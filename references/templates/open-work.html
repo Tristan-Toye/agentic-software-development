@@ -1,0 +1,1124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open work</title>
+<script>
+/* Dark by default; an explicit choice from the toggle is remembered. Runs
+   before first paint so the page never flashes light. */
+(function () {
+  var saved = localStorage.getItem("open-work-theme");
+  if (saved !== "auto") document.documentElement.dataset.theme = saved || "dark";
+})();
+</script>
+<style>
+/* ------------------------------------------------------------------ tokens
+   Palette: validated dataviz reference instance — three lifecycle hue groups
+   (blue: idle, waiting on a person; magenta: an agent is in flight; orange:
+   planned), each ordered internally by lightness, plus reserved status colors
+   for health. Every hue and step below was measured with the dataviz
+   validator's own code, not chosen by eye; the numbers are recorded on the
+   lifecycle block. Text always wears ink tokens, never a stage color. Dark is
+   the default; light is the option. */
+:root {
+  color-scheme: light;
+  --plane: #f9f9f7;            /* page plane */
+  --surface: #fcfcfb;          /* card surface */
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-3: #898781;
+  --grid: #e1e0d9;
+  --baseline: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --shadow: 0 1px 2px rgba(11,11,11,.04), 0 8px 24px -12px rgba(11,11,11,.10);
+  --shadow-lift: 0 2px 4px rgba(11,11,11,.06), 0 16px 32px -12px rgba(11,11,11,.16);
+  --backdrop: rgba(11,11,11,.35);
+
+  /* lifecycle — hue says what a stage MEANS, lightness orders the stages that
+     share a hue. Blue = the pipeline is idle and waiting on a person (ready is
+     waiting for you to start it, pr for you to merge it). Magenta = an agent is
+     mid-flight and the dossier should be left alone (building, review) — the
+     documented categorical slot-5 hue, stepped per surface. Planned sits off
+     both in orange. Terminal states apart: green done, gray dropped.
+     Blue↔magenta is the pair that had to survive CVD: it measures min(protan,
+     deutan) ΔE 16.5 light / 13.2 dark on ready↔building and 8.3 / 8.6 on
+     review↔pr. Violet and aqua were both measured and rejected — violet
+     collapses against blue (ΔE 6.7), aqua against done's green (10.9).
+     building↔review is a within-hue ordinal pair, so it answers to ΔL (0.134,
+     floor 0.06), not to the categorical ΔE floor. building sits ΔE 8.5 from
+     status-critical in light mode — structurally capped, since staying clear of
+     blue forces the hue into the red-pink region — so status keeps its icon +
+     label pairing and never leans on hue alone. */
+  --stage-planned:  #c2610a;
+  --stage-ready:    #5598e7;
+  --stage-building: #bd4a78;
+  --stage-review:   #901d52;
+  --stage-pr:       #104281;
+  --stage-done:     #0ca30c;   /* status good — always icon + label */
+  --stage-dropped:  #898781;
+
+  /* generic UI accent — decorative chrome only, never a lifecycle stage */
+  --accent: #2a78d6;
+
+  /* reserved status colors — never reused as series */
+  --status-good:     #0ca30c;
+  --status-warning:  #fab219;
+  --status-serious:  #ec835a;
+  --status-critical: #d03b3b;
+  --good-text:       #006300;
+
+  --hero-glow: radial-gradient(120% 140% at 15% 0%,
+               rgba(42,120,214,.10) 0%, rgba(42,120,214,.03) 45%, transparent 70%);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --plane: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --ink-3: #898781;
+    --grid: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --shadow: none;
+    --shadow-lift: 0 0 0 1px rgba(255,255,255,.06);
+    --backdrop: rgba(0,0,0,.55);
+
+    --stage-planned:  #f78c2a;   /* orange, off both ramps — see :root */
+    --stage-ready:    #6da7ec;
+    --stage-building: #dc6693;   /* magenta = in flight — see :root */
+    --stage-review:   #ae3c6b;
+    --stage-pr:       #184f95;
+    --stage-done:     #0ca30c;
+    --stage-dropped:  #898781;
+    --accent:         #3987e5;
+    --good-text:      #0ca30c;
+    --hero-glow: radial-gradient(120% 140% at 15% 0%,
+                 rgba(57,135,229,.14) 0%, rgba(57,135,229,.04) 45%, transparent 70%);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d;
+  --surface: #1a1a19;
+  --ink: #ffffff;
+  --ink-2: #c3c2b7;
+  --ink-3: #898781;
+  --grid: #2c2c2a;
+  --baseline: #383835;
+  --border: rgba(255, 255, 255, 0.10);
+  --shadow: none;
+  --shadow-lift: 0 0 0 1px rgba(255,255,255,.06);
+  --backdrop: rgba(0,0,0,.55);
+
+  --stage-planned:  #f78c2a;   /* orange, off both ramps — see :root */
+  --stage-ready:    #6da7ec;
+  --stage-building: #dc6693;   /* magenta = in flight — see :root */
+  --stage-review:   #ae3c6b;
+  --stage-pr:       #184f95;
+  --stage-done:     #0ca30c;
+  --stage-dropped:  #898781;
+  --accent:         #3987e5;
+  --good-text:      #0ca30c;
+  --hero-glow: radial-gradient(120% 140% at 15% 0%,
+               rgba(57,135,229,.14) 0%, rgba(57,135,229,.04) 45%, transparent 70%);
+}
+
+/* ------------------------------------------------------------------ base */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--plane);
+  color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 30px 24px 64px; }
+code, .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .86em;
+}
+h1 { font-size: 22px; font-weight: 650; letter-spacing: -.01em; margin: 0; }
+/* section titles — the page's top-level landmarks, unmistakably heavier
+   than any group label inside a panel */
+h2 {
+  display: flex; align-items: baseline; gap: 10px;
+  font-size: 16px; font-weight: 700; color: var(--ink);
+  letter-spacing: -.005em; margin: 42px 0 12px;
+  padding-top: 18px; border-top: 1px solid var(--grid);
+}
+h2::before { content: ""; align-self: center; width: 10px; height: 10px;
+             border-radius: 3px; background: var(--accent); flex: none; }
+h2 .hint { font-size: 12.5px; font-weight: 400; color: var(--ink-3); }
+a { color: inherit; }
+
+/* entrance animation — staggered via --i, disabled under reduced motion */
+.in { opacity: 0; transform: translateY(8px); animation: rise .5s cubic-bezier(.2,.7,.3,1) forwards; animation-delay: calc(var(--i, 0) * 45ms); }
+@keyframes rise { to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce), print {
+  .in { animation: none; opacity: 1; transform: none; }
+  .bar-seg { transition: none !important; }
+  .pulse::before { animation: none !important; }
+  .hero::after { animation: none !important; }
+}
+
+/* ------------------------------------------------------------------ header */
+header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+header .meta { color: var(--ink-3); font-size: 13px; }
+header .spacer { flex: 1; }
+#theme-btn {
+  border: 1px solid var(--border); background: var(--surface); color: var(--ink-2);
+  border-radius: 999px; padding: 4px 12px; font: inherit; font-size: 12.5px;
+  cursor: pointer;
+}
+#theme-btn:hover { color: var(--ink); }
+/* live indicator — says whether the page is watching the generator's state
+   file, so a stale tab never looks like a fresh one */
+#live-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px;
+  font-size: 12px; color: var(--ink-3); cursor: default;
+}
+#live-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); flex: none; }
+#live-chip.on { color: var(--good-text); }
+#live-chip.on .dot { background: var(--status-good); }
+#live-chip.lost { color: var(--status-critical); }
+#live-chip.lost .dot { background: var(--status-critical); }
+
+/* ------------------------------------------------------------------ hero */
+.hero {
+  position: relative; overflow: hidden;
+  margin-top: 20px; padding: 22px 24px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: var(--shadow);
+}
+.hero::before { content: ""; position: absolute; inset: 0; background: var(--hero-glow); pointer-events: none; }
+.hero::after { /* one slow sheen sweep on load */
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(105deg, transparent 40%, rgba(255,255,255,.05) 50%, transparent 60%);
+  transform: translateX(-100%); animation: sheen 1.6s .5s ease-out 1 forwards;
+}
+@keyframes sheen { to { transform: translateX(100%); } }
+.hero .kicker { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+.hero .cmd { font-size: 30px; font-weight: 650; letter-spacing: -.015em; margin: 6px 0 2px; }
+.hero .cmd code { font-size: .95em; }
+.hero .why { color: var(--ink-2); font-size: 14px; }
+
+/* ------------------------------------------------------------------ tiles */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 16px; }
+.tile {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 14px 16px 12px; box-shadow: var(--shadow);
+}
+.tile .label { font-size: 12.5px; color: var(--ink-2); display: flex; align-items: center; gap: 7px; }
+.tile .swatch { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+.tile .value { font-size: 30px; font-weight: 600; margin-top: 2px; }
+.tile .sub { font-size: 12px; color: var(--ink-3); min-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ------------------------------------------------------------------ flow bar */
+.flow { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: var(--shadow); }
+.bar { display: flex; gap: 2px; height: 26px; border-radius: 5px; }
+.bar-seg {
+  height: 100%; min-width: 0; border-radius: 2px; position: relative;
+  transition: flex-grow .9s cubic-bezier(.2,.7,.3,1);
+  flex-grow: 0.0001; flex-basis: 0;
+}
+.bar-seg:first-child { border-top-left-radius: 5px; border-bottom-left-radius: 5px; }
+.bar-seg:last-child { border-top-right-radius: 5px; border-bottom-right-radius: 5px; }
+.bar-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 12.5px; color: var(--ink-2); }
+.bar-legend .key { display: inline-flex; align-items: center; gap: 6px; }
+.bar-legend .swatch { width: 9px; height: 9px; border-radius: 3px; }
+.bar-legend .n { color: var(--ink); font-weight: 600; }
+
+/* ------------------------------------------------------- flight plan
+   The work list: one row per dossier, grouped by its literal front-matter
+   status, each group titled with the status value and its meaning. */
+.fp { padding: 2px 0 6px; overflow: hidden; }
+.fp-group {
+  display: flex; align-items: baseline; gap: 9px; padding: 15px 16px 6px;
+  font-size: 12px; color: var(--ink-3);
+}
+.fp-group .swatch { width: 8px; height: 8px; border-radius: 2.5px; align-self: center; }
+.fp-group .st { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                font-size: 12.5px; font-weight: 700; color: var(--ink); }
+.fp-group .n { font-weight: 600; color: var(--ink-2); }
+.fp-row {
+  display: grid; grid-template-columns: 14px minmax(0, 1fr) auto auto;
+  gap: 2px 14px; align-items: center; padding: 10px 16px;
+  border-top: 1px solid var(--grid); cursor: pointer;
+  transition: background .15s ease, transform .15s ease;
+}
+.fp-row:hover { background: var(--plane); transform: translateX(3px); }
+.fp-dot { width: 10px; height: 10px; border-radius: 50%; }
+.fp-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.fp-id { font-weight: 650; font-size: 12.5px; }
+.fp-title { font-size: 13.5px; }
+.fp-sub { font-size: 11.5px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fp-steps-wrap { display: flex; align-items: center; }
+.fp-steps { display: flex; align-items: center; }
+.step { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--baseline); flex: none; }
+.step.on { border: none; }
+.step.cur { width: 11px; height: 11px; outline: 2px solid var(--grid); outline-offset: 1.5px; }
+.step-link { width: 11px; height: 1.5px; background: var(--grid); flex: none; }
+.fp-age { font-size: 11.5px; color: var(--ink-3); text-align: right; min-width: 52px; }
+@media (max-width: 880px) { .fp-steps-wrap { display: none; } }
+.flag {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600; color: var(--ink-2);
+  border: 1px solid var(--border); border-radius: 999px; padding: 1.5px 8px;
+}
+.flag .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+/* pulsing dot for stages with agents at work */
+.pulse { position: relative; }
+.pulse::before {
+  content: ""; position: absolute; inset: -4px; border-radius: 50%;
+  background: inherit; opacity: .5; animation: pulse 1.8s ease-out infinite;
+}
+@keyframes pulse { 0% { transform: scale(.5); opacity: .5; } 70%, 100% { transform: scale(1.6); opacity: 0; } }
+
+/* ------------------------------------------------------------------ graph */
+.graph-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 10px; overflow-x: auto; }
+.graph-note { margin-top: 8px; font-size: 11.5px; color: var(--ink-3); padding: 0 4px 2px; }
+/* one panel per independent flow — they stack, never share a column grid */
+.graph-panel + .graph-panel { margin-top: 12px; }
+.graph-cap {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  font-size: 11.5px; color: var(--ink-3); padding: 2px 6px 8px;
+  border-bottom: 1px solid var(--grid); margin-bottom: 10px;
+}
+.graph-cap .n { font-weight: 700; color: var(--ink-2); }
+svg.dg { display: block; margin: 0 auto; }
+.dg-edge { fill: none; stroke: var(--ink-3); stroke-width: 1.5; opacity: .4; transition: opacity .15s ease, stroke-width .15s ease; }
+.dg-edge.hl { opacity: 1; stroke-width: 2.4; }
+.dg-node { cursor: pointer; }
+.dg-node rect { fill: var(--plane); stroke: var(--border); transition: stroke .15s ease; }
+.dg-node:hover rect { stroke: var(--ink-3); }
+.dg-node text { fill: var(--ink); font: 600 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.dg-node text.sub { fill: var(--ink-2); font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+/* ------------------------------------------------------------------ lists */
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+.rows { list-style: none; margin: 0; padding: 4px 0; }
+.rows li { display: flex; align-items: baseline; gap: 10px; padding: 9px 16px; border-top: 1px solid var(--grid); font-size: 13.5px; }
+.rows li:first-child { border-top: none; }
+.rows .icon { flex: none; width: 18px; text-align: center; }
+.rows .what { color: var(--ink); }
+.rows .who { color: var(--ink-3); font-size: 12px; margin-left: auto; white-space: nowrap; }
+.allclear { color: var(--good-text); font-weight: 600; }
+
+.empty {
+  text-align: center; padding: 64px 24px; color: var(--ink-2);
+  background: var(--surface); border: 1px dashed var(--baseline); border-radius: 14px; margin-top: 20px;
+}
+.empty .big { font-size: 20px; font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+
+footer { margin-top: 40px; color: var(--ink-3); font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
+
+/* ------------------------------------------------------------------ modal */
+#modal { position: fixed; inset: 0; z-index: 40; display: none; align-items: center; justify-content: center; padding: 22px; }
+#modal.open { display: flex; }
+#modal .backdrop { position: absolute; inset: 0; background: var(--backdrop); backdrop-filter: blur(2px); }
+#modal .sheet {
+  position: relative; width: 100%; max-width: 660px; max-height: 84vh; overflow: auto;
+  background: var(--surface); border: 1px solid var(--border); border-top: 3px solid var(--sheet-stage, var(--accent));
+  border-radius: 14px; padding: 20px 24px 22px; box-shadow: var(--shadow-lift);
+  animation: rise .22s cubic-bezier(.2,.7,.3,1);
+}
+@media (prefers-reduced-motion: reduce) { #modal .sheet { animation: none; } }
+#modal .kicker { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; letter-spacing: .07em; color: var(--ink-3); }
+#modal .kicker .st { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); font-size: 12.5px; }
+#modal .kicker .swatch { width: 9px; height: 9px; border-radius: 3px; }
+#modal .kicker .close { margin-left: auto; border: none; background: none; color: var(--ink-3); font-size: 18px; cursor: pointer; padding: 2px 6px; }
+#modal .kicker .close:hover { color: var(--ink); }
+#modal h3 { margin: 8px 0 2px; font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
+#modal h3 .mono { color: var(--ink-3); font-weight: 600; margin-right: 8px; }
+#modal h4 { margin: 18px 0 4px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); }
+#modal p { margin: 0; font-size: 14px; color: var(--ink-2); }
+#modal p.none { font-style: italic; color: var(--ink-3); }
+#modal .meta { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; margin-top: 4px; font-size: 12.5px; }
+#modal .meta b { color: var(--ink-3); font-weight: 600; }
+#modal .meta span { overflow-wrap: anywhere; color: var(--ink-2); }
+#modal .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+#modal .chip {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  font-size: 12px; font-weight: 600; color: var(--ink-2);
+  border: 1px solid var(--border); border-radius: 999px; padding: 2.5px 10px;
+}
+#modal .chip:hover { color: var(--ink); box-shadow: var(--shadow); }
+#modal .chip .swatch { width: 8px; height: 8px; border-radius: 50%; }
+
+/* ------------------------------------------------------------------ tooltip */
+#tip {
+  position: fixed; z-index: 50; pointer-events: none; display: none;
+  background: var(--ink); color: var(--plane);
+  font-size: 12px; line-height: 1.4; padding: 6px 9px; border-radius: 7px;
+  max-width: 280px; box-shadow: 0 4px 14px rgba(0,0,0,.25);
+}
+</style>
+</head>
+<body>
+<script id="open-work-data" type="application/json">{{DATA_JSON}}</script>
+<div class="wrap" id="app"></div>
+<div id="modal" aria-hidden="true"><div class="backdrop"></div><div class="sheet" role="dialog" aria-modal="true"></div></div>
+<div id="tip" role="tooltip"></div>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById("open-work-data").textContent);
+const SVGNS = "http://www.w3.org/2000/svg";
+
+/* the status lifecycle, in order, with the meaning of each literal value —
+   mirrors the status table in references/formats.md */
+const STAGES = ["planned", "ready", "building", "review", "pr", "done", "dropped"];
+const STATUS_GLOSS = {
+  planned:  "the plan exists — its review has not passed",
+  ready:    "the plan review passed — buildable",
+  building: "agents are working in worktrees",
+  review:   "tests are green — the review cycle is running",
+  pr:       "the branch is pushed — waiting for the PR URL",
+  done:     "the PR URL is recorded — this build is finished",
+  dropped:  "abandoned — the reason is in the build log",
+};
+const ACTIVE = new Set(["building", "review"]);
+const SEV_COLOR = {
+  warning:  "var(--status-warning)",
+  serious:  "var(--status-serious)",
+  critical: "var(--status-critical)",
+  good:     "var(--status-good)",
+};
+const SEV_ICON = { warning: "⚠︎", serious: "⚠︎", critical: "✖", good: "✓" };
+const BY_ID = Object.fromEntries(DATA.dossiers.map(d => [d.id, d]));
+const DEPENDENTS = {};
+for (const d of DATA.dossiers)
+  for (const b of d.blocked_by)
+    (DEPENDENTS[b] = DEPENDENTS[b] || []).push(d.id);
+
+const app = document.getElementById("app");
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let stagger = 0;
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+function svgEl(tag, attrs) {
+  const n = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  return n;
+}
+function enter(node) { node.classList.add("in"); node.style.setProperty("--i", Math.min(stagger++, 24)); return node; }
+function stageVar(s) { return `var(--stage-${s}, var(--stage-dropped))`; }
+function agePhrase(d) {
+  if (d == null) return "";
+  if (d <= 0) return "today";
+  if (d === 1) return "1 day";
+  return d + " days";
+}
+
+/* ---------------------------------------------------------------- header */
+{
+  const h = el("header");
+  h.append(el("h1", null, "Open work"));
+  const meta = el("span", "meta");
+  meta.append("dossiers in ", Object.assign(el("code"), { textContent: DATA.root }));
+  h.append(meta, el("span", "spacer"));
+  h.append(el("span", "meta", "generated " + DATA.generated_at_human));
+  const live = Object.assign(el("span"), { id: "live-chip" });
+  live.append(el("span", "dot"), el("span", "txt", "static"));
+  h.append(live);
+  const btn = Object.assign(el("button"), { id: "theme-btn" });
+  const label = () => "theme: " + (localStorage.getItem("open-work-theme") || "dark");
+  btn.textContent = label();
+  btn.onclick = () => {
+    const cur = localStorage.getItem("open-work-theme") || "dark";
+    const next = cur === "dark" ? "light" : cur === "light" ? "auto" : "dark";
+    localStorage.setItem("open-work-theme", next);
+    if (next === "auto") delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = next;
+    btn.textContent = label();
+  };
+  h.append(btn);
+  app.append(enter(h));
+}
+
+/* ---------------------------------------------------------------- empty */
+if (!DATA.dossiers.length) {
+  const e = el("div", "empty");
+  e.append(el("div", "big", "No dossiers yet"));
+  e.append(el("div", null, "/plan turns a Jira key, a bug report, or a paragraph of intent into buildable work."));
+  app.append(enter(e));
+} else {
+
+/* ---------------------------------------------------------------- hero */
+if (DATA.next_action) {
+  const hero = el("div", "hero");
+  hero.append(el("div", "kicker", "Suggested next action"));
+  const cmd = el("div", "cmd");
+  cmd.append(Object.assign(el("code"), { textContent: DATA.next_action.command }));
+  hero.append(cmd, el("div", "why", DATA.next_action.reason));
+  app.append(enter(hero));
+}
+
+/* ---------------------------------------------------------------- tiles */
+{
+  const tiles = el("div", "tiles");
+  const S = DATA.sections;
+  const spec = [
+    ["Ready to build", S.ready.length, "ready", S.ready[0] ? "next: " + S.ready[0] : ""],
+    ["In flight", S.in_flight.length, "building", S.in_flight.join("  ")],
+    ["Waiting on PR", S.waiting_pr.length, "pr", S.waiting_pr.join("  ")],
+    ["Blocked", S.blocked.length, null, S.blocked.join("  ")],
+    ["Not planned yet", S.planned.length, "planned", S.planned.join("  ")],
+    ["Done", S.done.length, "done", ""],
+  ];
+  for (const [label, n, stage, sub] of spec) {
+    const t = el("div", "tile");
+    const lab = el("div", "label");
+    const sw = el("span", "swatch");
+    sw.style.background = stage ? stageVar(stage) : "var(--status-serious)";
+    lab.append(sw, label);
+    const v = el("div", "value", reduced ? String(n) : "0");
+    t.append(lab, v, el("div", "sub", sub));
+    tiles.append(enter(t));
+    if (!reduced && n > 0) countUp(v, n);
+  }
+  app.append(tiles);
+}
+function countUp(node, target) {
+  const t0 = performance.now(), dur = 700;
+  (function tick(t) {
+    const p = Math.min(1, (t - t0) / dur), ease = 1 - Math.pow(1 - p, 3);
+    node.textContent = String(Math.round(target * ease));
+    if (p < 1) requestAnimationFrame(tick);
+  })(t0);
+}
+
+/* ---------------------------------------------------------------- flow bar */
+{
+  const present = STAGES.filter(s => (DATA.counts.by_status[s] || 0) > 0);
+  if (present.length) {
+    app.append(enter(el("h2", null, "Pipeline")));
+    const flow = el("div", "flow");
+    const bar = el("div", "bar");
+    bar.setAttribute("role", "img");
+    bar.setAttribute("aria-label", present.map(s =>
+      `${s}: ${DATA.counts.by_status[s]}`).join(", "));
+    for (const s of present) {
+      const n = DATA.counts.by_status[s];
+      const seg = el("div", "bar-seg");
+      seg.style.background = stageVar(s);
+      seg.dataset.grow = n;
+      const pct = Math.round(100 * n / DATA.counts.total);
+      bindTip(seg, () => `${s} — ${n} dossier${n === 1 ? "" : "s"} (${pct}%)`);
+      bar.append(seg);
+    }
+    const legend = el("div", "bar-legend");
+    for (const s of present) {
+      const k = el("span", "key");
+      const sw = el("span", "swatch");
+      sw.style.background = stageVar(s);
+      k.append(sw, Object.assign(el("span", "mono"), { textContent: s }), " ",
+               el("span", "n", String(DATA.counts.by_status[s])));
+      legend.append(k);
+    }
+    flow.append(bar, legend);
+    app.append(enter(flow));
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      for (const seg of bar.children) seg.style.flexGrow = seg.dataset.grow;
+    }));
+  }
+}
+
+/* ---------------------------------------------------------------- graph
+   A practical dependency flow: dossiers in dependency layers, left to
+   right, an arrow meaning "must be done before". Independent flows get one
+   rectangle each — see `flows()` for why they are never combined. Only
+   dossiers that take part in a dependency appear; the flight plan lists the
+   rest. */
+{
+  const edges = [];
+  const inGraph = new Set();
+  for (const d of DATA.dossiers)
+    for (const b of d.blocked_by)
+      if (BY_ID[b]) { edges.push([b, d.id]); inGraph.add(b); inGraph.add(d.id); }
+
+  const groups = flows([...inGraph], edges);
+  if (groups.length) {
+    const many = groups.length > 1;
+    const h = el("h2", null, many ? "Dependency flows" : "Dependency flow");
+    h.append(el("span", "hint", "an arrow reads “must be done before” · click a dossier for its intent"
+      + (many ? ` · ${groups.length} independent flows, one box each` : "")));
+    app.append(enter(h));
+    groups.forEach((g, i) => {
+      const panel = el("div", "graph-panel");
+      if (many) {
+        const cap = el("div", "graph-cap");
+        cap.append(el("span", "n", `Flow ${i + 1}`));
+        cap.append(el("span", null,
+          `${g.ids.length} dossier${g.ids.length === 1 ? "" : "s"} · starts at ${g.roots.join(", ")}`));
+        panel.append(cap);
+      }
+      panel.append(depGraph(g.ids, g.edges));
+      app.append(enter(panel));
+    });
+    const rest = DATA.dossiers.length - inGraph.size;
+    if (rest > 0) app.append(enter(el("div", "graph-note",
+      `${rest} dossier${rest === 1 ? "" : "s"} with no dependencies ${rest === 1 ? "is" : "are"} not drawn — see the flight plan.`)));
+  }
+}
+
+/* Split the dependency graph into independent flows: the connected components
+   of the undirected edge set. Two chains that share no dossier get one
+   rectangle each, because drawing them in one box implies a shared column
+   grid — and so a shared layer number and a shared "must be done before"
+   ordering — that they do not have. Largest flow first, ties by first id. */
+function flows(ids, edges) {
+  const adj = {};
+  for (const id of ids) adj[id] = [];
+  for (const [a, b] of edges) { adj[a].push(b); adj[b].push(a); }
+
+  const seen = new Set(), out = [];
+  for (const start of [...ids].sort()) {
+    if (seen.has(start)) continue;
+    const group = new Set([start]);
+    const queue = [start];
+    seen.add(start);
+    while (queue.length) {
+      for (const nb of adj[queue.pop()])
+        if (!seen.has(nb)) { seen.add(nb); group.add(nb); queue.push(nb); }
+    }
+    const gIds = [...group].sort();
+    out.push({
+      ids: gIds,
+      edges: edges.filter(([a, b]) => group.has(a) && group.has(b)),
+      /* a root has no blocker inside its own flow — where the arrows start */
+      roots: gIds.filter(id => !(BY_ID[id].blocked_by || []).some(b => group.has(b))),
+    });
+  }
+  out.sort((x, y) => y.ids.length - x.ids.length || (x.ids[0] < y.ids[0] ? -1 : 1));
+  return out;
+}
+
+function depGraph(ids, edges) {
+  /* layer = longest chain of blockers behind the dossier */
+  const layer = {};
+  function depth(id, trail) {
+    if (id in layer) return layer[id];
+    if (trail.has(id)) return 0;                       // cycle guard
+    trail.add(id);
+    const blockers = (BY_ID[id].blocked_by || []).filter(b => ids.includes(b));
+    layer[id] = blockers.length ? 1 + Math.max(...blockers.map(b => depth(b, trail))) : 0;
+    return layer[id];
+  }
+  for (const id of ids) depth(id, new Set());
+
+  /* Longest-path layering can leave an edge spanning more than one column —
+     drawn straight, it would cut through whichever node sits in between.
+     Give every skipped layer a dummy waypoint that reserves its own row in
+     that column — the standard "virtual node" fix from layered graph
+     drawing — so a line only ever passes through space nothing else uses. */
+  const dummyLayer = {};
+  let dummySeq = 0;
+  const hops = edges.map(([a, b]) => {
+    const chain = [a];
+    for (let li = layer[a] + 1; li < layer[b]; li++) {
+      const dId = " dg" + dummySeq++;
+      dummyLayer[dId] = li;
+      chain.push(dId);
+    }
+    chain.push(b);
+    return chain;
+  });
+
+  const maxLayer = Math.max(0, ...ids.map(id => layer[id]));
+  const cols = Array.from({ length: maxLayer + 1 }, () => []);
+  for (const id of ids) cols[layer[id]].push(id);
+  for (const dId in dummyLayer) cols[dummyLayer[dId]].push(dId);
+
+  /* unit-length hops only, grouped by the column boundary they cross —
+     what the crossing count is measured against. A blocked_by cycle (a data
+     error the layering's cycle guard already tolerates rather than rejects)
+     can hand back a hop whose layer doesn't fit this boundary range — skip
+     it rather than let a fixed-length array throw. */
+  const boundaries = Array.from({ length: maxLayer }, () => []);
+  for (const chain of hops)
+    for (let i = 0; i < chain.length - 1; i++) {
+      const li = layer[chain[i]] ?? dummyLayer[chain[i]];
+      if (li >= 0 && li < maxLayer) boundaries[li].push([chain[i], chain[i + 1]]);
+    }
+
+  const order = minimizeCrossings(cols, boundaries);
+  const rowOf = {};
+  order.forEach(col => col.forEach((id, i) => { rowOf[id] = i; }));
+
+  const PW = 168, PH = 48, GX = 74, GY = 20, PAD = 18;
+  const maxRows = Math.max(...order.map(c => c.length));
+  const width = PAD * 2 + order.length * PW + (order.length - 1) * GX;
+  const height = PAD * 2 + maxRows * PH + (maxRows - 1) * GY;
+  const pos = {};
+  order.forEach((col, li) => {
+    const x = PAD + li * (PW + GX);
+    const off = (maxRows - col.length) * (PH + GY) / 2;
+    col.forEach((id, i) => { pos[id] = [x, PAD + off + i * (PH + GY)]; });
+  });
+
+  const svg = svgEl("svg", { class: "dg", width, height, viewBox: `0 0 ${width} ${height}`, role: "img" });
+  svg.setAttribute("aria-label", "Dependency flow: " + edges.map(([a, b]) => `${a} before ${b}`).join(", "));
+  const defs = svgEl("defs", {});
+  const marker = svgEl("marker", { id: "dg-arrow", viewBox: "0 0 8 8", refX: 7, refY: 4,
+                                   markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" });
+  marker.append(svgEl("path", { d: "M0,0.5 L8,4 L0,7.5 Z", fill: "var(--ink-3)" }));
+  defs.append(marker);
+  svg.append(defs);
+
+  /* a real node's box edge, or the bare center of an invisible dummy row */
+  function anchor(id, out) {
+    const [x, y] = pos[id];
+    if (id in dummyLayer) return [x + PW / 2, y + PH / 2];
+    return out ? [x + PW, y + PH / 2] : [x - 2, y + PH / 2];
+  }
+
+  const edgeEls = [];
+  hops.forEach((chain, ei) => {
+    const [a, b] = edges[ei];
+    let d = "";
+    for (let i = 0; i < chain.length - 1; i++) {
+      const [x1, y1] = anchor(chain[i], true);
+      const [x2, y2] = anchor(chain[i + 1], false);
+      const mx = (x1 + x2) / 2;
+      if (i === 0) d += `M ${x1} ${y1} `;
+      d += `C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2} `;
+    }
+    const p = svgEl("path", { class: "dg-edge", "marker-end": "url(#dg-arrow)", d: d.trim() });
+    p.dataset.from = a; p.dataset.to = b;
+    svg.append(p);
+    edgeEls.push(p);
+  });
+
+  for (const id of ids) {
+    const d = BY_ID[id], [x, y] = pos[id];
+    const g = svgEl("g", { class: "dg-node", transform: `translate(${x},${y})`, tabindex: 0 });
+    g.append(svgEl("rect", { width: PW, height: PH, rx: 9 }));
+    g.append(svgEl("rect", { width: 3, height: PH, rx: 1.5, fill: stageVar(d.status) }));
+    g.append(svgEl("circle", { cx: 17, cy: 16, r: 4.5, fill: stageVar(d.status) }));
+    const t1 = svgEl("text", { x: 28, y: 20 });
+    t1.textContent = d.id + (d.status === "done" ? " ✓" : "");
+    const t2 = svgEl("text", { x: 12, y: 38, class: "sub" });
+    const title = d.title || "";
+    t2.textContent = title.length > 24 ? title.slice(0, 23).trimEnd() + "…" : title;
+    g.append(t1, t2);
+    bindTip(g, () => `${d.id} — ${d.title}  ·  ${d.status}`);
+    g.addEventListener("click", () => openModal(d));
+    g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openModal(d); } });
+    g.addEventListener("mouseenter", () => {
+      for (const p of edgeEls)
+        p.classList.toggle("hl", p.dataset.from === id || p.dataset.to === id);
+    });
+    g.addEventListener("mouseleave", () => {
+      for (const p of edgeEls) p.classList.remove("hl");
+    });
+    svg.append(g);
+  }
+  return svg;
+}
+
+/* Order each column to minimize edge crossings. Small flows — almost all of
+   them — get an exhaustive search over every column permutation: the exact
+   minimum, which is zero whenever the flow is level-planar. Anything too
+   large for that falls back to median-heuristic sweeps plus a transpose
+   pass, the standard Sugiyama-style approach — not guaranteed optimal, but
+   never hangs the page. */
+function minimizeCrossings(cols, boundaries) {
+  const CAP = 20000;
+  let combos = 1;
+  for (const c of cols) {
+    combos *= factorial(c.length);
+    if (combos > CAP) { combos = Infinity; break; }
+  }
+  return combos <= CAP ? exhaustiveOrder(cols, boundaries) : heuristicOrder(cols, boundaries);
+}
+
+function factorial(n) { let f = 1; for (let i = 2; i <= n; i++) f *= i; return f; }
+
+function totalCrossings(boundaries, rowIndex) {
+  let total = 0;
+  for (const segs of boundaries)
+    for (let i = 0; i < segs.length; i++)
+      for (let j = i + 1; j < segs.length; j++) {
+        const [a1, b1] = segs[i], [a2, b2] = segs[j];
+        if ((rowIndex[a1] - rowIndex[a2]) * (rowIndex[b1] - rowIndex[b2]) < 0) total++;
+      }
+  return total;
+}
+
+function exhaustiveOrder(cols, boundaries) {
+  const permsPerCol = cols.map(permutations);
+  let best = cols, bestScore = Infinity, stop = false;
+  const chosen = new Array(cols.length);
+  (function rec(ci) {
+    if (stop) return;
+    if (ci === cols.length) {
+      const rowIndex = {};
+      chosen.forEach(col => col.forEach((id, i) => { rowIndex[id] = i; }));
+      const score = totalCrossings(boundaries, rowIndex);
+      if (score < bestScore) {
+        bestScore = score;
+        best = chosen.map(c => c.slice());
+        if (score === 0) stop = true;               // can't beat zero — stop early
+      }
+      return;
+    }
+    for (const perm of permsPerCol[ci]) {
+      chosen[ci] = perm;
+      rec(ci + 1);
+      if (stop) return;
+    }
+  })(0);
+  return best;
+}
+
+function permutations(arr) {
+  if (arr.length <= 1) return [arr.slice()];
+  const a = arr.slice(), out = [];
+  (function heap(k) {
+    if (k === 1) { out.push(a.slice()); return; }
+    for (let i = 0; i < k; i++) {
+      heap(k - 1);
+      const j = k % 2 === 0 ? i : 0;
+      [a[j], a[k - 1]] = [a[k - 1], a[j]];
+    }
+  })(a.length);
+  return out;
+}
+
+/* fallback for flows too large to search exhaustively: iterative median
+   sweeps (down, then up), then a transpose pass swapping adjacent nodes
+   wherever that strictly reduces crossings */
+function heuristicOrder(cols, boundaries) {
+  const order = cols.map(c => c.slice());
+  const leftNbrs = {}, rightNbrs = {};
+  boundaries.forEach(segs => segs.forEach(([a, b]) => {
+    (rightNbrs[a] = rightNbrs[a] || []).push(b);
+    (leftNbrs[b] = leftNbrs[b] || []).push(a);
+  }));
+  function rowIndex() {
+    const m = {};
+    order.forEach(col => col.forEach((id, i) => { m[id] = i; }));
+    return m;
+  }
+  function median(list, rIdx, fallback) {
+    if (!list || !list.length) return fallback;
+    const rows = list.map(id => rIdx[id]).sort((x, y) => x - y);
+    const n = rows.length;
+    return n % 2 === 1 ? rows[(n - 1) / 2] : (rows[n / 2 - 1] + rows[n / 2]) / 2;
+  }
+  function sweep(dir) {
+    const range = dir > 0 ? [...order.keys()] : [...order.keys()].reverse();
+    const nbrs = dir > 0 ? leftNbrs : rightNbrs;
+    for (const li of range) {
+      const rIdx = rowIndex();
+      const existing = {};
+      order[li].forEach((id, i) => { existing[id] = i; });
+      order[li] = order[li].slice().sort((x, y) =>
+        median(nbrs[x], rIdx, existing[x]) - median(nbrs[y], rIdx, existing[y]));
+    }
+  }
+  for (let iter = 0; iter < 6; iter++) { sweep(1); sweep(-1); }
+
+  let improved = true, guard = 0;
+  while (improved && guard++ < 20) {
+    improved = false;
+    for (let li = 0; li < order.length; li++)
+      for (let i = 0; i < order[li].length - 1; i++) {
+        const before = totalCrossings(boundaries, rowIndex());
+        [order[li][i], order[li][i + 1]] = [order[li][i + 1], order[li][i]];
+        const after = totalCrossings(boundaries, rowIndex());
+        if (after < before) improved = true;
+        else [order[li][i], order[li][i + 1]] = [order[li][i + 1], order[li][i]];
+      }
+  }
+  return order;
+}
+
+/* ---------------------------------------------------------------- flight plan */
+{
+  const groups = STAGES
+    .map(s => [s, DATA.dossiers.filter(d => d.status === s)])
+    .filter(([, items]) => items.length);
+  if (groups.length) {
+    const h = el("h2", null, "Flight plan");
+    h.append(el("span", "hint", "every dossier by its recorded status · click a row for its intent"));
+    app.append(enter(h));
+    const panel = el("div", "panel fp");
+    for (const [s, items] of groups) {
+      const gh = el("div", "fp-group");
+      const sw = el("span", "swatch" + (ACTIVE.has(s) ? " pulse" : ""));
+      sw.style.background = stageVar(s);
+      gh.append(sw, el("span", "st", (s === "done" ? "✓ " : "") + s),
+                el("span", "n", String(items.length)),
+                el("span", null, "— " + (STATUS_GLOSS[s] || "")));
+      panel.append(gh);
+      for (const d of items) panel.append(fpRow(d));
+    }
+    app.append(enter(panel));
+  }
+
+  function fpRow(d) {
+    const row = el("div", "fp-row");
+    const dot = el("span", "fp-dot" + (ACTIVE.has(d.status) ? " pulse" : ""));
+    dot.style.background = stageVar(d.status);
+    const main = el("div");
+    const head = el("div", "fp-head");
+    head.append(el("span", "fp-id mono", d.id));
+    if (d.jira) head.append(el("span", "fp-sub mono", d.jira));
+    head.append(el("span", "fp-title", d.title || "(untitled)"));
+    for (const f of d.flags) {
+      const chip = el("span", "flag");
+      const fdot = el("span", "dot");
+      fdot.style.background = SEV_COLOR[f.severity] || "var(--status-warning)";
+      chip.append(fdot, `${SEV_ICON[f.severity] || "⚠︎"} ${f.label}`);
+      if (f.detail) bindTip(chip, () => f.detail);
+      head.append(chip);
+    }
+    main.append(head);
+    if (d.branch) main.append(el("div", "fp-sub mono", d.branch));
+    row.append(dot, main, stepper(d), el("span", "fp-age", agePhrase(d.age_days)));
+    row.addEventListener("click", () => openModal(d));
+    return row;
+  }
+
+  /* mini lifecycle stepper: filled to the current stage in the stage ramp */
+  function stepper(d) {
+    const wrap = el("div", "fp-steps-wrap");
+    if (d.status === "dropped") { wrap.append(el("span", "fp-sub", "dropped")); return wrap; }
+    const main = STAGES.slice(0, 6);                    // planned … done
+    const cur = main.indexOf(d.status);
+    const steps = el("div", "fp-steps");
+    main.forEach((s, i) => {
+      if (i) steps.append(el("span", "step-link"));
+      const st = el("span", "step" + (i <= cur ? " on" : "") + (i === cur ? " cur" : ""));
+      if (i <= cur) st.style.background = stageVar(s);
+      steps.append(st);
+    });
+    bindTip(steps, () => `status: ${d.status} — stage ${cur + 1} of ${main.length}`);
+    wrap.append(steps);
+    return wrap;
+  }
+}
+
+/* ---------------------------------------------------------------- attention */
+{
+  app.append(enter(el("h2", null, "Needs attention")));
+  const panel = el("div", "panel");
+  const rows = el("ul", "rows");
+  if (!DATA.attention.length) {
+    const li = el("li");
+    li.append(el("span", "icon", "✓"), Object.assign(el("span", "what allclear"), { textContent: "No discrepancies. The recorded state and the disk agree." }));
+    rows.append(li);
+  }
+  for (const a of DATA.attention) {
+    const li = el("li");
+    const icon = el("span", "icon", SEV_ICON[a.severity] || "⚠︎");
+    icon.style.color = SEV_COLOR[a.severity] || "var(--status-warning)";
+    li.append(icon, el("span", "what", a.text));
+    if (a.dossier) li.append(el("span", "who mono", a.dossier));
+    rows.append(li);
+  }
+  panel.append(rows);
+  app.append(enter(panel));
+}
+
+/* ---------------------------------------------------------------- signals
+   Mined from Build-log prose by /open-work, not by the generator — so on a
+   refresh the generator did the page carries the last mined set, and says
+   when that was rather than passing it off as current. */
+if (DATA.signals.length) {
+  const h = el("h2", null, "Health signals");
+  if (DATA.signals_mined_at_human)
+    h.append(el("span", "hint", `mined ${DATA.signals_mined_at_human} · /open-work refreshes them`));
+  app.append(enter(h));
+  const panel = el("div", "panel");
+  const rows = el("ul", "rows");
+  for (const s of DATA.signals) {
+    const li = el("li");
+    const icon = el("span", "icon", SEV_ICON[s.severity] || "⚠︎");
+    icon.style.color = SEV_COLOR[s.severity] || "var(--status-warning)";
+    li.append(icon, el("span", "what", (s.signal ? s.signal + " — " : "") + (s.detail || "")));
+    if (s.dossier) li.append(el("span", "who mono", s.dossier));
+    rows.append(li);
+  }
+  panel.append(rows);
+  app.append(enter(panel));
+}
+
+} /* end non-empty branch */
+
+/* ---------------------------------------------------------------- footer */
+{
+  const f = el("footer");
+  const per = STAGES.filter(s => DATA.counts.by_status[s])
+    .map(s => `${DATA.counts.by_status[s]} ${s}`).join(" · ");
+  f.append(el("span", null, `${DATA.counts.total} dossier${DATA.counts.total === 1 ? "" : "s"}${per ? " — " + per : ""}`));
+  f.append(el("span", null, "generated by /open-work — regenerate, never hand-edit"));
+  app.append(f);
+}
+
+/* ---------------------------------------------------------------- modal */
+const modal = document.getElementById("modal");
+const sheet = modal.querySelector(".sheet");
+function openModal(d) {
+  sheet.textContent = "";
+  sheet.style.setProperty("--sheet-stage", stageVar(d.status));
+  const kicker = el("div", "kicker");
+  const sw = el("span", "swatch");
+  sw.style.background = stageVar(d.status);
+  kicker.append(sw, el("span", "st", (d.status === "done" ? "✓ " : "") + d.status));
+  if (d.age_days != null) kicker.append(el("span", null, "· updated " + agePhrase(d.age_days) + (d.age_days > 0 ? " ago" : "")));
+  const close = Object.assign(el("button", "close", "✕"), { title: "close" });
+  close.onclick = closeModal;
+  kicker.append(close);
+  sheet.append(kicker);
+
+  const h3 = el("h3");
+  h3.append(el("span", "mono", d.id), d.title || "(untitled)");
+  sheet.append(h3);
+
+  sheet.append(el("h4", null, "Problem"));
+  sheet.append(d.problem ? el("p", null, d.problem)
+                         : el("p", "none", "No ## Problem section recorded."));
+  sheet.append(el("h4", null, "Approach"));
+  sheet.append(d.approach ? el("p", null, d.approach)
+                          : el("p", "none", "No ## Approach section recorded."));
+
+  const dep = (ids) => {
+    const chips = el("div", "chips");
+    for (const id of ids) {
+      const o = BY_ID[id];
+      const chip = el("span", "chip");
+      const s = el("span", "swatch");
+      s.style.background = o ? stageVar(o.status) : "var(--status-serious)";
+      chip.append(s, `${id} · ${o ? o.status : "missing"}`);
+      if (o) chip.onclick = () => openModal(o);
+      chips.append(chip);
+    }
+    return chips;
+  };
+  if (d.blocked_by.length) { sheet.append(el("h4", null, "Blocked by")); sheet.append(dep(d.blocked_by)); }
+  const dependents = DEPENDENTS[d.id] || [];
+  if (dependents.length) { sheet.append(el("h4", null, "Unlocks")); sheet.append(dep(dependents)); }
+
+  sheet.append(el("h4", null, "Facts"));
+  const meta = el("div", "meta");
+  const row = (k, v) => { if (v) { meta.append(el("b", null, k)); meta.append(Object.assign(el("span", "mono"), { textContent: String(v) })); } };
+  row("status", d.status);
+  row("jira", d.jira); row("branch", d.branch); row("worktree", d.worktree);
+  row("pr", d.pr); row("adrs", d.adrs.join(", ")); row("file", d.file);
+  row("updated", d.updated); row("created", d.created);
+  sheet.append(meta);
+
+  const hint = el("p", "none");
+  hint.style.marginTop = "16px";
+  hint.textContent = `Full detail: /open-work ${d.id}`;
+  sheet.append(hint);
+
+  modal.classList.add("open");
+  modal.setAttribute("aria-hidden", "false");
+}
+function closeModal() { modal.classList.remove("open"); modal.setAttribute("aria-hidden", "true"); }
+modal.querySelector(".backdrop").addEventListener("click", closeModal);
+addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+
+/* ---------------------------------------------------------------- tooltip */
+const tip = document.getElementById("tip");
+function bindTip(node, text) {
+  node.addEventListener("mousemove", (e) => {
+    tip.textContent = text();
+    tip.style.display = "block";
+    const w = tip.offsetWidth, x = Math.min(e.clientX + 14, innerWidth - w - 8);
+    tip.style.left = x + "px";
+    tip.style.top = (e.clientY + 16) + "px";
+  });
+  node.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+}
+
+/* ------------------------------------------------------------------- live
+   The report is a static file and the generator is what re-reads the
+   dossiers, so "live" here means: notice that a newer report exists and pick
+   it up. The generator writes a small state file beside the HTML holding the
+   fingerprint of everything the page shows except when it was generated; this
+   polls that file and reloads only when the fingerprint actually differs, so
+   a regeneration that changed nothing is never a reload.
+
+   A `file://` page cannot fetch its own sibling (CORS), so live is off there
+   and the chip says `static` — `--serve` is what makes it live. Reloading is
+   deferred while a dossier sheet is open, and the scroll position is carried
+   across, so an update does not throw away where the reader was. */
+{
+  const chip = document.getElementById("live-chip");
+  const txt = chip.querySelector(".txt");
+  const setChip = (cls, label, hint) => {
+    chip.className = cls;
+    txt.textContent = label;
+    chip.title = hint;
+  };
+
+  const KEY = "open-work-scroll";
+  const saved = sessionStorage.getItem(KEY);
+  if (saved !== null) {
+    sessionStorage.removeItem(KEY);
+    const restore = () => scrollTo({ top: +saved, behavior: "instant" });
+    if (document.readyState === "complete") restore();
+    else addEventListener("load", restore);
+  }
+
+  const servedOverHttp = location.protocol === "http:" || location.protocol === "https:";
+  if (!DATA.state_file || !servedOverHttp) {
+    setChip("", "static", DATA.state_file
+      ? "Opened as a file, so the page cannot poll for updates. Run the generator with --serve for a live report."
+      : "This report was generated without a state file, so it cannot poll for updates.");
+  } else {
+    const period = Math.max(1, Number(new URLSearchParams(location.search).get("poll")) || 3) * 1000;
+    let pending = false, misses = 0;
+    setChip("on", "live", `Watching ${DATA.state_file} every ${period / 1000}s — reloads when a dossier changes.`);
+
+    const reload = () => {
+      sessionStorage.setItem(KEY, String(scrollY));
+      location.reload();
+    };
+    /* A reader with a sheet open is reading it; finish, then take the update */
+    modal.querySelector(".backdrop").addEventListener("click", () => { if (pending) reload(); });
+    addEventListener("keydown", e => { if (pending && e.key === "Escape") reload(); });
+
+    const poll = async () => {
+      try {
+        const r = await fetch(DATA.state_file + "?t=" + Date.now(), { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const state = await r.json();
+        misses = 0;
+        if (state.fingerprint && state.fingerprint !== DATA.fingerprint) {
+          if (modal.classList.contains("open")) {
+            pending = true;
+            setChip("on", "update ready", "A newer report is ready — close this sheet to load it.");
+          } else {
+            reload();
+          }
+        } else if (!pending) {
+          setChip("on", "live", `Up to date as of ${DATA.generated_at_human}.`);
+        }
+      } catch (err) {
+        /* One miss is a regeneration mid-write; a run of them means the
+           server is gone, and a chip claiming "live" would then be a lie. */
+        if (++misses >= 3) setChip("lost", "not live", "Lost contact with the report server — this page may be stale. " + err);
+      }
+    };
+    setInterval(poll, period);
+    poll();
+  }
+}
+</script>
+</body>
+</html>
