@@ -9,13 +9,13 @@ description: >-
 argument-hint: "[dossier ID for one-dossier detail, or empty for everything]"
 ---
 
-# /open-work — what is going on
+# /overview-dossiers — what is going on
 
 Read-only toward pipeline state. No spawns; never write a dossier, an ADR, or
 `state`. You read front matter and report, then render the same overview as an
 HTML file (the one file this command writes — see "The HTML overview" below).
 
-Read `${CLAUDE_PLUGIN_ROOT}/references/formats.md` for the status lifecycle if
+Read `/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/formats.md` for the status lifecycle if
 you need it.
 
 ## What to read
@@ -100,7 +100,7 @@ same picture as a self-contained HTML dashboard:
 2. Run the generator:
 
    ```bash
-   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/generate_open_work.py" \
+   python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/generate_open_work.py" \
      --root .discovery [--signals <scratch>/signals.json]
    ```
 
@@ -126,17 +126,17 @@ shared left-to-right ordering they do not have.
 
 ## The live report — for a user who wants it to keep itself current
 
-`/open-work` is a snapshot: it is accurate when it runs. Two supported ways to
+`/overview-dossiers` is a snapshot: it is accurate when it runs. Two supported ways to
 make the page follow the pipeline instead, both user-invoked setup rather than
 part of a report run — suggest them, do not install them unasked:
 
 ```bash
 # a live page for as long as the command runs — Ctrl-C to stop
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/generate_open_work.py" \
+python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/generate_open_work.py" \
   --root .discovery --serve --open
 
 # always on: git hooks plus a Claude Code PostToolUse hook
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/generate_open_work.py" \
+python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/generate_open_work.py" \
   --root .discovery --install
 ```
 
@@ -157,13 +157,13 @@ Neither may name the plugin's install directory, because Claude Code gives every
 marketplace commit its own directory and the generator finds its template
 relative to itself — a hook naming one keeps rendering the report through that
 commit's template after the plugin has moved on, so the page looks right when
-`/open-work` renders it and reverts the next time the hook fires. Re-running
+`/overview-dossiers` renders it and reverts the next time the hook fires. Re-running
 `--install` also repairs a hook an older version pinned that way; if a user
 reports the report reverting to an older look, that is the fix.
 
 One honesty constraint to pass on: **health signals do not auto-update.** They
 are mined from `## Build log` prose by you, not by the script, so an
-auto-regenerated page carries the signals from the last `/open-work` run — or
+auto-regenerated page carries the signals from the last `/overview-dossiers` run — or
 none. The status table, the counts, the dependency flows and the attention rows
 are always current.
 
@@ -187,5 +187,5 @@ W-NNN` to build, to resume, or to close out, or `/plan W-NNN` if it is still
 - Report what the files say. A `status` that disagrees with the disk — a missing
   worktree, a merged PR still marked `pr` — is reported as a discrepancy for the
   user to resolve, and never quietly corrected here. `/work-on` fixes state;
-  `/open-work` observes it.
+  `/overview-dossiers` observes it.
 - End with one suggested next action, not a menu.
