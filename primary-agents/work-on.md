@@ -19,11 +19,39 @@ contract, every git operation, every merge, every test run, every arbitration,
 the Jira link, the ADR extraction, and the PR. The agents you spawn write code
 and change requests, and nothing else.
 
-Read `${CLAUDE_PLUGIN_ROOT}/references/formats.md` first. Spawn payloads come
-verbatim from `${CLAUDE_PLUGIN_ROOT}/references/payloads.md`.
+Read `/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/formats.md` first. Spawn payloads come
+verbatim from `/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/payloads.md`.
+
+**Delegation — mechanical work only, evidence never verdicts.** You run on the
+large model; the fan-out runs on small ones. Five flash support agents carry
+mechanical work off your context — `stub-materialiser`, `coverage-auditor`,
+`arbitration-clerk`, `blast-radius-scout`, `document-drafter` — and each
+returns a **guidance doc**: a pointer (`path:line`), a verbatim quote, a
+neutral flag. Never a ruling, a row label, or a spawn recommendation; a
+support agent that starts deciding has stopped being auditable. Three rules
+govern them all:
+
+1. **Only mechanical work is delegated** — placing stubs, indexing tests
+   against the checklist, assembling failure case files, listing the blast
+   radius, drafting documents from decisions you already made. Every
+   judgement — rulings, re-spawn triggers, contract fixes, merges, commits,
+   the PR scrub check — stays with you.
+2. **Investigate a flag before you act on it.** A flag is a place to read,
+   not an instruction. Read windows to rule; read the whole file when in
+   doubt.
+3. **Gate on size, and log the decision either way.** Below a gate you do
+   the work yourself — a small build stays single-model on purpose.
+
+Residue guarantees, so the run's quality never rests on the support agents'
+summaries: the primary surface's test file(s) and implementation you read
+**in full**, never windowed; every support report ends with a `NOTICED:` line
+(`none` allowed) that you harvest into `## Build log`; when `NOTICED` runs
+thin or your sampling stops finding anything, raise the sampling. No agent
+ever talks to another — work moves only as artifacts in `X`, after you commit
+or merge them.
 
 **Gates — before anything else.** Follow
-`${CLAUDE_PLUGIN_ROOT}/references/time-logging.md` for the time-logging gate.
+`/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/time-logging.md` for the time-logging gate.
 This command creates worktrees by design, so state that plainly and get the
 user's yes before Phase 2. Only you handle either gate, never a sub-agent.
 
@@ -91,7 +119,7 @@ This is the step everything else depends on.
    downstream agent builds against, so **read the contract-craft rules first** —
    every run, before you type a documentation comment:
 
-   - `${CLAUDE_PLUGIN_ROOT}/references/formats.md` § "The observability
+   - `/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/formats.md` § "The observability
      checklist" — return meaning, named errors, order, the empty case, the
      invalid case, concurrency semantics, and the unmeasurable words that are
      never promises.
@@ -103,11 +131,14 @@ This is the step everything else depends on.
      place the loop closes. A repo rule outranks
      `skills/standards/engineering-standards.md`.
 
-   Then materialise `## Contract` in `X` as actual source: the types, the
-   signatures, and the documentation comments, in the language's own
-   documentation form. Bodies are stubs that fail loudly —
-   `raise NotImplementedError`, `todo!()`,
-   `throw new NotImplementedException()`. Nothing else.
+    Then materialise `## Contract` in `X` as actual source: the types, the
+    signatures, and the documentation comments, in the language's own
+    documentation form. Bodies are stubs that fail loudly —
+    `raise NotImplementedError`, `unimplemented!()`,
+    `throw new NotImplementedException()`. Nothing else. A `todo!()` stub
+    compiles to the same nothing but reads as unfinished work; the repo
+    convention is the failing-loud marker, per this repo's rules file if it
+    says otherwise.
 
 3. **Refine the contract AND the packages while you write.** Materialising a
    contract exposes what a text section hides: a missing type, an unstated
@@ -143,9 +174,18 @@ You write this yourself. Do not delegate it: the contract is what you will
 referee with in Phase 6, and a contract you did not write is one you cannot
 referee with.
 
+The contract stays yours; the transcription need not. When `## Contract`
+carries more than four members, spawn `stub-materialiser` (payload in
+`references/payloads.md`): it places the contract verbatim as compiling
+stubs in `X` while you refine the packages. Review its diff line by line and
+compare every signature mechanically against `## Contract` before you commit —
+you still referee with this text, so a byte of drift here is a defect, not a
+style issue. Below the gate, type the stubs yourself. Log the gate decision
+either way.
+
 ## Phase 3 — Mechanical check before the fan-out
 
-Run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/validate_pipeline.py --dossier <ID>`.
+Run `python3 /Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py --dossier <ID>`.
 It checks the work packages' owned paths are **disjoint**, the `## Contract`
 section carries documentation comments and no bodies, and every criterion names
 a concrete observable.
@@ -177,6 +217,30 @@ defect to fix in the checklist and the contract together, never a reason to
 ask the same blind agent to re-read what its payload never told it to look
 for.
 
+**Three diffs over the checklist, before anything spawns:**
+
+1. **Slice it per surface, and make the slices add up.** Each unit author gets
+   exactly the lines its surface can observe — but every line lands with
+   exactly one author, and the slices reassembled must equal the whole. A line
+   nobody owns is a promise no test will assert.
+2. **Diff it against the acceptance criteria.** Every criterion must trace to
+   at least one checklist line *at least as strong as the criterion*. A
+   checklist line that cites a criterion while observing less than it passes
+   the Phase 5 coverage gate and ships an unobserved criterion — the most
+   expensive defect this gate can hide, because everything reports green.
+3. **Audit the seams it names.** Every member a checklist line exercises must
+   appear in the contract with its **visibility stated** — `pub`, `public`,
+   exported. A blind author compiles against the contract text alone; a seam
+   with unstated visibility is a compile error it cannot resolve, and a
+   guaranteed `GAP:` return or row-3 arbitration.
+
+**Run the repository's own text gates over the materialised contract, now.**
+Every check that reads source text — lint, spelling, policy-value checks —
+runs in CI over your contract files eventually. Run them here, over `X`,
+before the fan-out: a gate that first fails after the merge fails with no
+test output naming the cause, and you pay a full review round to find what a
+ten-second check would have said.
+
 **Decide the test files themselves, not just their owners — no test author can
 add one.** An author writes exactly the paths you name in its payload and
 nothing else. `unit-test-author` has `Write` as its only tool, so it cannot read
@@ -195,6 +259,11 @@ get, and neither agent can correct it. So plan the split before you spawn:
   own — name every path up front in that author's payload. Three named paths
   produce three files; one named path produces one long file, and the author had
   no way to know you wanted otherwise.
+- **Keep every blind-authored file small — one flow, one surface, or a few
+  criteria.** A blind author composes a whole file in one write with no
+  formatter and no compiler; the smaller the file, the shorter the silent
+  generation, the sooner you see it land, and the less a single `GAP:`,
+  vacuous test, or row-3 re-spawn throws away.
 
 Size is your call to make here because it is the only place it can be made. The
 same holds for `integration-test-author`: split by flow, not by dossier, when a
@@ -244,8 +313,10 @@ blindness.
   verbatim, its slice of `PROMISE_CHECKLIST` (Phase 3), its owned test paths
   inside `X` (every path it should produce, per the Phase 3 split — it cannot
   add one), the framework, a verbatim style sample, the naming convention, the
-  fixtures. Its payload is its entire world; a thin payload produces a guessed
-  test, which is why it returns `GAP:` instead of guessing.
+  citation shape and the repo conventions (`CITATION`, `CONVENTIONS` —
+  `references/payloads.md`), the fixtures. Its payload is its entire world; a
+  thin payload produces a guessed test, which is why it returns `GAP:` instead
+  of guessing.
 - `integration-test-author` — the dossier path (**absolute, into the main
   checkout** — `.discovery/` is untracked and exists in no worktree), its owned
   test paths inside `X` (again, all of them — one per flow), the harness, the
@@ -258,6 +329,21 @@ blindness.
   activation step, an environment variable) in the payload text itself. A
   command that fails in your shell fails in theirs, once per agent. Its own new
   code has no tests yet, and green is not its exit condition.
+
+**Name the shared idiom when a concept spans packages.** Two implementers that
+each need the same helper, type, or error-mapping shape each invent one, and
+invented idioms diverge — the collapse costs more than the build saved. When
+`## Work packages` splits a concept, paste the one named idiom into **every**
+payload that touches it, byte for byte (`SHARED_IDIOM`). The duplication is
+deliberate while the agents run; plan its collapse in the same run — record the
+copy count and the collapse target in `## Build log` now, and land the collapse
+with the merge or the review fix.
+
+**With three or more unit authors, canary the smallest surface first.** Spawn
+it alone, wait for its return, and fix every `GAP:` it surfaces in the
+contract before the rest fan out — the same contract defect priced once
+instead of per author. Two authors cost more to sequence than the gap costs
+to fix; six do not.
 
 **Commit for the test authors yourself — at Phase 5, not now.** Neither has
 `Bash`, so neither can commit. Each implementer commits its own work in its own
@@ -280,9 +366,12 @@ worktree.
 **Handle two returns immediately, never silently:**
 
 - **`GAP:`** — the contract, or `PROMISE_CHECKLIST`, did not tell a test author
-  enough. That is your defect, not the agent's. Fix the contract and the
-  checklist in the files and in the dossier, commit it on `X`, and re-spawn. If
-  the gap changes a signature, re-spawn every side that read it.
+  enough. That is your defect, not the agent's. **Collect every `GAP:` from
+  all in-flight authors first, then fix the contract and the checklist once**
+  — in the files and in the dossier — and re-spawn the affected authors
+  together. A fix applied per return often invalidates a payload that is
+  still writing. Commit the fix on `X`, and if the gap changes a signature,
+  re-spawn every side that read it.
 - **`CONTRACT-CHANGE:`** — an implementer cannot satisfy a signature. **You
   decide.** Accept it and you must re-spawn the affected test author, because it
   built against the old signature. Refuse it and say what to do instead. Record
@@ -316,20 +405,38 @@ are cheap, and both run while the bodies in `X` are still stubs:
    Phase 4), and re-spawn with the corrected checklist — or record the
    accepted gap in `## Build log`. Do the same for the integration author's
    map against the acceptance criteria.
-2. **The stub red-run.** Commit the test authors' work on `X`, then run the
-   new tests there. The bodies are still stubs that fail loudly, so **every
-   new test must fail**. A test that passes against a stub is vacuous — it
-   asserts nothing the implementation controls — and a vacuous test blocks a
-   real failure from being noticed later. Delete the file and re-spawn its
-   author with the test named (Phase 4). Fix pure harness noise (imports,
-   fixtures, collection errors) yourself now, so Phase 6 arbitrates real
-   disagreements only.
+2. **The stub red-run.** Commit the test authors' work on `X` — formatting
+    each author's files with the repository's own formatter first, over
+    exactly the named files and inside that same commit, because a Write-only
+    author cannot run it — then run the new tests there. The bodies are still
+    stubs that fail loudly, so **every new test must fail, judged one test at
+    a time — never by a failure count, which a collection error also
+    satisfies**. A test that passes against a stub is vacuous — it asserts
+    nothing the implementation controls — and a vacuous test blocks a real
+    failure from being noticed later. Delete the file and re-spawn its author
+    with the test named (Phase 4). Fix pure harness noise (imports, fixtures,
+    collection errors) yourself now, so Phase 6 arbitrates real disagreements
+    only.
 
 Log both results in `## Build log`: promises covered, tests red, vacuous
 tests caught.
 
+**Audit the audit — `coverage-auditor` past three test files.** It reads the
+now-committed files in full and returns one index line per checklist line —
+`covered`, `WEAK?`, `no-test-found`, `vacuous?` — each with the assertion
+quoted verbatim. Paste the index into `## Build log`; check the arithmetic
+(every checklist line exactly once); diff its counts against the author's
+self-report — a disagreement is a forced read of that file; read the flagged
+regions to rule; and audit a one-in-five sample as full files — one wrong
+sample means re-reading all of that author's output. Below the gate, run the
+same pass yourself. Either way, the primary surface's test file(s) you read
+in full, never windowed. Log the gate decision either way.
+
 Then merge each implementer branch into `X`, one at a time, in `Depends on`
-order.
+order. Before each merge, check scope mechanically: `git diff --name-only
+X..<branch>` must list only paths inside that package's `OWNED_PATHS`. A path
+outside them is the same signal as a conflict — the package table or the
+implementer drifted — so resolve the drift first; never merge it blind.
 
 Disjoint owned paths mean a conflict should be impossible. **A conflict is
 therefore a signal, not a chore**: it proves the package table was wrong. Log
@@ -342,6 +449,15 @@ Remove each implementer worktree once its branch has merged.
 Run the full suite in `X`. **This is the first time the code and the tests meet
 each other**, so expect failures. A failure here is the design working, not the
 design breaking.
+
+When the failures number more than three, or their combined output runs past
+roughly a hundred lines, spawn `arbitration-clerk` first: it returns one
+fixed-field case file per failure — the failing assertion verbatim, the
+implementation region, the governing contract promise verbatim, the output
+tail, a factual note. Paste the case files into `## Build log`, then rule on
+each by reading its pointers yourself — windows to rule, the whole file when
+in doubt. Below the gate, assemble the evidence yourself as you arbitrate.
+Log the gate decision either way.
 
 For each failure, decide who was wrong. **The contract is the referee**, and the
 rule is mechanical so you cannot drift toward whichever side is easier to
@@ -376,27 +492,37 @@ right place. Two or more row-3 rulings in one run means the next `/plan` needs a
 sharper contract, and `/open-work` surfaces the count as a health signal.
 
 Set `status: review` once the suite is green. **Budget: 3 arbitration rounds.**
-After the third, stop and show the user the failures and your rulings.
+After the third, stop and show the user the failures and your rulings;
+continuing past the budget needs the user's explicit sign-off, recorded in
+`## Build log`. Most budget exhaustion is one repeated ambiguity or a
+criterion this machine cannot observe — both are `/plan` questions wearing an
+arbitration costume, and the user is who names the substitute.
 
-**Mutation spot-check — decide it every run, run it when the risk earns it.**
-The stub red-run proves every test *can* fail; this check proves the suite
-catches *faults*. It costs one suite run per mutant, so scale it to the change:
-run it when the blast radius carries branching logic, concurrency, or a
-security or money path that the criteria do not pin down with concrete values;
-skip it for mechanical work and for behaviour the criteria already pin. To run
-it: on a throwaway branch off `X`, make 2–3 single-line mutants inside the
-blast radius — flip a comparison, drop a guard, swap an order — and run the
-suite once per mutant. A mutant that survives is a weak or missing test: route
-it to the right test author, exactly like a `GAP:`. Remove the branch; a
-mutant commit never reaches `X`. One `## Build log` line either way: mutants
-killed and survived, or skipped and the reason.
+**Mutation spot-check — default on, scale it honestly.** The stub red-run
+proves every test *can* fail; this check proves the suite catches *faults* —
+and weak oracles are the known weakness of LLM-written tests, so skipping
+needs a reason, not the other way round. Default: run it on the **primary
+surface** (the surface with the most `PROMISE_CHECKLIST` lines, or the one
+with branching, concurrency, or a security or money path) every build; skip
+only mechanical work, and log the reason. To run it: on a throwaway branch
+off `X`, make 2–3 mutants a real body could plausibly hide — flip a meaning,
+drop a guard, swap an order, return the wrong constant — never line noise a
+formatter would catch — and run the suite once per mutant. A mutant that
+survives is a missing `PROMISE_CHECKLIST` line: route it to the right test
+author, exactly like a `GAP:`. Remove the branch; a mutant commit never
+reaches `X`. One `## Build log` line either way: mutants killed and survived,
+or skipped and the reason.
 
 ## Phase 7 — The review cycle: three lenses, concurrently
 
-Compute the **blast radius** yourself: `git diff --stat <baseline>..HEAD` in `X`,
+Compute the **blast radius**: `git diff --stat <baseline>..HEAD` in `X`,
 narrowed to the functions and regions the change touched, plus their direct
-callers. Pass it as `SCOPE` — a **location list, never the diff**, so the
-reviewers stay blind to the history.
+callers. When the diff touches more than five files, delegate the listing to
+`blast-radius-scout` — it returns the location list, marked `changed` or
+`caller`, one hop deep — then validate it against your own `--stat` and narrow
+it before it becomes `SCOPE`. Log the gate decision either way. Pass `SCOPE`
+as a **location list, never the diff**, so the reviewers stay blind to the
+history.
 
 Spawn all three in **one message** so they run concurrently. There is no chain,
 no short-circuit, and no restart: they review the same green state and return
@@ -532,6 +658,11 @@ surfaced.
 - Write one when a boundary moved, a contract won over a real alternative, a
   performance trade-off was accepted, a convention was set, or a constraint was
   found that future work must respect.
+- **When ADRs are due, `document-drafter` drafts them** (`MODE: adr`): you
+  select the decisions and their evidence, it renders the files in the
+  validated format and self-checks the scrub list. You then read each file,
+  run the validator, fix every DEFECT, and commit — drafting is mechanical,
+  selecting and validating never are.
 - A decision an existing ADR already covers is an **amendment**: add the
   constraint to that ADR's `## Consequences` and bump its `date`. Do not mint a
   near-duplicate.
@@ -539,7 +670,7 @@ surfaced.
   future change must respect, not a summary of the work.
 - Mint IDs atomically and set `jira` to the ticket (never the dossier ID — the
   dossier is local and the ADR is not). Then run
-  `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/validate_pipeline.py` with no
+  `python3 /Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py` with no
   arguments, in `X`, and fix every DEFECT in what you just wrote —
   `--write-index` regenerates the index and checks nothing, and you wrote
   prose under the same language rules the plan is held to, with no reviewer
@@ -622,6 +753,16 @@ That closes the loop: a failure that cost you a double re-spawn today makes
 the next contract in this repo sharper, and it ships in the PR so the humans
 reviewing the code see the rule it bought.
 
+**Then ask the graduation question: does this rule stop at this repo?** A
+rule about this codebase (`use the Lima VM for database tests`) stays. A rule
+about the *craft* — a payload field the skeleton lacks, a contract shape that
+always fails, an orchestration step that always pays — will be re-learned by
+every repo this pipeline touches, and belongs in the plugin's flow documents
+instead. You never write the plugin from inside a build. Record a
+`GRADUATION: <one line>` entry in `## Build log`, name it to the user in your
+report, and let the plugin change happen as its own work item in the plugin
+repository.
+
 ## Phase 9 — PR, then remove the worktree
 
 1. **Sync the base last.** Inside `X`: `git fetch origin <target> && git merge
@@ -636,7 +777,11 @@ reviewing the code see the rule it bought.
    regenerate the index, and update the dossier's `adrs` field.
 2. **Run the acceptance criteria one final time** and keep the output — it goes
    in the PR description and in the Jira comment.
-3. **Write the PR description** and show it to the user. Two sections:
+3. **Write the PR description** and show it to the user. Delegate the draft to
+   `document-drafter` (`MODE: pr`, dossier excerpts verbatim, `SCRUB` carrying
+   the dossier ID and every `.discovery/` path) — then grep the draft yourself
+   for every scrub token before you show it; two checks, because a leaked
+   dossier id is a leaked local path. Two sections:
    `## Summary` — the problem and what this change does, from `## Problem` and
    `## Approach`, for a reviewer who has never seen the dossier. `## What
    changed` — grouped by theme, with the non-obvious choices explained and the
@@ -661,9 +806,12 @@ reviewing the code see the rule it bought.
 7. **Finalize the Tempo session** (`references/time-logging.md`) and report the
    block. If finalize refuses — below the floor, or across a day boundary — say
    so and let the user hand-log. Never invent a duration.
-8. **Report**: the ticket, the branch, the PR URL, the arbitration count by kind,
-   the review rounds spent, the ADRs extracted, the Tempo block, and which
-   dossiers this unblocks.
+8. **Report**: the ticket, the branch, the PR URL, the arbitration count by
+   kind, the review rounds spent, the ADRs extracted, the Tempo block, and
+   which dossiers this unblocks. Answer the residue question first, from your
+   own reads plus the `NOTICED:` harvest — *are you aware of any issues you
+   did not tackle?* — and let `none` be an answer you can defend, not a
+   default.
 
 ## Invariants
 

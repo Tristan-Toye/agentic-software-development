@@ -1,14 +1,15 @@
 # Spawn payloads — one skeleton per agent
 
-Four agents exist. Copy the skeleton, fill every line, delete nothing.
+Four agents build; five support agents carry mechanical work off the
+orchestrator's context. Copy the skeleton, fill every line, delete nothing.
 
 A malformed payload is the likeliest silent failure in this pipeline: an agent
 halts on a **missing** field, but a **misnamed** field is simply ignored. A
 misnamed `OWNED_PATHS` is the worst case — the agent writes wherever it likes
 and corrupts a concurrent agent's work.
 
-There is no `BAND`, no `TIER`, and no `RETURN_CEILING`. Every agent is sonnet;
-every agent returns a short structured report because its own prompt says so.
+There is no `BAND`, no `TIER`, and no `RETURN_CEILING`. Every agent returns a
+short structured report because its own prompt says so.
 
 **Paste, never reference, anything an agent's blindness depends on.**
 `unit-test-author` has no `Read` tool, so a path in its payload is a dead
@@ -59,6 +60,15 @@ PROMISE_CHECKLIST: |
           store exactly one time
 TEST_PATHS: /abs/path/repo-W-014/tests/unit/test_flush_queue.py
 TEST_FRAMEWORK: pytest; plain `assert`; run with `pytest tests/unit -q`
+CITATION: |
+   // promise: flush/return-meaning
+   One comment per test, the line above the test, in exactly this shape —
+   `promise: <checklist id>/<category>`. One citation vocabulary per build;
+   authors inventing their own shape diverge per file.
+CONVENTIONS: |
+   Derive Debug on every constructed type. The spelling checker accepts
+   "coalesce", "backfill". Checklist ids are <member>/<category>, lowercase,
+   hyphen-free.
 STYLE_SAMPLE: |
   <one existing test from this repo, verbatim, imports included>
 NAMING: Subject_StateUnderTest_ExpectedBehavior — Subject is the public member
@@ -79,6 +89,8 @@ output — it has no `Bash`.
 WORKTREE_DIR: /abs/path/repo-W-014
 DOSSIER: /abs/path/repo/.discovery/dossiers/W-014-flush-coalescing.md
 TEST_PATHS: /abs/path/repo-W-014/tests/integration/test_flush_flow.py
+           # one path per flow — a GAP: or a vacuous test then re-spawns one
+           # flow, not the whole set; and no single Write runs long
 TEST_FRAMEWORK: pytest; run with `pytest tests/integration -q`
 HARNESS: |
   The `app_client` fixture in tests/integration/conftest.py stands up the real
@@ -106,13 +118,18 @@ CONTRACT: |
   <the same contract text, verbatim — not a path>
 PACKAGE: P1 flush coalescing — make concurrent flush() calls coalesce behind a
          single drain, so each queued item reaches the store one time.
+SHARED_IDIOM: |
+  <when two or more agents will write the same concept — a type, a helper, a
+   error-mapping shape — paste the ONE named idiom here, identically in every
+   such payload. Blind agents cannot converge; invented idioms diverge, and
+   the collapse is paid for later. Omit when no concept is shared.>
 OWNED_PATHS: src/flush.py
 CRITERIA: |
   1. With 3 parallel flush(batch_size=10) calls and 5 queued items, the store
      receives each item one time.
   2. flush() on an empty queue returns 0 and writes nothing.
 TEST_COMMAND: pytest -q            # the EXISTING suite, for collateral damage
-STANDARDS: ${CLAUDE_PLUGIN_ROOT}/skills/standards/engineering-standards.md
+STANDARDS: /Users/tristan.toye/Documents/personal/repos/agentic-software-development/skills/standards/engineering-standards.md
 JIRA_KEY: PROJ-142
 ```
 
@@ -130,7 +147,7 @@ CRS: |
    plus any user arbitration that overrides one of them>
 OWNED_PATHS: src/flush.py, src/reload.py
 TEST_COMMAND: pytest -q            # now the invariant: it is green, keep it green
-STANDARDS: ${CLAUDE_PLUGIN_ROOT}/skills/standards/engineering-standards.md
+STANDARDS: /Users/tristan.toye/Documents/personal/repos/agentic-software-development/skills/standards/engineering-standards.md
 JIRA_KEY: PROJ-142
 ```
 
@@ -148,7 +165,7 @@ DOSSIER: /abs/path/repo/.discovery/dossiers/W-014-flush-coalescing.md
 WORKTREE_DIR: /abs/path/repo            # the main checkout, to check anchors
 CRITERIA: |
   <the acceptance criteria, verbatim>
-STANDARDS: ${CLAUDE_PLUGIN_ROOT}/skills/standards/engineering-standards.md
+STANDARDS: /Users/tristan.toye/Documents/personal/repos/agentic-software-development/skills/standards/engineering-standards.md
 CONTEXT_DOCS: /abs/path/repo/docs/adr/0003-session-store.md
 ROUND: 1
 ```
@@ -171,7 +188,7 @@ RUN_EVIDENCE: |
   <the full test run output; it is green>
 CRITERIA: |
   <the acceptance criteria, for context>
-STANDARDS: ${CLAUDE_PLUGIN_ROOT}/skills/standards/engineering-standards.md
+STANDARDS: /Users/tristan.toye/Documents/personal/repos/agentic-software-development/skills/standards/engineering-standards.md
 CONTEXT_DOCS: /abs/path/repo-W-014/docs/adr/0003-session-store.md
 ARBITRATIONS: |
   - user ruled 2026-08-10: keep the retry inside flush(); do not extract it
@@ -205,6 +222,90 @@ PRIOR_CRS: |
   CR-2: [local] hoist the serialiser construction out of the per-item loop
 ```
 
+## Support agents
+
+Five flash agents carry mechanical work off the orchestrator's context. Each
+returns a **guidance doc** — pointers, verbatim quotes, neutral flags — never a
+ruling; the orchestrator investigates and decides. Spawn one only past its size
+gate (`commands/work-on.md` names the gates); below the gate the orchestrator
+does the work itself.
+
+### stub-materialiser
+
+```
+WORKTREE_DIR: /abs/path/repo-W-014
+CONTRACT: |
+  <verbatim — byte-identical to every other payload this fan-out>
+OWNED_PATHS: src/flush.py
+STUB_STYLE: |
+  unimplemented!()      # the repo's own placeholder, verified against the repo
+BUILD_CHECK: cargo check
+```
+
+### coverage-auditor
+
+```
+PROMISE_CHECKLIST: |
+  <verbatim, with ids>
+TEST_PATHS: /abs/path/repo-W-014/tests/unit/test_flush_queue.py
+CONTRACT: |
+  <verbatim>
+```
+
+### arbitration-clerk
+
+```
+FAILURE_LOG: |
+  <the full test output, verbatim — never a summary>
+FAILURES: |
+  - test_flush_returns_count
+  - test_flush_empty_queue
+TEST_PATHS: /abs/path/repo-W-014/tests
+SOURCE_PATHS: /abs/path/repo-W-014/src
+CONTRACT: |
+  <verbatim>
+```
+
+### blast-radius-scout
+
+```
+WORKTREE_DIR: /abs/path/repo-W-014
+BASELINE: 3f2611f
+HEAD: e09ab77
+HINT: |
+  FlushQueue.flush and its drain loop — the orchestrator's prior belief,
+  checked first, overridden by what the diff actually shows
+```
+
+### document-drafter
+
+`MODE: adr`:
+
+```
+MODE: adr
+DECISIONS: |
+  - decision: <one sentence, the orchestrator's words>
+    evidence: |
+      <verbatim quote + path:line, selected by the orchestrator>
+FORMAT: |
+  <the ADR shape from references/formats.md, pasted verbatim — sections,
+   front matter fields, validator rules>
+TARGET_PATHS: /abs/path/repo-W-014/docs/adr/0031-flush-drain-lock.md
+SCRUB: W-014, .discovery, repo-W-014
+```
+
+`MODE: pr`:
+
+```
+MODE: pr
+DOSSIER-EXCERPTS: |
+  <## Problem, ## Approach, ## Acceptance criteria — verbatim>
+FORMAT: |
+  <the PR description shape this repo uses>
+TARGET_PATHS: /abs/path/repo/.discovery/pr-draft-W-014.md
+SCRUB: W-014, .discovery/dossiers, repo-W-014
+```
+
 ---
 
 ## Field rules that matter
@@ -235,3 +336,35 @@ PRIOR_CRS: |
   own linter over it, and only then put it in a payload. An author with no
   compiler cannot discover that your convention fights the language, and it
   will fight it once per test.
+- **`CITATION` names its exact shape, and one vocabulary serves the whole
+  build.** A test's citation comment is the evidence Phase 5 diffs against
+  `PROMISE_CHECKLIST`; authors left to invent the shape invent a different one
+  per file, and the diff dies at the first mismatch.
+- **`CONVENTIONS` carries the repo facts a blind author cannot discover.**
+  Derives to add, spelling-checker tokens, id shapes — each one verified
+  against the repository itself, never from memory. A wrong convention here
+  costs a re-spawn of the whole file.
+- **`SHARED_IDIOM` is identical, byte for byte, in every payload that shares
+  the concept.** Two implementers inventing the same helper produce two
+  helpers, and the collapse is paid for at review time.
+- **You format a blind author's files in the commit that lands them.** A
+  Write-only author cannot run the formatter; run it yourself over exactly
+  the named files — single-file invocation, never package-wide — inside that
+  commit, never a later one.
+- **A support agent's report is a guidance doc, not a verdict.** Pointers,
+  verbatim quotes, neutral flags (`WEAK?`, `no-test-found`, `NOT-FOUND`) —
+  pasted into `## Build log` and investigated by you before anything acts on
+  it. A support agent that starts ruling has stopped being auditable.
+- **`STUB_STYLE` and `BUILD_CHECK` are verified against the repo before the
+  spawn.** The placeholder must be the repo's own, and the compile command
+  must run in `WORKTREE_DIR`; a stub spawn with an invented style produces
+  stubs the fan-out cannot build on.
+- **`FAILURE_LOG` is pasted verbatim, never summarised.** The clerk's value is
+  exact quotes at `path:line`; a pre-digested log would pre-digest the
+  ruling too.
+- **`SCRUB` lists every token that must not leave the machine.** The drafter
+  greps its own output and you grep again before the description reaches the
+  PR — two checks, because a leaked dossier id is a leaked local path.
+- **`NOTICED:` is harvested into `## Build log`.** Every support report ends
+  with one, `none` allowed; your end-of-run residue answer draws on your own
+  reads plus this harvest.

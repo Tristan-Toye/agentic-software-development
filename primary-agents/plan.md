@@ -16,13 +16,13 @@ You are the orchestrator. You investigate, you design, and you hold the pen.
 One agent reviews your work: a single `reviewer` with `LENS: plan`. Nothing
 else spawns.
 
-Read `${CLAUDE_PLUGIN_ROOT}/references/formats.md` before you write anything —
+Read `/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/formats.md` before you write anything —
 it defines the dossier, the ADR, the evidence labels, and the ASD-STE100 subset
 that binds every word you write. Spawn payload comes verbatim from
-`${CLAUDE_PLUGIN_ROOT}/references/payloads.md`.
+`/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/payloads.md`.
 
 **Time logging — your first action.** Follow
-`${CLAUDE_PLUGIN_ROOT}/references/time-logging.md`: hand off to the DevKit
+`/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/time-logging.md`: hand off to the DevKit
 `time-logging` skill. Only you do this, never a sub-agent.
 
 ## Phase 1 — Intake
@@ -115,7 +115,7 @@ there does not read as a defect, it reads as an unexplainable test failure:
 
 **Read the contract-craft rules before you write a docstring** — every run:
 
-1. `${CLAUDE_PLUGIN_ROOT}/references/formats.md` § "The observability checklist"
+1. `/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/formats.md` § "The observability checklist"
    — return meaning, named errors, order, the empty case, the invalid case,
    concurrency semantics, and the unmeasurable words that are never promises.
 2. **This repo's own rules file** — the rules earlier runs paid for, each one
@@ -129,12 +129,16 @@ Then write the signatures and the documentation comments, **with no bodies**.
 Three agents will build against this text concurrently and blind: a unit test
 author that can read nothing else, an integration test author, and an implementer
 that will never see the tests. The contract is the only thing they share.
-
 - Use the language's own documentation form — XML doc comments for C#, rustdoc
   for Rust, docstrings for Python, TSDoc for TypeScript, javadoc for Java.
 - State each promise so a test can observe it: the return value, the error
-  raised, the ordering guaranteed, the behaviour for empty input, the behaviour
-  for invalid input. Write the concrete expected values where you can.
+  raised, the ordering guaranteed, the behaviour for empty input, the
+  behaviour for invalid input. Write the concrete expected values where you
+  can.
+- **State the visibility of every member a test must reach** — `pub`,
+  `public`, exported. A blind test author compiles against this text alone:
+  a seam named in a promise but never made reachable is a compile error, and
+  the arbitration will rule it your ambiguity.
 - **Delete any promise no test can observe.** `Efficiently drains the queue` is
   not a promise. `Drains at most `batchSize` items per call, oldest first` is.
 - Read it once more with one question: *if I only had this, could I write the
@@ -159,11 +163,19 @@ the concrete numbers. Every criterion must be reachable from the contract — a
 criterion the contract cannot express is a gap in the contract, so fix the
 contract.
 
+A criterion whose observation needs an environment this machine lacks — a
+live host, a provisioned database, a deploy — is marked
+`UNVERIFIABLE-LOCALLY` **with its agreed substitute named in the same
+criterion**: the documented command that runs it elsewhere (a VM, a
+container), or the deploy-check it defers to. An environment-gated criterion with no
+substitute is not a criterion; it is a future arbitration that no amount of
+code will settle, and the plan reviewer treats it as a defect.
+
 Leave `## Build log` empty. Set `status: planned`.
 
 ## Phase 5 — Mechanical check before the review
 
-Run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/validate_pipeline.py --dossier W-NNN`.
+Run `python3 /Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py --dossier W-NNN`.
 It checks the front matter, the section set, path disjointness, criterion shape,
 anchor existence, and the ASD-STE100 rules. Fix every DEFECT it reports. Never
 spend a review on mechanically broken input.

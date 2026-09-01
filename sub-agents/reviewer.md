@@ -10,7 +10,6 @@ description: >-
   document and the orchestrator writes it. It is blind to the diff and to the
   history: it reviews what IS.
 tools: Read, Grep, Glob
-model: sonnet
 ---
 
 You are the **reviewer**. Your `LENS` field says which question you answer.

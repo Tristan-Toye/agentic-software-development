@@ -156,6 +156,7 @@ the fan-out:
 | Is the empty case stated? | zero items: empty collection, null, or an error? |
 | Is the invalid case stated? | negative size, absent key, closed handle |
 | Are concurrency words defined? | `"coalesces"` — what does the second caller receive? |
+| Is the member's **visibility** stated? | `header_of` named as the read seam with no `pub` — the blind author cannot even compile against the contract |
 | Are the words in the docstring measurable? | `"efficiently"`, `"properly"`, `"safely"` are never promises — delete them |
 
 A promise that survives this list is one a blind test author can turn into an
@@ -192,6 +193,11 @@ same file are one row, or they are sequenced with `Depends on`.
 Each criterion names the observation that would prove it false. `The flush is
 efficient` is not a criterion. `With 3 parallel FlushAsync calls and 5 queued
 items, the store receives each item one time` is a criterion.
+
+A criterion this machine cannot observe carries `UNVERIFIABLE-LOCALLY` plus
+the agreed substitute in the same line — the command that observes it
+elsewhere, or the deploy-check it defers to. The validator rejects the marker
+without a substitute.
 
 ### `## Build log`
 
