@@ -663,6 +663,9 @@ def check_contract(where: str, text: str, rep: Report) -> None:
                 )
 
 
+CRITERION_OWNER_RE = re.compile(r"\(owner:\s*[\w./-]+\s*;\s*env:\s*[\w-]+\s*\)")
+
+
 def check_criteria(where: str, text: str, rep: Report) -> None:
     items = [ln.strip() for ln in text.split("\n") if re.match(r"^\s*\d+[.)]\s+\S", ln)]
     if not items:
@@ -689,6 +692,13 @@ def check_criteria(where: str, text: str, rep: Report) -> None:
                 where,
                 f"criterion is UNVERIFIABLE-LOCALLY with no "
                 f"substitute named: {item[:70]}",
+            )
+        if not CRITERION_OWNER_RE.search(item):
+            rep.defect(
+                where,
+                f"criterion names no owner test file and no run "
+                f"environment; append '(owner: <test path>; "
+                f"env: <where it runs>)': {item[:70]}",
             )
 
 
@@ -988,9 +998,8 @@ class FlushQueue:
 
 ## Acceptance criteria
 
-1. With 3 parallel `flush(batch_size=10)` calls and 5 queued items, the store
-   receives each item one time.
-2. `flush(batch_size=0)` raises ValueError.
+1. With 3 parallel `flush(batch_size=10)` calls and 5 queued items, the store receives each item one time. (owner: tests/integration/test_flush_flow.py; env: local)
+2. `flush(batch_size=0)` raises ValueError. (owner: tests/unit/test_flush.py; env: local)
 
 ## Build log
 """
@@ -1091,6 +1100,21 @@ def selftest() -> int:
             f"{'detected' if caught_pcl else 'NOT detected'}"
         )
 
+        print("\n--- selftest: a criterion with no owner/env is a DEFECT ---")
+        noowner = GOOD_DOSSIER.replace(
+            "2. `flush(batch_size=0)` raises ValueError. "
+            "(owner: tests/unit/test_flush.py; env: local)",
+            "2. `flush(batch_size=0)` raises ValueError.",
+        )
+        (d / "W-019-noowner.md").write_text(noowner.replace("W-014", "W-019"))
+        noowner_rep = validate_dossier(d / "W-019-noowner.md", root)
+        caught_owner = any("owner" in x for x in noowner_rep.defects)
+        print("\n".join(noowner_rep.defects) or "(no defects)")
+        print(
+            f"\n{'PASS' if caught_owner else 'FAIL'} — ownerless criterion "
+            f"{'detected' if caught_owner else 'NOT detected'}"
+        )
+
         print("\n--- selftest: a row-3 arbitration without a Lesson is a DEFECT ---")
         row3 = GOOD_DOSSIER.replace(
             "## Build log\n",
@@ -1106,7 +1130,11 @@ def selftest() -> int:
             f"\n{'PASS' if caught_lesson else 'FAIL'} — lesson-less row 3 "
             f"{'detected' if caught_lesson else 'NOT detected'}"
         )
-        return rc if caught and clean and caught_pcl and caught_lesson else 1
+        return (
+            rc
+            if caught and clean and caught_pcl and caught_lesson and caught_owner
+            else 1
+        )
 
 
 # --------------------------------------------------------------------------
