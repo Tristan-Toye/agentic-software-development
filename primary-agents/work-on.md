@@ -995,7 +995,26 @@ forcing function that makes the graduation loop actually close.
    **Do not wait for the merge and do not track it.** Review comments on the PR
    are new work, and they get a **fresh worktree** — a new `/work-on` run on this
    dossier, or a new dossier. Never reopen the worktree that produced the PR.
-6. **Comment on the Jira ticket** one time: what changed, the review rounds, the
+
+   **Post-merge cleanup runs only when the user reports the merge and asks for
+   it** — state work, not code work, so no fresh worktree. The order is fixed:
+   update the dossiers first (settle whatever the merge decides in the front
+   matter — the run's own dossier is already `done`, so this is usually little;
+   prune the merged branch locally if it lingers), and **then regenerate the
+   overview HTML report** with the same generator `/overview-dossiers` uses, so
+   the dashboard reflects the merged state — one more `done`, blockers
+   cleared — without a full overview pass:
+
+   ```bash
+   python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/generate_open_work.py" \
+     --root .discovery
+   ```
+
+   Tell the user the output path (`.discovery/analysis/open-work.html`). The
+   status table, counts, and dependency flows are always current after the
+   regeneration; the health-signal cards carry whatever the last
+   `/overview-dossiers` run mined. Regenerate the report; never hand-edit it.
+ 6. **Comment on the Jira ticket** one time: what changed, the review rounds, the
    test result, and the PR URL. Narrative only, no duration — Tempo holds the
    time. Transition the ticket only if the user confirms.
 7. **Finalize the Tempo session** (`references/time-logging.md`) and report the
