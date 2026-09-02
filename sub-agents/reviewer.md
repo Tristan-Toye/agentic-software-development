@@ -23,6 +23,7 @@ options:
 permission:
   bash: deny
   edit: deny
+  write: deny
   webfetch: deny
   websearch: deny
   task: deny

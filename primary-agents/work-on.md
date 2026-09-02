@@ -60,6 +60,21 @@ thin or your sampling stops finding anything, raise the sampling. No agent
 ever talks to another — work moves only as artifacts in `X`, after you commit
 or merge them.
 
+**Two independent checkers, and one surgical editor.** The checkers exist
+because you write the contract, derive the checklist, and arbitrate the
+failures — correlated errors need a pass that never saw yours.
+`contract-reviewer` (the one large-model agent besides you; Read+Glob only)
+reviews the materialised contract before the fan-out and derives its **own**
+`PROMISE_CHECKLIST` from the stubs alone; every disagreement between the two
+checklists is a contract defect caught before it costs a re-spawn.
+`mutation-tester` (flash, background) mutates the green implementation
+against the checklist, one mutant per checklist line, and returns a kill
+table; a surviving mutant is a weak oracle, routed exactly like a `GAP:`.
+`test-maintainer` (flash, Read+Edit) applies non-assertion change requests
+to unit-test files through an outside-the-repo copy, so a review CR on a
+test file never costs a blind full-file regeneration. Phase 3, Phase 6 and
+Phase 7 say exactly when each spawns.
+
 **Gates — before anything else.** Follow
 `/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/time-logging.md` for the time-logging gate.
 This command creates worktrees by design, so state that plainly and get the
@@ -198,7 +213,8 @@ either way.
 Run `python3 /Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py --dossier <ID>`.
 It checks the work packages' owned paths are **disjoint**, the `## Contract`
 section carries documentation comments and no bodies, and every criterion names
-a concrete observable.
+a concrete observable and carries its `(owner: <test path>; env: <where it
+runs>)` annotation.
 
 Fix every DEFECT before you spawn anything. Overlapping owned paths are the one
 failure mode in this design that corrupts work silently: two agents write the
@@ -211,7 +227,14 @@ is a spawn defect, not a Phase 5 finding — Phase 5 diffs the unit author's map
 against `PROMISE_CHECKLIST` (below) and the integration author's map against
 the *criteria*, so a criterion the integration author disclaims and the
 contract under-specifies is checked by neither diff, and both diffs run after
-the fan-out, where the cheapest fix is already a re-spawn.
+the fan-out, where the cheapest fix is already a re-spawn. `/plan` wrote each
+criterion's `(owner: …; env: …)` annotation from the package table it built;
+re-check it here against the table you are actually spawning from, and treat
+the **env** half as a hard flag: a criterion whose env names services this
+machine cannot provide — a live database, a deployed host — is a `/plan`-shaped
+defect, not a Phase 6 surprise. Fix it now: name the substitute environment in
+the criterion (the VM, the container, the CI job), or send the dossier back to
+`/plan` with a note.
 
 **Derive `unit-test-author`'s promise checklist mechanically, now — not by
 hand at Phase 5.** You already owe every documented member a pass over the
@@ -243,6 +266,32 @@ for.
    exported. A blind author compiles against the contract text alone; a seam
    with unstated visibility is a compile error it cannot resolve, and a
    guaranteed `GAP:` return or row-3 arbitration.
+
+**The independent contract review — spawn `contract-reviewer` now, before the
+fan-out.** You wrote the contract and derived the checklist; a defect in
+either is invisible to you for the same reason. `contract-reviewer` never
+sees the dossier, the plan, or your checklist — its payload is the
+materialised contract files (`CONTRACT_PATHS`), the acceptance criteria
+verbatim, and the observability-checklist rules (`CHECKLIST_RULES`), and it
+derives its **own** `PROMISE_CHECKLIST` from the stubs alone. When it
+returns, diff its checklist against yours line by line:
+
+- **Every disagreement is a contract defect caught pre-fan-out.** A promise
+  it found that you missed is a `GAP:` you would have paid per author; a
+  promise you listed that it cannot derive from the docstrings is a
+  checklist line no blind author can satisfy. Fix the contract and your
+  checklist together, commit on `X`, and only then fan out.
+- **Its `AMBIGUITY:` lines go to the user as one question.** A docstring
+  with two defensible readings, quoted verbatim with both readings, is
+  exactly the ambiguity that would otherwise become a row-3 arbitration you
+  are the wrong party to rule on — you wrote the sentence. Take the two
+  readings to the user, let them pick, and write the winner into the
+  docstring before the fan-out.
+- **Its `DEFECT:` lines you fix immediately** — unstated visibility,
+  unmeasurable words, criteria the contract cannot express.
+
+This review runs on every build; it is the counterweight to self-refereeing,
+and it is cheap next to one blind re-spawn.
 
 **Run the repository's own text gates over the materialised contract, now.**
 Every check that reads source text — lint, spelling, policy-value checks —
@@ -324,13 +373,13 @@ blindness.
   inside `X` (every path it should produce, per the Phase 3 split — it cannot
   add one), the framework, a verbatim style sample, the naming convention, the
   citation shape and the repo conventions (`CITATION`, `CONVENTIONS` —
-  `references/payloads.md`), the fixtures. Its payload is its entire world; a
-  thin payload produces a guessed test, which is why it returns `GAP:` instead
-  of guessing.
+  `references/payloads.md`), the fixtures, and `CONTRACT_HASH`. Its payload is
+  its entire world; a thin payload produces a guessed test, which is why it
+  returns `GAP:` instead of guessing.
 - `integration-test-author` — the dossier path (**absolute, into the main
   checkout** — `.discovery/` is untracked and exists in no worktree), its owned
   test paths inside `X` (again, all of them — one per flow), the harness, the
-  substitutable boundaries, a verbatim style sample.
+  substitutable boundaries, a verbatim style sample, and `CONTRACT_HASH`.
 - `implementer` × one per package — its own worktree, the contract verbatim, its
   package, its owned paths, its slice of the criteria, and the command that runs
   the **existing** suite. **Run that command yourself once, in your own shell,
@@ -339,6 +388,20 @@ blindness.
   activation step, an environment variable) in the payload text itself. A
   command that fails in your shell fails in theirs, once per agent. Its own new
   code has no tests yet, and green is not its exit condition.
+
+**`CONTRACT_HASH` — stamp every test author's world at spawn, and check the
+stamp at return.** Before the fan-out, hash the contract files as they stand
+on `X` (`sha256sum <contract files>`, first 16 hex chars is plenty) and paste
+the bare hash into each test author's payload — it is a version stamp, never
+instruction, and the authors paste nothing from it. When an author returns,
+re-hash the contract files: if the hash differs from the one in its payload,
+its world is stale — it wrote tests against a contract you have since
+changed, even if the change looks unrelated. Run the `GAP:` analysis on its
+report as usual, but the re-spawn is **unconditional**: regenerate the author
+against the current contract rather than judging whether the drift happened
+to touch its surface. A stale test file that happens to pass is the most
+expensive kind of coincidence, and judging it requires the very judgment the
+hash exists to make mechanical.
 
 **Name the shared idiom when a concept spans packages.** Two implementers that
 each need the same helper, type, or error-mapping shape each invent one, and
@@ -431,6 +494,16 @@ are cheap, and both run while the bodies in `X` are still stubs:
 Log both results in `## Build log`: promises covered, tests red, vacuous
 tests caught.
 
+**Weak-pattern flags — a sampling guide, not a gate.** Grep the committed test
+files for the assertion shapes that pass while asserting almost nothing:
+`is_some(`, `is_ok(`, `len() > 0`, a bare `assert!`/`assert` with no
+comparison behind it. Each hit is a place to read, not a defect on its own:
+open that test, hold its assertion against the `PROMISE_CHECKLIST` line's
+strong form (Phase 3), and if the test cannot state the concrete value the
+line names, treat it as vacuous and re-spawn its author with the test named.
+The grep tells you where to point your reading; a clean grep proves nothing
+on its own.
+
 **Audit the audit — `coverage-auditor` past three test files.** It reads the
 now-committed files in full and returns one index line per checklist line —
 `covered`, `WEAK?`, `no-test-found`, `vacuous?` — each with the assertion
@@ -448,6 +521,21 @@ X..<branch>` must list only paths inside that package's `OWNED_PATHS`. A path
 outside them is the same signal as a conflict — the package table or the
 implementer drifted — so resolve the drift first; never merge it blind.
 
+**A path outside `OWNED_PATHS` is a `TOUCHED_BEYOND` decision, and the
+implementer's report already carries its side.** Every implementer report
+ends with a `TOUCHED_BEYOND` section — one line per path it touched outside
+its owned paths, each with a one-line justification, or `TOUCHED_BEYOND:
+none`. Diff its list against your mechanical diff and rule on every path
+that appears: **accept** — the touch was legitimate, so update the package
+table in the dossier to own it and note that it enters the blast radius
+(Phase 7) — or **reject**, and have the implementer revert it or raise
+`CONTRACT-CHANGE:` if the contract itself forced the touch. A path outside
+`OWNED_PATHS` that the report does not list is an implementer defect, the
+same signal as a conflict. Two hard limits are never accepted, however good
+the justification: another package's owned paths (that is re-partitioning,
+and only you do it) and the contract files (an implementer does not edit the
+contract; it returns `CONTRACT-CHANGE:`).
+
 Disjoint owned paths mean a conflict should be impossible. **A conflict is
 therefore a signal, not a chore**: it proves the package table was wrong. Log
 it, resolve it, and fix `## Work packages` so the next run does not repeat it.
@@ -464,10 +552,12 @@ When the failures number more than three, or their combined output runs past
 roughly a hundred lines, spawn `arbitration-clerk` first: it returns one
 fixed-field case file per failure — the failing assertion verbatim, the
 implementation region, the governing contract promise verbatim, the output
-tail, a factual note. Paste the case files into `## Build log`, then rule on
-each by reading its pointers yourself — windows to rule, the whole file when
-in doubt. Below the gate, assemble the evidence yourself as you arbitrate.
-Log the gate decision either way.
+tail, an `INSIDE-ASSERTION` yes/no (yes: the output shows an evaluated
+assertion; no: harness noise fired before any assertion ran; `UNKNOWN` only
+when the output is silent), and a factual note. Paste the case files into
+`## Build log`, then rule on each by reading its pointers yourself — windows
+to rule, the whole file when in doubt. Below the gate, assemble the evidence
+yourself as you arbitrate. Log the gate decision either way.
 
 For each failure, decide who was wrong. **The contract is the referee**, and the
 rule is mechanical so you cannot drift toward whichever side is easier to
@@ -482,6 +572,21 @@ change:
 
 Write every arbitration into `## Build log`: the failure, the ruling, and which
 of the four rows applied.
+
+**Row 4's boundary is mechanical, not a judgement call.** The fuzzy edge of
+"harness noise" is where silent test-editing hides, so settle it with
+`scripts/check_harness_edit.py`: when you are about to class a failure as row
+4 and fix it yourself, capture the fix as a diff first and run
+`check_harness_edit.py --diff ORIG MOD` (or `--patch` over the patch). Exit 0
+means the change touches only harness lines — imports, module setup,
+fixtures, collection wiring — and row 4 stands: apply it yourself. Exit 1
+means the change touches an assertion-bearing line, and the failure belongs
+to rows 1–3 however noise-like it looked: route it through the table like any
+other failure, which means a re-spawn, never your own edit. Exit 2 means the
+check could not read the change — treat the boundary as unknown and rule
+conservatively (rows 1–3). The `INSIDE-ASSERTION` field on each case file is
+the same question answered from the output side; when the two disagree, read
+the test and the output before ruling.
 
 **Row 3 is a lesson, not just a count.** When the contract was ambiguous, record
 *what kind* of ambiguity it was — the promise you failed to make observable, and
@@ -508,20 +613,46 @@ continuing past the budget needs the user's explicit sign-off, recorded in
 criterion this machine cannot observe — both are `/plan` questions wearing an
 arbitration costume, and the user is who names the substitute.
 
-**Mutation spot-check — default on, scale it honestly.** The stub red-run
-proves every test *can* fail; this check proves the suite catches *faults* —
-and weak oracles are the known weakness of LLM-written tests, so skipping
-needs a reason, not the other way round. Default: run it on the **primary
-surface** (the surface with the most `PROMISE_CHECKLIST` lines, or the one
-with branching, concurrency, or a security or money path) every build; skip
-only mechanical work, and log the reason. To run it: on a throwaway branch
-off `X`, make 2–3 mutants a real body could plausibly hide — flip a meaning,
-drop a guard, swap an order, return the wrong constant — never line noise a
-formatter would catch — and run the suite once per mutant. A mutant that
-survives is a missing `PROMISE_CHECKLIST` line: route it to the right test
-author, exactly like a `GAP:`. Remove the branch; a mutant commit never
-reaches `X`. One `## Build log` line either way: mutants killed and survived,
-or skipped and the reason.
+**Repeat-fingerprint — the early stop one round before the budget.** Track the
+site of every arbitration: the contract member and the test file each failure
+touched. When the same member, or the same test file, is arbitrated a
+**second** time — even with a different symptom — stop and take it to the
+user right there, don't wait for round 3. Distinct failures across rounds are
+healthy convergence; the same site twice means something is stuck — a promise
+that cannot be made observable, a criterion this machine cannot check — and
+stuck is a `/plan` question wearing an arbitration costume. Escalating on the
+fingerprint gives the user one full round of budget to answer it in.
+
+**Mutation check — default on, scale it honestly.** The stub red-run proves
+every test *can* fail; this check proves the suite catches *faults* — and
+weak oracles are the known weakness of LLM-written tests, so skipping needs a
+reason, not the other way round. Default on the **primary surface** (the
+surface with the most `PROMISE_CHECKLIST` lines, or the one with branching,
+concurrency, or a security or money path) every build; skip only mechanical
+work, and log the reason.
+
+**Run it through `mutation-tester`, concurrent with Phase 7.** The moment the
+suite first goes green, create a throwaway worktree off `X` (branch
+`<branch>-MUT`), then spawn `mutation-tester` in the background with the
+worktree path, the contract paths, `PROMISE_CHECKLIST` in its strong form,
+the surface, the verified test command, and a mutant cap — while the review
+lens work, it derives one mutant per checklist line (a return-meaning line
+gets a wrong constant, an order line a swap, a named-guard line a dropped
+guard), runs the suite per mutant, and returns a kill table. Harvest the
+table when the reviews land: every `SURVIVED` row is a missing or weak
+checklist line — route it to the owning test author exactly like a `GAP:`,
+with the mutant and the surviving test named. `UNUSABLE` (baseline not
+green, harness broken) is exit-2 semantics — never a pass; fall back to the
+manual method or log why the check did not run. The throwaway branch never
+reaches `X`; remove it when the table is in. One `## Build log` line either
+way: mutants killed and survived, or skipped and the reason.
+
+**Below the gate (one small surface, a handful of checklist lines), do it
+yourself:** on a throwaway branch off `X`, make 2–3 mutants a real body could
+plausibly hide — flip a meaning, drop a guard, swap an order, return the
+wrong constant — never line noise a formatter would catch — and run the suite
+once per mutant. Same routing for survivors, same log line, remove the
+branch.
 
 ## Phase 7 — The review cycle: three lenses, concurrently
 
@@ -547,7 +678,7 @@ their change requests together.
 3. `reviewer` `LENS: performance` — complexity, work amplification, allocation
    and copying, memory movement, blocking.
 
-**Each lens carries its own evidence bar** (`agents/reviewer.md`): performance
+**Each lens carries its own evidence bar** (`sub-agents/reviewer.md`): performance
 states the input scale that makes the cost matter, style states the observable
 reading cost, architecture states the concrete future change or misuse. A CR
 without its lens's evidence is a note, not a change request.
@@ -579,12 +710,33 @@ contract is yours.
   because you disagree with a CR that carries its evidence — that disagreement
   goes to the user like any other conflict.
 - **Check who may apply each CR before you route it.** The fix implementer
-  owns source and never a test. A CR against a test path goes back to the test
-  author that owns that file — pass the finding and the constraints, and
-  nothing about the implementation, so its blindness holds. Record the routing
-  on the CR's ledger line. A conforming CR that no available agent may apply is
-  a routing question for the user, never a demotion — demotion is for missing
-  evidence only, never the merits.
+  owns source and never a test. **You never apply a test CR yourself either**
+  — you referee tests, so you must never author them; a test diff is always
+  a test agent's work. A CR against a test path routes by what it touches:
+
+  - **Non-assertion CRs on a unit-test file** — renames, citation-comment
+    shape, doc comments, imports — go to `test-maintainer`: copy the file to
+    a scratch directory **outside the repo**, spawn the maintainer with the
+    copy as its entire world (`FILE` = the copy path, no repo path named)
+    plus the CRs verbatim, let it edit surgically, then diff the result and
+    run `check_harness_edit.py --diff ORIGINAL COPY` — exit 0 proves the
+    assertions are untouched, and only then copy the file back. Exit 1, or a
+    `MAINTAINER-REFUSED`, means the CR is authorship after all: take the
+    regen route below. This keeps a cosmetic CR from costing a blind
+    full-file regeneration.
+  - **Assertion-touching or restructuring CRs** on a unit-test file are
+    authorship: delete the file and re-spawn `unit-test-author` with the CR
+    folded into its payload, **pasting the current file's content into the
+    payload as base material** — its blindness is unchanged (the payload was
+    already its whole world), and the delete-before-respawn mechanics are
+    unchanged (Phase 4). Pass the finding and the constraints, and nothing
+    about the implementation.
+  - **CRs on an integration-test file** go back to `integration-test-author`,
+    which can already read the file; no maintainer needed.
+
+  Record the routing on the CR's ledger line. A conforming CR that no
+  available agent may apply is a routing question for the user, never a
+  demotion — demotion is for missing evidence only, never the merits.
 - **Detect conflicts first.** You are the only party that sees all three lenses,
   so a performance request that undoes a style request is yours to catch. Deciding
   it is the **user's**, because it is a judgement call: present both sides with
@@ -593,9 +745,19 @@ contract is yours.
   reviewer re-litigates a settled question.
 - Spawn **one** `implementer` in `MODE: fix` with the merged change requests. It
   works in `X` directly — the tests exist now, so blindness has done its job and
-  keeping them green is the point.
+  keeping them green is the point. Its `TOUCHED_BEYOND` section applies in fix
+  mode exactly as at the merge (Phase 5): rule on every listed path, and two
+  hard limits hold — never another package's owned paths, never the contract
+  files.
 - Re-run the full suite. Any test that turns red means the fix was not
   behaviour-preserving: return it to the implementer, never patch the test.
+- **Check the fix footprint against the CR footprints.** After the fix
+  implementer returns, diff what it touched against the union of the CRs it
+  was given: a path inside `SCOPE` that no CR named is surplus work, and
+  surplus work has had no review. Do not forbid it outright and do not merge
+  it blind — spawn **one scoped lens review**: a single `reviewer` over just
+  the surplus locations, named as locations, one pass, same evidence bar.
+  Log the surplus paths and the scoped review on the ledger.
 - **Check rounds append to the same ledger.** One line per answer:
   `- r<k> <lens>: CR-<lens>-<n> resolved | not resolved (<what is still wrong>)`.
   A structural follow-up CR gets a fresh ledger line, like round 1.
@@ -722,6 +884,14 @@ dossier?*
   an earlier dossier's build log — draft a rule and **present it to the user
   for ratification**. You never write one unratified.
 
+**Ratification rides the PR.** The drafted rule is committed on the branch
+and shown in the PR description under a `## Pending ratification` section:
+the rule text, why it exists, and the trail that bought it. PR approval
+ratifies the rule with the code; PR rejection means you remove the section —
+and the rule — before anything merges. The humans already reviewing the code
+are the ratifiers, and the record of their yes is the PR itself, so a rule
+never waits on a conversation that may never happen.
+
 **Where it goes.** The repo's own rules file, committed with the ADRs. Look
 for one first (`docs/adr/RULES.md`, a rules section in `CLAUDE.md`, an
 existing conventions doc). If the repo has none, **ask the user where it
@@ -769,9 +939,22 @@ about the *craft* — a payload field the skeleton lacks, a contract shape that
 always fails, an orchestration step that always pays — will be re-learned by
 every repo this pipeline touches, and belongs in the plugin's flow documents
 instead. You never write the plugin from inside a build. Record a
-`GRADUATION: <one line>` entry in `## Build log`, name it to the user in your
-report, and let the plugin change happen as its own work item in the plugin
-repository.
+`GRADUATION: <one line>` entry in `## Build log`, and at Phase 9 report time
+**draft a graduation issue** for the plugin repository:
+
+- Title: `[graduation] <the rule, one line>`; label: `graduation`.
+- Body sections, in order: `## Lesson` — the imperative one-liner plus the
+  testable statement. `## Failure shape` — the `GAP:` or row-3 shape it
+  prevents and what it cost in re-spawns. `## Trail` — target repo, date,
+  phase; **never the dossier ID**, which stays in `.discovery/`. `##
+  Proposal` — which flow document, payload field, or script the lesson
+  should land in. `## Acceptance` — what must change in the plugin for the
+  issue to close.
+
+One issue per lesson, so each closes independently. **Create the issue only
+on the user's explicit yes** — it is an external action like any other.
+Log lines are not schedulable and nobody closes a log line; the issue is the
+forcing function that makes the graduation loop actually close.
 
 ## Phase 9 — PR, then remove the worktree
 
@@ -793,9 +976,11 @@ repository.
    for every scrub token before you show it; two checks, because a leaked
    dossier id is a leaked local path. Two sections:
    `## Summary` — the problem and what this change does, from `## Problem` and
-   `## Approach`, for a reviewer who has never seen the dossier. `## What
+   `## Approach`, for a reviewer who has never seen the dossier.    `## What
    changed` — grouped by theme, with the non-obvious choices explained and the
-   verification stated. Reference the **Jira ticket**. **Scrub the dossier ID and
+   verification stated. When Phase 8b drafted a rule, add a `## Pending
+   ratification` section carrying the rule text, why, and its trail. Reference
+   the **Jira ticket**. **Scrub the dossier ID and
    every `.discovery/` path** — they are local and gitignored. Acceptance of the
    description doubles as the yes for the PR.
 4. **Push the branch and open the PR.** Open it programmatically when the host
@@ -816,9 +1001,12 @@ repository.
 7. **Finalize the Tempo session** (`references/time-logging.md`) and report the
    block. If finalize refuses — below the floor, or across a day boundary — say
    so and let the user hand-log. Never invent a duration.
-8. **Report**: the ticket, the branch, the PR URL, the arbitration count by
-   kind, the review rounds spent, the ADRs extracted, the Tempo block, and
-   which dossiers this unblocks. Answer the residue question first, from your
+ 8. **Report**: the ticket, the branch, the PR URL, the arbitration count by
+   kind, the review rounds spent, the mutation kill table (mutants killed and
+   survived, or skipped and why), the ADRs extracted, the drafted rules
+   awaiting ratification, any graduation issues (created or awaiting your
+   yes), the Tempo block, and which dossiers this unblocks. Answer the
+   residue question first, from your
    own reads plus the `NOTICED:` harvest — *are you aware of any issues you
    did not tackle?* — and let `none` be an answer you can defend, not a
    default.
@@ -847,10 +1035,24 @@ repository.
   guarantee for a promise.
 - **Owned paths are disjoint.** Checked mechanically before the fan-out. A merge
   conflict between two packages is a defect in the package table, and it gets
-  logged and fixed there.
+  logged and fixed there. Every implementer report ends with a
+  `TOUCHED_BEYOND` section; a path outside `OWNED_PATHS` it did not list is an
+  implementer defect, and two paths are never accepted however well justified:
+  another package's owned paths and the contract files.
 - **The contract decides every test-versus-implementation dispute**, by the
-  four-row table in Phase 6. Never edit a test yourself: you have read the
-  implementation, so you are the wrong party.
+  four-row table in Phase 6, and the row-4 boundary is mechanical
+  (`check_harness_edit.py` — exit 0 is harness, exit 1 is an assertion, exit 2
+  is unknown and ruled conservatively). Never edit a test yourself: you have
+  read the implementation, so you are the wrong party. A non-assertion CR on a
+  unit-test file routes through `test-maintainer`'s outside-the-repo copy;
+  anything that touches an assertion is the test author's work, never yours.
+- **The checkers check the author.** You write the contract and derive the
+  checklist, so both are verified by a pass that never saw yours:
+  `contract-reviewer` before the fan-out (every checklist disagreement is a
+  contract defect), `mutation-tester` after green (every surviving mutant is a
+  weak oracle routed like a `GAP:`). A test author's world is stamped
+  (`CONTRACT_HASH`) at spawn; a contract that changed underneath it
+  invalidates it mechanically, on the hash, without judgment.
 - **The green suite is the invariant during review.** Every change request is
   behaviour-preserving under it. A red test after a fix means the fix was wrong,
   never that the test was.

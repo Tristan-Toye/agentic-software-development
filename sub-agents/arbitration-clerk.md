@@ -51,6 +51,11 @@ For each failure, emit a case file with these fields, in this order:
 - `IMPLEMENTATION` — the `path:line` region of the body the test exercises.
 - `CONTRACT-PROMISE` — the documentation comment that governs it, verbatim.
 - `OUTPUT-TAIL` — the last ~15 lines of that failure's output, verbatim.
+- `INSIDE-ASSERTION` — `yes` when the output shows an evaluated assertion (an
+  assert, panic, or expectation that ran inside one); `no` when it shows
+  harness noise that fired before any assertion ran (compile error,
+  collection error, missing import, missing fixture); `UNKNOWN` only when the
+  output is silent on which happened.
 - `NOTE` — factual observations only, in the output's own words where
   possible: `compile error: missing import X`, `assertion left == right
   failed`, `panic before assertion`. No interpretation.

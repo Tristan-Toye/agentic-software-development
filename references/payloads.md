@@ -1,7 +1,10 @@
 # Spawn payloads — one skeleton per agent
 
-Four agents build; five support agents carry mechanical work off the
-orchestrator's context. Copy the skeleton, fill every line, delete nothing.
+Four agents write code: three build agents and one test maintainer. Five
+flash support agents carry mechanical work off the orchestrator's context.
+Two independent checkers — `contract-reviewer` before the fan-out,
+`mutation-tester` after the suite goes green — verify what the orchestrator
+cannot verify alone. Copy the skeleton, fill every line, delete nothing.
 
 A malformed payload is the likeliest silent failure in this pipeline: an agent
 halts on a **missing** field, but a **misnamed** field is simply ignored. A
@@ -78,7 +81,14 @@ FIXTURES: |
   FlushQueue(store=FakeStore(), clock=FakeClock())
   FakeStore exposes .written -> list[Item] and .write_count -> int
   Build an Item with make_item(id: str) from tests/support/factories.py
+CONTRACT_HASH: 3f2611f0a91c4d8e
 ```
+
+`CONTRACT_HASH` is the orchestrator's stamp of the contract text above —
+paste the hash and never explain it to the author. When the author returns,
+re-hash the contract files: a different hash means the contract changed while
+the author was writing, its world is stale, and the re-spawn is unconditional
+(its `GAP:` analysis, if any, is still input to the contract fix).
 
 Absolute `TEST_PATHS` inside the base worktree. The orchestrator commits its
 output — it has no `Bash`.
@@ -100,7 +110,11 @@ STYLE_SAMPLE: |
   <one existing integration test, verbatim>
 BOUNDARIES: IClock (time), IPaymentClient (external API) — substitute these two
             only. Everything else runs for real.
+CONTRACT_HASH: 3f2611f0a91c4d8e
 ```
+
+Same `CONTRACT_HASH` rule as the unit author: stamp at spawn, re-hash at
+return, re-spawn unconditionally on a mismatch.
 
 The agent reads `## Problem`, `## Approach`, `## Contract` and
 `## Acceptance criteria` from `DOSSIER`, and never `## Build log`.
@@ -131,6 +145,7 @@ CRITERIA: |
 TEST_COMMAND: pytest -q            # the EXISTING suite, for collateral damage
 STANDARDS: /Users/tristan.toye/Documents/personal/repos/agentic-software-development/skills/standards/engineering-standards.md
 JIRA_KEY: PROJ-142
+# the report must end with a TOUCHED_BEYOND section (see the field rules)
 ```
 
 `MODE: fix` — apply the review change requests, in the base worktree, with the
@@ -154,6 +169,90 @@ JIRA_KEY: PROJ-142
 In `fix` mode the suite is the invariant, not a collateral-damage check: a red
 test after a fix means the fix was not behaviour-preserving. Never widen
 `OWNED_PATHS` to include a test path — the implementer never edits a test.
+
+**Both modes end their report with a `TOUCHED_BEYOND` section** listing every
+path they changed outside `OWNED_PATHS`, one line per path with a one-line
+reason — `TOUCHED_BEYOND: none` when the diff is clean. The orchestrator
+diffs mechanically and never trusts the section alone, but the section turns
+drift into a stated claim: a path the implementer touched, did not list, and
+cannot justify is a defect in the implementer's work, not just package-table
+noise. Two hard limits the section cannot excuse: another package's owned
+paths, and the contract files.
+
+## test-maintainer
+
+For a review change request against a unit-test file whose fix stays outside
+the assertions — a rename, a citation comment, an import, a doc comment. The
+orchestrator copies the file to a scratch directory **outside the repo** (an
+OS temp dir), points the maintainer at the copy, and copies the result back
+only when `scripts/check_harness_edit.py --diff` exits 0 against the
+original. One spawn per file, per review round.
+
+```
+FILE: /var/folders/.../T/opencode/test_flush_queue.py   # the copy — its
+      # entire world; never name the repo path it came from
+CRS: |
+  <the non-assertion change requests for this file, verbatim>
+CITATION: |
+  // promise: flush/return-meaning
+  <the citation shape, when a CR is about citation comments>
+```
+
+The maintainer's world is exactly `FILE` plus `CRS` — informational
+blindness, the same mechanism that keeps the implementer blind. An
+assertion-touching or restructuring CR is not maintainer work: it is
+authorship, and routes to `unit-test-author` with the current file content
+pasted into the payload as base material.
+
+## Independent checkers
+
+Two agents close loops the orchestrator cannot close alone. The
+contract-reviewer derives its own promise checklist from the materialised
+stubs, so a thin contract is caught before the fan-out instead of at
+arbitration. The mutation-tester turns `PROMISE_CHECKLIST` into mutants, so
+a weak oracle is caught after the build instead of in production.
+
+### contract-reviewer
+
+Spawned between Phase 3 and Phase 4, on the materialised stubs — never on
+the dossier or the orchestrator's checklist.
+
+```
+WORKTREE_DIR: /abs/path/repo-W-014
+CONTRACT_PATHS: src/flush.py
+CRITERIA: |
+  <the acceptance criteria, verbatim>
+CHECKLIST_RULES: |
+  <the observability checklist from references/formats.md, pasted verbatim —
+   the six categories, the visibility question, the unmeasurable-words rule>
+```
+
+It returns its own full checklist plus `AMBIGUITY:` and `DEFECT:` lines. The
+orchestrator diffs the two checklists: every disagreement is a contract
+defect caught pre-fan-out. An `AMBIGUITY:` line carries both readings
+verbatim — take the two readings to the user as one question, never pick a
+side silently.
+
+### mutation-tester
+
+Spawned when the suite first goes green, on a throwaway worktree the
+orchestrator creates first — it never branches. It runs while the review
+lenses work.
+
+```
+WORKTREE_DIR: /abs/path/repo-W-014-MUT   # pre-created throwaway worktree
+CONTRACT_PATHS: src/flush.py
+PROMISE_CHECKLIST: |
+  <verbatim, strong form — the mutants are derived from these lines>
+SURFACE: FlushQueue — the primary surface under mutation
+TEST_COMMAND: pytest -q
+MAX_MUTANTS: 3
+```
+
+It returns a kill table. A `SURVIVED` row is a missing or weak
+`PROMISE_CHECKLIST` line: route it to the owning test author exactly like a
+`GAP:`. `UNUSABLE` (baseline not green) is exit-2 semantics — the check did
+not run, which is never a pass.
 
 ## reviewer
 
@@ -365,6 +464,29 @@ SCRUB: W-014, .discovery/dossiers, repo-W-014
 - **`SCRUB` lists every token that must not leave the machine.** The drafter
   greps its own output and you grep again before the description reaches the
   PR — two checks, because a leaked dossier id is a leaked local path.
+- **`CONTRACT_HASH` stamps which contract an author saw.** Hash the contract
+  files at spawn time, paste the hash bare — never explained — into every
+  test-author payload, and re-hash when the author returns. A mismatch means
+  the author's world went stale mid-flight: the re-spawn against the current
+  contract is unconditional, whatever the author's report says. The hash
+  exists for the orchestrator's comparison, not for the agent's use.
+- **`TOUCHED_BEYOND` turns silent drift into a stated claim.** The
+  orchestrator still diffs `git diff --name-only` against `OWNED_PATHS`
+  mechanically; the section is what the diff is checked *against*. An
+  unlisted path is an implementer defect; a listed one is a decision the
+  orchestrator makes — accept and update the package table, or reject and
+  revert. A `TOUCHED_BEYOND` entry never excuses another package's owned
+  paths or the contract files.
+- **A test-maintainer spawn names exactly one world: `FILE`.** The path is a
+  copy in a scratch directory outside the repo, and the payload never names
+  the repo path it came from — the maintainer must not be able to read the
+  implementation around it. Copy back only on `check_harness_edit.py --diff`
+  exit 0; anything else is authorship and routes to the test author.
+- **A mutation-tester worktree is pre-created and throwaway.** The
+  orchestrator makes the branch before the spawn and deletes it after the
+  report; the agent's own bash denies commit and push, so a mutant can never
+  reach a real branch by accident. `UNUSABLE` is not a verdict on the tests —
+  it means the check did not run.
 - **`NOTICED:` is harvested into `## Build log`.** Every support report ends
   with one, `none` allowed; your end-of-run residue answer draws on your own
   reads plus this harvest.
