@@ -1,4 +1,4 @@
-# backend-skills — a contract-first build pipeline
+# agentic-software-development — a contract-first build pipeline
 
 Three commands, four agents, two file kinds.
 
@@ -68,6 +68,19 @@ whichever side is easier to change.
 | `integration-test-author` | Read, Grep, Glob, Write | A flow test needs intent, so it reads the dossier. It still cannot read a body. |
 | `reviewer` | Read, Grep, Glob | Four lenses: `plan`, `style`, `architecture`, `performance`. No write tools at all, so it cannot change what it reviews. |
 
+Five **support agents** (flash, size-gated) carry mechanical work off the
+orchestrator's context. Each returns a guidance doc — pointers, verbatim
+quotes, neutral flags — and never a verdict; the orchestrator investigates
+every flag and keeps every judgement:
+
+| Agent | Tools | Carries |
+|---|---|---|
+| `stub-materialiser` | Read, Grep, Glob, Bash, Write | The contract verbatim into compiling stubs, past four members. |
+| `coverage-auditor` | Read, Grep, Glob | One index line per checklist line, assertions quoted, past three test files. |
+| `arbitration-clerk` | Read, Grep, Glob | A fixed-field case file per failure, past three failures. |
+| `blast-radius-scout` | Read, Grep, Glob, Bash | The review scope as a location list, past five changed files. |
+| `document-drafter` | Read, Grep, Glob, Write | ADR and PR drafts from decisions already made, self-scrubbed. |
+
 ## The files
 
 ```
@@ -85,6 +98,10 @@ docs/adr/                        # committed — ships with the PR
 ADRs are **extracted, not generated**. Zero is a correct outcome for a defect
 fixed as specified. An ADR per dossier means a template got filled instead of a
 decision getting recorded.
+
+Rules that outgrow one repo **graduate**: `/work-on` Phase 8b asks whether a
+ratified rule stops at this repo; a rule that does not becomes a plugin change
+as its own work item, so the next repo starts with the lesson.
 
 Both file kinds use **ASD-STE100** (Simplified Technical English) — one term per
 concept, active voice, simple tenses, 25-word sentences. Prose an agent reads one
