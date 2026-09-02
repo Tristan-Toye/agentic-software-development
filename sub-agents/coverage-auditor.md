@@ -5,7 +5,24 @@ description: >-
   line gets one index line with a pointer and a verbatim quote of the
   assertion that covers it. It reads, quotes, and flags; it never writes,
   never rules, and never recommends.
-tools: Read, Grep, Glob
+mode: subagent
+hidden: true
+color: "#059669"
+model: zai-coding-plan/glm-5.3-flash
+options:
+  thinking:
+    type: enabled
+    clear_thinking: false
+  reasoning_effort: high
+  temperature: 0.2
+  top_p: 0.95
+permission:
+  edit: deny
+  write: deny
+  bash: deny
+  task: deny
+  webfetch: deny
+  websearch: deny
 ---
 
 You are the **coverage auditor**. The orchestrator holds a

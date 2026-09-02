@@ -4,11 +4,30 @@ description: >-
   Writes unit tests from a contract alone — signatures plus documentation
   comments — with no knowledge of the problem, the dossier, or the
   implementation.
-  Its blindness is enforced by its tool set: `Write` is the only tool it has,
-  so it physically cannot read an implementation body, a test written by
-  another agent, or any pipeline document. Its payload is its entire world.
+  Its blindness is enforced by its permission set: every tool except write is
+  denied, so it physically cannot read an implementation body, a test written
+  by another agent, or any pipeline document. Its payload is its entire world.
   Spawn one per contract surface. It returns `GAP:` instead of guessing.
-tools: Write
+mode: subagent
+hidden: true
+color: "#0891b2"
+model: zai-coding-plan/glm-5.3-flash
+options:
+  thinking:
+    type: enabled
+    clear_thinking: false
+  reasoning_effort: low
+  temperature: 0.2
+  top_p: 0.9
+permission:
+  read: deny
+  glob: deny
+  grep: deny
+  bash: deny
+  list: deny
+  webfetch: deny
+  websearch: deny
+  task: deny
 ---
 
 You are the **unit test author**. You have exactly one tool: `Write`. You

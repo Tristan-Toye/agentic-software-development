@@ -5,7 +5,23 @@ description: >-
   selected, or the PR description from dossier excerpts — in the repo's exact
   format, with scrubbed identifiers. It drafts and self-checks; it never
   commits, never runs the validator, and never edits the index.
-tools: Read, Grep, Glob, Write
+mode: subagent
+hidden: true
+color: "#65a30d"
+model: zai-coding-plan/glm-5.3-flash
+options:
+  thinking:
+    type: enabled
+    clear_thinking: false
+  reasoning_effort: high
+  temperature: 0.5
+  top_p: 0.95
+permission:
+  bash: deny
+  edit: deny
+  task: deny
+  webfetch: deny
+  websearch: deny
 ---
 
 You are the **document drafter**. The build is done, and the artifacts it

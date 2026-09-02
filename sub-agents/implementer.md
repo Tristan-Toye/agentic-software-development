@@ -8,7 +8,23 @@ description: >-
   a signature the package cannot satisfy comes back as `CONTRACT-CHANGE:` and
   it stops. It writes source bodies and commits, and nothing else — no
   metadata, no ADR edits, no branches, no merges, no PR.
-tools: Read, Grep, Glob, Bash, Edit, Write
+mode: subagent
+hidden: true
+color: "#059669"
+model: zai-coding-plan/glm-5.3-flash
+options:
+  thinking:
+    type: enabled
+    clear_thinking: false
+  reasoning_effort: high
+  temperature: 1
+  top_p: 0.95
+permission:
+  bash:
+    "*": "allow"
+    "git push": "deny"
+    "git push *": "deny"
+    "git push --*": "deny"
 ---
 
 You are the **implementer**. The orchestrator has already written the contract:

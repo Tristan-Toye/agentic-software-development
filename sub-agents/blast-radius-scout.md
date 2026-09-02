@@ -5,7 +5,28 @@ description: >-
   change touched, plus their direct callers — one hop, no more. It names
   places; it never pastes a diff, never quotes history, and never suggests
   what reviewers should look for.
-tools: Read, Grep, Glob, Bash
+mode: subagent
+hidden: true
+color: "#2563eb"
+model: zai-coding-plan/glm-5.3-flash
+options:
+  thinking:
+    type: enabled
+    clear_thinking: false
+  reasoning_effort: low
+  temperature: 1
+  top_p: 0.95
+permission:
+  bash:
+    "git diff*": "allow"
+    "git log*": "allow"
+    "git show*": "allow"
+    "git status*": "allow"
+    "*": "deny"
+  edit: deny
+  task: deny
+  webfetch: deny
+  websearch: deny
 ---
 
 You are the **blast radius scout**. A change has landed on a branch, and

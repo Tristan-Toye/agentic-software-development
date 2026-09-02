@@ -1,0 +1,267 @@
+{
+  // Global opencode config. The source of truth is this repo
+  // (agentic-software-development); ~/.config/opencode holds only symlinks:
+  //   ~/.config/opencode/opencode.jsonc        -> this file
+  //   ~/.config/opencode/AGENTS.md             -> opencode/AGENTS.md
+  //   ~/.config/opencode/command/<name>.md     -> commands/<name>.md
+  //   ~/.config/opencode/agent/work-on.md      -> primary-agents/work-on.md
+  //   ~/.config/opencode/agent/dossier.md      -> primary-agents/plan.md
+  //   ~/.config/opencode/agent/<sub-agent>.md  -> sub-agents/<sub-agent>.md
+  // Agents and commands carry their settings in their own frontmatter.
+  // Config loads at startup: restart opencode after changes here.
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "plan": {
+      "disable": true
+    },
+    "general": {
+      "disable": true
+    },
+    "explore": {
+      "disable": true
+    },
+    "scout": {
+      "disable": true
+    },
+    "summary": {
+      "disable": true
+    }
+  },
+  "skills": {
+    "paths": [
+      "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/skills",
+      "/Users/tristan.toye/Documents/personal/repos/twipe-backend-application-api-devkit/docs/skills"
+    ]
+  },
+  "provider": {
+    "zai-coding-plan": {
+      "options": {
+        "baseURL": "https://api.z.ai/api/coding/paas/v4"
+      },
+      "models": {
+        "glm-5.3": {
+          "name": "GLM-5.3",
+          "limit": {
+            "context": 1000000,
+            "output": 131072
+          },
+          "options": {
+            "thinking": {
+              "type": "enabled",
+              "clear_thinking": false
+            }
+          }
+        },
+        "glm-5.3-flash": {
+          "name": "GLM-5.3-Flash",
+          "limit": {
+            "context": 1000000,
+            "output": 131072
+          },
+          "options": {
+            "thinking": {
+              "type": "enabled",
+              "clear_thinking": false
+            }
+          }
+        }
+      }
+    }
+  },
+  "formatter": {
+    "ruff": {
+      "command": [
+        "ruff",
+        "format",
+        "$FILE"
+      ],
+      "extensions": [
+        ".py",
+        ".pyi"
+      ]
+    },
+    "rustfmt": {
+      "command": [
+        "rustfmt",
+        "$FILE"
+      ],
+      "extensions": [
+        ".rs"
+      ]
+    },
+    "csharpier": {
+      "command": [
+        "csharpier",
+        "format",
+        "$FILE"
+      ],
+      "extensions": [
+        ".cs",
+        ".csx"
+      ]
+    },
+    "clang-format": {
+      "command": [
+        "clang-format",
+        "-i",
+        "$FILE"
+      ],
+      "extensions": [
+        ".c",
+        ".cc",
+        ".cpp",
+        ".cxx",
+        ".c++",
+        ".h",
+        ".hh",
+        ".hpp",
+        ".hxx",
+        ".ino",
+        ".C",
+        ".H"
+      ]
+    },
+    "terraform": {
+      "command": [
+        "terraform",
+        "fmt",
+        "$FILE"
+      ],
+      "extensions": [
+        ".tf",
+        ".tfvars"
+      ]
+    },
+    "shfmt": {
+      "command": [
+        "shfmt",
+        "-w",
+        "$FILE"
+      ],
+      "extensions": [
+        ".sh",
+        ".bash"
+      ]
+    },
+    "prettier": {
+      "command": [
+        "npx",
+        "--yes",
+        "prettier",
+        "--write",
+        "$FILE"
+      ],
+      "extensions": [
+        ".ts",
+        ".tsx",
+        ".mts",
+        ".cts"
+      ]
+    }
+  },
+
+  // LSP servers feed diagnostics back to the agent. Empty object keeps ALL
+  // built-in servers enabled (opencode's design — it has no "only these" mode),
+  // covering the same languages as the formatters above: rust-analyzer (rust),
+  // clangd (C/C++), pyright (python), bash-language-server (shell),
+  // terraform-ls, and the Roslyn C# server. Servers start only when a matching
+  // file is opened and the binary is present (all pre-installed globally;
+  // TypeScript's built-in server resolves from the project's node_modules).
+  "lsp": {},
+
+  "permission": {
+    "edit": "allow",
+    "grep": "allow",
+    "glob": "allow",
+    "lsp": "allow",
+    "skill": {
+      "*": "allow",
+      "ask-matt": "deny",
+      "grill-me": "deny",
+      "grill-with-docs": "deny",
+      "loop-me": "deny",
+      "wayfinder": "deny",
+      "to-prd": "deny",
+      "to-issues": "deny",
+      "implement": "deny",
+      "tdd": "deny",
+      "triage": "deny",
+      "qa": "deny",
+      "claude-handoff": "deny",
+      "design-an-interface": "deny",
+      "domain-modeling": "deny",
+      "prototype": "deny",
+      "obsidian-vault": "deny",
+      "teach": "deny",
+      "edit-article": "deny",
+      "wizard": "deny",
+      "ubiquitous-language": "deny",
+      "setup-pre-commit": "deny",
+      "scaffold-exercises": "deny",
+      "migrate-to-shoehorn": "deny",
+      "setup-matt-pocock-skills": "deny",
+      "request-refactor-plan": "deny",
+      "writing-beats": "deny",
+      "writing-fragments": "deny",
+      "writing-shape": "deny"
+    },
+    "todowrite": "allow",
+    "webfetch": "allow",
+    "websearch": "allow",
+    "question": "allow",
+    "external_directory": "allow",
+    "read": {
+      "*": "allow",
+      ".env": "ask",
+      ".env.*": "ask",
+      ".env-*": "ask"
+    },
+    "bash": {
+      "git push": "allow",
+      "git push *": "allow",
+      "git rm -r *": "ask",
+      "git reset *": "deny",
+      "sudo *": "ask",
+      "rm -rf /": "deny",
+      "rm -rf /*": "deny",
+      "rm -rf ~": "deny",
+      "rm -rf ~/*": "deny",
+      ":(){:|:&};:": "deny"
+    }
+  },
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer {env:CONTEXT7_API_KEY}"
+      }
+    },
+    "twipe-devkit": {
+      "type": "local",
+      "command": [
+        "node",
+        "/Users/tristan.toye/Documents/personal/repos/twipe-backend-application-api-devkit/plugin/launch.mjs"
+      ],
+      "enabled": true,
+      "environment": {
+        "TWIPE_DEVKIT_ROOT": "/Users/tristan.toye/Documents/personal/repos/twipe-backend-application-api-devkit",
+        "TWIPE_DEVKIT_MCP_PUBLIC_KEY": "/Users/tristan.toye/Documents/personal/repos/twipe-backend-application-api-devkit/build/signing/mcp-signing-public-key.json",
+        "TWIPE_DEVKIT_MCP_CHANNEL": "stable",
+        "TWIPE_DEVKIT_MCP_BUCKET": "twipe-devkit-artifacts",
+        // "mcp-dev" is the dev flavor of the signed S3 channel (prod is the
+        // default "mcp"). Matches the twipe-devkit-dev Claude Code plugin, and
+        // namespaces the local resolver/server cache so dev never overwrites prod.
+        "TWIPE_DEVKIT_MCP_PREFIX": "mcp-dev",
+        "TWIPE_DEVKIT_MCP_AWS_PROFILE": "tdp.uat"
+      }
+    }
+  },
+  "plugin": [
+    "@tarquinen/opencode-dcp@latest",
+    "opencode-mem",
+    "envsitter-guard",
+    "opencode-notify"
+  ]
+}
