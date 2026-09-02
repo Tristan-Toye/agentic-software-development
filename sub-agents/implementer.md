@@ -112,3 +112,7 @@ Keep it short and factual:
 - Promises in the contract you believe no test can observe.
 - Suggestions you declined to act on.
 - Open questions.
+- `TOUCHED_BEYOND:` — one line per path you touched outside `OWNED_PATHS`,
+  each with a one-line justification, or `TOUCHED_BEYOND: none` when you
+  touched nothing outside them. Required in both build and fix modes; a path
+  outside `OWNED_PATHS` missing from this list is a report defect.
