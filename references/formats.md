@@ -172,6 +172,25 @@ unit author re-derives it by hand from the docstrings, and Phase 5 re-derives
 it again to check — two more freehand passes over the same six categories,
 each free to land on a different answer than this one.
 
+**Each line carries its strong form — the concrete assertion shape, not the
+promise's topic.** A checklist line that names a category without naming the
+assertion still leaves the author free to write a weak oracle: `returns the
+count of items written` invites `assert result.is_some()` as easily as it
+invites the real check. So every line states the assertion a test makes of
+it, with the concrete value stated wherever the docstring states a value:
+
+```
+flush — return meaning: returns the count written → with 3 items queued and
+        batch_size=10, assert the return value equals 3 (never is_some)
+flush — order: oldest first → queue items A, B, C; assert the store received
+        them in exactly [A, B, C]
+flush — empty case: returns 0 → assert the return value equals 0 and the
+        store received nothing
+```
+
+A line whose strong form cannot be written is a promise no test can observe,
+and the observability checklist should have deleted it one step earlier.
+
 ### `## Work packages` — path ownership is assigned, never discovered
 
 ```markdown
@@ -193,6 +212,23 @@ same file are one row, or they are sequenced with `Depends on`.
 Each criterion names the observation that would prove it false. `The flush is
 efficient` is not a criterion. `With 3 parallel FlushAsync calls and 5 queued
 items, the store receives each item one time` is a criterion.
+
+**Every criterion ends with an owner and an environment**, in this shape:
+
+```
+1. With 3 parallel `flush(batch_size=10)` calls and 5 queued items, the store
+   receives each item one time. (owner: tests/integration/test_flush_flow.py;
+   env: local)
+```
+
+`owner` is the test file that will prove the criterion — a `## Work packages`
+test row — and `env` is where that test runs: `local`, a VM or container
+name, or `ci`. The validator rejects a criterion with no annotation, so a
+criterion nobody owns cannot reach the fan-out. `/plan` writes the annotation
+from its own package table; `/work-on` Phase 3 re-checks it against the real
+split, and a criterion whose `env` names services the machine cannot provide
+is a `/plan`-shaped defect — fix it before anything spawns, not after a red
+suite that cannot even run.
 
 A criterion this machine cannot observe carries `UNVERIFIABLE-LOCALLY` plus
 the agreed substitute in the same line — the command that observes it

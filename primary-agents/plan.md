@@ -173,6 +173,15 @@ the concrete numbers. Every criterion must be reachable from the contract — a
 criterion the contract cannot express is a gap in the contract, so fix the
 contract.
 
+Every criterion ends with an owner and an environment:
+`(owner: <test path>; env: <local|vm|container|ci>)`. The owner is a test
+path from the `## Work packages` table — you just built it, so take the path
+from there, never from memory. The env names where that test runs. A
+criterion whose env names services this machine cannot provide is a defect to
+fix in this pass, not at `/work-on` Phase 3: name the substitute environment,
+or mark the criterion `UNVERIFIABLE-LOCALLY` with its substitute in the same
+line.
+
 A criterion whose observation needs an environment this machine lacks — a
 live host, a provisioned database, a deploy — is marked
 `UNVERIFIABLE-LOCALLY` **with its agreed substitute named in the same
