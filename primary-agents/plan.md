@@ -1,4 +1,5 @@
 ---
+name: dossier
 description: >-
   Turn a description of any kind — a Jira key, a bug report, a stack trace, a
   feature idea, a paragraph of intent — into a buildable dossier: the problem
@@ -7,7 +8,16 @@ description: >-
   criteria. You investigate and write it yourself; one reviewer checks the plan
   before it goes to /work-on. Writes `status: ready` — the only command that
   does.
-argument-hint: "<Jira key | file path | free-form description>"
+mode: primary
+color: "#7c3aed"
+model: zai-coding-plan/glm-5.3
+options:
+  thinking:
+    type: enabled
+    clear_thinking: false
+  reasoning_effort: max
+  temperature: 1
+  top_p: 0.95
 ---
 
 # /plan — a description in, a buildable dossier out

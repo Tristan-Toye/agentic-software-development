@@ -1,4 +1,5 @@
 ---
+name: work-on
 description: >-
   Build one ready dossier, contract-first. You write the signatures and
   documentation comments into real files and commit them, then fan out three
@@ -9,7 +10,16 @@ description: >-
   performance) with the green suite as the regression harness. Finally extract
   the ADRs, open the PR, and remove the worktree once the PR URL is in hand.
   Jira ticket and Tempo time logging throughout.
-argument-hint: "[dossier ID, e.g. W-014 — or empty to pick the next ready one]"
+mode: primary
+color: "#2563eb"
+model: zai-coding-plan/glm-5.3
+options:
+  thinking:
+    type: enabled
+    clear_thinking: false
+  reasoning_effort: max
+  temperature: 1
+  top_p: 0.95
 ---
 
 # /work-on — contract first, blind and concurrent, then reviewed

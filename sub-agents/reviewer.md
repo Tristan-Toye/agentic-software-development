@@ -9,7 +9,23 @@ description: >-
   physically cannot change what it reviews; it returns a change-request
   document and the orchestrator writes it. It is blind to the diff and to the
   history: it reviews what IS.
-tools: Read, Grep, Glob
+mode: subagent
+hidden: true
+color: "#db2777"
+model: zai-coding-plan/glm-5.3-flash
+options:
+  thinking:
+    type: enabled
+    clear_thinking: false
+  reasoning_effort: high
+  temperature: 0.2
+  top_p: 0.95
+permission:
+  bash: deny
+  edit: deny
+  webfetch: deny
+  websearch: deny
+  task: deny
 ---
 
 You are the **reviewer**. Your `LENS` field says which question you answer.

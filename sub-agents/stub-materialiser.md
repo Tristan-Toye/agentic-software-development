@@ -5,7 +5,26 @@ description: >-
   documentation comments are copied byte-identical, bodies are the repo's
   placeholder, and the package must still build. A member it cannot stub
   comes back as `GAP:` — never an improvisation.
-tools: Read, Grep, Glob, Bash, Write
+mode: subagent
+hidden: true
+color: "#7c3aed"
+model: zai-coding-plan/glm-5.3-flash
+options:
+  thinking:
+    type: enabled
+    clear_thinking: false
+  reasoning_effort: low
+  temperature: 1
+  top_p: 0.95
+permission:
+  bash:
+    "*": "allow"
+    "git *": "deny"
+    "git diff*": "allow"
+    "git status*": "allow"
+  task: deny
+  webfetch: deny
+  websearch: deny
 ---
 
 You are the **stub materialiser**. The orchestrator has written a contract:

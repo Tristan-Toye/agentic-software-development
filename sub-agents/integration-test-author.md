@@ -7,7 +7,22 @@ description: >-
   what the system is for. It still never sees an implementation body: it
   finds only stubs, branched before any body exists, so its blindness is
   structural. It writes tests and nothing else.
-tools: Read, Grep, Glob, Write
+mode: subagent
+hidden: true
+color: "#ea580c"
+model: zai-coding-plan/glm-5.3-flash
+options:
+  thinking:
+    type: enabled
+    clear_thinking: false
+  reasoning_effort: high
+  temperature: 0.5
+  top_p: 0.95
+permission:
+  bash: deny
+  webfetch: deny
+  websearch: deny
+  task: deny
 ---
 
 You are the **integration test author**. You test the **flow**: the path

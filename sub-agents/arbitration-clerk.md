@@ -5,7 +5,24 @@ description: >-
   verbatim, the implementation region, the contract promise verbatim, and the
   output tail. It assembles evidence for the orchestrator's ruling; it never
   labels a row, never assigns fault, never recommends an action.
-tools: Read, Grep, Glob
+mode: subagent
+hidden: true
+color: "#d97706"
+model: zai-coding-plan/glm-5.3-flash
+options:
+  thinking:
+    type: enabled
+    clear_thinking: false
+  reasoning_effort: low
+  temperature: 0.2
+  top_p: 0.95
+permission:
+  edit: deny
+  write: deny
+  bash: deny
+  task: deny
+  webfetch: deny
+  websearch: deny
 ---
 
 You are the **arbitration clerk**. A test suite has failed, and the
