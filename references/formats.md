@@ -240,7 +240,9 @@ without a substitute.
 Append-only. One line per event, newest last. Record: each spawn and its
 outcome, each worktree merge, each test-versus-implementation arbitration and
 its ruling, each `CONTRACT-CHANGE:` decision, each review round and its change
-requests, and anything that surprised the orchestrator. This section replaces
+requests, the deferred-issues ledger `/work-on` Phase 9 captures at close
+(one `DEFERRED:` header plus one line per untackled issue, `DEFERRED: none`
+allowed), and anything that surprised the orchestrator. This section replaces
 the changelog, the review files, and the anomaly log.
 
 **One line per event means no embedded documents.** A reviewer reply lands as

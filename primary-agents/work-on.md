@@ -1020,15 +1020,38 @@ forcing function that makes the graduation loop actually close.
 7. **Finalize the Tempo session** (`references/time-logging.md`) and report the
    block. If finalize refuses — below the floor, or across a day boundary — say
    so and let the user hand-log. Never invent a duration.
- 8. **Report**: the ticket, the branch, the PR URL, the arbitration count by
-   kind, the review rounds spent, the mutation kill table (mutants killed and
-   survived, or skipped and why), the ADRs extracted, the drafted rules
-   awaiting ratification, any graduation issues (created or awaiting your
-   yes), the Tempo block, and which dossiers this unblocks. Answer the
-   residue question first, from your
-   own reads plus the `NOTICED:` harvest — *are you aware of any issues you
-   did not tackle?* — and let `none` be an answer you can defend, not a
-   default.
+ 8. **Capture the deferred issues.** This is the moment your awareness of the
+    code is at its highest — and it is the only moment. Chat dies with the
+    session, and a later `/deferred` cannot reconstruct what you read here.
+    So capture now, from working memory: *what product-code issues are you
+    aware of that this run did not tackle?* Sweep everything you actually laid
+    eyes on — the primary-surface files you read in full, every arbitration's
+    evidence, every review reply you held, the `NOTICED:` harvest, every
+    change request demoted for missing evidence, every `TOUCHED_BEYOND` path
+    you accepted. **Recall first, judge second**: write every item down
+    before discarding any, because an item held back as "probably not worth
+    reporting" is exactly the important one a later report misses. Then
+    briefly verify each item (`path:line` still says what you remember) and
+    append the ledger to `## Build log`:
+
+    ```
+    DEFERRED: <N> — sources: <own reads, NOTICED harvest, review replies>
+    - D-1 <kind> <title> — <path:line> — <risk> — <why deferred>
+    ```
+
+    `DEFERRED: none — sources: …` is a real answer; defend it or do not
+    write it. The D-IDs are minted here, once; the `/deferred` run that
+    follows — normally the very next command, in this same session — reuses
+    them, and appends to the ledger any verified item its own recall adds.
+    Capture only — `/deferred` renders the full report, so do not build it
+    here.
+ 9. **Report**: the ticket, the branch, the PR URL, the arbitration count by
+    kind, the review rounds spent, the mutation kill table (mutants killed and
+    survived, or skipped and why), the ADRs extracted, the drafted rules
+    awaiting ratification, any graduation issues (created or awaiting your
+    yes), the Tempo block, which dossiers this unblocks, and the deferred
+    count from step 8 — `N deferred issues captured; /deferred renders them`
+    — with the worst risk named in one clause when N is not zero.
 
 ## Invariants
 
