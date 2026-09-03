@@ -488,5 +488,5 @@ SCRUB: W-014, .discovery/dossiers, repo-W-014
   reach a real branch by accident. `UNUSABLE` is not a verdict on the tests —
   it means the check did not run.
 - **`NOTICED:` is harvested into `## Build log`.** Every support report ends
-  with one, `none` allowed; your end-of-run residue answer draws on your own
-  reads plus this harvest.
+  with one, `none` allowed; the Phase 9 deferred-issues capture draws on your
+  own reads plus this harvest.

@@ -5,7 +5,9 @@ description: >-
   architecture, performance, duplication, multiple sources of truth — each
   with an ID, evidence, a proposed fix, the contract boundary it crosses, and
   its blast radius. A recall report, not an audit: no new research happens
-  here, so it stays cheap at the end of every run.
+  here, so it stays cheap at the end of every run. Recall comes first from
+  working memory, then from the ledger `/work-on` captured at close, then
+  from the build artifacts.
 argument-hint: "[optional dossier ID or branch/PR ref; empty = this session's changeset]"
 ---
 
@@ -18,18 +20,52 @@ you already suspect — open the one file, confirm the line, re-read the one
 hunk. You may not go looking for new issues. Deeper research is the user's
 call, triggered from this report by ID.
 
-## Where your awareness lives
+## Recall first, from working memory — before you touch any file
 
-Harvest these sources, then merge duplicates:
+Answer the question directly, the way you would if the user asked you in
+plain words: *are you aware of any issues related to the product code that
+you did not tackle?*
 
-1. Your own residue — everything you noticed while working and did not act on.
-2. If a dossier covers the run, its `## Build log`: every `NOTICED:` line,
+Sweep the session's reading, in the order it happened: every file you opened
+in full, every hunk you arbitrated, every review reply you held, every
+suggestion you declined, every "later" you thought. **Write every item down
+before judging any of it** — recall and judgement are separate passes, and an
+item filtered out during recall is the important one this report exists to
+catch. Only after the list exists do you score it against "What qualifies"
+below.
+
+This pass is the report's main source. The artifact harvest below is the
+cross-check, not the substitute: a report built from artifacts alone names
+only what mechanical agents noticed, and misses everything you saw yourself.
+
+You normally run right after `/work-on` finished, in this same session: your
+memory is warm and the capture ledger is minutes old. Treat the two as two
+passes over the same awareness — an item one of them dropped is still
+reported. The ledger anchors what memory let go; your recall recovers what
+the capture pass let go.
+
+## Then harvest the artifacts
+
+Merge these into the recalled list, then deduplicate:
+
+1. **The captured ledger.** If a dossier covers the run — the run's own
+   dossier ID, or the `.discovery/dossiers/*.md` whose `branch` matches the
+   changeset — read the `DEFERRED:` lines in its `## Build log`. `/work-on`
+   Phase 9 captured them at the moment the run's awareness was highest, so
+   they outrank your current memory: a ledger item your recall dropped goes
+   back in; a recalled item the ledger never caught stays in, and once
+   verified you append it to the ledger as its next `D-` line, so the
+   dossier keeps the complete set.
+2. The dossier's `## Build log` beyond the ledger: every `NOTICED:` line,
    every `SHARED_IDIOM` collapse that never landed, every change request
    demoted for missing evidence, every arbitration whose evidence pointed at
-   product code.
+   product code, every accepted `TOUCHED_BEYOND` path.
 3. Sub-agent reports you received — declined suggestions, open questions.
 
 Name the sources you harvested in the header, so a "none" can be defended.
+When the session is cold — no live memory of the changeset, no dossier — say
+so in the header instead of padding: a report built from a cold session names
+only what the diff itself shows.
 
 ## What qualifies
 
@@ -95,11 +131,14 @@ one anyway, it goes in the footer — one line, no ID.
 
 ## Rules
 
-- IDs are `D-1, D-2, …`, ordered by risk, unique within the report. The user
-  references them by ID afterwards. Never renumber inside one conversation.
+- IDs are `D-1, D-2, …`, ordered by risk, unique within the report. IDs the
+  captured ledger already minted keep their numbers in every later report.
+  New items take the next free number. Never renumber inside one
+  conversation — the user references them by ID afterwards.
 - Every issue carries `path:line` evidence. No evidence means Confidence is
   `suspected` — never that the issue is dropped.
 - Never omit a field. `none` and `unknown` are answers; silence is not.
 - Zero issues is a real result: state the sources harvested, print `**None.**`,
   and do not pad or invent.
-- You fix nothing here. Report only.
+- You change no code and no tracked file. The one write you perform is the
+  ledger append above, when a dossier covers the run. Report only.

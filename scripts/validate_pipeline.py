@@ -723,6 +723,13 @@ def check_build_log(where: str, text: str, status: str, rep: Report) -> None:
                 where,
                 "status is 'building' but the Build log names no PROMISE_CHECKLIST",
             )
+    if "DEFERRED" not in text and status == "done":
+        rep.defect(
+            where,
+            "status is 'done' but the Build log carries no DEFERRED ledger; "
+            "/work-on Phase 9 captures the deferred issues (or DEFERRED: none) "
+            "before closing the run",
+        )
 
 
 def validate_dossier(path: Path, repo_root: Path) -> Report:
@@ -1130,9 +1137,46 @@ def selftest() -> int:
             f"\n{'PASS' if caught_lesson else 'FAIL'} — lesson-less row 3 "
             f"{'detected' if caught_lesson else 'NOT detected'}"
         )
+
+        print("\n--- selftest: done without a DEFERRED ledger is a DEFECT ---")
+        nodeferred = GOOD_DOSSIER.replace("status: ready", "status: done").replace(
+            "## Build log\n",
+            "## Build log\n\nPROMISE_CHECKLIST: flush — return meaning.\n",
+        )
+        (d / "W-020-nodeferred.md").write_text(nodeferred.replace("W-014", "W-020"))
+        nodeferred_rep = validate_dossier(d / "W-020-nodeferred.md", root)
+        caught_deferred = any("DEFERRED" in x for x in nodeferred_rep.defects)
+        print("\n".join(nodeferred_rep.defects) or "(no defects)")
+        print(
+            f"\n{'PASS' if caught_deferred else 'FAIL'} — missing DEFERRED "
+            f"ledger {'detected' if caught_deferred else 'NOT detected'}"
+        )
+
+        print("\n--- selftest: done with a DEFERRED ledger is clean ---")
+        deferred = GOOD_DOSSIER.replace("status: ready", "status: done").replace(
+            "## Build log\n",
+            "## Build log\n\nPROMISE_CHECKLIST: flush — return meaning.\n"
+            "DEFERRED: none — sources: own reads, NOTICED harvest.\n",
+        )
+        (d / "W-021-deferred.md").write_text(deferred.replace("W-014", "W-021"))
+        deferred_rep = validate_dossier(d / "W-021-deferred.md", root)
+        deferred_clean = not any("DEFERRED" in x for x in deferred_rep.defects)
+        print("\n".join(deferred_rep.defects) or "(no defects)")
+        print(
+            f"\n{'PASS' if deferred_clean else 'FAIL'} — DEFERRED ledger "
+            f"{'accepted' if deferred_clean else 'rejected'}"
+        )
         return (
             rc
-            if caught and clean and caught_pcl and caught_lesson and caught_owner
+            if (
+                caught
+                and clean
+                and caught_pcl
+                and caught_lesson
+                and caught_owner
+                and caught_deferred
+                and deferred_clean
+            )
             else 1
         )
 
