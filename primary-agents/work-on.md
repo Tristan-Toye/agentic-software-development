@@ -101,8 +101,11 @@ confirmation or silent assent.
 
 `/work-on` never writes `ready` and never re-plans. If the plan turns out to be
 wrong once you are in the code, that is a finding for the review cycle or
-grounds to send the dossier back to `/plan` with a note — never a reason to
-silently re-plan inline.
+grounds to send the dossier back to `/plan` with a note: set `status: planned`
+and append a `RETURNED-TO-PLAN: <note>` line to `## Build log`, so the
+returning `/plan` run finds the note and no later `/work-on` run resumes a
+dossier whose plan was found wrong — never a reason to silently re-plan
+inline.
 
 **Claim it.** Write `updated` and set `status: building` now, before any other
 write. Check `worktree` and `branch` in the front matter: if they are already
@@ -203,10 +206,14 @@ The contract stays yours; the transcription need not. When `## Contract`
 carries more than four members, spawn `stub-materialiser` (payload in
 `references/payloads.md`): it places the contract verbatim as compiling
 stubs in `X` while you refine the packages. Review its diff line by line and
-compare every signature mechanically against `## Contract` before you commit —
-you still referee with this text, so a byte of drift here is a defect, not a
-style issue. Below the gate, type the stubs yourself. Log the gate decision
-either way.
+compare every signature — and every documentation-comment block —
+mechanically against `## Contract` before you commit. Doc-comment lines are
+materialisation requirements exactly like signature lines: each contract doc
+sentence must land in the materialised file verbatim, or be reconciled with a
+note in `## Build log` before the commit. You still referee with this text,
+so a byte of drift here is a defect, not a style issue. Below the gate, type
+the stubs yourself — the same doc-block parity check applies to your own
+transcription. Log the gate decision either way.
 
 ## Phase 3 — Mechanical check before the fan-out
 
@@ -377,9 +384,12 @@ blindness.
   its entire world; a thin payload produces a guessed test, which is why it
   returns `GAP:` instead of guessing.
 - `integration-test-author` — the dossier path (**absolute, into the main
-  checkout** — `.discovery/` is untracked and exists in no worktree), its owned
-  test paths inside `X` (again, all of them — one per flow), the harness, the
-  substitutable boundaries, a verbatim style sample, and `CONTRACT_HASH`.
+  checkout** — `.discovery/` is untracked and exists in no worktree), the
+  contract pasted verbatim from the files on `X` (`CONTRACT`, never read from
+  the dossier, so the text it builds against is the text `CONTRACT_HASH`
+  stamps), its owned test paths inside `X` (again, all of them — one per
+  flow), the harness, the substitutable boundaries, a verbatim style sample,
+  and `CONTRACT_HASH`.
 - `implementer` × one per package — its own worktree, the contract verbatim, its
   package, its owned paths, its slice of the criteria, and the command that runs
   the **existing** suite. **Run that command yourself once, in your own shell,
@@ -566,7 +576,7 @@ change:
 | The failure shows | Who is wrong | What you do |
 |---|---|---|
 | The test asserts something the contract does not promise | **the test** | Delete its `TEST_PATHS` file (Phase 4), then re-spawn the test author with a corrected payload. Never edit the test yourself — you have read the implementation, so you are exactly the wrong party to fix a test. |
-| The implementation does not do what the contract promises | **the implementation** | Re-spawn the implementer for that package with the failure output. |
+| The implementation does not do what the contract promises | **the implementation** | Re-spawn the implementer for that package in `MODE: fix`, working in `X` directly — its own worktree is gone (Phase 5) and the tests are committed, so blindness no longer applies. The failure output travels as `FAILURES:` in the payload (`references/payloads.md`); `CRS:` carries any review change requests still open for it, or is omitted. |
 | The contract is ambiguous enough to justify both readings | **you** | Fix the contract (and `PROMISE_CHECKLIST`, if a unit promise is involved) in the files and the dossier, commit on `X`, delete the affected test author's file (Phase 4), and re-spawn **both** sides. |
 | The test fails on harness noise — a compile error, a missing fixture, an import | nobody | Fix the harness yourself. It is mechanical. |
 
@@ -639,10 +649,15 @@ the surface, the verified test command, and a mutant cap — while the review
 lens work, it derives one mutant per checklist line (a return-meaning line
 gets a wrong constant, an order line a swap, a named-guard line a dropped
 guard), runs the suite per mutant, and returns a kill table. Harvest the
-table when the reviews land: every `SURVIVED` row is a missing or weak
+table when the reviews land — and re-validate before routing: the table
+describes the code as it stood at first green, and the review fix rounds may
+have changed it. Re-apply each `SURVIVED` mutant at the final `HEAD` and
+re-run the owning test; a row that still survives is a missing or weak
 checklist line — route it to the owning test author exactly like a `GAP:`,
-with the mutant and the surviving test named. `UNUSABLE` (baseline not
-green, harness broken) is exit-2 semantics — never a pass; fall back to the
+with the mutant and the surviving test named. A row the fixes already
+killed is closed with a `## Build log` line, never a re-spawn. `UNUSABLE`
+(baseline not green, harness broken) is exit-2 semantics — never a pass;
+fall back to the
 manual method or log why the check did not run. The throwaway branch never
 reaches `X`; remove it when the table is in. One `## Build log` line either
 way: mutants killed and survived, or skipped and the reason.
@@ -954,7 +969,10 @@ instead. You never write the plugin from inside a build. Record a
 One issue per lesson, so each closes independently. **Create the issue only
 on the user's explicit yes** — it is an external action like any other.
 Log lines are not schedulable and nobody closes a log line; the issue is the
-forcing function that makes the graduation loop actually close.
+forcing function that makes the graduation loop actually close. Until that
+yes arrives the lesson stays visible: `/overview-dossiers` mines `GRADUATION:`
+lines as a health signal, so an awaiting-yes graduation appears on every
+overview until its issue exists.
 
 ## Phase 9 — PR, then remove the worktree
 
@@ -1024,15 +1042,14 @@ forcing function that makes the graduation loop actually close.
     code is at its highest — and it is the only moment. Chat dies with the
     session, and a later `/deferred` cannot reconstruct what you read here.
     So capture now, from working memory: *what product-code issues are you
-    aware of that this run did not tackle?* Sweep everything you actually laid
-    eyes on — the primary-surface files you read in full, every arbitration's
-    evidence, every review reply you held, the `NOTICED:` harvest, every
-    change request demoted for missing evidence, every `TOUCHED_BEYOND` path
-    you accepted. **Recall first, judge second**: write every item down
-    before discarding any, because an item held back as "probably not worth
-    reporting" is exactly the important one a later report misses. Then
-    briefly verify each item (`path:line` still says what you remember) and
-    append the ledger to `## Build log`:
+    aware of that this run did not tackle?* The recall-and-verify method is
+    `/deferred`'s to define; this step is its capture pass. Sweep
+    everything the run laid eyes on — the primary-surface files you read in
+    full, every arbitration's evidence, every review reply you held, the
+    `NOTICED:` harvest, every change request demoted for missing evidence,
+    every `TOUCHED_BEYOND` path you accepted — write every item down before
+    judging any of it, verify each `path:line`, and append the ledger to
+    `## Build log`:
 
     ```
     DEFERRED: <N> — sources: <own reads, NOTICED harvest, review replies>
@@ -1059,22 +1076,18 @@ forcing function that makes the graduation loop actually close.
   it, and no agent changes it. An implementer that needs a different signature
   returns `CONTRACT-CHANGE:` and stops.
 - **You write the docstrings, so you read the docstring rules** — the
-  observability checklist and this repo's rules file, every run, before
-  Phase 2's first documentation comment. Phase 8b writes that file; Phase 2
-  and `/plan` Phase 4 are the only readers, and a loop with no reader is a log
-  line pretending to be a lesson.
-- **Blindness is structural, and informational where a tool set cannot reach.**
-  The unit author has only `Write`. The integration author sees stubs and has no
-  `Bash`. The implementer's worktree has no tests, because **the tests stay
-  uncommitted until Phase 5** — an uncommitted file in one working tree is
-  invisible to another worktree, while a committed one is reachable from all of
-  them. Never hand an agent something its blindness depends on not having, and
-  never rely on an instruction where an absence will do. The corollary of
-  `Write` being the unit author's only tool: it can create a path but never
-  amend one, because `Write` refuses to overwrite without a prior `Read` and a
-  fresh spawn has none. Delete before every re-spawn onto a path it already
-  wrote — never give it `Read` to work around this, that trades a structural
-  guarantee for a promise.
+  observability checklist and this repo's rules file (Phase 2 names both),
+  every run, before Phase 2's first documentation comment. Phase 8b writes
+  that file; Phase 2 and `/plan` Phase 4 are the only readers, and a loop
+  with no reader is a log line pretending to be a lesson.
+- **Blindness is structural, and informational where a tool set cannot reach**
+  (mechanics: Phase 4). The unit author has only `Write`. The integration
+  author sees stubs and has no `Bash`. The implementer's worktree has no tests,
+  because the tests stay uncommitted until Phase 5. Never hand an agent
+  something its blindness depends on not having, and never rely on an
+  instruction where an absence will do. The unit author can create a path but
+  never amend one — delete before every re-spawn onto a path it already wrote,
+  and never give it `Read` to work around it.
 - **Owned paths are disjoint.** Checked mechanically before the fan-out. A merge
   conflict between two packages is a defect in the package table, and it gets
   logged and fixed there. Every implementer report ends with a

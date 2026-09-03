@@ -1,15 +1,18 @@
-# Formats — the two files this pipeline keeps
+# Formats — the files this pipeline keeps
 
-This pipeline has three commands and two file kinds. There is no changelog, no
-review file, no analysis site, no memory trace, no state file, no anomaly log,
-and no template directory.
+This pipeline has three commands and two file kinds, plus one local scratch
+ledger. There is no changelog, no review file, no analysis site, no memory
+trace, no state file, no anomaly log, and no template directory.
 
 ```
 .discovery/                 # gitignored — local to this machine
-└── dossiers/
-    └── <ID>-<slug>.md      # One work item: its contract, its packages, its
-                            #   criteria, its build log. Front matter carries
-                            #   the machine state. KEPT after the build.
+├── dossiers/
+│   └── <ID>-<slug>.md      # One work item: its contract, its packages, its
+│                           #   criteria, its build log. Front matter carries
+│                           #   the machine state. KEPT after the build.
+└── deferred-ledger.md      # /deferred's fallback ledger, when no dossier
+                            #   covers the changeset. Append-only, one block
+                            #   per changeset. Local, never committed.
 docs/
 └── adr/                    # COMMITTED — ADRs ship with the PR that made them
     ├── index.md            # ID | title — the ONLY file a future agent scans
@@ -68,7 +71,7 @@ Status transitions, and the only writer of each:
 
 | Status | Meaning | Written by |
 |---|---|---|
-| `planned` | The plan exists. The plan review has not passed. | `/plan` |
+| `planned` | The plan exists. The plan review has not passed. | `/plan`; `/work-on`, when it returns a dossier mid-build |
 | `ready` | The plan review passed. Buildable. | `/plan` |
 | `building` | Agents are working in worktrees. | `/work-on` |
 | `review` | Tests are green. The review cycle is running. | `/work-on` |

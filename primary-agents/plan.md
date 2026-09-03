@@ -43,6 +43,12 @@ points at:
 - **A Jira key** (`PROJ-142`) → fetch it with the Atlassian Rovo tools
   (`getAccessibleAtlassianResources` once for the `cloudId`, then
   `getJiraIssue`). Read the description and the comments. Record the key.
+- **A deferred-issue ID** (`D-3`, from `/deferred`) → find its ledger line:
+  the `DEFERRED:` ledger in the `## Build log` of the dossier that captured
+  it, or `.discovery/deferred-ledger.md` when no dossier covers it. The line
+  is the problem statement — its `path:line` is your first anchor, its risk
+  and proposed fix seed `## Problem` and `## Approach`. Show the user the
+  restatement as usual, quoting the ledger line.
 - **A stack trace or a log excerpt** → the frames are your first anchors.
 - **A file path or a symbol** → your starting point for the trace.
 - **A free-form description** → an intent. Restate it in one sentence and show
