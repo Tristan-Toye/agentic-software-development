@@ -82,6 +82,11 @@ and report only the signals that actually fired:
   lesson for the repo's rules file, from the cheap side.
 - **`GAP:` returns.** These are contract defects caught by a test author. A
   pattern across dossiers points at one weak part of the contract format.
+- **Graduation lessons awaiting a yes.** `/work-on` Phase 8b records
+  `GRADUATION:` lines and drafts the plugin issue only on the user's explicit
+  yes. Report every `GRADUATION:` line whose issue does not exist yet — each
+  is a finished lesson parked on a decision, and the overview is where the
+  user remembers to give it.
 - **Reviews that hit the budget without resolving.** Name them — they are
   waiting on a user ruling, and nothing else will move them.
 

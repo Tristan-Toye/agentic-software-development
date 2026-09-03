@@ -37,8 +37,12 @@ implementation back to itself.
 ## Payload
 
 - `WORKTREE_DIR` — the base worktree you write into.
-- `DOSSIER` — path to the dossier. Read `## Problem`, `## Approach`,
-  `## Contract`, and `## Acceptance criteria`. Never read `## Build log`.
+- `DOSSIER` — path to the dossier. Read `## Problem`, `## Approach`, and
+  `## Acceptance criteria`. Never read `## Build log`.
+- `CONTRACT` — the contract text, pasted verbatim from the materialised files.
+  The dossier's `## Contract` section is not your source: the pasted text is
+  the same text every other author builds against, and the same text
+  `CONTRACT_HASH` stamps.
 - `TEST_PATHS` — the exact paths you own and write. Disjoint from every other
   agent's paths.
 - `TEST_FRAMEWORK` — the integration framework, the harness entry point, and

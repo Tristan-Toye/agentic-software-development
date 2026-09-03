@@ -14,11 +14,16 @@ argument-hint: "[optional dossier ID or branch/PR ref; empty = this session's ch
 # /deferred — what you noticed but did not tackle
 
 Produce the **deferred-issues report** for the work this session just finished,
-or for the changeset `$ARGUMENTS` names. This is a **recall report, not an
+or for the changeset `$ARGUMENTS` names — a dossier ID or a branch/PR ref;
+empty means this session's changeset. If `$ARGUMENTS` is non-empty but names
+neither, say so in the header and fall back to this session's changeset;
+never guess a changeset out of prose. This is a **recall report, not an
 audit**: report only what you are already aware of. You may briefly verify what
 you already suspect — open the one file, confirm the line, re-read the one
 hunk. You may not go looking for new issues. Deeper research is the user's
-call, triggered from this report by ID.
+call, triggered from this report by ID: `/plan D-3` seeds a new dossier from
+the ledger line — its `path:line` becomes the first anchor and its risk the
+problem statement.
 
 ## Recall first, from working memory — before you touch any file
 
@@ -61,6 +66,9 @@ Merge these into the recalled list, then deduplicate:
    demoted for missing evidence, every arbitration whose evidence pointed at
    product code, every accepted `TOUCHED_BEYOND` path.
 3. Sub-agent reports you received — declined suggestions, open questions.
+4. **The fallback ledger** `.discovery/deferred-ledger.md`, when no dossier
+   covers the changeset — a prior report on the same changeset minted its IDs
+   there. Keep those numbers.
 
 Name the sources you harvested in the header, so a "none" can be defended.
 When the session is cold — no live memory of the changeset, no dossier — say
@@ -131,14 +139,22 @@ one anyway, it goes in the footer — one line, no ID.
 
 ## Rules
 
-- IDs are `D-1, D-2, …`, ordered by risk, unique within the report. IDs the
-  captured ledger already minted keep their numbers in every later report.
-  New items take the next free number. Never renumber inside one
-  conversation — the user references them by ID afterwards.
+- IDs are `D-1, D-2, …` — stable handles, not a sort. Unique across the whole
+  conversation, not just this report: IDs the captured ledger already minted
+  keep their numbers in every later report, and new items take the next free
+  number after every ID minted in this conversation, ledger and fallback
+  ledger included. Present the blocks worst-risk-first, but expect
+  non-monotonic numbers when a ledger minted them in another order. Never
+  renumber inside one conversation — the user references them by ID
+  afterwards.
 - Every issue carries `path:line` evidence. No evidence means Confidence is
   `suspected` — never that the issue is dropped.
 - Never omit a field. `none` and `unknown` are answers; silence is not.
 - Zero issues is a real result: state the sources harvested, print `**None.**`,
   and do not pad or invent.
-- You change no code and no tracked file. The one write you perform is the
-  ledger append above, when a dossier covers the run. Report only.
+- You change no code and no tracked file. The only writes you perform are
+  ledger appends: to the dossier's `## Build log` when a dossier covers the
+  run, and otherwise to `.discovery/deferred-ledger.md` — one block per
+  changeset (`## <ref> — <date>`, then the `DEFERRED:` lines), created on
+  first use, so a dossier-less report persists beyond the session. Report
+  only.

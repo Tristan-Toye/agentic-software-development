@@ -98,6 +98,9 @@ output — it has no `Bash`.
 ```
 WORKTREE_DIR: /abs/path/repo-W-014
 DOSSIER: /abs/path/repo/.discovery/dossiers/W-014-flush-coalescing.md
+CONTRACT: |
+  <the same contract text as every other author's, pasted verbatim from the
+   files on the base worktree — never read out of the dossier>
 TEST_PATHS: /abs/path/repo-W-014/tests/integration/test_flush_flow.py
            # one path per flow — a GAP: or a vacuous test then re-spawns one
            # flow, not the whole set; and no single Write runs long
@@ -116,8 +119,12 @@ CONTRACT_HASH: 3f2611f0a91c4d8e
 Same `CONTRACT_HASH` rule as the unit author: stamp at spawn, re-hash at
 return, re-spawn unconditionally on a mismatch.
 
-The agent reads `## Problem`, `## Approach`, `## Contract` and
-`## Acceptance criteria` from `DOSSIER`, and never `## Build log`.
+The agent reads `## Problem`, `## Approach` and `## Acceptance criteria` from
+`DOSSIER`, and never `## Build log`. The contract never comes from the
+dossier: `CONTRACT` is pasted verbatim from the materialised files — the same
+text every other author builds against, and the same text `CONTRACT_HASH`
+stamps — so the dossier section can never drift from what the tests were
+written against.
 The orchestrator commits its output; it has no `Bash`.
 
 ## implementer
@@ -160,6 +167,11 @@ CONTRACT: |
 CRS: |
   <the merged change-request documents from the three lenses, verbatim,
    plus any user arbitration that overrides one of them>
+FAILURES: |
+  <verbatim test output, when this fix answers a Phase 6 arbitration ruling
+   rather than review change requests — the implementation broke a promise,
+   and the failing output is the work order. CRS is then omitted; either
+   field alone is valid>
 OWNED_PATHS: src/flush.py, src/reload.py
 TEST_COMMAND: pytest -q            # now the invariant: it is green, keep it green
 STANDARDS: /Users/tristan.toye/Documents/personal/repos/agentic-software-development/skills/standards/engineering-standards.md
@@ -169,6 +181,11 @@ JIRA_KEY: PROJ-142
 In `fix` mode the suite is the invariant, not a collateral-damage check: a red
 test after a fix means the fix was not behaviour-preserving. Never widen
 `OWNED_PATHS` to include a test path — the implementer never edits a test.
+
+A Phase 6 row-2 re-spawn — the implementation does not do what the contract
+promises — is also `MODE: fix` in the base worktree: the implementer's own
+worktree is gone, the tests are committed, and blindness no longer applies.
+`CRS:` is omitted and `FAILURES:` carries the verbatim failure output.
 
 **Both modes end their report with a `TOUCHED_BEYOND` section** listing every
 path they changed outside `OWNED_PATHS`, one line per path with a one-line
