@@ -244,6 +244,9 @@ header .spacer { flex: 1; }
 .fp-group .st { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                 font-size: 12.5px; font-weight: 700; color: var(--ink); }
 .fp-group .n { font-weight: 600; color: var(--ink-2); }
+.fp-part { margin: 7px 0 1px; font-size: 10.5px; font-weight: 600;
+           letter-spacing: .04em; text-transform: uppercase;
+           color: var(--ink-3); padding-left: 18px; }
 .fp-row {
   display: grid; grid-template-columns: 14px minmax(0, 1fr) auto auto;
   gap: 2px 14px; align-items: center; padding: 10px 16px;
@@ -538,7 +541,8 @@ function countUp(node, target) {
    right, an arrow meaning "must be done before". Independent flows get one
    rectangle each — see `flows()` for why they are never combined. Only
    dossiers that take part in a dependency appear; the flight plan lists the
-   rest. */
+   rest. Flows whose every member is done or dropped collapse to one note
+   line — a dashboard of closed work shows work, not a wall of green. */
 {
   const edges = [];
   const inGraph = new Set();
@@ -546,12 +550,16 @@ function countUp(node, target) {
     for (const b of d.blocked_by)
       if (BY_ID[b]) { edges.push([b, d.id]); inGraph.add(b); inGraph.add(d.id); }
 
-  const groups = flows([...inGraph], edges);
-  if (groups.length) {
+  const isOpen = id => BY_ID[id].status !== "done" && BY_ID[id].status !== "dropped";
+  const all = flows([...inGraph], edges);
+  const groups = all.filter(g => g.ids.some(isOpen));
+  const collapsed = all.filter(g => !g.ids.some(isOpen));
+  if (groups.length || collapsed.length) {
     const many = groups.length > 1;
     const h = el("h2", null, many ? "Dependency flows" : "Dependency flow");
     h.append(el("span", "hint", "an arrow reads “must be done before” · click a dossier for its intent"
-      + (many ? ` · ${groups.length} independent flows, one box each` : "")));
+      + (many ? ` · ${groups.length} independent flows, one box each` : "")
+      + (collapsed.length ? ` · ${collapsed.length} finished flow${collapsed.length === 1 ? "" : "s"} collapsed` : "")));
     app.append(enter(h));
     groups.forEach((g, i) => {
       const panel = el("div", "graph-panel");
@@ -565,7 +573,10 @@ function countUp(node, target) {
       panel.append(depGraph(g.ids, g.edges));
       app.append(enter(panel));
     });
-    const rest = DATA.dossiers.length - inGraph.size;
+    if (collapsed.length) app.append(enter(el("div", "graph-note",
+      `${collapsed.length} finished flow${collapsed.length === 1 ? "" : "s"} collapsed — every member done or dropped: `
+      + collapsed.map(g => g.ids.join(" → ")).join(" · ") + ".")));
+    const rest = DATA.dossiers.filter(d => !inGraph.has(d.id) && isOpen(d.id)).length;
     if (rest > 0) app.append(enter(el("div", "graph-note",
       `${rest} dossier${rest === 1 ? "" : "s"} with no dependencies ${rest === 1 ? "is" : "are"} not drawn — see the flight plan.`)));
   }
@@ -854,6 +865,15 @@ function heuristicOrder(cols, boundaries) {
     h.append(el("span", "hint", "every dossier by its recorded status · click a row for its intent"));
     app.append(enter(h));
     const panel = el("div", "panel fp");
+    /* pre-build stages partition on blocked-ness: a row with every blocker
+       done can start now; one with an open blocker cannot, whatever its
+       status line says. Later stages are already in flight — no partition. */
+    const openBlockers = d => (d.blocked_by || [])
+      .filter(b => BY_ID[b] && BY_ID[b].status !== "done");
+    const partitions = (s === "planned" || s === "ready")
+      ? [["not blocked — can start now", items.filter(d => !openBlockers(d).length)],
+         ["blocked — waiting on a dossier that is not done", items.filter(d => openBlockers(d).length)]]
+      : [["", items]];
     for (const [s, items] of groups) {
       const gh = el("div", "fp-group");
       const sw = el("span", "swatch" + (ACTIVE.has(s) ? " pulse" : ""));
@@ -862,7 +882,10 @@ function heuristicOrder(cols, boundaries) {
                 el("span", "n", String(items.length)),
                 el("span", null, "— " + (STATUS_GLOSS[s] || "")));
       panel.append(gh);
-      for (const d of items) panel.append(fpRow(d));
+      for (const [label, part] of partitions) {
+        if (label && part.length) panel.append(el("div", "fp-part", label));
+        for (const d of part) panel.append(fpRow(d));
+      }
     }
     app.append(enter(panel));
   }
