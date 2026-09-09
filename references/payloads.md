@@ -14,11 +14,15 @@ and corrupts a concurrent agent's work.
 There is no `BAND`, no `TIER`, and no `RETURN_CEILING`. Every agent returns a
 short structured report because its own prompt says so.
 
-**Paste, never reference, anything an agent's blindness depends on.**
-`unit-test-author` has no `Read` tool, so a path in its payload is a dead
-letter — `CONTRACT` and `STYLE_SAMPLE` must be the text itself. The same holds
-for `CONTRACT` everywhere: an agent that reads the contract out of the dossier
-could read the rest of the dossier too.
+**Paste what an agent cannot open; name what its permission map already
+admits.** `unit-test-author` reads and writes inside a pattern-scoped map —
+`.agent-staging/` and the test families — so a payload path inside that map is
+live: stage `CONTRACT` as files under `.agent-staging/` (hash-stampable as
+bytes on disk) or paste it, and *name* style samples and shared idioms as
+paths instead of pasting them. A path outside the map is still a dead letter.
+And the dossier rule is unchanged everywhere: an agent that reads the contract
+out of the dossier could read the rest of the dossier too — the contract
+never comes from the dossier.
 
 **Never describe the blindness machinery to the agent it constrains.** An agent's
 payload and prompt carry the rules that bind it, and nothing about how the
@@ -40,20 +44,18 @@ Blindness that has to be explained to stay intact is not blindness.
 
 ## unit-test-author
 
-Its payload is its entire world. It has exactly one tool, `Write`. Every field
-here must be literal text — a path it cannot open buys nothing.
+Its world is its permission map: `read` and `edit` are denied everywhere
+except `.agent-staging/` and the test families, and `bash`/`glob`/`grep`/web
+are denied outright. Name a path inside that map and the author opens it
+itself — stage the contract as files, name the style samples, never paste
+what a pointed-at path can carry. Name a path outside the map and the tool
+call is refused.
 
 ```
-CONTRACT: |
-  class FlushQueue:
-      def flush(self, batch_size: int) -> int:
-          """Drain queued items to the store, oldest first.
-
-          Drains at most `batch_size` items per call. Concurrent calls
-          coalesce: each queued item reaches the store exactly one time.
-          Returns the number of items written. Returns 0 when the queue is
-          empty. Raises ValueError when batch_size < 1.
-          """
+CONTRACT: /abs/path/repo-W-014/.agent-staging/flush-queue.contract.md
+          # staged verbatim by the orchestrator inside the base worktree —
+          # or pasted inline; either way this is the only contract text the
+          # author ever sees, and the same bytes CONTRACT_HASH stamps
 PROMISE_CHECKLIST: |
   flush — return meaning: number of items written
   flush — order: oldest first
@@ -72,8 +74,9 @@ CONVENTIONS: |
    Derive Debug on every constructed type. The spelling checker accepts
    "coalesce", "backfill". Checklist ids are <member>/<category>, lowercase,
    hyphen-free.
-STYLE_SAMPLE: |
-  <one existing test from this repo, verbatim, imports included>
+STYLE_PATHS: /abs/path/repo-W-014/tests/unit/test_retry.py
+             # existing tests the author reads and matches — named, not
+             # pasted; they sit inside the author's read map
 NAMING: Subject_StateUnderTest_ExpectedBehavior — Subject is the public member
         under test, e.g. Flush_EmptyQueue_ReturnsZero
 VOCABULARY: "drain", "coalesce", "batch" — the project's terms for these ideas
@@ -84,14 +87,17 @@ FIXTURES: |
 CONTRACT_HASH: 3f2611f0a91c4d8e
 ```
 
-`CONTRACT_HASH` is the orchestrator's stamp of the contract text above —
-paste the hash and never explain it to the author. When the author returns,
-re-hash the contract files: a different hash means the contract changed while
-the author was writing, its world is stale, and the re-spawn is unconditional
-(its `GAP:` analysis, if any, is still input to the contract fix).
+`CONTRACT_HASH` is the orchestrator's stamp of the contract the author saw —
+hash the staged files (or the pasted text) at spawn time and paste the hash
+bare, never explained. When the author returns, re-hash the same bytes: a
+different hash means the contract changed while the author was writing, its
+world is stale, and the re-spawn is unconditional (its `GAP:` analysis, if
+any, is still input to the contract fix).
 
 Absolute `TEST_PATHS` inside the base worktree. The orchestrator commits its
-output — it has no `Bash`.
+output — it has no `Bash`. `.agent-staging/` lives in the base worktree too:
+delete it when the author returns, before the commit-time scope diff, so the
+staged contract can never leak into a commit.
 
 ## integration-test-author
 
@@ -218,8 +224,10 @@ CITATION: |
 The maintainer's world is exactly `FILE` plus `CRS` — informational
 blindness, the same mechanism that keeps the implementer blind. An
 assertion-touching or restructuring CR is not maintainer work: it is
-authorship, and routes to `unit-test-author` with the current file content
-pasted into the payload as base material.
+authorship, and routes to `unit-test-author` with the CR folded into the
+payload — the author reads the current file at `TEST_PATHS` itself (it sits
+inside the author's read map) and edits it in place; no delete, no pasted
+base material.
 
 ## Independent checkers
 
@@ -444,10 +452,12 @@ SCRUB: W-014, .discovery/dossiers, repo-W-014
   anything and never needs to check the suite's claim.
 - **`ARBITRATIONS` accumulates across rounds** and goes into every later spawn,
   so no reviewer re-litigates a question the user already settled.
-- **`STYLE_SAMPLE` and `HARNESS` are the difference between a usable test and a
-  rewritten one.** Paste real code from this repository, not a description of it.
+- **`STYLE_PATHS` and `HARNESS` are the difference between a usable test and a
+  rewritten one.** Name real test files from this repository — verify each
+  path exists and sits inside the author's read map before the spawn — never
+  a description of them.
 - **A convention you hand a blind author must compile and lint clean first.**
-  `NAMING`, `STYLE_SAMPLE` and `FIXTURES` are executable instructions, not
+  `NAMING`, `STYLE_PATHS` and `FIXTURES` are executable instructions, not
   prose. Write one throwaway example of the naming shape, run the repository's
   own linter over it, and only then put it in a payload. An author with no
   compiler cannot discover that your convention fights the language, and it
@@ -463,10 +473,15 @@ SCRUB: W-014, .discovery/dossiers, repo-W-014
 - **`SHARED_IDIOM` is identical, byte for byte, in every payload that shares
   the concept.** Two implementers inventing the same helper produce two
   helpers, and the collapse is paid for at review time.
-- **You format a blind author's files in the commit that lands them.** A
-  Write-only author cannot run the formatter; run it yourself over exactly
+- **You format a blind author's files in the commit that lands them.** The
+  test author cannot run the formatter; run it yourself over exactly
   the named files — single-file invocation, never package-wide — inside that
   commit, never a later one.
+- **Exact-path ownership is checked at commit time, mechanically.** The
+  author's edit map admits the whole test family; its commitment is narrower.
+  After `.agent-staging/` is deleted, diff the worktree's changes against the
+  named `TEST_PATHS` — every path outside them is reverted, not negotiated.
+  The check sees what happened, which is stronger than what was permitted.
 - **A support agent's report is a guidance doc, not a verdict.** Pointers,
   verbatim quotes, neutral flags (`WEAK?`, `no-test-found`, `NOT-FOUND`) —
   pasted into `## Build log` and investigated by you before anything acts on

@@ -309,11 +309,13 @@ ten-second check would have said.
 
 **Decide the test files themselves, not just their owners — no test author can
 add one.** An author writes exactly the paths you name in its payload and
-nothing else. `unit-test-author` has `Write` as its only tool, so it cannot read
-the repo to notice that the single file you gave it is turning into a thousand
-lines covering four unrelated classes; `integration-test-author` can read, but it
-still owns only the paths you named. Whatever split you hand out is the split you
-get, and neither agent can correct it. So plan the split before you spawn:
+nothing else. `unit-test-author` reads only what its permission map admits —
+the staging area and the test families — so it cannot read the repo broadly
+enough to notice that the single file you gave it is turning into a thousand
+lines covering four unrelated classes; `integration-test-author` can read,
+but it still owns only the paths you named. Whatever split you hand out is
+the split you get, and neither agent can correct it. So plan the split
+before you spawn:
 
 - **One test file per contract surface** — per class, per module, per protocol —
   and one `unit-test-author` per surface to own it. Two surfaces pointed at one
@@ -326,21 +328,22 @@ get, and neither agent can correct it. So plan the split before you spawn:
   produce three files; one named path produces one long file, and the author had
   no way to know you wanted otherwise.
 - **Keep every blind-authored file small — one flow, one surface, or a few
-  criteria.** A blind author composes a whole file in one write with no
-  formatter and no compiler; the smaller the file, the shorter the silent
-  generation, the sooner you see it land, and the less a single `GAP:`,
-  vacuous test, or row-3 re-spawn throws away.
+  criteria.** A blind author composes with no formatter and no compiler, in
+  messages that race the runtime's stream timeout when they grow too large;
+  the smaller the file, the shorter the silent generation, the sooner you
+  see it land, and the less a single `GAP:`, vacuous test, or row-3 re-spawn
+  throws away.
 
 Size is your call to make here because it is the only place it can be made. The
 same holds for `integration-test-author`: split by flow, not by dossier, when a
 dossier describes more than one.
 
-The unit test author never sees the criteria — its payload is its whole world.
-So a criterion that states a scale the contract does not (a count, a size, a
-concurrency level) must travel into that author's payload as an explicit
-strength requirement — in `FIXTURES` or `TEST_FRAMEWORK`, phrased as a
-property of the contract surface, never as a criterion number — or the
-contract itself must be fixed to state the scale.
+The unit test author never sees the criteria — its payload and its read map
+are its whole world. So a criterion that states a scale the contract does not
+(a count, a size, a concurrency level) must travel into that author's payload
+as an explicit strength requirement — in `FIXTURES` or `TEST_FRAMEWORK`,
+phrased as a property of the contract surface, never as a criterion number —
+or the contract itself must be fixed to state the scale.
 
 ## Phase 4 — Fan out: concurrent and blind
 
@@ -349,16 +352,17 @@ promise you extract from a prompt:
 
 | Agent | Cannot see | Enforced by |
 |---|---|---|
-| `unit-test-author` | anything at all — the dossier, the code, the other tests | its tool set: `Write` is its only tool |
+| `unit-test-author` | the implementation, the dossier, every pipeline document, anything outside `.agent-staging/` and the test families | its permission map: `read` and `edit` deny every path outside the staging area and the test families — the tool call is refused, not merely discouraged |
 | `integration-test-author` | any implementation body | the bodies are stubs on `X`; it has no Bash and cannot reach another branch |
 | `implementer` | the tests | its worktree forks from `X` at this commit, and no test exists there |
 
 **Worktrees: one per concurrent implementer, and none for the test authors.**
 The test authors write into `X` directly. Neither of them can read an
-implementation body — the unit author cannot read at all, and the integration
-author finds only stubs — so a separate branch would buy them nothing. Only the
-implementer needs branch isolation, because it is the only agent with both
-`Read` and `Bash` and therefore the only one that could go looking.
+implementation body — the unit author's read map stops at the staging area
+and the test families, and the integration author finds only stubs — so a
+separate branch would buy them nothing. Only the implementer needs branch
+isolation, because it is the only agent with both `Read` and `Bash` and
+therefore the only one that could go looking.
 
 ```
 git worktree add ../<repo>-<ID>-P1 -b <branch>-p1 <X-head>
@@ -375,14 +379,16 @@ returns — never from `X-head`, where the dependency's code does not exist.
 That branch carries no test either, so the fork point changes nothing about
 blindness.
 
-- `unit-test-author` × **one per contract surface** — the contract pasted
+- `unit-test-author` × **one per contract surface** — the contract staged as
+  files under `.agent-staging/` inside `X` (hash the staged bytes) or pasted
   verbatim, its slice of `PROMISE_CHECKLIST` (Phase 3), its owned test paths
   inside `X` (every path it should produce, per the Phase 3 split — it cannot
-  add one), the framework, a verbatim style sample, the naming convention, the
+  add one), the framework, style sample paths (`STYLE_PATHS` — existing tests
+  inside its read map, which it opens itself), the naming convention, the
   citation shape and the repo conventions (`CITATION`, `CONVENTIONS` —
-  `references/payloads.md`), the fixtures, and `CONTRACT_HASH`. Its payload is
-  its entire world; a thin payload produces a guessed test, which is why it
-  returns `GAP:` instead of guessing.
+  `references/payloads.md`), the fixtures, and `CONTRACT_HASH`. Its payload
+  plus its permission map are its entire world; a thin payload produces a
+  guessed test, which is why it returns `GAP:` instead of guessing.
 - `integration-test-author` — the dossier path (**absolute, into the main
   checkout** — `.discovery/` is untracked and exists in no worktree), the
   contract pasted verbatim from the files on `X` (`CONTRACT`, never read from
@@ -400,11 +406,12 @@ blindness.
   code has no tests yet, and green is not its exit condition.
 
 **`CONTRACT_HASH` — stamp every test author's world at spawn, and check the
-stamp at return.** Before the fan-out, hash the contract files as they stand
-on `X` (`sha256sum <contract files>`, first 16 hex chars is plenty) and paste
-the bare hash into each test author's payload — it is a version stamp, never
-instruction, and the authors paste nothing from it. When an author returns,
-re-hash the contract files: if the hash differs from the one in its payload,
+stamp at return.** Before the fan-out, hash the contract bytes each author
+will see — the staged `.agent-staging/` files, or the text you pasted
+(`sha256sum`, first 16 hex chars is plenty) — and paste the bare hash into
+each test author's payload — it is a version stamp, never instruction, and
+the authors paste nothing from it. When an author returns, re-hash the same
+bytes: if the hash differs from the one in its payload,
 its world is stale — it wrote tests against a contract you have since
 changed, even if the change looks unrelated. Run the `GAP:` analysis on its
 report as usual, but the re-spawn is **unconditional**: regenerate the author
@@ -446,6 +453,17 @@ worktree.
 > If you must commit a test early, every implementer already spawned is no longer
 > blind. Say so in `## Build log`, and treat its tests as implementation-aware.
 
+**An empty report is never a verdict.** After every test-author spawn, and
+before you read anything into its report, check mechanically that the
+artifact exists: `test -f` each of its `TEST_PATHS` (or read
+`git status --porcelain` in `X`). An empty report **with no file at any of
+its paths** is a retryable infrastructure failure — the runtime's stream
+timeout races a long generation and the loss is silent by construction — not
+a judgement on the contract or the payload. Retry the spawn once, immediately
+and unchanged; a second empty return is surfaced to the user as an
+infrastructure problem. Never classify an empty-artifact return as a `GAP:`,
+a vacuous test, or a weak oracle, and never let one pass as success.
+
 **Handle two returns immediately, never silently:**
 
 - **`GAP:`** — the contract, or `PROMISE_CHECKLIST`, did not tell a test author
@@ -461,16 +479,25 @@ worktree.
   the ruling in `## Build log` either way. Never let an implementer change a
   signature quietly.
 
-**Re-spawning `unit-test-author` onto a path it already wrote.** It has only
-`Write`, and each spawn is a fresh, blind instance — so a new instance cannot
-overwrite a `TEST_PATHS` file an earlier instance created: `Write` refuses to
-overwrite without a prior `Read`, and this agent has none. **Delete the file
-yourself before every such re-spawn** — at a `GAP:` here, at Phase 5, and at
-Phase 6. Its payload is always the file's complete content, never a diff, so
-a full rewrite from the corrected payload loses nothing. Giving it `Read`
-instead would fix the symptom by breaking the invariant this agent exists to
-guarantee — its blindness is enforced by having exactly one tool, not by an
-instruction not to look.
+**Re-spawning `unit-test-author` onto a path it already wrote.** The test
+families are inside the author's read **and** edit maps, so a fresh instance
+opens the existing `TEST_PATHS` file itself and folds the corrected payload
+into it with `Edit` — no delete step, no pasted base material. Two limits.
+First, the payload still names the complete intent, never a diff against what
+the earlier instance wrote: a fresh instance's only knowledge of that file is
+what it reads on disk, so delta-language straddles two worlds it cannot
+reconcile. Second, when you want a clean slate — a wholesale contract change,
+a file judged vacuous — delete the file yourself first and say so in the
+payload; a fresh `Write` then recreates it. What is never on the table is
+widening the map to work around a problem: implementation paths, the dossier,
+the pipeline documents stay outside it, because the blindness is enforced by
+the permission map, not by an instruction not to look.
+
+A strict variant — `read` flatly denied, so nothing can be opened and every
+file is a single fresh `Write` — remains valid where single-shot generation
+is wanted. Its re-spawns use the delete-first mechanic above unconditionally,
+and every payload field must be pasted, because a path in its payload is a
+dead letter.
 
 ## Phase 5 — Test strength gate, then merge into the base branch
 
@@ -483,23 +510,27 @@ are cheap, and both run while the bodies in `X` are still stubs:
    Phase 3 — not a fresh re-read of the contract, so both sides of the diff
    come from the one derivation. An uncovered line means Phase 3's checklist
    should have caught it and did not: fix the checklist (and the contract, if
-   the gap traces back that far), delete the author's `TEST_PATHS` file (it
-   has only `Write`, so it cannot overwrite what an earlier instance wrote —
-   Phase 4), and re-spawn with the corrected checklist — or record the
+   the gap traces back that far), re-spawn the author onto its file with the
+   corrected checklist (it reads and edits its own earlier output — Phase 4;
+   delete first only when the fix is wholesale) — or record the
    accepted gap in `## Build log`. Do the same for the integration author's
    map against the acceptance criteria.
-2. **The stub red-run.** Commit the test authors' work on `X` — formatting
-    each author's files with the repository's own formatter first, over
-    exactly the named files and inside that same commit, because a Write-only
-    author cannot run it — then run the new tests there. The bodies are still
-    stubs that fail loudly, so **every new test must fail, judged one test at
-    a time — never by a failure count, which a collection error also
-    satisfies**. A test that passes against a stub is vacuous — it asserts
-    nothing the implementation controls — and a vacuous test blocks a real
-    failure from being noticed later. Delete the file and re-spawn its author
-    with the test named (Phase 4). Fix pure harness noise (imports, fixtures,
-    collection errors) yourself now, so Phase 6 arbitrates real disagreements
-    only.
+2. **The stub red-run.** Commit the test authors' work on `X` — deleting
+     `.agent-staging/` first, then checking scope mechanically: every path in
+     `X`'s working tree (`git status --porcelain`) must be one of the named
+     `TEST_PATHS` or a harness fix you logged; anything else is reverted, not
+     negotiated — then formatting each author's files with the repository's
+     own formatter, over exactly the named files and inside that same commit,
+     because the author's `bash` is denied and it cannot run the formatter
+     itself — then run the new tests there. The bodies are still
+     stubs that fail loudly, so **every new test must fail, judged one test at
+     a time — never by a failure count, which a collection error also
+     satisfies**. A test that passes against a stub is vacuous — it asserts
+     nothing the implementation controls — and a vacuous test blocks a real
+     failure from being noticed later. Delete the file and re-spawn its author
+     with the test named (Phase 4). Fix pure harness noise (imports, fixtures,
+     collection errors) yourself now, so Phase 6 arbitrates real disagreements
+     only.
 
 Log both results in `## Build log`: promises covered, tests red, vacuous
 tests caught.
@@ -575,9 +606,9 @@ change:
 
 | The failure shows | Who is wrong | What you do |
 |---|---|---|
-| The test asserts something the contract does not promise | **the test** | Delete its `TEST_PATHS` file (Phase 4), then re-spawn the test author with a corrected payload. Never edit the test yourself — you have read the implementation, so you are exactly the wrong party to fix a test. |
+| The test asserts something the contract does not promise | **the test** | Re-spawn the test author with a corrected payload — it reads and edits its own `TEST_PATHS` file (Phase 4); delete first only for a wholesale rewrite. Never edit the test yourself — you have read the implementation, so you are exactly the wrong party to fix a test. |
 | The implementation does not do what the contract promises | **the implementation** | Re-spawn the implementer for that package in `MODE: fix`, working in `X` directly — its own worktree is gone (Phase 5) and the tests are committed, so blindness no longer applies. The failure output travels as `FAILURES:` in the payload (`references/payloads.md`); `CRS:` carries any review change requests still open for it, or is omitted. |
-| The contract is ambiguous enough to justify both readings | **you** | Fix the contract (and `PROMISE_CHECKLIST`, if a unit promise is involved) in the files and the dossier, commit on `X`, delete the affected test author's file (Phase 4), and re-spawn **both** sides. |
+| The contract is ambiguous enough to justify both readings | **you** | Fix the contract (and `PROMISE_CHECKLIST`, if a unit promise is involved) in the files and the dossier, commit on `X`, re-spawn the affected test author onto its file (Phase 4), and re-spawn **both** sides. |
 | The test fails on harness noise — a compile error, a missing fixture, an import | nobody | Fix the harness yourself. It is mechanical. |
 
 Write every arbitration into `## Build log`: the failure, the ruling, and which
@@ -740,11 +771,10 @@ contract is yours.
     regen route below. This keeps a cosmetic CR from costing a blind
     full-file regeneration.
   - **Assertion-touching or restructuring CRs** on a unit-test file are
-    authorship: delete the file and re-spawn `unit-test-author` with the CR
-    folded into its payload, **pasting the current file's content into the
-    payload as base material** — its blindness is unchanged (the payload was
-    already its whole world), and the delete-before-respawn mechanics are
-    unchanged (Phase 4). Pass the finding and the constraints, and nothing
+    authorship: re-spawn `unit-test-author` with the CR folded into its
+    payload — the file sits inside the author's read map, so it reads the
+    current content itself and edits in place; nothing is pasted and nothing
+    is deleted (Phase 4). Pass the finding and the constraints, and nothing
     about the implementation.
   - **CRs on an integration-test file** go back to `integration-test-author`,
     which can already read the file; no maintainer needed.
@@ -1081,13 +1111,15 @@ overview until its issue exists.
   that file; Phase 2 and `/plan` Phase 4 are the only readers, and a loop
   with no reader is a log line pretending to be a lesson.
 - **Blindness is structural, and informational where a tool set cannot reach**
-  (mechanics: Phase 4). The unit author has only `Write`. The integration
-  author sees stubs and has no `Bash`. The implementer's worktree has no tests,
-  because the tests stay uncommitted until Phase 5. Never hand an agent
-  something its blindness depends on not having, and never rely on an
-  instruction where an absence will do. The unit author can create a path but
-  never amend one — delete before every re-spawn onto a path it already wrote,
-  and never give it `Read` to work around it.
+  (mechanics: Phase 4). The unit author's permission map denies `read` and
+  `edit` everywhere outside `.agent-staging/` and the test families — the
+  implementation, the dossier, and the pipeline documents are unreachable by
+  tool refusal, and its exact-path ownership is checked mechanically at
+  commit time. The integration author sees stubs and has no `Bash`. The
+  implementer's worktree has no tests, because the tests stay uncommitted
+  until Phase 5. Never hand an agent something its blindness depends on not
+  having, never rely on an instruction where an absence will do, and never
+  widen a permission map to work around a problem.
 - **Owned paths are disjoint.** Checked mechanically before the fan-out. A merge
   conflict between two packages is a defect in the package table, and it gets
   logged and fixed there. Every implementer report ends with a
