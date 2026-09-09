@@ -644,8 +644,9 @@ work, and log the reason.
 **Run it through `mutation-tester`, concurrent with Phase 7.** The moment the
 suite first goes green, create a throwaway worktree off `X` (branch
 `<branch>-MUT`), then spawn `mutation-tester` in the background with the
-worktree path, the contract paths, `PROMISE_CHECKLIST` in its strong form,
-the surface, the verified test command, and a mutant cap — while the review
+worktree path, the baseline commit the branch was cut from, the contract
+paths, `PROMISE_CHECKLIST` in its strong form, the surface, the verified
+test command, and a mutant cap — while the review
 lens work, it derives one mutant per checklist line (a return-meaning line
 gets a wrong constant, an order line a swap, a named-guard line a dropped
 guard), runs the suite per mutant, and returns a kill table. Harvest the
@@ -661,6 +662,22 @@ fall back to the
 manual method or log why the check did not run. The throwaway branch never
 reaches `X`; remove it when the table is in. One `## Build log` line either
 way: mutants killed and survived, or skipped and the reason.
+
+**A cancelled tester leaves its mutant behind — reset the worktree before
+anything is re-spawned into it.** The tester reverts every mutant itself,
+but a cancelled run never reaches the revert: whatever mutant it had
+applied stays behind as an uncommitted edit, so the throwaway worktree is
+dirty by default after a cancellation. Your next action on that worktree is
+mechanical, never a diagnosis: check it clean (`git status --porcelain`;
+the branch head is the baseline commit, because nothing ever commits
+there), and reset it (`git checkout -- <contract paths>`) — or remove and
+recreate the worktree outright, which a throwaway branch makes always safe.
+Spawning into the residue buys one of two failures: a red baseline misread
+as `UNUSABLE`, killing the check for no reason, or a kill table computed
+against an already-mutated body — a false table with no mechanical trace
+of the corruption. The tester's first method step reverts a dirty arrival
+itself, but that is the backstop; the reset before the spawn is yours. One
+`## Build log` line records it.
 
 **Below the gate (one small surface, a handful of checklist lines), do it
 yourself:** on a throwaway branch off `X`, make 2–3 mutants a real body could
