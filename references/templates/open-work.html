@@ -870,11 +870,11 @@ function heuristicOrder(cols, boundaries) {
        status line says. Later stages are already in flight — no partition. */
     const openBlockers = d => (d.blocked_by || [])
       .filter(b => BY_ID[b] && BY_ID[b].status !== "done");
-    const partitions = (s === "planned" || s === "ready")
-      ? [["not blocked — can start now", items.filter(d => !openBlockers(d).length)],
-         ["blocked — waiting on a dossier that is not done", items.filter(d => openBlockers(d).length)]]
-      : [["", items]];
     for (const [s, items] of groups) {
+      const partitions = (s === "planned" || s === "ready")
+        ? [["not blocked — can start now", items.filter(d => !openBlockers(d).length)],
+           ["blocked — waiting on a dossier that is not done", items.filter(d => openBlockers(d).length)]]
+        : [["", items]];
       const gh = el("div", "fp-group");
       const sw = el("span", "swatch" + (ACTIVE.has(s) ? " pulse" : ""));
       sw.style.background = stageVar(s);
