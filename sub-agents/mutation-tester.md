@@ -57,6 +57,9 @@ mutant not traceable to a checklist line is out of scope.
 - `WORKTREE_DIR` — your throwaway worktree, already created and already on
   its own branch. All your work happens here. Never touch any other
   directory.
+- `BASELINE` — the commit your branch was cut from. Every revert returns
+  the tree here: your own mutant after each run, and a cancelled
+  predecessor's residue on arrival (step 1).
 - `CONTRACT_PATHS` — the files whose bodies implement the checklist's
   promises. Mutate only inside these.
 - `PROMISE_CHECKLIST` — verbatim, one line per member per category, each
@@ -70,10 +73,17 @@ mutant not traceable to a checklist line is out of scope.
 
 ## Method
 
-1. **Run `TEST_COMMAND` on the untouched tree first.** If it is not green,
+1. **A dirty tree on arrival is a cancelled predecessor's residue.** A
+   cancelled predecessor never reaches its revert, so its applied mutant
+   stays behind as an uncommitted edit. If `git status --porcelain` shows
+   anything, revert to `BASELINE` (`git checkout <BASELINE> -- <path>`),
+   confirm the tree is clean, and only then continue. Never diagnose the
+   residue, and never run anything against a tree you did not revert
+   yourself.
+2. **Run `TEST_COMMAND` on the untouched tree first.** If it is not green,
    return `UNUSABLE` with the output tail — a red baseline means every kill
    after it is meaningless. Do not try to fix the suite.
-2. Pick up to `MAX_MUTANTS` checklist lines from `SURFACE`, preferring
+3. Pick up to `MAX_MUTANTS` checklist lines from `SURFACE`, preferring
    branching, ordering, guard, and constant promises. For each, choose the
    smallest real-body fault that flips the promise:
    - return meaning → return the wrong count, the wrong constant, or `None`
@@ -81,15 +91,15 @@ mutant not traceable to a checklist line is out of scope.
    - named guard → drop the guard, or off-by-one its boundary
    - empty case → make the empty case error, or return a wrong value
    - concurrency → remove the coalescing, so a caller sees a duplicate
-3. Apply **one mutant at a time** with an Edit: the smallest change that
+4. Apply **one mutant at a time** with an Edit: the smallest change that
    flips the promise — never line noise a formatter would catch.
-4. Run `TEST_COMMAND`. Record: the mutant, the checklist line, the
+5. Run `TEST_COMMAND`. Record: the mutant, the checklist line, the
    `path:line` mutated, the transform, and the outcome — `KILLED by
    <test name>` or `SURVIVED`.
-5. Revert the mutant exactly (Edit back, or `git checkout -- <path>`), and
-   confirm the tree is clean before the next mutant. One mutant at a time;
-   never two faults in the tree at once.
-6. Repeat until `MAX_MUTANTS` or the checklist lines from `SURFACE` run out.
+6. Revert the mutant exactly (Edit back, or `git checkout <BASELINE> --
+   <path>`), and confirm the tree is clean before the next mutant. One
+   mutant at a time; never two faults in the tree at once.
+7. Repeat until `MAX_MUTANTS` or the checklist lines from `SURFACE` run out.
 
 ## Rules
 
@@ -104,16 +114,18 @@ mutant not traceable to a checklist line is out of scope.
 
 ## Report
 
-1. Baseline: `TEST_COMMAND` output summary line, verbatim, and green/red.
-2. The kill table, one row per mutant:
+1. Arrival: what step 1 found and reverted — `arrived clean`, or the
+   predecessor residue restored to `BASELINE`.
+2. Baseline: `TEST_COMMAND` output summary line, verbatim, and green/red.
+3. The kill table, one row per mutant:
 
    ```
    M1  flush — return meaning   src/flush.py:41  wrong count (n-1)    KILLED by Flush_ThreeWritten_ReturnsThree
    M2  flush — order            src/flush.py:47  newest-first swap    SURVIVED
    ```
 
-3. `SURVIVED` rows repeated in a block of their own — these are the
+4. `SURVIVED` rows repeated in a block of their own — these are the
    orchestrator's work list; every one is a promise no test enforces.
-4. Final state: mutants applied (must be zero), tree clean or not.
-5. `NOTICED:` — anything in the bodies or the suite the payload did not
+5. Final state: mutants applied (must be zero), tree clean or not.
+6. `NOTICED:` — anything in the bodies or the suite the payload did not
    mention (explicit `none` allowed). This line is always last.

@@ -258,6 +258,8 @@ lenses work.
 
 ```
 WORKTREE_DIR: /abs/path/repo-W-014-MUT   # pre-created throwaway worktree
+BASELINE: 3f2611f   # the commit the throwaway branch was cut from — the
+                   # revert target when the tree arrives dirty
 CONTRACT_PATHS: src/flush.py
 PROMISE_CHECKLIST: |
   <verbatim, strong form — the mutants are derived from these lines>
@@ -269,7 +271,12 @@ MAX_MUTANTS: 3
 It returns a kill table. A `SURVIVED` row is a missing or weak
 `PROMISE_CHECKLIST` line: route it to the owning test author exactly like a
 `GAP:`. `UNUSABLE` (baseline not green) is exit-2 semantics — the check did
-not run, which is never a pass.
+not run, which is never a pass. A worktree that arrives dirty — an
+uncommitted mutant-shaped edit, the residue of a cancelled predecessor — is
+the tester's first revert, never a diagnosis: it restores the tree to
+`BASELINE` and proceeds. On your side, a cancellation is the one exit that
+leaves the worktree dirty; reset it (or remove and recreate it) before
+anything is re-spawned into it.
 
 ## reviewer
 
@@ -503,7 +510,12 @@ SCRUB: W-014, .discovery/dossiers, repo-W-014
   orchestrator makes the branch before the spawn and deletes it after the
   report; the agent's own bash denies commit and push, so a mutant can never
   reach a real branch by accident. `UNUSABLE` is not a verdict on the tests —
-  it means the check did not run.
+  it means the check did not run. Cancellation is the one exit that leaves
+  residue: the applied mutant stays behind as an uncommitted edit, so the
+  worktree is dirty by default. Reset it — or remove and recreate it —
+  before anything is re-spawned into it, and `BASELINE` names the commit
+  both you and the tester revert to, so a dirty arrival is a one-line
+  restore rather than a diagnosis.
 - **`NOTICED:` is harvested into `## Build log`.** Every support report ends
   with one, `none` allowed; the Phase 9 deferred-issues capture draws on your
   own reads plus this harvest.
