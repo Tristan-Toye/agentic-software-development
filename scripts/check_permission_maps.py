@@ -149,39 +149,47 @@ def symmetry_findings(agent: str, maps: Mapping[str, object]) -> list[str]:
     return out
 
 
-# Canonical implementation paths per agent: each must stay READ-denied, and
-# the second flag says whether it must also stay edit-denied. A path that is
-# a legitimate blind-write family (deploy/scripts/ suites) keeps edit but
-# never read. These mirror the target repo's lib/negative_control.sh idea:
-# the plugin asserts its own blindness against named paths, so a widening
-# pattern fails the plugin's checks before it ships.
-NEGATIVE_CONTROLS: dict[str, list[tuple[str, bool]]] = {
+# Canonical paths per agent with the verdict each map must keep: a control
+# names a path and, per tool, the boolean is_allowed must return. The blind
+# author's implementation paths stay read-denied (and edit-denied except the
+# deploy/scripts blind-write family); the document drafter, which reads
+# freely but writes only its three families, keeps every code path
+# write-denied while its own TARGET_PATHS stay write-allowed. These mirror
+# the target repo's lib/negative_control.sh idea: the plugin asserts its own
+# boundaries against named paths, so a widening pattern fails the plugin's
+# checks before it ships.
+NEGATIVE_CONTROLS: dict[str, list[tuple[str, dict[str, bool]]]] = {
     "unit-test-author.md": [
-        ("src/flush.py", True),
-        ("lib/foo.py", True),
-        ("internal/bar.rs", True),
-        ("cmd/main.go", True),
-        ("deploy/scripts/openbao_bootstrap.sh", False),
+        ("src/flush.py", {"read": False, "edit": False}),
+        ("lib/foo.py", {"read": False, "edit": False}),
+        ("internal/bar.rs", {"read": False, "edit": False}),
+        ("cmd/main.go", {"read": False, "edit": False}),
+        ("deploy/scripts/openbao_bootstrap.sh", {"read": False, "edit": True}),
+    ],
+    "document-drafter.md": [
+        ("src/flush.py", {"write": False}),
+        ("lib/foo.py", {"write": False}),
+        ("internal/bar.rs", {"write": False}),
+        ("cmd/main.go", {"write": False}),
+        ("docs/adr/0031-flush-drain-lock.md", {"write": True}),
+        (".discovery/pr-draft-W-014.md", {"write": True}),
     ],
 }
 
 
 def negative_control_findings(agent: str, maps: Mapping[str, object]) -> list[str]:
-    """Named implementation paths must stay denied by the maps."""
+    """Named control paths must keep their expected verdicts under the maps."""
     controls = NEGATIVE_CONTROLS.get(agent.rsplit("/", 1)[-1], [])
     out: list[str] = []
-    for path, must_edit_deny in controls:
-        if is_allowed(maps.get("read"), path):
-            out.append(
-                f"{agent}: negative control '{path}' is READ-ALLOWED — the read "
-                "map admits an implementation path; blindness is a map property, "
-                "not a habit"
-            )
-        if must_edit_deny and is_allowed(maps.get("edit"), path):
-            out.append(
-                f"{agent}: negative control '{path}' is EDIT-ALLOWED — an "
-                "implementation path is writable"
-            )
+    for path, assertions in controls:
+        for tool, expected in assertions.items():
+            allowed = bool(is_allowed(maps.get(tool), path))
+            if allowed != expected:
+                out.append(
+                    f"{agent}: negative control '{path}' is "
+                    f"{tool.upper()}-{'ALLOWED' if allowed else 'DENIED'} — "
+                    f"this path must stay {'allowed' if expected else 'denied'}"
+                )
     return out
 
 
@@ -436,6 +444,41 @@ def selftest() -> int:
         "controls: deploy suite stays edit-allowed without a finding",
         True,
         bool(is_allowed(real_edit, "deploy/scripts/openbao_bootstrap.sh")),
+    )
+
+    # Document drafter: write map denies code paths, admits its own targets
+    drafter = parse_permission(
+        (repo / "sub-agents" / "document-drafter.md").read_text()
+    )
+    drafter_write = drafter.get("write")
+    check(
+        "drafter: write map found",
+        True,
+        isinstance(drafter_write, dict),
+    )
+    check(
+        "drafter: real agent passes its controls",
+        False,
+        bool(negative_control_findings("sub-agents/document-drafter.md", drafter)),
+    )
+    assert isinstance(drafter_write, dict)
+    writable_code = dict(drafter, write=dict(drafter_write, **{"src/*": "allow"}))
+    check(
+        "drafter: code path write-allowed fails",
+        True,
+        bool(
+            negative_control_findings("sub-agents/document-drafter.md", writable_code)
+        ),
+    )
+    check(
+        "drafter: TARGET_PATHS under docs/adr stays write-allowed",
+        True,
+        bool(is_allowed(drafter_write, "docs/adr/0031-flush-drain-lock.md")),
+    )
+    check(
+        "drafter: TARGET_PATHS under .discovery stays write-allowed",
+        True,
+        bool(is_allowed(drafter_write, ".discovery/pr-draft-W-014.md")),
     )
 
     ok = all(w == g for _, w, g in cases)

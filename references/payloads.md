@@ -444,6 +444,13 @@ TARGET_PATHS: /abs/path/repo/.discovery/pr-draft-W-014.md
 SCRUB: W-014, .discovery/dossiers, repo-W-014
 ```
 
+The drafter writes `TARGET_PATHS` itself — its `Write` map admits
+`docs/adr/`, `.discovery/`, and `.agent-staging/` only, so the files land
+without an orchestrator hand-placement. Its scrub check runs over the
+written bytes. You still re-grep the files for the `SCRUB` tokens before
+anything leaves the machine: two checks, because a leaked dossier id is a
+leaked local path.
+
 ---
 
 ## Field rules that matter

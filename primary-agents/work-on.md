@@ -922,8 +922,11 @@ surfaced.
   performance trade-off was accepted, a convention was set, or a constraint was
   found that future work must respect.
 - **When ADRs are due, `document-drafter` drafts them** (`MODE: adr`): you
-  select the decisions and their evidence, it renders the files in the
-  validated format and self-checks the scrub list. You then read each file,
+  select the decisions and their evidence, give it `TARGET_PATHS` under
+  `docs/adr/` in `X`, and it writes those files itself in the validated
+  format — its Write tool admits `docs/adr/`, `.discovery/`, and
+  `.agent-staging/` only — then re-opens each written file and self-checks
+  the scrub list over the bytes on disk. You then read each file,
   run the validator, fix every DEFECT, and commit — drafting is mechanical,
   selecting and validating never are.
 - A decision an existing ADR already covers is an **amendment**: add the
@@ -1064,11 +1067,13 @@ overview until its issue exists.
    regenerate the index, and update the dossier's `adrs` field.
 2. **Run the acceptance criteria one final time** and keep the output — it goes
    in the PR description and in the Jira comment.
-3. **Write the PR description** and show it to the user. Delegate the draft to
-   `document-drafter` (`MODE: pr`, dossier excerpts verbatim, `SCRUB` carrying
-   the dossier ID and every `.discovery/` path) — then grep the draft yourself
-   for every scrub token before you show it; two checks, because a leaked
-   dossier id is a leaked local path. Two sections:
+ 3. **Write the PR description** and show it to the user. Delegate the draft to
+    `document-drafter` (`MODE: pr`, dossier excerpts verbatim, `TARGET_PATHS`
+    naming a file under `.discovery/` in the main checkout, `SCRUB` carrying
+    the dossier ID and every `.discovery/` path) — it writes the draft file
+    itself and self-checks the written bytes; then grep the written file
+    yourself for every scrub token before you show it; two checks, because a
+    leaked dossier id is a leaked local path. Two sections:
    `## Summary` — the problem and what this change does, from `## Problem` and
    `## Approach`, for a reviewer who has never seen the dossier.    `## What
    changed` — grouped by theme, with the non-obvious choices explained and the
