@@ -1109,10 +1109,28 @@ overview until its issue exists.
      --root .discovery
    ```
 
-   Tell the user the output path (`.discovery/analysis/open-work.html`). The
-   status table, counts, and dependency flows are always current after the
-   regeneration; the health-signal cards carry whatever the last
-   `/overview-dossiers` run mined. Regenerate the report; never hand-edit it.
+    Tell the user the output path (`.discovery/analysis/open-work.html`). The
+    status table, counts, and dependency flows are always current after the
+    regeneration; the health-signal cards carry whatever the last
+    `/overview-dossiers` run mined. Regenerate the report; never hand-edit it.
+
+    **A cleanup never stashes another run's state.** This checkout is shared:
+    a sibling run may hold uncommitted `.discovery/` work here right now. A
+    recorded failure: a cleanup stashed "pre-existing local modifications" to
+    fast-forward, and a concurrent build's dossier reverted to its seeded
+    state — a thousand lines gone mid-run. The rules:
+
+    - Before any fast-forward, pull, or clean-tree operation, run
+      `git status` and read it. Foreign `.discovery/` modifications mean
+      another run is active: **abort with a diagnostic**, do not stash, do
+      not proceed. Tell the user what you saw.
+    - Never create a stash that carries another run's files. Never drop a
+      stash without `git stash list` plus
+      `git show --name-only 'stash@{N}'` — inspect first, drop only your own.
+    - Restore foreign-run files verbatim, no merge, no re-type:
+      `git restore --source='stash@{N}' -- <path>`.
+    - A dossier that "reverts" mid-run is a possible sibling stash. Check
+      `git stash list` **first** — one step — before any forensics.
  6. **Comment on the Jira ticket** one time: what changed, the review rounds, the
    test result, and the PR URL. Narrative only, no duration — Tempo holds the
    time. Transition the ticket only if the user confirms.
