@@ -118,6 +118,7 @@ time and gets right.
 | `references/time-logging.md` | The Tempo contract: one session per run, orchestrator only. |
 | `skills/standards/` | The engineering standards. They bind generation and review symmetrically. |
 | `scripts/validate_pipeline.py` | Front matter, section set, **path disjointness**, contract shape, criterion falsifiability, anchors, ASD-STE100. `--selftest` checks the checker. |
+| `scripts/check_permission_maps.py` | Sub-agent permission maps: allow-list shape, read-to-edit symmetry, and pre-spawn `TEST_PATHS` validation. `--selftest` checks the checker. |
 
 ## Why the validator matters more than it looks
 

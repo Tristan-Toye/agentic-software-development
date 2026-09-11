@@ -94,6 +94,12 @@ different hash means the contract changed while the author was writing, its
 world is stale, and the re-spawn is unconditional (its `GAP:` analysis, if
 any, is still input to the contract fix).
 
+`TEST_PATHS` is validated before the spawn, never after an empty return.
+`scripts/check_permission_maps.py --agent sub-agents/unit-test-author.md
+--root <X> --test-paths ... --read-paths ...` refuses a spawn whose paths
+fall outside the author's maps. The refusal names the path and lists the
+admitted families; the fix is the split or the staging, never the map.
+
 Absolute `TEST_PATHS` inside the base worktree. The orchestrator commits its
 output — it has no `Bash`. `.agent-staging/` lives in the base worktree too:
 delete it when the author returns, before the commit-time scope diff, so the
@@ -482,6 +488,11 @@ SCRUB: W-014, .discovery/dossiers, repo-W-014
   After `.agent-staging/` is deleted, diff the worktree's changes against the
   named `TEST_PATHS` — every path outside them is reverted, not negotiated.
   The check sees what happened, which is stronger than what was permitted.
+- **`TEST_PATHS` is checked against the maps at spawn time, mechanically.**
+  `scripts/check_permission_maps.py --agent ... --root <X> --test-paths ...
+  --read-paths ...` refuses the spawn when a named path is edit-denied or a
+  read path is read-denied. A read-allowed family that is edit-refused bricks
+  the spawn silently; the pre-spawn check turns that into a one-line refusal.
 - **A support agent's report is a guidance doc, not a verdict.** Pointers,
   verbatim quotes, neutral flags (`WEAK?`, `no-test-found`, `NOT-FOUND`) —
   pasted into `## Build log` and investigated by you before anything acts on

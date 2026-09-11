@@ -405,6 +405,16 @@ blindness.
   command that fails in your shell fails in theirs, once per agent. Its own new
   code has no tests yet, and green is not its exit condition.
 
+**Validate `TEST_PATHS` against the maps before every `unit-test-author`
+spawn.** Run `python3 scripts/check_permission_maps.py --agent
+sub-agents/unit-test-author.md --root <X> --test-paths <comma-separated>
+--read-paths <STYLE_PATHS>` — the plugin checkout supplies the script and the
+agent file; `X` supplies the paths. Exit 1 names the offending path and lists
+the families the map admits; fix the split or stage the content, never the
+map. The failure this prevents is silent: a path the read map admits but the
+edit map refuses makes the author read the existing file, refuse to write it,
+and return empty — once per retry, seven times in the recorded failure.
+
 **`CONTRACT_HASH` — stamp every test author's world at spawn, and check the
 stamp at return.** Before the fan-out, hash the contract bytes each author
 will see — the staged `.agent-staging/` files, or the text you pasted

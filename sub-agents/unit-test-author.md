@@ -55,6 +55,8 @@ permission:
     "*/test-support/*": allow
     "testing/*": allow
     "*/testing/*": allow
+    "scripts/*": allow
+    "*/scripts/*": allow
     "fixtures/*": allow
     "*/fixtures/*": allow
   glob: deny
