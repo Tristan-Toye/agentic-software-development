@@ -100,6 +100,12 @@ any, is still input to the contract fix).
 fall outside the author's maps. The refusal names the path and lists the
 admitted families; the fix is the split or the staging, never the map.
 
+A suite in a family the read map denies — `deploy/scripts/`, the recorded
+case — is still writable: the edit map carries the family, the read map
+does not. Stage the file's current content under `.agent-staging/` yourself
+and have the author rewrite the whole file with `Write`. It never opens the
+original; the staged copy is its only view of what exists.
+
 Absolute `TEST_PATHS` inside the base worktree. The orchestrator commits its
 output — it has no `Bash`. `.agent-staging/` lives in the base worktree too:
 delete it when the author returns, before the commit-time scope diff, so the

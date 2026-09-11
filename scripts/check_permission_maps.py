@@ -16,6 +16,10 @@ Three questions this script answers mechanically:
      TEST_PATHS you are about to name, would every path land inside the edit
      map? Would every STYLE_PATHS-style read path land inside the read map?
      Answer before the spawn, not after an empty return.
+  4. Negative controls — named canonical implementation paths (src/, lib/,
+     internal/, cmd/, and the deploy/scripts bootstrap that a broad `*/scripts/*`
+     read pattern used to admit) must stay denied. A widening pattern fails
+     the plugin's own checks before it ships.
 
 Usage:
     check_permission_maps.py
@@ -145,6 +149,42 @@ def symmetry_findings(agent: str, maps: Mapping[str, object]) -> list[str]:
     return out
 
 
+# Canonical implementation paths per agent: each must stay READ-denied, and
+# the second flag says whether it must also stay edit-denied. A path that is
+# a legitimate blind-write family (deploy/scripts/ suites) keeps edit but
+# never read. These mirror the target repo's lib/negative_control.sh idea:
+# the plugin asserts its own blindness against named paths, so a widening
+# pattern fails the plugin's checks before it ships.
+NEGATIVE_CONTROLS: dict[str, list[tuple[str, bool]]] = {
+    "unit-test-author.md": [
+        ("src/flush.py", True),
+        ("lib/foo.py", True),
+        ("internal/bar.rs", True),
+        ("cmd/main.go", True),
+        ("deploy/scripts/openbao_bootstrap.sh", False),
+    ],
+}
+
+
+def negative_control_findings(agent: str, maps: Mapping[str, object]) -> list[str]:
+    """Named implementation paths must stay denied by the maps."""
+    controls = NEGATIVE_CONTROLS.get(agent.rsplit("/", 1)[-1], [])
+    out: list[str] = []
+    for path, must_edit_deny in controls:
+        if is_allowed(maps.get("read"), path):
+            out.append(
+                f"{agent}: negative control '{path}' is READ-ALLOWED — the read "
+                "map admits an implementation path; blindness is a map property, "
+                "not a habit"
+            )
+        if must_edit_deny and is_allowed(maps.get("edit"), path):
+            out.append(
+                f"{agent}: negative control '{path}' is EDIT-ALLOWED — an "
+                "implementation path is writable"
+            )
+    return out
+
+
 def resolve(root: Path, path: str) -> str | None:
     """A path against a root -> repository-relative, or None when outside."""
     p = Path(path)
@@ -231,6 +271,7 @@ def scan(sub_agents: Path) -> int:
         name = f"sub-agents/{agent.name}"
         findings += shape_findings(name, maps)
         findings += symmetry_findings(name, maps)
+        findings += negative_control_findings(name, maps)
     for f in findings:
         print(f"REFUSED   {f}")
     verdict = "PASS" if not findings else "FAIL"
@@ -355,6 +396,32 @@ def selftest() -> int:
         "parse: implementation path read-denied",
         False,
         bool(is_allowed(real_read, "src/flush.py")),
+    )
+
+    # Negative controls: the real map must pass them, a widened map must fail
+    check(
+        "controls: real agent passes",
+        False,
+        bool(negative_control_findings("sub-agents/unit-test-author.md", real)),
+    )
+    assert isinstance(real_read, dict) and isinstance(real_edit, dict)
+    widened = dict(real)
+    widened["read"] = dict(real_read, **{"scripts/*": "allow", "*/scripts/*": "allow"})
+    check(
+        "controls: scripts/* re-widened read map fails",
+        True,
+        bool(negative_control_findings("sub-agents/unit-test-author.md", widened)),
+    )
+    writable_impl = dict(real)
+    writable_impl["edit"] = dict(real_edit, **{"src/*": "allow"})
+    findings = negative_control_findings(
+        "sub-agents/unit-test-author.md", writable_impl
+    )
+    check("controls: implementation path edit-allowed fails", True, bool(findings))
+    check(
+        "controls: deploy suite stays edit-allowed without a finding",
+        True,
+        bool(is_allowed(real_edit, "deploy/scripts/openbao_bootstrap.sh")),
     )
 
     ok = all(w == g for _, w, g in cases)

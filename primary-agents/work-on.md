@@ -492,7 +492,11 @@ a vacuous test, or a weak oracle, and never let one pass as success.
 **Re-spawning `unit-test-author` onto a path it already wrote.** The test
 families are inside the author's read **and** edit maps, so a fresh instance
 opens the existing `TEST_PATHS` file itself and folds the corrected payload
-into it with `Edit` — no delete step, no pasted base material. Two limits.
+into it with `Edit` — no delete step, no pasted base material. One exception:
+a family the read map denies while the edit map admits it — `deploy/scripts/`
+is the recorded case — cannot be opened. Stage the file's current content
+under `.agent-staging/` yourself and have the fresh instance rewrite the
+whole file with `Write`. Two limits.
 First, the payload still names the complete intent, never a diff against what
 the earlier instance wrote: a fresh instance's only knowledge of that file is
 what it reads on disk, so delta-language straddles two worlds it cannot

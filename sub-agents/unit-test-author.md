@@ -39,8 +39,6 @@ permission:
     "*/test-support/*": allow
     "testing/*": allow
     "*/testing/*": allow
-    "scripts/*": allow
-    "*/scripts/*": allow
   edit:
     "*": deny
     "tests/*": allow
