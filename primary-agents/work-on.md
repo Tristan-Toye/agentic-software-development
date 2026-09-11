@@ -524,6 +524,26 @@ is wanted. Its re-spawns use the delete-first mechanic above unconditionally,
 and every payload field must be pasted, because a path in its payload is a
 dead letter.
 
+### Sub-agent permission maps are load-time
+
+Maps load when the host session starts. A patch to `sub-agents/*.md`
+mid-run changes nothing for this session: a spawn from the same host still
+carries the old map, the refused tool call stays refused, and no amount of
+re-spawning reads the new file. Treat the in-flight session as frozen, and
+work a refusal in this order:
+
+1. **The same refusal after a map patch means the patch is not loaded.**
+   Stop re-spawning into it; every spawn repeats the refusal and costs a run.
+2. **Resume the affected agent's session.** Its transcript carries the old
+   map and, often, the finished reasoning — the `MAX_SINGLE_EDIT` recovery
+   above is this move. The corrective payload works inside the old map.
+3. **Re-home the work on your side of the boundary.** Stage the content
+   under `.agent-staging/` so the old map suffices, and log the transport
+   in `## Build log`: what was staged, why, and which map motivated it.
+4. **Restart the host session last.** The flow is resumable — the dossier
+   and `## Build log` carry the state — but the restart drops every
+   in-flight session at once.
+
 ## Phase 5 — Test strength gate, then merge into the base branch
 
 **Before any merge, prove the new tests can fail.** Blindness guarantees the
@@ -710,7 +730,8 @@ describes the code as it stood at first green, and the review fix rounds may
 have changed it. Re-apply each `SURVIVED` mutant at the final `HEAD` and
 re-run the owning test; a row that still survives is a missing or weak
 checklist line — route it to the owning test author exactly like a `GAP:`,
-with the mutant and the surviving test named. A row the fixes already
+with the mutant and the surviving test named (a refused tool call on the way
+back follows the load-time rule: Phase 4). A row the fixes already
 killed is closed with a `## Build log` line, never a re-spawn. `UNUSABLE`
 (baseline not green, harness broken) is exit-2 semantics — never a pass;
 fall back to the
