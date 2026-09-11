@@ -27,7 +27,7 @@ Usage:
     check_permission_maps.py --agent sub-agents/unit-test-author.md \\
         --root /abs/path/target-worktree \\
         --test-paths tests/unit/test_flush.py,tests/util/helpers.py \\
-        --read-paths tests/unit/test_retry.py
+        --read-paths tests/unit/test_retry.py --expected-lines 620
         validate a spawn before it happens
     check_permission_maps.py --selftest
 
@@ -198,8 +198,15 @@ def resolve(root: Path, path: str) -> str | None:
     return p.relative_to(root.resolve()).as_posix()
 
 
+MAX_SINGLE_EDIT_LINES = 400
+
+
 def spawn_validation(
-    agent_file: Path, root: Path, test_paths: list[str], read_paths: list[str]
+    agent_file: Path,
+    root: Path,
+    test_paths: list[str],
+    read_paths: list[str],
+    expected_lines: int | None = None,
 ) -> int:
     try:
         maps = parse_permission(agent_file.read_text())
@@ -209,6 +216,13 @@ def spawn_validation(
     if "edit" not in maps:
         print(f"UNUSABLE  {agent_file} declares no edit map")
         return 2
+    if expected_lines is not None and expected_lines > MAX_SINGLE_EDIT_LINES:
+        print(
+            f"WARNING  expected deliverable ~{expected_lines} lines exceeds the "
+            f"~{MAX_SINGLE_EDIT_LINES}-line cap for one write: name the split in "
+            "the payload — more files, or one file in staged sections",
+            file=sys.stderr,
+        )
     findings: list[str] = []
     for raw in test_paths:
         rel = resolve(root, raw)
@@ -454,6 +468,11 @@ def main() -> int:
         help="comma-separated paths (STYLE_PATHS and kin) to check against the read map",
     )
     ap.add_argument(
+        "--expected-lines",
+        type=int,
+        help="expected deliverable size; warns past the single-edit cap",
+    )
+    ap.add_argument(
         "--selftest", action="store_true", help="run the built-in negative controls"
     )
     args = ap.parse_args()
@@ -467,7 +486,11 @@ def main() -> int:
             print("UNUSABLE  --agent needs --test-paths and/or --read-paths")
             return 2
         return spawn_validation(
-            Path(args.agent), Path(args.root), test_paths, read_paths
+            Path(args.agent),
+            Path(args.root),
+            test_paths,
+            read_paths,
+            args.expected_lines,
         )
     repo = Path(__file__).resolve().parent.parent
     return scan(repo / "sub-agents")

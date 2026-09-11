@@ -463,6 +463,17 @@ worktree.
 > If you must commit a test early, every implementer already spawned is no longer
 > blind. Say so in `## Build log`, and treat its tests as implementation-aware.
 
+**Cap what one blind write carries.** `MAX_SINGLE_EDIT` — around 300–400
+lines — bounds a single `Write` or `Edit` from the author. A deliverable
+above the cap is split at spawn time: more files, or one file delivered in
+staged sections, each under it. The failure mode is silent and repeatable. A
+~600-line single-write harness died six times at the same boundary — two
+reads, one reasoning block, the stream ends, no tool call — while an 11 KB
+sibling edit from the same spawn passed. Recovery, in order: resume the
+author's session from its transcript **once**; the transcript carries the
+finished reasoning and the resumed session lands the file. A repeated death
+at the same boundary indicts the payload, not the transport: split it.
+
 **An empty report is never a verdict.** After every test-author spawn, and
 before you read anything into its report, check mechanically that the
 artifact exists: `test -f` each of its `TEST_PATHS` (or read

@@ -65,6 +65,8 @@ PROMISE_CHECKLIST: |
           store exactly one time
 TEST_PATHS: /abs/path/repo-W-014/tests/unit/test_flush_queue.py
 TEST_FRAMEWORK: pytest; plain `assert`; run with `pytest tests/unit -q`
+MAX_SINGLE_EDIT: 350 lines — the cap for one Write or Edit; a larger
+                deliverable is named as a split at spawn, never improvised
 CITATION: |
    // promise: flush/return-meaning
    One comment per test, the line above the test, in exactly this shape —
@@ -499,6 +501,11 @@ SCRUB: W-014, .discovery/dossiers, repo-W-014
   --read-paths ...` refuses the spawn when a named path is edit-denied or a
   read path is read-denied. A read-allowed family that is edit-refused bricks
   the spawn silently; the pre-spawn check turns that into a one-line refusal.
+- **`MAX_SINGLE_EDIT` caps one write from a blind author.** Around 300–400
+  lines per single `Write` or `Edit`; above that, the payload names the split
+  — more files, or one file in staged sections — instead of hoping the stream
+  holds. Pass `--expected-lines N` to the pre-spawn check and it warns when
+  the expected deliverable exceeds the cap.
 - **A support agent's report is a guidance doc, not a verdict.** Pointers,
   verbatim quotes, neutral flags (`WEAK?`, `no-test-found`, `NOT-FOUND`) —
   pasted into `## Build log` and investigated by you before anything acts on
