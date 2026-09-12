@@ -10,3 +10,14 @@ Do not use for: refactoring, writing scripts from scratch, debugging business lo
 3. `query-docs` with the selected library ID and what to look up in the library's documentation (not single words), scoped to a single concept. If the question spans multiple distinct concepts (e.g., routing, auth, and caching), make a separate `query-docs` call per concept with the same library ID, unless the question is about how the concepts interact — combined queries dilute ranking and return shallow results for each topic
 4. Answer using the fetched docs
 <!-- context7 -->
+
+<!-- github-stacks -->
+## GitHub stacks
+
+Whenever work is split into stacked pull requests, always create the true GitHub Stack object with the `gh stack` CLI (extension `github/gh-stack`). Never stack by chaining PR base branches alone — without the Stack object, GitHub shows no stack UI, no per-layer diffs, and no whole-stack merge.
+
+- New work: `gh stack init <branch>` from the trunk, grow it with `gh stack add <branch>`, open it with `gh stack submit` (one PR per branch, linked as one Stack).
+- Existing PRs: link them bottom-to-top with `gh stack link --base <trunk> <b1> <b2> ... <bN>`; open PRs are reused and mismatched bases are corrected automatically.
+- After rebases or review changes: `gh stack sync` (or `gh stack rebase --continue` after conflicts) keeps every layer's base correct.
+- Merge bottom-up, and only when the user asks — `gh stack merge` exists, but merging stays the user's decision.
+<!-- github-stacks -->

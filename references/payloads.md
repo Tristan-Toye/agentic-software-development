@@ -65,6 +65,8 @@ PROMISE_CHECKLIST: |
           store exactly one time
 TEST_PATHS: /abs/path/repo-W-014/tests/unit/test_flush_queue.py
 TEST_FRAMEWORK: pytest; plain `assert`; run with `pytest tests/unit -q`
+MAX_SINGLE_EDIT: 350 lines — the cap for one Write or Edit; a larger
+                deliverable is named as a split at spawn, never improvised
 CITATION: |
    // promise: flush/return-meaning
    One comment per test, the line above the test, in exactly this shape —
@@ -93,6 +95,18 @@ bare, never explained. When the author returns, re-hash the same bytes: a
 different hash means the contract changed while the author was writing, its
 world is stale, and the re-spawn is unconditional (its `GAP:` analysis, if
 any, is still input to the contract fix).
+
+`TEST_PATHS` is validated before the spawn, never after an empty return.
+`scripts/check_permission_maps.py --agent sub-agents/unit-test-author.md
+--root <X> --test-paths ... --read-paths ...` refuses a spawn whose paths
+fall outside the author's maps. The refusal names the path and lists the
+admitted families; the fix is the split or the staging, never the map.
+
+A suite in a family the read map denies — `deploy/scripts/`, the recorded
+case — is still writable: the edit map carries the family, the read map
+does not. Stage the file's current content under `.agent-staging/` yourself
+and have the author rewrite the whole file with `Write`. It never opens the
+original; the staged copy is its only view of what exists.
 
 Absolute `TEST_PATHS` inside the base worktree. The orchestrator commits its
 output — it has no `Bash`. `.agent-staging/` lives in the base worktree too:
@@ -266,6 +280,8 @@ lenses work.
 
 ```
 WORKTREE_DIR: /abs/path/repo-W-014-MUT   # pre-created throwaway worktree
+BASELINE: 3f2611f   # the commit the throwaway branch was cut from — the
+                   # revert target when the tree arrives dirty
 CONTRACT_PATHS: src/flush.py
 PROMISE_CHECKLIST: |
   <verbatim, strong form — the mutants are derived from these lines>
@@ -277,7 +293,12 @@ MAX_MUTANTS: 3
 It returns a kill table. A `SURVIVED` row is a missing or weak
 `PROMISE_CHECKLIST` line: route it to the owning test author exactly like a
 `GAP:`. `UNUSABLE` (baseline not green) is exit-2 semantics — the check did
-not run, which is never a pass.
+not run, which is never a pass. A worktree that arrives dirty — an
+uncommitted mutant-shaped edit, the residue of a cancelled predecessor — is
+the tester's first revert, never a diagnosis: it restores the tree to
+`BASELINE` and proceeds. On your side, a cancellation is the one exit that
+leaves the worktree dirty; reset it (or remove and recreate it) before
+anything is re-spawned into it.
 
 ## reviewer
 
@@ -430,6 +451,13 @@ TARGET_PATHS: /abs/path/repo/.discovery/pr-draft-W-014.md
 SCRUB: W-014, .discovery/dossiers, repo-W-014
 ```
 
+The drafter writes `TARGET_PATHS` itself — its `Write` map admits
+`docs/adr/`, `.discovery/`, and `.agent-staging/` only, so the files land
+without an orchestrator hand-placement. Its scrub check runs over the
+written bytes. You still re-grep the files for the `SCRUB` tokens before
+anything leaves the machine: two checks, because a leaked dossier id is a
+leaked local path.
+
 ---
 
 ## Field rules that matter
@@ -482,6 +510,16 @@ SCRUB: W-014, .discovery/dossiers, repo-W-014
   After `.agent-staging/` is deleted, diff the worktree's changes against the
   named `TEST_PATHS` — every path outside them is reverted, not negotiated.
   The check sees what happened, which is stronger than what was permitted.
+- **`TEST_PATHS` is checked against the maps at spawn time, mechanically.**
+  `scripts/check_permission_maps.py --agent ... --root <X> --test-paths ...
+  --read-paths ...` refuses the spawn when a named path is edit-denied or a
+  read path is read-denied. A read-allowed family that is edit-refused bricks
+  the spawn silently; the pre-spawn check turns that into a one-line refusal.
+- **`MAX_SINGLE_EDIT` caps one write from a blind author.** Around 300–400
+  lines per single `Write` or `Edit`; above that, the payload names the split
+  — more files, or one file in staged sections — instead of hoping the stream
+  holds. Pass `--expected-lines N` to the pre-spawn check and it warns when
+  the expected deliverable exceeds the cap.
 - **A support agent's report is a guidance doc, not a verdict.** Pointers,
   verbatim quotes, neutral flags (`WEAK?`, `no-test-found`, `NOT-FOUND`) —
   pasted into `## Build log` and investigated by you before anything acts on
@@ -518,7 +556,12 @@ SCRUB: W-014, .discovery/dossiers, repo-W-014
   orchestrator makes the branch before the spawn and deletes it after the
   report; the agent's own bash denies commit and push, so a mutant can never
   reach a real branch by accident. `UNUSABLE` is not a verdict on the tests —
-  it means the check did not run.
+  it means the check did not run. Cancellation is the one exit that leaves
+  residue: the applied mutant stays behind as an uncommitted edit, so the
+  worktree is dirty by default. Reset it — or remove and recreate it —
+  before anything is re-spawned into it, and `BASELINE` names the commit
+  both you and the tester revert to, so a dirty arrival is a one-line
+  restore rather than a diagnosis.
 - **`NOTICED:` is harvested into `## Build log`.** Every support report ends
   with one, `none` allowed; the Phase 9 deferred-issues capture draws on your
   own reads plus this harvest.

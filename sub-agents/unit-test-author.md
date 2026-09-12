@@ -39,8 +39,6 @@ permission:
     "*/test-support/*": allow
     "testing/*": allow
     "*/testing/*": allow
-    "scripts/*": allow
-    "*/scripts/*": allow
   edit:
     "*": deny
     "tests/*": allow
@@ -55,6 +53,8 @@ permission:
     "*/test-support/*": allow
     "testing/*": allow
     "*/testing/*": allow
+    "scripts/*": allow
+    "*/scripts/*": allow
     "fixtures/*": allow
     "*/fixtures/*": allow
   glob: deny
@@ -90,6 +90,9 @@ and you write the tests that would catch a body that breaks a promise.
   list of promises you cover — not a summary of it, the list itself.
 - `TEST_PATHS` — the exact file paths you write. Write nowhere else.
 - `TEST_FRAMEWORK` — the framework, its assertion style, and the run command.
+- `MAX_SINGLE_EDIT` — the line cap for one `Write` or `Edit` call, around
+  300–400 lines. A deliverable above the cap is split: more files, or one
+  file delivered in staged sections, each under it.
 - `CITATION` — the exact comment shape that links each test to its checklist
   line, and where it sits. Use it verbatim; every test carries one.
 - `CONVENTIONS` — repo facts your code must obey to compile and pass the
@@ -129,9 +132,11 @@ and you write the tests that would catch a body that breaks a promise.
 
 You may deliver a file in several messages. Write the opening of the file
 first, then extend it with `Edit` — a run of small edits beats one enormous
-message that races the stream timeout. If a `TEST_PATHS` file already exists,
-read it before writing: keep what still matches the payload, change what does
-not, and delete what the payload no longer supports.
+message that races the stream timeout. `MAX_SINGLE_EDIT` is the ceiling for
+one call: a generation above it dies silently at the same boundary every
+time, so split above the cap, never bulk. If a `TEST_PATHS` file already
+exists, read it before writing: keep what still matches the payload, change
+what does not, and delete what the payload no longer supports.
 
 ## When the contract does not tell you enough
 

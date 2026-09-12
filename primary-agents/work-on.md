@@ -405,6 +405,16 @@ blindness.
   command that fails in your shell fails in theirs, once per agent. Its own new
   code has no tests yet, and green is not its exit condition.
 
+**Validate `TEST_PATHS` against the maps before every `unit-test-author`
+spawn.** Run `python3 scripts/check_permission_maps.py --agent
+sub-agents/unit-test-author.md --root <X> --test-paths <comma-separated>
+--read-paths <STYLE_PATHS>` — the plugin checkout supplies the script and the
+agent file; `X` supplies the paths. Exit 1 names the offending path and lists
+the families the map admits; fix the split or stage the content, never the
+map. The failure this prevents is silent: a path the read map admits but the
+edit map refuses makes the author read the existing file, refuse to write it,
+and return empty — once per retry, seven times in the recorded failure.
+
 **`CONTRACT_HASH` — stamp every test author's world at spawn, and check the
 stamp at return.** Before the fan-out, hash the contract bytes each author
 will see — the staged `.agent-staging/` files, or the text you pasted
@@ -453,6 +463,17 @@ worktree.
 > If you must commit a test early, every implementer already spawned is no longer
 > blind. Say so in `## Build log`, and treat its tests as implementation-aware.
 
+**Cap what one blind write carries.** `MAX_SINGLE_EDIT` — around 300–400
+lines — bounds a single `Write` or `Edit` from the author. A deliverable
+above the cap is split at spawn time: more files, or one file delivered in
+staged sections, each under it. The failure mode is silent and repeatable. A
+~600-line single-write harness died six times at the same boundary — two
+reads, one reasoning block, the stream ends, no tool call — while an 11 KB
+sibling edit from the same spawn passed. Recovery, in order: resume the
+author's session from its transcript **once**; the transcript carries the
+finished reasoning and the resumed session lands the file. A repeated death
+at the same boundary indicts the payload, not the transport: split it.
+
 **An empty report is never a verdict.** After every test-author spawn, and
 before you read anything into its report, check mechanically that the
 artifact exists: `test -f` each of its `TEST_PATHS` (or read
@@ -482,7 +503,11 @@ a vacuous test, or a weak oracle, and never let one pass as success.
 **Re-spawning `unit-test-author` onto a path it already wrote.** The test
 families are inside the author's read **and** edit maps, so a fresh instance
 opens the existing `TEST_PATHS` file itself and folds the corrected payload
-into it with `Edit` — no delete step, no pasted base material. Two limits.
+into it with `Edit` — no delete step, no pasted base material. One exception:
+a family the read map denies while the edit map admits it — `deploy/scripts/`
+is the recorded case — cannot be opened. Stage the file's current content
+under `.agent-staging/` yourself and have the fresh instance rewrite the
+whole file with `Write`. Two limits.
 First, the payload still names the complete intent, never a diff against what
 the earlier instance wrote: a fresh instance's only knowledge of that file is
 what it reads on disk, so delta-language straddles two worlds it cannot
@@ -498,6 +523,26 @@ file is a single fresh `Write` — remains valid where single-shot generation
 is wanted. Its re-spawns use the delete-first mechanic above unconditionally,
 and every payload field must be pasted, because a path in its payload is a
 dead letter.
+
+### Sub-agent permission maps are load-time
+
+Maps load when the host session starts. A patch to `sub-agents/*.md`
+mid-run changes nothing for this session: a spawn from the same host still
+carries the old map, the refused tool call stays refused, and no amount of
+re-spawning reads the new file. Treat the in-flight session as frozen, and
+work a refusal in this order:
+
+1. **The same refusal after a map patch means the patch is not loaded.**
+   Stop re-spawning into it; every spawn repeats the refusal and costs a run.
+2. **Resume the affected agent's session.** Its transcript carries the old
+   map and, often, the finished reasoning — the `MAX_SINGLE_EDIT` recovery
+   above is this move. The corrective payload works inside the old map.
+3. **Re-home the work on your side of the boundary.** Stage the content
+   under `.agent-staging/` so the old map suffices, and log the transport
+   in `## Build log`: what was staged, why, and which map motivated it.
+4. **Restart the host session last.** The flow is resumable — the dossier
+   and `## Build log` carry the state — but the restart drops every
+   in-flight session at once.
 
 ## Phase 5 — Test strength gate, then merge into the base branch
 
@@ -675,8 +720,9 @@ work, and log the reason.
 **Run it through `mutation-tester`, concurrent with Phase 7.** The moment the
 suite first goes green, create a throwaway worktree off `X` (branch
 `<branch>-MUT`), then spawn `mutation-tester` in the background with the
-worktree path, the contract paths, `PROMISE_CHECKLIST` in its strong form,
-the surface, the verified test command, and a mutant cap — while the review
+worktree path, the baseline commit the branch was cut from, the contract
+paths, `PROMISE_CHECKLIST` in its strong form, the surface, the verified
+test command, and a mutant cap — while the review
 lens work, it derives one mutant per checklist line (a return-meaning line
 gets a wrong constant, an order line a swap, a named-guard line a dropped
 guard), runs the suite per mutant, and returns a kill table. Harvest the
@@ -685,13 +731,30 @@ describes the code as it stood at first green, and the review fix rounds may
 have changed it. Re-apply each `SURVIVED` mutant at the final `HEAD` and
 re-run the owning test; a row that still survives is a missing or weak
 checklist line — route it to the owning test author exactly like a `GAP:`,
-with the mutant and the surviving test named. A row the fixes already
+with the mutant and the surviving test named (a refused tool call on the way
+back follows the load-time rule: Phase 4). A row the fixes already
 killed is closed with a `## Build log` line, never a re-spawn. `UNUSABLE`
 (baseline not green, harness broken) is exit-2 semantics — never a pass;
 fall back to the
 manual method or log why the check did not run. The throwaway branch never
 reaches `X`; remove it when the table is in. One `## Build log` line either
 way: mutants killed and survived, or skipped and the reason.
+
+**A cancelled tester leaves its mutant behind — reset the worktree before
+anything is re-spawned into it.** The tester reverts every mutant itself,
+but a cancelled run never reaches the revert: whatever mutant it had
+applied stays behind as an uncommitted edit, so the throwaway worktree is
+dirty by default after a cancellation. Your next action on that worktree is
+mechanical, never a diagnosis: check it clean (`git status --porcelain`;
+the branch head is the baseline commit, because nothing ever commits
+there), and reset it (`git checkout -- <contract paths>`) — or remove and
+recreate the worktree outright, which a throwaway branch makes always safe.
+Spawning into the residue buys one of two failures: a red baseline misread
+as `UNUSABLE`, killing the check for no reason, or a kill table computed
+against an already-mutated body — a false table with no mechanical trace
+of the corruption. The tester's first method step reverts a dirty arrival
+itself, but that is the backstop; the reset before the spawn is yours. One
+`## Build log` line records it.
 
 **Below the gate (one small surface, a handful of checklist lines), do it
 yourself:** on a throwaway branch off `X`, make 2–3 mutants a real body could
@@ -876,8 +939,11 @@ surfaced.
   performance trade-off was accepted, a convention was set, or a constraint was
   found that future work must respect.
 - **When ADRs are due, `document-drafter` drafts them** (`MODE: adr`): you
-  select the decisions and their evidence, it renders the files in the
-  validated format and self-checks the scrub list. You then read each file,
+  select the decisions and their evidence, give it `TARGET_PATHS` under
+  `docs/adr/` in `X`, and it writes those files itself in the validated
+  format — its Write tool admits `docs/adr/`, `.discovery/`, and
+  `.agent-staging/` only — then re-opens each written file and self-checks
+  the scrub list over the bytes on disk. You then read each file,
   run the validator, fix every DEFECT, and commit — drafting is mechanical,
   selecting and validating never are.
 - A decision an existing ADR already covers is an **amendment**: add the
@@ -1041,14 +1107,16 @@ overview until its issue exists.
    and `docs/learned-rules*.md`, the suite and review evidence already in the
    dossier stands — run the validators, not the tests.
 2. **Run the acceptance criteria one final time** and keep the output — it goes
-   in the PR description and in the Jira comment. A bookkeeping-only sync
-   does not invalidate the earlier run: if step 1 moved only bookkeeping,
-   the output you already kept stands and this step is a no-op.
-3. **Write the PR description** and show it to the user. Delegate the draft to
-   `document-drafter` (`MODE: pr`, dossier excerpts verbatim, `SCRUB` carrying
-   the dossier ID and every `.discovery/` path) — then grep the draft yourself
-   for every scrub token before you show it; two checks, because a leaked
-   dossier id is a leaked local path. Two sections:
+    in the PR description and in the Jira comment. A bookkeeping-only sync
+    does not invalidate the earlier run: if step 1 moved only bookkeeping,
+    the output you already kept stands and this step is a no-op.
+ 3. **Write the PR description** and show it to the user. Delegate the draft to
+    `document-drafter` (`MODE: pr`, dossier excerpts verbatim, `TARGET_PATHS`
+    naming a file under `.discovery/` in the main checkout, `SCRUB` carrying
+    the dossier ID and every `.discovery/` path) — it writes the draft file
+    itself and self-checks the written bytes; then grep the written file
+    yourself for every scrub token before you show it; two checks, because a
+    leaked dossier id is a leaked local path. Two sections:
    `## Summary` — the problem and what this change does, from `## Problem` and
    `## Approach`, for a reviewer who has never seen the dossier.    `## What
    changed` — grouped by theme, with the non-obvious choices explained and the
@@ -1089,25 +1157,42 @@ overview until its issue exists.
     regeneration; the health-signal cards carry whatever the last
     `/overview-dossiers` run mined. Regenerate the report; never hand-edit it.
 
-   **When several PRs are open and the user merges one**, the remaining PR
-   branches are stale against the new target tip. Offer the refresh ritual
-   for each remaining branch (a fresh worktree checked out on it):
+    **When several PRs are open and the user merges one**, the remaining PR
+    branches are stale against the new target tip. Offer the refresh ritual
+    for each remaining branch (a fresh worktree checked out on it):
 
-   ```bash
-   git fetch origin && git merge origin/<target>
-   python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py" \
-     --finalize-ids --base origin/<target>
-   python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py"
-   git restore docs/adr/index.md
-   git commit --no-edit && git push    # only when finalize renumbered something
-   ```
+    ```bash
+    git fetch origin && git merge origin/<target>
+    python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py" \
+      --finalize-ids --base origin/<target>
+    python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py"
+    git restore docs/adr/index.md
+    git commit --no-edit && git push    # only when finalize renumbered something
+    ```
 
-   The merge is local, so the union drivers apply; finalize renumbers only
-   what the landed branch's numbers displace; the PR button goes green
-   again. A conflict on code here is the real signal — resolve it through
-   `implementer` and re-run the suite if the blast radius moved, exactly as
-   in step 1; a bookkeeping-only refresh re-runs nothing.
+    The merge is local, so the union drivers apply; finalize renumbers only
+    what the landed branch's numbers displace; the PR button goes green
+    again. A conflict on code here is the real signal — resolve it through
+    `implementer` and re-run the suite if the blast radius moved, exactly as
+    in step 1; a bookkeeping-only refresh re-runs nothing.
 
+    **A cleanup never stashes another run's state.** This checkout is shared:
+    a sibling run may hold uncommitted `.discovery/` work here right now. A
+    recorded failure: a cleanup stashed "pre-existing local modifications" to
+    fast-forward, and a concurrent build's dossier reverted to its seeded
+    state — a thousand lines gone mid-run. The rules:
+
+    - Before any fast-forward, pull, or clean-tree operation, run
+      `git status` and read it. Foreign `.discovery/` modifications mean
+      another run is active: **abort with a diagnostic**, do not stash, do
+      not proceed. Tell the user what you saw.
+    - Never create a stash that carries another run's files. Never drop a
+      stash without `git stash list` plus
+      `git show --name-only 'stash@{N}'` — inspect first, drop only your own.
+    - Restore foreign-run files verbatim, no merge, no re-type:
+      `git restore --source='stash@{N}' -- <path>`.
+    - A dossier that "reverts" mid-run is a possible sibling stash. Check
+      `git stash list` **first** — one step — before any forensics.
  6. **Comment on the Jira ticket** one time: what changed, the review rounds, the
    test result, and the PR URL. Narrative only, no duration — Tempo holds the
    time. Transition the ticket only if the user confirms.
