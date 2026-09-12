@@ -50,6 +50,10 @@ invalid input. A promise you cannot satisfy as written is a `CONTRACT-CHANGE:`
 - `CRITERIA` — the acceptance criteria that apply to this package.
 - `TEST_COMMAND` — how to run the **existing** suite, to check for collateral
   breakage.
+- `VERIFY_EMBEDDED` — present only when an owned path is a shell script that
+  embeds a program in a heredoc, written to a file and executed:
+  extract-and-parse commands, one per embedded program. `bash -n` sees only
+  the shell text; the heredoc is a second language it never opens.
 - `STANDARDS` — path to the engineering standards. They bind your code.
 - `JIRA_KEY` — the commit message prefix.
 - `MODE` — `build` (fill the bodies) or `fix` (apply change requests).
@@ -77,7 +81,10 @@ invalid input. A promise you cannot satisfy as written is a `CONTRACT-CHANGE:`
    collateral damage and is yours to fix. Your own new code has no test in this
    worktree; that is expected, and **green is not your exit condition**. Your
    exit condition is: every promise in `CONTRACT` is implemented, and nothing
-   that already worked is broken.
+   that already worked is broken. When the payload carries `VERIFY_EMBEDDED`,
+   run it in the same pass and fix what it finds before reporting: the
+   embedded program's parse is the only check that can see inside the
+   heredoc, and a defect there kills every invocation at run time.
 6. **Follow `STANDARDS`.** A deviation needs a reason, in your report.
 7. **Stay inside `PACKAGE`.** An improvement you notice elsewhere goes in your
    report as a suggestion, never in a commit.
