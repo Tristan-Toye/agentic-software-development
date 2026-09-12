@@ -15,7 +15,9 @@ trace, no state file, no anomaly log, and no template directory.
                             #   per changeset. Local, never committed.
 docs/
 └── adr/                    # COMMITTED — ADRs ship with the PR that made them
-    ├── index.md            # ID | title — the ONLY file a future agent scans
+    ├── index.md            # ID | title — the ONLY file a future agent scans.
+    │                       #   Derived. CI commits it on development; branches
+    │                       #   never do (see "The index contract").
     └── NNNN-<slug>.md      # Extracted by /work-on after the build.
 ```
 
@@ -299,6 +301,14 @@ on titles:
 `index.md` is a derived view. Regenerate it with
 `scripts/validate_pipeline.py --write-index`; never hand-edit a row.
 
+Because every branch appends rows at the table tail, a committed index
+collides on every concurrent merge. So branches **never commit `index.md`**:
+regenerate it locally to validate (`--write-index`, then run the validators),
+then `git restore docs/adr/index.md` before committing. CI regenerates and
+commits it on the target branch after each merge. The index a future agent
+scans is always the one on the target branch, always current, and never a
+merge-conflict surface.
+
 ```markdown
 # ADR index
 
@@ -370,8 +380,18 @@ exclusive-create semantics — `set -o noclobber` on the redirect, or
 `python3 -c "open(p,'x')"` — and on a collision take the next number and retry.
 Never scan for the highest number and then write.
 
-The exclusive-create guard works per working copy. ADRs are committed, so two
-concurrent branches can still mint the same ADR number and collide at merge
-time. The rule: the branch that merges second renumbers its ADR, regenerates
-the index with `--write-index`, and updates its dossier's `adrs` field. Never
-merge two decisions under one number.
+The exclusive-create guard works per working copy. ADRs and LRNs are committed,
+so two concurrent branches can still mint the same number, and the collision
+only becomes visible at merge time. That is expected and handled: **a number
+minted on a branch is provisional until the branch's sync merge.** The
+serialization point is Phase 9's sync step (or the post-landing refresh, when
+several PRs land together): after merging the target branch, run
+
+```
+scripts/validate_pipeline.py --finalize-ids --base origin/development
+```
+
+It detects collisions against the merged tree, renumbers only the ADRs and
+LRNs this branch added, rewrites their references inside the branch's own
+files and dossiers, and regenerates the index. Never merge two decisions
+under one number, and never hand-renumber: the finalize step owns renumbering.
