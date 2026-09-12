@@ -170,6 +170,12 @@ CRITERIA: |
      receives each item one time.
   2. flush() on an empty queue returns 0 and writes nothing.
 TEST_COMMAND: pytest -q            # the EXISTING suite, for collateral damage
+VERIFY_EMBEDDED: |
+  <only when an owned path is a shell script that embeds a program in a
+   heredoc, written to a file and executed — the embedded-program parse
+   idiom below, one line per embedded program, its sed adapted to the
+   script's real write line and marker. Omit when no owned path has that
+   shape.>
 STANDARDS: /Users/tristan.toye/Documents/personal/repos/agentic-software-development/skills/standards/engineering-standards.md
 JIRA_KEY: PROJ-142
 # the report must end with a TOUCHED_BEYOND section (see the field rules)
@@ -194,6 +200,10 @@ FAILURES: |
    field alone is valid>
 OWNED_PATHS: src/flush.py, src/reload.py
 TEST_COMMAND: pytest -q            # now the invariant: it is green, keep it green
+VERIFY_EMBEDDED: |
+  <same rule as build mode — and never omitted from a fix that touches the
+   heredoc itself: the fix round is the recorded escape, where re-indented
+   except clauses passed bash -n and killed every invocation at parse time>
 STANDARDS: /Users/tristan.toye/Documents/personal/repos/agentic-software-development/skills/standards/engineering-standards.md
 JIRA_KEY: PROJ-142
 ```
@@ -215,6 +225,34 @@ drift into a stated claim: a path the implementer touched, did not list, and
 cannot justify is a defect in the implementer's work, not just package-table
 noise. Two hard limits the section cannot excuse: another package's owned
 paths, and the contract files.
+
+**A script that embeds a program must parse that program.** When an owned
+path is a shell script that writes a program to a file in a heredoc and
+executes it, the file is two languages in one path, and every shell-level
+check covers only one of them: `bash -n` parses the shell text and never
+opens the heredoc, and the script's own suite runs against stubs that never
+execute the embedded program. A whitespace-only defect inside the heredoc —
+two `except` clauses indented one level past their `try:` — is invisible to
+the whole mandated list, and at run time it collapses the program's exit
+channels: every invocation dies at parse time with exit 1, which the
+surrounding shell routes to whatever it routes failures to, so an unusable
+check reads as its finding shape ("cannot check" reported as "leak", in the
+recorded case). Both modes carry `VERIFY_EMBEDDED` for exactly that file
+shape; paste the idiom, never a paraphrase of it.
+
+**The embedded-program parse idiom** — extract the heredoc, strip the write
+line and the terminator, parse what remains:
+
+```sh
+sed -n "/cat >\"\$prog\" <<'PYEOF'/,/^PYEOF\$/p" "$script" | sed '1d;$d' \
+  | python3 -c "import ast,sys; ast.parse(sys.stdin.read())"
+```
+
+Adapt the first `sed`'s pattern to the script's real write line and marker
+(`"$script"` is the embedding script's path), and the final parser to the
+embedded language's parse-only equivalent — `ruby -c`, `perl -c` — never a
+command that runs the program: parsing is the check, running is the suite's
+job.
 
 ## test-maintainer
 
@@ -547,6 +585,14 @@ leaked local path.
   orchestrator makes — accept and update the package table, or reject and
   revert. A `TOUCHED_BEYOND` entry never excuses another package's owned
   paths or the contract files.
+- **`VERIFY_EMBEDDED` parses what `bash -n` cannot see.** An owned path
+  that is a shell script embedding a program in a heredoc — written to a
+  file and executed — is two languages in one file, and neither `bash -n`
+  nor a stub-backed suite ever parses the second one. When any owned path
+  has that shape, in either mode, the payload carries the
+  embedded-program parse idiom, one line per embedded program, and the
+  implementer runs it before reporting: a fix round touching the heredoc
+  cannot verify green on `bash -n` alone.
 - **A test-maintainer spawn names exactly one world: `FILE`.** The path is a
   copy in a scratch directory outside the repo, and the payload never names
   the repo path it came from — the maintainer must not be able to read the

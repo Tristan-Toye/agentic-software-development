@@ -403,7 +403,15 @@ blindness.
   including whatever environment setup it needed (an interpreter path, an
   activation step, an environment variable) in the payload text itself. A
   command that fails in your shell fails in theirs, once per agent. Its own new
-  code has no tests yet, and green is not its exit condition.
+  code has no tests yet, and green is not its exit condition. **When an owned
+  path is a shell script that embeds a program in a heredoc — written to a
+  file and executed — the payload also carries `VERIFY_EMBEDDED`: the
+  embedded-program parse idiom from `references/payloads.md`, one line per
+  embedded program, its `sed` adapted to the script's real write line and
+  marker.** Verify that line in your own shell first, exactly as
+  `TEST_COMMAND`: `bash -n` parses only the shell text, a stub-backed suite
+  never executes the embedded program, and the recorded fix round verified
+  green on both while the embedded program was syntactically dead.
 
 **Validate `TEST_PATHS` against the maps before every `unit-test-author`
 spawn.** Run `python3 scripts/check_permission_maps.py --agent
@@ -853,7 +861,10 @@ contract is yours.
   reviewer re-litigates a settled question.
 - Spawn **one** `implementer` in `MODE: fix` with the merged change requests. It
   works in `X` directly — the tests exist now, so blindness has done its job and
-  keeping them green is the point. Its `TOUCHED_BEYOND` section applies in fix
+  keeping them green is the point. `VERIFY_EMBEDDED` applies in fix mode
+  exactly as at the fan-out: a CR that touches an embedded program still gets
+  the extract-and-parse line in the payload — `bash -n` stayed green through
+  the recorded escape. Its `TOUCHED_BEYOND` section applies in fix
   mode exactly as at the merge (Phase 5): rule on every listed path, and two
   hard limits hold — never another package's owned paths, never the contract
   files.
