@@ -24,8 +24,8 @@ kinds of agent work at the same time without seeing each other's output:
               ┌──────────────────────┼──────────────────────┐
               │                      │                      │
      unit-test-author      integration-test-author      implementer × N
-     Write tool ONLY       reads the dossier            own worktree
-     sees the contract     sees stubs, never a body     never sees a test
+     reads the staging     reads the dossier            own worktree
+     area + tests only     sees stubs, never a body     never sees a test
               │                      │                      │
               └──────────── merge into the base ────────────┘
                                      │
@@ -39,9 +39,11 @@ kinds of agent work at the same time without seeing each other's output:
                         extract ADRs · open the PR
 ```
 
-**Blindness is structural, never a promise.** `unit-test-author` has exactly one
-tool — `Write` — so it cannot read an implementation even if it wanted to. Its
-payload is its entire world. `integration-test-author` finds only stubs on the
+**Blindness is structural, never a promise.** `unit-test-author` reads and
+writes inside a permission map that denies everything outside the staging
+area and the test families, so it cannot open an implementation even if it
+wanted to — the tool call is refused. Its payload plus that map are its
+entire world. `integration-test-author` finds only stubs on the
 base branch. Each `implementer` works in a worktree forked before any test
 exists. Nobody is asked to resist temptation.
 
@@ -64,7 +66,7 @@ whichever side is easier to change.
 | Agent | Tools | Why it exists |
 |---|---|---|
 | `implementer` | Read, Grep, Glob, Bash, Edit, Write | Fills bodies against the contract. Never changes a signature — returns `CONTRACT-CHANGE:` and stops. |
-| `unit-test-author` | **Write only** | A test written by someone who has seen the implementation re-derives the expected value the way the code does, and then it can never disagree with the code. |
+| `unit-test-author` | Read, Write, Edit — permission-scoped to `.agent-staging/` and the test families | A test written by someone who has seen the implementation re-derives the expected value the way the code does, and then it can never disagree with the code. |
 | `integration-test-author` | Read, Grep, Glob, Write | A flow test needs intent, so it reads the dossier. It still cannot read a body. |
 | `reviewer` | Read, Grep, Glob | Four lenses: `plan`, `style`, `architecture`, `performance`. No write tools at all, so it cannot change what it reviews. |
 
@@ -116,6 +118,7 @@ time and gets right.
 | `references/time-logging.md` | The Tempo contract: one session per run, orchestrator only. |
 | `skills/standards/` | The engineering standards. They bind generation and review symmetrically. |
 | `scripts/validate_pipeline.py` | Front matter, section set, **path disjointness**, contract shape, criterion falsifiability, anchors, ASD-STE100. `--selftest` checks the checker. |
+| `scripts/check_permission_maps.py` | Sub-agent permission maps: allow-list shape, read-to-edit symmetry, and pre-spawn `TEST_PATHS` validation. `--selftest` checks the checker. |
 
 ## Why the validator matters more than it looks
 
