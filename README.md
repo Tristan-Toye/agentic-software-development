@@ -93,7 +93,8 @@ every flag and keeps every judgement:
                                  #   build log. Kept after the build.
 docs/adr/                        # committed — ships with the PR
 ├── index.md                     # ID | status | title — the only file a
-│                                #   future agent scans
+│                                #   future agent scans. Derived; CI commits
+│                                #   it on the target branch, branches never
 └── NNNN-<slug>.md               # extracted by /work-on, selectively
 ```
 
@@ -131,8 +132,13 @@ silent.
 python3 scripts/validate_pipeline.py --dossier W-014
 python3 scripts/validate_pipeline.py --all
 python3 scripts/validate_pipeline.py --write-index
+python3 scripts/validate_pipeline.py --finalize-ids --base origin/development
 python3 scripts/validate_pipeline.py --selftest
 ```
+
+Branches never commit `docs/adr/index.md` (regenerate to validate, then
+`git restore`); `--finalize-ids`, run after the sync merge, renumbers the
+IDs a concurrent branch landed first.
 
 ## Gates
 

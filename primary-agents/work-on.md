@@ -886,16 +886,22 @@ surfaced.
 - Write `## Consequences` for the agent who will read it: state the constraint a
   future change must respect, not a summary of the work.
 - Mint IDs atomically and set `jira` to the ticket (never the dossier ID — the
-  dossier is local and the ADR is not). Then run
+  dossier is local and the ADR is not). A number minted here is provisional
+  until the Phase 9 sync: a concurrent branch may have taken the same number,
+  and `--finalize-ids` settles that. Then run
   `python3 /Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py` with no
   arguments, in `X`, and fix every DEFECT in what you just wrote —
   `--write-index` regenerates the index and checks nothing, and you wrote
   prose under the same language rules the plan is held to, with no reviewer
-  behind you. Only then regenerate the index with `--write-index` and record
-  the ADR IDs in the dossier's `adrs` front matter field.
-- **Commit the ADRs and the index on `X`**, with the Jira key prefix. They
-  ship inside the PR, so the humans who review the code review the decision
-  record with it.
+  behind you. Only then regenerate the index with `--write-index`, validate
+  once more, and record the ADR IDs in the dossier's `adrs` front matter
+  field.
+- **Commit the ADRs on `X` — never the index.** Commit them with the Jira key
+  prefix. Regenerate the index locally
+  to validate, then `git restore docs/adr/index.md` before committing: CI
+  owns the index on the target branch, so a committed index would collide
+  with every concurrent branch. The ADRs ship inside the PR, so the humans
+  who review the code review the decision record with it.
 
 ADRs live in `docs/adr/`, committed — they are the durable knowledge base,
 they travel with every clone, and they are the reason `/plan` checks
@@ -1008,16 +1014,36 @@ overview until its issue exists.
 
 1. **Sync the base last.** Inside `X`: `git fetch origin <target> && git merge
    origin/<target>`, where `<target>` is the branch the PR merges into — the
-   branch `baseline_commit` was taken from, usually the default branch. A clean
-   merge continues. **Conflicts** → show the user the conflicted files, resolve
-   them (through `implementer` for code, with the user for a judgement call),
-   and if the resolution touched the blast radius, **re-run the suite and the
-   three review lenses** before you go on. A conflict on `docs/adr/index.md`
-   is mechanical: regenerate it with `--write-index`. A conflict on an ADR
-   **ID** means a concurrent branch minted the same number: renumber yours,
-   regenerate the index, and update the dossier's `adrs` field.
+   branch `baseline_commit` was taken from, usually the default branch. Then
+   run the bookkeeping ritual — it is mechanical, never a judgement call:
+
+   ```bash
+   python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py" \
+     --finalize-ids --base origin/<target>
+   python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py"
+   git restore docs/adr/index.md
+   git commit --no-edit    # only when finalize renumbered something
+   ```
+
+   `--finalize-ids` settles the provisional ID space: it renumbers the ADRs
+   and LRNs this branch minted that a concurrent branch landed first, rewrites
+   them in the branch's own files and dossiers, and regenerates the index.
+   A conflict on `docs/adr/index.md` cannot happen — branches never commit
+   it (Phase 8a), CI owns it on the target. The LRN ledgers carry a
+   `merge=union` driver, so they merge clean locally and finalize renumbers
+   what the union left duplicated.
+
+   **Conflicts on code** → show the user the conflicted files, resolve them
+   (through `implementer` for code, with the user for a judgement call), and
+   if the resolution touched the blast radius, **re-run the suite and the
+   three review lenses** before you go on. **Bookkeeping-only merges re-run
+   nothing**: when the sync (merge plus finalize) touched only `docs/adr/**`
+   and `docs/learned-rules*.md`, the suite and review evidence already in the
+   dossier stands — run the validators, not the tests.
 2. **Run the acceptance criteria one final time** and keep the output — it goes
-   in the PR description and in the Jira comment.
+   in the PR description and in the Jira comment. A bookkeeping-only sync
+   does not invalidate the earlier run: if step 1 moved only bookkeeping,
+   the output you already kept stands and this step is a no-op.
 3. **Write the PR description** and show it to the user. Delegate the draft to
    `document-drafter` (`MODE: pr`, dossier excerpts verbatim, `SCRUB` carrying
    the dossier ID and every `.discovery/` path) — then grep the draft yourself
@@ -1058,10 +1084,30 @@ overview until its issue exists.
      --root .discovery
    ```
 
-   Tell the user the output path (`.discovery/analysis/open-work.html`). The
-   status table, counts, and dependency flows are always current after the
-   regeneration; the health-signal cards carry whatever the last
-   `/overview-dossiers` run mined. Regenerate the report; never hand-edit it.
+    Tell the user the output path (`.discovery/analysis/open-work.html`). The
+    status table, counts, and dependency flows are always current after the
+    regeneration; the health-signal cards carry whatever the last
+    `/overview-dossiers` run mined. Regenerate the report; never hand-edit it.
+
+   **When several PRs are open and the user merges one**, the remaining PR
+   branches are stale against the new target tip. Offer the refresh ritual
+   for each remaining branch (a fresh worktree checked out on it):
+
+   ```bash
+   git fetch origin && git merge origin/<target>
+   python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py" \
+     --finalize-ids --base origin/<target>
+   python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py"
+   git restore docs/adr/index.md
+   git commit --no-edit && git push    # only when finalize renumbered something
+   ```
+
+   The merge is local, so the union drivers apply; finalize renumbers only
+   what the landed branch's numbers displace; the PR button goes green
+   again. A conflict on code here is the real signal — resolve it through
+   `implementer` and re-run the suite if the blast radius moved, exactly as
+   in step 1; a bookkeeping-only refresh re-runs nothing.
+
  6. **Comment on the Jira ticket** one time: what changed, the review rounds, the
    test result, and the PR URL. Narrative only, no duration — Tempo holds the
    time. Transition the ticket only if the user confirms.
