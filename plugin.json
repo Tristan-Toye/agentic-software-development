@@ -1,8 +1,0 @@
-{
-  "name": "agentic-software-development",
-  "description": "A contract-first build pipeline: plan, fan out blind concurrent agents, arbitrate, review, extract ADRs",
-  "version": "1.3.0",
-  "author": {
-    "name": "Twipe Mobile Solutions"
-  }
-}

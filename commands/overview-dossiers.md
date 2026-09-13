@@ -16,9 +16,10 @@ Read-only toward pipeline state. No spawns; never write a dossier, an ADR, or
 HTML file (the one file this command writes — see "The HTML overview" below).
 
 `${PLUGIN_ROOT}` is this plugin's checkout — the directory holding
-`primary-agents/` and `references/`. Resolve it once and expand it in every
-path below; a payload always carries the expanded absolute path, never the
-variable.
+`primary-agents/` and `references/`. Under Claude Code it is the absolute path
+already substituted into `${CLAUDE_PLUGIN_ROOT}`; take it from there. Resolve
+it once and expand it in every path below; a payload always carries the
+expanded absolute path, never the variable.
 
 Read `${PLUGIN_ROOT}/references/formats.md` for the status lifecycle if
 you need it.
