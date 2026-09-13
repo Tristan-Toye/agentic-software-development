@@ -1665,6 +1665,51 @@ def selftest() -> int:
 
 
 # --------------------------------------------------------------------------
+# pre-fan-out obligations
+# --------------------------------------------------------------------------
+
+CONTRACT_REVIEW_RE = re.compile(
+    r"^\s*[-*]?\s*CONTRACT-REVIEW:\s*(spawned|skipped)\b", re.MULTILINE
+)
+
+
+def check_pre_fanout(path: Path) -> int:
+    """Check the obligations that must hold before /work-on Phase 4 fans out.
+
+    The contract review has no size gate: the orchestrator writes the contract
+    and derives the checklist, so a defect in either is invisible to it for the
+    same reason, on a small contract as much as a large one. Skipping stays
+    allowed; skipping SILENTLY does not, because a skip that leaves no trace is
+    indistinguishable from a step nobody remembered. Exactly one
+    ``CONTRACT-REVIEW: spawned ...`` or ``CONTRACT-REVIEW: skipped — <reason>``
+    line in ``## Build log`` satisfies it.
+
+    Returns 0 when every obligation is recorded, 1 otherwise.
+    """
+    text = path.read_text(encoding="utf-8")
+    body = text.split("## Build log", 1)
+    if len(body) != 2:
+        print(f"DEFECT  {path.name}: no '## Build log' section to check")
+        return 1
+
+    match = CONTRACT_REVIEW_RE.search(body[1])
+    if not match:
+        print(
+            f"DEFECT  {path.name}: no CONTRACT-REVIEW: line in ## Build log.\n"
+            "        The contract review runs on every build and has no size "
+            "gate.\n"
+            "        Record one of:\n"
+            "          CONTRACT-REVIEW: spawned <ref> — <N> lines, <N> DEFECT, "
+            "<N> AMBIGUITY\n"
+            "          CONTRACT-REVIEW: skipped — <reason>"
+        )
+        return 1
+
+    print(f"ok      {path.name}: contract review recorded ({match.group(1)})")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
 
@@ -1693,6 +1738,12 @@ def main() -> int:
         metavar="REF",
         help="the ref this branch syncs against, e.g. origin/development "
         "(used by --finalize-ids)",
+    )
+    ap.add_argument(
+        "--pre-fanout",
+        action="store_true",
+        help="check the pre-fan-out obligations for --dossier: the build log "
+        "must record a CONTRACT-REVIEW: line (spawned or skipped)",
     )
     ap.add_argument(
         "--selftest",
@@ -1729,6 +1780,11 @@ def main() -> int:
         if not targets_d:
             print(f"DEFECT  no dossier matches '{args.dossier}' in {dossier_dir}")
             return 1
+        if args.pre_fanout:
+            return check_pre_fanout(targets_d[0])
+    elif args.pre_fanout:
+        print("DEFECT  --pre-fanout requires --dossier <ID>")
+        return 1
     if args.adr:
         num = args.adr.replace("ADR-", "")
         targets_a = sorted(adr_dir.glob(f"{num}-*.md"))

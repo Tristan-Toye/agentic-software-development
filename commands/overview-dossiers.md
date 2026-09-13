@@ -15,7 +15,12 @@ Read-only toward pipeline state. No spawns; never write a dossier, an ADR, or
 `state`. You read front matter and report, then render the same overview as an
 HTML file (the one file this command writes — see "The HTML overview" below).
 
-Read `/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/formats.md` for the status lifecycle if
+`${PLUGIN_ROOT}` is this plugin's checkout — the directory holding
+`primary-agents/` and `references/`. Resolve it once and expand it in every
+path below; a payload always carries the expanded absolute path, never the
+variable.
+
+Read `${PLUGIN_ROOT}/references/formats.md` for the status lifecycle if
 you need it.
 
 ## What to read
@@ -105,7 +110,7 @@ same picture as a self-contained HTML dashboard:
 2. Run the generator:
 
    ```bash
-   python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/generate_open_work.py" \
+   python3 "${PLUGIN_ROOT}/scripts/generate_open_work.py" \
      --root .discovery [--signals <scratch>/signals.json]
    ```
 
@@ -137,11 +142,11 @@ part of a report run — suggest them, do not install them unasked:
 
 ```bash
 # a live page for as long as the command runs — Ctrl-C to stop
-python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/generate_open_work.py" \
+python3 "${PLUGIN_ROOT}/scripts/generate_open_work.py" \
   --root .discovery --serve --open
 
 # always on: git hooks plus a Claude Code PostToolUse hook
-python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/generate_open_work.py" \
+python3 "${PLUGIN_ROOT}/scripts/generate_open_work.py" \
   --root .discovery --install
 ```
 

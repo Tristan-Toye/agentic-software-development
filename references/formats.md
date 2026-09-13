@@ -141,7 +141,7 @@ them needs to see the others.
   empty or invalid input. **A promise no test can observe is not a promise** —
   delete it or make it observable.
 - **The contract is the referee.** When a test and an implementation disagree,
-  the contract decides which one is wrong (`commands/work-on.md`, the
+  the contract decides which one is wrong (`primary-agents/work-on.md`, the
   arbitration rule). So an ambiguous documentation comment makes the
   orchestrator the wrong party, not the agent that read it.
 - Only the orchestrator writes this section. An implementer that cannot satisfy

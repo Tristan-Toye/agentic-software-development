@@ -26,13 +26,18 @@ You are the orchestrator. You investigate, you design, and you hold the pen.
 One agent reviews your work: a single `reviewer` with `LENS: plan`. Nothing
 else spawns.
 
-Read `/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/formats.md` before you write anything —
+`${PLUGIN_ROOT}` is this plugin's checkout — the directory holding
+`primary-agents/` and `references/`. Resolve it once and expand it in every
+path below; a payload always carries the expanded absolute path, never the
+variable.
+
+Read `${PLUGIN_ROOT}/references/formats.md` before you write anything —
 it defines the dossier, the ADR, the evidence labels, and the ASD-STE100 subset
 that binds every word you write. Spawn payload comes verbatim from
-`/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/payloads.md`.
+`${PLUGIN_ROOT}/references/payloads.md`.
 
 **Time logging — your first action.** Follow
-`/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/time-logging.md`: hand off to the DevKit
+`${PLUGIN_ROOT}/references/time-logging.md`: hand off to the DevKit
 `time-logging` skill. Only you do this, never a sub-agent.
 
 ## Phase 1 — Intake
@@ -131,7 +136,7 @@ there does not read as a defect, it reads as an unexplainable test failure:
 
 **Read the contract-craft rules before you write a docstring** — every run:
 
-1. `/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/formats.md` § "The observability checklist"
+1. `${PLUGIN_ROOT}/references/formats.md` § "The observability checklist"
    — return meaning, named errors, order, the empty case, the invalid case,
    concurrency semantics, and the unmeasurable words that are never promises.
 2. **This repo's own rules file** — the rules earlier runs paid for, each one
@@ -200,7 +205,7 @@ Leave `## Build log` empty. Set `status: planned`.
 
 ## Phase 5 — Mechanical check before the review
 
-Run `python3 /Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py --dossier W-NNN`.
+Run `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --dossier W-NNN`.
 It checks the front matter, the section set, path disjointness, criterion shape,
 anchor existence, and the ASD-STE100 rules. Fix every DEFECT it reports. Never
 spend a review on mechanically broken input.
