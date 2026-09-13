@@ -120,6 +120,78 @@ Both file kinds use **ASD-STE100** (Simplified Technical English) — one term p
 concept, active voice, simple tenses, 25-word sentences. Prose an agent reads one
 time and gets right.
 
+## Two harnesses, one source
+
+The pipeline runs under opencode and under Claude Code. Every file stays where
+opencode expects it; Claude Code reaches the same files through the path fields
+in `.claude-plugin/plugin.json`.
+
+| Claude Code loads | From |
+|---|---|
+| commands | `commands/` and the generated `claude/commands/` |
+| agents | the generated `claude/agents/` |
+| skills | `skills/` |
+| marketplace | `.claude-plugin/marketplace.json` — the repo hosts itself |
+
+```
+/plugin marketplace add <path or git URL of this repo>
+/plugin install agentic-software-development@agentic-software-development
+```
+
+Two front matter keys cannot serve both harnesses. `model` wants
+`provider/model` in opencode and a Claude model name in Claude Code. Tool
+policy is a `permission:` map in opencode — per path, per command — and a
+whole-tool `tools:` list in Claude Code, which ignores `permission:` entirely.
+opencode also types `tools` as an object, so a Claude-style `tools: Read, Write`
+string breaks its schema.
+
+So there is **one source and one derived artifact, never two maintained
+copies**. `sub-agents/*.md` and `primary-agents/*.md` keep their opencode front
+matter and add one `claude:` block that states what Claude Code needs:
+
+```yaml
+claude:
+  model: haiku
+  effort: low
+  tools: Write
+```
+
+`scripts/build_claude_plugin.py` writes `claude/agents/` and
+`claude/commands/` from those sources, copies each body byte-identical, and
+regenerates the manifest's `agents` list. **Never edit a file under `claude/`.**
+The next build overwrites it.
+
+```
+python3 scripts/build_claude_plugin.py            # write claude/
+python3 scripts/build_claude_plugin.py --check    # exit 1 when claude/ is stale
+python3 scripts/build_claude_plugin.py --selftest
+```
+
+**Drift is checked, not documented.** `--check` regenerates into memory and
+fails when a committed file does not match its source. Run it with the other
+validators before any plugin change lands, and after Phase 8b graduates a rule.
+
+### What Claude Code cannot express
+
+Claude Code grants or withholds a whole tool. Agent front matter has no
+per-path and no per-command scope. The generator makes that gap loud instead of
+silent:
+
+- A permission entry that denies `*` is a blindness boundary. The generator
+  **refuses** to grant that tool. `unit-test-author` gets `tools: Write` and
+  nothing else — the same blindness, by a different mechanism.
+- An agent that still needs the tool records the widening under
+  `claude.widen.<key>`, with a reason. The generator copies the reason into the
+  generated file and into the agent's own prompt, so nothing runs wider than
+  its opencode twin without saying so.
+- A narrowing inside an otherwise-allowed tool — `implementer` denying
+  `git push` — cannot survive. The generated file carries a comment that names
+  the loss. Put a `Bash(git push *)` deny rule in the project `settings.json`
+  when the repo needs that guarantee back.
+
+Every generated agent ends with a footer that names its real tool list, so body
+prose about permission maps cannot mislead the agent that reads it.
+
 ## Reference
 
 | File | Holds |
@@ -130,6 +202,7 @@ time and gets right.
 | `skills/standards/` | The engineering standards. They bind generation and review symmetrically. |
 | `scripts/validate_pipeline.py` | Front matter, section set, **path disjointness**, contract shape, criterion falsifiability, anchors, ASD-STE100. `--selftest` checks the checker. |
 | `scripts/check_permission_maps.py` | Sub-agent permission maps: allow-list shape, read-to-edit symmetry, and pre-spawn `TEST_PATHS` validation. `--selftest` checks the checker. |
+| `scripts/build_claude_plugin.py` | The Claude Code surface, derived from the opencode sources. `--check` fails on drift; `--selftest` checks the checker. |
 
 ## Why the validator matters more than it looks
 

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "agentic-software-development",
+  "description": "A contract-first build pipeline: plan, fan out blind concurrent agents, arbitrate, review, extract ADRs",
+  "version": "1.3.0",
+  "author": {
+    "name": "Twipe Mobile Solutions"
+  },
+  "commands": [
+    "./commands/",
+    "./claude/commands/"
+  ],
+  "agents": [
+    "./claude/agents/blast-radius-scout.md",
+    "./claude/agents/contract-reviewer.md",
+    "./claude/agents/document-drafter.md",
+    "./claude/agents/implementer.md",
+    "./claude/agents/integration-test-author.md",
+    "./claude/agents/reviewer.md",
+    "./claude/agents/stub-materialiser.md",
+    "./claude/agents/unit-test-author.md"
+  ],
+  "skills": [
+    "./skills/"
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "agentic-software-development",
+  "description": "The contract-first build pipeline, as a single self-hosted plugin",
+  "owner": {
+    "name": "Twipe Mobile Solutions"
+  },
+  "plugins": [
+    {
+      "name": "agentic-software-development",
+      "source": "./",
+      "description": "A contract-first build pipeline: plan, fan out blind concurrent agents, arbitrate, review, extract ADRs"
+    }
+  ]
+}
