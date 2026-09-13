@@ -113,6 +113,9 @@ else is a dead letter, because the tool call is refused.
   project's own language.
 - `FIXTURES` — how to construct the subject under test, and the fakes or stubs
   available to you.
+- `SHARED_IDIOM` — present only when a test must construct or invoke a
+  concept the payload names as shared: the one helper, type or shape to use
+  for it, verbatim. Use it as written; never invent an alternative.
 - `CONTRACT_HASH` — a version stamp of `CONTRACT`, pasted bare. It is not
   instruction; paste nothing from it into your tests or your report.
 

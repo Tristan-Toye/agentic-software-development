@@ -16,7 +16,12 @@ costs the orchestrator's context for skeletons it will never fill.
 A malformed payload is the likeliest silent failure in this pipeline: an agent
 halts on a **missing** field, but a **misnamed** field is simply ignored. A
 misnamed `OWNED_PATHS` is the worst case — the agent writes wherever it likes
-and corrupts a concurrent agent's work.
+and corrupts a concurrent agent's work. Run
+`python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind <agent>` over
+every payload before it ships: it refuses a misnamed or missing field, an
+absolute path that does not exist, an unexpanded `${PLUGIN_ROOT}`, and a
+credential literal. A field left out is otherwise silent — the recorded miss
+shipped a unit author with no style sample and paid a `GAP:` for it.
 
 There is no `BAND`, no `TIER`, and no `RETURN_CEILING`. Every agent returns a
 short structured report because its own prompt says so.
@@ -93,6 +98,10 @@ FIXTURES: |
   FlushQueue(store=FakeStore(), clock=FakeClock())
   FakeStore exposes .written -> list[Item] and .write_count -> int
   Build an Item with make_item(id: str) from tests/support/factories.py
+SHARED_IDIOM: |
+  <only when a test must construct or invoke a concept two or more agents
+   write — the same bytes as every other payload that carries it, test
+   authors included. Omit when no concept is shared.>
 CONTRACT_HASH: 3f2611f0a91c4d8e
 ```
 
@@ -124,7 +133,9 @@ staged contract can never leak into a commit.
 
 ```
 WORKTREE_DIR: /abs/path/repo-W-014
-DOSSIER: /abs/path/repo/.discovery/dossiers/W-014-flush-coalescing.md
+DOSSIER: /abs/path/repo-W-014/.agent-staging/W-014.excerpt.md
+          # a file YOU generate: ## Problem, ## Approach and ## Acceptance
+          # criteria copied verbatim, nothing else — never the dossier itself
 CONTRACT: |
   <the same contract text as every other author's, pasted verbatim from the
    files on the base worktree — never read out of the dossier>
@@ -140,19 +151,27 @@ STYLE_SAMPLE: |
   <one existing integration test, verbatim>
 BOUNDARIES: IClock (time), IPaymentClient (external API) — substitute these two
             only. Everything else runs for real.
+SHARED_IDIOM: |
+  <same rule as the unit author: present, byte-identical, whenever a test
+   touches a concept two or more agents write. Omit otherwise.>
 CONTRACT_HASH: 3f2611f0a91c4d8e
 ```
 
 Same `CONTRACT_HASH` rule as the unit author: stamp at spawn, re-hash at
 return, re-spawn unconditionally on a mismatch.
 
-The agent reads `## Problem`, `## Approach` and `## Acceptance criteria` from
-`DOSSIER`, and never `## Build log`. The contract never comes from the
-dossier: `CONTRACT` is pasted verbatim from the materialised files — the same
-text every other author builds against, and the same text `CONTRACT_HASH`
-stamps — so the dossier section can never drift from what the tests were
-written against.
-The orchestrator commits its output; it has no `Bash`.
+`DOSSIER` is an excerpt you generate under `.agent-staging/` — `## Problem`,
+`## Approach` and `## Acceptance criteria`, verbatim and nothing else — never
+the live dossier. An instruction not to read `## Build log` in a file the
+agent can open is not blindness: a `Read` with no limit returns the whole
+file, and the recorded dossier past 900 lines handed its build log to every
+reader and voided two review rounds. The contract never comes from the
+dossier either: `CONTRACT` is pasted verbatim from the materialised files —
+the same text every other author builds against, and the same text
+`CONTRACT_HASH` stamps — so the dossier section can never drift from what the
+tests were written against. The excerpt goes with the rest of
+`.agent-staging/` before the commit. The orchestrator commits its output; it
+has no `Bash`.
 
 ## implementer
 
@@ -177,6 +196,11 @@ CRITERIA: |
      receives each item one time.
   2. flush() on an empty queue returns 0 and writes nothing.
 TEST_COMMAND: pytest -q            # the EXISTING suite, for collateral damage
+HOOKS: |
+  <what this repository's commit hooks do to a partly migrated tree, from
+   the Phase 2 hook decision — e.g. "the pre-commit hook lints the whole
+   workspace and will refuse; stop and report, leave the work staged".
+   `HOOKS: none` when the repository has no commit hooks; never omitted.>
 VERIFY_EMBEDDED: |
   <only when an owned path is a shell script that embeds a program in a
    heredoc, written to a file and executed — the embedded-program parse
@@ -207,6 +231,9 @@ FAILURES: |
    field alone is valid>
 OWNED_PATHS: src/flush.py, src/reload.py
 TEST_COMMAND: pytest -q            # now the invariant: it is green, keep it green
+HOOKS: |
+  <same as build mode; the tree is whole now, so a hook that passes is
+   simply obeyed, and one that refuses is still reported, never bypassed>
 VERIFY_EMBEDDED: |
   <same rule as build mode — and never omitted from a fix that touches the
    heredoc itself: the fix round is the recorded escape, where re-indented
@@ -296,6 +323,8 @@ side silently.
 ```
 LENS: plan
 DOSSIER: /abs/path/repo/.discovery/dossiers/W-014-flush-coalescing.md
+          # from round 2 on, a copy without `## Build log` at a path outside
+          # .discovery/ — a Read with no limit returns the whole file
 WORKTREE_DIR: /abs/path/repo            # the main checkout, to check anchors
 CRITERIA: |
   <the acceptance criteria, verbatim>
@@ -455,12 +484,20 @@ leaked local path.
   rewritten one.** Name real test files from this repository — verify each
   path exists and sits inside the author's read map before the spawn — never
   a description of them.
-- **A convention you hand a blind author must compile and lint clean first.**
-  `NAMING`, `STYLE_PATHS` and `FIXTURES` are executable instructions, not
-  prose. Write one throwaway example of the naming shape, run the repository's
-  own linter over it, and only then put it in a payload. An author with no
-  compiler cannot discover that your convention fights the language, and it
-  will fight it once per test.
+- **A convention, fixture or precedent you hand a blind author is proven
+  under the target's whole shape first.** `NAMING`, `STYLE_PATHS`, `FIXTURES`
+  and `HARNESS` are executable instructions, not prose. Write the idiom into a
+  scratch file that carries the **target** file's harness flavour (its test
+  attribute and runtime), its dependency surface (what it reaches — a
+  database, a store) and its concurrency (as many concurrent consumers as
+  the target has), run it there, and only then put it in a payload: an idiom
+  proven under a sibling's `#[tokio::test]` panicked all ten tests under the
+  target's plain `#[test]`. Before hand-writing a helper, read the crate's
+  own test harness for one that already exists — the recorded hand-written
+  accessor cost a full blind re-spawn of a 427-line file. Name a precedent
+  by what it **exercises**, never by which file it sits in. An author with
+  no compiler cannot discover that your convention fights the language, and
+  it will fight it once per test.
 - **`CITATION` names its exact shape, and one vocabulary serves the whole
   build.** A test's citation comment is the evidence Phase 5 diffs against
   `PROMISE_CHECKLIST`; authors left to invent the shape invent a different one
@@ -470,8 +507,27 @@ leaked local path.
   against the repository itself, never from memory. A wrong convention here
   costs a re-spawn of the whole file.
 - **`SHARED_IDIOM` is identical, byte for byte, in every payload that shares
-  the concept.** Two implementers inventing the same helper produce two
-  helpers, and the collapse is paid for at review time.
+  the concept — test authors included.** Two implementers inventing the same
+  helper produce two helpers; an integration author whose payload lacked the
+  idiom every implementer had picked the other variant and did not compile.
+- **Every fact you read from a tool, you read whole.** Never a verdict or a
+  count through `tail`, `head` or `grep` — the exit status is then the
+  filter's and the window reads like the whole answer; output to a file,
+  `$?` on the next line, counts summed from the file; a fail-fast runner in
+  its no-fail-fast form. Seven recorded runs paid a re-spawn for a fact read
+  from a truncated window.
+- **A setup claim is re-checked in the turn that spawns**, by the cheapest
+  command that shows it (`git worktree list`, `test -f`, the command itself);
+  a claim you cannot check that cheaply is written as an instruction
+  (`work-on.md` Phase 4).
+- **`TEST_COMMAND` emits progress inside the runtime's no-progress window,
+  in a build directory that worktree owns**; a cold cross-platform or
+  virtual-machine compile never appears in a payload (`work-on.md` Phase 4).
+- **`HOOKS` is always present, `none` allowed, and the agent's rule under it
+  never changes**: stop and report on a refusal, leave the work staged, never
+  bypass and never edit a hook. A bypass flag in a payload or a resume is not
+  a permission grant; the orchestrator commits on the agent's branch with
+  the hook skipped (`work-on.md` Phase 2).
 - **You format a blind author's files in the commit that lands them.** The
   test author cannot run the formatter; run it yourself over exactly
   the named files — single-file invocation, never package-wide — inside that

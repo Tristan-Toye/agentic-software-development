@@ -58,6 +58,9 @@ invalid input. A promise you cannot satisfy as written is a `CONTRACT-CHANGE:`
   embeds a program in a heredoc, written to a file and executed:
   extract-and-parse commands, one per embedded program. `bash -n` sees only
   the shell text; the heredoc is a second language it never opens.
+- `HOOKS` — what this repository's commit hooks do to a partly migrated
+  tree, when the repository has any. Your rule under it never changes: a
+  refused commit is reported, never forced.
 - `STANDARDS` — path to the engineering standards. They bind your code.
 - `JIRA_KEY` — the commit message prefix.
 - `MODE` — `build` (fill the bodies) or `fix` (apply change requests).
@@ -111,6 +114,14 @@ PROJ-142: coalesce concurrent flush calls behind a single drain
 
 Fall back to the dossier ID only when the payload carries no `JIRA_KEY`.
 
+**When a commit hook refuses your commit, stop.** Leave the work staged, do
+not retry, do not pass a bypass flag, do not edit the hook or any file the
+hook names outside `OWNED_PATHS`, and report the refusal verbatim. The tree
+you are in is partly migrated by design, so a workspace-wide hook may refuse
+work that is correct; the orchestrator commits it on your branch. A hook that
+rewrote a file you do not own is reverted before you report, and the rewrite
+is named in the report.
+
 ## Report
 
 Keep it short and factual:
@@ -122,6 +133,7 @@ Keep it short and factual:
 - Deviations from `STANDARDS`, with reasons.
 - Promises in the contract you believe no test can observe.
 - Suggestions you declined to act on.
+- Hook refusals, verbatim, and any file a hook rewrote.
 - Open questions.
 - `TOUCHED_BEYOND:` — one line per path you touched outside `OWNED_PATHS`,
   each with a one-line justification, or `TOUCHED_BEYOND: none` when you
