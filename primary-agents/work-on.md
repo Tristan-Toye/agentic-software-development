@@ -394,6 +394,34 @@ returns — never from `X-head`, where the dependency's code does not exist.
 That branch carries no test either, so the fork point changes nothing about
 blindness.
 
+**Name the wave in a table first, then count the spawns you actually
+issued.** One row per agent — kind, package, worktree — written into
+`## Build log` before the fan-out message, and a count of the `Agent` calls
+against that table before you read a single report. A provider limit can cut
+a multi-spawn message *between* spawns, so a wave that planned eight agents
+issues seven and nothing announces the eighth is missing; the gap surfaces
+phases later as a criterion nobody's tests cover. The count is two seconds
+and it is the only thing that catches it. A difference is a spawn defect
+logged in `## Build log`, never something the next message explains away.
+
+**Under rate pressure, narrow the wave — never re-send the same batch.**
+Concurrency is the default because it is free when the quota allows it. Once
+a provider limit has killed agents in a wave, re-sending that wave buys the
+same death: the limit is a property of the batch, not of any one payload.
+Degrade instead, in this order, and log which step you are on:
+
+1. **Wait out the stated reset** when the limit names one — a wave sent
+   into a closed window is a wave that dies whole.
+2. **Halve the wave.** Two batches that land beat one batch that dies.
+3. **Serialise the kind that is cheapest to lose.** Reviewers hold no
+   write state, so a lens retried alone costs only its own tokens; an
+   implementer mid-write costs a revert as well.
+
+The order matters because the loss is not uniform. A killed reviewer wastes
+its generation and nothing else. A killed implementer or test author may
+have left a partial file, so every retry under pressure pays the tree-diff
+above before anything is re-spawned.
+
 - `unit-test-author` × **one per contract surface** — the contract staged as
   files under `.agent-staging/` inside `X` (hash the staged bytes) or pasted
   verbatim, its slice of `PROMISE_CHECKLIST` (Phase 3), its owned test paths
@@ -492,16 +520,40 @@ transcript **once**, which carries the finished reasoning and lands the
 file. A repeated death at the same boundary indicts the payload, not the
 transport: split it.
 
-**An empty report is never a verdict.** After every test-author spawn, and
-before you read anything into its report, check mechanically that the
-artifact exists: `test -f` each of its `TEST_PATHS` (or read
-`git status --porcelain` in `X`). An empty report **with no file at any of
-its paths** is a retryable infrastructure failure — the runtime's stream
-timeout races a long generation and the loss is silent by construction — not
-a judgement on the contract or the payload. Retry the spawn once, immediately
-and unchanged; a second empty return is surfaced to the user as an
-infrastructure problem. Never classify an empty-artifact return as a `GAP:`,
-a vacuous test, or a weak oracle, and never let one pass as success.
+**A report is never the evidence — the tree is. Diff the tree after EVERY
+spawn outcome, not only after the successes.** Before you read a single
+word of any agent's report, look at what is on disk: `test -f` each of its
+declared paths, and read `git status --porcelain` in its worktree. This
+applies to every agent kind and every outcome — returned, empty, errored,
+killed by a provider limit.
+
+The reason is the expensive one: **a spawn that reports failure has very
+often already done the work.** An agent dies at its reporting step with the
+file complete on disk; a fix agent dies after folding two of four cases; a
+stub placer dies after landing every file. Re-spawning on the strength of
+the failure message pays the whole generation again for work you already
+own, and worse, a fresh instance can now collide with a file its predecessor
+half-wrote. Recover by **looking**, never by assuming, and the three states
+are easy to tell apart:
+
+| What the tree shows | What it means | What you do |
+|---|---|---|
+| Files complete and coherent | the agent finished and died reporting | keep the work, verify it against the payload as if it had reported, log the recovery |
+| Files partial or half-written | the agent died mid-write | revert those paths to a clean base, then re-spawn — a fresh instance must not inherit a fragment |
+| Nothing written at any path | the work never happened | retry the spawn once, immediately and unchanged |
+
+An empty report **with no file at any of its paths** is a retryable
+infrastructure failure, not a judgement on the contract or the payload — the
+runtime's stream timeout races a long generation and the loss is silent by
+construction. A second empty return goes to the user as an infrastructure
+problem. Never classify an empty-artifact return as a `GAP:`, a vacuous
+test, or a weak oracle, and never let one pass as success.
+
+**Prefer a resume over a re-spawn whenever the transport failed and the work
+did not.** The agent's transcript carries its finished reasoning, so a
+resume lands the remaining work instead of regenerating all of it. A resume
+message is a payload like any other, and every payload rule binds it — it is
+not a place to be terse about what changed.
 
 **Handle two returns immediately, never silently:**
 
@@ -1299,53 +1351,50 @@ overview until its issue exists.
 
 ## Invariants
 
-- **You own the contract.** You write it, you materialise it, you referee with
-  it, and no agent changes it. An implementer that needs a different signature
-  returns `CONTRACT-CHANGE:` and stops.
-- **You write the docstrings, so you read the docstring rules** — the
-  observability checklist and this repo's rules file (Phase 2 names both),
-  every run, before Phase 2's first documentation comment. Phase 8b writes
-  that file; Phase 2 and `/plan` Phase 4 are the only readers, and a loop
-  with no reader is a log line pretending to be a lesson.
-- **Blindness is structural, and informational where a tool set cannot reach**
-  (mechanics: Phase 4). The unit author's permission map denies `read` and
-  `edit` everywhere outside `.agent-staging/` and the test families — the
-  implementation, the dossier, and the pipeline documents are unreachable by
-  tool refusal, and its exact-path ownership is checked mechanically at
-  commit time. The integration author sees stubs and has no `Bash`. The
-  implementer's worktree has no tests, because the tests stay uncommitted
-  until Phase 5. Never hand an agent something its blindness depends on not
+The rule is here; the phase that names it carries the why. A disagreement
+between this list and a phase is a defect in this list.
+
+- **You own the contract.** You write it, materialise it, and referee with it;
+  no agent changes it. An implementer needing a different signature returns
+  `CONTRACT-CHANGE:` and stops. (Phase 2, Phase 6)
+- **You write the docstrings, so you read the docstring rules first** — the
+  observability checklist and this repo's rules file, every run, before the
+  first documentation comment. Phase 8b writes that file and Phase 2 reads
+  it; a loop with no reader is a log line pretending to be a lesson.
+- **Blindness is structural, and informational where a tool set cannot
+  reach.** The unit author's `read` and `edit` maps deny everything outside
+  `.agent-staging/` and the test families, so the implementation, the dossier
+  and the pipeline documents are refused rather than discouraged; the
+  integration author sees stubs and has no `Bash`; the implementer's worktree
+  has no tests. Never hand an agent something its blindness depends on not
   having, never rely on an instruction where an absence will do, and never
-  widen a permission map to work around a problem.
-- **Owned paths are disjoint.** Checked mechanically before the fan-out. A merge
-  conflict between two packages is a defect in the package table, and it gets
-  logged and fixed there. Every implementer report ends with a
-  `TOUCHED_BEYOND` section; a path outside `OWNED_PATHS` it did not list is an
-  implementer defect, and two paths are never accepted however well justified:
-  another package's owned paths and the contract files.
+  widen a permission map to work around a problem. (Phase 4)
+- **Owned paths are disjoint**, checked mechanically before the fan-out. A
+  conflict between two packages is a defect in the package table. Every
+  implementer report ends with `TOUCHED_BEYOND`; a path outside `OWNED_PATHS`
+  it did not list is an implementer defect, and two are never accepted
+  however justified: another package's owned paths, and the contract files.
+  (Phase 3, Phase 5)
 - **The contract decides every test-versus-implementation dispute**, by the
-  five-row table in Phase 6. The row-4 boundary is mechanical
-  (`check_harness_edit.py` — exit 0 is harness, exit 1 is an assertion, exit 2
-  is unknown and ruled conservatively), and row 5 is never ruled from the
-  shape of the error: a failure is upstream only once it reproduces on the
-  pristine merge-base. Never edit a test yourself: you have read the
-  implementation, so you are the wrong party. Every CR on a test file is its
-  author's work, cosmetic ones included.
+  five-row table in Phase 6. Row 4's boundary is mechanical
+  (`check_harness_edit.py`: exit 0 harness, exit 1 assertion, exit 2 unknown
+  and ruled conservatively); row 5 is never ruled from the shape of the error,
+  only from a reproduction on the pristine merge-base. Never edit a test
+  yourself — you have read the implementation, so you are the wrong party, and
+  every CR on a test file is its author's work, cosmetic ones included.
 - **The checks check the author.** You write the contract, derive the
-  checklist, and arbitrate the failures, so each is verified by a pass that
-  did not come from the same place: `contract-reviewer` before the fan-out
-  derives its own checklist from the stubs alone (every disagreement is a
-  contract defect), and the mutation check after green turns each checklist
-  line into a fault the suite must catch (every survivor is a weak oracle
-  routed like a `GAP:`). A test author's world is stamped (`CONTRACT_HASH`)
-  at spawn; a contract that changed underneath it invalidates it
-  mechanically, on the hash, without judgment.
+  checklist and arbitrate the failures, so each is verified by a pass that did
+  not come from the same place: `contract-reviewer` on the stubs alone before
+  the fan-out, the mutation check on the checklist after green (a survivor is
+  a weak oracle, routed like a `GAP:`). A test author's world is stamped with
+  `CONTRACT_HASH` at spawn, and a contract that changed underneath it is
+  invalidated on the hash, without judgment. (Phase 3, Phase 6)
 - **The green suite is the invariant during review.** Every change request is
-  behaviour-preserving under it. A red test after a fix means the fix was wrong,
-  never that the test was.
-- **Reviewers reply; you write.** They have no write tools. Each change request
-  becomes one `## Build log` ledger line; the full document travels only in the
-  fix implementer's payload, byte-for-byte.
+  behaviour-preserving under it; a red test after a fix means the fix was
+  wrong, never that the test was. (Phase 7)
+- **Reviewers reply; you write.** They have no write tools. Each change
+  request becomes one `## Build log` ledger line; the full document travels
+  only in the fix implementer's payload, byte-for-byte.
 - **An agent resumes from its own transcript, never from the file on disk.**
   If you edited a file an agent owns — a harness fix at Phase 6, a lint
   attribute, a missing import — never describe that file's current content
