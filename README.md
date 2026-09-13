@@ -70,7 +70,7 @@ whichever side is easier to change.
 | `integration-test-author` | Read, Grep, Glob, Write | A flow test needs intent, so it reads the dossier. It still cannot read a body. |
 | `reviewer` | Read, Grep, Glob | Four lenses: `plan`, `style`, `architecture`, `performance`. No write tools at all, so it cannot change what it reviews. |
 
-Five **support agents** (flash, size-gated) carry mechanical work off the
+Three **support agents** (flash, size-gated) carry mechanical work off the
 orchestrator's context. Each returns a guidance doc — pointers, verbatim
 quotes, neutral flags — and never a verdict; the orchestrator investigates
 every flag and keeps every judgement:
@@ -78,10 +78,20 @@ every flag and keeps every judgement:
 | Agent | Tools | Carries |
 |---|---|---|
 | `stub-materialiser` | Read, Grep, Glob, Bash, Write | The contract verbatim into compiling stubs, past four members. |
-| `coverage-auditor` | Read, Grep, Glob | One index line per checklist line, assertions quoted, past three test files. |
-| `arbitration-clerk` | Read, Grep, Glob | A fixed-field case file per failure, past three failures. |
 | `blast-radius-scout` | Read, Grep, Glob, Bash | The review scope as a location list, past five changed files. |
 | `document-drafter` | Read, Grep, Glob, Write | ADR and PR drafts from decisions already made, self-scrubbed. |
+
+One **independent checker** runs on every build, with no size gate:
+
+| Agent | Tools | Carries |
+|---|---|---|
+| `contract-reviewer` | Read, Glob | Its **own** promise checklist, derived from the materialised stubs alone. Every disagreement with the orchestrator's is a contract defect caught before the fan-out. |
+
+Two checks that were once agents are now the orchestrator's own passes: the
+**coverage index** (one line per checklist line, assertions quoted) and the
+**mutation check** (one mutant per checklist line on the primary surface).
+Both were delegated in fewer than one build in five, and the orchestrator ran
+them itself in every other — the spawn was the unused path, never the check.
 
 ## The files
 

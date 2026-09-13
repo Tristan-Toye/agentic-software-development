@@ -1,10 +1,17 @@
 # Spawn payloads — one skeleton per agent
 
-Four agents write code: three build agents and one test maintainer. Five
-flash support agents carry mechanical work off the orchestrator's context.
-Two independent checkers — `contract-reviewer` before the fan-out,
-`mutation-tester` after the suite goes green — verify what the orchestrator
-cannot verify alone. Copy the skeleton, fill every line, delete nothing.
+Three build agents write code. Three support agents —
+`stub-materialiser`, `blast-radius-scout`, `document-drafter` — carry
+mechanical work off the orchestrator's context. One independent checker,
+`contract-reviewer`, reviews the materialised contract before the fan-out
+and derives its own checklist from the stubs alone. Copy the skeleton, fill
+every line, delete nothing.
+
+**Load only the skeletons the phase you are in spawns.** Phase 2 needs
+`stub-materialiser`; Phase 3 needs `contract-reviewer`; Phase 4 needs the
+three build agents; Phase 7 needs `reviewer` and `implementer MODE: fix`;
+Phase 8 and 9 need `document-drafter`. Reading the whole file every run
+costs the orchestrator's context for skeletons it will never fill.
 
 A malformed payload is the likeliest silent failure in this pipeline: an agent
 halts on a **missing** field, but a **misnamed** field is simply ignored. A
@@ -37,7 +44,7 @@ reasons, and the third is the one that matters:
    somewhere, and that a branch is where to look.
 
 State the rule (`never write a test`, `never change a signature`) and stop. The
-mechanism lives in `commands/work-on.md`, which only the orchestrator reads.
+mechanism lives in `primary-agents/work-on.md`, which only the orchestrator reads.
 Blindness that has to be explained to stay intact is not blindness.
 
 ---
@@ -176,7 +183,7 @@ VERIFY_EMBEDDED: |
    idiom below, one line per embedded program, its sed adapted to the
    script's real write line and marker. Omit when no owned path has that
    shape.>
-STANDARDS: /Users/tristan.toye/Documents/personal/repos/agentic-software-development/skills/standards/engineering-standards.md
+STANDARDS: ${PLUGIN_ROOT}/skills/standards/engineering-standards.md
 JIRA_KEY: PROJ-142
 # the report must end with a TOUCHED_BEYOND section (see the field rules)
 ```
@@ -204,7 +211,7 @@ VERIFY_EMBEDDED: |
   <same rule as build mode — and never omitted from a fix that touches the
    heredoc itself: the fix round is the recorded escape, where re-indented
    except clauses passed bash -n and killed every invocation at parse time>
-STANDARDS: /Users/tristan.toye/Documents/personal/repos/agentic-software-development/skills/standards/engineering-standards.md
+STANDARDS: ${PLUGIN_ROOT}/skills/standards/engineering-standards.md
 JIRA_KEY: PROJ-142
 ```
 
@@ -231,14 +238,12 @@ path is a shell script that writes a program to a file in a heredoc and
 executes it, the file is two languages in one path, and every shell-level
 check covers only one of them: `bash -n` parses the shell text and never
 opens the heredoc, and the script's own suite runs against stubs that never
-execute the embedded program. A whitespace-only defect inside the heredoc —
-two `except` clauses indented one level past their `try:` — is invisible to
-the whole mandated list, and at run time it collapses the program's exit
-channels: every invocation dies at parse time with exit 1, which the
-surrounding shell routes to whatever it routes failures to, so an unusable
-check reads as its finding shape ("cannot check" reported as "leak", in the
-recorded case). Both modes carry `VERIFY_EMBEDDED` for exactly that file
-shape; paste the idiom, never a paraphrase of it.
+execute the embedded program. So a whitespace-only defect inside the heredoc
+passes every mandated check and still collapses the program's exit channels
+at run time — every invocation dies at parse time, and the surrounding shell
+reports that as whatever it reports failures as, which means an unusable
+check reads as a real finding. Both modes carry `VERIFY_EMBEDDED` for
+exactly that file shape; paste the idiom, never a paraphrase of it.
 
 **The embedded-program parse idiom** — extract the heredoc, strip the write
 line and the terminator, parse what remains:
@@ -254,40 +259,14 @@ embedded language's parse-only equivalent — `ruby -c`, `perl -c` — never a
 command that runs the program: parsing is the check, running is the suite's
 job.
 
-## test-maintainer
+## The independent checker
 
-For a review change request against a unit-test file whose fix stays outside
-the assertions — a rename, a citation comment, an import, a doc comment. The
-orchestrator copies the file to a scratch directory **outside the repo** (an
-OS temp dir), points the maintainer at the copy, and copies the result back
-only when `scripts/check_harness_edit.py --diff` exits 0 against the
-original. One spawn per file, per review round.
-
-```
-FILE: /var/folders/.../T/opencode/test_flush_queue.py   # the copy — its
-      # entire world; never name the repo path it came from
-CRS: |
-  <the non-assertion change requests for this file, verbatim>
-CITATION: |
-  // promise: flush/return-meaning
-  <the citation shape, when a CR is about citation comments>
-```
-
-The maintainer's world is exactly `FILE` plus `CRS` — informational
-blindness, the same mechanism that keeps the implementer blind. An
-assertion-touching or restructuring CR is not maintainer work: it is
-authorship, and routes to `unit-test-author` with the CR folded into the
-payload — the author reads the current file at `TEST_PATHS` itself (it sits
-inside the author's read map) and edits it in place; no delete, no pasted
-base material.
-
-## Independent checkers
-
-Two agents close loops the orchestrator cannot close alone. The
+One agent closes a loop the orchestrator cannot close alone: the
 contract-reviewer derives its own promise checklist from the materialised
 stubs, so a thin contract is caught before the fan-out instead of at
-arbitration. The mutation-tester turns `PROMISE_CHECKLIST` into mutants, so
-a weak oracle is caught after the build instead of in production.
+arbitration. The other half of that pair — turning `PROMISE_CHECKLIST` into
+mutants so a weak oracle is caught after the build — is the orchestrator's
+own Phase 6 pass, not a spawn.
 
 ### contract-reviewer
 
@@ -310,34 +289,6 @@ defect caught pre-fan-out. An `AMBIGUITY:` line carries both readings
 verbatim — take the two readings to the user as one question, never pick a
 side silently.
 
-### mutation-tester
-
-Spawned when the suite first goes green, on a throwaway worktree the
-orchestrator creates first — it never branches. It runs while the review
-lenses work.
-
-```
-WORKTREE_DIR: /abs/path/repo-W-014-MUT   # pre-created throwaway worktree
-BASELINE: 3f2611f   # the commit the throwaway branch was cut from — the
-                   # revert target when the tree arrives dirty
-CONTRACT_PATHS: src/flush.py
-PROMISE_CHECKLIST: |
-  <verbatim, strong form — the mutants are derived from these lines>
-SURFACE: FlushQueue — the primary surface under mutation
-TEST_COMMAND: pytest -q
-MAX_MUTANTS: 3
-```
-
-It returns a kill table. A `SURVIVED` row is a missing or weak
-`PROMISE_CHECKLIST` line: route it to the owning test author exactly like a
-`GAP:`. `UNUSABLE` (baseline not green) is exit-2 semantics — the check did
-not run, which is never a pass. A worktree that arrives dirty — an
-uncommitted mutant-shaped edit, the residue of a cancelled predecessor — is
-the tester's first revert, never a diagnosis: it restores the tree to
-`BASELINE` and proceeds. On your side, a cancellation is the one exit that
-leaves the worktree dirty; reset it (or remove and recreate it) before
-anything is re-spawned into it.
-
 ## reviewer
 
 `LENS: plan` — before any code exists:
@@ -348,7 +299,7 @@ DOSSIER: /abs/path/repo/.discovery/dossiers/W-014-flush-coalescing.md
 WORKTREE_DIR: /abs/path/repo            # the main checkout, to check anchors
 CRITERIA: |
   <the acceptance criteria, verbatim>
-STANDARDS: /Users/tristan.toye/Documents/personal/repos/agentic-software-development/skills/standards/engineering-standards.md
+STANDARDS: ${PLUGIN_ROOT}/skills/standards/engineering-standards.md
 CONTEXT_DOCS: /abs/path/repo/docs/adr/0003-session-store.md
 ROUND: 1
 ```
@@ -371,7 +322,7 @@ RUN_EVIDENCE: |
   <the full test run output; it is green>
 CRITERIA: |
   <the acceptance criteria, for context>
-STANDARDS: /Users/tristan.toye/Documents/personal/repos/agentic-software-development/skills/standards/engineering-standards.md
+STANDARDS: ${PLUGIN_ROOT}/skills/standards/engineering-standards.md
 CONTEXT_DOCS: /abs/path/repo-W-014/docs/adr/0003-session-store.md
 ARBITRATIONS: |
   - user ruled 2026-08-10: keep the retry inside flush(); do not extract it
@@ -407,11 +358,12 @@ PRIOR_CRS: |
 
 ## Support agents
 
-Five flash agents carry mechanical work off the orchestrator's context. Each
+Three flash agents carry mechanical work off the orchestrator's context. Each
 returns a **guidance doc** — pointers, verbatim quotes, neutral flags — never a
 ruling; the orchestrator investigates and decides. Spawn one only past its size
-gate (`commands/work-on.md` names the gates); below the gate the orchestrator
-does the work itself.
+gate (the gate table in `primary-agents/work-on.md` names every gate and its
+threshold); below the gate the orchestrator does the work itself and logs the
+decision either way.
 
 ### stub-materialiser
 
@@ -423,30 +375,6 @@ OWNED_PATHS: src/flush.py
 STUB_STYLE: |
   unimplemented!()      # the repo's own placeholder, verified against the repo
 BUILD_CHECK: cargo check
-```
-
-### coverage-auditor
-
-```
-PROMISE_CHECKLIST: |
-  <verbatim, with ids>
-TEST_PATHS: /abs/path/repo-W-014/tests/unit/test_flush_queue.py
-CONTRACT: |
-  <verbatim>
-```
-
-### arbitration-clerk
-
-```
-FAILURE_LOG: |
-  <the full test output, verbatim — never a summary>
-FAILURES: |
-  - test_flush_returns_count
-  - test_flush_empty_queue
-TEST_PATHS: /abs/path/repo-W-014/tests
-SOURCE_PATHS: /abs/path/repo-W-014/src
-CONTRACT: |
-  <verbatim>
 ```
 
 ### blast-radius-scout
@@ -500,6 +428,11 @@ leaked local path.
 
 ## Field rules that matter
 
+- **`${PLUGIN_ROOT}` is expanded before a payload ships.** It names this
+  plugin's checkout (the directory holding `primary-agents/` and
+  `references/`). The skeletons below write it for brevity; what reaches an
+  agent is the expanded absolute path, because an agent cannot resolve a
+  variable it was never given.
 - **Every path in a payload is absolute.** `.discovery/` is untracked, so it
   exists only in the main checkout — a relative dossier path read from inside
   a worktree resolves to a file that does not exist, and the agent halts or
@@ -593,21 +526,32 @@ leaked local path.
   embedded-program parse idiom, one line per embedded program, and the
   implementer runs it before reporting: a fix round touching the heredoc
   cannot verify green on `bash -n` alone.
-- **A test-maintainer spawn names exactly one world: `FILE`.** The path is a
-  copy in a scratch directory outside the repo, and the payload never names
-  the repo path it came from — the maintainer must not be able to read the
-  implementation around it. Copy back only on `check_harness_edit.py --diff`
-  exit 0; anything else is authorship and routes to the test author.
-- **A mutation-tester worktree is pre-created and throwaway.** The
-  orchestrator makes the branch before the spawn and deletes it after the
-  report; the agent's own bash denies commit and push, so a mutant can never
-  reach a real branch by accident. `UNUSABLE` is not a verdict on the tests —
-  it means the check did not run. Cancellation is the one exit that leaves
-  residue: the applied mutant stays behind as an uncommitted edit, so the
-  worktree is dirty by default. Reset it — or remove and recreate it —
-  before anything is re-spawned into it, and `BASELINE` names the commit
-  both you and the tester revert to, so a dirty arrival is a one-line
-  restore rather than a diagnosis.
+- **A payload that names a call carries its signature, not its name.** In
+  `FIXTURES`, `HARNESS`, `STYLE_SAMPLE`, `SHARED_IDIOM` and `CONTRACT`: give
+  the signature verbatim — **parameter types and return type** — never a
+  parenthesised list of parameter *names*. For a helper the payload itself
+  defines, paste the definition, not a description. An agent with no
+  compiler cannot discover that `bytes` means `&[u8]` rather than `Vec<u8>`,
+  and it will guess plausibly and wrongly, once per test.
+- **A contract VIEW carries everything the test must NAME, not only what it
+  calls.** Where a build changes existing code, generate a view per file the
+  author needs: module docs, public types, public signatures, doc comments —
+  with **every body and every private item removed** (a private helper's name
+  and doc hand over the design as surely as its body would). The view must
+  still carry every constant, every enum's exact variants, and every import
+  path the test has to write, because a name the author cannot see is a name
+  it invents.
+- **A contract that changes a shared type is checked across the whole
+  workspace before it ships.** A single-crate check proves the contract
+  compiles where it is defined and says nothing about the callers that will
+  break; run the workspace-wide, all-targets form of the repo's check
+  command before the contract commit, because every downstream implementer
+  forks from it.
+- **A payload fact is verified only when the artifact that SHIPS is the one
+  that ran.** Verifying a command in one shell and pasting a retyped,
+  reformatted or path-adjusted variant into the payload verifies nothing —
+  the difference is where the failure lives. Copy the invocation that
+  actually ran, byte for byte.
 - **`NOTICED:` is harvested into `## Build log`.** Every support report ends
   with one, `none` allowed; the Phase 9 deferred-issues capture draws on your
   own reads plus this harvest.

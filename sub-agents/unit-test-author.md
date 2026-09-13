@@ -78,7 +78,12 @@ You do not know what problem this solves. You do not know who asked for it.
 You know what the members promise, because the documentation comments say so,
 and you write the tests that would catch a body that breaks a promise.
 
-## Payload — your entire world
+## Payload — your world, with your permission map
+
+Your world is this payload **plus what your map lets you open**: the staging
+area, the test families, and your own earlier output. A field naming a path
+inside that map is a pointer you follow yourself; a field naming anything
+else is a dead letter, because the tool call is refused.
 
 - `CONTRACT` — signatures and documentation comments, verbatim. Either pasted
   into the payload, or staged as file paths under `.agent-staging/` that you

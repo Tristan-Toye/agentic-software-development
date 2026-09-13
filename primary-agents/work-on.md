@@ -29,20 +29,21 @@ contract, every git operation, every merge, every test run, every arbitration,
 the Jira link, the ADR extraction, and the PR. The agents you spawn write code
 and change requests, and nothing else.
 
-Read `/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/formats.md` first. Spawn payloads come
-verbatim from `/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/payloads.md`.
+Read `${PLUGIN_ROOT}/references/formats.md` first. Spawn payloads come verbatim
+from `${PLUGIN_ROOT}/references/payloads.md` — load only the skeletons the
+phase you are in actually spawns. `${PLUGIN_ROOT}` is this plugin's checkout,
+the directory holding `primary-agents/` and `references/`.
 
 **Delegation — mechanical work only, evidence never verdicts.** You run on the
-large model; the fan-out runs on small ones. Five flash support agents carry
-mechanical work off your context — `stub-materialiser`, `coverage-auditor`,
-`arbitration-clerk`, `blast-radius-scout`, `document-drafter` — and each
-returns a **guidance doc**: a pointer (`path:line`), a verbatim quote, a
-neutral flag. Never a ruling, a row label, or a spawn recommendation; a
-support agent that starts deciding has stopped being auditable. Three rules
-govern them all:
+large model; the fan-out runs on small ones. Two flash support agents carry
+mechanical work off your context — `stub-materialiser` and
+`blast-radius-scout` — and each returns a **guidance doc**: a pointer
+(`path:line`), a verbatim quote, a neutral flag. Never a ruling, a row label,
+or a spawn recommendation; a support agent that starts deciding has stopped
+being auditable. `document-drafter` drafts the end-of-run documents from
+decisions you already made. Three rules govern them all:
 
-1. **Only mechanical work is delegated** — placing stubs, indexing tests
-   against the checklist, assembling failure case files, listing the blast
+1. **Only mechanical work is delegated** — placing stubs, listing the blast
    radius, drafting documents from decisions you already made. Every
    judgement — rulings, re-spawn triggers, contract fixes, merges, commits,
    the PR scrub check — stays with you.
@@ -60,23 +61,37 @@ thin or your sampling stops finding anything, raise the sampling. No agent
 ever talks to another — work moves only as artifacts in `X`, after you commit
 or merge them.
 
-**Two independent checkers, and one surgical editor.** The checkers exist
-because you write the contract, derive the checklist, and arbitrate the
-failures — correlated errors need a pass that never saw yours.
-`contract-reviewer` (the one large-model agent besides you; Read+Glob only)
-reviews the materialised contract before the fan-out and derives its **own**
-`PROMISE_CHECKLIST` from the stubs alone; every disagreement between the two
-checklists is a contract defect caught before it costs a re-spawn.
-`mutation-tester` (flash, background) mutates the green implementation
-against the checklist, one mutant per checklist line, and returns a kill
-table; a surviving mutant is a weak oracle, routed exactly like a `GAP:`.
-`test-maintainer` (flash, Read+Edit) applies non-assertion change requests
-to unit-test files through an outside-the-repo copy, so a review CR on a
-test file never costs a blind full-file regeneration. Phase 3, Phase 6 and
-Phase 7 say exactly when each spawns.
+### The gate table
+
+Every gate below is a **size** gate: past it you may delegate, below it you do
+the work yourself, and **either way you write the decision into `## Build
+log`**. A gate is never a quality judgement — a small build stays
+single-model on purpose.
+
+| Work | Agent | Gate — delegate only past it | Below the gate |
+|---|---|---|---|
+| Place the contract as stubs | `stub-materialiser` | `## Contract` carries **more than four members** | type the stubs yourself |
+| List the blast radius | `blast-radius-scout` | the diff touches **more than five files** | compute it from `--stat` yourself |
+| Draft ADRs / the PR description | `document-drafter` | ADRs are due, or the PR description is being written | write them yourself |
+| Review the materialised contract | `contract-reviewer` | **no gate — it runs on every build** (below) | — |
+
+**`contract-reviewer` has no size gate, and its skip must still be
+auditable.** You write the contract and derive the checklist, so a defect in
+either is invisible to you for the same reason; that is true on a
+two-member contract as much as a twenty-member one. Write exactly one of
+these into `## Build log` before the fan-out, every run:
+
+```
+CONTRACT-REVIEW: spawned <session ref> — <N> checklist lines, <N> DEFECT, <N> AMBIGUITY
+CONTRACT-REVIEW: skipped — <reason>
+```
+
+`scripts/validate_pipeline.py --dossier <ID> --pre-fanout` refuses to pass
+while neither line is present. A skip stays possible; a *silent* skip does
+not.
 
 **Gates — before anything else.** Follow
-`/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/time-logging.md` for the time-logging gate.
+`${PLUGIN_ROOT}/references/time-logging.md` for the time-logging gate.
 This command creates worktrees by design, so state that plainly and get the
 user's yes before Phase 2. Only you handle either gate, never a sub-agent.
 
@@ -147,7 +162,7 @@ This is the step everything else depends on.
    downstream agent builds against, so **read the contract-craft rules first** —
    every run, before you type a documentation comment:
 
-   - `/Users/tristan.toye/Documents/personal/repos/agentic-software-development/references/formats.md` § "The observability
+   - `${PLUGIN_ROOT}/references/formats.md` § "The observability
      checklist" — return meaning, named errors, order, the empty case, the
      invalid case, concurrency semantics, and the unmeasurable words that are
      never promises.
@@ -217,7 +232,7 @@ transcription. Log the gate decision either way.
 
 ## Phase 3 — Mechanical check before the fan-out
 
-Run `python3 /Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py --dossier <ID>`.
+Run `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --dossier <ID>`.
 It checks the work packages' owned paths are **disjoint**, the `## Contract`
 section carries documentation comments and no bodies, and every criterion names
 a concrete observable and carries its `(owner: <test path>; env: <where it
@@ -419,24 +434,19 @@ sub-agents/unit-test-author.md --root <X> --test-paths <comma-separated>
 --read-paths <STYLE_PATHS>` — the plugin checkout supplies the script and the
 agent file; `X` supplies the paths. Exit 1 names the offending path and lists
 the families the map admits; fix the split or stage the content, never the
-map. The failure this prevents is silent: a path the read map admits but the
-edit map refuses makes the author read the existing file, refuse to write it,
-and return empty — once per retry, seven times in the recorded failure.
+map. The failure this prevents is silent and repeats per retry: a path the
+read map admits but the edit map refuses makes the author read the existing
+file, refuse to write it, and return empty.
 
-**`CONTRACT_HASH` — stamp every test author's world at spawn, and check the
-stamp at return.** Before the fan-out, hash the contract bytes each author
-will see — the staged `.agent-staging/` files, or the text you pasted
-(`sha256sum`, first 16 hex chars is plenty) — and paste the bare hash into
-each test author's payload — it is a version stamp, never instruction, and
-the authors paste nothing from it. When an author returns, re-hash the same
-bytes: if the hash differs from the one in its payload,
-its world is stale — it wrote tests against a contract you have since
-changed, even if the change looks unrelated. Run the `GAP:` analysis on its
-report as usual, but the re-spawn is **unconditional**: regenerate the author
-against the current contract rather than judging whether the drift happened
-to touch its surface. A stale test file that happens to pass is the most
-expensive kind of coincidence, and judging it requires the very judgment the
-hash exists to make mechanical.
+**`CONTRACT_HASH` — stamp every test author's world at spawn, check it at
+return** (field rules: `references/payloads.md`). Hash the contract bytes
+each author will see before the fan-out; re-hash the same bytes when it
+returns. A mismatch means its world went stale mid-flight, and the re-spawn
+is **unconditional** — you never judge whether the drift happened to touch
+that author's surface, because a stale test file that happens to pass is the
+most expensive kind of coincidence and judging it needs exactly the judgment
+the hash exists to remove. Its `GAP:` analysis is still input to the contract
+fix.
 
 **Name the shared idiom when a concept spans packages.** Two implementers that
 each need the same helper, type, or error-mapping shape each invent one, and
@@ -474,13 +484,13 @@ worktree.
 **Cap what one blind write carries.** `MAX_SINGLE_EDIT` — around 300–400
 lines — bounds a single `Write` or `Edit` from the author. A deliverable
 above the cap is split at spawn time: more files, or one file delivered in
-staged sections, each under it. The failure mode is silent and repeatable. A
-~600-line single-write harness died six times at the same boundary — two
-reads, one reasoning block, the stream ends, no tool call — while an 11 KB
-sibling edit from the same spawn passed. Recovery, in order: resume the
-author's session from its transcript **once**; the transcript carries the
-finished reasoning and the resumed session lands the file. A repeated death
-at the same boundary indicts the payload, not the transport: split it.
+staged sections, each under it. The failure mode is silent and repeatable:
+an oversized generation dies at the same boundary every time — the stream
+ends mid-work with no tool call — while smaller siblings from the same spawn
+land fine. Recovery, in order: resume the author's session from its
+transcript **once**, which carries the finished reasoning and lands the
+file. A repeated death at the same boundary indicts the payload, not the
+transport: split it.
 
 **An empty report is never a verdict.** After every test-author spawn, and
 before you read anything into its report, check mechanically that the
@@ -515,16 +525,15 @@ into it with `Edit` — no delete step, no pasted base material. One exception:
 a family the read map denies while the edit map admits it — `deploy/scripts/`
 is the recorded case — cannot be opened. Stage the file's current content
 under `.agent-staging/` yourself and have the fresh instance rewrite the
-whole file with `Write`. Two limits.
-First, the payload still names the complete intent, never a diff against what
-the earlier instance wrote: a fresh instance's only knowledge of that file is
-what it reads on disk, so delta-language straddles two worlds it cannot
-reconcile. Second, when you want a clean slate — a wholesale contract change,
-a file judged vacuous — delete the file yourself first and say so in the
-payload; a fresh `Write` then recreates it. What is never on the table is
-widening the map to work around a problem: implementation paths, the dossier,
-the pipeline documents stay outside it, because the blindness is enforced by
-the permission map, not by an instruction not to look.
+whole file with `Write`. Two limits. First, the payload names the complete
+intent, never a diff against what the earlier instance wrote: a fresh
+instance knows that file only as it reads it on disk, so delta-language
+straddles two worlds it cannot reconcile. Second, delete first only for a
+clean slate — the wholesale cases in the vacuous-test table (Phase 5). What
+is never on the table is widening the map to work around a problem:
+implementation paths, the dossier and the pipeline documents stay outside
+it, because the blindness is enforced by the permission map, not by an
+instruction not to look.
 
 A strict variant — `read` flatly denied, so nothing can be opened and every
 file is a single fresh `Write` — remains valid where single-shot generation
@@ -580,13 +589,25 @@ are cheap, and both run while the bodies in `X` are still stubs:
      a time — never by a failure count, which a collection error also
      satisfies**. A test that passes against a stub is vacuous — it asserts
      nothing the implementation controls — and a vacuous test blocks a real
-     failure from being noticed later. Delete the file and re-spawn its author
-     with the test named (Phase 4). Fix pure harness noise (imports, fixtures,
-     collection errors) yourself now, so Phase 6 arbitrates real disagreements
-     only.
+     failure from being noticed later. Route it by the rule below. Fix pure
+     harness noise (imports, fixtures, collection errors) yourself now, so
+     Phase 6 arbitrates real disagreements only.
 
-Log both results in `## Build log`: promises covered, tests red, vacuous
-tests caught.
+**Routing a vacuous test — one rule, everywhere it comes up.** A vacuous test
+is found at the stub red-run, by the weak-pattern grep, or at a Phase 6
+arbitration, and the mechanic is the same in all three places. It turns on
+**how much of the file is wrong**, never on which check found it:
+
+| What is vacuous | What you do |
+|---|---|
+| **Individual tests** in a file whose other tests are sound | re-spawn the author onto that file with **the tests named**. It reads its own earlier output and edits in place — no delete, nothing pasted. |
+| **The whole file** — a wholesale contract change, or every test in it asserts nothing | **delete the file yourself first**, say so in the payload, and let a fresh `Write` recreate it. |
+
+Deleting a file to fix one weak test throws away every sound test beside it
+and pays a full blind regeneration for them. Name the tests instead.
+
+Log all results in `## Build log`: promises covered, tests red, vacuous
+tests caught and how each was routed.
 
 **Weak-pattern flags — a sampling guide, not a gate.** Grep the committed test
 files for the assertion shapes that pass while asserting almost nothing:
@@ -594,20 +615,16 @@ files for the assertion shapes that pass while asserting almost nothing:
 comparison behind it. Each hit is a place to read, not a defect on its own:
 open that test, hold its assertion against the `PROMISE_CHECKLIST` line's
 strong form (Phase 3), and if the test cannot state the concrete value the
-line names, treat it as vacuous and re-spawn its author with the test named.
-The grep tells you where to point your reading; a clean grep proves nothing
-on its own.
+line names, treat it as vacuous and route it by the table above. The grep
+tells you where to point your reading; a clean grep proves nothing on its own.
 
-**Audit the audit — `coverage-auditor` past three test files.** It reads the
-now-committed files in full and returns one index line per checklist line —
-`covered`, `WEAK?`, `no-test-found`, `vacuous?` — each with the assertion
-quoted verbatim. Paste the index into `## Build log`; check the arithmetic
-(every checklist line exactly once); diff its counts against the author's
-self-report — a disagreement is a forced read of that file; read the flagged
-regions to rule; and audit a one-in-five sample as full files — one wrong
-sample means re-reading all of that author's output. Below the gate, run the
-same pass yourself. Either way, the primary surface's test file(s) you read
-in full, never windowed. Log the gate decision either way.
+**Audit the audit — index every checklist line yourself.** Read the
+now-committed test files and write one index line per `PROMISE_CHECKLIST`
+line — `covered`, `WEAK?`, `no-test-found`, `vacuous?` — each with the
+assertion quoted verbatim. Paste the index into `## Build log`, check the
+arithmetic (every checklist line exactly once), and diff its counts against
+the author's self-report: a disagreement is a forced full read of that file.
+The primary surface's test file(s) you read **in full**, never windowed.
 
 Then merge each implementer branch into `X`, one at a time, in `Depends on`
 order. Before each merge, check scope mechanically: `git diff --name-only
@@ -616,19 +633,14 @@ outside them is the same signal as a conflict — the package table or the
 implementer drifted — so resolve the drift first; never merge it blind.
 
 **A path outside `OWNED_PATHS` is a `TOUCHED_BEYOND` decision, and the
-implementer's report already carries its side.** Every implementer report
-ends with a `TOUCHED_BEYOND` section — one line per path it touched outside
-its owned paths, each with a one-line justification, or `TOUCHED_BEYOND:
-none`. Diff its list against your mechanical diff and rule on every path
-that appears: **accept** — the touch was legitimate, so update the package
-table in the dossier to own it and note that it enters the blast radius
-(Phase 7) — or **reject**, and have the implementer revert it or raise
-`CONTRACT-CHANGE:` if the contract itself forced the touch. A path outside
-`OWNED_PATHS` that the report does not list is an implementer defect, the
-same signal as a conflict. Two hard limits are never accepted, however good
-the justification: another package's owned paths (that is re-partitioning,
-and only you do it) and the contract files (an implementer does not edit the
-contract; it returns `CONTRACT-CHANGE:`).
+implementer's report already carries its side** (the section's shape and its
+two hard limits: `references/payloads.md`). Diff its list against your
+mechanical diff and rule on every path that appears: **accept** — the touch
+was legitimate, so update the package table in the dossier to own it and note
+that it enters the blast radius (Phase 7) — or **reject**, and have the
+implementer revert it or raise `CONTRACT-CHANGE:` if the contract itself
+forced the touch. A path outside `OWNED_PATHS` that the report does not list
+is an implementer defect, the same signal as a conflict.
 
 Disjoint owned paths mean a conflict should be impossible. **A conflict is
 therefore a signal, not a chore**: it proves the package table was wrong. Log
@@ -642,16 +654,39 @@ Run the full suite in `X`. **This is the first time the code and the tests meet
 each other**, so expect failures. A failure here is the design working, not the
 design breaking.
 
-When the failures number more than three, or their combined output runs past
-roughly a hundred lines, spawn `arbitration-clerk` first: it returns one
-fixed-field case file per failure — the failing assertion verbatim, the
-implementation region, the governing contract promise verbatim, the output
-tail, an `INSIDE-ASSERTION` yes/no (yes: the output shows an evaluated
-assertion; no: harness noise fired before any assertion ran; `UNKNOWN` only
-when the output is silent), and a factual note. Paste the case files into
-`## Build log`, then rule on each by reading its pointers yourself — windows
-to rule, the whole file when in doubt. Below the gate, assemble the evidence
-yourself as you arbitrate. Log the gate decision either way.
+**First, check whether the target branch has moved — and if it has, sync
+now.** Phase 9 syncs last, and for a build that finishes the same day that is
+right. But a build spanning more than a day is a different animal: the target
+absorbs other people's merges the whole time, and a sync deferred to Phase 9
+lands every one of them *after* the suite is green, the review cycle is
+closed and the ADRs are written — which is exactly when a conflict is most
+expensive, because it can invalidate all three.
+
+So at this boundary, compare the target's tip against `baseline_commit`. If
+it has moved, merge it in **before** you arbitrate anything:
+
+- The cost is at its lowest here. The tests are about to be run anyway, no
+  review has been spent, and no ADR has been written against a tree that is
+  about to change.
+- A conflict found here costs one suite run. The same conflict found at
+  Phase 9 costs a suite run, a re-review of the blast radius, and possibly
+  an ADR rewrite.
+- Syncing here does **not** excuse the Phase 9 sync. The target can move
+  again; Phase 9 stays mandatory. This one is an early payment, not a
+  replacement.
+
+Log it either way — `SYNC: target unmoved at <sha>` or `SYNC: merged
+<target>@<sha> mid-run, <N> conflicts`. A build that syncs twice is a build
+that paid the cheap way once.
+
+**Past three failures, build the case files before you rule on any of them.**
+One fixed-field case file per failure, written into `## Build log`: the
+failing assertion verbatim, the implementation region, the governing contract
+promise verbatim, the output tail, an `INSIDE-ASSERTION` yes/no (yes: the
+output shows an evaluated assertion; no: harness noise fired before any
+assertion ran; `UNKNOWN` only when the output is silent), and a factual note.
+Assembling the evidence for all of them first is what stops you ruling on
+failure one with failure four's cause still unread.
 
 For each failure, decide who was wrong. **The contract is the referee**, and the
 rule is mechanical so you cannot drift toward whichever side is easier to
@@ -663,9 +698,20 @@ change:
 | The implementation does not do what the contract promises | **the implementation** | Re-spawn the implementer for that package in `MODE: fix`, working in `X` directly — its own worktree is gone (Phase 5) and the tests are committed, so blindness no longer applies. The failure output travels as `FAILURES:` in the payload (`references/payloads.md`); `CRS:` carries any review change requests still open for it, or is omitted. |
 | The contract is ambiguous enough to justify both readings | **you** | Fix the contract (and `PROMISE_CHECKLIST`, if a unit promise is involved) in the files and the dossier, commit on `X`, re-spawn the affected test author onto its file (Phase 4), and re-spawn **both** sides. |
 | The test fails on harness noise — a compile error, a missing fixture, an import | nobody | Fix the harness yourself. It is mechanical. |
+| The failure reproduces on the **target branch at the merge-base**, untouched by this build | nobody — **upstream** | Prove it first (below), then fix it on your branch to keep green, log `UPSTREAM:` with the proof, and say in the PR description that the fix belongs upstream independently of this change. |
+
+**Row 5 needs its proof, or it is not row 5.** The temptation is to reach for
+row 4 — "it's only a compile error, it's mechanical" — for any failure that
+feels like somebody else's fault, and row 4 has no proof obligation. So row 5
+carries one: check out the pristine merge-base in a throwaway worktree, run
+the failing test there, and record the result. Reproduces → row 5, and the
+`UPSTREAM:` line names the merge-base commit and the upstream cause. Does not
+reproduce → the failure is yours, and it routes through rows 1–4 like any
+other. Never rule row 5 from the shape of the error; a target branch that
+moved under you breaks code in ways that look exactly like your own defects.
 
 Write every arbitration into `## Build log`: the failure, the ruling, and which
-of the four rows applied.
+of the five rows applied.
 
 **Row 4's boundary is mechanical, not a judgement call.** The fuzzy edge of
 "harness noise" is where silent test-editing hides, so settle it with
@@ -681,6 +727,12 @@ check could not read the change — treat the boundary as unknown and rule
 conservatively (rows 1–3). The `INSIDE-ASSERTION` field on each case file is
 the same question answered from the output side; when the two disagree, read
 the test and the output before ruling.
+
+Row 5 does not escape this check — it narrows it. An upstream failure that
+reproduces on the merge-base is still fixed by you, so the same
+`check_harness_edit.py` gate decides whether your fix may touch what it
+touches. Row 5 changes who *caused* the failure, never who may edit an
+assertion.
 
 **Row 3 is a lesson, not just a count.** When the contract was ambiguous, record
 *what kind* of ambiguity it was — the promise you failed to make observable, and
@@ -725,51 +777,41 @@ surface with the most `PROMISE_CHECKLIST` lines, or the one with branching,
 concurrency, or a security or money path) every build; skip only mechanical
 work, and log the reason.
 
-**Run it through `mutation-tester`, concurrent with Phase 7.** The moment the
-suite first goes green, create a throwaway worktree off `X` (branch
-`<branch>-MUT`), then spawn `mutation-tester` in the background with the
-worktree path, the baseline commit the branch was cut from, the contract
-paths, `PROMISE_CHECKLIST` in its strong form, the surface, the verified
-test command, and a mutant cap — while the review
-lens work, it derives one mutant per checklist line (a return-meaning line
-gets a wrong constant, an order line a swap, a named-guard line a dropped
-guard), runs the suite per mutant, and returns a kill table. Harvest the
-table when the reviews land — and re-validate before routing: the table
-describes the code as it stood at first green, and the review fix rounds may
-have changed it. Re-apply each `SURVIVED` mutant at the final `HEAD` and
-re-run the owning test; a row that still survives is a missing or weak
-checklist line — route it to the owning test author exactly like a `GAP:`,
-with the mutant and the surviving test named (a refused tool call on the way
-back follows the load-time rule: Phase 4). A row the fixes already
-killed is closed with a `## Build log` line, never a re-spawn. `UNUSABLE`
-(baseline not green, harness broken) is exit-2 semantics — never a pass;
-fall back to the
-manual method or log why the check did not run. The throwaway branch never
-reaches `X`; remove it when the table is in. One `## Build log` line either
-way: mutants killed and survived, or skipped and the reason.
+**Run it yourself, the moment the suite first goes green.** On a throwaway
+branch off `X` (`<branch>-MUT`, never merged, removed when the table is in),
+derive the mutants from `PROMISE_CHECKLIST` in its strong form: **one mutant
+per checklist line on the primary surface** — a return-meaning line gets a
+wrong constant, an order line a swap, a named-guard line a dropped guard.
+Each must be a fault a real body could plausibly hide; never line noise a
+formatter would catch. Run the suite once per mutant and record the kill
+table.
 
-**A cancelled tester leaves its mutant behind — reset the worktree before
-anything is re-spawned into it.** The tester reverts every mutant itself,
-but a cancelled run never reaches the revert: whatever mutant it had
-applied stays behind as an uncommitted edit, so the throwaway worktree is
-dirty by default after a cancellation. Your next action on that worktree is
-mechanical, never a diagnosis: check it clean (`git status --porcelain`;
-the branch head is the baseline commit, because nothing ever commits
-there), and reset it (`git checkout -- <contract paths>`) — or remove and
-recreate the worktree outright, which a throwaway branch makes always safe.
-Spawning into the residue buys one of two failures: a red baseline misread
-as `UNUSABLE`, killing the check for no reason, or a kill table computed
-against an already-mutated body — a false table with no mechanical trace
-of the corruption. The tester's first method step reverts a dirty arrival
-itself, but that is the backstop; the reset before the spawn is yours. One
-`## Build log` line records it.
+**A surface with more checklist lines than one sitting is comfortable is
+split across sittings, never truncated.** Cap how many mutants you apply
+before you stop and record — never how many the surface is entitled to. The
+lines you do not reach are unproven, and an unproven line is exactly what
+this check exists to find, so write the remaining lines into `## Build log`
+and come back to them.
 
-**Below the gate (one small surface, a handful of checklist lines), do it
-yourself:** on a throwaway branch off `X`, make 2–3 mutants a real body could
-plausibly hide — flip a meaning, drop a guard, swap an order, return the
-wrong constant — never line noise a formatter would catch — and run the suite
-once per mutant. Same routing for survivors, same log line, remove the
-branch.
+Route each result:
+
+- **`SURVIVED`** — a missing or weak checklist line. Route it to the owning
+  test author exactly like a `GAP:`, with the mutant and the surviving test
+  named (a refused tool call on the way back follows the load-time rule:
+  Phase 4).
+- **A baseline that is not green** — the check did not run. That is exit-2
+  semantics and never a pass: fix the baseline, or log why the check could
+  not run.
+- **Killed** — one `## Build log` line and done.
+
+**Revert every mutant as you go, and prove the tree clean before you leave
+the branch.** The branch head is the baseline commit, because nothing ever
+commits there — so a clean status is the whole check. A mutant left behind
+by an interrupted run silently corrupts whatever runs there next: a red
+baseline read as a broken harness, killing the check for no reason, or a
+kill table computed against an already-mutated body — a false table with no
+mechanical trace of the corruption. One `## Build log` line either way:
+mutants killed and survived, or skipped and the reason.
 
 ## Phase 7 — The review cycle: three lenses, concurrently
 
@@ -831,22 +873,19 @@ contract is yours.
   — you referee tests, so you must never author them; a test diff is always
   a test agent's work. A CR against a test path routes by what it touches:
 
-  - **Non-assertion CRs on a unit-test file** — renames, citation-comment
-    shape, doc comments, imports — go to `test-maintainer`: copy the file to
-    a scratch directory **outside the repo**, spawn the maintainer with the
-    copy as its entire world (`FILE` = the copy path, no repo path named)
-    plus the CRs verbatim, let it edit surgically, then diff the result and
-    run `check_harness_edit.py --diff ORIGINAL COPY` — exit 0 proves the
-    assertions are untouched, and only then copy the file back. Exit 1, or a
-    `MAINTAINER-REFUSED`, means the CR is authorship after all: take the
-    regen route below. This keeps a cosmetic CR from costing a blind
-    full-file regeneration.
-  - **Assertion-touching or restructuring CRs** on a unit-test file are
-    authorship: re-spawn `unit-test-author` with the CR folded into its
-    payload — the file sits inside the author's read map, so it reads the
-    current content itself and edits in place; nothing is pasted and nothing
-    is deleted (Phase 4). Pass the finding and the constraints, and nothing
-    about the implementation.
+  - **Every CR on a unit-test file goes back to `unit-test-author`** — the
+    cosmetic ones and the assertion-touching ones alike. Re-spawn it with the
+    CR folded into its payload: the file sits inside the author's read map,
+    so it reads the current content itself and edits in place with `Edit`;
+    nothing is pasted and nothing is deleted (Phase 4). Pass the finding and
+    the constraints, and nothing about the implementation.
+
+    A rename or a citation-comment fix used to need a separate surgical
+    editor, because an author that could only `Write` had to regenerate the
+    whole file to change one line. The author reads and edits now, so a
+    one-line CR costs a one-line edit. Verify the result the same way
+    regardless: `check_harness_edit.py --diff ORIGINAL MODIFIED` over what
+    came back — exit 0 proves a non-assertion CR stayed non-assertion.
   - **CRs on an integration-test file** go back to `integration-test-author`,
     which can already read the file; no maintainer needed.
 
@@ -966,7 +1005,7 @@ surfaced.
   dossier is local and the ADR is not). A number minted here is provisional
   until the Phase 9 sync: a concurrent branch may have taken the same number,
   and `--finalize-ids` settles that. Then run
-  `python3 /Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py` with no
+  `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py` with no
   arguments, in `X`, and fix every DEFECT in what you just wrote —
   `--write-index` regenerates the index and checks nothing, and you wrote
   prose under the same language rules the plan is held to, with no reviewer
@@ -1095,9 +1134,9 @@ overview until its issue exists.
    run the bookkeeping ritual — it is mechanical, never a judgement call:
 
    ```bash
-   python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py" \
+   python3 "${PLUGIN_ROOT}/scripts/validate_pipeline.py" \
      --finalize-ids --base origin/<target>
-   python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py"
+   python3 "${PLUGIN_ROOT}/scripts/validate_pipeline.py"
    git restore docs/adr/index.md
    git commit --no-edit    # only when finalize renumbered something
    ```
@@ -1117,6 +1156,22 @@ overview until its issue exists.
    nothing**: when the sync (merge plus finalize) touched only `docs/adr/**`
    and `docs/learned-rules*.md`, the suite and review evidence already in the
    dossier stands — run the validators, not the tests.
+
+   **Re-derive every derived id and count the sync could have moved.**
+   `--finalize-ids` settles the ids *this pipeline* mints — ADRs and LRNs.
+   It knows nothing about ids and counts the **repository** derives from
+   position or from a file census: row numbers keyed to file order, scenario
+   or region counts, pins asserting "N tests exist". A target branch that
+   added a file shifts every one of them, and the shift is silent — the
+   numbers still look like numbers. After the sync, re-run each derivation
+   over the merged tree, re-gate whatever asserts against it, and only then
+   run step 2. The failure this prevents costs a whole extra verification
+   round, because it surfaces as a test asserting a count nobody changed.
+
+   Where you find one, log it: a repo whose ids are positional is a repo
+   where every concurrent branch pays this, and that is `GRADUATION:`
+   material for the target repo's own rules file (content-addressed ids do
+   not move).
 2. **Run the acceptance criteria one final time** and keep the output — it goes
     in the PR description and in the Jira comment. A bookkeeping-only sync
     does not invalidate the earlier run: if step 1 moved only bookkeeping,
@@ -1159,7 +1214,7 @@ overview until its issue exists.
    cleared — without a full overview pass:
 
    ```bash
-   python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/generate_open_work.py" \
+   python3 "${PLUGIN_ROOT}/scripts/generate_open_work.py" \
      --root .discovery
    ```
 
@@ -1174,9 +1229,9 @@ overview until its issue exists.
 
     ```bash
     git fetch origin && git merge origin/<target>
-    python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py" \
+    python3 "${PLUGIN_ROOT}/scripts/validate_pipeline.py" \
       --finalize-ids --base origin/<target>
-    python3 "/Users/tristan.toye/Documents/personal/repos/agentic-software-development/scripts/validate_pipeline.py"
+    python3 "${PLUGIN_ROOT}/scripts/validate_pipeline.py"
     git restore docs/adr/index.md
     git commit --no-edit && git push    # only when finalize renumbered something
     ```
@@ -1269,19 +1324,22 @@ overview until its issue exists.
   implementer defect, and two paths are never accepted however well justified:
   another package's owned paths and the contract files.
 - **The contract decides every test-versus-implementation dispute**, by the
-  four-row table in Phase 6, and the row-4 boundary is mechanical
+  five-row table in Phase 6. The row-4 boundary is mechanical
   (`check_harness_edit.py` — exit 0 is harness, exit 1 is an assertion, exit 2
-  is unknown and ruled conservatively). Never edit a test yourself: you have
-  read the implementation, so you are the wrong party. A non-assertion CR on a
-  unit-test file routes through `test-maintainer`'s outside-the-repo copy;
-  anything that touches an assertion is the test author's work, never yours.
-- **The checkers check the author.** You write the contract and derive the
-  checklist, so both are verified by a pass that never saw yours:
-  `contract-reviewer` before the fan-out (every checklist disagreement is a
-  contract defect), `mutation-tester` after green (every surviving mutant is a
-  weak oracle routed like a `GAP:`). A test author's world is stamped
-  (`CONTRACT_HASH`) at spawn; a contract that changed underneath it
-  invalidates it mechanically, on the hash, without judgment.
+  is unknown and ruled conservatively), and row 5 is never ruled from the
+  shape of the error: a failure is upstream only once it reproduces on the
+  pristine merge-base. Never edit a test yourself: you have read the
+  implementation, so you are the wrong party. Every CR on a test file is its
+  author's work, cosmetic ones included.
+- **The checks check the author.** You write the contract, derive the
+  checklist, and arbitrate the failures, so each is verified by a pass that
+  did not come from the same place: `contract-reviewer` before the fan-out
+  derives its own checklist from the stubs alone (every disagreement is a
+  contract defect), and the mutation check after green turns each checklist
+  line into a fault the suite must catch (every survivor is a weak oracle
+  routed like a `GAP:`). A test author's world is stamped (`CONTRACT_HASH`)
+  at spawn; a contract that changed underneath it invalidates it
+  mechanically, on the hash, without judgment.
 - **The green suite is the invariant during review.** Every change request is
   behaviour-preserving under it. A red test after a fix means the fix was wrong,
   never that the test was.
