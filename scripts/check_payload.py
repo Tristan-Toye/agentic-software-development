@@ -71,11 +71,11 @@ FIELDS: dict[str, dict[str, set[str]]] = {
     "implementer": {
         "required": {
             "WORKTREE_DIR", "BRANCH", "MODE", "CONTRACT", "OWNED_PATHS",
-            "TEST_COMMAND", "STANDARDS", "JIRA_KEY",
+            "TEST_COMMAND", "STANDARDS", "JIRA_KEY", "HOOKS",
         },
         "optional": {
             "PACKAGE", "CRITERIA", "CRS", "FAILURES", "SHARED_IDIOM",
-            "VERIFY_EMBEDDED", "HOOKS",
+            "VERIFY_EMBEDDED",
         },
     },
     "reviewer": {
@@ -121,6 +121,28 @@ CONDITIONAL: dict[tuple[str, str, str], tuple[set[str], list[set[str]]]] = {
 
 # A field line at the start of a line: NAME: value  /  NAME: |
 FIELD_LINE = re.compile(r"^(?P<name>[A-Z][A-Z0-9_-]{2,}):(?P<rest>\s.*|\s*\|\s*)?$")
+# A block field: NAME: | — every following line that is indented or blank is
+# the block's body, never a field, however it is shaped (`CR-1:` in a CRS
+# block, a `TODO:` in a pasted contract). A line at column 0 ends the block.
+BLOCK_OPEN = re.compile(r"^[A-Z][A-Z0-9_-]{2,}:\s*\|\s*$")
+
+
+def field_lines(lines: list[str]) -> list[tuple[int, str, str]]:
+    """Yield (line number, field name, rest) for every top-level field line."""
+    found: list[tuple[int, str, str]] = []
+    in_block = False
+    for number, line in enumerate(lines, 1):
+        if in_block:
+            if line.strip() == "" or line[:1] in (" ", "\t"):
+                continue
+            in_block = False
+        match = FIELD_LINE.match(line)
+        if not match:
+            continue
+        found.append((number, match.group("name"), (match.group("rest") or "").strip()))
+        if BLOCK_OPEN.match(line):
+            in_block = True
+    return found
 
 # An absolute path. Kept deliberately narrow: two or more word-bearing segments.
 ABS_PATH = re.compile(r"(?<![\w/$}])(/[\w.@+-]+(?:/[\w.@+-]+)+)")
@@ -158,10 +180,9 @@ def read_lines(path: str) -> list[str]:
 
 
 def field_value(lines: list[str], name: str) -> str:
-    for line in lines:
-        match = FIELD_LINE.match(line)
-        if match and match.group("name") == name:
-            return (match.group("rest") or "").strip().split()[0] if (match.group("rest") or "").strip() else ""
+    for _, found, rest in field_lines(lines):
+        if found == name:
+            return rest.split()[0] if rest else ""
     return ""
 
 
@@ -172,11 +193,7 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
 
     # 1. field names — misnamed, missing, and mode/lens-conditional
     present: list[str] = []
-    for number, line in enumerate(lines, 1):
-        match = FIELD_LINE.match(line)
-        if not match:
-            continue
-        name = match.group("name")
+    for number, name, _rest in field_lines(lines):
         present.append(name)
         if kind is None:
             continue
@@ -349,10 +366,15 @@ def selftest() -> int:
     impl = (
         "WORKTREE_DIR: {REAL}\nBRANCH: fix/x-p1\nMODE: build\nCONTRACT: |\n  fn a()\n"
         "PACKAGE: P1 thing\nOWNED_PATHS: src/flush.py\nCRITERIA: |\n  1. x\n"
-        "TEST_COMMAND: pytest -q\nSTANDARDS: {REAL}/tests/unit/test_retry.py\nJIRA_KEY: PROJ-1\n"
+        "TEST_COMMAND: pytest -q\nHOOKS: none\nSTANDARDS: {REAL}/tests/unit/test_retry.py\nJIRA_KEY: PROJ-1\n"
     )
     case("implementer build clean", impl, "implementer", False)
-    case("implementer build with hooks", impl + "HOOKS: |\n  stop and report\n", "implementer", False)
+    case("implementer hooks required",
+         impl.replace("HOOKS: none\n", ""), "implementer", True, "HOOKS is missing")
+    case("implementer block body is not a field",
+         impl.replace("MODE: build", "MODE: fix").replace("PACKAGE: P1 thing\n", "")
+         .replace("CRITERIA: |\n  1. x\n", "CRS: |\n  CR-1: rename x\n  TODO: y\n\n  CR-2: hoist z\n"),
+         "implementer", False)
     case("implementer build missing package",
          impl.replace("PACKAGE: P1 thing\n", ""), "implementer", True, "PACKAGE is missing")
     fix = impl.replace("MODE: build", "MODE: fix").replace("PACKAGE: P1 thing\n", "").replace("CRITERIA: |\n  1. x\n", "")
@@ -382,7 +404,7 @@ def selftest() -> int:
 
     for item in failures:
         print("SELFTEST FAIL  %s" % item)
-    print("selftest: %d case group(s), %d failure(s)" % (22, len(failures)))
+    print("selftest: %d case group(s), %d failure(s)" % (23, len(failures)))
     return 1 if failures else 0
 
 

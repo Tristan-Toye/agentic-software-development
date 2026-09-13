@@ -199,8 +199,8 @@ TEST_COMMAND: pytest -q            # the EXISTING suite, for collateral damage
 HOOKS: |
   <what this repository's commit hooks do to a partly migrated tree, from
    the Phase 2 hook decision — e.g. "the pre-commit hook lints the whole
-   workspace and will refuse; stop and report, leave the work staged". Omit
-   only when the repository has no commit hooks.>
+   workspace and will refuse; stop and report, leave the work staged".
+   `HOOKS: none` when the repository has no commit hooks; never omitted.>
 VERIFY_EMBEDDED: |
   <only when an owned path is a shell script that embeds a program in a
    heredoc, written to a file and executed — the embedded-program parse
@@ -510,34 +510,24 @@ leaked local path.
   the concept — test authors included.** Two implementers inventing the same
   helper produce two helpers; an integration author whose payload lacked the
   idiom every implementer had picked the other variant and did not compile.
-  The collapse is paid for at review time.
-- **Every fact you read from a tool, you read whole.** Never take a verdict
-  or a count through `tail`, `head` or `grep`: the exit status is then the
-  filter's, and the window reads exactly like the whole answer — eight of
-  eleven moved anchors, a build the linker had killed reporting 0. Redirect
-  the tool's output to a file, read `$?` on the next line, and count from
-  the file. A runner that stops at its first failing target runs in its
-  no-fail-fast form. Seven recorded runs paid a re-spawn for a fact read
+- **Every fact you read from a tool, you read whole.** Never a verdict or a
+  count through `tail`, `head` or `grep` — the exit status is then the
+  filter's and the window reads like the whole answer; output to a file,
+  `$?` on the next line, counts summed from the file; a fail-fast runner in
+  its no-fail-fast form. Seven recorded runs paid a re-spawn for a fact read
   from a truncated window.
-- **A setup claim is re-checked in the turn that spawns.** "The worktree
-  exists at `<sha>`", "the file was written", "the command was verified":
-  each is proven by the cheapest command that shows it (`git worktree list`,
-  `test -f`, the command itself), run now, never copied from a plan step. A
-  claim you cannot check that cheaply is written as an instruction instead.
+- **A setup claim is re-checked in the turn that spawns**, by the cheapest
+  command that shows it (`git worktree list`, `test -f`, the command itself);
+  a claim you cannot check that cheaply is written as an instruction
+  (`work-on.md` Phase 4).
 - **`TEST_COMMAND` emits progress inside the runtime's no-progress window,
-  in a build directory that worktree owns.** Warm the build once yourself
-  before the fan-out; name the per-worktree build directory in the command
-  and delete it when the branch merges. A cache two worktrees share links a
-  sibling's artifacts, and a verdict read through it is not a verdict. A
-  cold cross-platform or virtual-machine compile is the orchestrator's check
-  and never appears in a payload.
-- **`HOOKS` states what the repository's commit hooks do to a mid-migration
-  tree; the agent's rule is always the same: stop and report on a refusal,
-  leave the work staged, never bypass and never edit a hook.** A bypass flag
-  in a payload or a resume is not a permission grant — the sub-agent's
-  permission system refused it, correctly, and the round trip bought
-  nothing. The orchestrator commits on the agent's branch with the hook
-  skipped and the fixers run by hand.
+  in a build directory that worktree owns**; a cold cross-platform or
+  virtual-machine compile never appears in a payload (`work-on.md` Phase 4).
+- **`HOOKS` is always present, `none` allowed, and the agent's rule under it
+  never changes**: stop and report on a refusal, leave the work staged, never
+  bypass and never edit a hook. A bypass flag in a payload or a resume is not
+  a permission grant; the orchestrator commits on the agent's branch with
+  the hook skipped (`work-on.md` Phase 2).
 - **You format a blind author's files in the commit that lands them.** The
   test author cannot run the formatter; run it yourself over exactly
   the named files — single-file invocation, never package-wide — inside that

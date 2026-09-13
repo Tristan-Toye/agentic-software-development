@@ -214,7 +214,12 @@ right or wrong, without asking anybody anything? It has no write tools.
   them to `## Build log` verbatim, then **fix them yourself** — you hold the
   pen. Re-run the validator, then re-spawn the reviewer with `PRIOR_CRS` so it
   answers only whether each one is resolved. It must not open new subjects on a
-  re-review.
+  re-review. **From round 2 on, `DOSSIER` names a copy of the dossier without
+  `## Build log`, written outside `.discovery/`** — the reviewer's `Read` has
+  no limit, so on a long dossier the log arrives whole and the reviewer reads
+  its own prior verdict and your rulings; the recorded case voided two rounds.
+  An instruction not to read a section of a file the agent can open is not
+  blindness.
 - A change request you disagree with is a decision for the user, not for you.
   Present the reviewer's position and yours, get a ruling, and record it in
   `## Build log`.

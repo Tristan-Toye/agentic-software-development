@@ -203,6 +203,7 @@ prose about permission maps cannot mislead the agent that reads it.
 | `scripts/validate_pipeline.py` | Front matter, section set, **path disjointness**, contract shape, criterion falsifiability, anchors, ASD-STE100. `--selftest` checks the checker. |
 | `scripts/check_permission_maps.py` | Sub-agent permission maps: allow-list shape, read-to-edit symmetry, and pre-spawn `TEST_PATHS` validation. `--selftest` checks the checker. |
 | `scripts/check_payload.py` | A spawn payload before it ships: field names per agent kind (missing and misnamed), absolute paths that exist, no unexpanded `${PLUGIN_ROOT}`, no credential literal. `--selftest` checks the checker. |
+| `scripts/safe_revert.py` | The only way the orchestrator reverts or deletes a path an agent may hold uncommitted: copies it outside the repository first, prints where, refuses a copy target inside the repository. `--selftest` checks the checker. |
 | `scripts/build_claude_plugin.py` | The Claude Code surface, derived from the opencode sources. `--check` fails on drift; `--selftest` checks the checker. |
 
 ## Why the validator matters more than it looks

@@ -81,8 +81,9 @@ CONTRACT-REVIEW: skipped — <reason>
 ```
 
 `scripts/validate_pipeline.py --dossier <ID> --pre-fanout` refuses to pass
-while neither line is present. A skip stays possible; a *silent* skip does
-not.
+while neither line is present — and likewise without the `HOOKS:` line
+(Phase 2) and the `PAYLOAD-LINT:` line (Phase 4). A skip stays possible; a
+*silent* skip does not.
 
 **Gates — before anything else.** Follow
 `${PLUGIN_ROOT}/references/time-logging.md` for the time-logging gate.
@@ -225,8 +226,9 @@ This is the step everything else depends on.
    permission is not granted by an instruction, and the recorded attempt
    paid a full round trip to learn that. When the hook's own runtime
    approaches the runtime's no-progress window, tell the implementer to
-   stage and report without committing at all. Log the decision:
-   `HOOKS: none` or `HOOKS: <hook> — <policy>`.
+   stage and report without committing at all. Log the decision before the
+   fan-out — `HOOKS: none` or `HOOKS: <hook> — <policy>` — and
+   `validate_pipeline.py --pre-fanout` refuses to pass without it.
 
 You write this yourself. Do not delegate it: the contract is what you will
 referee with in Phase 6, and a contract you did not write is one you cannot
@@ -497,12 +499,21 @@ command itself — run now, never remembered from a plan step an earlier
 failure may have invalidated; a claim you cannot check that cheaply becomes
 an instruction ("create it with this command if absent"). Two recorded
 implementers were handed worktrees that did not exist and built their own
-topology to make the payload true. Then run
-`python3 ${PLUGIN_ROOT}/scripts/check_payload.py <payload-file> --kind <agent>`
-over each payload: it refuses a misnamed or missing field (a misnamed field is
-ignored, never rejected, so the agent writes wherever it likes), an absolute
-path that does not exist, an unexpanded `${PLUGIN_ROOT}`, and a credential
-literal.
+topology to make the payload true. Then write each payload to a file under
+`.agent-staging/payloads/` in `X` — the bytes you will paste, not a draft —
+and run `python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind
+<agent>` over each: it refuses a misnamed or missing field (a misnamed field
+is ignored, never rejected, so the agent writes wherever it likes), an
+absolute path that does not exist, an unexpanded `${PLUGIN_ROOT}`, and a
+credential literal. Record the result before the fan-out message:
+
+```
+PAYLOAD-LINT: <N> payloads, <N> defects fixed — <agent ids>
+```
+
+`validate_pipeline.py --pre-fanout` refuses to pass without the line, exactly
+as it does for `CONTRACT-REVIEW:` and `HOOKS:`. A payload that was never a
+file was never linted.
 
 **Validate `TEST_PATHS` against the maps before every `unit-test-author`
 spawn.** Run `python3 scripts/check_permission_maps.py --agent
@@ -522,7 +533,11 @@ is **unconditional** — you never judge whether the drift happened to touch
 that author's surface, because a stale test file that happens to pass is the
 most expensive kind of coincidence and judging it needs exactly the judgment
 the hash exists to remove. Its `GAP:` analysis is still input to the contract
-fix.
+fix. Unconditional means the re-spawn happens, not that the file is deleted:
+the author reads and edits its own earlier output onto the current contract
+like every other re-spawn, and the delete-first mechanic stays reserved for
+the wholesale cases in the Phase 5 table. The recorded hash re-spawn deleted
+both test files and paid two full regenerations for a one-sentence pin.
 
 **Name the shared idiom when a concept spans packages.** Two implementers that
 each need the same helper, type, or error-mapping shape each invent one, and
@@ -587,7 +602,7 @@ are easy to tell apart:
 | What the tree shows | What it means | What you do |
 |---|---|---|
 | Files complete and coherent | the agent finished and died reporting | keep the work, verify it against the payload as if it had reported, log the recovery |
-| Files partial or half-written | the agent died mid-write | copy the fragments outside the repository, then revert those paths to a clean base and re-spawn — a fresh instance must not inherit a fragment, and an uncommitted fragment has no other copy |
+| Files partial or half-written | the agent died mid-write | `safe_revert.py` the paths (below): it copies each fragment outside the repository, then reverts — a fresh instance must not inherit a fragment, and an uncommitted fragment has no other copy |
 | Nothing written at any path | the work never happened | retry the spawn once, immediately and unchanged |
 
 An empty report **with no file at any of its paths** is a retryable
@@ -616,14 +631,24 @@ message is a payload like any other, and every payload rule binds it — it is
 not a place to be terse about what changed.
 
 **Uncommitted agent work has no second copy.** Never run `git checkout --`,
-`git restore`, `git stash` or `git clean` over a path an in-flight or recently
-dead agent may hold uncommitted; the recorded cases destroyed a whole fix
-round, and broke the rule again in the run that ratified it. Before any
-revert, and before any delete made so an author can be re-spawned, copy the
-path outside the repository and log where — a commit while blind agents run
-puts the file in the shared object store, reachable from every worktree, and
-spends the blindness invariant for nothing a copy does not give. An agent
-that died between staging and committing is committed by you on its branch,
+`git restore`, `git stash` or `git clean` yourself over a path an in-flight
+or recently dead agent may hold uncommitted; the recorded cases destroyed a
+whole fix round, and broke the rule again in the run that ratified it. Every
+revert, and every delete made so an author can be re-spawned, goes through
+the guard instead:
+
+```bash
+python3 "${PLUGIN_ROOT}/scripts/safe_revert.py" --repo <X or worktree> \
+  --copy-to <dir outside every repository> [--delete] <path> ...
+```
+
+It copies each path outside the repository first, prints where, then
+reverts (or, with `--delete`, removes) — and refuses a `--copy-to` inside
+the repository, because a copy the next revert can take is not a second
+copy. Log the printed copy path. A commit while blind agents run puts the
+file in the shared object store, reachable from every worktree, and spends
+the blindness invariant for nothing the copy does not give. An agent that
+died between staging and committing is committed by you on its branch,
 never reset. Recovery is the copy, or `git checkout <commit> -- <path>`
 against a commit that holds the file.
 
@@ -654,8 +679,8 @@ intent, never a diff against what the earlier instance wrote: a fresh
 instance knows that file only as it reads it on disk, so delta-language
 straddles two worlds it cannot reconcile. Second, delete first only for a
 clean slate — the wholesale cases in the vacuous-test table (Phase 5) — and
-copy the file outside the repository before the delete, so a re-spawn that
-stalls leaves the run with a file instead of nothing. What
+the delete is `safe_revert.py --delete`, so a re-spawn that stalls leaves the
+run with a copy instead of nothing. What
 is never on the table is widening the map to work around a problem:
 implementation paths, the dossier and the pipeline documents stay outside
 it, because the blindness is enforced by the permission map, not by an
@@ -727,7 +752,7 @@ arbitration, and the mechanic is the same in all three places. It turns on
 | What is vacuous | What you do |
 |---|---|
 | **Individual tests** in a file whose other tests are sound | re-spawn the author onto that file with **the tests named**. It reads its own earlier output and edits in place — no delete, nothing pasted. |
-| **The whole file** — a wholesale contract change, or every test in it asserts nothing | **copy the file outside the repository, then delete it yourself**, say so in the payload, and let a fresh `Write` recreate it — a re-spawn that stalls after the delete otherwise leaves the run at zero tests, and the recorded case was saved only by an unrelated commit. |
+| **The whole file** — a wholesale contract change, or every test in it asserts nothing | **delete it with `safe_revert.py --delete`** (Phase 4), which copies it outside the repository first; say so in the payload, and let a fresh `Write` recreate it — a re-spawn that stalls after a bare delete leaves the run at zero tests, and the recorded case was saved only by an unrelated commit. |
 
 Deleting a file to fix one weak test throws away every sound test beside it
 and pays a full blind regeneration for them. Name the tests instead.

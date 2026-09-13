@@ -1648,6 +1648,7 @@ def selftest() -> int:
             f"{'accepted' if deferred_clean else 'rejected'}"
         )
         finalize_ok = selftest_finalize()
+        pre_fanout_ok = selftest_pre_fanout()
         return (
             rc
             if (
@@ -1659,6 +1660,7 @@ def selftest() -> int:
                 and caught_deferred
                 and deferred_clean
                 and finalize_ok
+                and pre_fanout_ok
             )
             else 1
         )
@@ -1671,18 +1673,57 @@ def selftest() -> int:
 CONTRACT_REVIEW_RE = re.compile(
     r"^\s*[-*]?\s*CONTRACT-REVIEW:\s*(spawned|skipped)\b", re.MULTILINE
 )
+# `HOOKS: none` or `HOOKS: <hook> — <policy>`: the Phase 2 decision about what
+# the repository's commit hooks do to a mid-migration tree. Without it every
+# implementer learns the answer at its commit step, once per agent.
+HOOKS_RE = re.compile(r"^\s*[-*]?\s*HOOKS:\s*(none|\S.*)$", re.MULTILINE)
+# `PAYLOAD-LINT: <N> payloads, <N> defects ...`: every payload was a file and
+# went through check_payload.py before the fan-out message. A payload that was
+# never a file was never linted.
+PAYLOAD_LINT_RE = re.compile(
+    r"^\s*[-*]?\s*PAYLOAD-LINT:\s*(\d+)\s+payloads?\b.*?(\d+)\s+defects?\b",
+    re.MULTILINE,
+)
+
+PRE_FANOUT_LINES = (
+    (
+        "CONTRACT-REVIEW",
+        CONTRACT_REVIEW_RE,
+        "The contract review runs on every build and has no size gate.",
+        (
+            "CONTRACT-REVIEW: spawned <ref> — <N> lines, <N> DEFECT, <N> AMBIGUITY",
+            "CONTRACT-REVIEW: skipped — <reason>",
+        ),
+    ),
+    (
+        "HOOKS",
+        HOOKS_RE,
+        "The hook policy is decided at the contract commit, never at an "
+        "implementer's commit step.",
+        ("HOOKS: none", "HOOKS: <hook> — <policy>"),
+    ),
+    (
+        "PAYLOAD-LINT",
+        PAYLOAD_LINT_RE,
+        "Every payload is written to a file and linted before the fan-out "
+        "message; a payload that was never a file was never linted.",
+        ("PAYLOAD-LINT: <N> payloads, <N> defects fixed — <agent ids>",),
+    ),
+)
 
 
 def check_pre_fanout(path: Path) -> int:
     """Check the obligations that must hold before /work-on Phase 4 fans out.
 
-    The contract review has no size gate: the orchestrator writes the contract
-    and derives the checklist, so a defect in either is invisible to it for the
-    same reason, on a small contract as much as a large one. Skipping stays
-    allowed; skipping SILENTLY does not, because a skip that leaves no trace is
-    indistinguishable from a step nobody remembered. Exactly one
-    ``CONTRACT-REVIEW: spawned ...`` or ``CONTRACT-REVIEW: skipped — <reason>``
-    line in ``## Build log`` satisfies it.
+    Three lines in ``## Build log``, each recording a decision the orchestrator
+    otherwise makes silently — or forgets, which reads the same:
+
+    * ``CONTRACT-REVIEW: spawned ... | skipped — <reason>`` — the review has no
+      size gate; a skip stays allowed, a silent skip does not.
+    * ``HOOKS: none | <hook> — <policy>`` — what the commit hooks do to a
+      mid-migration tree, decided once instead of once per implementer.
+    * ``PAYLOAD-LINT: <N> payloads, <N> defects ...`` — every payload went
+      through ``check_payload.py`` as a file.
 
     Returns 0 when every obligation is recorded, 1 otherwise.
     """
@@ -1692,21 +1733,46 @@ def check_pre_fanout(path: Path) -> int:
         print(f"DEFECT  {path.name}: no '## Build log' section to check")
         return 1
 
-    match = CONTRACT_REVIEW_RE.search(body[1])
-    if not match:
-        print(
-            f"DEFECT  {path.name}: no CONTRACT-REVIEW: line in ## Build log.\n"
-            "        The contract review runs on every build and has no size "
-            "gate.\n"
-            "        Record one of:\n"
-            "          CONTRACT-REVIEW: spawned <ref> — <N> lines, <N> DEFECT, "
-            "<N> AMBIGUITY\n"
-            "          CONTRACT-REVIEW: skipped — <reason>"
-        )
-        return 1
+    rc = 0
+    for token, pattern, why, shapes in PRE_FANOUT_LINES:
+        match = pattern.search(body[1])
+        if not match:
+            shape_lines = "\n".join(f"          {s}" for s in shapes)
+            print(
+                f"DEFECT  {path.name}: no {token}: line in ## Build log.\n"
+                f"        {why}\n"
+                f"        Record one of:\n{shape_lines}"
+            )
+            rc = 1
+            continue
+        print(f"ok      {path.name}: {token} recorded ({match.group(1)})")
+    return rc
 
-    print(f"ok      {path.name}: contract review recorded ({match.group(1)})")
-    return 0
+
+def selftest_pre_fanout() -> bool:
+    """The pre-fan-out check refuses each missing line and passes a full log."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        full = (
+            "## Build log\n"
+            "- CONTRACT-REVIEW: spawned ses_1 — 12 lines, 0 DEFECT, 1 AMBIGUITY\n"
+            "- HOOKS: lefthook clippy --workspace — agents stop on refusal, "
+            "orchestrator commits with --no-verify\n"
+            "- PAYLOAD-LINT: 5 payloads, 1 defect fixed — P1 P2 UT-A UT-B IT\n"
+        )
+        ok = True
+        (root / "full.md").write_text(full, encoding="utf-8")
+        ok &= check_pre_fanout(root / "full.md") == 0
+        for token in ("CONTRACT-REVIEW", "HOOKS", "PAYLOAD-LINT"):
+            partial = "\n".join(
+                line for line in full.splitlines() if not line.startswith(f"- {token}:")
+            )
+            (root / f"no-{token}.md").write_text(partial + "\n", encoding="utf-8")
+            ok &= check_pre_fanout(root / f"no-{token}.md") == 1
+        (root / "none.md").write_text("## Build log\n- HOOKS: none\n- PAYLOAD-LINT: 2 payloads, 0 defects — P1 UT\n- CONTRACT-REVIEW: skipped — two-member contract, reviewed by hand\n", encoding="utf-8")
+        ok &= check_pre_fanout(root / "none.md") == 0
+        print(f"\n{'PASS' if ok else 'FAIL'} — pre-fan-out lines each refused when missing, accepted when present")
+        return bool(ok)
 
 
 # --------------------------------------------------------------------------
@@ -1743,7 +1809,8 @@ def main() -> int:
         "--pre-fanout",
         action="store_true",
         help="check the pre-fan-out obligations for --dossier: the build log "
-        "must record a CONTRACT-REVIEW: line (spawned or skipped)",
+        "must record CONTRACT-REVIEW: (spawned or skipped), HOOKS: (none or "
+        "a policy) and PAYLOAD-LINT: (payload and defect counts) lines",
     )
     ap.add_argument(
         "--selftest",
