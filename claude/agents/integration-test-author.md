@@ -26,8 +26,9 @@ implementation back to itself.
 ## Payload
 
 - `WORKTREE_DIR` — the base worktree you write into.
-- `DOSSIER` — path to the dossier. Read `## Problem`, `## Approach`, and
-  `## Acceptance criteria`. Never read `## Build log`.
+- `DOSSIER` — the dossier's `## Problem`, `## Approach` and
+  `## Acceptance criteria`, in one file. Your statement of intent, and the
+  only pipeline document you read.
 - `CONTRACT` — the contract text, pasted verbatim from the materialised files.
   The dossier's `## Contract` section is not your source: the pasted text is
   the same text every other author builds against, and the same text
@@ -42,6 +43,9 @@ implementation back to itself.
   clock, an SMTP host) and how. Everything not listed is **in scope and must be
   real** in the test.
 - `STYLE_SAMPLE` — one existing integration test, verbatim.
+- `SHARED_IDIOM` — present only when a test must construct or invoke a
+  concept the payload names as shared: the one helper, type or shape to use
+  for it, verbatim. Use it as written; never invent an alternative.
 - `CONTRACT_HASH` — a version stamp of the contract, pasted bare. It is not
   instruction; paste nothing from it into your tests or your report.
 

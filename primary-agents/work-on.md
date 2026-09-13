@@ -217,6 +217,27 @@ This is the step everything else depends on.
 4. **Commit it on `X`.** Prefix with the Jira key. Every fan-out branch forks
    from this commit, so the contract is the one thing all of them share.
 
+   **Read the repository's commit hooks before this commit, and decide the
+   hook policy for the whole fan-out now.** From this commit until the last
+   package merges the tree is mid-migration by construction — stubs beside
+   real bodies, tests naming types no body fills yet — so a hook that
+   compiles, lints or auto-fixes **workspace-wide** cannot pass on it, and
+   an auto-fixer that runs anyway rewrites files nobody owns: the recorded
+   cases renamed a stub's unused parameters inside the contract commit, and
+   reformatted a blind author's test during a fix round. So: diff this commit
+   against your own edits before any worktree forks from it and revert what
+   the hook wrote; when a hook is workspace-wide, skip it on your own commits
+   with the repository's bypass flag, run its fixers by hand over exactly the
+   files you changed, and say so in the commit message. Every implementer
+   payload then carries `HOOKS` (`references/payloads.md`): **the agent stops
+   and reports when a hook refuses its commit**, and you commit on its
+   branch. Never put the bypass in a payload or a resume — a sub-agent's
+   permission is not granted by an instruction, and the recorded attempt
+   paid a full round trip to learn that. When the hook's own runtime
+   approaches the runtime's no-progress window, tell the implementer to
+   stage and report without committing at all. Log the decision:
+   `HOOKS: none` or `HOOKS: <hook> — <policy>`.
+
 You write this yourself. Do not delegate it: the contract is what you will
 referee with in Phase 6, and a contract you did not write is one you cannot
 referee with.
@@ -276,7 +297,7 @@ defect to fix in the checklist and the contract together, never a reason to
 ask the same blind agent to re-read what its payload never told it to look
 for.
 
-**Three diffs over the checklist, before anything spawns:**
+**Four diffs over the checklist, before anything spawns:**
 
 1. **Slice it per surface, and make the slices add up.** Each unit author gets
    exactly the lines its surface can observe — but every line lands with
@@ -292,6 +313,14 @@ for.
    exported. A blind author compiles against the contract text alone; a seam
    with unstated visibility is a compile error it cannot resolve, and a
    guaranteed `GAP:` return or row-3 arbitration.
+4. **Diff it against the tests that already exist.** On a surface that already
+   has a test file, grep the tree for a test that observes each line; where
+   one does, cite the line on that test in place, drop it from the new
+   author's slice, and name in the payload the test names it must not reuse.
+   A blind author told to cover a promise an existing test owns writes a
+   second test for it — the recorded case duplicated half a file under three
+   identical names and passed the coverage gate throughout, because the gate
+   asks whether a line has an owner and cannot ask whether it has two.
 
 **The independent contract review — spawn `contract-reviewer` now, before the
 fan-out.** You wrote the contract and derived the checklist; a defect in
@@ -436,8 +465,10 @@ above before anything is re-spawned.
   `references/payloads.md`), the fixtures, and `CONTRACT_HASH`. Its payload
   plus its permission map are its entire world; a thin payload produces a
   guessed test, which is why it returns `GAP:` instead of guessing.
-- `integration-test-author` — the dossier path (**absolute, into the main
-  checkout** — `.discovery/` is untracked and exists in no worktree), the
+- `integration-test-author` — a dossier **excerpt** you generate under
+  `.agent-staging/` in `X` (`DOSSIER`: `## Problem`, `## Approach` and
+  `## Acceptance criteria` verbatim, nothing else — never the live dossier,
+  whose `## Build log` a `Read` with no limit returns whole), the
   contract pasted verbatim from the files on `X` (`CONTRACT`, never read from
   the dossier, so the text it builds against is the text `CONTRACT_HASH`
   stamps), its owned test paths inside `X` (again, all of them — one per
@@ -449,8 +480,16 @@ above before anything is re-spawned.
   before the fan-out, and paste the invocation that actually worked** —
   including whatever environment setup it needed (an interpreter path, an
   activation step, an environment variable) in the payload text itself. A
-  command that fails in your shell fails in theirs, once per agent. Its own new
-  code has no tests yet, and green is not its exit condition. **When an owned
+  command that fails in your shell fails in theirs, once per agent. **The
+  command must also emit progress well inside the runtime's no-progress
+  watchdog**: warm each worktree's build once yourself before the fan-out and
+  give every worktree its own build directory, named in the command — a cache
+  two worktrees share links a sibling's artifacts, and the recorded stub
+  red-run passed 41 of 69 tests against stubs through one. A cold
+  cross-platform or virtual-machine compile is your check, never an agent's;
+  the recorded payload that asked three implementers for one killed all
+  three on the watchdog. Its own new code has no tests yet, and green is not
+  its exit condition. **When an owned
   path is a shell script that embeds a program in a heredoc — written to a
   file and executed — the payload also carries `VERIFY_EMBEDDED`: the
   embedded-program parse idiom from `references/payloads.md`, one line per
@@ -459,6 +498,21 @@ above before anything is re-spawned.
   `TEST_COMMAND`: `bash -n` parses only the shell text, a stub-backed suite
   never executes the embedded program, and the recorded fix round verified
   green on both while the embedded program was syntactically dead.
+
+**Re-verify every setup claim in the same turn as the fan-out message, then
+lint every payload before it ships.** A payload that says a worktree exists,
+a branch was created, a file was written or a command was verified is proven
+by the cheapest command that shows it — `git worktree list`, `test -f`, the
+command itself — run now, never remembered from a plan step an earlier
+failure may have invalidated; a claim you cannot check that cheaply becomes
+an instruction ("create it with this command if absent"). Two recorded
+implementers were handed worktrees that did not exist and built their own
+topology to make the payload true. Then run
+`python3 ${PLUGIN_ROOT}/scripts/check_payload.py <payload-file> --kind <agent>`
+over each payload: it refuses a misnamed or missing field (a misnamed field is
+ignored, never rejected, so the agent writes wherever it likes), an absolute
+path that does not exist, an unexpanded `${PLUGIN_ROOT}`, and a credential
+literal.
 
 **Validate `TEST_PATHS` against the maps before every `unit-test-author`
 spawn.** Run `python3 scripts/check_permission_maps.py --agent
@@ -543,7 +597,7 @@ are easy to tell apart:
 | What the tree shows | What it means | What you do |
 |---|---|---|
 | Files complete and coherent | the agent finished and died reporting | keep the work, verify it against the payload as if it had reported, log the recovery |
-| Files partial or half-written | the agent died mid-write | revert those paths to a clean base, then re-spawn — a fresh instance must not inherit a fragment |
+| Files partial or half-written | the agent died mid-write | copy the fragments outside the repository, then revert those paths to a clean base and re-spawn — a fresh instance must not inherit a fragment, and an uncommitted fragment has no other copy |
 | Nothing written at any path | the work never happened | retry the spawn once, immediately and unchanged |
 
 An empty report **with no file at any of its paths** is a retryable
@@ -553,11 +607,35 @@ construction. A second empty return goes to the user as an infrastructure
 problem. Never classify an empty-artifact return as a `GAP:`, a vacuous
 test, or a weak oracle, and never let one pass as success.
 
+**After the second empty return, change something before you spawn again.**
+Three recorded runs sent the same agent shape eleven, six and six times.
+Escalate in this order and log the step: (1) canary the shape with a trivial
+payload — one small read, a one-line write — so one cheap spawn tells
+infrastructure from workload; (2) if the canary lands, shrink the deliverable
+once, by splitting `TEST_PATHS` or lowering `MAX_SINGLE_EDIT`; (3) if that
+dies too, re-route to an agent shape that has landed in this run for the same
+file family, state its blindness constraint, require disclosure, and log the
+routing; (4) failing that, write the harness machinery yourself and have
+authors produce only cases, in small standalone files. Never a fourth spawn
+of one shape at one size.
+
 **Prefer a resume over a re-spawn whenever the transport failed and the work
 did not.** The agent's transcript carries its finished reasoning, so a
 resume lands the remaining work instead of regenerating all of it. A resume
 message is a payload like any other, and every payload rule binds it — it is
 not a place to be terse about what changed.
+
+**Uncommitted agent work has no second copy.** Never run `git checkout --`,
+`git restore`, `git stash` or `git clean` over a path an in-flight or recently
+dead agent may hold uncommitted; the recorded cases destroyed a whole fix
+round, and broke the rule again in the run that ratified it. Before any
+revert, and before any delete made so an author can be re-spawned, copy the
+path outside the repository and log where — a commit while blind agents run
+puts the file in the shared object store, reachable from every worktree, and
+spends the blindness invariant for nothing a copy does not give. An agent
+that died between staging and committing is committed by you on its branch,
+never reset. Recovery is the copy, or `git checkout <commit> -- <path>`
+against a commit that holds the file.
 
 **Handle two returns immediately, never silently:**
 
@@ -585,7 +663,9 @@ whole file with `Write`. Two limits. First, the payload names the complete
 intent, never a diff against what the earlier instance wrote: a fresh
 instance knows that file only as it reads it on disk, so delta-language
 straddles two worlds it cannot reconcile. Second, delete first only for a
-clean slate — the wholesale cases in the vacuous-test table (Phase 5). What
+clean slate — the wholesale cases in the vacuous-test table (Phase 5) — and
+copy the file outside the repository before the delete, so a re-spawn that
+stalls leaves the run with a file instead of nothing. What
 is never on the table is widening the map to work around a problem:
 implementation paths, the dossier and the pipeline documents stay outside
 it, because the blindness is enforced by the permission map, not by an
@@ -657,7 +737,7 @@ arbitration, and the mechanic is the same in all three places. It turns on
 | What is vacuous | What you do |
 |---|---|
 | **Individual tests** in a file whose other tests are sound | re-spawn the author onto that file with **the tests named**. It reads its own earlier output and edits in place — no delete, nothing pasted. |
-| **The whole file** — a wholesale contract change, or every test in it asserts nothing | **delete the file yourself first**, say so in the payload, and let a fresh `Write` recreate it. |
+| **The whole file** — a wholesale contract change, or every test in it asserts nothing | **copy the file outside the repository, then delete it yourself**, say so in the payload, and let a fresh `Write` recreate it — a re-spawn that stalls after the delete otherwise leaves the run at zero tests, and the recorded case was saved only by an unrelated commit. |
 
 Deleting a file to fix one weak test throws away every sound test beside it
 and pays a full blind regeneration for them. Name the tests instead.
@@ -743,6 +823,17 @@ output shows an evaluated assertion; no: harness noise fired before any
 assertion ran; `UNKNOWN` only when the output is silent), and a factual note.
 Assembling the evidence for all of them first is what stops you ruling on
 failure one with failure four's cause still unread.
+
+**A ruling rests on a measurement only after the harness that took it was
+shown to fail and shown to run.** When a ruling depends on a count, a timing
+or a probe you took yourself, run the check on a known-bad input first and
+watch it fail, confirm it prints one result line per case, and derive every
+label it prints from the measurement rather than from the loop variable that
+names a step. Prefer the repository's own verdict scripts to a throwaway
+probe, and paste the negative control into the case file beside the reading.
+The recorded failure ruled on labels that were never elapsed times, re-spawned
+both sides twice, and reversed itself two rounds later; a ruling reversed
+because the harness lied counts against the arbitration budget twice.
 
 For each failure, decide who was wrong. **The contract is the referee**, and the
 rule is mechanical so you cannot drift toward whichever side is easier to
@@ -903,6 +994,11 @@ behaviour-preserving under it. A change request that needs a test changed to
 pass is out of bounds, and a reviewer that thinks the *behaviour* is wrong files
 a contract objection in its notes — the contract owns behaviour, and the
 contract is yours.
+
+**A lens that died mid-pass has reviewed nothing.** Its partial text reads
+like a verdict — "this looks solid so far" — and is not one: a lens that
+stopped before three of its five locations has reviewed neither. Resume it
+from its transcript; never record a partial return as `PASS`.
 
 **Apply the change requests:**
 
@@ -1213,6 +1309,18 @@ overview until its issue exists.
    and `docs/learned-rules*.md`, the suite and review evidence already in the
    dossier stands — run the validators, not the tests.
 
+   **Git's silence at this merge is not agreement — three checks before the
+   merge commit.** Compile the merged tree once per gated configuration
+   before committing it: two files both sides changed can auto-merge into
+   code that does not compile, and a check that skips a platform-gated file
+   reports zero errors over code it never read. Run the repository's
+   decision-id collision check: two branches can mint one ADR or rule number
+   under two filenames, and git sees one file added on each side. Stage
+   resolved files by name and grep the tree for `<<<<<<<` before committing,
+   because `git add -A` stages marker-carrying files and `--diff-filter=U`
+   then reports zero unmerged paths. All three were paid for in one recorded
+   sync.
+
    **Re-derive every derived id and count the sync could have moved.**
    `--finalize-ids` settles the ids *this pipeline* mints — ADRs and LRNs.
    It knows nothing about ids and counts the **repository** derives from
@@ -1419,5 +1527,16 @@ between this list and a phase is a defect in this list.
 - Nothing external happens without an explicit yes: no Jira create, no Jira
   transition, no PR, no push to a protected branch. No force-push, no history
   rewrite, no merge of the PR — merging is the user's.
+- **Uncommitted agent work has no second copy.** No destructive git command
+  over a path an agent may hold uncommitted; copy out before any revert or
+  delete; an agent that died after staging is committed, never reset.
+  (Phase 4, Phase 5)
+- **A workspace-wide hook is decided at the contract commit.** Agents stop
+  and report on a hook refusal; you commit on their branch with the hook
+  skipped and the fixers run by hand; no payload ever names a bypass.
+  (Phase 2)
+- **A tool's output is read whole.** Never a verdict through `tail`, `head`
+  or `grep`; the exit status is the command's; a fail-fast runner runs in its
+  no-fail-fast form; counts are summed from a file. (Phase 4, Phase 6)
 - **Everything surprising goes in `## Build log`.** Chat output dies with the
   session; the dossier does not.
