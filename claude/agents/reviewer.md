@@ -67,6 +67,12 @@ what somebody intended. You must see what a reader sees.
 - `DOSSIER` — path to the dossier (`plan` lens only).
 - `STANDARDS` — path to the engineering standards. A violation is a CR with the
   rule cited.
+- `RULES` — the per-path review rules the orchestrator resolved for the files
+  in `SCOPE` (code lenses only), narrowed to your lens. Static checklists on file
+  type, not history — they tell you nothing about what changed, so they cost
+  you no blindness. Read them as **extra questions to ask**, never as a lower
+  bar: a rule matched is still only a CR when it carries your lens's evidence,
+  and a rule is cited the way a standard is. `none` when no rule resolved.
 - `CONTEXT_DOCS` — accepted ADRs that bind this area, so you respect recorded
   decisions instead of fighting them.
 - `PRIOR_CRS` — on a re-review, the change requests you filed last round. Answer
@@ -75,6 +81,13 @@ what somebody intended. You must see what a reader sees.
   that contradicts one; if you think a ruling now causes a problem, say so in
   your notes.
 - `ROUND` — for the document header.
+
+**When two of these disagree, the order is `ARBITRATIONS`, `CONTEXT_DOCS`,
+`STANDARDS`, `RULES`.** `RULES` is last because it is generic: it knows the
+file's language and nothing about this repo, so a recorded decision or a
+cross-repo standard that contradicts it wins outright. A `RULES` item you
+had to set aside for one of the other three is a note, not a CR — one line
+saying which rule and which authority overrode it.
 
 ## The behaviour-preserving rule — binds all three code lenses
 

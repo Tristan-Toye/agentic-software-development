@@ -352,6 +352,11 @@ RUN_EVIDENCE: |
 CRITERIA: |
   <the acceptance criteria, for context>
 STANDARDS: ${PLUGIN_ROOT}/skills/standards/engineering-standards.md
+RULES: |
+  # ocr delegate rule, narrowed to this lens. `none` when nothing resolved.
+  #### Performance
+  - Recomputing inside a loop a value that is invariant across iterations
+  - Building a full list where a generator would avoid holding everything
 CONTEXT_DOCS: /abs/path/repo-W-014/docs/adr/0003-session-store.md
 ARBITRATIONS: |
   - user ruled 2026-08-10: keep the retry inside flush(); do not extract it
@@ -470,6 +475,18 @@ leaked local path.
 - **`SCOPE` is a location list, never a diff.** Passing a diff breaks the
   reviewer's blindness, and blindness is the whole reason its verdict is worth
   anything.
+- **`RULES` is rule text, never `ocr` output verbatim.** `ocr delegate rule`
+  resolves one combined checklist per path — correctness, security,
+  performance, maintainability, tests in a single block. Pasting that block
+  into all three lenses hands every lens every other lens's question, and the
+  duplicate CRs that follow are exactly what the `LENS` field exists to
+  prevent. **The orchestrator narrows it per lens before it is a payload
+  field**, and a rule that belongs to no lens is dropped, not distributed.
+  It is a checklist, not a licence: a rule still becomes a CR only with that
+  lens's evidence, and it loses to `STANDARDS`, `CONTEXT_DOCS` and
+  `ARBITRATIONS` whenever they disagree. `RULES: none` is a valid field and
+  the right one when nothing resolved or `ocr` was unavailable — the field
+  stays present so a lens can tell "no rules" from "forgotten".
 - **`OWNED_PATHS` is assigned by the orchestrator from `## Work packages`**,
   never negotiated by the agent, and disjoint across every concurrent spawn.
   `scripts/validate_pipeline.py` checks the disjointness before the fan-out.

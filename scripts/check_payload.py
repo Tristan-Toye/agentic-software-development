@@ -82,7 +82,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         "required": {"LENS", "WORKTREE_DIR", "STANDARDS", "ROUND"},
         "optional": {
             "DOSSIER", "SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA",
-            "CONTEXT_DOCS", "ARBITRATIONS", "PRIOR_CRS",
+            "CONTEXT_DOCS", "ARBITRATIONS", "PRIOR_CRS", "RULES",
         },
     },
     "contract-reviewer": {
@@ -110,11 +110,14 @@ CONDITIONAL: dict[tuple[str, str, str], tuple[set[str], list[set[str]]]] = {
     ("implementer", "MODE", "fix"): (set(), [{"CRS", "FAILURES"}]),
     ("reviewer", "LENS", "plan"): ({"DOSSIER", "CRITERIA", "CONTEXT_DOCS"}, []),
     ("reviewer", "LENS", "style"): (
-        {"SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA", "CONTEXT_DOCS", "ARBITRATIONS"}, []),
+        {"SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA", "CONTEXT_DOCS", "ARBITRATIONS",
+         "RULES"}, []),
     ("reviewer", "LENS", "architecture"): (
-        {"SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA", "CONTEXT_DOCS", "ARBITRATIONS"}, []),
+        {"SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA", "CONTEXT_DOCS", "ARBITRATIONS",
+         "RULES"}, []),
     ("reviewer", "LENS", "performance"): (
-        {"SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA", "CONTEXT_DOCS", "ARBITRATIONS"}, []),
+        {"SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA", "CONTEXT_DOCS", "ARBITRATIONS",
+         "RULES"}, []),
     ("document-drafter", "MODE", "adr"): ({"DECISIONS"}, []),
     ("document-drafter", "MODE", "pr"): ({"DOSSIER-EXCERPTS"}, []),
 }
@@ -393,6 +396,20 @@ def selftest() -> int:
     case("reviewer style needs scope",
          plan.replace("LENS: plan", "LENS: style"), "reviewer", True, "SCOPE is missing")
 
+    style = (
+        "LENS: style\nWORKTREE_DIR: {REAL}\nSCOPE: |\n  src/flush.py :: flush (changed)\n"
+        "CONTRACT: |\n  fn flush()\nRUN_EVIDENCE: |\n  3 passed\nCRITERIA: |\n  1. x\n"
+        "STANDARDS: {REAL}/tests/unit/test_retry.py\n"
+        "RULES: |\n  #### Resource Management\n  Prefer `with` over manual close.\n"
+        "CONTEXT_DOCS: {REAL}/tests/unit/test_retry.py\nARBITRATIONS: none\nROUND: 1\n"
+    )
+    case("reviewer style clean", style, "reviewer", False)
+    case("reviewer style needs rules",
+         style.replace("RULES: |\n  #### Resource Management\n  Prefer `with` over manual close.\n", ""),
+         "reviewer", True, "RULES is missing")
+    case("reviewer plan takes no rules",
+         plan + "RULES: none\n", "reviewer", False)
+
     drafter = (
         "MODE: pr\nDOSSIER-EXCERPTS: |\n  ## Problem\nFORMAT: |\n  shape\n"
         "TARGET_PATHS: {REAL}/.discovery/pr-draft.md\nSCRUB: W-014\n"
@@ -404,7 +421,7 @@ def selftest() -> int:
 
     for item in failures:
         print("SELFTEST FAIL  %s" % item)
-    print("selftest: %d case group(s), %d failure(s)" % (23, len(failures)))
+    print("selftest: %d case group(s), %d failure(s)" % (26, len(failures)))
     return 1 if failures else 0
 
 

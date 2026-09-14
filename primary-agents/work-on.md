@@ -74,7 +74,7 @@ log`**.
 | Work | Agent | Gate — delegate only past it | Below the gate |
 |---|---|---|---|
 | Place the contract as stubs | `stub-materialiser` | `## Contract` carries **more than four members** | type the stubs yourself |
-| List the blast radius | `blast-radius-scout` | the diff touches **more than five files** | compute it from `--stat` yourself |
+| List the blast radius | `blast-radius-scout` | `ocr delegate preview` returns **more than five reviewable files** | run `preview` and narrow it from `--stat` yourself |
 | Draft ADRs / the PR description | `document-drafter` | ADRs are due, or the PR description is being written | write them yourself |
 | Review the materialised contract | `contract-reviewer` | **no gate — it runs on every build** (below) | — |
 
@@ -923,14 +923,37 @@ line either way: mutants killed and survived, or skipped and the reason.
 
 ## Phase 7 — The review cycle: three lenses, concurrently
 
-Compute the **blast radius**: `git diff --stat <baseline>..HEAD` in `X`,
-narrowed to the functions and regions the change touched, plus their direct
-callers. When the diff touches more than five files, delegate the listing to
-`blast-radius-scout` — it returns the location list, marked `changed` or
-`caller`, one hop deep — then validate it against your own `--stat` and narrow
-it before it becomes `SCOPE`. Log the gate decision either way. Pass `SCOPE`
+Compute the **blast radius**. The file list comes from
+`ocr delegate preview --format json --repo X --from <baseline> --to HEAD`, not
+from a hand-rolled `git diff --name-only`: it returns `reviewable_files` and,
+just as important, `excluded_files` with the reason each was dropped. Narrow
+`reviewable_files` to the functions and regions the change touched, plus their
+direct callers. When it holds more than five files, delegate the listing to
+`blast-radius-scout` — it runs the same `preview`, returns the location list
+marked `changed` or `caller`, one hop deep, and reports `EXCLUDED:` — then
+validate it against your own `git diff --stat <baseline>..HEAD` and narrow it
+before it becomes `SCOPE`. Log the gate decision either way. Pass `SCOPE`
 as a **location list, never the diff**, so the reviewers stay blind to the
 history.
+
+**Rule on every exclusion before you spawn.** An excluded file is a file no
+lens will ever see, and `ocr`'s defaults were written for a generic
+repository, not this one. `exclude_reason: unsupported_ext` is the one that
+bites: `ocr` carries a fixed language list, so a repository whose product is
+`.md`, `.sql`, `.tf` or `.proto` watches its entire change land in
+`excluded_files` and reviews nothing. Read every reason, and for each one
+either accept it or pull the path back into `SCOPE` by hand — the exclusion
+governs what `ocr` would have reviewed, never what you may. Record the
+verdict in `## Build log`:
+
+```
+- EXCLUDED: <n> files — <path: reason>; ... — accepted | <path> pulled back into SCOPE
+```
+
+`none` is a valid value and so is `unknown — ocr unavailable`; what is not
+valid is an exclusion that reached nobody. When `ocr` is missing, fall back to
+`git diff --name-only`, log `unknown`, and know that nothing was filtered —
+which is the safe direction, not the unsafe one.
 
 Spawn all three in **one message** so they run concurrently. There is no chain,
 no short-circuit, and no restart: they review the same green state and return
@@ -945,10 +968,33 @@ their change requests together.
 3. `reviewer` `LENS: performance` — complexity, work amplification, allocation
    and copying, memory movement, blocking.
 
+**Resolve `RULES` once, then narrow it three ways.** Run
+`ocr delegate rule --format json <the SCOPE paths>` — it returns per-path
+review checklists, grouped so files sharing a rule appear once. This is
+deterministic rule resolution, not a review: it calls no model, and the rules
+are keyed on file type alone, so they carry nothing about what changed and
+cost the reviewers no blindness.
+
+**The narrowing is yours and it is not optional.** `ocr` returns one combined
+checklist per path — correctness, security, performance, maintainability,
+tests in a single block — and the three lenses exist precisely so that one
+question goes to one lens. Split the resolved text by lens before it becomes a
+payload field: readability, naming and documentation items to `style`;
+security, coupling, boundary and contract items to `architecture`; complexity,
+allocation and concurrency items to `performance`. Drop what belongs to no
+lens — test-coverage rules in particular, because you referee tests and no
+lens authors them. Pass `RULES: none` when nothing resolved or `ocr` is
+absent; never leave the field out, and never paste the ungrouped block.
+
+`RULES` ranks below `STANDARDS`, `CONTEXT_DOCS` and `ARBITRATIONS`: it knows
+the file's language and nothing about this repo. A reviewer that sets a rule
+aside for one of those says so in its notes.
+
 **Each lens carries its own evidence bar** (`sub-agents/reviewer.md`): performance
 states the input scale that makes the cost matter, style states the observable
 reading cost, architecture states the concrete future change or misuse. A CR
-without its lens's evidence is a note, not a change request.
+without its lens's evidence is a note, not a change request — **a matched
+`RULES` item is not evidence and never substitutes for it.**
 
 **The green suite is the invariant.** Every change request must be
 behaviour-preserving under it. A change request that needs a test changed to
