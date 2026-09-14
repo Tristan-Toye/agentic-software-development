@@ -1215,10 +1215,29 @@ instead. You never write the plugin from inside a build. Record a
 One issue per lesson, so each closes independently. **Create the issue only
 on the user's explicit yes** — it is an external action like any other.
 Log lines are not schedulable and nobody closes a log line; the issue is the
-forcing function that makes the graduation loop actually close. Until that
-yes arrives the lesson stays visible: `/overview-dossiers` mines `GRADUATION:`
-lines as a health signal, so an awaiting-yes graduation appears on every
-overview until its issue exists.
+forcing function that makes the graduation loop actually close.
+
+**Then write the outcome back onto the `GRADUATION:` line in `## Build log`,
+before you leave Phase 8b.** A resolved line ends in exactly one of three
+suffixes:
+
+- `— issue <owner>/<repo>#<n>` — the user said yes and `gh issue create`
+  returned that number. Owner and repo, never a bare `#<n>`: the line is read
+  from a different repository than the one the issue lives in.
+- `— absorbed: <commit>` — a later flow change already landed every clause of
+  the lesson, so no issue is owed. Not hypothetical, and the reason an issue
+  link alone cannot close the loop: a lesson can be settled by a change that
+  never knew it was owed.
+- `— declined: <one line>` — the user said no, and why, so the next run does
+  not re-ask.
+
+A line carrying none of the three means the decision is still open, and that
+— not the existence of an issue — is what keeps it visible:
+`/overview-dossiers` mines bare `GRADUATION:` lines as a health signal, so an
+awaiting-yes graduation appears on every overview until its line is closed.
+Improvise no fourth form. A suffix a grep cannot match reads as no suffix,
+and the signal then reports a finished lesson on every run until it is
+skipped for being wrong every time.
 
 ## Phase 9 — PR, then remove the worktree
 
