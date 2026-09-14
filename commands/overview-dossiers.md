@@ -89,10 +89,18 @@ and report only the signals that actually fired:
 - **`GAP:` returns.** These are contract defects caught by a test author. A
   pattern across dossiers points at one weak part of the contract format.
 - **Graduation lessons awaiting a yes.** `/work-on` Phase 8b records
-  `GRADUATION:` lines and drafts the plugin issue only on the user's explicit
-  yes. Report every `GRADUATION:` line whose issue does not exist yet — each
-  is a finished lesson parked on a decision, and the overview is where the
-  user remembers to give it.
+  `GRADUATION:` lines and closes each one by writing a suffix onto the line
+  itself: `— issue <owner>/<repo>#<n>`, `— absorbed: <commit>`, or
+  `— declined: <one line>`. That suffix is the whole membership test — report
+  every `GRADUATION:` line carrying none of the three, and never try to decide
+  whether an issue exists: you cannot see the plugin's issue list from here,
+  so text-matching `GRADUATION:` reports lessons that were closed months ago
+  and goes on reporting them forever. Each line you do report is a finished
+  lesson parked on a decision, and the overview is where the user remembers to
+  give it. **Give the counts both ways** — `N awaiting, M closed` — so
+  `0 awaiting, 0 closed` (no graduations), `0 awaiting, 12 closed` (the loop
+  is closing) and `9 awaiting, 0 closed` (the write-back step is not
+  happening) are three different readings rather than one.
 - **Reviews that hit the budget without resolving.** Name them — they are
   waiting on a user ruling, and nothing else will move them.
 
