@@ -78,7 +78,7 @@ every flag and keeps every judgement:
 | Agent | Tools | Carries |
 |---|---|---|
 | `stub-materialiser` | Read, Grep, Glob, Bash, Write | The contract verbatim into compiling stubs, past four members. |
-| `blast-radius-scout` | Read, Grep, Glob, Bash | The review scope as a location list, past five changed files. |
+| `blast-radius-scout` | Read, Grep, Glob, Bash | The review scope as a location list, past five changed files. File selection comes from `ocr delegate preview`, so every dropped path arrives with the reason it was dropped. |
 | `document-drafter` | Read, Grep, Glob, Write | ADR and PR drafts from decisions already made, self-scrubbed. |
 
 One **independent checker** runs on every build, with no size gate:
@@ -92,6 +92,42 @@ Two checks that were once agents are now the orchestrator's own passes: the
 **mutation check** (one mutant per checklist line on the primary surface).
 Both were delegated in fewer than one build in five, and the orchestrator ran
 them itself in every other — the spawn was the unused path, never the check.
+
+### open-code-review, at the two places that are not blind
+
+`ocr` ([open-code-review](https://github.com/alibaba/open-code-review)) is an
+**optional** dependency, used in delegation mode only: it resolves files and
+rules and calls no model, so no LLM endpoint is configured for it.
+
+| Step | Command | Who runs it |
+|---|---|---|
+| Which files changed, and which were dropped and why | `ocr delegate preview --format json` | `blast-radius-scout`, or the orchestrator below the gate |
+| The per-path review checklists | `ocr delegate rule --format json` | the orchestrator, at Phase 7 |
+
+It deliberately stops there. **The `reviewer` never runs `ocr` and never sees
+a diff** — its blindness protocol is the reason its verdict is worth anything,
+and every OCR delegate step past rule resolution is diff-driven. The rules
+reach a lens as the `RULES` payload field, already narrowed to that lens by
+the orchestrator, because `ocr` resolves one combined checklist per path and
+three lenses given the same checklist file the same CR three times.
+
+Two things to know before trusting it:
+
+- **`RULES` ranks last**, below `ARBITRATIONS`, `CONTEXT_DOCS` and
+  `STANDARDS`. It knows the file's language and nothing about the repo.
+- **`exclude_reason: unsupported_ext` is not a verdict.** `ocr` carries a
+  fixed language list; a repository whose product is `.md`, `.sql`, `.tf` or
+  `.proto` sees its whole change excluded. Phase 7 makes the orchestrator
+  rule on every exclusion and log it, rather than inherit it.
+
+Without `ocr` installed the pipeline runs unchanged: the scout falls back to
+`git diff --name-only`, the orchestrator logs `EXCLUDED: unknown — ocr
+unavailable`, and `RULES: none` goes to every lens. Nothing is filtered, which
+is the safe direction.
+
+```bash
+npm install -g @alibaba-group/open-code-review   # needs v1.9.0+ for --format
+```
 
 ## The files
 
