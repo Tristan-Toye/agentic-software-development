@@ -262,6 +262,7 @@
     "@tarquinen/opencode-dcp@latest",
     "opencode-mem",
     "envsitter-guard",
-    "opencode-notify"
+    "opencode-notify",
+    "context-mode"
   ]
 }
