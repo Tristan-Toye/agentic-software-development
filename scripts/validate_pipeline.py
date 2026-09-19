@@ -1814,6 +1814,13 @@ PAYLOAD_LINT_RE = re.compile(
     r"^\s*[-*]?\s*PAYLOAD-LINT:\s*(\d+)\s+payloads?\b.*?(\d+)\s+defects?\b",
     re.MULTILINE,
 )
+# `ADMISSION: granted <N> slots — <provider>/<model>, cap <C>, ceiling <K>` or
+# `ADMISSION: skipped — <reason>`: the wave took its slots from the machine-wide
+# ledger (scripts/spawn_admission.py) before the spawn message, so a wave is
+# split or deferred before it spawns instead of dying half-way.
+ADMISSION_RE = re.compile(
+    r"^\s*[-*]?\s*ADMISSION:\s*(granted|skipped)\b(?P<rest>.*)$", re.MULTILINE
+)
 
 PRE_FANOUT_LINES = (
     (
@@ -1839,13 +1846,23 @@ PRE_FANOUT_LINES = (
         "message; a payload that was never a file was never linted.",
         ("PAYLOAD-LINT: <N> payloads, <N> defects fixed — <agent ids>",),
     ),
+    (
+        "ADMISSION",
+        ADMISSION_RE,
+        "The wave acquires its slots from the machine-wide admission ledger "
+        "before the spawn message; a refusal splits it, a deferral waits.",
+        (
+            "ADMISSION: granted <N> slots — <provider>/<model>, cap <C>, ceiling <K>",
+            "ADMISSION: skipped — <reason>",
+        ),
+    ),
 )
 
 
 def check_pre_fanout(path: Path) -> int:
     """Check the obligations that must hold before /work-on Phase 4 fans out.
 
-    Three lines in ``## Build log``, each recording a decision the orchestrator
+    Four lines in ``## Build log``, each recording a decision the orchestrator
     otherwise makes silently — or forgets, which reads the same:
 
     * ``CONTRACT-REVIEW: spawned ... | skipped — <reason>`` — the review has no
@@ -1854,6 +1871,10 @@ def check_pre_fanout(path: Path) -> int:
       mid-migration tree, decided once instead of once per implementer.
     * ``PAYLOAD-LINT: <N> payloads, <N> defects ...`` — every payload went
       through ``check_payload.py`` as a file.
+    * ``ADMISSION: granted ... <provider>/<model> ... | skipped — <reason>`` —
+      the wave took its slots from the admission ledger. A ``granted`` line is
+      refused while that ledger holds an unexpired reset deadline for the
+      provider and model it names.
 
     Returns 0 when every obligation is recorded, 1 otherwise.
     """
@@ -1876,6 +1897,26 @@ def check_pre_fanout(path: Path) -> int:
             rc = 1
             continue
         print(f"ok      {path.name}: {token} recorded ({match.group(1)})")
+
+    granted = ADMISSION_RE.search(body[1])
+    key = re.search(r"([\w.-]+)/([\w.-]+)", granted.group("rest")) if granted and granted.group(1) == "granted" else None
+    if key:
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import spawn_admission
+
+            pending = spawn_admission.pending_deferral(key.group(1), key.group(2))
+        except ImportError:
+            pending = None
+            print("note    spawn_admission.py is not beside this script; the ledger was not consulted")
+        if pending:
+            deadline, text = pending
+            print(
+                f"DEFECT  {path.name}: ADMISSION granted for {key.group(1)}/{key.group(2)}, "
+                f"but the admission ledger holds a reset at {spawn_admission._fmt(deadline)} "
+                f"— {text[:80]!r}. Wait it out; never spawn into a closed window."
+            )
+            rc = 1
     return rc
 
 
@@ -1889,19 +1930,43 @@ def selftest_pre_fanout() -> bool:
             "- HOOKS: lefthook clippy --workspace — agents stop on refusal, "
             "orchestrator commits with --no-verify\n"
             "- PAYLOAD-LINT: 5 payloads, 1 defect fixed — P1 P2 UT-A UT-B IT\n"
+            "- ADMISSION: granted 5 slots — selftest-provider/selftest-model, cap 8, ceiling 5\n"
         )
         ok = True
         (root / "full.md").write_text(full, encoding="utf-8")
         ok &= check_pre_fanout(root / "full.md") == 0
-        for token in ("CONTRACT-REVIEW", "HOOKS", "PAYLOAD-LINT"):
+        for token in ("CONTRACT-REVIEW", "HOOKS", "PAYLOAD-LINT", "ADMISSION"):
             partial = "\n".join(
                 line for line in full.splitlines() if not line.startswith(f"- {token}:")
             )
             (root / f"no-{token}.md").write_text(partial + "\n", encoding="utf-8")
             ok &= check_pre_fanout(root / f"no-{token}.md") == 1
-        (root / "none.md").write_text("## Build log\n- HOOKS: none\n- PAYLOAD-LINT: 2 payloads, 0 defects — P1 UT\n- CONTRACT-REVIEW: skipped — two-member contract, reviewed by hand\n", encoding="utf-8")
+        (root / "none.md").write_text("## Build log\n- HOOKS: none\n- PAYLOAD-LINT: 2 payloads, 0 defects — P1 UT\n- CONTRACT-REVIEW: skipped — two-member contract, reviewed by hand\n- ADMISSION: skipped — one spawn\n", encoding="utf-8")
         ok &= check_pre_fanout(root / "none.md") == 0
-        print(f"\n{'PASS' if ok else 'FAIL'} — pre-fan-out lines each refused when missing, accepted when present")
+
+        # A granted line is refused while the admission ledger defers that key.
+        saved = os.environ.get("ASD_ADMISSION_DIR")
+        os.environ["ASD_ADMISSION_DIR"] = str(root / "admission")
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import spawn_admission
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                spawn_admission.main([
+                    "record-error", "--provider", "selftest-provider", "--model",
+                    "selftest-model", "Limit Exhausted. Your limit will reset in 30 minutes",
+                ])
+            with contextlib.redirect_stdout(io.StringIO()) as buf:
+                deferred = check_pre_fanout(root / "full.md")
+            ok &= deferred == 1 and "admission ledger holds a reset" in buf.getvalue()
+        except ImportError:
+            print("SKIP  spawn_admission.py not importable; the ledger refusal was not run")
+        finally:
+            if saved is None:
+                os.environ.pop("ASD_ADMISSION_DIR", None)
+            else:
+                os.environ["ASD_ADMISSION_DIR"] = saved
+        print(f"\n{'PASS' if ok else 'FAIL'} — pre-fan-out lines each refused when missing, accepted when present, and a granted admission refused under a live deferral")
         return bool(ok)
 
 

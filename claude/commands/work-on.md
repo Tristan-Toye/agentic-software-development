@@ -79,8 +79,8 @@ CONTRACT-REVIEW: skipped — <reason>
 
 `scripts/validate_pipeline.py --dossier <ID> --pre-fanout` refuses to pass
 while neither line is present — and likewise without the `HOOKS:` line
-(Phase 2) and the `PAYLOAD-LINT:` line (Phase 4). A skip stays possible; a
-*silent* skip does not.
+(Phase 2), the `PAYLOAD-LINT:` line and the `ADMISSION:` line (Phase 4). A
+skip stays possible; a *silent* skip does not.
 
 **Gates — before anything else.** Follow
 `${PLUGIN_ROOT}/references/time-logging.md` for the time-logging gate.
@@ -436,6 +436,39 @@ announces the eighth, and the gap surfaces phases later as a criterion no
 test covers. A difference is a spawn defect logged in `## Build log`, never
 something the next message explains away.
 
+**Admission before the spawn message — mandatory.** The wave table carries
+a slot count beside the agent count (one slot per spawn). Acquire them from
+the machine-wide ledger, which every session, checkout and plugin instance on
+this machine shares:
+
+```bash
+python3 "${PLUGIN_ROOT}/scripts/spawn_admission.py" acquire \
+  --provider <provider> --model <model> --n <N> --holder <ID>-wave<k>
+```
+
+Exit 0 grants the slots and prints the cap in force and the ceiling the
+ledger has learned; log `ADMISSION: granted <N> slots — <provider>/<model>,
+cap <C>, ceiling <K>` and spawn. Exit 1 is a refusal or a deferral, and the
+ladder below governs what it degrades into: a **deferral** names a recorded
+reset deadline — wait it out (step 1), and never spawn into a closed window
+from any checkout; a **refusal** names the free slots — split the wave to fit
+them (step 2), or serialise the cheapest kind (step 3). Never send the whole
+wave past a refusal. When the agents return, `release --holder <ID>-wave<k>`
+— a wave released with no error recorded raises the learned ceiling, which is
+the cap the next run starts from. When a provider limit kills an agent,
+`record-error "<the error, verbatim>"` before anything else, so every other
+session on the machine defers too. The two recorded failures: an 8-spawn
+wave with 4 corpses at their first API call while three sibling sessions
+drew on the same account, and a quota error that named its reset in prose
+nothing acted on. `ADMISSION: skipped — <reason>` is allowed for a wave of
+one; `validate_pipeline.py --pre-fanout` refuses without either line, and
+refuses a `granted` line while the ledger holds an unexpired deadline for
+that provider and model. A local cap cannot see other machines on the
+account — the provider's error stays the account-global signal, and
+`ASD_ADMISSION_DIR` can point every machine at one synced directory. Agents
+never learn any of this: an agent told about admission control waits on the
+wrong thing.
+
 **Under rate pressure, narrow the wave — never re-send the same batch.**
 Concurrency is the default because it is free when the quota allows it. Once
 a provider limit has killed agents in a wave, re-sending that wave buys the
@@ -443,7 +476,9 @@ same death: the limit is a property of the batch, not of any one payload.
 Degrade instead, in this order, and log which step you are on:
 
 1. **Wait out the stated reset** when the limit names one — a wave sent
-   into a closed window is a wave that dies whole.
+   into a closed window is a wave that dies whole. `spawn_admission.py
+   record-error "<the error, verbatim>"` puts the deadline in the ledger, so
+   every session on the machine waits with you.
 2. **Halve the wave.** Two batches that land beat one batch that dies.
 3. **Serialise the kind that is cheapest to lose.** A killed reviewer wastes
    only its generation; a killed implementer or test author may have left a
@@ -516,8 +551,8 @@ PAYLOAD-LINT: <N> payloads, <N> defects fixed — <agent ids>
 ```
 
 `validate_pipeline.py --pre-fanout` refuses without it, as for
-`CONTRACT-REVIEW:` and `HOOKS:`. A payload that was never a file was never
-linted.
+`CONTRACT-REVIEW:`, `HOOKS:` and `ADMISSION:`. A payload that was never a
+file was never linted.
 
 **Validate `TEST_PATHS` against the maps before every `unit-test-author`
 spawn.** Run `python3 scripts/check_permission_maps.py --agent
@@ -1560,7 +1595,9 @@ skipped for being wrong every time.
     kind, the review rounds spent, the mutation kill table (mutants killed and
     survived, or skipped and why), the ADRs extracted, the drafted rules
     awaiting ratification, any graduation issues (created or awaiting your
-    yes), the Tempo block, which dossiers this unblocks, and the deferred
+    yes), the admission ledger's learned ceiling per provider and model
+    (`spawn_admission.py status`), the Tempo block, which dossiers this
+    unblocks, and the deferred
     count from step 8 — `N deferred issues captured; /deferred renders them`
     — with the worst risk named in one clause when N is not zero.
 
@@ -1638,6 +1675,10 @@ between this list and a phase is a defect in this list.
   and report on a hook refusal; you commit on their branch with the hook
   skipped and the fixers run by hand; no payload ever names a bypass.
   (Phase 2)
+- **No wave spawns without admission.** Its slots come from the machine-wide
+  ledger before the spawn message; a refusal splits or serialises the wave,
+  a deferral waits out the recorded reset, and the whole wave is never sent
+  into a closed window. Agents never learn the mechanism. (Phase 4)
 - **A tool's output is read whole.** Never a verdict through `tail`, `head`
   or `grep`; the exit status is the command's; a fail-fast runner runs in its
   no-fail-fast form; counts are summed from a file. (Phase 4, Phase 6)
