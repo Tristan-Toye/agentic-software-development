@@ -505,8 +505,11 @@ topology to make the payload true. Then write each payload to a file under
 `python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind <agent>` over
 each: it refuses a misnamed or missing field (a misnamed field is ignored,
 never rejected, so the agent writes wherever it likes), an absolute path that
-does not exist, an unexpanded `${PLUGIN_ROOT}`, and a credential literal.
-Record it before the fan-out message:
+does not exist, an unexpanded `${PLUGIN_ROOT}`, a credential literal, a
+`TEST_COMMAND` verb that contradicts the named script's shebang (`python3
+<bash script>` lints clean and dies at run time — copy the invocation you
+verified, never write the verb from memory), and a `DOSSIER` that is not the
+run's live copy. Record it before the fan-out message:
 
 ```
 PAYLOAD-LINT: <N> payloads, <N> defects fixed — <agent ids>
@@ -525,6 +528,16 @@ the families the map admits; fix the split or stage the content, never the
 map. The failure this prevents is silent and repeats per retry: a path the
 read map admits but the edit map refuses makes the author read the existing
 file, refuse to write it, and return empty.
+
+**Gate the `integration-test-author` the same way before it spawns.** It has
+no path map, so the check is size and split, not admission: `python3
+scripts/check_permission_maps.py --agent sub-agents/integration-test-author.md
+--root <X> --test-paths <paths> --expected-lines <N> --flows <M>` warns past
+the single-write cap and when the flows outnumber the paths. **One
+`TEST_PATHS` entry per flow is the default, not a hint**: a `GAP:` or a
+vacuous test then re-spawns one flow instead of the set, and no single
+`Write` runs long — the recorded 646-line single-file deliverable, 1.85× the
+cap, returned empty twice and took three shrink rounds and a canary to land.
 
 **`CONTRACT_HASH` — stamp every test author's world at spawn, check it at
 return** (field rules: `references/payloads.md`). Hash the contract bytes
@@ -867,10 +880,18 @@ Exit 0: only harness lines —
 imports, module setup, fixtures, collection wiring — and row 4 stands. Exit
 1: an assertion-bearing line, so the failure belongs to rows 1–3 however
 noise-like it looked, which means a re-spawn, never your own edit. Exit 2:
-the check could not read the change — rule conservatively (rows 1–3). The
+the check could not read the change, or a changed binding is read by an
+assertion it cannot place — rule conservatively (rows 1–3). The
 `INSIDE-ASSERTION` field on each case file asks the same question from the
-output side; when the two disagree, read the test and the output before
-ruling. Row 5 narrows this check rather than escaping it: an upstream failure
+output side; **when the two disagree, the conservative ruling is mandatory** —
+rows 1–3, a re-spawn, never your own edit — and you read the test and the
+output before you record it. **A hoisted expected value is assertion-bearing
+whatever the checker returns**: `let embedded = (1..=14).collect();` one line
+above `assert_eq!(applied, embedded)` is the assertion's value, and changing
+the `14` rewrites what the test demands. The checker flags a changed binding
+an assertion in the same function reads (exit 1) and one read elsewhere in
+the file (exit 2); the rule stands where it misses. Row 5 narrows this check
+rather than escaping it: an upstream failure
 is still fixed by you, so the same `check_harness_edit.py` gate decides what
 your fix may touch. Row 5 changes who *caused* the failure, never who may
 edit an assertion.

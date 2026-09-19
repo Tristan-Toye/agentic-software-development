@@ -140,8 +140,14 @@ CONTRACT: |
   <the same contract text as every other author's, pasted verbatim from the
    files on the base worktree — never read out of the dossier>
 TEST_PATHS: /abs/path/repo-W-014/tests/integration/test_flush_flow.py
-           # one path per flow — a GAP: or a vacuous test then re-spawns one
-           # flow, not the whole set; and no single Write runs long
+           # ONE PATH PER FLOW — the default, not a hint. A GAP: or a vacuous
+           # test then re-spawns one flow, not the whole set, and no single
+           # Write runs long: the recorded 646-line single-file deliverable
+           # returned empty twice and took three shrink rounds to land. Gate
+           # it before the spawn — check_permission_maps.py --agent
+           # sub-agents/integration-test-author.md --test-paths … --flows N
+           # --expected-lines N warns when flows outnumber paths or the size
+           # passes the single-write cap.
 TEST_FRAMEWORK: pytest; run with `pytest tests/integration -q`
 HARNESS: |
   The `app_client` fixture in tests/integration/conftest.py stands up the real

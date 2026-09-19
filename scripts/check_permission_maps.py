@@ -29,6 +29,12 @@ Usage:
         --test-paths tests/unit/test_flush.py,tests/util/helpers.py \\
         --read-paths tests/unit/test_retry.py --expected-lines 620
         validate a spawn before it happens
+    check_permission_maps.py --agent sub-agents/integration-test-author.md \\
+        --root /abs/path/target-worktree \\
+        --test-paths tests/integration/test_flow.py --flows 3 --expected-lines 700
+        the size and split gates for an agent with no path map: warns when the
+        flows outnumber the paths (one TEST_PATH per flow is the default) and
+        past the single-write cap
     check_permission_maps.py --selftest
 
 Exit codes:
@@ -48,6 +54,8 @@ No third-party imports: this runs wherever python3 does.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import re
 import sys
 from collections.abc import Mapping
@@ -215,14 +223,16 @@ def spawn_validation(
     test_paths: list[str],
     read_paths: list[str],
     expected_lines: int | None = None,
+    flows: int | None = None,
 ) -> int:
     try:
         maps = parse_permission(agent_file.read_text())
     except OSError as exc:
         print(f"UNUSABLE  cannot read the agent file: {exc}")
         return 2
-    if "edit" not in maps:
-        print(f"UNUSABLE  {agent_file} declares no edit map")
+    scoped = "edit" in maps
+    if not scoped and any(tool in maps for tool in PATH_TOOLS):
+        print(f"UNUSABLE  {agent_file} declares path maps but no edit map")
         return 2
     if expected_lines is not None and expected_lines > MAX_SINGLE_EDIT_LINES:
         print(
@@ -231,7 +241,26 @@ def spawn_validation(
             "the payload — more files, or one file in staged sections",
             file=sys.stderr,
         )
+    if flows is not None and flows > len(test_paths):
+        print(
+            f"WARNING  {flows} flows over {len(test_paths)} TEST_PATHS: name one "
+            "path per flow — a GAP: or a vacuous test then re-spawns one flow, not "
+            "the whole set, and no single Write runs long",
+            file=sys.stderr,
+        )
     findings: list[str] = []
+    if not scoped:
+        # No path map (integration-test-author): admission is not gated, only
+        # the size and split gates above apply.
+        for raw in test_paths + read_paths:
+            if resolve(root, raw) is None:
+                print(f"UNUSABLE  '{raw}' is not inside the root {root}")
+                return 2
+        print(
+            f"OK        {len(test_paths)} test path(s) named; {agent_file.name} has "
+            "no path map, so only the size and split gates applied"
+        )
+        return 0
     for raw in test_paths:
         rel = resolve(root, raw)
         if rel is None:
@@ -481,6 +510,26 @@ def selftest() -> int:
         bool(is_allowed(drafter_write, ".discovery/pr-draft-W-014.md")),
     )
 
+    # The integration author has no path map: size and split gates only.
+    it_author = repo / "sub-agents" / "integration-test-author.md"
+
+    def gate(paths: list[str], lines: int | None, flows: int | None) -> tuple[int, str]:
+        err, out = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            rc = spawn_validation(it_author, repo, paths, [], lines, flows)
+        return rc, err.getvalue()
+
+    rc, warned = gate(["tests/integration/test_flow.py"], 700, None)
+    check("it author: 700 lines warns past the cap", True, rc == 0 and "exceeds" in warned)
+    rc, warned = gate(["tests/integration/test_flow.py"], 250, None)
+    check("it author: 250 lines is quiet", True, rc == 0 and "exceeds" not in warned)
+    rc, warned = gate(["tests/integration/test_flow.py"], None, 3)
+    check("it author: three flows over one path warns", True, rc == 0 and "3 flows over 1" in warned)
+    rc, warned = gate(["tests/integration/a.py", "tests/integration/b.py", "tests/integration/c.py"], None, 3)
+    check("it author: one path per flow is quiet", True, rc == 0 and "flows over" not in warned)
+    rc, _ = gate(["/etc/outside.py"], None, None)
+    check("it author: a path outside the root is unusable", True, rc == 2)
+
     ok = all(w == g for _, w, g in cases)
     for name, want, got in cases:
         print(f"{'PASS' if want == got else 'FAIL'}  {name}: want {want}, got {got}")
@@ -516,6 +565,12 @@ def main() -> int:
         help="expected deliverable size; warns past the single-edit cap",
     )
     ap.add_argument(
+        "--flows",
+        type=int,
+        help="flows (or criteria groups) the spawn covers; warns when they "
+        "outnumber --test-paths — one path per flow is the default",
+    )
+    ap.add_argument(
         "--selftest", action="store_true", help="run the built-in negative controls"
     )
     args = ap.parse_args()
@@ -534,6 +589,7 @@ def main() -> int:
             test_paths,
             read_paths,
             args.expected_lines,
+            args.flows,
         )
     repo = Path(__file__).resolve().parent.parent
     return scan(repo / "sub-agents")

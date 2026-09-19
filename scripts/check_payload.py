@@ -31,6 +31,13 @@ Four failure modes this catches, each of which cost a real build:
    `DOSSIER` inside some other checkout's `.discovery/` is the stale copy by
    design — the main checkout's, while the live one sits in the worktree.
 
+6. **A command verb that contradicts the script's shebang.** `TEST_COMMAND:
+   python3 scripts/check.sh` names an existing file, so every other check
+   passes — and the command dies at its first run. When a command field
+   names a script that carries a shebang, the verb must be the same
+   interpreter family; the recorded payload wrote the verb from memory
+   instead of copying the verified invocation.
+
 # Usage
 
     check_payload.py PAYLOAD_FILE --kind implementer [--worktree DIR]
@@ -178,6 +185,95 @@ URL_CREDENTIAL = re.compile(
 # is told to CREATE, or the drafter's target files.
 CREATE_HINT = re.compile(r"\b(TEST_PATHS|OWNED_PATHS|TARGET_PATHS)\b")
 
+# Fields that carry a command the agent will run verbatim.
+COMMAND_FIELDS = ("TEST_COMMAND", "BUILD_CHECK")
+# Interpreter verb -> family. A verb outside this table (pytest, cargo, make)
+# is a runner, not an interpreter, and the check does not apply.
+VERB_FAMILY = {
+    "python": "python", "python2": "python", "python3": "python", "pypy": "python",
+    "pypy3": "python",
+    "bash": "shell", "sh": "shell", "zsh": "shell", "dash": "shell", "ksh": "shell",
+    "node": "node", "nodejs": "node", "deno": "node", "bun": "node",
+    "ruby": "ruby", "perl": "perl",
+}
+ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def interpreter_family(token: str) -> str | None:
+    """`/usr/bin/python3.12` -> python; `bash` -> shell; `pytest` -> None."""
+    name = os.path.basename(token.strip("\"'"))
+    return VERB_FAMILY.get(name) or VERB_FAMILY.get(re.sub(r"[\d.]+$", "", name))
+
+
+def shebang_family(path: str) -> tuple[str | None, str]:
+    """(family, shebang line) of a script, or (None, '') when it has none."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            first = handle.readline().rstrip("\n")
+    except OSError:
+        return None, ""
+    if not first.startswith("#!"):
+        return None, ""
+    tokens = first[2:].split()
+    if not tokens:
+        return None, first
+    interpreter = tokens[0]
+    if os.path.basename(interpreter) == "env":
+        rest = [t for t in tokens[1:] if not t.startswith("-") and not ENV_ASSIGNMENT.match(t)]
+        interpreter = rest[0] if rest else ""
+    return interpreter_family(interpreter), first
+
+
+def field_command(lines: list[str], name: str) -> tuple[int, str]:
+    """(line number, command text) of a command field — its inline value, or
+    the first body line of a `NAME: |` block. (0, '') when absent."""
+    for number, found, rest in field_lines(lines):
+        if found != name:
+            continue
+        if rest and rest != "|":
+            return number, rest.split("#", 1)[0].strip()
+        for offset, line in enumerate(lines[number:], number + 1):
+            if line.strip():
+                return offset, line.strip().split("#", 1)[0].strip()
+        return number, ""
+    return 0, ""
+
+
+def verb_findings(lines: list[str], worktree: str | None) -> list[str]:
+    """A command field whose verb contradicts the named script's shebang."""
+    out: list[str] = []
+    for field in COMMAND_FIELDS:
+        number, command = field_command(lines, field)
+        if not command:
+            continue
+        tokens = [t for t in command.split() if not ENV_ASSIGNMENT.match(t)]
+        if tokens and os.path.basename(tokens[0]) == "env":
+            tokens = tokens[1:]
+        if not tokens:
+            continue
+        verb_family = interpreter_family(tokens[0])
+        if verb_family is None:
+            continue
+        for token in tokens[1:]:
+            if token.startswith("-") or not ("/" in token or re.search(r"\.\w+$", token)):
+                continue
+            candidates = [token] if os.path.isabs(token) else [
+                os.path.join(worktree, token) if worktree else token
+            ]
+            path = next((c for c in candidates if os.path.isfile(c)), None)
+            if path is None:
+                continue
+            family, shebang = shebang_family(path)
+            if family is None or family == verb_family:
+                continue
+            out.append(
+                "line %d: %s runs %s with %r, but its shebang says %r (%s). A verb "
+                "that contradicts the shebang lints clean and dies at run time; "
+                "copy the verified invocation." % (number, field, token, tokens[0], shebang, family)
+            )
+            break
+    return out
+
 
 def read_lines(path: str) -> list[str]:
     try:
@@ -306,7 +402,10 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
                 "never carries one: run the step that needs it yourself." % (number, name)
             )
 
-    # 5. a dossier path that is not the run's live copy
+    # 5. a command verb that contradicts the script's shebang
+    defects.extend(verb_findings(lines, worktree))
+
+    # 6. a dossier path that is not the run's live copy
     dossier, worktree_dir = field_value(lines, "DOSSIER"), field_value(lines, "WORKTREE_DIR")
     if (
         dossier
@@ -346,6 +445,11 @@ def selftest() -> int:
             real = os.path.join(tmp, "repo-W-014")
             os.makedirs(os.path.join(real, "tests", "unit"))
             os.makedirs(os.path.join(real, ".discovery", "dossiers"))
+            os.makedirs(os.path.join(real, "scripts"))
+            with open(os.path.join(real, "scripts", "check.sh"), "w") as fh:
+                fh.write("#!/usr/bin/env bash\necho ok\n")
+            with open(os.path.join(real, "scripts", "check.py"), "w") as fh:
+                fh.write("#!/usr/bin/env python3\nprint('ok')\n")
             with open(os.path.join(real, "tests", "unit", "test_retry.py"), "w") as fh:
                 fh.write("def test_x(): pass\n")
             with open(os.path.join(real, ".discovery", "dossiers", "W-014-x.md"), "w") as fh:
@@ -409,6 +513,18 @@ def selftest() -> int:
     case("implementer bad mode", impl.replace("MODE: build", "MODE: repair"), "implementer", True, "takes one of")
     case("implementer misnamed owned paths",
          impl.replace("OWNED_PATHS:", "OWNED_PATH:"), "implementer", True, "did you mean OWNED_PATHS")
+    case("test command verb contradicts a bash shebang",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: python3 {REAL}/scripts/check.sh"),
+         "implementer", True, "shebang says")
+    case("test command verb matches the shebang",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: bash {REAL}/scripts/check.sh --fast"),
+         "implementer", False)
+    case("test command bash verb over a python script",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: RUST_LOG=x sh {REAL}/scripts/check.py"),
+         "implementer", True, "shebang says")
+    case("test command as a block field",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: |\n  python3 {REAL}/scripts/check.sh"),
+         "implementer", True, "shebang says")
 
     plan = (
         "LENS: plan\nDOSSIER: {REAL}/tests/unit/test_retry.py\nWORKTREE_DIR: {REAL}\n"
@@ -450,7 +566,7 @@ def selftest() -> int:
 
     for item in failures:
         print("SELFTEST FAIL  %s" % item)
-    print("selftest: %d case group(s), %d failure(s)" % (28, len(failures)))
+    print("selftest: %d case group(s), %d failure(s)" % (32, len(failures)))
     return 1 if failures else 0
 
 
