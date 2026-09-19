@@ -43,8 +43,10 @@ in `../<repo>-<ID>`, and a plan under review lives in `../<repo>-plan-<KEY>`
 with no copy here at all. So run `git worktree list` and read the front
 matter of each such worktree's copy as the live state for that ID — say per
 row which copy you read. Two files here sharing one ID is a plan collision
-that landed; report it as a discrepancy. The HTML generator reads one `--root`
-and cannot follow worktrees; say so under the report in committed mode.
+that landed; report it as a discrepancy. Pass `--worktrees` to the HTML
+generator in committed mode, so the page shows the same live copies: an
+overlaid row carries a `live from` flag, and an attention line names the
+difference from this checkout's copy.
 
 ## `$ARGUMENTS` empty — the overview
 
@@ -131,8 +133,15 @@ same picture as a self-contained HTML dashboard:
 
    ```bash
    python3 "${PLUGIN_ROOT}/scripts/generate_open_work.py" \
-     --root .discovery [--signals <scratch>/signals.json]
+     --root .discovery [--signals <scratch>/signals.json] [--worktrees]
    ```
+
+   `--worktrees` in committed mode only: it overlays the live copy of each
+   dossier from the sibling worktrees (`../<repo>-<ID>`,
+   `../<repo>-plan-<KEY>`), ranked by `updated` and then by the worktree
+   named for the id. `--serve` and `--watch` honour it on every tick;
+   `--install` records it in the git hooks, while the Claude Code hook still
+   fires only for writes into this checkout's `.discovery/dossiers/`.
 
 3. Tell the user the output path it printed
    (`.discovery/analysis/open-work.html`) so they can open it in a browser.

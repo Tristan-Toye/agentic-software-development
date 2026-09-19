@@ -62,7 +62,7 @@ dossier inside a tracked `.discovery/`, and a warning per local-only path
 | Means | `.discovery/` is gitignored working state on this machine. | At least one file under `.discovery/` is tracked. A dossier is a reviewable change. |
 | `/plan` writes | `.discovery/dossiers/` in this checkout; nothing is committed. | The same path inside its own worktree on `plan/<KEY>`, forked from `origin/<base>`; the run ends with a PR (Phase 7). |
 | `/work-on` writes | This checkout's dossier, by absolute path. | `X`'s copy only, committed on the build branch before every merge and push, so the build record ships inside the build PR. This checkout's copy changes only when a PR merges. |
-| `/overview-dossiers` sees | Every dossier, live. | What has merged; an in-flight dossier lives in `../<repo>-<ID>` or `../<repo>-plan-<KEY>`, and the chat report reads it there. |
+| `/overview-dossiers` sees | Every dossier, live. | What has merged; an in-flight dossier lives in `../<repo>-<ID>` or `../<repo>-plan-<KEY>`, and both the chat report and the HTML (`--worktrees`) read it there. |
 | `/deferred` appends | To the dossier; git sees nothing. | To the dossier — an uncommitted change on the checked-out branch, named in the report and left to the user. |
 | Dossier IDs | Minted per working copy; final. | Provisional until the plan PR merges; `/plan` Phase 7 re-checks against the base tip (§4). |
 
