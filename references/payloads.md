@@ -237,9 +237,14 @@ FAILURES: |
    field alone is valid>
 OWNED_PATHS: src/flush.py, src/reload.py
 TEST_COMMAND: pytest -q            # now the invariant: it is green, keep it green
+                                   # a file outside OWNED_PATHS that changes
+                                   # while it runs: STOP AND REPORT, never revert
 HOOKS: |
   <same as build mode; the tree is whole now, so a hook that passes is
-   simply obeyed, and one that refuses is still reported, never bypassed>
+   simply obeyed, and one that refuses is still reported, never bypassed.
+   A formatter named here runs over OWNED_PATHS only — `rustfmt <owned
+   files>`, `prettier --write <owned files>` — never tree-wide (`cargo fmt
+   --all`, `prettier --write .`)>
 VERIFY_EMBEDDED: |
   <same rule as build mode — and never omitted from a fix that touches the
    heredoc itself: the fix round is the recorded escape, where re-indented
@@ -251,6 +256,23 @@ JIRA_KEY: PROJ-142
 In `fix` mode the suite is the invariant, not a collateral-damage check: a red
 test after a fix means the fix was not behaviour-preserving. Never widen
 `OWNED_PATHS` to include a test path — the implementer never edits a test.
+
+**A formatter instruction is scoped to `OWNED_PATHS`, never tree-wide.** A
+payload that says "leave `tests/perf_baseline_test.rs` exactly as it is" and
+"run `cargo fmt --all` before you commit" cannot be obeyed whole: the
+tree-wide formatter rewrites the carved-out file, the agent picks which
+instruction loses, and the orchestrator does not learn which. Give the scoped
+form beside any formatter you name — `rustfmt src/flush.rs src/reload.rs`,
+`prettier --write src/flush.ts` — and when a carve-out of an uncommitted file
+is truly unavoidable (commit it first instead, `work-on.md` Phase 6), say in
+the payload which instruction wins.
+
+**A file outside `OWNED_PATHS` that changes while the agent runs is reported,
+never reverted.** In `fix` mode the agent shares `X` with nobody by rule
+(`work-on.md` Phase 6 and Phase 7), but the rule in its payload is the
+backstop: a test file that changes under `TEST_COMMAND` is another agent's
+uncommitted work with no second copy, and `git checkout --` over it destroys
+a round. The recorded case did exactly that.
 
 A Phase 6 row-2 re-spawn — the implementation does not do what the contract
 promises — is also `MODE: fix` in the base worktree: the implementer's own

@@ -734,7 +734,14 @@ are cheap, and both run while the bodies in `X` are still stubs:
    corrected checklist (it reads and edits its own earlier output — Phase 4;
    delete first only when the fix is wholesale) — or record the
    accepted gap in `## Build log`. Do the same for the integration author's
-   map against the acceptance criteria.
+   map against the acceptance criteria. **When the repository owns a
+   coverage script, discover its real CLI before the first invocation** —
+   read its `--help` and use the flags it actually takes. The plugin's flag
+   shape (`--dossier`, `--root`) is a default, not a contract: the recorded
+   run invoked the repository's own `check_promise_coverage.py` with the
+   plugin's flags twice, and the second run resolved the test paths against
+   the wrong checkout and reported 0 covered / 29 uncovered — a coverage
+   FAIL that read like a fan-out defect.
 2. **The stub red-run.** Commit the test authors' work on `X`: delete
      `.agent-staging/` first; check scope mechanically — every path in `X`'s
      working tree (`git status --porcelain`) is a named `TEST_PATHS` entry or
@@ -853,7 +860,7 @@ change:
 | The failure shows | Who is wrong | What you do |
 |---|---|---|
 | The test asserts something the contract does not promise | **the test** | Re-spawn the test author with a corrected payload — it reads and edits its own `TEST_PATHS` file (Phase 4); delete first only for a wholesale rewrite. Never edit the test yourself — you have read the implementation, so you are exactly the wrong party to fix a test. |
-| The implementation does not do what the contract promises | **the implementation** | Re-spawn the implementer for that package in `MODE: fix`, working in `X` directly — its own worktree is gone (Phase 5) and the tests are committed, so blindness no longer applies. The failure output travels as `FAILURES:` in the payload (`references/payloads.md`); `CRS:` carries any review change requests still open for it, or is omitted. |
+| The implementation does not do what the contract promises | **the implementation** | Re-spawn the implementer for that package in `MODE: fix`, working in `X` directly — its own worktree is gone (Phase 5) and the tests are committed, so blindness no longer applies. The failure output travels as `FAILURES:` in the payload (`references/payloads.md`); `CRS:` carries any review change requests still open for it, or is omitted. **It runs alone in `X`**: never concurrently with a test author editing uncommitted files there — commit the author's work first, or wait for it. The recorded fix implementer saw the test file change under its `TEST_COMMAND`, reverted it with `git checkout --`, and destroyed a whole uncommitted fix round. |
 | The contract is ambiguous enough to justify both readings | **you** | Fix the contract (and `PROMISE_CHECKLIST`, if a unit promise is involved) in the files and the dossier, commit on `X`, re-spawn the affected test author onto its file (Phase 4), and re-spawn **both** sides. |
 | The test fails on harness noise — a compile error, a missing fixture, an import | nobody | Fix the harness yourself. It is mechanical. |
 | The failure reproduces on the **target branch at the merge-base**, untouched by this build | nobody — **upstream** | Prove it first (below), then fix it on your branch to keep green, log `UPSTREAM:` with the proof, and say in the PR description that the fix belongs upstream independently of this change. |
@@ -870,6 +877,16 @@ like your own defects.
 
 Write every arbitration into `## Build log`: the failure, the ruling, and which
 of the five rows applied.
+
+**Land your own row-4 fix before any fix agent enters `X`.** A `MODE: fix`
+payload that carves out an uncommitted file of yours while also naming a
+formatter conflicts with itself: `cargo fmt --all` reformats the carved-out
+file, and the agent must pick which instruction to disobey — the recorded
+agent chose well and said so; a quieter one reformats your work, and you find
+out when your own diff is dirty for a reason you cannot place. Commit the
+harness fix first, so no carve-out is needed; where one is unavoidable, the
+payload says which instruction wins, and the formatter is scoped to
+`OWNED_PATHS` in every case (`references/payloads.md`).
 
 **Row 4's boundary is mechanical, not a judgement call.** The fuzzy edge of
 "harness noise" is where silent test-editing hides, so settle it with
@@ -943,7 +960,10 @@ derive the mutants from `PROMISE_CHECKLIST` in its strong form: **one mutant
 per checklist line on the primary surface** — a return-meaning line gets a
 wrong constant, an order line a swap, a named-guard line a dropped guard —
 each a fault a real body could plausibly hide, never line noise a formatter
-would catch. Run the suite once per mutant and record the kill table. A
+would catch, and — where a schema binds the surface — one the schema's own
+constraints permit: a mutant the database rejects is killed by the
+constraint, not by the test's assertion, and says nothing about the oracle.
+Run the suite once per mutant and record the kill table. A
 surface with more lines than one sitting is comfortable is **split across
 sittings, never truncated**: cap how many mutants you apply before you stop
 and record, never how many the surface is entitled to, and write the
@@ -952,10 +972,18 @@ check exists to find.
 
 Route each result:
 
-- **`SURVIVED`** — a missing or weak checklist line. Route it to the owning
-  test author exactly like a `GAP:`, with the mutant and the surviving test
-  named (a refused tool call on the way back follows the load-time rule:
-  Phase 4).
+- **`SURVIVED`** — first ask whether any reachable state distinguishes the
+  mutant from the original. **None does → an equivalent mutant**: evidence
+  about the code, not about the tests. Record it in `## Build log` with the
+  proof — the constraint or invariant that makes the two behaviours
+  identical; the recorded case dropped a `status = 'running'` conjunct under
+  a check constraint tying `status` to `claimed_by` — and route nothing: a
+  blind author asked to distinguish two behaviours that cannot differ
+  returns `GAP:` by construction, and the round is spent. **Some state does
+  → a missing or weak checklist line**: route it to the owning test author
+  exactly like a `GAP:`, with the mutant and the surviving test named (a
+  refused tool call on the way back follows the load-time rule: Phase 4).
+  **Unclear → route it**: a wasted round beats an unexamined survivor.
 - **A baseline that is not green** — the check did not run. That is exit-2
   semantics and never a pass: fix the baseline, or log why the check could
   not run.
@@ -1102,7 +1130,11 @@ from its transcript; never record a partial return as `PASS`.
   reviewer re-litigates a settled question.
 - Spawn **one** `implementer` in `MODE: fix` with the merged change requests. It
   works in `X` directly — the tests exist now, so blindness has done its job and
-  keeping them green is the point. `VERIFY_EMBEDDED` applies in fix mode
+  keeping them green is the point — **and alone**: never while a test author
+  is editing uncommitted files in `X` (a CR routed to an author runs before
+  or after the fix implementer, never beside it), and never over an
+  uncommitted harness fix of your own — commit that first (Phase 6), so the
+  payload needs no carve-out. `VERIFY_EMBEDDED` applies in fix mode
   exactly as at the fan-out: a CR that touches an embedded program still gets
   the extract-and-parse line in the payload — `bash -n` stayed green through
   the recorded escape. Its `TOUCHED_BEYOND` section applies in fix
