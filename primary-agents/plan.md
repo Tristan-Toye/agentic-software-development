@@ -319,17 +319,26 @@ a squash merge, and the plan commit is not.
 In local mode you are done — go to Phase 8. In committed mode the dossier is
 a change to review, so finish it as one:
 
-1. **Re-check the ID against the base tip.** `git fetch origin <base>`, then
-   `git ls-tree --name-only origin/<base>:.discovery/dossiers/`. A file with
-   your `W-NNN` prefix means a sibling plan landed first: take the next free
-   number, rename the file, rewrite `id:` and every `W-NNN` inside it, and
-   re-run the validator. A collision with a plan PR still open cannot be seen
-   from here; `/work-on` Phase 0 and `/overview-dossiers` report two files
-   sharing an ID when it happens, and the later one renumbers in its own PR.
-2. **Commit the dossier alone**, plus the `.gitignore` lines Phase 0 added:
+1. **Commit the dossier alone**, plus the `.gitignore` lines Phase 0 added:
    `git add .discovery/dossiers/W-NNN-<slug>.md .gitignore`, message
    `<KEY>: plan — <title>`. Nothing else belongs on this branch; read
    `git status` before you commit, and never `git add -A`.
+2. **Settle the ID against the base tip.** A sibling plan PR may have landed
+   your number first. Inside the plan worktree, after the commit above:
+
+   ```bash
+   git fetch origin <base> && git merge origin/<base>
+   python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --finalize-ids --base origin/<base>
+   git commit --no-edit    # only when finalize renumbered something
+   ```
+
+   `--finalize-ids` renumbers the dossiers this branch added whose `id:` a
+   file on the base already carries — the file name, `id:`, and every
+   mention inside this branch's own dossiers — and leaves the sibling alone.
+   Re-run the validator on the renamed file. A collision with a plan PR
+   still open cannot be seen from here: once both land,
+   `validate_pipeline.py --all` names the two files, `/work-on` Phase 0
+   stops on them, and the later one renumbers in its own PR the same way.
 3. **Ask once, then push and open the PR.** One yes covers both: "push
    `plan/<KEY>` and open a PR against `<base>`?" Then:
 

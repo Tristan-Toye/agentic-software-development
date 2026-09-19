@@ -992,13 +992,18 @@ def branch_tip(root: Path) -> str:
     return "HEAD^" if len(line) > 2 else "HEAD"
 
 
-def own_added_adrs(root: Path, base: str, tip: str) -> set[str]:
-    """ADR paths this branch added, as repo-relative names."""
+def own_added(root: Path, base: str, tip: str, pathspec: str) -> set[str]:
+    """Files this branch added under `pathspec`, as repo-relative names."""
     mb = git_out(root, "merge-base", base, tip).strip()
     out = git_out(
-        root, "diff", "--name-only", "--diff-filter=A", mb, tip, "--", "docs/adr"
+        root, "diff", "--name-only", "--diff-filter=A", mb, tip, "--", pathspec
     )
     return {x for x in out.splitlines() if x}
+
+
+def own_added_adrs(root: Path, base: str, tip: str) -> set[str]:
+    """ADR paths this branch added, as repo-relative names."""
+    return own_added(root, base, tip, "docs/adr")
 
 
 def collect_adr_ids(adr_dir: Path) -> dict[str, list[Path]]:
@@ -1010,14 +1015,48 @@ def collect_adr_ids(adr_dir: Path) -> dict[str, list[Path]]:
     return by_id
 
 
-def plan_adr_renumber(
-    by_id: dict[str, list[str]], own: set[str], taken: list[int]
+def collect_dossier_ids(dossier_dir: Path) -> dict[str, list[Path]]:
+    """Front-matter id -> the dossier files that carry it."""
+    by_id: dict[str, list[Path]] = {}
+    for p in sorted(dossier_dir.glob("W-*.md")):
+        try:
+            fm, _, _ = split_front_matter(p.read_text())
+        except ValueError:
+            continue
+        by_id.setdefault(str(fm.get("id", "?")), []).append(p)
+    return by_id
+
+
+def check_dossier_ids(dossier_dir: Path, rep: Report) -> None:
+    """Two dossiers with one id, or a file named for another id, is a DEFECT.
+
+    In committed mode two plan PRs can land the same number (formats.md §4).
+    Nothing else catches it: each file validates on its own, and /work-on
+    would build whichever one it read first.
+    """
+    for did, files in sorted(collect_dossier_ids(dossier_dir).items()):
+        if len(files) > 1:
+            names = ", ".join(p.name for p in files)
+            rep.defect(
+                "dossiers",
+                f"{did} is the id of two dossiers: {names} — a plan collision "
+                "that landed; the later one renumbers in its own PR "
+                "(--finalize-ids)",
+            )
+        for p in files:
+            if not p.name.startswith(f"{did}-"):
+                rep.defect(p.name, f"file is named for another id than its front matter ({did})")
+
+
+def plan_renumber(
+    by_id: dict[str, list[str]], own: set[str], taken: list[int], fmt: str
 ) -> tuple[dict[str, str], list[str]]:
     """Plan fresh ids for the branch's own files inside duplicate-id groups.
 
     `by_id` maps front-matter id to repo-relative file names, `own` is the
     set of files this branch added, `taken` holds every id number in use
-    after the merge. A group with no own claimant means the base itself is
+    after the merge, and `fmt` renders a number as an id (`ADR-{:04d}`,
+    `W-{:03d}`). A group with no own claimant means the base itself is
     broken; a group with two own claimants means this branch minted one id
     twice. Both are DEFECTs: this tool renumbers merge collisions only.
     """
@@ -1034,9 +1073,15 @@ def plan_adr_renumber(
         if len(own_files) > 1:
             defects.append(f"{aid}: this branch minted the id twice")
             continue
-        renames[own_files[0]] = f"ADR-{nxt:04d}"
+        renames[own_files[0]] = fmt.format(nxt)
         nxt += 1
     return renames, defects
+
+
+def plan_adr_renumber(
+    by_id: dict[str, list[str]], own: set[str], taken: list[int]
+) -> tuple[dict[str, str], list[str]]:
+    return plan_renumber(by_id, own, taken, "ADR-{:04d}")
 
 
 def rewrite_ids(text: str, id_map: dict[str, str]) -> str:
@@ -1044,6 +1089,16 @@ def rewrite_ids(text: str, id_map: dict[str, str]) -> str:
     if not id_map:
         return text
     pattern = re.compile("|".join(sorted(id_map, key=len, reverse=True)))
+    return pattern.sub(lambda m: id_map[m.group(0)], text)
+
+
+def rewrite_dossier_ids(text: str, id_map: dict[str, str]) -> str:
+    """Like rewrite_ids, but W-015 never matches inside W-0150 or W-0157."""
+    if not id_map:
+        return text
+    pattern = re.compile(
+        r"(?<!\d)(?:" + "|".join(sorted(map(re.escape, id_map), key=len, reverse=True)) + r")(?!\d)"
+    )
     return pattern.sub(lambda m: id_map[m.group(0)], text)
 
 
@@ -1197,13 +1252,44 @@ def run_finalize(root: Path, base: str) -> int:
                 p.write_text(new_text)
                 print(f"updated dossier {p.name}")
 
+    # Dossiers collide the same way when .discovery/ is committed: two plan
+    # branches mint one number against the same base tip. Own files only.
+    dossier_map: dict[str, str] = {}
+    if dossier_dir.exists():
+        own_d = own_added(root, base, tip, ".discovery/dossiers")
+        by_did = collect_dossier_ids(dossier_dir)
+        rel_by_did = {
+            did: [f".discovery/dossiers/{p.name}" for p in files]
+            for did, files in by_did.items()
+        }
+        numbered = [did for did in by_did if re.fullmatch(r"W-\d{3,}", did)]
+        taken_d = [int(did[2:]) for did in numbered]
+        width = max((len(did[2:]) for did in numbered), default=3)
+        renames_d, defects_d = plan_renumber(
+            rel_by_did, own_d, taken_d, "W-{:0" + str(width) + "d}"
+        )
+        defects += defects_d
+        for rel, new_id in sorted(renames_d.items()):
+            old_id = next(did for did, rels in rel_by_did.items() if rel in rels)
+            dossier_map[old_id] = new_id
+            summary.append(f"{old_id} -> {new_id} ({rel})")
+        if dossier_map:
+            for p in sorted(dossier_dir.glob("*.md")):
+                if f".discovery/dossiers/{p.name}" in own_d:
+                    p.write_text(rewrite_dossier_ids(p.read_text(), dossier_map))
+            for rel, new_id in sorted(renames_d.items()):
+                p = root / rel
+                old_id = next(k for k, v in dossier_map.items() if v == new_id)
+                p.replace(dossier_dir / (new_id + p.name[len(old_id):]))
+
     if not summary:
         print("no collisions — nothing to renumber")
     for line in summary:
         print(f"renumbered: {line}")
 
-    if id_map:
+    if id_map or dossier_map:
         full_map = dict(id_map)
+        full_map.update(dossier_map)
         if full_map:
             pattern = "|".join(sorted(full_map, key=len, reverse=True))
             p = subprocess.run(
@@ -1378,6 +1464,17 @@ def selftest_finalize() -> bool:
     ok &= case
     print(f"{'PASS' if case else 'FAIL'} — rewrite is single-pass: {no_chain}")
 
+    renames_d, defects_d = plan_renumber(
+        {"W-014": ["a/W-014-one.md"], "W-015": ["a/W-015-own.md", "a/W-015-sib.md"]},
+        {"a/W-015-own.md"},
+        [14, 15],
+        "W-{:03d}",
+    )
+    bounded = rewrite_dossier_ids("W-015 W-0150 W-0157 W-015.", {"W-015": "W-016"})
+    case = renames_d == {"a/W-015-own.md": "W-016"} and not defects_d and bounded == "W-016 W-0150 W-0157 W-016."
+    ok &= case
+    print(f"{'PASS' if case else 'FAIL'} — dossier planner and bounded rewrite: {renames_d} / {bounded}")
+
     merged = {
         "docs/learned-rules.md": (
             "### LRN-0001: base rule\n\nBase.\n\n"
@@ -1460,6 +1557,10 @@ def selftest_finalize() -> bool:
             (adr / "0002-own.md").write_text(
                 FINALIZE_ADR.format(num="0002", title="Own decision")
             )
+            (dossiers / "W-0902-own.md").write_text(
+                "---\nid: W-0902\nadrs: []\nblocked_by: [W-0901]\n---\n\n"
+                "## Problem\n\nOwn plan W-0902 cites W-0901.\n"
+            )
             with rules.open("a") as f:
                 f.write("\n### LRN-0002: own rule\n\nOwn body cites LRN-0002 once.\n")
                 f.write("| LRN-0002 | own rule |\n")
@@ -1474,6 +1575,9 @@ def selftest_finalize() -> bool:
             git_out(root, "checkout", "-q", "main")
             (adr / "0002-sib.md").write_text(
                 FINALIZE_ADR.format(num="0002", title="Sibling decision")
+            )
+            (dossiers / "W-0902-sib.md").write_text(
+                "---\nid: W-0902\nadrs: []\n---\n\n## Problem\n\nSibling plan.\n"
             )
             with rules.open("a") as f:
                 f.write(
@@ -1515,6 +1619,12 @@ def selftest_finalize() -> bool:
             "evidence ledger follows": "### LRN-0003: own rule" in evidence_text
             and "Own evidence LRN-0003." in evidence_text,
             "dossier adrs updated": "adrs: [ADR-0003]" in dossier.read_text(),
+            "own dossier renumbered to W-0903": (dossiers / "W-0903-own.md").exists()
+            and not (dossiers / "W-0902-own.md").exists()
+            and "id: W-0903" in (dossiers / "W-0903-own.md").read_text()
+            and "Own plan W-0903 cites W-0901." in (dossiers / "W-0903-own.md").read_text(),
+            "sibling dossier untouched": "id: W-0902"
+            in (dossiers / "W-0902-sib.md").read_text(),
             "index regenerated": index_text == render_index(adr_rows(adr))
             and "| ADR-0003 |" in index_text
             and index_text.count("| ADR-0002 |") == 1,
@@ -1649,6 +1759,21 @@ def selftest() -> int:
             f"\n{'PASS' if deferred_clean else 'FAIL'} — DEFERRED ledger "
             f"{'accepted' if deferred_clean else 'rejected'}"
         )
+        print("\n--- selftest: two dossiers with one id is a DEFECT ---")
+        (d / "W-014-twin.md").write_text(GOOD_DOSSIER)
+        dup_rep = Report()
+        check_dossier_ids(d, dup_rep)
+        caught_dup = any("two dossiers" in x for x in dup_rep.defects)
+        (d / "W-014-twin.md").unlink()
+        clean_rep = Report()
+        check_dossier_ids(d, clean_rep)
+        caught_dup = caught_dup and not clean_rep.defects
+        print("\n".join(dup_rep.defects) or "(no defects)")
+        print(
+            f"\n{'PASS' if caught_dup else 'FAIL'} — duplicate dossier id "
+            f"{'detected, distinct ids clean' if caught_dup else 'NOT handled'}"
+        )
+
         finalize_ok = selftest_finalize()
         pre_fanout_ok = selftest_pre_fanout()
         mode_ok = selftest_mode()
@@ -1662,6 +1787,7 @@ def selftest() -> int:
                 and caught_owner
                 and caught_deferred
                 and deferred_clean
+                and caught_dup
                 and finalize_ok
                 and pre_fanout_ok
                 and mode_ok
@@ -1931,8 +2057,8 @@ def main() -> int:
     ap.add_argument(
         "--finalize-ids",
         action="store_true",
-        help="renumber this branch's colliding ADR/LRN ids after the sync "
-        "merge; requires --base",
+        help="renumber this branch's colliding ADR, LRN and dossier ids after "
+        "the sync merge; requires --base",
     )
     ap.add_argument(
         "--base",
@@ -2019,6 +2145,8 @@ def main() -> int:
         rep.merge(validate_adr(p, root))
     if adr_dir.exists() and (args.all or args.adr or not args.dossier):
         check_index(adr_dir, rep)
+    if dossier_dir.exists() and (args.all or not (args.dossier or args.adr)):
+        check_dossier_ids(dossier_dir, rep)
 
     print(f"checked {len(targets_d)} dossier(s), {len(targets_a)} ADR(s)\n")
     return rep.emit()

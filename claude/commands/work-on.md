@@ -109,9 +109,10 @@ every `.discovery/dossiers/*.md`, and take the first with `status: ready` whose
 confirmation or silent assent. In committed mode this checkout's copies show
 only what has merged, so list the worktrees first (`git worktree list`): a
 `../<repo>-<ID>` present means that dossier is in flight and its live front
-matter is in that worktree, not here. Route on the live copy. Two files
-sharing one ID here is a plan collision that landed — stop and say which;
-the later one renumbers in its own PR.
+matter is in that worktree, not here. Route on the live copy. Run
+`python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --all` once: two files
+sharing one ID is a plan collision that landed — stop and say which; the
+later one renumbers in its own PR with `--finalize-ids`.
 
 **Route on `status`** — this command is resumable:
 

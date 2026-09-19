@@ -248,7 +248,7 @@ prose about permission maps cannot mislead the agent that reads it.
 | `references/payloads.md` | One spawn skeleton per agent, and the field rules that matter. |
 | `references/time-logging.md` | The Tempo contract: one session per run, orchestrator only. |
 | `skills/standards/` | The engineering standards. They bind generation and review symmetrically. |
-| `scripts/validate_pipeline.py` | Front matter, section set, **path disjointness**, contract shape, criterion falsifiability, anchors, ASD-STE100. `--mode` settles which of the two `.discovery/` modes a checkout is in. `--selftest` checks the checker. |
+| `scripts/validate_pipeline.py` | Front matter, section set, **path disjointness**, contract shape, criterion falsifiability, anchors, ASD-STE100, and two dossiers sharing one ID. `--mode` settles which of the two `.discovery/` modes a checkout is in; `--finalize-ids` renumbers the ADRs, LRNs and dossiers a concurrent branch landed first. `--selftest` checks the checker. |
 | `scripts/check_docs.py` | The flow documents' cross-references: section numbers and titles, command names, plugin paths, phase references. Catches the dangling pointer an agent would otherwise follow into nothing. `--selftest` checks the checker. |
 | `scripts/check_permission_maps.py` | Sub-agent permission maps: allow-list shape, read-to-edit symmetry, and pre-spawn `TEST_PATHS` validation. `--selftest` checks the checker. |
 | `scripts/check_payload.py` | A spawn payload before it ships: field names per agent kind (missing and misnamed), absolute paths that exist, no unexpanded `${PLUGIN_ROOT}`, no credential literal. `--selftest` checks the checker. |
