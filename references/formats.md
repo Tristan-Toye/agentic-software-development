@@ -200,6 +200,7 @@ the fan-out:
 | Are concurrency words defined? | `"coalesces"` — what does the second caller receive? |
 | Is the member's **visibility** stated? | `header_of` named as the read seam with no `pub` — the blind author cannot even compile against the contract |
 | Are the words in the docstring measurable? | `"efficiently"`, `"properly"`, `"safely"` are never promises — delete them |
+| Are the trait bounds an assertion needs **derived**? | `expect_err` on a type without `Debug`, `assert_eq!` without `PartialEq`, a second move without `Clone` — the stub compiles, the test does not, and a blind author cannot see the derive set |
 
 A promise that survives this list is one a blind test author can turn into an
 assertion. A promise that does not is a row-3 arbitration waiting to happen
@@ -228,7 +229,20 @@ flush — order: oldest first → queue items A, B, C; assert the store received
         them in exactly [A, B, C]
 flush — empty case: returns 0 → assert the return value equals 0 and the
         store received nothing
+flush — derives: Result<Written, FlushError> → expect_err needs Written:
+        Debug, assert_eq on Written needs PartialEq — the stub derives both
 ```
+
+**Derive-sets are part of the checklist.** For every line whose strong form
+asserts through `expect_err`/`unwrap_err` (`Debug` on the Ok type),
+`assert_eq!` or any equality (`PartialEq`, often `Eq`), or moves a value
+twice (`Clone`), the line names the bound the assertion requires, and
+`/work-on` Phase 3 checks the stub's derive set satisfies it — or the
+payload's `FIXTURES` names the house idiom to use instead (`match` on
+`Err(e)` where an `Arc<dyn Tool>` field blocks `Debug`). The recorded
+`Validated` derived only `Clone`; the integration tests called `expect_err`,
+and the file failed to compile at the Phase 5 commit — one corrective resume
+after two blind authors had done nothing wrong.
 
 A line whose strong form cannot be written is a promise no test can observe,
 and the observability checklist should have deleted it one step earlier.

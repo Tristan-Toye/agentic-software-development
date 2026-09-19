@@ -38,6 +38,18 @@ Four failure modes this catches, each of which cost a real build:
    interpreter family; the recorded payload wrote the verb from memory
    instead of copying the verified invocation.
 
+7. **A checklist that names a surface the author cannot see** (WARNING). A
+   `PROMISE_CHECKLIST` line whose assertion constructs or calls a type found
+   in neither `CONTRACT` nor `SUPPORT_PATHS` (nor the payload's own
+   `FIXTURES` and `SHARED_IDIOM`) is a `GAP:` waiting to happen: a blind
+   author cannot invent `RepoGrant::mint` from a docstring that names it. The
+   recorded run paid three round trips before the surface was staged.
+
+A field name may carry a parenthetical — `CRITERIA (15 verbatim): |`,
+`RULES (narrowed per lens): |` — and lints as the bare name. Authors
+annotate naturally, and the annotation is harmless; a genuinely misnamed
+field (`RULE:` for `RULES:`) is still refused.
+
 # Usage
 
     check_payload.py PAYLOAD_FILE --kind implementer [--worktree DIR]
@@ -71,7 +83,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
             "MAX_SINGLE_EDIT", "CITATION", "CONVENTIONS", "STYLE_PATHS",
             "NAMING", "VOCABULARY", "FIXTURES", "CONTRACT_HASH",
         },
-        "optional": {"SHARED_IDIOM"},
+        "optional": {"SHARED_IDIOM", "SUPPORT_PATHS", "DELIVERY_CHANGE"},
     },
     "integration-test-author": {
         "required": {
@@ -79,7 +91,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
             "TEST_FRAMEWORK", "HARNESS", "STYLE_SAMPLE", "BOUNDARIES",
             "CONTRACT_HASH",
         },
-        "optional": {"SHARED_IDIOM"},
+        "optional": {"SHARED_IDIOM", "DELIVERY_CHANGE"},
     },
     "implementer": {
         "required": {
@@ -135,12 +147,15 @@ CONDITIONAL: dict[tuple[str, str, str], tuple[set[str], list[set[str]]]] = {
     ("document-drafter", "MODE", "pr"): ({"DOSSIER-EXCERPTS"}, []),
 }
 
-# A field line at the start of a line: NAME: value  /  NAME: |
-FIELD_LINE = re.compile(r"^(?P<name>[A-Z][A-Z0-9_-]{2,}):(?P<rest>\s.*|\s*\|\s*)?$")
+# A field line at the start of a line: NAME: value  /  NAME: |  — and the
+# annotated forms NAME (note): value / NAME(note): |, which lint as NAME.
+FIELD_LINE = re.compile(
+    r"^(?P<name>[A-Z][A-Z0-9_-]{2,})(?:\s*\([^)]*\))?:(?P<rest>\s.*|\s*\|\s*)?$"
+)
 # A block field: NAME: | — every following line that is indented or blank is
 # the block's body, never a field, however it is shaped (`CR-1:` in a CRS
 # block, a `TODO:` in a pasted contract). A line at column 0 ends the block.
-BLOCK_OPEN = re.compile(r"^[A-Z][A-Z0-9_-]{2,}:\s*\|\s*$")
+BLOCK_OPEN = re.compile(r"^[A-Z][A-Z0-9_-]{2,}(?:\s*\([^)]*\))?:\s*\|\s*$")
 
 
 def field_lines(lines: list[str]) -> list[tuple[int, str, str]]:
@@ -222,6 +237,70 @@ def shebang_family(path: str) -> tuple[str | None, str]:
         rest = [t for t in tokens[1:] if not t.startswith("-") and not ENV_ASSIGNMENT.match(t)]
         interpreter = rest[0] if rest else ""
     return interpreter_family(interpreter), first
+
+
+def field_body(lines: list[str], name: str) -> str:
+    """A field's whole text: its inline value, or every line of its block."""
+    for number, found, rest in field_lines(lines):
+        if found != name:
+            continue
+        if rest and rest != "|":
+            return rest
+        body: list[str] = []
+        for line in lines[number:]:
+            if line.strip() and line[:1] not in (" ", "\t"):
+                break
+            body.append(line)
+        return "\n".join(body)
+    return ""
+
+
+# A type a checklist line constructs or calls: `RepoGrant::mint`, `TrackId.new(`,
+# `CredentialRef(`, or any CamelCase word of two or more humps.
+TYPE_REF = re.compile(r"\b([A-Z][A-Za-z0-9]*)(?=::|\.[a-z_]\w*\(|\()")
+CAMEL = re.compile(r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b")
+# Words a checklist line uses as prose or as the language's own vocabulary.
+NOT_A_SURFACE = {
+    "Returns", "Raises", "Drains", "With", "The", "None", "Some", "Ok", "Err",
+    "True", "False", "Result", "Option", "Vec", "String", "Self", "Box", "Arc",
+    "Rc", "HashMap", "BTreeMap", "BTreeSet", "HashSet", "Debug", "Clone",
+    "PartialEq", "Eq", "Default", "Send", "Sync", "Task", "Exception", "Error",
+}
+
+
+def surface_findings(lines: list[str], kind: str | None) -> list[str]:
+    """Checklist types the unit author's world does not carry (a WARNING)."""
+    if kind != "unit-test-author":
+        return []
+    checklist = field_body(lines, "PROMISE_CHECKLIST")
+    if not checklist:
+        return []
+    known: list[str] = []
+    for field in ("CONTRACT", "SUPPORT_PATHS", "FIXTURES", "SHARED_IDIOM"):
+        body = field_body(lines, field)
+        known.append(body)
+        for token in body.split():
+            path = token.strip(",;")
+            if os.path.isabs(path) and os.path.isfile(path):
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as handle:
+                        known.append(handle.read())
+                except OSError:
+                    continue
+    world = "\n".join(known)
+    names = set(TYPE_REF.findall(checklist)) | set(CAMEL.findall(checklist))
+    missing = sorted(
+        n for n in names
+        if n not in NOT_A_SURFACE and not re.search(r"\b%s\b" % re.escape(n), world)
+    )
+    if not missing:
+        return []
+    return [
+        "PROMISE_CHECKLIST names %s, found in neither CONTRACT nor SUPPORT_PATHS "
+        "(nor FIXTURES, SHARED_IDIOM). A blind author cannot invent a type's API: "
+        "stage its signature surface under .agent-staging/contract-support/ and "
+        "name it in SUPPORT_PATHS, or the spawn returns GAP:." % ", ".join(missing)
+    ]
 
 
 def field_command(lines: list[str], name: str) -> tuple[int, str]:
@@ -405,6 +484,9 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     # 5. a command verb that contradicts the script's shebang
     defects.extend(verb_findings(lines, worktree))
 
+    # 7. a checklist surface the unit author's world does not carry
+    warnings.extend(surface_findings(lines, kind))
+
     # 6. a dossier path that is not the run's live copy
     dossier, worktree_dir = field_value(lines, "DOSSIER"), field_value(lines, "WORKTREE_DIR")
     if (
@@ -440,12 +522,15 @@ def selftest() -> int:
     failures: list[str] = []
 
     def case(name: str, text: str, kind: str | None, expect_defect: bool,
-             must_mention: str = "") -> None:
+             must_mention: str = "", must_warn: str | None = None) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             real = os.path.join(tmp, "repo-W-014")
             os.makedirs(os.path.join(real, "tests", "unit"))
             os.makedirs(os.path.join(real, ".discovery", "dossiers"))
             os.makedirs(os.path.join(real, "scripts"))
+            os.makedirs(os.path.join(real, ".agent-staging", "contract-support"))
+            with open(os.path.join(real, ".agent-staging", "contract-support", "grant.rs"), "w") as fh:
+                fh.write("pub struct RepoGrant;\nimpl RepoGrant { pub fn mint() {} }\n")
             with open(os.path.join(real, "scripts", "check.sh"), "w") as fh:
                 fh.write("#!/usr/bin/env bash\necho ok\n")
             with open(os.path.join(real, "scripts", "check.py"), "w") as fh:
@@ -455,13 +540,18 @@ def selftest() -> int:
             with open(os.path.join(real, ".discovery", "dossiers", "W-014-x.md"), "w") as fh:
                 fh.write("---\nid: W-014\n---\n")
             body = text.replace("{REAL}", real)
-            _, defects, _ = lint(body.splitlines(), kind, None, [])
+            _, defects, warnings = lint(body.splitlines(), kind, None, [])
             got = bool(defects)
             if got != expect_defect:
                 failures.append("%s: expected defect=%s, got %s: %s"
                                 % (name, expect_defect, got, defects))
             elif must_mention and not any(must_mention in d for d in defects):
                 failures.append("%s: no defect mentions %r: %s" % (name, must_mention, defects))
+            if must_warn is not None:
+                if must_warn == "" and warnings:
+                    failures.append("%s: expected no warning, got %s" % (name, warnings))
+                elif must_warn and not any(must_warn in w for w in warnings):
+                    failures.append("%s: no warning mentions %r: %s" % (name, must_warn, warnings))
 
     unit_ok = (
         "CONTRACT: {REAL}/tests/unit/test_retry.py\n"
@@ -491,6 +581,18 @@ def selftest() -> int:
     case("url credential", unit_ok + "FIXTURES: |\n  postgres://app:hunter2@db/x\n",
          "unit-test-author", True, "carries a password")
     case("secret placeholder ok", unit_ok + "FIXTURES: |\n  password: <redacted>\n",
+         "unit-test-author", False)
+    case("checklist names only contract members: quiet", unit_ok, "unit-test-author", False,
+         must_warn="")
+    grant = unit_ok.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
+                            "PROMISE_CHECKLIST: |\n  flush — invalid case: RepoGrant::mint(bad) raises\n")
+    case("checklist names an unstaged surface: warns", grant, "unit-test-author", False,
+         must_warn="RepoGrant")
+    case("staged support surface silences the warning",
+         grant + "SUPPORT_PATHS: {REAL}/.agent-staging/contract-support/grant.rs\n",
+         "unit-test-author", False, must_warn="")
+    case("a delivery change is a legal resume field",
+         unit_ok + "DELIVERY_CHANGE: |\n  land the file as one Write plus Edits under the cap\n",
          "unit-test-author", False)
 
     impl = (
@@ -546,6 +648,13 @@ def selftest() -> int:
     case("reviewer style needs rules",
          style.replace("RULES: |\n  #### Resource Management\n  Prefer `with` over manual close.\n", ""),
          "reviewer", True, "RULES is missing")
+    case("a parenthetical after the field name lints as the field",
+         style.replace("RULES: |", "RULES (narrowed per lens): |")
+         .replace("CRITERIA: |", "CRITERIA(3 verbatim): |"),
+         "reviewer", False)
+    case("a misnamed field is still refused beside a parenthetical",
+         style.replace("RULES: |", "RULE (narrowed per lens): |"),
+         "reviewer", True, "'RULE' is not a field")
     case("reviewer plan takes no rules",
          plan + "RULES: none\n", "reviewer", False)
     live = plan.replace("DOSSIER: {REAL}/tests/unit/test_retry.py",
@@ -566,7 +675,7 @@ def selftest() -> int:
 
     for item in failures:
         print("SELFTEST FAIL  %s" % item)
-    print("selftest: %d case group(s), %d failure(s)" % (32, len(failures)))
+    print("selftest: %d case group(s), %d failure(s)" % (38, len(failures)))
     return 1 if failures else 0
 
 

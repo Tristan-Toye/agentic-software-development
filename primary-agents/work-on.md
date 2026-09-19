@@ -309,14 +309,15 @@ hand at Phase 5.** The observability pass you already owe every documented
 member (`references/formats.md` § "The observability checklist") is the
 derivation: keep its output. One line per member per category the docstring
 actually states — return meaning, named error, order, empty case, invalid
-case, concurrency semantics — becomes `PROMISE_CHECKLIST`. Write it into
+case, concurrency semantics, and the derive-set each assertion shape needs —
+becomes `PROMISE_CHECKLIST`. Write it into
 `## Build log` before you spawn and pass it verbatim in the unit author's
 payload beside `CONTRACT`. A promise missing from a test traces to a thin
 checklist: a Phase 3 defect to fix in the checklist and the contract
 together, never a reason to ask a blind agent to re-read what its payload
 never named.
 
-**Four diffs over the checklist, before anything spawns:**
+**Six diffs over the checklist, before anything spawns:**
 
 1. **Slice it per surface, and make the slices add up.** Each unit author gets
    exactly the lines its surface can observe — but every line lands with
@@ -340,6 +341,22 @@ never named.
    second test for it — the recorded case duplicated half a file under three
    identical names and passed the coverage gate throughout, because the gate
    asks whether a line has an owner and cannot ask whether it has two.
+5. **Stage every non-contract surface it names.** Collect the types a line's
+   assertion must construct or call that live outside the contract files — a
+   repo grant, an id type, a port helper, a credential constructor — and
+   stage their signature surface under `.agent-staging/contract-support/` in
+   `X` at fan-out, named in the payload as `SUPPORT_PATHS`
+   (`references/payloads.md`). A blind author cannot invent `RepoGrant::mint`
+   from a docstring that names it: the recorded run paid three `GAP:` round
+   trips before the surface was staged mid-flight. `check_payload.py` warns
+   when a checklist line names a type found in neither `CONTRACT` nor
+   `SUPPORT_PATHS`.
+6. **Check the derive-sets.** Every bound a checklist line names — `Debug`
+   for `expect_err`, `PartialEq` for equality, `Clone` for a second move —
+   is on the stub's type, or `FIXTURES` names the house idiom to use instead.
+   The stub's derives compile without any of them, so nothing but this diff
+   catches it before the Phase 5 commit fails to compile a blind author's
+   file (`references/formats.md` § "The observability checklist").
 
 **The independent contract review — spawn `contract-reviewer` now, before the
 fan-out.** You wrote the contract and derived the checklist; a defect in
@@ -519,7 +536,15 @@ Degrade instead, in this order, and log which step you are on:
   the **existing** suite. **Run that command yourself once, in your own shell,
   before the fan-out, and paste the invocation that actually worked**, with
   whatever environment setup it needed, in the payload text; a command that
-  fails in your shell fails in theirs, once per agent. **It must also emit
+  fails in your shell fails in theirs, once per agent. **When that run is not
+  fully green, the payload carries the exact known-red shape**: the failed
+  and passed counts, the failing-suite count, and the shared failure
+  signature — `198 failed / 443 passed across 23 suites, every failure a
+  panic at tests/common/mod.rs:140, DATABASE_URL absent` — plus the rule that
+  any deviation from it is the implementer's defect. "The baseline held" is
+  then a comparison, not a judgement: the recorded three concurrent
+  implementers each held it exactly, and one proved a two-test discrepancy
+  pre-existing by re-running at the contract commit. **It must also emit
   progress well inside the runtime's no-progress watchdog**: warm each
   worktree's build once yourself first, and give every worktree its own build
   directory, named in the command — a cache two worktrees share links a
@@ -634,8 +659,9 @@ above it is split at spawn time into more files or staged sections, each
 under the cap. The failure is silent and repeatable: an oversized generation
 dies at the same boundary every time — the stream ends mid-work with no tool
 call — while smaller siblings land fine. Recovery: resume the author's
-session from its transcript **once**, which carries the finished reasoning
-and lands the file; a repeated death at the same boundary indicts the
+session from its transcript **once**, which carries the finished reasoning —
+with staged-sections delivery and the complete field set (the ladder below)
+— and lands the file; a repeated death at the same boundary indicts the
 payload, not the transport — split it.
 
 **A report is never the evidence — the tree is. Diff the tree after EVERY
@@ -670,13 +696,19 @@ test, or a weak oracle, and never let one pass as success.
 Three recorded runs sent the same agent shape eleven, six and six times.
 Escalate in this order and log the step: (1) canary the shape with a trivial
 payload — one small read, a one-line write — so one cheap spawn tells
-infrastructure from workload; (2) if the canary lands, shrink the deliverable
-once, by splitting `TEST_PATHS` or lowering `MAX_SINGLE_EDIT`; (3) if that
-dies too, re-route to an agent shape that has landed in this run for the same
-file family, state its blindness constraint, require disclosure, and log the
-routing; (4) failing that, write the harness machinery yourself and have
-authors produce only cases, in small standalone files. Never a fourth spawn
-of one shape at one size.
+infrastructure from workload; (2) if the canary lands, **resume the same
+session with staged-sections delivery**: a `DELIVERY_CHANGE` block telling
+it to land the file as one `Write` plus several `Edit`s, each far under
+`MAX_SINGLE_EDIT`, appended to the **complete field set** its kind demands
+— a corrective-only resume fails `check_payload.py` on a dozen missing
+fields, and an agent resumed with half a payload works from half a world;
+the recorded run landed twice this way where an unchanged re-spawn died
+twice; (3) if that dies too, shrink the deliverable once, by splitting
+`TEST_PATHS`; (4) if that dies too, re-route to an agent shape that has
+landed in this run for the same file family, state its blindness
+constraint, require disclosure, and log the routing; (5) failing that, write
+the harness machinery yourself and have authors produce only cases, in
+small standalone files. Never a fourth spawn of one shape at one size.
 
 **Prefer a resume over a re-spawn whenever the transport failed and the work
 did not.** The agent's transcript carries its finished reasoning, so a

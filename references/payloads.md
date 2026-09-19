@@ -91,6 +91,12 @@ CONVENTIONS: |
 STYLE_PATHS: /abs/path/repo-W-014/tests/unit/test_retry.py
              # existing tests the author reads and matches — named, not
              # pasted; they sit inside the author's read map
+SUPPORT_PATHS: /abs/path/repo-W-014/.agent-staging/contract-support/repo_grant.rs
+             # the signature surface of every NON-contract type a checklist
+             # line's assertion constructs or calls — a repo grant, an id
+             # type, a port helper — staged by the orchestrator at fan-out
+             # (work-on.md Phase 3, diff 5). Omit when the checklist names
+             # contract members only; check_payload.py warns otherwise.
 NAMING: Subject_StateUnderTest_ExpectedBehavior — Subject is the public member
         under test, e.g. Flush_EmptyQueue_ReturnsZero
 VOCABULARY: "drain", "coalesce", "batch" — the project's terms for these ideas
@@ -202,6 +208,11 @@ CRITERIA: |
      receives each item one time.
   2. flush() on an empty queue returns 0 and writes nothing.
 TEST_COMMAND: pytest -q            # the EXISTING suite, for collateral damage
+                                   # red by design on this machine? carry the
+                                   # exact shape — "198 failed / 443 passed,
+                                   # 23 suites, every failure a panic at
+                                   # tests/common/mod.rs:140 (DATABASE_URL
+                                   # absent)" — any deviation is the agent's
 HOOKS: |
   <what this repository's commit hooks do to a partly migrated tree, from
    the Phase 2 hook decision — e.g. "the pre-commit hook lints the whole
@@ -599,6 +610,30 @@ leaked local path.
   — more files, or one file in staged sections — instead of hoping the stream
   holds. Pass `--expected-lines N` to the pre-spawn check and it warns when
   the expected deliverable exceeds the cap.
+- **A resume payload is a payload.** The complete field set for the agent's
+  kind binds it, and `check_payload.py` lints it as a file like any other; a
+  corrective-only resume fails on a dozen missing fields, and an agent
+  resumed with half a payload works from half a world. When the resume
+  changes how the deliverable lands, it says so in a `DELIVERY_CHANGE`
+  block — staged sections: one `Write` plus several `Edit`s, each far under
+  `MAX_SINGLE_EDIT` — beside, never instead of, the full field set
+  (`work-on.md` Phase 4, the escalation ladder).
+- **`SUPPORT_PATHS` stages what the checklist names and the contract does
+  not.** Every non-contract type a `PROMISE_CHECKLIST` line's assertion must
+  construct or call — repo grants, id types, port helpers, a credential
+  constructor — has its signature surface staged under
+  `.agent-staging/contract-support/` in `X` before the fan-out and named
+  here. A docstring that names `RepoGrant::mint` gives a blind author the
+  name and nothing else; the recorded run paid three `GAP:` round trips
+  before the surface was staged. `check_payload.py` warns when a checklist
+  type is in neither `CONTRACT` nor `SUPPORT_PATHS`.
+- **`TEST_COMMAND` carries the known-red shape when the baseline is red by
+  design.** Failed and passed counts, the failing-suite count, and the shared
+  failure signature, copied from the orchestrator's own verification run —
+  with the rule that any deviation is the implementer's defect. "The baseline
+  held" becomes a mechanical comparison; three recorded implementers held a
+  198-failure baseline exactly, and one proved a two-test discrepancy
+  pre-existing.
 - **A support agent's report is a guidance doc, not a verdict.** Pointers,
   verbatim quotes, neutral flags (`WEAK?`, `no-test-found`, `NOT-FOUND`) —
   pasted into `## Build log` and investigated by you before anything acts on

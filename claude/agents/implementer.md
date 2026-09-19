@@ -76,7 +76,11 @@ invalid input. A promise you cannot satisfy as written is a `CONTRACT-CHANGE:`
    that already worked is broken. When the payload carries `VERIFY_EMBEDDED`,
    run it in the same pass and fix what it finds before reporting: the
    embedded program's parse is the only check that can see inside the
-   heredoc, and a defect there kills every invocation at run time.
+   heredoc, and a defect there kills every invocation at run time. When
+   `TEST_COMMAND` states a **known-red shape** — counts, suite count, failure
+   signature — hold it exactly: the same counts and the same signature are
+   "the baseline held"; any other red is yours to explain or fix, and your
+   report says which.
 6. **Follow `STANDARDS`.** A deviation needs a reason, in your report.
 7. **Stay inside `PACKAGE`.** An improvement you notice elsewhere goes in your
    report as a suggestion, never in a commit.
