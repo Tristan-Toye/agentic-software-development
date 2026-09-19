@@ -5,7 +5,7 @@ ledger. There is no changelog, no review file, no analysis site, no memory
 trace, no state file, no anomaly log, and no template directory.
 
 ```
-.discovery/                 # gitignored — local to this machine
+.discovery/                 # local by default; see "Two modes" below
 ├── dossiers/
 │   └── <ID>-<slug>.md      # One work item: its contract, its packages, its
 │                           #   criteria, its build log. Front matter carries
@@ -21,23 +21,60 @@ docs/
     └── NNNN-<slug>.md      # Extracted by /work-on after the build.
 ```
 
-`.discovery/` is gitignored; `docs/adr/` is committed. `/plan` writes a
-dossier. `/work-on` builds it and extracts the ADRs. `/open-work` reads
-dossier front matter and renders status.
+`.discovery/` is local by default and a repository may commit it (below);
+`docs/adr/` is always committed. `/plan` writes a dossier. `/work-on` builds
+it and extracts the ADRs. `/overview-dossiers` reads dossier front matter and
+renders status.
 
 **Both files are kept. They answer different questions.** A dossier answers
 "what did we build, and what happened while we built it" — it stays as the build
-record, and `/open-work` mines its `## Build log` for pipeline health signals
+record, and `/overview-dossiers` mines its `## Build log` for pipeline health signals
 long after the work ships. An ADR answers "why is the code like this", which is
 the question a future agent asks constantly and cannot answer from a build
 record.
 
 The difference is **audience, not lifetime**: a dossier is read by whoever asks
-about *this* work item, and only ever by ID — so it stays local. An ADR is read
+about *this* work item, and only ever by ID — so it stays local by default,
+and a team that wants the record shared commits it without changing what it
+is for (committed mode, below). An ADR is read
 by every future agent, through `docs/adr/index.md`, without knowing it exists —
 so it is committed and travels with every clone. That is why the ADR
 format is strict about titles and consequences, and why extraction is selective:
 the index is a scan surface, and a near-duplicate ADR costs every future reader.
+
+## Two modes for `.discovery/`
+
+One check, run in the checkout the command was started from, at the top of
+every command:
+
+```bash
+python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --mode
+```
+
+The definition it applies is `git ls-files -- .discovery`: any tracked file
+means `committed`, none means `local`. It adds the two checks the table
+relies on — `mode: conflict` (exit 1) when `.gitignore` ignores a new
+dossier inside a tracked `.discovery/`, and a warning per local-only path
+(below) that `.gitignore` does not cover.
+
+| | `local` (default) | `committed` |
+|---|---|---|
+| Means | `.discovery/` is gitignored working state on this machine. | At least one file under `.discovery/` is tracked. A dossier is a reviewable change. |
+| `/plan` writes | `.discovery/dossiers/` in this checkout; nothing is committed. | The same path inside its own worktree on `plan/<KEY>`, forked from `origin/<base>`; the run ends with a PR (Phase 7). |
+| `/work-on` writes | This checkout's dossier, by absolute path. | `X`'s copy only, committed on the build branch before every merge and push, so the build record ships inside the build PR. This checkout's copy changes only when a PR merges. |
+| `/overview-dossiers` sees | Every dossier, live. | What has merged; an in-flight dossier lives in `../<repo>-<ID>` or `../<repo>-plan-<KEY>`, and both the chat report and the HTML (`--worktrees`) read it there. |
+| `/deferred` appends | To the dossier; git sees nothing. | To the dossier — an uncommitted change on the checked-out branch, named in the report and left to the user. |
+| Dossier IDs | Minted per working copy; final. | Provisional until the plan PR merges; `/plan` Phase 7 re-checks against the base tip (§4). |
+
+Three paths stay local in **both** modes: `.discovery/analysis/` (the rendered
+overview), `.discovery/pr-draft-*.md` (the drafter's scratch), and
+`.discovery/deferred-ledger.md`. In committed mode `/plan` Phase 0 puts the
+three patterns in `.gitignore`, and every dossier commit adds files by name.
+
+A repository in two minds — tracked files under `.discovery/` while
+`.gitignore` also lists `.discovery/` — is neither mode: a new dossier would
+vanish from its PR. Every command stops there and shows the user the line.
+Modes never mix inside one run.
 
 ---
 
@@ -47,7 +84,7 @@ the index is a scan surface, and a near-duplicate ADR costs every future reader.
 
 ## Front matter — the machine state, first bytes of the file
 
-`/open-work` reads **only** this block. Keep it parseable and keep it current;
+`/overview-dossiers` reads **only** this block. Keep it parseable and keep it current;
 every field is a fact, so a command may rewrite it without touching the prose.
 
 ```yaml
@@ -74,7 +111,7 @@ Status transitions, and the only writer of each:
 | Status | Meaning | Written by |
 |---|---|---|
 | `planned` | The plan exists. The plan review has not passed. | `/plan`; `/work-on`, when it returns a dossier mid-build |
-| `ready` | The plan review passed. Buildable. | `/plan` |
+| `ready` | The plan review passed. Buildable. Committed mode: lands when the plan PR merges. | `/plan` |
 | `building` | Agents are working in worktrees. | `/work-on` |
 | `review` | Tests are green. The review cycle is running. | `/work-on` |
 | `pr` | The branch is pushed. The run waits for the PR URL from the user. | `/work-on` |
@@ -380,6 +417,15 @@ exclusive-create semantics — `set -o noclobber` on the redirect, or
 `python3 -c "open(p,'x')"` — and on a collision take the next number and retry.
 Never scan for the highest number and then write.
 
+Dossier IDs follow the ADR rule when `.discovery/` is committed: the plan
+branch mints against the base tip its worktree forked from, so a sibling plan
+PR can hold the same number. `/plan` Phase 7 merges the base and runs
+`--finalize-ids`, which renumbers the dossiers this branch added exactly as
+it renumbers ADRs and LRNs — file name, `id:`, and every mention in the
+branch's own dossiers. Two dossiers that land with one ID are a DEFECT from
+`validate_pipeline.py --all`, which `/work-on` Phase 0 stops on; the later
+one renumbers in its own PR the same way.
+
 The exclusive-create guard works per working copy. ADRs and LRNs are committed,
 so two concurrent branches can still mint the same number, and the collision
 only becomes visible at merge time. That is expected and handled: **a number
@@ -395,3 +441,30 @@ It detects collisions against the merged tree, renumbers only the ADRs and
 LRNs this branch added, rewrites their references inside the branch's own
 files and dossiers, and regenerates the index. Never merge two decisions
 under one number, and never hand-renumber: the finalize step owns renumbering.
+
+---
+
+# 5. ASD-STE100 — the subset the validator enforces
+
+Every word in a dossier and an ADR follows a fixed subset of Simplified
+Technical English. `scripts/validate_pipeline.py` checks it over prose lines
+only — code fences, tables and headings are skipped. Technical Names are
+exempt from every rule (R10): anything in backticks, a file name, a
+`snake_case`, `camelCase` or `PascalCase` identifier, or an all-caps token
+such as `ADR`.
+
+| Rule | Says | Level |
+|---|---|---|
+| R1 | One term per concept. A banned word fails: write `use` (not utilise, leverage, employ), `start`, `stop`, `make` (not create, generate, produce), `change` (not modify, adjust, revise), `remove`, `check` (not verify, validate, ensure), `find`, `fix` (not resolve), `problem` (not issue, defect), `about`. The full table is `BANNED_TERMS` in the script. | DEFECT |
+| R2 | A sentence has at most 25 words; an instruction at most 20. | WARNING |
+| R3 | A sentence over 18 words joined by `and` wants a split. | WARNING |
+| R4 | Active voice. `is written`, `was made` and the like are flagged. | WARNING |
+| R5 | Simple tenses. No `has been`, no `had done`. | WARNING |
+| R7 | No noun cluster of four or more words with no function word between them. | WARNING |
+| R8 | A sentence never starts with a bare `This is`, `It means`, `Which makes` — name the subject. | DEFECT |
+| R9 | A paragraph has at most six sentences. | WARNING |
+| R10 | Technical Names are exempt from R1–R9. | — |
+
+There is no R6; the number is unused and no validator message carries it.
+Only R1 and R8 fail a run — the rest are heuristics, so read them as
+questions, not verdicts.

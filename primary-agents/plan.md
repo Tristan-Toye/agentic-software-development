@@ -43,6 +43,41 @@ that binds every word you write. Spawn payload comes verbatim from
 `${PLUGIN_ROOT}/references/time-logging.md`: hand off to the DevKit
 `time-logging` skill. Only you do this, never a sub-agent.
 
+## Phase 0 — Mode: is `.discovery/` committed?
+
+Right after the time-logging hand-off, before you read `$ARGUMENTS`, settle
+the one fact that decides where this run writes. Run it in the checkout
+`/plan` was started from (`formats.md` § "Two modes for `.discovery/`"):
+
+```bash
+python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --root . --mode
+```
+
+Its first line is the answer — `mode: local`, `mode: committed` or
+`mode: conflict` — and the lines after it are the checks that mode relies on.
+
+- **`local`** (the default) — `.discovery/` is untracked working state. Keep
+  the **gitignore guarantee**: check `.discovery/` is in the repository's
+  `.gitignore`, and add it if it is absent (`--mode` warns when it is). The
+  dossier never lands in a commit, and the run works in this checkout.
+- **`committed`** — the repository tracks its dossiers, so a dossier is a
+  reviewable change like any other. The run writes the dossier in **its own
+  worktree on a `plan/` branch** (made at the end of Phase 1) and ends by
+  opening a PR with it (Phase 7). `--mode` warns for each of the three paths
+  that stay local in either mode — `.discovery/analysis/`,
+  `.discovery/pr-draft-*.md`, `.discovery/deferred-ledger.md` — when
+  `.gitignore` does not cover it. Add the missing patterns to `.gitignore`
+  inside the plan worktree once it exists, so the plan PR carries them.
+- **`conflict`** (exit 1) — tracked files under `.discovery/` while
+  `.gitignore` also ignores a new dossier: a repository in two minds, where
+  the dossier would vanish from its PR. Stop and show the user the
+  conflicting `.gitignore` line; never pick a side yourself.
+
+State the mode in one line before Phase 1. Every later phase names
+`${RUN_ROOT}`: **the checkout `/plan` was started from in local mode, the plan
+worktree in committed mode.** Every relative path from Phase 2 on resolves
+against `${RUN_ROOT}`, and every payload path is its absolute expansion.
+
 ## Phase 1 — Intake
 
 `$ARGUMENTS` is a description of any kind. Classify it and gather what it
@@ -57,21 +92,50 @@ points at:
   is the problem statement — its `path:line` is your first anchor, its risk
   and proposed fix seed `## Problem` and `## Approach`. Show the user the
   restatement as usual, quoting the ledger line.
+- **A dossier ID** (`W-014`) → a `planned` dossier that needs this command
+  again: `/work-on` returned it with a `RETURNED-TO-PLAN:` line, or an
+  earlier `/plan` run stopped at its review budget. Read the last lines of
+  its `## Build log` first — the note or the unresolved change requests are
+  your brief. Re-enter at Phase 2 with what the note questions; the existing
+  sections are yours to fix, not to rewrite. In committed mode find the live
+  copy before you read it: an existing plan worktree for this ID (re-plan
+  there, on its branch), else a build worktree `../<repo>-<ID>` — the copy
+  `/work-on` returned lives there; copy that one file into a fresh plan
+  worktree made as below and leave the build worktree for the user to
+  remove. Never plan on a build branch.
 - **A stack trace or a log excerpt** → the frames are your first anchors.
 - **A file path or a symbol** → your starting point for the trace.
 - **A free-form description** → an intent. Restate it in one sentence and show
   the user your restatement before you invest in investigation. A wrong reading
   of the intent is the most expensive mistake available to you here.
 
-**Gitignore guarantee.** Check `.discovery/` is in the repository's
-`.gitignore`; add it if it is absent. Dossiers are local working documents and
-must never land in a commit.
+**Committed mode: make the plan worktree now**, once the ticket or the slug
+is known and before any investigation — the anchors you write in Phase 2 must
+be true in the tree the PR is made from. `<base>` is the branch checked out in
+the checkout `/plan` was started from (`git rev-parse --abbrev-ref HEAD`;
+detached → ask). Fork from its up-to-date remote tip, so the plan starts
+current without touching the user's checkout:
+
+```bash
+git fetch origin <base>
+git worktree add ../<repo>-plan-<KEY> -b plan/<KEY> origin/<base>
+```
+
+`<KEY>` is the Jira key when one exists, else the slug — never a dossier ID,
+which is not minted yet. A `<base>` with no remote forks from the local
+branch instead; say so. This worktree is `${RUN_ROOT}` from here. In local
+mode this step does not exist.
 
 ## Phase 2 — Investigate, yourself
 
 There is no discovery agent. You have `Read`, `Grep`, `Glob` and `Bash`, and
 you are the strongest model in the pipeline — the isolation a sub-agent offers
 buys nothing here and costs a context round trip.
+
+Work in `${RUN_ROOT}`: open, grep and blame there, so every anchor you write
+is true at the commit Phase 7 stamps. In committed mode that tree is the
+remote's tip, which may be ahead of the user's checkout — a difference worth
+one line in the report, never a reason to read the older tree.
 
 1. **Check the recorded knowledge first.** Read `docs/adr/index.md` and
    open only the ADRs whose titles are relevant. A decision already recorded is
@@ -119,9 +183,11 @@ better than tidiness.
 
 ## Phase 4 — Write the dossier
 
-Mint the ID atomically (`formats.md` §5) and write
-`.discovery/dossiers/W-NNN-<slug>.md` with the front matter and the six sections
-in order.
+Mint the ID atomically (`formats.md` §4) and write
+`${RUN_ROOT}/.discovery/dossiers/W-NNN-<slug>.md` with the front matter and
+the six sections in order. In committed mode the number is provisional until
+the plan PR merges — Phase 7 re-checks it against the base tip before the
+push.
 
 All six matter. Two of them get extra care because **their errors are invisible
 until they are expensive** — the fan-out consumes them mechanically, so a defect
@@ -208,7 +274,8 @@ Leave `## Build log` empty. Set `status: planned`.
 
 ## Phase 5 — Mechanical check before the review
 
-Run `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --dossier W-NNN`.
+Run `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --root ${RUN_ROOT}
+--dossier W-NNN`.
 It checks the front matter, the section set, path disjointness, criterion shape,
 anchor existence, and the ASD-STE100 rules. Fix every DEFECT it reports. Never
 spend a review on mechanically broken input.
@@ -217,7 +284,9 @@ spend a review on mechanically broken input.
 
 Spawn one `reviewer` with `LENS: plan`. It reads the dossier and answers one
 question: could a competent implementer build this, and could a test prove it
-right or wrong, without asking anybody anything? It has no write tools.
+right or wrong, without asking anybody anything? It has no write tools. Its
+`DOSSIER` and `WORKTREE_DIR` both point into `${RUN_ROOT}` (`payloads.md`),
+so the anchors it spot-checks are the tree the dossier was written against.
 
 - **`PASS`** → go to Phase 7.
 - **`CHANGES-REQUIRED`** → the change requests come back in its reply. Append
@@ -234,21 +303,71 @@ right or wrong, without asking anybody anything? It has no write tools.
   Present the reviewer's position and yours, get a ruling, and record it in
   `## Build log`.
 - **Budget: 2 review rounds.** After the second, stop and show the user the
-  unresolved change requests. Never mark a plan ready by exhaustion.
+  unresolved change requests. Never mark a plan ready by exhaustion. In
+  committed mode the dossier stays `planned` and uncommitted in the plan
+  worktree — name its path; `/plan W-NNN` resumes there.
 
-## Phase 7 — Write `ready`
+## Phase 7 — Write `ready`, then (committed mode) the PR
 
 Only after a `PASS`: set `status: ready`, bump `updated`, stamp
-`baseline_commit` to the current `HEAD` — the commit at which your anchors are
-true. Stamp it last, so a run that fails part way never installs a baseline for
-code nobody checked.
+`baseline_commit` to the current `HEAD` of `${RUN_ROOT}` — the commit at
+which your anchors are true. Stamp it last, so a run that fails part way never
+installs a baseline for code nobody checked. In committed mode stamp it
+**before** the dossier commit below: the base tip is the commit that survives
+a squash merge, and the plan commit is not.
+
+In local mode you are done — go to Phase 8. In committed mode the dossier is
+a change to review, so finish it as one:
+
+1. **Commit the dossier alone**, plus the `.gitignore` lines Phase 0 added:
+   `git add .discovery/dossiers/W-NNN-<slug>.md .gitignore`, message
+   `<KEY>: plan — <title>`. Nothing else belongs on this branch; read
+   `git status` before you commit, and never `git add -A`.
+2. **Settle the ID against the base tip.** A sibling plan PR may have landed
+   your number first. Inside the plan worktree, after the commit above:
+
+   ```bash
+   git fetch origin <base> && git merge origin/<base>
+   python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --finalize-ids --base origin/<base>
+   git commit --no-edit    # only when finalize renumbered something
+   ```
+
+   `--finalize-ids` renumbers the dossiers this branch added whose `id:` a
+   file on the base already carries — the file name, `id:`, and every
+   mention inside this branch's own dossiers — and leaves the sibling alone.
+   Re-run the validator on the renamed file. A collision with a plan PR
+   still open cannot be seen from here: once both land,
+   `validate_pipeline.py --all` names the two files, `/work-on` Phase 0
+   stops on them, and the later one renumbers in its own PR the same way.
+3. **Ask once, then push and open the PR.** One yes covers both: "push
+   `plan/<KEY>` and open a PR against `<base>`?" Then:
+
+   ```bash
+   git push -u origin plan/<KEY>
+   gh pr create --base <base> --head plan/<KEY> \
+     --title "<KEY>: plan — <title>" --body-file <scratch>/plan-pr.md
+   ```
+
+   You write the body yourself — no drafter spawn; this command spawns one
+   agent, the reviewer. Four parts: `## Problem` and `## Approach` verbatim,
+   the acceptance criteria as a list, the review rounds it took, and the
+   handoff line — `/work-on W-NNN` once merged and pulled. Reference the
+   Jira ticket. Write the body outside the repository (a scratch directory).
+   On a host `gh` cannot reach (Bitbucket), push, hand the user the create-PR
+   link and the body, and ask for the URL back.
+4. **Remove the plan worktree** once the URL is in hand:
+   `git worktree remove ../<repo>-plan-<KEY>`. The branch stays on the
+   remote; the PR is the user's from here. A no at step 3 leaves the worktree
+   and the branch in place — name both, so the user can push later.
 
 ## Phase 8 — Report
 
-The dossier ID and path, the problem in one sentence, the approach in one
-sentence, the work-package count with the concurrency it allows, how many review
-rounds it took, any `UNKNOWN` left standing, any ADR you found that constrains
-the work, and the handoff: `/work-on W-NNN`.
+The mode, the dossier ID and path, the problem in one sentence, the approach
+in one sentence, the work-package count with the concurrency it allows, how
+many review rounds it took, any `UNKNOWN` left standing, any ADR you found
+that constrains the work, and the handoff. Local mode: `/work-on W-NNN`.
+Committed mode: the plan branch and the PR URL — or, after a no, the worktree
+path — and `/work-on W-NNN` once the PR has merged and `<base>` is pulled.
 
 ## Invariants
 
@@ -262,6 +381,10 @@ the work, and the handoff: `/work-on W-NNN`.
   load-bearing in `## Approach` blocks `ready`.
 - The contract carries no bodies, and every promise in it is observable.
 - Owned paths are disjoint across every work-package row.
+- `.discovery/` runs in one of two modes, settled at Phase 0 and never mixed
+  inside one run: local writes this checkout and commits nothing; committed
+  writes a plan worktree and lands through a PR.
 - Nothing external happens without the user's explicit yes — no Jira create, no
-  Jira transition, no command that writes outside the repository.
-- ASD-STE100 binds every word you write in the dossier (`formats.md` §4).
+  Jira transition, no push, no PR (committed mode asks once, at Phase 7), no
+  command that writes outside the repository.
+- ASD-STE100 binds every word you write in the dossier (`formats.md` §5).

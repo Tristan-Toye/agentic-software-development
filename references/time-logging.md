@@ -20,7 +20,7 @@ command, not just the later phases.
 
 - This holds for **every** command in this plugin, read-only ones included.
   The skill asks the user first and never logs silently, so an offer on a quick
-  `/open-work` costs one question the user can decline.
+  `/overview-dossiers` costs one question the user can decline.
 - If the Tempo capability is **not present** in the running environment (no
   `twipe_*` time tools, skill unavailable), skip time logging entirely and
   proceed — do **not** fall back to writing Jira time comments or a parallel

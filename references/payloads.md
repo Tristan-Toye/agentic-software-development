@@ -140,8 +140,14 @@ CONTRACT: |
   <the same contract text as every other author's, pasted verbatim from the
    files on the base worktree — never read out of the dossier>
 TEST_PATHS: /abs/path/repo-W-014/tests/integration/test_flush_flow.py
-           # one path per flow — a GAP: or a vacuous test then re-spawns one
-           # flow, not the whole set; and no single Write runs long
+           # ONE PATH PER FLOW — the default, not a hint. A GAP: or a vacuous
+           # test then re-spawns one flow, not the whole set, and no single
+           # Write runs long: the recorded 646-line single-file deliverable
+           # returned empty twice and took three shrink rounds to land. Gate
+           # it before the spawn — check_permission_maps.py --agent
+           # sub-agents/integration-test-author.md --test-paths … --flows N
+           # --expected-lines N warns when flows outnumber paths or the size
+           # passes the single-write cap.
 TEST_FRAMEWORK: pytest; run with `pytest tests/integration -q`
 HARNESS: |
   The `app_client` fixture in tests/integration/conftest.py stands up the real
@@ -231,9 +237,14 @@ FAILURES: |
    field alone is valid>
 OWNED_PATHS: src/flush.py, src/reload.py
 TEST_COMMAND: pytest -q            # now the invariant: it is green, keep it green
+                                   # a file outside OWNED_PATHS that changes
+                                   # while it runs: STOP AND REPORT, never revert
 HOOKS: |
   <same as build mode; the tree is whole now, so a hook that passes is
-   simply obeyed, and one that refuses is still reported, never bypassed>
+   simply obeyed, and one that refuses is still reported, never bypassed.
+   A formatter named here runs over OWNED_PATHS only — `rustfmt <owned
+   files>`, `prettier --write <owned files>` — never tree-wide (`cargo fmt
+   --all`, `prettier --write .`)>
 VERIFY_EMBEDDED: |
   <same rule as build mode — and never omitted from a fix that touches the
    heredoc itself: the fix round is the recorded escape, where re-indented
@@ -245,6 +256,23 @@ JIRA_KEY: PROJ-142
 In `fix` mode the suite is the invariant, not a collateral-damage check: a red
 test after a fix means the fix was not behaviour-preserving. Never widen
 `OWNED_PATHS` to include a test path — the implementer never edits a test.
+
+**A formatter instruction is scoped to `OWNED_PATHS`, never tree-wide.** A
+payload that says "leave `tests/perf_baseline_test.rs` exactly as it is" and
+"run `cargo fmt --all` before you commit" cannot be obeyed whole: the
+tree-wide formatter rewrites the carved-out file, the agent picks which
+instruction loses, and the orchestrator does not learn which. Give the scoped
+form beside any formatter you name — `rustfmt src/flush.rs src/reload.rs`,
+`prettier --write src/flush.ts` — and when a carve-out of an uncommitted file
+is truly unavoidable (commit it first instead, `work-on.md` Phase 6), say in
+the payload which instruction wins.
+
+**A file outside `OWNED_PATHS` that changes while the agent runs is reported,
+never reverted.** In `fix` mode the agent shares `X` with nobody by rule
+(`work-on.md` Phase 6 and Phase 7), but the rule in its payload is the
+backstop: a test file that changes under `TEST_COMMAND` is another agent's
+uncommitted work with no second copy, and `git checkout --` over it destroys
+a round. The recorded case did exactly that.
 
 A Phase 6 row-2 re-spawn — the implementation does not do what the contract
 promises — is also `MODE: fix` in the base worktree: the implementer's own
@@ -325,7 +353,9 @@ LENS: plan
 DOSSIER: /abs/path/repo/.discovery/dossiers/W-014-flush-coalescing.md
           # from round 2 on, a copy without `## Build log` at a path outside
           # .discovery/ — a Read with no limit returns the whole file
-WORKTREE_DIR: /abs/path/repo            # the main checkout, to check anchors
+WORKTREE_DIR: /abs/path/repo            # ${RUN_ROOT}: the main checkout in
+          # local mode, the plan worktree (/abs/path/repo-plan-KEY) in
+          # committed mode — both fields point into the same tree
 CRITERIA: |
   <the acceptance criteria, verbatim>
 STANDARDS: ${PLUGIN_ROOT}/skills/standards/engineering-standards.md
@@ -448,7 +478,9 @@ DOSSIER-EXCERPTS: |
 FORMAT: |
   <the PR description shape this repo uses>
 TARGET_PATHS: /abs/path/repo/.discovery/pr-draft-W-014.md
+          # committed mode: under X — /abs/path/repo-W-014/.discovery/pr-draft-W-014.md
 SCRUB: W-014, .discovery/dossiers, repo-W-014
+          # committed mode: repo-W-014 only — the dossier is inside the PR
 ```
 
 The drafter writes `TARGET_PATHS` itself — its `Write` map admits
@@ -467,11 +499,14 @@ leaked local path.
   `references/`). The skeletons below write it for brevity; what reaches an
   agent is the expanded absolute path, because an agent cannot resolve a
   variable it was never given.
-- **Every path in a payload is absolute.** `.discovery/` is untracked, so it
-  exists only in the main checkout — a relative dossier path read from inside
-  a worktree resolves to a file that does not exist, and the agent halts or
-  guesses. The same rule keeps `TEST_PATHS`, `CONTEXT_DOCS`, and `STANDARDS`
-  unambiguous whatever the agent's working directory is.
+- **Every path in a payload is absolute.** In local mode `.discovery/` is
+  untracked and exists only in the main checkout; in committed mode the live
+  dossier is the copy inside the run's worktree, and the main checkout's copy
+  is stale by design. Either way a relative dossier path read from the wrong
+  directory resolves to a file that does not exist or to the wrong version,
+  and the agent halts or guesses. The same rule keeps `TEST_PATHS`,
+  `CONTEXT_DOCS`, and `STANDARDS` unambiguous whatever the agent's working
+  directory is.
 - **`SCOPE` is a location list, never a diff.** Passing a diff breaks the
   reviewer's blindness, and blindness is the whole reason its verdict is worth
   anything.

@@ -4,12 +4,12 @@
 Deterministic, and read-only toward pipeline state: reads the YAML front
 matter of `.discovery/dossiers/*.md` through the one parser
 (`validate_pipeline.split_front_matter`), computes the same overview sections
-`/open-work` reports in chat, and writes one self-contained HTML file
+`/overview-dossiers` reports in chat, and writes one self-contained HTML file
 (inline CSS and JS, no external assets). It never writes a dossier, an ADR,
 or `state` — the only file it writes is the report.
 
 Usage:
-    generate_open_work.py [--root .discovery] [--out PATH]
+    generate_open_work.py [--root .discovery] [--out PATH] [--worktrees]
                           [--signals PATH.json] [--open] [--quiet]
     generate_open_work.py --serve [PORT]      # live report, watches dossiers
     generate_open_work.py --watch [SECONDS]   # regenerate on change, no server
@@ -18,6 +18,12 @@ Usage:
     generate_open_work.py --selftest
 
 Default output: <root>/analysis/open-work.html
+`--worktrees` overlays the live copy of each dossier from the repository's
+sibling worktrees (references/formats.md § "Two modes"): when `.discovery/`
+is committed, this checkout's copy changes only when a PR merges, while a
+build in flight lives in `../<repo>-<ID>` and a plan under review in
+`../<repo>-plan-<KEY>`. An overlaid row carries a `live from` flag and an
+attention line names the difference.
 The template lives at references/templates/open-work.html, next to this
 script's parent. `--signals` takes a JSON list the caller mined from the
 Build logs (this script does not read dossier bodies); each item is
@@ -30,7 +36,7 @@ is how a report already open in a browser notices a newer one exists: served
 over http it polls that file and reloads only on a fingerprint change. The HTML
 is always written before it, so a poller that sees a new fingerprint never races
 the report it points at. `<stem>-signals.json` remembers the last `--signals`
-set, so a refresh triggered by a hook keeps showing the signals `/open-work`
+set, so a refresh triggered by a hook keeps showing the signals `/overview-dossiers`
 mined instead of dropping the section.
 
 The fingerprint covers the template as well as the data, because a plugin update
@@ -85,6 +91,8 @@ LAUNCHER_NAME = "open-work-report.py"
 # Either name in a hook command means the hook is ours: the launcher is what
 # --install writes now, the generator itself is what older versions wrote.
 HOOK_NAMES = (LAUNCHER_NAME, "generate_open_work.py")
+# Set from --worktrees in main(); every refresh path reads it.
+OVERLAY_WORKTREES = False
 
 
 def _as_list(value: object) -> list[str]:
@@ -144,11 +152,65 @@ def load_dossiers(root: Path) -> tuple[list[dict], list[dict]]:
     return dossiers, errors
 
 
+def sibling_worktrees(repo: Path) -> list[Path]:
+    """Every other worktree of the repository at `repo`, from git itself."""
+    out = _git(repo, "worktree", "list", "--porcelain")
+    if not out:
+        return []
+    here = repo.resolve()
+    paths = [Path(line[len("worktree "):].strip())
+             for line in out.splitlines() if line.startswith("worktree ")]
+    return [p for p in paths if p.resolve() != here]
+
+
+def overlay_worktrees(root: Path, dossiers: list[dict]) -> list[tuple[str, str]]:
+    """Replace each dossier with its live copy from a sibling worktree.
+
+    Candidates for one id are ranked by `updated`, then by the worktree named
+    for the id, so an implementer's `../<repo>-<ID>-P1` copy — forked from the
+    base worktree and frozen there — never outranks the base worktree's own.
+    A copy in the same state as this checkout's is left alone. Returns
+    (id, note) pairs for the attention list.
+    """
+    repo = root.parent
+    candidates: dict[str, list[tuple[str, dict]]] = {}
+    for wt in sibling_worktrees(repo):
+        wt_root = wt / root.name
+        if not (wt_root / "dossiers").is_dir():
+            continue
+        label = os.path.relpath(wt.resolve(), repo.resolve())
+        live, _errors = load_dossiers(wt_root)
+        for d in live:
+            candidates.setdefault(d["id"], []).append((label, d))
+
+    notes: list[tuple[str, str]] = []
+    index = {d["id"]: i for i, d in enumerate(dossiers)}
+    for did, options in sorted(candidates.items()):
+        label, live = max(options, key=lambda o: (str(o[1]["updated"] or ""),
+                                                  o[0].endswith(f"-{did}")))
+        live["live_from"] = label
+        if did in index:
+            base = dossiers[index[did]]
+            if base["status"] == live["status"] and \
+                    str(base["updated"]) == str(live["updated"]):
+                continue
+            dossiers[index[did]] = live
+            notes.append((did, f"{did} is shown live from {label} "
+                               f"({live['status']}); this checkout has "
+                               f"{base['status']}."))
+        else:
+            index[did] = len(dossiers)
+            dossiers.append(live)
+            notes.append((did, f"{did} exists only in worktree {label} "
+                               f"({live['status']}) — a plan not merged yet."))
+    return notes
+
+
 def classify(dossiers: list[dict], errors: list[dict], root: Path,
              today: dt.date) -> dict:
-    """The overview /open-work defines, as one JSON payload for the template.
+    """The overview /overview-dossiers defines, as one JSON payload for the template.
 
-    Section semantics mirror commands/open-work.md exactly: ready means
+    Section semantics mirror commands/overview-dossiers.md exactly: ready means
     `status: ready` with every blocker done; blocked means `status: ready`
     with a blocker that is not done; stale worktrees are recorded paths that
     disagree with the disk.
@@ -276,7 +338,7 @@ def classify(dossiers: list[dict], errors: list[dict], root: Path,
 class Signals(NamedTuple):
     """Health signals mined from Build logs, and when they were mined.
 
-    This script cannot produce them — only `/open-work` reads dossier bodies —
+    This script cannot produce them — only `/overview-dossiers` reads dossier bodies —
     so a refresh it did not trigger reuses the last mined set and says how old
     it is. Dropping the section instead would read as "no signals fired",
     which is a different and false claim.
@@ -293,11 +355,25 @@ def as_signals(value: Signals | list[dict] | None) -> Signals:
 
 def build_payload(root: Path, now: dt.datetime,
                   signals: Signals | list[dict] | None = None,
-                  state_file: str | None = None) -> dict:
+                  state_file: str | None = None,
+                  worktrees: bool | None = None) -> dict:
     dossiers, errors = load_dossiers(root)
+    follow = OVERLAY_WORKTREES if worktrees is None else worktrees
+    notes = overlay_worktrees(root, dossiers) if follow else []
     mined = as_signals(signals)
     payload = classify(dossiers, errors, root, now.date())
+    for d in dossiers:
+        if d.get("live_from"):
+            d["flags"].append({
+                "severity": "good", "label": f"live from {d['live_from']}",
+                "detail": "This row is the worktree's copy; the checked-out "
+                          "branch changes only when a PR merges.",
+            })
+    for did, text in notes:
+        payload["attention"].append({"severity": "good", "dossier": did,
+                                     "text": text})
     payload.update({
+        "worktrees": follow,
         "generated_at": now.isoformat(timespec="seconds"),
         "generated_at_human": now.strftime("%-d %b %Y, %H:%M"),
         "root": str(root),
@@ -374,7 +450,7 @@ def load_signals(out: Path, explicit: Path | None,
 
     Given `--signals`, those are the freshly mined ones, and they are also
     remembered beside the report — otherwise the next refresh, which comes from
-    a hook rather than from `/open-work`, would drop the section. Without
+    a hook rather than from `/overview-dossiers`, would drop the section. Without
     `--signals`, the remembered set, carrying the date it was mined.
     """
     if explicit is not None:
@@ -678,9 +754,10 @@ def _hook_block(script: Path, root: Path, out: Path) -> str:
     # The interpreter by absolute path, not `python3`: a git hook fired from a
     # GUI client does not necessarily inherit a shell PATH. `|| true` because a
     # report that cannot be written must never fail somebody's commit.
+    follow = " --worktrees" if OVERLAY_WORKTREES else ""
     return (f"{SENTINEL_OPEN}\n"
             f'"{sys.executable}" "{script}" --root "{root}" --out "{out}" '
-            f"--quiet || true\n"
+            f"--quiet{follow} || true\n"
             f"{SENTINEL_CLOSE}\n")
 
 
@@ -837,6 +914,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="default: <root>/analysis/open-work.html")
     ap.add_argument("--signals", default=None,
                     help="JSON list of health signals mined from Build logs")
+    ap.add_argument("--worktrees", action="store_true",
+                    help="overlay each dossier's live copy from the "
+                         "repository's sibling worktrees (committed mode)")
     ap.add_argument("--open", action="store_true",
                     help="open the report in the default browser")
     ap.add_argument("--quiet", action="store_true",
@@ -862,6 +942,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.selftest:
         return selftest()
+
+    global OVERLAY_WORKTREES
+    OVERLAY_WORKTREES = bool(args.worktrees)
 
     root = Path(args.root).resolve()
     if not (root / "dossiers").is_dir():
@@ -1058,6 +1141,58 @@ def selftest() -> int:
                       build_payload(root, today))
         check("</script><script>alert(1)" not in evil,
               "script-close sequence is escaped in the JSON blob")
+
+        # ---- worktree overlay: the live copy beats the checked-out one
+        import shutil
+        if shutil.which("git"):
+            repo = Path(tmp) / "wt" / "repo"
+            (repo / ".discovery" / "dossiers").mkdir(parents=True)
+            g = lambda *a: _git(repo, "-c", "user.email=t@example.invalid",  # noqa: E731
+                                "-c", "user.name=t", *a)
+            (repo / ".discovery" / "dossiers" / "W-001-a.md").write_text(
+                _dossier("W-001", status="ready", updated="2026-08-10"))
+            ok_git = (g("init", "-q", "-b", "main") is not None
+                      and g("add", "-A") is not None
+                      and g("commit", "-q", "-m", "base") is not None
+                      and g("worktree", "add", "-q", "../repo-W-001", "-b", "build/W-001") is not None
+                      and g("worktree", "add", "-q", "../repo-W-001-P1", "-b", "build/W-001-p1") is not None
+                      and g("worktree", "add", "-q", "../repo-plan-KEY", "-b", "plan/KEY") is not None)
+            check(ok_git, "overlay fixture: git worktrees created")
+            if ok_git:
+                (repo.parent / "repo-W-001" / ".discovery" / "dossiers" / "W-001-a.md").write_text(
+                    _dossier("W-001", status="building", updated="2026-08-11",
+                             worktree="../repo-W-001"))
+                (repo.parent / "repo-W-001-P1" / ".discovery" / "dossiers" / "W-001-a.md").write_text(
+                    _dossier("W-001", status="building", updated="2026-08-11",
+                             worktree="../repo-W-001"))
+                (repo.parent / "repo-plan-KEY" / ".discovery" / "dossiers" / "W-002-b.md").write_text(
+                    _dossier("W-002", status="planned", updated="2026-08-11"))
+                plain = build_payload(repo / ".discovery", today, worktrees=False)
+                live = build_payload(repo / ".discovery", today, worktrees=True)
+                by_id = {d["id"]: d for d in live["dossiers"]}
+                check(plain["sections"]["ready"] == ["W-001"]
+                      and "W-002" not in {d["id"] for d in plain["dossiers"]},
+                      "without --worktrees the checkout's copy stands")
+                check(by_id["W-001"]["status"] == "building"
+                      and by_id["W-001"]["live_from"] == "../repo-W-001",
+                      f"W-001 overlaid from the base worktree: {by_id['W-001'].get('live_from')}")
+                check(by_id.get("W-002", {}).get("live_from") == "../repo-plan-KEY",
+                      "W-002 appears from the plan worktree")
+                check(live["sections"]["in_flight"] == ["W-001"]
+                      and live["sections"]["planned"] == ["W-002"],
+                      f"overlaid sections: {live['sections']}")
+                texts = " | ".join(a["text"] for a in live["attention"])
+                check("shown live from ../repo-W-001" in texts
+                      and "exists only in worktree ../repo-plan-KEY" in texts,
+                      f"overlay attention rows: {texts}")
+                check(any(f["label"] == "live from ../repo-W-001"
+                          for f in by_id["W-001"]["flags"]),
+                      "overlaid row carries a live-from flag")
+                check(live["fingerprint"] != plain["fingerprint"],
+                      "the overlay changes the fingerprint")
+        else:
+            print("selftest: git missing — skipped the worktree overlay check",
+                  file=sys.stderr)
 
         # Empty root renders the empty state without error.
         empty_root = Path(tmp) / "empty" / ".discovery"

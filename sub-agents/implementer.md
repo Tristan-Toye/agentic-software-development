@@ -103,6 +103,14 @@ invalid input. A promise you cannot satisfy as written is a `CONTRACT-CHANGE:`
    error means the package cannot satisfy the contract — with three lines:
    what failed, what you tried, why the next attempt would repeat. A fourth
    attempt on the same error is a loop, not progress.
+10. **A file outside `OWNED_PATHS` that changes under you is somebody else's
+    work — stop and report, never revert.** When `TEST_COMMAND` or a re-read
+    shows a file you do not own changing mid-run, another agent is writing
+    it; `git checkout --`, `git restore` or `git stash` over it destroys work
+    that has no second copy. Report the path and what you observed, and leave
+    it exactly as you found it. For the same reason a formatter you are told
+    to run covers `OWNED_PATHS` only, never the whole tree — when the payload
+    names a tree-wide form, scope it to your own paths and say so.
 
 ## Commits
 

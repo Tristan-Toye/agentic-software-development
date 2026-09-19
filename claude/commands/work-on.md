@@ -79,20 +79,40 @@ CONTRACT-REVIEW: skipped — <reason>
 
 `scripts/validate_pipeline.py --dossier <ID> --pre-fanout` refuses to pass
 while neither line is present — and likewise without the `HOOKS:` line
-(Phase 2) and the `PAYLOAD-LINT:` line (Phase 4). A skip stays possible; a
-*silent* skip does not.
+(Phase 2), the `PAYLOAD-LINT:` line and the `ADMISSION:` line (Phase 4). A
+skip stays possible; a *silent* skip does not.
 
 **Gates — before anything else.** Follow
 `${PLUGIN_ROOT}/references/time-logging.md` for the time-logging gate.
 This command creates worktrees by design, so state that plainly and get the
 user's yes before Phase 2. Only you handle either gate, never a sub-agent.
 
+**Mode — settled once, right after the gates.** Run
+`python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --mode` in this checkout
+(`formats.md` § "Two modes for `.discovery/`"). `mode: conflict` (exit 1)
+stops the run — show the user what it printed. `mode: local`: the
+dossier is untracked, lives only in this checkout, and every write below
+goes to it by absolute path. `mode: committed`: the dossier is a
+tracked file, so **the live copy is the one inside `X`** from the moment `X`
+exists; this checkout's copy is never written (it changes only when a PR
+merges), and the build record ships in the PR. Committed mode adds one rule
+to every phase that touches git: **commit the dossier on `X` before `X`
+merges or pushes** — a dirty tracked dossier blocks a merge that touches it,
+and an unpushed record dies with the worktree. Add it by name, never with
+`git add -A`. State the mode in one line.
+
 ## Phase 0 — Select the dossier and route the run
 
 `$ARGUMENTS` names a dossier ID, or is empty. Empty → read the front matter of
 every `.discovery/dossiers/*.md`, and take the first with `status: ready` whose
 `blocked_by` entries are all `done`. State your pick and continue on
-confirmation or silent assent.
+confirmation or silent assent. In committed mode this checkout's copies show
+only what has merged, so list the worktrees first (`git worktree list`): a
+`../<repo>-<ID>` present means that dossier is in flight and its live front
+matter is in that worktree, not here. Route on the live copy. Run
+`python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --all` once: two files
+sharing one ID is a plan collision that landed — stop and say which; the
+later one renumbers in its own PR with `--finalize-ids`.
 
 **Route on `status`** — this command is resumable:
 
@@ -117,7 +137,10 @@ inline.
 **Claim it.** Write `updated` and set `status: building` now, before any other
 write. Check `worktree` and `branch` in the front matter: if they are already
 set and the paths exist, this is a resume, so never delete or force-recreate
-one.
+one. In committed mode the claim is `X` itself: you cannot write this
+checkout's copy, so the `building` write lands in `X`'s copy the moment
+Phase 2 makes it, and an existing `../<repo>-<ID>` is the resume signal
+whatever this checkout's front matter says.
 
 ## Phase 1 — Jira: one ticket, lightly
 
@@ -149,6 +172,16 @@ This is the step everything else depends on.
    The branch keys off the **Jira key**, never the dossier ID; fall back to the
    dossier ID only when no ticket exists. Record `worktree` and `branch` in the
    front matter.
+
+   **Committed mode forks from the target tip, not from `<baseline>`.** The
+   dossier reached the target through its own PR, after `baseline_commit`
+   was stamped, so a worktree at `<baseline>` has no dossier in it. Run
+   `git fetch origin <target>` and fork from `origin/<target>`; log
+   `FORK: <target>@<sha>, baseline <baseline>, <N> commits behind`, then run
+   the validator on `X`'s copy (`--root <X> --dossier <ID>`) — an anchor the
+   target moved is a defect to fix before you write a docstring. Then write
+   `status: building`, `worktree` and `branch` into `X`'s copy; it is the
+   live dossier from here.
 
 2. **Write the contract into real files.** You write the docstrings that every
    downstream agent builds against, so **read the contract-craft rules first** —
@@ -196,7 +229,9 @@ This is the step everything else depends on.
    here has been reviewed by nobody.
 
 4. **Commit it on `X`.** Prefix with the Jira key. Every fan-out branch forks
-   from this commit, so the contract is the one thing all of them share.
+   from this commit, so the contract is the one thing all of them share. In
+   committed mode the dossier is in this commit too — `status: building`, the
+   revised sections, and their build-log lines.
 
    **Read the repository's commit hooks before this commit, and decide the
    hook policy for the whole fan-out now.** From this commit until the last
@@ -401,6 +436,39 @@ announces the eighth, and the gap surfaces phases later as a criterion no
 test covers. A difference is a spawn defect logged in `## Build log`, never
 something the next message explains away.
 
+**Admission before the spawn message — mandatory.** The wave table carries
+a slot count beside the agent count (one slot per spawn). Acquire them from
+the machine-wide ledger, which every session, checkout and plugin instance on
+this machine shares:
+
+```bash
+python3 "${PLUGIN_ROOT}/scripts/spawn_admission.py" acquire \
+  --provider <provider> --model <model> --n <N> --holder <ID>-wave<k>
+```
+
+Exit 0 grants the slots and prints the cap in force and the ceiling the
+ledger has learned; log `ADMISSION: granted <N> slots — <provider>/<model>,
+cap <C>, ceiling <K>` and spawn. Exit 1 is a refusal or a deferral, and the
+ladder below governs what it degrades into: a **deferral** names a recorded
+reset deadline — wait it out (step 1), and never spawn into a closed window
+from any checkout; a **refusal** names the free slots — split the wave to fit
+them (step 2), or serialise the cheapest kind (step 3). Never send the whole
+wave past a refusal. When the agents return, `release --holder <ID>-wave<k>`
+— a wave released with no error recorded raises the learned ceiling, which is
+the cap the next run starts from. When a provider limit kills an agent,
+`record-error "<the error, verbatim>"` before anything else, so every other
+session on the machine defers too. The two recorded failures: an 8-spawn
+wave with 4 corpses at their first API call while three sibling sessions
+drew on the same account, and a quota error that named its reset in prose
+nothing acted on. `ADMISSION: skipped — <reason>` is allowed for a wave of
+one; `validate_pipeline.py --pre-fanout` refuses without either line, and
+refuses a `granted` line while the ledger holds an unexpired deadline for
+that provider and model. A local cap cannot see other machines on the
+account — the provider's error stays the account-global signal, and
+`ASD_ADMISSION_DIR` can point every machine at one synced directory. Agents
+never learn any of this: an agent told about admission control waits on the
+wrong thing.
+
 **Under rate pressure, narrow the wave — never re-send the same batch.**
 Concurrency is the default because it is free when the quota allows it. Once
 a provider limit has killed agents in a wave, re-sending that wave buys the
@@ -408,7 +476,9 @@ same death: the limit is a property of the batch, not of any one payload.
 Degrade instead, in this order, and log which step you are on:
 
 1. **Wait out the stated reset** when the limit names one — a wave sent
-   into a closed window is a wave that dies whole.
+   into a closed window is a wave that dies whole. `spawn_admission.py
+   record-error "<the error, verbatim>"` puts the deadline in the ledger, so
+   every session on the machine waits with you.
 2. **Halve the wave.** Two batches that land beat one batch that dies.
 3. **Serialise the kind that is cheapest to lose.** A killed reviewer wastes
    only its generation; a killed implementer or test author may have left a
@@ -470,16 +540,19 @@ topology to make the payload true. Then write each payload to a file under
 `python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind <agent>` over
 each: it refuses a misnamed or missing field (a misnamed field is ignored,
 never rejected, so the agent writes wherever it likes), an absolute path that
-does not exist, an unexpanded `${PLUGIN_ROOT}`, and a credential literal.
-Record it before the fan-out message:
+does not exist, an unexpanded `${PLUGIN_ROOT}`, a credential literal, a
+`TEST_COMMAND` verb that contradicts the named script's shebang (`python3
+<bash script>` lints clean and dies at run time — copy the invocation you
+verified, never write the verb from memory), and a `DOSSIER` that is not the
+run's live copy. Record it before the fan-out message:
 
 ```
 PAYLOAD-LINT: <N> payloads, <N> defects fixed — <agent ids>
 ```
 
 `validate_pipeline.py --pre-fanout` refuses without it, as for
-`CONTRACT-REVIEW:` and `HOOKS:`. A payload that was never a file was never
-linted.
+`CONTRACT-REVIEW:`, `HOOKS:` and `ADMISSION:`. A payload that was never a
+file was never linted.
 
 **Validate `TEST_PATHS` against the maps before every `unit-test-author`
 spawn.** Run `python3 scripts/check_permission_maps.py --agent
@@ -490,6 +563,16 @@ the families the map admits; fix the split or stage the content, never the
 map. The failure this prevents is silent and repeats per retry: a path the
 read map admits but the edit map refuses makes the author read the existing
 file, refuse to write it, and return empty.
+
+**Gate the `integration-test-author` the same way before it spawns.** It has
+no path map, so the check is size and split, not admission: `python3
+scripts/check_permission_maps.py --agent sub-agents/integration-test-author.md
+--root <X> --test-paths <paths> --expected-lines <N> --flows <M>` warns past
+the single-write cap and when the flows outnumber the paths. **One
+`TEST_PATHS` entry per flow is the default, not a hint**: a `GAP:` or a
+vacuous test then re-spawns one flow instead of the set, and no single
+`Write` runs long — the recorded 646-line single-file deliverable, 1.85× the
+cap, returned empty twice and took three shrink rounds and a canary to land.
 
 **`CONTRACT_HASH` — stamp every test author's world at spawn, check it at
 return** (field rules: `references/payloads.md`). Hash the contract bytes
@@ -686,7 +769,14 @@ are cheap, and both run while the bodies in `X` are still stubs:
    corrected checklist (it reads and edits its own earlier output — Phase 4;
    delete first only when the fix is wholesale) — or record the
    accepted gap in `## Build log`. Do the same for the integration author's
-   map against the acceptance criteria.
+   map against the acceptance criteria. **When the repository owns a
+   coverage script, discover its real CLI before the first invocation** —
+   read its `--help` and use the flags it actually takes. The plugin's flag
+   shape (`--dossier`, `--root`) is a default, not a contract: the recorded
+   run invoked the repository's own `check_promise_coverage.py` with the
+   plugin's flags twice, and the second run resolved the test paths against
+   the wrong checkout and reported 0 covered / 29 uncovered — a coverage
+   FAIL that read like a fan-out defect.
 2. **The stub red-run.** Commit the test authors' work on `X`: delete
      `.agent-staging/` first; check scope mechanically — every path in `X`'s
      working tree (`git status --porcelain`) is a named `TEST_PATHS` entry or
@@ -769,6 +859,7 @@ day; a build spanning more than a day absorbs other people's merges the whole
 time, and a sync deferred to Phase 9 lands them *after* the suite is green,
 the review is closed and the ADRs are written — exactly when a conflict can
 invalidate all three. So compare the target's tip against `baseline_commit`
+— in committed mode against the `FORK:` sha, the tip `X` already carries —
 here, and merge it in **before** you arbitrate anything: the tests are about
 to run anyway, no review has been spent, and a conflict found here costs one
 suite run where the same conflict at Phase 9 costs a suite run, a re-review
@@ -804,7 +895,7 @@ change:
 | The failure shows | Who is wrong | What you do |
 |---|---|---|
 | The test asserts something the contract does not promise | **the test** | Re-spawn the test author with a corrected payload — it reads and edits its own `TEST_PATHS` file (Phase 4); delete first only for a wholesale rewrite. Never edit the test yourself — you have read the implementation, so you are exactly the wrong party to fix a test. |
-| The implementation does not do what the contract promises | **the implementation** | Re-spawn the implementer for that package in `MODE: fix`, working in `X` directly — its own worktree is gone (Phase 5) and the tests are committed, so blindness no longer applies. The failure output travels as `FAILURES:` in the payload (`references/payloads.md`); `CRS:` carries any review change requests still open for it, or is omitted. |
+| The implementation does not do what the contract promises | **the implementation** | Re-spawn the implementer for that package in `MODE: fix`, working in `X` directly — its own worktree is gone (Phase 5) and the tests are committed, so blindness no longer applies. The failure output travels as `FAILURES:` in the payload (`references/payloads.md`); `CRS:` carries any review change requests still open for it, or is omitted. **It runs alone in `X`**: never concurrently with a test author editing uncommitted files there — commit the author's work first, or wait for it. The recorded fix implementer saw the test file change under its `TEST_COMMAND`, reverted it with `git checkout --`, and destroyed a whole uncommitted fix round. |
 | The contract is ambiguous enough to justify both readings | **you** | Fix the contract (and `PROMISE_CHECKLIST`, if a unit promise is involved) in the files and the dossier, commit on `X`, re-spawn the affected test author onto its file (Phase 4), and re-spawn **both** sides. |
 | The test fails on harness noise — a compile error, a missing fixture, an import | nobody | Fix the harness yourself. It is mechanical. |
 | The failure reproduces on the **target branch at the merge-base**, untouched by this build | nobody — **upstream** | Prove it first (below), then fix it on your branch to keep green, log `UPSTREAM:` with the proof, and say in the PR description that the fix belongs upstream independently of this change. |
@@ -822,6 +913,16 @@ like your own defects.
 Write every arbitration into `## Build log`: the failure, the ruling, and which
 of the five rows applied.
 
+**Land your own row-4 fix before any fix agent enters `X`.** A `MODE: fix`
+payload that carves out an uncommitted file of yours while also naming a
+formatter conflicts with itself: `cargo fmt --all` reformats the carved-out
+file, and the agent must pick which instruction to disobey — the recorded
+agent chose well and said so; a quieter one reformats your work, and you find
+out when your own diff is dirty for a reason you cannot place. Commit the
+harness fix first, so no carve-out is needed; where one is unavoidable, the
+payload says which instruction wins, and the formatter is scoped to
+`OWNED_PATHS` in every case (`references/payloads.md`).
+
 **Row 4's boundary is mechanical, not a judgement call.** The fuzzy edge of
 "harness noise" is where silent test-editing hides, so settle it with
 `scripts/check_harness_edit.py`: before you class a failure as row 4 and fix
@@ -831,10 +932,18 @@ Exit 0: only harness lines —
 imports, module setup, fixtures, collection wiring — and row 4 stands. Exit
 1: an assertion-bearing line, so the failure belongs to rows 1–3 however
 noise-like it looked, which means a re-spawn, never your own edit. Exit 2:
-the check could not read the change — rule conservatively (rows 1–3). The
+the check could not read the change, or a changed binding is read by an
+assertion it cannot place — rule conservatively (rows 1–3). The
 `INSIDE-ASSERTION` field on each case file asks the same question from the
-output side; when the two disagree, read the test and the output before
-ruling. Row 5 narrows this check rather than escaping it: an upstream failure
+output side; **when the two disagree, the conservative ruling is mandatory** —
+rows 1–3, a re-spawn, never your own edit — and you read the test and the
+output before you record it. **A hoisted expected value is assertion-bearing
+whatever the checker returns**: `let embedded = (1..=14).collect();` one line
+above `assert_eq!(applied, embedded)` is the assertion's value, and changing
+the `14` rewrites what the test demands. The checker flags a changed binding
+an assertion in the same function reads (exit 1) and one read elsewhere in
+the file (exit 2); the rule stands where it misses. Row 5 narrows this check
+rather than escaping it: an upstream failure
 is still fixed by you, so the same `check_harness_edit.py` gate decides what
 your fix may touch. Row 5 changes who *caused* the failure, never who may
 edit an assertion.
@@ -855,7 +964,7 @@ ARBITRATION 3 — row 3 (contract ambiguous).
 That lesson is **not ADR material** — an ADR records a decision about the code,
 and this is a decision about how we write contracts. Phase 8 routes it to the
 right place. Two or more row-3 rulings in one run means the next `/plan` needs a
-sharper contract, and `/open-work` surfaces the count as a health signal.
+sharper contract, and `/overview-dossiers` surfaces the count as a health signal.
 
 Set `status: review` once the suite is green. **Budget: 3 arbitration rounds.**
 After the third, stop and show the user the failures and your rulings;
@@ -886,7 +995,10 @@ derive the mutants from `PROMISE_CHECKLIST` in its strong form: **one mutant
 per checklist line on the primary surface** — a return-meaning line gets a
 wrong constant, an order line a swap, a named-guard line a dropped guard —
 each a fault a real body could plausibly hide, never line noise a formatter
-would catch. Run the suite once per mutant and record the kill table. A
+would catch, and — where a schema binds the surface — one the schema's own
+constraints permit: a mutant the database rejects is killed by the
+constraint, not by the test's assertion, and says nothing about the oracle.
+Run the suite once per mutant and record the kill table. A
 surface with more lines than one sitting is comfortable is **split across
 sittings, never truncated**: cap how many mutants you apply before you stop
 and record, never how many the surface is entitled to, and write the
@@ -895,10 +1007,18 @@ check exists to find.
 
 Route each result:
 
-- **`SURVIVED`** — a missing or weak checklist line. Route it to the owning
-  test author exactly like a `GAP:`, with the mutant and the surviving test
-  named (a refused tool call on the way back follows the load-time rule:
-  Phase 4).
+- **`SURVIVED`** — first ask whether any reachable state distinguishes the
+  mutant from the original. **None does → an equivalent mutant**: evidence
+  about the code, not about the tests. Record it in `## Build log` with the
+  proof — the constraint or invariant that makes the two behaviours
+  identical; the recorded case dropped a `status = 'running'` conjunct under
+  a check constraint tying `status` to `claimed_by` — and route nothing: a
+  blind author asked to distinguish two behaviours that cannot differ
+  returns `GAP:` by construction, and the round is spent. **Some state does
+  → a missing or weak checklist line**: route it to the owning test author
+  exactly like a `GAP:`, with the mutant and the surviving test named (a
+  refused tool call on the way back follows the load-time rule: Phase 4).
+  **Unclear → route it**: a wasted round beats an unexamined survivor.
 - **A baseline that is not green** — the check did not run. That is exit-2
   semantics and never a pass: fix the baseline, or log why the check could
   not run.
@@ -1045,7 +1165,11 @@ from its transcript; never record a partial return as `PASS`.
   reviewer re-litigates a settled question.
 - Spawn **one** `implementer` in `MODE: fix` with the merged change requests. It
   works in `X` directly — the tests exist now, so blindness has done its job and
-  keeping them green is the point. `VERIFY_EMBEDDED` applies in fix mode
+  keeping them green is the point — **and alone**: never while a test author
+  is editing uncommitted files in `X` (a CR routed to an author runs before
+  or after the fix implementer, never beside it), and never over an
+  uncommitted harness fix of your own — commit that first (Phase 6), so the
+  payload needs no carve-out. `VERIFY_EMBEDDED` applies in fix mode
   exactly as at the fan-out: a CR that touches an embedded program still gets
   the extract-and-parse line in the payload — `bash -n` stayed green through
   the recorded escape. Its `TOUCHED_BEYOND` section applies in fix
@@ -1146,8 +1270,9 @@ surfaced.
   near-duplicate.
 - Write `## Consequences` for the agent who will read it: state the constraint a
   future change must respect, not a summary of the work.
-- Mint IDs atomically and set `jira` to the ticket (never the dossier ID — the
-  dossier is local and the ADR is not). A number minted here is provisional
+- Mint IDs atomically and set `jira` to the ticket (never the dossier ID — an
+  ADR is read by people who never open a dossier, and in local mode the
+  dossier is not even in the repository). A number minted here is provisional
   until the Phase 9 sync, where `--finalize-ids` settles a collision with a
   concurrent branch. Then run
   `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py` with no arguments, in
@@ -1155,7 +1280,8 @@ surfaced.
   plan's own language rules with no reviewer behind you, and `--write-index`
   regenerates the index and checks nothing. Only then regenerate the index
   with `--write-index`, validate once more, and record the ADR IDs in the
-  dossier's `adrs` front matter field.
+  dossier's `adrs` front matter field (committed mode: `X`'s copy, committed
+  with the ADRs below).
 - **Commit the ADRs on `X` — never the index.** Commit them with the Jira key
   prefix. Regenerate the index locally
   to validate, then `git restore docs/adr/index.md` before committing: CI
@@ -1165,7 +1291,8 @@ surfaced.
 
 ADRs are the part of a build that outlives the machine it ran on, and the
 reason `/plan` checks `index.md` before it investigates anything. Dossiers
-stay local in `.discovery/`.
+stay in `.discovery/` — local by default, inside the PR in committed mode —
+and the index never lists them.
 
 ### 8b — the rules this run paid for
 
@@ -1253,7 +1380,7 @@ instead. You never write the plugin from inside a build. Record a
 - Body sections, in order: `## Lesson` — the imperative one-liner plus the
   testable statement. `## Failure shape` — the `GAP:` or row-3 shape it
   prevents and what it cost in re-spawns. `## Trail` — target repo, date,
-  phase; **never the dossier ID**, which stays in `.discovery/`. `##
+  phase; **never the dossier ID** — the plugin repository has no use for it. `##
   Proposal` — which flow document, payload field, or script the lesson
   should land in. `## Acceptance` — what must change in the plugin for the
   issue to close.
@@ -1287,9 +1414,10 @@ skipped for being wrong every time.
 
 ## Phase 9 — PR, then remove the worktree
 
-1. **Sync the base last.** Inside `X`: `git fetch origin <target> && git merge
-   origin/<target>`, where `<target>` is the branch the PR merges into — the
-   branch `baseline_commit` was taken from, usually the default branch. Then
+1. **Sync the base last.** Inside `X` (committed mode: commit the dossier
+   first): `git fetch origin <target> && git merge origin/<target>`, where
+   `<target>` is the branch the PR merges into — the branch `baseline_commit`
+   was taken from, usually the default branch. Then
    run the bookkeeping ritual — it is mechanical, never a judgement call:
 
    ```bash
@@ -1349,8 +1477,10 @@ skipped for being wrong every time.
     the output you already kept stands and this step is a no-op.
  3. **Write the PR description** and show it to the user. Delegate the draft to
     `document-drafter` (`MODE: pr`, dossier excerpts verbatim, `TARGET_PATHS`
-    naming a file under `.discovery/` in the main checkout, `SCRUB` carrying
-    the dossier ID and every `.discovery/` path) — it writes the draft file
+    naming a file under `.discovery/` in the main checkout — in committed
+    mode under `X`'s `.discovery/`, where nothing is staged by pattern —
+    `SCRUB` carrying the worktree names, and in local mode also the dossier
+    ID and every `.discovery/` path) — it writes the draft file
     itself and self-checks the written bytes; then grep the written file
     yourself for every scrub token before you show it; two checks, because a
     leaked dossier id is a leaked local path. Two sections:
@@ -1359,25 +1489,33 @@ skipped for being wrong every time.
    changed` — grouped by theme, with the non-obvious choices explained and the
    verification stated. When Phase 8b drafted a rule, add a `## Pending
    ratification` section carrying the rule text, why, and its trail. Reference
-   the **Jira ticket**. **Scrub the dossier ID and
-   every `.discovery/` path** — they are local and gitignored. Acceptance of the
-   description doubles as the yes for the PR.
+   the **Jira ticket**. **In local mode scrub the dossier ID and every
+   `.discovery/` path** — they are local and gitignored. In committed mode
+   the dossier is inside this PR, so the description may name it; the
+   worktree names are scrubbed in both modes. Acceptance of the description
+   doubles as the yes for the PR.
 4. **Push the branch and open the PR.** Open it programmatically when the host
    supports it. **On Bitbucket it does not**: push the branch, then hand the user
    the create-PR link and the approved description as the body, and **ask for the
    PR URL back**. Set `status: pr` while you wait — a run that ends here is
-   resumable from exactly this point.
+   resumable from exactly this point. Committed mode: commit the dossier
+   before the push, so the PR opens with the build record in it.
 5. **Record the URL and remove the worktree.** Once the URL is in hand, write it
-   to the front matter, then `git worktree remove` the base worktree and prune
-   any fan-out branch already merged into it. Set `status: done`. The branch
-   stays on the remote; the PR is the user's from here.
+   to the front matter and set `status: done`. Committed mode: commit that
+   final state on `X` and push it — the branch is yours, the PR picks the
+   commit up, and the record would otherwise die with the worktree. Then
+   `git worktree remove` the base worktree and prune any fan-out branch
+   already merged into it. The branch stays on the remote; the PR is the
+   user's from here.
    **Do not wait for the merge and do not track it.** Review comments on the PR
    are new work, and they get a **fresh worktree** — a new `/work-on` run on this
    dossier, or a new dossier. Never reopen the worktree that produced the PR.
 
    **Post-merge cleanup runs only when the user reports the merge and asks for
    it** — state work, not code work, so no fresh worktree. Update the dossiers
-   first (settle whatever the merge decides in the front matter; prune the
+   first (local mode: settle whatever the merge decides in the front matter;
+   committed mode: `git pull` brings the `done` dossier in, and a discrepancy
+   goes through a PR, never a write on the target branch; in both, prune the
    merged branch locally if it lingers), **then regenerate the overview HTML
    report** with the generator `/overview-dossiers` uses, so the dashboard
    reflects the merged state without a full overview pass:
@@ -1457,7 +1595,9 @@ skipped for being wrong every time.
     kind, the review rounds spent, the mutation kill table (mutants killed and
     survived, or skipped and why), the ADRs extracted, the drafted rules
     awaiting ratification, any graduation issues (created or awaiting your
-    yes), the Tempo block, which dossiers this unblocks, and the deferred
+    yes), the admission ledger's learned ceiling per provider and model
+    (`spawn_admission.py status`), the Tempo block, which dossiers this
+    unblocks, and the deferred
     count from step 8 — `N deferred issues captured; /deferred renders them`
     — with the worst risk named in one clause when N is not zero.
 
@@ -1520,8 +1660,10 @@ between this list and a phase is a defect in this list.
   arbitrations and `GAP:` returns are evidence about how to write contracts, not
   about this code; a recurring one becomes a user-ratified rule in this repo's
   rules file (Phase 8b), never an ADR and never an unratified write.
-- The dossier ID never leaves `.discovery/`. The branch, every commit, and the
-  PR reference the Jira ticket.
+- The branch, every commit, and the PR reference the Jira ticket, never the
+  dossier ID. In local mode the ID never leaves `.discovery/`; in committed
+  mode the dossier itself travels in the PR, the live copy is `X`'s, and
+  this checkout's copy is never written. (Gates, Phase 2, Phase 9)
 - Nothing external happens without an explicit yes: no Jira create, no Jira
   transition, no PR, no push to a protected branch. No force-push, no history
   rewrite, no merge of the PR — merging is the user's.
@@ -1533,6 +1675,10 @@ between this list and a phase is a defect in this list.
   and report on a hook refusal; you commit on their branch with the hook
   skipped and the fixers run by hand; no payload ever names a bypass.
   (Phase 2)
+- **No wave spawns without admission.** Its slots come from the machine-wide
+  ledger before the spawn message; a refusal splits or serialises the wave,
+  a deferral waits out the recorded reset, and the whole wave is never sent
+  into a closed window. Agents never learn the mechanism. (Phase 4)
 - **A tool's output is read whole.** Never a verdict through `tail`, `head`
   or `grep`; the exit status is the command's; a fail-fast runner runs in its
   no-fail-fast form; counts are summed from a file. (Phase 4, Phase 6)

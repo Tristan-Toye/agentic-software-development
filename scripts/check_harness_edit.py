@@ -16,6 +16,14 @@ that carries an assert-family token (assert, assert_eq!, Assert.Equal,
 expect(...).toBe, ...) up to the line where its open delimiters close — so
 the arguments of a multi-line assertion count, not just its first line.
 
+A hoisted expected value is assertion-bearing too. `let embedded = (1..=14)
+.collect();` one line above `assert_eq!(applied, embedded)` IS the assertion's
+value, and changing the 14 rewrites what the test demands — the recorded case
+cleared it as harness-only. So a changed line that binds a name is judged by
+where that name is read: inside an assertion in the same function -> exit 1;
+inside an assertion elsewhere in the file -> exit 2, because the check cannot
+place it and the flow rules conservatively on exit 2; nowhere -> harness.
+
 Known limit, on purpose: a block-scoped assertion body (the statements under
 `with pytest.raises(...):`) is not tracked — only the header and its own
 arguments are. The script flags the token and its argument span; when the
@@ -54,6 +62,34 @@ ASSERT_TOKENS: dict[str, str] = {
     ".kt": r"\bassert\w*\(|\bAssertions\.|\bfail\(|\bassertThat\b",
 }
 
+# A line that binds a name (the `name` group), per extension. Bias toward
+# matching: a fixture rebinding a name the assertion reads is a value change
+# from the assertion's point of view.
+_PY_BIND = r"^\s*(?P<name>[A-Za-z_]\w*)\s*(?::[^=]+)?=(?!=)"
+_JS_BIND = r"^\s*(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)\b"
+_TYPED_BIND = r"^\s*(?:final\s+)?(?:var|[A-Za-z_][\w<>\[\],?. ]*?)\s+(?P<name>[A-Za-z_]\w*)\s*=(?!=)"
+BINDING_TOKENS: dict[str, str] = {
+    ".py": _PY_BIND,
+    ".rs": r"^\s*let\s+(?:mut\s+)?(?P<name>[A-Za-z_]\w*)\b",
+    ".ts": _JS_BIND, ".tsx": _JS_BIND, ".mts": _JS_BIND, ".cts": _JS_BIND, ".js": _JS_BIND,
+    ".cs": _TYPED_BIND,
+    ".java": _TYPED_BIND,
+    ".kt": r"^\s*(?:val|var)\s+(?P<name>[A-Za-z_]\w*)\b",
+}
+# A line that starts a function, per extension: the boundary of "the same
+# function". Heuristic on purpose — a miss widens the search to the file and
+# lands on exit 2, never on exit 0.
+_JS_FN = r"^\s*(?:(?:it|test|describe)\s*\(|(?:export\s+)?(?:async\s+)?function\b|(?:export\s+)?(?:const|let)\s+\w+\s*=\s*(?:async\s*)?(?:\(|function\b))"
+_CLIKE_FN = r"^\s*(?:\[[\w.]+\]\s*|@\w+\s*)*(?:public|private|protected|internal|static|async|void|fun|override)\b[^;=]*\("
+FUNCTION_TOKENS: dict[str, str] = {
+    ".py": r"^\s*(?:async\s+)?def\s",
+    ".rs": r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s",
+    ".ts": _JS_FN, ".tsx": _JS_FN, ".mts": _JS_FN, ".cts": _JS_FN, ".js": _JS_FN,
+    ".cs": _CLIKE_FN,
+    ".java": _CLIKE_FN,
+    ".kt": _CLIKE_FN,
+}
+
 OPEN = "([{"
 CLOSE = ")]}"
 
@@ -66,6 +102,63 @@ def pattern_for(path: str) -> re.Pattern[str] | None:
         if path.endswith(ext):
             return re.compile(frag)
     return None
+
+
+def _table_pattern(path: str, table: dict[str, str]) -> re.Pattern[str] | None:
+    for ext, frag in table.items():
+        if path.endswith(ext):
+            return re.compile(frag)
+    return None
+
+
+def hoisted_hits(
+    text: str, changed: list[int], path: str, pattern: re.Pattern[str]
+) -> tuple[list[str], list[str]]:
+    """(same-function findings, elsewhere-in-file findings) for changed lines
+    that bind a name an assertion reads. `changed` holds 1-based line numbers
+    on this side of the edit."""
+    bind_re = _table_pattern(path, BINDING_TOKENS)
+    fn_re = _table_pattern(path, FUNCTION_TOKENS)
+    if bind_re is None:
+        return [], []
+    lines = text.split("\n")
+    spans = assertion_spans(text, pattern)
+    definite: list[str] = []
+    unknown: list[str] = []
+    for ln in changed:
+        if ln < 1 or ln > len(lines):
+            continue
+        line = lines[ln - 1]
+        match = bind_re.match(line)
+        if not match or pattern.search(line):
+            continue
+        name = match.group("name")
+        name_re = re.compile(rf"(?<![\w$]){re.escape(name)}(?![\w$])")
+        start, end = 1, len(lines)
+        if fn_re is not None:
+            for i in range(ln - 1, -1, -1):
+                if fn_re.match(lines[i]):
+                    start = i + 1
+                    break
+            for i in range(ln, len(lines)):
+                if fn_re.match(lines[i]):
+                    end = i
+                    break
+        for a, b in spans:
+            if not any(name_re.search(lines[k - 1]) for k in range(a, b + 1)):
+                continue
+            if start <= a <= end:
+                definite.append(
+                    f"{path}:{ln} binds `{name}`, which the assertion at {a}-{b} reads"
+                    " — a hoisted expected value is assertion-bearing"
+                )
+            else:
+                unknown.append(
+                    f"{path}:{ln} binds `{name}`, read by an assertion at {a}-{b} in "
+                    "another function — the check cannot place it"
+                )
+            break
+    return definite, unknown
 
 
 def assertion_spans(text: str, pattern: re.Pattern[str]) -> list[tuple[int, int]]:
@@ -200,6 +293,19 @@ def classify(old: str, new: str, path: str) -> tuple[int, list[str]]:
                 break
     if hits:
         return 1, hits
+    definite: list[str] = []
+    unknown: list[str] = []
+    for text, side in ((new, "+"), (old, "-")):
+        d, u = hoisted_hits(text, [ln for ln, s in changed if s == side], path, pattern)
+        definite += d
+        unknown += u
+    if definite:
+        return 1, definite
+    if unknown:
+        return 2, unknown + [
+            "a changed binding feeds an assertion this check cannot place; "
+            "rule conservatively (rows 1-3)"
+        ]
     return 0, [
         f"harness-only: {len(changed)} changed line(s), none in an assertion span"
     ]
@@ -318,6 +424,54 @@ def selftest() -> int:
         )[0],
     )
     check("unknown extension -> 2", 2, classify("x", "y", "tests/test_flush.txt")[0])
+
+    rs_h = (
+        "#[test]\n"
+        "fn census() {\n"
+        "    let embedded: BTreeSet<i64> = (1..=14).collect();\n"
+        '    assert_eq!(applied, embedded, "every migration is embedded");\n'
+        "}\n"
+    )
+    check(
+        "rs hoisted expected value change -> 1",
+        1,
+        classify(rs_h, rs_h.replace("1..=14", "1..=15"), "tests/census.rs")[0],
+    )
+    py_h = "def test_count():\n    expected = 3\n    assert q.flush(10) == expected\n"
+    check(
+        "py hoisted expected value change -> 1",
+        1,
+        classify(py_h, py_h.replace("expected = 3", "expected = 4"), "tests/test_h.py")[0],
+    )
+    py_other = (
+        "def helper():\n    expected = 3\n    return expected\n\n\n"
+        "def test_count():\n    assert q.flush(10) == expected\n"
+    )
+    check(
+        "py binding read by another function's assertion -> 2",
+        2,
+        classify(py_other, py_other.replace("expected = 3", "expected = 4"), "tests/test_h.py")[0],
+    )
+    py_free = "def test_count():\n    label = 'x'\n    assert q.flush(10) == 3\n"
+    check(
+        "py binding no assertion reads -> 0",
+        0,
+        classify(py_free, py_free.replace("'x'", "'y'"), "tests/test_h.py")[0],
+    )
+    ts_h = (
+        "it('counts', () => {\n  const expected = 3;\n"
+        "  expect(q.flush(10)).toBe(expected);\n});\n"
+    )
+    check(
+        "ts hoisted expected value change -> 1",
+        1,
+        classify(ts_h, ts_h.replace("= 3;", "= 4;"), "tests/flush.test.ts")[0],
+    )
+    check(
+        "py hoisted binding removed -> 1",
+        1,
+        classify(py_h, py_h.replace("    expected = 3\n", ""), "tests/test_h.py")[0],
+    )
 
     # patch mode: apply + classify end to end
     with __import__("tempfile").TemporaryDirectory() as tmp:

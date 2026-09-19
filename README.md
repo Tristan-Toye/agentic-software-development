@@ -1,11 +1,12 @@
 # agentic-software-development — a contract-first build pipeline
 
-Three commands, four agents, two file kinds.
+Four commands, four agents, two file kinds.
 
 ```
-/plan  <description>   →  a buildable dossier
+/plan  <description>   →  a buildable dossier (a PR, when dossiers are committed)
 /work-on <ID>          →  a PR, and the ADRs the build earned
-/open-work             →  what is going on
+/overview-dossiers     →  what is going on
+/deferred              →  what the run noticed and did not tackle
 ```
 
 ## The idea
@@ -57,9 +58,10 @@ whichever side is easier to change.
 
 | Command | Does | Spawns |
 |---|---|---|
-| **`/plan <anything>`** | A Jira key, a stack trace, a paragraph of intent → an investigated dossier: the problem with anchored evidence, the approach, the contract, disjoint work packages, falsifiable criteria. Writes `status: ready`. | 1 (`reviewer`, `LENS: plan`) |
+| **`/plan <anything>`** | A Jira key, a stack trace, a paragraph of intent → an investigated dossier: the problem with anchored evidence, the approach, the contract, disjoint work packages, falsifiable criteria. Writes `status: ready`. In a repo that commits `.discovery/`, it works in a `plan/<KEY>` worktree and ends with a PR. | 1 (`reviewer`, `LENS: plan`) |
 | **`/work-on <ID>`** | Materialises the contract as real code, fans out blind and concurrent, merges, arbitrates every test failure, runs three concurrent review lenses, extracts the ADRs, opens the PR, removes the worktree. Resumable at every phase. | 3 + N, then 3 |
-| **`/open-work`** | Status of every dossier from front matter alone, plus the pipeline health signals worth acting on. Read-only toward pipeline state; also renders `.discovery/analysis/open-work.html`, a self-contained animated dashboard. | 0 |
+| **`/overview-dossiers`** | Status of every dossier from front matter alone, plus the pipeline health signals worth acting on. Read-only toward pipeline state; also renders `.discovery/analysis/open-work.html`, a self-contained animated dashboard; `--worktrees` overlays the live copies from sibling worktrees when `.discovery/` is committed. | 0 |
+| **`/deferred`** | The deferred-issues report for a finished change: every product-code issue the session knew about and did not tackle, with an ID, evidence and a proposed fix. Recall, not audit; `/plan D-n` seeds a dossier from a line. | 0 |
 
 ## The agents
 
@@ -132,8 +134,8 @@ npm install -g @alibaba-group/open-code-review   # needs v1.9.0+ for --format
 ## The files
 
 ```
-.discovery/                      # gitignored — local working state
-└── dossiers/<ID>-<slug>.md      # front matter = machine state (/open-work
+.discovery/                      # local by default; a repo may commit it
+└── dossiers/<ID>-<slug>.md      # front matter = machine state (/overview-dossiers
                                  #   reads only this). Body = problem,
                                  #   approach, contract, packages, criteria,
                                  #   build log. Kept after the build.
@@ -143,6 +145,16 @@ docs/adr/                        # committed — ships with the PR
 │                                #   it on the target branch, branches never
 └── NNNN-<slug>.md               # extracted by /work-on, selectively
 ```
+
+**`.discovery/` has two modes**, decided by one check at the top of every
+command: `scripts/validate_pipeline.py --mode`. Untracked (the default)
+means local working state that never lands in a commit. Tracked means the
+repository reviews its plans: `/plan` writes the dossier in its own
+`plan/<KEY>` worktree and ends with a PR, `/work-on` keeps the live copy in
+its base worktree and ships the build record inside the build PR, and the
+main checkout's copy changes only when a PR merges. `references/formats.md`
+§ "Two modes" holds the full table; the overview HTML, the PR draft and the
+deferred ledger stay local in both.
 
 ADRs are **extracted, not generated**. Zero is a correct outcome for a defect
 fixed as specified. An ADR per dossier means a template got filled instead of a
@@ -236,9 +248,12 @@ prose about permission maps cannot mislead the agent that reads it.
 | `references/payloads.md` | One spawn skeleton per agent, and the field rules that matter. |
 | `references/time-logging.md` | The Tempo contract: one session per run, orchestrator only. |
 | `skills/standards/` | The engineering standards. They bind generation and review symmetrically. |
-| `scripts/validate_pipeline.py` | Front matter, section set, **path disjointness**, contract shape, criterion falsifiability, anchors, ASD-STE100. `--selftest` checks the checker. |
-| `scripts/check_permission_maps.py` | Sub-agent permission maps: allow-list shape, read-to-edit symmetry, and pre-spawn `TEST_PATHS` validation. `--selftest` checks the checker. |
-| `scripts/check_payload.py` | A spawn payload before it ships: field names per agent kind (missing and misnamed), absolute paths that exist, no unexpanded `${PLUGIN_ROOT}`, no credential literal. `--selftest` checks the checker. |
+| `scripts/validate_pipeline.py` | Front matter, section set, **path disjointness**, contract shape, criterion falsifiability, anchors, ASD-STE100, and two dossiers sharing one ID. `--mode` settles which of the two `.discovery/` modes a checkout is in; `--finalize-ids` renumbers the ADRs, LRNs and dossiers a concurrent branch landed first. `--selftest` checks the checker. |
+| `scripts/check_docs.py` | The flow documents' cross-references: section numbers and titles, command names, plugin paths, phase references. Catches the dangling pointer an agent would otherwise follow into nothing. `--selftest` checks the checker. |
+| `scripts/check_permission_maps.py` | Sub-agent permission maps: allow-list shape, read-to-edit symmetry, and pre-spawn `TEST_PATHS` validation; the size and one-path-per-flow gates for both test authors (`--expected-lines`, `--flows`). `--selftest` checks the checker. |
+| `scripts/check_payload.py` | A spawn payload before it ships: field names per agent kind (missing and misnamed), absolute paths that exist, no unexpanded `${PLUGIN_ROOT}`, no credential literal, a `TEST_COMMAND` verb that matches the script's shebang, a `DOSSIER` that is the run's live copy. `--selftest` checks the checker. |
+| `scripts/check_harness_edit.py` | The row-4 boundary at Phase 6: exit 0 harness-only, exit 1 assertion-bearing — a hoisted expected value the assertion reads included — exit 2 unknown, ruled conservatively. `--selftest` checks the checker. |
+| `scripts/spawn_admission.py` | Admission control for a wave: a machine-wide slot semaphore and a quota ledger every session shares, so a wave is split or deferred before it spawns, a provider's named reset closes the window for every checkout, and the next run starts from the ceiling the last one learned. `--selftest` checks the checker. |
 | `scripts/safe_revert.py` | The only way the orchestrator reverts or deletes a path an agent may hold uncommitted: copies it outside the repository first, prints where, refuses a copy target inside the repository. `--selftest` checks the checker. |
 | `scripts/build_claude_plugin.py` | The Claude Code surface, derived from the opencode sources. `--check` fails on drift; `--selftest` checks the checker. |
 
@@ -270,7 +285,9 @@ sub-agent:
 1. **Time logging** — offered at the top of every command, including read-only
    ones. Never logged silently. One Tempo session covers the run.
 2. **Worktree** — `/work-on` creates worktrees by design, so it says so and gets
-   an explicit yes first.
+   an explicit yes first. `/plan` does the same when `.discovery/` is
+   committed, and asks once more before it pushes the plan branch and opens
+   its PR.
 
 Nothing external happens without an explicit yes: no Jira create, no Jira
 transition, no PR, no push to a protected branch. No force-push, no history
