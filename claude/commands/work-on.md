@@ -88,10 +88,11 @@ This command creates worktrees by design, so state that plainly and get the
 user's yes before Phase 2. Only you handle either gate, never a sub-agent.
 
 **Mode — settled once, right after the gates.** Run
-`git ls-files -- .discovery | grep -q .` in this checkout
-(`formats.md` § "Two modes for `.discovery/`"). Empty → **local mode**: the
+`python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --mode` in this checkout
+(`formats.md` § "Two modes for `.discovery/`"). `mode: conflict` (exit 1)
+stops the run — show the user what it printed. `mode: local`: the
 dossier is untracked, lives only in this checkout, and every write below
-goes to it by absolute path. Non-empty → **committed mode**: the dossier is a
+goes to it by absolute path. `mode: committed`: the dossier is a
 tracked file, so **the live copy is the one inside `X`** from the moment `X`
 exists; this checkout's copy is never written (it changes only when a PR
 merges), and the build record ships in the PR. Committed mode adds one rule

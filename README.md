@@ -147,7 +147,7 @@ docs/adr/                        # committed — ships with the PR
 ```
 
 **`.discovery/` has two modes**, decided by one check at the top of every
-command: `git ls-files -- .discovery | grep -q .`. Untracked (the default)
+command: `scripts/validate_pipeline.py --mode`. Untracked (the default)
 means local working state that never lands in a commit. Tracked means the
 repository reviews its plans: `/plan` writes the dossier in its own
 `plan/<KEY>` worktree and ends with a PR, `/work-on` keeps the live copy in
@@ -248,7 +248,8 @@ prose about permission maps cannot mislead the agent that reads it.
 | `references/payloads.md` | One spawn skeleton per agent, and the field rules that matter. |
 | `references/time-logging.md` | The Tempo contract: one session per run, orchestrator only. |
 | `skills/standards/` | The engineering standards. They bind generation and review symmetrically. |
-| `scripts/validate_pipeline.py` | Front matter, section set, **path disjointness**, contract shape, criterion falsifiability, anchors, ASD-STE100. `--selftest` checks the checker. |
+| `scripts/validate_pipeline.py` | Front matter, section set, **path disjointness**, contract shape, criterion falsifiability, anchors, ASD-STE100. `--mode` settles which of the two `.discovery/` modes a checkout is in. `--selftest` checks the checker. |
+| `scripts/check_docs.py` | The flow documents' cross-references: section numbers and titles, command names, plugin paths, phase references. Catches the dangling pointer an agent would otherwise follow into nothing. `--selftest` checks the checker. |
 | `scripts/check_permission_maps.py` | Sub-agent permission maps: allow-list shape, read-to-edit symmetry, and pre-spawn `TEST_PATHS` validation. `--selftest` checks the checker. |
 | `scripts/check_payload.py` | A spawn payload before it ships: field names per agent kind (missing and misnamed), absolute paths that exist, no unexpanded `${PLUGIN_ROOT}`, no credential literal. `--selftest` checks the checker. |
 | `scripts/safe_revert.py` | The only way the orchestrator reverts or deletes a path an agent may hold uncommitted: copies it outside the repository first, prints where, refuses a copy target inside the repository. `--selftest` checks the checker. |

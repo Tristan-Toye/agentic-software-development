@@ -15,6 +15,7 @@ Usage:
     validate_pipeline.py --all
     validate_pipeline.py --write-index
     validate_pipeline.py --finalize-ids --base origin/development
+    validate_pipeline.py --mode
     validate_pipeline.py --selftest
 
 Exit status is 1 when any DEFECT is reported, 0 otherwise. A WARNING never
@@ -1650,6 +1651,7 @@ def selftest() -> int:
         )
         finalize_ok = selftest_finalize()
         pre_fanout_ok = selftest_pre_fanout()
+        mode_ok = selftest_mode()
         return (
             rc
             if (
@@ -1662,6 +1664,7 @@ def selftest() -> int:
                 and deferred_clean
                 and finalize_ok
                 and pre_fanout_ok
+                and mode_ok
             )
             else 1
         )
@@ -1777,6 +1780,137 @@ def selftest_pre_fanout() -> bool:
 
 
 # --------------------------------------------------------------------------
+# the two modes of .discovery/  (references/formats.md § "Two modes")
+# --------------------------------------------------------------------------
+
+# One probe per path that stays local in committed mode. `git check-ignore`
+# answers from the patterns alone, so the probe file never has to exist.
+LOCAL_ONLY_PROBES = (
+    (".discovery/analysis/", ".discovery/analysis/open-work.html"),
+    (".discovery/pr-draft-*.md", ".discovery/pr-draft-probe.md"),
+    (".discovery/deferred-ledger.md", ".discovery/deferred-ledger.md"),
+)
+DOSSIER_PROBE = ".discovery/dossiers/probe.md"
+
+
+def _ignored(root: Path, path: str) -> bool:
+    p = subprocess.run(
+        ["git", "-C", str(root), "check-ignore", "-q", path], capture_output=True
+    )
+    return p.returncode == 0
+
+
+def discovery_mode(root: Path) -> tuple[str, list[str]]:
+    """`local`, `committed`, `conflict` or `no-git`, plus the notes to print.
+
+    The definition is `git ls-files -- .discovery`: any tracked file means
+    committed. Two checks ride on it. A tracked `.discovery/` whose
+    `.gitignore` also ignores a new dossier is a repository in two minds
+    (`conflict`): the dossier `/plan` writes would vanish from its PR. In
+    committed mode the three local-only paths must stay ignored, and each
+    one that is not is a WARNING. In local mode a missing `.discovery/`
+    gitignore line is a WARNING — `/plan`'s gitignore guarantee adds it.
+    """
+    p = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "--", ".discovery"],
+        capture_output=True,
+        text=True,
+    )
+    if p.returncode != 0:
+        return "no-git", [f"UNUSABLE {p.stderr.strip() or 'git ls-files failed'}"]
+    tracked = [line for line in p.stdout.splitlines() if line.strip()]
+    notes: list[str] = []
+    if not tracked:
+        if not _ignored(root, DOSSIER_PROBE):
+            notes.append(
+                "WARNING .discovery/ is not gitignored; /plan adds the line "
+                "(the gitignore guarantee)"
+            )
+        return "local", notes
+    if _ignored(root, DOSSIER_PROBE):
+        return "conflict", [
+            f"DEFECT  {len(tracked)} tracked file(s) under .discovery/ while "
+            ".gitignore ignores a new dossier — a repository in two minds. "
+            "Show the user the .gitignore line; never pick a side."
+        ]
+    for pattern, probe in LOCAL_ONLY_PROBES:
+        if not _ignored(root, probe):
+            notes.append(
+                f"WARNING {pattern} is not gitignored; it stays local in committed "
+                "mode — add the pattern (in the plan worktree, so the PR carries it)"
+            )
+    notes.insert(0, f"ok      {len(tracked)} tracked file(s) under .discovery/")
+    return "committed", notes
+
+
+def run_mode(root: Path) -> int:
+    mode, notes = discovery_mode(root)
+    print(f"mode: {mode}")
+    for note in notes:
+        print(note)
+    return {"local": 0, "committed": 0, "conflict": 1}.get(mode, 2)
+
+
+def selftest_mode() -> bool:
+    """Each of the three answers on a fixture repository."""
+    print("\n--- selftest: the two modes of .discovery/ ---")
+    if not shutil.which("git"):
+        print("SKIP  git not found; the mode scenario was not run")
+        return True
+    ok = True
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "repo"
+        (root / ".discovery" / "dossiers").mkdir(parents=True)
+        try:
+            git_out(root, "init", "-q", "-b", "main")
+            git_out(root, "config", "user.email", "selftest@example.invalid")
+            git_out(root, "config", "user.name", "selftest")
+        except RuntimeError as exc:
+            print(f"FAIL  fixture repository could not be built: {exc}")
+            return False
+        (root / ".discovery" / "dossiers" / "W-001-a.md").write_text("---\nid: W-001\n---\n")
+
+        mode, notes = discovery_mode(root)
+        case = mode == "local" and any("not gitignored" in n for n in notes)
+        ok &= case
+        print(f"{'PASS' if case else 'FAIL'} — untracked, no .gitignore: local with a warning")
+
+        (root / ".gitignore").write_text(".discovery/\n")
+        mode, notes = discovery_mode(root)
+        case = mode == "local" and not notes
+        ok &= case
+        print(f"{'PASS' if case else 'FAIL'} — untracked and ignored: local, clean")
+
+        (root / ".gitignore").unlink()
+        git_out(root, "add", "-A")
+        git_out(root, "commit", "-q", "-m", "track dossiers")
+        mode, notes = discovery_mode(root)
+        case = mode == "committed" and sum("not gitignored" in n for n in notes) == 3
+        ok &= case
+        print(f"{'PASS' if case else 'FAIL'} — tracked, no local-only patterns: committed with 3 warnings")
+
+        (root / ".gitignore").write_text(
+            ".discovery/analysis/\n.discovery/pr-draft-*.md\n.discovery/deferred-ledger.md\n"
+        )
+        mode, notes = discovery_mode(root)
+        case = mode == "committed" and not any("WARNING" in n for n in notes)
+        ok &= case
+        print(f"{'PASS' if case else 'FAIL'} — tracked with the three patterns: committed, clean")
+
+        (root / ".gitignore").write_text(".discovery/\n")
+        mode, notes = discovery_mode(root)
+        case = mode == "conflict" and run_mode(root) == 1
+        ok &= case
+        print(f"{'PASS' if case else 'FAIL'} — tracked yet ignored: conflict, exit 1")
+
+        mode, _ = discovery_mode(Path(tmp))
+        case = mode == "no-git"
+        ok &= case
+        print(f"{'PASS' if case else 'FAIL'} — outside a repository: no-git")
+    return bool(ok)
+
+
+# --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
 
@@ -1814,6 +1948,12 @@ def main() -> int:
         "a policy) and PAYLOAD-LINT: (payload and defect counts) lines",
     )
     ap.add_argument(
+        "--mode",
+        action="store_true",
+        help="print which mode .discovery/ is in for --root — local, committed "
+        "or conflict (exit 1) — and the gitignore checks that mode relies on",
+    )
+    ap.add_argument(
         "--selftest",
         action="store_true",
         help="check this script against a reference pair",
@@ -1826,6 +1966,9 @@ def main() -> int:
     root = Path(args.root).resolve()
     dossier_dir = root / ".discovery" / "dossiers"
     adr_dir = root / "docs" / "adr"
+
+    if args.mode:
+        return run_mode(root)
 
     if args.write_index:
         adr_dir.mkdir(parents=True, exist_ok=True)

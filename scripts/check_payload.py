@@ -25,6 +25,12 @@ Four failure modes this catches, each of which cost a real build:
    is the orchestrator's to run. A literal password in a payload is a defect
    even when it is correct, because the payload lands in a transcript on disk.
 
+5. **A dossier that is not the run's live copy.** `.discovery/` has two modes
+   (references/formats.md § "Two modes"); in both, the dossier an agent may
+   read is the one inside the tree the payload names as `WORKTREE_DIR`. A
+   `DOSSIER` inside some other checkout's `.discovery/` is the stale copy by
+   design — the main checkout's, while the live one sits in the worktree.
+
 # Usage
 
     check_payload.py PAYLOAD_FILE --kind implementer [--worktree DIR]
@@ -300,6 +306,20 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
                 "never carries one: run the step that needs it yourself." % (number, name)
             )
 
+    # 5. a dossier path that is not the run's live copy
+    dossier, worktree_dir = field_value(lines, "DOSSIER"), field_value(lines, "WORKTREE_DIR")
+    if (
+        dossier
+        and worktree_dir
+        and "/.discovery/" in dossier
+        and not dossier.startswith(worktree_dir.rstrip("/") + "/")
+    ):
+        defects.append(
+            "DOSSIER %s sits in a .discovery/ that is not WORKTREE_DIR's (%s). The "
+            "live dossier is the copy inside the run's own tree; another checkout's "
+            "copy is stale by design." % (dossier, worktree_dir)
+        )
+
     return present, defects, warnings
 
 
@@ -325,8 +345,11 @@ def selftest() -> int:
         with tempfile.TemporaryDirectory() as tmp:
             real = os.path.join(tmp, "repo-W-014")
             os.makedirs(os.path.join(real, "tests", "unit"))
+            os.makedirs(os.path.join(real, ".discovery", "dossiers"))
             with open(os.path.join(real, "tests", "unit", "test_retry.py"), "w") as fh:
                 fh.write("def test_x(): pass\n")
+            with open(os.path.join(real, ".discovery", "dossiers", "W-014-x.md"), "w") as fh:
+                fh.write("---\nid: W-014\n---\n")
             body = text.replace("{REAL}", real)
             _, defects, _ = lint(body.splitlines(), kind, None, [])
             got = bool(defects)
@@ -409,6 +432,12 @@ def selftest() -> int:
          "reviewer", True, "RULES is missing")
     case("reviewer plan takes no rules",
          plan + "RULES: none\n", "reviewer", False)
+    live = plan.replace("DOSSIER: {REAL}/tests/unit/test_retry.py",
+                        "DOSSIER: {REAL}/.discovery/dossiers/W-014-x.md")
+    case("reviewer plan dossier inside its worktree", live, "reviewer", False)
+    case("reviewer plan dossier from another checkout",
+         live.replace("WORKTREE_DIR: {REAL}\n", "WORKTREE_DIR: {REAL}/tests\n"),
+         "reviewer", True, "not WORKTREE_DIR's")
 
     drafter = (
         "MODE: pr\nDOSSIER-EXCERPTS: |\n  ## Problem\nFORMAT: |\n  shape\n"
@@ -421,7 +450,7 @@ def selftest() -> int:
 
     for item in failures:
         print("SELFTEST FAIL  %s" % item)
-    print("selftest: %d case group(s), %d failure(s)" % (26, len(failures)))
+    print("selftest: %d case group(s), %d failure(s)" % (28, len(failures)))
     return 1 if failures else 0
 
 

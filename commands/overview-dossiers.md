@@ -35,8 +35,9 @@ dossier to render one row is exactly the waste this format exists to avoid.
 Read a `## Build log` only when you need a health signal (below) or when
 `$ARGUMENTS` asks for one dossier.
 
-**Mode first.** `git ls-files -- .discovery | grep -q .` in this checkout
-(`formats.md` § "Two modes for `.discovery/`"). In committed mode this
+**Mode first.** `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --mode`
+in this checkout (`formats.md` § "Two modes for `.discovery/`"); report a
+`conflict` as a discrepancy and stop. In committed mode this
 checkout's dossiers show what has **merged**: a `ready` here may be building
 in `../<repo>-<ID>`, and a plan under review lives in `../<repo>-plan-<KEY>`
 with no copy here at all. So run `git worktree list` and read the front

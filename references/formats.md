@@ -48,8 +48,14 @@ One check, run in the checkout the command was started from, at the top of
 every command:
 
 ```bash
-git ls-files -- .discovery | grep -q . && echo committed || echo local
+python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --mode
 ```
+
+The definition it applies is `git ls-files -- .discovery`: any tracked file
+means `committed`, none means `local`. It adds the two checks the table
+relies on — `mode: conflict` (exit 1) when `.gitignore` ignores a new
+dossier inside a tracked `.discovery/`, and a warning per local-only path
+(below) that `.gitignore` does not cover.
 
 | | `local` (default) | `committed` |
 |---|---|---|
