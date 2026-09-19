@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lint a spawn payload before it reaches an agent.
 
-Four failure modes this catches, each of which cost a real build:
+Eight failure modes this catches, each of which cost a real build:
 
 1. **A misnamed or missing field.** `references/payloads.md` names a misnamed
    field the likeliest silent failure in the pipeline: an agent halts on a
@@ -44,6 +44,15 @@ Four failure modes this catches, each of which cost a real build:
    `FIXTURES` and `SHARED_IDIOM`) is a `GAP:` waiting to happen: a blind
    author cannot invent `RepoGrant::mint` from a docstring that names it. The
    recorded run paid three round trips before the surface was staged.
+
+8. **An unexpanded `@@TOKEN@@` template placeholder.** A payload assembled
+   from a template — `@@CONTRACT@@`, `@@STYLE_SAMPLE@@` substituted into a
+   src file to make the final under `.agent-staging/payloads/` — ships only
+   from the final, re-read in the turn that composes the spawn message. The
+   recorded fan-out pasted three of five prompts from the src directory while
+   the substituted finals sat on disk; every agent disclosed and recovered,
+   but a weaker one satisfies the placeholder by guessing. A token left in
+   the payload is a transmission defect whether or not the agent recovers.
 
 A field name may carry a parenthetical — `CRITERIA (15 verbatim): |`,
 `RULES (narrowed per lens): |` — and lints as the bare name. Authors
@@ -179,6 +188,9 @@ def field_lines(lines: list[str]) -> list[tuple[int, str, str]]:
 ABS_PATH = re.compile(r"(?<![\w/$}])(/[\w.@+-]+(?:/[\w.@+-]+)+)")
 
 UNEXPANDED = re.compile(r"\$\{[A-Z_][A-Z0-9_]*\}")
+# `@@CONTRACT@@`: a template placeholder no substitution reached. No whitespace
+# inside, so a unified-diff hunk header (`@@ -1,4 +1,5 @@`) never matches.
+TEMPLATE_TOKEN = re.compile(r"@@[A-Za-z_][A-Za-z0-9_-]*@@")
 
 SECRET_NAME = re.compile(
     r"\b(pass|passwd|password|secret|token|api[_-]?key|credential)\b", re.IGNORECASE
@@ -420,12 +432,19 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
                     % (disc, field_value(lines, disc), kind, ", ".join(sorted(wanted)))
                 )
 
-    # 2. unexpanded variables
+    # 2. unexpanded variables and template placeholders
     for number, line in enumerate(lines, 1):
         for match in UNEXPANDED.finditer(line):
             defects.append(
                 "line %d: %s is unexpanded. An agent cannot resolve a variable it "
                 "was never given; ship the absolute path." % (number, match.group(0))
+            )
+        for match in TEMPLATE_TOKEN.finditer(line):
+            defects.append(
+                "line %d: %s is an unexpanded template token. This payload was "
+                "pasted from a src template, not from the assembled final: re-read "
+                "the final under .agent-staging/payloads/ in this turn and ship "
+                "its bytes." % (number, match.group(0))
             )
 
     # 3. paths that do not exist
@@ -578,6 +597,12 @@ def selftest() -> int:
     case("unexpanded variable",
          unit_ok + "STANDARDS: ${PLUGIN_ROOT}/skills/standards/engineering-standards.md\n",
          "unit-test-author", True, "unexpanded")
+    case("unexpanded template token in an inline field",
+         unit_ok.replace("CONTRACT: {REAL}/tests/unit/test_retry.py", "CONTRACT: @@CONTRACT@@"),
+         "unit-test-author", True, "template token")
+    case("unexpanded template token in a block body",
+         unit_ok + "SHARED_IDIOM: |\n  @@SHARED_IDIOM@@\n",
+         "unit-test-author", True, "@@SHARED_IDIOM@@")
     case("url credential", unit_ok + "FIXTURES: |\n  postgres://app:hunter2@db/x\n",
          "unit-test-author", True, "carries a password")
     case("secret placeholder ok", unit_ok + "FIXTURES: |\n  password: <redacted>\n",
@@ -612,6 +637,8 @@ def selftest() -> int:
     fix = impl.replace("MODE: build", "MODE: fix").replace("PACKAGE: P1 thing\n", "").replace("CRITERIA: |\n  1. x\n", "")
     case("implementer fix needs crs or failures", fix, "implementer", True, "CRS / FAILURES")
     case("implementer fix with failures", fix + "FAILURES: |\n  assert x\n", "implementer", False)
+    case("a diff hunk header is not a template token",
+         fix + "FAILURES: |\n  @@ -1,4 +1,5 @@\n  -assert x\n  +assert y\n", "implementer", False)
     case("implementer bad mode", impl.replace("MODE: build", "MODE: repair"), "implementer", True, "takes one of")
     case("implementer misnamed owned paths",
          impl.replace("OWNED_PATHS:", "OWNED_PATH:"), "implementer", True, "did you mean OWNED_PATHS")
@@ -675,7 +702,7 @@ def selftest() -> int:
 
     for item in failures:
         print("SELFTEST FAIL  %s" % item)
-    print("selftest: %d case group(s), %d failure(s)" % (38, len(failures)))
+    print("selftest: %d case group(s), %d failure(s)" % (39, len(failures)))
     return 1 if failures else 0
 
 
