@@ -19,9 +19,10 @@ misnamed `OWNED_PATHS` is the worst case — the agent writes wherever it likes
 and corrupts a concurrent agent's work. Run
 `python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind <agent>` over
 every payload before it ships: it refuses a misnamed or missing field, an
-absolute path that does not exist, an unexpanded `${PLUGIN_ROOT}`, and a
-credential literal. A field left out is otherwise silent — the recorded miss
-shipped a unit author with no style sample and paid a `GAP:` for it.
+absolute path that does not exist, an unexpanded `${PLUGIN_ROOT}` or
+`@@TOKEN@@` template placeholder, and a credential literal. A field left out
+is otherwise silent — the recorded miss shipped a unit author with no style
+sample and paid a `GAP:` for it.
 
 There is no `BAND`, no `TIER`, and no `RETURN_CEILING`. Every agent returns a
 short structured report because its own prompt says so.
@@ -510,6 +511,13 @@ leaked local path.
   `references/`). The skeletons below write it for brevity; what reaches an
   agent is the expanded absolute path, because an agent cannot resolve a
   variable it was never given.
+- **A template placeholder never ships.** A payload assembled from a template
+  — `@@CONTRACT@@`, `@@STYLE_SAMPLE@@` substituted into a src file to make the
+  final under `.agent-staging/payloads/` — is pasted from the final, re-read
+  in the turn that composes the spawn message, never from the src directory.
+  `check_payload.py` refuses any `@@TOKEN@@` left in a final; a token that
+  reaches an agent is a transmission defect whether or not the agent recovers
+  (`/work-on` Phase 4).
 - **Every path in a payload is absolute.** In local mode `.discovery/` is
   untracked and exists only in the main checkout; in committed mode the live
   dossier is the copy inside the run's worktree, and the main checkout's copy

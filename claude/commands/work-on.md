@@ -565,11 +565,12 @@ topology to make the payload true. Then write each payload to a file under
 `python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind <agent>` over
 each: it refuses a misnamed or missing field (a misnamed field is ignored,
 never rejected, so the agent writes wherever it likes), an absolute path that
-does not exist, an unexpanded `${PLUGIN_ROOT}`, a credential literal, a
-`TEST_COMMAND` verb that contradicts the named script's shebang (`python3
-<bash script>` lints clean and dies at run time — copy the invocation you
-verified, never write the verb from memory), and a `DOSSIER` that is not the
-run's live copy. Record it before the fan-out message:
+does not exist, an unexpanded `${PLUGIN_ROOT}` or `@@TOKEN@@` template
+placeholder, a credential literal, a `TEST_COMMAND` verb that contradicts the
+named script's shebang (`python3 <bash script>` lints clean and dies at run
+time — copy the invocation you verified, never write the verb from memory),
+and a `DOSSIER` that is not the run's live copy. Record it before the fan-out
+message:
 
 ```
 PAYLOAD-LINT: <N> payloads, <N> defects fixed — <agent ids>
@@ -578,6 +579,25 @@ PAYLOAD-LINT: <N> payloads, <N> defects fixed — <agent ids>
 `validate_pipeline.py --pre-fanout` refuses without it, as for
 `CONTRACT-REVIEW:`, `HOOKS:` and `ADMISSION:`. A payload that was never a
 file was never linted.
+
+**When payloads are assembled from templates, the template is the source and
+the assembled file is the final: lint the finals, and compose every spawn
+prompt from a final you re-read in this same turn.** Keep them apart on disk
+— templates under `.agent-staging/payloads/src/`, substituted finals under
+`.agent-staging/payloads/` — run `check_payload.py` over the finals only, and
+paste each prompt from the final's bytes after `head` or `sha256sum` has
+shown them to you beside the spawn message, never from the src directory and
+never from the memory of having assembled it. A prompt that reaches an agent
+carrying `@@CONTRACT@@` is a transmission defect whether or not the agent
+recovers. The recorded fan-out shipped three of five prompts from src while
+the substituted finals sat on disk; every affected agent disclosed and
+recovered against the staged contract bytes, so the run absorbed the cost —
+but the recovery was the agent's disclosure, not your control, in a design
+whose blindness invariants depend on exactly which bytes a payload carries.
+The defect repeats on every re-spawn composed from src, and a weaker agent
+satisfies the placeholder by guessing instead of disclosing. The lint refuses
+the token, so a src paste fails before it ships; the same-turn re-read keeps
+the file you linted and the file you paste the same file.
 
 **Validate `TEST_PATHS` against the maps before every `unit-test-author`
 spawn.** Run `python3 scripts/check_permission_maps.py --agent
