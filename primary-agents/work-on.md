@@ -97,12 +97,30 @@ while neither line is present — and likewise without the `HOOKS:` line
 This command creates worktrees by design, so state that plainly and get the
 user's yes before Phase 2. Only you handle either gate, never a sub-agent.
 
+**Mode — settled once, right after the gates.** Run
+`git ls-files -- .discovery | grep -q .` in this checkout
+(`formats.md` § "Two modes for `.discovery/`"). Empty → **local mode**: the
+dossier is untracked, lives only in this checkout, and every write below
+goes to it by absolute path. Non-empty → **committed mode**: the dossier is a
+tracked file, so **the live copy is the one inside `X`** from the moment `X`
+exists; this checkout's copy is never written (it changes only when a PR
+merges), and the build record ships in the PR. Committed mode adds one rule
+to every phase that touches git: **commit the dossier on `X` before `X`
+merges or pushes** — a dirty tracked dossier blocks a merge that touches it,
+and an unpushed record dies with the worktree. Add it by name, never with
+`git add -A`. State the mode in one line.
+
 ## Phase 0 — Select the dossier and route the run
 
 `$ARGUMENTS` names a dossier ID, or is empty. Empty → read the front matter of
 every `.discovery/dossiers/*.md`, and take the first with `status: ready` whose
 `blocked_by` entries are all `done`. State your pick and continue on
-confirmation or silent assent.
+confirmation or silent assent. In committed mode this checkout's copies show
+only what has merged, so list the worktrees first (`git worktree list`): a
+`../<repo>-<ID>` present means that dossier is in flight and its live front
+matter is in that worktree, not here. Route on the live copy. Two files
+sharing one ID here is a plan collision that landed — stop and say which;
+the later one renumbers in its own PR.
 
 **Route on `status`** — this command is resumable:
 
@@ -127,7 +145,10 @@ inline.
 **Claim it.** Write `updated` and set `status: building` now, before any other
 write. Check `worktree` and `branch` in the front matter: if they are already
 set and the paths exist, this is a resume, so never delete or force-recreate
-one.
+one. In committed mode the claim is `X` itself: you cannot write this
+checkout's copy, so the `building` write lands in `X`'s copy the moment
+Phase 2 makes it, and an existing `../<repo>-<ID>` is the resume signal
+whatever this checkout's front matter says.
 
 ## Phase 1 — Jira: one ticket, lightly
 
@@ -159,6 +180,16 @@ This is the step everything else depends on.
    The branch keys off the **Jira key**, never the dossier ID; fall back to the
    dossier ID only when no ticket exists. Record `worktree` and `branch` in the
    front matter.
+
+   **Committed mode forks from the target tip, not from `<baseline>`.** The
+   dossier reached the target through its own PR, after `baseline_commit`
+   was stamped, so a worktree at `<baseline>` has no dossier in it. Run
+   `git fetch origin <target>` and fork from `origin/<target>`; log
+   `FORK: <target>@<sha>, baseline <baseline>, <N> commits behind`, then run
+   the validator on `X`'s copy (`--root <X> --dossier <ID>`) — an anchor the
+   target moved is a defect to fix before you write a docstring. Then write
+   `status: building`, `worktree` and `branch` into `X`'s copy; it is the
+   live dossier from here.
 
 2. **Write the contract into real files.** You write the docstrings that every
    downstream agent builds against, so **read the contract-craft rules first** —
@@ -206,7 +237,9 @@ This is the step everything else depends on.
    here has been reviewed by nobody.
 
 4. **Commit it on `X`.** Prefix with the Jira key. Every fan-out branch forks
-   from this commit, so the contract is the one thing all of them share.
+   from this commit, so the contract is the one thing all of them share. In
+   committed mode the dossier is in this commit too — `status: building`, the
+   revised sections, and their build-log lines.
 
    **Read the repository's commit hooks before this commit, and decide the
    hook policy for the whole fan-out now.** From this commit until the last
@@ -779,6 +812,7 @@ day; a build spanning more than a day absorbs other people's merges the whole
 time, and a sync deferred to Phase 9 lands them *after* the suite is green,
 the review is closed and the ADRs are written — exactly when a conflict can
 invalidate all three. So compare the target's tip against `baseline_commit`
+— in committed mode against the `FORK:` sha, the tip `X` already carries —
 here, and merge it in **before** you arbitrate anything: the tests are about
 to run anyway, no review has been spent, and a conflict found here costs one
 suite run where the same conflict at Phase 9 costs a suite run, a re-review
@@ -865,7 +899,7 @@ ARBITRATION 3 — row 3 (contract ambiguous).
 That lesson is **not ADR material** — an ADR records a decision about the code,
 and this is a decision about how we write contracts. Phase 8 routes it to the
 right place. Two or more row-3 rulings in one run means the next `/plan` needs a
-sharper contract, and `/open-work` surfaces the count as a health signal.
+sharper contract, and `/overview-dossiers` surfaces the count as a health signal.
 
 Set `status: review` once the suite is green. **Budget: 3 arbitration rounds.**
 After the third, stop and show the user the failures and your rulings;
@@ -1156,8 +1190,9 @@ surfaced.
   near-duplicate.
 - Write `## Consequences` for the agent who will read it: state the constraint a
   future change must respect, not a summary of the work.
-- Mint IDs atomically and set `jira` to the ticket (never the dossier ID — the
-  dossier is local and the ADR is not). A number minted here is provisional
+- Mint IDs atomically and set `jira` to the ticket (never the dossier ID — an
+  ADR is read by people who never open a dossier, and in local mode the
+  dossier is not even in the repository). A number minted here is provisional
   until the Phase 9 sync, where `--finalize-ids` settles a collision with a
   concurrent branch. Then run
   `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py` with no arguments, in
@@ -1165,7 +1200,8 @@ surfaced.
   plan's own language rules with no reviewer behind you, and `--write-index`
   regenerates the index and checks nothing. Only then regenerate the index
   with `--write-index`, validate once more, and record the ADR IDs in the
-  dossier's `adrs` front matter field.
+  dossier's `adrs` front matter field (committed mode: `X`'s copy, committed
+  with the ADRs below).
 - **Commit the ADRs on `X` — never the index.** Commit them with the Jira key
   prefix. Regenerate the index locally
   to validate, then `git restore docs/adr/index.md` before committing: CI
@@ -1175,7 +1211,8 @@ surfaced.
 
 ADRs are the part of a build that outlives the machine it ran on, and the
 reason `/plan` checks `index.md` before it investigates anything. Dossiers
-stay local in `.discovery/`.
+stay in `.discovery/` — local by default, inside the PR in committed mode —
+and the index never lists them.
 
 ### 8b — the rules this run paid for
 
@@ -1263,7 +1300,7 @@ instead. You never write the plugin from inside a build. Record a
 - Body sections, in order: `## Lesson` — the imperative one-liner plus the
   testable statement. `## Failure shape` — the `GAP:` or row-3 shape it
   prevents and what it cost in re-spawns. `## Trail` — target repo, date,
-  phase; **never the dossier ID**, which stays in `.discovery/`. `##
+  phase; **never the dossier ID** — the plugin repository has no use for it. `##
   Proposal` — which flow document, payload field, or script the lesson
   should land in. `## Acceptance` — what must change in the plugin for the
   issue to close.
@@ -1297,9 +1334,10 @@ skipped for being wrong every time.
 
 ## Phase 9 — PR, then remove the worktree
 
-1. **Sync the base last.** Inside `X`: `git fetch origin <target> && git merge
-   origin/<target>`, where `<target>` is the branch the PR merges into — the
-   branch `baseline_commit` was taken from, usually the default branch. Then
+1. **Sync the base last.** Inside `X` (committed mode: commit the dossier
+   first): `git fetch origin <target> && git merge origin/<target>`, where
+   `<target>` is the branch the PR merges into — the branch `baseline_commit`
+   was taken from, usually the default branch. Then
    run the bookkeeping ritual — it is mechanical, never a judgement call:
 
    ```bash
@@ -1359,8 +1397,10 @@ skipped for being wrong every time.
     the output you already kept stands and this step is a no-op.
  3. **Write the PR description** and show it to the user. Delegate the draft to
     `document-drafter` (`MODE: pr`, dossier excerpts verbatim, `TARGET_PATHS`
-    naming a file under `.discovery/` in the main checkout, `SCRUB` carrying
-    the dossier ID and every `.discovery/` path) — it writes the draft file
+    naming a file under `.discovery/` in the main checkout — in committed
+    mode under `X`'s `.discovery/`, where nothing is staged by pattern —
+    `SCRUB` carrying the worktree names, and in local mode also the dossier
+    ID and every `.discovery/` path) — it writes the draft file
     itself and self-checks the written bytes; then grep the written file
     yourself for every scrub token before you show it; two checks, because a
     leaked dossier id is a leaked local path. Two sections:
@@ -1369,25 +1409,33 @@ skipped for being wrong every time.
    changed` — grouped by theme, with the non-obvious choices explained and the
    verification stated. When Phase 8b drafted a rule, add a `## Pending
    ratification` section carrying the rule text, why, and its trail. Reference
-   the **Jira ticket**. **Scrub the dossier ID and
-   every `.discovery/` path** — they are local and gitignored. Acceptance of the
-   description doubles as the yes for the PR.
+   the **Jira ticket**. **In local mode scrub the dossier ID and every
+   `.discovery/` path** — they are local and gitignored. In committed mode
+   the dossier is inside this PR, so the description may name it; the
+   worktree names are scrubbed in both modes. Acceptance of the description
+   doubles as the yes for the PR.
 4. **Push the branch and open the PR.** Open it programmatically when the host
    supports it. **On Bitbucket it does not**: push the branch, then hand the user
    the create-PR link and the approved description as the body, and **ask for the
    PR URL back**. Set `status: pr` while you wait — a run that ends here is
-   resumable from exactly this point.
+   resumable from exactly this point. Committed mode: commit the dossier
+   before the push, so the PR opens with the build record in it.
 5. **Record the URL and remove the worktree.** Once the URL is in hand, write it
-   to the front matter, then `git worktree remove` the base worktree and prune
-   any fan-out branch already merged into it. Set `status: done`. The branch
-   stays on the remote; the PR is the user's from here.
+   to the front matter and set `status: done`. Committed mode: commit that
+   final state on `X` and push it — the branch is yours, the PR picks the
+   commit up, and the record would otherwise die with the worktree. Then
+   `git worktree remove` the base worktree and prune any fan-out branch
+   already merged into it. The branch stays on the remote; the PR is the
+   user's from here.
    **Do not wait for the merge and do not track it.** Review comments on the PR
    are new work, and they get a **fresh worktree** — a new `/work-on` run on this
    dossier, or a new dossier. Never reopen the worktree that produced the PR.
 
    **Post-merge cleanup runs only when the user reports the merge and asks for
    it** — state work, not code work, so no fresh worktree. Update the dossiers
-   first (settle whatever the merge decides in the front matter; prune the
+   first (local mode: settle whatever the merge decides in the front matter;
+   committed mode: `git pull` brings the `done` dossier in, and a discrepancy
+   goes through a PR, never a write on the target branch; in both, prune the
    merged branch locally if it lingers), **then regenerate the overview HTML
    report** with the generator `/overview-dossiers` uses, so the dashboard
    reflects the merged state without a full overview pass:
@@ -1530,8 +1578,10 @@ between this list and a phase is a defect in this list.
   arbitrations and `GAP:` returns are evidence about how to write contracts, not
   about this code; a recurring one becomes a user-ratified rule in this repo's
   rules file (Phase 8b), never an ADR and never an unratified write.
-- The dossier ID never leaves `.discovery/`. The branch, every commit, and the
-  PR reference the Jira ticket.
+- The branch, every commit, and the PR reference the Jira ticket, never the
+  dossier ID. In local mode the ID never leaves `.discovery/`; in committed
+  mode the dossier itself travels in the PR, the live copy is `X`'s, and
+  this checkout's copy is never written. (Gates, Phase 2, Phase 9)
 - Nothing external happens without an explicit yes: no Jira create, no Jira
   transition, no PR, no push to a protected branch. No force-push, no history
   rewrite, no merge of the PR — merging is the user's.

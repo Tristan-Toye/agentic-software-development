@@ -325,7 +325,9 @@ LENS: plan
 DOSSIER: /abs/path/repo/.discovery/dossiers/W-014-flush-coalescing.md
           # from round 2 on, a copy without `## Build log` at a path outside
           # .discovery/ — a Read with no limit returns the whole file
-WORKTREE_DIR: /abs/path/repo            # the main checkout, to check anchors
+WORKTREE_DIR: /abs/path/repo            # ${RUN_ROOT}: the main checkout in
+          # local mode, the plan worktree (/abs/path/repo-plan-KEY) in
+          # committed mode — both fields point into the same tree
 CRITERIA: |
   <the acceptance criteria, verbatim>
 STANDARDS: ${PLUGIN_ROOT}/skills/standards/engineering-standards.md
@@ -448,7 +450,9 @@ DOSSIER-EXCERPTS: |
 FORMAT: |
   <the PR description shape this repo uses>
 TARGET_PATHS: /abs/path/repo/.discovery/pr-draft-W-014.md
+          # committed mode: under X — /abs/path/repo-W-014/.discovery/pr-draft-W-014.md
 SCRUB: W-014, .discovery/dossiers, repo-W-014
+          # committed mode: repo-W-014 only — the dossier is inside the PR
 ```
 
 The drafter writes `TARGET_PATHS` itself — its `Write` map admits
@@ -467,11 +471,14 @@ leaked local path.
   `references/`). The skeletons below write it for brevity; what reaches an
   agent is the expanded absolute path, because an agent cannot resolve a
   variable it was never given.
-- **Every path in a payload is absolute.** `.discovery/` is untracked, so it
-  exists only in the main checkout — a relative dossier path read from inside
-  a worktree resolves to a file that does not exist, and the agent halts or
-  guesses. The same rule keeps `TEST_PATHS`, `CONTEXT_DOCS`, and `STANDARDS`
-  unambiguous whatever the agent's working directory is.
+- **Every path in a payload is absolute.** In local mode `.discovery/` is
+  untracked and exists only in the main checkout; in committed mode the live
+  dossier is the copy inside the run's worktree, and the main checkout's copy
+  is stale by design. Either way a relative dossier path read from the wrong
+  directory resolves to a file that does not exist or to the wrong version,
+  and the agent halts or guesses. The same rule keeps `TEST_PATHS`,
+  `CONTEXT_DOCS`, and `STANDARDS` unambiguous whatever the agent's working
+  directory is.
 - **`SCOPE` is a location list, never a diff.** Passing a diff breaks the
   reviewer's blindness, and blindness is the whole reason its verdict is worth
   anything.

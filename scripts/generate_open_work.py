@@ -4,7 +4,7 @@
 Deterministic, and read-only toward pipeline state: reads the YAML front
 matter of `.discovery/dossiers/*.md` through the one parser
 (`validate_pipeline.split_front_matter`), computes the same overview sections
-`/open-work` reports in chat, and writes one self-contained HTML file
+`/overview-dossiers` reports in chat, and writes one self-contained HTML file
 (inline CSS and JS, no external assets). It never writes a dossier, an ADR,
 or `state` — the only file it writes is the report.
 
@@ -30,7 +30,7 @@ is how a report already open in a browser notices a newer one exists: served
 over http it polls that file and reloads only on a fingerprint change. The HTML
 is always written before it, so a poller that sees a new fingerprint never races
 the report it points at. `<stem>-signals.json` remembers the last `--signals`
-set, so a refresh triggered by a hook keeps showing the signals `/open-work`
+set, so a refresh triggered by a hook keeps showing the signals `/overview-dossiers`
 mined instead of dropping the section.
 
 The fingerprint covers the template as well as the data, because a plugin update
@@ -146,9 +146,9 @@ def load_dossiers(root: Path) -> tuple[list[dict], list[dict]]:
 
 def classify(dossiers: list[dict], errors: list[dict], root: Path,
              today: dt.date) -> dict:
-    """The overview /open-work defines, as one JSON payload for the template.
+    """The overview /overview-dossiers defines, as one JSON payload for the template.
 
-    Section semantics mirror commands/open-work.md exactly: ready means
+    Section semantics mirror commands/overview-dossiers.md exactly: ready means
     `status: ready` with every blocker done; blocked means `status: ready`
     with a blocker that is not done; stale worktrees are recorded paths that
     disagree with the disk.
@@ -276,7 +276,7 @@ def classify(dossiers: list[dict], errors: list[dict], root: Path,
 class Signals(NamedTuple):
     """Health signals mined from Build logs, and when they were mined.
 
-    This script cannot produce them — only `/open-work` reads dossier bodies —
+    This script cannot produce them — only `/overview-dossiers` reads dossier bodies —
     so a refresh it did not trigger reuses the last mined set and says how old
     it is. Dropping the section instead would read as "no signals fired",
     which is a different and false claim.
@@ -374,7 +374,7 @@ def load_signals(out: Path, explicit: Path | None,
 
     Given `--signals`, those are the freshly mined ones, and they are also
     remembered beside the report — otherwise the next refresh, which comes from
-    a hook rather than from `/open-work`, would drop the section. Without
+    a hook rather than from `/overview-dossiers`, would drop the section. Without
     `--signals`, the remembered set, carrying the date it was mined.
     """
     if explicit is not None:

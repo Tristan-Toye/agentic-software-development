@@ -35,6 +35,16 @@ dossier to render one row is exactly the waste this format exists to avoid.
 Read a `## Build log` only when you need a health signal (below) or when
 `$ARGUMENTS` asks for one dossier.
 
+**Mode first.** `git ls-files -- .discovery | grep -q .` in this checkout
+(`formats.md` § "Two modes for `.discovery/`"). In committed mode this
+checkout's dossiers show what has **merged**: a `ready` here may be building
+in `../<repo>-<ID>`, and a plan under review lives in `../<repo>-plan-<KEY>`
+with no copy here at all. So run `git worktree list` and read the front
+matter of each such worktree's copy as the live state for that ID — say per
+row which copy you read. Two files here sharing one ID is a plan collision
+that landed; report it as a discrepancy. The HTML generator reads one `--root`
+and cannot follow worktrees; say so under the report in committed mode.
+
 ## `$ARGUMENTS` empty — the overview
 
 Report these, and omit any section that is empty rather than printing a header
@@ -201,7 +211,10 @@ W-NNN` to build, to resume, or to close out, or `/plan W-NNN` if it is still
 - Read-only toward pipeline state. Never write a dossier, never write an ADR,
   never touch `state`, never spawn an agent, never run a validator. The only
   files this command produces are the HTML overview under
-  `.discovery/analysis/` and its scratch signals JSON.
+  `.discovery/analysis/` and its scratch signals JSON. In committed mode
+  `.discovery/analysis/` must be gitignored: when
+  `git check-ignore -q .discovery/analysis/open-work.html` fails, say so —
+  the next `/plan` run adds the pattern — and never stage the report.
 - Front matter for the table; bodies only for health signals and the detail view.
 - Report what the files say. A `status` that disagrees with the disk — a missing
   worktree, a merged PR still marked `pr` — is reported as a discrepancy for the

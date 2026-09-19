@@ -1,11 +1,12 @@
 # agentic-software-development — a contract-first build pipeline
 
-Three commands, four agents, two file kinds.
+Four commands, four agents, two file kinds.
 
 ```
-/plan  <description>   →  a buildable dossier
+/plan  <description>   →  a buildable dossier (a PR, when dossiers are committed)
 /work-on <ID>          →  a PR, and the ADRs the build earned
-/open-work             →  what is going on
+/overview-dossiers     →  what is going on
+/deferred              →  what the run noticed and did not tackle
 ```
 
 ## The idea
@@ -57,9 +58,10 @@ whichever side is easier to change.
 
 | Command | Does | Spawns |
 |---|---|---|
-| **`/plan <anything>`** | A Jira key, a stack trace, a paragraph of intent → an investigated dossier: the problem with anchored evidence, the approach, the contract, disjoint work packages, falsifiable criteria. Writes `status: ready`. | 1 (`reviewer`, `LENS: plan`) |
+| **`/plan <anything>`** | A Jira key, a stack trace, a paragraph of intent → an investigated dossier: the problem with anchored evidence, the approach, the contract, disjoint work packages, falsifiable criteria. Writes `status: ready`. In a repo that commits `.discovery/`, it works in a `plan/<KEY>` worktree and ends with a PR. | 1 (`reviewer`, `LENS: plan`) |
 | **`/work-on <ID>`** | Materialises the contract as real code, fans out blind and concurrent, merges, arbitrates every test failure, runs three concurrent review lenses, extracts the ADRs, opens the PR, removes the worktree. Resumable at every phase. | 3 + N, then 3 |
-| **`/open-work`** | Status of every dossier from front matter alone, plus the pipeline health signals worth acting on. Read-only toward pipeline state; also renders `.discovery/analysis/open-work.html`, a self-contained animated dashboard. | 0 |
+| **`/overview-dossiers`** | Status of every dossier from front matter alone, plus the pipeline health signals worth acting on. Read-only toward pipeline state; also renders `.discovery/analysis/open-work.html`, a self-contained animated dashboard. | 0 |
+| **`/deferred`** | The deferred-issues report for a finished change: every product-code issue the session knew about and did not tackle, with an ID, evidence and a proposed fix. Recall, not audit; `/plan D-n` seeds a dossier from a line. | 0 |
 
 ## The agents
 
@@ -132,8 +134,8 @@ npm install -g @alibaba-group/open-code-review   # needs v1.9.0+ for --format
 ## The files
 
 ```
-.discovery/                      # gitignored — local working state
-└── dossiers/<ID>-<slug>.md      # front matter = machine state (/open-work
+.discovery/                      # local by default; a repo may commit it
+└── dossiers/<ID>-<slug>.md      # front matter = machine state (/overview-dossiers
                                  #   reads only this). Body = problem,
                                  #   approach, contract, packages, criteria,
                                  #   build log. Kept after the build.
@@ -143,6 +145,16 @@ docs/adr/                        # committed — ships with the PR
 │                                #   it on the target branch, branches never
 └── NNNN-<slug>.md               # extracted by /work-on, selectively
 ```
+
+**`.discovery/` has two modes**, decided by one check at the top of every
+command: `git ls-files -- .discovery | grep -q .`. Untracked (the default)
+means local working state that never lands in a commit. Tracked means the
+repository reviews its plans: `/plan` writes the dossier in its own
+`plan/<KEY>` worktree and ends with a PR, `/work-on` keeps the live copy in
+its base worktree and ships the build record inside the build PR, and the
+main checkout's copy changes only when a PR merges. `references/formats.md`
+§ "Two modes" holds the full table; the overview HTML, the PR draft and the
+deferred ledger stay local in both.
 
 ADRs are **extracted, not generated**. Zero is a correct outcome for a defect
 fixed as specified. An ADR per dossier means a template got filled instead of a
@@ -270,7 +282,9 @@ sub-agent:
 1. **Time logging** — offered at the top of every command, including read-only
    ones. Never logged silently. One Tempo session covers the run.
 2. **Worktree** — `/work-on` creates worktrees by design, so it says so and gets
-   an explicit yes first.
+   an explicit yes first. `/plan` does the same when `.discovery/` is
+   committed, and asks once more before it pushes the plan branch and opens
+   its PR.
 
 Nothing external happens without an explicit yes: no Jira create, no Jira
 transition, no PR, no push to a protected branch. No force-push, no history

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Mechanical checks for the contract-first pipeline.
 
-Two file kinds are checked: the dossier (.discovery/dossiers/*.md, local) and
+Two file kinds are checked: the dossier (.discovery/dossiers/*.md, local by
+default, committed when the repository tracks it) and
 the ADR (docs/adr/*.md, committed). See references/formats.md for both formats
 and for the ASD-STE100 subset enforced here.
 
