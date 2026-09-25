@@ -95,7 +95,12 @@ skip stays possible; a *silent* skip does not.
 **Gates — before anything else.** Follow
 `${PLUGIN_ROOT}/references/time-logging.md` for the time-logging gate.
 This command creates worktrees by design, so state that plainly and get the
-user's yes before Phase 2. Only you handle either gate, never a sub-agent.
+user's yes before Phase 2. Where the target has CI that runs the suite, this
+command also **pushes the base branch and opens a draft PR at Phase 6**, so
+that CI is the suite runner and no verdict costs a local run beside it
+(Phase 2 decides it): state that in the same breath and get the yes for it
+here, so no agent is ever spawned into a run that will stall on a question
+with a merged tree waiting. Only you handle these gates, never a sub-agent.
 
 **Mode — settled once, right after the gates.** Run
 `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --mode` in this checkout
@@ -130,7 +135,7 @@ later one renumbers in its own PR with `--finalize-ids`.
 |---|---|
 | `ready` | The full build, from Phase 1. |
 | `building` | Resume: read `## Build log`, find which packages have merged into the base branch, and continue the fan-out from the rest. |
-| `review` | Resume at Phase 6 — re-run the tests first, and never trust a log line over the actual suite. |
+| `review` | Resume at Phase 6 — get the suite's verdict on the current head first, from the runner `SUITE-RUNNER:` names (CI's run on the pushed head, or a local run), and never trust a log line over the actual run. |
 | `pr` | Ask the user for the PR URL, then finish Phase 9: record it and remove the worktree. |
 | `done` | Ask what the user wants. A follow-up on finished work — PR review comments, a second pass — starts a **fresh worktree**, either as a new run on this dossier or as a new dossier. Never reopen the worktree that produced the PR. |
 | `dropped` | Stop and say so. |
@@ -263,6 +268,34 @@ This is the step everything else depends on.
    or `HOOKS: <hook> — <policy>` before the fan-out;
    `validate_pipeline.py --pre-fanout` refuses without it.
 
+   **Decide the suite runner now, beside the hook policy.** From Phase 6 on,
+   every verdict about the suite — the first green, each arbitration round,
+   each review fix, the Phase 9 sync — needs one full run, and running it
+   here and then again in the target's CI is the same run paid twice. So
+   look at the target's CI once: a workflow that runs the suite on a push or
+   a pull request (`.github/workflows/*.yml` with `on: push` or
+   `pull_request`, `bitbucket-pipelines.yml`, `.gitlab-ci.yml`), the
+   command it runs, and what it needs that this branch will carry. Where one
+   exists, **CI is the runner**: from Phase 6 the branch is pushed and a
+   draft PR opened (with the yes taken at the gates), and every full-suite
+   verdict is read from CI's run on the pushed head — never run locally as
+   well. Where none exists, or CI does not run the suite, or the user says
+   its minutes are constrained, **local is the runner** and you run the
+   suite yourself. Log one line before the fan-out; `validate_pipeline.py
+   --pre-fanout` refuses without it:
+
+   ```
+   SUITE-RUNNER: ci — <workflow file>, <trigger>; push and draft PR: yes
+   SUITE-RUNNER: local — <reason>
+   ```
+
+   The decision moves verdict runs only. Runs that are not verdicts stay
+   local under either runner, because CI cannot make them: the stub red-run
+   of the new tests alone (Phase 5), a mutant run on the throwaway branch
+   (Phase 6), the one failing test at the merge-base for a row-5 proof, the
+   command verification an implementer's payload needs (Phase 4), and the
+   agents' own runs in their worktrees.
+
 You write this yourself. Do not delegate it: the contract is what you will
 referee with in Phase 6, and a contract you did not write is one you cannot
 referee with.
@@ -317,7 +350,7 @@ checklist: a Phase 3 defect to fix in the checklist and the contract
 together, never a reason to ask a blind agent to re-read what its payload
 never named.
 
-**Six diffs over the checklist, before anything spawns:**
+**Seven diffs over the checklist, before anything spawns:**
 
 1. **Slice it per surface, and make the slices add up.** Each unit author gets
    exactly the lines its surface can observe — but every line lands with
@@ -357,6 +390,17 @@ never named.
    The stub's derives compile without any of them, so nothing but this diff
    catches it before the Phase 5 commit fails to compile a blind author's
    file (`references/formats.md` § "The observability checklist").
+7. **Tag every line that states the whole result.** A line whose text
+   states the whole value — "gives exactly", "gives `[A, B]`", a full list
+   — carries `[whole-value]` and is asserted as one equality over the whole
+   value; a line that states membership only carries `[member]` and is
+   asserted on the whole element (`references/formats.md` § "The
+   observability checklist"). An untagged whole-result line reads as
+   description to a blind author, which then writes a length check plus an
+   `any(...)` — green on the correct body, and found only by the Phase 6
+   mutation check: six survivors from three authors in one recorded build,
+   every one on such a line, three delete-first rewrite rounds to fix.
+   `check_payload.py` warns on an untagged "exactly" line.
 
 **The independent contract review — spawn `contract-reviewer` now, before the
 fan-out.** You wrote the contract and derived the checklist; a defect in
@@ -391,7 +435,8 @@ ten-second check would have said.
 
 **Decide the test files themselves, not just their owners — no test author can
 add one.** An author writes exactly the paths you name and nothing else:
-`unit-test-author` reads only what its permission map admits, so it cannot
+`unit-test-author` reads only what its permission map admits — nothing at
+all under Claude Code — so it cannot
 see that the one file you gave it is becoming a thousand lines over four
 unrelated classes, and `integration-test-author` owns only the paths you
 named. The split you hand out is the split you get. Plan it before you spawn:
@@ -430,7 +475,7 @@ promise you extract from a prompt:
 
 | Agent | Cannot see | Enforced by |
 |---|---|---|
-| `unit-test-author` | the implementation, the dossier, every pipeline document, anything outside `.agent-staging/` and the test families | its permission map: `read` and `edit` deny every path outside the staging area and the test families — the tool call is refused, not merely discouraged |
+| `unit-test-author` | the implementation, the dossier, every pipeline document, anything outside `.agent-staging/` and the test families | under opencode its permission map: `read` and `edit` deny every path outside the staging area and the test families; under Claude Code its tool list, `Write` alone, with the payload pasted whole — either way the tool call is refused, not merely discouraged |
 | `integration-test-author` | any implementation body | the bodies are stubs on `X`; it has no Bash and cannot reach another branch |
 | `implementer` | the tests | its worktree forks from `X` at this commit, and no test exists there |
 
@@ -514,23 +559,49 @@ Degrade instead, in this order, and log which step you are on:
 
 - `unit-test-author` × **one per contract surface** — the contract staged as
   files under `.agent-staging/` inside `X` (hash the staged bytes) or pasted
-  verbatim, its slice of `PROMISE_CHECKLIST` (Phase 3), its owned test paths
-  inside `X` (every path it should produce, per the Phase 3 split — it cannot
-  add one), the framework, style sample paths (`STYLE_PATHS` — existing tests
-  inside its read map, which it opens itself), the naming convention, the
-  citation shape and the repo conventions (`CITATION`, `CONVENTIONS` —
-  `references/payloads.md`), the fixtures, and `CONTRACT_HASH`. Its payload
-  plus its permission map are its entire world; a thin payload produces a
-  guessed test, which is why it returns `GAP:` instead of guessing.
+  verbatim — **pasted, always, under Claude Code**, where the author has
+  `Write` alone and every path but `TEST_PATHS` is a dead letter
+  (`references/payloads.md` carries both forms of the skeleton) — its slice
+  of `PROMISE_CHECKLIST` (Phase 3, assertion-form tags included), its owned
+  test paths inside `X` (every path it should produce, per the Phase 3
+  split — it cannot add one), the framework, the style sample
+  (`STYLE_PATHS` under opencode — existing tests inside its read map, which
+  it opens itself; `STYLE_SAMPLE`, pasted, under Claude Code), the naming
+  convention, the citation shape and the repo conventions (`CITATION`,
+  `CONVENTIONS` — `references/payloads.md`, with the four shell lines for a
+  shell suite), the fixtures, every non-contract surface it names
+  (`SUPPORT_PATHS` / `SUPPORT`), and `CONTRACT_HASH`. Its payload plus its
+  tool set are its entire world; a thin payload produces a guessed test,
+  which is why it returns `GAP:` instead of guessing.
 - `integration-test-author` — a dossier **excerpt** you generate under
   `.agent-staging/` in `X` (`DOSSIER`: `## Problem`, `## Approach` and
   `## Acceptance criteria` verbatim, nothing else — never the live dossier,
-  whose `## Build log` a `Read` with no limit returns whole), the
-  contract pasted verbatim from the files on `X` (`CONTRACT`, never read from
-  the dossier, so the text it builds against is the text `CONTRACT_HASH`
-  stamps), its owned test paths inside `X` (again, all of them — one per
-  flow), the harness, the substitutable boundaries, a verbatim style sample,
-  and `CONTRACT_HASH`.
+  whose `## Build log` a `Read` with no limit returns whole), **regenerated
+  from the live dossier in the turn that spawns, after every Phase 2–4
+  edit, and linted against it** (`check_payload.py --live-dossier`) — it is
+  derived state exactly like the staged contract, and the recorded excerpt
+  written early in Phase 3 shipped a criterion an owner ruling had since
+  changed — the contract pasted verbatim from the files on `X`
+  (`CONTRACT`, never read from the dossier, so the text it builds against
+  is the text `CONTRACT_HASH` stamps), its owned test paths inside `X`
+  (again, all of them — one per flow), the harness, the substitutable
+  boundaries, a verbatim style sample, and `CONTRACT_HASH`.
+
+**Under Claude Code, route by the file's shape before you spawn a unit
+author.** The `Write`-only author on the small model lands a pure-function
+surface in one write; a **shell suite** or a **compiled-language test file**
+it did not, in the recorded build — every such file failed at least once (a
+`Duration` call inside a `matches!` pattern, `==` on a `Result` with no
+`PartialEq`, negative controls inverted twice, a quoted heredoc that never
+expanded), two extra rounds per surface, and it cannot re-read its own file
+to correct it. The same surfaces routed to `integration-test-author` —
+`Read` and `Write`, the larger model — in `X` while the bodies were stubs
+landed on the first write every time, and stayed structurally blind because
+a stub has no body to read. So the default under Claude Code: shell suites
+and compiled-language test files go to `integration-test-author`, its own
+skeleton plus that surface's `PROMISE_CHECKLIST` (`references/payloads.md`),
+spawned while `X` holds stubs only; the `Write`-only author keeps the small
+pure-function surfaces. Log the routing per surface in the wave table.
 - `implementer` × one per package — its own worktree, the contract verbatim, its
   package, its owned paths, its slice of the criteria, and the command that runs
   the **existing** suite. **Run that command yourself once, in your own shell,
@@ -572,15 +643,20 @@ an instruction ("create it with this command if absent"). Two recorded
 implementers were handed worktrees that did not exist and built their own
 topology to make the payload true. Then write each payload to a file under
 `.agent-staging/payloads/` in `X` — the bytes you will paste — and run
-`python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind <agent>` over
-each: it refuses a misnamed or missing field (a misnamed field is ignored,
-never rejected, so the agent writes wherever it likes), an absolute path that
-does not exist, an unexpanded `${PLUGIN_ROOT}` or `@@TOKEN@@` template
-placeholder, a credential literal, a `TEST_COMMAND` verb that contradicts the
-named script's shebang (`python3 <bash script>` lints clean and dies at run
-time — copy the invocation you verified, never write the verb from memory),
-and a `DOSSIER` that is not the run's live copy. Record it before the fan-out
-message:
+`python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind <agent>
+--host <claude|opencode>` (plus `--live-dossier <live copy>` for the
+integration author) over each: it refuses a misnamed or missing field (a
+misnamed field is ignored, never rejected, so the agent writes wherever it
+likes), an absolute path that does not exist, an unexpanded `${PLUGIN_ROOT}`
+or `@@TOKEN@@` template placeholder, a credential literal, a `TEST_COMMAND`
+verb that contradicts the named script's shebang (`python3 <bash script>`
+lints clean and dies at run time — copy the invocation you verified, never
+write the verb from memory), a `DOSSIER` that is not the run's live copy,
+**any path handed to an agent whose tool list under that host grants no
+`Read` — in a field or in a sentence — an existing `TEST_PATHS` file for a
+`Write`-only author, a path the agent may only partly read, and an excerpt
+that differs from the live dossier**; it warns on a whole-value checklist
+line with no assertion-form tag. Record it before the fan-out message:
 
 ```
 PAYLOAD-LINT: <N> payloads, <N> defects fixed — <agent ids>
@@ -609,15 +685,24 @@ satisfies the placeholder by guessing instead of disclosing. The lint refuses
 the token, so a src paste fails before it ships; the same-turn re-read keeps
 the file you linted and the file you paste the same file.
 
-**Validate `TEST_PATHS` against the maps before every `unit-test-author`
-spawn.** Run `python3 scripts/check_permission_maps.py --agent
-sub-agents/unit-test-author.md --root <X> --test-paths <comma-separated>
---read-paths <STYLE_PATHS>` — the plugin checkout supplies the script and the
-agent file; `X` supplies the paths. Exit 1 names the offending path and lists
-the families the map admits; fix the split or stage the content, never the
-map. The failure this prevents is silent and repeats per retry: a path the
-read map admits but the edit map refuses makes the author read the existing
-file, refuse to write it, and return empty.
+**Validate `TEST_PATHS` against the host's boundary before every
+`unit-test-author` spawn.** Run `python3 scripts/check_permission_maps.py
+--agent <the agent file the host loads> --host <opencode|claude> --root <X>
+--test-paths <comma-separated> [--read-paths <STYLE_PATHS>]` — the plugin
+checkout supplies the script and the agent file
+(`sub-agents/unit-test-author.md` under opencode,
+`claude/agents/unit-test-author.md` under Claude Code); `X` supplies the
+paths. It reads the frontmatter tool list first: under Claude Code any
+`--read-paths` is refused, because the list grants no `Read`, and an
+existing `TEST_PATHS` target warns delete-first. Exit 1 names the offending
+path and, under opencode, the families the map admits; fix the split, stage
+or paste the content, never the map or the tool list. Two failures this
+prevents, both silent: a path the read map admits but the edit map refuses
+makes the author read the existing file, refuse to write it, and return
+empty, once per retry; and a read path validated against the opencode map
+for a Claude Code spawn — the recorded check printed `OK … 2 read path(s)
+admitted` for an author that could open neither — passes as evidence and is
+a dead letter at run time, found only because a canary spawn disclosed it.
 
 **Gate the `integration-test-author` the same way before it spawns.** It has
 no path map, so the check is size and split, not admission: `python3
@@ -637,11 +722,11 @@ mismatch means its world went stale mid-flight, and the re-spawn is
 surface, because a stale test file that happens to pass is the most expensive
 coincidence there is, and judging it needs exactly the judgement the hash
 removes. Its `GAP:` analysis still feeds the contract fix. Unconditional means
-the re-spawn happens, not that the file is deleted: the author edits its own
-earlier output onto the current contract like every other re-spawn, and the
-delete-first mechanic stays reserved for the wholesale rows of Phase 5. The
-recorded hash re-spawn deleted both test files and paid two regenerations for
-a one-sentence pin.
+the re-spawn happens by the host's mechanic (below) — in place under
+opencode, where the author edits its own earlier output onto the current
+contract; delete-first under Claude Code, where every re-spawn is — never a
+bare delete with nothing said. The recorded opencode hash re-spawn deleted
+both test files and paid two regenerations for a one-sentence pin.
 
 **Name the shared idiom when a concept spans packages.** Two implementers that
 each need the same helper, type, or error-mapping shape each invent one, and
@@ -773,28 +858,41 @@ commit that holds the file.
   the ruling in `## Build log` either way. Never let an implementer change a
   signature quietly.
 
-**Re-spawning `unit-test-author` onto a path it already wrote.** The test
-families are inside the author's read **and** edit maps, so a fresh instance
-opens the existing `TEST_PATHS` file itself and folds the corrected payload
-into it with `Edit` — no delete step, no pasted base material. One exception:
-a family the read map denies while the edit map admits it — `deploy/scripts/`
-is the recorded case — cannot be opened; stage the file's current content
-under `.agent-staging/` yourself and have the fresh instance rewrite the
-whole file with `Write`. Two limits. First, the payload names the complete
-intent, never a diff against what the earlier instance wrote: a fresh
-instance knows the file only as it reads it on disk. Second, delete first
-only for a clean slate — the wholesale cases in the vacuous-test table (Phase
-5) — and the delete is `safe_revert.py --delete`, so a stalled re-spawn
-leaves a copy instead of nothing. Never widen the map to work around a
-problem: implementation paths, the dossier and the pipeline documents stay
-outside it, because the blindness is the permission map, not an instruction
-not to look.
+**Re-spawning `unit-test-author` onto a path it already wrote — the
+mechanic is the host's.** Under opencode the test families are inside the
+author's read **and** edit maps, so a fresh instance opens the existing
+`TEST_PATHS` file itself and folds the corrected payload into it with
+`Edit` — no delete step, no pasted base material. One exception: a family
+the read map denies while the edit map admits it — `deploy/scripts/` is the
+recorded case — cannot be opened; stage the file's current content under
+`.agent-staging/` yourself and have the fresh instance rewrite the whole
+file with `Write`. **Under Claude Code every re-spawn onto an existing path
+is delete-first, unconditionally** — corrective rounds, coverage gaps,
+review CRs and hash mismatches alike. The author has `Write` alone, and
+Claude Code's `Write` refuses to overwrite a file the agent has not read,
+its own earlier output included, formatted or not: an in-place instruction
+returns "The Write tool requires Read to be called first" or a `GAP:` with
+the finished draft undelivered, and the round is lost — the recorded repo
+paid it twice across two builds, once after a formatter pass and once on a
+file nobody had touched. Delete the file with `safe_revert.py --delete` (it
+copies the file out first), then resume the same session or re-spawn with
+the complete payload and the changed tests named, and let one whole-file
+`Write` land it; the resume reuses the finished reasoning where the draft
+already exists. Two limits on either host. First, the payload names the
+complete intent, never a diff against what the earlier instance wrote: a
+fresh instance knows the file only as it reads it on disk, or not at all.
+Second, under opencode delete first only for a clean slate — the wholesale
+cases in the vacuous-test table (Phase 5) — and the delete is
+`safe_revert.py --delete`, so a stalled re-spawn leaves a copy instead of
+nothing. Never widen the map or the tool list to work around a problem:
+implementation paths, the dossier and the pipeline documents stay outside
+it, because the blindness is the permission map or the tool list, not an
+instruction not to look.
 
-A strict variant — `read` flatly denied, so nothing can be opened and every
-file is a single fresh `Write` — remains valid where single-shot generation
-is wanted. Its re-spawns use the delete-first mechanic above unconditionally,
-and every payload field must be pasted, because a path in its payload is a
-dead letter.
+The strict variant — `read` flatly denied, so nothing can be opened and
+every file is a single fresh `Write` — **is the Claude Code default**, not
+an option: every payload field is pasted, because a path in its payload is
+a dead letter, and every re-spawn is the delete-first mechanic above.
 
 ### Sub-agent permission maps are load-time
 
@@ -828,8 +926,8 @@ are cheap, and both run while the bodies in `X` are still stubs:
    come from the one derivation. An uncovered line means Phase 3's checklist
    should have caught it and did not: fix the checklist (and the contract, if
    the gap traces back that far), re-spawn the author onto its file with the
-   corrected checklist (it reads and edits its own earlier output — Phase 4;
-   delete first only when the fix is wholesale) — or record the
+   corrected checklist by the host's mechanic (Phase 4: in place under
+   opencode; delete-first under Claude Code) — or record the
    accepted gap in `## Build log`. Do the same for the integration author's
    map against the acceptance criteria. **When the repository owns a
    coverage script, discover its real CLI before the first invocation** —
@@ -845,8 +943,10 @@ are cheap, and both run while the bodies in `X` are still stubs:
      a harness fix you logged, and anything else is reverted, not negotiated;
      format each author's files with the repository's own formatter, over
      exactly the named files and inside that same commit, because the author's
-     `bash` is denied. Then run the new tests there. The bodies are still
-     stubs that fail loudly, so **every new test must fail, judged one test at
+     `bash` is denied. Then run the new tests there — the new files only,
+     locally, under either suite runner (Phase 2): this run is not a verdict
+     on the suite, and CI cannot run a subset against stubs. The bodies are
+     still stubs that fail loudly, so **every new test must fail, judged one test at
      a time — never by a failure count, which a collection error also
      satisfies**. A test that passes against a stub is vacuous — it asserts
      nothing the implementation controls — and blocks a real failure from
@@ -861,11 +961,15 @@ arbitration, and the mechanic is the same in all three places. It turns on
 
 | What is vacuous | What you do |
 |---|---|
-| **Individual tests** in a file whose other tests are sound | re-spawn the author onto that file with **the tests named**. It reads its own earlier output and edits in place — no delete, nothing pasted. |
-| **The whole file** — a wholesale contract change, or every test in it asserts nothing | **delete it with `safe_revert.py --delete`** (Phase 4), which copies it outside the repository first; say so in the payload, and let a fresh `Write` recreate it — a re-spawn that stalls after a bare delete leaves the run at zero tests, and the recorded case was saved only by an unrelated commit. |
+| **Individual tests** in a file whose other tests are sound | re-spawn the author onto that file with **the tests named** and the complete intent. Under opencode it reads its own earlier output and edits in place — no delete, nothing pasted. Under Claude Code the author has `Write` alone, so even this row is delete-first: `safe_revert.py --delete` the file (it copies it out), then a fresh whole-file `Write` with the changed tests named (Phase 4). |
+| **The whole file** — a wholesale contract change, or every test in it asserts nothing | **delete it with `safe_revert.py --delete`** (Phase 4), which copies it outside the repository first; say so in the payload, and let a fresh `Write` recreate it — a re-spawn that stalls after a bare delete leaves the run at zero tests, and the recorded case was saved only by an unrelated commit. The same on either host. |
 
 Deleting a file to fix one weak test throws away every sound test beside it
-and pays a full blind regeneration for them. Name the tests instead.
+and pays a full blind regeneration for them — under opencode, so name the
+tests instead. Under Claude Code the regeneration is paid regardless,
+because the author cannot read what it wrote; naming the tests still tells
+it what changed, and the split into small files (Phase 3) is what keeps that
+regeneration cheap.
 
 Log all results in `## Build log`: promises covered, tests red, vacuous
 tests caught and how each was routed.
@@ -911,9 +1015,30 @@ Remove each implementer worktree once its branch has merged.
 
 ## Phase 6 — Run the tests, and arbitrate with the contract
 
-Run the full suite in `X`. **This is the first time the code and the tests meet
-each other**, so expect failures. A failure here is the design working, not the
-design breaking.
+Get the suite's verdict on `X`. **This is the first time the code and the
+tests meet each other**, so expect failures. A failure here is the design
+working, not the design breaking.
+
+**The verdict comes from the runner `SUITE-RUNNER:` names (Phase 2), once
+per head, never twice.** Under `ci`: sync first (below), push `X`'s branch
+(`git push -u origin <branch>`; committed mode commits the dossier first),
+open the draft PR on the first push — `gh pr create --draft --title
+"<JIRA-KEY>: <title>" --body "build in progress; description follows"`, or
+the host's equivalent; on a host with no CLI the push alone triggers a
+pipeline whose branch pattern matches — and wait for the run: `gh run watch
+<run id> --exit-status` (or `gh pr checks --watch`), then `gh run view <run
+id> --log > <file>` and read the file whole. The exit status is the runner's
+and the counts are summed from the file, never a verdict through `grep` or
+`tail`; log `SUITE: ci run <url> on <sha> — <N> failed / <N> passed`. A run
+that did not start, or that failed before the suite ran — a checkout error,
+a missing secret, a cache step — is not a verdict: exit-2 semantics. Fix the
+CI wiring on your branch, or fall back to `local` for this head and log why.
+Under `local`: run the full suite in `X` yourself, exactly as the
+implementers' `TEST_COMMAND` runs it, output to a file, and log `SUITE:
+local on <sha> — <N> failed / <N> passed`. Every later "the runner's
+verdict" in this document means exactly this — the runner's run on the new
+head, read the same way — and never a local run beside a CI run of the
+same head.
 
 **First, check whether the target branch has moved — and if it has, sync
 now.** Phase 9 syncs last, which is right for a build that finishes the same
@@ -956,7 +1081,7 @@ change:
 
 | The failure shows | Who is wrong | What you do |
 |---|---|---|
-| The test asserts something the contract does not promise | **the test** | Re-spawn the test author with a corrected payload — it reads and edits its own `TEST_PATHS` file (Phase 4); delete first only for a wholesale rewrite. Never edit the test yourself — you have read the implementation, so you are exactly the wrong party to fix a test. |
+| The test asserts something the contract does not promise | **the test** | Re-spawn the test author with a corrected payload by the host's mechanic (Phase 4): in place under opencode; delete-first with `safe_revert.py --delete`, then a fresh whole-file `Write`, under Claude Code. Never edit the test yourself — you have read the implementation, so you are exactly the wrong party to fix a test. |
 | The implementation does not do what the contract promises | **the implementation** | Re-spawn the implementer for that package in `MODE: fix`, working in `X` directly — its own worktree is gone (Phase 5) and the tests are committed, so blindness no longer applies. The failure output travels as `FAILURES:` in the payload (`references/payloads.md`); `CRS:` carries any review change requests still open for it, or is omitted. **It runs alone in `X`**: never concurrently with a test author editing uncommitted files there — commit the author's work first, or wait for it. The recorded fix implementer saw the test file change under its `TEST_COMMAND`, reverted it with `git checkout --`, and destroyed a whole uncommitted fix round. |
 | The contract is ambiguous enough to justify both readings | **you** | Fix the contract (and `PROMISE_CHECKLIST`, if a unit promise is involved) in the files and the dossier, commit on `X`, re-spawn the affected test author onto its file (Phase 4), and re-spawn **both** sides. |
 | The test fails on harness noise — a compile error, a missing fixture, an import | nobody | Fix the harness yourself. It is mechanical. |
@@ -965,8 +1090,11 @@ change:
 **Row 5 needs its proof, or it is not row 5.** Row 4 — "it's only a compile
 error, it's mechanical" — has no proof obligation and tempts every failure
 that feels like somebody else's fault, so row 5 carries one: check out the
-pristine merge-base in a throwaway worktree, run the failing test there, and
-record the result. Reproduces → row 5, and the `UPSTREAM:` line names the
+pristine merge-base in a throwaway worktree, run the failing test there —
+one test, locally, under either runner — and record the result. Under `ci`
+the target's own run at the merge-base commit, where CI kept one (`gh run
+list --branch <target> --commit <sha>`), is the same proof at no cost; read
+its log whole before you cite it. Reproduces → row 5, and the `UPSTREAM:` line names the
 merge-base commit and the upstream cause. Does not reproduce → the failure is
 yours, routed through rows 1–4. Never rule row 5 from the shape of the error;
 a target branch that moved under you breaks code in ways that look exactly
@@ -1028,7 +1156,8 @@ and this is a decision about how we write contracts. Phase 8 routes it to the
 right place. Two or more row-3 rulings in one run means the next `/plan` needs a
 sharper contract, and `/overview-dossiers` surfaces the count as a health signal.
 
-Set `status: review` once the suite is green. **Budget: 3 arbitration rounds.**
+Set `status: review` once the runner's verdict on the current head is green.
+**Budget: 3 arbitration rounds.**
 After the third, stop and show the user the failures and your rulings;
 continuing past the budget needs the user's explicit sign-off, recorded in
 `## Build log`. Most budget exhaustion is one repeated ambiguity or a
@@ -1052,7 +1181,9 @@ concurrency, or a security or money path) every build; skip only mechanical
 work, and log the reason.
 
 **Run it yourself, the moment the suite first goes green.** On a throwaway
-branch off `X` (`<branch>-MUT`, never merged, removed when the table is in),
+branch off `X` (`<branch>-MUT`, never merged, never pushed, removed when the
+table is in — mutants run locally under either suite runner, because a
+mutant is not a head anyone wants CI to remember),
 derive the mutants from `PROMISE_CHECKLIST` in its strong form: **one mutant
 per checklist line on the primary surface** — a return-meaning line gets a
 wrong constant, an order line a swap, a named-guard line a dropped guard —
@@ -1060,7 +1191,7 @@ each a fault a real body could plausibly hide, never line noise a formatter
 would catch, and — where a schema binds the surface — one the schema's own
 constraints permit: a mutant the database rejects is killed by the
 constraint, not by the test's assertion, and says nothing about the oracle.
-Run the suite once per mutant and record the kill table. A
+Run the suite once per mutant, locally, and record the kill table. A
 surface with more lines than one sitting is comfortable is **split across
 sittings, never truncated**: cap how many mutants you apply before you stop
 and record, never how many the surface is entitled to, and write the
@@ -1206,9 +1337,12 @@ from its transcript; never record a partial return as `PASS`.
 
   - **Every CR on a unit-test file goes back to `unit-test-author`** — the
     cosmetic ones and the assertion-touching ones alike. Re-spawn it with the
-    CR folded into its payload: the file sits inside the author's read map,
-    so it reads the current content itself and edits in place with `Edit`;
-    nothing is pasted and nothing is deleted (Phase 4). Pass the finding and
+    CR folded into its payload, by the host's mechanic (Phase 4): under
+    opencode the file sits inside the author's read map, so it reads the
+    current content itself and edits in place with `Edit`, nothing pasted
+    and nothing deleted; under Claude Code the author has `Write` alone, so
+    the file is deleted first with `safe_revert.py --delete` and rewritten
+    whole, with the CR's tests named. Pass the finding and
     the constraints, and nothing about the implementation. A one-line CR
     costs a one-line edit; verify it regardless with
     `check_harness_edit.py --diff ORIGINAL MODIFIED` over what came back —
@@ -1238,8 +1372,10 @@ from its transcript; never record a partial return as `PASS`.
   mode exactly as at the merge (Phase 5): rule on every listed path, and two
   hard limits hold — never another package's owned paths, never the contract
   files.
-- Re-run the full suite. Any test that turns red means the fix was not
-  behaviour-preserving: return it to the implementer, never patch the test.
+- Get the runner's verdict on the fixed head (Phase 6: under `ci`, push the
+  fix commit and read CI's run; under `local`, run it). Any test that turns
+  red means the fix was not behaviour-preserving: return it to the
+  implementer, never patch the test.
 - **Check the fix footprint against the CR footprints.** After the fix
   implementer returns, diff what it touched against the union of the CRs it
   was given: a path inside `SCOPE` that no CR named is surplus work, and
@@ -1256,7 +1392,7 @@ from its transcript; never record a partial return as `PASS`.
 |---|---|---|---|
 | **1 — sweep** | **3**, concurrent | all three lenses | Fresh subject matter, full `SCOPE`, **one pass**. |
 | fix | 1 | `implementer MODE: fix` | the merged open CRs plus any arbitration |
-| — | 0 | you | re-run the suite; red means the fix was not behaviour-preserving |
+| — | 0 | you | the runner's verdict on the fixed head; red means the fix was not behaviour-preserving |
 | **2 — check** | **0–3**, concurrent | **only lenses with an open CR** | own CRs: resolved / not resolved |
 | fix | 1 | `implementer MODE: fix` | what is still open |
 | **3 — check** | **0–3**, concurrent | only lenses still open | same |
@@ -1500,9 +1636,9 @@ skipped for being wrong every time.
 
    **Conflicts on code** → show the user the conflicted files, resolve them
    (through `implementer` for code, with the user for a judgement call), and
-   if the resolution touched the blast radius, **re-run the suite and the
-   three review lenses** before you go on. **Bookkeeping-only merges re-run
-   nothing**: when the sync (merge plus finalize) touched only `docs/adr/**`
+   if the resolution touched the blast radius, **get the runner's verdict on
+   the merged head and re-run the three review lenses** before you go on.
+   **Bookkeeping-only merges re-run nothing**: when the sync (merge plus finalize) touched only `docs/adr/**`
    and `docs/learned-rules*.md`, the suite and review evidence already in the
    dossier stands — run the validators, not the tests.
 
@@ -1533,10 +1669,14 @@ skipped for being wrong every time.
    where every concurrent branch pays this, and that is `GRADUATION:`
    material for the target repo's own rules file (content-addressed ids do
    not move).
-2. **Run the acceptance criteria one final time** and keep the output — it goes
-    in the PR description and in the Jira comment. A bookkeeping-only sync
-    does not invalidate the earlier run: if step 1 moved only bookkeeping,
-    the output you already kept stands and this step is a no-op.
+2. **Get the final verdict on the head the PR will carry** and keep the
+    evidence — it goes in the PR description and in the Jira comment. Under
+    `ci` the run is CI's on the pushed final head: push, wait, and keep the
+    run URL and the counts read from its log; there is no local run beside
+    it. Under `local`, run the acceptance criteria one final time and keep
+    the output. A bookkeeping-only sync does not invalidate the earlier run:
+    if step 1 moved only bookkeeping, the evidence you already kept stands
+    and this step is a no-op.
  3. **Write the PR description** and show it to the user. Delegate the draft to
     `document-drafter` (`MODE: pr`, dossier excerpts verbatim, `TARGET_PATHS`
     naming a file under `.discovery/` in the main checkout — in committed
@@ -1556,8 +1696,12 @@ skipped for being wrong every time.
    the dossier is inside this PR, so the description may name it; the
    worktree names are scrubbed in both modes. Acceptance of the description
    doubles as the yes for the PR.
-4. **Push the branch and open the PR.** Open it programmatically when the host
-   supports it. **On Bitbucket it does not**: push the branch, then hand the user
+4. **Push the branch and open the PR — or, under `ci`, finish the draft.**
+   Under `ci` the branch is already on the remote and the draft PR already
+   open from Phase 6: set the approved description as its body (`gh pr edit
+   --body-file <draft>`) and mark it ready (`gh pr ready`). Under `local`,
+   open it programmatically now when the host supports it. **On Bitbucket
+   it does not**: push the branch, then hand the user
    the create-PR link and the approved description as the body, and **ask for the
    PR URL back**. Set `status: pr` while you wait — a run that ends here is
    resumable from exactly this point. Committed mode: commit the dossier
@@ -1653,7 +1797,8 @@ skipped for being wrong every time.
     write it. The D-IDs are minted here, once; the `/deferred` run that
     follows — normally the very next command — reuses them and appends what
     its own recall adds. Capture only; `/deferred` renders the report.
- 9. **Report**: the ticket, the branch, the PR URL, the arbitration count by
+ 9. **Report**: the ticket, the branch, the PR URL, the suite runner and
+    its final run (the CI run URL, or `local`), the arbitration count by
     kind, the review rounds spent, the mutation kill table (mutants killed and
     survived, or skipped and why), the ADRs extracted, the drafted rules
     awaiting ratification, any graduation issues (created or awaiting your
@@ -1677,7 +1822,9 @@ between this list and a phase is a defect in this list.
   it; a loop with no reader is a log line pretending to be a lesson.
 - **Blindness is structural, and informational where a tool set cannot
   reach.** The unit author's `read` and `edit` maps deny everything outside
-  `.agent-staging/` and the test families; the integration author sees stubs
+  `.agent-staging/` and the test families under opencode, and under Claude
+  Code it has `Write` alone with a fully pasted payload and a delete-first
+  re-spawn; the integration author sees stubs
   and has no `Bash`; the implementer's worktree has no tests. Never hand an
   agent something its blindness depends on not having, never rely on an
   instruction where an absence will do, and never widen a permission map to
@@ -1705,6 +1852,13 @@ between this list and a phase is a defect in this list.
 - **The green suite is the invariant during review.** Every change request is
   behaviour-preserving under it; a red test after a fix means the fix was
   wrong, never that the test was. (Phase 7)
+- **One verdict, one run.** The suite runner is decided at the contract
+  commit (`SUITE-RUNNER:`), and every full-suite verdict from Phase 6 on
+  comes from that runner's run on the head in question — CI's run on the
+  pushed branch wherever the target has CI, never a local run beside it.
+  Runs that are not verdicts — the stub red-run, the mutants, a row-5 proof,
+  an implementer's own command — stay local. (Phase 2, Phase 6, Phase 7,
+  Phase 9)
 - **Reviewers reply; you write.** They have no write tools. Each change
   request becomes one `## Build log` ledger line; the full document travels
   only in the fix implementer's payload, byte-for-byte.
@@ -1727,8 +1881,10 @@ between this list and a phase is a defect in this list.
   mode the dossier itself travels in the PR, the live copy is `X`'s, and
   this checkout's copy is never written. (Gates, Phase 2, Phase 9)
 - Nothing external happens without an explicit yes: no Jira create, no Jira
-  transition, no PR, no push to a protected branch. No force-push, no history
-  rewrite, no merge of the PR — merging is the user's.
+  transition, no PR, no push to a protected branch. The `ci` runner's push
+  of the base branch and its draft PR are covered by the yes taken at the
+  gates, before Phase 2. No force-push, no history rewrite, no merge of the
+  PR — merging is the user's.
 - **Uncommitted agent work has no second copy.** No destructive git command
   over a path an agent may hold uncommitted; copy out before any revert or
   delete; an agent that died after staging is committed, never reset.

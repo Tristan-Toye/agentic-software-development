@@ -17,25 +17,36 @@ A malformed payload is the likeliest silent failure in this pipeline: an agent
 halts on a **missing** field, but a **misnamed** field is simply ignored. A
 misnamed `OWNED_PATHS` is the worst case — the agent writes wherever it likes
 and corrupts a concurrent agent's work. Run
-`python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind <agent>` over
-every payload before it ships: it refuses a misnamed or missing field, an
-absolute path that does not exist, an unexpanded `${PLUGIN_ROOT}` or
-`@@TOKEN@@` template placeholder, and a credential literal. A field left out
-is otherwise silent — the recorded miss shipped a unit author with no style
-sample and paid a `GAP:` for it.
+`python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind <agent>
+--host <claude|opencode>` over every payload before it ships: it refuses a
+misnamed or missing field, an absolute path that does not exist, an
+unexpanded `${PLUGIN_ROOT}` or `@@TOKEN@@` template placeholder, a
+credential literal, any path handed to an agent whose tool list under that
+host grants no `Read` — in a field or in a sentence — a path the agent may
+only partly read, and (with `--live-dossier`) an integration excerpt that
+differs from the live dossier. A field left out is otherwise silent — the
+recorded miss shipped a unit author with no style sample and paid a `GAP:`
+for it.
 
 There is no `BAND`, no `TIER`, and no `RETURN_CEILING`. Every agent returns a
 short structured report because its own prompt says so.
 
-**Paste what an agent cannot open; name what its permission map already
-admits.** `unit-test-author` reads and writes inside a pattern-scoped map —
-`.agent-staging/` and the test families — so a payload path inside that map is
-live: stage `CONTRACT` as files under `.agent-staging/` (hash-stampable as
-bytes on disk) or paste it, and *name* style samples and shared idioms as
-paths instead of pasting them. A path outside the map is still a dead letter.
-And the dossier rule is unchanged everywhere: an agent that reads the contract
-out of the dossier could read the rest of the dossier too — the contract
-never comes from the dossier.
+**Paste what an agent cannot open; name only what its tools can reach — and
+the tools are the host's.** Under opencode `unit-test-author` reads and
+writes inside a pattern-scoped map — `.agent-staging/` and the test families
+— so a payload path inside that map is live: stage `CONTRACT` as files under
+`.agent-staging/` (hash-stampable as bytes on disk) or paste it, and *name*
+style samples as paths instead of pasting them. **Under Claude Code the same
+agent has `Write` alone**, and every path in its payload other than
+`TEST_PATHS` is a dead letter — in a field or in a sentence — so the Claude
+Code form of its skeleton pastes everything: `CONTRACT` inline,
+`STYLE_SAMPLE` in place of `STYLE_PATHS`, `SUPPORT` in place of
+`SUPPORT_PATHS`, and no sentence that tells it to read anything.
+`check_payload.py --host claude` refuses a path the agent cannot reach;
+`--host opencode` leaves admission to the maps and
+`check_permission_maps.py`. And the dossier rule is unchanged everywhere: an
+agent that reads the contract out of the dossier could read the rest of the
+dossier too — the contract never comes from the dossier.
 
 **Never describe the blindness machinery to the agent it constrains.** An agent's
 payload and prompt carry the rules that bind it, and nothing about how the
@@ -57,12 +68,21 @@ Blindness that has to be explained to stay intact is not blindness.
 
 ## unit-test-author
 
-Its world is its permission map: `read` and `edit` are denied everywhere
-except `.agent-staging/` and the test families, and `bash`/`glob`/`grep`/web
-are denied outright. Name a path inside that map and the author opens it
-itself — stage the contract as files, name the style samples, never paste
-what a pointed-at path can carry. Name a path outside the map and the tool
-call is refused.
+Its world is its tool set, and the tool set is the host's. **Under opencode**
+`read` and `edit` are denied everywhere except `.agent-staging/` and the
+test families, and `bash`/`glob`/`grep`/web are denied outright: name a path
+inside that map and the author opens it itself — stage the contract as
+files, name the style samples, never paste what a pointed-at path can
+carry; name a path outside the map and the tool call is refused. **Under
+Claude Code** the author has `Write` and nothing else — no `Read`, no `Edit`
+(`claude/agents/unit-test-author.md`): every path field is a dead letter,
+`CONTRACT`, `STYLE_PATHS` and `SUPPORT_PATHS` included, and so is a sentence
+that tells it to read something. The recorded wave shipped four payloads
+with all three as paths; two blind authors built from `PROMISE_CHECKLIST`
+alone and guessed the rest — 20 compile errors. So the skeleton has two
+forms, and `check_payload.py --host` refuses the wrong one for the host.
+
+**The opencode form** — paths inside the map are live:
 
 ```
 CONTRACT: /abs/path/repo-W-014/.agent-staging/flush-queue.contract.md
@@ -70,8 +90,8 @@ CONTRACT: /abs/path/repo-W-014/.agent-staging/flush-queue.contract.md
           # or pasted inline; either way this is the only contract text the
           # author ever sees, and the same bytes CONTRACT_HASH stamps
 PROMISE_CHECKLIST: |
-  flush — return meaning: number of items written
-  flush — order: oldest first
+  flush — return meaning: number of items written → equals 3 [whole-value]
+  flush — order: oldest first → store received exactly [A, B, C] [whole-value]
   flush — empty case: returns 0
   flush — invalid case: raises ValueError when batch_size < 1
   flush — concurrency: concurrent calls coalesce; each item reaches the
@@ -112,6 +132,70 @@ SHARED_IDIOM: |
 CONTRACT_HASH: 3f2611f0a91c4d8e
 ```
 
+**The Claude Code form** — `Write` only, everything pasted, `TEST_PATHS` the
+one path in the payload:
+
+```
+CONTRACT: |
+  <the contract text, pasted verbatim from the files on X — the same bytes
+   CONTRACT_HASH stamps. Never a staged path: the author cannot open it.>
+PROMISE_CHECKLIST: |
+  <as in the opencode form, assertion-form tags included>
+TEST_PATHS: /abs/path/repo-W-014/tests/unit/test_flush_queue.py
+           # the one path here. A file already at it is deleted with
+           # safe_revert.py --delete BEFORE the lint and the spawn: Write is
+           # whole-file and refuses a file the author has not read, and it
+           # has no Read (work-on.md Phase 4)
+TEST_FRAMEWORK: pytest; plain `assert`; run with `pytest tests/unit -q`
+MAX_SINGLE_EDIT: 350 lines — one whole Write per file; a larger deliverable
+                is split into more TEST_PATHS at spawn, never into staged
+                sections the author cannot Edit together
+CITATION: |
+   <as in the opencode form>
+CONVENTIONS: |
+   <as in the opencode form — plus the four shell lines below when the
+    file is a shell suite>
+STYLE_SAMPLE: |
+  <one existing test from this repository, verbatim — what STYLE_PATHS
+   names under opencode>
+SUPPORT: |
+  <the signature surface of every NON-contract type a checklist line's
+   assertion constructs or calls, pasted verbatim from the staged file —
+   what SUPPORT_PATHS names under opencode. Omit when the checklist names
+   contract members only; check_payload.py warns otherwise.>
+NAMING: Subject_StateUnderTest_ExpectedBehavior
+VOCABULARY: "drain", "coalesce", "batch"
+FIXTURES: |
+  <as in the opencode form. No sentence here, or anywhere in the payload,
+   tells the author to read or open anything — it cannot.>
+SHARED_IDIOM: |
+  <same rule as the opencode form>
+CONTRACT_HASH: 3f2611f0a91c4d8e
+```
+
+A pasted payload grows — a support block of ~1,000 lines is recorded — and
+the temptation is to condense while transcribing. Never: the final under
+`.agent-staging/payloads/` is the artifact that ships (`work-on.md` Phase
+4), so paste each block into the final from the file it came from (`cat
+>>`, never a retyping), lint the final, and spawn from a re-read of it — a
+byte the lint saw is a byte the agent sees. Where the pasted world would
+exceed what one payload carries well, split the surface across more
+authors, or route it to the `Read` + `Write` shape (`work-on.md` Phase 4).
+
+**Shell suites — four `CONVENTIONS` lines a blind author cannot discover**
+(the recorded build paid two rounds per surface before adding them):
+
+1. Capture output and exit status in two steps — `out=$(cmd)` on one line,
+   `status=$?` on the next — never `|| true` inside the capture, which
+   zeroes every status it was meant to record.
+2. Pass values to an embedded program through argv, never by shell
+   expansion inside a quoted heredoc (which never expands) and never a
+   heredoc plus a here-string.
+3. One check function shared by a case and its negative control, so the
+   control cannot invert what the case asserts.
+4. A refusal helper compares the SUBJECT's exit status, never the test
+   helper's own 0/1.
+
 `CONTRACT_HASH` is the orchestrator's stamp of the contract the author saw —
 hash the staged files (or the pasted text) at spawn time and paste the hash
 bare, never explained. When the author returns, re-hash the same bytes: a
@@ -120,16 +204,25 @@ world is stale, and the re-spawn is unconditional (its `GAP:` analysis, if
 any, is still input to the contract fix).
 
 `TEST_PATHS` is validated before the spawn, never after an empty return.
-`scripts/check_permission_maps.py --agent sub-agents/unit-test-author.md
---root <X> --test-paths ... --read-paths ...` refuses a spawn whose paths
-fall outside the author's maps. The refusal names the path and lists the
-admitted families; the fix is the split or the staging, never the map.
+`scripts/check_permission_maps.py --agent <the file the host loads> --host
+<opencode|claude> --root <X> --test-paths ... [--read-paths ...]` reads the
+frontmatter tool list first: under opencode it refuses a spawn whose paths
+fall outside the author's maps, naming the path and the admitted families;
+under Claude Code it refuses any `--read-paths` at all, because the tool
+list grants no `Read`, and warns when a named `TEST_PATHS` target already
+exists for an author with neither `Read` nor `Edit`. The fix is the split,
+the staging or the paste, never the map or the tool list.
 
-A suite in a family the read map denies — `deploy/scripts/`, the recorded
-case — is still writable: the edit map carries the family, the read map
-does not. Stage the file's current content under `.agent-staging/` yourself
-and have the author rewrite the whole file with `Write`. It never opens the
-original; the staged copy is its only view of what exists.
+Under opencode, a suite in a family the read map denies — `deploy/scripts/`,
+the recorded case — is still writable: the edit map carries the family, the
+read map does not. Stage the file's current content under `.agent-staging/`
+yourself and have the author rewrite the whole file with `Write`. It never
+opens the original; the staged copy is its only view of what exists. Under
+Claude Code every `TEST_PATHS` file that already exists is that case,
+unconditionally: delete it with `safe_revert.py --delete` (which copies it
+out first), then spawn for a fresh whole-file `Write` with the changed tests
+named — never an in-place edit, which `Write` refuses for a file the author
+has not read, and the author cannot read (`work-on.md` Phase 4).
 
 Absolute `TEST_PATHS` inside the base worktree. The orchestrator commits its
 output — it has no `Bash`. `.agent-staging/` lives in the base worktree too:
@@ -142,10 +235,17 @@ staged contract can never leak into a commit.
 WORKTREE_DIR: /abs/path/repo-W-014
 DOSSIER: /abs/path/repo-W-014/.agent-staging/W-014.excerpt.md
           # a file YOU generate: ## Problem, ## Approach and ## Acceptance
-          # criteria copied verbatim, nothing else — never the dossier itself
+          # criteria copied verbatim, nothing else — never the dossier itself.
+          # Regenerated from the live dossier in the turn that spawns, and
+          # linted against it: check_payload.py --live-dossier <live copy>
 CONTRACT: |
   <the same contract text as every other author's, pasted verbatim from the
    files on the base worktree — never read out of the dossier>
+PROMISE_CHECKLIST: |
+  <only when this Read + Write author is the routed shape for a UNIT surface
+   — under Claude Code, a shell suite or a compiled-language test file
+   (work-on.md Phase 4): that surface's checklist, tags included, exactly as
+   the unit author would receive it. Omit for a flow.>
 TEST_PATHS: /abs/path/repo-W-014/tests/integration/test_flush_flow.py
            # ONE PATH PER FLOW — the default, not a hint. A GAP: or a vacuous
            # test then re-spawns one flow, not the whole set, and no single
@@ -185,6 +285,19 @@ the same text every other author builds against, and the same text
 tests were written against. The excerpt goes with the rest of
 `.agent-staging/` before the commit. The orchestrator commits its output; it
 has no `Bash`.
+
+**The excerpt is derived state, regenerated at spawn time.** Like the staged
+contract and its `CONTRACT_HASH`, it equals the live dossier's three
+sections at the moment the payload ships — not at the moment the file was
+first written. Regenerate it from the live dossier (`X`'s copy in committed
+mode) in the same turn as the spawn, after every Phase 2–4 edit: the
+recorded excerpt was written early in Phase 3, an owner ruling then moved
+one criterion from three measured shapes to five, the contract and the
+criteria were updated and the excerpt was not, and the author received
+"three lines" beside a `CONTRACT` saying five. `check_payload.py --kind
+integration-test-author --live-dossier <live copy>` compares the three
+sections byte for byte and refuses any difference; linted without the flag,
+the payload warns that the excerpt was not compared.
 
 ## implementer
 
@@ -551,10 +664,39 @@ leaked local path.
   anything and never needs to check the suite's claim.
 - **`ARBITRATIONS` accumulates across rounds** and goes into every later spawn,
   so no reviewer re-litigates a question the user already settled.
-- **`STYLE_PATHS` and `HARNESS` are the difference between a usable test and a
-  rewritten one.** Name real test files from this repository — verify each
-  path exists and sits inside the author's read map before the spawn — never
-  a description of them.
+- **`STYLE_PATHS` / `STYLE_SAMPLE` and `HARNESS` are the difference between
+  a usable test and a rewritten one.** Name real test files from this
+  repository — verify each path exists and sits inside the author's read
+  map before the spawn — or, for an author with no `Read`, paste one
+  verbatim as `STYLE_SAMPLE`; never a description of them.
+- **A path never ships to an agent that cannot read it — in a field or in
+  prose.** The target agent's frontmatter tool list under the host is what
+  loads; a payload path it cannot reach is a dead letter whether it sits in
+  `CONTRACT:`, in `STYLE_PATHS:`, or in a sentence in `FIXTURES` saying
+  "read the sibling test first". Three times in one recorded run an
+  orchestrator handed an agent a path instead of content, knowing the rule;
+  `check_payload.py --host claude` refuses every such token, quoting it, and
+  warns on a read-verb sentence. The pasted fields (`CONTRACT: |`,
+  `STYLE_SAMPLE`, `SUPPORT`) carry what the path was meant to carry.
+- **A path an agent may only partly read is not bounded by an instruction.**
+  An agent with `Read` reaches every byte of a file it is told to read
+  three sections of; the recorded read returned a paged view carrying the
+  forbidden section anyway. Extract the permitted part to its own file
+  under `.agent-staging/` and name that — the integration author's excerpt
+  is this rule applied to the dossier. `check_payload.py` refuses a path
+  beside a partial-read phrase.
+- **`PROMISE_CHECKLIST` lines carry their assertion form.** A line tagged
+  `[whole-value]` is asserted as one equality over the whole value; a line
+  tagged `[member]` as membership of the whole element. Every line whose
+  text states the whole result carries the tag (`/work-on` Phase 3, diff
+  7; `references/formats.md` § "The observability checklist"), and the
+  lint warns on an "exactly" line without one.
+- **`TEST_PATHS` for a `Write`-only author is delete-first, every time.**
+  Under Claude Code the unit author cannot read the file it wrote, and
+  `Write` refuses to overwrite a file it has not read; a re-spawn onto an
+  existing path returns `GAP:` with its finished draft undelivered. Delete
+  with `safe_revert.py --delete` before the lint and the spawn; the lint
+  refuses an existing `TEST_PATHS` file for such an author.
 - **A convention, fixture or precedent you hand a blind author is proven
   under the target's whole shape first.** `NAMING`, `STYLE_PATHS`, `FIXTURES`
   and `HARNESS` are executable instructions, not prose. Write the idiom into a
@@ -608,11 +750,15 @@ leaked local path.
   After `.agent-staging/` is deleted, diff the worktree's changes against the
   named `TEST_PATHS` — every path outside them is reverted, not negotiated.
   The check sees what happened, which is stronger than what was permitted.
-- **`TEST_PATHS` is checked against the maps at spawn time, mechanically.**
-  `scripts/check_permission_maps.py --agent ... --root <X> --test-paths ...
-  --read-paths ...` refuses the spawn when a named path is edit-denied or a
-  read path is read-denied. A read-allowed family that is edit-refused bricks
-  the spawn silently; the pre-spawn check turns that into a one-line refusal.
+- **`TEST_PATHS` is checked against the host's boundary at spawn time,
+  mechanically.** `scripts/check_permission_maps.py --agent ... --host
+  <opencode|claude> --root <X> --test-paths ... [--read-paths ...]` reads
+  the frontmatter tool list first, then the maps: it refuses the spawn when
+  a named path is edit-denied, a read path is read-denied, or a read path
+  is named at all for a tool list with no `Read`. A read-allowed family that
+  is edit-refused bricks the spawn silently; a map validated for a host
+  where it does not load reads as evidence and is not; the pre-spawn check
+  turns both into a one-line refusal.
 - **`MAX_SINGLE_EDIT` caps one write from a blind author.** Around 300–400
   lines per single `Write` or `Edit`; above that, the payload names the split
   — more files, or one file in staged sections — instead of hoping the stream
@@ -626,15 +772,16 @@ leaked local path.
   block — staged sections: one `Write` plus several `Edit`s, each far under
   `MAX_SINGLE_EDIT` — beside, never instead of, the full field set
   (`work-on.md` Phase 4, the escalation ladder).
-- **`SUPPORT_PATHS` stages what the checklist names and the contract does
-  not.** Every non-contract type a `PROMISE_CHECKLIST` line's assertion must
-  construct or call — repo grants, id types, port helpers, a credential
-  constructor — has its signature surface staged under
+- **`SUPPORT_PATHS` / `SUPPORT` carries what the checklist names and the
+  contract does not.** Every non-contract type a `PROMISE_CHECKLIST` line's
+  assertion must construct or call — repo grants, id types, port helpers, a
+  credential constructor — has its signature surface staged under
   `.agent-staging/contract-support/` in `X` before the fan-out and named
-  here. A docstring that names `RepoGrant::mint` gives a blind author the
-  name and nothing else; the recorded run paid three `GAP:` round trips
-  before the surface was staged. `check_payload.py` warns when a checklist
-  type is in neither `CONTRACT` nor `SUPPORT_PATHS`.
+  here (opencode), or pasted verbatim under `SUPPORT` (Claude Code). A
+  docstring that names `RepoGrant::mint` gives a blind author the name and
+  nothing else; the recorded run paid three `GAP:` round trips before the
+  surface was staged. `check_payload.py` warns when a checklist type is in
+  neither `CONTRACT` nor `SUPPORT_PATHS` / `SUPPORT`.
 - **`TEST_COMMAND` carries the known-red shape when the baseline is red by
   design.** Failed and passed counts, the failing-suite count, and the shared
   failure signature, copied from the orchestrator's own verification run —

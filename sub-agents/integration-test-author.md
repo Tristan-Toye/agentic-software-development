@@ -58,6 +58,15 @@ implementation back to itself.
   clock, an SMTP host) and how. Everything not listed is **in scope and must be
   real** in the test.
 - `STYLE_SAMPLE` — one existing integration test, verbatim.
+- `PROMISE_CHECKLIST` — present only when the orchestrator routes you a
+  **unit surface** in place of the `Write`-only unit author (under Claude
+  Code: a shell suite or a compiled-language test file): every promise of
+  `CONTRACT`, one line per member per category, each with its assertion
+  form — `[whole-value]` is one equality over the whole value, never a
+  length or membership check; `[member]` is membership of the whole
+  element. Cover every line, one test per line, through the signature in
+  `CONTRACT`; the dossier still supplies intent and the criteria still get
+  their flow tests. Absent, you test the flow alone.
 - `SHARED_IDIOM` — present only when a test must construct or invoke a
   concept the payload names as shared: the one helper, type or shape to use
   for it, verbatim. Use it as written; never invent an alternative.

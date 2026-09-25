@@ -244,6 +244,29 @@ payload's `FIXTURES` names the house idiom to use instead (`match` on
 and the file failed to compile at the Phase 5 commit — one corrective resume
 after two blind authors had done nothing wrong.
 
+**A line that states the whole result carries its assertion form as a
+tag.** `[whole-value]` on a line that states the whole result — "gives
+exactly", "gives `[A, B]`", "gives `Ok(vec![])`", a full list — means ONE
+equality over the whole value; a length check, a membership test (`any`,
+`contains`, `find`) or a per-field check on such a line is a weak oracle
+that passes against the correct body and survives the mutant. `[member]` on
+a line that states membership only ("holds …") means membership of the
+WHOLE element, never of one field of it. The tag rides the line into
+`PROMISE_CHECKLIST`, where the unit author asserts by it; `check_payload.py`
+warns on an "exactly" line with no tag, and `/work-on` Phase 3's seventh
+diff checks every whole-result line carries one. Six recorded mutation
+survivors from three blind authors sat on untagged "gives exactly" lines:
+three delete-first rewrite rounds and six mutants re-run.
+
+```
+flush — order: oldest first → queue A, B, C; assert the store received
+        exactly [A, B, C] [whole-value]
+flush — return meaning: returns the written ids → assert the result equals
+        exactly [id_a, id_b] [whole-value] — never len() == 2 plus any(...)
+index — membership: holds every seen id → assert the whole element
+        (id, seen_at) is in the index [member] — never the id alone
+```
+
 A line whose strong form cannot be written is a promise no test can observe,
 and the observability checklist should have deleted it one step earlier.
 
