@@ -47,9 +47,17 @@ per work-on.md Phase 4), 2 unusable:
     --selftest
 
 The cap in force is the first of: --cap, the cap an error set, the learned
-ceiling, DEFAULT_CAP. The ceiling only ever comes from evidence — a wave that
-completed — so the next run starts from what the machine has seen, never
-from a guess. Both are printed on every acquire, for the ADMISSION: line.
+ceiling WHEN IT EXCEEDS DEFAULT_CAP, DEFAULT_CAP. The ceiling only ever comes
+from evidence — a wave that completed — so the next run starts from what the
+machine has seen, never from a guess. That evidence reads one way only: a
+completed wave proves the machine can go AT LEAST that wide, never that it
+cannot go wider, so a learned ceiling below DEFAULT_CAP is floored at
+DEFAULT_CAP. Without the floor, a run whose first spawn is a single
+pre-fan-out agent teaches `ceiling = 1`, every later `acquire --n 4` is
+refused, and nothing can ever raise the ceiling again because no wave larger
+than one is admitted — a machine pinned at one slot with no error recorded.
+Only a recorded provider error lowers the cap. Both cap and ceiling are
+printed on every acquire, for the ADMISSION: line.
 
 No third-party imports: this runs wherever python3 does.
 """
@@ -247,8 +255,11 @@ def effective_cap(ledger: dict, explicit: int | None) -> tuple[int, str]:
         return explicit, "--cap"
     if ledger.get("cap"):
         return int(ledger["cap"]), "set by a recorded error"
-    if ledger.get("ceiling"):
-        return int(ledger["ceiling"]), "the learned ceiling"
+    # A learned ceiling is evidence the machine can go at least this wide,
+    # never evidence it cannot go wider: below DEFAULT_CAP it floors nothing.
+    ceiling = int(ledger.get("ceiling") or 0)
+    if ceiling > DEFAULT_CAP:
+        return ceiling, "the learned ceiling"
     return DEFAULT_CAP, "the default"
 
 
@@ -475,6 +486,28 @@ def selftest() -> int:
             check("the lowered cap refuses the old wave size", rc == 1 and "cap 3" in out, out)
             rc, out = _run(["acquire", *pm4, "--n", "3", "--holder", "Y"])
             check("a wave that fits the lowered cap is admitted", rc == 0, out)
+
+            # a one-slot wave on a fresh ledger never pins the machine at one:
+            # the learned ceiling floors nothing below DEFAULT_CAP
+            pm5 = ["--provider", "p5", "--model", "m5"]
+            rc, out = _run(["acquire", *pm5, "--n", "1", "--holder", "C"])
+            check("single pre-fan-out slot admitted on a fresh ledger", rc == 0, out)
+            rc, out = _run(["release", *pm5, "--holder", "C"])
+            check("releasing the single slot learns ceiling 1", rc == 0 and "ceiling learned: 1" in out, out)
+            rc, out = _run(["acquire", *pm5, "--n", str(DEFAULT_CAP), "--holder", "D"])
+            check(
+                "a full DEFAULT_CAP wave is still admitted after a one-slot ceiling",
+                rc == 0 and f"cap {DEFAULT_CAP}" in out and "the default" in out,
+                out,
+            )
+            _run(["release", *pm5, "--holder", "D"])
+            # a ceiling above DEFAULT_CAP still widens the cap on evidence
+            rc, _ = _run(["acquire", *pm5, "--n", "6", "--holder", "E", "--cap", "6"])
+            rc2, out2 = _run(["release", *pm5, "--holder", "E"])
+            check("a six-slot wave learns ceiling 6", rc == 0 and rc2 == 0 and "ceiling learned: 6" in out2, out2)
+            rc, out = _run(["acquire", *pm5, "--n", "5", "--holder", "F"])
+            check("a ceiling above the default is the cap in force", rc == 0 and "cap 6, the learned ceiling" in out, out)
+            _run(["release", *pm5, "--holder", "F"])
 
             # the module API validate_pipeline.py --pre-fanout uses
             pend = pending_deferral("zai-coding-plan", "glm-5.3-flash")

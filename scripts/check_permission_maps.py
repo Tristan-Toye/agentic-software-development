@@ -20,15 +20,40 @@ Three questions this script answers mechanically:
      internal/, cmd/, and the deploy/scripts bootstrap that a broad `*/scripts/*`
      read pattern used to admit) must stay denied. A widening pattern fails
      the plugin's own checks before it ships.
+  5. The host — an agent file states two tool policies: opencode's
+     `permission:` maps, and the Claude Code tool list (`claude.tools` in a
+     source under sub-agents/, a top-level `tools:` in a generated file under
+     claude/agents/). The frontmatter tool list is what loads under Claude
+     Code, and it is read FIRST: a read path validated against a body map
+     that the tool list contradicts passes the map check and is still a dead
+     letter at run time — worse than no check, because it reads as evidence.
+     The recorded spawn printed `OK 2 read path(s) admitted` for an agent
+     whose tools were `Write` alone; every one of those paths was unreachable.
+     So `--read-paths` for a host whose tool list grants no Read is REFUSED,
+     naming the frontmatter line; a `--test-paths` target that already exists
+     on disk for an agent with neither Read nor Edit is a WARNING (a `Write`
+     is whole-file and refuses a file the agent has not read — delete first
+     with safe_revert.py --delete); and the two policies disagreeing about a
+     tool — a blindness boundary the tool list grants anyway, or a flat grant
+     the tool list withholds — is a defect in the agent file itself, reported
+     by the scan. `--host claude|opencode|both` picks the policy to validate;
+     omitted, it is inferred from what the file declares (a source with a
+     `claude:` block validates on both, and a refusal names its host).
 
 Usage:
     check_permission_maps.py
-        scan every sub-agents/*.md for shape and symmetry
+        scan every sub-agents/*.md for shape, symmetry, negative controls,
+        and frontmatter/map disagreement
     check_permission_maps.py --agent sub-agents/unit-test-author.md \\
-        --root /abs/path/target-worktree \\
+        --host opencode --root /abs/path/target-worktree \\
         --test-paths tests/unit/test_flush.py,tests/util/helpers.py \\
         --read-paths tests/unit/test_retry.py --expected-lines 620
-        validate a spawn before it happens
+        validate a spawn before it happens, against the opencode maps
+    check_permission_maps.py --agent claude/agents/unit-test-author.md \\
+        --host claude --root /abs/path/target-worktree \\
+        --test-paths tests/unit/test_flush.py
+        the same spawn under Claude Code: the tool list is `Write`, so any
+        --read-paths is refused and an existing TEST_PATH warns delete-first
     check_permission_maps.py --agent sub-agents/integration-test-author.md \\
         --root /abs/path/target-worktree \\
         --test-paths tests/integration/test_flow.py --flows 3 --expected-lines 700
@@ -58,6 +83,7 @@ import contextlib
 import io
 import re
 import sys
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -201,6 +227,150 @@ def negative_control_findings(agent: str, maps: Mapping[str, object]) -> list[st
     return out
 
 
+# opencode permission key -> the Claude Code tool it governs. Mirrors the
+# table in build_claude_plugin.py; `list` has no Claude counterpart.
+CLAUDE_TOOL_OF: dict[str, str] = {
+    "read": "Read",
+    "edit": "Edit",
+    "write": "Write",
+    "bash": "Bash",
+    "glob": "Glob",
+    "grep": "Grep",
+    "webfetch": "WebFetch",
+    "websearch": "WebSearch",
+    "task": "Agent",
+}
+
+
+def front_matter_lines(text: str) -> list[tuple[int, str]]:
+    """(line number, line) for every line inside the front matter fence."""
+    if not text.startswith("---\n"):
+        return []
+    out: list[tuple[int, str]] = []
+    for number, line in enumerate(text.split("\n")[1:], 2):
+        if line == "---":
+            break
+        out.append((number, line))
+    return out
+
+
+def parse_tools(text: str) -> tuple[list[str] | None, int, set[str]]:
+    """The Claude Code tool list, the front matter line it sits on, and the
+    permission keys widened on purpose under `claude.widen`.
+
+    A generated file (claude/agents/*.md) carries a top-level `tools:` line;
+    a source (sub-agents/*.md) carries it inside its `claude:` block. The
+    tool list is what loads under Claude Code, whatever the body prose says.
+    (None, 0, set()) when the file declares neither.
+    """
+    tools: list[str] | None = None
+    line_no = 0
+    widened: set[str] = set()
+    in_claude = in_widen = False
+    for number, line in front_matter_lines(text):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if indent == 0:
+            in_claude, in_widen = stripped == "claude:", False
+            top = re.match(r"^tools:\s*(.+)$", stripped)
+            if top:
+                tools = [t.strip() for t in top.group(1).split(",") if t.strip()]
+                line_no = number
+            continue
+        if not in_claude:
+            continue
+        if indent == 2:
+            in_widen = stripped == "widen:"
+            nested = re.match(r"^tools:\s*(.+)$", stripped)
+            if nested:
+                tools = [t.strip() for t in nested.group(1).split(",") if t.strip()]
+                line_no = number
+        elif in_widen and indent > 2:
+            widened.add(stripped.split(":", 1)[0].strip().strip("\"'"))
+    return tools, line_no, widened
+
+
+def hosts_declared(maps: Mapping[str, object], tools: list[str] | None) -> list[str]:
+    """Which hosts' policies an agent file states, in validation order."""
+    hosts: list[str] = []
+    if tools is not None:
+        hosts.append("claude")
+    if maps:
+        hosts.append("opencode")
+    return hosts
+
+
+def disagreement_findings(
+    agent: str,
+    maps: Mapping[str, object],
+    tools: list[str] | None,
+    tools_line: int,
+    widened: set[str],
+) -> list[str]:
+    """The two declared policies of one file must agree, tool by tool.
+
+    A blindness boundary in a map — a scalar deny, or an allow-list closed by
+    `"*": deny` — that the tool list grants anyway is a boundary that holds
+    on one host only. A flat opencode grant — scalar allow, or a map whose
+    default is allow — that the tool list withholds is a capability lost
+    silently under Claude Code. `claude.widen.<key>` exempts a key on
+    purpose, with its reason, exactly as build_claude_plugin.py reads it.
+    """
+    if tools is None:
+        return []
+    out: list[str] = []
+    for key, tool in CLAUDE_TOOL_OF.items():
+        policy = maps.get(key)
+        if policy is None or key in widened:
+            continue
+        granted = tool in tools
+        boundary = policy == "deny" or (
+            isinstance(policy, dict) and policy.get("*") == "deny"
+        )
+        flat_allow = policy == "allow" or (
+            isinstance(policy, dict) and policy.get("*") == "allow"
+        )
+        if boundary and granted:
+            out.append(
+                f"{agent}: frontmatter tools (line {tools_line}) grants {tool}, but "
+                f"the {key} policy is a blindness boundary ('*': deny) — the boundary "
+                f"holds on one host only; withhold {tool}, or record the widening "
+                f"under claude.widen.{key} with its reason"
+            )
+        elif flat_allow and not granted:
+            out.append(
+                f"{agent}: the {key} policy is a flat allow, but frontmatter tools "
+                f"(line {tools_line}) withholds {tool} — a capability lost silently "
+                "under Claude Code; grant it, or deny it on both hosts"
+            )
+    return out
+
+
+def dead_letter_notes(
+    agent: str, maps: Mapping[str, object], tools: list[str] | None, tools_line: int
+) -> list[str]:
+    """Allow-list maps the tool list makes unreachable: not a defect (the
+    generator withholds the tool on purpose), but every path the map admits
+    is a dead letter under Claude Code, and the scan says so."""
+    if tools is None:
+        return []
+    out: list[str] = []
+    for key in PATH_TOOLS:
+        policy = maps.get(key)
+        tool = CLAUDE_TOOL_OF[key]
+        if isinstance(policy, dict) and allow_families(policy) and tool not in tools:
+            out.append(
+                f"{agent}: the {key} map admits {len(allow_families(policy))} "
+                f"families, but frontmatter tools (line {tools_line}: "
+                f"{', '.join(tools)}) grants no {tool} — the map is opencode-only; "
+                f"under Claude Code every path it admits is a dead letter, so the "
+                "payload pastes the content instead"
+            )
+    return out
+
+
 def resolve(root: Path, path: str) -> str | None:
     """A path against a root -> repository-relative, or None when outside."""
     p = Path(path)
@@ -224,16 +394,30 @@ def spawn_validation(
     read_paths: list[str],
     expected_lines: int | None = None,
     flows: int | None = None,
+    host: str | None = None,
 ) -> int:
     try:
-        maps = parse_permission(agent_file.read_text())
+        text = agent_file.read_text()
     except OSError as exc:
         print(f"UNUSABLE  cannot read the agent file: {exc}")
         return 2
-    scoped = "edit" in maps
-    if not scoped and any(tool in maps for tool in PATH_TOOLS):
-        print(f"UNUSABLE  {agent_file} declares path maps but no edit map")
+    maps = parse_permission(text)
+    tools, tools_line, _widened = parse_tools(text)
+    declared = hosts_declared(maps, tools)
+    if not declared:
+        print(
+            f"UNUSABLE  {agent_file} declares neither a permission map nor a "
+            "tools list — nothing to validate a spawn against"
+        )
         return 2
+    hosts = declared if host in (None, "both") else [host]
+    for wanted in hosts:
+        if wanted not in declared:
+            print(
+                f"UNUSABLE  --host {wanted} asked, but {agent_file} declares no "
+                f"{'tool list' if wanted == 'claude' else 'permission map'} for it"
+            )
+            return 2
     if expected_lines is not None and expected_lines > MAX_SINGLE_EDIT_LINES:
         print(
             f"WARNING  expected deliverable ~{expected_lines} lines exceeds the "
@@ -248,61 +432,115 @@ def spawn_validation(
             "the whole set, and no single Write runs long",
             file=sys.stderr,
         )
+    for raw in test_paths + read_paths:
+        if resolve(root, raw) is None:
+            print(f"UNUSABLE  '{raw}' is not inside the root {root}")
+            return 2
+
     findings: list[str] = []
-    if not scoped:
-        # No path map (integration-test-author): admission is not gated, only
-        # the size and split gates above apply.
-        for raw in test_paths + read_paths:
-            if resolve(root, raw) is None:
-                print(f"UNUSABLE  '{raw}' is not inside the root {root}")
-                return 2
-        print(
-            f"OK        {len(test_paths)} test path(s) named; {agent_file.name} has "
-            "no path map, so only the size and split gates applied"
-        )
-        return 0
-    for raw in test_paths:
-        rel = resolve(root, raw)
-        if rel is None:
-            print(f"UNUSABLE  '{raw}' is not inside the root {root}")
-            return 2
-        if not is_allowed(maps.get("edit"), rel):
-            families = ", ".join(allow_families(maps.get("edit"))) or "none"
+    notes: list[str] = []
+
+    # The Claude Code host: the tool list is read first, and it is the whole
+    # boundary — no map narrows or widens it.
+    if "claude" in hosts:
+        assert tools is not None
+        granted = ", ".join(tools)
+        if read_paths and "Read" not in tools:
             findings.append(
-                f"TEST_PATH '{rel}' is outside the edit map (admitted: {families})"
+                f"host claude: frontmatter tools (line {tools_line}: {granted}) "
+                f"grants no Read — {len(read_paths)} read path(s) are dead letters: "
+                f"{', '.join(read_paths)}. Every payload field naming a path is "
+                "unreachable for this agent; paste the content instead (CONTRACT "
+                "inline, STYLE_SAMPLE, SUPPORT)"
             )
-        elif not is_allowed(maps.get("read"), rel):
-            if (root / rel).exists():
-                print(
-                    f"WARNING  TEST_PATH '{rel}' exists but is read-denied: stage its "
-                    "current content under .agent-staging/ and have the author "
-                    "rewrite the whole file",
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    f"NOTE      TEST_PATH '{rel}' is read-denied but does not exist yet"
-                )
-    for raw in read_paths:
-        rel = resolve(root, raw)
-        if rel is None:
-            print(f"UNUSABLE  '{raw}' is not inside the root {root}")
-            return 2
-        if not is_allowed(maps.get("read"), rel):
-            families = ", ".join(allow_families(maps.get("read"))) or "none"
+        if test_paths and "Write" not in tools and "Edit" not in tools:
             findings.append(
-                f"read path '{rel}' is outside the read map (admitted: {families})"
+                f"host claude: frontmatter tools (line {tools_line}: {granted}) "
+                "grants neither Write nor Edit — no TEST_PATH can be written"
             )
+        elif "Edit" not in tools:
+            for raw in test_paths:
+                rel = resolve(root, raw) or raw
+                if not (root / rel).exists():
+                    continue
+                if "Read" not in tools:
+                    print(
+                        f"WARNING  host claude: TEST_PATH '{rel}' already exists and "
+                        f"the agent has no Edit and no Read (tools: {granted}): a "
+                        "Write is whole-file and refuses a file the agent has not "
+                        "read, so the spawn returns GAP: with the file undelivered. "
+                        "Delete it first with safe_revert.py --delete, then spawn "
+                        "for a fresh whole-file Write (work-on.md Phase 4)",
+                        file=sys.stderr,
+                    )
+                else:
+                    notes.append(
+                        f"host claude: TEST_PATH '{rel}' exists; with Read and no "
+                        "Edit the agent re-reads it and rewrites it whole"
+                    )
+        if not read_paths and "Read" not in tools:
+            notes.append(
+                f"host claude: no read paths named, and none could be — tools "
+                f"(line {tools_line}) are {granted}"
+            )
+
+    # The opencode host: the path maps are the boundary.
+    if "opencode" in hosts:
+        scoped = "edit" in maps
+        if not scoped and any(tool in maps for tool in PATH_TOOLS):
+            print(f"UNUSABLE  {agent_file} declares path maps but no edit map")
+            return 2
+        if not scoped:
+            # No path map (integration-test-author): admission is not gated,
+            # only the size and split gates above apply.
+            notes.append(
+                f"host opencode: {agent_file.name} has no path map, so only the "
+                "size and split gates applied"
+            )
+        else:
+            for raw in test_paths:
+                rel = resolve(root, raw) or raw
+                if not is_allowed(maps.get("edit"), rel):
+                    families = ", ".join(allow_families(maps.get("edit"))) or "none"
+                    findings.append(
+                        f"host opencode: TEST_PATH '{rel}' is outside the edit map "
+                        f"(admitted: {families})"
+                    )
+                elif not is_allowed(maps.get("read"), rel):
+                    if (root / rel).exists():
+                        print(
+                            f"WARNING  host opencode: TEST_PATH '{rel}' exists but is "
+                            "read-denied: stage its current content under "
+                            ".agent-staging/ and have the author rewrite the whole file",
+                            file=sys.stderr,
+                        )
+                    else:
+                        notes.append(
+                            f"host opencode: TEST_PATH '{rel}' is read-denied but does "
+                            "not exist yet"
+                        )
+            for raw in read_paths:
+                rel = resolve(root, raw) or raw
+                if not is_allowed(maps.get("read"), rel):
+                    families = ", ".join(allow_families(maps.get("read"))) or "none"
+                    findings.append(
+                        f"host opencode: read path '{rel}' is outside the read map "
+                        f"(admitted: {families})"
+                    )
+
+    for note in notes:
+        print(f"NOTE      {note}")
     for f in findings:
         print(f"REFUSED   {f}")
     if findings:
         print(
-            "\nexit 1 — fix the split or stage the content; never widen the map "
-            "to work around a refused path"
+            "\nexit 1 — fix the split, stage or paste the content; never widen a "
+            "map or a tool list to work around a refused path"
         )
         return 1
     print(
-        f"OK        {len(test_paths)} test path(s), {len(read_paths)} read path(s) admitted"
+        f"OK        {len(test_paths)} test path(s), {len(read_paths)} read path(s) "
+        f"admitted on {' and '.join(hosts)}"
     )
     return 0
 
@@ -312,17 +550,22 @@ def scan(sub_agents: Path) -> int:
     checked = 0
     for agent in sorted(sub_agents.glob("*.md")):
         try:
-            maps = parse_permission(agent.read_text())
+            text = agent.read_text()
         except OSError as exc:
             print(f"UNUSABLE  cannot read {agent}: {exc}")
             return 2
+        maps = parse_permission(text)
         if not maps:
             continue
         checked += 1
         name = f"sub-agents/{agent.name}"
+        tools, tools_line, widened = parse_tools(text)
         findings += shape_findings(name, maps)
         findings += symmetry_findings(name, maps)
         findings += negative_control_findings(name, maps)
+        findings += disagreement_findings(name, maps, tools, tools_line, widened)
+        for note in dead_letter_notes(name, maps, tools, tools_line):
+            print(f"NOTE      {note}")
     for f in findings:
         print(f"REFUSED   {f}")
     verdict = "PASS" if not findings else "FAIL"
@@ -530,6 +773,84 @@ def selftest() -> int:
     rc, _ = gate(["/etc/outside.py"], None, None)
     check("it author: a path outside the root is unusable", True, rc == 2)
 
+    # The frontmatter tool list is read first: host-aware spawn validation.
+    with tempfile.TemporaryDirectory() as tmp:
+        troot = Path(tmp)
+        (troot / "tests" / "unit").mkdir(parents=True)
+        (troot / "tests" / "unit" / "test_retry.py").write_text("def test_x(): pass\n")
+        source = troot / "unit-source.md"
+        source.write_text(
+            "---\nname: u\npermission:\n  read:\n    \"*\": deny\n"
+            "    \".agent-staging/*\": allow\n    \"tests/*\": allow\n"
+            "  edit:\n    \"*\": deny\n    \"tests/*\": allow\n"
+            "claude:\n  model: haiku\n  tools: Write\n---\nbody\n"
+        )
+        generated = troot / "unit-generated.md"
+        generated.write_text("---\nname: u\ntools: Write\nmodel: haiku\n---\nbody\n")
+
+        def spawn(agent: Path, host: str | None, tests: list[str], reads: list[str]) -> tuple[int, str]:
+            err, out = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+                rc = spawn_validation(agent, troot, tests, reads, None, None, host)
+            return rc, out.getvalue() + err.getvalue()
+
+        new, style = ["tests/unit/test_flush.py"], ["tests/unit/test_retry.py"]
+        tools, line, _ = parse_tools(source.read_text())
+        check("tools: source claude.tools parsed", True, tools == ["Write"] and line == 13)
+        tools, line, _ = parse_tools(generated.read_text())
+        check("tools: generated top-level tools parsed", True, tools == ["Write"] and line == 3)
+        rc, out = spawn(source, "claude", new, style)
+        check(
+            "host claude: a read path for a Read-less agent is refused, naming the line",
+            True,
+            rc == 1 and "grants no Read" in out and "line 13" in out and "test_retry.py" in out,
+        )
+        rc, out = spawn(source, "opencode", new, style)
+        check("host opencode: the same read path is admitted by the map", True, rc == 0)
+        rc, out = spawn(source, None, new, style)
+        check("host inferred: a source with both policies refuses on claude", True, rc == 1 and "host claude" in out)
+        rc, out = spawn(generated, None, new, style)
+        check("host inferred: a generated file validates as claude", True, rc == 1 and "line 3" in out)
+        rc, out = spawn(source, "claude", new, [])
+        check("host claude: no read paths, new test path — admitted", True, rc == 0)
+        rc, out = spawn(source, "claude", style, [])
+        check(
+            "host claude: an existing TEST_PATH for an agent with no Edit and no Read warns delete-first",
+            True,
+            rc == 0 and "safe_revert.py --delete" in out,
+        )
+        rc, out = spawn(source, "opencode", style, [])
+        check("host opencode: an existing TEST_PATH inside both maps is quiet", True, rc == 0 and "safe_revert" not in out)
+        rc, _ = spawn(generated, "opencode", new, [])
+        check("host asked that the file does not declare is unusable", True, rc == 2)
+
+    # Frontmatter/map disagreement is a defect in the agent file itself.
+    def disagreement(text: str) -> list[str]:
+        tools, line, widened = parse_tools(text)
+        return disagreement_findings("fixture", parse_permission(text), tools, line, widened)
+
+    boundary_granted = (
+        "---\nname: c\npermission:\n  read:\n    \"*\": deny\n    \"tests/*\": allow\n"
+        "claude:\n  tools: Read, Write\n---\n"
+    )
+    found = disagreement(boundary_granted)
+    check("disagreement: a blindness boundary the tool list grants is a defect", True, bool(found) and "boundary" in found[0])
+    flat_lost = "---\nname: c\npermission:\n  read: allow\nclaude:\n  tools: Write\n---\n"
+    found = disagreement(flat_lost)
+    check("disagreement: a flat allow the tool list withholds is a defect", True, bool(found) and "lost silently" in found[0])
+    widened_ok = boundary_granted.replace("  tools: Read, Write\n", "  tools: Read, Write\n  widen:\n    read: reads its own targets\n")
+    check("disagreement: claude.widen exempts the key", False, bool(disagreement(widened_ok)))
+    consistent = "---\nname: c\npermission:\n  read:\n    \"*\": deny\n    \"tests/*\": allow\n  bash: deny\nclaude:\n  tools: Write\n---\n"
+    check("disagreement: an allow-list withheld on claude is consistent", False, bool(disagreement(consistent)))
+    check(
+        "disagreement: an allow-list withheld on claude is a dead-letter note",
+        True,
+        bool(dead_letter_notes("fixture", parse_permission(consistent), ["Write"], 9)),
+    )
+    for name in ("unit-test-author.md", "integration-test-author.md", "document-drafter.md", "implementer.md", "reviewer.md"):
+        text = (repo / "sub-agents" / name).read_text()
+        check(f"disagreement: real {name} is consistent", False, bool(disagreement(text)))
+
     ok = all(w == g for _, w, g in cases)
     for name, want, got in cases:
         print(f"{'PASS' if want == got else 'FAIL'}  {name}: want {want}, got {got}")
@@ -571,6 +892,14 @@ def main() -> int:
         "outnumber --test-paths — one path per flow is the default",
     )
     ap.add_argument(
+        "--host",
+        choices=("claude", "opencode", "both"),
+        default=None,
+        help="the host the spawn runs under: claude validates the frontmatter tool "
+        "list, opencode the permission maps; omitted, every policy the file "
+        "declares is validated",
+    )
+    ap.add_argument(
         "--selftest", action="store_true", help="run the built-in negative controls"
     )
     args = ap.parse_args()
@@ -590,6 +919,7 @@ def main() -> int:
             read_paths,
             args.expected_lines,
             args.flows,
+            args.host,
         )
     repo = Path(__file__).resolve().parent.parent
     return scan(repo / "sub-agents")

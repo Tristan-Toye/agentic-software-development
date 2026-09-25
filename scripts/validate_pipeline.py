@@ -1821,6 +1821,16 @@ PAYLOAD_LINT_RE = re.compile(
 ADMISSION_RE = re.compile(
     r"^\s*[-*]?\s*ADMISSION:\s*(granted|skipped)\b(?P<rest>.*)$", re.MULTILINE
 )
+# `SUITE-RUNNER: ci — <workflow>, <trigger>` or `SUITE-RUNNER: local — <reason>`:
+# which runner produces the orchestrator's suite verdicts (work-on.md Phase 2).
+# CI on the pushed branch is the default where the target has one, so the
+# suite never runs locally AND in CI for one verdict; `local` keeps every run
+# on this machine and says why. Decided before the fan-out because `ci` needs
+# the user's yes for the Phase 6 push and draft PR, and a yes asked after the
+# agents have returned stalls the run with a merged tree waiting on a question.
+SUITE_RUNNER_RE = re.compile(
+    r"^\s*[-*]?\s*SUITE-RUNNER:\s*(ci|local)\b(?P<rest>.*)$", re.MULTILINE
+)
 
 PRE_FANOUT_LINES = (
     (
@@ -1856,13 +1866,23 @@ PRE_FANOUT_LINES = (
             "ADMISSION: skipped — <reason>",
         ),
     ),
+    (
+        "SUITE-RUNNER",
+        SUITE_RUNNER_RE,
+        "The suite runner is decided at the contract commit — CI on the pushed "
+        "branch, or local with a reason — so one verdict never costs two runs.",
+        (
+            "SUITE-RUNNER: ci — <workflow>, <trigger>; push and draft PR: yes",
+            "SUITE-RUNNER: local — <reason>",
+        ),
+    ),
 )
 
 
 def check_pre_fanout(path: Path) -> int:
     """Check the obligations that must hold before /work-on Phase 4 fans out.
 
-    Four lines in ``## Build log``, each recording a decision the orchestrator
+    Five lines in ``## Build log``, each recording a decision the orchestrator
     otherwise makes silently — or forgets, which reads the same:
 
     * ``CONTRACT-REVIEW: spawned ... | skipped — <reason>`` — the review has no
@@ -1875,6 +1895,8 @@ def check_pre_fanout(path: Path) -> int:
       the wave took its slots from the admission ledger. A ``granted`` line is
       refused while that ledger holds an unexpired reset deadline for the
       provider and model it names.
+    * ``SUITE-RUNNER: ci — ... | local — <reason>`` — which runner produces
+      the suite verdicts from Phase 6 on, decided once at the contract commit.
 
     Returns 0 when every obligation is recorded, 1 otherwise.
     """
@@ -1931,17 +1953,18 @@ def selftest_pre_fanout() -> bool:
             "orchestrator commits with --no-verify\n"
             "- PAYLOAD-LINT: 5 payloads, 1 defect fixed — P1 P2 UT-A UT-B IT\n"
             "- ADMISSION: granted 5 slots — selftest-provider/selftest-model, cap 8, ceiling 5\n"
+            "- SUITE-RUNNER: ci — .github/workflows/ci.yml, on push; push and draft PR: yes\n"
         )
         ok = True
         (root / "full.md").write_text(full, encoding="utf-8")
         ok &= check_pre_fanout(root / "full.md") == 0
-        for token in ("CONTRACT-REVIEW", "HOOKS", "PAYLOAD-LINT", "ADMISSION"):
+        for token in ("CONTRACT-REVIEW", "HOOKS", "PAYLOAD-LINT", "ADMISSION", "SUITE-RUNNER"):
             partial = "\n".join(
                 line for line in full.splitlines() if not line.startswith(f"- {token}:")
             )
             (root / f"no-{token}.md").write_text(partial + "\n", encoding="utf-8")
             ok &= check_pre_fanout(root / f"no-{token}.md") == 1
-        (root / "none.md").write_text("## Build log\n- HOOKS: none\n- PAYLOAD-LINT: 2 payloads, 0 defects — P1 UT\n- CONTRACT-REVIEW: skipped — two-member contract, reviewed by hand\n- ADMISSION: skipped — one spawn\n", encoding="utf-8")
+        (root / "none.md").write_text("## Build log\n- HOOKS: none\n- PAYLOAD-LINT: 2 payloads, 0 defects — P1 UT\n- CONTRACT-REVIEW: skipped — two-member contract, reviewed by hand\n- ADMISSION: skipped — one spawn\n- SUITE-RUNNER: local — no CI in this repository\n", encoding="utf-8")
         ok &= check_pre_fanout(root / "none.md") == 0
 
         # A granted line is refused while the admission ledger defers that key.
