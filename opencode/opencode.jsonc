@@ -7,6 +7,8 @@
   //   ~/.config/opencode/agent/work-on.md      -> primary-agents/work-on.md
   //   ~/.config/opencode/agent/dossier.md      -> primary-agents/plan.md
   //   ~/.config/opencode/agent/<sub-agent>.md  -> sub-agents/<sub-agent>.md
+  //   ~/.config/opencode/plugins/provider-fifo.ts -> opencode/plugins/provider-fifo.ts
+  //     (limits per host and model: opencode/plugins/provider-fifo.yaml)
   // Agents and commands carry their settings in their own frontmatter.
   // Config loads at startup: restart opencode after changes here.
   "$schema": "https://opencode.ai/config.json",
@@ -36,7 +38,10 @@
   "provider": {
     "zai-coding-plan": {
       "options": {
-        "baseURL": "https://api.z.ai/api/coding/paas/v4"
+        "baseURL": "https://api.z.ai/api/coding/paas/v4",
+        // plugins/provider-fifo.ts queues requests to this host, and opencode's header
+        // timeout (default 5 min) starts before the queue: allow 30 min for queue + headers.
+        "headerTimeout": 1800000
       },
       "models": {
         "glm-5.3": {
