@@ -1,0 +1,32 @@
+# Provider FIFO limits — read by provider-fifo.ts.
+#
+# Requests to a host listed here wait in a first-in, first-out queue, and at most
+# `concurrency` of them are in flight at once. A request holds its slot until the
+# response stream ends. Hosts not listed here are never queued.
+#
+# Edits apply on the next request; no restart needed.
+#
+# Keys per host (host is matched exactly, or as a suffix: "z.ai" matches "api.z.ai"):
+#   concurrency   in-flight limit for any model on this host not listed under models
+#   models        per-model in-flight limits; each model gets its own queue
+#   max_hold_ms   watchdog: a slot held this long is freed (default below)
+
+defaults:
+  max_hold_ms: 900000 # 15 minutes
+
+hosts:
+  # Z.ai GLM Coding Plan, Pro tier (zai-coding-plan in opencode.jsonc).
+  # Z.ai publishes no fixed number: "rate (concurrency) limits are tied to your plan
+  # tier ... dynamically adjusted ... Max > Pro > Lite", Pro recommended for 1-2
+  # projects at once (https://docs.z.ai/devpack/usage-policy). The per-model values
+  # below are the owner's settings; the account console shows the live ones at
+  # https://z.ai/manage-apikey/rate-limits.
+  api.z.ai:
+    concurrency: 1
+    models:
+      glm-5.3: 3
+      glm-5.3-flash: 7
+
+  # Example: a provider that allows a single call at a time.
+  # cheapestinference.ai:
+  #   concurrency: 1
