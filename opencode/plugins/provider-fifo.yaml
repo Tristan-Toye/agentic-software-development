@@ -19,12 +19,13 @@ hosts:
   # Z.ai publishes no fixed number: "rate (concurrency) limits are tied to your plan
   # tier ... dynamically adjusted ... Max > Pro > Lite", Pro recommended for 1-2
   # projects at once (https://docs.z.ai/devpack/usage-policy). The per-model values
-  # below come from the account console, https://z.ai/manage-apikey/rate-limits.
+  # below are the owner's settings; the account console shows the live ones at
+  # https://z.ai/manage-apikey/rate-limits.
   api.z.ai:
     concurrency: 1
     models:
-      glm-5.3: 1
-      glm-5.3-flash: 1
+      glm-5.3: 3
+      glm-5.3-flash: 7
 
   # Example: a provider that allows a single call at a time.
   # cheapestinference.ai:
