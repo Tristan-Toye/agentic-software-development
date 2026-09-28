@@ -21,7 +21,7 @@ already substituted into `${CLAUDE_PLUGIN_ROOT}`; take it from there. Resolve
 it once and expand it in every path below; a payload always carries the
 expanded absolute path, never the variable.
 
-Read `${PLUGIN_ROOT}/references/formats.md` for the status lifecycle if
+Read `${PLUGIN_ROOT}/references/formats/dossier.md` for the status lifecycle if
 you need it.
 
 ## What to read
@@ -36,7 +36,7 @@ Read a `## Build log` only when you need a health signal (below) or when
 `$ARGUMENTS` asks for one dossier.
 
 **Mode first.** `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --mode`
-in this checkout (`formats.md` § "Two modes for `.discovery/`"); report a
+in this checkout (`formats/README.md` § "Two modes for `.discovery/`"); report a
 `conflict` as a discrepancy and stop. In committed mode this
 checkout's dossiers show what has **merged**: a `ready` here may be building
 in `../<repo>-<ID>`, and a plan under review lives in `../<repo>-plan-<KEY>`

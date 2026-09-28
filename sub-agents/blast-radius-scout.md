@@ -16,7 +16,18 @@ options:
   reasoning_effort: low
   temperature: 1
   top_p: 0.95
+steps: 40
 permission:
+  doom_loop: deny
+  # Plugin tools no subagent uses: each schema rides on every step.
+  "envsitter_*": deny
+  EnterWorktree: deny
+  ExitWorktree: deny
+  skill:
+    "*": deny
+    standards: allow
+  # Read-only work: the ctx sandbox adds tool schemas and runs code this agent never needs.
+  "ctx_*": deny
   bash:
     "git diff*": "allow"
     "git log*": "allow"

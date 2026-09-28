@@ -3,8 +3,9 @@
 
 Two file kinds are checked: the dossier (.discovery/dossiers/*.md, local by
 default, committed when the repository tracks it) and
-the ADR (docs/adr/*.md, committed). See references/formats.md for both formats
-and for the ASD-STE100 subset enforced here.
+the ADR (docs/adr/*.md, committed). See references/formats/dossier.md and
+references/formats/adr.md for both formats, and references/formats/writing.md
+for the ASD-STE100 subset enforced here.
 
 The check that matters most is work-package path disjointness. Three kinds of
 agent build concurrently against one contract, so two packages that own the same
@@ -39,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # --------------------------------------------------------------------------
-# format constants (references/formats.md)
+# format constants (references/formats/dossier.md, references/formats/adr.md)
 # --------------------------------------------------------------------------
 
 DOSSIER_SECTIONS = [
@@ -1030,7 +1031,8 @@ def collect_dossier_ids(dossier_dir: Path) -> dict[str, list[Path]]:
 def check_dossier_ids(dossier_dir: Path, rep: Report) -> None:
     """Two dossiers with one id, or a file named for another id, is a DEFECT.
 
-    In committed mode two plan PRs can land the same number (formats.md §4).
+    In committed mode two plan PRs can land the same number
+    (formats/evidence-and-ids.md §4).
     Nothing else catches it: each file validates on its own, and /work-on
     would build whichever one it read first.
     """
@@ -1994,7 +1996,7 @@ def selftest_pre_fanout() -> bool:
 
 
 # --------------------------------------------------------------------------
-# the two modes of .discovery/  (references/formats.md § "Two modes")
+# the two modes of .discovery/  (references/formats/README.md § "Two modes")
 # --------------------------------------------------------------------------
 
 # One probe per path that stays local in committed mode. `git check-ignore`

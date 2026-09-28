@@ -22,7 +22,15 @@ import { dirname, join } from "node:path"
 //
 // OPENCODE_FIFO_DEBUG=1 logs queue activity to stderr.
 
-type HostConfig = { concurrency?: number; models?: Record<string, number>; max_hold_ms?: number }
+// A pool is a group of models that share one queue, for providers whose limit covers a
+// whole subscription rather than each model (one subscription, several models).
+type PoolConfig = { concurrency?: number; models?: string[] }
+type HostConfig = {
+  concurrency?: number
+  models?: Record<string, number>
+  pools?: Record<string, PoolConfig>
+  max_hold_ms?: number
+}
 type Config = { defaults?: { max_hold_ms?: number }; hosts?: Record<string, HostConfig> }
 
 const DEFAULT_MAX_HOLD_MS = 900_000
@@ -57,6 +65,8 @@ function positive(n: unknown, fallback: number): number {
 type Limit = { lane: string; concurrency: number; maxHoldMs: number }
 
 // The queue a request belongs to, or undefined when its host is not configured.
+// Precedence: the model's own entry under `models`, then the first pool listing it,
+// then the host-wide lane.
 function limitFor(host: string, model: string | undefined): Limit | undefined {
   const cfg = currentConfig()
   const entry = Object.entries(cfg.hosts ?? {}).find(([h]) => host === h || host.endsWith(`.${h}`))
@@ -65,6 +75,10 @@ function limitFor(host: string, model: string | undefined): Limit | undefined {
   const maxHoldMs = positive(hc.max_hold_ms ?? cfg.defaults?.max_hold_ms, DEFAULT_MAX_HOLD_MS)
   if (model && hc.models && model in hc.models)
     return { lane: `${name}/${model}`, concurrency: positive(hc.models[model], 1), maxHoldMs }
+  const pool = model
+    ? Object.entries(hc.pools ?? {}).find(([, p]) => Array.isArray(p?.models) && p.models.includes(model))
+    : undefined
+  if (pool) return { lane: `${name}/pool:${pool[0]}`, concurrency: positive(pool[1].concurrency, 1), maxHoldMs }
   return { lane: name, concurrency: positive(hc.concurrency, 1), maxHoldMs }
 }
 

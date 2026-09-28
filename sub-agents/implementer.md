@@ -19,7 +19,16 @@ options:
   reasoning_effort: high
   temperature: 1
   top_p: 0.95
+steps: 250
 permission:
+  doom_loop: deny
+  # Plugin tools no subagent uses: each schema rides on every step.
+  "envsitter_*": deny
+  EnterWorktree: deny
+  ExitWorktree: deny
+  skill:
+    "*": deny
+    standards: allow
   bash:
     "*": "allow"
     "git push": "deny"

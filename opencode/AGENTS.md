@@ -3,6 +3,10 @@ Use Context7 MCP to fetch current documentation whenever the user asks about a l
 
 Do not use for: refactoring, writing scripts from scratch, debugging business logic, code review, or general programming concepts.
 
+Context7 indexes third-party libraries only. It never finds this project's own code, files, or tests: search those with read, grep, and glob, or report the gap. Language syntax (a Rust `match` arm, a Python decorator) is a general concept, not a library question.
+
+Budget: at most 3 Context7 calls per question. Never repeat a call with the same library ID and query — the answer does not change. When 3 calls do not answer the question, or Context7 reports a quota limit, stop calling it: continue with what you know and state the gap in your report.
+
 ## Steps
 
 1. Always start with `resolve-library-id` using the library name and what to look up in the library's documentation, unless the user provides an exact library ID in `/org/project` format

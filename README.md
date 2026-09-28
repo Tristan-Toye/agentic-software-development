@@ -152,7 +152,7 @@ means local working state that never lands in a commit. Tracked means the
 repository reviews its plans: `/plan` writes the dossier in its own
 `plan/<KEY>` worktree and ends with a PR, `/work-on` keeps the live copy in
 its base worktree and ships the build record inside the build PR, and the
-main checkout's copy changes only when a PR merges. `references/formats.md`
+main checkout's copy changes only when a PR merges. `references/formats/README.md`
 § "Two modes" holds the full table; the overview HTML, the PR draft and the
 deferred ledger stay local in both.
 
@@ -244,8 +244,9 @@ prose about permission maps cannot mislead the agent that reads it.
 
 | File | Holds |
 |---|---|
-| `references/formats.md` | Both file formats, the evidence labels, the ASD-STE100 subset. Read this first. |
-| `references/payloads.md` | One spawn skeleton per agent, and the field rules that matter. |
+| `references/formats/` | Both file formats, the evidence labels, the ASD-STE100 subset. Read `README.md` first. |
+| `references/payloads/` | One spawn skeleton per agent, and the field rules that matter. Read `README.md` first. |
+| `references/work-on/` | `/work-on`'s instructions, one file per phase. `primary-agents/work-on.md` holds what is true in every phase and points at each file; the orchestrator reads a phase file when the phase starts. |
 | `references/time-logging.md` | The Tempo contract: one session per run, orchestrator only. |
 | `skills/standards/` | The engineering standards. They bind generation and review symmetrically. |
 | `scripts/validate_pipeline.py` | Front matter, section set, **path disjointness**, contract shape, criterion falsifiability, anchors, ASD-STE100, and two dossiers sharing one ID. `--mode` settles which of the two `.discovery/` modes a checkout is in; `--finalize-ids` renumbers the ADRs, LRNs and dossiers a concurrent branch landed first. `--selftest` checks the checker. |
@@ -255,6 +256,13 @@ prose about permission maps cannot mislead the agent that reads it.
 | `scripts/check_harness_edit.py` | The row-4 boundary at Phase 6: exit 0 harness-only, exit 1 assertion-bearing — a hoisted expected value the assertion reads included — exit 2 unknown, ruled conservatively. `--selftest` checks the checker. |
 | `scripts/spawn_admission.py` | Admission control for a wave: a machine-wide slot semaphore and a quota ledger every session shares, so a wave is split or deferred before it spawns, a provider's named reset closes the window for every checkout, and the next run starts from the ceiling the last one learned. `--selftest` checks the checker. |
 | `scripts/safe_revert.py` | The only way the orchestrator reverts or deletes a path an agent may hold uncommitted: copies it outside the repository first, prints where, refuses a copy target inside the repository. `--selftest` checks the checker. |
+| `scripts/dossier_edit.py` | A dossier write without a dossier read: append to `## Build log`, set or extend a front matter field, print one section with line numbers. `--selftest` checks the checker. |
+| `scripts/prepare_wave.py` | One call per fan-out wave: every payload lint and boundary gate through the scripts that own them, only the defects printed, then the admission slots and the `PAYLOAD-LINT:` / `ADMISSION:` lines. `--selftest` checks the checker. |
+| `scripts/compose_payloads.py` | A spawn payload with every mechanical field filled from the dossier and the contract files, and every judgement field left as a `@@FILL_<FIELD>@@` placeholder the lint refuses. `--selftest` checks the checker. |
+| `scripts/git_state.py` | A worktree's state in one bounded call: branch, HEAD, ahead/behind, status counts and paths, diff stat, in-progress merge. `--selftest` checks the checker. |
+| `scripts/run_tests.py` | Runs a suite (optionally inside a Lima VM) with the whole output in a log, and prints the summed counts and each failure, bounded; cargo, nextest, pytest and TAP parsers. `--selftest` checks the checker. |
+| `scripts/wait_ci.py` | Waits for a PR's checks without output, then prints each check and a bounded digest of every failed job's log. `--selftest` checks the checker. |
+| `scripts/run_gates.py` | Runs a list of gate commands, one log per gate, and prints one line per gate plus the failing lines, bounded. `--selftest` checks the checker. |
 | `scripts/build_claude_plugin.py` | The Claude Code surface, derived from the opencode sources. `--check` fails on drift; `--selftest` checks the checker. |
 
 ## Why the validator matters more than it looks

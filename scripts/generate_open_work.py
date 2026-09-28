@@ -19,7 +19,7 @@ Usage:
 
 Default output: <root>/analysis/open-work.html
 `--worktrees` overlays the live copy of each dossier from the repository's
-sibling worktrees (references/formats.md § "Two modes"): when `.discovery/`
+sibling worktrees (references/formats/README.md § "Two modes"): when `.discovery/`
 is committed, this checkout's copy changes only when a PR merges, while a
 build in flight lives in `../<repo>-<ID>` and a plan under review in
 `../<repo>-plan-<KEY>`. An overlaid row carries a `live from` flag and an

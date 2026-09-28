@@ -3,7 +3,7 @@
 
 Twelve failure modes this catches, each of which cost a real build:
 
-1. **A misnamed or missing field.** `references/payloads.md` names a misnamed
+1. **A misnamed or missing field.** `references/payloads/README.md` names a misnamed
    field the likeliest silent failure in the pipeline: an agent halts on a
    MISSING field only when it cannot proceed without it, and a MISNAMED field
    is simply ignored. A misspelled `OWNED_PATHS` is the worst case, because the
@@ -26,7 +26,7 @@ Twelve failure modes this catches, each of which cost a real build:
    even when it is correct, because the payload lands in a transcript on disk.
 
 5. **A dossier that is not the run's live copy.** `.discovery/` has two modes
-   (references/formats.md § "Two modes"); in both, the dossier an agent may
+   (references/formats/README.md § "Two modes"); in both, the dossier an agent may
    read is the one inside the tree the payload names as `WORKTREE_DIR`. A
    `DOSSIER` inside some other checkout's `.discovery/` is the stale copy by
    design — the main checkout's, while the live one sits in the worktree.
@@ -136,7 +136,7 @@ import sys
 import tempfile
 
 # Required and optional fields per agent kind, derived from the skeletons in
-# references/payloads.md. A skeleton says "fill every line, delete nothing", so
+# references/payloads/*.md. A skeleton says "fill every line, delete nothing", so
 # every field it shows is required unless its own text says "omit when".
 # Mode- and lens-dependent requirements live in CONDITIONAL below.
 FIELDS: dict[str, dict[str, set[str]]] = {
@@ -676,7 +676,7 @@ def assertion_form_findings(lines: list[str], kind: str | None) -> list[str]:
                 "checklist line %d states a whole result with no assertion-form tag: "
                 "%r. Tag it [whole-value] — one equality over the whole value, never "
                 "a length or membership check — or [member] for membership of the "
-                "whole element (references/formats.md, the observability checklist)."
+                "whole element (references/formats/dossier.md, the observability checklist)."
                 % (number, line.strip()[:80])
             )
     return out

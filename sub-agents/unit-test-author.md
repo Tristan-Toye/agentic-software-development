@@ -24,7 +24,19 @@ options:
   reasoning_effort: low
   temperature: 0.2
   top_p: 0.9
+steps: 80
 permission:
+  doom_loop: deny
+  # Plugin tools no subagent uses: each schema rides on every step.
+  "envsitter_*": deny
+  EnterWorktree: deny
+  ExitWorktree: deny
+  skill:
+    "*": deny
+    standards: allow
+  # ctx_execute runs arbitrary code: it would read what the read map denies.
+  "ctx_*": deny
+  "context7_*": deny
   read:
     "*": deny
     ".agent-staging/*": allow
