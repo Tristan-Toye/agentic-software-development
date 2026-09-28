@@ -37,7 +37,8 @@ const { tool } = (await import(
 // and characters dropped), a refusal, a missed-boundary nudge, a persistence error —
 // is one timestamped line in phase-checkpoint.log beside the checkpoints (the TUI
 // swallows stderr, so a file is the only log anyone can read afterwards).
-// OPENCODE_PHASE_CHECKPOINT_LOG names another file, or `off` to stop logging.
+// OPENCODE_PHASE_CHECKPOINT_LOG: unset, `true`, `1`, `on` or `yes` log to that file;
+// `false`, `0`, `off` or `no` stop logging; any other value is the log file's path.
 
 const AGENTS = new Set(["work-on"])
 const MAX_SUMMARY_CHARS = 6000
@@ -58,8 +59,14 @@ function phaseNumber(phase: string): number | undefined {
 const dir = join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "opencode", "phase-checkpoint")
 const sessions = new Map<string, Checkpoint[]>()
 
-const logSetting = process.env.OPENCODE_PHASE_CHECKPOINT_LOG
-const logFile = logSetting === "off" ? undefined : logSetting || join(dir, "phase-checkpoint.log")
+// A boolean-looking value is a switch, never a path: `true` must not create ./true.
+function logPath(setting: string | undefined): string | undefined {
+  const value = (setting ?? "").trim()
+  if (/^(false|0|off|no)$/i.test(value)) return undefined
+  if (value === "" || /^(true|1|on|yes)$/i.test(value)) return join(dir, "phase-checkpoint.log")
+  return value
+}
+const logFile = logPath(process.env.OPENCODE_PHASE_CHECKPOINT_LOG)
 
 // One line per event. A log that cannot be written never breaks a request.
 function log(event: string, sessionID: string, detail: string) {
