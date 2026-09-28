@@ -24,7 +24,10 @@ options:
   reasoning_effort: low
   temperature: 0.2
   top_p: 0.9
+steps: 80
 permission:
+  doom_loop: deny
+  "context7_*": deny
   read:
     "*": deny
     ".agent-staging/*": allow

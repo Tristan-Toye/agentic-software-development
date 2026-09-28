@@ -19,7 +19,9 @@ options:
   reasoning_effort: high
   temperature: 1
   top_p: 0.95
+steps: 250
 permission:
+  doom_loop: deny
   bash:
     "*": "allow"
     "git push": "deny"

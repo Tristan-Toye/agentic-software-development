@@ -16,7 +16,9 @@ options:
   reasoning_effort: low
   temperature: 1
   top_p: 0.95
+steps: 40
 permission:
+  doom_loop: deny
   bash:
     "git diff*": "allow"
     "git log*": "allow"

@@ -20,7 +20,9 @@ options:
   reasoning_effort: high
   temperature: 0.2
   top_p: 0.95
+steps: 60
 permission:
+  doom_loop: deny
   bash: deny
   edit: deny
   write: deny

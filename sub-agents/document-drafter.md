@@ -17,7 +17,9 @@ options:
   reasoning_effort: high
   temperature: 0.5
   top_p: 0.95
+steps: 40
 permission:
+  doom_loop: deny
   write:
     "*": deny
     "docs/adr/*": allow

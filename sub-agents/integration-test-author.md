@@ -18,7 +18,9 @@ options:
   reasoning_effort: high
   temperature: 0.5
   top_p: 0.95
+steps: 80
 permission:
+  doom_loop: deny
   bash: deny
   webfetch: deny
   websearch: deny
