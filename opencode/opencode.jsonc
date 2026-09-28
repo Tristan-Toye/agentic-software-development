@@ -8,11 +8,38 @@
   //   ~/.config/opencode/agent/dossier.md      -> primary-agents/plan.md
   //   ~/.config/opencode/agent/<sub-agent>.md  -> sub-agents/<sub-agent>.md
   //   ~/.config/opencode/plugins/provider-fifo.ts -> opencode/plugins/provider-fifo.ts
-  //     (limits per host and model: opencode/plugins/provider-fifo.yaml)
+  //     (limits per host, model and model pool: opencode/plugins/provider-fifo.yaml)
+  //   ~/.config/opencode/plugins/phase-checkpoint.ts -> opencode/plugins/phase-checkpoint.ts
+  //   ~/.config/opencode/dcp.jsonc             -> opencode/dcp.jsonc
   // Agents and commands carry their settings in their own frontmatter.
   // Config loads at startup: restart opencode after changes here.
   "$schema": "https://opencode.ai/config.json",
   "agent": {
+    // The default agent is the only one with the whole Twipe DevKit: the global
+    // permission map below denies its MCP tools and skills for every other agent,
+    // so their schemas stay out of the pipeline agents' prompts. /work-on and
+    // /plan re-allow the Tempo subset in their own front matter.
+    "build": {
+      "permission": {
+        "twipe-devkit_*": "allow",
+        "skill": {
+          "cdn-traffic-template-report": "allow",
+          "context-engineering-source-catalog": "allow",
+          "dogfood-feature-workflow": "allow",
+          "fast-packager-local-content-package-run": "allow",
+          "feeder-local-publication-import": "allow",
+          "learn-devkit-skill": "allow",
+          "packager-version-consolidation-regression-test": "allow",
+          "route-first-opensearch-investigations": "allow",
+          "run-custom-sql-against-client-databases": "allow",
+          "tagging-service-thumbnail-download-counts": "allow",
+          "time-logging": "allow",
+          "transformer-oncall-local-delivery-fix": "allow",
+          "verify-client-database-name-before-prod-db-diagnostics": "allow",
+          "worktree": "allow"
+        }
+      }
+    },
     "plan": {
       "disable": true
     },
@@ -72,6 +99,14 @@
         }
       }
     }
+  },
+  // A tool result past either limit is written whole to opencode's tool-output
+  // directory, and the model gets a preview plus that path to grep or read in
+  // slices. The default (50 KB) let single test logs and case lists land ~12k
+  // tokens that then rode along for hundreds of steps.
+  "tool_output": {
+    "max_lines": 1000,
+    "max_bytes": 20480
   },
   "formatter": {
     "ruff": {
@@ -208,8 +243,27 @@
       "request-refactor-plan": "deny",
       "writing-beats": "deny",
       "writing-fragments": "deny",
-      "writing-shape": "deny"
+      "writing-shape": "deny",
+      // Twipe DevKit skills: the default agent only (see agent.build).
+      "cdn-traffic-template-report": "deny",
+      "context-engineering-source-catalog": "deny",
+      "dogfood-feature-workflow": "deny",
+      "fast-packager-local-content-package-run": "deny",
+      "feeder-local-publication-import": "deny",
+      "learn-devkit-skill": "deny",
+      "packager-version-consolidation-regression-test": "deny",
+      "route-first-opensearch-investigations": "deny",
+      "run-custom-sql-against-client-databases": "deny",
+      "tagging-service-thumbnail-download-counts": "deny",
+      "time-logging": "deny",
+      "transformer-oncall-local-delivery-fix": "deny",
+      "verify-client-database-name-before-prod-db-diagnostics": "deny",
+      "worktree": "deny"
     },
+    // Twipe DevKit MCP tools: the default agent only (see agent.build).
+    "twipe-devkit_*": "deny",
+    // plugins/phase-checkpoint.ts: primary-agents/work-on.md allows it.
+    "phase_checkpoint": "deny",
     "todowrite": "allow",
     "webfetch": "allow",
     "websearch": "allow",

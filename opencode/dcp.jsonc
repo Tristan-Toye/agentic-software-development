@@ -1,0 +1,15 @@
+{
+  // Dynamic Context Pruning (@tarquinen/opencode-dcp). Symlinked from
+  // ~/.config/opencode/dcp.jsonc (see opencode.jsonc).
+  //
+  // The model-callable `compress` tool is off: it fired on the model's own
+  // schedule, mid-investigation included, and in the recorded runs 212 calls cost
+  // ~11k credits for a ~8k-token drop that grew back within 5–10 steps. Context
+  // resets at phase boundaries through plugins/phase-checkpoint.ts instead.
+  // The automatic strategies (deduplication, purgeErrors) stay on: plain code in
+  // the request transform, no model step.
+  "$schema": "https://raw.githubusercontent.com/Opencode-DCP/opencode-dynamic-context-pruning/master/dcp.schema.json",
+  "compress": {
+    "permission": "deny"
+  }
+}
