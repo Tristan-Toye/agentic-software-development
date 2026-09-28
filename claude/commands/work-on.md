@@ -140,7 +140,8 @@ CONTRACT-REVIEW: skipped — <reason>
 
 `scripts/validate_pipeline.py --dossier <ID> --pre-fanout` refuses to pass
 while neither line is present — and likewise without the `HOOKS:` line
-(Phase 2), the `PAYLOAD-LINT:` line and the `ADMISSION:` line (Phase 4). A
+(Phase 2), the `PAYLOAD-LINT:` line and the `ADMISSION:` line (Phase 4), and
+the `CENSUS:` and `CHECKLIST-IDS:` lines (Phase 3). A
 skip stays possible; a *silent* skip does not.
 
 **Gates — before anything else.** Follow

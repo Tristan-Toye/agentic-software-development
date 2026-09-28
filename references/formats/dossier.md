@@ -244,6 +244,14 @@ requests, the deferred-issues ledger `/work-on` Phase 9 captures at close
 allowed), and anything that surprised the orchestrator. This section replaces
 the changelog, the review files, and the anomaly log.
 
+`scripts/validate_pipeline.py --pre-fanout` requires seven lines before the
+fan-out: `CONTRACT-REVIEW:`, `HOOKS:`, `PAYLOAD-LINT:`, `ADMISSION:`,
+`SUITE-RUNNER:`, `CENSUS:` (a pin the contract shifts, with its owner, or
+`CENSUS: none — <what was grepped>`), and `CHECKLIST-IDS:` (the repo's
+promise-coverage script's parse count against the draft `PROMISE_CHECKLIST`,
+or `CHECKLIST-IDS: none — no coverage script`; a `parsed 0/` line is
+refused).
+
 **One line per event means no embedded documents.** A reviewer reply lands as
 a ledger — one line per change request:
 

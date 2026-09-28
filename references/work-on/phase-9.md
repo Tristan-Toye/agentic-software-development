@@ -25,6 +25,12 @@
    `merge=union` driver, so they merge clean locally and finalize renumbers
    what the union left duplicated.
 
+   **Review every `updated dossier` line the finalizer prints before you
+   commit** — read the diff (`git diff --stat`, or `git_state.py`) for each
+   one it names. It rewrites only dossiers this branch added or modified; a
+   `NOTICE` line about a dossier it left alone is informational, never a
+   rewrite to chase.
+
    **Conflicts on code** → show the user the conflicted files, resolve them
    (through `implementer` for code, with the user for a judgement call), and
    if the resolution touched the blast radius, **get the runner's verdict on
@@ -51,7 +57,10 @@
    position or from a file census: row numbers keyed to file order, scenario
    or region counts, pins asserting "N tests exist". A target branch that
    added a file shifts every one of them, and the shift is silent — the
-   numbers still look like numbers. After the sync, re-run each derivation
+   numbers still look like numbers. Re-use the `CENSUS:` lines Phase 3
+   logged before the fan-out: they already name every pin and its owner,
+   so this is a re-derivation of that same inventory, not a fresh grep.
+   After the sync, re-run each derivation
    over the merged tree, re-gate whatever asserts against it, and only then
    run step 2. The failure this prevents costs a whole extra verification
    round, because it surfaces as a test asserting a count nobody changed.

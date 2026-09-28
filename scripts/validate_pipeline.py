@@ -993,11 +993,16 @@ def branch_tip(root: Path) -> str:
     return "HEAD^" if len(line) > 2 else "HEAD"
 
 
-def own_added(root: Path, base: str, tip: str, pathspec: str) -> set[str]:
-    """Files this branch added under `pathspec`, as repo-relative names."""
+def own_added(
+    root: Path, base: str, tip: str, pathspec: str, diff_filter: str = "A"
+) -> set[str]:
+    """Files this branch added (or, with `diff_filter="AM"`, added or modified)
+    under `pathspec`, as repo-relative names, relative to `merge-base(base, tip)`
+    — taken before the merge commit, so a sync merge never widens ownership.
+    """
     mb = git_out(root, "merge-base", base, tip).strip()
     out = git_out(
-        root, "diff", "--name-only", "--diff-filter=A", mb, tip, "--", pathspec
+        root, "diff", "--name-only", f"--diff-filter={diff_filter}", mb, tip, "--", pathspec
     )
     return {x for x in out.splitlines() if x}
 
@@ -1102,6 +1107,25 @@ def rewrite_dossier_ids(text: str, id_map: dict[str, str]) -> str:
         r"(?<!\d)(?:" + "|".join(sorted(map(re.escape, id_map), key=len, reverse=True)) + r")(?!\d)"
     )
     return pattern.sub(lambda m: id_map[m.group(0)], text)
+
+
+def rewrite_dossier_front_matter(text: str, id_map: dict[str, str]) -> str:
+    """Rewrite `id_map` occurrences inside a dossier's front matter only.
+
+    The front matter holds the live references to a renamed ADR — the
+    `adrs:` list and any anchor naming the renamed file. The body, including
+    `## Build log` prose that quotes an id as history, is never touched: a
+    dossier this branch owns may still narrate, verbatim, what an id used to
+    be.
+    """
+    if not id_map or not text.startswith("---\n"):
+        return text
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        return text
+    fm = text[: end + 5]
+    body = text[end + 5 :]
+    return rewrite_ids(fm, id_map) + body
 
 
 def lrn_numbered_headers(text: str) -> list[tuple[int, str]]:
@@ -1247,12 +1271,25 @@ def run_finalize(root: Path, base: str) -> int:
 
     dossier_dir = root / ".discovery" / "dossiers"
     if id_map and dossier_dir.exists():
+        # Own = added or modified by this branch relative to the merge-base,
+        # taken before the merge commit. A dossier the base branch owns is
+        # never rewritten, even when it mentions the moving id.
+        own_dossiers = own_added(root, base, tip, ".discovery/dossiers", diff_filter="AM")
+        moving_re = re.compile("|".join(sorted(id_map, key=len, reverse=True)))
         for p in sorted(dossier_dir.glob("*.md")):
             text = p.read_text()
-            new_text = rewrite_ids(text, id_map)
-            if new_text != text:
-                p.write_text(new_text)
-                print(f"updated dossier {p.name}")
+            rel = f".discovery/dossiers/{p.name}"
+            if rel in own_dossiers:
+                new_text = rewrite_dossier_front_matter(text, id_map)
+                if new_text != text:
+                    p.write_text(new_text)
+                    print(f"updated dossier {p.name}")
+            elif moving_re.search(text):
+                print(
+                    f"NOTICE  {p.name} mentions a renumbered id "
+                    f"({', '.join(sorted(id_map))}) but this branch does "
+                    f"not own it — left untouched"
+                )
 
     # Dossiers collide the same way when .discovery/ is committed: two plan
     # branches mint one number against the same base tip. Own files only.
@@ -1569,7 +1606,10 @@ def selftest_finalize() -> bool:
             with evidence.open("a") as f:
                 f.write("\n### LRN-0002: own rule\n\nOwn evidence LRN-0002.\n")
             dossier.write_text(
-                "---\nid: W-0901\nadrs: [ADR-0002]\n---\n\n## Problem\n\nP.\n"
+                "---\nid: W-0901\nadrs: [ADR-0002]\n---\n\n## Problem\n\nP.\n\n"
+                "## Build log\n\n"
+                "- note: earlier this branch wrote adrs: [ADR-0002] here by "
+                "mistake, restored by hand\n"
             )
             git_out(root, "add", "-A")
             git_out(root, "commit", "-q", "-m", "own")
@@ -1580,6 +1620,11 @@ def selftest_finalize() -> bool:
             )
             (dossiers / "W-0902-sib.md").write_text(
                 "---\nid: W-0902\nadrs: []\n---\n\n## Problem\n\nSibling plan.\n"
+            )
+            (dossiers / "W-0900-foreign.md").write_text(
+                "---\nid: W-0900\nadrs: []\n---\n\n## Build log\n\n"
+                "- note: see ADR-0002 (the sibling's own decision) for "
+                "background\n"
             )
             with rules.open("a") as f:
                 f.write(
@@ -1597,7 +1642,12 @@ def selftest_finalize() -> bool:
             print(f"FAIL  fixture repository could not be built: {exc}")
             return False
 
-        rc = run_finalize(root, "main")
+        sib_before = (dossiers / "W-0902-sib.md").read_bytes()
+        foreign_before = (dossiers / "W-0900-foreign.md").read_bytes()
+
+        buf1 = io.StringIO()
+        with contextlib.redirect_stdout(buf1):
+            rc = run_finalize(root, "main")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc2 = run_finalize(root, "main")
@@ -1621,6 +1671,17 @@ def selftest_finalize() -> bool:
             "evidence ledger follows": "### LRN-0003: own rule" in evidence_text
             and "Own evidence LRN-0003." in evidence_text,
             "dossier adrs updated": "adrs: [ADR-0003]" in dossier.read_text(),
+            "own dossier build-log quote unchanged": (
+                "wrote adrs: [ADR-0002] here by mistake" in dossier.read_text()
+            ),
+            "sibling dossier byte-identical": (
+                dossiers / "W-0902-sib.md"
+            ).read_bytes() == sib_before,
+            "foreign dossier untouched, NOTICE printed": (
+                dossiers / "W-0900-foreign.md"
+            ).read_bytes() == foreign_before
+            and "W-0900-foreign.md" in buf1.getvalue()
+            and "NOTICE" in buf1.getvalue(),
             "own dossier renumbered to W-0903": (dossiers / "W-0903-own.md").exists()
             and not (dossiers / "W-0902-own.md").exists()
             and "id: W-0903" in (dossiers / "W-0903-own.md").read_text()
@@ -1833,6 +1894,19 @@ ADMISSION_RE = re.compile(
 SUITE_RUNNER_RE = re.compile(
     r"^\s*[-*]?\s*SUITE-RUNNER:\s*(ci|local)\b(?P<rest>.*)$", re.MULTILINE
 )
+# `CENSUS: <path>:<line> — <owner>` or `CENSUS: none — <what was grepped>`: the
+# Phase 3 grep for count/list pins a migration, table, counted-file or moved-
+# file change shifts (a table-name census, a `(1..=N)` migration count, an
+# inventory row count), each given an owner before the fan-out.
+CENSUS_RE = re.compile(r"^\s*[-*]?\s*CENSUS:\s*(none|\S.*)$", re.MULTILINE)
+# `CHECKLIST-IDS: <script> parsed <N>/<N> lines` or `CHECKLIST-IDS: none — no
+# coverage script`: the draft PROMISE_CHECKLIST ran through the repo's own
+# promise-coverage script, in its own id grammar, before the fan-out.
+CHECKLIST_IDS_RE = re.compile(r"^\s*[-*]?\s*CHECKLIST-IDS:\s*(none|\S.*)$", re.MULTILINE)
+# A script that parses zero promise lines ("no promise lines found") means
+# the checklist ids do not match the script's grammar — a Phase 3 defect to
+# fix by re-deriving the ids, never a line to record and move past.
+CHECKLIST_IDS_ZERO_RE = re.compile(r"\bparsed\s+0\s*/\s*\d+")
 
 PRE_FANOUT_LINES = (
     (
@@ -1878,13 +1952,34 @@ PRE_FANOUT_LINES = (
             "SUITE-RUNNER: local — <reason>",
         ),
     ),
+    (
+        "CENSUS",
+        CENSUS_RE,
+        "The contract's migration, table, counted-file or moved-file change "
+        "shifts a census pin somewhere in the tree; each pin gets an owner "
+        "before the fan-out, or the grep that found none is named.",
+        (
+            "CENSUS: <path>:<line> — <owner package or criterion>",
+            "CENSUS: none — <what was grepped>",
+        ),
+    ),
+    (
+        "CHECKLIST-IDS",
+        CHECKLIST_IDS_RE,
+        "The draft PROMISE_CHECKLIST runs through the repo's own promise-"
+        "coverage script, in its id grammar, before the fan-out.",
+        (
+            "CHECKLIST-IDS: <script> parsed <N>/<N> lines",
+            "CHECKLIST-IDS: none — no coverage script",
+        ),
+    ),
 )
 
 
 def check_pre_fanout(path: Path) -> int:
     """Check the obligations that must hold before /work-on Phase 4 fans out.
 
-    Five lines in ``## Build log``, each recording a decision the orchestrator
+    Seven lines in ``## Build log``, each recording a decision the orchestrator
     otherwise makes silently — or forgets, which reads the same:
 
     * ``CONTRACT-REVIEW: spawned ... | skipped — <reason>`` — the review has no
@@ -1899,6 +1994,11 @@ def check_pre_fanout(path: Path) -> int:
       provider and model it names.
     * ``SUITE-RUNNER: ci — ... | local — <reason>`` — which runner produces
       the suite verdicts from Phase 6 on, decided once at the contract commit.
+    * ``CENSUS: <path>:<line> — <owner> | none — <what was grepped>`` — every
+      count or list pin the contract shifts has an owner before the fan-out.
+    * ``CHECKLIST-IDS: <script> parsed <N>/<N> lines | none — no coverage
+      script`` — the draft checklist parses in the repo's own promise-line
+      grammar; a ``parsed 0/`` line is refused, not recorded.
 
     Returns 0 when every obligation is recorded, 1 otherwise.
     """
@@ -1941,6 +2041,16 @@ def check_pre_fanout(path: Path) -> int:
                 f"— {text[:80]!r}. Wait it out; never spawn into a closed window."
             )
             rc = 1
+
+    checklist_ids = CHECKLIST_IDS_RE.search(body[1])
+    if checklist_ids and CHECKLIST_IDS_ZERO_RE.search(checklist_ids.group(1)):
+        print(
+            f"DEFECT  {path.name}: CHECKLIST-IDS reports 'parsed 0/...' — the "
+            f"checklist ids don't match the coverage script's promise-line "
+            f"grammar. This is a Phase 3 defect: read the script's regex and "
+            f"re-derive the ids in it, never a Phase 5 manual-diff fallback."
+        )
+        rc = 1
     return rc
 
 
@@ -1956,18 +2066,35 @@ def selftest_pre_fanout() -> bool:
             "- PAYLOAD-LINT: 5 payloads, 1 defect fixed — P1 P2 UT-A UT-B IT\n"
             "- ADMISSION: granted 5 slots — selftest-provider/selftest-model, cap 8, ceiling 5\n"
             "- SUITE-RUNNER: ci — .github/workflows/ci.yml, on push; push and draft PR: yes\n"
+            "- CENSUS: none — grepped for PROTECTED_TABLES, EXPECTED_TABLES, migration counts\n"
+            "- CHECKLIST-IDS: scripts/check_promise_coverage.py parsed 8/8 lines\n"
         )
         ok = True
         (root / "full.md").write_text(full, encoding="utf-8")
         ok &= check_pre_fanout(root / "full.md") == 0
-        for token in ("CONTRACT-REVIEW", "HOOKS", "PAYLOAD-LINT", "ADMISSION", "SUITE-RUNNER"):
+        for token in (
+            "CONTRACT-REVIEW", "HOOKS", "PAYLOAD-LINT", "ADMISSION", "SUITE-RUNNER",
+            "CENSUS", "CHECKLIST-IDS",
+        ):
             partial = "\n".join(
                 line for line in full.splitlines() if not line.startswith(f"- {token}:")
             )
             (root / f"no-{token}.md").write_text(partial + "\n", encoding="utf-8")
             ok &= check_pre_fanout(root / f"no-{token}.md") == 1
-        (root / "none.md").write_text("## Build log\n- HOOKS: none\n- PAYLOAD-LINT: 2 payloads, 0 defects — P1 UT\n- CONTRACT-REVIEW: skipped — two-member contract, reviewed by hand\n- ADMISSION: skipped — one spawn\n- SUITE-RUNNER: local — no CI in this repository\n", encoding="utf-8")
+        (root / "none.md").write_text("## Build log\n- HOOKS: none\n- PAYLOAD-LINT: 2 payloads, 0 defects — P1 UT\n- CONTRACT-REVIEW: skipped — two-member contract, reviewed by hand\n- ADMISSION: skipped — one spawn\n- SUITE-RUNNER: local — no CI in this repository\n- CENSUS: none — grepped for table censuses and migration counts\n- CHECKLIST-IDS: none — no coverage script\n", encoding="utf-8")
         ok &= check_pre_fanout(root / "none.md") == 0
+
+        # A CHECKLIST-IDS line that parsed zero promise lines is refused, not
+        # recorded — it means the checklist ids do not match the script's
+        # grammar (a Phase 3 defect), never a fallback to record and move past.
+        zero = full.replace(
+            "- CHECKLIST-IDS: scripts/check_promise_coverage.py parsed 8/8 lines\n",
+            "- CHECKLIST-IDS: scripts/check_promise_coverage.py parsed 0/8 lines\n",
+        )
+        (root / "zero.md").write_text(zero, encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as zbuf:
+            zero_rc = check_pre_fanout(root / "zero.md")
+        ok &= zero_rc == 1 and "parsed 0/" in zbuf.getvalue()
 
         # A granted line is refused while the admission ledger defers that key.
         saved = os.environ.get("ASD_ADMISSION_DIR")

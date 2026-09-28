@@ -41,6 +41,24 @@ checklist: a Phase 3 defect to fix in the checklist and the contract
 together, never a reason to ask a blind agent to re-read what its payload
 never named.
 
+**Match the checklist's ids to the repo's own coverage script, before
+deriving it.** When the target repo owns a promise-coverage script, read its
+promise-line regex first and derive `PROMISE_CHECKLIST`'s ids in that
+grammar, not a free-form one. Log `CHECKLIST-IDS: <script> parsed <N>/<N>
+lines`, or `CHECKLIST-IDS: none — no coverage script`, into `## Build log`
+before you spawn; `validate_pipeline.py --pre-fanout` requires the line and
+refuses a `parsed 0/` result — that means the ids don't match the grammar,
+so re-derive them in it, never fall back to a Phase 5 manual diff.
+
+**Grep for census pins the contract shifts.** When the contract adds a
+migration, a table, a counted file, or moves a file, grep the tree for pins
+that count or list it — a table-name census, a migration count `(1..=N)`, a
+`[&str; N]` array, an inventory row count — and give each one an owner: the
+package that moves it, or a criterion with a test-author owner. Log
+`CENSUS: <path>:<line> — <owner>`, or `CENSUS: none — <what was grepped>`,
+into `## Build log` before you spawn; `validate_pipeline.py --pre-fanout`
+requires the line.
+
 **Seven diffs over the checklist, before anything spawns:**
 
 1. **Slice it per surface, and make the slices add up.** Each unit author gets

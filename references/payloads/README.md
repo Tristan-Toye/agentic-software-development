@@ -111,14 +111,23 @@ or no specific field at all.
   `check_payload.py` refuses any `@@TOKEN@@` left in a final; a token that
   reaches an agent is a transmission defect whether or not the agent recovers
   (`/work-on` Phase 4).
-- **Every path in a payload is absolute.** In local mode `.discovery/` is
+- **Every path in a payload is absolute.** A relative path resolves against
+  the subagent's cwd, which is the HOST SESSION's working directory, never
+  the `WORKTREE_DIR` the payload names; a canary test author once resolved
+  its relative paths against the main checkout instead of the build
+  worktree and wrote its test file there. In local mode `.discovery/` is
   untracked and exists only in the main checkout; in committed mode the live
   dossier is the copy inside the run's worktree, and the main checkout's copy
   is stale by design. Either way a relative dossier path read from the wrong
   directory resolves to a file that does not exist or to the wrong version,
   and the agent halts or guesses. The same rule keeps `TEST_PATHS`,
-  `CONTEXT_DOCS`, and `STANDARDS` unambiguous whatever the agent's working
-  directory is.
+  `STYLE_PATHS`, `SUPPORT_PATHS`, `WORKTREE_DIR`, `DOSSIER`, `STANDARDS`,
+  `CONTEXT_DOCS`, `TARGET_PATHS`, and `CONTRACT` (when it names a path
+  rather than pasting text) unambiguous whatever the agent's working
+  directory is — `check_payload.py` refuses a relative value in any of
+  them. `OWNED_PATHS` and `CONTRACT_PATHS` are the deliberate exception:
+  relative to `WORKTREE_DIR` by design, for the agent that already works
+  there.
 - **`OWNED_PATHS` is assigned by the orchestrator from `## Work packages`**,
   never negotiated by the agent, and disjoint across every concurrent spawn.
   `scripts/validate_pipeline.py` checks the disjointness before the fan-out.
@@ -251,6 +260,22 @@ or no specific field at all.
   reformatted or path-adjusted variant into the payload verifies nothing —
   the difference is where the failure lives. Copy the invocation that
   actually ran, byte for byte.
+- **A prose sentence naming what an env var or fixture mechanism DOES is
+  verified, not asserted from memory.** Which database a URL targets, what a
+  helper returns, which user a pool connects as — a blind agent cannot check
+  the claim, so it builds against it as given. Run the check yourself, in a
+  shell, against the real environment, and put the command beside the claim
+  as `verified: <command run>`, on the same line or the next. Recorded
+  failure: a payload claimed an env var targeted "the same database the
+  fixture pools use" — false, and a blind agent built the delete-refusal
+  assertion on it and hit a missing table. When you have not verified the
+  fact yet, write the sentence as a discovery instruction instead
+  (`discover which database X targets before...`) rather than as a claim.
+  `check_payload.py` warns on an upper-snake env-var-shaped name (one
+  carrying `URL`, `DATABASE`, `DB`, `HOST`, `DSN`, `PATH`, `DIR`, `USER` or
+  `POOL`) next to a behaviour verb (`targets`, `points`, `connects`, `is the
+  same`, `uses`, `returns`) with no `verified:` note nearby and no
+  discovery phrasing.
 - **`NOTICED:` is harvested into `## Build log`.** Every support report ends
   with one, `none` allowed; the Phase 9 deferred-issues capture draws on your
   own reads plus this harvest.
