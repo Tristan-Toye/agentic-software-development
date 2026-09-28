@@ -21,6 +21,13 @@ options:
 steps: 80
 permission:
   doom_loop: deny
+  # Plugin tools no subagent uses: each schema rides on every step.
+  "envsitter_*": deny
+  EnterWorktree: deny
+  ExitWorktree: deny
+  skill:
+    "*": deny
+    standards: allow
   bash: deny
   webfetch: deny
   websearch: deny

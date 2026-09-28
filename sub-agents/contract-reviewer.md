@@ -23,6 +23,15 @@ options:
 steps: 30
 permission:
   doom_loop: deny
+  # Plugin tools no subagent uses: each schema rides on every step.
+  "envsitter_*": deny
+  EnterWorktree: deny
+  ExitWorktree: deny
+  skill:
+    "*": deny
+    standards: allow
+  # Read-only work: the ctx sandbox adds tool schemas and runs code this agent never needs.
+  "ctx_*": deny
   edit: deny
   write: deny
   bash: deny

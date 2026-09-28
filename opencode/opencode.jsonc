@@ -319,7 +319,8 @@
   },
   "plugin": [
     "@tarquinen/opencode-dcp@latest",
-    "opencode-mem",
+    // opencode-mem is off: it had no model configured, captured nothing since
+    // 2026-08-31 ("provider not ready" every session), and still ran on each one.
     "envsitter-guard",
     "opencode-notify",
     "context-mode"
