@@ -9,7 +9,12 @@
 # Keys per host (host is matched exactly, or as a suffix: "z.ai" matches "api.z.ai"):
 #   concurrency   in-flight limit for any model on this host not listed under models
 #   models        per-model in-flight limits; each model gets its own queue
+#   pools         named groups of models sharing one queue: { concurrency, models: [..] }
+#                 for providers that limit a whole subscription, not each model
 #   max_hold_ms   watchdog: a slot held this long is freed (default below)
+#
+# A model uses its own `models` entry first, then the first pool listing it, then the
+# host's `concurrency`. Model names are matched exactly against the request's "model".
 
 defaults:
   max_hold_ms: 900000 # 15 minutes
@@ -27,6 +32,15 @@ hosts:
       glm-5.3: 3
       glm-5.3-flash: 7
 
-  # Example: a provider that allows a single call at a time.
-  # cheapestinference.ai:
+  # Example: CheapestInference, where each pool subscription allows one request in
+  # flight across all of its models (https://cheapestinference.com/pools). Copy the
+  # exact model IDs from the provider's model list; the ones below are placeholders.
+  # cheapestinference.com:
   #   concurrency: 1
+  #   pools:
+  #     frontier:
+  #       concurrency: 1
+  #       models: [glm-5.3, minimax-m3]
+  #     core:
+  #       concurrency: 1
+  #       models: [deepseek-v4.1-flash, mimo-v2.6-flash]

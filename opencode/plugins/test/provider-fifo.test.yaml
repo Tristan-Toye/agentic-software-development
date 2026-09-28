@@ -1,0 +1,8 @@
+hosts:
+  cheapestinference.com:
+    concurrency: 2
+    models:
+      solo: 4
+    pools:
+      frontier: { concurrency: 1, models: [glm-5.3, minimax-m3] }
+      core: { concurrency: 2, models: [ds-flash, mimo-flash, solo] }
