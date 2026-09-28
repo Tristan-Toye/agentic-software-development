@@ -13,17 +13,24 @@ per head, never twice.** Under `ci`: sync first (below), push `X`'s branch
 open the draft PR on the first push — `gh pr create --draft --title
 "<JIRA-KEY>: <title>" --body "build in progress; description follows"`, or
 the host's equivalent; on a host with no CLI the push alone triggers a
-pipeline whose branch pattern matches — and wait for the run: `gh run watch
-<run id> --exit-status` (or `gh pr checks --watch`), then `gh run view <run
-id> --log > <file>` and read the file whole. The exit status is the runner's
-and the counts are summed from the file, never a verdict through `grep` or
-`tail`; log `SUITE: ci run <url> on <sha> — <N> failed / <N> passed`. A run
+pipeline whose branch pattern matches — and wait for the run in one call:
+`python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N>`. It polls silently,
+exits with the checks' verdict, and prints each failed job's log as a
+bounded digest parsed from the whole log. The exit status is the runner's
+and the counts are summed from the whole log by the parser, never a verdict
+through `grep` or `tail`; open a failing job's full log only in slices, for
+a line the digest names. Log `SUITE: ci run <url> on <sha> — <N> failed /
+<N> passed`. A run
 that did not start, or that failed before the suite ran — a checkout error,
 a missing secret, a cache step — is not a verdict: exit-2 semantics. Fix the
 CI wiring on your branch, or fall back to `local` for this head and log why.
 Under `local`: run the full suite in `X` yourself, exactly as the
-implementers' `TEST_COMMAND` runs it, output to a file, and log `SUITE:
-local on <sha> — <N> failed / <N> passed`. Every later "the runner's
+implementers' `TEST_COMMAND` runs it, through `python3
+${PLUGIN_ROOT}/scripts/run_tests.py --log <file> -- <TEST_COMMAND>` (add
+`--vm <name> --workdir <X> --env-script <file>` for a suite that runs only
+in a Linux VM). It writes the whole output to the log and prints the summed
+counts and each failure, bounded. Log `SUITE: local on <sha> — <N> failed /
+<N> passed`. Every later "the runner's
 verdict" in this document means exactly this — the runner's run on the new
 head, read the same way — and never a local run beside a CI run of the
 same head.

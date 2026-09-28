@@ -67,6 +67,27 @@ lines you need. A test run's output goes to a log file; you read the summary
 and then the failing lines, bounded (`grep -n … | cut -c1-400 | head -40`),
 never the log. A tool result over opencode's `tool_output` limit arrives as a
 preview plus the path of the full text: grep or read that path in slices.
+When a ctx tool fails, do the same work with Bash or Read in the next step —
+never re-send the ctx call; in the recorded runs it was the tool that failed
+most often.
+
+**Predictable work is a script call, never a composed command.** Each step you
+take pays your whole context again, so a check you can predict is a script,
+not a chain you type. Before you compose a shell command, take the tool:
+
+| Work | One call |
+|---|---|
+| The state of a worktree after a change — branch, HEAD, ahead/behind, status, diff stat, in-progress merge | `python3 ${PLUGIN_ROOT}/scripts/git_state.py <X> --base <target> [--diff] [--worktrees]` |
+| Run a suite or a subset, locally or in a Linux VM | `python3 ${PLUGIN_ROOT}/scripts/run_tests.py --log <file> [--vm <name> --workdir <X> --env-script <file>] -- <command>` |
+| Wait for CI and read its failures | `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N>` |
+| Several of the target's gate scripts | write them once to `.agent-staging/gates.txt` (`name: command` per line), then `python3 ${PLUGIN_ROOT}/scripts/run_gates.py .agent-staging/gates.txt --root <X>` |
+| A spawn payload | `python3 ${PLUGIN_ROOT}/scripts/compose_payloads.py …` fills every mechanical field; you write only the `@@FILL_<FIELD>@@` fields (Phase 4) |
+| Lint, gate and admit a wave | `python3 ${PLUGIN_ROOT}/scripts/prepare_wave.py …` (Phase 4) |
+| Read or write the dossier | `python3 ${PLUGIN_ROOT}/scripts/dossier_edit.py <section, log, set or add> …` |
+
+Read source files with the read and grep tools on absolute paths, never
+`cd <X> && sed -n` or `cat`: the recorded runs spent more on those chains than
+on any other kind of step.
 
 **Delegation — mechanical work only, evidence never verdicts.** You run on the
 large model; the fan-out runs on small ones. Two flash support agents carry

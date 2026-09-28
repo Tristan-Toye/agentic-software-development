@@ -186,6 +186,29 @@ pure-function surfaces. Log the routing per surface in the wave table.
   round verified green on both while the embedded program was syntactically
   dead.
 
+**Compose each payload with the script, then write only the judgement.**
+Most fields are copies — the contract bytes and their hash, the package row
+and its owned paths, the criteria, the dossier excerpt, the worktree and
+branch, the Jira key, the standards path — and typing them is the most
+expensive output of the run. Run
+
+```bash
+python3 "${PLUGIN_ROOT}/scripts/compose_payloads.py" --kind <agent> \
+  --dossier <live dossier> --root <X> --host <opencode|claude> \
+  --out <X>/.agent-staging/payloads/<id>.md --package <P> \
+  --contract-paths <files> --test-command '<verified command>' \
+  --hooks '<HOOKS>' --manifest <X>/.agent-staging/payloads/wave<k>.txt
+```
+
+It fills every mechanical field from the files, adds each contract member's
+`path:line` to the owned paths so an implementer starts where the stub is,
+regenerates the integration author's excerpt from the live dossier, and
+leaves every judgement field as `@@FILL_<FIELD>@@` with a one-line hint.
+Replace each `@@FILL_…@@` yourself — `check_payload.py` refuses any that
+is left — or pass it with `--set FIELD=VALUE`. The manifest line it appends
+is the `prepare_wave.py` input. A composed payload is a final: the lint and
+the same-turn re-read below apply to it unchanged.
+
 **Re-verify every setup claim in the same turn as the fan-out message, then
 lint every payload before it ships.** "The worktree exists", "the branch was
 created", "the file was written", "the command was verified": each is proven

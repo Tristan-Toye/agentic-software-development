@@ -258,6 +258,11 @@ prose about permission maps cannot mislead the agent that reads it.
 | `scripts/safe_revert.py` | The only way the orchestrator reverts or deletes a path an agent may hold uncommitted: copies it outside the repository first, prints where, refuses a copy target inside the repository. `--selftest` checks the checker. |
 | `scripts/dossier_edit.py` | A dossier write without a dossier read: append to `## Build log`, set or extend a front matter field, print one section with line numbers. `--selftest` checks the checker. |
 | `scripts/prepare_wave.py` | One call per fan-out wave: every payload lint and boundary gate through the scripts that own them, only the defects printed, then the admission slots and the `PAYLOAD-LINT:` / `ADMISSION:` lines. `--selftest` checks the checker. |
+| `scripts/compose_payloads.py` | A spawn payload with every mechanical field filled from the dossier and the contract files, and every judgement field left as a `@@FILL_<FIELD>@@` placeholder the lint refuses. `--selftest` checks the checker. |
+| `scripts/git_state.py` | A worktree's state in one bounded call: branch, HEAD, ahead/behind, status counts and paths, diff stat, in-progress merge. `--selftest` checks the checker. |
+| `scripts/run_tests.py` | Runs a suite (optionally inside a Lima VM) with the whole output in a log, and prints the summed counts and each failure, bounded; cargo, nextest, pytest and TAP parsers. `--selftest` checks the checker. |
+| `scripts/wait_ci.py` | Waits for a PR's checks without output, then prints each check and a bounded digest of every failed job's log. `--selftest` checks the checker. |
+| `scripts/run_gates.py` | Runs a list of gate commands, one log per gate, and prints one line per gate plus the failing lines, bounded. `--selftest` checks the checker. |
 | `scripts/build_claude_plugin.py` | The Claude Code surface, derived from the opencode sources. `--check` fails on drift; `--selftest` checks the checker. |
 
 ## Why the validator matters more than it looks
