@@ -10,11 +10,17 @@ because an agent that follows a pointer into nothing improvises.
 
 Four kinds of reference, each resolved against the repository:
 
-1. Section references — `formats.md §4`, `formats.md § "The observability
-   checklist"`. The named file (default: references/formats.md) must carry a
-   heading that starts with that number, or whose title starts with the
+1. Section references — `formats/dossier.md §1`, `payloads/reviewer.md §
+   "SCOPE"`. The file token is resolved relative to `references/` and may
+   include a subdirectory (`formats/dossier.md`, `payloads/reviewer.md`) or
+   name a top-level file bare (`time-logging.md`); a `${PLUGIN_ROOT}/
+   references/` or `references/` prefix baked into the same backtick token
+   is stripped first. No file named (default: references/formats/README.md)
+   falls back to the bare-name lookup too. The resolved file must carry a
+   heading that starts with the given number, or whose title starts with the
    quoted text (case-insensitive, whitespace-normalised, backticks ignored).
-   DEFECT when it does not.
+   DEFECT when the file cannot be resolved under `references/`, or when it
+   has no such heading.
 2. Command mentions — a backticked `/plan`, `/work-on W-014`, `/deferred`.
    The command must exist as commands/<name>.md or primary-agents/<name>.md.
    DEFECT when it does not.
@@ -53,14 +59,14 @@ REPO = Path(__file__).resolve().parent.parent
 
 DOC_GLOBS = (
     "README.md",
-    "references/*.md",
+    "references/**/*.md",
     "commands/*.md",
     "primary-agents/*.md",
     "sub-agents/*.md",
     "skills/**/*.md",
     "opencode/AGENTS.md",
 )
-DEFAULT_SECTION_FILE = "formats.md"
+DEFAULT_SECTION_FILE = "formats/README.md"
 PATH_ROOTS = ("scripts", "references", "sub-agents", "primary-agents", "commands", "skills")
 # A backticked `/name` that is a filesystem root, not a command.
 NOT_A_COMMAND = {
@@ -69,7 +75,7 @@ NOT_A_COMMAND = {
 }
 
 SECTION_RE = re.compile(r'§\s*(?:(?P<num>\d+)|"(?P<title>[^"]+)")')
-MD_TOKEN_RE = re.compile(r"`[^`]*?([\w.-]+\.md)`")
+MD_TOKEN_RE = re.compile(r"`[^`]*?([\w./-]+\.md)`")
 COMMAND_RE = re.compile(r"(?<![`\w])`(/[a-z][a-z0-9-]*)((?:\s[^`]*)?)`")
 PATH_RE = re.compile(
     r"(?:(?P<root>\$\{PLUGIN_ROOT\}/)|(?<![\w/.-]))"
@@ -167,6 +173,26 @@ def known_doc(repo: Path, name: str) -> Path | None:
     return None
 
 
+def resolve_section_doc(repo: Path, token: str) -> Path | None:
+    """A section reference's file token, resolved relative to `references/`.
+    The token may carry a subdirectory (`formats/dossier.md`,
+    `payloads/reviewer.md`) or name a top-level file bare
+    (`time-logging.md`); a `${PLUGIN_ROOT}/references/` or `references/`
+    prefix baked into the same backtick token is stripped first. A bare
+    name with no subdirectory falls back to a search under `references/`,
+    and only a single match resolves — an ambiguous bare name (the same
+    file name in two subdirectories) is refused, not guessed."""
+    rel = token.rsplit("references/", 1)[-1].lstrip("/")
+    candidate = repo / "references" / rel
+    if candidate.is_file():
+        return candidate
+    if "/" not in rel:
+        matches = sorted(repo.glob(f"references/**/{rel}"))
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
 # --------------------------------------------------------------------------
 # the four checks
 # --------------------------------------------------------------------------
@@ -186,10 +212,14 @@ def check_sections(rel: str, text: str, repo: Path, rep: Report) -> None:
         for match in SECTION_RE.finditer(para):
             named = MD_TOKEN_RE.findall(para[: match.start()])
             file_name = named[-1] if named else DEFAULT_SECTION_FILE
-            target = known_doc(repo, file_name)
+            target = resolve_section_doc(repo, file_name)
             where = f"{rel}:{number}"
             if target is None:
-                rep.defect(where, f"section reference names '{file_name}', which is not a flow document")
+                rep.defect(
+                    where,
+                    f"section reference names '{file_name}', which does not resolve "
+                    "under references/",
+                )
                 continue
             num, title = match.group("num"), match.group("title")
             if not heading_matches(headings(target), num, title):
@@ -247,8 +277,16 @@ def phase_headings(path: Path) -> list[str]:
     return out
 
 
+# A command whose phases live one file per phase: a phase file names the other
+# phases of its command bare, so its bare references resolve against the owner.
+PHASE_FILE_OWNERS = {"references/work-on/": "primary-agents/work-on.md"}
+
+
 def check_phases(rel: str, text: str, repo: Path, rep: Report) -> None:
     own = phase_headings(repo / rel) if (repo / rel).exists() else []
+    for prefix, owner in PHASE_FILE_OWNERS.items():
+        if rel.startswith(prefix) and (repo / owner).exists():
+            own = own + phase_headings(repo / owner)
     for number, para in paragraphs(text):
         owned_spans: list[tuple[int, int]] = []
         for match in OWNED_PHASE_RE.finditer(para):
@@ -299,21 +337,21 @@ def check_repo(repo: Path) -> Report:
 # selftest
 # --------------------------------------------------------------------------
 
-_FORMATS = """# Formats
+_FORMATS_README = """# Formats
 
 ## Two modes for `.discovery/`
 
 Text.
+"""
 
----
-
-# 1. The dossier
+_FORMATS_DOSSIER = """# 1. The dossier
 
 ## Front matter
 
-# 4. ID minting
-
 #### The observability checklist
+"""
+
+_FORMATS_IDS = """# 4. ID minting
 """
 
 _PLAN = """---
@@ -329,21 +367,26 @@ description: plan
 ## Phase 7 — Write `ready`
 """
 
-_GOOD = """Read `formats.md` §4 and `${PLUGIN_ROOT}/references/formats.md` § "The
-observability checklist". Then `/plan W-014` runs `/plan` Phase 1 and hands
-off to `/work-on W-014`; `references/formats.md` § "Two modes" says why.
+_GOOD = """Read `formats/evidence-and-ids.md` §4 and
+`${PLUGIN_ROOT}/references/formats/dossier.md` § "The observability
+checklist". Then `/plan W-014` runs `/plan` Phase 1 and hands off to
+`/work-on W-014`; `formats/README.md` § "Two modes" says why.
 Run `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --root .` and read
 `/abs/path/repo` and `/tmp`. A bare Phase 7 is fine here.
+
+A paragraph with no file named at all — a bare § "Two modes" — falls back
+to the default file.
 
 ```bash
 python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --all
 ```
 """
 
-_BAD = """See `formats.md` §5 and `formats.md` § "ASD-STE200". Then `/open-work`
-reports, and `/plan` Phase 9 never runs. Read
+_BAD = """See `formats/dossier.md` §5 and `formats/dossier.md` § "ASD-STE200".
+Then `/open-work` reports, and `/plan` Phase 9 never runs. Read
 `${PLUGIN_ROOT}/scripts/nope.py` and `scripts/maybe.py`; `plan.md Phase 3`
-is not a heading either. A bare Phase 12 has no heading.
+is not a heading either. A bare Phase 12 has no heading. See
+`payloads/README.md` §9 for a file that does not resolve under references/.
 """
 
 
@@ -356,9 +399,11 @@ def selftest() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp)
-        for folder in ("references", "commands", "primary-agents", "scripts"):
+        for folder in ("references", "references/formats", "commands", "primary-agents", "scripts"):
             (repo / folder).mkdir()
-        (repo / "references" / "formats.md").write_text(_FORMATS)
+        (repo / "references" / "formats" / "README.md").write_text(_FORMATS_README)
+        (repo / "references" / "formats" / "dossier.md").write_text(_FORMATS_DOSSIER)
+        (repo / "references" / "formats" / "evidence-and-ids.md").write_text(_FORMATS_IDS)
         (repo / "commands" / "deferred.md").write_text("# /deferred\n")
         (repo / "primary-agents" / "plan.md").write_text(_PLAN)
         (repo / "primary-agents" / "work-on.md").write_text("# /work-on\n\n## Phase 4 — Fan out\n")
@@ -379,12 +424,23 @@ def selftest() -> int:
         check("plan.md phase caught", "Phase 3 has no heading in primary-agents/plan.md" in joined)
         check("plugin path caught", "${PLUGIN_ROOT}/scripts/nope.py does not exist" in joined)
         check("bare path is a warning", any("scripts/maybe.py" in w for w in rep.warnings))
-        check(f"defect count is 6, got {len(rep.defects)}", len(rep.defects) == 6)
+        check("unresolved section file caught", "does not resolve under references/" in joined)
+        check(f"defect count is 7, got {len(rep.defects)}", len(rep.defects) == 7)
 
         # A bare phase inside a file with phase headings warns; the README has none.
         (repo / "primary-agents" / "plan.md").write_text(_PLAN + "\nA bare Phase 12 here.\n")
         rep = check_repo(repo)
         check("bare phase in plan.md warns", any("Phase 12" in w for w in rep.warnings))
+
+        # A work-on phase file resolves bare phases against work-on.md, not itself.
+        (repo / "references" / "work-on").mkdir()
+        (repo / "references" / "work-on" / "phase-6.md").write_text(
+            "## Phase 6 — Run the tests\n\nAfter Phase 4 merged. Phase 13 does not exist.\n"
+        )
+        rep = check_repo(repo)
+        phase_file = [w for w in rep.warnings if "references/work-on/phase-6.md" in w]
+        check("phase file: owner's Phase 4 resolves", not any("Phase 4" in w for w in phase_file))
+        check("phase file: missing phase still warns", any("Phase 13" in w for w in phase_file))
 
     for item in failures:
         print(f"SELFTEST FAIL  {item}")

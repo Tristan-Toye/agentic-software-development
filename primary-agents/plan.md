@@ -18,6 +18,12 @@ options:
   reasoning_effort: max
   temperature: 1
   top_p: 0.95
+permission:
+  # Tempo only: the rest of the Twipe DevKit is the default agent's (opencode.jsonc).
+  "twipe-devkit_twipe_*time_session": allow
+  "twipe-devkit_twipe_query_atlassian": allow
+  skill:
+    time-logging: allow
 claude:
   argument-hint: "<Jira key | file path | free-form description>"
 ---
@@ -34,10 +40,14 @@ already substituted into `${CLAUDE_PLUGIN_ROOT}`; take it from there. Resolve
 it once and expand it in every path below; a payload always carries the
 expanded absolute path, never the variable.
 
-Read `${PLUGIN_ROOT}/references/formats.md` before you write anything —
-it defines the dossier, the ADR, the evidence labels, and the ASD-STE100 subset
-that binds every word you write. Spawn payload comes verbatim from
-`${PLUGIN_ROOT}/references/payloads.md`.
+Read `${PLUGIN_ROOT}/references/formats/README.md` first, then only the part
+the phase needs before you write anything — `references/formats/dossier.md`
+for the dossier shape, `references/formats/evidence-and-ids.md` for the
+evidence labels and ID minting, `references/formats/writing.md` for the
+ASD-STE100 subset that binds every word you write. Spawn payload comes
+verbatim from the per-agent files under
+`${PLUGIN_ROOT}/references/payloads/` — load only the skeleton the phase
+needs (`references/payloads/README.md` names them).
 
 **Time logging — your first action.** Follow
 `${PLUGIN_ROOT}/references/time-logging.md`: hand off to the DevKit
@@ -47,7 +57,7 @@ that binds every word you write. Spawn payload comes verbatim from
 
 Right after the time-logging hand-off, before you read `$ARGUMENTS`, settle
 the one fact that decides where this run writes. Run it in the checkout
-`/plan` was started from (`formats.md` § "Two modes for `.discovery/`"):
+`/plan` was started from (`formats/README.md` § "Two modes for `.discovery/`"):
 
 ```bash
 python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --root . --mode
@@ -183,7 +193,7 @@ better than tidiness.
 
 ## Phase 4 — Write the dossier
 
-Mint the ID atomically (`formats.md` §4) and write
+Mint the ID atomically (`formats/evidence-and-ids.md` §4) and write
 `${RUN_ROOT}/.discovery/dossiers/W-NNN-<slug>.md` with the front matter and
 the six sections in order. In committed mode the number is provisional until
 the plan PR merges — Phase 7 re-checks it against the base tip before the
@@ -205,7 +215,7 @@ there does not read as a defect, it reads as an unexplainable test failure:
 
 **Read the contract-craft rules before you write a docstring** — every run:
 
-1. `${PLUGIN_ROOT}/references/formats.md` § "The observability checklist"
+1. `${PLUGIN_ROOT}/references/formats/dossier.md` § "The observability checklist"
    — return meaning, named errors, order, the empty case, the invalid case,
    concurrency semantics, and the unmeasurable words that are never promises.
 2. **This repo's own rules file** — the rules earlier runs paid for, each one
@@ -285,7 +295,7 @@ spend a review on mechanically broken input.
 Spawn one `reviewer` with `LENS: plan`. It reads the dossier and answers one
 question: could a competent implementer build this, and could a test prove it
 right or wrong, without asking anybody anything? It has no write tools. Its
-`DOSSIER` and `WORKTREE_DIR` both point into `${RUN_ROOT}` (`payloads.md`),
+`DOSSIER` and `WORKTREE_DIR` both point into `${RUN_ROOT}` (`payloads/reviewer.md`),
 so the anchors it spot-checks are the tree the dossier was written against.
 
 - **`PASS`** → go to Phase 7.
@@ -387,4 +397,4 @@ path — and `/work-on W-NNN` once the PR has merged and `<base>` is pulled.
 - Nothing external happens without the user's explicit yes — no Jira create, no
   Jira transition, no push, no PR (committed mode asks once, at Phase 7), no
   command that writes outside the repository.
-- ASD-STE100 binds every word you write in the dossier (`formats.md` §5).
+- ASD-STE100 binds every word you write in the dossier (`formats/writing.md` §5).

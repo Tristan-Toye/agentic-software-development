@@ -158,7 +158,7 @@ one anyway, it goes in the footer — one line, no ID.
   changeset (`## <ref> — <date>`, then the `DEFERRED:` lines), created on
   first use, so a dossier-less report persists beyond the session. Report
   only. When the repository commits `.discovery/` — `validate_pipeline.py
-  --mode` prints `committed`; `formats.md` § "Two modes" — the dossier
+  --mode` prints `committed`; `formats/README.md` § "Two modes" — the dossier
   append is the one tracked change you make: it stays
   uncommitted on the checked-out branch, you name it in the report as such,
   and the user commits or discards it — never you. The fallback ledger stays
