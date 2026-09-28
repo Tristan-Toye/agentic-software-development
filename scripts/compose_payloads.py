@@ -39,7 +39,10 @@ STYLE_SAMPLE, SUPPORT_PATHS / SUPPORT (optional — omitted unless given),
 HARNESS, BOUNDARIES, SCOPE, RUN_EVIDENCE, RULES, CONTEXT_DOCS, CRS / FAILURES
 (implementer MODE=fix), LENS (reviewer — must be given with --set; there is
 no safe default). SHARED_IDIOM / VERIFY_EMBEDDED / DELIVERY_CHANGE / PRIOR_CRS
-are optional judgement fields, included only when given with --set.
+are optional judgement fields, included only when given with --set. So are
+the integration author's FAILURES / CORRECTION (issue #82's corrective-round
+pair for a Phase 6 row-1 ruling on a pre-existing test) — included only when
+given with --set, same as SHARED_IDIOM / DELIVERY_CHANGE for that kind.
 
 # Usage
 
@@ -504,8 +507,8 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     BOUNDARIES: judgement — which flows get which file, the harness fixture,
     a real style sample, and which boundaries are substituted are all
     decisions only the orchestrator can make; @@FILL unless --set.
-    PROMISE_CHECKLIST/SHARED_IDIOM/DELIVERY_CHANGE: optional, included only
-    when --set names them."""
+    PROMISE_CHECKLIST/SHARED_IDIOM/DELIVERY_CHANGE/SUPPORT_PATHS/SUPPORT/
+    FAILURES/CORRECTION: optional, included only when --set names them."""
     root, dossier_text, args, sets = ctx["root"], ctx["dossier_text"], ctx["args"], ctx["sets"]
     fm = ctx["fm"]
     dossier_id = fm.get("id")
@@ -539,11 +542,12 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     }
     apply_overrides(fields, sets, blocks={
         "CONTRACT", "HARNESS", "STYLE_SAMPLE", "PROMISE_CHECKLIST", "SHARED_IDIOM",
-        "DELIVERY_CHANGE",
+        "DELIVERY_CHANGE", "SUPPORT", "FAILURES", "CORRECTION",
     })
     order = ["WORKTREE_DIR", "DOSSIER", "CONTRACT", "PROMISE_CHECKLIST", "TEST_PATHS",
-             "TEST_FRAMEWORK", "HARNESS", "STYLE_SAMPLE", "BOUNDARIES", "SHARED_IDIOM",
-             "DELIVERY_CHANGE", "CONTRACT_HASH"]
+             "TEST_FRAMEWORK", "HARNESS", "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
+             "BOUNDARIES", "SHARED_IDIOM", "DELIVERY_CHANGE", "FAILURES", "CORRECTION",
+             "CONTRACT_HASH"]
     return [fields[n] for n in order if n in fields]
 
 

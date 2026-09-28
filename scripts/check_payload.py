@@ -38,12 +38,17 @@ Twelve failure modes this catches, each of which cost a real build:
    interpreter family; the recorded payload wrote the verb from memory
    instead of copying the verified invocation.
 
-7. **A checklist that names a surface the author cannot see** (WARNING). A
+7. **A checklist that names a surface the author cannot see.** A
    `PROMISE_CHECKLIST` line whose assertion constructs or calls a type found
    in neither `CONTRACT` nor `SUPPORT_PATHS` (nor the payload's own
-   `FIXTURES` and `SHARED_IDIOM`) is a `GAP:` waiting to happen: a blind
-   author cannot invent `RepoGrant::mint` from a docstring that names it. The
-   recorded run paid three round trips before the surface was staged.
+   `FIXTURES` and `SHARED_IDIOM`) — read whole, including a `SUPPORT_PATHS`
+   file resolved against `--worktree` when it is not absolute — is a `GAP:`
+   waiting to happen: a blind author cannot invent `RepoGrant::mint` from a
+   docstring that names it. The recorded run paid three round trips before
+   the surface was staged. A `DEFECT`, naming which checklist line names the
+   missing surface; applies to `unit-test-author` always and to
+   `integration-test-author` whenever it carries a routed `PROMISE_CHECKLIST`
+   (work-on.md Phase 4).
 
 8. **An unexpanded `@@TOKEN@@` template placeholder.** A payload assembled
    from a template — `@@CONTRACT@@`, `@@STYLE_SAMPLE@@` substituted into a
@@ -103,6 +108,26 @@ Twelve failure modes this catches, each of which cost a real build:
     survivors from three authors in one recorded build, every one on such a
     line.
 
+13. **A relative path in a path-valued field.** `CONTRACT` (when it names a
+    path, never when it pastes text), `TEST_PATHS`, `STYLE_PATHS`,
+    `SUPPORT_PATHS`, `WORKTREE_DIR`, `DOSSIER`, `STANDARDS`, `CONTEXT_DOCS`
+    and `TARGET_PATHS` are absolute in every payload — a relative path
+    resolves against the subagent's cwd, which is the HOST SESSION's working
+    directory, never the worktree the payload names. A canary test author
+    once resolved a relative path against the main checkout and wrote its
+    test file there. `OWNED_PATHS` and `CONTRACT_PATHS` are deliberately
+    relative-to-worktree and are not checked here.
+
+14. **An environment-variable or fixture-mechanism claim with no
+    verification note** (WARNING). A prose line naming an upper-snake env
+    var or fixture and stating what it does — "targets", "points",
+    "connects", "is the same", "uses", "returns" — is either backed by a
+    `verified: <command run>` note on the same or the next line, or written
+    as a discovery instruction ("discover ...", "check ...", "run ...",
+    "find ..."). A blind agent cannot check the claim itself; the recorded
+    failure shipped a false claim about which database an env var targeted
+    and cost a wasted VM suite round.
+
 A field name may carry a parenthetical — `CRITERIA (15 verbatim): |`,
 `RULES (narrowed per lens): |` — and lints as the bare name. Authors
 annotate naturally, and the annotation is harmless; a genuinely misnamed
@@ -161,8 +186,14 @@ FIELDS: dict[str, dict[str, set[str]]] = {
             "CONTRACT_HASH",
         },
         # PROMISE_CHECKLIST travels here only when this Read + Write author is
-        # the routed shape for a unit surface (work-on.md Phase 4).
-        "optional": {"SHARED_IDIOM", "DELIVERY_CHANGE", "PROMISE_CHECKLIST"},
+        # the routed shape for a unit surface (work-on.md Phase 4); SUPPORT_PATHS
+        # / SUPPORT then travel with it, same rule as the unit author's. FAILURES
+        # / CORRECTION are the corrective-round pair for a Phase 6 row-1 ruling
+        # on a pre-existing test (issue #82) — never folded into DELIVERY_CHANGE.
+        "optional": {
+            "SHARED_IDIOM", "DELIVERY_CHANGE", "PROMISE_CHECKLIST",
+            "SUPPORT_PATHS", "SUPPORT", "FAILURES", "CORRECTION",
+        },
     },
     "implementer": {
         "required": {
@@ -289,6 +320,12 @@ TEMPLATE_TOKEN = re.compile(r"@@[A-Za-z_][A-Za-z0-9_-]*@@")
 SECRET_NAME = re.compile(
     r"\b(pass|passwd|password|secret|token|api[_-]?key|credential)\b", re.IGNORECASE
 )
+# `pass`, `passed`, `passes` are shell-tally names as often as credential
+# ones (`pass=0`, `pass=$((pass + 1))`, `passes=N`); only a quoted string
+# value on one of these three exact names is still a credential finding —
+# `password` is not in this family and is unaffected.
+PASS_FAMILY = {"pass", "passed", "passes"}
+QUOTED_VALUE = re.compile(r"^([\"'`]).*\1$")
 # A value that is obviously not a live secret.
 PLACEHOLDER = re.compile(
     r"^(|<.*>|\*+|x+|placeholder|redacted|none|null|changeme|\$\{.*\}|.*-placeholder)$",
@@ -305,6 +342,44 @@ URL_CREDENTIAL = re.compile(
 # Paths a payload legitimately names that will not exist yet: a path the agent
 # is told to CREATE, or the drafter's target files.
 CREATE_HINT = re.compile(r"\b(TEST_PATHS|OWNED_PATHS|TARGET_PATHS)\b")
+
+# Fields whose inline value is a single path (or `none`), never prose, and
+# is absolute in every payload (references/payloads/README.md, "Every path
+# in a payload is absolute"). `OWNED_PATHS` and `CONTRACT_PATHS` are the
+# deliberate exception — relative to WORKTREE_DIR by design — and are not
+# checked here. `CONTRACT` joins this set only when it names a path, never
+# when it pastes text under `CONTRACT: |`.
+PATH_VALUED_FIELDS = (
+    "TEST_PATHS", "STYLE_PATHS", "SUPPORT_PATHS", "WORKTREE_DIR", "DOSSIER",
+    "STANDARDS", "CONTEXT_DOCS", "TARGET_PATHS",
+)
+NOT_A_PATH_VALUE = re.compile(r"^(|none|null|n/a)$", re.IGNORECASE)
+
+
+def relative_path_findings(lines: list[str]) -> list[str]:
+    """A path-valued field carrying a relative path: it resolves against the
+    subagent's cwd — the HOST SESSION's working directory — never against
+    WORKTREE_DIR (issue #77)."""
+    out: list[str] = []
+    for number, name, rest in field_lines(lines):
+        if name != "CONTRACT" and name not in PATH_VALUED_FIELDS:
+            continue
+        if not rest or rest == "|":
+            continue  # a pasted block, not a path value
+        token = rest.split("#", 1)[0].strip()
+        token = token.split()[0] if token.split() else token
+        token = token.rstrip(",;")
+        if NOT_A_PATH_VALUE.match(token) or token.startswith("${") \
+                or TEMPLATE_TOKEN.match(token) or "://" in token:
+            continue
+        if not token.startswith("/"):
+            out.append(
+                "line %d: %s names the relative path %r. A relative path "
+                "resolves against the subagent's cwd, which is the HOST "
+                "SESSION's working directory, not WORKTREE_DIR; ship the "
+                "absolute path." % (number, name, token)
+            )
+    return out
 
 # Fields that carry a command the agent will run verbatim.
 COMMAND_FIELDS = ("TEST_COMMAND", "BUILD_CHECK")
@@ -374,9 +449,12 @@ NOT_A_SURFACE = {
 }
 
 
-def surface_findings(lines: list[str], kind: str | None) -> list[str]:
-    """Checklist types the unit author's world does not carry (a WARNING)."""
-    if kind != "unit-test-author":
+def surface_findings(lines: list[str], kind: str | None, worktree: str | None) -> list[str]:
+    """Checklist types the author's world does not carry: a DEFECT, naming
+    which checklist line names the surface. Applies to unit-test-author
+    always, and to integration-test-author whenever it carries a routed
+    PROMISE_CHECKLIST (work-on.md Phase 4, issue #78)."""
+    if kind not in ("unit-test-author", "integration-test-author"):
         return []
     checklist = field_body(lines, "PROMISE_CHECKLIST")
     if not checklist:
@@ -388,28 +466,36 @@ def surface_findings(lines: list[str], kind: str | None) -> list[str]:
         known.append(body)
         for token in body.split():
             path = token.strip(",;")
-            if os.path.isabs(path) and os.path.isfile(path):
-                try:
-                    with open(path, encoding="utf-8", errors="replace") as handle:
-                        known.append(handle.read())
-                except OSError:
-                    continue
+            candidates = [path] if os.path.isabs(path) else (
+                [os.path.join(worktree, path)] if worktree else []
+            )
+            for candidate in candidates:
+                if os.path.isfile(candidate):
+                    try:
+                        with open(candidate, encoding="utf-8", errors="replace") as handle:
+                            known.append(handle.read())
+                    except OSError:
+                        continue
     world = "\n".join(known)
-    names = set(TYPE_REF.findall(checklist)) | set(CAMEL.findall(checklist))
-    missing = sorted(
-        n for n in names
-        if n not in NOT_A_SURFACE and not re.search(r"\b%s\b" % re.escape(n), world)
-    )
-    if not missing:
-        return []
-    return [
-        "PROMISE_CHECKLIST names %s, found in neither CONTRACT nor SUPPORT_PATHS / "
-        "SUPPORT (nor STYLE_SAMPLE, FIXTURES, SHARED_IDIOM). A blind author cannot "
-        "invent a type's API: stage its signature surface under "
-        ".agent-staging/contract-support/ and name it in SUPPORT_PATHS — or paste "
-        "it under SUPPORT for a Read-less host — or the spawn returns GAP:."
-        % ", ".join(missing)
-    ]
+    out: list[str] = []
+    for number in sorted(field_line_numbers(lines, "PROMISE_CHECKLIST")):
+        line = lines[number - 1]
+        names = set(TYPE_REF.findall(line)) | set(CAMEL.findall(line))
+        missing = sorted(
+            n for n in names
+            if n not in NOT_A_SURFACE and not re.search(r"\b%s\b" % re.escape(n), world)
+        )
+        for name in missing:
+            out.append(
+                "checklist line %d names %s, found in neither CONTRACT nor "
+                "SUPPORT_PATHS / SUPPORT (nor STYLE_SAMPLE, FIXTURES, SHARED_IDIOM): "
+                "%r. A blind author cannot invent a type's API: stage its "
+                "signature surface under .agent-staging/contract-support/ and name "
+                "it in SUPPORT_PATHS — or paste it under SUPPORT for a Read-less "
+                "host — or the spawn returns GAP:."
+                % (number, name, line.strip()[:80])
+            )
+    return out
 
 
 def field_command(lines: list[str], name: str) -> tuple[int, str]:
@@ -664,6 +750,44 @@ def excerpt_findings(lines: list[str], kind: str | None,
     return defects, []
 
 
+# An UPPER_SNAKE token that plausibly names an env var or a fixture handle.
+ENV_NAME = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
+ENV_KEYWORD = re.compile(r"URL|DATABASE|DB|HOST|DSN|PATH|DIR|USER|POOL")
+# A verb that states what the env var / fixture DOES, not merely names it.
+BEHAVIOUR_VERB = re.compile(
+    r"\b(targets|points|connects|is the same|uses|returns)\b", re.IGNORECASE
+)
+# A sentence phrased as an instruction to discover the fact, never a claim.
+INSTRUCTION_START = re.compile(r"^\s*(discover|check|run|find)\b", re.IGNORECASE)
+VERIFIED_NOTE = re.compile(r"\bverified\s*:", re.IGNORECASE)
+
+
+def env_claim_findings(lines: list[str]) -> list[str]:
+    """A prose line stating what an env var or fixture mechanism does, with
+    no `verified: <command run>` note on this line or the next, and not
+    phrased as a discovery instruction (issue #75) — a WARNING: an
+    orchestrator can check this empirically, but a blind agent cannot check
+    it at all, so an unverified claim ships only as an instruction to look."""
+    out: list[str] = []
+    for number, line in enumerate(lines, 1):
+        if INSTRUCTION_START.match(line):
+            continue
+        names = [n for n in ENV_NAME.findall(line) if ENV_KEYWORD.search(n)]
+        if not names or not BEHAVIOUR_VERB.search(line):
+            continue
+        nearby = line if number >= len(lines) else line + "\n" + lines[number]
+        if VERIFIED_NOTE.search(nearby):
+            continue
+        out.append(
+            "line %d: %r states what %s does, with no `verified: <command run>` "
+            "note on this line or the next. Verify it in a shell and paste the "
+            "command beside the claim, or rewrite the sentence as a discovery "
+            "instruction (references/payloads/README.md, the env-claim field "
+            "rule)." % (number, line.strip()[:80], ", ".join(names))
+        )
+    return out
+
+
 def assertion_form_findings(lines: list[str], kind: str | None) -> list[str]:
     """A checklist line that states the whole result names its assertion form."""
     if kind != "unit-test-author":
@@ -794,6 +918,8 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
             name, value = match.group("name"), match.group("value")
             if not SECRET_NAME.search(name):
                 continue
+            if name.lower() in PASS_FAMILY and not QUOTED_VALUE.match(value):
+                continue  # a tally/counter (pass=0, pass=$((pass + 1)), passes=N)
             value = value.strip("\"'`,;")
             if PLACEHOLDER.match(value):
                 continue
@@ -805,8 +931,14 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     # 5. a command verb that contradicts the script's shebang
     defects.extend(verb_findings(lines, worktree))
 
-    # 7. a checklist surface the unit author's world does not carry
-    warnings.extend(surface_findings(lines, kind))
+    # 7. a checklist surface the author's world does not carry
+    defects.extend(surface_findings(lines, kind, worktree))
+
+    # 13. a relative path in a path-valued field
+    defects.extend(relative_path_findings(lines))
+
+    # 14. an unverified env-var / fixture-mechanism claim
+    warnings.extend(env_claim_findings(lines))
 
     # 9. a path, or a read instruction, handed to an agent with no Read
     if host is None and kind in ("unit-test-author", "integration-test-author"):
@@ -868,7 +1000,7 @@ def selftest() -> int:
     def case(name: str, text: str, kind: str | None, expect_defect: bool,
              must_mention: str = "", must_warn: str | None = None,
              host: str | None = None, tools: list[str] | None = None,
-             live: str | None = None) -> None:
+             live: str | None = None, worktree: bool = False) -> None:
         nonlocal groups
         groups += 1
         with tempfile.TemporaryDirectory() as tmp:
@@ -900,7 +1032,8 @@ def selftest() -> int:
                          "## Acceptance criteria\n1. five shapes\n")
             body = text.replace("{REAL}", real)
             live_path = live.replace("{REAL}", real) if live else None
-            _, defects, warnings = lint(body.splitlines(), kind, None, [], host, tools, live_path)
+            wt = real if worktree else None
+            _, defects, warnings = lint(body.splitlines(), kind, wt, [], host, tools, live_path)
             got = bool(defects)
             if got != expect_defect:
                 failures.append("%s: expected defect=%s, got %s: %s"
@@ -997,14 +1130,64 @@ def selftest() -> int:
          must_warn="", host="opencode")
     grant = unit_ok.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
                             "PROMISE_CHECKLIST: |\n  flush — invalid case: RepoGrant::mint(bad) raises\n")
-    case("checklist names an unstaged surface: warns", grant, "unit-test-author", False,
-         must_warn="RepoGrant")
-    case("staged support surface silences the warning",
+    case("checklist names an unstaged surface: a defect naming the line", grant,
+         "unit-test-author", True, "RepoGrant")
+    case("staged support surface silences the defect",
          grant + "SUPPORT_PATHS: {REAL}/.agent-staging/contract-support/grant.rs\n",
          "unit-test-author", False, must_warn="", host="opencode")
     case("a delivery change is a legal resume field",
          unit_ok + "DELIVERY_CHANGE: |\n  land the file as one Write plus Edits under the cap\n",
          "unit-test-author", False)
+
+    # --- issue #78: relative SUPPORT_PATHS-shaped tokens in prose resolve
+    # against --worktree, not only absolute ones ---
+    grant_in_prose = grant.replace(
+        "FIXTURES: |\n  FlushQueue()\n",
+        "FIXTURES: |\n  FlushQueue()\n  see .agent-staging/contract-support/grant.rs for the shape\n",
+    )
+    case("a relative support path in prose is unresolved with no --worktree",
+         grant_in_prose, "unit-test-author", True, "RepoGrant")
+    case("a relative support path in prose is resolved against --worktree",
+         grant_in_prose, "unit-test-author", False, worktree=True)
+
+    # --- issue #77: a relative path in a path-valued field is refused ---
+    case("relative TEST_PATHS is refused",
+         unit_ok.replace("TEST_PATHS: {REAL}/tests/unit/test_flush.py",
+                         "TEST_PATHS: tests/unit/test_flush.py"),
+         "unit-test-author", True, "relative path")
+    case("relative CONTRACT path is refused",
+         unit_ok.replace("CONTRACT: {REAL}/tests/unit/test_retry.py",
+                         "CONTRACT: tests/unit/test_retry.py"),
+         "unit-test-author", True, "relative path")
+    case("a pasted CONTRACT block is not checked for relative-ness",
+         pasted, "unit-test-author", False, host="claude", tools=write_only, must_warn="")
+
+    # --- issue #79: a shell tally is never a credential finding ---
+    case("pass=0 shell tally is not a credential",
+         unit_ok + "SHARED_IDIOM: |\n  pass=0\n", "unit-test-author", False)
+    case("pass counter increment is not a credential",
+         unit_ok + "SHARED_IDIOM: |\n  pass=$((pass + 1))\n", "unit-test-author", False)
+    case("passed= with no value is not a credential",
+         unit_ok + "SHARED_IDIOM: |\n  passed=\n", "unit-test-author", False)
+    case("passes=N counter is not a credential",
+         unit_ok + "SHARED_IDIOM: |\n  passes=N\n", "unit-test-author", False)
+    case("password literal is still a credential",
+         unit_ok + "SHARED_IDIOM: |\n  password=\"hunter2\"\n", "unit-test-author", True,
+         "carries what looks like a live secret")
+
+    # --- issue #75: an unverified env-var / fixture-mechanism claim warns ---
+    case("an unverified env-var claim warns",
+         unit_ok + "SHARED_IDIOM: |\n  NIGHTWATCH_APP_DATABASE_URL targets the same "
+                   "database the fixture pools use.\n",
+         "unit-test-author", False, must_warn="verified", host="opencode")
+    case("a verified note on the next line silences the env-claim warning",
+         unit_ok + "SHARED_IDIOM: |\n  NIGHTWATCH_APP_DATABASE_URL targets the shared "
+                   "POSTGRES_DB.\n  verified: echo $NIGHTWATCH_APP_DATABASE_URL\n",
+         "unit-test-author", False, must_warn="", host="opencode")
+    case("a discovery instruction never claims the fact, so it is quiet",
+         unit_ok + "SHARED_IDIOM: |\n  discover which database NIGHTWATCH_APP_DATABASE_URL "
+                   "targets before writing the fixture.\n",
+         "unit-test-author", False, must_warn="", host="opencode")
 
     integ = (
         "WORKTREE_DIR: {REAL}\nDOSSIER: {REAL}/.agent-staging/W-014.excerpt.md\n"
@@ -1029,6 +1212,32 @@ def selftest() -> int:
          integ + "PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
          "integration-test-author", False, host="claude", tools=rw,
          live="{REAL}/.discovery/dossiers/W-014-x.md")
+
+    # --- issue #78: a routed checklist is checked the same way as the unit
+    # author's, SUPPORT_PATHS included ---
+    integ_grant = integ + "PROMISE_CHECKLIST: |\n  flush — invalid case: RepoGrant::mint(bad) raises\n"
+    case("integration author with a routed checklist: an unstaged surface is a defect",
+         integ_grant, "integration-test-author", True, "RepoGrant", host="claude", tools=rw,
+         live="{REAL}/.discovery/dossiers/W-014-x.md")
+    case("integration author with a routed checklist: a staged SUPPORT_PATHS is quiet",
+         integ_grant + "SUPPORT_PATHS: {REAL}/.agent-staging/contract-support/grant.rs\n",
+         "integration-test-author", False, host="claude", tools=rw,
+         live="{REAL}/.discovery/dossiers/W-014-x.md")
+
+    # --- issue #82: FAILURES + CORRECTION, the corrective-round pair for a
+    # Phase 6 row-1 ruling on a pre-existing test ---
+    corrective = integ + (
+        "FAILURES: |\n  assert census == 18, got 17\n"
+        "CORRECTION: |\n  1. Update EXPECTED_TABLES to 17 entries.\n"
+        "  Read the whole file, then Write it back with exactly this change, "
+        "nothing else.\n"
+    )
+    case("integration author: FAILURES + CORRECTION lints clean",
+         corrective, "integration-test-author", False, host="claude", tools=rw,
+         live="{REAL}/.discovery/dossiers/W-014-x.md")
+    case("integration author: an unknown field is still refused beside FAILURES/CORRECTION",
+         corrective.replace("CORRECTION:", "CORRECTON:"), "integration-test-author", True,
+         "not a field", host="claude", tools=rw, live="{REAL}/.discovery/dossiers/W-014-x.md")
 
     impl = (
         "WORKTREE_DIR: {REAL}\nBRANCH: fix/x-p1\nMODE: build\nCONTRACT: |\n  fn a()\n"

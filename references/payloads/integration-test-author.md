@@ -14,7 +14,10 @@ PROMISE_CHECKLIST: |
   <only when this Read + Write author is the routed shape for a UNIT surface
    — under Claude Code, a shell suite or a compiled-language test file
    (work-on.md Phase 4): that surface's checklist, tags included, exactly as
-   the unit author would receive it. Omit for a flow.>
+   the unit author would receive it. Omit for a flow. SUPPORT_PATHS / SUPPORT
+   travel with it, same rule as the unit author's: check_payload.py flags a
+   checklist line naming a type in neither CONTRACT nor SUPPORT_PATHS /
+   SUPPORT (nor STYLE_SAMPLE, SHARED_IDIOM) as a defect, naming the line.>
 TEST_PATHS: /abs/path/repo-W-014/tests/integration/test_flush_flow.py
            # ONE PATH PER FLOW — the default, not a hint. A GAP: or a vacuous
            # test then re-spawns one flow, not the whole set, and no single
@@ -67,3 +70,22 @@ criteria were updated and the excerpt was not, and the author received
 integration-test-author --live-dossier <live copy>` compares the three
 sections byte for byte and refuses any difference; linted without the flag,
 the payload warns that the excerpt was not compared.
+
+**A corrective round on a pre-existing test** carries `FAILURES` and
+`CORRECTION` instead of folding the fix into `DELIVERY_CHANGE`, which is
+written for a delivery-shape change, not a correction:
+
+```
+FAILURES: |
+  <the failing run's output, verbatim>
+CORRECTION: |
+  1. <the first edit, exact and ordered>
+  2. <the next edit>
+  Read the whole file, then Write it back with exactly these changes,
+  nothing else — never a partial Edit, and never a new test.
+```
+
+Routing note: a Phase 6 row-1 ruling on a pre-existing test — its hoisted
+expected value is assertion-bearing, so the orchestrator may not edit it,
+and the implementer never edits a test — or a census literal a sync merge
+moved onto the same test, is this author's round, every time.

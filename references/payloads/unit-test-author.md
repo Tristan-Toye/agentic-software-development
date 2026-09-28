@@ -184,5 +184,10 @@ staged contract can never leak into a commit.
   here (opencode), or pasted verbatim under `SUPPORT` (Claude Code). A
   docstring that names `RepoGrant::mint` gives a blind author the name and
   nothing else; the recorded run paid three `GAP:` round trips before the
-  surface was staged. `check_payload.py` warns when a checklist type is in
-  neither `CONTRACT` nor `SUPPORT_PATHS` / `SUPPORT`.
+  surface was staged. `check_payload.py` refuses a checklist line whose type
+  is in neither `CONTRACT` nor `SUPPORT_PATHS` / `SUPPORT` (nor
+  `STYLE_SAMPLE`, `FIXTURES`, `SHARED_IDIOM`) as a defect, naming which line
+  names it — reading a `SUPPORT_PATHS` file whole, resolved against
+  `--worktree` when it is not absolute. The same rule applies to
+  `integration-test-author` whenever it carries a routed `PROMISE_CHECKLIST`
+  (`references/payloads/integration-test-author.md`).
