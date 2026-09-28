@@ -29,6 +29,20 @@ Known limit, on purpose: a block-scoped assertion body (the statements under
 arguments are. The script flags the token and its argument span; when the
 output says a hunk is near one, a human reads it.
 
+Before any hunk-based (position) classification, the whitespace-normalised
+multiset of assertion spans on each side is compared: equal multisets mean
+every assertion-bearing span survived unchanged, just moved or re-indented,
+so the edit is harness-only even though the diff marks those lines -/+. The
+hoisted-expected-value rule still runs first and wins: a binding an
+assertion reads can change while its own span's text stays put.
+
+`.sh` files (bash negative-control suites over `scripts/lib/negative_control.sh`)
+use their own assertion vocabulary: a line is assertion-bearing when it
+starts, after indentation, with `expect_pass`, `expect_fail`, or `holds` —
+the span is that line (plus any backslash-continued lines), including the
+test/grep command passed to the token. Fixture setup and heredocs are
+harness.
+
 Usage:
     check_harness_edit.py --diff tests/x.py tests/x.py.new
     check_harness_edit.py --patch fix.diff --root .
@@ -43,6 +57,7 @@ import argparse
 import difflib
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 # One table: extension -> assert-family tokens (regex fragments). A CHANGED
@@ -60,6 +75,7 @@ ASSERT_TOKENS: dict[str, str] = {
     ".js": r"\bexpect\(|\bassert\(|\.toBe\b|\.toEqual\b|\.toThrow\b",
     ".java": r"\bassert\w*\(|\bAssertions\.|\bfail\(|\bassertThat\b",
     ".kt": r"\bassert\w*\(|\bAssertions\.|\bfail\(|\bassertThat\b",
+    ".sh": r"^\s*(?:expect_pass|expect_fail|holds)\b",
 }
 
 # A line that binds a name (the `name` group), per extension. Bias toward
@@ -174,12 +190,18 @@ def assertion_spans(text: str, pattern: re.Pattern[str]) -> list[tuple[int, int]
         opened = False
         j = i
         while j < len(lines):
-            for ch in lines[j]:
+            line = lines[j]
+            for ch in line:
                 if ch in OPEN:
                     depth += 1
                     opened = True
                 elif ch in CLOSE:
                     depth -= 1
+            # A backslash-continued line (bash) always extends the span,
+            # regardless of bracket balance.
+            if line.endswith("\\"):
+                j += 1
+                continue
             # Balanced on the first line with no open delimiters at all
             # (`assert x`), or balanced after opening: the span ends here.
             if (j == i and not opened) or (opened and depth <= 0):
@@ -188,6 +210,22 @@ def assertion_spans(text: str, pattern: re.Pattern[str]) -> list[tuple[int, int]
         out.append((i + 1, j + 1))
         i = j + 1
     return out
+
+
+def normalize_span(lines: list[str], a: int, b: int) -> str:
+    """Whitespace-normalised text of a 1-based inclusive line span — collapses
+    indentation and internal spacing so a span that only moved or was
+    re-indented compares equal to its original."""
+    return re.sub(r"\s+", " ", "\n".join(lines[a - 1 : b])).strip()
+
+
+def assertion_multiset(
+    text: str, spans: list[tuple[int, int]]
+) -> Counter[str]:
+    """Multiset of whitespace-normalised assertion spans, for comparing two
+    versions of a file regardless of where each span now sits."""
+    lines = text.split("\n")
+    return Counter(normalize_span(lines, a, b) for a, b in spans)
 
 
 def changed_lines(old: str, new: str) -> list[tuple[int, str]]:
@@ -282,17 +320,12 @@ def classify(old: str, new: str, path: str) -> tuple[int, list[str]]:
     changed = changed_lines(old, new)
     if not changed:
         return 0, ["no changes: the texts are identical"]
-    hits: list[str] = []
     old_spans = assertion_spans(old, pattern)
     new_spans = assertion_spans(new, pattern)
-    for ln, side in changed:
-        against = old_spans if side == "-" else new_spans
-        for a, b in against:
-            if a <= ln <= b:
-                hits.append(f"{path}:{ln} ({side}) inside an assertion span ({a}-{b})")
-                break
-    if hits:
-        return 1, hits
+
+    # The hoisted-expected-value rule runs first and wins: a binding an
+    # assertion reads is assertion-bearing even when the assertion span's
+    # own text is untouched.
     definite: list[str] = []
     unknown: list[str] = []
     for text, side in ((new, "+"), (old, "-")):
@@ -301,6 +334,31 @@ def classify(old: str, new: str, path: str) -> tuple[int, list[str]]:
         unknown += u
     if definite:
         return 1, definite
+
+    # Before any hunk-based (position) classification: equal whitespace-
+    # normalised multisets mean every assertion span survived unchanged —
+    # only moved or re-indented — so the edit is harness-only even though
+    # the diff marks those lines -/+.
+    if assertion_multiset(old, old_spans) == assertion_multiset(new, new_spans):
+        if unknown:
+            return 2, unknown + [
+                "a changed binding feeds an assertion this check cannot place; "
+                "rule conservatively (rows 1-3)"
+            ]
+        return 0, [
+            f"harness-only: {len(changed)} changed line(s), assertion spans "
+            "unchanged (moved or re-indented)"
+        ]
+
+    hits: list[str] = []
+    for ln, side in changed:
+        against = old_spans if side == "-" else new_spans
+        for a, b in against:
+            if a <= ln <= b:
+                hits.append(f"{path}:{ln} ({side}) inside an assertion span ({a}-{b})")
+                break
+    if hits:
+        return 1, hits
     if unknown:
         return 2, unknown + [
             "a changed binding feeds an assertion this check cannot place; "
@@ -471,6 +529,102 @@ def selftest() -> int:
         "py hoisted binding removed -> 1",
         1,
         classify(py_h, py_h.replace("    expected = 3\n", ""), "tests/test_h.py")[0],
+    )
+
+    # --- issue 80: a moved/re-indented assertion span is harness-only ---
+    rs_reindent = (
+        "#[test]\n"
+        "fn reset_stats() {\n"
+        "    let db = Database::connect();\n"
+        "    if db.is_multi() {\n"
+        "        db.reset_pg_stat_statements()\n"
+        '            .expect("reset succeeds");\n'
+        "    }\n"
+        "}\n"
+    )
+    check(
+        "rs re-indented .expect( line -> 0",
+        0,
+        classify(
+            rs_reindent,
+            rs_reindent.replace(
+                '            .expect("reset succeeds");\n',
+                '                .expect("reset succeeds");\n',
+            ),
+            "tests/reset_stats.rs",
+        )[0],
+    )
+    rs_swap_old = (
+        "#[test]\n"
+        "fn two_checks() {\n"
+        "    assert_eq!(1 + 1, 2);\n"
+        "    assert_eq!(2 + 2, 4);\n"
+        "}\n"
+    )
+    rs_swap_new = (
+        "#[test]\n"
+        "fn two_checks() {\n"
+        "    assert_eq!(2 + 2, 4);\n"
+        "    assert_eq!(1 + 1, 2);\n"
+        "}\n"
+    )
+    check(
+        "rs moved (reordered) assertion block -> 0",
+        0,
+        classify(rs_swap_old, rs_swap_new, "tests/two_checks.rs")[0],
+    )
+    check(
+        "rs changed expected value, same position -> 1",
+        1,
+        classify(
+            rs_reindent,
+            rs_reindent.replace('"reset succeeds"', '"reset done"'),
+            "tests/reset_stats.rs",
+        )[0],
+    )
+
+    # --- issue 81: a bash negative-control suite (.sh) ---
+    sh_a = (
+        "#!/usr/bin/env bash\n"
+        "source scripts/lib/negative_control.sh\n"
+        "\n"
+        "setup_fixture() {\n"
+        "  cat <<'EOF' > /tmp/x.cfg\n"
+        "value=1\n"
+        "EOF\n"
+        "}\n"
+        "\n"
+        "setup_fixture\n"
+        "expect_pass \"key present\" grep -q 'key=1' /tmp/x.cfg\n"
+        "expect_fail \"bad key absent\" grep -q 'key=99' /tmp/x.cfg\n"
+    )
+    check(
+        "sh file recognized, not UNUSABLE -> 0",
+        0,
+        classify(sh_a, sh_a, "tests/negctl.sh")[0],
+    )
+    check(
+        "sh heredoc-fixture-only change -> 0",
+        0,
+        classify(sh_a, sh_a.replace("value=1", "value=2"), "tests/negctl.sh")[0],
+    )
+    check(
+        "sh expect_pass label changed -> 1",
+        1,
+        classify(
+            sh_a,
+            sh_a.replace('"key present"', '"key present!!"'),
+            "tests/negctl.sh",
+        )[0],
+    )
+    check(
+        "sh expect_pass command changed -> 1",
+        1,
+        classify(
+            sh_a,
+            sh_a.replace("grep -q 'key=1'", "grep -q 'key=2'"),
+            "tests/negctl.sh",
+        )[0],
     )
 
     # patch mode: apply + classify end to end
