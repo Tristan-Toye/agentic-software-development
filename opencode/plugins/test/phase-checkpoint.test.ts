@@ -78,5 +78,19 @@ check("other tools untouched", await (async () => {
   return o.output === "x"
 })())
 
+// 8. The log file: one line per event, one cut line per checkpoint however many requests.
+out = { messages: history() }
+await transform({}, out)
+await transform({}, { messages: history() })
+const logText = readFileSync(join(process.env.XDG_DATA_HOME!, "opencode", "phase-checkpoint", "phase-checkpoint.log"), "utf8")
+const lines = logText.trim().split("\n")
+const count = (event: string, session: string) => lines.filter((l) => l.split(" ")[1] === event && l.split(" ")[2] === session).length
+check("log: every line is timestamped", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z /.test(l)))
+check("log: two checkpoints recorded for ses_1", count("recorded", S) === 2)
+check("log: refusals logged", count("refused", S) >= 2 && count("refused", S2) >= 2)
+check("log: one cut line per checkpoint", count("cut", S) === 2)
+check("log: cut line says what it dropped", lines.some((l) => / cut ses_1 checkpoint 2: 7 -> 2 messages, 5 dropped \(~\d+ chars, ~\d+ tokens\)$/.test(l)))
+check("log: nudge logged", count("nudge", S2) === 1)
+
 console.log(fails.length ? "FAIL " + fails.join(" | ") : "PASS (all cases)")
 process.exit(fails.length ? 1 : 0)

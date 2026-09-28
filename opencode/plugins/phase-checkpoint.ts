@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 // The file is symlinked into ~/.config/opencode/plugins and runs from its real path in
 // this repo, which has no node_modules: take the plugin SDK (and its zod) from
@@ -33,13 +33,15 @@ const { tool } = (await import(
 // The tool is permission-denied globally in opencode.jsonc and allowed only in
 // work-on's front matter; AGENTS below is the second guard.
 //
-// OPENCODE_PHASE_CHECKPOINT_DEBUG=1 logs cuts to stderr.
+// Every event — a checkpoint recorded, the first cut after each checkpoint (messages
+// and characters dropped), a refusal, a missed-boundary nudge, a persistence error —
+// is one timestamped line in phase-checkpoint.log beside the checkpoints (the TUI
+// swallows stderr, so a file is the only log anyone can read afterwards).
+// OPENCODE_PHASE_CHECKPOINT_LOG names another file, or `off` to stop logging.
 
 const AGENTS = new Set(["work-on"])
 const MAX_SUMMARY_CHARS = 6000
 const TOOL = "phase_checkpoint"
-const debug = process.env.OPENCODE_PHASE_CHECKPOINT_DEBUG === "1"
-const log = (...args: unknown[]) => debug && console.error("[phase-checkpoint]", ...args)
 
 type Checkpoint = { phase: string; summary: string; messageID: string; marker: string; at: string }
 
@@ -55,6 +57,23 @@ function phaseNumber(phase: string): number | undefined {
 
 const dir = join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "opencode", "phase-checkpoint")
 const sessions = new Map<string, Checkpoint[]>()
+
+const logSetting = process.env.OPENCODE_PHASE_CHECKPOINT_LOG
+const logFile = logSetting === "off" ? undefined : logSetting || join(dir, "phase-checkpoint.log")
+
+// One line per event. A log that cannot be written never breaks a request.
+function log(event: string, sessionID: string, detail: string) {
+  if (!logFile) return
+  try {
+    mkdirSync(dirname(logFile), { recursive: true })
+    appendFileSync(logFile, `${new Date().toISOString()} ${event} ${sessionID} ${detail}\n`)
+  } catch {
+    // nothing to do: the reset itself does not depend on the log
+  }
+}
+
+// sessionID:marker pairs whose first cut is already logged, so one line per checkpoint
+const loggedCuts = new Set<string>()
 
 function load(sessionID: string): Checkpoint[] {
   let list = sessions.get(sessionID)
@@ -74,7 +93,7 @@ function save(sessionID: string, list: Checkpoint[]) {
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, `${sessionID}.json`), JSON.stringify(list, null, 2))
   } catch (err) {
-    log("could not persist checkpoint:", err)
+    log("persist-error", sessionID, String(err))
   }
 }
 
@@ -101,14 +120,16 @@ function summaryText(list: Checkpoint[]): string {
   )
 }
 
-// Applies the latest checkpoint to an outgoing message list, in place. Not exported:
-// opencode may call every export of a plugin file as a plugin.
-function applyCheckpoint(messages: Entry[], list: Checkpoint[]): boolean {
-  if (messages.length < 2 || list.length === 0) return false
+type Cut = { dropped: number; droppedChars: number }
+
+// Applies the latest checkpoint to an outgoing message list, in place, and says what
+// it dropped. Not exported: opencode may call every export of a plugin file as a plugin.
+function applyCheckpoint(messages: Entry[], list: Checkpoint[]): Cut | undefined {
+  if (messages.length < 2 || list.length === 0) return undefined
   const cut = cutIndex(messages, list[list.length - 1])
-  if (cut <= 1) return false
+  if (cut <= 1) return undefined
   const first = messages[0]
-  if (first.info.role !== "user") return false
+  if (first.info.role !== "user") return undefined
   const part = {
     id: `${first.info.id}-phase-checkpoint`,
     sessionID: first.info.sessionID,
@@ -119,8 +140,14 @@ function applyCheckpoint(messages: Entry[], list: Checkpoint[]): boolean {
   }
   // New objects, never the stored ones: only this request changes.
   messages[0] = { info: first.info, parts: [...first.parts, part] }
-  messages.splice(1, cut - 1)
-  return true
+  const removed = messages.splice(1, cut - 1)
+  // The size of the parts' own text is the measure; the JSON of a whole message
+  // would count ids and metadata the model never sees as prose.
+  const droppedChars = removed.reduce(
+    (sum, m) => sum + m.parts.reduce((s, p) => s + JSON.stringify(p?.text ?? p?.state ?? "").length, 0),
+    0,
+  )
+  return { dropped: removed.length, droppedChars }
 }
 
 export const PhaseCheckpointPlugin: Plugin = async () => ({
@@ -138,20 +165,29 @@ export const PhaseCheckpointPlugin: Plugin = async () => ({
         summary: tool.schema.string().describe("the hand-off to the rest of the run, self-contained"),
       },
       async execute({ phase, summary }, ctx) {
-        if (!AGENTS.has(ctx.agent)) return `${TOOL}: refused — only ${[...AGENTS].join(" and ")} reset their context`
+        const refuse = (why: string) => {
+          log("refused", ctx.sessionID, `${ctx.agent} "${phase}": ${why}`)
+          return `${TOOL}: refused — ${why}`
+        }
+        if (!AGENTS.has(ctx.agent)) return refuse(`only ${[...AGENTS].join(" and ")} reset their context`)
         const num = phaseNumber(phase)
-        if (num === undefined) return `${TOOL}: refused — name the phase as "Phase <N> — <title>"`
+        if (num === undefined) return refuse('name the phase as "Phase <N> — <title>"')
         const current = phaseReads.get(ctx.sessionID)
         if (current !== undefined && num !== current)
-          return `${TOOL}: refused — the phase file in use is Phase ${current}, not Phase ${num}. Check the phase before you cut: a wrong boundary drops the steps you are still working from.`
+          return refuse(
+            `the phase file in use is Phase ${current}, not Phase ${num}. Check the phase before you cut: a wrong boundary drops the steps you are still working from.`,
+          )
         if (summary.length > MAX_SUMMARY_CHARS)
-          return `${TOOL}: refused — the summary is ${summary.length} characters, the limit is ${MAX_SUMMARY_CHARS}. Put the detail in ## Build log and point at it.`
+          return refuse(
+            `the summary is ${summary.length} characters, the limit is ${MAX_SUMMARY_CHARS}. Put the detail in ## Build log and point at it.`,
+          )
         const list = load(ctx.sessionID)
         const marker = `checkpoint ${list.length + 1}`
         save(ctx.sessionID, [
           ...list,
           { phase, summary, messageID: ctx.messageID, marker, at: new Date().toISOString() },
         ])
+        log("recorded", ctx.sessionID, `${marker} after "${phase}", summary ${summary.length} chars`)
         return `${TOOL}: ${marker} recorded after ${phase}. From the next request on, earlier steps are out of context; the summaries of ${list.length + 1} completed phase(s) stay.`
       },
     }),
@@ -168,6 +204,7 @@ export const PhaseCheckpointPlugin: Plugin = async () => ({
     phaseReads.set(input.sessionID, num)
     if (previous === undefined || num <= previous) return
     if (load(input.sessionID).some((cp) => phaseNumber(cp.phase) === previous)) return
+    log("nudge", input.sessionID, `phase-${num}.md read, Phase ${previous} has no checkpoint`)
     output.output +=
       `\n\n[${TOOL}] Phase ${previous} has no checkpoint. When its outcome is in ## Build log, call ` +
       `${TOOL} for Phase ${previous} before the first step of Phase ${num}.`
@@ -180,6 +217,17 @@ export const PhaseCheckpointPlugin: Plugin = async () => ({
     const list = load(sessionID)
     if (list.length === 0) return
     const before = messages.length
-    if (applyCheckpoint(messages, list)) log(`${sessionID}: ${before} -> ${messages.length} messages`)
+    const cut = applyCheckpoint(messages, list)
+    if (!cut) return
+    // One line per checkpoint: every later request repeats the same cut.
+    const key = `${sessionID}:${list[list.length - 1].marker}`
+    if (loggedCuts.has(key)) return
+    loggedCuts.add(key)
+    log(
+      "cut",
+      sessionID,
+      `${list[list.length - 1].marker}: ${before} -> ${messages.length} messages, ` +
+        `${cut.dropped} dropped (~${cut.droppedChars} chars, ~${Math.round(cut.droppedChars / 4)} tokens)`,
+    )
   },
 })
