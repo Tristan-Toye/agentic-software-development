@@ -1021,6 +1021,64 @@ def collect_adr_ids(adr_dir: Path) -> dict[str, list[Path]]:
     return by_id
 
 
+# `BLOCKER-REMOVED: W-079 — <reason>`: a blocker taken out of `blocked_by` on
+# purpose. Without this line in `## Build log` a removal is a defect.
+BLOCKER_REMOVED_RE = re.compile(r"BLOCKER-REMOVED:\s*(W-\d+)\s*[—-]+\s*\S")
+WID_RE = re.compile(r"W-\d+")
+
+
+def default_base(root: Path) -> str | None:
+    """The ref a branch is measured against when --base is not given:
+    `origin/HEAD` (the remote's default branch), or None when there is none."""
+    p = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--verify", "--quiet", "origin/HEAD"],
+        capture_output=True, text=True,
+    )
+    return "origin/HEAD" if p.returncode == 0 else None
+
+
+def check_blocker_removals(root: Path, paths: list[Path], base: str | None, rep: Report) -> None:
+    """A blocker never silently leaves `blocked_by`.
+
+    `blocked_by` is the dossier graph as well as a gate: a done blocker records
+    what the dossier builds on. A recorded `/plan` run dropped a done blocker
+    because it no longer gated anything, and cut that dossier out of the graph.
+    For each dossier, compare its `blocked_by` with the dossier at
+    `merge-base(base, HEAD)`; an id there and not here is a DEFECT unless
+    `## Build log` holds `BLOCKER-REMOVED: <id> — <reason>`. Outside git, with
+    no base, or for a dossier the base does not have, the check is silent.
+    """
+    if base is None:
+        return
+    try:
+        mb = git_out(root, "merge-base", base, "HEAD").strip()
+    except RuntimeError:
+        return
+    for p in paths:
+        try:
+            rel = p.resolve().relative_to(root.resolve()).as_posix()
+            fm_now, body, _ = split_front_matter(p.read_text())
+        except (ValueError, OSError):
+            continue
+        before = git_show(root, mb, rel)
+        if not before:
+            continue
+        try:
+            fm_then, _, _ = split_front_matter(before)
+        except ValueError:
+            continue
+        then = set(WID_RE.findall(str(fm_then.get("blocked_by") or "")))
+        now = set(WID_RE.findall(str(fm_now.get("blocked_by") or "")))
+        justified = set(BLOCKER_REMOVED_RE.findall(body))
+        for wid in sorted(then - now - justified):
+            rep.defect(
+                p.name,
+                f"blocked_by drops {wid}, which it holds at {base}. A done blocker "
+                f"stays: it records what this dossier builds on. To remove a wrong "
+                f"blocker, log `BLOCKER-REMOVED: {wid} — <reason>` in ## Build log.",
+            )
+
+
 def collect_dossier_ids(dossier_dir: Path) -> dict[str, list[Path]]:
     """Front-matter id -> the dossier files that carry it."""
     by_id: dict[str, list[Path]] = {}
@@ -1840,6 +1898,7 @@ def selftest() -> int:
         finalize_ok = selftest_finalize()
         pre_fanout_ok = selftest_pre_fanout()
         mode_ok = selftest_mode()
+        blockers_ok = selftest_blocker_removal()
         return (
             rc
             if (
@@ -1854,9 +1913,63 @@ def selftest() -> int:
                 and finalize_ok
                 and pre_fanout_ok
                 and mode_ok
+                and blockers_ok
             )
             else 1
         )
+
+
+def selftest_blocker_removal() -> bool:
+    """A blocker dropped on a branch is a defect unless the build log justifies it."""
+    print("\n--- selftest: a blocker never silently leaves blocked_by ---")
+    if not shutil.which("git"):
+        print("SKIP  git not found; the blocker scenario was not run")
+        return True
+    dossier = (
+        "---\nid: W-0002\nstatus: planned\nblocked_by: {blockers}\n---\n\n"
+        "## Problem\n\nx\n\n## Build log\n\n- seeded{extra}\n"
+    )
+    ok = True
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "repo"
+        d = root / ".discovery" / "dossiers"
+        d.mkdir(parents=True)
+        path = d / "W-0002-b.md"
+        try:
+            git_out(root, "init", "-q", "-b", "main")
+            git_out(root, "config", "user.email", "selftest@example.invalid")
+            git_out(root, "config", "user.name", "selftest")
+            path.write_text(dossier.format(blockers="[W-0001]", extra=""))
+            git_out(root, "add", "-A")
+            git_out(root, "commit", "-q", "-m", "base")
+            git_out(root, "checkout", "-q", "-b", "plan/x")
+        except RuntimeError as exc:
+            print(f"FAIL  fixture: {exc}")
+            return False
+
+        def defects(blockers: str, extra: str = "") -> list[str]:
+            path.write_text(dossier.format(blockers=blockers, extra=extra))
+            rep = Report()
+            check_blocker_removals(root, [path], "main", rep)
+            return rep.defects
+
+        cases = [
+            ("a dropped blocker is refused", bool(defects("[]"))),
+            ("the defect names the blocker", any("W-0001" in x for x in defects("[]"))),
+            ("a kept blocker passes", not defects("[W-0001]")),
+            ("an added blocker passes", not defects("[W-0001, W-0003]")),
+            ("a justified removal passes",
+             not defects("[]", "\n- BLOCKER-REMOVED: W-0001 — the dependency was wrong")),
+            ("a justification without a reason is refused",
+             bool(defects("[]", "\n- BLOCKER-REMOVED: W-0001 —"))),
+        ]
+        rep = Report()
+        check_blocker_removals(root, [path], None, rep)
+        cases.append(("no base, no check", not rep.defects))
+        for name, passed in cases:
+            print(f"{'PASS' if passed else 'FAIL'}  {name}")
+            ok = ok and passed
+    return ok
 
 
 # --------------------------------------------------------------------------
@@ -2281,7 +2394,8 @@ def main() -> int:
         "--base",
         metavar="REF",
         help="the ref this branch syncs against, e.g. origin/development "
-        "(used by --finalize-ids)",
+        "(used by --finalize-ids, and by the dossier checks to catch a blocker "
+        "dropped from blocked_by; default for those: origin/HEAD)",
     )
     ap.add_argument(
         "--pre-fanout",
@@ -2358,6 +2472,7 @@ def main() -> int:
 
     for p in targets_d:
         rep.merge(validate_dossier(p, root))
+    check_blocker_removals(root, targets_d, args.base or default_base(root), rep)
     for p in targets_a:
         rep.merge(validate_adr(p, root))
     if adr_dir.exists() and (args.all or args.adr or not args.dossier):

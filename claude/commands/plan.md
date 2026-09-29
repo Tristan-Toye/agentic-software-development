@@ -175,6 +175,14 @@ dependency that forced it, and get the user's agreement — a split doubles the
 Jira tickets, the branches, the reviews, and the PRs, so it needs a reason
 better than tidiness.
 
+**A blocker stays in `blocked_by` after it is done.** It no longer gates
+anything, but it records what this dossier builds on, and the open-work
+report draws its dependency graph from those links: a recorded plan dropped
+a done blocker and left that dossier in a box of its own. Remove a blocker
+only when the dependency itself was wrong, and say so in `## Build log` as
+`BLOCKER-REMOVED: W-NNN — <reason>`; `validate_pipeline.py --dossier` refuses
+a removal without that line.
+
 ## Phase 4 — Write the dossier
 
 Mint the ID atomically (`formats/evidence-and-ids.md` §4) and write
