@@ -240,6 +240,21 @@ silent:
 Every generated agent ends with a footer that names its real tool list, so body
 prose about permission maps cannot mislead the agent that reads it.
 
+### Runaway guards under Claude Code
+
+opencode stops a runaway agent with `steps` and `doom_loop: deny`. Claude Code
+gets the same two stops from this plugin:
+
+- **A turn cap per agent.** The generator writes each agent's opencode `steps`
+  as Claude Code `maxTurns`, so one number caps both hosts; `claude.maxTurns`
+  overrides it. At the cap Claude Code stops the subagent and marks its
+  output partial.
+- **A repeat guard.** `hooks/hooks.json` runs `scripts/hooks/repeat_guard.py`
+  before every tool call: the 4th identical call in a row in one session is
+  denied with a reason the model reads, and any different call resets the
+  count. `ASD_REPEAT_GUARD_LIMIT` sets the allowed run (default 3; 0 turns it
+  off). The hook fails open — bad input or state allows the call.
+
 ## Reference
 
 | File | Holds |

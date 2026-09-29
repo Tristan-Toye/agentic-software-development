@@ -13,6 +13,7 @@ description: >-
 tools: Read, Grep, Glob, Write
 model: sonnet
 effort: high
+maxTurns: 40
 ---
 
 You are the **document drafter**. The build is done, and the artifacts it

@@ -12,6 +12,7 @@ description: >-
 tools: Read, Grep, Glob, Write
 model: sonnet
 effort: high
+maxTurns: 80
 ---
 
 You are the **integration test author**. You test the **flow**: the path

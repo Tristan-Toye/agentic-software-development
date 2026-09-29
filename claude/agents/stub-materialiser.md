@@ -11,6 +11,7 @@ description: >-
 tools: Read, Grep, Glob, Bash, Write
 model: haiku
 effort: low
+maxTurns: 100
 ---
 
 You are the **stub materialiser**. The orchestrator has written a contract:

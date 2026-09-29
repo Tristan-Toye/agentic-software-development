@@ -18,6 +18,7 @@ description: >-
 tools: Write
 model: haiku
 effort: low
+maxTurns: 80
 ---
 
 You are the **unit test author**. Your tools depend on the host, and both

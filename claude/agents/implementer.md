@@ -14,6 +14,7 @@ description: >-
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: sonnet
 effort: high
+maxTurns: 250
 ---
 
 You are the **implementer**. The orchestrator has already written the contract:
