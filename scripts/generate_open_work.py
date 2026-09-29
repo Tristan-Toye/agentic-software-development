@@ -163,14 +163,30 @@ def sibling_worktrees(repo: Path) -> list[Path]:
     return [p for p in paths if p.resolve() != here]
 
 
+# How far a dossier has come; `dropped` is terminal like `done`.
+_PROGRESS = {"planned": 0, "ready": 1, "building": 2, "review": 3, "pr": 4, "done": 5, "dropped": 5}
+
+
+def _newer(live: dict, base: dict) -> bool:
+    """Whether a worktree's copy is ahead of this checkout's: a later `updated`,
+    or the same date with a status further along. `updated` is a date, so two
+    copies changed on one day are told apart by how far each has come."""
+    lu, bu = str(live.get("updated") or ""), str(base.get("updated") or "")
+    if lu != bu:
+        return lu > bu
+    return _PROGRESS.get(live.get("status"), 0) > _PROGRESS.get(base.get("status"), 0)
+
+
 def overlay_worktrees(root: Path, dossiers: list[dict]) -> list[tuple[str, str]]:
     """Replace each dossier with its live copy from a sibling worktree.
 
     Candidates for one id are ranked by `updated`, then by the worktree named
     for the id, so an implementer's `../<repo>-<ID>-P1` copy — forked from the
     base worktree and frozen there — never outranks the base worktree's own.
-    A copy in the same state as this checkout's is left alone. Returns
-    (id, note) pairs for the attention list.
+    The winner replaces this checkout's copy only when it is newer (`_newer`):
+    a stale worktree forked before the dossier moved on is reported, never
+    shown in its place. A copy in the same state as this checkout's is left
+    alone. Returns (id, note) pairs for the attention list.
     """
     repo = root.parent
     candidates: dict[str, list[tuple[str, dict]]] = {}
@@ -193,6 +209,13 @@ def overlay_worktrees(root: Path, dossiers: list[dict]) -> list[tuple[str, str]]
             base = dossiers[index[did]]
             if base["status"] == live["status"] and \
                     str(base["updated"]) == str(live["updated"]):
+                continue
+            if not _newer(live, base):
+                # An older copy — a worktree forked before this checkout moved
+                # on — never replaces the checkout's own state.
+                notes.append((did, f"{did}: worktree {label} holds an older copy "
+                                   f"({live['status']}, updated {live['updated']}); "
+                                   f"this checkout's {base['status']} stands."))
                 continue
             dossiers[index[did]] = live
             notes.append((did, f"{did} is shown live from {label} "
@@ -1151,6 +1174,8 @@ def selftest() -> int:
                                 "-c", "user.name=t", *a)
             (repo / ".discovery" / "dossiers" / "W-001-a.md").write_text(
                 _dossier("W-001", status="ready", updated="2026-08-10"))
+            (repo / ".discovery" / "dossiers" / "W-003-c.md").write_text(
+                _dossier("W-003", status="ready", updated="2026-08-09"))
             ok_git = (g("init", "-q", "-b", "main") is not None
                       and g("add", "-A") is not None
                       and g("commit", "-q", "-m", "base") is not None
@@ -1167,6 +1192,10 @@ def selftest() -> int:
                              worktree="../repo-W-001"))
                 (repo.parent / "repo-plan-KEY" / ".discovery" / "dossiers" / "W-002-b.md").write_text(
                     _dossier("W-002", status="planned", updated="2026-08-11"))
+                # The checkout moves W-003 on to done after the plan worktree
+                # forked: the worktree's older `ready` copy must not win.
+                (repo / ".discovery" / "dossiers" / "W-003-c.md").write_text(
+                    _dossier("W-003", status="done", updated="2026-08-12"))
                 plain = build_payload(repo / ".discovery", today, worktrees=False)
                 live = build_payload(repo / ".discovery", today, worktrees=True)
                 by_id = {d["id"]: d for d in live["dossiers"]}
@@ -1190,6 +1219,10 @@ def selftest() -> int:
                       "overlaid row carries a live-from flag")
                 check(live["fingerprint"] != plain["fingerprint"],
                       "the overlay changes the fingerprint")
+                check(by_id["W-003"]["status"] == "done" and "live_from" not in by_id["W-003"],
+                      f"an older worktree copy never replaces a newer checkout copy: {by_id['W-003']}")
+                check("W-003: worktree ../repo-plan-KEY holds an older copy" in texts,
+                      f"the stale copy is reported: {texts}")
         else:
             print("selftest: git missing — skipped the worktree overlay check",
                   file=sys.stderr)
