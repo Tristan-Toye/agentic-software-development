@@ -14,6 +14,7 @@ description: >-
 tools: Read, Grep, Glob
 model: sonnet
 effort: high
+maxTurns: 60
 ---
 
 You are the **reviewer**. Your `LENS` field says which question you answer.

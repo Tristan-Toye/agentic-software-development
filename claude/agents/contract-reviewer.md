@@ -14,6 +14,7 @@ description: >-
 tools: Read, Glob
 model: sonnet
 effort: high
+maxTurns: 30
 ---
 
 You are the **contract reviewer**. The orchestrator wrote a contract —

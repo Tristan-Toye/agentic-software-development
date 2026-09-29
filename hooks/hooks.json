@@ -1,0 +1,17 @@
+{
+  "description": "agentic-software-development: refuse a tool call that repeats itself in a row (scripts/hooks/repeat_guard.py)",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/repeat_guard.py\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

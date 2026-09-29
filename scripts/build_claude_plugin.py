@@ -226,6 +226,22 @@ def tool_list(block: dict[str, object], where: str) -> list[str]:
     return [t.strip() for t in raw.split(",") if t.strip()]
 
 
+def max_turns(block: dict[str, object], fm: FrontMatter, where: str) -> int | None:
+    """Claude Code's `maxTurns` for the agent: `claude.maxTurns` when set, else
+    the opencode `steps` limit, so one number caps a runaway agent on both hosts.
+    At the cap Claude Code stops the subagent and marks its output partial."""
+    raw = block.get("maxTurns", fm.data.get("steps"))
+    if raw in (None, ""):
+        return None
+    try:
+        turns = int(str(raw))
+    except ValueError:
+        raise Unusable(f"{where}: `steps` / `claude.maxTurns` is not a whole number: {raw!r}") from None
+    if turns < 1:
+        raise Unusable(f"{where}: `steps` / `claude.maxTurns` must be at least 1, got {turns}")
+    return turns
+
+
 def render_agent(path: Path) -> str:
     where = path.relative_to(REPO).as_posix()
     fm = split_front_matter(path.read_text(), where)
@@ -264,6 +280,9 @@ def render_agent(path: Path) -> str:
     for key in ("model", "effort"):
         if block.get(key):
             out.append(f"{key}: {block[key]}")
+    turns = max_turns(block, fm, where)
+    if turns:
+        out.append(f"maxTurns: {turns}")
     out.append("---")
     return "\n".join(out) + "\n" + fm.body + _footer(tools, widen)
 
@@ -417,6 +436,11 @@ _WIDE = _LEAK.replace(
 )
 
 
+def render_agent_text(tmp: Path, text: str) -> str:
+    tmp.write_text(text)
+    return render_agent(tmp)
+
+
 def selftest() -> int:
     failures: list[str] = []
 
@@ -462,6 +486,17 @@ def selftest() -> int:
         text = render_agent(tmp)
         check("widening allowed", "\ntools: Read, Write\n" in text)
         check("widening recorded", text.count("staging only") == 2)
+
+        check("no steps, no maxTurns", "maxTurns" not in render_agent_text(tmp, _BLIND))
+        stepped = _BLIND.replace("model: zai/flash\n", "model: zai/flash\nsteps: 80\n")
+        check("steps become maxTurns", "\nmaxTurns: 80\n" in render_agent_text(tmp, stepped))
+        override = stepped.replace("  tools: Write\n", "  tools: Write\n  maxTurns: 40\n")
+        check("claude.maxTurns wins", "\nmaxTurns: 40\n" in render_agent_text(tmp, override))
+        try:
+            render_agent_text(tmp, stepped.replace("steps: 80", "steps: many"))
+            failures.append("a non-number steps is refused")
+        except Unusable:
+            pass
     finally:
         tmp.unlink(missing_ok=True)
 

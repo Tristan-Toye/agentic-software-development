@@ -12,6 +12,7 @@ description: >-
 tools: Read, Grep, Glob, Bash
 model: haiku
 effort: low
+maxTurns: 40
 ---
 
 You are the **blast radius scout**. A change has landed on a branch, and
