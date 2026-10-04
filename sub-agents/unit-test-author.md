@@ -34,6 +34,8 @@ permission:
   skill:
     "*": deny
     standards: allow
+  # code_item and code_find read implementation bodies: blindness forbids them.
+  "code_*": deny
   # ctx_execute runs arbitrary code: it would read what the read map denies.
   "ctx_*": deny
   "context7_*": deny
@@ -106,6 +108,8 @@ You know what the members promise, because the documentation comments say so,
 and you write the tests that would catch a body that breaks a promise.
 
 ## Payload — your world
+
+When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that file whole before anything else: it is your payload, with the fields below. Your read map admits it under `.agent-staging/`.
 
 Your world is this payload **plus what your tools let you open**. Under
 opencode a field naming a path inside your map — the staging area, the test

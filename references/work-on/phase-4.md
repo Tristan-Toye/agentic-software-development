@@ -261,6 +261,31 @@ satisfies the placeholder by guessing instead of disclosing. The lint refuses
 the token, so a src paste fails before it ships; the same-turn re-read keeps
 the file you linted and the file you paste the same file.
 
+**Under opencode, spawn by the file, never by retyping it.** Every agent that
+can read its payload gets a prompt of two lines — `PAYLOAD_FILE: <absolute path
+of the final>` and `PAYLOAD_SHA256: <the hash prepare_wave.py recorded in
+.agent-staging/wave-<holder>.hashes>` — and opens the file itself as its first
+step. That is every opencode agent here: `unit-test-author`'s read map admits
+`.agent-staging/`. Retyping a linted payload costs its whole length again as
+output and keeps it in your context for the rest of the phase; the recorded
+fan-outs retyped 1.77 M characters. Under Claude Code, `unit-test-author` has
+`Write` alone, so its payload is still pasted, as above.
+
+**Check every return with one call.** When an agent returns, run
+`python3 ${PLUGIN_ROOT}/scripts/verify_return.py --root <its worktree> --branch
+<branch> --base <fork sha> --owned <OWNED_PATHS> [--contract-hash …
+--contract-files …] --release <ID>-wave<k> --provider … --model … --log <live
+dossier> --agent <id>`: state, commits, paths touched beyond ownership, stubs
+left, the contract hash and the slot release, with the mechanical half of the
+`RETURNED` line written to the build log. You add the ruling, not the facts.
+
+**Checkpoint after each wave.** When every agent of a wave has returned and
+its `RETURNED` lines and rulings are in `## Build log`, call `phase_checkpoint`
+with `Phase 4 — wave <k>` and the hand-off: the waves still to spawn, the
+packages that returned and their SHAs, the open `GAP:` and `CONTRACT-CHANGE:`
+items. The next wave starts from that summary and the dossier, not from the
+last wave's transcript.
+
 **Validate `TEST_PATHS` against the host's boundary before every
 `unit-test-author` spawn.** Run `python3 scripts/check_permission_maps.py
 --agent <the agent file the host loads> --host <opencode|claude> --root <X>

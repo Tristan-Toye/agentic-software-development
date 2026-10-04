@@ -26,6 +26,8 @@ implementation back to itself.
 
 ## Payload
 
+When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that file whole before anything else: it is your payload, with the fields below.
+
 - `WORKTREE_DIR` — the base worktree you write into.
 - `DOSSIER` — the dossier's `## Problem`, `## Approach` and
   `## Acceptance criteria`, in one file. Your statement of intent, and the

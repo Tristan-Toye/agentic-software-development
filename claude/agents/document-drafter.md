@@ -27,6 +27,8 @@ map, not by your judgment.
 
 ## Payload
 
+When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that file whole before anything else: it is your payload, with the fields below.
+
 - `MODE` — `adr` or `pr`.
 - `DECISIONS` — in `adr` mode: the decisions to record, each with its
   evidence already selected by the orchestrator.

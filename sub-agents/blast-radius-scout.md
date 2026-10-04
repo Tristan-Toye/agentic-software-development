@@ -58,6 +58,8 @@ three.
 
 ## Payload
 
+When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that file whole before anything else: it is your payload, with the fields below.
+
 - `WORKTREE_DIR` — the worktree to inspect.
 - `BASELINE` — the commit the change forked from.
 - `HEAD` — the commit the change reached.

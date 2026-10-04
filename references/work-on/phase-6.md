@@ -152,6 +152,15 @@ right place. Two or more row-3 rulings in one run means the next `/plan` needs a
 sharper contract, and `/overview-dossiers` surfaces the count as a health signal.
 
 Set `status: review` once the runner's verdict on the current head is green.
+
+**Checkpoint after each arbitration round.** A round ends when its rulings are
+logged, its re-spawns have returned and been verified, and the runner's
+verdict on the new head is in `## Build log`. Then call `phase_checkpoint` with
+`Phase 6 — round <n>` and the hand-off: the head SHA, the verdict counts, every
+ruling so far with its site (the repeat-fingerprint needs them), the rounds
+spent against the budget, and what the next round runs. The next round reads
+its failures from the runner, not from the last round's transcript.
+
 **Budget: 3 arbitration rounds.**
 After the third, stop and show the user the failures and your rulings;
 continuing past the budget needs the user's explicit sign-off, recorded in
