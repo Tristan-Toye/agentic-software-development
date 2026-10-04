@@ -1,0 +1,198 @@
+{
+ "window": [
+  1790623790000,
+  1791151140000
+ ],
+ "unknown_models": [],
+ "totals": {
+  "steps": 5820,
+  "credits": 123476
+ },
+ "per_day": {
+  "2026-10-02": 45834,
+  "2026-10-03": 65877,
+  "2026-10-04": 11766
+ },
+ "agents": {
+  "work-on": {
+   "sessions": 5,
+   "steps": 3618,
+   "credits": 106507,
+   "share_pct": 86.3,
+   "avg_ctx_k": 153,
+   "max_ctx_k": 454,
+   "first_step_ctx_k": 32.9
+  },
+  "implementer": {
+   "sessions": 29,
+   "steps": 1048,
+   "credits": 5936,
+   "share_pct": 4.8,
+   "avg_ctx_k": 79,
+   "max_ctx_k": 177,
+   "first_step_ctx_k": 25.9
+  },
+  "integration-test-author": {
+   "sessions": 22,
+   "steps": 352,
+   "credits": 2621,
+   "share_pct": 2.1,
+   "avg_ctx_k": 82,
+   "max_ctx_k": 197,
+   "first_step_ctx_k": 22.4
+  },
+  "dossier": {
+   "sessions": 1,
+   "steps": 72,
+   "credits": 2506,
+   "share_pct": 2.0,
+   "avg_ctx_k": 174,
+   "max_ctx_k": 235,
+   "first_step_ctx_k": 34.1
+  },
+  "unit-test-author": {
+   "sessions": 26,
+   "steps": 237,
+   "credits": 1809,
+   "share_pct": 1.5,
+   "avg_ctx_k": 74,
+   "max_ctx_k": 195,
+   "first_step_ctx_k": 14.5
+  },
+  "reviewer": {
+   "sessions": 23,
+   "steps": 231,
+   "credits": 1433,
+   "share_pct": 1.2,
+   "avg_ctx_k": 67,
+   "max_ctx_k": 137,
+   "first_step_ctx_k": 17.8
+  },
+  "contract-reviewer": {
+   "sessions": 4,
+   "steps": 47,
+   "credits": 1309,
+   "share_pct": 1.1,
+   "avg_ctx_k": 83,
+   "max_ctx_k": 145,
+   "first_step_ctx_k": 12.5
+  },
+  "stub-materialiser": {
+   "sessions": 2,
+   "steps": 121,
+   "credits": 984,
+   "share_pct": 0.8,
+   "avg_ctx_k": 128,
+   "max_ctx_k": 188,
+   "first_step_ctx_k": 19.1
+  },
+  "blast-radius-scout": {
+   "sessions": 3,
+   "steps": 66,
+   "credits": 224,
+   "share_pct": 0.2,
+   "avg_ctx_k": 37,
+   "max_ctx_k": 87,
+   "first_step_ctx_k": 11.7
+  },
+  "document-drafter": {
+   "sessions": 5,
+   "steps": 28,
+   "credits": 147,
+   "share_pct": 0.1,
+   "avg_ctx_k": 32,
+   "max_ctx_k": 51,
+   "first_step_ctx_k": 14.1
+  }
+ },
+ "runs": {
+  "ses_f038e460fffeYUOt7jWJ5BlijH": {
+   "title": "W-073",
+   "steps": 2,
+   "credits": 31,
+   "credits_per_step": 15.3,
+   "avg_ctx_k": 31,
+   "max_ctx_k": 31,
+   "checkpoints": 0,
+   "mask_moves": 0
+  },
+  "ses_f038d6744ffeQO6XBdcq8PQFS9": {
+   "title": "W-069",
+   "steps": 893,
+   "credits": 21887,
+   "credits_per_step": 24.5,
+   "avg_ctx_k": 126,
+   "max_ctx_k": 340,
+   "checkpoints": 8,
+   "mask_moves": 0
+  },
+  "ses_f038d4736ffeQMJrHLV32Rmj1j": {
+   "title": "W-073",
+   "steps": 1045,
+   "credits": 30567,
+   "credits_per_step": 29.3,
+   "avg_ctx_k": 155,
+   "max_ctx_k": 343,
+   "checkpoints": 7,
+   "mask_moves": 0
+  },
+  "ses_f038c0f49ffeCgb0QwGu5qkNor": {
+   "title": "W-091",
+   "steps": 853,
+   "credits": 31748,
+   "credits_per_step": 37.2,
+   "avg_ctx_k": 196,
+   "max_ctx_k": 454,
+   "checkpoints": 5,
+   "mask_moves": 0
+  },
+  "ses_f03304a78ffeQQV1eLtsYEiIjh": {
+   "title": "w-095 inquiry",
+   "steps": 825,
+   "credits": 22275,
+   "credits_per_step": 27.0,
+   "avg_ctx_k": 135,
+   "max_ctx_k": 256,
+   "checkpoints": 8,
+   "mask_moves": 0
+  }
+ },
+ "carried": {
+  "reasoning": 34.9,
+  "read output": 24.3,
+  "bash output": 14.8,
+  "bash input": 7.2,
+  "other input": 5.3,
+  "other output": 5.0,
+  "task input": 4.4,
+  "text": 1.9,
+  "task output": 1.7,
+  "read input": 0.5
+ },
+ "tools": {
+  "bash grep/rg": 1106,
+  "bypass:raw limactl cargo test": 75,
+  "bypass:sed/cat/head/tail reads": 1812,
+  "bypass:whole dossier read": 2,
+  "bypass:whole-file read > 20 KB": 25,
+  "calls": 4132,
+  "errors": 45,
+  "grep tool": 25,
+  "read calls": 563,
+  "script:compose_payloads": 57,
+  "script:dossier_edit": 220,
+  "script:git_state": 25,
+  "script:prepare_wave": 70,
+  "script:run_gates": 4,
+  "script:run_tests": 88,
+  "script:validate_pipeline": 67,
+  "script:wait_ci": 32,
+  "tool:phase_checkpoint": 32
+ },
+ "plugin_events": {
+  "phase-checkpoint:cut": 28,
+  "phase-checkpoint:nudge": 7,
+  "phase-checkpoint:recorded": 28,
+  "phase-checkpoint:refused": 4
+ }
+}

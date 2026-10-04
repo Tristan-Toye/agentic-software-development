@@ -1,0 +1,173 @@
+{
+ "window": [
+  1789941600000,
+  1790623790000
+ ],
+ "unknown_models": [],
+ "totals": {
+  "steps": 5314,
+  "credits": 125624
+ },
+ "per_day": {
+  "2026-09-24": 34534,
+  "2026-09-25": 39022,
+  "2026-09-26": 52068
+ },
+ "agents": {
+  "work-on": {
+   "sessions": 3,
+   "steps": 2099,
+   "credits": 86218,
+   "share_pct": 68.6,
+   "avg_ctx_k": 215,
+   "max_ctx_k": 441,
+   "first_step_ctx_k": 71.0
+  },
+  "implementer": {
+   "sessions": 30,
+   "steps": 1561,
+   "credits": 15015,
+   "share_pct": 12.0,
+   "avg_ctx_k": 151,
+   "max_ctx_k": 464,
+   "first_step_ctx_k": 45.2
+  },
+  "build": {
+   "sessions": 2,
+   "steps": 553,
+   "credits": 11745,
+   "share_pct": 9.3,
+   "avg_ctx_k": 104,
+   "max_ctx_k": 208,
+   "first_step_ctx_k": 46.1
+  },
+  "unit-test-author": {
+   "sessions": 23,
+   "steps": 565,
+   "credits": 6701,
+   "share_pct": 5.3,
+   "avg_ctx_k": 179,
+   "max_ctx_k": 517,
+   "first_step_ctx_k": 41.9
+  },
+  "dossier": {
+   "sessions": 1,
+   "steps": 72,
+   "credits": 1544,
+   "share_pct": 1.2,
+   "avg_ctx_k": 92,
+   "max_ctx_k": 124,
+   "first_step_ctx_k": 50.3
+  },
+  "reviewer": {
+   "sessions": 18,
+   "steps": 167,
+   "credits": 1194,
+   "share_pct": 1.0,
+   "avg_ctx_k": 77,
+   "max_ctx_k": 138,
+   "first_step_ctx_k": 44.2
+  },
+  "integration-test-author": {
+   "sessions": 7,
+   "steps": 111,
+   "credits": 1177,
+   "share_pct": 0.9,
+   "avg_ctx_k": 118,
+   "max_ctx_k": 200,
+   "first_step_ctx_k": 43.1
+  },
+  "stub-materialiser": {
+   "sessions": 3,
+   "steps": 91,
+   "credits": 828,
+   "share_pct": 0.7,
+   "avg_ctx_k": 133,
+   "max_ctx_k": 198,
+   "first_step_ctx_k": 47.9
+  },
+  "contract-reviewer": {
+   "sessions": 4,
+   "steps": 22,
+   "credits": 756,
+   "share_pct": 0.6,
+   "avg_ctx_k": 80,
+   "max_ctx_k": 149,
+   "first_step_ctx_k": 42.8
+  },
+  "document-drafter": {
+   "sessions": 5,
+   "steps": 47,
+   "credits": 240,
+   "share_pct": 0.2,
+   "avg_ctx_k": 55,
+   "max_ctx_k": 85,
+   "first_step_ctx_k": 41.0
+  },
+  "blast-radius-scout": {
+   "sessions": 3,
+   "steps": 26,
+   "credits": 206,
+   "share_pct": 0.2,
+   "avg_ctx_k": 64,
+   "max_ctx_k": 106,
+   "first_step_ctx_k": 41.1
+  }
+ },
+ "runs": {
+  "ses_f2c31c343ffexoyV06bYqCGORf": {
+   "title": "W-072",
+   "steps": 756,
+   "credits": 35553,
+   "credits_per_step": 47.0,
+   "avg_ctx_k": 249,
+   "max_ctx_k": 441,
+   "checkpoints": 0,
+   "mask_moves": 0
+  },
+  "ses_f2c31a622ffeWQCL0N5egCTuBk": {
+   "title": "W-067",
+   "steps": 664,
+   "credits": 24685,
+   "credits_per_step": 37.2,
+   "avg_ctx_k": 193,
+   "max_ctx_k": 304,
+   "checkpoints": 0,
+   "mask_moves": 0
+  },
+  "ses_f2bfca0e2ffePSCWMpYVMO9DdG": {
+   "title": "W-086",
+   "steps": 679,
+   "credits": 25980,
+   "credits_per_step": 38.3,
+   "avg_ctx_k": 199,
+   "max_ctx_k": 357,
+   "checkpoints": 0,
+   "mask_moves": 0
+  }
+ },
+ "carried": {
+  "reasoning": 24.8,
+  "read output": 21.9,
+  "other input": 17.0,
+  "bash output": 12.1,
+  "other output": 7.8,
+  "bash input": 5.7,
+  "task input": 4.7,
+  "task output": 3.8,
+  "text": 2.0,
+  "read input": 0.3
+ },
+ "tools": {
+  "bash grep/rg": 593,
+  "bypass:raw limactl cargo test": 57,
+  "bypass:sed/cat/head/tail reads": 940,
+  "bypass:whole dossier read": 9,
+  "bypass:whole-file read > 20 KB": 23,
+  "calls": 2312,
+  "errors": 39,
+  "read calls": 176,
+  "script:validate_pipeline": 25
+ },
+ "plugin_events": {}
+}
