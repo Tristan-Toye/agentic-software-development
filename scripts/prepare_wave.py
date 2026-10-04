@@ -30,6 +30,7 @@ integration author).
 
     prepare_wave.py MANIFEST --host opencode --root X --plugin-root P
         [--provider zai --model glm-5.3-flash --holder W-014-wave1]
+        [--lint-only] [--wait-slot SECONDS [--slot-poll S=15]]
         [--log LIVE_DOSSIER]
     prepare_wave.py --selftest
 
@@ -38,6 +39,23 @@ With them, and only when no spawn has a defect, it acquires one slot per spawn
 and prints the `ADMISSION:` line. `--log` appends `PAYLOAD-LINT:` (and
 `ADMISSION:` when taken) to the dossier's `## Build log` through
 `dossier_edit.py`, so the dossier never has to be opened for it.
+
+`--lint-only` states the re-check explicitly: lint and gate, never acquire,
+even when `--provider/--model/--holder` are also given — so a fix round can
+re-run the exact command that admitted the wave. It is the one door for
+re-checking a payload; there is no reason to run `check_payload.py` alone.
+
+`--wait-slot SECONDS` changes what a refusal for lack of slots means: instead
+of returning 1 at once, it polls `spawn_admission.py acquire` every
+`--slot-poll` seconds until the slots are free or SECONDS pass, printing one
+line when it starts waiting. A refusal that waiting cannot cure (asked more
+than the cap) and a provider deferral still return 1 immediately.
+
+Every payload that passes lint has its sha256 recorded in
+`<root>/.agent-staging/wave-<holder>.hashes` (`wave.hashes` without a holder),
+one `<sha256>  <payload path>` line per payload, replaced on each lint. A spawn
+can prove it ships the linted bytes by comparing `sha256sum` of the payload with
+that line: a payload edited after its lint no longer matches it.
 
 `PAYLOAD-LINT` counts the defects fixed since the wave was first linted: each
 run records its defect count in `<root>/.agent-staging/wave-<holder>.lint`
@@ -53,12 +71,14 @@ No third-party imports: this runs wherever python3 does.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import shlex
 import subprocess
 import sys
 import tempfile
+import time
 
 TEST_AUTHORS = ("unit-test-author", "integration-test-author")
 KEYS = {"kind", "payload", "allow-path", "test-paths", "read-paths", "expected-lines", "flows", "live-dossier"}
@@ -140,6 +160,54 @@ def defects_fixed(root: str, holder: str | None, defects_now: int) -> int:
     return sum(history)
 
 
+def hashes_path(root: str, holder: str | None) -> str:
+    name = f"wave-{holder}.hashes" if holder else "wave.hashes"
+    return os.path.join(root, ".agent-staging", name)
+
+
+def record_hashes(root: str, holder: str | None, payloads: list[str]) -> str:
+    """Record sha256 of each linted payload as `<sha256>  <path>`; a re-lint
+    replaces that path's line, other paths' lines stay. Returns the file path."""
+    path = hashes_path(root, holder)
+    entries: dict[str, str] = {}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            for line in fh.read().splitlines():
+                digest, _, name = line.partition("  ")
+                if digest and name:
+                    entries[name] = digest
+    for payload in payloads:
+        with open(payload, "rb") as fh:
+            entries[payload] = hashlib.sha256(fh.read()).hexdigest()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("".join(f"{digest}  {name}\n" for name, digest in entries.items()))
+    return path
+
+
+def acquire(args: argparse.Namespace, n: int, runner=run, sleep=time.sleep, clock=time.monotonic) -> tuple[int, list[str]]:
+    """spawn_admission.py acquire, polled while it refuses only for lack of
+    slots and --wait-slot seconds remain. Returns (exit, output lines)."""
+    cmd = [sys.executable, os.path.join(args.plugin_root, "scripts", "spawn_admission.py"),
+           "acquire", "--provider", args.provider, "--model", args.model,
+           "--n", str(n), "--holder", args.holder]
+    deadline = clock() + (args.wait_slot or 0)
+    announced = False
+    while True:
+        rc, lines = runner(cmd)
+        if rc == 0:
+            return rc, lines
+        refused = next((l for l in lines if l.startswith("refused:")), "")
+        m = re.search(r"(\d+) free of cap (\d+).*asked (\d+)", refused)
+        curable = bool(m) and int(m.group(3)) <= int(m.group(2))
+        if not (args.wait_slot and curable) or clock() >= deadline:
+            return rc, lines
+        if not announced:
+            print(f"      waiting up to {args.wait_slot:.0f}s for {n} free slot(s): {refused}")
+            announced = True
+        sleep(max(min(args.slot_poll, deadline - clock()), 0.001))
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("manifest", nargs="?")
@@ -150,6 +218,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--model")
     ap.add_argument("--holder", help="e.g. W-014-wave1")
     ap.add_argument("--log", metavar="LIVE_DOSSIER", help="append the build-log lines to this dossier")
+    ap.add_argument("--lint-only", action="store_true", help="lint and gate; never acquire")
+    ap.add_argument("--wait-slot", type=float, default=0, metavar="SECONDS",
+                    help="when admission is refused for lack of slots, poll until free or this long")
+    ap.add_argument("--slot-poll", type=float, default=15, metavar="SECONDS")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -167,6 +239,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     failed: list[str] = []
+    linted: list[str] = []
     defect_count = 0
     for row in rows:
         ok, out = lint_row(row, args)
@@ -177,6 +250,10 @@ def main(argv: list[str]) -> int:
         if not ok:
             failed.append(name)
             defect_count += max(1, sum(1 for item in out if "DEFECT" in item or "REFUSED" in item))
+        elif os.path.isfile(row["payload"]):
+            linted.append(row["payload"])
+    if linted:
+        print(f"      sha256 of {len(linted)} linted payload(s) recorded in {record_hashes(args.root, args.holder, linted)}")
 
     fixed = defects_fixed(args.root, args.holder, defect_count)
     ids = ", ".join(os.path.splitext(os.path.basename(r["payload"]))[0] for r in rows)
@@ -185,10 +262,8 @@ def main(argv: list[str]) -> int:
         return 1
 
     log_lines = [f"PAYLOAD-LINT: {len(rows)} payloads, {fixed} defects fixed — {ids}"]
-    if all(admit):
-        rc, lines = run([sys.executable, os.path.join(args.plugin_root, "scripts", "spawn_admission.py"),
-                         "acquire", "--provider", args.provider, "--model", args.model,
-                         "--n", str(len(rows)), "--holder", args.holder])
+    if all(admit) and not args.lint_only:
+        rc, lines = acquire(args, len(rows))
         for line in lines:
             print(f"      {line}")
         if rc != 0:
@@ -255,6 +330,71 @@ def selftest() -> int:
             fh.write(f"kind=implementer payload={payload}\n")
         rc = main([manifest, "--host", "opencode", "--root", tmp])
         check("a defective payload fails the wave", rc == 1)
+        check("a defective payload records no hash", not os.path.exists(hashes_path(tmp, None)))
+
+        # sha256 ledger: recorded, merged across calls, replaced on re-lint.
+        other = os.path.join(tmp, "P2.md")
+        with open(other, "w", encoding="utf-8") as fh:
+            fh.write("a\n")
+        path = record_hashes(tmp, "W-1-wave1", [payload, other])
+        check("hashes file is wave-<holder>.hashes", path.endswith(os.path.join(".agent-staging", "wave-W-1-wave1.hashes")))
+        entries = dict((l.split("  ", 1)[1], l.split("  ", 1)[0]) for l in open(path, encoding="utf-8").read().splitlines())
+        check("hash is the payload's sha256", entries[other] == hashlib.sha256(b"a\n").hexdigest())
+        with open(other, "w", encoding="utf-8") as fh:
+            fh.write("b\n")
+        record_hashes(tmp, "W-1-wave1", [other])
+        entries = dict((l.split("  ", 1)[1], l.split("  ", 1)[0]) for l in open(path, encoding="utf-8").read().splitlines())
+        check("a re-lint replaces its line and keeps the others", entries[other] == hashlib.sha256(b"b\n").hexdigest() and payload in entries)
+
+        # --lint-only never acquires, even with provider/model/holder; a plain run does.
+        module = sys.modules[__name__]
+        real_lint, real_acquire = module.lint_row, module.acquire
+        calls: list[int] = []
+        module.lint_row = lambda row, a: (True, [])
+        module.acquire = lambda a, n, **kw: (calls.append(n) or (0, ["granted: p/m slots 1 (held 1 of cap 4, learned; ceiling 6)"]))
+        try:
+            admit = ["--provider", "p", "--model", "m", "--holder", "W-2-wave1"]
+            rc = main([manifest, "--host", "opencode", "--root", tmp, *admit, "--lint-only"])
+            check("--lint-only passes and acquires nothing", rc == 0 and calls == [])
+            check("--lint-only still records the hash", os.path.exists(hashes_path(tmp, "W-2-wave1")))
+            rc = main([manifest, "--host", "opencode", "--root", tmp, *admit])
+            check("without --lint-only the same call acquires", rc == 0 and calls == [1])
+        finally:
+            module.lint_row, module.acquire = real_lint, real_acquire
+
+        # --wait-slot polls a slots-only refusal, never a hopeless one.
+        ns = argparse.Namespace(plugin_root=tmp, provider="p", model="m", holder="h", wait_slot=60, slot_poll=5)
+        script = {"n": 0}
+
+        def fake_run(cmd: list[str]) -> tuple[int, list[str]]:
+            script["n"] += 1
+            if script["n"] < 3:
+                return 1, ["refused: 0 free of cap 2 (learned), asked 1; wait"]
+            return 0, ["granted: p/m slots 1 (held 1 of cap 2, learned; ceiling 4)"]
+
+        clock = {"t": 0.0}
+        slept: list[float] = []
+        rc, lines = acquire(ns, 1, runner=fake_run, sleep=lambda s: (slept.append(s), clock.__setitem__("t", clock["t"] + s)),
+                            clock=lambda: clock["t"])
+        check("--wait-slot polls until the slot frees", rc == 0 and script["n"] == 3 and slept == [5, 5])
+        script["n"] = 0
+        ns.wait_slot = 8
+        rc, _ = acquire(ns, 1, runner=lambda c: (1, ["refused: 0 free of cap 2 (learned), asked 1; wait"]),
+                        sleep=lambda s: clock.__setitem__("t", clock["t"] + s), clock=lambda: clock["t"])
+        check("--wait-slot gives up after its seconds with 1", rc == 1)
+        calls2: list[int] = []
+        rc, _ = acquire(ns, 3, runner=lambda c: (calls2.append(1) or (1, ["refused: 2 free of cap 2 (learned), asked 3; split"])),
+                        sleep=lambda s: calls2.append(99), clock=lambda: 0.0)
+        check("asking more than the cap is not waited for", rc == 1 and calls2 == [1])
+        ns.wait_slot = 0
+        calls3: list[int] = []
+        rc, _ = acquire(ns, 1, runner=lambda c: (calls3.append(1) or (1, ["refused: 0 free of cap 2 (learned), asked 1"])),
+                        sleep=lambda s: calls3.append(99), clock=lambda: 0.0)
+        check("without --wait-slot a refusal returns 1 at once", rc == 1 and calls3 == [1])
+        ns.wait_slot = 60
+        rc, _ = acquire(ns, 1, runner=lambda c: (1, ["deferred: p/m resets at 10:00"]),
+                        sleep=lambda s: calls3.append(99), clock=lambda: 0.0)
+        check("a provider deferral is never waited for", rc == 1 and 99 not in calls3)
 
     for item in failures:
         print("SELFTEST FAIL  " + item)

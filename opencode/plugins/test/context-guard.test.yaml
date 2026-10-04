@@ -1,0 +1,12 @@
+# Test config: small numbers so a few messages cross the trigger.
+trigger_tokens: 5000
+keep_tool_steps: 2
+keep_reasoning_steps: 4
+protect_tools: [phase_checkpoint, task, question, todowrite, skill, edit, write]
+protect_paths:
+  - 'references/work-on/phase-\d+\.md'
+  - 'primary-agents/work-on\.md'
+mask_agents: [work-on, dossier, implementer]
+mask_reasoning_agents: [work-on, dossier]
+guard_agents: [work-on]
+max_read_bytes: 500

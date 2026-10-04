@@ -30,6 +30,8 @@ invalid input. A promise you cannot satisfy as written is a `CONTRACT-CHANGE:`
 
 ## Payload
 
+When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that file whole before anything else: it is your payload, with the fields below.
+
 - `WORKTREE_DIR` — your isolated worktree. All your work happens here.
 - `BRANCH` — the branch you are already on. Check it; never create one.
 - `CONTRACT` — the signatures and documentation comments, verbatim. Your spec.

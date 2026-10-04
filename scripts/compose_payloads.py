@@ -50,7 +50,32 @@ given with --set, same as SHARED_IDIOM / DELIVERY_CHANGE for that kind.
         --host opencode --out FILE --package P1 \\
         --contract-paths src/flush.py [--test-command CMD] [--hooks TEXT] \\
         [--set FIELD=VALUE ...] [--plugin-root DIR] [--manifest FILE] [--force]
+        [--failures-from LOG] [--excerpt FILE:A-B ... --excerpt-field FIELD]
+    compose_payloads.py --refresh-contract PAYLOAD [PAYLOAD ...] --root X \\
+        --contract-paths src/flush.py
     compose_payloads.py --selftest
+
+`--refresh-contract` re-reads the contract files and rewrites the pasted
+CONTRACT block and, where the kind has one, CONTRACT_HASH in each named payload
+in place — the Phase 3 contract fix after a payload was composed: it prints
+`CONTRACT_HASH old -> new` per payload and touches no other byte. It never
+composes, so it needs only `--root` and `--contract-paths`.
+
+`--failures-from LOG` fills FAILURES (implementer `--set MODE=fix`, or the
+integration author) with run_tests.py's digest of LOG — totals, capped failing
+tests with their detail lines, every line cut — instead of a hand-pasted log.
+`--excerpt FILE:A-B` (repeatable; FILE absolute or relative to --root) pastes
+those 1-based inclusive lines, at most 200 in all, into the field named by
+`--excerpt-field FIELD` (SUPPORT, CONVENTIONS, ...), each under a `# FILE:A-B`
+line; the field must not also be given with `--set`.
+
+A field value of more than one line is always written as a `NAME: |` block, and
+a field given with `--set` that the kind's order does not list is appended, not
+dropped. Before this, a multi-line `--test-command` or `--set CRITERIA=...` was
+written with its second line at column 0 (a bare TEST_COMMAND, a CRITERIA the
+orchestrator then repaired by pasting a second block), and `--set` of a field
+outside the order vanished. A dossier holding two `## Acceptance criteria`
+headings is refused rather than read at the first.
 
 Exit codes: 0 written; 1 refused (missing section, package row, or contract
 file); 2 unusable input (bad arguments, unreadable files).
@@ -76,6 +101,7 @@ def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, os.path.join(SCRIPTS_DIR, name + ".py"))
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    sys.modules[name] = module  # a module with @dataclass classes needs to be findable while it loads
     spec.loader.exec_module(module)
     return module
 
@@ -136,6 +162,12 @@ def section_body(text: str, heading: str, drop_heading: bool = True) -> str:
         numbered = de.section(text, heading)
     except de.Refused as err:
         raise Refusal(str(err))
+    want = heading.lstrip("#").strip().strip("`").lower()
+    count = sum(1 for _i, _lv, title in de.headings(text.split("\n")) if title.strip("`").lower() == want)
+    if count > 1:
+        # de.section() would quietly use the first; a second copy of a section
+        # (a restated Acceptance criteria) is how a block lands in a payload twice.
+        raise Refusal("the dossier has %d `%s` headings; keep one" % (count, heading))
     lines = strip_line_numbers(numbered).splitlines()
     if drop_heading and lines:
         lines = lines[1:]
@@ -296,8 +328,14 @@ class Field:
 
 
 def render_field(field: Field) -> str:
-    if field.block:
-        lines = field.value.splitlines() or [""]
+    # A value with a newline is always a block: written as `NAME: value` its
+    # second line would sit at column 0, where check_payload.py reads it as a
+    # stray field line (a bare TEST_COMMAND, a CRITERIA written twice by hand
+    # to repair it). Whatever the caller said, such a value is a `NAME: |` block.
+    if field.block or "\n" in field.value.strip("\n"):
+        lines = field.value.split("\n") if field.value.strip() else [""]
+        while len(lines) > 1 and not lines[-1].strip():
+            lines.pop()
         body = "\n".join(("  " + l if l.strip() else "") for l in lines)
         return "%s: |\n%s\n" % (field.name, body)
     return "%s: %s\n" % (field.name, field.value)
@@ -327,6 +365,15 @@ NAMING_DEFAULT = (
 def apply_overrides(fields: dict[str, Field], sets: dict[str, str], blocks: set[str]) -> None:
     for name, value in sets.items():
         fields[name] = Field(name, value, block=name in blocks)
+
+
+def ordered(fields: dict[str, Field], order: list[str]) -> list[Field]:
+    """The kind's fields in its fixed order. A field that is not in `order` —
+    given with --set, --excerpt-field or --failures-from for a kind or MODE whose
+    order does not list it — is appended, never dropped: the old comprehension
+    silently lost it, and the orchestrator then pasted it in by hand beside the
+    composed one (the duplicate block)."""
+    return [fields[n] for n in order if n in fields] + [f for n, f in fields.items() if n not in order]
 
 
 def compose_implementer(ctx: dict) -> list[Field]:
@@ -426,7 +473,7 @@ def compose_implementer(ctx: dict) -> list[Field]:
              + (["PACKAGE", "SHARED_IDIOM", "OWNED_PATHS", "CRITERIA"] if mode == "build"
                 else ["CRS", "FAILURES", "OWNED_PATHS"])
              + ["TEST_COMMAND", "HOOKS", "VERIFY_EMBEDDED", "STANDARDS", "JIRA_KEY"])
-    return [fields[n] for n in order if n in fields]
+    return ordered(fields, order)
 
 
 def compose_unit_test_author(ctx: dict) -> list[Field]:
@@ -490,7 +537,7 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
              "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
              "NAMING", "VOCABULARY", "FIXTURES", "SHARED_IDIOM",
              "DELIVERY_CHANGE", "CONTRACT_HASH"]
-    return [fields[n] for n in order if n in fields]
+    return ordered(fields, order)
 
 
 def compose_integration_test_author(ctx: dict) -> list[Field]:
@@ -548,7 +595,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
              "TEST_FRAMEWORK", "HARNESS", "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
              "BOUNDARIES", "SHARED_IDIOM", "DELIVERY_CHANGE", "FAILURES", "CORRECTION",
              "CONTRACT_HASH"]
-    return [fields[n] for n in order if n in fields]
+    return ordered(fields, order)
 
 
 def compose_reviewer(ctx: dict) -> list[Field]:
@@ -615,7 +662,7 @@ def compose_reviewer(ctx: dict) -> list[Field]:
     order = ["LENS", "DOSSIER", "WORKTREE_DIR", "SCOPE", "CONTRACT", "RUN_EVIDENCE",
              "CRITERIA", "STANDARDS", "RULES", "CONTEXT_DOCS", "ARBITRATIONS",
              "PRIOR_CRS", "ROUND"]
-    return [fields[n] for n in order if n in fields]
+    return ordered(fields, order)
 
 
 COMPOSERS = {
@@ -662,6 +709,85 @@ def parse_sets(pairs: list[str]) -> dict[str, str]:
     return out
 
 
+EXCERPT_RE = re.compile(r"^(?P<file>.+):(?P<a>\d+)-(?P<b>\d+)$")
+MAX_EXCERPT_LINES = 200
+
+
+def excerpt_text(specs: list[str], root: str) -> str:
+    """`FILE:A-B` specs (1-based, inclusive, FILE absolute or relative to --root)
+    -> one block: a `# FILE:A-B` line, then those lines verbatim, per spec.
+    Bounded: at most MAX_EXCERPT_LINES lines in all."""
+    parts: list[str] = []
+    total = 0
+    for spec in specs:
+        m = EXCERPT_RE.match(spec)
+        if not m:
+            raise Refusal("--excerpt expects FILE:A-B (line numbers), got %r" % spec)
+        a, b = int(m.group("a")), int(m.group("b"))
+        path = m.group("file") if os.path.isabs(m.group("file")) else os.path.join(root, m.group("file"))
+        if not os.path.isfile(path):
+            raise Refusal("excerpt file not found: %s" % path)
+        lines = read_text(path).split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        if not 1 <= a <= b <= len(lines):
+            raise Refusal("excerpt %s: lines %d-%d are outside the file (1-%d)" % (m.group("file"), a, b, len(lines)))
+        total += b - a + 1
+        if total > MAX_EXCERPT_LINES:
+            raise Refusal("excerpts total %d lines; the cap is %d" % (total, MAX_EXCERPT_LINES))
+        parts.append("# %s:%d-%d\n%s" % (m.group("file"), a, b, "\n".join(lines[a - 1 : b])))
+    return "\n\n".join(parts)
+
+
+def failures_digest(log: str, root: str) -> str:
+    """The FAILURES field for a log: run_tests.py's own digest body (totals,
+    capped failures with their detail lines, every line cut), not the raw log."""
+    path = log if os.path.isabs(log) else os.path.join(root, log)
+    if not os.path.isfile(path):
+        raise Refusal("--failures-from log not found: %s" % path)
+    rt = _load("run_tests")
+    text = read_text(path)
+    parser, totals, failures = rt.parse_log(text)
+    return "\n".join(rt.format_body(parser, totals, failures, 10, 15, 300, text))
+
+
+def refresh_contract(args: argparse.Namespace) -> int:
+    """Re-read the contract files and rewrite CONTRACT (and CONTRACT_HASH, where
+    the kind has it) in each named payload in place; every other byte stays."""
+    if not args.root:
+        raise Refusal("--refresh-contract needs --root (the contract files resolve against it)")
+    text = contract_bytes(args.contract_paths, os.path.abspath(args.root))
+    new_hash = contract_hash(text)
+    new_block = render_field(Field("CONTRACT", text, block=True)).rstrip("\n").split("\n")
+    code = 0
+    for path in args.refresh_contract:
+        lines = read_text(path).split("\n")
+        start = next((n for n, l in enumerate(lines) if re.match(r"^CONTRACT:\s*\|\s*$", l)), None)
+        if start is None:
+            print("%s: no pasted `CONTRACT: |` block; left alone" % os.path.basename(path))
+            code = 1
+            continue
+        end = start + 1
+        while end < len(lines) and (not lines[end].strip() or lines[end][:1] in (" ", "\t")):
+            end += 1
+        while end > start + 1 and not lines[end - 1].strip():
+            end -= 1  # blank lines after the block belong to the file, not to it
+        current = [l[2:] if l.startswith("  ") else l for l in lines[start + 1 : end]]
+        same = current == text.rstrip("\n").split("\n")
+        lines[start:end] = new_block
+        old_hash = None
+        for n, l in enumerate(lines):
+            m = re.match(r"^CONTRACT_HASH:\s*(\S*)\s*$", l)
+            if m:
+                old_hash = m.group(1)
+                lines[n] = "CONTRACT_HASH: %s" % new_hash
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines))
+        shown = ("CONTRACT_HASH %s -> %s" % (old_hash[:8], new_hash[:8])) if old_hash is not None else "no CONTRACT_HASH field"
+        print("%s: CONTRACT %s; %s" % (os.path.basename(path), "already current" if same else "refreshed", shown))
+    return code
+
+
 def compose(args: argparse.Namespace) -> tuple[list[Field], str]:
     composer = COMPOSERS.get(args.kind)
     if composer is None:
@@ -669,12 +795,30 @@ def compose(args: argparse.Namespace) -> tuple[list[Field], str]:
             args.kind, ", ".join(sorted(COMPOSERS))))
     dossier_text = read_text(args.dossier)
     fm = front_matter(dossier_text)
+    sets = parse_sets(args.set)
+    root = os.path.abspath(args.root)
+    if args.failures_from:
+        if args.kind not in ("implementer", "integration-test-author"):
+            raise Refusal("--failures-from fills FAILURES, which only the implementer (MODE=fix) and the integration author take")
+        if args.kind == "implementer" and sets.get("MODE", "build") != "fix":
+            raise Refusal("--failures-from needs --set MODE=fix (a build-mode implementer has no FAILURES)")
+        if "FAILURES" in sets:
+            raise Refusal("FAILURES is given twice: --set FAILURES=... and --failures-from")
+        sets["FAILURES"] = failures_digest(args.failures_from, root)
+    if args.excerpt:
+        if not args.excerpt_field:
+            raise Refusal("--excerpt needs --excerpt-field FIELD (the field the excerpt is pasted into)")
+        if args.excerpt_field in sets:
+            raise Refusal("%s is given twice: --set and --excerpt" % args.excerpt_field)
+        sets[args.excerpt_field] = excerpt_text(args.excerpt, root)
+    elif args.excerpt_field:
+        raise Refusal("--excerpt-field %s has no --excerpt FILE:A-B" % args.excerpt_field)
     ctx = {
-        "root": os.path.abspath(args.root),
+        "root": root,
         "dossier_text": dossier_text,
         "fm": fm,
         "args": args,
-        "sets": parse_sets(args.set),
+        "sets": sets,
         "host": args.host,
         "plugin_root": os.path.abspath(args.plugin_root),
     }
@@ -695,6 +839,10 @@ def write_payload(path: str, fields: list[Field], force: bool) -> None:
                 "%s exists and is not a previous output of this script "
                 "(pass --force to overwrite)" % path
             )
+    names = [f.name for f in fields]
+    repeated = sorted({n for n in names if names.count(n) > 1})
+    if repeated:
+        raise Refusal("field(s) composed twice: %s" % ", ".join(repeated))
     text = MARKER + "\n" + "".join(render_field(f) for f in fields)
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
@@ -715,6 +863,8 @@ def manifest_line(args: argparse.Namespace, out_path: str, fields: list[Field]) 
 
 def append_manifest(path: str, line: str) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    if os.path.exists(path) and line in read_text(path).splitlines():
+        return  # a --force re-compose must not list the same spawn twice
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(line + "\n")
 
@@ -735,11 +885,24 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--plugin-root", default=os.path.dirname(SCRIPTS_DIR))
     parser.add_argument("--manifest", help="append this spawn's prepare_wave.py manifest line")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--refresh-contract", nargs="+", metavar="PAYLOAD",
+                        help="re-read --contract-paths and rewrite CONTRACT + CONTRACT_HASH in these payloads, in place")
+    parser.add_argument("--failures-from", metavar="LOG", help="fill FAILURES from run_tests.py's digest of LOG")
+    parser.add_argument("--excerpt", action="append", default=[], metavar="FILE:A-B",
+                        help="paste lines A-B of FILE (bounded) into --excerpt-field; repeatable")
+    parser.add_argument("--excerpt-field", metavar="FIELD", help="the payload field --excerpt fills")
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args(argv)
 
     if args.selftest:
         return selftest()
+    if args.refresh_contract:
+        args.contract_paths = [p for p in args.contract_paths.split(",") if p]
+        try:
+            return refresh_contract(args)
+        except Refusal as err:
+            print("compose_payloads: REFUSED — %s" % err, file=sys.stderr)
+            return 1
 
     missing_cli = [name for name, value in (
         ("--kind", args.kind), ("--dossier", args.dossier), ("--root", args.root),
@@ -873,6 +1036,9 @@ def _fill_placeholders(text: str, real_style_path: str, new_test_path: str) -> s
 
 
 def selftest() -> int:
+    import contextlib
+    import io
+
     failures: list[str] = []
 
     def check(name: str, ok: bool, detail: str = "") -> None:
@@ -1048,6 +1214,97 @@ def selftest() -> int:
                   "--package", "P1", "--contract-paths", "src/flush.py",
                   "--test-command", "pytest -q", "--hooks", "none", "--force"])
         check("--force allows the overwrite", rc == 0)
+
+        # --- multi-line values: always a block, never a column-0 stray line ---
+        base_impl = ["implementer", "--host", "opencode", "--package", "P1", "--contract-paths", "src/flush.py", "--hooks", "none"]
+        rc, ml_path, out = run_compose("ML.md", base_impl + ["--test-command", "pytest -q\n  -x"])
+        ml_text = read_text(ml_path) if rc == 0 else ""
+        check("a multi-line TEST_COMMAND is written as a block", "TEST_COMMAND: |\n  pytest -q\n    -x\n" in ml_text, out)
+        check("no composed line sits at column 0 unless it opens a field",
+              not [l for l in ml_text.splitlines()[1:] if l and not l.startswith(" ") and not re.match(r"^[A-Z][A-Z0-9_-]*:", l)])
+        rc2, out2 = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"), ml_path,
+                          "--kind", "implementer", "--host", "opencode", "--worktree", root])
+        check("the multi-line TEST_COMMAND payload lints clean", rc2 == 0, out2)
+
+        # --- CRITERIA: once, whether composed or --set; a field outside the order is kept ---
+        rc, cr_path, out = run_compose("CR1.md", base_impl + ["--test-command", "pytest -q", "--set", "CRITERIA=1. first\n2. second"])
+        cr_text = read_text(cr_path) if rc == 0 else ""
+        check("--set CRITERIA (multi-line, build mode) appears once, as a block",
+              cr_text.count("CRITERIA:") == 1 and "CRITERIA: |\n  1. first\n  2. second\n" in cr_text, out)
+        check("composed CRITERIA appears exactly once", read_text(impl_path).count("CRITERIA:") == 1)
+        rc, fx_path, out = run_compose("FX.md", ["implementer", "--host", "opencode", "--contract-paths", "src/flush.py", "--hooks", "none",
+                                                 "--test-command", "pytest -q", "--set", "MODE=fix", "--set", "CRS=CR-1: x",
+                                                 "--set", "CRITERIA=one", "--set", "SUPPORT=s"])
+        fx_text = read_text(fx_path) if rc == 0 else ""
+        check("a --set field outside the kind's order is appended, not dropped",
+              rc == 0 and fx_text.count("CRITERIA: one") == 1 and fx_text.count("SUPPORT: s") == 1, out)
+        dup = DOSSIER_FIXTURE.replace("## Build log", "## Acceptance criteria\n\n3. restated\n\n## Build log")
+        dup_path = os.path.join(root, "dup.md")
+        with open(dup_path, "w", encoding="utf-8") as fh:
+            fh.write(dup)
+        rc = main(["--kind", "implementer", "--dossier", dup_path, "--root", root, "--host", "opencode",
+                   "--out", os.path.join(root, "dupout.md"), "--package", "P1", "--contract-paths", "src/flush.py"])
+        check("a dossier with two Acceptance criteria headings is refused", rc == 1)
+
+        # --- --excerpt FILE:A-B into a named field ---
+        rc, ex_path, out = run_compose("EX.md", base_impl + ["--test-command", "pytest -q", "--excerpt", "src/flush.py:1-2", "--excerpt-field", "SUPPORT"])
+        ex_text = read_text(ex_path) if rc == 0 else ""
+        check("--excerpt pastes the lines under a # FILE:A-B header into the field",
+              "SUPPORT: |\n  # src/flush.py:1-2\n  class FlushQueue:\n      def flush(self, batch_size: int) -> int:\n" in ex_text, out)
+        for label, extra in (("out-of-range lines", ["--excerpt", "src/flush.py:1-99", "--excerpt-field", "SUPPORT"]),
+                             ("a missing --excerpt-field", ["--excerpt", "src/flush.py:1-2"]),
+                             ("a malformed spec", ["--excerpt", "src/flush.py", "--excerpt-field", "SUPPORT"]),
+                             ("a missing file", ["--excerpt", "src/none.py:1-2", "--excerpt-field", "SUPPORT"]),
+                             ("--set and --excerpt on one field", ["--excerpt", "src/flush.py:1-2", "--excerpt-field", "SUPPORT", "--set", "SUPPORT=x"])):
+            rc, _p, _o = run_compose("EXbad.md", base_impl + ["--test-command", "pytest -q"] + extra)
+            check("--excerpt refuses " + label, rc == 1)
+        big = os.path.join(root, "src", "big.py")
+        with open(big, "w", encoding="utf-8") as fh:
+            fh.write("x = 1\n" * 500)
+        rc, _p, _o = run_compose("EXbig.md", base_impl + ["--test-command", "pytest -q", "--excerpt", "src/big.py:1-300", "--excerpt-field", "SUPPORT"])
+        check("--excerpt is bounded at 200 lines", rc == 1)
+
+        # --- --failures-from LOG: FAILURES is the run_tests digest, not the raw log ---
+        flog = os.path.join(root, "red.log")
+        with open(flog, "w", encoding="utf-8") as fh:
+            fh.write("FAILED tests/test_x.py::test_y - assert 1 == 2\n" + "noise\n" * 500 + "=== 1 failed, 7 passed in 0.5s ===\n")
+        rc, ff_path, out = run_compose("FF.md", ["implementer", "--host", "opencode", "--contract-paths", "src/flush.py", "--hooks", "none",
+                                                 "--test-command", "pytest -q", "--set", "MODE=fix", "--failures-from", flog])
+        ff_text = read_text(ff_path) if rc == 0 else ""
+        check("--failures-from writes the digest into FAILURES", "FAILURES: |\n  passed 7  failed 1" in ff_text and "FAIL tests/test_x.py::test_y" in ff_text, out)
+        check("--failures-from does not paste the raw log", "noise" not in ff_text and "CRS:" not in ff_text)
+        rc, _p, _o = run_compose("FFbuild.md", base_impl + ["--test-command", "pytest -q", "--failures-from", flog])
+        check("--failures-from refuses a build-mode implementer", rc == 1)
+        rc, _p, _o = run_compose("FFut.md", ["unit-test-author", "--host", "opencode", "--contract-paths", "src/flush.py", "--failures-from", flog])
+        check("--failures-from refuses a kind with no FAILURES", rc == 1)
+
+        # --- --refresh-contract: contract text and hash updated in place, nothing else ---
+        before_ut = read_text(ut_op_path)
+        old_hash = re.search(r"^CONTRACT_HASH: (\S+)$", before_ut, re.M).group(1)
+        with open(os.path.join(root, "src", "flush.py"), "a", encoding="utf-8") as fh:
+            fh.write("\n    def reset(self) -> None:\n        \"\"\"Empties the queue.\"\"\"\n")
+        new_contract = contract_bytes(["src/flush.py"], root)
+        out_io = io.StringIO()
+        with contextlib.redirect_stdout(out_io):
+            rc = main(["--refresh-contract", ut_op_path, impl_path, "--root", root, "--contract-paths", "src/flush.py"])
+        after_ut, after_impl = read_text(ut_op_path), read_text(impl_path)
+        check("--refresh-contract exits 0 and reports old -> new hash",
+              rc == 0 and ("CONTRACT_HASH %s -> %s" % (old_hash[:8], contract_hash(new_contract)[:8])) in out_io.getvalue(), out_io.getvalue())
+        check("--refresh-contract rewrote CONTRACT and CONTRACT_HASH", "def reset(self)" in after_ut and ("CONTRACT_HASH: %s\n" % contract_hash(new_contract)) in after_ut)
+        check("--refresh-contract also rewrites an implementer's CONTRACT (no hash field)", "def reset(self)" in after_impl and "CONTRACT_HASH" not in after_impl)
+        expected = before_ut.replace(render_field(Field("CONTRACT", CONTRACT_FIXTURE, block=True)),
+                                     render_field(Field("CONTRACT", new_contract, block=True))).replace(old_hash, contract_hash(new_contract))
+        check("--refresh-contract changes only the CONTRACT block and the hash line", after_ut == expected)
+        out_io = io.StringIO()
+        with contextlib.redirect_stdout(out_io):
+            main(["--refresh-contract", ut_op_path, "--root", root, "--contract-paths", "src/flush.py"])
+        check("a second --refresh-contract reports already current and changes nothing",
+              "already current" in out_io.getvalue() and read_text(ut_op_path) == after_ut)
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = main(["--refresh-contract", rev_path, "--root", root, "--contract-paths", "src/flush.py"])
+        check("--refresh-contract on a payload with no CONTRACT block exits 1", rc == 1)
+        rc = main(["--refresh-contract", ut_op_path, "--root", root, "--contract-paths", "src/gone.py"])
+        check("--refresh-contract with a missing contract file is refused", rc == 1)
 
         # --- manifest ---
         manifest_path = os.path.join(root, "wave.txt")

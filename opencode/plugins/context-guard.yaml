@@ -1,0 +1,33 @@
+# Context guard settings. Re-read whenever this file changes; a missing key uses its default.
+
+# --- A. batched observation masking ---------------------------------------------------
+
+# Estimated request size (latest assistant's input + cache-read tokens, plus ~chars/4 of
+# what came after) at which the mask watermark moves forward. Between two moves the same
+# watermark applies to every request, so the provider's prompt cache keeps hitting.
+trigger_tokens: 100000
+
+# When the watermark moves, the newest N assistant steps keep their tool output ...
+keep_tool_steps: 10
+# ... and the newest N keep their reasoning. 0 = never mask reasoning.
+keep_reasoning_steps: 20
+
+# Tools whose output is never masked.
+protect_tools: [phase_checkpoint, task, question, todowrite, skill, edit, write]
+# A read or bash whose path / command matches one of these regexes is never masked.
+protect_paths:
+  - 'references/work-on/phase-\d+\.md'
+  - 'primary-agents/work-on\.md'
+
+# Agents whose context is masked (the agent of the session's first user message).
+mask_agents: [work-on, dossier, implementer, integration-test-author, reviewer]
+# Of those, the agents whose reasoning is masked too.
+mask_reasoning_agents: [work-on, dossier]
+
+# --- B. read guard --------------------------------------------------------------------
+
+# Agents whose wasteful reads are refused (whole dossier reads, large whole-file reads
+# and cats, cargo test through limactl without run_tests.py).
+guard_agents: [work-on]
+# A read or cat without offset/limit of a file larger than this many bytes is refused.
+max_read_bytes: 20000

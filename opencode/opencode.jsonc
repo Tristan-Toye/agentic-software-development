@@ -10,6 +10,9 @@
   //   ~/.config/opencode/plugins/provider-fifo.ts -> opencode/plugins/provider-fifo.ts
   //     (limits per host, model and model pool: opencode/plugins/provider-fifo.yaml)
   //   ~/.config/opencode/plugins/phase-checkpoint.ts -> opencode/plugins/phase-checkpoint.ts
+  //   ~/.config/opencode/plugins/context-guard.ts -> opencode/plugins/context-guard.ts
+  //     (masking and read guard: opencode/plugins/context-guard.yaml)
+  //   ~/.config/opencode/plugins/code-nav.ts   -> opencode/plugins/code-nav.ts
   //   ~/.config/opencode/dcp.jsonc             -> opencode/dcp.jsonc
   // Agents and commands carry their settings in their own frontmatter.
   // Config loads at startup: restart opencode after changes here.

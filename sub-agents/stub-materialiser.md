@@ -53,6 +53,8 @@ interpreted.
 
 ## Payload
 
+When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that file whole before anything else: it is your payload, with the fields below.
+
 - `WORKTREE_DIR` — your isolated worktree. All your work happens here.
 - `CONTRACT` — the signatures and documentation comments, verbatim.
 - `OWNED_PATHS` — the only files you may create or write.

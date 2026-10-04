@@ -36,6 +36,8 @@ that needs its author present is already defective, and that is your finding.
 
 ## Payload
 
+When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that file whole before anything else: it is your payload, with the fields below.
+
 - `WORKTREE_DIR` — the base worktree. The stubs live here.
 - `CONTRACT_PATHS` — the files that carry the contract. Read these and
   nothing else in the worktree except files they import for types.

@@ -21,18 +21,56 @@ reaches stdout, however large the run.
     run_tests.py [--log FILE] [--max-failures N=10] [--lines N=15]
                  [--line-chars N=300]
                  [--vm NAME --workdir DIR [--env-script FILE] [--path-prepend DIR]]
-                 [--cwd DIR]
+                 [--cwd DIR] [--test NAME ...] [--repeat N] [--detach] [--print-cmd]
                  -- <command...>
+    run_tests.py --wait LOG [--timeout SECONDS=3600]
+    run_tests.py --digest LOG
     run_tests.py --selftest
 
 Without `--vm` the command runs directly (optionally in `--cwd`). With
 `--vm NAME --workdir DIR` it runs inside `limactl shell NAME -- bash -lc
-'<export PATH=...:$PATH;> cd DIR && <. ENV-SCRIPT &&> COMMAND'`, with every
-part correctly shell-quoted — the same shape the orchestrator was typing by
-hand.
+'<export PATH=...:$PATH;> cd DIR && <. ENV-SCRIPT &&> COMMAND'`.
+
+The VM command is built so it pastes into a fresh shell unchanged: the inner
+`bash -lc` script is one single-quoted argument (`shlex.join`, the same string
+that is run), and inside it `$HOME` / `$PATH` / a leading `~/` stay LIVE, to be
+expanded by the VM's own bash — the outer macOS shell never sees them. (Before,
+the printed line was not safely quoted, so pasting it let the outer shell expand
+`$HOME` to the Mac's home, and an implementer ran darwin cargo in the VM.)
+`--print-cmd` prints that full command and runs nothing; the digest header
+shows it cut at 200 characters.
 
 `--log` defaults to a file under `$TMPDIR` named after a hash of the
 command, so repeat runs of the same command reuse one path.
+
+# Detached runs, digests of old logs, repeats, one test
+
+`--detach` starts the same run in its own session (setsid, SIGHUP ignored,
+stdio detached) so it survives the calling shell or tool call returning, then
+prints four lines — the pid, the log path, the pid file `LOG.pid` and the exact
+`--wait` command — and exits 0 at once. When the run ends the child writes
+`LOG.exit` and then `LOG.digest` (the digest it would have printed).
+
+`--wait LOG` blocks, silently, until `LOG.digest` exists, prints it, and exits
+with the run's own exit code (read from `LOG.exit`). 124 means `--timeout`
+passed with the run still going; 125 means the process died without writing a
+digest (killed), and a digest of the log so far is printed instead; 2 means no
+detached run was started for LOG.
+
+`--digest LOG` prints the digest of a log already on disk (no run): totals,
+capped failures, or the tail when nothing parses. Exit 1 when it holds failures,
+else 0. `--wait` and `--digest` need no command after `--`.
+
+`--repeat N` runs the command N times (logs `LOG.run1` ... `LOG.runN`) and
+prints one `RUN k/N pass|fail  exit E  Ts` line per run, then `FLAKY name
+(failed X/N)` for every test that failed in some runs but not all, `FAILS EVERY
+RUN name` for those that failed in all, and the capped digest of the first
+failing run. Exit 0 when every run passed, else the first nonzero exit code.
+
+`--test NAME` (repeatable) appends the filter to a cargo command, after a `--`
+(added when missing): `cargo test -p x -- NAME`. A name that matches no test
+line in the log is reported `NOT RUN` and turns an otherwise green exit into 3,
+so a typo cannot pass as green. Only a `cargo` command takes `--test`.
 
 # Parsers (auto-detected; several may apply to one log)
 
@@ -56,7 +94,9 @@ trailing "…"), so one giant line — a 68 KB panic message on one line, say �
 never blows up the digest.
 
 Exit codes: the run command's own exit code (so callers can branch on it);
-2 for unusable input (no command, or `--vm` without `--workdir`).
+2 for unusable input (no command, `--vm` without `--workdir`, `--test` on a
+non-cargo command); 3 a `--test` name matched nothing; 124/125 from `--wait`
+(see above).
 
 No third-party imports: this runs wherever python3 does.
 """
@@ -64,10 +104,13 @@ No third-party imports: this runs wherever python3 does.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -91,6 +134,20 @@ class Failure:
 # ---------------------------------------------------------------- building the run
 
 
+def inner_quote(value: str) -> str:
+    """Quote one word of the VM's inner `bash -lc` script. A word with no `$`
+    or backtick gets plain `shlex.quote`. A word with `$` (`$HOME/.cargo/bin`)
+    or a leading `~/` goes in double quotes with `"`, `\\` and backtick
+    escaped, so the VM's bash still expands `$HOME` and `$PATH` — single-quoting
+    it (the old behaviour) would have made them literal, and leaving it bare
+    inside an unquoted outer string let the OUTER shell expand them."""
+    if value.startswith("~/"):
+        value = "$HOME/" + value[2:]
+    if "$" not in value:
+        return shlex.quote(value)
+    return '"' + re.sub(r'(["\\`])', r"\\\1", value) + '"'
+
+
 def build_command(
     vm: str | None,
     workdir: str | None,
@@ -99,21 +156,43 @@ def build_command(
     command: list[str],
 ) -> tuple[list[str], str]:
     """Return (argv, display). argv is what subprocess.run receives directly
-    (no shell=True at this level); display is a short human string for the
-    digest header."""
+    (no shell=True at this level); display is `shlex.join(argv)` — the very
+    command that is run, quoted so it pastes into a fresh shell unchanged (the
+    inner script is one single-quoted word, so `$HOME` reaches the VM literal)."""
     joined = shlex.join(command)
     if not vm:
         return list(command), joined
     parts = []
     if path_prepend:
-        parts.append(f"export PATH={shlex.quote(path_prepend)}:$PATH;")
-    parts.append(f"cd {shlex.quote(workdir or '')} &&")
+        parts.append(f"export PATH={inner_quote(path_prepend)}:$PATH;")
+    parts.append(f"cd {inner_quote(workdir or '')} &&")
     if env_script:
-        parts.append(f". {shlex.quote(env_script)} &&")
+        parts.append(f". {inner_quote(env_script)} &&")
     parts.append(joined)
     inner = " ".join(parts)
     argv = ["limactl", "shell", vm, "--", "bash", "-lc", inner]
-    return argv, f"limactl shell {vm} -- bash -lc '{inner}'"
+    return argv, shlex.join(argv)
+
+
+def add_test_filters(command: list[str], names: list[str]) -> list[str]:
+    """`cargo test -p x` + names -> `cargo test -p x -- NAME ...` (a `--` is
+    added when missing; names go last, where libtest reads its filters)."""
+    if not command or os.path.basename(command[0]) != "cargo":
+        raise ValueError("--test only extends a cargo command")
+    out = list(command)
+    if "--" not in out:
+        out.append("--")
+    return out + list(names)
+
+
+def names_not_run(log_text: str, names: list[str]) -> list[str]:
+    """Names with no `test PATH ... ok|FAILED|ignored` line containing them.
+    Empty when the log holds no libtest line at all (a compile error says
+    nothing about which tests ran)."""
+    ran = re.findall(r"^test (\S+) \.\.\. (?:ok|FAILED|ignored)", log_text, re.M)
+    if not ran:
+        return []
+    return [n for n in names if not any(n in r for r in ran)]
 
 
 def default_log_path(command: list[str]) -> str:
@@ -296,7 +375,143 @@ def format_digest(
 # ------------------------------------------------------------------------ run
 
 
-def run(args: argparse.Namespace) -> int:
+def execute(argv: list[str], log_path: str, cwd: str | None) -> tuple[int, float, str]:
+    """One run: every byte of stdout+stderr to log_path. Returns (exit, wall, log text)."""
+    os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
+    start = time.time()
+    with open(log_path, "w", encoding="utf-8", errors="replace") as fh:
+        proc = subprocess.run(argv, stdout=fh, stderr=subprocess.STDOUT, cwd=cwd, check=False)
+    wall = time.time() - start
+    with open(log_path, encoding="utf-8", errors="replace") as fh:
+        return proc.returncode, wall, fh.read()
+
+
+def digest_of(path: str, args: argparse.Namespace) -> tuple[str, int]:
+    """(digest text, failure count) of a log on disk, no run."""
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
+    parser, totals, failures = parse_log(text)
+    body = format_body(parser, totals, failures, args.max_failures, args.lines, args.line_chars, text)
+    head = f"digest of {path} ({len(text)} chars)"
+    return "\n".join([head, *body]), len(failures)
+
+
+def single_run(args: argparse.Namespace, argv: list[str], display: str, log_path: str) -> int:
+    rc, wall, log_text = execute(argv, log_path, args.cwd if not args.vm else None)
+    parser, totals, failures = parse_log(log_text)
+    out = format_digest(display, rc, wall, log_path, parser, totals, failures,
+                        args.max_failures, args.lines, args.line_chars, log_text)
+    missing = names_not_run(log_text, args.test) if args.test else []
+    if missing:
+        out += f"\nNOT RUN (matched no test): {', '.join(missing)}"
+        rc = rc or 3
+    print(out)
+    return rc
+
+
+def repeat_run(args: argparse.Namespace, argv: list[str], display: str, log_path: str) -> int:
+    """N runs; per-run verdict, flaky tests (failed in some runs, not all)."""
+    n = args.repeat
+    first_rc = 0
+    fail_counts: dict[str, int] = {}
+    first_fail: tuple[str, Totals, list[Failure], str] | None = None
+    short = display if len(display) <= 200 else display[:197] + "..."
+    out = [f"$ {short}", f"repeat {n}x  logs: {log_path}.run1 .. .run{n}"]
+    failed_runs = 0
+    for k in range(1, n + 1):
+        run_log = f"{log_path}.run{k}"
+        rc, wall, text = execute(argv, run_log, args.cwd if not args.vm else None)
+        parser, totals, failures = parse_log(text)
+        bad = rc != 0 or bool(failures)
+        out.append(f"RUN {k}/{n} {'fail' if bad else 'pass'}  exit {rc}  {wall:.1f}s")
+        if bad:
+            failed_runs += 1
+            first_rc = first_rc or rc or 1
+            for name in {f.name for f in failures}:
+                fail_counts[name] = fail_counts.get(name, 0) + 1
+            if first_fail is None:
+                first_fail = (parser, totals, failures, text)
+    out.append(f"{n - failed_runs} of {n} runs passed")
+    flaky = sorted((c, nm) for nm, c in fail_counts.items() if c < n)
+    always = sorted(nm for nm, c in fail_counts.items() if c == n)
+    for c, nm in flaky[: args.max_failures]:
+        out.append(f"FLAKY {nm} (failed {c}/{n})")
+    for nm in always[: args.max_failures]:
+        out.append(f"FAILS EVERY RUN {nm}")
+    if first_fail:
+        parser, totals, failures, text = first_fail
+        out.append("first failing run:")
+        out += ["  " + l for l in format_body(parser, totals, failures, args.max_failures, args.lines, args.line_chars, text)]
+    print("\n".join(out))
+    return first_rc
+
+
+def detach(args: argparse.Namespace, own_args: list[str], command: list[str], log_path: str) -> int:
+    """Start the same run in its own session and return at once."""
+    for suffix in (".digest", ".exit", ".pid"):
+        with contextlib.suppress(OSError):
+            os.remove(log_path + suffix)
+    child = [sys.executable, os.path.abspath(__file__),
+             *[a for a in own_args if a != "--detach"], "--log", log_path, "--detached-child", "--", *command]
+    proc = subprocess.Popen(child, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    with open(log_path + ".pid", "w", encoding="utf-8") as fh:
+        fh.write(f"{proc.pid}\n")
+    print(f"detached: pid {proc.pid}")
+    print(f"log: {log_path}")
+    print(f"pid file: {log_path}.pid")
+    print(f"wait: python3 {shlex.quote(os.path.abspath(__file__))} --wait {shlex.quote(log_path)}")
+    return 0
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def read_int(path: str, default: int) -> int:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return default
+
+
+def wait(args: argparse.Namespace, log_path: str) -> int:
+    """Block silently until the detached run's digest exists, then print it."""
+    digest_path = log_path + ".digest"
+    if not os.path.exists(log_path + ".pid") and not os.path.exists(digest_path):
+        print(f"run_tests: no detached run for {log_path} (no {log_path}.pid)", file=sys.stderr)
+        return 2
+    deadline = time.monotonic() + args.timeout
+    dead_polls = 0
+    pause = 0.2
+    while True:
+        if os.path.exists(digest_path):
+            with open(digest_path, encoding="utf-8", errors="replace") as fh:
+                print(fh.read().rstrip("\n"))
+            return read_int(log_path + ".exit", 0)
+        pid = read_int(log_path + ".pid", 0)
+        if pid and not alive(pid):
+            dead_polls += 1
+            if dead_polls >= 3:  # grace: the digest is written just before the child exits
+                print(f"run_tests: pid {pid} ended without a digest (killed?); the log so far:")
+                if os.path.exists(log_path):
+                    print(digest_of(log_path, args)[0])
+                return 125
+        if time.monotonic() >= deadline:
+            print(f"run_tests: still running after {args.timeout:.0f}s (pid {pid}); wait again with the same command")
+            return 124
+        time.sleep(pause)
+        pause = min(pause * 1.5, 5.0)
+
+
+def run(args: argparse.Namespace, own_args: list[str]) -> int:
     command = args.command
     if not command:
         print("run_tests: no command given after --", file=sys.stderr)
@@ -304,33 +519,39 @@ def run(args: argparse.Namespace) -> int:
     if args.vm and not args.workdir:
         print("run_tests: --vm requires --workdir", file=sys.stderr)
         return 2
+    if args.test:
+        try:
+            command = add_test_filters(command, args.test)
+        except ValueError as err:
+            print(f"run_tests: {err}", file=sys.stderr)
+            return 2
 
     argv, display = build_command(args.vm, args.workdir, args.env_script, args.path_prepend, command)
-    log_path = args.log or default_log_path(command)
-    log_dir = os.path.dirname(os.path.abspath(log_path))
-    os.makedirs(log_dir, exist_ok=True)
+    if args.print_cmd:
+        print(display)
+        return 0
+    log_path = args.log or default_log_path(args.command)
+    if args.detach:
+        return detach(args, own_args, args.command, log_path)
+    if args.repeat and args.repeat > 1:
+        return repeat_run(args, argv, display, log_path)
+    return single_run(args, argv, display, log_path)
 
-    start = time.time()
-    with open(log_path, "w", encoding="utf-8", errors="replace") as fh:
-        proc = subprocess.run(
-            argv,
-            stdout=fh,
-            stderr=subprocess.STDOUT,
-            cwd=(args.cwd if not args.vm else None),
-            check=False,
-        )
-    wall = time.time() - start
 
-    with open(log_path, encoding="utf-8", errors="replace") as fh:
-        log_text = fh.read()
-    parser, totals, failures = parse_log(log_text)
-    print(
-        format_digest(
-            display, proc.returncode, wall, log_path, parser, totals, failures,
-            args.max_failures, args.lines, args.line_chars, log_text,
-        )
-    )
-    return proc.returncode
+def run_detached_child(args: argparse.Namespace, own_args: list[str]) -> int:
+    """The detached half: run, then leave LOG.exit and LOG.digest behind (the
+    digest last, atomically, so a waiter that sees it can trust LOG.exit)."""
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    log_path = args.log or default_log_path(args.command)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = run(args, own_args)
+    for suffix, text in ((".exit", f"{rc}\n"), (".digest", buf.getvalue())):
+        tmp = f"{log_path}{suffix}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, log_path + suffix)
+    return rc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -349,14 +570,34 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--vm", help="run inside `limactl shell VM -- bash -lc ...`")
     ap.add_argument("--workdir", help="cd here inside the VM (required with --vm)")
     ap.add_argument("--env-script", help="sourced after cd, inside the VM")
-    ap.add_argument("--path-prepend", help="prepended to PATH, inside the VM")
+    ap.add_argument("--path-prepend", help="prepended to PATH, inside the VM ($HOME stays live there)")
     ap.add_argument("--cwd", help="cwd for a direct (non-VM) run")
+    ap.add_argument("--test", action="append", default=[], metavar="NAME", help="append a test filter to a cargo command")
+    ap.add_argument("--repeat", type=int, default=0, metavar="N", help="run N times; report flaky tests")
+    ap.add_argument("--detach", action="store_true", help="run detached; print the log path, pid file and --wait command")
+    ap.add_argument("--wait", metavar="LOG", help="block until the detached run on LOG ends; print its digest")
+    ap.add_argument("--timeout", type=float, default=3600, help="--wait: give up after this many seconds")
+    ap.add_argument("--digest", metavar="LOG", help="print the digest of an existing log; run nothing")
+    ap.add_argument("--print-cmd", action="store_true", help="print the full paste-safe command; run nothing")
+    ap.add_argument("--detached-child", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--selftest", action="store_true", help="check the checker")
     args = ap.parse_args(own_args)
     args.command = command
     if args.selftest:
         return selftest()
-    return run(args)
+    if args.digest:
+        try:
+            text, nfail = digest_of(args.digest, args)
+        except OSError as err:
+            print(f"run_tests: {err}", file=sys.stderr)
+            return 2
+        print(text)
+        return 1 if nfail else 0
+    if args.wait:
+        return wait(args, args.wait)
+    if args.detached_child:
+        return run_detached_child(args, own_args)
+    return run(args, own_args)
 
 
 # -------------------------------------------------------------------- selftest
@@ -514,6 +755,89 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
         rc = main(["--log", log_path])
         check("no command after -- is unusable input", rc == 2)
+
+        # --- the $HOME bug: the printed VM command must paste into a fresh shell ---
+        argv, display = build_command("nightwatch", "/work/x y", "deploy/host/test-env.sh", "$HOME/.cargo/bin", ["cargo", "test", "-p", "a b"])
+        inner = argv[6]
+        check("inner script keeps a literal $HOME", 'export PATH="$HOME/.cargo/bin":$PATH;' in inner)
+        check("display is exactly the shlex-joined argv (paste-safe)", display == shlex.join(argv) and shlex.split(display) == argv)
+        check("display single-quotes the whole inner script", "'export PATH=\"$HOME/.cargo/bin\":$PATH;" in display)
+        _, d2 = build_command("vm", "/w", None, "~/.cargo/bin", ["true"])
+        check("a leading ~/ becomes a live $HOME", '"$HOME/.cargo/bin"' in d2)
+        probe = build_command("vm", "/", None, "$HOME/.cargo/bin", ["printenv", "PATH"])[0][6]
+        env = dict(os.environ, HOME="/zz-vm-home")
+        got = subprocess.run(["bash", "-c", probe], capture_output=True, text=True, env=env, check=False).stdout
+        check("bash expands $HOME inside the VM script, not before", got.startswith("/zz-vm-home/.cargo/bin:"))
+        rc = main(["--print-cmd", "--vm", "nightwatch", "--workdir", "/w", "--path-prepend", "$HOME/.cargo/bin", "--", "cargo", "test"])
+        check("--print-cmd prints and runs nothing", rc == 0)
+
+        # --- --test appends the filter after `--`, cargo only ---
+        check("--test adds `--` and the name", add_test_filters(["cargo", "test", "-p", "x"], ["foo"]) == ["cargo", "test", "-p", "x", "--", "foo"])
+        check("--test reuses an existing `--`", add_test_filters(["cargo", "test", "--", "--nocapture"], ["a", "b"]) == ["cargo", "test", "--", "--nocapture", "a", "b"])
+        try:
+            add_test_filters(["pytest"], ["x"])
+            check("--test refuses a non-cargo command", False)
+        except ValueError:
+            pass
+        rc = main(["--test", "x", "--", "python3", "-c", "pass"])
+        check("--test on a non-cargo command is unusable input", rc == 2)
+        libtest = "test a::b::foo_works ... ok\ntest a::c::bar ... FAILED\n"
+        check("names_not_run finds the missing name", names_not_run(libtest, ["foo_works", "ghost"]) == ["ghost"])
+        check("names_not_run is silent without libtest lines", names_not_run("error: could not compile\n", ["x"]) == [])
+
+        # --- --digest reads a log, runs nothing ---
+        dlog = os.path.join(tmp, "old.log")
+        with open(dlog, "w", encoding="utf-8") as fh:
+            fh.write(PYTEST_LOG)
+        rc = main(["--digest", dlog])
+        check("--digest exits 1 on a log with failures", rc == 1)
+        with open(dlog, "w", encoding="utf-8") as fh:
+            fh.write("test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured\n")
+        check("--digest exits 0 on a green log", main(["--digest", dlog]) == 0)
+        check("--digest of a missing file is unusable input", main(["--digest", os.path.join(tmp, "nope.log")]) == 2)
+
+        # --- --repeat finds the flaky test: fails on runs 1 and 3 of 3 ---
+        counter = os.path.join(tmp, "count")
+        flaky_py = (
+            "import os, sys; p = sys.argv[1]; "
+            "n = int(open(p).read()) if os.path.exists(p) else 0; open(p, 'w').write(str(n + 1)); "
+            "print('FAILED tests/x.py::t_flaky - boom' if n % 2 == 0 else 'ok'); sys.exit(1 if n % 2 == 0 else 0)"
+        )
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = main(["--log", os.path.join(tmp, "rep.log"), "--repeat", "3", "--", "python3", "-c", flaky_py, counter])
+        out = buf.getvalue()
+        check("--repeat prints a line per run", "RUN 1/3 fail" in out and "RUN 2/3 pass" in out and "RUN 3/3 fail" in out)
+        check("--repeat names the flaky test with its rate", "FLAKY tests/x.py::t_flaky (failed 2/3)" in out)
+        check("--repeat exits nonzero when any run failed", rc == 1)
+        check("--repeat keeps one log per run", os.path.exists(os.path.join(tmp, "rep.log.run3")))
+
+        # --- --detach / --wait: the run outlives the call, the digest is waited for ---
+        dl = os.path.join(tmp, "det.log")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = main(["--log", dl, "--detach", "--", "python3", "-c", "import time; time.sleep(0.4); print('ok')"])
+        out = buf.getvalue()
+        check("--detach returns 0 at once and prints pid, log, pid file, wait", rc == 0 and "detached: pid" in out and f"pid file: {dl}.pid" in out and "--wait" in out)
+        check("--detach wrote the pid file", os.path.exists(dl + ".pid"))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = main(["--wait", dl, "--timeout", "30"])
+        check("--wait prints the digest of the finished run", rc == 0 and "exit 0" in buf.getvalue() and dl in buf.getvalue())
+        check("the detached run left LOG.exit and LOG.digest", read_int(dl + ".exit", -1) == 0 and os.path.exists(dl + ".digest"))
+        dl2 = os.path.join(tmp, "det2.log")
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["--log", dl2, "--detach", "--", "python3", "-c", "import sys; sys.exit(7)"])
+            rc = main(["--wait", dl2, "--timeout", "30"])
+        check("--wait returns the run's own exit code", rc == 7)
+        check("--wait on a log with no detached run is unusable input", main(["--wait", os.path.join(tmp, "never.log")]) == 2)
+        slow = os.path.join(tmp, "slow.log")
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["--log", slow, "--detach", "--", "python3", "-c", "import time; time.sleep(5)"])
+            rc = main(["--wait", slow, "--timeout", "0.3"])
+        check("--wait times out with 124", rc == 124)
+        with contextlib.suppress(OSError, ValueError):
+            os.kill(read_int(slow + ".pid", 0), signal.SIGTERM)
 
     for item in failures_list:
         print("SELFTEST FAIL  " + item)

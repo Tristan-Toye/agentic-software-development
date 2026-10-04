@@ -61,10 +61,23 @@ the next request on, every earlier step of the run is out of your context: the
 what remains. So write the summary as the hand-off to the rest of the run —
 the live dossier's path, `X` and its branch, the SHAs that matter, the rulings
 and open items, the budgets spent, the next phase — and never as a diary; the
-detail is already in `## Build log`. Never call it mid-phase, mid-investigation
-or to save space: it is a boundary, and a boundary you cross early leaves the
-next step without the facts it was working on. Under Claude Code the tool does
-not exist — skip the call; the host compacts on its own.
+detail is already in `## Build log`. Call it at a phase end, and inside the two
+long phases at the round boundaries their files name (Phase 4: after each
+wave's returns are verified and logged; Phase 6: after each arbitration round's
+rulings are logged), with the phase's own number — never mid-investigation or
+to save space: a boundary you cross early leaves the next step without the
+facts it was working on. Phases 0 and 1 are short: checkpoint them together,
+as "Phase 1", when Phase 1 ends. Under Claude Code the tool does not exist —
+skip the call; the host compacts on its own.
+
+**Old output fades on its own, under opencode.** The context-guard plugin
+masks tool output older than your newest 10 steps and reasoning older than
+your newest 20 once a request passes its trigger: the call stays, the output
+becomes a one-line stub. When you need a masked result again, fetch only the
+part you need — `code_item`, `doc_section`, `dossier_edit.py section`, or the
+command once more. It also refuses a whole read of a dossier or of a file over
+20 KB and a VM test run that bypasses `run_tests.py`; the refusal names the
+tool to use instead. Take it, and never work around a refusal.
 
 **The dossier is sought, never read whole.** Every read you make stays in
 context until the next phase boundary, and a whole dossier is tens of
@@ -101,11 +114,21 @@ not a chain you type. Before you compose a shell command, take the tool:
 | Several of the target's gate scripts | write them once to `.agent-staging/gates.txt` (`name: command` per line), then `python3 ${PLUGIN_ROOT}/scripts/run_gates.py .agent-staging/gates.txt --root <X>` |
 | A spawn payload | `python3 ${PLUGIN_ROOT}/scripts/compose_payloads.py …` fills every mechanical field; you write only the `@@FILL_<FIELD>@@` fields (Phase 4) |
 | Lint, gate and admit a wave | `python3 ${PLUGIN_ROOT}/scripts/prepare_wave.py …` (Phase 4) |
-| Read or write the dossier | `python3 ${PLUGIN_ROOT}/scripts/dossier_edit.py <section, log, set or add> …` |
+| Read or write the dossier | `python3 ${PLUGIN_ROOT}/scripts/dossier_edit.py <section, log, set, add, remove or replace-section> …` |
+| The items of a source file, with line ranges and first doc lines | `code_outline` (opencode tool) or `python3 ${PLUGIN_ROOT}/scripts/code_nav.py outline <file>` |
+| One function, type, impl or method — whole, its contract, its doc comment or its signature | `code_item` with `mode` `full`, `contract`, `doc` or `signature` (or `code_nav.py item <file> <Type::method> --mode …`) |
+| Where a symbol is defined | `code_find` (or `code_nav.py find <name> --root <X>`) |
+| One section or rule of a markdown file, by heading or id (`LRN-0073`, `ADR-0150`) | `doc_section` (or `code_nav.py section <file> <heading-or-id>`) |
+| Replace one item without reading its file | `code_replace` (or `code_nav.py replace <file> <symbol> --from-file <f>`) |
+| A chain of lookups — where X is, what calls Y | spawn `code-scout` with the questions; it returns `path:line` rows |
+| Check a subagent's return | `python3 ${PLUGIN_ROOT}/scripts/verify_return.py …` (Phase 4) |
+| Gate, stage named paths, commit, push | `python3 ${PLUGIN_ROOT}/scripts/gate_commit.py --root <X> --paths … -m …` |
+| A prose edit to the dossier or a document from facts you hold | spawn `scribe` with the edits and the facts |
 
-Read source files with the read and grep tools on absolute paths, never
-`cd <X> && sed -n` or `cat`: the recorded runs spent more on those chains than
-on any other kind of step.
+Read source and documents through these tools. Read a file whole only when it
+is small, and a range only when no item boundary fits; never `cd <X> && sed -n`
+or `cat` — the recorded runs spent more on those chains than on any other kind
+of step.
 
 **Delegation — mechanical work only, evidence never verdicts.** You run on the
 large model; the fan-out runs on small ones. Two flash support agents carry
@@ -114,7 +137,11 @@ mechanical work off your context — `stub-materialiser` and
 (`path:line`), a verbatim quote, a neutral flag. Never a ruling, a row label,
 or a spawn recommendation; a support agent that starts deciding has stopped
 being auditable. `document-drafter` drafts the end-of-run documents from
-decisions you already made. Three rules govern them all:
+decisions you already made. `scribe` writes the prose of a dossier or document
+edit from the facts and rulings you hand it — never tests, docstrings or code —
+and `code-scout` answers lookup chains with `path:line` rows. Neither takes a
+linted payload: give `scribe` `TARGETS`, `EDITS`, `FACTS` and `STYLE`, and
+`code-scout` `ROOT` and `QUESTIONS`. Three rules govern them all:
 
 1. **Only mechanical work is delegated** — placing stubs, listing the blast
    radius, drafting documents from decisions you already made. Every

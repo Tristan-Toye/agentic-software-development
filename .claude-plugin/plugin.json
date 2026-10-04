@@ -12,11 +12,13 @@
   ],
   "agents": [
     "./claude/agents/blast-radius-scout.md",
+    "./claude/agents/code-scout.md",
     "./claude/agents/contract-reviewer.md",
     "./claude/agents/document-drafter.md",
     "./claude/agents/implementer.md",
     "./claude/agents/integration-test-author.md",
     "./claude/agents/reviewer.md",
+    "./claude/agents/scribe.md",
     "./claude/agents/stub-materialiser.md",
     "./claude/agents/unit-test-author.md"
   ],

@@ -82,6 +82,8 @@ every flag and keeps every judgement:
 | `stub-materialiser` | Read, Grep, Glob, Bash, Write | The contract verbatim into compiling stubs, past four members. |
 | `blast-radius-scout` | Read, Grep, Glob, Bash | The review scope as a location list, past five changed files. File selection comes from `ocr delegate preview`, so every dropped path arrives with the reason it was dropped. |
 | `document-drafter` | Read, Grep, Glob, Write | ADR and PR drafts from decisions already made, self-scrubbed. |
+| `scribe` | Read, Edit, Write — scoped to `.discovery/`, `docs/`, `.agent-staging/` | Prose edits to a dossier or a document from the facts and rulings it is handed. Never tests, docstrings or code. |
+| `code-scout` | Read, Grep, Glob, the code-navigation tools | Lookup chains — where a symbol is, what calls it — answered as `path:line` rows, never file contents. |
 
 One **independent checker** runs on every build, with no size gate:
 
@@ -255,6 +257,25 @@ gets the same two stops from this plugin:
   count. `ASD_REPEAT_GUARD_LIMIT` sets the allowed run (default 3; 0 turns it
   off). The hook fails open — bad input or state allows the call.
 
+## Token spend
+
+A `/work-on` orchestrator re-sends its whole context on every step, so what it
+carries is what it costs. Three opencode plugins keep that small:
+
+- `opencode/plugins/phase-checkpoint.ts` — the orchestrator closes a phase (or
+  a Phase 4 wave, a Phase 6 round) with `phase_checkpoint`; later requests drop
+  every earlier step and keep the phase summaries.
+- `opencode/plugins/context-guard.ts` — inside a phase, tool output older than
+  the newest 10 steps and reasoning older than the newest 20 become one-line
+  stubs, in batches so the provider cache holds; whole reads of a dossier or
+  of a large file, and VM test runs that bypass `run_tests.py`, are refused
+  with the tool to use instead. Tuned in `context-guard.yaml`.
+- `opencode/plugins/code-nav.ts` — `code_outline`, `code_item`, `code_find`,
+  `doc_section`, `code_replace`, so a read returns the item, not the file.
+
+Every change, the evidence behind it, its hypothesis and its measured result
+are in `ledger/token-spend.md`; `scripts/token_report.py` produces the numbers.
+
 ## Reference
 
 | File | Holds |
@@ -278,6 +299,10 @@ gets the same two stops from this plugin:
 | `scripts/run_tests.py` | Runs a suite (optionally inside a Lima VM) with the whole output in a log, and prints the summed counts and each failure, bounded; cargo, nextest, pytest and TAP parsers. `--selftest` checks the checker. |
 | `scripts/wait_ci.py` | Waits for a PR's checks without output, then prints each check and a bounded digest of every failed job's log. `--selftest` checks the checker. |
 | `scripts/run_gates.py` | Runs a list of gate commands, one log per gate, and prints one line per gate plus the failing lines, bounded. `--selftest` checks the checker. |
+| `scripts/code_nav.py` | Structural reads and edits for Rust, Python and markdown: an outline with line ranges, one item (whole, contract, doc or signature), where a symbol is defined, one markdown section by heading or id, and a replace of one item. Exposed to opencode as `code_*` and `doc_section` tools by `opencode/plugins/code-nav.ts`. `--selftest` checks the checker. |
+| `scripts/gate_commit.py` | Gates, stage only the named paths, commit (signed when asked), push when asked; at most 12 lines out. `--selftest` checks the checker. |
+| `scripts/verify_return.py` | One call after a subagent returns: worktree state, its commits, paths touched beyond ownership, stubs left, the contract hash and the slot release, with the mechanical half of the build-log line. `--selftest` checks the checker. |
+| `scripts/token_report.py` | Where an opencode setup spends its tokens in a time window: per agent, per orchestrator run, carried context by kind, tool adoption and bypasses, plugin events. `--json` snapshots and `--compare` diffs them; the evidence behind `ledger/token-spend.md`. `--selftest` checks the checker. |
 | `scripts/build_claude_plugin.py` | The Claude Code surface, derived from the opencode sources. `--check` fails on drift; `--selftest` checks the checker. |
 
 ## Why the validator matters more than it looks

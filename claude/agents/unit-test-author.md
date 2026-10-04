@@ -44,6 +44,8 @@ and you write the tests that would catch a body that breaks a promise.
 
 ## Payload — your world
 
+When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that file whole before anything else: it is your payload, with the fields below. Your read map admits it under `.agent-staging/`.
+
 Your world is this payload **plus what your tools let you open**. Under
 opencode a field naming a path inside your map — the staging area, the test
 families, your own earlier output — is a pointer you follow yourself. Under
