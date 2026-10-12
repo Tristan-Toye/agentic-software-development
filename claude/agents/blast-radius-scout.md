@@ -112,3 +112,7 @@ Wider than opencode, on purpose:
 - `bash` — opencode allows only git diff, log, show, status and ocr delegate
   preview. Claude Code cannot scope Bash, so the scout gets the whole tool;
   add a project Bash deny rule to compensate.
+
+Your payload arrives pasted in your prompt, one `FIELD: value` per line; a
+`PAYLOAD_FILE:` intake named above is the opencode form. Files the payload
+names are still yours to read, as your tools allow.

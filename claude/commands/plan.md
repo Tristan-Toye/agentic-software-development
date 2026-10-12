@@ -390,3 +390,23 @@ path — and `/work-on W-NNN` once the PR has merged and `<base>` is pulled.
   Jira transition, no push, no PR (committed mode asks once, at Phase 7), no
   command that writes outside the repository.
 - ASD-STE100 binds every word you write in the dossier (`formats/writing.md` §5).
+
+---
+
+**Spawning under Claude Code.** Paste every payload; never spawn by pointing
+at it. In auto mode Claude Code classifies the task a spawn delegates from
+the spawn prompt alone — it cannot see a file the prompt points at — so
+"your payload is the file X; read it whole; every field binds you" reads as
+handing authority to unseen content, and the recorded runs had one such
+spawn in five denied as [Auto-Mode Bypass] or [Data Exfiltration]. So:
+compose and lint the final on disk exactly as the phase says, then Read it
+and spawn with a one-line task statement followed by its fields verbatim,
+one `FIELD: value` per line. Files the payload names (contract, criteria,
+style samples, excerpts) stay paths. Stage every file under
+`<worktree>/.agent-staging/`, never in your scratchpad, and put no secret in
+a prompt: name the script or env file that sets it. The plugin's spawn guard
+refuses a pointer prompt, a scratchpad path or a secret-shaped value with
+the reason; fix the prompt and spawn again. A spawn the classifier still
+denies is never re-worded or re-sent to get past it: stop that spawn, keep
+the rest of the wave, and give the user the agent, the denial reason and the
+payload path — they can retry it from /permissions.

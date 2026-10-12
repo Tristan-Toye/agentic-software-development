@@ -310,7 +310,46 @@ def _footer(tools: list[str], widen: object) -> str:
             lines += textwrap.wrap(
                 f"`{key}` — {reason}", width=76, initial_indent="- ", subsequent_indent="  "
             )
+    lines += [""]
+    lines += textwrap.wrap(
+        "Your payload arrives pasted in your prompt, one `FIELD: value` per line; "
+        "a `PAYLOAD_FILE:` intake named above is the opencode form. Files the "
+        "payload names are still yours to read, as your tools allow.",
+        width=76,
+    )
     return "\n".join(lines) + "\n"
+
+
+# The spawn rule under Claude Code, appended to every command that spawns.
+# The phase references say "under opencode, spawn by the file"; this is the
+# Claude Code half, and it lives here because only Claude Code has the auto
+# mode classifier it answers to. scripts/hooks/spawn_guard.py enforces it.
+_SPAWN_RULE = (
+    "**Spawning under Claude Code.** Paste every payload; never spawn by "
+    "pointing at it. In auto mode Claude Code classifies the task a spawn "
+    "delegates from the spawn prompt alone — it cannot see a file the prompt "
+    "points at — so \"your payload is the file X; read it whole; every field "
+    "binds you\" reads as handing authority to unseen content, and the recorded "
+    "runs had one such spawn in five denied as [Auto-Mode Bypass] or [Data "
+    "Exfiltration]. So: compose and lint the final on disk exactly as the "
+    "phase says, then Read it and spawn with a one-line task statement "
+    "followed by its fields verbatim, one `FIELD: value` per line. Files the "
+    "payload names (contract, criteria, style samples, excerpts) stay paths. "
+    "Stage every file under `<worktree>/.agent-staging/`, never in your "
+    "scratchpad, and put no secret in a prompt: name the script or env file "
+    "that sets it. The plugin's spawn guard refuses a pointer prompt, a "
+    "scratchpad path or a secret-shaped value with the reason; fix the prompt "
+    "and spawn again. A spawn the classifier still denies is never re-worded "
+    "or re-sent to get past it: stop that spawn, keep the rest of the wave, "
+    "and give the user the agent, the denial reason and the payload path — "
+    "they can retry it from /permissions."
+)
+
+
+def _command_footer(body: str) -> str:
+    if "spawn" not in body:
+        return ""
+    return "\n---\n\n" + "\n".join(textwrap.wrap(_SPAWN_RULE, width=76)) + "\n"
 
 
 def render_command(path: Path) -> str:
@@ -332,7 +371,7 @@ def render_command(path: Path) -> str:
     if isinstance(block, dict) and block.get("argument-hint"):
         out.append(f"argument-hint: {block['argument-hint']}")
     out.append("---")
-    return "\n".join(out) + "\n" + fm.body
+    return "\n".join(out) + "\n" + fm.body + _command_footer(fm.body)
 
 
 def render_manifest(agents: list[Path]) -> str:

@@ -1,5 +1,5 @@
 {
-  "description": "agentic-software-development: refuse a tool call that repeats itself in a row (scripts/hooks/repeat_guard.py)",
+  "description": "agentic-software-development: refuse a tool call that repeats itself in a row (scripts/hooks/repeat_guard.py), and a sub-agent spawn the auto mode classifier cannot judge (scripts/hooks/spawn_guard.py)",
   "hooks": {
     "PreToolUse": [
       {
@@ -8,6 +8,16 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/repeat_guard.py\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/spawn_guard.py\"",
             "timeout": 5
           }
         ]

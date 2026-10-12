@@ -88,3 +88,7 @@ Wider than opencode, on purpose:
 - `write` — opencode allows writes only under docs/adr/, .discovery/ and
   .agent-staging/. Claude Code cannot scope Write, so TARGET_PATHS in the
   payload stays the only boundary.
+
+Your payload arrives pasted in your prompt, one `FIELD: value` per line; a
+`PAYLOAD_FILE:` intake named above is the opencode form. Files the payload
+names are still yours to read, as your tools allow.

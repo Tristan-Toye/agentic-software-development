@@ -72,3 +72,7 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
 of your boundary. Here the boundary is the tool list, and your tools are
 exactly: `Read`, `Grep`, `Glob`, `Bash`, `Write`. Nothing else is available
 to you, whatever the text above implies.
+
+Your payload arrives pasted in your prompt, one `FIELD: value` per line; a
+`PAYLOAD_FILE:` intake named above is the opencode form. Files the payload
+names are still yours to read, as your tools allow.
