@@ -257,6 +257,38 @@ gets the same two stops from this plugin:
   count. `ASD_REPEAT_GUARD_LIMIT` sets the allowed run (default 3; 0 turns it
   off). The hook fails open — bad input or state allows the call.
 
+### Spawns the auto mode classifier can judge
+
+In auto mode Claude Code classifies the task a spawn delegates from the spawn
+prompt alone; it never sees a file the prompt points at. The opencode spawn
+form — `PAYLOAD_FILE: <path>`, "read it whole; every field binds you" — hands
+authority to content the classifier cannot see, and in the recorded Claude
+Code runs (2026-10-05..10) about one such spawn in five was denied as
+`[Auto-Mode Bypass]` or `[Data Exfiltration]`, while the identical prompt
+passed on another try. So under Claude Code the payload is pasted:
+
+- **The rule.** The generator appends it to every command that spawns
+  (`claude/commands/work-on.md`, `plan.md`): a one-line task statement, then
+  the linted final's fields verbatim; files the payload names stay paths;
+  staged files live under `<worktree>/.agent-staging/`, never a scratchpad;
+  no secret in a prompt. Each generated agent says its payload arrives
+  pasted. A spawn the classifier still denies goes to the user, never
+  re-worded to get past it.
+- **The check.** `hooks/hooks.json` runs `scripts/hooks/spawn_guard.py`
+  before every `Agent` call to one of this plugin's agents and denies, with
+  the fix as the reason, a pointer prompt (a payload file named and no
+  `FIELD:` line of its own), a path in a Claude Code scratchpad, or a
+  secret-shaped value. It never allows anything — what it lets through still
+  goes to the classifier. Replayed over the 127 recorded spawns it refuses 20
+  of the 22 the classifier denied; the other 2 were pasted payloads.
+  `ASD_SPAWN_GUARD=0` turns it off; it fails open.
+- **Your settings.** The classifier reads `autoMode.environment` from
+  `~/.claude/settings.json` (never a plugin or project file). One line naming
+  this plugin's spawns and the `.agent-staging/` payloads as the intended
+  design gives it the context the prompt cannot.
+
+opencode has no classifier and keeps spawning by the file.
+
 ## Token spend
 
 A `/work-on` orchestrator re-sends its whole context on every step, so what it

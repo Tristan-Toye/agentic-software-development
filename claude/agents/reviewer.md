@@ -336,3 +336,7 @@ document.
 of your boundary. Here the boundary is the tool list, and your tools are
 exactly: `Read`, `Grep`, `Glob`. Nothing else is available to you, whatever
 the text above implies.
+
+Your payload arrives pasted in your prompt, one `FIELD: value` per line; a
+`PAYLOAD_FILE:` intake named above is the opencode form. Files the payload
+names are still yours to read, as your tools allow.
