@@ -222,6 +222,11 @@ changed no code a test runs (documents alone), and log the reason. Then run
 the risk scan Phase 7 needs, while the test paths are in hand:
 `python3 ${PLUGIN_ROOT}/scripts/flake_risk.py <every test file this build
 added or changed>`, and log `FLAKE-RISK: <n> markers in <files> | none`.
+A marker that the repo's `.flake-risk-exempt.md` covers does not count (the
+summary line ends `(<e> exempt)`): a review has already ruled on it, with the
+mechanism. When the scan warns `stale exempt row`, this build changed the line
+that row named. Delete the row in this build, and the scan reads the line
+afresh.
 
 Set `status: review` once the runner's verdict on the current head is green
 and the stability gate is logged.

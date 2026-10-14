@@ -349,6 +349,15 @@ arbitrates it. The recorded "flaky" lock test was exactly that: a retry was
 added to the test five builds running, and the cause was a lock descriptor
 leaked into a child process.
 
+**A marked line you judge stable is an exemption, with its mechanism.** Put
+it in your notes as `FLAKE-EXEMPT: <path> | <kind> | <a substring of the line>
+| <why it is stable>`. Name the mechanism, never the outcome: a poll interval
+under a deadline, a negative window a slow host can only make see less, a test
+double's own latency, a sleep past a server-side window that started first.
+The orchestrator adds the row to the repo's exempt table, so the next build's
+scan reads the line as ruled. A marker you cannot clear with a mechanism is a
+CR or a `PRODUCT-RACE:`, never an exemption.
+
 The `tests` lens never asks for a change outside a test file, and its CRs go
 back to the test's author, not to an implementer.
 
