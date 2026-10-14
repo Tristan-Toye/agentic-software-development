@@ -1,0 +1,44 @@
+{
+  "_comment": "Subscription plans the pipeline runs on, for budget_report.py. Edit when a price or quota changes; keep `checked` and `source` current.",
+  "glm": {
+    "unit": "credits",
+    "rates_per_10k_tokens": {
+      "glm-5.3": {"input": 6.9, "cache_read": 1.7, "output": 24},
+      "glm-5.3-flash": {"input": 2.3, "cache_read": 0.56, "output": 8}
+    },
+    "peak_utc": {"weekdays": [0, 1, 2, 3, 4], "start_hour": 6, "end_hour": 10, "_comment": "Mon-Fri 14:00-18:00 Singapore time; outside it a call bills half"},
+    "offpeak_factor": 0.5,
+    "plans": {
+      "Lite": {"usd_month": 18, "week": 10000, "five_hour": 2000},
+      "Pro": {"usd_month": 80, "week": 60000, "five_hour": 12000},
+      "Max": {"usd_month": 168, "week": 140000, "five_hour": 28000}
+    },
+    "checked": "2026-10-14",
+    "source": "https://blogs.novita.ai/z-ai-coding-plan-pricing/ (z.ai subscription page, checked 2026-10-10)"
+  },
+  "claude": {
+    "unit": "usd_api_equivalent",
+    "prices_per_mtok": {
+      "claude-opus-5-5": {"input": 4, "output": 20, "write_5m": 5, "write_1h": 8, "cache_read": 0.20},
+      "claude-sonnet-5-5": {"input": 2, "output": 10, "write_5m": 2.5, "write_1h": 4, "cache_read": 0.10},
+      "claude-fable-5-1": {"input": 10, "output": 50, "write_5m": 12.5, "write_1h": 20, "cache_read": 0.25},
+      "claude-haiku-4-5-20251001": {"input": 1, "output": 5, "write_5m": 1.25, "write_1h": 2, "cache_read": 0.10}
+    },
+    "plans": {
+      "Team Premium seat (Max 5x tier)": {
+        "usd_month": 125,
+        "week_usd": 1010,
+        "week_usd_basis": "lower bound: Claude Code use on this machine since the weekly reset priced at API rates ($414) / the 41% the account showed at 2026-10-14T08:53Z; use elsewhere also counts, so the real week is larger. budget_report.py replaces it with a calibration from ~/.claude/usage-log.jsonl once that log spans enough of a week."
+      }
+    },
+    "checked": "2026-10-14",
+    "source": "https://docs.claude.com/en/docs/about-claude/pricing ; plan tier from ~/.claude.json userRateLimitTier=default_claude_max_5x"
+  },
+  "codex": {
+    "plans": {
+      "Pro 200": {"usd_month": 200, "week": null, "_comment": "token allowance unpublished; measure with /status before and after one dossier"}
+    },
+    "checked": "2026-10-14",
+    "source": "https://www.developersdigest.tech/blog/codex-usage-limits-pricing-2026"
+  }
+}
