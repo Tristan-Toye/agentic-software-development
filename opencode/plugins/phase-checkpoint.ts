@@ -17,10 +17,16 @@ const { tool } = (await import(
 // every step: a context that grows to 400k is paid for hundreds of times. opencode's
 // own compaction is token-triggered, so it fires mid-investigation; DCP's `compress`
 // tool is model-triggered at any time. This plugin gives the orchestrator one tool,
-// `phase_checkpoint`, to call when a phase is done and its outcome is in the dossier's
+// `phase_checkpoint`, to call when a phase — or a stage inside one: a wave, a test or
+// review round, an investigation — is done and its outcome is in the dossier's
 // `## Build log`. From the next request on, everything before that call is dropped
-// from what the model sees, and the phase summaries ride on the original task
-// message instead.
+// from what the model sees, and the summaries ride on the original task message.
+//
+// Context masking (context-guard) cannot remove what the orchestrator must keep — old
+// call inputs it still cites, protected outputs — so a long stage grows past it: the
+// recorded runs went 224 and 281 steps without a checkpoint. A guarded agent is
+// therefore reminded in a tool result after NUDGE_EVERY tool calls without a checkpoint,
+// and again every NUDGE_EVERY after that (OPENCODE_PHASE_CHECKPOINT_NUDGE_CALLS; 0 = off).
 //
 // Only the outgoing request changes (experimental.chat.messages.transform). The
 // session's stored history, the TUI transcript and /work-on's resume from the dossier
@@ -43,6 +49,15 @@ const { tool } = (await import(
 const AGENTS = new Set(["work-on"])
 const MAX_SUMMARY_CHARS = 6000
 const TOOL = "phase_checkpoint"
+const NUDGE_EVERY = (() => {
+  const n = Number(process.env.OPENCODE_PHASE_CHECKPOINT_NUDGE_CALLS ?? 80)
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 80
+})()
+// sessionID -> the agent of its latest request (chat.params), and tool calls since the
+// session's latest checkpoint (in memory: a restart starts the count again, which only
+// delays one reminder)
+const sessionAgents = new Map<string, string>()
+const callsSince = new Map<string, number>()
 
 type Checkpoint = { phase: string; summary: string; messageID: string; marker: string; at: string }
 
@@ -121,8 +136,10 @@ function summaryText(list: Checkpoint[]): string {
   return (
     "## Completed phases (phase_checkpoint)\n\n" +
     "Earlier steps of this run are no longer in context. What they established is below " +
-    "and in the dossier's `## Build log`, which is the record. Continue with the next phase: " +
-    "read its phase file and the dossier sections it needs; do not redo finished phases.\n\n" +
+    "and in the dossier's `## Build log`, which is the record. Continue from the latest entry: " +
+    "after a phase, read the next phase file; after a stage inside a phase, re-read only the " +
+    "section of that phase file you need (doc_section) and the dossier sections it names. " +
+    "Do not redo finished phases or stages.\n\n" +
     phases
   )
 }
@@ -158,17 +175,25 @@ function applyCheckpoint(messages: Entry[], list: Checkpoint[]): Cut | undefined
 }
 
 export const PhaseCheckpointPlugin: Plugin = async () => ({
+  "chat.params": async (input) => {
+    if (input.sessionID && input.agent) sessionAgents.set(input.sessionID, input.agent)
+  },
+
   tool: {
     [TOOL]: tool({
       description:
-        "End a /work-on phase: drop every earlier step of this run from your context from the next " +
-        "request on, keeping the original task and the summaries of completed phases. Call it ONLY at a phase " +
-        "boundary, after the phase's outcome is in the dossier's ## Build log — never mid-investigation, never " +
-        "to save space. The summary is what you will know about all earlier work: the dossier path and worktree, " +
-        "the phase just finished and the next one, commits and SHAs, rulings and open items, and anything the " +
-        `next phase must not rediscover. At most ${MAX_SUMMARY_CHARS} characters; detail belongs in the build log.`,
+        "Close a /work-on phase or a stage inside one: drop every earlier step of this run from your context " +
+        "from the next request on, keeping the original task and the summaries of completed phases and stages. " +
+        "Call it at a phase boundary, or when a stage inside a phase is done — a wave returned, a test or review " +
+        "round ruled, an investigation answered — and only after that outcome is written to the dossier's " +
+        "## Build log. Never in the middle of a stage you are still working from. The summary is what you will " +
+        "know about all earlier work: the dossier path and worktree, what just finished and what comes next, " +
+        "commits and SHAs, rulings, findings and open items, and anything later steps must not rediscover. " +
+        `At most ${MAX_SUMMARY_CHARS} characters; detail belongs in the build log.`,
       args: {
-        phase: tool.schema.string().describe('the phase just finished, starting "Phase <N>", e.g. "Phase 3 — Mechanical check"'),
+        phase: tool.schema
+          .string()
+          .describe('what just finished, starting "Phase <N>": "Phase 3 — Mechanical check", or a stage: "Phase 6 — round 2", "Phase 4 — wave 1"'),
         summary: tool.schema.string().describe("the hand-off to the rest of the run, self-contained"),
       },
       async execute({ phase, summary }, ctx) {
@@ -194,6 +219,7 @@ export const PhaseCheckpointPlugin: Plugin = async () => ({
           ...list,
           { phase, summary, messageID: ctx.messageID, marker, at: new Date().toISOString() },
         ])
+        callsSince.set(ctx.sessionID, 0)
         log("recorded", ctx.sessionID, `${marker} after "${phase}", summary ${summary.length} chars`)
         return `${TOOL}: ${marker} recorded after ${phase}. From the next request on, earlier steps are out of context; the summaries of ${list.length + 1} completed phase(s) stay.`
       },
@@ -203,6 +229,17 @@ export const PhaseCheckpointPlugin: Plugin = async () => ({
   // A phase file opened while the previous phase has no checkpoint is a missed
   // boundary: say so in that read's result, where the orchestrator looks next.
   "tool.execute.after": async (input, output) => {
+    // A long stage without a checkpoint: remind, in the result the orchestrator reads next.
+    if (NUDGE_EVERY > 0 && input.tool !== TOOL && AGENTS.has(sessionAgents.get(input.sessionID) ?? "")) {
+      const n = (callsSince.get(input.sessionID) ?? 0) + 1
+      callsSince.set(input.sessionID, n)
+      if (n % NUDGE_EVERY === 0 && typeof output.output === "string") {
+        log("nudge", input.sessionID, `${n} tool calls since the last checkpoint`)
+        output.output +=
+          `\n\n[${TOOL}] ${n} tool calls since the last checkpoint. When the stage you are in is done and its ` +
+          `outcome is in ## Build log, call ${TOOL} with "Phase <N> — <stage>" before starting the next one.`
+      }
+    }
     if (input.tool !== "read") return
     const match = PHASE_FILE_RE.exec(String(input.args?.filePath ?? ""))
     if (!match) return

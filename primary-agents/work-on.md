@@ -61,23 +61,28 @@ the next request on, every earlier step of the run is out of your context: the
 what remains. So write the summary as the hand-off to the rest of the run —
 the live dossier's path, `X` and its branch, the SHAs that matter, the rulings
 and open items, the budgets spent, the next phase — and never as a diary; the
-detail is already in `## Build log`. Call it at a phase end, and inside the two
-long phases at the round boundaries their files name (Phase 4: after each
-wave's returns are verified and logged; Phase 6: after each arbitration round's
-rulings are logged), with the phase's own number — never mid-investigation or
-to save space: a boundary you cross early leaves the next step without the
-facts it was working on. Phases 0 and 1 are short: checkpoint them together,
+detail is already in `## Build log`. Call it at a phase end, and at every
+stage boundary inside a phase, named `Phase <N> — <stage>` with the phase's own
+number: each Phase 4 wave once its returns are verified and logged, each Phase 6
+or Phase 7 round once its rulings are logged, and any investigation once its
+findings are in the build log. Never in the middle of a stage: a boundary you
+cross early leaves the next step without the facts it was working on. Masking
+cannot shrink what you must keep, so a long stage is what grows your context;
+after 80 tool calls without a checkpoint a tool result reminds you to close
+the stage you are in. Phases 0 and 1 are short: checkpoint them together,
 as "Phase 1", when Phase 1 ends. Under Claude Code the tool does not exist —
 skip the call; the host compacts on its own.
 
 **Old output fades on its own, under opencode.** The context-guard plugin
 masks tool output older than your newest 10 steps and reasoning older than
-your newest 20 once a request passes its trigger: the call stays, the output
-becomes a one-line stub. When you need a masked result again, fetch only the
-part you need — `code_item`, `doc_section`, `dossier_edit.py section`, or the
-command once more. It also refuses a whole read of a dossier or of a file over
-20 KB and a VM test run that bypasses `run_tests.py`; the refusal names the
-tool to use instead. Take it, and never work around a refusal.
+your newest 20 once a request passes its trigger: the output becomes a
+one-line stub, and a long old input (a heredoc, a task prompt, a write's
+content) keeps only its head. When you need a masked result again, fetch only
+the part you need — `code_item`, `doc_section`, `dossier_edit.py section`, or
+the command once more. It also refuses a whole read of a dossier or of a file
+over 20 KB (never of a phase file) and a VM test run that bypasses
+`run_tests.py`; the refusal names the tool to use instead. Take it, and never
+work around a refusal.
 
 **The dossier is sought, never read whole.** Every read you make stays in
 context until the next phase boundary, and a whole dossier is tens of

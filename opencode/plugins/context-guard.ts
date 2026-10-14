@@ -20,10 +20,25 @@ import { dirname, extname, isAbsolute, join, resolve } from "node:path"
 //    session under $XDG_DATA_HOME/opencode/context-guard/<session>.json, so a restart
 //    keeps the same masked set.
 //
+//    Past the watermark the long inputs of `mask_input_tools` are shortened too (a bash
+//    heredoc, a task prompt, a write's content): masking only outputs left a floor of
+//    old inputs that the recorded runs could not get under the trigger.
+//
+//    Every move breaks the prompt cache from the watermark on, so moves are batched by
+//    two rules. A move must free at least `min_gain_tokens`; and after a move (or a
+//    check that found nothing worth freeing) the next one waits until the request has
+//    regrown `regrow_tokens` past the size it left. Without them a context whose
+//    unmaskable part sits above the trigger moved the watermark on every step: 154 moves
+//    and ~35 cache misses in one recorded run. When a check finds nothing worth freeing
+//    it logs a `floor` line: only a phase_checkpoint can shrink that context.
+//
 // B. A read guard (tool.execute.before). For the agents in `guard_agents` it refuses
 //    whole-file reads of dossiers and large files, `cargo test` through limactl without
 //    run_tests.py, and `cat` of a large file. A refusal is a thrown Error: the call is
 //    blocked and the model reads the message. A guard that fails internally allows.
+//    The files in `protect_paths` (the pipeline's own phase files) are never refused: the
+//    orchestrator is told to read them whole. `limactl` counts only where it is the
+//    command run, never as text inside another command's argument.
 //
 // Every mask move and every refusal is one timestamped line in context-guard.log beside
 // the watermarks. OPENCODE_CONTEXT_GUARD_LOG: unset, `true`, `1`, `on` or `yes` log to
@@ -36,6 +51,10 @@ type Config = {
   keep_reasoning_steps: number
   protect_tools: string[]
   protect_paths: string[]
+  mask_input_tools: string[]
+  keep_input_chars: number
+  regrow_tokens: number
+  min_gain_tokens: number
   mask_agents: string[]
   mask_reasoning_agents: string[]
   guard_agents: string[]
@@ -43,11 +62,15 @@ type Config = {
 }
 
 const DEFAULTS: Config = {
-  trigger_tokens: 100000,
+  trigger_tokens: 70000,
   keep_tool_steps: 10,
   keep_reasoning_steps: 20,
   protect_tools: ["phase_checkpoint", "task", "question", "todowrite", "skill", "edit", "write"],
   protect_paths: ["references/work-on/phase-\\d+\\.md", "primary-agents/work-on\\.md"],
+  mask_input_tools: ["bash", "task", "write", "edit"],
+  keep_input_chars: 300,
+  regrow_tokens: 10000,
+  min_gain_tokens: 4000,
   mask_agents: ["work-on", "dossier", "implementer", "integration-test-author", "reviewer"],
   mask_reasoning_agents: ["work-on", "dossier"],
   guard_agents: ["work-on"],
@@ -82,6 +105,10 @@ function currentConfig(): Config {
         keep_reasoning_steps: num(raw.keep_reasoning_steps, DEFAULTS.keep_reasoning_steps),
         protect_tools: strings(raw.protect_tools, DEFAULTS.protect_tools),
         protect_paths: strings(raw.protect_paths, DEFAULTS.protect_paths),
+        mask_input_tools: strings(raw.mask_input_tools, DEFAULTS.mask_input_tools),
+        keep_input_chars: num(raw.keep_input_chars, DEFAULTS.keep_input_chars, 1),
+        regrow_tokens: num(raw.regrow_tokens, DEFAULTS.regrow_tokens),
+        min_gain_tokens: num(raw.min_gain_tokens, DEFAULTS.min_gain_tokens),
         mask_agents: strings(raw.mask_agents, DEFAULTS.mask_agents),
         mask_reasoning_agents: strings(raw.mask_reasoning_agents, DEFAULTS.mask_reasoning_agents),
         guard_agents: strings(raw.guard_agents, DEFAULTS.guard_agents),
@@ -130,8 +157,11 @@ function log(event: string, sessionID: string, detail: string) {
 // ---- watermark state -------------------------------------------------------------
 
 // tool: newest message whose older tool outputs are masked; reasoning: the same for
-// reasoning (its window is wider, so its watermark trails the tool one).
-type State = { tool?: string; reasoning?: string }
+// reasoning (its window is wider, so its watermark trails the tool one). floor: the
+// estimated request size the last move (or no-gain check) left, valid while floorAt —
+// the newest message at that time — is still in the request (a phase_checkpoint cut
+// removes it, and the floor with it).
+type State = { tool?: string; reasoning?: string; floor?: number; floorAt?: string }
 const states = new Map<string, State>()
 
 function load(sessionID: string): State {
@@ -162,8 +192,24 @@ type Entry = { info: any; parts: any[] }
 
 const REASONING_MASK = "[earlier reasoning omitted]"
 const toolMask = (tool: string, chars: number) =>
-  `[context-guard: ${tool} output of ${chars} chars masked; the call above is kept — re-run it, ` +
+  `[context-guard: ${tool} output of ${chars} chars masked; re-run the call if you still need it, ` +
   "or fetch only the part you need (code_item, doc_section, dossier_edit section)]"
+
+// A long string field of an old call's input, shortened: the head says what the call
+// was; the rest (a heredoc, a payload, a file's content) is on disk or in the dossier.
+function shortenInput(input: any, keep: number): { input: any; chars: number } {
+  if (!input || typeof input !== "object") return { input, chars: 0 }
+  let chars = 0
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(input)) {
+    if (typeof v === "string" && v.length > keep + 80) {
+      const note = ` … [context-guard: ${v.length - keep} chars of this old input elided]`
+      out[k] = v.slice(0, keep) + note
+      chars += v.length - keep - note.length
+    } else out[k] = v
+  }
+  return chars > 0 ? { input: out, chars } : { input, chars: 0 }
+}
 
 const outputOf = (p: any): string => (typeof p?.state?.output === "string" ? p.state.output : "")
 
@@ -198,11 +244,11 @@ function isProtected(p: any, cfg: Config): boolean {
   return target !== "" && protectRes.some((re) => re.test(target))
 }
 
-type Masked = { outputs: number; reasoning: number; chars: number }
+type Masked = { outputs: number; inputs: number; reasoning: number; chars: number }
 
 // Masks the older parts of the message list in place (replacing entries by copies).
 function applyMask(messages: Entry[], state: State, cfg: Config, reasoningToo: boolean): Masked {
-  const result: Masked = { outputs: 0, reasoning: 0, chars: 0 }
+  const result: Masked = { outputs: 0, inputs: 0, reasoning: 0, chars: 0 }
   const toolAt = state.tool ? messages.findIndex((m) => m.info?.id === state.tool) : -1
   const reasonAt = reasoningToo && state.reasoning ? messages.findIndex((m) => m.info?.id === state.reasoning) : -1
   for (let i = 0; i <= Math.max(toolAt, reasonAt); i++) {
@@ -210,14 +256,28 @@ function applyMask(messages: Entry[], state: State, cfg: Config, reasoningToo: b
     if (m.info?.role !== "assistant") continue
     let changed = false
     const parts = m.parts.map((p) => {
-      if (p?.type === "tool" && i <= toolAt && p.state?.status === "completed" && !isProtected(p, cfg)) {
-        const out = outputOf(p)
-        const mask = toolMask(String(p.tool), out.length)
-        if (out.length > mask.length) {
+      if (p?.type === "tool" && i <= toolAt && p.state?.status === "completed") {
+        let state = p.state
+        if (!isProtected(p, cfg)) {
+          const out = outputOf(p)
+          const mask = toolMask(String(p.tool), out.length)
+          if (out.length > mask.length) {
+            result.outputs++
+            result.chars += out.length - mask.length
+            state = { ...state, output: mask }
+          }
+        }
+        if (cfg.mask_input_tools.includes(p.tool)) {
+          const short = shortenInput(state.input, cfg.keep_input_chars)
+          if (short.chars > 0) {
+            result.inputs++
+            result.chars += short.chars
+            state = { ...state, input: short.input }
+          }
+        }
+        if (state !== p.state) {
           changed = true
-          result.outputs++
-          result.chars += out.length - mask.length
-          return { ...p, state: { ...p.state, output: mask } }
+          return { ...p, state }
         }
       }
       if (p?.type === "reasoning" && i <= reasonAt) {
@@ -255,6 +315,10 @@ const DOSSIER_RE = /\/\.discovery\/dossiers\/[^/]+\.md$/
 const SOURCE_EXT = new Set([
   ".rs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".py", ".go", ".java", ".kt", ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".swift", ".sh",
 ])
+// limactl as the command run: at the start, or after a separator, `then`, `do`, `exec`,
+// `time` or `rtk` — not inside a quoted argument of another command (compose_payloads.py
+// carries a TEST_COMMAND that names limactl; refusing it cost the recorded runs a step).
+const LIMACTL_RUN_RE = /(?:^|[;&|(]\s*|\b(?:then|do|exec|time)\s+)(?:rtk\s+)?limactl\s+shell\b/m
 const CAT_RE = /^\s*cat\s+(?:--\s+)?("[^"]+"|'[^']+'|[^\s|;&<>$`()*?]+)\s*$/
 
 function sizeOf(file: string, cwd: string): { bytes: number; lines: number } | undefined {
@@ -285,6 +349,7 @@ function refusal(tool: string, args: any, cfg: Config): string | undefined {
   if (tool === "read") {
     const file = String(args?.filePath ?? "")
     if (!file || args?.limit !== undefined) return undefined
+    if (protectRes.some((re) => re.test(file))) return undefined
     if (DOSSIER_RE.test(file))
       return `read a dossier by section: python3 ${pluginRepo}/scripts/dossier_edit.py section <dossier> '<heading>' — or read with offset/limit`
     const size = sizeOf(file, process.cwd())
@@ -293,7 +358,7 @@ function refusal(tool: string, args: any, cfg: Config): string | undefined {
   }
   if (tool === "bash") {
     const command = String(args?.command ?? "")
-    if (/limactl\s+shell/.test(command) && /cargo\s+(test|nextest)\b/.test(command) && !command.includes("run_tests.py"))
+    if (LIMACTL_RUN_RE.test(command) && /cargo\s+(test|nextest)\b/.test(command) && !command.includes("run_tests.py"))
       return `use python3 ${pluginRepo}/scripts/run_tests.py --vm nightwatch --workdir <X> --env-script deploy/host/test-env.sh -- <command>`
     const cat = CAT_RE.exec(command)
     if (cat) {
@@ -347,24 +412,42 @@ export const ContextGuardPlugin: Plugin = async () => {
         const state = load(sessionID)
 
         const before = estimate(messages)
-        if (before >= cfg.trigger_tokens) {
+        const floorValid = state.floor !== undefined && indexOfId(messages, state.floorAt) !== -1
+        const due = Math.max(cfg.trigger_tokens, floorValid ? (state.floor as number) + cfg.regrow_tokens : 0)
+        if (before >= due) {
           const tool = watermarkFor(messages, cfg.keep_tool_steps)
           const reasoning = reasoningToo ? watermarkFor(messages, cfg.keep_reasoning_steps) : undefined
-          const next: State = { ...state }
+          const next: State = { tool: state.tool, reasoning: state.reasoning }
           if (indexOfId(messages, tool) > indexOfId(messages, state.tool)) next.tool = tool
           if (indexOfId(messages, reasoning) > indexOfId(messages, state.reasoning)) next.reasoning = reasoning
-          if (next.tool !== state.tool || next.reasoning !== state.reasoning) {
-            save(sessionID, next)
-            const masked = applyMask(messages, next, cfg, reasoningToo)
-            const after = Math.max(0, before - Math.round(masked.chars / 4))
+          // What this move frees beyond what the current watermark already masks; measured
+          // on copies of the list (applyMask replaces entries, never edits them).
+          const moved = next.tool !== state.tool || next.reasoning !== state.reasoning
+          const now = applyMask(messages.slice(), state, cfg, reasoningToo)
+          const masked = moved ? applyMask(messages.slice(), next, cfg, reasoningToo) : now
+          const gain = Math.round((masked.chars - now.chars) / 4)
+          const newest = messages[messages.length - 1]?.info?.id
+          if (moved && gain >= cfg.min_gain_tokens) {
+            const after = Math.max(0, before - gain)
+            save(sessionID, { ...next, floor: after, floorAt: newest })
+            applyMask(messages, next, cfg, reasoningToo)
             log(
               "mask",
               sessionID,
               `watermark ${next.tool ?? next.reasoning}: ~${Math.round(before / 1000)}k -> ~${Math.round(after / 1000)}k tokens, ` +
-                `${masked.outputs} outputs, ${masked.reasoning} reasoning`,
+                `${masked.outputs - now.outputs} outputs, ${masked.inputs - now.inputs} inputs, ` +
+                `${masked.reasoning - now.reasoning} reasoning`,
             )
             return
           }
+          // Not worth a cache break: hold the watermark and wait for the request to regrow.
+          save(sessionID, { ...state, floor: before, floorAt: newest })
+          log(
+            "floor",
+            sessionID,
+            `~${Math.round(before / 1000)}k tokens, a move would free ~${Math.round(Math.max(0, gain) / 1000)}k: ` +
+              "the rest is unmaskable; only a phase_checkpoint shrinks it",
+          )
         }
         if (state.tool || state.reasoning) applyMask(messages, state, cfg, reasoningToo)
       } catch (err) {

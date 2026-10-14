@@ -180,6 +180,13 @@ never re-spawn it.** A clean run costs 3 spawns; one lens filing, fixed and
 confirmed costs 5; the worst case is 11. Re-spawning a satisfied lens buys
 nothing — it has no question left to answer, and its one pass is already spent.
 
+**Checkpoint after each round.** When a round's CRs are ruled, its fixes have
+returned and been verified, and the round's ledger lines are in `## Build log`,
+call `phase_checkpoint` with `Phase 7 — round <n>` and the hand-off: the head
+SHA, the open CRs per lens with their ledger ids, the rounds spent against the
+budget, and which lenses the next round re-spawns. The next round reads the
+CRs from the ledger, not from this round's transcript.
+
 **Exit condition:** every lens at zero open CRs.
 **Budget: 2 fix rounds.** After the second, stop and show the user the round
 history and the unresolved tensions.

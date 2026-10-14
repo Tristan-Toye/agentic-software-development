@@ -1,0 +1,146 @@
+{
+ "window": [
+  1791137922000,
+  1791792000000
+ ],
+ "unknown_models": [],
+ "totals": {
+  "steps": 1740,
+  "credits": 56779
+ },
+ "per_day": {
+  "2026-10-08": 23621,
+  "2026-10-09": 28702,
+  "2026-10-10": 4456
+ },
+ "agents": {
+  "work-on": {
+   "sessions": 2,
+   "steps": 700,
+   "credits": 33174,
+   "share_pct": 58.4,
+   "avg_ctx_k": 242,
+   "max_ctx_k": 452,
+   "first_step_ctx_k": 262.3
+  },
+  "build": {
+   "sessions": 1,
+   "steps": 325,
+   "credits": 17954,
+   "share_pct": 31.6,
+   "avg_ctx_k": 293,
+   "max_ctx_k": 405,
+   "first_step_ctx_k": 164.6
+  },
+  "implementer": {
+   "sessions": 3,
+   "steps": 442,
+   "credits": 4008,
+   "share_pct": 7.1,
+   "avg_ctx_k": 143,
+   "max_ctx_k": 238,
+   "first_step_ctx_k": 26.2
+  },
+  "reviewer": {
+   "sessions": 12,
+   "steps": 86,
+   "credits": 499,
+   "share_pct": 0.9,
+   "avg_ctx_k": 50,
+   "max_ctx_k": 99,
+   "first_step_ctx_k": 18.6
+  },
+  "integration-test-author": {
+   "sessions": 5,
+   "steps": 63,
+   "credits": 380,
+   "share_pct": 0.7,
+   "avg_ctx_k": 59,
+   "max_ctx_k": 97,
+   "first_step_ctx_k": 19.5
+  },
+  "unit-test-author": {
+   "sessions": 7,
+   "steps": 46,
+   "credits": 376,
+   "share_pct": 0.7,
+   "avg_ctx_k": 54,
+   "max_ctx_k": 105,
+   "first_step_ctx_k": 11.6
+  },
+  "document-drafter": {
+   "sessions": 2,
+   "steps": 61,
+   "credits": 335,
+   "share_pct": 0.6,
+   "avg_ctx_k": 69,
+   "max_ctx_k": 92,
+   "first_step_ctx_k": 13.9
+  },
+  "blast-radius-scout": {
+   "sessions": 1,
+   "steps": 17,
+   "credits": 55,
+   "share_pct": 0.1,
+   "avg_ctx_k": 33,
+   "max_ctx_k": 60,
+   "first_step_ctx_k": 11.7
+  }
+ },
+ "runs": {
+  "ses_f038c0f49ffeCgb0QwGu5qkNor": {
+   "title": "W-091",
+   "steps": 534,
+   "credits": 26048,
+   "credits_per_step": 48.8,
+   "avg_ctx_k": 251,
+   "max_ctx_k": 452,
+   "checkpoints": 8,
+   "mask_moves": 0
+  },
+  "ses_f038d6744ffeQO6XBdcq8PQFS9": {
+   "title": "W-069",
+   "steps": 166,
+   "credits": 7125,
+   "credits_per_step": 42.9,
+   "avg_ctx_k": 212,
+   "max_ctx_k": 272,
+   "checkpoints": 8,
+   "mask_moves": 0
+  }
+ },
+ "carried": {
+  "reasoning": 36.8,
+  "read output": 21.3,
+  "bash output": 13.3,
+  "bash input": 8.4,
+  "task input": 6.5,
+  "other input": 5.1,
+  "other output": 3.4,
+  "text": 2.5,
+  "task output": 2.3,
+  "read input": 0.4
+ },
+ "tools": {
+  "bash grep/rg": 215,
+  "bypass:raw limactl cargo test": 10,
+  "bypass:sed/cat/head/tail reads": 415,
+  "bypass:whole dossier read": 2,
+  "bypass:whole-file read > 20 KB": 4,
+  "calls": 735,
+  "errors": 2,
+  "read calls": 34,
+  "script:dossier_edit": 26,
+  "script:gate_commit": 6,
+  "script:git_state": 1,
+  "script:prepare_wave": 8,
+  "script:run_tests": 17,
+  "script:validate_pipeline": 11,
+  "script:wait_ci": 6,
+  "tool:phase_checkpoint": 3
+ },
+ "plugin_events": {
+  "phase-checkpoint:cut": 6,
+  "phase-checkpoint:recorded": 3
+ }
+}

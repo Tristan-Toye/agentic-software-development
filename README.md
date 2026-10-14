@@ -294,14 +294,18 @@ opencode has no classifier and keeps spawning by the file.
 A `/work-on` orchestrator re-sends its whole context on every step, so what it
 carries is what it costs. Three opencode plugins keep that small:
 
-- `opencode/plugins/phase-checkpoint.ts` — the orchestrator closes a phase (or
-  a Phase 4 wave, a Phase 6 round) with `phase_checkpoint`; later requests drop
-  every earlier step and keep the phase summaries.
+- `opencode/plugins/phase-checkpoint.ts` — the orchestrator closes a phase or
+  a stage inside one (a wave, a test or review round, an investigation) with
+  `phase_checkpoint`; later requests drop every earlier step and keep the
+  summaries. After 80 tool calls without one, a tool result reminds it.
 - `opencode/plugins/context-guard.ts` — inside a phase, tool output older than
   the newest 10 steps and reasoning older than the newest 20 become one-line
-  stubs, in batches so the provider cache holds; whole reads of a dossier or
-  of a large file, and VM test runs that bypass `run_tests.py`, are refused
-  with the tool to use instead. Tuned in `context-guard.yaml`.
+  stubs, and long old inputs (heredocs, task prompts, write contents) keep
+  their head; moves are batched (a minimum gain, then a regrowth) so the
+  provider cache holds. Whole reads of a dossier or of a large file (never a
+  phase file), and VM test runs that bypass `run_tests.py`, are refused with
+  the tool to use instead. Tuned in `context-guard.yaml`, against recorded
+  sessions with `opencode/plugins/test/replay-guard.ts`.
 - `opencode/plugins/code-nav.ts` — `code_outline`, `code_item`, `code_find`,
   `doc_section`, `code_replace`, so a read returns the item, not the file.
 

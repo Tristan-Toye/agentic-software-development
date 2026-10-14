@@ -5,16 +5,30 @@
 # Estimated request size (latest assistant's input + cache-read tokens, plus ~chars/4 of
 # what came after) at which the mask watermark moves forward. Between two moves the same
 # watermark applies to every request, so the provider's prompt cache keeps hitting.
-trigger_tokens: 100000
+trigger_tokens: 70000
 
 # When the watermark moves, the newest N assistant steps keep their tool output ...
 keep_tool_steps: 10
 # ... and the newest N keep their reasoning. 0 = never mask reasoning.
 keep_reasoning_steps: 20
 
+# A move must free at least this many tokens, or it is not worth the cache break it costs.
+min_gain_tokens: 4000
+# After a move (or a check that found too little to free), the next move waits until the
+# request has regrown this much past the size it left. Batches moves: the recorded runs
+# without it moved on every step once the unmaskable part sat above the trigger.
+regrow_tokens: 10000
+
+# Past the watermark, long string inputs of these tools are cut to their first
+# keep_input_chars (a heredoc, a task prompt, a write's content); their outputs follow
+# protect_tools as before.
+mask_input_tools: [bash, task, write, edit]
+keep_input_chars: 300
+
 # Tools whose output is never masked.
 protect_tools: [phase_checkpoint, task, question, todowrite, skill, edit, write]
-# A read or bash whose path / command matches one of these regexes is never masked.
+# A read or bash whose path / command matches one of these regexes is never masked, and a
+# read of one is never refused by the read guard below (the orchestrator reads them whole).
 protect_paths:
   - 'references/work-on/phase-\d+\.md'
   - 'primary-agents/work-on\.md'
