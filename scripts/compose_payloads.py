@@ -25,7 +25,8 @@ function below for the exact reasoning per field)
 
 Mechanical, always derived, never a placeholder: WORKTREE_DIR, BRANCH, MODE
 (default `build`), CONTRACT (+ CONTRACT_HASH), OWNED_PATHS (with a stub-location
-aid appended: `member -> path:line`, grepped from the contract), PACKAGE,
+aid appended: `member -> path:line`, the member's declaration in a contract
+file the package owns), PACKAGE,
 CRITERIA, STANDARDS, JIRA_KEY, DOSSIER (the integration author's excerpt, or
 the reviewer's build-log-free copy, generated and written under
 `.agent-staging/` by this script — never the live dossier itself),
@@ -51,6 +52,8 @@ given with --set, same as SHARED_IDIOM / DELIVERY_CHANGE for that kind.
         --contract-paths src/flush.py [--test-command CMD] [--hooks TEXT] \\
         [--set FIELD=VALUE ...] [--plugin-root DIR] [--manifest FILE] [--force]
         [--failures-from LOG] [--excerpt FILE:A-B ... --excerpt-field FIELD]
+        [--hook-outputs STEP:GLOB ...] [--no-stub-hints]
+    compose_payloads.py --emit-prompt PAYLOAD
     compose_payloads.py --refresh-contract PAYLOAD [PAYLOAD ...] --root X \\
         --contract-paths src/flush.py
     compose_payloads.py --selftest
@@ -60,6 +63,30 @@ CONTRACT block and, where the kind has one, CONTRACT_HASH in each named payload
 in place — the Phase 3 contract fix after a payload was composed: it prints
 `CONTRACT_HASH old -> new` per payload and touches no other byte. It never
 composes, so it needs only `--root` and `--contract-paths`.
+
+Where CONTRACT comes from depends on the phase. The Phase 4 kinds (both test
+authors, the integration author, an implementer in MODE build) paste the
+`--contract-paths` files, which are still stubs. A reviewer's code lens and an
+implementer in MODE fix run after the merge, when those files hold the
+implementation, so their CONTRACT is the dossier's `## Contract` section,
+byte for byte (an empty section is refused) and `--contract-paths` is refused
+for them: the files are not their authority. `--no-stub-hints` leaves the
+`# stub locations` aid out of OWNED_PATHS.
+
+`--hook-outputs STEP:GLOB` (implementer, repeatable) appends an
+`EXPECTED_HOOK_OUTPUTS:` sub-list to HOOKS: the paths a named commit-hook step
+rewrites on every commit, which the implementer commits through and lists under
+TOUCHED_BEYOND as hook output (references/payloads/implementer.md).
+
+`--emit-prompt PAYLOAD` prints the spawn prompt for a linted final under Claude
+Code: the file's bytes, then a `PAYLOAD_SHA256:` line carrying their hash (the
+one prepare_wave.py records). Paste it as the spawn prompt, a one-line task
+statement above it if you like; scripts/hooks/spawn_guard.py accepts it.
+
+Every write re-reads the payload and compares each pasted verbatim block
+(CONTRACT, CRITERIA, the `--excerpt-field` field) with the text meant to be
+pasted; a mismatch, or a verbatim block that is empty, is refused and the file
+removed. `--excerpt` lines that are all blank are refused for the same reason.
 
 `--failures-from LOG` fills FAILURES (implementer `--set MODE=fix`, or the
 integration author) with run_tests.py's digest of LOG — totals, capped failing
@@ -249,6 +276,22 @@ def contract_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def dossier_contract(dossier_text: str, args: argparse.Namespace, who: str) -> str:
+    """CONTRACT for a spawn that runs after the merge (a reviewer's code lens, an
+    implementer in MODE fix): the dossier's `## Contract` section, verbatim. The
+    contract files then hold the implementation, which is not what the field is
+    the authority on, so naming them is refused rather than quietly ignored."""
+    if args.contract_paths:
+        raise Refusal(
+            "%s takes CONTRACT from the dossier's `## Contract`, not from files: after the "
+            "merge the contract files hold the implementation. Drop --contract-paths" % who
+        )
+    text = section_body(dossier_text, "## Contract")
+    if not text.strip():
+        raise Refusal("the dossier's `## Contract` section is empty; %s needs it as CONTRACT" % who)
+    return text
+
+
 # A member name a contract signature declares: an identifier immediately
 # before `(`. The contract holds signatures and doc comments only (no
 # bodies — references/formats/dossier.md, "## Contract"), so almost every
@@ -283,18 +326,40 @@ def contract_members(contract_text: str) -> list[str]:
     return names
 
 
-def stub_locations(members: list[str], owned_paths: list[str], root: str) -> list[str]:
-    """`member -> path:line` for every contract member found in an owned
-    path — the TARGETS-style aid so the implementer does not spend steps
-    orienting. Silent (no line) for a path not yet materialised."""
+# Files whose text is prose or data: a member name there is a mention, never a
+# declaration (the recorded hint pointed an implementer into a docs file).
+NON_CODE_SUFFIXES = (".md", ".rst", ".txt", ".sql", ".json", ".yaml", ".yml", ".toml", ".csv")
+DECLARATION_KEYWORDS = r"(?:fn|def|function|struct|enum|trait|impl|class|interface|type)"
+
+
+def declaration_pattern(name: str) -> re.Pattern:
+    """`fn name`, `def name`, `class name`, ... — a declaration, not a call
+    site. A Go `func (r *T) name` carries its receiver between the two."""
+    return re.compile(
+        r"\b(?:%s\s+|func\s+(?:\([^)]*\)\s*)?)%s\b" % (DECLARATION_KEYWORDS, re.escape(name))
+    )
+
+
+def stub_locations(members: list[str], owned_paths: list[str], contract_paths: list[str], root: str) -> list[str]:
+    """`member -> path:line` for every contract member declared in a contract
+    file this package owns — the TARGETS-style aid so the implementer does not
+    spend steps orienting. Silent (no line) for an owned path that is not a
+    contract file (docs, SQL), a non-code file, a file not yet materialised, and
+    a member with no declaration there: a call site is never a stub."""
+    def absolute(rel: str) -> str:
+        return os.path.normpath(rel if os.path.isabs(rel) else os.path.join(root, rel))
+
+    owned = [absolute(p) for p in owned_paths]
     out: list[str] = []
-    for rel in owned_paths:
-        path = rel if os.path.isabs(rel) else os.path.join(root, rel)
-        if not os.path.isfile(path):
+    for rel in contract_paths:
+        path = absolute(rel)
+        if path.lower().endswith(NON_CODE_SUFFIXES) or not os.path.isfile(path):
+            continue
+        if not any(path == o or path.startswith(o.rstrip("/") + "/") for o in owned):
             continue
         lines = read_text(path).splitlines()
         for name in members:
-            pattern = re.compile(r"\b%s\s*\(" % re.escape(name))
+            pattern = declaration_pattern(name)
             for number, line in enumerate(lines, 1):
                 if pattern.search(line):
                     out.append("%s -> %s:%d" % (name, rel, number))
@@ -376,6 +441,21 @@ def ordered(fields: dict[str, Field], order: list[str]) -> list[Field]:
     return [fields[n] for n in order if n in fields] + [f for n, f in fields.items() if n not in order]
 
 
+def hook_outputs_block(specs: list[str]) -> str:
+    """The `EXPECTED_HOOK_OUTPUTS:` sub-list of HOOKS, one `<step>: <glob>` line
+    per `--hook-outputs STEP:GLOB`. The globs are relative to the worktree: an
+    absolute one, or one that climbs out with `..`, can only mean a mistake."""
+    lines = ["EXPECTED_HOOK_OUTPUTS:"]
+    for spec in specs:
+        step, sep, glob = (part.strip() for part in spec.partition(":"))
+        if not sep or not step or not glob:
+            raise Refusal("--hook-outputs expects STEP:GLOB (hook step name, then a path glob), got %r" % spec)
+        if glob.startswith("/") or ".." in glob.split("/"):
+            raise Refusal("--hook-outputs glob %r must be relative to the worktree, with no `..`" % glob)
+        lines.append("  %s: %s" % (step, glob))
+    return "\n".join(lines)
+
+
 def compose_implementer(ctx: dict) -> list[Field]:
     """WORKTREE_DIR/BRANCH: mechanical — build mode forks a per-package
     worktree and branch suffix (`references/payloads/implementer.md`,
@@ -388,7 +468,8 @@ def compose_implementer(ctx: dict) -> list[Field]:
     the TARGETS-style aid the design calls for, attached here rather than to
     a new field. PACKAGE: mechanical, the row's own Package cell.
     CRITERIA: mechanical, the whole `## Acceptance criteria` section verbatim
-    (build mode only — fix mode is scoped by CRS/FAILURES instead).
+    (build mode only — fix mode is scoped by CRS/FAILURES instead). In fix mode
+    CONTRACT is the dossier's `## Contract` (the files hold the merged code).
     STANDARDS/JIRA_KEY: mechanical, from --plugin-root and the dossier.
     TEST_COMMAND/HOOKS: mechanical when the flag is given, else judgement
     (the orchestrator verifies these in its own shell first —
@@ -434,7 +515,8 @@ def compose_implementer(ctx: dict) -> list[Field]:
     # gives that field to the two test authors only, whose re-spawn rule
     # depends on it — README, "CONTRACT_HASH stamps which contract an author
     # saw"); the implementer's CONTRACT is still pasted verbatim.
-    contract_text = contract_bytes(args.contract_paths, root)
+    contract_text = (dossier_contract(dossier_text, args, "an implementer in MODE fix") if mode == "fix"
+                     else contract_bytes(args.contract_paths, root))
     fields["CONTRACT"] = Field("CONTRACT", contract_text, block=True)
 
     if owned_paths is None:
@@ -442,8 +524,8 @@ def compose_implementer(ctx: dict) -> list[Field]:
             "OWNED_PATHS", "the owned paths for this package, from ## Work packages "
             "(pass --package to fill this mechanically)"), block=True)
     else:
-        members = contract_members(contract_text)
-        aid = stub_locations(members, owned_paths, root)
+        aid = [] if args.no_stub_hints else stub_locations(
+            contract_members(contract_text), owned_paths, args.contract_paths, root)
         body = "\n".join(owned_paths)
         if aid:
             body += "\n# stub locations (grepped from CONTRACT members):\n" + "\n".join(
@@ -468,6 +550,10 @@ def compose_implementer(ctx: dict) -> list[Field]:
         "JIRA_KEY", "the dossier's jira: front-matter field")))
 
     apply_overrides(fields, sets, blocks={"CRS", "FAILURES", "SHARED_IDIOM", "VERIFY_EMBEDDED", "HOOKS", "CONTRACT"})
+    if args.hook_outputs:
+        hooks = fields["HOOKS"]
+        hooks.value = hooks.value.rstrip("\n") + "\n" + hook_outputs_block(args.hook_outputs)
+        hooks.block = True
 
     order = (["WORKTREE_DIR", "BRANCH", "MODE", "CONTRACT"]
              + (["PACKAGE", "SHARED_IDIOM", "OWNED_PATHS", "CRITERIA"] if mode == "build"
@@ -608,7 +694,8 @@ def compose_reviewer(ctx: dict) -> list[Field]:
     `.agent-staging/` (a Read with no limit returns the whole file
     otherwise — `references/payloads/reviewer.md`). CRITERIA: mechanical,
     the whole `## Acceptance criteria` section verbatim. CONTRACT
-    (code lenses): mechanical, pasted bytes. ARBITRATIONS: judgement, never
+    (code lenses): mechanical, the dossier's `## Contract` verbatim — never the
+    contract files, which hold the merged implementation by then. ARBITRATIONS: judgement, never
     defaulted — the rulings accumulate across rounds, so `none` must be a
     decision, not a default. SCOPE/RUN_EVIDENCE/RULES/CONTEXT_DOCS/PRIOR_CRS: pure
     judgement — the blast radius, the green run's output, the narrowed OCR
@@ -638,7 +725,7 @@ def compose_reviewer(ctx: dict) -> list[Field]:
         fields["CONTEXT_DOCS"] = Field("CONTEXT_DOCS", placeholder(
             "CONTEXT_DOCS", "the ADR(s) this plan should be checked against, if any"))
     else:
-        contract_text = contract_bytes(args.contract_paths, root)
+        contract_text = dossier_contract(dossier_text, args, "a reviewer's code lens")
         fields["SCOPE"] = Field("SCOPE", placeholder(
             "SCOPE", "the blast radius as a location list (file :: member (changed) "
             "/ (direct caller, unchanged)) — never a diff"), block=True)
@@ -732,6 +819,8 @@ def excerpt_text(specs: list[str], root: str) -> str:
             lines.pop()
         if not 1 <= a <= b <= len(lines):
             raise Refusal("excerpt %s: lines %d-%d are outside the file (1-%d)" % (m.group("file"), a, b, len(lines)))
+        if not any(l.strip() for l in lines[a - 1 : b]):
+            raise Refusal("excerpt %s:%d-%d is all blank lines; an empty excerpt is a stager defect" % (m.group("file"), a, b))
         total += b - a + 1
         if total > MAX_EXCERPT_LINES:
             raise Refusal("excerpts total %d lines; the cap is %d" % (total, MAX_EXCERPT_LINES))
@@ -805,6 +894,8 @@ def compose(args: argparse.Namespace) -> tuple[list[Field], str]:
         if "FAILURES" in sets:
             raise Refusal("FAILURES is given twice: --set FAILURES=... and --failures-from")
         sets["FAILURES"] = failures_digest(args.failures_from, root)
+    if args.hook_outputs and args.kind != "implementer":
+        raise Refusal("--hook-outputs fills HOOKS, which only the implementer takes")
     if args.excerpt:
         if not args.excerpt_field:
             raise Refusal("--excerpt needs --excerpt-field FIELD (the field the excerpt is pasted into)")
@@ -830,7 +921,61 @@ def compose(args: argparse.Namespace) -> tuple[list[Field], str]:
     return fields, ctx["root"]
 
 
-def write_payload(path: str, fields: list[Field], force: bool) -> None:
+VERBATIM_FIELDS = ("CONTRACT", "CRITERIA")
+
+
+def parsed_field(text: str, name: str) -> str | None:
+    """One field's value as written, the rendering's indentation undone: the
+    inline text, or the lines of a `NAME: |` block (blank edges trimmed). None
+    when the payload has no such field."""
+    lines = text.split("\n")
+    for n, line in enumerate(lines):
+        if line == name + ":" or line.startswith(name + ": "):
+            rest = line[len(name) + 1 :].strip()
+            if rest != "|":
+                return rest
+            body: list[str] = []
+            for follow in lines[n + 1 :]:
+                if follow.strip() and follow[:1] not in (" ", "\t"):
+                    break
+                body.append(follow[2:] if follow.startswith("  ") else follow)
+            while body and not body[-1].strip():
+                body.pop()
+            return "\n".join(body)
+    return None
+
+
+def meant_value(value: str) -> str:
+    """What render_field is meant to preserve of a value: every byte, except
+    that trailing blank lines and the whitespace of an all-blank line go."""
+    lines = value.split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(l if l.strip() else "" for l in lines)
+
+
+def verbatim_findings(text: str, fields: list[Field], names: tuple[str, ...]) -> list[str]:
+    """Per pasted verbatim block: empty, or not the bytes that were meant to be
+    pasted (the stager defects of issue #100: `\\n` escapes, empty excerpts, a
+    garbled name). Compared after the rendering's own indentation is undone."""
+    found: list[str] = []
+    for f in fields:
+        if f.name not in names or is_placeholder(f.value):
+            continue
+        if not f.value.strip():
+            found.append("%s is empty" % f.name)
+            continue
+        got = parsed_field(text, f.name)
+        meant = meant_value(f.value)
+        if not (f.block or "\n" in f.value.strip("\n")):
+            meant = meant.strip()  # written inline: `NAME: value`, edges trimmed by the reader
+        if got != meant:
+            found.append("%s differs from the text meant to be pasted (written %d bytes, meant %d)" % (
+                f.name, len((got or "").encode("utf-8")), len(meant.encode("utf-8"))))
+    return found
+
+
+def write_payload(path: str, fields: list[Field], force: bool, verbatim: tuple[str, ...] = VERBATIM_FIELDS) -> None:
     if os.path.exists(path):
         with open(path, encoding="utf-8") as fh:
             first_line = fh.readline().rstrip("\n")
@@ -843,10 +988,33 @@ def write_payload(path: str, fields: list[Field], force: bool) -> None:
     repeated = sorted({n for n in names if names.count(n) > 1})
     if repeated:
         raise Refusal("field(s) composed twice: %s" % ", ".join(repeated))
+    empty = [f.name for f in fields if f.name in verbatim and not is_placeholder(f.value) and not f.value.strip()]
+    if empty:
+        raise Refusal("verbatim block(s) empty: %s" % ", ".join(empty))
     text = MARKER + "\n" + "".join(render_field(f) for f in fields)
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text)
+    with open(path, encoding="utf-8") as fh:
+        written = fh.read()
+    mismatched = verbatim_findings(written, fields, verbatim)
+    if mismatched:
+        os.remove(path)  # a corrupt payload must not be left for a later lint to miss
+        raise Refusal("payload not written, the file does not carry its pasted blocks byte for byte: " + "; ".join(mismatched))
+
+
+def emit_prompt(path: str) -> str:
+    """The spawn prompt for a linted final under Claude Code: the file's bytes,
+    then the `PAYLOAD_SHA256:` line carrying their hash (what prepare_wave.py
+    records, so the two can be compared). A payload with an `@@TOKEN@@` left in
+    it was never linted clean and is refused."""
+    text = read_text(path)
+    left = sorted(set(cp.TEMPLATE_TOKEN.findall(text)))
+    if left:
+        raise Refusal("%s still carries template token(s) %s; compose and lint it first" % (path, ", ".join(left)))
+    if not text.endswith("\n"):
+        text += "\n"
+    return "%sPAYLOAD_SHA256: %s\n" % (text, contract_hash(text))
 
 
 def manifest_line(args: argparse.Namespace, out_path: str, fields: list[Field]) -> str:
@@ -891,11 +1059,23 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--excerpt", action="append", default=[], metavar="FILE:A-B",
                         help="paste lines A-B of FILE (bounded) into --excerpt-field; repeatable")
     parser.add_argument("--excerpt-field", metavar="FIELD", help="the payload field --excerpt fills")
+    parser.add_argument("--hook-outputs", action="append", default=[], metavar="STEP:GLOB",
+                        help="implementer: a path glob a named commit-hook step rewrites on every commit; repeatable")
+    parser.add_argument("--no-stub-hints", action="store_true", help="leave the `# stub locations` aid out of OWNED_PATHS")
+    parser.add_argument("--emit-prompt", metavar="PAYLOAD",
+                        help="print PAYLOAD's bytes and its PAYLOAD_SHA256 line: the Claude Code spawn prompt")
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args(argv)
 
     if args.selftest:
         return selftest()
+    if args.emit_prompt:
+        try:
+            sys.stdout.write(emit_prompt(args.emit_prompt))
+        except Refusal as err:
+            print("compose_payloads: REFUSED — %s" % err, file=sys.stderr)
+            return 1
+        return 0
     if args.refresh_contract:
         args.contract_paths = [p for p in args.contract_paths.split(",") if p]
         try:
@@ -914,7 +1094,8 @@ def main(argv: list[str]) -> int:
 
     try:
         fields, _root = compose(args)
-        write_payload(args.out, fields, args.force)
+        write_payload(args.out, fields, args.force,
+                      VERBATIM_FIELDS + ((args.excerpt_field,) if args.excerpt else ()))
     except Refusal as err:
         print("compose_payloads: REFUSED — %s" % err, file=sys.stderr)
         return 1
@@ -1232,7 +1413,7 @@ def selftest() -> int:
         check("--set CRITERIA (multi-line, build mode) appears once, as a block",
               cr_text.count("CRITERIA:") == 1 and "CRITERIA: |\n  1. first\n  2. second\n" in cr_text, out)
         check("composed CRITERIA appears exactly once", read_text(impl_path).count("CRITERIA:") == 1)
-        rc, fx_path, out = run_compose("FX.md", ["implementer", "--host", "opencode", "--contract-paths", "src/flush.py", "--hooks", "none",
+        rc, fx_path, out = run_compose("FX.md", ["implementer", "--host", "opencode", "--hooks", "none",
                                                  "--test-command", "pytest -q", "--set", "MODE=fix", "--set", "CRS=CR-1: x",
                                                  "--set", "CRITERIA=one", "--set", "SUPPORT=s"])
         fx_text = read_text(fx_path) if rc == 0 else ""
@@ -1268,7 +1449,7 @@ def selftest() -> int:
         flog = os.path.join(root, "red.log")
         with open(flog, "w", encoding="utf-8") as fh:
             fh.write("FAILED tests/test_x.py::test_y - assert 1 == 2\n" + "noise\n" * 500 + "=== 1 failed, 7 passed in 0.5s ===\n")
-        rc, ff_path, out = run_compose("FF.md", ["implementer", "--host", "opencode", "--contract-paths", "src/flush.py", "--hooks", "none",
+        rc, ff_path, out = run_compose("FF.md", ["implementer", "--host", "opencode", "--hooks", "none",
                                                  "--test-command", "pytest -q", "--set", "MODE=fix", "--failures-from", flog])
         ff_text = read_text(ff_path) if rc == 0 else ""
         check("--failures-from writes the digest into FAILURES", "FAILURES: |\n  passed 7  failed 1" in ff_text and "FAIL tests/test_x.py::test_y" in ff_text, out)
@@ -1305,6 +1486,123 @@ def selftest() -> int:
         check("--refresh-contract on a payload with no CONTRACT block exits 1", rc == 1)
         rc = main(["--refresh-contract", ut_op_path, "--root", root, "--contract-paths", "src/gone.py"])
         check("--refresh-contract with a missing contract file is refused", rc == 1)
+
+        # --- #109: after the merge CONTRACT is the dossier's ## Contract, never the files ---
+        contract_section = "```\nclass FlushQueue:\n    def flush(self, batch_size: int) -> int: ...\n```\n\nflush() returns the count written."
+        dossier2_path = os.path.join(root, "W-014-contract.md")
+        with open(dossier2_path, "w", encoding="utf-8") as fh:
+            fh.write(DOSSIER_FIXTURE.replace("see src/flush.py", contract_section))
+        merged_path = os.path.join(root, "src", "merged.py")
+        with open(merged_path, "w", encoding="utf-8") as fh:
+            fh.write("class FlushQueue:\n    def flush(self, batch_size: int) -> int:\n        return self._written\n")
+
+        def run_with(dossier: str, out_name: str, extra: list[str]) -> tuple[int, str, str]:
+            out_path = os.path.join(root, ".agent-staging", "payloads", out_name)
+            out_io, err_io = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out_io), contextlib.redirect_stderr(err_io):
+                rc = main(["--kind", extra[0], "--dossier", dossier, "--root", root, "--out", out_path,
+                           "--plugin-root", plugin_root] + extra[1:])
+            return rc, out_path, out_io.getvalue() + err_io.getvalue()
+
+        rc, rv_path, out = run_with(dossier2_path, "RV.md", ["reviewer", "--host", "claude", "--set", "LENS=style"])
+        rv_text = read_text(rv_path) if rc == 0 else ""
+        want = section_body(read_text(dossier2_path), "## Contract")
+        check("a reviewer's CONTRACT is the dossier's ## Contract byte for byte",
+              rc == 0 and parsed_field(rv_text, "CONTRACT") == want and "return self._written" not in rv_text, out)
+        rc, _p, out = run_with(dossier2_path, "RVp.md", ["reviewer", "--host", "claude", "--set", "LENS=style", "--contract-paths", "src/merged.py"])
+        check("a reviewer's code lens refuses --contract-paths (the files hold the merge)", rc == 1 and "Drop --contract-paths" in out, out)
+        rc, fxc_path, out = run_with(dossier2_path, "FXC.md", ["implementer", "--host", "opencode", "--hooks", "none", "--test-command", "pytest -q",
+                                                                "--set", "MODE=fix", "--set", "CRS=CR-1: x"])
+        check("an implementer in MODE fix takes CONTRACT from the dossier too",
+              rc == 0 and parsed_field(read_text(fxc_path), "CONTRACT") == want, out)
+        empty_contract = os.path.join(root, "W-014-nocontract.md")
+        with open(empty_contract, "w", encoding="utf-8") as fh:
+            fh.write(DOSSIER_FIXTURE.replace("see src/flush.py\n", ""))
+        rc, _p, out = run_with(empty_contract, "RVe.md", ["reviewer", "--host", "claude", "--set", "LENS=style"])
+        check("an empty dossier ## Contract is refused for a reviewer", rc == 1 and "`## Contract` section is empty" in out, out)
+
+        # --- #95: stub-location hints only for members declared in an owned contract file ---
+        os.makedirs(os.path.join(root, "docs"), exist_ok=True)
+        with open(os.path.join(root, "docs", "arch.md"), "w", encoding="utf-8") as fh:
+            fh.write("The writer calls flush(batch) and _drain() for each batch.\n")
+        with open(os.path.join(root, "src", "call.py"), "w", encoding="utf-8") as fh:
+            fh.write("store.flush(1)\n\nclass Q:\n    def flush(self, n):\n        pass\n")
+        stub_dossier = os.path.join(root, "W-014-stubs.md")
+        with open(stub_dossier, "w", encoding="utf-8") as fh:
+            fh.write(DOSSIER_FIXTURE.replace("| P2 reload guard | src/reload.py | P1 |",
+                                             "| P3 docs | docs/arch.md | — |\n| P4 calls | src/call.py | — |"))
+        os.makedirs(root + "-P3", exist_ok=True)
+        os.makedirs(root + "-P4", exist_ok=True)
+        impl_args = ["implementer", "--host", "opencode", "--hooks", "none", "--test-command", "pytest -q"]
+        rc, docs_path, out = run_with(stub_dossier, "P3.md", impl_args + ["--package", "P3", "--contract-paths", "src/flush.py"])
+        check("a documentation package gets no stub-location block",
+              rc == 0 and "stub locations" not in read_text(docs_path) and "docs/arch.md" in read_text(docs_path), out)
+        rc, docs2_path, out = run_with(stub_dossier, "P3b.md", impl_args + ["--package", "P3", "--contract-paths", "docs/arch.md"])
+        check("a docs file named as a contract path is still never a hint target",
+              rc == 0 and "stub locations" not in read_text(docs2_path), out)
+        rc, call_path, out = run_with(stub_dossier, "P4.md", impl_args + ["--package", "P4", "--contract-paths", "src/call.py"])
+        check("a member resolves to its declaration, not the call site above it",
+              rc == 0 and "flush -> src/call.py:4" in read_text(call_path) and "src/call.py:1" not in read_text(call_path), out)
+        rc, nohint_path, out = run_with(stub_dossier, "P4n.md", impl_args + ["--package", "P4", "--contract-paths", "src/call.py", "--no-stub-hints"])
+        check("--no-stub-hints leaves the block out", rc == 0 and "stub locations" not in read_text(nohint_path), out)
+        rc, nodecl_path, out = run_with(stub_dossier, "P4m.md", impl_args + ["--package", "P4", "--contract-paths", "src/flush.py"])
+        check("an owned path that is not a contract file gets no hint", rc == 0 and "stub locations" not in read_text(nodecl_path), out)
+
+        # --- #100: a pasted verbatim block is re-read and compared; an empty one is refused ---
+        slash = os.path.join(root, "W-014-slash.md")
+        with open(slash, "w", encoding="utf-8") as fh:
+            fh.write(DOSSIER_FIXTURE.replace("2. flush() on an empty queue returns 0 and writes nothing.",
+                                             "2. the log reads `a\\nb` (a literal backslash-n, two characters) and\n   flush() on an empty queue returns 0."))
+        rc, sl_path, out = run_with(slash, "SL.md", base_impl + ["--test-command", "pytest -q"])
+        check("a CRITERIA with a literal backslash-n round-trips unchanged",
+              rc == 0 and parsed_field(read_text(sl_path), "CRITERIA") == section_body(read_text(slash), "## Acceptance criteria")
+              and "a\\nb" in read_text(sl_path), out)
+        with open(os.path.join(root, "src", "blank.py"), "w", encoding="utf-8") as fh:
+            fh.write("\n\n\nx = 1\n")
+        rc, _p, out = run_compose("EXe.md", base_impl + ["--test-command", "pytest -q", "--excerpt", "src/blank.py:1-3", "--excerpt-field", "SUPPORT"])
+        check("an all-blank excerpt is refused", rc == 1 and "all blank" in out, out)
+        rc, _p, out = run_compose("EXs.md", base_impl + ["--test-command", "pytest -q", "--set", "CRITERIA="])
+        check("an empty verbatim CRITERIA is refused", rc == 1 and "empty" in out, out)
+        real_render = globals()["render_field"]
+        try:
+            globals()["render_field"] = lambda f: real_render(Field(f.name, f.value.replace("\n", "\\n"), f.block))
+            rc, broken_path, out = run_compose("BR.md", base_impl + ["--test-command", "pytest -q"])
+        finally:
+            globals()["render_field"] = real_render
+        check("a renderer that corrupts a pasted block is refused and the file removed",
+              rc == 1 and "byte for byte" in out and not os.path.exists(broken_path), out)
+
+        # --- #106: --hook-outputs becomes an EXPECTED_HOOK_OUTPUTS sub-list of HOOKS ---
+        rc, ho_path, out = run_compose("HO.md", ["implementer", "--host", "opencode", "--package", "P1", "--contract-paths", "src/flush.py",
+                                                  "--test-command", "pytest -q", "--hooks", "the pre-commit hook re-points doc anchors",
+                                                  "--hook-outputs", "anchor-fixer:docs/architecture/*.md", "--hook-outputs", "fmt: **/*.snap"])
+        ho_text = read_text(ho_path) if rc == 0 else ""
+        check("--hook-outputs appends one `step: glob` line each under HOOKS",
+              "HOOKS: |\n  the pre-commit hook re-points doc anchors\n  EXPECTED_HOOK_OUTPUTS:\n    anchor-fixer: docs/architecture/*.md\n    fmt: **/*.snap\n" in ho_text, out)
+        rc2, out2 = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"), ho_path,
+                          "--kind", "implementer", "--host", "opencode", "--worktree", root])
+        check("a payload with EXPECTED_HOOK_OUTPUTS lints clean", rc2 == 0, out2)
+        for label, spec in (("no glob", "anchor-fixer"), ("an empty step", ":docs/*.md"), ("an absolute glob", "f:/docs/*.md"), ("a parent glob", "f:../x/*.md")):
+            rc, _p, _o = run_compose("HOb.md", base_impl[:-2] + ["--hooks", "none", "--test-command", "pytest -q", "--hook-outputs", spec])
+            check("--hook-outputs refuses " + label, rc == 1)
+        rc, _p, _o = run_compose("HOr.md", ["reviewer", "--host", "claude", "--set", "LENS=plan", "--hook-outputs", "f:docs/*.md"])
+        check("--hook-outputs refuses a kind with no HOOKS", rc == 1)
+
+        # --- #111: --emit-prompt is the Claude Code spawn prompt, and the spawn guard lets it through ---
+        guard_spec = importlib.util.spec_from_file_location("spawn_guard", os.path.join(SCRIPTS_DIR, "hooks", "spawn_guard.py"))
+        guard = importlib.util.module_from_spec(guard_spec)
+        guard_spec.loader.exec_module(guard)
+        ep_text = read_text(impl_path)
+        # a final with its judgement fields filled; impl_path itself is fully filled already
+        out_io = io.StringIO()
+        with contextlib.redirect_stdout(out_io):
+            rc = main(["--emit-prompt", impl_path])
+        prompt = out_io.getvalue()
+        check("--emit-prompt prints the file's bytes then PAYLOAD_SHA256 of them",
+              rc == 0 and prompt.startswith(ep_text) and prompt.endswith("PAYLOAD_SHA256: %s\n" % contract_hash(ep_text)), prompt[-120:])
+        check("the spawn guard allows the --emit-prompt output", guard.problems(prompt) == [], str(guard.problems(prompt)))
+        check("the spawn guard allows it under a one-line task statement", guard.problems("Fill the bodies.\n" + prompt) == [])
+        check("--emit-prompt refuses a payload with an @@FILL left", main(["--emit-prompt", ut_op_path]) == 1)
 
         # --- manifest ---
         manifest_path = os.path.join(root, "wave.txt")

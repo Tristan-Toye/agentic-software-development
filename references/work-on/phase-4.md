@@ -205,7 +205,9 @@ It fills every mechanical field from the files, adds each contract member's
 regenerates the integration author's excerpt from the live dossier, and
 leaves every judgement field as `@@FILL_<FIELD>@@` with a one-line hint.
 Replace each `@@FILL_…@@` yourself — `check_payload.py` refuses any that
-is left — or pass it with `--set FIELD=VALUE`. The manifest line it appends
+is left — or pass it with `--set FIELD=VALUE`. `--contract-paths` is for this
+phase's kinds, whose files are still stubs; a Phase 7 reviewer or fix
+implementer takes CONTRACT from the dossier instead. The manifest line it appends
 is the `prepare_wave.py` input. A composed payload is a final: the lint and
 the same-turn re-read below apply to it unchanged.
 
@@ -261,6 +263,14 @@ satisfies the placeholder by guessing instead of disclosing. The lint refuses
 the token, so a src paste fails before it ships; the same-turn re-read keeps
 the file you linted and the file you paste the same file.
 
+**Under Claude Code the spawn prompt IS the payload.** Paste the linted final
+into the prompt, one `FIELD: value` per line, under a one-line task
+statement; `python3 ${PLUGIN_ROOT}/scripts/compose_payloads.py --emit-prompt
+<final>` prints exactly that text with its `PAYLOAD_SHA256:` line. That is the
+only form, for every agent: a prompt that points at a payload file is refused
+by the plugin's spawn guard and, in auto mode, denied by the classifier, which
+sees the prompt and never the file. The next paragraph is the opencode form.
+
 **Under opencode, spawn by the file, never by retyping it.** Every agent that
 can read its payload gets a prompt of two lines — `PAYLOAD_FILE: <absolute path
 of the final>` and `PAYLOAD_SHA256: <the hash prepare_wave.py recorded in
@@ -268,8 +278,7 @@ of the final>` and `PAYLOAD_SHA256: <the hash prepare_wave.py recorded in
 step. That is every opencode agent here: `unit-test-author`'s read map admits
 `.agent-staging/`. Retyping a linted payload costs its whole length again as
 output and keeps it in your context for the rest of the phase; the recorded
-fan-outs retyped 1.77 M characters. Under Claude Code, `unit-test-author` has
-`Write` alone, so its payload is still pasted, as above.
+fan-outs retyped 1.77 M characters.
 
 **Check every return with one call.** When an agent returns, run
 `python3 ${PLUGIN_ROOT}/scripts/verify_return.py --root <its worktree> --branch

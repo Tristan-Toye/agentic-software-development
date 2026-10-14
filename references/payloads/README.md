@@ -45,6 +45,15 @@ for it.
 There is no `BAND`, no `TIER`, and no `RETURN_CEILING`. Every agent returns a
 short structured report because its own prompt says so.
 
+**Under Claude Code the spawn prompt IS the payload; the file pointer is the
+opencode form.** Compose and lint the final on disk, then paste it as the
+prompt (`compose_payloads.py --emit-prompt <final>` prints the text with its
+`PAYLOAD_SHA256:` line). It is the only form there: auto mode judges a spawn
+from its prompt alone, so a prompt that only points at a payload file reads as
+handing authority to unseen content, and the plugin's spawn guard refuses it.
+Under opencode the prompt is `PAYLOAD_FILE:` plus `PAYLOAD_SHA256:` and the
+agent opens the file itself.
+
 **Paste what an agent cannot open; name only what its tools can reach — and
 the tools are the host's.** Under opencode `unit-test-author` reads and
 writes inside a pattern-scoped map — `.agent-staging/` and the test families

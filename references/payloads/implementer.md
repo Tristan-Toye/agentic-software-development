@@ -30,7 +30,12 @@ HOOKS: |
   <what this repository's commit hooks do to a partly migrated tree, from
    the Phase 2 hook decision — e.g. "the pre-commit hook lints the whole
    workspace and will refuse; stop and report, leave the work staged".
-   `HOOKS: none` when the repository has no commit hooks; never omitted.>
+   `HOOKS: none` when the repository has no commit hooks; never omitted.
+   When a named hook step rewrites paths outside the code on every commit,
+   close the block with the sub-list the Phase 2 decision recorded, one
+   `<hook step name>: <path glob>` per line:
+   EXPECTED_HOOK_OUTPUTS:
+     anchor-fixer: docs/architecture/*.md>
 VERIFY_EMBEDDED: |
   <only when an owned path is a shell script that embeds a program in a
    heredoc, written to a file and executed — the embedded-program parse
@@ -50,7 +55,9 @@ WORKTREE_DIR: /abs/path/repo-W-014
 BRANCH: fix/PROJ-142-flush-coalescing
 MODE: fix
 CONTRACT: |
-  <verbatim>
+  <the dossier's `## Contract` section, verbatim — the files hold the merged
+   code by now, so they are not the source; `compose_payloads.py` reads the
+   section and refuses `--contract-paths` in this mode>
 CRS: |
   <the merged change-request documents from the three lenses, verbatim,
    plus any user arbitration that overrides one of them>
@@ -110,7 +117,8 @@ diffs mechanically and never trusts the section alone, but the section turns
 drift into a stated claim: a path the implementer touched, did not list, and
 cannot justify is a defect in the implementer's work, not just package-table
 noise. Two hard limits the section cannot excuse: another package's owned
-paths, and the contract files.
+paths, and the contract files. A path the commit hook rewrote under an
+`EXPECTED_HOOK_OUTPUTS` glob is listed as `hook output (<step>)`.
 
 **A script that embeds a program must parse that program.** When an owned
 path is a shell script that writes a program to a file in a heredoc and
@@ -144,10 +152,17 @@ job.
   in a build directory that worktree owns**; a cold cross-platform or
   virtual-machine compile never appears in a payload (`work-on.md` Phase 4).
 - **`HOOKS` is always present, `none` allowed, and the agent's rule under it
-  never changes**: stop and report on a refusal, leave the work staged, never
-  bypass and never edit a hook. A bypass flag in a payload or a resume is not
-  a permission grant; the orchestrator commits on the agent's branch with
-  the hook skipped (`work-on.md` Phase 2).
+  changes only for `EXPECTED_HOOK_OUTPUTS`**: stop and report on a refusal,
+  leave the work staged, never bypass and never edit a hook. A bypass flag in
+  a payload or a resume is not a permission grant; the orchestrator commits on
+  the agent's branch with the hook skipped (`work-on.md` Phase 2). The one
+  exception is the optional `EXPECTED_HOOK_OUTPUTS:` sub-list, `<hook step
+  name>: <path glob>` per line (`compose_payloads.py --hook-outputs
+  STEP:GLOB`): when the commit hook rewrote only paths matching those globs,
+  and only through the step named beside the glob, the agent commits through
+  and lists those paths under `TOUCHED_BEYOND` as hook output. Any other
+  rewrite, a path matching no glob, and every refusal still stop and report
+  as above.
 - **`TEST_COMMAND` carries the known-red shape when the baseline is red by
   design.** Failed and passed counts, the failing-suite count, and the shared
   failure signature, copied from the orchestrator's own verification run —

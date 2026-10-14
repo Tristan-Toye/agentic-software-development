@@ -17,8 +17,10 @@ It denies, with a reason the orchestrator reads, a spawn of one of this
 plugin's agents whose prompt:
 
 - is a pointer — it names a payload file (`PAYLOAD_FILE:`, or a path under
-  `.agent-staging/`) and carries no payload field of its own (no line
-  starting `FIELD_NAME:`);
+  `.agent-staging/`) and does not also carry the payload: at least
+  MIN_PASTED_FIELDS `FIELD_NAME:` lines of its own, or a body that hashes to
+  the `PAYLOAD_SHA256:` it states (what `compose_payloads.py --emit-prompt`
+  prints). A pointer with a stub field or two beside it is still a pointer;
 - points into a Claude Code scratchpad (`/private/tmp/claude-…`,
   `/tmp/claude-…`): a session-private temp path is where exfiltration
   stages data, and a payload belongs under `<worktree>/.agent-staging/`;
@@ -47,6 +49,7 @@ No third-party imports: this runs wherever python3 does.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -56,6 +59,8 @@ PLUGIN = "agentic-software-development:"
 
 FIELD_LINE = re.compile(r"^\s*([A-Z][A-Z0-9_]{2,}):", re.M)
 POINTER_FIELDS = {"PAYLOAD_FILE", "PAYLOAD_SHA256"}
+SHA_LINE = re.compile(r"^PAYLOAD_SHA256:\s*([0-9a-f]{64})\s*$", re.M)
+MIN_PASTED_FIELDS = 4  # the smallest payload any agent takes has more
 STAGED_PATH = re.compile(r"\.agent-staging/\S+")
 SCRATCHPAD = re.compile(r"(?:/private)?/tmp/claude-\d+/")
 URL_CREDENTIALS = re.compile(r"\b[a-z][a-z0-9+.-]*://[^/\s:@<>$]+:[^/\s@<>$]+@")
@@ -64,12 +69,27 @@ SECRET_ASSIGNMENT = re.compile(
 )
 
 
+def carries_payload(prompt: str) -> bool:
+    """True when the prompt holds the payload itself: enough field lines, or a
+    stated PAYLOAD_SHA256 that some run of whole lines before it hashes to (the
+    task statement above the payload is the only thing that may differ)."""
+    if len(set(FIELD_LINE.findall(prompt)) - POINTER_FIELDS) >= MIN_PASTED_FIELDS:
+        return True
+    match = SHA_LINE.search(prompt)
+    if not match:
+        return False
+    lines = prompt[: match.start()].splitlines(keepends=True)
+    return any(
+        hashlib.sha256("".join(lines[n:]).encode("utf-8")).hexdigest() == match.group(1)
+        for n in range(len(lines))
+    )
+
+
 def problems(prompt: str) -> list[str]:
     found: list[str] = []
-    fields = set(FIELD_LINE.findall(prompt)) - POINTER_FIELDS
-    if not fields and ("PAYLOAD_FILE" in prompt or STAGED_PATH.search(prompt)):
+    if ("PAYLOAD_FILE" in prompt or STAGED_PATH.search(prompt)) and not carries_payload(prompt):
         found.append(
-            "the prompt points at a payload file instead of carrying the payload. Under Claude "
+            "the prompt points at a payload file without carrying the payload. Under Claude "
             "Code the auto mode classifier judges the spawn by its prompt alone and cannot see "
             "the file, so a pointer reads as handing authority to unseen content. Read the "
             "linted final and paste its fields into the prompt verbatim (one `FIELD: value` "
@@ -149,6 +169,24 @@ def selftest() -> int:
         "CONTRACT: /Users/x/repo-W-093/.agent-staging/contract/llm.rs\nROUND: 1\n"
     )
     check("a pasted payload naming staged files passes", spawn(pasted) is None)
+    check("a pointer plus one stub field is denied",
+          bool(spawn("PAYLOAD_FILE: /r/.agent-staging/p.md\nLENS: style\nPAYLOAD_SHA256: abc")))
+    check("a pointer prompt with three stub fields is denied",
+          bool(spawn("Payload at /r/.agent-staging/p.md\nLENS: style\nROUND: 1\nWORKTREE_DIR: /r\n")))
+    full = "".join("%s: %s\n" % kv for kv in (
+        ("LENS", "style"), ("WORKTREE_DIR", "/r"), ("SCOPE", "a.rs"),
+        ("CONTRACT", "/r/.agent-staging/contract/a.rs"), ("ROUND", "1")))
+    check("a full paste that also names its payload file is allowed",
+          spawn("PAYLOAD_FILE: /r/.agent-staging/p.md\n" + full) is None)
+    emitted = full + "PAYLOAD_SHA256: " + hashlib.sha256(full.encode()).hexdigest() + "\n"
+    check("the --emit-prompt shape is allowed", spawn(emitted) is None)
+    check("the --emit-prompt shape under a task line is allowed", spawn("Review the code.\n" + emitted) is None)
+    short = "LENS: style\nROUND: 1\n"
+    shorthash = "PAYLOAD_SHA256: " + hashlib.sha256(short.encode()).hexdigest() + "\n"
+    check("a short payload that hashes to its stated PAYLOAD_SHA256 is allowed",
+          spawn("See /r/.agent-staging/p.md\n" + short + shorthash) is None)
+    check("a stated PAYLOAD_SHA256 the body does not match is denied",
+          bool(spawn("See /r/.agent-staging/p.md\n" + short + "PAYLOAD_SHA256: " + "0" * 64 + "\n")))
     scratch = pasted + "CONTEXT_DOCS: /private/tmp/claude-501/-Users-x/abc/scratchpad/rev/architecture.md\n"
     check("a scratchpad path is denied", bool(spawn(scratch)))
     check("credentials in a URL are denied",

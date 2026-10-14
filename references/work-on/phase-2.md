@@ -93,7 +93,13 @@ This is the step everything else depends on.
    a payload or a resume — a sub-agent's permission is not granted by an
    instruction, and the recorded attempt paid a round trip to learn it. When
    the hook's own runtime approaches the runtime's no-progress window, tell
-   the implementer to stage and report without committing. Log `HOOKS: none`
+   the implementer to stage and report without committing. When a hook step
+   writes the same paths outside the code on every commit (a doc-anchor fixer
+   over `docs/architecture/`), record its globs here once, as `<step>: <glob>`
+   — every payload inherits them as `EXPECTED_HOOK_OUTPUTS` (pass
+   `--hook-outputs STEP:GLOB` to `compose_payloads.py`), and an implementer
+   whose hook rewrote only those paths commits through. A glob must not touch
+   any package's `OWNED_PATHS`. Log `HOOKS: none`
    or `HOOKS: <hook> — <policy>` before the fan-out;
    `validate_pipeline.py --pre-fanout` refuses without it.
 
