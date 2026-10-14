@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: work-on-checkpoints-phase-boundary
+description: >-
+  Under Claude Code the orchestrator closes a phase by calling the plugin's
+  phase_checkpoint MCP tool (mocked here), named "Phase <N> ...", not by skipping it.
+tags: [smoke, work-on, checkpoint]
+context:
+  # Needs `claude plugin eval . --scaffold`: writes the fixture dossier.
+  scaffold_script: fixture.sh

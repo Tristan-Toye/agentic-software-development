@@ -25,6 +25,11 @@
     "build": {
       "permission": {
         "twipe-devkit_*": "allow",
+        // Tools the pipeline never calls (global deny below): the default agent keeps them.
+        "ctx_*": "allow",
+        "envsitter_*": "allow",
+        "EnterWorktree": "allow",
+        "ExitWorktree": "allow",
         "skill": {
           "cdn-traffic-template-report": "allow",
           "context-engineering-source-catalog": "allow",
@@ -40,6 +45,32 @@
           "transformer-oncall-local-delivery-fix": "allow",
           "verify-client-database-name-before-prod-db-diagnostics": "allow",
           "worktree": "allow"
+        }
+      }
+    },
+    // The orchestrator and the planner load only the skills they call (time-logging, plus
+    // resolving-merge-conflicts for work-on): the other ~27 skills' names and descriptions
+    // were ~5k tokens of catalogue on every request. "*": deny comes first, because the last
+    // matching rule wins. work-on also never searches the web (the dossier, payload files and
+    // scripts carry the state) and keeps no todo list. The rest of each agent's map is in
+    // its frontmatter; scripts/check_permission_maps.py guards both.
+    "work-on": {
+      "permission": {
+        "skill": {
+          "*": "deny",
+          "time-logging": "allow",
+          "resolving-merge-conflicts": "allow"
+        },
+        "webfetch": "deny",
+        "websearch": "deny",
+        "todowrite": "deny"
+      }
+    },
+    "dossier": {
+      "permission": {
+        "skill": {
+          "*": "deny",
+          "time-logging": "allow"
         }
       }
     },
@@ -265,6 +296,26 @@
     },
     // Twipe DevKit MCP tools: the default agent only (see agent.build).
     "twipe-devkit_*": "deny",
+    // A denied tool's schema is not sent to the model (opencode drops it from the request;
+    // `opencode debug agent <name>` lists it as disabled). Measured over 2026-10-01..14, no
+    // pipeline agent called ctx_index, ctx_fetch_and_index or the ctx admin tools, envsitter
+    // or the worktree pair; each
+    // schema rides on every request: ctx_index/fetch/purge/stats/doctor/upgrade/insight
+    // ~2.9k tokens, envsitter's 15 ~1.4k, the worktree pair ~0.4k. Context7 stays (~1k): the
+    // rule is to check a third-party library's current docs before using it.
+    // ctx_execute, ctx_batch_execute, ctx_execute_file and ctx_search stay: /work-on, the
+    // implementers and the integration-test-author call them hundreds of times. The default
+    // agent re-allows every one of these (see agent.build).
+    "ctx_index": "deny",
+    "ctx_fetch_and_index": "deny",
+    "ctx_stats": "deny",
+    "ctx_doctor": "deny",
+    "ctx_upgrade": "deny",
+    "ctx_purge": "deny",
+    "ctx_insight": "deny",
+    "envsitter_*": "deny",
+    "EnterWorktree": "deny",
+    "ExitWorktree": "deny",
     // plugins/phase-checkpoint.ts: primary-agents/work-on.md allows it.
     "phase_checkpoint": "deny",
     "todowrite": "allow",

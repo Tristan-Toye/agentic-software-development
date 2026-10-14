@@ -31,9 +31,11 @@ permission:
   "envsitter_*": deny
   EnterWorktree: deny
   ExitWorktree: deny
-  skill:
-    "*": deny
-    standards: allow
+  # A subagent asks no user and keeps no todo list: each schema rides on every step.
+  question: deny
+  todowrite: deny
+  # Pipeline skills are read by path (STANDARDS in the payload); the catalogue buys nothing.
+  skill: deny
   # code_item and code_find read implementation bodies: blindness forbids them.
   "code_*": deny
   # ctx_execute runs arbitrary code: it would read what the read map denies.

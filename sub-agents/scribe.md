@@ -25,9 +25,11 @@ permission:
   "envsitter_*": deny
   EnterWorktree: deny
   ExitWorktree: deny
-  skill:
-    "*": deny
-    standards: allow
+  # A subagent asks no user and keeps no todo list: each schema rides on every step.
+  question: deny
+  todowrite: deny
+  # Pipeline skills are read by path (STANDARDS in the payload); the catalogue buys nothing.
+  skill: deny
   # Prose work: the ctx sandbox adds tool schemas and runs code this agent never needs.
   "ctx_*": deny
   "code_*": deny

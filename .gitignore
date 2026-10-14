@@ -9,3 +9,6 @@ __pycache__/
 
 # opencode runtime
 .opencode/
+
+# plugin eval runs
+evals/results/
