@@ -51,6 +51,11 @@ arbitration, and the mechanic is the same in all three places. It turns on
 | **Individual tests** in a file whose other tests are sound | re-spawn the author onto that file with **the tests named** and the complete intent. Under opencode it reads its own earlier output and edits in place — no delete, nothing pasted. Under Claude Code the author has `Write` alone, so even this row is delete-first: `safe_revert.py --delete` the file (it copies it out), then a fresh whole-file `Write` with the changed tests named (Phase 4). |
 | **The whole file** — a wholesale contract change, or every test in it asserts nothing | **delete it with `safe_revert.py --delete`** (Phase 4), which copies it outside the repository first; say so in the payload, and let a fresh `Write` recreate it — a re-spawn that stalls after a bare delete leaves the run at zero tests, and the recorded case was saved only by an unrelated commit. The same on either host. |
 
+**Under Claude Code, name the author by its agent ID and resume it** with the
+tests named (after the delete-first step, for a unit author) instead of a full
+re-spawn, per `phase-4.md` ("Under Claude Code, resume instead of re-spawn");
+a changed contract is a full re-spawn.
+
 Deleting a file to fix one weak test throws away every sound test beside it
 and pays a full blind regeneration for them — under opencode, so name the
 tests instead. Under Claude Code the regeneration is paid regardless,

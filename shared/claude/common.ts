@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, writeFileSync } from "node:fs"
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { createReadStream } from "node:fs"
@@ -171,4 +171,138 @@ export async function readCheckpoints(path: string): Promise<{ task: string; che
     }
   }
   return { task, checkpoints: [...calls.values()] }
+}
+
+// ---- the work in flight ----------------------------------------------------------
+
+export type InFlight = {
+  kind: "Agent" | "Workflow"
+  label: string
+  type?: string
+  agentId?: string
+  runId?: string
+  taskId?: string
+  arrived: boolean
+}
+
+const SPAWN_TOOLS = ["Agent", "Task", "Workflow"]
+const DOSSIER_PATH_RE = /(\/[^\s"'\\]*\.discovery\/dossiers\/[\w.-]+\.md)/g
+
+const idOf = (text: string, key: string): string | undefined =>
+  new RegExp(`${key}["']?\\s*[:=]\\s*["']?([\\w-]+)`).exec(text)?.[1]
+
+// Every Agent/Task spawn and Workflow launch since the last valid phase_checkpoint call,
+// with the agent or run ID the launch result carried and whether its result arrived: a
+// synchronous spawn arrives with its tool result, a background spawn or a workflow run
+// with a later <task-notification> that names its ID. Also the dossier the session has
+// been working on (the last `.discovery/dossiers/*.md` path any tool call named) and the
+// /work-on arguments. Streams line by line and parses only lines that can matter.
+export async function readInFlight(path: string): Promise<{ items: InFlight[]; dossier?: string; args: string }> {
+  type Item = InFlight & { seq: number; callId: string }
+  const items: Item[] = []
+  const checkpoints = new Map<string, number>()
+  let dossier: string | undefined
+  let args = ""
+  let seq = 0
+  const rl = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity })
+  for await (const line of rl) {
+    seq++
+    if (line.includes('"tool_use"') && line.includes(".discovery/dossiers/")) {
+      const found = [...line.matchAll(DOSSIER_PATH_RE)].map((m) => m[1])
+      if (found.length > 0) dossier = found[found.length - 1]
+    }
+    const isCall = line.includes('"tool_use"') && (line.includes("phase_checkpoint") || SPAWN_TOOLS.some((t) => line.includes(`"name":"${t}"`)))
+    const pending = items.filter((i) => !i.arrived || (!i.agentId && !i.runId))
+    const isResult = pending.length > 0 && line.includes('"tool_result"') && pending.some((i) => line.includes(i.callId))
+    const isNotice = line.includes("task-notification") && items.length > 0
+    const isArgs = args === "" && line.includes("<command-args>")
+    const isFailure = checkpoints.size > 0 && line.includes('"is_error":true') && line.includes('"tool_result"')
+    if (!isCall && !isResult && !isNotice && !isArgs && !isFailure) continue
+    let rec: any
+    try {
+      rec = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (rec?.isSidechain) continue
+    const content = rec?.message?.content
+    if (isArgs && rec?.type === "user") {
+      const m = /<command-args>([\s\S]*?)<\/command-args>/.exec(textOf(content))
+      if (m && WORK_ON_RE.test(textOf(content))) args = m[1].trim()
+    }
+    if (!Array.isArray(content)) {
+      if (isNotice && rec?.type === "user") {
+        const text = textOf(content)
+        for (const item of items) {
+          if ([item.agentId, item.runId, item.taskId].some((id) => id && text.includes(id))) item.arrived = true
+        }
+      }
+      continue
+    }
+    for (const block of content) {
+      if (block?.type === "tool_use") {
+        if (isCheckpointTool(block.name)) {
+          checkpoints.set(String(block.id), seq)
+        } else if (SPAWN_TOOLS.includes(block.name)) {
+          const input = block.input ?? {}
+          const workflow = block.name === "Workflow"
+          items.push({
+            kind: workflow ? "Workflow" : "Agent",
+            label: String((workflow ? (input.name ?? input.scriptPath ?? "workflow") : (input.description ?? input.name ?? "agent")) ?? "").slice(0, 80),
+            type: workflow ? undefined : typeof input.subagent_type === "string" ? input.subagent_type : undefined,
+            arrived: false,
+            seq,
+            callId: String(block.id),
+          })
+        }
+      } else if (block?.type === "tool_result") {
+        const id = String(block.tool_use_id)
+        if (block.is_error === true && checkpoints.has(id)) {
+          checkpoints.delete(id)
+          continue
+        }
+        const item = items.find((i) => i.callId === id)
+        if (!item) continue
+        const text = textOf(block.content)
+        item.agentId = idOf(text, "agentId") ?? item.agentId
+        item.runId = idOf(text, "runId") ?? item.runId
+        item.taskId = idOf(text, "taskId") ?? item.taskId
+        const background = item.kind === "Workflow" || /async_launched|launched successfully|running in the background/i.test(text)
+        item.arrived = block.is_error === true || !background
+      } else if (isNotice && block?.type === "text") {
+        for (const item of items) {
+          if ([item.agentId, item.runId, item.taskId].some((id) => id && String(block.text).includes(id))) item.arrived = true
+        }
+      }
+    }
+  }
+  const cutoff = Math.max(0, ...checkpoints.values())
+  return { items: items.filter((i) => i.seq > cutoff), dossier, args }
+}
+
+// The last `lines` lines of the dossier's `## Build log`, each cut to 300 characters; when
+// the transcript named no dossier path, `args` (the /work-on argument, a dossier ID) is
+// looked up under `<cwd>/.discovery/dossiers/`. undefined on any failure.
+export function buildLogTail(dossier: string | undefined, args: string, cwd: string | undefined, lines = 40): { path: string; text: string } | undefined {
+  try {
+    let path = dossier
+    if (!path || !existsSync(path)) {
+      const id = /[A-Za-z]+-\d+/.exec(args)?.[0]
+      if (!id || !cwd) return undefined
+      const dir = join(cwd, ".discovery", "dossiers")
+      const file = readdirSync(dir).find((f) => f.startsWith(id) && f.endsWith(".md"))
+      if (!file) return undefined
+      path = join(dir, file)
+    }
+    const all = readFileSync(path, "utf8").split("\n")
+    const start = all.findIndex((l) => /^## Build log\s*$/.test(l))
+    if (start < 0) return undefined
+    let end = all.findIndex((l, i) => i > start && /^## /.test(l))
+    if (end < 0) end = all.length
+    const body = all.slice(start + 1, end).filter((l) => l.trim() !== "")
+    if (body.length === 0) return undefined
+    return { path, text: body.slice(-lines).map((l) => (l.length > 300 ? l.slice(0, 300) + " …" : l)).join("\n") }
+  } catch {
+    return undefined
+  }
 }
