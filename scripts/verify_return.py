@@ -20,7 +20,7 @@ agent's tool list makes impossible.
         [--owned p1,p2]
         [--contract-hash H --contract-files f1,f2]
         [--release HOLDER --provider P --model M]
-        [--log DOSSIER --agent ID]
+        [--log DOSSIER --agent ID] [--print-line --agent ID]
         [--report FILE --kind KIND [--host claude|opencode]]
     verify_return.py --selftest
 
@@ -61,6 +61,13 @@ blocks and `>` quotes are skipped, so quoted output is not a claim. A phantom
 verification is a fabricated verdict, not a wrong one: it flags the return, and
 the orchestrator re-runs that class of check itself and never logs the claim as
 fact.
+
+`--print-line` (with `--agent`) prints the same line as `RETURNED-LINE: <line>`
+without writing it: the phase workflows (`workflows/phase4-wave.js`) run many of
+these at once, and the orchestrator logs the lines itself, in one append, so
+concurrent verifications never race on the dossier. They never pass `--release`
+either: it frees the holder's whole wave, so the orchestrator releases once,
+after the last return.
 
 The release and the log happen whether or not a check flagged anything: the
 agent is finished either way, and the log must say what it did.
@@ -343,7 +350,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--provider")
     ap.add_argument("--model")
     ap.add_argument("--log", metavar="DOSSIER", help="append the mechanical RETURNED line to this dossier's Build log")
-    ap.add_argument("--agent", help='with --log: e.g. "P2 (ses_x)"')
+    ap.add_argument("--agent", help='with --log or --print-line: e.g. "P2 (agent a1b2c3)"')
+    ap.add_argument("--print-line", action="store_true", help="print the RETURNED line as RETURNED-LINE: ... without logging it")
     ap.add_argument("--report", metavar="FILE", help="the agent's report, read only for claims its tools cannot back")
     ap.add_argument("--kind", help="with --report: the agent kind, e.g. unit-test-author")
     ap.add_argument("--host", default="claude", choices=("claude", "opencode"), help="with --report: where the tool list comes from")
@@ -359,8 +367,8 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--release needs --provider and --model")
     if args.report and not args.kind:
         ap.error("--report needs --kind")
-    if args.log and not args.agent:
-        ap.error("--log needs --agent")
+    if (args.log or args.print_line) and not args.agent:
+        ap.error("--log and --print-line need --agent")
     rc, text = git(os.path.abspath(args.root), "rev-parse", "--is-inside-work-tree")
     if rc != 0 or text != "true":
         print(f"verify_return: {args.root} is not a git work tree", file=sys.stderr)
@@ -384,6 +392,8 @@ def main(argv: list[str] | None = None) -> int:
         if rc != 0:
             flags.append("log")
 
+    if args.print_line:
+        out.append(f"RETURNED-LINE: {args.agent} RETURNED: " + ", ".join(parts))
     out.append("verdict: " + ("clean" if not flags else "FLAGGED " + ", ".join(flags)))
     print("\n".join(clamp(out)))
     return 1 if flags else 0
@@ -517,6 +527,14 @@ def selftest() -> int:
                 AGENTS_DIR = saved_dir
 
             # --- unusable input ---
+            # --print-line echoes the RETURNED line and writes nothing
+            before = open(dossier, encoding="utf-8").read()
+            rc, out = call(["--root", root, "--branch", "feat/empty", "--base", base, "--owned", "src", "--print-line", "--agent", "P3 (agent a1b2)"])
+            check("--print-line echoes the RETURNED line before the verdict",
+                  "RETURNED-LINE: P3 (agent a1b2) RETURNED: NO NEW COMMITS" in out and out.splitlines()[-1].startswith("verdict:"))
+            check("--print-line writes no log", open(dossier, encoding="utf-8").read() == before)
+            rc, _ = call(["--root", root, "--branch", "b", "--base", base, "--print-line"])
+            check("--print-line without --agent is unusable input", rc == 2)
             rc, _ = call(["--root", tmp, "--branch", "b", "--base", base])
             check("a non-repo root is unusable input", rc == 2)
             rc, _ = call(["--root", root, "--branch", "b", "--base", "deadbeef"])

@@ -2258,6 +2258,12 @@ def selftest_pre_fanout() -> bool:
             "- GATES: .discovery/analysis/gates-W-1.txt — 3 gates; axes: default, fault-inject\n"
             "- CENSUS: none — grepped for PROTECTED_TABLES, EXPECTED_TABLES, migration counts\n"
             "- CHECKLIST-IDS: scripts/check_promise_coverage.py parsed 8/8 lines\n"
+            # Claude Code spawn, workflow and return lines carry agent and run IDs
+            # (phase-4.md, "resume instead of re-spawn"); none of them is a pre-fan-out
+            # obligation, and none may be mistaken for one.
+            "- SPAWNED: P1 (agent a1b2c3d4) — implementer, wave 1\n"
+            "- WORKFLOW: phase4-wave wave1 run run-77 — P1, UT-A\n"
+            "- P1 (agent a1b2c3d4) RETURNED: 3f2a1b9 on feat/x-p1, lib.rs +2/-2 only, 0 unimplemented left, hash stable, tree exact\n"
         )
         ok = True
         (root / "full.md").write_text(full, encoding="utf-8")

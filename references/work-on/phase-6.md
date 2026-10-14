@@ -86,6 +86,14 @@ change:
 | The test fails on harness noise — a compile error, a missing fixture, an import | nobody | Fix the harness yourself. It is mechanical. |
 | The failure reproduces on the **target branch at the merge-base**, untouched by this build | nobody — **upstream** | Prove it first (below), then fix it on your branch to keep green, log `UPSTREAM:` with the proof, and say in the PR description that the fix belongs upstream independently of this change. |
 
+**Under Claude Code, a re-spawn in rows 1–3 is a resume** whenever the agent's
+ID is known and the contract is unchanged: `SendMessage` to the test author or
+the implementer with only the correction (for the implementer, the
+`WORKTREE_DIR` it now works in), per `phase-4.md` ("Under Claude Code, resume
+instead of re-spawn"). A row-3 contract fix changes the contract, so the
+affected agents are re-spawned with the full payload and the new
+`CONTRACT_HASH`.
+
 **Row 5 needs its proof, or it is not row 5.** Row 4 — "it's only a compile
 error, it's mechanical" — has no proof obligation and tempts every failure
 that feels like somebody else's fault, so row 5 carries one: check out the

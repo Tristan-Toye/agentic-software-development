@@ -111,16 +111,37 @@ def problems(prompt: str) -> list[str]:
     return found
 
 
+def workflow_problems(tool_input: dict) -> list[str]:
+    """The same checks for every spawn prompt inside one of the plugin's workflow launches
+    (phase4-wave, phase7-review): their args are lists of items that carry a `prompt` each,
+    and the workflow passes each prompt to a plugin agent unchanged."""
+    target = str(tool_input.get("name", "")) + " " + str(tool_input.get("scriptPath", ""))
+    if not (PLUGIN in target or "/workflows/phase4-wave" in target or "/workflows/phase7-review" in target):
+        return []
+    args = tool_input.get("args")
+    items = args.get("items") if isinstance(args, dict) else args
+    found: list[str] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        for problem in problems(str(item.get("prompt", ""))):
+            found.append(f"item {item.get('label', '?')}: {problem}")
+    return found
+
+
 def decide(event: dict) -> dict | None:
     """The hook output for one PreToolUse event, or None to let it through."""
     if os.environ.get("ASD_SPAWN_GUARD", "1").strip().lower() in ("0", "false", "off", "no"):
         return None
-    if event.get("tool_name") not in ("Agent", "Task"):
-        return None
     tool_input = event.get("tool_input") or {}
-    if not str(tool_input.get("subagent_type", "")).startswith(PLUGIN):
+    if event.get("tool_name") == "Workflow":
+        found = workflow_problems(tool_input)
+    elif event.get("tool_name") in ("Agent", "Task"):
+        if not str(tool_input.get("subagent_type", "")).startswith(PLUGIN):
+            return None
+        found = problems(str(tool_input.get("prompt", "")))
+    else:
         return None
-    found = problems(str(tool_input.get("prompt", "")))
     if not found:
         return None
     return {
@@ -198,6 +219,20 @@ def selftest() -> int:
     check("a placeholder URL passes", spawn(pasted + "HARNESS: postgres://<user>:<pass>@host/db\n") is None)
     check("other agents are not its business", spawn(recorded, agent="Explore") is None)
     check("other tools are not its business", spawn(recorded, tool="Bash") is None)
+
+    def launch(items, name: str = PLUGIN + "phase4-wave", wrap: bool = False) -> dict | None:
+        args = {"pluginRoot": "/p", "items": items} if wrap else items
+        return decide({"tool_name": "Workflow", "tool_input": {"name": name, "args": args}})
+
+    check("a workflow wave of pasted payloads passes", launch([{"label": "P1", "prompt": pasted}]) is None)
+    out = launch([{"label": "P1", "prompt": pasted}, {"label": "P2", "prompt": recorded}])
+    check("a workflow wave with one pointer prompt is denied, naming the item",
+          bool(out) and "item P2" in out["hookSpecificOutput"]["permissionDecisionReason"])
+    check("the object form of a wave's args is checked too", bool(launch([{"label": "P2", "prompt": recorded}], wrap=True)))
+    check("a scriptPath launch of the plugin workflow is checked",
+          bool(decide({"tool_name": "Workflow", "tool_input": {
+              "scriptPath": "/c/1.9.0/workflows/phase4-wave.js", "args": [{"label": "P2", "prompt": recorded}]}})))
+    check("other workflows are not its business", launch([{"label": "x", "prompt": recorded}], name="my-sweep") is None)
     check("the legacy Task name is covered", bool(spawn(recorded, tool="Task")))
     reason = spawn(recorded)["hookSpecificOutput"]["permissionDecisionReason"]
     check("the reason says how to fix it", "paste" in reason)

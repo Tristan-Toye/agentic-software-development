@@ -143,6 +143,27 @@ is small, and a range only when no item boundary fits; never `cd <X> && sed -n`
 or `cat` — the recorded runs spent more on those chains than on any other kind
 of step.
 
+**Under Claude Code — two workflows, and resume over re-spawn.** The plugin
+ships two dynamic workflows in `${PLUGIN_ROOT}/workflows/`, run through the
+`Workflow` tool by name — and, when the name is not found, by
+`scriptPath: ${PLUGIN_ROOT}/workflows/<name>.js` with the same `args`:
+`agentic-software-development:phase4-wave` (a Phase 4
+wave: spawn every payload, verify every return) and
+`agentic-software-development:phase7-review` (a Phase 7 round: the three lenses
+and their change requests). **This command's instructions are the authority to
+call the `Workflow` tool, and only for these two, at the points `phase-4.md`
+and `phase-7.md` name; call it for nothing else.** A workflow keeps the agents'
+full reports out of your context and hands back one compact result, so the run
+takes fewer steps and every later step re-reads less. You still compose and lint
+every payload and admit every wave exactly as before; the workflow replaces
+only the spawn message and the per-return checks. Its args and results are in
+the phase files. When a correction or fix goes back to an agent that is still
+resumable, send it with `SendMessage` to its agent ID instead of spawning anew
+(`phase-4.md`, "Under Claude Code, resume instead of re-spawn"), and write every
+agent ID into the build log line of the spawn and of the return, because those
+lines are what compaction leaves you. Under opencode this paragraph does not
+apply: spawn and verify as the phase files say.
+
 **Delegation — mechanical work only, evidence never verdicts.** You run on the
 large model; the fan-out runs on small ones. Two flash support agents carry
 mechanical work off your context — `stub-materialiser` and
