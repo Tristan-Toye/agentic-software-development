@@ -19,7 +19,8 @@ a flag here.
 # Usage
 
     wait_ci.py --pr N [--repo OWNER/NAME] [--timeout SECONDS=3600]
-               [--interval SECONDS=30] [--lines N=20] [--line-chars N=300]
+               [--interval SECONDS=30] [--register-wait SECONDS=120]
+               [--lines N=20] [--line-chars N=300]
     wait_ci.py --branch NAME [--sha SHA] ...        find the PR (or the runs) by branch
     wait_ci.py --idle-first [--idle-timeout S=7200] ...   wait for a free runner first
     wait_ci.py (--pr N | --branch NAME) --job-log JOB --grep REGEX [--lines N=20]
@@ -39,6 +40,12 @@ present) is read out of its GitHub Actions link
 --log-failed` is fetched, ANSI colour codes are stripped, and the digest is
 printed along with the link. A failed check with no such link (a non-Actions
 check) is listed with a note instead.
+
+Right after a push, `gh pr checks` can report no checks at all (`no checks
+reported on the '<branch>' branch`, or an empty list) until GitHub registers
+the workflow runs. That is not an error: polling continues at the current
+interval for up to `--register-wait` seconds (capped by `--timeout`) and only
+then fails. Any other `gh` error still fails fast.
 
 `--branch NAME` finds the open PR whose head is NAME (`gh pr list --head`) and
 follows its checks. With no PR yet it follows the branch's workflow runs
@@ -88,6 +95,8 @@ import run_tests  # noqa: E402  (must follow the sys.path fix-up above)
 LINK_RE = re.compile(r"/actions/runs/(\d+)(?:/job/(\d+))?")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 BAD_BUCKETS = ("fail", "cancel")
+DEFAULT_REGISTER_WAIT = 120.0
+NOT_REGISTERED = "no checks registered yet"
 
 Runner = "callable[[list[str]], tuple[int, str, str]]"
 
@@ -152,9 +161,11 @@ def fetch_checks(runner: Runner, target, repo: str | None) -> tuple[list[dict] |
             checks = json.loads(out)
         except (json.JSONDecodeError, TypeError):
             detail = (err or out or "").strip()[:300]
+            if "no checks reported" in detail.lower():
+                return None, f"{NOT_REGISTERED}: {detail}"
             return None, f"gh pr checks did not return JSON (exit {rc}): {detail}"
         if not isinstance(checks, list) or not checks:
-            return None, "gh pr checks returned no checks"
+            return None, f"{NOT_REGISTERED}: gh pr checks returned no checks"
         return checks, ""
     cmd = with_repo(["gh", "run", "list", "--branch", target[1], "--limit", "30", "--json",
                      "databaseId,status,conclusion,workflowName,headSha,url"], repo)
@@ -238,20 +249,32 @@ def poll(
     repo: str | None,
     timeout: float,
     interval: float,
+    register_wait: float = DEFAULT_REGISTER_WAIT,
 ) -> tuple[str, list[dict], str]:
     """Poll until no check is pending or the timeout passes. Returns
     (outcome, checks, error) with outcome in {"done", "timeout", "error"}.
+    A PR with no checks registered yet is polled on for `register_wait`
+    seconds (never past the timeout) before it is an error.
     Prints at most one line per state change — nothing else."""
     deadline = time.monotonic() + timeout
+    unregistered_since: float | None = None
     last_summary: str | None = None
     cur_interval = max(interval, 0.001)
-    is_branch = not isinstance(target, int) and target[0] == "branch"
     while True:
         checks, err = fetch_checks(runner, target, repo)
+        if checks is None and err.startswith(NOT_REGISTERED):
+            now = time.monotonic()
+            unregistered_since = now if unregistered_since is None else unregistered_since
+            if now - unregistered_since >= register_wait or now >= deadline:
+                return "error", [], f"{err} (after {now - unregistered_since:.0f}s)"
+            if last_summary != "waiting for checks to register":
+                last_summary = "waiting for checks to register"
+                print(last_summary)
+            time.sleep(cur_interval)
+            continue
         if checks is None:
             return "error", [], err
-        if not checks and not is_branch:
-            return "error", [], "gh pr checks returned no checks"
+        unregistered_since = None
 
         done = sum(1 for c in checks if c.get("bucket") != "pending")
         failed = sum(1 for c in checks if c.get("bucket") in BAD_BUCKETS)
@@ -374,6 +397,8 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     ap.add_argument("--repo")
     ap.add_argument("--timeout", type=float, default=3600)
     ap.add_argument("--interval", type=float, default=30)
+    ap.add_argument("--register-wait", type=float, default=DEFAULT_REGISTER_WAIT,
+                    help="seconds to keep polling while no checks are registered yet (after a push)")
     ap.add_argument("--lines", type=int, default=20)
     ap.add_argument("--line-chars", type=int, default=300)
     ap.add_argument("--idle-first", action="store_true", help="wait for a free shared runner before the timeout counts")
@@ -413,7 +438,7 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
             return 2
         return job_log(active_runner, checks, args)
 
-    outcome, checks, err = poll(active_runner, target, args.repo, args.timeout, args.interval)
+    outcome, checks, err = poll(active_runner, target, args.repo, args.timeout, args.interval, args.register_wait)
     if outcome == "error":
         print(f"wait_ci: {err}", file=sys.stderr)
         return 2
@@ -424,7 +449,7 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
         print(f"rerun: failed {', '.join(failed_names)}; re-ran run(s) {', '.join(ids) or 'none (no run id in the links)'}")
         if ids:
             time.sleep(max(args.rerun_settle, 0))
-            outcome, checks, err = poll(active_runner, target, args.repo, args.timeout, args.interval)
+            outcome, checks, err = poll(active_runner, target, args.repo, args.timeout, args.interval, args.register_wait)
             if outcome == "error":
                 print(f"wait_ci: {err}", file=sys.stderr)
                 return 2
@@ -467,6 +492,34 @@ def selftest() -> int:
 
     outcome, checks, err = poll(runner_pass, 5, None, timeout=5, interval=0.01)
     check("pending then pass reaches done", outcome == "done" and checks[0]["bucket"] == "pass")
+
+    # 1b. the post-push window: no checks registered yet, then real ones.
+    calls = {"n": 0}
+
+    def runner_late(cmd: list[str]) -> tuple[int, str, str]:
+        if cmd[:3] == ["gh", "pr", "checks"]:
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                return 1, "", "no checks reported on the 'feat/x' branch"
+            return 0, json.dumps([{"name": "build", "state": "SUCCESS", "bucket": "pass", "link": "", "workflow": "CI"}]), ""
+        return 1, "", "unexpected call"
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        outcome, checks, err = poll(runner_late, 5, None, timeout=5, interval=0.01, register_wait=5)
+    check("two 'no checks' responses, then checks, reaches done", outcome == "done" and calls["n"] == 3)
+
+    def runner_never(cmd: list[str]) -> tuple[int, str, str]:
+        return 1, "", "no checks reported on the 'feat/x' branch"
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        outcome, _, err = poll(runner_never, 5, None, timeout=5, interval=0.01, register_wait=0.05)
+    check("always 'no checks' errors after the register window", outcome == "error" and NOT_REGISTERED in err)
+    with contextlib.redirect_stdout(io.StringIO()):
+        outcome, _, err = poll(lambda c: (0, "[]", ""), 5, None, timeout=5, interval=0.01, register_wait=0.05)
+    check("an empty list is the same window", outcome == "error" and NOT_REGISTERED in err)
+    with contextlib.redirect_stdout(io.StringIO()):
+        outcome, _, err = poll(lambda c: (1, "", "authentication required"), 5, None, timeout=5, interval=0.01, register_wait=5)
+    check("another gh error still fails fast", outcome == "error" and NOT_REGISTERED not in err)
 
     # 2. a failure, with a fake --log-failed body that includes a huge line.
     huge = "boom" * 20000

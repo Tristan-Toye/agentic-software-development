@@ -10,7 +10,9 @@ on -p2, db.rs +20/-2 only, 0 unimplemented left, hash stable, tree exact". The
 recorded runs did this 60 times: 123 calls and 5,847 credits with the release
 calls. Each piece already exists as a tool; this script is the fixed bundle of
 them, so a return costs one step instead of three to five. It never reads the
-agent's own report — every verdict comes from git and the files on disk.
+agent's own report — every verdict comes from git and the files on disk —
+with one exception, `--report`, below: it reads the report only for claims the
+agent's tool list makes impossible.
 
 # Usage
 
@@ -19,6 +21,7 @@ agent's own report — every verdict comes from git and the files on disk.
         [--contract-hash H --contract-files f1,f2]
         [--release HOLDER --provider P --model M]
         [--log DOSSIER --agent ID]
+        [--report FILE --kind KIND [--host claude|opencode]]
     verify_return.py --selftest
 
 `--root` is the worktree the agent worked in; `--branch` the branch it was told
@@ -48,12 +51,23 @@ What it prints (one line each unless noted):
   adds only its ruling sentence, if there is one. The line states facts, flagged
   ones included, so a flagged return is logged as flagged.
 
+With `--report FILE --kind KIND` it also prints `UNVERIFIED: <kind> claims a
+test run but has no Bash; re-run it yourself` when the report claims a shell
+run (`N passed`, `ran pytest` / `cargo test` / `go test` / `npm test`, `exit
+code N`, `git diff shows`) and the kind's tool list has no Bash. The list is the
+`tools:` line of `claude/agents/<kind>.md` (host `claude`, the default); under
+`opencode` the boundary is a permission map, so nothing is checked. Fenced
+blocks and `>` quotes are skipped, so quoted output is not a claim. A phantom
+verification is a fabricated verdict, not a wrong one: it flags the return, and
+the orchestrator re-runs that class of check itself and never logs the claim as
+fact.
+
 The release and the log happen whether or not a check flagged anything: the
 agent is finished either way, and the log must say what it did.
 
 Exit codes: 0 every check clean; 1 something is flagged (no commits, a file
 outside `--owned`, stubs left, a changed contract hash, a dirty tree, the wrong
-branch, a failed release or log); 2 unusable input.
+branch, an unverifiable claim in the report, a failed release or log); 2 unusable input.
 
 No third-party imports: this runs wherever python3 and git do.
 """
@@ -74,6 +88,16 @@ SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 MAX_LINES = 20
 STUB_RE = re.compile(r"\b(?:unimplemented|todo)!\s*\(")
 MAX_RS_FILES = 200
+AGENTS_DIR = os.path.join(os.path.dirname(SCRIPTS_DIR), "claude", "agents")
+# Conservative: each pattern is a run's own phrasing, matched outside fences and quotes.
+SHELL_CLAIMS = (
+    ("a test run", re.compile(r"\b\d+\s+(?:tests?\s+)?passed\b", re.IGNORECASE)),
+    ("a test run", re.compile(
+        r"\bran\s+(?:the\s+)?`?(?:pytest|cargo\s+test|go\s+test|npm\s+(?:run\s+)?test|make\s+test)\b",
+        re.IGNORECASE)),
+    ("an exit code", re.compile(r"\bexit\s+(?:code|status)\s*[:=]?\s*\d+\b", re.IGNORECASE)),
+    ("a git diff", re.compile(r"\b(?:ran\s+`?git\s+diff|git\s+diff\s+(?:shows|confirms|is\s+empty))", re.IGNORECASE)),
+)
 
 
 def git(root: str, *args: str) -> tuple[int, str]:
@@ -150,6 +174,44 @@ def contract_digest(root: str, files: list[str]) -> str:
         with open(path, encoding="utf-8") as fh:
             texts.append(fh.read())
     return hashlib.sha256("\n\n".join(texts).encode("utf-8")).hexdigest()
+
+
+def agent_tools(kind: str, host: str, agents_dir: str | None = None) -> list[str] | None:
+    """The kind's tool list from `<agents_dir>/<kind>.md`'s `tools:` line under
+    `claude`; None when it cannot be told (opencode's boundary is a permission
+    map, and an unreadable or tool-less file is unknown, not empty)."""
+    if host != "claude":
+        return None
+    try:
+        with open(os.path.join(agents_dir or AGENTS_DIR, kind + ".md"), encoding="utf-8") as handle:
+            lines = handle.read().split("\n")
+    except OSError:
+        return None
+    if not lines or lines[0] != "---":
+        return None
+    for line in lines[1:]:
+        if line == "---":
+            break
+        match = re.match(r"^tools:\s*(.+)$", line)
+        if match:
+            return [t.strip() for t in match.group(1).split(",") if t.strip()]
+    return None
+
+
+def shell_claims(report: str) -> list[str]:
+    """The kinds of shell run the report claims, outside fences and `>` quotes."""
+    kinds: list[str] = []
+    fenced = False
+    for line in report.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced or line.lstrip().startswith(">"):
+            continue
+        for label, pattern in SHELL_CLAIMS:
+            if label not in kinds and pattern.search(line):
+                kinds.append(label)
+    return kinds
 
 
 def clamp(lines: list[str]) -> list[str]:
@@ -243,6 +305,23 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
     else:
         parts.append("tree exact")
 
+    if args.report:
+        tools = agent_tools(args.kind, args.host)
+        try:
+            with open(args.report, encoding="utf-8") as handle:
+                claims = shell_claims(handle.read())
+        except OSError as err:
+            claims = []
+            out.append(f"report: cannot read {args.report} ({err})")
+        if tools is None:
+            out.append(f"UNVERIFIED: not checked (no tool list for {args.kind} under {args.host})")
+        elif claims and not any(t.split("(")[0] == "Bash" for t in tools):
+            out.append(f"UNVERIFIED: {args.kind} claims {' and '.join(claims)} but has no Bash; re-run it yourself")
+            parts.append(f"UNVERIFIED: claims {' and '.join(claims)}, no Bash")
+            flags.append("unverified")
+        else:
+            out.append("UNVERIFIED: none")
+
     if beyond:
         parts.append("TOUCHED_BEYOND: " + ", ".join(beyond[:3]) + (f" (+{len(beyond) - 3})" if len(beyond) > 3 else ""))
     if not commits:
@@ -265,6 +344,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model")
     ap.add_argument("--log", metavar="DOSSIER", help="append the mechanical RETURNED line to this dossier's Build log")
     ap.add_argument("--agent", help='with --log: e.g. "P2 (ses_x)"')
+    ap.add_argument("--report", metavar="FILE", help="the agent's report, read only for claims its tools cannot back")
+    ap.add_argument("--kind", help="with --report: the agent kind, e.g. unit-test-author")
+    ap.add_argument("--host", default="claude", choices=("claude", "opencode"), help="with --report: where the tool list comes from")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     if args.selftest:
@@ -275,6 +357,8 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--contract-hash needs --contract-files")
     if args.release and not (args.provider and args.model):
         ap.error("--release needs --provider and --model")
+    if args.report and not args.kind:
+        ap.error("--report needs --kind")
     if args.log and not args.agent:
         ap.error("--log needs --agent")
     rc, text = git(os.path.abspath(args.root), "rev-parse", "--is-inside-work-tree")
@@ -405,6 +489,32 @@ def selftest() -> int:
             check("no new commits is flagged", rc == 1 and "NO NEW COMMITS" in out and "no-commits" in out)
             check("the flagged return is logged as flagged", "- P2 (ses_y) RETURNED: NO NEW COMMITS" in open(dossier, encoding="utf-8").read())
             check("an owned directory counts its .rs files for stubs", "STUBS_LEFT: 2" in out or "STUBS_LEFT: 2 (" in out)
+
+            # --- a report claiming a run its tools cannot make ---
+            agents = os.path.join(tmp, "agents")
+            put(agents, "writer.md", "---\nname: writer\ntools: Read, Grep, Write\n---\nbody\n")
+            put(agents, "builder.md", "---\nname: builder\ntools: Read, Bash, Edit\n---\nbody\n")
+            put(tmp, "claim.md", "Wrote the tests.\nI ran cargo test, 12 passed.\n")
+            put(tmp, "quiet.md", "Wrote the tests.\n> 12 passed (quoted from the brief)\n```\nexit code 0\n```\n")
+            check("agent_tools reads the tools: line", agent_tools("writer", "claude", agents) == ["Read", "Grep", "Write"])
+            check("opencode and unknown kinds have no tool list", agent_tools("writer", "opencode", agents) is None and agent_tools("nope", "claude", agents) is None)
+            check("shell_claims finds a test run and skips quotes and fences",
+                  shell_claims("ran pytest\nexit code 1") == ["a test run", "an exit code"] and shell_claims("> 12 passed\n```\nexit code 0\n```\n") == [])
+            report_args = ["--root", root, "--branch", "feat/p1", "--base", base]
+            global AGENTS_DIR
+            saved_dir, AGENTS_DIR = AGENTS_DIR, agents
+            try:
+                def with_report(kind: str, name: str) -> tuple[int, str]:
+                    return call(report_args + ["--report", os.path.join(tmp, name), "--kind", kind])
+                rc, out = with_report("writer", "claim.md")
+                check("a Write-only agent claiming a test run is flagged",
+                      "UNVERIFIED: writer claims a test run but has no Bash; re-run it yourself" in out and "unverified" in out.splitlines()[-1])
+                rc, out = with_report("builder", "claim.md")
+                check("the same claim from an agent with Bash is clean", "UNVERIFIED: none" in out and "unverified" not in out.splitlines()[-1])
+                rc, out = with_report("writer", "quiet.md")
+                check("no claim is clean, quotes and fences included", "UNVERIFIED: none" in out)
+            finally:
+                AGENTS_DIR = saved_dir
 
             # --- unusable input ---
             rc, _ = call(["--root", tmp, "--branch", "b", "--base", base])
