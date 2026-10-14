@@ -1,0 +1,14 @@
+{
+  "_comment": "Model profiles for opencode. Each agent's tier comes from the `model:` in its own markdown frontmatter, matched against the `glm` profile (the frontmatter is the GLM source of truth); a profile maps every tier to a model. Launch with `opencode-glm` or `opencode-openai` (shell functions that pass scripts/opencode_profile.py's output as OPENCODE_CONFIG_CONTENT, the one config layer that overrides an agent file's model). Model IDs: `opencode models <provider>`.",
+  "tiers_from": "glm",
+  "profiles": {
+    "glm": {
+      "large": "zai-coding-plan/glm-5.3",
+      "flash": "zai-coding-plan/glm-5.3-flash"
+    },
+    "openai": {
+      "large": "openai/gpt-6.1-sol",
+      "flash": "openai/gpt-6-luna"
+    }
+  }
+}
