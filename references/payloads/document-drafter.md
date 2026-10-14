@@ -36,6 +36,13 @@ written bytes. You still re-grep the files for the `SCRUB` tokens before
 anything leaves the machine: two checks, because a leaked dossier id is a
 leaked local path.
 
+A drafter spawned without `Write` (`check_payload.py --host claude` and
+`check_permission_maps.py` refuse the spawn when its tool list lacks it) is
+the exception, not a mode: if one still comes up that way, it returns each
+draft verbatim between `---DRAFT-START---` and `---DRAFT-END---` lines, one
+pair per `TARGET_PATHS` entry in order. You land the bytes and run both
+`SCRUB` checks over what you landed — the drafter never self-checked them.
+
 ## Field rules that matter
 
 - **`SCRUB` lists every token that must not leave the machine.** The drafter

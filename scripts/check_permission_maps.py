@@ -39,6 +39,12 @@ Three questions this script answers mechanically:
      by the scan. `--host claude|opencode|both` picks the policy to validate;
      omitted, it is inferred from what the file declares (a source with a
      `claude:` block validates on both, and a refusal names its host).
+  6. Capability — the tool a payload field depends on (a drafter's `Write` for
+     `TARGET_PATHS`, a scout's `Bash`; REQUIRED_TOOLS in check_payload.py) must
+     be in the Claude tool list of both `claude/agents/<kind>.md` and the
+     source's `claude.tools`, and not scalar-denied or deny-only in the
+     opencode map. An agent spawned without it returns its deliverable
+     verbatim and the orchestrator lands bytes nobody self-checked.
 
 Usage:
     check_permission_maps.py
@@ -86,6 +92,8 @@ import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
+
+from check_payload import REQUIRED_TOOLS
 
 PATH_TOOLS = ("read", "edit", "write")
 STAGING_MARKERS = (".agent-staging/",)
@@ -545,6 +553,42 @@ def spawn_validation(
     return 0
 
 
+def capability_findings(
+    agent: str,
+    kind: str,
+    maps: Mapping[str, object],
+    tools: list[str] | None,
+    tools_line: int,
+) -> list[str]:
+    """The tools a payload of this agent kind depends on, against both
+    policies the file states: the Claude tool list, and the opencode map
+    (a scalar deny, or a map whose parsed verdicts are all deny)."""
+    out: list[str] = []
+    for tool, field in REQUIRED_TOOLS.get(kind, ()):
+        if tools is not None and tool not in tools:
+            out.append(
+                f"{agent}: frontmatter tools (line {tools_line}: {', '.join(tools)}) "
+                f"grants no {tool}, but a {kind} payload's {field} depends on it — "
+                f"the deliverable would come back verbatim; grant {tool}"
+            )
+        key = tool.lower()
+        if key in maps and not is_allowed_anywhere(maps[key]):
+            out.append(
+                f"{agent}: the opencode {key} policy admits nothing, but a {kind} "
+                f"payload's {field} depends on {tool}; allow it"
+            )
+    return out
+
+
+def is_allowed_anywhere(policy: object) -> bool:
+    """False for a scalar deny, or a pattern map whose every parsed verdict is
+    deny. An empty map is read as unknown: parse_permission skips entries whose
+    verdict is quoted ("git diff*": "allow"), so it cannot prove a refusal."""
+    if isinstance(policy, dict):
+        return not policy or any(v == "allow" for v in policy.values())
+    return policy != "deny"
+
+
 def scan(sub_agents: Path) -> int:
     findings: list[str] = []
     checked = 0
@@ -560,12 +604,22 @@ def scan(sub_agents: Path) -> int:
         checked += 1
         name = f"sub-agents/{agent.name}"
         tools, tools_line, widened = parse_tools(text)
+        findings += capability_findings(name, agent.stem, maps, tools, tools_line)
         findings += shape_findings(name, maps)
         findings += symmetry_findings(name, maps)
         findings += negative_control_findings(name, maps)
         findings += disagreement_findings(name, maps, tools, tools_line, widened)
         for note in dead_letter_notes(name, maps, tools, tools_line):
             print(f"NOTE      {note}")
+    for generated in sorted((sub_agents.parent / "claude" / "agents").glob("*.md")):
+        try:
+            tools, tools_line, _ = parse_tools(generated.read_text())
+        except OSError as exc:
+            print(f"UNUSABLE  cannot read {generated}: {exc}")
+            return 2
+        findings += capability_findings(
+            f"claude/agents/{generated.name}", generated.stem, {}, tools, tools_line
+        )
     for f in findings:
         print(f"REFUSED   {f}")
     verdict = "PASS" if not findings else "FAIL"
@@ -850,6 +904,46 @@ def selftest() -> int:
     for name in ("unit-test-author.md", "integration-test-author.md", "document-drafter.md", "implementer.md", "reviewer.md"):
         text = (repo / "sub-agents" / name).read_text()
         check(f"disagreement: real {name} is consistent", False, bool(disagreement(text)))
+
+    # Capability: the tool a payload field depends on
+    drafter_maps = {"write": {"docs/adr/*": "allow", "*": "deny"}, "bash": "deny"}
+    check(
+        "capability: drafter without Write is refused",
+        True,
+        bool(capability_findings("d", "document-drafter", drafter_maps, ["Read"], 4)),
+    )
+    check(
+        "capability: drafter with Write is clean",
+        False,
+        bool(capability_findings("d", "document-drafter", drafter_maps, ["Read", "Write"], 4)),
+    )
+    check(
+        "capability: scout without Bash is refused",
+        True,
+        bool(capability_findings("s", "blast-radius-scout", {}, ["Read", "Grep"], 4)),
+    )
+    check(
+        "capability: scout with a scalar-denied opencode bash is refused",
+        True,
+        bool(capability_findings("s", "blast-radius-scout", {"bash": "deny"}, ["Bash"], 4)),
+    )
+    check(
+        "capability: scout with an allow-listed opencode bash is clean",
+        False,
+        bool(capability_findings(
+            "s", "blast-radius-scout", {"bash": {"git diff*": "allow", "*": "deny"}}, ["Bash"], 4
+        )),
+    )
+    check(
+        "capability: a kind with no requirement is clean",
+        False,
+        bool(capability_findings("r", "reviewer", {}, ["Read"], 4)),
+    )
+    check(
+        "capability: an opencode-only file (no tool list) is not refused on tools",
+        False,
+        bool(capability_findings("d", "document-drafter", drafter_maps, None, 0)),
+    )
 
     ok = all(w == g for _, w, g in cases)
     for name, want, got in cases:
