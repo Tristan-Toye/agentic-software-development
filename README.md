@@ -221,6 +221,29 @@ python3 scripts/build_claude_plugin.py --selftest
 fails when a committed file does not match its source. Run it with the other
 validators before any plugin change lands, and after Phase 8b graduates a rule.
 
+### Model profiles under opencode
+
+An agent's opencode `model:` names its tier: `zai-coding-plan/glm-5.3` is the
+large tier, `glm-5.3-flash` the flash tier. `opencode/model-profiles.json`
+maps each tier to a model per profile (`glm`, `openai`), with provider options
+such as OpenAI's `reasoningEffort` beside it; the file records why each choice.
+`scripts/opencode_profile.py <profile>` reads the agents opencode loads (the
+links in `~/.config/opencode/agent/`) and prints the config that moves every
+one onto its tier's model in that profile. The output goes in
+`OPENCODE_CONFIG_CONTENT`, the one config layer that overrides an agent file's
+`model:`; an `OPENCODE_CONFIG` file does not. Two shell functions wrap it:
+
+```
+opencode-glm       # every agent on GLM (glm-5.3 / glm-5.3-flash)
+opencode-openai    # every agent on OpenAI gpt-6.1-sol at reasoningEffort high, after /connect → OpenAI
+python3 scripts/opencode_profile.py --check   # every linked agent has a tier, no link dangles,
+                                              # every repo agent is linked
+```
+
+A subagent without its own `model:` would inherit the orchestrator's model, but
+then every subagent runs on the large tier; the profile keeps the flash tier on
+each provider.
+
 ### What Claude Code cannot express
 
 Claude Code grants or withholds a whole tool. Agent front matter has no

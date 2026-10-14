@@ -1,0 +1,21 @@
+{
+  "_comment": "Model profiles for opencode. Each agent's tier comes from the `model:` in its own markdown frontmatter, matched against the `glm` profile (the frontmatter is the GLM source of truth); a profile maps every tier to a model, either a model ID or {\"model\": ID, ...provider options}. Options pass straight to the provider (opencode docs: agents, Additional), e.g. OpenAI's `reasoningEffort`. Launch with `opencode-glm` or `opencode-openai` (shell functions that pass scripts/opencode_profile.py's output as OPENCODE_CONFIG_CONTENT, the one config layer that overrides an agent file's model). Model IDs: `opencode models <provider>`.",
+  "tiers_from": "glm",
+  "profiles": {
+    "glm": {
+      "large": "zai-coding-plan/glm-5.3",
+      "flash": "zai-coding-plan/glm-5.3-flash"
+    },
+    "openai": {
+      "_comment": "Both tiers on gpt-6.1-sol: on Terminal-Bench 4.0 it ties GPT-6 Astra (58.2%) at a fifth of the price, while GPT-6 Luna resolves 16.4%, too weak for agents that write and test code. Effort `high`: on GPT-6 Sol's per-effort results high keeps nearly all of xhigh/max's gain (DeepSWE 65.3% vs 66.6/68.8%, FrontierCode 47.7% vs 48.4/49.3%) at about half to a third of max's cost; medium drops sharply (DeepSWE 56.6%); and GPT-6.1 Sol scored lower at max than at medium on FrontierCode (47.6% vs 50.2%). GLM-5.3 has no effort setting (its thinking is always on). Sources: kingy.ai GPT-6 Sol/Luna and Haiku 5.5 comparisons, Terminal-Bench 4.0 leaderboard, checked 2026-10-14.",
+      "large": {
+        "model": "openai/gpt-6.1-sol",
+        "reasoningEffort": "high"
+      },
+      "flash": {
+        "model": "openai/gpt-6.1-sol",
+        "reasoningEffort": "high"
+      }
+    }
+  }
+}
