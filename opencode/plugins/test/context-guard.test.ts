@@ -97,6 +97,47 @@ check("implementer: reasoning kept", reasonOf(out, "a1").text.startsWith("think"
 const rev = history("ses_rev", "reviewer", 6, 6000)
 check("reviewer (not in mask_agents): unchanged", JSON.stringify(await run(rev)) === JSON.stringify(rev))
 
+// 6. Old long inputs are shortened past the watermark; newer ones and short ones stay.
+const SI = "ses_inputs"
+const longCmd = "cat <<'EOF' > f\n" + "y".repeat(2000) + "\nEOF"
+const withInputs = history(SI, "work-on", 6, 6000)
+withInputs[3].parts[1] = tp("bash", { command: longCmd, description: "heredoc" }, 3) // a3: past the watermark
+withInputs[6].parts[1] = tp("task", { prompt: "p".repeat(2000) }, 6) // a6: in the kept window
+out = await run(withInputs)
+const a3in = toolOf(out, "a3").state.input
+check("old long bash input shortened", a3in.command.length < 200 && a3in.command.startsWith("cat <<'EOF' > f") && a3in.command.includes("chars of this old input elided"))
+check("short fields of that input kept", a3in.description === "heredoc")
+check("input in the kept window untouched", toolOf(out, "a6").state.input.prompt.length === 2000)
+check("stored input unchanged", withInputs[3].parts[1].state.input.command === longCmd)
+
+// 7. No thrash: once a move has freed what it can, a request that stays above the trigger
+//    does not move the watermark on every step — only after regrowing regrow_tokens, and
+//    only when the move would free min_gain_tokens; a check that frees too little logs `floor`.
+const T = "ses_thrash"
+let msgs: any[] = history(T, "work-on", 6, 6000)
+await run(msgs) // first move
+const firstState = JSON.parse(readFileSync(join(tmp, "opencode", "context-guard", `${T}.json`), "utf8"))
+check("thrash: first move recorded with a floor", firstState.tool === "a4" && typeof firstState.floor === "number")
+// Steps whose provider-reported size stays just above the trigger but below floor + regrow.
+for (let n = 7; n <= 9; n++) {
+  msgs = [...msgs.map((m: any) => (m.info.tokens ? { ...m, info: { ...m.info, tokens: { ...m.info.tokens, input: 100 } } } : m)), step(T, n, firstState.floor + 500)]
+  await run(msgs)
+}
+const held = JSON.parse(readFileSync(join(tmp, "opencode", "context-guard", `${T}.json`), "utf8"))
+check("thrash: watermark held below floor + regrow", held.tool === "a4")
+// A context above the trigger with nothing to free (only short text parts): no move, a
+// `floor` line, and the floor raised to the current size so the next check waits.
+const F = "ses_floor"
+const tiny = (n: number, tokens: number) => ({
+  info: { id: "a" + n, sessionID: F, role: "assistant", tokens: { input: tokens, output: 1, cache: { read: 0, write: 0 } } },
+  parts: [{ type: "text", text: "ok" }],
+})
+msgs = [user(F, "work-on"), ...[1, 2, 3, 4, 5].map((n) => tiny(n, 100)), tiny(6, 6000)]
+await run(msgs)
+const floored = JSON.parse(readFileSync(join(tmp, "opencode", "context-guard", `${F}.json`), "utf8"))
+check("floor: too little to free sets no watermark", floored.tool === undefined)
+check("floor: floor raised to the current size", floored.floor >= 6000 && floored.floorAt === "a6")
+
 // ---- guard -------------------------------------------------------------------------
 
 const small = join(tmp, "small.rs")
@@ -136,6 +177,14 @@ check("cargo nextest via limactl refused", (await attempt("g_work", "bash", { co
 check("cargo test through run_tests.py allowed", (await attempt("g_work", "bash", { command: `python3 scripts/run_tests.py -- ${cargo}` })) === undefined)
 check("plain cargo test allowed", (await attempt("g_work", "bash", { command: "cargo test" })) === undefined)
 check("cargo: other agent allowed", (await attempt("g_other", "bash", { command: cargo })) === undefined)
+check("limactl after a separator refused", (await attempt("g_work", "bash", { command: `X=/w; cd $X && ${cargo}` })) !== undefined)
+check("limactl named in another command's argument allowed",
+  (await attempt("g_work", "bash", { command: `python3 scripts/compose_payloads.py --field TEST_COMMAND="${cargo}"` })) === undefined)
+
+const bigPhase = join(tmp, "references", "work-on", "phase-4.md")
+await Bun.write(bigPhase, "# p\n".repeat(400))
+check("big phase file read allowed (protect_paths)", (await attempt("g_work", "read", { filePath: bigPhase })) === undefined)
+check("big markdown elsewhere still refused", (await attempt("g_work", "read", { filePath: bigMd })) !== undefined)
 
 check("cat of big file refused", (await attempt("g_work", "bash", { command: `cat ${big}` }))?.includes("code_outline") === true)
 check("cat of small file allowed", (await attempt("g_work", "bash", { command: `cat ${small}` })) === undefined)
@@ -148,9 +197,11 @@ const lines = readFileSync(join(tmp, "opencode", "context-guard", "context-guard
 const ev = (e: string) => lines.filter((l) => l.split(" ")[1] === e)
 check("log: timestamped", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z /.test(l)))
 check("log: mask lines for ses_w (two moves)", ev("mask").filter((l) => l.includes(" ses_w ")).length === 2)
-check("log: mask line format", ev("mask").some((l) => / mask ses_w watermark a4: ~\d+k -> ~\d+k tokens, 2 outputs, 2 reasoning$/.test(l)))
+check("log: mask line format", ev("mask").some((l) => / mask ses_w watermark a4: ~\d+k -> ~\d+k tokens, 2 outputs, 0 inputs, 2 reasoning$/.test(l)))
 check("log: refused line format", ev("refused").some((l) => / refused g_work work-on read: read a dossier by section/.test(l)))
-check("log: refusals count", ev("refused").length === 6)
+check("log: refusals count", ev("refused").length === 8)
+check("log: floor line for the thrash session", ev("floor").some((l) => / floor ses_floor ~\d+k tokens, a move would free ~\d+k: /.test(l)))
+check("log: no mask line on every step", ev("mask").filter((l) => l.includes(" ses_thrash ")).length === 1)
 
 console.log(fails.length ? "FAIL " + fails.join(" | ") : "PASS (all cases)")
 process.exit(fails.length ? 1 : 0)

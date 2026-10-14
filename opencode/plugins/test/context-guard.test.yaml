@@ -10,3 +10,7 @@ mask_agents: [work-on, dossier, implementer]
 mask_reasoning_agents: [work-on, dossier]
 guard_agents: [work-on]
 max_read_bytes: 500
+regrow_tokens: 1000
+min_gain_tokens: 200
+mask_input_tools: [bash, task, write, edit]
+keep_input_chars: 50

@@ -1,0 +1,192 @@
+{
+ "window": [
+  1791791603000,
+  1791962913000
+ ],
+ "unknown_models": [],
+ "totals": {
+  "steps": 2728,
+  "credits": 38914
+ },
+ "per_day": {
+  "2026-10-13": 36866,
+  "2026-10-14": 2049
+ },
+ "agents": {
+  "work-on": {
+   "sessions": 3,
+   "steps": 1588,
+   "credits": 29455,
+   "share_pct": 75.7,
+   "avg_ctx_k": 86,
+   "max_ctx_k": 154,
+   "first_step_ctx_k": 36.8
+  },
+  "dossier": {
+   "sessions": 2,
+   "steps": 180,
+   "credits": 3816,
+   "share_pct": 9.8,
+   "avg_ctx_k": 84,
+   "max_ctx_k": 111,
+   "first_step_ctx_k": 36.6
+  },
+  "implementer": {
+   "sessions": 16,
+   "steps": 482,
+   "credits": 2494,
+   "share_pct": 6.4,
+   "avg_ctx_k": 66,
+   "max_ctx_k": 103,
+   "first_step_ctx_k": 23.6
+  },
+  "integration-test-author": {
+   "sessions": 12,
+   "steps": 185,
+   "credits": 1304,
+   "share_pct": 3.4,
+   "avg_ctx_k": 69,
+   "max_ctx_k": 128,
+   "first_step_ctx_k": 20.4
+  },
+  "reviewer": {
+   "sessions": 11,
+   "steps": 139,
+   "credits": 674,
+   "share_pct": 1.7,
+   "avg_ctx_k": 53,
+   "max_ctx_k": 100,
+   "first_step_ctx_k": 17.3
+  },
+  "unit-test-author": {
+   "sessions": 10,
+   "steps": 63,
+   "credits": 491,
+   "share_pct": 1.3,
+   "avg_ctx_k": 49,
+   "max_ctx_k": 133,
+   "first_step_ctx_k": 12.1
+  },
+  "contract-reviewer": {
+   "sessions": 2,
+   "steps": 7,
+   "credits": 317,
+   "share_pct": 0.8,
+   "avg_ctx_k": 59,
+   "max_ctx_k": 136,
+   "first_step_ctx_k": 14.0
+  },
+  "stub-materialiser": {
+   "sessions": 2,
+   "steps": 60,
+   "credits": 251,
+   "share_pct": 0.6,
+   "avg_ctx_k": 56,
+   "max_ctx_k": 90,
+   "first_step_ctx_k": 15.4
+  },
+  "document-drafter": {
+   "sessions": 1,
+   "steps": 14,
+   "credits": 65,
+   "share_pct": 0.2,
+   "avg_ctx_k": 41,
+   "max_ctx_k": 50,
+   "first_step_ctx_k": 14.4
+  },
+  "blast-radius-scout": {
+   "sessions": 1,
+   "steps": 10,
+   "credits": 46,
+   "share_pct": 0.1,
+   "avg_ctx_k": 33,
+   "max_ctx_k": 64,
+   "first_step_ctx_k": 13.2
+  }
+ },
+ "runs": {
+  "ses_ecb94a416ffeBL8z1Dx7xk6qi2": {
+   "title": "W-092 reference",
+   "steps": 726,
+   "credits": 13155,
+   "credits_per_step": 18.1,
+   "avg_ctx_k": 84,
+   "max_ctx_k": 125,
+   "uncached_credits": 2026,
+   "cache_hit_pct": 95.2,
+   "checkpoints": 8,
+   "mask_moves": 89
+  },
+  "ses_ecade0ecaffe08oEa1DnjxrYWh": {
+   "title": "W-104 reference",
+   "steps": 837,
+   "credits": 15919,
+   "credits_per_step": 19.0,
+   "avg_ctx_k": 89,
+   "max_ctx_k": 154,
+   "uncached_credits": 2518,
+   "cache_hit_pct": 95.1,
+   "checkpoints": 7,
+   "mask_moves": 160
+  },
+  "ses_ec6be841dffeiqR6YtuiZj4GYI": {
+   "title": "W-102",
+   "steps": 25,
+   "credits": 381,
+   "credits_per_step": 15.3,
+   "avg_ctx_k": 57,
+   "max_ctx_k": 94,
+   "uncached_credits": 73,
+   "cache_hit_pct": 92.6,
+   "checkpoints": 1,
+   "mask_moves": 0
+  }
+ },
+ "carried": {
+  "reasoning": 35.5,
+  "read output": 22.4,
+  "bash output": 17.1,
+  "bash input": 9.4,
+  "other input": 4.5,
+  "task input": 3.5,
+  "task output": 2.6,
+  "other output": 2.5,
+  "text": 2.1,
+  "read input": 0.4
+ },
+ "tools": {
+  "bash grep/rg": 538,
+  "bypass:raw limactl cargo test": 6,
+  "bypass:sed/cat/head/tail file reads": 173,
+  "bypass:whole-file read > 20 KB": 2,
+  "calls": 1870,
+  "errors": 37,
+  "grep tool": 6,
+  "output trims (| head/tail)": 742,
+  "read calls": 218,
+  "script:code_nav": 13,
+  "script:compose_payloads": 46,
+  "script:dossier_edit": 124,
+  "script:gate_commit": 31,
+  "script:git_state": 7,
+  "script:prepare_wave": 72,
+  "script:run_gates": 3,
+  "script:run_tests": 53,
+  "script:validate_pipeline": 18,
+  "script:verify_return": 21,
+  "script:wait_ci": 17,
+  "tool:code_find": 4,
+  "tool:code_item": 21,
+  "tool:code_outline": 3,
+  "tool:doc_section": 20,
+  "tool:phase_checkpoint": 18
+ },
+ "plugin_events": {
+  "context-guard:mask": 289,
+  "context-guard:refused": 20,
+  "phase-checkpoint:cut": 16,
+  "phase-checkpoint:nudge": 4,
+  "phase-checkpoint:recorded": 16,
+  "phase-checkpoint:refused": 2
+ }
+}

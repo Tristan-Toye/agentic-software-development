@@ -123,8 +123,11 @@ def report(con: sqlite3.Connection, since: int, until: int, data_dir: str) -> di
     for s in st:
         if s["agent"] != "work-on" or s["sid"] not in top:
             continue
-        r = runs.setdefault(s["sid"], {"title": top[s["sid"]], "steps": 0, "credits": 0.0, "ctx_sum": 0, "ctx_max": 0})
+        r = runs.setdefault(s["sid"], {"title": top[s["sid"]], "steps": 0, "credits": 0.0, "ctx_sum": 0, "ctx_max": 0,
+                                       "uncached": 0.0, "inp": 0, "cached": 0})
         r["steps"] += 1; r["credits"] += s["cr"]; r["ctx_sum"] += s["ctx"]; r["ctx_max"] = max(r["ctx_max"], s["ctx"])
+        # Uncached input is what a cache break costs: the fresh-input share of the bill.
+        r["uncached"] += credits(s["model"], s["inp"], 0, 0); r["inp"] += s["inp"]; r["cached"] += s["cached"]
     cp_dir = os.path.join(data_dir, "phase-checkpoint")
     guard_dir = os.path.join(data_dir, "context-guard")
     for sid, r in runs.items():
@@ -138,6 +141,8 @@ def report(con: sqlite3.Connection, since: int, until: int, data_dir: str) -> di
             masks = sum(1 for line in open(gp) if f" mask {sid} " in line)
         r.update(credits=round(r["credits"]), credits_per_step=round(r["credits"] / r["steps"], 1),
                  avg_ctx_k=round(r.pop("ctx_sum") / r["steps"] / 1000), max_ctx_k=round(r.pop("ctx_max") / 1000),
+                 uncached_credits=round(r.pop("uncached")),
+                 cache_hit_pct=round(100 * r["cached"] / max(1, r.pop("inp") + r.pop("cached")), 1),
                  checkpoints=len(cps), mask_moves=masks)
     out["runs"] = runs
 
@@ -199,8 +204,12 @@ def tool_use(con: sqlite3.Connection, since: int, until: int, run_ids: list[str]
             for name in MECHANICAL:
                 if f"{name}.py" in cmd:
                     c[f"script:{name}"] += 1
-            if re.search(r"(^|[;&|]\s*)(rtk\s+)?(sed|cat|head|tail|nl)\b", cmd):
-                c["bypass:sed/cat/head/tail reads"] += 1
+            # A file read through the shell (the command reads a file) vs trimming another
+            # command's output (`| head`): only the first is a bypass of read/code_item.
+            if re.search(r"(^|[;&]\s*|&&\s*)(rtk\s+)?(sed\s+-n|cat|head|tail|nl)\s+[^|;&]*[\w/.-]+\.\w+", cmd):
+                c["bypass:sed/cat/head/tail file reads"] += 1
+            elif re.search(r"\|\s*(rtk\s+)?(head|tail)\b", cmd):
+                c["output trims (| head/tail)"] += 1
             if "limactl" in cmd and re.search(r"cargo (test|nextest)", cmd) and "run_tests.py" not in cmd:
                 c["bypass:raw limactl cargo test"] += 1
             if re.search(r"\b(grep|rg)\b", cmd):
@@ -246,10 +255,12 @@ def render(r: dict) -> str:
     for k, v in r["agents"].items():
         L.append(f"{k:<25} {v['sessions']:>4} {v['steps']:>6} {v['credits']:>8,} {v['share_pct']:>5}% "
                  f"{v['avg_ctx_k']:>6}k {v['max_ctx_k']:>7}k {v['first_step_ctx_k']:>9}k")
-    L.append("\norchestrator runs: title, steps, credits, credits/step, avg ctx, max ctx, checkpoints, mask moves")
+    L.append("\norchestrator runs: title, steps, credits, credits/step, avg ctx, max ctx, checkpoints, mask moves, "
+             "uncached credits, cache hit")
     for v in r["runs"].values():
         L.append(f"  {v['title'][:30]:<30} {v['steps']:>5} {v['credits']:>7,} {v['credits_per_step']:>6} "
-                 f"{v['avg_ctx_k']:>5}k {v['max_ctx_k']:>5}k {v['checkpoints']:>3} {v['mask_moves']:>3}")
+                 f"{v['avg_ctx_k']:>5}k {v['max_ctx_k']:>5}k {v['checkpoints']:>3} {v['mask_moves']:>3} "
+                 f"{v.get('uncached_credits', 0):>6,} {v.get('cache_hit_pct', 0):>5}%")
     if r["carried"]:
         L.append("\norchestrator carried context by kind: " + ", ".join(f"{k} {v}%" for k, v in r["carried"].items()))
     if r["tools"]:
@@ -265,7 +276,8 @@ MIN_RUN_STEPS = 50  # shorter top-level sessions are false starts, not runs
 def compare(before: dict, after: dict) -> str:
     def per(r: dict, key: str) -> float:
         runs = [x for x in r.get("runs", {}).values() if x["steps"] >= MIN_RUN_STEPS]
-        return sum(x[key] for x in runs) / len(runs) if runs else 0.0
+        # Snapshots older than a metric lack its key: they count as 0, shown as n/a.
+        return sum(x.get(key, 0) for x in runs) / len(runs) if runs else 0.0
 
     rows = [
         ("credits per orchestrator run", per(before, "credits"), per(after, "credits")),
@@ -273,6 +285,8 @@ def compare(before: dict, after: dict) -> str:
         ("credits per orchestrator step", per(before, "credits_per_step"), per(after, "credits_per_step")),
         ("orchestrator avg context (k)", per(before, "avg_ctx_k"), per(after, "avg_ctx_k")),
         ("orchestrator max context (k)", per(before, "max_ctx_k"), per(after, "max_ctx_k")),
+        ("uncached credits per run", per(before, "uncached_credits"), per(after, "uncached_credits")),
+        ("orchestrator cache hit (%)", per(before, "cache_hit_pct"), per(after, "cache_hit_pct")),
     ]
     out = ["metric                              before      after    change"]
     for name, b, a in rows:
@@ -335,6 +349,10 @@ def selftest() -> int:
         check("mask moves read from the guard log", run["mask_moves"] == 1)
         check("whole dossier read counted", r["tools"].get("bypass:whole dossier read") == 4)
         check("run_tests adoption counted", r["tools"].get("script:run_tests") == 4)
+        check("uncached credits per run", run["uncached_credits"] == round(4 * credits("glm-5.3", 1000, 0, 0)))
+        check("cache hit per run", run["cache_hit_pct"] == round(100 * 100000 / (4000 + 100000), 1))
+        check("an old snapshot without the new keys still compares",
+              "n/a" in compare({"runs": {"x": {k: v for k, v in run.items() if k != "uncached_credits"}}}, r))
         check("carried shares sum to ~100", 99 <= sum(r["carried"].values()) <= 101)
         check("plugin event counted", r["plugin_events"].get("context-guard:mask") == 1)
         check("compare renders", "credits per orchestrator run" in compare(r, r))

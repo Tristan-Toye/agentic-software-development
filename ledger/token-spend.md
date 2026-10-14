@@ -153,7 +153,13 @@ measurable claim, how to verify, and the result.
 - **Risk to watch**: reasoning masking may cost coherence (Z.ai asks for
   earlier thinking to be returned). If steps per run rise by more than 10% or
   a run repeats work, set `keep_reasoning_steps: 0` and compare again.
-- **Result**: —
+- **Result** (interim, from `ledger/metrics/2026-10-14_after-pr105-plugins-interim.json` (W-092 through Phase 7, W-104 still in Phase 5/6; window from the plugin link 2026-10-12T07:53:23Z), compared with `2026-10-12_after-pr105-no-plugins.json`): orchestrator average context 231.5k → 86k (−63%),
+  max 362k → 138k, credits per step 45.8 → 18.5 (−60%) — beyond the hypothesis.
+  Steps per run 777 (Sept 28: 904). But the guard moved the watermark 154 and
+  89 times: once the unmaskable part passed the trigger, on every step, and ~35
+  cache misses per run followed a move; the cache hit fell 97.6% → 95.1%. See
+  C-108. Logged after-sizes of `~0k` were a counting bug (all masked chars, not
+  the new ones), fixed with C-108.
 
 ### C-102 — Read guard (this PR)
 
@@ -166,7 +172,11 @@ measurable claim, how to verify, and the result.
 - **Hypothesis**: `bypass:whole-file read > 20 KB`, `bypass:whole dossier read`
   and `bypass:raw limactl cargo test` near 0; refusals below 20 per run.
 - **Verify**: `tools.bypass:*`, `plugin_events.context-guard:refused`.
-- **Result**: —
+- **Result** (interim, from `ledger/metrics/2026-10-14_after-pr105-plugins-interim.json` (W-092 through Phase 7, W-104 still in Phase 5/6; window from the plugin link 2026-10-12T07:53:23Z), compared with `2026-10-12_after-pr105-no-plugins.json`): 19 refusals in the two runs; 8 refused whole reads of
+  `phase-4.md` (32.7 KB), the file the orchestrator is told to read whole, and
+  4 refused commands that only named `limactl … cargo test` in an argument
+  (`compose_payloads.py` with a TEST_COMMAND). Each cost a retry step. Fixed by
+  C-110.
 
 ### C-103 — Code and document navigation tools (this PR)
 
@@ -179,7 +189,10 @@ measurable claim, how to verify, and the result.
   context −30%; steps per run −10 to −20%.
 - **Verify**: `tools.tool:code_*` > 0, `tools.bypass:sed/cat/head/tail reads`,
   `carried.read output`, `runs.*.steps`.
-- **Result**: —
+- **Result** (interim, from `ledger/metrics/2026-10-14_after-pr105-plugins-interim.json` (W-092 through Phase 7, W-104 still in Phase 5/6; window from the plugin link 2026-10-12T07:53:23Z), compared with `2026-10-12_after-pr105-no-plugins.json`): low adoption — 36 calls in two runs (`code_item` 20,
+  `doc_section` 11, `code_find` 3, `code_outline` 2) against ~180 shell file
+  reads (`sed -n`/`cat`/`head` on a file) and ~540 `grep`/`rg` calls. Not
+  changed yet; the step count, not the read size, is now the cost driver.
 
 ### C-104 — Checkpoints inside long phases (this PR)
 
@@ -189,7 +202,9 @@ measurable claim, how to verify, and the result.
 - **Why**: Phases 4 and 6 grew back to 300–450k tokens over 170–340 steps.
 - **Hypothesis**: more than 10 checkpoints per run; peak context −30%.
 - **Verify**: `runs.*.checkpoints`, `runs.*.max_ctx_k`.
-- **Result**: —
+- **Result** (interim, from `ledger/metrics/2026-10-14_after-pr105-plugins-interim.json` (W-092 through Phase 7, W-104 still in Phase 5/6; window from the plugin link 2026-10-12T07:53:23Z), compared with `2026-10-12_after-pr105-no-plugins.json`): 8 and 7 checkpoints (hypothesis: more than 10); peak
+  context −62%. Phases without a named round grew long: W-092's Phase 6 ran 224
+  steps, W-104 is 281 steps past its last checkpoint. See C-109.
 
 ### C-105 — Mechanical batch (this PR)
 
@@ -229,14 +244,93 @@ measurable claim, how to verify, and the result.
 - **Verify**: `tools.bash grep/rg`, `agents.scribe`, `agents.code-scout`.
 - **Result**: —
 
+### C-108 — Batched mask moves, old inputs masked, a lower trigger
+
+- **Change**: `context-guard.ts` — a move must free `min_gain_tokens` (4k) and
+  the next move waits until the request has regrown `regrow_tokens` (10k) past
+  the size the last move (or a check that found too little) left; a check that
+  finds nothing worth freeing logs `floor`. Past the watermark the long inputs
+  of `bash`, `task`, `write` and `edit` keep their first 300 chars. The trigger
+  drops from 100k to 70k. The mask log line now counts only what a move adds.
+- **Why**: C-101's trigger rule moved the watermark on every step once the part
+  it cannot mask (old call inputs, subagent returns, phase files, the newest
+  steps, the system prompt) passed 100k — 154 moves in W-104. In W-104's open
+  segment the masked region still held ~34k tokens of bash inputs, 14k of task
+  prompts and 7.5k of write content.
+- **How it was tuned**: `opencode/plugins/test/replay-guard.ts` replays a recorded
+  session through context-guard with its checkpoint cuts, feeding back the
+  simulated request size. The old plugin replayed to 160 moves on W-104 (154
+  recorded), so the replay is faithful on cadence. Cost model: request size ×
+  cache-read rate + re-billed tokens at the fresh-input premium (glm-5.3).
+
+  | W-104 (838 steps) | moves | breaks >20k | re-billed | avg request | ~credits |
+  |---|---|---|---|---|---|
+  | old (C-101) | 130 | 17 | 546k | 83k | 12.1k |
+  | new, inputs not masked | 47 | 26 | 744k | 80k | 11.8k |
+  | **new (70k / 10k / 4k)** | 48 | 23 | 646k | 73k | **10.7k** |
+
+  W-092: 10.3k → 9.3k. A 100k trigger with a 30k regrow made fewer moves but
+  carried more (14.2k on W-104): batching alone does not pay; masking inputs
+  and an earlier trigger do.
+- **Hypothesis**: orchestrator credits per run −8 to −12% at equal steps;
+  average context 86k → 70–75k; mask moves per run under 60; cache hit back
+  above 96%.
+- **Verify**: `runs.*.avg_ctx_k`, `runs.*.mask_moves`, `runs.*.cache_hit_pct`,
+  `runs.*.uncached_credits`, `plugin_events.context-guard:floor`.
+- **Result**: —
+
+### C-109 — Stage checkpoints and a reminder after 80 calls
+
+- **Change**: `phase_checkpoint` closes a phase or a stage inside one (a wave,
+  a test or review round, an investigation) once its outcome is in the build
+  log, named `Phase <N> — <stage>`; the tool text no longer forbids it "to save
+  space". After 80 tool calls without a checkpoint (and every 80 after) a
+  `work-on` tool result carries a reminder (`OPENCODE_PHASE_CHECKPOINT_NUDGE_CALLS`).
+  `phase-7.md` gains a checkpoint per review round; the work-on core states the
+  stage rule. After a stage cut the summary says to re-read only the section of
+  the phase file it needs.
+- **Why**: masking cannot remove what the orchestrator must keep; only a cut
+  does. The runs went 224 and 281 steps without one, and the tool's own text
+  ("never to save space") kept the orchestrator from cutting.
+- **Hypothesis**: 12 or more checkpoints per run; no stretch over 120 steps
+  without one; max context under 110k.
+- **Verify**: `runs.*.checkpoints`, `runs.*.max_ctx_k`, `plugin_events.phase-checkpoint:nudge`.
+- **Result**: —
+
+### C-110 — Read guard: phase files allowed, `limactl` only as the command run
+
+- **Change**: the read guard never refuses a file in `protect_paths` (the phase
+  files and the work-on core). The VM-test rule matches `limactl shell` only at
+  the start of a command or after a separator, `then`, `do`, `exec` or `time`.
+- **Why**: 12 of the 19 recorded refusals were wrong (C-102 result), each a
+  wasted step and a chunked re-read.
+- **Hypothesis**: no refusal of a phase file or of a command that only names
+  `limactl`; fewer reads of `phase-4.md` per run (16 in W-104).
+- **Verify**: `plugin_events.context-guard:refused`, the refused lines in
+  `context-guard.log`.
+- **Result**: —
+
+### C-111 — The report separates file reads from output trims, and prices cache misses
+
+- **Change**: `token_report.py` counts `bypass:sed/cat/head/tail file reads` (the
+  command reads a file) apart from `output trims (| head/tail)`, and adds
+  `uncached_credits` and `cache_hit_pct` per run (and to `--compare`; older
+  snapshots show `n/a`).
+- **Why**: the old count (914) mixed 742 output trims with 173 real file reads,
+  and cache breaks had no number of their own.
+- **Result**: n/a (measurement).
+
 ## Next measurement
 
-After the next runs, from the merge time of this PR:
+After the next runs, from the time the C-108–C-111 merge is pulled into the
+checkout opencode loads (restart opencode first):
 
 ```bash
-python3 scripts/token_report.py --since <merge time> --json ledger/metrics/<date>_after-context-guard.json \
-  --compare ledger/metrics/2026-09-28_after-pr86-to-92.json
+python3 scripts/token_report.py --since <pull time> --json ledger/metrics/<date>_after-c108.json \
+  --compare ledger/metrics/2026-10-14_after-pr105-plugins-interim.json
 ```
 
-Fill each **Result** above from that output. Overall hypothesis for this PR:
-credits per orchestrator run 26.6k → 12–16k, steps per run 904 → 750 or fewer.
+Fill the **Result** of C-108–C-110 from that output, and the final results of
+C-101–C-107 once W-092 and W-104 have finished (re-run the interim window with
+`--until <pull time>`). Overall so far: credits per orchestrator run 26.6k
+(Sept 28) → 14.4k (interim, runs unfinished).

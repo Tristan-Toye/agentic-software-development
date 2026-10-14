@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "pc-"))
+process.env.OPENCODE_PHASE_CHECKPOINT_NUDGE_CALLS = "3"
 const { PhaseCheckpointPlugin } = await import(join(import.meta.dir, "..", "phase-checkpoint.ts"))
 const hooks: any = await PhaseCheckpointPlugin({} as never)
 const t = hooks.tool.phase_checkpoint
@@ -77,6 +78,23 @@ check("other tools untouched", await (async () => {
   await after({ tool: "bash", sessionID: S2, callID: "c", args: { command: "cat references/work-on/phase-9.md" } }, o)
   return o.output === "x"
 })())
+
+// 7b. A long stage: every 3rd tool call without a checkpoint carries a reminder, for the
+//     guarded agent only; a checkpoint restarts the count.
+const S3 = "ses_3"
+await hooks["chat.params"]({ sessionID: S3, agent: "work-on" })
+await hooks["chat.params"]({ sessionID: "ses_impl", agent: "implementer" })
+const call = async (sessionID: string) => {
+  const o = { title: "", output: "ok", metadata: {} }
+  await after({ tool: "bash", sessionID, callID: "c", args: { command: "ls" } }, o)
+  return o.output
+}
+check("calls 1-2: no reminder", (await call(S3)) === "ok" && (await call(S3)) === "ok")
+check("call 3: reminder", (await call(S3)).includes("3 tool calls since the last checkpoint"))
+check("call 4: no reminder", (await call(S3)) === "ok")
+await t.execute({ phase: "Phase 4 — wave 1", summary: "wave 1 returned" }, { sessionID: S3, messageID: "m9", agent: "work-on" } as any)
+check("checkpoint restarts the count", (await call(S3)) === "ok" && (await call(S3)) === "ok" && (await call(S3)).includes("3 tool calls"))
+check("other agents never reminded", (await call("ses_impl")) + (await call("ses_impl")) + (await call("ses_impl")) === "okokok")
 
 // 8. The log file: one line per event, one cut line per checkpoint however many requests.
 out = { messages: history() }
