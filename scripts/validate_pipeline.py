@@ -2021,6 +2021,63 @@ CHECKLIST_IDS_RE = re.compile(r"^\s*[-*]?\s*CHECKLIST-IDS:\s*(none|\S.*)$", re.M
 # fix by re-deriving the ids, never a line to record and move past.
 CHECKLIST_IDS_ZERO_RE = re.compile(r"\bparsed\s+0\s*/\s*\d+")
 
+# `GATES: <file> — <N> gates; axes: <...>` or `GATES: none — <reason>`: the
+# gate list read once from CI's workflows at Phase 2 (one command per feature
+# axis CI compiles, plus its doc and lint gates). The contract commit, the
+# first push and every fix round run this same list, never a narrower one.
+GATES_RE = re.compile(
+    r"^\s*[-*]?\s*GATES:\s*(none\s+—\s+\S.*|\S+\s+—\s+\d+\s+gates?\b.*)$",
+    re.MULTILINE,
+)
+# `DOSSIER-ONLY-TERMS: <term>, <term>`: `### Definitions` terms deliberately
+# kept out of the stubs' documentation.
+DOSSIER_ONLY_RE = re.compile(r"^\s*[-*]?\s*DOSSIER-ONLY-TERMS:\s*(.+)$", re.MULTILINE)
+DEFINITION_TERM_RE = re.compile(r"^\s*(?:[-*]\s*)?\*\*([^*]+?)\*\*", re.MULTILINE)
+
+
+def definition_terms(contract: str) -> list[str]:
+    """The terms `### Definitions` under `## Contract` defines: the leading
+    `**term**` of each line in that subsection. Prose defined elsewhere in
+    `## Contract` is not extracted; /plan puts definitions in the list."""
+    m = re.search(r"^### Definitions[ \t]*\n(.*?)(?=^#{2,3} |\Z)", contract, re.M | re.S)
+    if not m:
+        return []
+    return [t.strip().rstrip(":.,") for t in DEFINITION_TERM_RE.findall(m.group(1))]
+
+
+def check_definitions(path: Path, text: str, build_log: str, root: Path) -> int:
+    """Every `### Definitions` term appears in an owned file that exists (the
+    stubs), or is logged `DOSSIER-ONLY-TERMS:`. Returns 1 on a missing term."""
+    secs = sections(text)
+    terms = definition_terms(secs.get("## Contract", ""))
+    if not terms:
+        return 0
+    skip = {
+        t.strip().lower()
+        for m in DOSSIER_ONLY_RE.finditer(build_log)
+        for t in m.group(1).split(",")
+    }
+    stub_text = ""
+    for _, paths in parse_packages(secs.get("## Work packages", "")):
+        for rel in paths:
+            f = root / rel.strip("`")
+            if f.is_file():
+                stub_text += f.read_text(encoding="utf-8", errors="replace").lower() + "\n"
+    rc = 0
+    for term in terms:
+        if term.lower() in skip or term.lower() in stub_text:
+            continue
+        print(
+            f"DEFECT  {path.name}: Definitions term {term!r} is in no owned stub "
+            f"file. Place it in the documentation of the members that use it, or "
+            f"log DOSSIER-ONLY-TERMS: {term}"
+        )
+        rc = 1
+    if not rc:
+        print(f"ok      {path.name}: {len(terms)} Definitions terms placed or dossier-only")
+    return rc
+
+
 PRE_FANOUT_LINES = (
     (
         "CONTRACT-REVIEW",
@@ -2066,6 +2123,16 @@ PRE_FANOUT_LINES = (
         ),
     ),
     (
+        "GATES",
+        GATES_RE,
+        "The gate list (one command per CI feature axis, plus CI's doc and "
+        "lint gates) is read from CI once and run at every commit class.",
+        (
+            "GATES: <gates file> — <N> gates; axes: <default, ...>",
+            "GATES: none — <reason>",
+        ),
+    ),
+    (
         "CENSUS",
         CENSUS_RE,
         "The contract's migration, table, counted-file or moved-file change "
@@ -2089,10 +2156,10 @@ PRE_FANOUT_LINES = (
 )
 
 
-def check_pre_fanout(path: Path) -> int:
+def check_pre_fanout(path: Path, root: Path | None = None) -> int:
     """Check the obligations that must hold before /work-on Phase 4 fans out.
 
-    Seven lines in ``## Build log``, each recording a decision the orchestrator
+    Eight lines in ``## Build log``, each recording a decision the orchestrator
     otherwise makes silently — or forgets, which reads the same:
 
     * ``CONTRACT-REVIEW: spawned ... | skipped — <reason>`` — the review has no
@@ -2107,15 +2174,22 @@ def check_pre_fanout(path: Path) -> int:
       provider and model it names.
     * ``SUITE-RUNNER: ci — ... | local — <reason>`` — which runner produces
       the suite verdicts from Phase 6 on, decided once at the contract commit.
+    * ``GATES: <file> — <N> gates; axes: ... | none — <reason>`` — the CI
+      gate list, run at every commit class.
     * ``CENSUS: <path>:<line> — <owner> | none — <what was grepped>`` — every
       count or list pin the contract shifts has an owner before the fan-out.
     * ``CHECKLIST-IDS: <script> parsed <N>/<N> lines | none — no coverage
       script`` — the draft checklist parses in the repo's own promise-line
       grammar; a ``parsed 0/`` line is refused, not recorded.
 
+    Also refuses a ``### Definitions`` term (under ``## Contract``) found in no
+    owned stub file and not listed in ``DOSSIER-ONLY-TERMS:``.
+
     Returns 0 when every obligation is recorded, 1 otherwise.
     """
     text = path.read_text(encoding="utf-8")
+    if root is None:
+        root = path.resolve().parents[2]
     body = text.split("## Build log", 1)
     if len(body) != 2:
         print(f"DEFECT  {path.name}: no '## Build log' section to check")
@@ -2155,6 +2229,8 @@ def check_pre_fanout(path: Path) -> int:
             )
             rc = 1
 
+    rc |= check_definitions(path, text, body[1], root)
+
     checklist_ids = CHECKLIST_IDS_RE.search(body[1])
     if checklist_ids and CHECKLIST_IDS_ZERO_RE.search(checklist_ids.group(1)):
         print(
@@ -2179,6 +2255,7 @@ def selftest_pre_fanout() -> bool:
             "- PAYLOAD-LINT: 5 payloads, 1 defect fixed — P1 P2 UT-A UT-B IT\n"
             "- ADMISSION: granted 5 slots — selftest-provider/selftest-model, cap 8, ceiling 5\n"
             "- SUITE-RUNNER: ci — .github/workflows/ci.yml, on push; push and draft PR: yes\n"
+            "- GATES: .discovery/analysis/gates-W-1.txt — 3 gates; axes: default, fault-inject\n"
             "- CENSUS: none — grepped for PROTECTED_TABLES, EXPECTED_TABLES, migration counts\n"
             "- CHECKLIST-IDS: scripts/check_promise_coverage.py parsed 8/8 lines\n"
         )
@@ -2187,14 +2264,14 @@ def selftest_pre_fanout() -> bool:
         ok &= check_pre_fanout(root / "full.md") == 0
         for token in (
             "CONTRACT-REVIEW", "HOOKS", "PAYLOAD-LINT", "ADMISSION", "SUITE-RUNNER",
-            "CENSUS", "CHECKLIST-IDS",
+            "GATES", "CENSUS", "CHECKLIST-IDS",
         ):
             partial = "\n".join(
                 line for line in full.splitlines() if not line.startswith(f"- {token}:")
             )
             (root / f"no-{token}.md").write_text(partial + "\n", encoding="utf-8")
             ok &= check_pre_fanout(root / f"no-{token}.md") == 1
-        (root / "none.md").write_text("## Build log\n- HOOKS: none\n- PAYLOAD-LINT: 2 payloads, 0 defects — P1 UT\n- CONTRACT-REVIEW: skipped — two-member contract, reviewed by hand\n- ADMISSION: skipped — one spawn\n- SUITE-RUNNER: local — no CI in this repository\n- CENSUS: none — grepped for table censuses and migration counts\n- CHECKLIST-IDS: none — no coverage script\n", encoding="utf-8")
+        (root / "none.md").write_text("## Build log\n- HOOKS: none\n- PAYLOAD-LINT: 2 payloads, 0 defects — P1 UT\n- CONTRACT-REVIEW: skipped — two-member contract, reviewed by hand\n- ADMISSION: skipped — one spawn\n- SUITE-RUNNER: local — no CI in this repository\n- GATES: none — no CI workflow builds anything\n- CENSUS: none — grepped for table censuses and migration counts\n- CHECKLIST-IDS: none — no coverage script\n", encoding="utf-8")
         ok &= check_pre_fanout(root / "none.md") == 0
 
         # A CHECKLIST-IDS line that parsed zero promise lines is refused, not
@@ -2208,6 +2285,39 @@ def selftest_pre_fanout() -> bool:
         with contextlib.redirect_stdout(io.StringIO()) as zbuf:
             zero_rc = check_pre_fanout(root / "zero.md")
         ok &= zero_rc == 1 and "parsed 0/" in zbuf.getvalue()
+
+        # A `### Definitions` term must reach an owned stub file or be logged
+        # dossier-only; a log with no Definitions subsection is untouched.
+        (root / "src").mkdir()
+        (root / "src" / "flush.py").write_text(
+            '"""Flush.\n\nThe window start is the first instant a flush covers."""\n',
+            encoding="utf-8",
+        )
+        dossier = (
+            "## Contract\n\n### Definitions\n\n"
+            "- **window start** — the first instant a flush covers.\n"
+            "- **track rows** — the rows of one track, oldest first.\n\n"
+            "```python\ndef flush(): ...\n```\n\n"
+            "## Work packages\n\n| Package | Owned paths |\n|---|---|\n"
+            "| P1 | src/flush.py |\n\n"
+        )
+        (root / "def-missing.md").write_text(dossier + full, encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as dbuf:
+            miss = check_pre_fanout(root / "def-missing.md", root)
+        ok &= miss == 1 and "'track rows'" in dbuf.getvalue() and "'window start'" not in dbuf.getvalue()
+        (root / "def-skipped.md").write_text(
+            dossier + full + "- DOSSIER-ONLY-TERMS: Track Rows\n", encoding="utf-8"
+        )
+        ok &= check_pre_fanout(root / "def-skipped.md", root) == 0
+        (root / "src" / "flush.py").write_text(
+            '"""Flush: window start; track rows are one track\'s rows."""\n', encoding="utf-8"
+        )
+        (root / "def-placed.md").write_text(dossier + full, encoding="utf-8")
+        ok &= check_pre_fanout(root / "def-placed.md", root) == 0
+        # A malformed GATES line (no gate count) is refused like a missing one.
+        bad = full.replace("— 3 gates; axes: default, fault-inject", "— several")
+        (root / "gates-bad.md").write_text(bad, encoding="utf-8")
+        ok &= check_pre_fanout(root / "gates-bad.md", root) == 1
 
         # A granted line is refused while the admission ledger defers that key.
         saved = os.environ.get("ASD_ADMISSION_DIR")
@@ -2402,7 +2512,9 @@ def main() -> int:
         action="store_true",
         help="check the pre-fan-out obligations for --dossier: the build log "
         "must record CONTRACT-REVIEW: (spawned or skipped), HOOKS: (none or "
-        "a policy) and PAYLOAD-LINT: (payload and defect counts) lines",
+        "a policy), PAYLOAD-LINT: (payload and defect counts) and GATES: "
+        "(the CI gate list) lines, and every ### Definitions term of "
+        "## Contract must reach a stub file or be in DOSSIER-ONLY-TERMS:",
     )
     ap.add_argument(
         "--mode",
@@ -2449,7 +2561,7 @@ def main() -> int:
             print(f"DEFECT  no dossier matches '{args.dossier}' in {dossier_dir}")
             return 1
         if args.pre_fanout:
-            return check_pre_fanout(targets_d[0])
+            return check_pre_fanout(targets_d[0], root)
     elif args.pre_fanout:
         print("DEFECT  --pre-fanout requires --dossier <ID>")
         return 1

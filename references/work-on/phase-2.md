@@ -49,6 +49,12 @@ This is the step everything else depends on.
     as unfinished work, so the failing-loud marker is the default unless this
     repo's rules file names another.
 
+    **Carry the definitions.** Every term `### Definitions` (under `## Contract`)
+    defines goes into the documentation of each type or member that uses it: a
+    blind author and the contract reviewer read the stubs alone. A term meant
+    for the dossier only is logged `DOSSIER-ONLY-TERMS: <term>, <term>`.
+    `--pre-fanout` refuses a term found in no owned stub file.
+
 3. **Refine the contract AND the packages while you write.** Materialising a
    contract exposes what a text section hides: a missing type, an unstated
    error, a return value that cannot express the promise, or a file that turns
@@ -63,6 +69,15 @@ This is the step everything else depends on.
    **written** without another's implementation, which is rare. A serial chain
    inherited from the prose costs one full agent round trip per link and buys
    nothing.
+
+   **A shape change compiles every library at the contract commit.** When
+   `## Contract` changes a type other code builds or matches on (a field's
+   type, a trait method's signature, a constructor's arity), the contract
+   commit carries the type-forced edits at every non-test call site, so the
+   libraries, bins and examples compile (the tests need not) on every gate
+   below. A package that owned only such edits leaves the table, and call-site
+   test packages depend on nothing: they fork in the same wave. This is a
+   revision; it goes to the user (below).
 
    **This is the last cheap moment to change either.** `## Contract` and
    `## Work packages` **freeze** when Phase 4 spawns anything: after that a
@@ -124,6 +139,24 @@ This is the step everything else depends on.
    (Phase 6), the one failing test at the merge-base for a row-5 proof, the
    command verification an implementer's payload needs (Phase 4), and the
    agents' own runs in their worktrees.
+
+   **Record the gate list from the same read of CI.** One gate per feature
+   axis a CI job compiles (`cargo check --workspace --all-targets --locked`,
+   and once more per `--features` set a job uses) plus every doc and lint gate
+   CI runs (`cargo doc` under its `RUSTDOCFLAGS`, clippy, fmt) — never the
+   repo's local aggregator alone, which covers fewer. Write them in
+   `run_gates.py`'s format to `.discovery/analysis/gates-<ID>.txt`, run
+   `python3 ${PLUGIN_ROOT}/scripts/run_gates.py <file> --root <X>` before the
+   contract commit, and log one line; `--pre-fanout` refuses without it:
+
+   ```
+   GATES: <gates file> — <N> gates; axes: <default, fault-inject, ...>
+   GATES: none — <why CI builds nothing to gate>
+   ```
+
+   The list is fixed for the branch. The first push (Phase 6), every
+   arbitration fix and every review fix round (Phase 7) run this same list,
+   docs-only commits included; none gets a narrower one.
 
 You write this yourself. Do not delegate it: the contract is what you will
 referee with in Phase 6, and a contract you did not write is one you cannot
