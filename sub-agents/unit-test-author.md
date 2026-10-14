@@ -240,6 +240,31 @@ fixes the contract or the payload and spawns you again.
   foreign to this repository will be rewritten by a human, and then it is
   wasted work.
 
+## Stability — a test passes or fails the same way on every run
+
+Your tests run many times, beside the rest of the suite, on a loaded machine.
+A test that fails on one run in ten is a false failure that costs a whole
+arbitration round, and the orchestrator repeats the suite to find it.
+
+- **Never sleep to wait for something.** Wait on the thing itself: join the
+  thread, await the task, or poll the observable condition with a deadline.
+  A sleep is only correct when the promise is itself about elapsed time.
+- **A wall-clock bound is at least one second.** Assert a time only when the
+  contract promises one. Under load a 50 ms bound fails at 70 ms with correct
+  code. When the promise is shorter than one second, return `GAP:` — the
+  contract must say how the bound is observed (an injected clock, a count).
+- **Time comes from the clock the contract names.** When a member takes a
+  clock, drive it; never read the real clock to compute an expected value.
+- **No shared mutable state.** Each test builds what it uses. No global, no
+  static, no environment variable set and left, no fixed port or file path two
+  tests can share, and no dependence on the order tests run in.
+- **Concurrent promises: assert after every worker is joined.** Start the
+  workers, join them all, then assert on the final state. Never assert on a
+  state that only exists between two steps of another thread.
+- **Randomness is seeded**, and the seed is in the test.
+- **A retry, a longer sleep, or a skip never makes a test stable.** It hides
+  the race, and the race may be a real defect in the code under test.
+
 ## Report
 
 The paths you wrote, one line per test with the member and the promise it

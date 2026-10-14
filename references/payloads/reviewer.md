@@ -17,8 +17,8 @@ CONTEXT_DOCS: /abs/path/repo/docs/adr/0003-session-store.md
 ROUND: 1
 ```
 
-`LENS: style | architecture | performance` — after the suite is green. Spawn all
-three in one message so they run concurrently:
+`LENS: style | architecture | performance` — after the suite is green. Spawn
+them in one message, with `tests` when it is due, so they run concurrently:
 
 ```
 LENS: performance
@@ -46,6 +46,36 @@ ARBITRATIONS: |
   - user ruled 2026-08-10: keep the retry inside flush(); do not extract it
     (overrides architecture CR-2 from round 1)
 ROUND: 2
+```
+
+`LENS: tests` — in the same message, only when Phase 6 logged a `FLAKY` test
+or `FLAKE-RISK:` found a marker in this build's test files. Its `SCOPE` is the
+test files and their marked lines, not the blast radius, and `RUN_EVIDENCE`
+carries the `STABILITY:` line:
+
+```
+LENS: tests
+WORKTREE_DIR: /abs/path/repo-W-014
+SCOPE: |
+  Test files this build added or changed, with the risk scan's marks:
+    tests/flush_test.rs :: flush_three_parallel_calls_each_item_written_once
+      tests/flush_test.rs:41  sleep  thread::sleep(Duration::from_millis(50));
+      tests/flush_test.rs:44  wall-clock  assert!(t.elapsed() < Duration::from_millis(200));
+    tests/reload_flow_test.rs :: reload_drains_queue (FLAKY 1/3 in STABILITY)
+  Change requests must stay inside these test files.
+CONTRACT: |
+  <the dossier's `## Contract` section, verbatim>
+RUN_EVIDENCE: |
+  STABILITY: 3 runs on 4f1c2e9 — FLAKY reload_drains_queue (failed 1/3)
+  <the full green run's output>
+CRITERIA: |
+  <the acceptance criteria, for context>
+STANDARDS: ${PLUGIN_ROOT}/skills/standards/engineering-standards.md
+RULES: none
+CONTEXT_DOCS: none
+ARBITRATIONS: |
+  none
+ROUND: 1
 ```
 
 On a re-review, add `PRIOR_CRS` with that lens's **own** change requests from the
@@ -82,7 +112,7 @@ PRIOR_CRS: |
 - **`RULES` is rule text, never `ocr` output verbatim.** `ocr delegate rule`
   resolves one combined checklist per path — correctness, security,
   performance, maintainability, tests in a single block. Pasting that block
-  into all three lenses hands every lens every other lens's question, and the
+  into every lens hands each lens every other lens's question, and the
   duplicate CRs that follow are exactly what the `LENS` field exists to
   prevent. **The orchestrator narrows it per lens before it is a payload
   field**, and a rule that belongs to no lens is dropped, not distributed.
@@ -99,5 +129,8 @@ PRIOR_CRS: |
   section itself, refuses an empty one, and refuses `--contract-paths`.
 - **`RUN_EVIDENCE` is green when a code lens sees it.** A reviewer never runs
   anything and never needs to check the suite's claim.
+- **Every reply ends with `UNREACHED:`** — `none`, or the `SCOPE` locations the
+  lens did not read in full. A `PASS` that is not `UNREACHED: none` is
+  `incomplete`, never a pass (`references/work-on/phase-7.md`).
 - **`ARBITRATIONS` accumulates across rounds** and goes into every later spawn,
   so no reviewer re-litigates a question the user already settled.

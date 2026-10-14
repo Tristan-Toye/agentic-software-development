@@ -304,6 +304,9 @@ CONDITIONAL: dict[tuple[str, str, str], tuple[set[str], list[set[str]]]] = {
     ("reviewer", "LENS", "performance"): (
         {"SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA", "CONTEXT_DOCS", "ARBITRATIONS",
          "RULES"}, []),
+    ("reviewer", "LENS", "tests"): (
+        {"SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA", "CONTEXT_DOCS", "ARBITRATIONS",
+         "RULES"}, []),
     ("document-drafter", "MODE", "adr"): ({"DECISIONS"}, []),
     ("document-drafter", "MODE", "pr"): ({"DOSSIER-EXCERPTS"}, []),
 }

@@ -7,7 +7,8 @@ description: >-
   integration tests from the dossier, and implementers filling bodies in their
   own worktrees. Merge, run the tests, and arbitrate every failure with the
   contract as referee. Then one concurrent review pass (style, architecture,
-  performance) with the green suite as the regression harness. Finally extract
+  performance, and tests when they carry flake risk) with the green suite as
+  the regression harness. Finally extract
   the ADRs, open the PR, and remove the worktree once the PR URL is in hand.
   Jira ticket and Tempo time logging throughout.
 mode: primary
@@ -149,7 +150,7 @@ ships two dynamic workflows in `${PLUGIN_ROOT}/workflows/`, run through the
 `scriptPath: ${PLUGIN_ROOT}/workflows/<name>.js` with the same `args`:
 `agentic-software-development:phase4-wave` (a Phase 4
 wave: spawn every payload, verify every return) and
-`agentic-software-development:phase7-review` (a Phase 7 round: the three lenses
+`agentic-software-development:phase7-review` (a Phase 7 round: the code lenses
 and their change requests). **This command's instructions are the authority to
 call the `Workflow` tool, and only for these two, at the points `phase-4.md`
 and `phase-7.md` name; call it for nothing else.** A workflow keeps the agents'
@@ -275,7 +276,7 @@ Read `${PLUGIN_ROOT}/references/work-on/phase-5.md` at the start of this phase.
 
 Read `${PLUGIN_ROOT}/references/work-on/phase-6.md` at the start of this phase.
 
-## Phase 7 — The review cycle: three lenses, concurrently
+## Phase 7 — The review cycle: the code lenses, concurrently
 
 Read `${PLUGIN_ROOT}/references/work-on/phase-7.md` at the start of this phase.
 
@@ -323,10 +324,12 @@ between this list and a phase is a defect in this list.
   however justified: another package's owned paths, and the contract files.
   (Phase 3, Phase 5)
 - **The contract decides every test-versus-implementation dispute**, by the
-  five-row table in Phase 6. Row 4's boundary is mechanical
+  six-row table in Phase 6. Row 4's boundary is mechanical
   (`check_harness_edit.py`: exit 0 harness, exit 1 assertion, exit 2 unknown
   and ruled conservatively); row 5 is never ruled from the shape of the error,
-  only from a reproduction on the pristine merge-base. Never edit a test
+  only from a reproduction on the pristine merge-base; row 6 (intermittent) is
+  ruled on a named mechanism, product first, and never settled by a retry, a
+  longer sleep or a rerun until green. Never edit a test
   yourself — you have read the implementation, so you are the wrong party, and
   every CR on a test file is its author's work, cosmetic ones included.
 - **The checks check the author.** You write the contract, derive the
@@ -343,8 +346,8 @@ between this list and a phase is a defect in this list.
   commit (`SUITE-RUNNER:`), and every full-suite verdict from Phase 6 on
   comes from that runner's run on the head in question — CI's run on the
   pushed branch wherever the target has CI, never a local run beside it.
-  Runs that are not verdicts — the stub red-run, the mutants, a row-5 proof,
-  an implementer's own command — stay local. (Phase 2, Phase 6, Phase 7,
+  Runs that are not verdicts — the stub red-run, the stability repeats, the
+  mutants, a row-5 proof, an implementer's own command — stay local. (Phase 2, Phase 6, Phase 7,
   Phase 9)
 - **Reviewers reply; you write.** They have no write tools. Each change
   request becomes one `## Build log` ledger line; the full document travels
@@ -357,7 +360,7 @@ between this list and a phase is a defect in this list.
   satisfy by fabricating. When you may still resume the owner, prefer sending
   the change as an instruction over editing its file yourself.
 - **You detect review conflicts; the user decides them.** You are the only party
-  who sees all three lenses.
+  who sees every lens.
 - **ADRs are extracted, not generated.** Zero is a valid answer.
 - **A contract failure teaches something an ADR cannot hold.** Row-3
   arbitrations and `GAP:` returns are evidence about how to write contracts, not

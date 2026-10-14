@@ -57,6 +57,7 @@ nice-to-have to hard policy), not on the Confluence TCG page.
 | 3003 | must | Never commit commented-out code. |
 | 3004 † | **critical** | **Law of Demeter** — invoke members only on `this`, parameters, objects you create, and your own fields. Never `a.B.C.Do()`. Exempt: fluent/builder APIs and pure data records, where a chain is projection, not navigation. |
 | 4000 | should | Features ship with tests. Tests are code. Cover edge cases; each test standalone, self-cleaning, arrange-act-assert. |
+| 4001 | must | Tests are deterministic. No sleep as synchronisation (join, await, or poll with a deadline); a wall-clock bound is at least 1 s; no shared mutable state, resource names, ports or order dependence between tests; seeded randomness; cleanup that runs when the test fails. A flaky test is fixed at its cause — never with a retry, a longer sleep, or a skip. |
 | 5000 | **critical** | **Never commit secrets** — history is public. Env vars / secret manager. |
 
 ## Security

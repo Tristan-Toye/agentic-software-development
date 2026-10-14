@@ -85,6 +85,7 @@ change:
 | The contract is ambiguous enough to justify both readings | **you** | Fix the contract (and `PROMISE_CHECKLIST`, if a unit promise is involved) in the files and the dossier, commit on `X`, re-spawn the affected test author onto its file (Phase 4), and re-spawn **both** sides. |
 | The test fails on harness noise — a compile error, a missing fixture, an import | nobody | Fix the harness yourself. It is mechanical. |
 | The failure reproduces on the **target branch at the merge-base**, untouched by this build | nobody — **upstream** | Prove it first (below), then fix it on your branch to keep green, log `UPSTREAM:` with the proof, and say in the PR description that the fix belongs upstream independently of this change. |
+| The failure is **intermittent** — `FLAKY` in a repeat run, or a red that a rerun of the same head turns green | **unknown until the mechanism is found** | Find the race (below), then rule on the mechanism: rows 1–3, or row 5 with a repeated proof. Never "nobody", and never a rerun until green. |
 
 **Under Claude Code, a re-spawn in rows 1–3 is a resume** whenever the agent's
 ID is known and the contract is unchanged: `SendMessage` to the test author or
@@ -105,10 +106,43 @@ its log whole before you cite it. Reproduces → row 5, and the `UPSTREAM:` line
 merge-base commit and the upstream cause. Does not reproduce → the failure is
 yours, routed through rows 1–4. Never rule row 5 from the shape of the error;
 a target branch that moved under you breaks code in ways that look exactly
-like your own defects.
+like your own defects. **For an intermittent failure one run proves
+nothing**: a flaky test passes at the merge-base most of the time. Run it
+there with the same `--repeat N` that showed it flip here, and rule row 5 only
+when it flips there too.
+
+**Row 6 needs a mechanism, or it is not a ruling.** An intermittent failure is
+a race between two things, and a ruling names both: the interleaving or the
+load condition, and where it lives. Reproduce it first with `run_tests.py
+--repeat N` — the whole suite, because the load of the rest of the suite is
+what exposes most races — and put the `FLAKY name (failed X/N)` line in the
+case file. Then rule on where the race lives, **product first**:
+
+- **In the code under test** — the contract promises an outcome and the code
+  does not deliver it on every interleaving → row 2. The recorded "flaky" lock
+  test failed only under full-suite load and was settled by a retry inside the
+  test across five builds; the cause was a product fault — a child process
+  forked by another thread inherited the lock's descriptor and held the lock.
+- **In the contract** — it is silent about concurrency, ordering or when an
+  effect becomes visible, and the test and the code read that silence
+  differently → row 3, and the lesson names the missing promise.
+- **In the test** — it sleeps to wait for something, asserts a wall-clock bound
+  under one second, shares a resource, a name or global state with another
+  test, depends on test order, uses unseeded randomness, or reads before the
+  signal that ends the background work → row 1. The author's correction names
+  the mechanism and the deterministic form (join, await, poll with a deadline,
+  an own resource, a seed); `STANDARDS` rule `TCG 4001` is the citation.
+
+A fix is proven by the same repeat: the test that failed `X/N` passes `N/N` at
+a count no smaller than the one that showed it. **Never accept a fix that only
+hides the race**: a retry loop in the test, a longer sleep, a bound raised to
+absorb the slowness that was observed (raising a sub-second bound to one second
+is the rule, not a workaround), an ignored or skipped test, or a CI rerun until
+green. When a round ends with no mechanism found, take the case file to the
+user; "flaky" is not a ruling.
 
 Write every arbitration into `## Build log`: the failure, the ruling, and which
-of the five rows applied.
+of the six rows applied.
 
 **Land your own row-4 fix before any fix agent enters `X`.** A `MODE: fix`
 payload that carves out an uncommitted file of yours while also naming a
@@ -163,7 +197,34 @@ and this is a decision about how we write contracts. Phase 8 routes it to the
 right place. Two or more row-3 rulings in one run means the next `/plan` needs a
 sharper contract, and `/overview-dossiers` surfaces the count as a health signal.
 
-Set `status: review` once the runner's verdict on the current head is green.
+**Stability gate — the moment the suite first goes green, before the mutation
+check and before review.** A single green run says nothing about a test that
+fails one run in five, and the blind authors write their tests without ever
+running them under load; a flaky test also kills mutants by chance, so the
+kill table is worth nothing until the gate has passed. So
+repeat the whole suite locally, exactly as the runner's command runs it:
+`python3 ${PLUGIN_ROOT}/scripts/run_tests.py --repeat 3 --log <file> --
+<TEST_COMMAND>` (with the same `--vm` flags as the local verdict; add
+`--detach` for a long suite). It is not a verdict — like the mutants, it stays
+local under either runner and never replaces the runner's run on the head.
+Log one line:
+
+```
+STABILITY: <N> runs on <sha> — stable | FLAKY <name> (failed X/N), ...
+```
+
+Each `FLAKY` line is a row-6 arbitration and counts against the budget like
+any other. A `FLAKY` test this build did not add, in code this build did not
+touch, still gets the repeated row-5 proof before you call it upstream. Scale
+the count, never skip the gate: a suite longer than about twenty minutes runs
+`--repeat 2`, and the count goes on the log line. Skip only when the build
+changed no code a test runs (documents alone), and log the reason. Then run
+the risk scan Phase 7 needs, while the test paths are in hand:
+`python3 ${PLUGIN_ROOT}/scripts/flake_risk.py <every test file this build
+added or changed>`, and log `FLAKE-RISK: <n> markers in <files> | none`.
+
+Set `status: review` once the runner's verdict on the current head is green
+and the stability gate is logged.
 
 **Checkpoint after each arbitration round.** A round ends when its rulings are
 logged, its re-spawns have returned and been verified, and the runner's
