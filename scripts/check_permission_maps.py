@@ -46,6 +46,18 @@ Three questions this script answers mechanically:
      opencode map. An agent spawned without it returns its deliverable
      verbatim and the orchestrator lands bytes nobody self-checked.
 
+  7. Tool diet — every tool the model can call has its schema sent on every
+     request, and opencode drops a tool's schema only when the agent's
+     effective permission for it is a blanket deny. A pipeline agent (every
+     sub-agent, plus /work-on and /plan in opencode.jsonc's `agent` section)
+     must keep the denies in TOOL_DIET: the plugin and MCP tools the pipeline
+     never calls (envsitter, Context7, the worktree pair, context-mode's admin
+     and fetch tools), the skill catalogue, and for sub-agents also the
+     question, todo and web tools. The effective map is opencode.jsonc's global
+     `permission`, then the agent's frontmatter, then `agent.<name>.permission`.
+     A deny that is dropped fails here, before a restart finds it as 12k more
+     tokens on every step.
+
 Usage:
     check_permission_maps.py
         scan every sub-agents/*.md for shape, symmetry, negative controls,
@@ -128,6 +140,174 @@ def parse_permission(text: str) -> dict[str, object]:
         if entry and open_map is not None:
             open_map[entry.group(1)] = entry.group(2)
     return maps
+
+
+CTX_UNUSED = (
+    "ctx_index",
+    "ctx_fetch_and_index",
+    "ctx_stats",
+    "ctx_doctor",
+    "ctx_upgrade",
+    "ctx_purge",
+    "ctx_insight",
+)
+# What no pipeline agent calls (measured in the opencode store, 2026-10-01..14):
+# a blanket deny drops the schema from the request.
+PIPELINE_DENIES = (
+    "envsitter_*",
+    "EnterWorktree",
+    "ExitWorktree",
+    "twipe-devkit_*",
+    *CTX_UNUSED,
+)
+# A sub-agent also asks no user, keeps no todo list, searches no web, loads no skill.
+SUBAGENT_DENIES = ("question", "todowrite", "webfetch", "websearch", "skill")
+ORCHESTRATOR_DENIES = {"work-on": ("webfetch", "websearch", "todowrite")}
+# Orchestrators keep the skill tool, but its catalogue must be scoped: "*": deny first.
+SCOPED_SKILL = ("work-on", "dossier")
+
+
+def strip_jsonc(text: str) -> str:
+    """Drop // and /* */ comments and trailing commas, leaving strings alone."""
+    out: list[str] = []
+    i, n, in_str = 0, len(text), False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\":
+                out.append(text[i + 1])
+                i += 1
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+            out.append(c)
+        elif text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        elif text.startswith("/*", i):
+            i = text.index("*/", i) + 2
+            continue
+        else:
+            out.append(c)
+        i += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+
+
+def load_config_text_ok() -> bool:
+    import json
+
+    sample = '{"u": "https://x.y/z", // c\n "a": [1,], /* b */ "b": 2}'
+    return json.loads(strip_jsonc(sample)) == {"u": "https://x.y/z", "a": [1], "b": 2}
+
+
+def load_config(path: Path) -> dict:
+    import json
+
+    return json.loads(strip_jsonc(path.read_text()))
+
+
+def frontmatter_permission(text: str) -> dict[str, object]:
+    """Every top-level `permission:` key of a frontmatter, quoted or not:
+    a scalar verdict, or the dict of its pattern map."""
+    m = re.search(r"^permission:\n((?:  .*\n|\n)+)", text, re.MULTILINE)
+    out: dict[str, object] = {}
+    if not m:
+        return out
+    open_map: dict[str, str] | None = None
+    for line in m.group(1).split("\n"):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        top = re.match(r'^  ("?)([^\s":]+)\1:\s*(.*?)\s*$', line)
+        if top and not line.startswith("   "):
+            key, val = top.group(2), top.group(3)
+            if val in ("allow", "deny", "ask"):
+                out[key], open_map = val, None
+            elif not val:
+                open_map = {}
+                out[key] = open_map
+            continue
+        entry = re.match(r'^    "?(.*?)"?:\s*"?(allow|deny|ask)"?\s*$', line)
+        if entry and open_map is not None:
+            open_map[entry.group(1)] = entry.group(2)
+    return out
+
+
+def effective(maps: list[Mapping[str, object]], key: str) -> object:
+    """The last layer that names `key`, matching a layer's wildcard key too."""
+    found: object = None
+    for layer in maps:
+        for k, v in layer.items():
+            if k == key or (k.endswith("*") and key.startswith(k[:-1]) and k != "*"):
+                found = v
+    return found
+
+
+def is_blanket_deny(verdict: object) -> bool:
+    return verdict == "deny" or (
+        isinstance(verdict, dict) and next(iter(verdict.items()), (None, None)) == ("*", "deny")
+    )
+
+
+def tool_diet_findings(
+    name: str,
+    layers: list[Mapping[str, object]],
+    subagent: bool,
+    agent_name: str,
+) -> list[str]:
+    """Denies a pipeline agent must keep, given its layered permission maps."""
+    wanted = list(PIPELINE_DENIES)
+    if subagent:
+        wanted += SUBAGENT_DENIES
+    wanted += ORCHESTRATOR_DENIES.get(agent_name, ())
+    found: list[str] = []
+    for key in wanted:
+        verdict = effective(layers, key)
+        if key == "twipe-devkit_*":
+            # The Tempo subset may be re-allowed; the blanket must stay denied globally.
+            verdict = layers[0].get(key) if layers else None
+        if not is_blanket_deny(verdict):
+            found.append(
+                f"{name}: `{key}` is not denied ({verdict!r}) — its schema rides on every request"
+            )
+    if agent_name in SCOPED_SKILL:
+        skill = effective(layers, "skill")
+        if not (isinstance(skill, dict) and skill.get("*") == "deny" and list(skill)[0] == "*"):
+            found.append(
+                f'{name}: `skill` must be a map whose first rule is "*": deny — '
+                "the whole catalogue rides on every request otherwise"
+            )
+    return found
+
+
+def diet_scan(root: Path) -> list[str]:
+    cfg_path = root / "opencode" / "opencode.jsonc"
+    if not cfg_path.exists():
+        return []
+    cfg = load_config(cfg_path)
+    global_layer = dict(cfg.get("permission", {}))
+    agents_cfg = cfg.get("agent", {})
+    findings: list[str] = []
+    sources = [(p, True) for p in sorted((root / "sub-agents").glob("*.md"))]
+    sources += [(root / "primary-agents" / "work-on.md", False)]
+    sources += [(root / "primary-agents" / "plan.md", False)]
+    for path, subagent in sources:
+        if not path.exists():
+            continue
+        text = path.read_text()
+        nm = re.search(r"^name:\s*(\S+)", text, re.MULTILINE)
+        agent_name = nm.group(1) if nm else path.stem
+        layers = [
+            global_layer,
+            frontmatter_permission(text),
+            dict(agents_cfg.get(agent_name, {}).get("permission", {})),
+        ]
+        findings += tool_diet_findings(
+            f"{path.parent.name}/{path.name}", layers, subagent, agent_name
+        )
+    return findings
 
 
 def compile_pattern(pattern: str) -> re.Pattern[str]:
@@ -611,6 +791,7 @@ def scan(sub_agents: Path) -> int:
         findings += disagreement_findings(name, maps, tools, tools_line, widened)
         for note in dead_letter_notes(name, maps, tools, tools_line):
             print(f"NOTE      {note}")
+    findings += diet_scan(sub_agents.parent)
     for generated in sorted((sub_agents.parent / "claude" / "agents").glob("*.md")):
         try:
             tools, tools_line, _ = parse_tools(generated.read_text())
@@ -943,6 +1124,48 @@ def selftest() -> int:
         "capability: an opencode-only file (no tool list) is not refused on tools",
         False,
         bool(capability_findings("d", "document-drafter", drafter_maps, None, 0)),
+    )
+
+    # Tool diet: a pipeline agent keeps the denies that drop heavy schemas
+    cfg = load_config(repo / "opencode" / "opencode.jsonc")
+    glob_layer = dict(cfg["permission"])
+    impl_text = (repo / "sub-agents" / "implementer.md").read_text()
+    impl_layers = [glob_layer, frontmatter_permission(impl_text), {}]
+    check(
+        "diet: real implementer keeps every deny",
+        False,
+        bool(tool_diet_findings("implementer", impl_layers, True, "implementer")),
+    )
+    check(
+        "diet: whole repo passes",
+        False,
+        bool(diet_scan(repo)),
+    )
+    no_global = [{}, frontmatter_permission(impl_text), {}]
+    found = tool_diet_findings("implementer", no_global, True, "implementer")
+    check("diet: no global deny lets the unused context-mode schemas back", True, any("ctx_purge" in s for s in found))
+    regained = [glob_layer, dict(frontmatter_permission(impl_text), webfetch="allow"), {}]
+    check(
+        "diet: a sub-agent that re-allows webfetch is refused",
+        True,
+        any("webfetch" in s for s in tool_diet_findings("implementer", regained, True, "implementer")),
+    )
+    reopened = [glob_layer, {}, {"ctx_purge": "allow"}]
+    check(
+        "diet: a later allow of an unused ctx tool is refused",
+        True,
+        any("ctx_purge" in s for s in tool_diet_findings("work-on", reopened, False, "work-on")),
+    )
+    open_skills = [glob_layer, {}, {"skill": {"time-logging": "allow", "*": "deny"}}]
+    check(
+        "diet: an orchestrator skill map must open with the deny",
+        True,
+        any("skill" in s for s in tool_diet_findings("work-on", open_skills, False, "work-on")),
+    )
+    check(
+        "diet: strip_jsonc keeps // inside strings",
+        True,
+        load_config_text_ok(),
     )
 
     ok = all(w == g for _, w, g in cases)

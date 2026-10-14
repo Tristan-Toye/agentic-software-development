@@ -524,6 +524,87 @@ measurable claim, how to verify, and the result.
   flight; `budget_report.py`.
 - **Result**: —
 
+### C-130 — Tool diet: plugin and MCP tools no pipeline agent calls are denied globally
+
+- **Change**: `opencode/opencode.jsonc` `permission` denies `envsitter_*`,
+  `EnterWorktree`, `ExitWorktree` and context-mode's seven tools nobody calls
+  (`ctx_index`, `ctx_fetch_and_index`, `ctx_stats`, `ctx_doctor`, `ctx_upgrade`,
+  `ctx_purge`, `ctx_insight`); `agent.build` (the one
+  built-in agent this config leaves enabled) re-allows them. Context7 (~1k) stays allowed: the rule is to check a third-party library's
+  current docs before using it. `ctx_execute`,
+  `ctx_batch_execute`, `ctx_execute_file` and `ctx_search` stay: in 2026-10-01..14 the
+  orchestrator, the implementers and the integration author called them ~700 times.
+- **Why**: opencode drops a tool from the request when its permission is a blanket
+  `deny`, so a schema is paid on every request otherwise. Offline measure
+  (`GET /experimental/tool`, 3.6 characters per token): context-mode's 11 tools ~7.5k tokens
+  (the four kept ~4.6k), envsitter's 15 ~1.4k, the worktree pair ~0.4k. The Twipe DevKit server (~60 tools) was already denied
+  for these agents (C-003); it could not be listed offline.
+- **Hypothesis**: first-step context of `implementer` 24.4k → ≤17k, of
+  `integration-test-author` 19.5k → ≤16k; `work-on` and `dossier` by the same ~4.8k
+  (with C-131: 36.7k → ≤26k).
+- **Verify**: `agents.<agent>.first_step_ctx_k`; `opencode debug agent <name>` lists the
+  tools as disabled.
+- **Not done**: denying all of `ctx_*` for `work-on` and the implementers (another ~4.6k a
+  request). The global `AGENTS.md` tells every agent to route through it, and opencode has
+  no per-agent instructions, so that is a behaviour experiment: run one dossier with it and
+  compare steps and credits before adopting it.
+- **Result**: —
+
+### C-131 — `work-on` and `dossier` load only the skills they call
+
+- **Change**: `agent.work-on` and `agent.dossier` in `opencode.jsonc` open their `skill` map
+  with `"*": deny`, then allow `time-logging` (and `resolving-merge-conflicts` for `work-on`).
+  `work-on` also denies `webfetch`, `websearch` and `todowrite`.
+- **Why**: the skill tool lists every allowed skill's name and description: 28 skills ~5k
+  tokens on each request. The store shows `work-on` calling `time-logging` 5 times and
+  `resolving-merge-conflicts` once, `dossier` `time-logging` 3 times; no pipeline agent
+  called `webfetch` or `websearch`.
+- **Hypothesis**: `work-on` and `dossier` first-step context −5k on top of C-130
+  (36.7k → ≤26k).
+- **Verify**: `agents.work-on.first_step_ctx_k` and `agents.dossier.first_step_ctx_k`.
+- **Result**: —
+
+### C-132 — Sub-agent diet: no question, todo, skill, task or web tools
+
+- **Change**: every `sub-agents/*.md` denies `question`, `todowrite` and `skill` (the old
+  `skill: standards: allow` named a skill that is called `engineering-standards`, so it
+  allowed nothing); the implementer also denies `task`, `webfetch` and `websearch`;
+  `reviewer`, `contract-reviewer` and `blast-radius-scout`, which are read-only, deny
+  `code_replace`.
+- **Why**: the `task` schema lists every agent (~2.1k tokens) and the implementer never spawns
+  one; sub-agents called `todowrite` 100 times, each an extra request that re-sends the context.
+- **Hypothesis**: first-step context −2.3k for every sub-agent (implementer −4k more for
+  `task`/web); steps per implementer run −3%.
+- **Verify**: `agents.<sub-agent>.first_step_ctx_k` and `.steps`; `tools.tool:todowrite` = 0
+  for sub-agents.
+- **Result**: —
+
+### C-133 — A tool-diet check in `check_permission_maps.py`
+
+- **Change**: `scripts/check_permission_maps.py` (item 7 of its header, `tool_diet_findings`,
+  `diet_scan`) reads `opencode.jsonc`'s global `permission`, each agent's frontmatter and
+  `agent.<name>.permission`, and fails when a pipeline agent no longer denies a tool in
+  `PIPELINE_DENIES` (plus `SUBAGENT_DENIES`, `ORCHESTRATOR_DENIES`), or when
+  `work-on` or `dossier` has a skill map that does not open with `"*": deny`. Seven new
+  `--selftest` cases.
+- **Why**: a dropped deny shows up as ~10k more tokens per request, and only in a run.
+- **Hypothesis**: none about spend; it keeps C-130 to C-132 from regressing.
+- **Verify**: `python3 scripts/check_permission_maps.py` and `--selftest` pass.
+- **Result**: —
+
+### C-134 — Starter evals for the Claude plugin
+
+- **Change**: `evals/` — three `claude plugin eval` cases on haiku, two runs each, free graders
+  only (regex, tool_used): `work-on-refuses-unready`, `spawn-guard-refuses-pointer`,
+  `work-on-checkpoints-phase-boundary` (the last mocks the `nav` MCP server's
+  `phase_checkpoint`).
+- **Why**: these promises hold only in prompts and a hook; a rewrite can drop one without any
+  test failing.
+- **Hypothesis**: none about spend; a run costs a few cents and scores 1.0 with the plugin and
+  lower without it.
+- **Verify**: `claude plugin eval . --scaffold --trust-plugin --max-cost-usd 1`.
+- **Result**: not run yet.
+
 ## Next measurement
 
 After the next runs, from the time the C-108–C-111 merge is pulled into the

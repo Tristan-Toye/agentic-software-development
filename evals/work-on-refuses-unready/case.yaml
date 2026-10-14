@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: work-on-refuses-unready
+description: >-
+  /work-on on a dossier whose status is `planned` (not `ready`) must refuse and
+  name the status, pointing at /plan. It must not claim the dossier or spawn.
+tags: [smoke, work-on, routing]
+context:
+  # Needs `claude plugin eval . --scaffold`: writes the fixture dossier.
+  scaffold_script: fixture.sh

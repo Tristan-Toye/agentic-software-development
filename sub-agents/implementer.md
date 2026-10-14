@@ -26,9 +26,15 @@ permission:
   "envsitter_*": deny
   EnterWorktree: deny
   ExitWorktree: deny
-  skill:
-    "*": deny
-    standards: allow
+  # A subagent asks no user and keeps no todo list: each schema rides on every step.
+  question: deny
+  todowrite: deny
+  # The implementer fills bodies: no spawning, no web.
+  task: deny
+  webfetch: deny
+  websearch: deny
+  # Pipeline skills are read by path (STANDARDS in the payload); the catalogue buys nothing.
+  skill: deny
   bash:
     "*": "allow"
     "git push": "deny"

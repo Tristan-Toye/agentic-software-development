@@ -24,9 +24,11 @@ permission:
   "envsitter_*": deny
   EnterWorktree: deny
   ExitWorktree: deny
-  skill:
-    "*": deny
-    standards: allow
+  # A subagent asks no user and keeps no todo list: each schema rides on every step.
+  question: deny
+  todowrite: deny
+  # Pipeline skills are read by path (STANDARDS in the payload); the catalogue buys nothing.
+  skill: deny
   "ctx_*": deny
   # The navigation tools are this agent's main instruments; it writes nothing.
   code_replace: deny

@@ -356,6 +356,27 @@ What Claude Code cannot mirror:
 Masking and the opencode read guard are tuned in `shared/context-guard.yaml`,
 against recorded sessions with `opencode/plugins/test/replay-guard.ts`.
 
+**The fixed prompt under opencode.** Before any work, a request carries the
+agent's prompt, `AGENTS.md`, and the schema of every tool the agent may call; a
+tool opencode lets through costs its schema on every request. opencode drops a
+tool from the request when the agent's effective permission for it is a blanket
+`deny` (`opencode debug agent <name>` lists it as disabled; the denied call is
+not merely refused). So the tool set is a permission map: `opencode/opencode.jsonc`
+denies, for every agent but the default, the plugin and MCP tools the pipeline
+never calls; `work-on` and `dossier` scope their skill catalogue in its `agent`
+section; each sub-agent's frontmatter denies the rest.
+`scripts/check_permission_maps.py` fails when a pipeline agent regains one
+(item 7 of its header), and `opencode` has no per-agent switch for `AGENTS.md`,
+so its Context7 and context-mode text stays. Numbers: C-130 to C-133 in the
+ledger.
+
+**Plugin evals.** `evals/` holds three starter cases for `claude plugin eval`
+(`/work-on` refuses an unready dossier, the spawn hook refuses a payload-file
+pointer, the orchestrator calls `phase_checkpoint` at a phase boundary). They
+call the model, so nothing runs them by default: `claude plugin eval . --scaffold
+--trust-plugin --max-cost-usd 1`. `--scaffold` runs each case's `fixture.sh`,
+which only writes a dossier into the empty workspace.
+
 Every change, the evidence behind it, its hypothesis and its measured result
 are in `ledger/token-spend.md`; `scripts/token_report.py` produces the numbers.
 
