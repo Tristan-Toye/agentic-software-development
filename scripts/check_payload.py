@@ -128,6 +128,26 @@ Twelve failure modes this catches, each of which cost a real build:
     failure shipped a false claim about which database an env var targeted
     and cost a wasted VM suite round.
 
+15. **A field that appears twice.** Payload surgery between rounds can leave a
+    second `DELIVERY_CHANGE:` block beside the first; the agent honors the
+    stale one and returns an empty file it believes it delivered (two empty
+    author returns in one recorded build). No payload kind repeats a field on
+    purpose, so any repeat is refused, naming both lines.
+
+16. **An agent spawned without the tool its payload needs.** Under `--host
+    claude` the frontmatter tool list is known: a `document-drafter` with
+    `TARGET_PATHS` needs `Write`, a `blast-radius-scout` needs `Bash` (REQUIRED_TOOLS
+    below). Without it the deliverable comes back verbatim and the
+    orchestrator lands bytes the agent never self-checked.
+
+Verbatim prose is exempt from two heuristics. Fields that paste text the
+orchestrator did not write (VERBATIM_FIELDS: `CRITERIA`, `CONTRACT`, the
+excerpt fields, ...) are skipped by the unexpanded-`${VAR}` check and by the
+name-based secret-assignment check, since a spec may legitimately discuss
+`${HOME}` or quote a test line `token: a`. A secret-shaped value (a known
+key prefix, or a long random string) is still refused there, and path and
+`@@TOKEN@@` checks are unchanged.
+
 A field name may carry a parenthetical — `CRITERIA (15 verbatim): |`,
 `RULES (narrowed per lens): |` — and lints as the bare name. Authors
 annotate naturally, and the annotation is harmless; a genuinely misnamed
@@ -136,9 +156,15 @@ field (`RULE:` for `RULES:`) is still refused.
 # Usage
 
     check_payload.py PAYLOAD_FILE --kind implementer [--worktree DIR]
-                     [--allow-path PATH ...] [--host claude|opencode]
+                     [--allow-path PATH ...] [--allow-token TOKEN ...]
+                     [--host claude|opencode]
                      [--live-dossier FILE]
     check_payload.py --selftest
+
+List fields (`TEST_PATHS`, `STYLE_PATHS`, `SUPPORT_PATHS`, `TARGET_PATHS`) take
+entries separated by commas, whitespace, or both. An absolute path inside the
+remote command of a `limactl shell`, `ssh` or `docker exec` line resolves in
+the VM or container, not here, and is not checked for existence.
 
 `--kind` is one of the agent kinds in FIELDS. Omit it and the field checks are
 skipped; the path, variable and credential checks still run. `--host` names
@@ -312,6 +338,34 @@ def field_lines(lines: list[str]) -> list[tuple[int, str, str]]:
 # An absolute path. Kept deliberately narrow: two or more word-bearing segments.
 ABS_PATH = re.compile(r"(?<![\w/$}])(/[\w.@+-]+(?:/[\w.@+-]+)+)")
 
+# A command that runs the rest of its line somewhere else: a path after it
+# resolves in the VM, host or container, never on this machine.
+REMOTE_PREFIX = re.compile(
+    r"\b(?:limactl\s+shell|docker\s+exec|kubectl\s+exec|ssh\s+(?:-\S+\s+)*[\w.@-]+)\s"
+)
+
+
+def mask_remote(line: str) -> str:
+    """The line with every remote command blanked out: from the end of a
+    `limactl shell` / `docker exec` / `ssh host` prefix to the next unquoted
+    `&&`, `||`, `;` or `|`, or the end of the line (issue #94)."""
+    out = line
+    for match in REMOTE_PREFIX.finditer(line):
+        quote = ""
+        end = len(line)
+        for index in range(match.end(), len(line)):
+            char = line[index]
+            if quote:
+                quote = "" if char == quote else quote
+            elif char in "'\"":
+                quote = char
+            elif char in ";|" or line.startswith("&&", index):
+                end = index
+                break
+        out = out[:match.end()] + " " * (end - match.end()) + out[end:]
+    return out
+
+
 UNEXPANDED = re.compile(r"\$\{[A-Z_][A-Z0-9_]*\}")
 # `@@CONTRACT@@`: a template placeholder no substitution reached. No whitespace
 # inside, so a unified-diff hunk header (`@@ -1,4 +1,5 @@`) never matches.
@@ -333,6 +387,22 @@ PLACEHOLDER = re.compile(
 )
 ASSIGNMENT = re.compile(r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(?P<value>\S+)")
 
+# Fields whose body is pasted text the orchestrator did not write: acceptance
+# criteria, contract text, dossier excerpts, style/support samples, test output,
+# change requests. Such text may discuss `${HOME}` or quote `token: a`.
+VERBATIM_FIELDS = (
+    "CRITERIA", "CONTRACT", "DOSSIER-EXCERPTS", "STYLE_SAMPLE", "SUPPORT",
+    "FAILURES", "CRS", "PRIOR_CRS", "RUN_EVIDENCE", "CHECKLIST_RULES", "FORMAT",
+)
+# A secret by its shape alone, whatever it is named: a known key prefix, or a
+# long mixed letter-and-digit string. Active everywhere, verbatim blocks included.
+STRONG_SECRET = re.compile(
+    r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}"
+    r"|xox[abpr]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|glpat-[\w-]{20,}"
+    r"|eyJ[\w-]{15,}\.[\w-]{10,})"
+)
+LONG_RANDOM = re.compile(r"^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9+/=_-]{24,}$")
+
 # A credential inside a connection URL: scheme://user:secret@host. No field name
 # on such a line says "password", so the name-based check cannot see it.
 URL_CREDENTIAL = re.compile(
@@ -343,12 +413,44 @@ URL_CREDENTIAL = re.compile(
 # is told to CREATE, or the drafter's target files.
 CREATE_HINT = re.compile(r"\b(TEST_PATHS|OWNED_PATHS|TARGET_PATHS)\b")
 
+# The tool each agent kind's payload depends on, keyed by the payload field
+# that makes it so: (tool, field). Without the tool the deliverable comes back
+# verbatim and the orchestrator lands bytes the agent never self-checked
+# (issue #104). check_permission_maps.py asserts the same pairs against the
+# agent files' own tool lists.
+REQUIRED_TOOLS: dict[str, tuple[tuple[str, str], ...]] = {
+    "document-drafter": (("Write", "TARGET_PATHS"),),
+    "blast-radius-scout": (("Bash", "BASELINE"),),
+    "stub-materialiser": (("Write", "OWNED_PATHS"), ("Bash", "BUILD_CHECK")),
+    "implementer": (("Bash", "TEST_COMMAND"),),
+    "unit-test-author": (("Write", "TEST_PATHS"),),
+    "integration-test-author": (("Write", "TEST_PATHS"),),
+}
+
+
+def missing_tool_findings(present: list[str], kind: str | None,
+                          tools: list[str] | None) -> list[str]:
+    """A payload field that needs a tool the agent's frontmatter withholds."""
+    if kind is None or tools is None:
+        return []
+    out: list[str] = []
+    for tool, field in REQUIRED_TOOLS.get(kind, ()):
+        if field in present and tool not in tools:
+            out.append(
+                "%s is in this %s payload, but %s's frontmatter under this host "
+                "grants no %s (tools: %s): the deliverable cannot land the way the "
+                "payload says. Grant %s in the agent file, or spawn an agent that "
+                "has it." % (field, kind, kind, tool, ", ".join(tools), tool)
+            )
+    return out
+
 # Fields whose inline value is a single path (or `none`), never prose, and
 # is absolute in every payload (references/payloads/README.md, "Every path
 # in a payload is absolute"). `OWNED_PATHS` and `CONTRACT_PATHS` are the
 # deliberate exception — relative to WORKTREE_DIR by design — and are not
 # checked here. `CONTRACT` joins this set only when it names a path, never
 # when it pastes text under `CONTRACT: |`.
+LIST_SEPARATOR = re.compile(r"[,\s]+")
 PATH_VALUED_FIELDS = (
     "TEST_PATHS", "STYLE_PATHS", "SUPPORT_PATHS", "WORKTREE_DIR", "DOSSIER",
     "STANDARDS", "CONTEXT_DOCS", "TARGET_PATHS",
@@ -366,19 +468,19 @@ def relative_path_findings(lines: list[str]) -> list[str]:
             continue
         if not rest or rest == "|":
             continue  # a pasted block, not a path value
-        token = rest.split("#", 1)[0].strip()
-        token = token.split()[0] if token.split() else token
-        token = token.rstrip(",;")
-        if NOT_A_PATH_VALUE.match(token) or token.startswith("${") \
-                or TEMPLATE_TOKEN.match(token) or "://" in token:
-            continue
-        if not token.startswith("/"):
-            out.append(
-                "line %d: %s names the relative path %r. A relative path "
-                "resolves against the subagent's cwd, which is the HOST "
-                "SESSION's working directory, not WORKTREE_DIR; ship the "
-                "absolute path." % (number, name, token)
-            )
+        value = rest.split("#", 1)[0].strip()
+        value = value.split()[0] if value.split() else value
+        for token in LIST_SEPARATOR.split(value.rstrip(";")):
+            if NOT_A_PATH_VALUE.match(token) or token.startswith("${") \
+                    or TEMPLATE_TOKEN.match(token) or "://" in token:
+                continue
+            if not token.startswith("/"):
+                out.append(
+                    "line %d: %s names the relative path %r. A relative path "
+                    "resolves against the subagent's cwd, which is the HOST "
+                    "SESSION's working directory, not WORKTREE_DIR; ship the "
+                    "absolute path." % (number, name, token)
+                )
     return out
 
 # Fields that carry a command the agent will run verbatim.
@@ -464,8 +566,8 @@ def surface_findings(lines: list[str], kind: str | None, worktree: str | None) -
                   "SHARED_IDIOM"):
         body = field_body(lines, field)
         known.append(body)
-        for token in body.split():
-            path = token.strip(",;")
+        for token in LIST_SEPARATOR.split(body):
+            path = token.strip(";")
             candidates = [path] if os.path.isabs(path) else (
                 [os.path.join(worktree, path)] if worktree else []
             )
@@ -809,13 +911,23 @@ def assertion_form_findings(lines: list[str], kind: str | None) -> list[str]:
 def lint(lines: list[str], kind: str | None, worktree: str | None,
          allow_paths: list[str], host: str | None = None,
          tools: list[str] | None = None,
-         live_dossier: str | None = None) -> tuple[list[str], list[str], list[str]]:
+         live_dossier: str | None = None,
+         allow_tokens: list[str] | None = None) -> tuple[list[str], list[str], list[str]]:
     defects: list[str] = []
     warnings: list[str] = []
 
     # 1. field names — misnamed, missing, and mode/lens-conditional
     present: list[str] = []
+    first_seen: dict[str, int] = {}
     for number, name, _rest in field_lines(lines):
+        if name in first_seen:
+            defects.append(
+                "line %d: %s appears twice (first at line %d); keep exactly one. "
+                "The agent honors whichever block it reads, and a stale one from "
+                "payload surgery returns an empty deliverable."
+                % (number, name, first_seen[name])
+            )
+        first_seen.setdefault(name, number)
         present.append(name)
         if kind is None:
             continue
@@ -859,8 +971,18 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
                 )
 
     # 2. unexpanded variables and template placeholders
+    verbatim_lines: set[int] = set()
+    for field in VERBATIM_FIELDS:
+        verbatim_lines |= field_line_numbers(lines, field)
+    token_allowed = set(allow_tokens or [])
+    token_used: set[str] = set()
     for number, line in enumerate(lines, 1):
         for match in UNEXPANDED.finditer(line):
+            if number in verbatim_lines:
+                continue  # pasted prose may discuss ${HOME}; it is not an instruction
+            if match.group(0) in token_allowed:
+                token_used.add(match.group(0))
+                continue
             defects.append(
                 "line %d: %s is unexpanded. An agent cannot resolve a variable it "
                 "was never given; ship the absolute path." % (number, match.group(0))
@@ -873,6 +995,12 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
                 "its bytes." % (number, match.group(0))
             )
 
+    for stale in sorted(token_allowed - token_used):
+        defects.append(
+            "--allow-token %s matched no unexpanded token in this payload. A stale "
+            "exemption hides the next real one." % stale
+        )
+
     # 3. paths that do not exist
     owned_lines = {
         number for number, line in enumerate(lines, 1) if CREATE_HINT.search(line)
@@ -882,7 +1010,7 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     for number, line in enumerate(lines, 1):
         if number in owned_lines:
             continue  # a path the agent is told to create
-        for match in ABS_PATH.finditer(line):
+        for match in ABS_PATH.finditer(mask_remote(line)):
             path = match.group(1)
             if os.path.exists(path):
                 continue
@@ -912,21 +1040,33 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
                 "payload never carries a live secret, and a URL hides one from "
                 "any check that keys on a field name." % (number, match.group("user"))
             )
-        if not SECRET_NAME.search(line):
-            continue
-        for match in ASSIGNMENT.finditer(line):
-            name, value = match.group("name"), match.group("value")
-            if not SECRET_NAME.search(name):
-                continue
-            if name.lower() in PASS_FAMILY and not QUOTED_VALUE.match(value):
-                continue  # a tally/counter (pass=0, pass=$((pass + 1)), passes=N)
-            value = value.strip("\"'`,;")
-            if PLACEHOLDER.match(value):
-                continue
-            defects.append(
-                "line %d: %s carries what looks like a live secret. A payload "
-                "never carries one: run the step that needs it yourself." % (number, name)
-            )
+        flagged = False
+        if SECRET_NAME.search(line):
+            for match in ASSIGNMENT.finditer(line):
+                name, value = match.group("name"), match.group("value")
+                if not SECRET_NAME.search(name):
+                    continue
+                if name.lower() in PASS_FAMILY and not QUOTED_VALUE.match(value):
+                    continue  # a tally/counter (pass=0, pass=$((pass + 1)), passes=N)
+                value = value.strip("\"'`,;")
+                if PLACEHOLDER.match(value):
+                    continue
+                if number in verbatim_lines and not (
+                        STRONG_SECRET.search(value) or LONG_RANDOM.match(value)):
+                    continue  # quoted test text (`token: a`) is not a credential
+                flagged = True
+                defects.append(
+                    "line %d: %s carries what looks like a live secret. A payload "
+                    "never carries one: run the step that needs it yourself." % (number, name)
+                )
+        if not flagged:
+            strong = STRONG_SECRET.search(line)
+            if strong:
+                defects.append(
+                    "line %d: a string shaped like a live secret (%s...). A payload "
+                    "never carries one, a verbatim block included."
+                    % (number, strong.group(0)[:3])
+                )
 
     # 5. a command verb that contradicts the script's shebang
     defects.extend(verb_findings(lines, worktree))
@@ -947,6 +1087,7 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
             "Claude Code unit-test-author has Write alone and every path in its "
             "payload is a dead letter; pass --host claude or --host opencode." % kind
         )
+    defects.extend(missing_tool_findings(present, kind, tools))
     dead, dead_warnings = dead_letter_findings(lines, kind, tools)
     defects.extend(dead)
     warnings.extend(dead_warnings)
@@ -1000,7 +1141,8 @@ def selftest() -> int:
     def case(name: str, text: str, kind: str | None, expect_defect: bool,
              must_mention: str = "", must_warn: str | None = None,
              host: str | None = None, tools: list[str] | None = None,
-             live: str | None = None, worktree: bool = False) -> None:
+             live: str | None = None, worktree: bool = False,
+             allow_tokens: list[str] | None = None) -> None:
         nonlocal groups
         groups += 1
         with tempfile.TemporaryDirectory() as tmp:
@@ -1033,7 +1175,8 @@ def selftest() -> int:
             body = text.replace("{REAL}", real)
             live_path = live.replace("{REAL}", real) if live else None
             wt = real if worktree else None
-            _, defects, warnings = lint(body.splitlines(), kind, wt, [], host, tools, live_path)
+            _, defects, warnings = lint(body.splitlines(), kind, wt, [], host, tools, live_path,
+                                         allow_tokens)
             got = bool(defects)
             if got != expect_defect:
                 failures.append("%s: expected defect=%s, got %s: %s"
@@ -1122,9 +1265,9 @@ def selftest() -> int:
     case("unexpanded template token in a block body",
          unit_ok + "SHARED_IDIOM: |\n  @@SHARED_IDIOM@@\n",
          "unit-test-author", True, "@@SHARED_IDIOM@@")
-    case("url credential", unit_ok + "FIXTURES: |\n  postgres://app:hunter2@db/x\n",
+    case("url credential", unit_ok.replace("FlushQueue()", "postgres://app:hunter2@db/x"),
          "unit-test-author", True, "carries a password")
-    case("secret placeholder ok", unit_ok + "FIXTURES: |\n  password: <redacted>\n",
+    case("secret placeholder ok", unit_ok.replace("FlushQueue()", "password: <redacted>"),
          "unit-test-author", False)
     case("checklist names only contract members: quiet", unit_ok, "unit-test-author", False,
          must_warn="", host="opencode")
@@ -1321,6 +1464,84 @@ def selftest() -> int:
     case("drafter pr clean, hyphen field accepted", drafter, "document-drafter", False)
     case("drafter adr needs decisions",
          drafter.replace("MODE: pr", "MODE: adr"), "document-drafter", True, "DECISIONS is missing")
+    # a field that appears twice (issue #107)
+    delivery = "DELIVERY_CHANGE: |\n  one Write, then Edits\n"
+    case("one DELIVERY_CHANGE block is clean", unit_ok + delivery, "unit-test-author", False)
+    case("two DELIVERY_CHANGE blocks are refused",
+         unit_ok + delivery + delivery, "unit-test-author", True, "appears twice")
+    case("a repeated field is refused with no kind too",
+         "A_FIELD: 1\nA_FIELD: 2\n", None, True, "first at line 1")
+    integ = (
+        "WORKTREE_DIR: {REAL}\nDOSSIER: {REAL}/.agent-staging/W-014.excerpt.md\n"
+        "CONTRACT: |\n  fn flush()\nTEST_PATHS: {REAL}/tests/integration/test_flow.py\n"
+        "TEST_FRAMEWORK: pytest\nHARNESS: |\n  conftest\nSTYLE_SAMPLE: |\n  def test_x(): pass\n"
+        "BOUNDARIES: |\n  none\nCONTRACT_HASH: 3f2611f0a91c4d8e\n"
+    )
+    case("CORRECTION plus DELIVERY_CHANGE is clean",
+         integ + "CORRECTION: |\n  fix the assert\n" + delivery, "integration-test-author", False,
+         host="opencode")
+
+    # VM-side paths and comma-separated lists (issue #94)
+    vm = "limactl shell nightwatch -- bash -lc 'CARGO_TARGET_DIR=/var/tmp/nonexistent-x cargo test'"
+    case("a limactl-wrapped command with a VM-only path is clean",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: " + vm), "implementer", False)
+    case("an ssh remote command is not checked for existence",
+         "NOTE: ssh build-host 'ls /srv/nonexistent-x/out'\n", None, False)
+    case("a docker exec command is not checked for existence",
+         "NOTE: docker exec ci cat /srv/nonexistent-x/out\n", None, False)
+    case("a local path after a remote command is still checked",
+         "NOTE: ssh host 'true' && cat /no/such/place/here\n", None, True, "does not exist")
+    case("a missing local path is still a defect",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: cat /var/tmp/nonexistent-x"),
+         "implementer", True, "does not exist")
+    support = ("SUPPORT_PATHS: {REAL}/.agent-staging/contract-support/grant.rs,"
+               "{REAL}/tests/unit/test_retry.py\n")
+    case("a comma-only SUPPORT_PATHS list resolves every entry",
+         unit_ok + support, "unit-test-author", False, host="opencode")
+    case("a comma list still checks every entry for existence",
+         "SUPPORT_PATHS: {REAL}/tests/unit/test_retry.py,/no/such/place/here\n", None, True,
+         "does not exist")
+    case("a comma list is checked for a relative entry",
+         "SUPPORT_PATHS: {REAL}/tests/unit/test_retry.py,rel/b.rs\n", None, True, "relative path")
+
+    # verbatim prose is exempt from the token and weak-secret heuristics (issue #101)
+    case("${HOME} in CRITERIA is clean",
+         impl.replace("CRITERIA: |\n  1. x", "CRITERIA: |\n  1. expands ${HOME} and ~"),
+         "implementer", False)
+    case("${HOME} in an instruction field is refused",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: ls ${HOME}"),
+         "implementer", True, "is unexpanded")
+    case("--allow-token clears an intended ${HOME}",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: ls ${HOME}"),
+         "implementer", False, allow_tokens=["${HOME}"])
+    case("a stale --allow-token is refused", impl, "implementer", True,
+         "--allow-token ${HOME} matched no", allow_tokens=["${HOME}"])
+    case("token: a quoted in CRITERIA is no secret finding",
+         impl.replace("CRITERIA: |\n  1. x", "CRITERIA: |\n  1. run `login --token: a` and expect 401"),
+         "implementer", False)
+    case("a secret assignment in an instruction field is still flagged",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: pytest -q  # token: hunter2hunter2"),
+         "implementer", True, "live secret")
+    case("a key-shaped value inside CRITERIA is still flagged",
+         impl.replace("CRITERIA: |\n  1. x", "CRITERIA: |\n  1. api_key: Zq81xLm20PfWv93nKd47TyRs55"),
+         "implementer", True, "live secret")
+    case("a known key prefix is flagged in a verbatim block with no assignment",
+         impl.replace("CRITERIA: |\n  1. x", "CRITERIA: |\n  1. sees sk-abcdefghijklmnop1234"),
+         "implementer", True, "shaped like a live secret")
+
+    # a payload field whose tool the agent lacks (issue #104)
+    scout = "WORKTREE_DIR: {REAL}\nBASELINE: 3f2611f\nHEAD: e09ab77\nHINT: |\n  flush\n"
+    case("drafter without Write is refused", drafter, "document-drafter", True, "grants no Write",
+         host="claude", tools=["Read", "Grep", "Glob"])
+    case("drafter with Write is clean", drafter, "document-drafter", False,
+         host="claude", tools=["Read", "Grep", "Glob", "Write"])
+    case("scout without Bash is refused", scout, "blast-radius-scout", True, "grants no Bash",
+         host="claude", tools=["Read", "Grep", "Glob"])
+    case("scout with Bash is clean", scout, "blast-radius-scout", False,
+         host="claude", tools=["Read", "Grep", "Glob", "Bash"])
+    case("opencode host leaves the tool list to check_permission_maps", scout,
+         "blast-radius-scout", False, host="opencode")
+
     case("no kind still checks paths", "X: /no/such/place/here\n", None, True, "does not exist")
 
     for item in failures:
@@ -1341,6 +1562,13 @@ def main() -> int:
         "or a container image) and that the orchestrator has verified by listing "
         "it there. Repeatable. An --allow-path that matches no path in the payload "
         "is itself a defect, so a stale exemption cannot linger.",
+    )
+    parser.add_argument(
+        "--allow-token", action="append", default=[], metavar="TOKEN",
+        help="an unexpanded token such as '${HOME}' that is meant literally in an "
+        "instruction field (pasted verbatim fields are exempt already). "
+        "Repeatable. An --allow-token that matches no token in the payload is "
+        "itself a defect, so a stale exemption cannot linger.",
     )
     parser.add_argument(
         "--host", choices=("claude", "opencode"), default=None,
@@ -1366,7 +1594,8 @@ def main() -> int:
     lines = read_lines(args.payload)
     tools = agent_tools(args.kind, args.host) if args.host else None
     present, defects, warnings = lint(
-        lines, args.kind, args.worktree, args.allow_path, args.host, tools, args.live_dossier
+        lines, args.kind, args.worktree, args.allow_path, args.host, tools, args.live_dossier,
+        args.allow_token
     )
     return report(args.payload, args.kind, present, defects, warnings)
 

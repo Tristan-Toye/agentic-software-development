@@ -221,6 +221,23 @@ or no specific field at all.
   block — staged sections: one `Write` plus several `Edit`s, each far under
   `MAX_SINGLE_EDIT` — beside, never instead of, the full field set
   (`work-on.md` Phase 4, the escalation ladder).
+  Payload surgery on a resume (splicing in a correction, swapping a block)
+  ends with `check_payload.py` on the result: it refuses any field that
+  appears twice, and a stale second `DELIVERY_CHANGE` block makes the agent
+  return an empty file it believes it delivered.
+- **List fields take commas, whitespace, or both.** `TEST_PATHS`,
+  `STYLE_PATHS`, `SUPPORT_PATHS` and `TARGET_PATHS` entries are separated by
+  `,` or whitespace (`/a.rs,/b.rs` is two entries). Every entry is an
+  absolute path. A path inside the remote command of a `limactl shell`,
+  `ssh` or `docker exec` line is a VM path: the lint does not look for it
+  on the host.
+- **Verbatim fields are not linted as instructions.** In `CRITERIA`,
+  `CONTRACT`, `DOSSIER-EXCERPTS`, `STYLE_SAMPLE`, `SUPPORT`, `FAILURES`,
+  `CRS`, `PRIOR_CRS`, `RUN_EVIDENCE`, `CHECKLIST_RULES` and `FORMAT`,
+  `${VAR}` spellings and quoted `token: a` test text pass; key-shaped
+  secrets still do not. An intended literal `${VAR}` elsewhere takes
+  `--allow-token '${VAR}'`, which, like `--allow-path`, is itself a defect
+  when it matches nothing.
 - **A support agent's report is a guidance doc, not a verdict.** Pointers,
   verbatim quotes, neutral flags (`WEAK?`, `no-test-found`, `NOT-FOUND`) —
   pasted into `## Build log` and investigated by you before anything acts on
