@@ -1,12 +1,14 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import { appendFileSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, extname, isAbsolute, join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
+import { configLoader, protectRegexes, type Config } from "../../shared/config"
+import { readGuard } from "../../shared/read-guard"
 
 // Context guard — keeps an orchestrator's carried context small, and stops the reads
-// that bloat it. Two parts, both configured by context-guard.yaml beside the real file
-// (the plugin is symlinked into ~/.config/opencode/plugins, so the path is resolved
-// through the link; re-read whenever its mtime moves; OPENCODE_CONTEXT_GUARD_CONFIG
+// that bloat it. Two parts, both configured by shared/context-guard.yaml (one config for opencode
+// and Claude Code; the plugin is symlinked into ~/.config/opencode/plugins, so the path is
+// resolved through the link, and `../../shared` is imported the same way; re-read whenever its mtime moves; OPENCODE_CONTEXT_GUARD_CONFIG
 // points at a different file).
 //
 // A. Batched observation masking (experimental.chat.messages.transform). In a long run
@@ -45,92 +47,11 @@ import { dirname, extname, isAbsolute, join, resolve } from "node:path"
 // that file; `false`, `0`, `off` or `no` stop logging; any other value is the log path.
 // Nothing but the plugin is exported: opencode may call every export as a plugin.
 
-type Config = {
-  trigger_tokens: number
-  keep_tool_steps: number
-  keep_reasoning_steps: number
-  protect_tools: string[]
-  protect_paths: string[]
-  mask_input_tools: string[]
-  keep_input_chars: number
-  regrow_tokens: number
-  min_gain_tokens: number
-  mask_agents: string[]
-  mask_reasoning_agents: string[]
-  guard_agents: string[]
-  max_read_bytes: number
-}
-
-const DEFAULTS: Config = {
-  trigger_tokens: 70000,
-  keep_tool_steps: 10,
-  keep_reasoning_steps: 20,
-  protect_tools: ["phase_checkpoint", "task", "question", "todowrite", "skill", "edit", "write"],
-  protect_paths: ["references/work-on/phase-\\d+\\.md", "primary-agents/work-on\\.md"],
-  mask_input_tools: ["bash", "task", "write", "edit"],
-  keep_input_chars: 300,
-  regrow_tokens: 10000,
-  min_gain_tokens: 4000,
-  mask_agents: ["work-on", "dossier", "implementer", "integration-test-author", "reviewer"],
-  mask_reasoning_agents: ["work-on", "dossier"],
-  guard_agents: ["work-on"],
-  max_read_bytes: 20000,
-}
-
 const configPath =
-  process.env.OPENCODE_CONTEXT_GUARD_CONFIG ?? join(dirname(realpathSync(import.meta.path)), "context-guard.yaml")
+  process.env.OPENCODE_CONTEXT_GUARD_CONFIG ?? join(dirname(realpathSync(import.meta.path)), "..", "..", "shared", "context-guard.yaml")
 // The pipeline repo the plugin lives in (opencode/plugins/ under it), for the script paths a refusal names.
 const pluginRepo = resolve(dirname(realpathSync(import.meta.path)), "..", "..")
-let config: Config = DEFAULTS
-let configMtime = -1
-let protectRes: RegExp[] = DEFAULTS.protect_paths.map((p) => new RegExp(p))
-
-const num = (v: unknown, fallback: number, min = 0) => {
-  const n = Number(v)
-  return Number.isFinite(n) && n >= min ? Math.floor(n) : fallback
-}
-const strings = (v: unknown, fallback: string[]) =>
-  Array.isArray(v) ? v.filter((x) => typeof x === "string") : fallback
-
-// Re-reads the YAML when its mtime moves. A broken edit keeps the last good config;
-// a missing key falls back to its default.
-function currentConfig(): Config {
-  try {
-    const mtime = statSync(configPath).mtimeMs
-    if (mtime !== configMtime) {
-      const raw = ((Bun.YAML.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>) ?? {}) as Record<string, unknown>
-      const next: Config = {
-        trigger_tokens: num(raw.trigger_tokens, DEFAULTS.trigger_tokens, 1),
-        keep_tool_steps: num(raw.keep_tool_steps, DEFAULTS.keep_tool_steps),
-        keep_reasoning_steps: num(raw.keep_reasoning_steps, DEFAULTS.keep_reasoning_steps),
-        protect_tools: strings(raw.protect_tools, DEFAULTS.protect_tools),
-        protect_paths: strings(raw.protect_paths, DEFAULTS.protect_paths),
-        mask_input_tools: strings(raw.mask_input_tools, DEFAULTS.mask_input_tools),
-        keep_input_chars: num(raw.keep_input_chars, DEFAULTS.keep_input_chars, 1),
-        regrow_tokens: num(raw.regrow_tokens, DEFAULTS.regrow_tokens),
-        min_gain_tokens: num(raw.min_gain_tokens, DEFAULTS.min_gain_tokens),
-        mask_agents: strings(raw.mask_agents, DEFAULTS.mask_agents),
-        mask_reasoning_agents: strings(raw.mask_reasoning_agents, DEFAULTS.mask_reasoning_agents),
-        guard_agents: strings(raw.guard_agents, DEFAULTS.guard_agents),
-        max_read_bytes: num(raw.max_read_bytes, DEFAULTS.max_read_bytes, 1),
-      }
-      const res: RegExp[] = []
-      for (const p of next.protect_paths) {
-        try {
-          res.push(new RegExp(p))
-        } catch {
-          // a bad pattern is skipped, not fatal
-        }
-      }
-      config = next
-      protectRes = res
-      configMtime = mtime
-    }
-  } catch {
-    // keep the last good config (the defaults when none was ever read)
-  }
-  return config
-}
+const currentConfig = configLoader(configPath)
 
 const dir = join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "opencode", "context-guard")
 
@@ -241,7 +162,7 @@ function isProtected(p: any, cfg: Config): boolean {
   if (cfg.protect_tools.includes(p.tool)) return true
   const input = p.state?.input ?? {}
   const target = String(input.filePath ?? input.path ?? input.command ?? "")
-  return target !== "" && protectRes.some((re) => re.test(target))
+  return target !== "" && protectRegexes(cfg).some((re) => re.test(target))
 }
 
 type Masked = { outputs: number; inputs: number; reasoning: number; chars: number }
@@ -311,62 +232,13 @@ function indexOfId(messages: Entry[], id: string | undefined): number {
 
 const sessionAgents = new Map<string, string>()
 
-const DOSSIER_RE = /\/\.discovery\/dossiers\/[^/]+\.md$/
-const SOURCE_EXT = new Set([
-  ".rs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".py", ".go", ".java", ".kt", ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".swift", ".sh",
-])
-// limactl as the command run: at the start, or after a separator, `then`, `do`, `exec`,
-// `time` or `rtk` — not inside a quoted argument of another command (compose_payloads.py
-// carries a TEST_COMMAND that names limactl; refusing it cost the recorded runs a step).
-const LIMACTL_RUN_RE = /(?:^|[;&|(]\s*|\b(?:then|do|exec|time)\s+)(?:rtk\s+)?limactl\s+shell\b/m
-const CAT_RE = /^\s*cat\s+(?:--\s+)?("[^"]+"|'[^']+'|[^\s|;&<>$`()*?]+)\s*$/
-
-function sizeOf(file: string, cwd: string): { bytes: number; lines: number } | undefined {
-  try {
-    const abs = isAbsolute(file) ? file : resolve(cwd, file)
-    const st = statSync(abs)
-    if (!st.isFile()) return undefined
-    const text = readFileSync(abs, "utf8")
-    return { bytes: st.size, lines: text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0) }
-  } catch {
-    return undefined
-  }
-}
-
-function bigFileReason(file: string, size: { bytes: number; lines: number }): string {
-  const ext = extname(file).toLowerCase()
-  const how =
-    ext === ".md"
-      ? "use doc_section for the heading you need"
-      : SOURCE_EXT.has(ext)
-        ? "use code_outline for the shape of the file and code_item for one item"
-        : "use code_outline / code_item (source) or doc_section (markdown)"
-  return `${file} is ${size.bytes} bytes, ${size.lines} lines; reading it whole costs the context of every later step: ${how}, or read with offset and limit.`
-}
-
-// The reason to refuse a call, or undefined to allow it.
+// The reason to refuse a call, or undefined to allow it: opencode's args mapped onto the
+// shared read guard (shared/read-guard.ts).
 function refusal(tool: string, args: any, cfg: Config): string | undefined {
-  if (tool === "read") {
-    const file = String(args?.filePath ?? "")
-    if (!file || args?.limit !== undefined) return undefined
-    if (protectRes.some((re) => re.test(file))) return undefined
-    if (DOSSIER_RE.test(file))
-      return `read a dossier by section: python3 ${pluginRepo}/scripts/dossier_edit.py section <dossier> '<heading>' — or read with offset/limit`
-    const size = sizeOf(file, process.cwd())
-    if (size && size.bytes > cfg.max_read_bytes) return bigFileReason(file, size)
-    return undefined
-  }
-  if (tool === "bash") {
-    const command = String(args?.command ?? "")
-    if (LIMACTL_RUN_RE.test(command) && /cargo\s+(test|nextest)\b/.test(command) && !command.includes("run_tests.py"))
-      return `use python3 ${pluginRepo}/scripts/run_tests.py --vm nightwatch --workdir <X> --env-script deploy/host/test-env.sh -- <command>`
-    const cat = CAT_RE.exec(command)
-    if (cat) {
-      const file = cat[1].replace(/^["']|["']$/g, "")
-      const size = sizeOf(file, String(args?.workdir ?? process.cwd()))
-      if (size && size.bytes > cfg.max_read_bytes) return bigFileReason(file, size)
-    }
-  }
+  if (tool === "read")
+    return readGuard({ kind: "read", path: String(args?.filePath ?? ""), limit: args?.limit, offset: args?.offset }, process.cwd(), cfg, pluginRepo)
+  if (tool === "bash")
+    return readGuard({ kind: "bash", command: String(args?.command ?? "") }, String(args?.workdir ?? process.cwd()), cfg, pluginRepo)
   return undefined
 }
 

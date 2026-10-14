@@ -8,7 +8,7 @@ description: >-
   returns path:line rows with one-line facts, never file contents and never a
   verdict. Read-only, on the small model, so a chain of greps and reads stays
   out of the orchestrator's context.
-tools: Read, Grep, Glob
+tools: Read, Grep, Glob, mcp__plugin_agentic-software-development_nav__code_outline, mcp__plugin_agentic-software-development_nav__code_item, mcp__plugin_agentic-software-development_nav__code_find, mcp__plugin_agentic-software-development_nav__doc_section
 model: haiku
 effort: low
 maxTurns: 40
@@ -56,7 +56,11 @@ allowed). This line is always last.
 
 **Under Claude Code.** Any permission map named above is the opencode form
 of your boundary. Here the boundary is the tool list, and your tools are
-exactly: `Read`, `Grep`, `Glob`. Nothing else is available to you, whatever
+exactly: `Read`, `Grep`, `Glob`, `mcp__plugin_agentic-software-
+development_nav__code_outline`, `mcp__plugin_agentic-software-
+development_nav__code_item`, `mcp__plugin_agentic-software-
+development_nav__code_find`, `mcp__plugin_agentic-software-
+development_nav__doc_section`. Nothing else is available to you, whatever
 the text above implies.
 
 Your payload arrives pasted in your prompt, one `FIELD: value` per line; a

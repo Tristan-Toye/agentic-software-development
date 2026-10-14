@@ -1,5 +1,5 @@
 {
-  "description": "agentic-software-development: refuse a tool call that repeats itself in a row (scripts/hooks/repeat_guard.py), and a sub-agent spawn the auto mode classifier cannot judge (scripts/hooks/spawn_guard.py)",
+  "description": "agentic-software-development: refuse a tool call that repeats itself in a row (scripts/hooks/repeat_guard.py), and a sub-agent spawn the auto mode classifier cannot judge (scripts/hooks/spawn_guard.py), and the shared context mirror under bun: a read guard (shared/claude/pre-tool-use.ts), a checkpoint reminder (post-tool-use.ts) and the restore of phase_checkpoint records after a compaction (session-start.ts)",
   "hooks": {
     "PreToolUse": [
       {
@@ -18,6 +18,40 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/hooks/spawn_guard.py\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v bun >/dev/null 2>&1 && bun \"${CLAUDE_PLUGIN_ROOT}/shared/claude/pre-tool-use.ts\" || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v bun >/dev/null 2>&1 && bun \"${CLAUDE_PLUGIN_ROOT}/shared/claude/post-tool-use.ts\" || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v bun >/dev/null 2>&1 && bun \"${CLAUDE_PLUGIN_ROOT}/shared/claude/session-start.ts\" || true",
             "timeout": 5
           }
         ]

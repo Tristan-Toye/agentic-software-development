@@ -36,11 +36,17 @@ phase; each phase's instructions are in
 `${PLUGIN_ROOT}/references/work-on/phase-<N>.md`, and each heading below names
 its file. Read a phase file whole at the start of its phase — never a later
 phase's file ahead of time; a resumed run reads the file of the phase it
-resumes in. A phase ends when its outcome is in `## Build log`. **Then, under
-opencode, call `phase_checkpoint`** with the phase name and a summary. From
-the next request on, every earlier step of the run is out of your context: the
-`/work-on` request, the summaries of all completed phases, and the dossier are
-what remains. So write the summary as the hand-off to the rest of the run —
+resumes in. A phase ends when its outcome is in `## Build log`. **Then call
+`phase_checkpoint`** with the phase name and a summary. Under opencode it is
+the plugin's tool of that name; under Claude Code it is the plugin's MCP tool
+`mcp__plugin_agentic-software-development_nav__phase_checkpoint`. Under
+opencode, from the next request on, every earlier step of the run is out of
+your context: the `/work-on` request, the summaries of all completed phases,
+and the dossier are what remains. Under Claude Code the call records and does
+not cut — the host compacts on its own and no tool can trigger it — but the
+record is what compaction keeps: after each compaction a hook restores the
+`/work-on` request and the summaries of every checkpoint into your context.
+So on both hosts write the summary as the hand-off to the rest of the run —
 the live dossier's path, `X` and its branch, the SHAs that matter, the rulings
 and open items, the budgets spent, the next phase — and never as a diary; the
 detail is already in `## Build log`. Call it at a phase end, and at every
@@ -52,8 +58,7 @@ cross early leaves the next step without the facts it was working on. Masking
 cannot shrink what you must keep, so a long stage is what grows your context;
 after 80 tool calls without a checkpoint a tool result reminds you to close
 the stage you are in. Phases 0 and 1 are short: checkpoint them together,
-as "Phase 1", when Phase 1 ends. Under Claude Code the tool does not exist —
-skip the call; the host compacts on its own.
+as "Phase 1", when Phase 1 ends.
 
 **Old output fades on its own, under opencode.** The context-guard plugin
 masks tool output older than your newest 10 steps and reasoning older than
@@ -61,8 +66,9 @@ your newest 20 once a request passes its trigger: the output becomes a
 one-line stub, and a long old input (a heredoc, a task prompt, a write's
 content) keeps only its head. When you need a masked result again, fetch only
 the part you need — `code_item`, `doc_section`, `dossier_edit.py section`, or
-the command once more. It also refuses a whole read of a dossier or of a file
-over 20 KB (never of a phase file) and a VM test run that bypasses
+the command once more (masking is opencode's; Claude Code has no hook that
+rewrites history). On both hosts a guard also refuses a whole read of a
+dossier or of a file over 20 KB (never of a phase file) and a VM test run that bypasses
 `run_tests.py`; the refusal names the tool to use instead. Take it, and never
 work around a refusal.
 
@@ -102,7 +108,7 @@ not a chain you type. Before you compose a shell command, take the tool:
 | A spawn payload | `python3 ${PLUGIN_ROOT}/scripts/compose_payloads.py …` fills every mechanical field; you write only the `@@FILL_<FIELD>@@` fields (Phase 4) |
 | Lint, gate and admit a wave | `python3 ${PLUGIN_ROOT}/scripts/prepare_wave.py …` (Phase 4) |
 | Read or write the dossier | `python3 ${PLUGIN_ROOT}/scripts/dossier_edit.py <section, log, set, add, remove or replace-section> …` |
-| The items of a source file, with line ranges and first doc lines | `code_outline` (opencode tool) or `python3 ${PLUGIN_ROOT}/scripts/code_nav.py outline <file>` |
+| The items of a source file, with line ranges and first doc lines | `code_outline` or `python3 ${PLUGIN_ROOT}/scripts/code_nav.py outline <file>` |
 | One function, type, impl or method — whole, its contract, its doc comment or its signature | `code_item` with `mode` `full`, `contract`, `doc` or `signature` (or `code_nav.py item <file> <Type::method> --mode …`) |
 | Where a symbol is defined | `code_find` (or `code_nav.py find <name> --root <X>`) |
 | One section or rule of a markdown file, by heading or id (`LRN-0073`, `ADR-0150`) | `doc_section` (or `code_nav.py section <file> <heading-or-id>`) |
@@ -112,7 +118,9 @@ not a chain you type. Before you compose a shell command, take the tool:
 | Gate, stage named paths, commit, push | `python3 ${PLUGIN_ROOT}/scripts/gate_commit.py --root <X> --paths … -m …` |
 | A prose edit to the dossier or a document from facts you hold | spawn `scribe` with the edits and the facts |
 
-Read source and documents through these tools. Read a file whole only when it
+Under Claude Code the navigation tools are the plugin's MCP tools, named
+`mcp__plugin_agentic-software-development_nav__<tool>`. Read source and
+documents through these tools. Read a file whole only when it
 is small, and a range only when no item boundary fits; never `cd <X> && sed -n`
 or `cat` — the recorded runs spent more on those chains than on any other kind
 of step.
