@@ -95,6 +95,31 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   criterion.
 - Name each test after the flow and the outcome, in the project's vocabulary.
 
+## Stability — the flow test passes or fails the same way on every run
+
+Real dependencies make an integration test slow and shared, and that is
+where most flaky tests come from. The orchestrator repeats the whole suite
+under load before review, so a race you leave in costs an arbitration round.
+
+- **Never sleep to wait for a flow to finish.** Wait on the observable exit
+  point: the response, the row, the message. Poll it with a deadline when the
+  flow is asynchronous.
+- **Read only after the flow says it is done.** When the flow starts
+  background work (a resumed process, a consumer, a flush), the criterion
+  names the signal that ends it. Assert after that signal, never after the
+  call that started the work. No signal in the criterion → `GAP:`.
+- **A wall-clock bound is at least one second**, and only where a criterion
+  states one. A tighter bound fails under a loaded runner with correct code.
+- **Every test owns its resources.** A unique database, queue, topic, key,
+  budget, port or directory per test, named from the test name and kept
+  within the backend's identifier limit (63 bytes for a Postgres name). Never
+  share one with another test or another suite.
+- **Cleanup runs when the test fails.** Use the harness's guard, fixture
+  teardown or `finally` form, so a panic does not leave a resource behind for
+  the next run.
+- **A retry, a longer timeout, or a skip never makes a test stable.** It hides
+  the race, and the race may be a real defect in the flow.
+
 ## Report
 
 The paths you wrote, one line per test mapping it to the criterion it covers,

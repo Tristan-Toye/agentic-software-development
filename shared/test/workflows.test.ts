@@ -171,8 +171,9 @@ const doc = "# Change requests — architecture (round 1)\n\n## CR-1: split the 
 const fakeReview = (prompt: string, opts: Opts) => {
   if (opts.agentType) {
     check("review: reviewer agent with a schema", opts.agentType === "agentic-software-development:reviewer" && !!opts.schema)
-    if (prompt.startsWith("LENS: style")) return { verdict: "PASS", crs: [], document: "", notes: "clean" }
+    if (prompt.startsWith("LENS: style")) return { verdict: "PASS", crs: [], document: "", notes: "clean", unreached: ["none"] }
     if (prompt.startsWith("LENS: performance")) return null
+    if (prompt.startsWith("LENS: tests")) return { verdict: "PASS", crs: [], document: "", notes: "", unreached: ["tests/flush_test.rs :: reload_drains_queue"] }
     return {
       verdict: "CHANGES-REQUIRED",
       crs: [{ id: "CR-1", severity: "blocking", location: "src/a.rs:10", claim: "split the cache from the loader" }],
@@ -183,17 +184,21 @@ const fakeReview = (prompt: string, opts: Opts) => {
   return { written: true }
 }
 {
-  const { result, calls } = await run(review, [lens("style"), lens("architecture"), lens("performance")], fakeReview)
+  const { result, calls } = await run(review, [lens("style"), lens("architecture"), lens("performance"), lens("tests")], fakeReview)
   const by = (l: string) => result.find((r: any) => r.lens === l)
-  check("review: one entry per lens", result.length === 3)
+  check("review: one entry per lens, four with tests due", result.length === 4)
+  check("review: UNREACHED none is no unreached location", by("style").verdict === "PASS" && by("style").unreached.length === 0)
+  check("review: a PASS with an unreached location is 'incomplete', never PASS", by("tests").verdict === "incomplete" && by("tests").unreached[0] === "tests/flush_test.rs :: reload_drains_queue")
+  check("review: the schema demands the unreached list", calls.some((c) => c.opts.schema && c.opts.schema.required.includes("unreached")))
   check("review: PASS lens writes no document", by("style").verdict === "PASS" && by("style").crs.length === 0 && by("style").document_path === "")
   check("review: CRs are compact with ledger ids", by("architecture").verdict === "CHANGES-REQUIRED" && by("architecture").crs[0].ledger_id === "CR-architecture-1" && by("architecture").crs[0].location === "src/a.rs:10" && by("architecture").crs[0].severity === "blocking")
   check("review: document kept under reportDir", by("architecture").document_path === "/x/.agent-staging/reviews/r1_architecture.md")
   check("review: the verbatim document travels to the keeper", calls.some((c) => c.opts.model === "haiku" && c.prompt.includes(doc)))
   check("review: a dead lens is 'died', never PASS", by("performance").verdict === "died" && by("performance").crs.length === 0)
   check("review: the compact result holds no document text", !JSON.stringify(result).includes("# Change requests"))
-  check("review: result shape", result.every((r: any) => ["label", "lens", "round", "verdict", "crs", "answers", "notes", "document_path"].every((k) => k in r)))
+  check("review: result shape", result.every((r: any) => ["label", "lens", "round", "verdict", "crs", "answers", "unreached", "notes", "document_path"].every((k) => k in r)))
   check("review: bad args refused", (await run(review, [{ lens: "style" }], () => null)).result[0].verdict === "died")
+  check("review: five lenses refused", (await run(review, ["style", "architecture", "performance", "tests", "style"].map(lens), () => null)).result[0].verdict === "died")
 }
 
 console.log(fails.length ? "FAIL " + fails.join(" | ") : "PASS (all cases)")

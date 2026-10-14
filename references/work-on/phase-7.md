@@ -1,7 +1,7 @@
 <!-- /work-on, Phase 7. Read at the start of this phase; the rules that hold
      in every phase stay in primary-agents/work-on.md. -->
 
-## Phase 7 — The review cycle: three lenses, concurrently
+## Phase 7 — The review cycle: the code lenses, concurrently
 
 Compute the **blast radius**. The file list comes from
 `ocr delegate preview --format json --repo X --from <baseline> --to HEAD`, not
@@ -35,7 +35,8 @@ valid is an exclusion that reached nobody. When `ocr` is missing, fall back to
 `git diff --name-only`, log `unknown`, and know that nothing was filtered —
 which is the safe direction, not the unsafe one.
 
-Spawn all three in **one message** so they run concurrently. There is no chain,
+Spawn the round's lenses — the three code lenses, plus `tests` when it is due
+(below) — in **one message** so they run concurrently. There is no chain,
 no short-circuit, and no restart: they review the same green state and return
 their change requests together. Each payload's `CONTRACT` is the dossier's
 `## Contract` (`compose_payloads.py` reads it; never `--contract-paths`, whose
@@ -44,17 +45,17 @@ payload itself, pasted (`compose_payloads.py --emit-prompt <final>`); the
 `PAYLOAD_FILE` pointer is the opencode form (`references/work-on/phase-4.md`).
 
 **Under Claude Code, send the round through the workflow, once.** Compose and
-lint the three payloads as above, then call the `Workflow` tool once with
+lint the round's payloads as above, then call the `Workflow` tool once with
 `name: "agentic-software-development:phase7-review"` and `args`, an array with
 one object per lens in this round:
 
 ```
-{ "lens": "style | architecture | performance", "label": "r1 style",
+{ "lens": "style | architecture | performance | tests", "label": "r1 style",
   "prompt": "<the linted reviewer payload, pasted>", "round": 1,
   "reportDir": "<X>/.agent-staging/reviews" }
 ```
 
-The three reviewers run concurrently, each returns its change requests as a
+The reviewers run concurrently, each returns its change requests as a
 structured object, and a cheap agent keeps each verbatim document in
 `reportDir`. The call returns a run ID at once (log `WORKFLOW: phase7-review
 r<n> run <runId>`); the result arrives as the run's completion, one object per
@@ -62,11 +63,12 @@ lens:
 
 ```
 { "label": "r1 architecture", "lens": "architecture", "round": 1,
-  "verdict": "PASS | CHANGES-REQUIRED | died",
+  "verdict": "PASS | CHANGES-REQUIRED | incomplete | died",
   "crs": [ { "id": "CR-1", "ledger_id": "CR-architecture-1",
              "severity": "blocking | should-fix", "location": "path:line",
              "claim": "<the heading's one-line requirement>" } ],
   "answers": [ { "id": "CR-1", "status": "resolved | not-resolved", "detail": "…" } ],
+  "unreached": [ "<a SCOPE location the lens did not read in full>" ],
   "notes": "…", "document_path": "<the verbatim document, empty on PASS>" }
 ```
 
@@ -79,8 +81,13 @@ when you compose the fix implementer's payload, which carries it byte for byte
 (compose it from the file: never retype or edit it). A `died` lens has reviewed
 nothing: resume it (`phase-4.md`, "Under Claude Code, resume instead of
 re-spawn") or call the workflow again with that lens alone; it is never
-`PASS`. A check round calls the workflow with only the lenses that have an open
-CR, each prompt carrying its `PRIOR_CRS`. Under opencode there is no workflow:
+`PASS`. An `incomplete` lens replied `PASS` with locations in `unreached`:
+the workflow never reports that as a pass, and neither do you — resume it, or
+call the workflow again with that lens alone and `SCOPE` narrowed to the
+`unreached` locations. A `CHANGES-REQUIRED` with a non-empty `unreached` keeps
+its CRs and gets the same follow-up for the rest. A check round calls the
+workflow with only the lenses that have an open CR, each prompt carrying its
+`PRIOR_CRS`. Under opencode there is no workflow:
 spawn the lenses in one message as written.
 
 1. `reviewer` `LENS: style` — readability, extraction, naming, documentation
@@ -91,6 +98,14 @@ spawn the lenses in one message as written.
    question lives in this lens and nowhere else.
 3. `reviewer` `LENS: performance` — complexity, work amplification, allocation
    and copying, memory movement, blocking.
+4. `reviewer` `LENS: tests` — **only when it is due**: Phase 6 logged a
+   `FLAKY` test, or `FLAKE-RISK:` found a marker in a test file this build
+   added or changed. Its `SCOPE` is not the blast radius: it is those test
+   files, each with its marked lines and the names of any test that flipped,
+   and its `RUN_EVIDENCE` carries the `STABILITY:` line. It reviews whether
+   each test observes its promise reliably under load — never coverage, never
+   what is asserted. When it is not due, log `TESTS-LENS: not due —
+   FLAKE-RISK none, STABILITY stable` and spawn three.
 
 **Resolve `RULES` once, then narrow it three ways.** Run
 `ocr delegate rule --format json <the SCOPE paths>` — it returns per-path
@@ -101,13 +116,14 @@ cost the reviewers no blindness.
 
 **The narrowing is yours and it is not optional.** `ocr` returns one combined
 checklist per path — correctness, security, performance, maintainability,
-tests in a single block — and the three lenses exist precisely so that one
+tests in a single block — and the lenses exist precisely so that one
 question goes to one lens. Split the resolved text by lens before it becomes a
 payload field: readability, naming and documentation items to `style`;
 security, coupling, boundary and contract items to `architecture`; complexity,
 allocation and concurrency items to `performance`. Drop what belongs to no
 lens — test-coverage rules in particular, because you referee tests and no
-lens authors them. Pass `RULES: none` when nothing resolved or `ocr` is
+lens authors them. Rules on test determinism and isolation go to `tests` when
+it is due, and are dropped when it is not. Pass `RULES: none` when nothing resolved or `ocr` is
 absent; never leave the field out, and never paste the ungrouped block.
 
 `RULES` ranks below `STANDARDS`, `CONTEXT_DOCS` and `ARBITRATIONS`: it knows
@@ -124,12 +140,20 @@ without its lens's evidence is a note, not a change request — **a matched
 behaviour-preserving under it. A change request that needs a test changed to
 pass is out of bounds, and a reviewer that thinks the *behaviour* is wrong files
 a contract objection in its notes — the contract owns behaviour, and the
-contract is yours.
+contract is yours. The `tests` lens is the one lens whose CRs change test
+files, and its bound is the same in kind: each CR keeps what the test asserts
+and changes only how reliably it observes it.
 
 **A lens that died mid-pass has reviewed nothing.** Its partial text reads
 like a verdict — "this looks solid so far" — and is not one: a lens that
 stopped before three of its five locations has reviewed neither. Resume it
-from its transcript; never record a partial return as `PASS`.
+from its transcript; never record a partial return as `PASS`. **A lens that
+ran out of steps says so**: every reply ends with an `UNREACHED:` line
+(`sub-agents/reviewer.md`, Output). Under opencode read it yourself — a `PASS`
+whose line is not `UNREACHED: none`, or a reply with no such line, is
+`incomplete`, and the unreached locations go to that lens again before its
+`PASS` is logged. Log the line either way: `- r1 <lens>: UNREACHED none |
+<locations> — resumed`.
 
 **Apply the change requests:**
 
@@ -170,11 +194,16 @@ from its transcript; never record a partial return as `PASS`.
     exit 0 proves a non-assertion CR stayed non-assertion.
   - **CRs on an integration-test file** go back to `integration-test-author`,
     which can already read the file; no maintainer needed.
+  - **A `tests` CR is proven by the repeat that found the risk.** After the
+    author returns, rerun the stability gate (Phase 6) on the fixed head; the
+    CR is resolved only when the test passes every run. A `PRODUCT-RACE:` note
+    from the `tests` lens is not a CR: it is a Phase 6 row-6 arbitration, ruled
+    on its mechanism before any CR is routed.
 
   Record the routing on the CR's ledger line. A conforming CR that no
   available agent may apply is a routing question for the user, never a
   demotion — demotion is for missing evidence only, never the merits.
-- **Detect conflicts first.** You are the only party that sees all three lenses,
+- **Detect conflicts first.** You are the only party that sees every lens,
   so a performance request that undoes a style request is yours to catch. Deciding
   it is the **user's**, because it is a judgement call: present both sides with
   your recommendation, get a ruling, and record it in `## Build log` as an
@@ -223,17 +252,18 @@ from its transcript; never record a partial return as `PASS`.
 
 | Round | Spawns | Who | Answers |
 |---|---|---|---|
-| **1 — sweep** | **3**, concurrent | all three lenses | Fresh subject matter, full `SCOPE`, **one pass**. |
+| **1 — sweep** | **3–4**, concurrent | the three code lenses, plus `tests` when due | Fresh subject matter, full `SCOPE`, **one pass**. |
 | fix | 1 | `implementer MODE: fix` | the merged open CRs plus any arbitration |
 | — | 0 | you | the runner's verdict on the fixed head; red means the fix was not behaviour-preserving |
-| **2 — check** | **0–3**, concurrent | **only lenses with an open CR** | own CRs: resolved / not resolved |
+| **2 — check** | **0–4**, concurrent | **only lenses with an open CR** | own CRs: resolved / not resolved |
 | fix | 1 | `implementer MODE: fix` | what is still open |
-| **3 — check** | **0–3**, concurrent | only lenses still open | same |
+| **3 — check** | **0–4**, concurrent | only lenses still open | same |
 | stop | — | — | escalate with the round history |
 
 **A lens with every CR resolved and no structural follow-up is done, and you
-never re-spawn it.** A clean run costs 3 spawns; one lens filing, fixed and
-confirmed costs 5; the worst case is 11. Re-spawning a satisfied lens buys
+never re-spawn it.** A clean run costs 3 spawns (4 with `tests`
+due); one lens filing, fixed and confirmed costs 5; the worst case is 11, or 14
+with `tests` open every round. Re-spawning a satisfied lens buys
 nothing — it has no question left to answer, and its one pass is already spent.
 
 **Checkpoint after each round.** When a round's CRs are ruled, its fixes have
@@ -249,7 +279,7 @@ history and the unresolved tensions.
 
 **On a check round, honour one asymmetry:**
 
-- `style` is a pure resolved / not-resolved check. A rename cannot create new
+- `style` and `tests` are pure resolved / not-resolved checks. A rename cannot create new
   structure, so there is nothing new for it to see.
 - `architecture` and `performance` may **also** review the structure their own
   accepted request created — a new interface, a new type, a changed algorithm, a

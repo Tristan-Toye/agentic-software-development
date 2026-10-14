@@ -1,6 +1,6 @@
 export const meta = {
   name: 'phase7-review',
-  description: 'One /work-on Phase 7 review round: the three code lenses (style, architecture, performance) run concurrently through the reviewer agent and return their change requests in a compact structured form, with each full document kept in a file.',
+  description: 'One /work-on Phase 7 review round: the code lenses (style, architecture, performance, and tests when due) run concurrently through the reviewer agent and return their change requests in a compact structured form, with each full document kept in a file.',
   phases: [{ title: 'Review' }, { title: 'Keep' }],
 }
 
@@ -24,12 +24,12 @@ const AGENT_MODELS = {
 const modelFor = (agentType) => AGENT_MODELS[agentType] || { model: 'sonnet', effort: 'high' }
 
 // Claude Code only. The orchestrator composes and lints each reviewer payload as today and
-// calls this workflow once per round (round 1: three lenses; a check round: only the lenses
+// calls this workflow once per round (round 1: three or four lenses; a check round: only the lenses
 // with an open CR). It writes the CR ledger from the compact result; the full document is
 // read only when it composes the fix implementer's payload, which carries it byte for byte.
 //
 // args: [{ lens, label, prompt, round, reportDir, agentType? }]
-//   lens        'style' | 'architecture' | 'performance'
+//   lens        'style' | 'architecture' | 'performance' | 'tests'
 //   label       e.g. 'r1 style'
 //   prompt      the full pasted reviewer payload (compose_payloads.py --emit-prompt)
 //   round       the round number, for the ledger ids' log lines
@@ -37,16 +37,17 @@ const modelFor = (agentType) => AGENT_MODELS[agentType] || { model: 'sonnet', ef
 //               verbatim document is kept (<X>/.agent-staging/reviews)
 //   agentType   default 'agentic-software-development:reviewer'
 //
-// returns: [{ label, lens, round, verdict: 'PASS'|'CHANGES-REQUIRED'|'died',
+// returns: [{ label, lens, round, verdict: 'PASS'|'CHANGES-REQUIRED'|'incomplete'|'died',
 //             crs: [{ id, ledger_id, severity, location, claim }],
-//             answers: [{ id, status, detail }], notes, document_path }]
-// A lens that died has reviewed nothing: verdict 'died', never 'PASS'.
+//             answers: [{ id, status, detail }], unreached, notes, document_path }]
+// A lens that died has reviewed nothing: verdict 'died', never 'PASS'. A lens that answered
+// PASS but lists SCOPE locations it did not reach is 'incomplete', never 'PASS'.
 
-const MAX_LENSES = 3
+const MAX_LENSES = 4
 
 const REVIEW_SCHEMA = {
   type: 'object',
-  required: ['verdict', 'crs', 'document'],
+  required: ['verdict', 'crs', 'document', 'unreached'],
   properties: {
     verdict: { type: 'string', enum: ['PASS', 'CHANGES-REQUIRED'] },
     crs: {
@@ -74,6 +75,7 @@ const REVIEW_SCHEMA = {
         },
       },
     },
+    unreached: { type: 'array', items: { type: 'string' } },
     notes: { type: 'string' },
     document: { type: 'string' },
   },
@@ -86,15 +88,15 @@ const KEEP_SCHEMA = {
 }
 
 const RETURN_FORM =
-  '\n\nReturn your result as the structured object. verdict: PASS or CHANGES-REQUIRED. crs: one entry per change request in your document, with id (CR-1, CR-2, ...; a follow-up keeps its own heading id), severity (blocking or should-fix), location (path:line) and claim (the one-line requirement from its heading). answers: on a re-review, one entry per prior CR with status resolved or not-resolved and a short detail; otherwise empty. notes: your notes, at most three lines. document: the complete change-request document, exactly as your Output section specifies, character for character, and empty when you reply PASS.'
+  '\n\nReturn your result as the structured object. verdict: PASS or CHANGES-REQUIRED. crs: one entry per change request in your document, with id (CR-1, CR-2, ...; a follow-up keeps its own heading id), severity (blocking or should-fix), location (path:line) and claim (the one-line requirement from its heading). answers: on a re-review, one entry per prior CR with status resolved or not-resolved and a short detail; otherwise empty. unreached: every SCOPE location you did not read in full, exactly as your UNREACHED line names it; empty when that line says none. notes: your notes, at most three lines. document: the complete change-request document, exactly as your Output section specifies, character for character, and empty when you reply PASS.'
 
 const sq = (value) => "'" + String(value == null ? '' : value).replace(/'/g, "'\\''") + "'"
 const slug = (value) => String(value).replace(/[^\w.-]+/g, '_')
 
-const bad = (why) => [{ label: 'phase7-review', lens: '', round: 0, verdict: 'died', crs: [], answers: [], notes: why, document_path: '' }]
+const bad = (why) => [{ label: 'phase7-review', lens: '', round: 0, verdict: 'died', crs: [], answers: [], unreached: [], notes: why, document_path: '' }]
 
 if (!Array.isArray(args) || args.length === 0) return bad('args must be a non-empty array of {lens, label, prompt, round, reportDir}')
-if (args.length > MAX_LENSES) return bad('a review round has at most three lenses')
+if (args.length > MAX_LENSES) return bad('a review round has at most four lenses')
 for (const item of args) {
   for (const key of ['lens', 'label', 'prompt', 'reportDir']) {
     if (!item || typeof item[key] !== 'string' || item[key] === '') return bad('item ' + (item && item.label) + ' lacks ' + key)
@@ -133,16 +135,22 @@ async function keep(reviewed) {
     written = !!(kept && kept.written)
   }
   const crs = out && Array.isArray(out.crs) ? out.crs : []
+  const unreached = out && Array.isArray(out.unreached)
+    ? out.unreached.map(String).filter((loc) => loc.trim() !== '' && !/^none$/i.test(loc.trim()))
+    : []
+  let verdict = out ? out.verdict : 'died'
+  if (verdict === 'PASS' && unreached.length > 0) verdict = 'incomplete'
   return {
     label: item.label,
     lens: item.lens,
     round: item.round || 0,
-    verdict: out ? out.verdict : 'died',
+    verdict,
     crs: crs.map((c) => {
       const n = (/(\d+)/.exec(String(c.id)) || [])[1] || String(c.id)
       return { id: c.id, ledger_id: 'CR-' + item.lens + '-' + n, severity: c.severity, location: c.location, claim: String(c.claim).slice(0, 240) }
     }),
     answers: out && Array.isArray(out.answers) ? out.answers : [],
+    unreached,
     notes: out && typeof out.notes === 'string' ? out.notes.slice(0, 400) : '',
     document_path: written ? path : '',
   }
@@ -150,6 +158,6 @@ async function keep(reviewed) {
 
 const results = await pipeline(args, review, keep)
 return args.map((item, i) => results[i] || {
-  label: item.label, lens: item.lens, round: item.round || 0, verdict: 'died', crs: [], answers: [],
+  label: item.label, lens: item.lens, round: item.round || 0, verdict: 'died', crs: [], answers: [], unreached: [],
   notes: 'the lens died or was skipped: it reviewed nothing, resume it from its transcript or re-spawn it', document_path: '',
 })

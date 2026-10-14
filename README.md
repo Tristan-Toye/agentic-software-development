@@ -32,10 +32,12 @@ kinds of agent work at the same time without seeing each other's output:
                                      │
               stub red-run · run the tests · arbitrate failures
                         (the contract is the referee)
+                 stability gate: repeat the suite, find flaky tests
                                      │
               ┌──────────────────────┼──────────────────────┐
         reviewer:style       reviewer:architecture   reviewer:performance
-              └──────────── all three concurrently ─────────┘
+                  (+ reviewer:tests when the new tests carry flake risk)
+              └──────────────── all concurrently ───────────┘
                                      │
                         extract ADRs · open the PR
 ```
@@ -59,7 +61,7 @@ whichever side is easier to change.
 | Command | Does | Spawns |
 |---|---|---|
 | **`/plan <anything>`** | A Jira key, a stack trace, a paragraph of intent → an investigated dossier: the problem with anchored evidence, the approach, the contract, disjoint work packages, falsifiable criteria. Writes `status: ready`. In a repo that commits `.discovery/`, it works in a `plan/<KEY>` worktree and ends with a PR. | 1 (`reviewer`, `LENS: plan`) |
-| **`/work-on <ID>`** | Materialises the contract as real code, fans out blind and concurrent, merges, arbitrates every test failure, runs three concurrent review lenses, extracts the ADRs, opens the PR, removes the worktree. Resumable at every phase. | 3 + N, then 3 |
+| **`/work-on <ID>`** | Materialises the contract as real code, fans out blind and concurrent, merges, arbitrates every test failure, repeats the suite to catch flaky tests, runs three concurrent review lenses (four when the new tests carry flake risk), extracts the ADRs, opens the PR, removes the worktree. Resumable at every phase. | 3 + N, then 3 |
 | **`/overview-dossiers`** | Status of every dossier from front matter alone, plus the pipeline health signals worth acting on. Read-only toward pipeline state; also renders `.discovery/analysis/open-work.html`, a self-contained animated dashboard; `--worktrees` overlays the live copies from sibling worktrees when `.discovery/` is committed. | 0 |
 | **`/deferred`** | The deferred-issues report for a finished change: every product-code issue the session knew about and did not tackle, with an ID, evidence and a proposed fix. Recall, not audit; `/plan D-n` seeds a dossier from a line. | 0 |
 
@@ -70,7 +72,7 @@ whichever side is easier to change.
 | `implementer` | Read, Grep, Glob, Bash, Edit, Write | Fills bodies against the contract. Never changes a signature — returns `CONTRACT-CHANGE:` and stops. |
 | `unit-test-author` | Read, Write, Edit — permission-scoped to `.agent-staging/` and the test families | A test written by someone who has seen the implementation re-derives the expected value the way the code does, and then it can never disagree with the code. |
 | `integration-test-author` | Read, Grep, Glob, Write | A flow test needs intent, so it reads the dossier. It still cannot read a body. |
-| `reviewer` | Read, Grep, Glob | Four lenses: `plan`, `style`, `architecture`, `performance`. No write tools at all, so it cannot change what it reviews. |
+| `reviewer` | Read, Grep, Glob | Five lenses: `plan`, `style`, `architecture`, `performance`, and `tests` (test stability under load, only when due). No write tools at all, so it cannot change what it reviews; every reply names the scope it did not reach. |
 
 Three **support agents** (flash, size-gated) carry mechanical work off the
 orchestrator's context. Each returns a guidance doc — pointers, verbatim
@@ -400,7 +402,8 @@ are in `ledger/token-spend.md`; `scripts/token_report.py` produces the numbers.
 | `scripts/prepare_wave.py` | One call per fan-out wave: every payload lint and boundary gate through the scripts that own them, only the defects printed, then the admission slots and the `PAYLOAD-LINT:` / `ADMISSION:` lines. `--selftest` checks the checker. |
 | `scripts/compose_payloads.py` | A spawn payload with every mechanical field filled from the dossier and the contract files, and every judgement field left as a `@@FILL_<FIELD>@@` placeholder the lint refuses. `--selftest` checks the checker. |
 | `scripts/git_state.py` | A worktree's state in one bounded call: branch, HEAD, ahead/behind, status counts and paths, diff stat, in-progress merge. `--selftest` checks the checker. |
-| `scripts/run_tests.py` | Runs a suite (optionally inside a Lima VM) with the whole output in a log, and prints the summed counts and each failure, bounded; cargo, nextest, pytest and TAP parsers. `--selftest` checks the checker. |
+| `scripts/run_tests.py` | Runs a suite (optionally inside a Lima VM) with the whole output in a log, and prints the summed counts and each failure, bounded; cargo, nextest, pytest and TAP parsers. `--repeat N` is the Phase 6 stability gate: it names each test that failed in some runs but not all. `--selftest` checks the checker. |
+| `scripts/flake_risk.py` | The lines in test files that make a test likely to flake under load — a sleep, a sub-second bound, a wall-clock read, threads or tasks, shared state, a fixed port or path, unseeded randomness. Decides whether the Phase 7 `tests` lens is due, and gives it its scope. `--selftest` checks the checker. |
 | `scripts/wait_ci.py` | Waits for a PR's checks without output, then prints each check and a bounded digest of every failed job's log. `--selftest` checks the checker. |
 | `scripts/run_gates.py` | Runs a list of gate commands, one log per gate, and prints one line per gate plus the failing lines, bounded. `--selftest` checks the checker. |
 | `scripts/code_nav.py` | Structural reads and edits for Rust, Python and markdown: an outline with line ranges, one item (whole, contract, doc or signature), where a symbol is defined, one markdown section by heading or id, and a replace of one item. Exposed to opencode as `code_*` and `doc_section` tools by `opencode/plugins/code-nav.ts`. `--selftest` checks the checker. |

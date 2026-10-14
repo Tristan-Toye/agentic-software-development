@@ -703,8 +703,8 @@ def compose_reviewer(ctx: dict) -> list[Field]:
     only the orchestrator makes; @@FILL unless --set."""
     root, dossier_text, args, sets = ctx["root"], ctx["dossier_text"], ctx["args"], ctx["sets"]
     lens = sets.get("LENS")
-    if lens not in ("plan", "style", "architecture", "performance"):
-        raise Refusal("reviewer needs --set LENS=plan|style|architecture|performance")
+    if lens not in ("plan", "style", "architecture", "performance", "tests"):
+        raise Refusal("reviewer needs --set LENS=plan|style|architecture|performance|tests")
 
     fields: dict[str, Field] = {
         "LENS": Field("LENS", lens),
@@ -726,9 +726,12 @@ def compose_reviewer(ctx: dict) -> list[Field]:
             "CONTEXT_DOCS", "the ADR(s) this plan should be checked against, if any"))
     else:
         contract_text = dossier_contract(dossier_text, args, "a reviewer's code lens")
-        fields["SCOPE"] = Field("SCOPE", placeholder(
-            "SCOPE", "the blast radius as a location list (file :: member (changed) "
-            "/ (direct caller, unchanged)) — never a diff"), block=True)
+        scope_hint = ("the test files this build added or changed, each with its "
+                      "FLAKE-RISK marked lines and any test STABILITY saw flip — never a diff"
+                      if lens == "tests" else
+                      "the blast radius as a location list (file :: member (changed) "
+                      "/ (direct caller, unchanged)) — never a diff")
+        fields["SCOPE"] = Field("SCOPE", placeholder("SCOPE", scope_hint), block=True)
         fields["CONTRACT"] = Field("CONTRACT", contract_text, block=True)
         fields["RUN_EVIDENCE"] = Field("RUN_EVIDENCE", placeholder(
             "RUN_EVIDENCE", "the full green test run's output, verbatim"), block=True)
@@ -1511,6 +1514,13 @@ def selftest() -> int:
               rc == 0 and parsed_field(rv_text, "CONTRACT") == want and "return self._written" not in rv_text, out)
         rc, _p, out = run_with(dossier2_path, "RVp.md", ["reviewer", "--host", "claude", "--set", "LENS=style", "--contract-paths", "src/merged.py"])
         check("a reviewer's code lens refuses --contract-paths (the files hold the merge)", rc == 1 and "Drop --contract-paths" in out, out)
+        rc, rvt_path, out = run_with(dossier2_path, "RVt.md", ["reviewer", "--host", "claude", "--set", "LENS=tests"])
+        rvt_text = read_text(rvt_path) if rc == 0 else ""
+        check("the tests lens composes like a code lens, its SCOPE asking for the marked test files",
+              rc == 0 and parsed_field(rvt_text, "CONTRACT") == want and "FLAKE-RISK" in rvt_text
+              and "RULES" in rvt_text, out)
+        rc, _p, out = run_with(dossier2_path, "RVx.md", ["reviewer", "--host", "claude", "--set", "LENS=flaky"])
+        check("an unknown lens is refused", rc == 1 and "LENS=plan|style|architecture|performance|tests" in out, out)
         rc, fxc_path, out = run_with(dossier2_path, "FXC.md", ["implementer", "--host", "opencode", "--hooks", "none", "--test-command", "pytest -q",
                                                                 "--set", "MODE=fix", "--set", "CRS=CR-1: x"])
         check("an implementer in MODE fix takes CONTRACT from the dossier too",
