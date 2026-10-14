@@ -3,7 +3,9 @@
 
 The pipeline's agents keep their model in their own markdown frontmatter, written for
 GLM: `zai-coding-plan/glm-5.3` (the large tier) or `glm-5.3-flash` (the flash tier).
-opencode/model-profiles.json maps each tier to a model per profile. This script reads
+opencode/model-profiles.json maps each tier to a model per profile — a model ID, or
+{"model": ID, ...} with provider options that opencode passes straight through (OpenAI's
+`reasoningEffort`, for one). This script reads
 the agents opencode actually loads (the files in ~/.config/opencode/agent/, linked to
 this repo), finds each one's tier from its frontmatter, and prints the JSON that puts
 every agent on the chosen profile's model for that tier:
@@ -80,9 +82,18 @@ def linked_agents(agent_dir: str) -> tuple[dict[str, str], list[str]]:
     return agents, dangling
 
 
+def tier_entry(value) -> dict:
+    """A profile's tier value as an agent config entry: {"model": ...} plus any options."""
+    return {"model": value} if isinstance(value, str) else dict(value)
+
+
+def tier_map(profile: dict) -> dict[str, dict]:
+    return {tier: tier_entry(v) for tier, v in profile.items() if not tier.startswith("_")}
+
+
 def tiers(agents: dict[str, str], profiles: dict) -> tuple[dict[str, str], list[str]]:
-    base = profiles["profiles"][profiles["tiers_from"]]
-    by_model = {model: tier for tier, model in base.items()}
+    base = tier_map(profiles["profiles"][profiles["tiers_from"]])
+    by_model = {entry["model"]: tier for tier, entry in base.items()}
     known, unknown = {}, []
     for name, model in agents.items():
         if model in by_model:
@@ -97,8 +108,8 @@ def config_for(profile: str, agent_dir: str, profiles: dict) -> dict:
         raise ValueError(f"unknown profile {profile!r}; known: {', '.join(profiles['profiles'])}")
     agents, _ = linked_agents(agent_dir)
     known, _ = tiers(agents, profiles)
-    target = profiles["profiles"][profile]
-    return {"agent": {name: {"model": target[tier]} for name, tier in sorted(known.items()) if tier in target}}
+    target = tier_map(profiles["profiles"][profile])
+    return {"agent": {name: target[tier] for name, tier in sorted(known.items()) if tier in target}}
 
 
 def check(agent_dir: str, profiles: dict, repo: str = REPO) -> list[str]:
@@ -108,7 +119,7 @@ def check(agent_dir: str, profiles: dict, repo: str = REPO) -> list[str]:
     _, unknown = tiers(agents, profiles)
     defects += unknown
     for name, target in profiles["profiles"].items():
-        missing = set(profiles["profiles"][profiles["tiers_from"]]) - set(target)
+        missing = set(tier_map(profiles["profiles"][profiles["tiers_from"]])) - set(tier_map(target))
         if missing:
             defects.append(f"profile {name!r} has no model for tier(s) {', '.join(sorted(missing))}")
     # Compared by `<source dir>/<file>`: the links point at the checkout opencode runs from,
@@ -134,7 +145,7 @@ def selftest() -> int:
 
     profiles = {"tiers_from": "glm", "profiles": {
         "glm": {"large": "z/big", "flash": "z/small"},
-        "openai": {"large": "o/big", "flash": "o/small"}}}
+        "openai": {"_comment": "x", "large": {"model": "o/big", "reasoningEffort": "high"}, "flash": "o/small"}}}
     with tempfile.TemporaryDirectory() as tmp:
         repo, agent_dir = os.path.join(tmp, "repo"), os.path.join(tmp, "agent")
         os.makedirs(os.path.join(repo, "sub-agents"))
@@ -154,7 +165,7 @@ def selftest() -> int:
         os.symlink(worker, os.path.join(agent_dir, "worker.md"))
         cfg = config_for("openai", agent_dir, profiles)
         ok("profile maps each agent by its tier, under the link's name",
-           cfg == {"agent": {"dossier": {"model": "o/big"}, "worker": {"model": "o/small"}}}, cfg)
+           cfg == {"agent": {"dossier": {"model": "o/big", "reasoningEffort": "high"}, "worker": {"model": "o/small"}}}, cfg)
         ok("only the frontmatter model counts", frontmatter_model(worker) == "z/small")
         defects = check(agent_dir, profiles, repo)
         ok("an unlinked repo agent is a defect", any("unlinked.md is not linked" in d for d in defects), defects)
