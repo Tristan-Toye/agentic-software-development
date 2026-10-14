@@ -292,22 +292,36 @@ opencode has no classifier and keeps spawning by the file.
 ## Token spend
 
 A `/work-on` orchestrator re-sends its whole context on every step, so what it
-carries is what it costs. Three opencode plugins keep that small:
+carries is what it costs. Each mechanism has one source of truth, run by bun,
+and a thin adapter per host:
 
-- `opencode/plugins/phase-checkpoint.ts` — the orchestrator closes a phase or
-  a stage inside one (a wave, a test or review round, an investigation) with
-  `phase_checkpoint`; later requests drop every earlier step and keep the
-  summaries. After 80 tool calls without one, a tool result reminds it.
-- `opencode/plugins/context-guard.ts` — inside a phase, tool output older than
-  the newest 10 steps and reasoning older than the newest 20 become one-line
-  stubs, and long old inputs (heredocs, task prompts, write contents) keep
-  their head; moves are batched (a minimum gain, then a regrowth) so the
-  provider cache holds. Whole reads of a dossier or of a large file (never a
-  phase file), and VM test runs that bypass `run_tests.py`, are refused with
-  the tool to use instead. Tuned in `context-guard.yaml`, against recorded
-  sessions with `opencode/plugins/test/replay-guard.ts`.
-- `opencode/plugins/code-nav.ts` — `code_outline`, `code_item`, `code_find`,
-  `doc_section`, `code_replace`, so a read returns the item, not the file.
+| Mechanism | One source | opencode adapter | Claude Code adapter |
+|---|---|---|---|
+| Config | `shared/context-guard.yaml`, loaded by `shared/config.ts` | `opencode/plugins/context-guard.ts` | `shared/claude/*.ts` (same file) |
+| Read guard — whole reads of a dossier or of a large file (never a phase file) and VM test runs that bypass `run_tests.py` are refused with the tool to use instead | `shared/read-guard.ts` | `tool.execute.before` throws | `shared/claude/pre-tool-use.ts`, PreToolUse `Read\|Bash`, a deny, for the `/work-on` main session only |
+| Checkpoints — the orchestrator closes a phase or a stage (a wave, a test or review round, an investigation) with `phase_checkpoint`; after 80 tool calls without one a result reminds it | `shared/checkpoint.ts` | `opencode/plugins/phase-checkpoint.ts`: the tool cuts every earlier step from later requests and keeps the summaries | the MCP tool records (the call is the record); `post-tool-use.ts` counts and reminds; `session-start.ts` (matcher `compact`) restores the task and the summaries from the transcript after a compaction |
+| Code tools — `code_outline`, `code_item`, `code_find`, `doc_section`, `code_replace`, so a read returns the item, not the file | `shared/tools.ts`, wrapping `scripts/code_nav.py` | `opencode/plugins/code-nav.ts` | `shared/claude/mcp.ts`, a stdio MCP server registered by `.mcp.json`; tools are named `mcp__plugin_agentic-software-development_nav__<tool>` |
+
+The `shared/` modules need bun and no npm packages; the Claude hooks and the MCP
+server are guarded, so a machine without bun runs the plugin as before. Every
+hook fails open (exit 0, no output). Hook events — `refused`, `nudge`,
+`recorded`, `restored` — are one line each in
+`~/.local/share/agentic-software-development/claude/claude-hooks.log`.
+Tests: `bun --no-install shared/test/<name>.test.ts` (shared modules and the
+symlink proof, the hooks, the MCP server) and `opencode/plugins/test/`.
+
+What Claude Code cannot mirror:
+
+- **Masking.** `opencode/plugins/context-guard.ts` also turns old tool output,
+  old reasoning and long old inputs into one-line stubs. Claude Code has no
+  hook that rewrites the conversation history. Set `autoCompactWindow: 200000`
+  in the project settings of the repo that runs dossiers instead.
+- **The cut.** The model cannot trigger compaction, so `phase_checkpoint`
+  cannot drop earlier steps there. The checkpoint is recorded, and compaction
+  keeps it.
+
+Masking and the opencode read guard are tuned in `shared/context-guard.yaml`,
+against recorded sessions with `opencode/plugins/test/replay-guard.ts`.
 
 Every change, the evidence behind it, its hypothesis and its measured result
 are in `ledger/token-spend.md`; `scripts/token_report.py` produces the numbers.

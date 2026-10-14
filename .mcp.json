@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "nav": {
+      "command": "bun",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/shared/claude/mcp.ts"]
+    }
+  }
+}

@@ -39,7 +39,8 @@ permission:
 claude:
   model: haiku
   effort: low
-  tools: Read, Grep, Glob
+  # The plugin's read-only navigation tools (shared/claude/mcp.ts); code_replace stays withheld.
+  tools: Read, Grep, Glob, mcp__plugin_agentic-software-development_nav__code_outline, mcp__plugin_agentic-software-development_nav__code_item, mcp__plugin_agentic-software-development_nav__code_find, mcp__plugin_agentic-software-development_nav__doc_section
 ---
 
 You are the **code scout**. The orchestrator has a lookup question — where is

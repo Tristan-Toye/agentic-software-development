@@ -140,7 +140,7 @@ measurable claim, how to verify, and the result.
   reasoning older than the newest 20 steps become short stubs in the outgoing
   request; the masked set only moves at the next trigger, so the provider
   cache holds between moves. Phase files, subagent returns and checkpoints are
-  never masked. Config: `opencode/plugins/context-guard.yaml`.
+  never masked. Config: `shared/context-guard.yaml`.
 - **Why**: carried context after C-001 was 34.9% reasoning, 24.3% read output,
   14.8% bash output. A replay of the four runs (masking after 10 steps)
   estimated −33% carried context for tool outputs alone and −62% with
@@ -319,6 +319,78 @@ measurable claim, how to verify, and the result.
 - **Why**: the old count (914) mixed 742 output trims with 173 real file reads,
   and cache breaks had no number of their own.
 - **Result**: n/a (measurement).
+
+### C-112 — Claude Code: the read guard, as a PreToolUse hook
+
+- **Change**: `shared/read-guard.ts` is the one read guard (C-102, C-110 rules and
+  messages unchanged), and `shared/claude/pre-tool-use.ts` runs it for `Read` and
+  `Bash` in the main session of a `/work-on` run (no `agent_id`; detected once per
+  session from the transcript head, cached under
+  `~/.local/share/agentic-software-development/claude/<session>.json`). A refusal is
+  the documented PreToolUse deny with the reason. Config: `shared/context-guard.yaml`,
+  the same file opencode reads. Each refusal is a `refused` line in `claude-hooks.log`.
+- **Why**: the Claude orchestrator averages 328k tokens per request against 75-80k on
+  opencode, and whole reads of dossiers and large files stay in its context until
+  compaction. Only opencode refused them.
+- **Hypothesis**: no whole read of a dossier or of a file over 20 KB in a Claude run;
+  with C-113 to C-115, the Claude median `avg_request_k` goes 328k → ≤150k and the
+  median share of the seat's week per dossier goes 8.8% → ≤5%.
+- **Verify**: `python3 scripts/budget_report.py` (`avg_request_k`, share of the seat's
+  week per dossier, Claude runs); `grep -c ' refused ' claude-hooks.log`.
+- **Result**: —
+
+### C-113 — Claude Code: checkpoints are recorded, and restored after compaction
+
+- **Change**: `phase_checkpoint` is an MCP tool of the plugin
+  (`mcp__plugin_agentic-software-development_nav__phase_checkpoint`, served by
+  `shared/claude/mcp.ts`). Claude Code cannot be cut, so the call records: it is the
+  tool call in the transcript. `shared/claude/session-start.ts` (SessionStart,
+  matcher `compact`) reads every call back from the transcript, streaming, and injects
+  the original task and the checkpoint summaries (`shared/checkpoint.ts`, the text
+  opencode injects after a cut). `shared/claude/post-tool-use.ts` counts the
+  orchestrator's tool calls since its last checkpoint and adds the reminder every 80
+  (`PHASE_CHECKPOINT_NUDGE_CALLS`; 0 = off). `work-on.md` no longer tells Claude Code to
+  skip the call.
+- **Why**: compaction was the only thing that shrank the Claude orchestrator's context,
+  it fires mid-stage, and its summary kept what the model chose to keep. A checkpoint
+  made at a stage boundary is the hand-off that compaction then preserves verbatim.
+- **Hypothesis**: 12 or more `phase_checkpoint` calls per Claude run; every compaction
+  after the first checkpoint is followed by a `restored` line; Claude median
+  `avg_request_k` ≤150k (with C-112, C-114, C-115).
+- **Verify**: `claude-hooks.log` counts of `recorded`, `nudge` and `restored`;
+  `python3 scripts/budget_report.py`.
+- **Result**: —
+
+### C-114 — Claude Code: the code tools
+
+- **Change**: `code_outline`, `code_item`, `code_find`, `doc_section` and
+  `code_replace` are served to Claude Code by the same MCP server, from the same
+  definitions as opencode's (`shared/tools.ts`). `code-scout` is granted the four
+  read-only ones.
+- **Why**: the Claude orchestrator had to page large files with `sed -n`, whole reads
+  and grep chains, which the work-on core already told it not to; the tools did not
+  exist for it.
+- **Hypothesis**: fewer whole-file reads and `sed`/`cat` file reads per Claude run;
+  Claude median `avg_request_k` ≤150k (with C-112, C-113, C-115).
+- **Verify**: `python3 scripts/token_report.py` tool counts for `code_*` in Claude
+  sessions (names carry the `mcp__plugin_agentic-software-development_nav__` prefix);
+  `python3 scripts/budget_report.py`.
+- **Result**: —
+
+### C-115 — Claude Code: `autoCompactWindow` 200000 in the dossier repo
+
+- **Change**: the repo that runs dossiers sets `autoCompactWindow: 200000` in its
+  project settings (added by hand, not by this plugin). Claude Code has no hook that
+  rewrites history, so masking (C-101) is not mirrored; this caps what the orchestrator
+  carries instead, and C-113 makes each compaction lossless for the checkpoints.
+- **Why**: the Claude orchestrator's context grew to 328k on average per request before
+  the host compacted.
+- **Hypothesis**: the Claude median `avg_request_k` goes 328k → ≤150k, and the median
+  share of the seat's week per dossier goes 8.8% → ≤5%, together with C-112 to C-114.
+- **Verify**: `python3 scripts/budget_report.py` (Claude median `avg_request_k`, median
+  share of the seat's week per dossier); the number of `restored` lines in
+  `claude-hooks.log` against compactions.
+- **Result**: —
 
 ## Next measurement
 

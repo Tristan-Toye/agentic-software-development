@@ -2,6 +2,18 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { opencodeTool } from "../../shared/opencode"
+import {
+  TOOL,
+  nudgeEvery,
+  phaseNumber,
+  reminderText,
+  summaryText,
+  validatePhase,
+  validateSummary,
+  type Checkpoint,
+} from "../../shared/checkpoint"
+import { toolByName } from "../../shared/tools"
 
 // The file is symlinked into ~/.config/opencode/plugins and runs from its real path in
 // this repo, which has no node_modules: take the plugin SDK (and its zod) from
@@ -47,29 +59,16 @@ const { tool } = (await import(
 // `false`, `0`, `off` or `no` stop logging; any other value is the log file's path.
 
 const AGENTS = new Set(["work-on"])
-const MAX_SUMMARY_CHARS = 6000
-const TOOL = "phase_checkpoint"
-const NUDGE_EVERY = (() => {
-  const n = Number(process.env.OPENCODE_PHASE_CHECKPOINT_NUDGE_CALLS ?? 80)
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 80
-})()
+const NUDGE_EVERY = nudgeEvery()
 // sessionID -> the agent of its latest request (chat.params), and tool calls since the
 // session's latest checkpoint (in memory: a restart starts the count again, which only
 // delays one reminder)
 const sessionAgents = new Map<string, string>()
 const callsSince = new Map<string, number>()
 
-type Checkpoint = { phase: string; summary: string; messageID: string; marker: string; at: string }
-
-const PHASE_RE = /^Phase (\d+)/
 const PHASE_FILE_RE = /references\/work-on\/phase-(\d+)\.md$/
 // sessionID -> the number of the last phase file the session read
 const phaseReads = new Map<string, number>()
-
-function phaseNumber(phase: string): number | undefined {
-  const match = PHASE_RE.exec(phase.trim())
-  return match ? Number(match[1]) : undefined
-}
 
 const dir = join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "opencode", "phase-checkpoint")
 const sessions = new Map<string, Checkpoint[]>()
@@ -131,19 +130,6 @@ function cutIndex(messages: Entry[], cp: Checkpoint): number {
   )
 }
 
-function summaryText(list: Checkpoint[]): string {
-  const phases = list.map((cp) => `### ${cp.phase}\n\n${cp.summary.trim()}`).join("\n\n")
-  return (
-    "## Completed phases (phase_checkpoint)\n\n" +
-    "Earlier steps of this run are no longer in context. What they established is below " +
-    "and in the dossier's `## Build log`, which is the record. Continue from the latest entry: " +
-    "after a phase, read the next phase file; after a stage inside a phase, re-read only the " +
-    "section of that phase file you need (doc_section) and the dossier sections it names. " +
-    "Do not redo finished phases or stages.\n\n" +
-    phases
-  )
-}
-
 type Cut = { dropped: number; droppedChars: number }
 
 // Applies the latest checkpoint to an outgoing message list, in place, and says what
@@ -180,49 +166,31 @@ export const PhaseCheckpointPlugin: Plugin = async () => ({
   },
 
   tool: {
-    [TOOL]: tool({
-      description:
-        "Close a /work-on phase or a stage inside one: drop every earlier step of this run from your context " +
-        "from the next request on, keeping the original task and the summaries of completed phases and stages. " +
-        "Call it at a phase boundary, or when a stage inside a phase is done — a wave returned, a test or review " +
-        "round ruled, an investigation answered — and only after that outcome is written to the dossier's " +
-        "## Build log. Never in the middle of a stage you are still working from. The summary is what you will " +
-        "know about all earlier work: the dossier path and worktree, what just finished and what comes next, " +
-        "commits and SHAs, rulings, findings and open items, and anything later steps must not rediscover. " +
-        `At most ${MAX_SUMMARY_CHARS} characters; detail belongs in the build log.`,
-      args: {
-        phase: tool.schema
-          .string()
-          .describe('what just finished, starting "Phase <N>": "Phase 3 — Mechanical check", or a stage: "Phase 6 — round 2", "Phase 4 — wave 1"'),
-        summary: tool.schema.string().describe("the hand-off to the rest of the run, self-contained"),
-      },
-      async execute({ phase, summary }, ctx) {
-        const refuse = (why: string) => {
-          log("refused", ctx.sessionID, `${ctx.agent} "${phase}": ${why}`)
-          return `${TOOL}: refused — ${why}`
-        }
-        if (!AGENTS.has(ctx.agent)) return refuse(`only ${[...AGENTS].join(" and ")} reset their context`)
-        const num = phaseNumber(phase)
-        if (num === undefined) return refuse('name the phase as "Phase <N> — <title>"')
-        const current = phaseReads.get(ctx.sessionID)
-        if (current !== undefined && num !== current)
-          return refuse(
-            `the phase file in use is Phase ${current}, not Phase ${num}. Check the phase before you cut: a wrong boundary drops the steps you are still working from.`,
-          )
-        if (summary.length > MAX_SUMMARY_CHARS)
-          return refuse(
-            `the summary is ${summary.length} characters, the limit is ${MAX_SUMMARY_CHARS}. Put the detail in ## Build log and point at it.`,
-          )
-        const list = load(ctx.sessionID)
-        const marker = `checkpoint ${list.length + 1}`
-        save(ctx.sessionID, [
-          ...list,
-          { phase, summary, messageID: ctx.messageID, marker, at: new Date().toISOString() },
-        ])
-        callsSince.set(ctx.sessionID, 0)
-        log("recorded", ctx.sessionID, `${marker} after "${phase}", summary ${summary.length} chars`)
-        return `${TOOL}: ${marker} recorded after ${phase}. From the next request on, earlier steps are out of context; the summaries of ${list.length + 1} completed phase(s) stay.`
-      },
+    [TOOL]: opencodeTool(tool, toolByName(TOOL)!, async ({ phase, summary }: { phase: string; summary: string }, ctx: any) => {
+      const refuse = (why: string) => {
+        log("refused", ctx.sessionID, `${ctx.agent} "${phase}": ${why}`)
+        return `${TOOL}: refused — ${why}`
+      }
+      if (!AGENTS.has(ctx.agent)) return refuse(`only ${[...AGENTS].join(" and ")} reset their context`)
+      const badPhase = validatePhase(phase)
+      if (badPhase) return refuse(badPhase)
+      const num = phaseNumber(phase)!
+      const current = phaseReads.get(ctx.sessionID)
+      if (current !== undefined && num !== current)
+        return refuse(
+          `the phase file in use is Phase ${current}, not Phase ${num}. Check the phase before you cut: a wrong boundary drops the steps you are still working from.`,
+        )
+      const badSummary = validateSummary(summary)
+      if (badSummary) return refuse(badSummary)
+      const list = load(ctx.sessionID)
+      const marker = `checkpoint ${list.length + 1}`
+      save(ctx.sessionID, [
+        ...list,
+        { phase, summary, messageID: ctx.messageID, marker, at: new Date().toISOString() },
+      ])
+      callsSince.set(ctx.sessionID, 0)
+      log("recorded", ctx.sessionID, `${marker} after "${phase}", summary ${summary.length} chars`)
+      return `${TOOL}: ${marker} recorded after ${phase}. From the next request on, earlier steps are out of context; the summaries of ${list.length + 1} completed phase(s) stay.`
     }),
   },
 
@@ -235,9 +203,7 @@ export const PhaseCheckpointPlugin: Plugin = async () => ({
       callsSince.set(input.sessionID, n)
       if (n % NUDGE_EVERY === 0 && typeof output.output === "string") {
         log("nudge", input.sessionID, `${n} tool calls since the last checkpoint`)
-        output.output +=
-          `\n\n[${TOOL}] ${n} tool calls since the last checkpoint. When the stage you are in is done and its ` +
-          `outcome is in ## Build log, call ${TOOL} with "Phase <N> — <stage>" before starting the next one.`
+        output.output += `\n\n${reminderText(n)}`
       }
     }
     if (input.tool !== "read") return
