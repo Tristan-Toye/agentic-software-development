@@ -134,13 +134,84 @@ const t0 = Date.now()
 const huge = hook("session-start.ts", start({ transcript_path: bigT }))
 check("start: 60 MB transcript streamed", huge.out.includes("### Phase 7 — round 1") && Date.now() - t0 < 4000)
 
+// ---- session-start: the work in flight, and the build log --------------------------
+const spawn = (id: string, name: string, input: object) => ({
+  type: "assistant",
+  message: { role: "assistant", content: [{ type: "tool_use", id, name, input }] },
+})
+const resultText = (id: string, text: string) => ({
+  type: "user",
+  message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: text }] },
+})
+const notice = (text: string) => ({ type: "user", message: { role: "user", content: `<task-notification>${text}</task-notification>` } })
+const proj = join(tmp, "proj")
+const dossierDir = join(proj, ".discovery", "dossiers")
+Bun.spawnSync(["mkdir", "-p", dossierDir])
+const dossierFile = join(dossierDir, "W-014-flush.md")
+writeFileSync(
+  dossierFile,
+  "---\nstatus: building\n---\n\n## Problem\n\nx\n\n## Build log\n\n" +
+    Array.from({ length: 60 }, (_, i) => `- line ${i + 1} of the log`).join("\n") +
+    "\n\n## Notes\n\n- not part of the log\n",
+)
+const midWave = write("mid-wave.jsonl", [
+  cmd("work-on"),
+  spawn("old", "Agent", { description: "before the checkpoint", subagent_type: "agentic-software-development:stub-materialiser", prompt: "p" }),
+  resultText("old", "agentId: aold111 (for resuming)\nreport"),
+  call("c1", "Phase 3", "contract committed"),
+  result("c1"),
+  spawn("s1", "Agent", { description: "P1 implementer", subagent_type: "agentic-software-development:implementer", prompt: "p" }),
+  resultText("s1", "agentId: ab12cd34 (for resuming)\nRETURNED"),
+  spawn("s2", "Agent", { description: "P2 implementer", subagent_type: "agentic-software-development:implementer", prompt: "p" }),
+  resultText("s2", "Async agent launched successfully. agentId: ae56fa78"),
+  spawn("s3", "Workflow", { name: "agentic-software-development:phase4-wave", args: [{ label: "P3" }] }),
+  resultText("s3", JSON.stringify({ status: "async_launched", taskId: "wt9", runId: "run-77" })),
+  spawn("s4", "Bash", { command: `python3 dossier_edit.py log ${dossierFile} 'x'` }),
+  notice("<task-id>ae56fa78</task-id><status>completed</status>"),
+])
+r = hook("session-start.ts", start({ transcript_path: midWave, cwd: proj }))
+o = r.out ? json(r.out) : undefined
+const mid: string = o?.hookSpecificOutput?.additionalContext ?? ""
+let restores = 1
+check("flight: section present", mid.includes("## In flight since the last checkpoint (3)"))
+check("flight: spawns before the checkpoint dropped", !mid.includes("before the checkpoint") && !mid.includes("aold111"))
+check("flight: arrived agent with its ID", /"P1 implementer".*agent ab12cd34.*result arrived/.test(mid))
+check("flight: background agent completed by its notification", /"P2 implementer".*agent ae56fa78.*result arrived/.test(mid))
+check("flight: workflow run pending with run and task IDs", /Workflow "agentic-software-development:phase4-wave".*run run-77.*task wt9.*no result seen yet/.test(mid))
+check("flight: build log tail, newest lines", mid.includes("## Build log, last lines") && mid.includes("line 60 of the log") && mid.includes("line 21 of the log") && !mid.includes("line 20 of the log"))
+check("flight: build log stops at the next heading", !mid.includes("not part of the log"))
+check("flight: checkpoints still restored", mid.includes("### Phase 3") && mid.includes("contract committed"))
+check("flight: extras bounded to 6k", mid.length - mid.indexOf("## In flight") <= 6200)
+
+// The dossier found by the /work-on ID alone (no path in the transcript), a pending spawn with no checkpoint.
+const byId = write("by-id.jsonl", [cmd("work-on"), spawn("q1", "Task", { description: "UT-A", subagent_type: "agentic-software-development:unit-test-author", prompt: "p" })])
+r = hook("session-start.ts", start({ transcript_path: byId, cwd: proj }))
+restores++
+o = r.out ? json(r.out) : undefined
+const idCtx: string = o?.hookSpecificOutput?.additionalContext ?? ""
+check("flight: no checkpoint but a spawn in flight still restores", idCtx.includes('"UT-A"') && idCtx.includes("no result seen yet"))
+check("flight: dossier found from the /work-on ID", idCtx.includes("line 60 of the log"))
+
+// A huge build log never blows the bound; a missing dossier just drops the section.
+const hugeDossier = join(dossierDir, "W-099-big.md")
+writeFileSync(hugeDossier, "## Build log\n\n" + Array.from({ length: 80 }, (_, i) => `- ${i} ${"y".repeat(1000)}`).join("\n") + "\n")
+const bounded = write("bounded.jsonl", [cmd("work-on"), call("b1", "Phase 1", "s"), result("b1"), spawn("b2", "Bash", { command: `cat ${hugeDossier}` }), spawn("b3", "Agent", { description: "X", prompt: "p" })])
+r = hook("session-start.ts", start({ transcript_path: bounded, cwd: proj }))
+restores++
+const bctx: string = (r.out ? json(r.out) : undefined)?.hookSpecificOutput?.additionalContext ?? ""
+check("flight: huge build log bounded", bctx.length > 0 && bctx.length - bctx.indexOf("## In flight") <= 6200)
+const gone = write("gone-dossier.jsonl", [cmd("work-on"), call("g1", "Phase 1", "s"), result("g1"), spawn("g2", "Bash", { command: "ls /nowhere/.discovery/dossiers/W-1.md" })])
+r = hook("session-start.ts", start({ transcript_path: gone, cwd: join(tmp, "nowhere") }))
+restores++
+check("flight: missing dossier fails open", r.code === 0 && !r.out.includes("Build log, last lines") && r.out.includes("### Phase 1"))
+
 // ---- the log ----------------------------------------------------------------------
 const lines = readFileSync(join(tmp, "agentic-software-development", "claude", "claude-hooks.log"), "utf8").trim().split("\n")
 const count = (e: string) => lines.filter((l) => l.split(" ")[1] === e).length
 check("log: timestamped, one line per event", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z (refused|nudge|recorded|restored) \S+ /.test(l)))
 check("log: refusals", count("refused") === 5)
 check("log: nudges", count("nudge") === 2)
-check("log: restores", count("restored") === 2)
+check("log: restores", count("restored") === 2 + restores)
 check("log: checkpoint recorded", count("recorded") === 1)
 
 console.log(fails.length ? "FAIL " + fails.join(" | ") : "PASS (all cases)")

@@ -43,6 +43,46 @@ files hold the merged code now). Under Claude Code each spawn prompt is the
 payload itself, pasted (`compose_payloads.py --emit-prompt <final>`); the
 `PAYLOAD_FILE` pointer is the opencode form (`references/work-on/phase-4.md`).
 
+**Under Claude Code, send the round through the workflow, once.** Compose and
+lint the three payloads as above, then call the `Workflow` tool once with
+`name: "agentic-software-development:phase7-review"` and `args`, an array with
+one object per lens in this round:
+
+```
+{ "lens": "style | architecture | performance", "label": "r1 style",
+  "prompt": "<the linted reviewer payload, pasted>", "round": 1,
+  "reportDir": "<X>/.agent-staging/reviews" }
+```
+
+The three reviewers run concurrently, each returns its change requests as a
+structured object, and a cheap agent keeps each verbatim document in
+`reportDir`. The call returns a run ID at once (log `WORKFLOW: phase7-review
+r<n> run <runId>`); the result arrives as the run's completion, one object per
+lens:
+
+```
+{ "label": "r1 architecture", "lens": "architecture", "round": 1,
+  "verdict": "PASS | CHANGES-REQUIRED | died",
+  "crs": [ { "id": "CR-1", "ledger_id": "CR-architecture-1",
+             "severity": "blocking | should-fix", "location": "path:line",
+             "claim": "<the heading's one-line requirement>" } ],
+  "answers": [ { "id": "CR-1", "status": "resolved | not-resolved", "detail": "…" } ],
+  "notes": "…", "document_path": "<the verbatim document, empty on PASS>" }
+```
+
+Write the `## Build log` ledger from `crs` — one line per change request,
+`ledger_id` and `claim` and `location` as the line below says — and, on a check
+round, from `answers`. Demote by the fields as below: the evidence fields are in
+the document, so read a CR's section of `document_path` only to check a CR whose
+evidence you cannot judge from its claim. The document is read whole once more,
+when you compose the fix implementer's payload, which carries it byte for byte
+(compose it from the file: never retype or edit it). A `died` lens has reviewed
+nothing: resume it (`phase-4.md`, "Under Claude Code, resume instead of
+re-spawn") or call the workflow again with that lens alone; it is never
+`PASS`. A check round calls the workflow with only the lenses that have an open
+CR, each prompt carrying its `PRIOR_CRS`. Under opencode there is no workflow:
+spawn the lenses in one message as written.
+
 1. `reviewer` `LENS: style` — readability, extraction, naming, documentation
    that matches the contract.
 2. `reviewer` `LENS: architecture` — cohesion, coupling, boundaries, dependency
@@ -140,6 +180,14 @@ from its transcript; never record a partial return as `PASS`.
   your recommendation, get a ruling, and record it in `## Build log` as an
   arbitration. Pass every accumulated arbitration into later spawns so no
   reviewer re-litigates a settled question.
+- **Under Claude Code, a fix or check round goes to the agent that holds the
+  context** — the original reviewer for its own check round, the original
+  author for a test CR, the previous fix implementer for a second fix round —
+  by `SendMessage` to its agent ID with only the new CRs or the `PRIOR_CRS`
+  answers, per `phase-4.md` ("Under Claude Code, resume instead of
+  re-spawn"). Reviewers a workflow spawned have no ID in its result: a check
+  round re-spawns them with the full payload, by the workflow again. A fix
+  round after a contract change is a full re-spawn.
 - Spawn **one** `implementer` in `MODE: fix` with the merged change requests. It
   works in `X` directly — the tests exist now, so blindness has done its job and
   keeping them green is the point — **and alone**: never while a test author

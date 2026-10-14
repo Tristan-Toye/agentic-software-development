@@ -322,7 +322,7 @@ and a thin adapter per host:
 |---|---|---|---|
 | Config | `shared/context-guard.yaml`, loaded by `shared/config.ts` | `opencode/plugins/context-guard.ts` | `shared/claude/*.ts` (same file) |
 | Read guard — whole reads of a dossier or of a large file (never a phase file) and VM test runs that bypass `run_tests.py` are refused with the tool to use instead | `shared/read-guard.ts` | `tool.execute.before` throws | `shared/claude/pre-tool-use.ts`, PreToolUse `Read\|Bash`, a deny, for the `/work-on` main session only |
-| Checkpoints — the orchestrator closes a phase or a stage (a wave, a test or review round, an investigation) with `phase_checkpoint`; after 80 tool calls without one a result reminds it | `shared/checkpoint.ts` | `opencode/plugins/phase-checkpoint.ts`: the tool cuts every earlier step from later requests and keeps the summaries | the MCP tool records (the call is the record); `post-tool-use.ts` counts and reminds; `session-start.ts` (matcher `compact`) restores the task and the summaries from the transcript after a compaction |
+| Checkpoints — the orchestrator closes a phase or a stage (a wave, a test or review round, an investigation) with `phase_checkpoint`; after 80 tool calls without one a result reminds it | `shared/checkpoint.ts` | `opencode/plugins/phase-checkpoint.ts`: the tool cuts every earlier step from later requests and keeps the summaries | the MCP tool records (the call is the record); `post-tool-use.ts` counts and reminds; `session-start.ts` (matcher `compact`) restores the task and the summaries from the transcript after a compaction, plus the spawns and workflow runs in flight since the last checkpoint (with their agent and run IDs) and the last 40 lines of the dossier's `## Build log` |
 | Code tools — `code_outline`, `code_item`, `code_find`, `doc_section`, `code_replace`, so a read returns the item, not the file | `shared/tools.ts`, wrapping `scripts/code_nav.py` | `opencode/plugins/code-nav.ts` | `shared/claude/mcp.ts`, a stdio MCP server registered by `.mcp.json`; tools are named `mcp__plugin_agentic-software-development_nav__<tool>` |
 
 The `shared/` modules need bun and no npm packages; the Claude hooks and the MCP
@@ -331,7 +331,17 @@ hook fails open (exit 0, no output). Hook events — `refused`, `nudge`,
 `recorded`, `restored` — are one line each in
 `~/.local/share/agentic-software-development/claude/claude-hooks.log`.
 Tests: `bun --no-install shared/test/<name>.test.ts` (shared modules and the
-symlink proof, the hooks, the MCP server) and `opencode/plugins/test/`.
+symlink proof, the hooks, the MCP server, the workflows) and `opencode/plugins/test/`.
+
+**Claude Code only: two dynamic workflows** (`workflows/`, run through the
+`Workflow` tool as `agentic-software-development:phase4-wave` and
+`agentic-software-development:phase7-review`). `/work-on` still composes, lints
+and admits every payload; it then calls the workflow once per wave or review
+round, which spawns the agents, verifies each return with `verify_return.py`
+through a cheap agent, and returns one compact object per agent, so the
+orchestrator's context holds a result line and an excerpt instead of every full
+report. Corrections and fix rounds resume the original agent with `SendMessage`
+to the agent ID the build log holds. opencode keeps its current flow.
 
 What Claude Code cannot mirror:
 

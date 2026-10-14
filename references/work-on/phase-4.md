@@ -299,6 +299,67 @@ a test run but has no Bash; re-run it yourself` flags the return. A kind
 without Bash cannot have run what it reports — that verdict is fabricated, so
 run the claimed suite or diff yourself and log your result, never the claim.
 
+**Under Claude Code, send the wave through the workflow, once.** Everything
+above runs as written — compose, lint, `prepare_wave.py`, admission, the
+wave table — and then, instead of one `Agent` call per spawn followed by one
+`verify_return.py` call per return, call the `Workflow` tool once with
+`name: "agentic-software-development:phase4-wave"` and `args`, an array with
+one object per spawn:
+
+```
+{ "agentType": "agentic-software-development:implementer", "label": "P1",
+  "prompt": "<the linted final, pasted: compose_payloads.py --emit-prompt>",
+  "root": "<its worktree>", "branch": "<its branch>", "base": "<fork sha>",
+  "owned": "<OWNED_PATHS or TEST_PATHS, comma list>", "kind": "implementer",
+  "contractHash": "<CONTRACT_HASH>", "contractFiles": "<comma list>",
+  "reportDir": "<X>/.agent-staging/reports", "pluginRoot": "<${PLUGIN_ROOT}, absolute>" }
+```
+
+`contractHash` and `contractFiles` are for a test author whose world the hash
+stamps; `reportDir` defaults to `<root>/.agent-staging/reports`. The prompt is
+the whole pasted payload, so the paste rule holds: the spawned agent sees every
+field, and the call you make carries them. Send at most nine spawns per call
+(the runtime's size guideline; its hard limit is sixteen concurrent agents):
+split a larger wave into parts, each admitted and called on its own. The
+workflow is asynchronous: the call returns a run ID at once, and the compact
+result arrives as the run's completion. Log the launch first —
+`WORKFLOW: phase4-wave wave<k> run <runId> — <labels>` — and each spawn's wave-
+table row stays as before. The result is one object per spawn, in args order:
+
+```
+{ "label": "P1", "verdict": "clean | flagged | died", "flags": [...],
+  "returned_line": "P1 RETURNED: <sha> on <branch>, …",
+  "report_excerpt": "<= 600 chars, every GAP: and CONTRACT-CHANGE: line verbatim",
+  "report_path": "<the full report, kept by the verifier>" }
+```
+
+Each agent is followed by a cheap verifier (`haiku`, low effort) that runs
+`verify_return.py --print-line` with the agent's report written to
+`report_path` for `--report`. The workflow never releases slots (the script's
+`--release` frees the holder's whole wave on the first return) and never
+writes the build log (concurrent appends): you do both from the array. Then:
+
+1. Count the results against the wave table. A `died` verdict is a spawn that
+   returned nothing, was skipped, or lost its verifier: look at the tree before
+   anything else, by the three-state table below, and re-spawn only on what it
+   shows.
+2. Append every `returned_line` to `## Build log` in one `dossier_edit.py log`
+   call, with the agent's ID in it where you hold one (`P1 (agent a1b2c3)
+   RETURNED: …`); an agent a workflow spawned has no ID in the compact result,
+   so its line carries `(workflow run <runId>)` instead.
+3. Release the wave's slots once: `spawn_admission.py release --holder
+   <ID>-wave<k>`.
+4. Rule from the compact result. Read a full report (`report_path`) only for an
+   item whose verdict is not `clean`, and only the part you need: a `GAP:` or
+   `CONTRACT-CHANGE:` line is already in the excerpt, so handle it from there.
+   Collect every `GAP:` of the wave before you fix the contract, as above.
+5. Under rate pressure the workflow runs a wave smaller, not the same wave
+   again: the ladder above applies to the next call's `args`.
+
+The workflow never touches the contract, the tree, `X`'s branch or a ruling.
+Under opencode there is no workflow: spawn by the file and verify each return
+with `verify_return.py` as written above.
+
 **Checkpoint after each wave.** When every agent of a wave has returned and
 its `RETURNED` lines and rulings are in `## Build log`, call `phase_checkpoint`
 with `Phase 4 — wave <k>` and the hand-off: the waves still to spawn, the
@@ -441,6 +502,34 @@ did not.** The agent's transcript carries its finished reasoning, so a
 resume lands the remaining work instead of regenerating all of it. A resume
 message is a payload like any other, and every payload rule binds it — it is
 not a place to be terse about what changed.
+
+**Under Claude Code, resume instead of re-spawn.** A correction, a
+`DELIVERY_CHANGE`, a `GAP:` fix for one author, a coverage gap, a Phase 6
+fix round and a Phase 7 fix round all go back to an agent of the same kind that
+already holds the context. Resume that agent: `SendMessage` with `to` set to its
+agent ID and a message that carries **only the correction** — the changed
+field, the named tests or change requests, and (for a fix round in `X`) the
+`WORKTREE_DIR` it now works in. It keeps its history and its warm prompt cache,
+so the message is short where a re-spawn repeats the whole payload and pays the
+cache cold. A resume message is not a payload, so `check_payload.py` does not
+run on it; the rule that a message never describes the agent's own file back
+to it stays (state the delta). A resumed `unit-test-author` still needs its
+file deleted first with `safe_revert.py --delete` (the delete-first rule
+above): the delete, then the resume naming the changed tests. **Re-spawn with
+the full payload, linted and pasted, only when** the agent's ID is unknown (it
+was spawned by a workflow, whose compact result carries none, or the line that
+held it is gone), the agent has ended and `SendMessage` reports it unreachable,
+or the contract changed: a `CONTRACT_HASH` mismatch, an accepted
+`CONTRACT-CHANGE:` or a contract fix after a `GAP:` makes the agent's world
+stale, and a stale world is rebuilt, never patched. **Where the IDs live:**
+every `Agent` spawn's result carries an agent ID; write it into the build log in
+the spawn line (`SPAWNED: P1 (agent <id>) — implementer, wave <k>`) and keep it
+in the `RETURNED` line (`P1 (agent <id>) RETURNED: …`) — the build log is what
+the compaction hook restores (it prints the last 40 lines), and the in-flight
+list that hook prints also carries every ID since the last checkpoint. After a
+`phase_checkpoint`, only the build log still has them, so a checkpoint summary
+names the agents a later round will resume. `validate_pipeline.py` reads none of
+these lines, so their wording is free; keep it greppable.
 
 **Uncommitted agent work has no second copy.** Never run `git checkout --`,
 `git restore`, `git stash` or `git clean` yourself over a path an in-flight

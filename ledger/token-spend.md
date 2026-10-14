@@ -28,6 +28,7 @@ Saved snapshots:
 | `metrics/2026-09-21_baseline-before-pr86.json` | 2026-09-21 → 2026-09-28 19:29:50 (cutoff) | Baseline: 3 runs (W-067, W-072, W-086) |
 | `metrics/2026-09-28_after-pr86-to-92.json` | cutoff → 2026-10-04 23:59 | After PRs #86–#92: 4 runs (W-069, W-073, W-091, W-095 inquiry), run in parallel |
 | `metrics/2026-10-14_budget-per-dossier.json` | 2026-09-14 → 2026-10-14 09:30 UTC | `budget_report.py`: every dossier on both hosts as a share of each plan's week |
+| `metrics/2026-10-14_budget-per-dossier-with-quality.json` | the same window | the same, plus build-log quality per dossier and the seat's week calibrated from the usage log ($1,067): **the baseline for the next eval** |
 
 ## Results so far (baseline → after #86–#92)
 
@@ -76,6 +77,16 @@ python3 scripts/budget_report.py --since <start> --until <end> --json ledger/met
   bound and each Claude share an upper bound.
 - A run with fewer than 300 requests (an inquiry, or a run in progress) is
   listed but left out of the medians.
+- **Quality per dossier** comes from its `## Build log`: returns, flagged returns,
+  arbitrations, defects, corrections and re-spawns, `GAP:`s and `CONTRACT-CHANGE:`s
+  (negated mentions such as "no `GAP:`" excluded), distinct change requests, workflow
+  runs, and the `## Work packages` row count to normalise by. A build writes its log in
+  its own worktree, so the copy with the longest log across the repo's worktrees is read.
+  Only logs in the current format (one `RETURNED` line per return) enter the medians;
+  older prose logs would count as zero. These are indicators to compare runs by, not
+  exact tallies.
+- A Claude dossier counts every transcript under its session directory: the main one,
+  `subagents/`, and a workflow run's agent transcripts, each API response once.
 - **opencode on the openai profile** (`opencode-openai`): OpenAI's own
   published Codex credit rates per model (`plans.json` → `codex`). OpenAI
   publishes no credit allowance per plan, so a seat's week is measured once:
@@ -439,6 +450,78 @@ measurable claim, how to verify, and the result.
 - **Verify**: `python3 scripts/budget_report.py` (Claude median `avg_request_k`, median
   share of the seat's week per dossier); the number of `restored` lines in
   `claude-hooks.log` against compactions.
+- **Result**: —
+
+### C-116 — Claude Code: Phase 4 wave as one workflow call
+
+- **Change**: `workflows/phase4-wave.js`, run once per wave through the `Workflow` tool
+  (`agentic-software-development:phase4-wave`). The orchestrator still composes and lints
+  every payload and admits the wave; the workflow spawns each pasted payload as its plugin
+  agent, runs `verify_return.py --print-line` per return through a `haiku` low-effort
+  agent, and returns `{label, verdict, flags, returned_line, report_excerpt, report_path}`
+  per agent. `verify_return.py` gained `--print-line`; `work-on.md` and `phase-4.md` carry
+  the rule, marked "Under Claude Code".
+- **Why**: each spawn and each `verify_return.py` call was an orchestrator step that
+  re-read its whole context, and every full report then sat in that context until
+  compaction. The orchestrator is 89–98% of a Claude dossier's cost.
+- **Hypothesis**: orchestrator requests during a Phase 4 wave fall from about three per
+  agent (spawn, verify, log) to about five per wave; Claude median `avg_request_k` falls
+  by at least 40k against the pre-1.9.0 dossiers (with C-117 to C-119); median share of
+  the seat's week per dossier falls by at least a quarter.
+- **Verify**: `python3 scripts/budget_report.py` (Claude `avg_request_k`, share per
+  dossier); orchestrator request count between the Phase 3 and Phase 4 checkpoints in a
+  Claude session transcript, before and after; the number of `WORKFLOW: phase4-wave`
+  build-log lines.
+- **Result**: —
+
+### C-117 — Claude Code: Phase 7 review lenses as one workflow call
+
+- **Change**: `workflows/phase7-review.js` (`agentic-software-development:phase7-review`).
+  The three code lenses run concurrently through `reviewer` with a schema; each returns
+  `{verdict, crs[{id, ledger_id, severity, location, claim}], answers, notes}` and a cheap
+  agent keeps the verbatim document under `reportDir`. The orchestrator writes the ledger
+  from the compact result and reads a document only to compose the fix payload.
+- **Why**: three full reviewer reports landed in the orchestrator's context and were
+  re-read on every step of the review and fix rounds.
+- **Hypothesis**: orchestrator requests in Phase 7 round 1 fall to about four (call,
+  ledger, fix payload, fix spawn) from about ten; Claude median `avg_request_k` falls
+  with C-116; no CR is lost (ledger line count equals the CR headings in the kept
+  documents).
+- **Verify**: `budget_report.py` as above; request count between the Phase 6 and Phase 7
+  checkpoints; `WORKFLOW: phase7-review` lines against ledger lines in the dossier.
+- **Result**: —
+
+### C-118 — Claude Code: resume with `SendMessage` instead of re-spawn
+
+- **Change**: `phase-4.md` ("Under Claude Code, resume instead of re-spawn") with pointers
+  in phase 5, 6 and 7: a correction, `DELIVERY_CHANGE`, `GAP:` fix, coverage gap or fix
+  round goes back to the original agent's ID carrying only the correction; a full payload
+  only when the ID is unknown or the contract changed. IDs are written into the `SPAWNED:`
+  and `RETURNED` build-log lines, which the compaction hook restores.
+- **Why**: a re-spawn repeats the whole payload as orchestrator output and starts the
+  agent's prompt cache cold; a resume keeps both.
+- **Hypothesis**: orchestrator output tokens per correction round fall from the full
+  payload (several thousand) to the correction (under 500); the share of correction
+  rounds served by resume is at least half where an ID is known.
+- **Verify**: count of `SendMessage` against `Agent` calls after the first wave in Claude
+  transcripts; `budget_report.py` Claude cost per dossier; `SPAWNED:` lines carrying an
+  agent ID.
+- **Result**: —
+
+### C-119 — Claude Code: compaction mid-wave restores the in-flight state
+
+- **Change**: `shared/claude/session-start.ts` also restores every `Agent`/`Task` spawn
+  and `Workflow` launch since the last `phase_checkpoint` (label, agent or run ID, result
+  arrived or not) and the last 40 lines of the dossier's `## Build log`, at most 6k
+  characters, fail open (`shared/claude/common.ts`: `readInFlight`, `buildLogTail`).
+- **Why**: a compaction inside a wave kept the summaries of finished stages and lost the
+  spawns in flight, so the orchestrator re-spawned work that was still running or
+  re-read the dossier to find out where it was.
+- **Hypothesis**: no re-spawn of an agent whose result had not arrived follows a
+  compaction; steps between a `restored` line and the next ruling fall by at least two.
+- **Verify**: `claude-hooks.log` `restored` lines (they now state the number in flight);
+  `Agent` calls in the ten requests after a compaction that name a label listed as in
+  flight; `budget_report.py`.
 - **Result**: —
 
 ### C-130 — Tool diet: plugin and MCP tools no pipeline agent calls are denied globally
