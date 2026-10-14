@@ -80,9 +80,11 @@ from any checkout; a **refusal** names the free slots — split the wave to fit
 them (step 2), or serialise the cheapest kind (step 3). Never send the whole
 wave past a refusal. When the agents return, `release --holder <ID>-wave<k>`
 — a wave released with no error recorded raises the learned ceiling, which is
-the cap the next run starts from. When a provider limit kills an agent,
-`record-error "<the error, verbatim>"` before anything else, so every other
-session on the machine defers too. The two recorded failures: an 8-spawn
+the cap the next run starts from. To free one agent's slot early, add
+`--slots <n>`: only that slot of the holder is freed, a slot the holder does
+not hold refuses, and the wave stays open until its last slot goes. When a
+provider limit kills an agent, `record-error "<the error, verbatim>"` before
+anything else, so every other session on the machine defers too. The two recorded failures: an 8-spawn
 wave with 4 corpses at their first API call while three sibling sessions
 drew on the same account, and a quota error that named its reset in prose
 nothing acted on. `ADMISSION: skipped — <reason>` is allowed for a wave of
@@ -104,6 +106,10 @@ Degrade instead, in this order, and log which step you are on:
    into a closed window is a wave that dies whole. `spawn_admission.py
    record-error "<the error, verbatim>"` puts the deadline in the ledger, so
    every session on the machine waits with you.
+   When the user says the limit has reset before the deadline, clear it with
+   `spawn_admission.py clear --reason "<what the user said>"` — the owner's
+   verb, which stamps the entry rather than deleting it and refuses one
+   recorded under 120 s ago unless `--force`; never edit the ledger by hand.
 2. **Halve the wave.** Two batches that land beat one batch that dies.
 3. **Serialise the kind that is cheapest to lose.** A killed reviewer wastes
    only its generation; a killed implementer or test author may have left a
@@ -287,6 +293,11 @@ fan-outs retyped 1.77 M characters.
 dossier> --agent <id>`: state, commits, paths touched beyond ownership, stubs
 left, the contract hash and the slot release, with the mechanical half of the
 `RETURNED` line written to the build log. You add the ruling, not the facts.
+Add `--report <file holding the agent's return> --kind <agent kind>` and it
+also checks the report against the kind's tool list: `UNVERIFIED: <kind> claims
+a test run but has no Bash; re-run it yourself` flags the return. A kind
+without Bash cannot have run what it reports — that verdict is fabricated, so
+run the claimed suite or diff yourself and log your result, never the claim.
 
 **Checkpoint after each wave.** When every agent of a wave has returned and
 its `RETURNED` lines and rulings are in `## Build log`, call `phase_checkpoint`

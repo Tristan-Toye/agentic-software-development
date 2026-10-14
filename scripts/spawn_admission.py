@@ -35,14 +35,23 @@ per work-on.md Phase 4), 2 unusable:
         Otherwise holds N slots. A slot whose pid is dead, or older than
         --stale-after (default 4h), is reclaimed first — a crashed holder
         never blocks the machine.
-    release      --provider P --model M (--holder H | --slots 3,4)
-        Frees the slots. A wave released with no error recorded since it
-        was admitted raises the learned ceiling to its peak concurrency.
+    release      --provider P --model M (--holder H | --slots 3,4 | both)
+        Frees the slots. With both, only those of the slots H holds are
+        freed; a named slot H does not hold refuses (rc 1) before anything
+        is freed. A wave released whole (no --slots, or its last slot) with
+        no error recorded since it was admitted raises the learned ceiling
+        to its peak concurrency; a partial release leaves the wave open.
     record-error --provider P --model M "<the provider's error, verbatim>"
                  [--cooldown SECONDS]
         Records the error, parses a `reset at <timestamp>` or `reset in
         <n> minutes` deadline (default: now + --cooldown, 60s), and lowers
         the cap to one below what was held when the error arrived.
+    clear        --reason TEXT [--provider P] [--model M] [--force]
+        The owner's verb for a recorded deferral they know is over (the user
+        says the limit has reset). Refuses an entry recorded under
+        CLEAR_MIN_AGE seconds ago unless --force. Entries are never deleted:
+        each is stamped cleared_by_owner, clear_reason, cleared_at, its
+        reset_at becomes now, and a cap an error set is reset.
     status       --provider P --model M
     --selftest
 
@@ -85,6 +94,7 @@ DEFAULT_CAP = 4
 DEFAULT_STALE_AFTER = 4 * 3600
 DEFAULT_COOLDOWN = 60
 MAX_ERRORS_KEPT = 50
+CLEAR_MIN_AGE = 120
 
 RESET_AT_RE = re.compile(
     r"reset(?:s)?\s+(?:at|on)\s+(?P<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?"
@@ -335,14 +345,29 @@ def cmd_release(args: argparse.Namespace) -> int:
     with Locked(directory):
         ledger = load_ledger(directory)
         held = held_slots(directory)
-        targets = [
-            n for n, s in held.items()
-            if (args.holder and s.get("holder") == args.holder) or n in wanted
-        ]
+        mine = {n for n, s in held.items() if s.get("holder") == args.holder}
+        if args.holder and wanted:
+            foreign = sorted(wanted - mine)
+            if foreign:
+                print(
+                    f"refused: slot(s) {','.join(map(str, foreign))} not held by {args.holder!r} "
+                    f"under {args.provider}/{args.model}; nothing released"
+                )
+                return 1
+            targets = sorted(mine & wanted)
+        elif args.holder:
+            targets = sorted(mine)
+        else:
+            targets = sorted(n for n in held if n in wanted)
         for number in targets:
             (directory / "slots" / f"{number}.json").unlink(missing_ok=True)
         learned = ""
-        if args.holder:
+        remaining = mine - set(targets)
+        if args.holder and wanted and remaining:
+            wave = ledger["waves"].get(args.holder)
+            if wave:
+                wave["slots"] = sorted(remaining)
+        elif args.holder:
             wave = ledger["waves"].pop(args.holder, None)
             if wave and float(ledger.get("last_error_at") or 0) < float(wave.get("acquired_at") or 0):
                 if int(wave.get("peak") or 0) > int(ledger.get("ceiling") or 0):
@@ -381,6 +406,56 @@ def cmd_record_error(args: argparse.Namespace) -> int:
         save_ledger(directory, ledger)
         print(f"recorded: {args.provider}/{args.model} defers until {_fmt(reset_at)} ({source}); {cap_note}")
         return 0
+
+
+def cmd_clear(args: argparse.Namespace) -> int:
+    base = state_dir()
+    now = time.time()
+    wanted = (_safe(args.provider) if args.provider else None, _safe(args.model) if args.model else None)
+    directories = []
+    for path in sorted(base.glob("*__*")) if base.is_dir() else []:
+        prov, _, mod = path.name.partition("__")
+        if (wanted[0] in (None, prov)) and (wanted[1] in (None, mod)) and (path / "ledger.json").is_file():
+            directories.append(path)
+    def pending(ledger: dict) -> list[dict]:
+        return [
+            e for e in ledger.get("errors", [])
+            if isinstance(e.get("reset_at"), (int, float)) and e["reset_at"] > now
+        ]
+
+    # Refuse before anything is cleared: a fresh entry in any directory stops them all.
+    if not args.force:
+        for directory in directories:
+            fresh = [e for e in pending(load_ledger(directory)) if now - float(e.get("at") or 0) < CLEAR_MIN_AGE]
+            if fresh:
+                age = int(now - float(fresh[0].get("at") or 0))
+                print(
+                    f"refused: {directory.name} recorded a deferral {age}s ago (under "
+                    f"{CLEAR_MIN_AGE}s) — it may be the error you just hit; --force to clear it anyway; "
+                    f"nothing cleared"
+                )
+                return 1
+    cleared: list[str] = []
+    for directory in directories:
+        with Locked(directory):
+            ledger = load_ledger(directory)
+            active = pending(ledger)
+            if not active:
+                continue
+            for err in active:
+                cleared.append(f"{directory.name}: {err.get('text', '')[:90]!r} (was until {_fmt(err['reset_at'])})")
+                err.update({
+                    "cleared_by_owner": True, "clear_reason": args.reason,
+                    "cleared_at": now, "reset_at": now,
+                })
+            ledger["cap"] = None
+            save_ledger(directory, ledger)
+    if not cleared:
+        print("nothing to clear: no recorded deferral pending")
+        return 1
+    for line in cleared:
+        print(f"cleared: {line} — {args.reason}")
+    return 0
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -509,6 +584,42 @@ def selftest() -> int:
             check("a ceiling above the default is the cap in force", rc == 0 and "cap 6, the learned ceiling" in out, out)
             _run(["release", *pm5, "--holder", "F"])
 
+            # release --holder with --slots frees only the named slots of that holder
+            pm6 = ["--provider", "p6", "--model", "m6"]
+            _run(["acquire", *pm6, "--n", "4", "--holder", "H"])
+            rc, out = _run(["release", *pm6, "--holder", "H", "--slots", "4"])
+            held = held_slots(key_dir("p6", "m6"))
+            check("release --holder --slots frees only that slot", rc == 0 and sorted(held) == [1, 2, 3], out)
+            check("a partial release keeps the wave and learns nothing",
+                  "ceiling learned" not in out and "H" in load_ledger(key_dir("p6", "m6"))["waves"], out)
+            rc, out = _run(["release", *pm6, "--holder", "H", "--slots", "9"])
+            check("a slot the holder does not hold refuses", rc == 1 and "refused" in out and len(held_slots(key_dir("p6", "m6"))) == 3, out)
+            rc, out = _run(["release", *pm6, "--holder", "H", "--slots", "1,9"])
+            check("one foreign slot refuses the whole release", rc == 1 and len(held_slots(key_dir("p6", "m6"))) == 3, out)
+            rc, out = _run(["release", *pm6, "--holder", "H"])
+            check("releasing the rest closes the wave", rc == 0 and "ceiling learned: 4" in out, out)
+
+            # clear: the owner's verb, never a delete
+            pm7 = ["--provider", "p7", "--model", "m7"]
+            _run(["record-error", *pm7, "Limit Exhausted. Your limit will reset in 3 hours"])
+            rc, out = _run(["acquire", *pm7, "--n", "1", "--holder", "K"])
+            check("a recorded error defers acquire", rc == 1 and "deferred" in out, out)
+            rc, out = _run(["clear", *pm7, "--reason", "user says it reset"])
+            check("a fresh entry refuses clear without --force", rc == 1 and "refused" in out, out)
+            rc, out = _run(["acquire", *pm7, "--n", "1", "--holder", "K"])
+            check("a refused clear leaves the deferral", rc == 1, out)
+            rc, out = _run(["clear", *pm7, "--reason", "user says it reset", "--force"])
+            check("--force clears and says what", rc == 0 and "cleared" in out and "user says it reset" in out, out)
+            rc, out = _run(["acquire", *pm7, "--n", "1", "--holder", "K"])
+            check("acquire is admitted after clear", rc == 0, out)
+            errs = load_ledger(key_dir("p7", "m7"))["errors"]
+            check("the cleared entry is kept and stamped",
+                  len(errs) == 1 and errs[0].get("cleared_by_owner") is True
+                  and errs[0].get("clear_reason") == "user says it reset"
+                  and errs[0].get("cleared_at") and errs[0]["reset_at"] <= time.time(), str(errs))
+            rc, out = _run(["clear", *pm7, "--reason", "again", "--force"])
+            check("clearing with nothing pending says so", rc == 1 and "nothing to clear" in out, out)
+
             # the module API validate_pipeline.py --pre-fanout uses
             pend = pending_deferral("zai-coding-plan", "glm-5.3-flash")
             check("pending_deferral reports the live deadline", pend is not None and pend[0] > time.time())
@@ -553,7 +664,7 @@ def main(argv: list[str] | None = None) -> int:
                          help=f"seconds after which a held slot is reclaimed (default {DEFAULT_STALE_AFTER})")
     acquire.set_defaults(func=cmd_acquire)
 
-    release = sub.add_parser("release", help="free the slots of a holder, or named slots")
+    release = sub.add_parser("release", help="free the slots of a holder, named slots, or the named slots of a holder")
     common(release)
     release.add_argument("--holder", default=None)
     release.add_argument("--slots", default=None, help="comma-separated slot numbers")
@@ -565,6 +676,14 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN,
                         help=f"deferral when the error names no reset (default {DEFAULT_COOLDOWN}s)")
     record.set_defaults(func=cmd_record_error)
+
+    clear = sub.add_parser("clear", help="owner-clear a recorded deferral (stamps it, never deletes)")
+    clear.add_argument("--provider", default=None, help="only this provider (default: all)")
+    clear.add_argument("--model", default=None, help="only this model (default: all)")
+    clear.add_argument("--reason", required=True, help="why the owner knows the limit is over")
+    clear.add_argument("--force", action="store_true",
+                       help=f"also clear an entry recorded under {CLEAR_MIN_AGE}s ago")
+    clear.set_defaults(func=cmd_clear)
 
     status = sub.add_parser("status", help="what is held, the cap, the ceiling, any deferral")
     common(status)
