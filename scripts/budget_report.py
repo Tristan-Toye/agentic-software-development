@@ -42,6 +42,7 @@ import os
 import re
 import sqlite3
 import statistics
+import subprocess
 import sys
 import tempfile
 from collections import defaultdict
@@ -91,6 +92,10 @@ def opencode_runs(db: str, since: int, until: int, glm: dict, codex: dict | None
         return []
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     sessions = {r[0]: (r[1], r[2]) for r in con.execute("select id, parent_id, title from session")}
+    try:
+        directories = dict(con.execute("select id, directory from session"))
+    except sqlite3.Error:
+        directories = {}
     children: dict[str, list[str]] = defaultdict(list)
     for sid, (parent, _) in sessions.items():
         if parent:
@@ -121,6 +126,7 @@ def opencode_runs(db: str, since: int, until: int, glm: dict, codex: dict | None
         s["last"] = max(s["last"], created)
     by_run: dict[str, dict] = defaultdict(lambda: defaultdict(float))
     titles: dict[str, list[str]] = defaultdict(list)
+    run_dirs: dict[str, set] = defaultdict(set)
     for sid, (parent, title) in sessions.items():
         match = RUN_TITLE.match(title or "")
         if parent or not match:
@@ -140,18 +146,20 @@ def opencode_runs(db: str, since: int, until: int, glm: dict, codex: dict | None
                     agg[key] += value
         by_run[rid]["main_credits"] += per[sid]["credits"]
         titles[rid].append(title)
+        if directories.get(sid):
+            run_dirs[rid].add(directories[sid])
     runs = []
     for rid, agg in by_run.items():
         if agg["codex"] > agg["credits"]:  # the run was on the openai profile
             if agg["codex"] < MIN_RUN_COST["opencode-openai"]:
                 continue
-            runs.append({"host": "opencode-openai", "run": rid, "titles": sorted(titles[rid]),
+            runs.append({"host": "opencode-openai", "run": rid, "titles": sorted(titles[rid]), "dirs": sorted(run_dirs[rid]),
                          "cost": round(agg["codex"]), "unit": "codex credits", **common(agg)})
             continue
         if agg["credits"] < MIN_RUN_COST["opencode"]:
             continue
         runs.append({
-            "host": "opencode", "run": rid, "titles": sorted(titles[rid]),
+            "host": "opencode", "run": rid, "titles": sorted(titles[rid]), "dirs": sorted(run_dirs[rid]),
             "cost": round(agg["billed"]), "unit": "credits billed", "credits_standard": round(agg["credits"]),
             "orchestrator_share_pct": round(100 * agg["main_credits"] / agg["credits"], 1),
             **common(agg),
@@ -188,7 +196,7 @@ def claude_requests(path: str):
             if msg.get("model") == "<synthetic>" or msg.get("id") in seen or not d.get("timestamp"):
                 continue
             seen.add(msg.get("id"))
-            yield ts_ms(d["timestamp"]), msg.get("model", "?"), msg["usage"]
+            yield ts_ms(d["timestamp"]), msg.get("model", "?"), msg["usage"], msg.get("id")
 
 
 def claude_usd(model: str, usage: dict, prices: dict) -> float | None:
@@ -209,20 +217,31 @@ def claude_runs(projects: str, since: int, until: int, prices: dict) -> tuple[li
     agg: dict[str, dict] = defaultdict(lambda: defaultdict(float))
     stream: list[tuple[int, float]] = []
     unpriced: dict[str, int] = defaultdict(int)
+    run_cwds: dict[str, set] = defaultdict(set)
+    run_ids: dict[str, set] = defaultdict(set)
     for path in glob.glob(os.path.join(projects, "**", "*.jsonl"), recursive=True):
         rid = None
-        if "/subagents/" not in path:
+        # A session's own transcript sits directly in its project dir; anything deeper
+        # (subagents/, a workflow run's agent transcripts) belongs to the session above it.
+        if os.path.dirname(os.path.dirname(path)) == os.path.normpath(projects):
             with open(path, errors="replace") as fh:
                 head = fh.read(400000)
             match = CLAUDE_RUN.search(head) if WORK_ON.search(head) else None
             rid = (match.group(1) or match.group(2)) if match else None
+            cwd = re.search(r'"cwd":\s*"([^"]+)"', head)
+            if rid and cwd:
+                run_cwds[rid].add(cwd.group(1))
         files = [path]
         if rid:
             sid = os.path.basename(path)[:-6]
-            files += glob.glob(os.path.join(os.path.dirname(path), sid, "subagents", "*.jsonl"))
+            files += glob.glob(os.path.join(os.path.dirname(path), sid, "**", "*.jsonl"), recursive=True)
         for f in files:
-            counted = f == path  # subagent files are also walked on their own: count them for the stream once
-            for ms, model, usage in claude_requests(f):
+            counted = f == path  # nested files are also walked on their own: count them for the stream once
+            for ms, model, usage, mid in claude_requests(f):
+                if rid and mid:
+                    if mid in run_ids[rid]:
+                        continue  # the same response recorded in two files of one run
+                    run_ids[rid].add(mid)
                 usd = claude_usd(model, usage, prices)
                 if usd is None:
                     unpriced[model] += counted
@@ -243,7 +262,8 @@ def claude_runs(projects: str, since: int, until: int, prices: dict) -> tuple[li
                 if f == path:
                     a["main_usd"] += usd
     runs = [{"host": "claude", "run": rid, "cost": round(a["usd"], 2), "unit": "usd api-equivalent",
-             "orchestrator_share_pct": round(100 * a["main_usd"] / a["usd"], 1), **common(a)}
+             "orchestrator_share_pct": round(100 * a["main_usd"] / a["usd"], 1),
+             "dirs": sorted(run_cwds[rid]), **common(a)}
             for rid, a in agg.items() if a["usd"] >= MIN_RUN_COST["claude"]]
     return runs, stream, dict(unpriced)
 
@@ -275,6 +295,92 @@ def calibrate(log: str, stream: list[tuple[int, float]]) -> dict | None:
     return best
 
 
+# ---------------------------------------------------------------- quality from the build log
+
+NEGATED = r"(?:[Nn]o|[Zz]ero|[Ww]ithout)\s+`?"
+QUALITY_MARKERS = {
+    # Line counts over the dossier's `## Build log`. The orchestrator writes free text
+    # around these tokens, so they are indicators to compare across runs, not exact tallies.
+    "returns": re.compile(r"\bRETURNED\b"),
+    "flagged_returns": re.compile(r"\bRETURNED\b.*\b(?:FLAGGED|flagged|UNVERIFIED)\b"),
+    "arbitrations": re.compile(r"^\W*ARBITRATION\b"),
+    "defects": re.compile(r"^\W*DEFECT\b"),
+    "corrections": re.compile(r"\b(?:CORRECTION|DELIVERY_CHANGE)\b|\bre-?spawn|\bresum(?:e|ed)\b", re.I),
+    "workflow_runs": re.compile(r"\bWORKFLOW:"),
+}
+GAP_RE = re.compile(r"(?<![\w-])GAP:")
+GAP_NEG = re.compile(NEGATED + r"GAP:")
+CC_RE = re.compile(r"\bCONTRACT-CHANGE:")
+CC_NEG = re.compile(NEGATED + r"CONTRACT-CHANGE:")
+CR_ID = re.compile(r"\bCR-\d+\b")
+DOSSIER_DIR = os.path.join(".discovery", "dossiers")
+
+
+def log_lines(path: str) -> int:
+    try:
+        with open(path, errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return -1
+    start = text.find("## Build log")
+    return -1 if start < 0 else text[start:].count("\n")
+
+
+def dossier_path(rid: str, dirs: list[str]) -> str | None:
+    """The dossier file of a run: of every copy in the directories its sessions ran in and in
+    every worktree of their repositories, the one with the longest build log. A build writes
+    its log in its own worktree (`X`); the main checkout's copy only catches up when the
+    branch merges, so the first copy found is often the stale one."""
+    candidates = set()
+    for d in dirs:
+        candidates.add(d)
+        try:
+            listing = subprocess.run(["git", "-C", d, "worktree", "list", "--porcelain"],
+                                     capture_output=True, text=True, timeout=5).stdout
+            candidates.update(line[9:] for line in listing.splitlines() if line.startswith("worktree "))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    hits = []
+    for d in sorted(candidates):
+        hits += glob.glob(os.path.join(d, DOSSIER_DIR, f"{rid}-*.md")) + glob.glob(os.path.join(d, DOSSIER_DIR, f"{rid}.md"))
+    return max(sorted(set(hits)), key=log_lines) if hits else None
+
+
+def quality(path: str) -> dict:
+    with open(path, errors="replace") as fh:
+        text = fh.read()
+    start = text.find("## Build log")
+    if start < 0:
+        return {"build_log": False}
+    nxt = text.find("\n## ", start + 3)
+    log = text[start: nxt if nxt != -1 else len(text)].splitlines()
+    out = {name: sum(1 for line in log if rx.search(line)) for name, rx in QUALITY_MARKERS.items()}
+    body = "\n".join(log)
+    out["gaps"] = max(0, len(GAP_RE.findall(body)) - len(GAP_NEG.findall(body)))
+    out["contract_changes"] = max(0, len(CC_RE.findall(body)) - len(CC_NEG.findall(body)))
+    out["change_requests"] = len(set(CR_ID.findall(body)))
+    out["packages"] = work_packages(text)
+    out["build_log"] = True
+    return out
+
+
+def work_packages(text: str) -> int:
+    """Rows of the dossier's `## Work packages` table: the size to normalise a run by."""
+    start = text.find("## Work packages")
+    if start < 0:
+        return 0
+    nxt = text.find("\n## ", start + 3)
+    rows = [l for l in text[start: nxt if nxt != -1 else len(text)].splitlines() if l.lstrip().startswith("|")]
+    return max(0, len(rows) - 2)  # minus the header and its separator
+
+
+def add_quality(runs: list[dict]) -> None:
+    for r in runs:
+        path = dossier_path(r["run"], r.get("dirs", []))
+        r["dossier"] = path
+        r["quality"] = quality(path) if path else None
+
+
 # ---------------------------------------------------------------- report
 
 def shares(runs: list[dict], plans: dict, claude_week: float) -> None:
@@ -302,6 +408,12 @@ def summary(runs: list[dict]) -> dict:
                      "median_share_pct": {p: (statistics.median(r["share_pct"][p] for r in rs)
                                               if all(r["share_pct"][p] is not None for r in rs) else None)
                                           for p in plans}}
+        # Only logs in the current format (one RETURNED line per spawn) are comparable; an
+        # older free-prose log would count as zero on every marker.
+        qs = [r["quality"] for r in rs if r.get("quality") and r["quality"].get("returns", 0) > 0]
+        keys = [k for k in (qs[0] if qs else {}) if k != "build_log"]
+        out[host]["median_quality"] = {k: statistics.median(q[k] for q in qs) for k in keys}
+        out[host]["quality_runs"] = len(qs)
         out[host]["dossiers_per_week"] = {p: round(100 / v, 1) if v else None
                                           for p, v in out[host]["median_share_pct"].items()}
     return out
@@ -316,6 +428,7 @@ def build(args, plans: dict) -> dict:
     claude_week = cal["week_usd"] if cal else seat["week_usd"]
     runs = sorted(oc + cc, key=lambda r: (r["host"], r["start"] or ""))
     shares(runs, plans, claude_week)
+    add_quality(runs)
     return {"window": {"since": args.since, "until": args.until},
             "claude_week_usd": claude_week,
             "claude_week_basis": "calibrated from usage log" if cal else "plans.json week_usd",
@@ -328,6 +441,9 @@ def print_report(rep: dict) -> None:
     for host, s in rep["summary"].items():
         print(f"\n{host}: {s['runs']} runs, median cost {s['median_cost']}, median {s['median_mtok_in']} Mtok in, "
               f"avg request {s['median_avg_request_k']}k")
+        if s.get("median_quality"):
+            print(f"  quality (median over {s['quality_runs']} of {s['runs']} build logs with RETURNED lines): "
+                  + ", ".join(f"{k} {v}" for k, v in s["median_quality"].items()))
         for plan, pct in s["median_share_pct"].items():
             if pct is None:
                 print(f"  {plan}: week unmeasured (set week_credits in plans.json from one measured dossier)")
@@ -342,6 +458,12 @@ def print_report(rep: dict) -> None:
 
 
 def compare(rep: dict, before: dict) -> None:
+    for host, s in rep["summary"].items():
+        old = (before.get("summary", {}).get(host) or {}).get("median_quality")
+        if s.get("median_quality"):
+            print(f"\ncompare quality, {host} (median per dossier, before -> after):")
+            for k, v in s["median_quality"].items():
+                print(f"  {k}: {old.get(k) if old else 'n/a'} -> {v}")
     print("\ncompare (median share of a week per dossier):")
     for host, s in rep["summary"].items():
         old = before.get("summary", {}).get(host)
@@ -414,10 +536,34 @@ def selftest() -> int:
             fh.write(line("2026-10-12T10:30:00Z", "c", "claude-sonnet-5-5", 0, 10000000))  # $1.00
         with open(os.path.join(proj, "other.jsonl"), "w") as fh:
             fh.write(line("2026-10-12T12:00:00Z", "d", "claude-opus-5-5", 50000, 0))  # $1.00, not a dossier
+        os.makedirs(os.path.join(proj, "s1", "workflows", "run1"))
+        with open(os.path.join(proj, "s1", "workflows", "run1", "agent-a.jsonl"), "w") as fh:
+            fh.write(line("2026-10-12T10:40:00Z", "w", "claude-sonnet-5-5", 0, 10000000))  # $1.00, a workflow agent
+            fh.write(line("2026-10-12T10:30:00Z", "c", "claude-sonnet-5-5", 0, 10000000))  # same response as subagent c
         cc, stream, unpriced = claude_runs(os.path.join(tmp, "projects"), 0, 2**62, plans["claude"]["prices_per_mtok"])
-        check("one claude run with its subagent", [(r["run"], r["cost"]) for r in cc] == [("W-777", 3.0)], cc)
-        check("orchestrator share of the claude run", cc and cc[0]["orchestrator_share_pct"] == 66.7, cc)
-        check("the calibration stream counts every request once", round(sum(u for _, u in stream), 2) == 4.0, stream)
+        check("a claude run counts its subagent and its workflow agents, each response once",
+              [(r["run"], r["cost"]) for r in cc] == [("W-777", 4.0)], cc)
+        check("orchestrator share of the claude run", cc and cc[0]["orchestrator_share_pct"] == 50.0, cc)
+        check("a nested transcript is never a run of its own", [r["run"] for r in cc] == ["W-777"], cc)
+
+        stream_total = round(sum(u for _, u in stream), 2)
+        check("the calibration stream counts every file's requests", stream_total == 6.0, stream_total)
+
+        dossier = os.path.join(tmp, "repo", ".discovery", "dossiers")
+        os.makedirs(dossier)
+        with open(os.path.join(dossier, "W-777-x.md"), "w") as fh:
+            fh.write("# x\n## Work packages\n| ID | Owns |\n|---|---|\n| P1 | a |\n| P2 | b |\n## Build log\n- RETURNED P1: clean\n- RETURNED P2: FLAGGED (stubs left)\n"
+                     "- P3 returned with no `GAP:`\n- RETURNED U1: GAP: the window start is undefined\n"
+                     "- ARBITRATION 1 — row 2\n- CORRECTION sent to P2 (resume)\n- review r1: CR-1, CR-2; r2: CR-2\n"
+                     "- WORKFLOW: phase4-wave wave1 run abc\n## Next\n- RETURNED outside the log\n")
+        q = quality(os.path.join(dossier, "W-777-x.md"))
+        check("quality counts the build log only", q["returns"] == 3 and q["flagged_returns"] == 1, q)
+        check("the dossier's size is its work-package rows", q["packages"] == 2, q)
+        check("a negated GAP is not a gap", q["gaps"] == 1, q)
+        check("arbitrations, corrections, distinct CRs, workflow runs",
+              (q["arbitrations"], q["corrections"], q["change_requests"], q["workflow_runs"]) == (1, 1, 2, 1), q)
+        check("the dossier is found from the run's directory",
+              dossier_path("W-777", [os.path.join(tmp, "repo")]) == os.path.join(dossier, "W-777-x.md"))
 
         log = os.path.join(tmp, "usage-log.jsonl")
         with open(log, "w") as fh:
@@ -427,12 +573,12 @@ def selftest() -> int:
         with open(log, "a") as fh:
             fh.write(json.dumps({"ts": "2026-10-12T13:00:01Z", "week_pct": 50, "week_resets_at": 1}) + "\n")
         cal = calibrate(log, stream)
-        check("calibration: $4 over 40 points is a $10 week", cal and cal["week_usd"] == 10.0, cal)
+        check("calibration: the spend over 40 points sets the week", cal and cal["week_usd"] == round(stream_total / 40 * 100, 2), cal)
 
         runs = oc + cc + oa
         shares(runs, plans, 10.0)
         check("an unmeasured codex week gives no share", oa and oa[0]["share_pct"]["Business seat"] is None, oa)
-        check("claude share uses the calibrated week", cc[0]["share_pct"]["Team Premium seat (Max 5x tier)"] == 30.0, cc)
+        check("claude share uses the calibrated week", cc[0]["share_pct"]["Team Premium seat (Max 5x tier)"] == 40.0, cc)
         check("glm share per plan", oc[0]["share_pct"]["Max"] == round(100 * oc[0]["cost"] / 140000, 1), oc)
         check("a short run stays out of the medians", summary(runs) == {})
         global MIN_FULL_REQUESTS
