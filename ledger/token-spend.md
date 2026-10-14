@@ -28,6 +28,7 @@ Saved snapshots:
 | `metrics/2026-09-21_baseline-before-pr86.json` | 2026-09-21 → 2026-09-28 19:29:50 (cutoff) | Baseline: 3 runs (W-067, W-072, W-086) |
 | `metrics/2026-09-28_after-pr86-to-92.json` | cutoff → 2026-10-04 23:59 | After PRs #86–#92: 4 runs (W-069, W-073, W-091, W-095 inquiry), run in parallel |
 | `metrics/2026-10-14_budget-per-dossier.json` | 2026-09-14 → 2026-10-14 09:30 UTC | `budget_report.py`: every dossier on both hosts as a share of each plan's week |
+| `metrics/2026-10-14_budget-per-dossier-with-quality.json` | the same window | the same, plus build-log quality per dossier and the seat's week calibrated from the usage log ($1,067): **the baseline for the next eval** |
 
 ## Results so far (baseline → after #86–#92)
 
@@ -76,6 +77,16 @@ python3 scripts/budget_report.py --since <start> --until <end> --json ledger/met
   bound and each Claude share an upper bound.
 - A run with fewer than 300 requests (an inquiry, or a run in progress) is
   listed but left out of the medians.
+- **Quality per dossier** comes from its `## Build log`: returns, flagged returns,
+  arbitrations, defects, corrections and re-spawns, `GAP:`s and `CONTRACT-CHANGE:`s
+  (negated mentions such as "no `GAP:`" excluded), distinct change requests, workflow
+  runs, and the `## Work packages` row count to normalise by. A build writes its log in
+  its own worktree, so the copy with the longest log across the repo's worktrees is read.
+  Only logs in the current format (one `RETURNED` line per return) enter the medians;
+  older prose logs would count as zero. These are indicators to compare runs by, not
+  exact tallies.
+- A Claude dossier counts every transcript under its session directory: the main one,
+  `subagents/`, and a workflow run's agent transcripts, each API response once.
 - **opencode on the openai profile** (`opencode-openai`): OpenAI's own
   published Codex credit rates per model (`plans.json` → `codex`). OpenAI
   publishes no credit allowance per plan, so a seat's week is measured once:
