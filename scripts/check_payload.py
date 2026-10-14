@@ -245,7 +245,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
     },
     "stub-materialiser": {
         "required": {"WORKTREE_DIR", "CONTRACT", "OWNED_PATHS", "STUB_STYLE", "BUILD_CHECK"},
-        "optional": set(),
+        "optional": {"DEFINITIONS"},
     },
     "blast-radius-scout": {
         "required": {"WORKTREE_DIR", "BASELINE", "HEAD", "HINT"},

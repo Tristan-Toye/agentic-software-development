@@ -153,6 +153,10 @@ from its transcript; never record a partial return as `PASS`.
   mode exactly as at the merge (Phase 5): rule on every listed path, and two
   hard limits hold — never another package's owned paths, never the contract
   files.
+- **Run the whole `GATES:` list (Phase 2) on the fixed head before you push**,
+  including gates no local aggregator covers. A fix round never gets a
+  narrower list than the contract commit; a doc link or a feature-gated
+  compile is what a small fix breaks.
 - Get the runner's verdict on the fixed head (Phase 6: under `ci`, push the
   fix commit and read CI's run; under `local`, run it). Any test that turns
   red means the fix was not behaviour-preserving: return it to the

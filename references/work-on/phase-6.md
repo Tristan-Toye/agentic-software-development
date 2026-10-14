@@ -35,6 +35,10 @@ verdict" in this document means exactly this — the runner's run on the new
 head, read the same way — and never a local run beside a CI run of the
 same head.
 
+**Every head that leaves this machine passes the `GATES:` list first**
+(Phase 2, `run_gates.py`): the first push and each arbitration fix. A green
+default-feature compile is not the list.
+
 **First, check whether the target branch has moved — and if it has, sync
 now.** Phase 9 syncs last, which is right for a build that finishes the same
 day; a build spanning more than a day absorbs other people's merges the whole

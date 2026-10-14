@@ -57,6 +57,9 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
 
 - `WORKTREE_DIR` — your isolated worktree. All your work happens here.
 - `CONTRACT` — the signatures and documentation comments, verbatim.
+- `DEFINITIONS` — the terms the contract's prose defines, verbatim. Place each
+  in the documentation of every member that uses it; a term no member uses
+  comes back as `GAP:`.
 - `OWNED_PATHS` — the only files you may create or write.
 - `STUB_STYLE` — the repo's placeholder for a body, verbatim (for example
   `unimplemented!()`), and where it goes.

@@ -91,6 +91,10 @@ them needs to see the others.
 
 - Signatures and documentation comments only. **No bodies** — a body is the
   implementer's work.
+- Terms the signatures lean on are defined in a `### Definitions` list under
+  `## Contract`, one `- **term** — meaning` each. Phase 2 copies every one into
+  the stubs' documentation; `validate_pipeline.py --pre-fanout` refuses a term
+  that reached no stub unless it is logged `DOSSIER-ONLY-TERMS:`.
 - Documentation uses the language's own form: XML doc comments for C#, rustdoc
   for Rust, docstrings for Python, TSDoc for TypeScript, javadoc for Java.
   Never a bare `//` where the language has a documentation form.
@@ -121,6 +125,7 @@ the fan-out:
 | Are concurrency words defined? | `"coalesces"` — what does the second caller receive? |
 | Is the member's **visibility** stated? | `header_of` named as the read seam with no `pub` — the blind author cannot even compile against the contract |
 | Are the words in the docstring measurable? | `"efficiently"`, `"properly"`, `"safely"` are never promises — delete them |
+| Does a new event or typed-payload variant name **every member it carries and every member it leaves empty**? | `EventKind::Resumed` leaning on `track`'s general docstring ("the track, when the event is about one") — the implementer reads it narrow, the test author wide |
 | Are the trait bounds an assertion needs **derived**? | `expect_err` on a type without `Debug`, `assert_eq!` without `PartialEq`, a second move without `Clone` — the stub compiles, the test does not, and a blind author cannot see the derive set |
 
 A promise that survives this list is one a blind test author can turn into an

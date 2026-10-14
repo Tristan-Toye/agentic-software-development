@@ -237,6 +237,12 @@ Then write the signatures and the documentation comments, **with no bodies**.
 Three agents will build against this text concurrently and blind: a unit test
 author that can read nothing else, an integration test author, and an implementer
 that will never see the tests. The contract is the only thing they share.
+- **Define every term the signatures lean on** ("the track's rows", "the
+  window start") in a `### Definitions` list under `## Contract`, one
+  `- **term** — meaning` per term. `/work-on` copies each into the stubs'
+  documentation; prose defined anywhere else never reaches them.
+- **A new event or typed-payload variant states, in its own documentation,
+  every member it carries and every member it leaves empty.**
 - Use the language's own documentation form — XML doc comments for C#, rustdoc
   for Rust, docstrings for Python, TSDoc for TypeScript, javadoc for Java.
 - State each promise so a test can observe it: the return value, the error
@@ -263,6 +269,11 @@ integration tests. Owned path sets must be **disjoint across every row**. Use
 `Depends on` to sequence anything that cannot be concurrent. Keep a package
 small enough that one spawn can finish it; a package that needs the whole change
 is not a package.
+
+**A shape change leaves no source call-site packages.** When the contract
+changes a type other code builds or matches on, the type-forced edits at the
+non-test call sites are contract-commit items, not rows. Call-site test
+packages `Depends on` nothing: the libraries compile at that commit.
 
 ### `## Acceptance criteria`
 
