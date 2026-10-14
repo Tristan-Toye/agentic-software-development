@@ -27,6 +27,7 @@ Saved snapshots:
 |---|---|---|
 | `metrics/2026-09-21_baseline-before-pr86.json` | 2026-09-21 → 2026-09-28 19:29:50 (cutoff) | Baseline: 3 runs (W-067, W-072, W-086) |
 | `metrics/2026-09-28_after-pr86-to-92.json` | cutoff → 2026-10-04 23:59 | After PRs #86–#92: 4 runs (W-069, W-073, W-091, W-095 inquiry), run in parallel |
+| `metrics/2026-10-14_budget-per-dossier.json` | 2026-09-14 → 2026-10-14 09:30 UTC | `budget_report.py`: every dossier on both hosts as a share of each plan's week |
 
 ## Results so far (baseline → after #86–#92)
 
@@ -50,6 +51,54 @@ the after snapshot).
 Reading: every step got cheaper, but runs took more steps, so a run cost only
 7% less. The orchestrator is 86% of all spend. Four runs in parallel spent
 123k credits in three days against a 60k weekly cap.
+
+## Budget per dossier across hosts
+
+`scripts/budget_report.py` prices one dossier (a `W-<n>` id, resumes and
+subagents included) on each host and divides it by each plan's week. Plan
+prices and quotas live in `ledger/plans.json`, the one place to edit them.
+
+```bash
+python3 scripts/budget_report.py --since <start> --until <end> --json ledger/metrics/<date>_budget-per-dossier.json \
+  [--compare ledger/metrics/2026-10-14_budget-per-dossier.json]
+```
+
+- **opencode (GLM coding plan)**: credits per request from the store, at half
+  rate outside Mon–Fri 06:00–10:00 UTC (the off-peak rate; the Sept 24–26 week
+  is consistent with it: 125.8k credits at the standard rate exhausted the 60k
+  Pro week). Shares use these billed credits.
+- **Claude Code (claude.ai seat)**: transcripts priced at API rates per model.
+  The seat's week in API dollars is calibrated from `~/.claude/usage-log.jsonl`
+  (the status-line sampler logs the account's weekly %) once the log spans a
+  rise of 5 points or more; until then `week_usd` in `plans.json`: **≥ $1,010**,
+  the local spend since the reset ($414) over the 41% shown at 2026-10-14 08:53
+  UTC. Use outside Claude Code also counts toward the %, so this is a lower
+  bound and each Claude share an upper bound.
+- A run with fewer than 300 requests (an inquiry, or a run in progress) is
+  listed but left out of the medians.
+- **opencode on the openai profile** (`opencode-openai`): OpenAI's own
+  published Codex credit rates per model (`plans.json` → `codex`). OpenAI
+  publishes no credit allowance per plan, so a seat's week is measured once:
+  run one dossier, read the weekly % on chatgpt.com/codex/settings/usage before
+  and after, and set `week_credits` = the dossier's credits / (% used / 100).
+  From then on every openai run gets a share like the other hosts.
+
+Result, 2026-10-14 snapshot (`metrics/2026-10-14_budget-per-dossier.json`):
+
+| | Runs | Per dossier (median) | Share of a week (median) | Dossiers / week | Tokens in / dossier | Avg request |
+|---|---|---|---|---|---|---|
+| opencode, GLM-5.3, all full runs Sept 17 → Oct 14 | 15 | 12.7k credits | Lite 127%, Pro 21.2%, **Max 9.1%** | Pro 4.7, **Max 11.0** | 140M | 139k |
+| opencode with context-guard (W-092, W-104, unfinished) | 2 | 10.5k–12.7k | Pro 17.5–21.2%, **Max 7.5–9.1%** | Max 11–13 | 95–123M | **75–80k** |
+| Claude Code, Opus 5.5 orchestrator + Sonnet 5.5 subagents | 15 | $89 API-equivalent | **Team Premium (Max 5x) ≤ 8.8%** | **≥ 11.4** | 281M | **328k** |
+
+Reading: the GLM Max plan ($168/month) and the Claude seat ($125/month, Max 5x
+tier) hold about the same number of dossiers a week, ~11. They get there
+differently: the seat's week is worth ~2–3x more tokens (≥ ~3.5B against
+~1.3–1.7B), but a Claude Code dossier carries ~4x the context per request
+(328k against 75–80k with context-guard, since Opus 5.5 with the 1M window
+only auto-compacts at ~967k) and so uses ~2–3x the tokens. The orchestrator is
+89–98% of a Claude dossier's cost. Codex Pro ($200) publishes no token
+allowance; measure it with `/status` before and after one dossier.
 
 ## Changes
 
