@@ -76,6 +76,12 @@ python3 scripts/budget_report.py --since <start> --until <end> --json ledger/met
   bound and each Claude share an upper bound.
 - A run with fewer than 300 requests (an inquiry, or a run in progress) is
   listed but left out of the medians.
+- **opencode on the openai profile** (`opencode-openai`): OpenAI's own
+  published Codex credit rates per model (`plans.json` → `codex`). OpenAI
+  publishes no credit allowance per plan, so a seat's week is measured once:
+  run one dossier, read the weekly % on chatgpt.com/codex/settings/usage before
+  and after, and set `week_credits` = the dossier's credits / (% used / 100).
+  From then on every openai run gets a share like the other hosts.
 
 Result, 2026-10-14 snapshot (`metrics/2026-10-14_budget-per-dossier.json`):
 

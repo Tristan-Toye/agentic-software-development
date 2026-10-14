@@ -57,7 +57,7 @@ WORK_ON = re.compile(r"agentic-software-development:work-on|<command-name>/work-
 # The dossier id of a /work-on invocation: its command args, or the echoed `/…:work-on W-<n>`.
 CLAUDE_RUN = re.compile(r"work-on</command-name>.{0,200}?<command-args>\s*(W-\d+)|work-on\s+(W-\d+)", re.S)
 MIN_CALIBRATION_PCT = 5
-MIN_RUN_COST = {"opencode": 500.0, "claude": 2.0}  # below this a session is a probe, not a dossier
+MIN_RUN_COST = {"opencode": 500.0, "opencode-openai": 50.0, "claude": 2.0}  # below this a session is a probe, not a dossier
 # A dossier build makes hundreds of requests; fewer means an inquiry or a run still in progress.
 # Such runs are listed but left out of the medians.
 MIN_FULL_REQUESTS = 300
@@ -86,7 +86,7 @@ def peak(ms: int, glm: dict) -> bool:
 
 # ---------------------------------------------------------------- opencode (GLM) runs
 
-def opencode_runs(db: str, since: int, until: int, glm: dict) -> list[dict]:
+def opencode_runs(db: str, since: int, until: int, glm: dict, codex: dict | None = None) -> list[dict]:
     if not os.path.exists(db):
         return []
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -100,15 +100,19 @@ def opencode_runs(db: str, since: int, until: int, glm: dict) -> list[dict]:
              "where json_extract(p.data, '$.type') = 'step-finish' and m.time_created between ? and ?")
     for sid, mdata, pdata, created in con.execute(query, (since, until)):
         model = json.loads(mdata).get("modelID", "?")
-        rate = glm["rates_per_10k_tokens"].get(model, glm["rates_per_10k_tokens"]["glm-5.3"])
         tok = json.loads(pdata).get("tokens") or {}
         read = (tok.get("cache") or {}).get("read", 0) or 0
         fresh = tok.get("input", 0) or 0
         out = (tok.get("output", 0) or 0) + (tok.get("reasoning", 0) or 0)
-        credits = (fresh * rate["input"] + read * rate["cache_read"] + out * rate["output"]) / 10000
         s = per[sid]
-        s["credits"] += credits
-        s["billed"] += credits if peak(created, glm) else credits * glm["offpeak_factor"]
+        codex_rate = (codex or {}).get(model)
+        if codex_rate:  # an OpenAI model (opencode-openai): Codex credits per million tokens
+            s["codex"] += (fresh * codex_rate["input"] + read * codex_rate["cache_read"] + out * codex_rate["output"]) / 1e6
+        else:
+            rate = glm["rates_per_10k_tokens"].get(model, glm["rates_per_10k_tokens"]["glm-5.3"])
+            credits = (fresh * rate["input"] + read * rate["cache_read"] + out * rate["output"]) / 10000
+            s["credits"] += credits
+            s["billed"] += credits if peak(created, glm) else credits * glm["offpeak_factor"]
         s["requests"] += 1
         s["tok_in"] += fresh + read
         s["tok_read"] += read
@@ -138,6 +142,12 @@ def opencode_runs(db: str, since: int, until: int, glm: dict) -> list[dict]:
         titles[rid].append(title)
     runs = []
     for rid, agg in by_run.items():
+        if agg["codex"] > agg["credits"]:  # the run was on the openai profile
+            if agg["codex"] < MIN_RUN_COST["opencode-openai"]:
+                continue
+            runs.append({"host": "opencode-openai", "run": rid, "titles": sorted(titles[rid]),
+                         "cost": round(agg["codex"]), "unit": "codex credits", **common(agg)})
+            continue
         if agg["credits"] < MIN_RUN_COST["opencode"]:
             continue
         runs.append({
@@ -271,13 +281,17 @@ def shares(runs: list[dict], plans: dict, claude_week: float) -> None:
     for r in runs:
         if r["host"] == "opencode":
             r["share_pct"] = {name: round(100 * r["cost"] / p["week"], 1) for name, p in plans["glm"]["plans"].items()}
+        elif r["host"] == "opencode-openai":
+            # None until a plan's week_credits is measured (see plans.json)
+            r["share_pct"] = {name: (round(100 * r["cost"] / p["week_credits"], 1) if p.get("week_credits") else None)
+                              for name, p in plans.get("codex", {}).get("plans", {}).items()}
         else:
             r["share_pct"] = {name: round(100 * r["cost"] / claude_week, 1) for name in plans["claude"]["plans"]}
 
 
 def summary(runs: list[dict]) -> dict:
     out = {}
-    for host in ("opencode", "claude"):
+    for host in ("opencode", "opencode-openai", "claude"):
         rs = [r for r in runs if r["host"] == host and r["full"]]
         if not rs:
             continue
@@ -285,7 +299,9 @@ def summary(runs: list[dict]) -> dict:
         out[host] = {"runs": len(rs), "median_cost": statistics.median(r["cost"] for r in rs),
                      "median_mtok_in": statistics.median(r["mtok_in"] for r in rs),
                      "median_avg_request_k": statistics.median(r["avg_request_k"] for r in rs),
-                     "median_share_pct": {p: statistics.median(r["share_pct"][p] for r in rs) for p in plans}}
+                     "median_share_pct": {p: (statistics.median(r["share_pct"][p] for r in rs)
+                                              if all(r["share_pct"][p] is not None for r in rs) else None)
+                                          for p in plans}}
         out[host]["dossiers_per_week"] = {p: round(100 / v, 1) if v else None
                                           for p, v in out[host]["median_share_pct"].items()}
     return out
@@ -293,7 +309,7 @@ def summary(runs: list[dict]) -> dict:
 
 def build(args, plans: dict) -> dict:
     since, until = iso_ms(args.since, 0), iso_ms(args.until, 2**62)
-    oc = opencode_runs(args.db, since, until, plans["glm"])
+    oc = opencode_runs(args.db, since, until, plans["glm"], plans.get("codex", {}).get("credits_per_mtok"))
     cc, stream, unpriced = claude_runs(args.projects, since, until, plans["claude"]["prices_per_mtok"])
     seat = next(iter(plans["claude"]["plans"].values()))
     cal = calibrate(args.usage_log, stream)
@@ -313,11 +329,14 @@ def print_report(rep: dict) -> None:
         print(f"\n{host}: {s['runs']} runs, median cost {s['median_cost']}, median {s['median_mtok_in']} Mtok in, "
               f"avg request {s['median_avg_request_k']}k")
         for plan, pct in s["median_share_pct"].items():
-            print(f"  {plan}: median {pct}% of a week per dossier, ~{s['dossiers_per_week'][plan]} dossiers/week")
+            if pct is None:
+                print(f"  {plan}: week unmeasured (set week_credits in plans.json from one measured dossier)")
+            else:
+                print(f"  {plan}: median {pct}% of a week per dossier, ~{s['dossiers_per_week'][plan]} dossiers/week")
     print(f"\n* fewer than {MIN_FULL_REQUESTS} requests: an inquiry or a run in progress, not in the medians")
     print("host      run     start              cost         Mtok in  req   avg k  read%  share of week")
     for r in rep["runs"]:
-        share = ", ".join(f"{k.split(' ')[0]} {v}%" for k, v in r["share_pct"].items())
+        share = ", ".join(f"{k.split(' ')[0]} {v}%" for k, v in r["share_pct"].items() if v is not None) or "n/a"
         print(f"{r['host']:<9} {r['run'] + ('' if r['full'] else '*'):<7} {r['start'] or '':<18} {r['cost']:>9} {r['unit'][:7]:<7} "
               f"{r['mtok_in']:>6} {r['requests']:>5} {r['avg_request_k']:>5} {r['cache_read_pct']:>5}  {share}")
 
@@ -354,18 +373,25 @@ def selftest() -> int:
         con.execute("insert into session values ('r', null, 'W-123 build')")
         con.execute("insert into session values ('c', 'r', 'child')")
         con.execute("insert into session values ('x', null, 'unrelated')")
+        con.execute("insert into session values ('o', null, 'W-555 on openai')")
         step = {"type": "step-finish", "tokens": {"input": 10000, "output": 10000, "reasoning": 0, "cache": {"read": 1000000}}}
         for i, (sid, ms) in enumerate((("r", peak_ms), ("c", off_ms), ("x", off_ms))):
             con.execute("insert into message values (?, ?, ?, ?)", (f"m{i}", sid, json.dumps({"modelID": "glm-5.3"}), ms))
             con.execute("insert into part values (?, ?, ?, ?)", (f"p{i}", f"m{i}", sid, json.dumps(step)))
+        con.execute("insert into message values ('mo', 'o', ?, ?)", (json.dumps({"modelID": "gpt-6.1-sol"}), off_ms))
+        con.execute("insert into part values ('po', 'mo', 'o', ?)", (json.dumps(step),))
         con.commit()
         con.close()
         # one step: (10k*6.9 + 1M*1.7 + 10k*24)/10k = 6.9 + 170 + 24 = 200.9 credits
-        old = MIN_RUN_COST["opencode"]
-        MIN_RUN_COST["opencode"] = 1
-        oc = opencode_runs(db, 0, 2**62, plans["glm"])
-        MIN_RUN_COST["opencode"] = old
+        saved_min = dict(MIN_RUN_COST)
+        MIN_RUN_COST.update({"opencode": 1, "opencode-openai": 1})
+        both = opencode_runs(db, 0, 2**62, plans["glm"], plans["codex"]["credits_per_mtok"])
+        MIN_RUN_COST.update(saved_min)
+        oc = [r for r in both if r["host"] == "opencode"]
+        oa = [r for r in both if r["host"] == "opencode-openai"]
         check("one opencode run, children included, unrelated sessions out", [r["run"] for r in oc] == ["W-123"], oc)
+        # (10k * 50 + 1M * 2.5 + 10k * 250) / 1M = 5.5 Codex credits
+        check("an openai-profile run is priced in codex credits", [(r["run"], r["cost"]) for r in oa] == [("W-555", 6)], oa)
         check("standard credits sum both steps", oc and oc[0]["credits_standard"] == 402, oc)
         check("billed halves only the off-peak step", oc and oc[0]["cost"] == round(200.9 + 100.45), oc)
         check("orchestrator share is the root's part", oc and oc[0]["orchestrator_share_pct"] == 50.0, oc)
@@ -403,8 +429,9 @@ def selftest() -> int:
         cal = calibrate(log, stream)
         check("calibration: $4 over 40 points is a $10 week", cal and cal["week_usd"] == 10.0, cal)
 
-        runs = oc + cc
+        runs = oc + cc + oa
         shares(runs, plans, 10.0)
+        check("an unmeasured codex week gives no share", oa and oa[0]["share_pct"]["Business seat"] is None, oa)
         check("claude share uses the calibrated week", cc[0]["share_pct"]["Team Premium seat (Max 5x tier)"] == 30.0, cc)
         check("glm share per plan", oc[0]["share_pct"]["Max"] == round(100 * oc[0]["cost"] / 140000, 1), oc)
         check("a short run stays out of the medians", summary(runs) == {})
@@ -416,7 +443,8 @@ def selftest() -> int:
             s = summary(runs)
         finally:
             MIN_FULL_REQUESTS = saved
-        check("summary has both hosts", set(s) == {"opencode", "claude"}, s)
+        check("summary has every host", set(s) == {"opencode", "opencode-openai", "claude"}, s)
+        check("an unmeasured week has no dossiers-per-week", s["opencode-openai"]["dossiers_per_week"]["Business seat"] is None, s)
     print(f"selftest: {len(failures)} failure(s)")
     return 1 if failures else 0
 
