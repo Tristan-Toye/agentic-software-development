@@ -47,8 +47,9 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   extract-and-parse commands, one per embedded program. `bash -n` sees only
   the shell text; the heredoc is a second language it never opens.
 - `HOOKS` — what this repository's commit hooks do to a partly migrated
-  tree, when the repository has any. Your rule under it never changes: a
-  refused commit is reported, never forced.
+  tree, when the repository has any. Your rule under it changes only for an
+  `EXPECTED_HOOK_OUTPUTS:` sub-list (`<hook step>: <path glob>` per line),
+  below: a refused commit is reported, never forced.
 - `STANDARDS` — path to the engineering standards. They bind your code.
 - `JIRA_KEY` — the commit message prefix.
 - `MODE` — `build` (fill the bodies) or `fix` (apply change requests).
@@ -121,6 +122,12 @@ you are in is partly migrated by design, so a workspace-wide hook may refuse
 work that is correct; the orchestrator commits it on your branch. A hook that
 rewrote a file you do not own is reverted before you report, and the rewrite
 is named in the report.
+
+One exception, and only when `HOOKS` carries `EXPECTED_HOOK_OUTPUTS:`: if the
+hook rewrote nothing but paths matching those globs, through the step named
+beside each glob, commit through and list each such path under
+`TOUCHED_BEYOND` as `hook output (<step>)`. A rewrite of any other path, by
+any other step, and any refusal, are handled as above.
 
 ## Report
 

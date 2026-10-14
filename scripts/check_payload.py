@@ -155,6 +155,7 @@ No third-party imports: this runs wherever python3 does.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import re
 import sys
@@ -447,6 +448,47 @@ NOT_A_SURFACE = {
     "Rc", "HashMap", "BTreeMap", "BTreeSet", "HashSet", "Debug", "Clone",
     "PartialEq", "Eq", "Default", "Send", "Sync", "Task", "Exception", "Error",
 }
+
+
+def hook_output_findings(lines: list[str], kind: str | None) -> list[str]:
+    """The implementer's `EXPECTED_HOOK_OUTPUTS:` sub-list inside HOOKS: one
+    `<hook step>: <glob>` per line, a relative glob that is not the whole tree,
+    and not a path this payload's own OWNED_PATHS names (a hook output is by
+    definition outside them). Another package's OWNED_PATHS is not in this
+    payload, so that overlap is the orchestrator's to check at Phase 2."""
+    if kind != "implementer":
+        return []
+    body = field_body(lines, "HOOKS").split("\n")
+    start = next((n for n, l in enumerate(body) if l.strip() == "EXPECTED_HOOK_OUTPUTS:"), None)
+    if start is None:
+        return []
+    indent = len(body[start]) - len(body[start].lstrip())
+    entries = []
+    for line in body[start + 1 :]:
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        if line.strip():
+            entries.append(line.strip())
+    owned = [
+        p.strip() for l in field_body(lines, "OWNED_PATHS").split("\n") if not l.strip().startswith("#")
+        for p in l.split(",") if p.strip() and p.strip() != "|"
+    ]
+    found: list[str] = []
+    if not entries:
+        found.append("HOOKS: EXPECTED_HOOK_OUTPUTS is empty; give `<hook step>: <glob>` lines or drop it")
+    for entry in entries:
+        step, sep, glob = (part.strip() for part in entry.partition(":"))
+        if not sep or not step or not glob:
+            found.append("HOOKS: EXPECTED_HOOK_OUTPUTS line %r is not `<hook step>: <glob>`" % entry)
+        elif glob.startswith("/") or ".." in glob.split("/") or glob.strip("*/") == "":
+            found.append("HOOKS: EXPECTED_HOOK_OUTPUTS glob %r must be relative to the worktree, "
+                         "inside it, and narrower than the whole tree" % glob)
+        else:
+            clash = [o for o in owned if fnmatch.fnmatch(o, glob)]
+            if clash:
+                found.append("HOOKS: EXPECTED_HOOK_OUTPUTS glob %r matches OWNED_PATHS %s; a path the "
+                             "package owns is not a hook output" % (glob, ", ".join(clash)))
+    return found
 
 
 def surface_findings(lines: list[str], kind: str | None, worktree: str | None) -> list[str]:
@@ -940,6 +982,9 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     # 14. an unverified env-var / fixture-mechanism claim
     warnings.extend(env_claim_findings(lines))
 
+    # 15. a malformed or owned-path-overlapping EXPECTED_HOOK_OUTPUTS sub-list
+    defects.extend(hook_output_findings(lines, kind))
+
     # 9. a path, or a read instruction, handed to an agent with no Read
     if host is None and kind in ("unit-test-author", "integration-test-author"):
         warnings.append(
@@ -1245,6 +1290,16 @@ def selftest() -> int:
         "TEST_COMMAND: pytest -q\nHOOKS: none\nSTANDARDS: {REAL}/tests/unit/test_retry.py\nJIRA_KEY: PROJ-1\n"
     )
     case("implementer build clean", impl, "implementer", False)
+    hooked = impl.replace("HOOKS: none\n", "HOOKS: |\n  the anchor fixer rewrites docs\n  EXPECTED_HOOK_OUTPUTS:\n    anchor-fixer: docs/architecture/*.md\n")
+    case("implementer expected hook outputs clean", hooked, "implementer", False)
+    case("expected hook outputs: a step with no glob",
+         hooked.replace("anchor-fixer: docs/architecture/*.md", "anchor-fixer"), "implementer", True, "not `<hook step>: <glob>`")
+    case("expected hook outputs: an absolute glob",
+         hooked.replace("docs/architecture/*.md", "/docs/*.md"), "implementer", True, "relative to the worktree")
+    case("expected hook outputs: the whole tree",
+         hooked.replace("docs/architecture/*.md", "**/*"), "implementer", True, "narrower than the whole tree")
+    case("expected hook outputs: a glob over an owned path",
+         hooked.replace("docs/architecture/*.md", "src/*.py"), "implementer", True, "matches OWNED_PATHS")
     case("implementer hooks required",
          impl.replace("HOOKS: none\n", ""), "implementer", True, "HOOKS is missing")
     case("implementer block body is not a field",

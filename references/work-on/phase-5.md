@@ -92,7 +92,11 @@ was legitimate, so update the package table in the dossier to own it and note
 that it enters the blast radius (Phase 7) — or **reject**, and have the
 implementer revert it or raise `CONTRACT-CHANGE:` if the contract itself
 forced the touch. A path outside `OWNED_PATHS` that the report does not list
-is an implementer defect, the same signal as a conflict.
+is an implementer defect, the same signal as a conflict. The exception is a
+path listed as hook output that matches an `EXPECTED_HOOK_OUTPUTS` glob
+recorded at Phase 2: accept it without a judgement call, no package-table
+change. You still run the repository's own checker over it (the anchor checker,
+for a doc-anchor fixer) before the merge.
 
 Disjoint owned paths mean a conflict should be impossible. **A conflict is
 therefore a signal, not a chore**: it proves the package table was wrong. Log

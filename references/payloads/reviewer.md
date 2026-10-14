@@ -30,7 +30,7 @@ SCOPE: |
     src/store.py :: Store.write_batch (direct caller, unchanged)
   Change requests must stay inside it.
 CONTRACT: |
-  <verbatim — the authority on what the code must do>
+  <the dossier's `## Contract` section, verbatim — the authority on what the code must do>
 RUN_EVIDENCE: |
   <the full test run output; it is green>
 CRITERIA: |
@@ -91,6 +91,12 @@ PRIOR_CRS: |
   `ARBITRATIONS` whenever they disagree. `RULES: none` is a valid field and
   the right one when nothing resolved or `ocr` was unavailable — the field
   stays present so a lens can tell "no rules" from "forgotten".
+- **`CONTRACT` comes from the dossier's `## Contract`, never from the contract
+  files.** After the merge the files hold the implementation, so a CONTRACT
+  filled from them hands the lens the code under the field that is its
+  authority on behaviour, and it can no longer report "the code does not do
+  what the contract says". `compose_payloads.py --kind reviewer` reads the
+  section itself, refuses an empty one, and refuses `--contract-paths`.
 - **`RUN_EVIDENCE` is green when a code lens sees it.** A reviewer never runs
   anything and never needs to check the suite's claim.
 - **`ARBITRATIONS` accumulates across rounds** and goes into every later spawn,

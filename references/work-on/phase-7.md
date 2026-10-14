@@ -37,7 +37,11 @@ which is the safe direction, not the unsafe one.
 
 Spawn all three in **one message** so they run concurrently. There is no chain,
 no short-circuit, and no restart: they review the same green state and return
-their change requests together.
+their change requests together. Each payload's `CONTRACT` is the dossier's
+`## Contract` (`compose_payloads.py` reads it; never `--contract-paths`, whose
+files hold the merged code now). Under Claude Code each spawn prompt is the
+payload itself, pasted (`compose_payloads.py --emit-prompt <final>`); the
+`PAYLOAD_FILE` pointer is the opencode form (`references/work-on/phase-4.md`).
 
 1. `reviewer` `LENS: style` — readability, extraction, naming, documentation
    that matches the contract.
