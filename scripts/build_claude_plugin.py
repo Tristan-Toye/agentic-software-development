@@ -312,8 +312,9 @@ def _footer(tools: list[str], widen: object) -> str:
             )
     lines += [""]
     lines += textwrap.wrap(
-        "Your payload arrives pasted in your prompt, one `FIELD: value` per line; "
-        "a `PAYLOAD_FILE:` intake named above is the opencode form. Files the "
+        "Your payload arrives pasted in your prompt, one `FIELD: value` per line, "
+        "or — when one of the plugin's workflows spawned you — as the "
+        "`PAYLOAD_FILE:` intake named above, which you read first. Files the "
         "payload names are still yours to read, as your tools allow.",
         width=76,
     )
@@ -342,7 +343,12 @@ _SPAWN_RULE = (
     "and spawn again. A spawn the classifier still denies is never re-worded "
     "or re-sent to get past it: stop that spawn, keep the rest of the wave, "
     "and give the user the agent, the denial reason and the payload path — "
-    "they can retry it from /permissions."
+    "they can retry it from /permissions. The one exception is a wave or "
+    "review round sent through the plugin's workflow by name: its `args` "
+    "name each linted final by `payloadPath` and `payloadSha256`, because "
+    "the launch is approved once and a pasted wave is too large to show. "
+    "Never paste a payload into `args`, and never write or copy a workflow "
+    "script."
 )
 
 

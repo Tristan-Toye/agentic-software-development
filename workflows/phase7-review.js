@@ -28,10 +28,12 @@ const modelFor = (agentType) => AGENT_MODELS[agentType] || { model: 'sonnet', ef
 // with an open CR). It writes the CR ledger from the compact result; the full document is
 // read only when it composes the fix implementer's payload, which carries it byte for byte.
 //
-// args: [{ lens, label, prompt, round, reportDir, agentType? }]
+// args: [{ lens, label, payloadPath, payloadSha256, round, reportDir, agentType? }]
 //   lens        'style' | 'architecture' | 'performance' | 'tests'
 //   label       e.g. 'r1 style'
-//   prompt      the full pasted reviewer payload (compose_payloads.py --emit-prompt)
+//   payloadPath   the linted reviewer final, absolute, under <X>/.agent-staging/
+//   payloadSha256 its hash; the reviewer reads the file itself, so args stay small and the
+//                 launch approvable. The plugin's spawn guard checks the file against it.
 //   round       the round number, for the ledger ids' log lines
 //   reportDir   absolute directory, outside any repository's tracked files, where the
 //               verbatim document is kept (<X>/.agent-staging/reviews)
@@ -95,16 +97,23 @@ const slug = (value) => String(value).replace(/[^\w.-]+/g, '_')
 
 const bad = (why) => [{ label: 'phase7-review', lens: '', round: 0, verdict: 'died', crs: [], answers: [], unreached: [], notes: why, document_path: '' }]
 
-if (!Array.isArray(args) || args.length === 0) return bad('args must be a non-empty array of {lens, label, prompt, round, reportDir}')
+if (!Array.isArray(args) || args.length === 0) return bad('args must be a non-empty array of {lens, label, payloadPath, payloadSha256, round, reportDir}')
 if (args.length > MAX_LENSES) return bad('a review round has at most four lenses')
 for (const item of args) {
-  for (const key of ['lens', 'label', 'prompt', 'reportDir']) {
+  if (item && item.prompt !== undefined) return bad('item ' + item.label + ' carries a pasted prompt: pass payloadPath and payloadSha256 instead, and never put a payload into args or a script')
+  for (const key of ['lens', 'label', 'payloadPath', 'payloadSha256', 'reportDir']) {
     if (!item || typeof item[key] !== 'string' || item[key] === '') return bad('item ' + (item && item.label) + ' lacks ' + key)
   }
 }
 
+// The spawn prompt: a task line and the two pointer fields every agent file's intake names.
+const spawnPrompt = (item) =>
+  'You are the ' + item.lens + ' lens of a /work-on Phase 7 review round (' + item.label + '). Your payload is the file below: read it whole before anything else ' +
+  '(in parts with offset and limit if Read says it is too large); every field in it binds you.\n' +
+  'PAYLOAD_FILE: ' + item.payloadPath + '\nPAYLOAD_SHA256: ' + item.payloadSha256
+
 async function review(item) {
-  const out = await agent(item.prompt + RETURN_FORM, {
+  const out = await agent(spawnPrompt(item) + RETURN_FORM, {
     agentType: item.agentType || 'agentic-software-development:reviewer',
     ...modelFor(item.agentType || 'agentic-software-development:reviewer'),
     label: item.label,

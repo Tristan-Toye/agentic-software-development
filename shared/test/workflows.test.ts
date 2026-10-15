@@ -97,7 +97,8 @@ const wave = readFileSync(join(dir, "phase4-wave.js"), "utf8")
 const item = (label: string, over: object = {}) => ({
   agentType: "agentic-software-development:implementer",
   label,
-  prompt: `TASK ${label}\nOWNED_PATHS: src/${label}.rs`,
+  payloadPath: `/wt/${label}/.agent-staging/payloads/${label}.md`,
+  payloadSha256: `sha-${label}`,
   root: `/wt/${label}`,
   branch: `feat/x-${label}`,
   base: "abc123",
@@ -128,14 +129,15 @@ const fakeWave = (prompt: string, opts: Opts) => {
   const by = (l: string) => result.find((r: any) => r.label === l)
   check("wave: one compact entry per item, in order", Array.isArray(result) && result.map((r: any) => r.label).join() === "P1,P2,P3,P4")
   check("wave: entry shape", result.every((r: any) => ["label", "verdict", "flags", "returned_line", "report_excerpt", "report_path"].every((k) => k in r) && Array.isArray(r.flags)))
-  check("wave: spawns carry agentType, label and the pasted prompt", calls.filter((c) => c.opts.agentType).length === 4 && calls.some((c) => c.opts.label === "P2" && c.opts.agentType === "agentic-software-development:unit-test-author" && c.prompt.startsWith("TASK P2")))
+  check("wave: spawns carry agentType, label and the payload pointer", calls.filter((c) => c.opts.agentType).length === 4 && calls.some((c) => c.opts.label === "P2" && c.opts.agentType === "agentic-software-development:unit-test-author" && c.prompt.includes("\nPAYLOAD_FILE: /wt/P2/.agent-staging/payloads/P2.md\nPAYLOAD_SHA256: sha-P2")))
+  check("wave: a spawn prompt is small (the payload stays in its file)", calls.filter((c) => c.opts.agentType).every((c) => c.prompt.length < 400))
   check("wave: clean return", by("P1").verdict === "clean" && by("P1").flags.length === 0 && by("P1").returned_line.startsWith("P1 RETURNED") && by("P1").report_path.endsWith("/wt/P1/.agent-staging/reports/P1.txt"))
   check("wave: GAP line passes through verbatim and flags the item", by("P2").verdict === "flagged" && by("P2").flags.includes("gap") && by("P2").report_excerpt.includes("GAP: the contract does not say what flush returns on an empty window"))
   check("wave: CONTRACT-CHANGE passes through", by("P4").flags.includes("contract-change") && by("P4").report_excerpt.startsWith("CONTRACT-CHANGE: flush(x) must take &mut self"))
   check("wave: a null agent result is 'died' and the tree is still checked", by("P3").verdict === "died" && by("P3").flags.includes("no-report") && by("P3").report_path === "" && calls.some((c) => c.opts.model === "haiku" && c.prompt.includes("--agent 'P3'") && c.prompt.includes("returned no report")))
   check("wave: excerpt bounded", result.every((r: any) => r.report_excerpt.length <= 600))
   check("wave: never releases a slot or writes the log", calls.every((c) => !c.prompt.includes("--release") && !c.prompt.includes("--log ")))
-  check("wave: verifier runs the plugin's verify_return.py with the paths given", calls.some((c) => c.prompt.includes("python3 '/plugin/scripts/verify_return.py' --root '/wt/P1' --branch 'feat/x-P1' --base 'abc123' --print-line --agent 'P1' --owned 'src/P1.rs'") && c.prompt.includes("--report '/wt/P1/.agent-staging/reports/P1.txt' --kind 'implementer'")))
+  check("wave: verifier runs the plugin's verify_return.py with the paths given", calls.some((c) => c.prompt.includes("python3 '/plugin/scripts/verify_return.py' --root '/wt/P1' --branch 'feat/x-P1' --base 'abc123' --payload '/wt/P1/.agent-staging/payloads/P1.md' --payload-sha256 'sha-P1' --print-line --agent 'P1' --owned 'src/P1.rs'") && c.prompt.includes("--report '/wt/P1/.agent-staging/reports/P1.txt' --kind 'implementer'")))
 }
 {
   // a long GAP block is cut at 600 with a pointer to the file
@@ -153,6 +155,8 @@ const fakeWave = (prompt: string, opts: Opts) => {
   check("wave: one dead agent does not stop the others", thrown.result[0].verdict === "clean" && thrown.result[1].verdict === "died")
   // argument checks
   check("wave: empty args refused", (await run(wave, [], () => null)).result[0].flags[0] === "bad-args")
+  check("wave: a pasted prompt refused, nothing spawned", await (async () => { const r = await run(wave, [item("P1", { prompt: "TASK P1" })], () => null); return r.result[0].flags[0] === "bad-args" && r.result[0].report_excerpt.includes("payloadPath") && r.calls.length === 0 })())
+  check("wave: missing payloadSha256 refused", (await run(wave, [item("P1", { payloadSha256: "" })], () => null)).result[0].flags[0] === "bad-args")
   check("wave: missing pluginRoot refused", (await run(wave, [item("P1", { pluginRoot: "" })], () => null)).result[0].flags[0] === "bad-args")
   check("wave: more than 16 refused, nothing spawned", await (async () => { const r = await run(wave, Array.from({ length: 17 }, (_, i) => item("A" + i)), () => null); return r.result[0].flags[0] === "bad-args" && r.calls.length === 0 })())
   const ten = await run(wave, Array.from({ length: 10 }, (_, i) => item("B" + i)), (p, o) => (o.agentType ? "ok" : { verdict: "clean", flags: [], returned_line: "r" }))
@@ -166,14 +170,14 @@ const fakeWave = (prompt: string, opts: Opts) => {
 
 // ---- phase7-review ------------------------------------------------------------------
 const review = readFileSync(join(dir, "phase7-review.js"), "utf8")
-const lens = (name: string) => ({ lens: name, label: `r1 ${name}`, prompt: `LENS: ${name}\nSCOPE: src/a.rs`, round: 1, reportDir: "/x/.agent-staging/reviews" })
+const lens = (name: string) => ({ lens: name, label: `r1 ${name}`, payloadPath: `/x/.agent-staging/payloads/rv-${name}.md`, payloadSha256: `sha-${name}`, round: 1, reportDir: "/x/.agent-staging/reviews" })
 const doc = "# Change requests — architecture (round 1)\n\n## CR-1: split the cache from the loader\n- Location: src/a.rs:10\n"
 const fakeReview = (prompt: string, opts: Opts) => {
   if (opts.agentType) {
     check("review: reviewer agent with a schema", opts.agentType === "agentic-software-development:reviewer" && !!opts.schema)
-    if (prompt.startsWith("LENS: style")) return { verdict: "PASS", crs: [], document: "", notes: "clean", unreached: ["none"] }
-    if (prompt.startsWith("LENS: performance")) return null
-    if (prompt.startsWith("LENS: tests")) return { verdict: "PASS", crs: [], document: "", notes: "", unreached: ["tests/flush_test.rs :: reload_drains_queue"] }
+    if (prompt.includes("rv-style.md")) return { verdict: "PASS", crs: [], document: "", notes: "clean", unreached: ["none"] }
+    if (prompt.includes("rv-performance.md")) return null
+    if (prompt.includes("rv-tests.md")) return { verdict: "PASS", crs: [], document: "", notes: "", unreached: ["tests/flush_test.rs :: reload_drains_queue"] }
     return {
       verdict: "CHANGES-REQUIRED",
       crs: [{ id: "CR-1", severity: "blocking", location: "src/a.rs:10", claim: "split the cache from the loader" }],
@@ -197,6 +201,8 @@ const fakeReview = (prompt: string, opts: Opts) => {
   check("review: a dead lens is 'died', never PASS", by("performance").verdict === "died" && by("performance").crs.length === 0)
   check("review: the compact result holds no document text", !JSON.stringify(result).includes("# Change requests"))
   check("review: result shape", result.every((r: any) => ["label", "lens", "round", "verdict", "crs", "answers", "unreached", "notes", "document_path"].every((k) => k in r)))
+  check("review: spawns carry the payload pointer", calls.some((c) => c.opts.agentType && c.prompt.includes("PAYLOAD_FILE: /x/.agent-staging/payloads/rv-architecture.md\nPAYLOAD_SHA256: sha-architecture")))
+  check("review: a pasted prompt refused", (await run(review, [{ ...lens("style"), prompt: "LENS: style" }], () => null)).result[0].verdict === "died")
   check("review: bad args refused", (await run(review, [{ lens: "style" }], () => null)).result[0].verdict === "died")
   check("review: five lenses refused", (await run(review, ["style", "architecture", "performance", "tests", "style"].map(lens), () => null)).result[0].verdict === "died")
 }

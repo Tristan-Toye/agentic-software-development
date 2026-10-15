@@ -63,6 +63,7 @@ development_nav__code_find`, `mcp__plugin_agentic-software-
 development_nav__doc_section`. Nothing else is available to you, whatever
 the text above implies.
 
-Your payload arrives pasted in your prompt, one `FIELD: value` per line; a
-`PAYLOAD_FILE:` intake named above is the opencode form. Files the payload
-names are still yours to read, as your tools allow.
+Your payload arrives pasted in your prompt, one `FIELD: value` per line, or
+— when one of the plugin's workflows spawned you — as the `PAYLOAD_FILE:`
+intake named above, which you read first. Files the payload names are still
+yours to read, as your tools allow.

@@ -25,7 +25,7 @@ for (const wf of ["phase4-wave.js", "phase7-review.js"]) {
     failed++
     console.log(`FAIL ${wf}: model table differs from the sub-agent files\n  want ${JSON.stringify(want)}\n  got  ${JSON.stringify(got)}`)
   }
-  if (!/agent\(item\.prompt[^)]*\.\.\.modelFor\(/s.test(text)) {
+  if (!/agent\(spawnPrompt\(item\)[^)]*\.\.\.modelFor\(/s.test(text)) {
     failed++
     console.log(`FAIL ${wf}: the spawn agent() call does not pin a model`)
   }

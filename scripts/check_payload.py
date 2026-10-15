@@ -770,13 +770,34 @@ def section_text(text: str, heading: str) -> str | None:
     return None if out is None else "\n".join(out).rstrip("\n")
 
 
+# Agents whose Claude Code Read is confined by the plugin's PreToolUse hook
+# (shared/blind-read.ts): a path is readable only when one of these directory
+# names is a segment of it. shared/test/shared.test.ts keeps the two lists equal.
+HOOK_READ_SCOPE = {
+    "unit-test-author": (".agent-staging", "tests", "test", "__tests__", "spec", "test-support", "testing"),
+}
+
+
+def readable(path: str, kind: str | None) -> bool:
+    """Whether a Read-granted agent may open the path under Claude Code."""
+    scope = HOOK_READ_SCOPE.get(kind or "")
+    return scope is None or any(seg in scope for seg in path.split("/")[:-1])
+
+
 def dead_letter_findings(lines: list[str], kind: str | None,
                          tools: list[str] | None) -> tuple[list[str], list[str]]:
-    """Paths and read instructions handed to an agent whose tool list grants
-    no Read: every one is a dead letter, in a field or in prose."""
-    if tools is None or "Read" in tools:
+    """Paths and read instructions handed to an agent that cannot read them:
+    every one is a dead letter, in a field or in prose. That is every path when
+    the tool list grants no Read, and every path outside the hook's read scope
+    when it grants a confined Read."""
+    if tools is None:
+        return [], []
+    scoped = "Read" in tools and (kind or "") in HOOK_READ_SCOPE
+    if "Read" in tools and not scoped:
         return [], []
     granted = ", ".join(tools)
+    if scoped:
+        granted += "; Read confined to " + ", ".join(HOOK_READ_SCOPE[kind or ""])
     defects: list[str] = []
     warnings: list[str] = []
     test_lines = field_line_numbers(lines, "TEST_PATHS")
@@ -789,21 +810,23 @@ def dead_letter_findings(lines: list[str], kind: str | None,
             continue
         for match in ABS_PATH.finditer(line):
             token = match.group(1)
+            if scoped and readable(token, kind):
+                continue
             field = field_of.get(number)
             if field:
                 defects.append(
-                    "line %d: %s names the path %s, but %s's frontmatter under this "
-                    "host grants no Read (tools: %s) — a dead letter; %s."
+                    "line %d: %s names the path %s, but %s cannot read it under this "
+                    "host (tools: %s) — a dead letter; %s."
                     % (number, field, token, kind or "the agent", granted, PASTED_FORM[field])
                 )
             else:
                 defects.append(
-                    "line %d: the path %s is handed to an agent whose frontmatter "
-                    "grants no Read (tools: %s) — a dead letter in prose as much as "
+                    "line %d: the path %s is handed to an agent that cannot read it "
+                    "(tools: %s) — a dead letter in prose as much as "
                     "in a field; paste the content the path was meant to carry."
                     % (number, token, granted)
                 )
-        if READ_VERB.search(line):
+        if READ_VERB.search(line) and not scoped:
             warnings.append(
                 "line %d: %r tells an agent with no Read (tools: %s) to read "
                 "something. The instruction is a dead letter; paste what it should "
@@ -813,7 +836,7 @@ def dead_letter_findings(lines: list[str], kind: str | None,
         for number in sorted(test_lines):
             for match in ABS_PATH.finditer(lines[number - 1]):
                 path = match.group(1)
-                if os.path.exists(path):
+                if os.path.exists(path) and not (scoped and readable(path, kind)):
                     defects.append(
                         "line %d: TEST_PATHS %s already exists, and the agent has "
                         "neither Read nor Edit (tools: %s): Write is whole-file and "
@@ -1284,6 +1307,15 @@ def selftest() -> int:
          "unit-test-author", False, host="opencode")
     case("host claude: a Read + Write author may be handed paths",
          unit_ok, "unit-test-author", False, host="claude", tools=["Read", "Write"])
+    case("host claude: the hook-confined Read admits a staged SUPPORT_PATHS path",
+         pasted + "SUPPORT_PATHS: {REAL}/.agent-staging/contract-support/grant.rs\n",
+         "unit-test-author", False, host="claude", tools=["Read", "Write"])
+    case("host claude: the hook-confined Read refuses a source path",
+         pasted + "SUPPORT_PATHS: {REAL}/src/grant.rs\n",
+         "unit-test-author", True, "cannot read it", host="claude", tools=["Read", "Write"])
+    case("host claude: an existing TEST_PATHS file is fine once the author can Read it",
+         pasted.replace("TEST_PATHS: {REAL}/tests/unit/test_flush.py", "TEST_PATHS: {REAL}/tests/unit/test_retry.py"),
+         "unit-test-author", False, host="claude", tools=["Read", "Write"])
     case("assertion form: a whole-value line with no tag warns",
          pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
                         "PROMISE_CHECKLIST: |\n  flush — order: gives exactly `[A, B]`\n"),

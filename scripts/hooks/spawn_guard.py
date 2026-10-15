@@ -28,6 +28,22 @@ plugin's agents whose prompt:
   `…TOKEN/SECRET/PASSWORD/API_KEY=<literal>` assignment: name the file or
   script that sets it instead.
 
+A launch of the plugin's workflows (phase4-wave, phase7-review) is the one
+place a pointer is the form: the user approves the launch, its spawns are not
+classified one by one, and a pasted wave made args too large to approve (a
+340 KB wave could not be shown, so it could not be approved). Each item
+carries `payloadPath` and `payloadSha256`, and this hook denies the launch
+when an item:
+
+- pastes a `prompt` instead;
+- names a payload outside `.agent-staging/`, or in a scratchpad, or one that
+  does not exist or does not hash to its `payloadSha256`;
+- names a payload that carries a scratchpad path or a secret-shaped value.
+
+It also denies a workflow script of its own — inline, or by a scriptPath
+outside the plugin's workflows/ — that spawns this plugin's agents with a
+payload built in: call the plugin's workflow by name instead.
+
 It never allows anything: a spawn it lets through still goes to the
 classifier. Spawns of other agents are not its business.
 
@@ -111,22 +127,71 @@ def problems(prompt: str) -> list[str]:
     return found
 
 
+PLUGIN_WORKFLOWS = ("phase4-wave", "phase7-review")
+SCRIPT_PAYLOAD_CHARS = 20_000  # the plugin's own workflows are under 12 KB with no payload in them
+
+
+def plugin_workflow(tool_input: dict) -> bool:
+    name = str(tool_input.get("name", ""))
+    path = str(tool_input.get("scriptPath", ""))
+    return any(name in (wf, PLUGIN + wf) or path.endswith("/workflows/" + wf + ".js") for wf in PLUGIN_WORKFLOWS)
+
+
+def payload_problems(label: str, path: str, sha: str) -> list[str]:
+    """One workflow item's payload file: staged, present, at its hash, and clean."""
+    where = f"item {label}: "
+    if not path or not sha:
+        return [where + "payloadPath and payloadSha256 are required (the linted final and its hash)"]
+    if SCRATCHPAD.search(path) or ".agent-staging/" not in path:
+        return [where + f"the payload {path} must be a linted final under <worktree>/.agent-staging/"]
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError as err:
+        return [where + f"cannot read the payload {path} ({err.strerror})"]
+    now = hashlib.sha256(data).hexdigest()
+    if not now.startswith(sha.lower()):
+        return [where + f"{path} hashes to {now[:12]}, not the stated {sha[:12]}: re-lint the final and pass its current hash"]
+    return [where + p for p in problems(data.decode("utf-8", "replace")) if not p.startswith("the prompt points")]
+
+
 def workflow_problems(tool_input: dict) -> list[str]:
-    """The same checks for every spawn prompt inside one of the plugin's workflow launches
-    (phase4-wave, phase7-review): their args are lists of items that carry a `prompt` each,
-    and the workflow passes each prompt to a plugin agent unchanged."""
-    target = str(tool_input.get("name", "")) + " " + str(tool_input.get("scriptPath", ""))
-    if not (PLUGIN in target or "/workflows/phase4-wave" in target or "/workflows/phase7-review" in target):
+    """A Workflow launch: the plugin's own workflows take payload files, checked here before
+    the launch; any other script that spawns this plugin's agents must not carry a payload."""
+    if plugin_workflow(tool_input):
+        args = tool_input.get("args")
+        items = args.get("items") if isinstance(args, dict) else args
+        found: list[str] = []
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label", "?"))
+            if "prompt" in item:
+                found.append(
+                    f"item {label}: a pasted prompt — pass payloadPath and payloadSha256 instead "
+                    "(the agent reads the file; args stay small enough to approve)"
+                )
+                continue
+            found += payload_problems(label, str(item.get("payloadPath", "")), str(item.get("payloadSha256", "")))
+        return found
+    script = str(tool_input.get("script", ""))
+    path = str(tool_input.get("scriptPath", ""))
+    if not script and path:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                script = fh.read()
+        except OSError:
+            return []
+    if PLUGIN not in script:
         return []
-    args = tool_input.get("args")
-    items = args.get("items") if isinstance(args, dict) else args
-    found: list[str] = []
-    for item in items if isinstance(items, list) else []:
-        if not isinstance(item, dict):
-            continue
-        for problem in problems(str(item.get("prompt", ""))):
-            found.append(f"item {item.get('label', '?')}: {problem}")
-    return found
+    if len(script) > SCRIPT_PAYLOAD_CHARS or carries_payload(script):
+        return [
+            f"this workflow script ({len(script)} characters) spawns {PLUGIN.rstrip(':')} agents with a "
+            "payload built in. A script that size cannot be shown, so the launch cannot be approved, and "
+            "a copy of the plugin's workflow escapes its checks. Call the plugin's workflow by name "
+            f"({PLUGIN}phase4-wave or {PLUGIN}phase7-review) with payloadPath and payloadSha256 per item"
+        ]
+    return []
 
 
 def decide(event: dict) -> dict | None:
@@ -224,15 +289,48 @@ def selftest() -> int:
         args = {"pluginRoot": "/p", "items": items} if wrap else items
         return decide({"tool_name": "Workflow", "tool_input": {"name": name, "args": args}})
 
-    check("a workflow wave of pasted payloads passes", launch([{"label": "P1", "prompt": pasted}]) is None)
-    out = launch([{"label": "P1", "prompt": pasted}, {"label": "P2", "prompt": recorded}])
-    check("a workflow wave with one pointer prompt is denied, naming the item",
-          bool(out) and "item P2" in out["hookSpecificOutput"]["permissionDecisionReason"])
-    check("the object form of a wave's args is checked too", bool(launch([{"label": "P2", "prompt": recorded}], wrap=True)))
-    check("a scriptPath launch of the plugin workflow is checked",
-          bool(decide({"tool_name": "Workflow", "tool_input": {
-              "scriptPath": "/c/1.9.0/workflows/phase4-wave.js", "args": [{"label": "P2", "prompt": recorded}]}})))
-    check("other workflows are not its business", launch([{"label": "x", "prompt": recorded}], name="my-sweep") is None)
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        staged = os.path.join(tmp, "wt", ".agent-staging", "payloads")
+        os.makedirs(staged)
+        good = os.path.join(staged, "P1.md")
+        with open(good, "w", encoding="utf-8") as fh:
+            fh.write(pasted)
+        good_sha = hashlib.sha256(pasted.encode()).hexdigest()
+        item = {"label": "P1", "payloadPath": good, "payloadSha256": good_sha}
+        check("a workflow wave of staged payload files passes", launch([item]) is None)
+        check("a hash prefix is enough", launch([dict(item, payloadSha256=good_sha[:16])]) is None)
+        out = launch([item, {"label": "P2", "prompt": pasted}])
+        check("a pasted prompt in a wave is denied, naming the item",
+              bool(out) and "item P2: a pasted prompt" in out["hookSpecificOutput"]["permissionDecisionReason"])
+        check("a stale hash is denied", bool(launch([dict(item, payloadSha256="0" * 64)])))
+        check("a missing hash is denied", bool(launch([{"label": "P1", "payloadPath": good}])))
+        check("a payload outside .agent-staging is denied",
+              bool(launch([dict(item, payloadPath=os.path.join(tmp, "P1.md"))])))
+        check("a missing payload file is denied", bool(launch([dict(item, payloadPath=os.path.join(staged, "nope.md"))])))
+        secret = os.path.join(staged, "P3.md")
+        body = pasted + "HOOKS: GH_TOKEN=ghp_abcdefghijklmnop\n"
+        with open(secret, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        check("a payload carrying a secret is denied",
+              bool(launch([{"label": "P3", "payloadPath": secret, "payloadSha256": hashlib.sha256(body.encode()).hexdigest()}])))
+        check("the object form of a wave's args is checked too", bool(launch([{"label": "P2", "prompt": pasted}], wrap=True)))
+        check("a scriptPath launch of the plugin workflow is checked",
+              bool(decide({"tool_name": "Workflow", "tool_input": {
+                  "scriptPath": "/c/1.9.0/workflows/phase4-wave.js", "args": [{"label": "P2", "prompt": pasted}]}})))
+        check("the review workflow is checked", bool(launch([{"label": "r1", "prompt": pasted}], name=PLUGIN + "phase7-review")))
+        generated = os.path.join(tmp, "wave1.js")
+        with open(generated, "w", encoding="utf-8") as fh:
+            fh.write("const items = [{agentType: '" + PLUGIN + "implementer', prompt: `" + "x" * 30000 + "`}]\n")
+        out = decide({"tool_name": "Workflow", "tool_input": {"scriptPath": generated}})
+        check("a generated script with a payload built in is denied (the W-075 launch)",
+              bool(out) and "by name" in out["hookSpecificOutput"]["permissionDecisionReason"])
+        check("an inline script with a pasted payload is denied",
+              bool(decide({"tool_name": "Workflow", "tool_input": {"script": "agent(`" + full + "`, {agentType: '" + PLUGIN + "reviewer'})"}})))
+        check("a small script that spawns a plugin agent with no payload passes",
+              decide({"tool_name": "Workflow", "tool_input": {"script": "await agent('read README', {agentType: '" + PLUGIN + "reviewer'})"}}) is None)
+        check("other workflows are not its business",
+              decide({"tool_name": "Workflow", "tool_input": {"name": "my-sweep", "args": [{"label": "x", "prompt": recorded}]}}) is None)
     check("the legacy Task name is covered", bool(spawn(recorded, tool="Task")))
     reason = spawn(recorded)["hookSpecificOutput"]["permissionDecisionReason"]
     check("the reason says how to fix it", "paste" in reason)

@@ -51,9 +51,13 @@ one object per lens in this round:
 
 ```
 { "lens": "style | architecture | performance | tests", "label": "r1 style",
-  "prompt": "<the linted reviewer payload, pasted>", "round": 1,
+  "payloadPath": "<the linted reviewer final, absolute, under <X>/.agent-staging/>",
+  "payloadSha256": "<its hash>", "round": 1,
   "reportDir": "<X>/.agent-staging/reviews" }
 ```
+
+Each reviewer reads its final itself, as in Phase 4's workflow wave: never put
+a payload into `args` or a script, and never write or copy a workflow script.
 
 The reviewers run concurrently, each returns its change requests as a
 structured object, and a cheap agent keeps each verbatim document in
@@ -86,7 +90,7 @@ the workflow never reports that as a pass, and neither do you — resume it, or
 call the workflow again with that lens alone and `SCOPE` narrowed to the
 `unreached` locations. A `CHANGES-REQUIRED` with a non-empty `unreached` keeps
 its CRs and gets the same follow-up for the rest. A check round calls the
-workflow with only the lenses that have an open CR, each prompt carrying its
+workflow with only the lenses that have an open CR, each payload carrying its
 `PRIOR_CRS`. Under opencode there is no workflow:
 spawn the lenses in one message as written.
 
@@ -185,9 +189,8 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
     CR folded into its payload, by the host's mechanic (Phase 4): under
     opencode the file sits inside the author's read map, so it reads the
     current content itself and edits in place with `Edit`, nothing pasted
-    and nothing deleted; under Claude Code the author has `Write` alone, so
-    the file is deleted first with `safe_revert.py --delete` and rewritten
-    whole, with the CR's tests named. Pass the finding and
+    and nothing deleted; under Claude Code it reads the file (its `Read` reaches the
+    test families) and rewrites it whole, with the CR's tests named. Pass the finding and
     the constraints, and nothing about the implementation. A one-line CR
     costs a one-line edit; verify it regardless with
     `check_harness_edit.py --diff ORIGINAL MODIFIED` over what came back —

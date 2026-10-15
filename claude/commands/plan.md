@@ -420,4 +420,8 @@ refuses a pointer prompt, a scratchpad path or a secret-shaped value with
 the reason; fix the prompt and spawn again. A spawn the classifier still
 denies is never re-worded or re-sent to get past it: stop that spawn, keep
 the rest of the wave, and give the user the agent, the denial reason and the
-payload path — they can retry it from /permissions.
+payload path — they can retry it from /permissions. The one exception is a
+wave or review round sent through the plugin's workflow by name: its `args`
+name each linted final by `payloadPath` and `payloadSha256`, because the
+launch is approved once and a pasted wave is too large to show. Never paste
+a payload into `args`, and never write or copy a workflow script.

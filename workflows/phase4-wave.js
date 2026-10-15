@@ -1,6 +1,6 @@
 export const meta = {
   name: 'phase4-wave',
-  description: 'One /work-on Phase 4 wave: spawn every pasted payload as its plugin sub-agent, verify each return mechanically with verify_return.py, and hand back one compact result per agent.',
+  description: 'One /work-on Phase 4 wave: spawn every linted payload file as its plugin sub-agent, verify each return mechanically with verify_return.py, and hand back one compact result per agent.',
   phases: [{ title: 'Wave' }, { title: 'Verify' }],
 }
 
@@ -28,11 +28,16 @@ const modelFor = (agentType) => AGENT_MODELS[agentType] || { model: 'sonnet', ef
 // calls this workflow ONCE per wave. Each agent's full report stays in this script and in
 // the file the verifier wrote; the orchestrator's context gets only the compact array.
 //
-// args: [{ agentType, label, prompt, root, branch, base, owned, kind,
+// args: [{ agentType, label, payloadPath, payloadSha256, root, branch, base, owned, kind,
 //          contractHash?, contractFiles?, reportDir?, pluginRoot }]
 //   agentType     plugin sub-agent, e.g. 'agentic-software-development:implementer'
 //   label         the wave-table label, e.g. 'P1' or 'UT-A'
-//   prompt        the full pasted payload (compose_payloads.py --emit-prompt)
+//   payloadPath   the linted final, absolute, under <worktree>/.agent-staging/
+//   payloadSha256 its hash (prepare_wave.py's .hashes file, or shasum -a 256)
+//                 The agent reads the file itself: args stay a few hundred bytes per spawn,
+//                 so the launch is approvable (a pasted wave was 340 KB) and nothing is
+//                 retyped. The plugin's spawn guard checks each file against its hash and
+//                 for a secret before the launch; the verifier checks the hash again after.
 //   root, branch, base, owned   what verify_return.py checks: the worktree the agent worked
 //                 in, the branch it was told to commit on, the sha it forked from, its
 //                 OWNED_PATHS / TEST_PATHS (comma list or array)
@@ -98,9 +103,18 @@ const gateFlags = (report) => {
   return flags
 }
 
+// The spawn prompt: a task line and the two pointer fields, the intake every agent file
+// names ("When your prompt is `PAYLOAD_FILE: <path>`").
+function spawnPrompt(item) {
+  return 'You are ' + item.label + ' in a /work-on Phase 4 wave. Your payload is the file below: read it whole before anything else ' +
+    '(in parts with offset and limit if Read says it is too large); every field in it binds you.\n' +
+    'PAYLOAD_FILE: ' + item.payloadPath + '\nPAYLOAD_SHA256: ' + item.payloadSha256
+}
+
 function verifyPrompt(item, reportPath, report, pluginRoot) {
   const cmd = ['python3', sq(pluginRoot + '/scripts/verify_return.py'),
     '--root', sq(item.root), '--branch', sq(item.branch), '--base', sq(item.base),
+    '--payload', sq(item.payloadPath), '--payload-sha256', sq(item.payloadSha256),
     '--print-line', '--agent', sq(item.label)]
   const owned = csv(item.owned)
   if (owned) cmd.push('--owned', sq(owned))
@@ -125,10 +139,11 @@ const rootOfPlugin = (item) => item.pluginRoot || (args && !Array.isArray(args) 
 
 const bad = (why) => [{ label: 'phase4-wave', verdict: 'died', flags: ['bad-args'], returned_line: '', report_excerpt: why, report_path: '' }]
 
-if (!items || items.length === 0) return bad('args must be a non-empty array of {agentType, label, prompt, root, branch, base, owned, kind, pluginRoot}')
+if (!items || items.length === 0) return bad('args must be a non-empty array of {agentType, label, payloadPath, payloadSha256, root, branch, base, owned, kind, pluginRoot}')
 if (items.length > MAX_AGENTS) return bad('a wave of ' + items.length + ' exceeds the ' + MAX_AGENTS + '-agent concurrency limit; split it and call this workflow once per part')
 for (const item of items) {
-  for (const key of ['agentType', 'label', 'prompt', 'root', 'branch', 'base']) {
+  if (item && item.prompt !== undefined) return bad('item ' + item.label + ' carries a pasted prompt: pass payloadPath and payloadSha256 instead, and never put a payload into args or a script')
+  for (const key of ['agentType', 'label', 'payloadPath', 'payloadSha256', 'root', 'branch', 'base']) {
     if (!item || typeof item[key] !== 'string' || item[key] === '') return bad('item ' + (item && item.label) + ' lacks ' + key)
   }
   if (!rootOfPlugin(item)) return bad('item ' + item.label + ' lacks pluginRoot')
@@ -138,7 +153,7 @@ if (items.length > MEDIUM_WAVE) log('Wave of ' + items.length + ' is past the me
 // Stage 1: the spawn. Stage 2: the cheap mechanical verification. A stage that has a null
 // predecessor never runs, so the spawn always returns an object, even for a dead agent.
 async function spawn(item) {
-  const report = await agent(item.prompt, { agentType: item.agentType, ...modelFor(item.agentType), label: item.label, phase: 'Wave' })
+  const report = await agent(spawnPrompt(item), { agentType: item.agentType, ...modelFor(item.agentType), label: item.label, phase: 'Wave' })
   return { item, report: typeof report === 'string' && report.trim() !== '' ? report : null }
 }
 

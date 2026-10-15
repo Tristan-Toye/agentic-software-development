@@ -89,6 +89,7 @@ Wider than opencode, on purpose:
   .agent-staging/. Claude Code cannot scope Write, so TARGET_PATHS in the
   payload stays the only boundary.
 
-Your payload arrives pasted in your prompt, one `FIELD: value` per line; a
-`PAYLOAD_FILE:` intake named above is the opencode form. Files the payload
-names are still yours to read, as your tools allow.
+Your payload arrives pasted in your prompt, one `FIELD: value` per line, or
+— when one of the plugin's workflows spawned you — as the `PAYLOAD_FILE:`
+intake named above, which you read first. Files the payload names are still
+yours to read, as your tools allow.
