@@ -1,7 +1,7 @@
 // Run: bun --no-install shared/test/claude-hooks.test.ts
 // Each Claude Code hook is run as Claude Code runs it: a process fed hook JSON on stdin,
 // with a fixture transcript on disk. Checks stdout and the exit code.
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -65,6 +65,26 @@ check("pre: ordinary bash allowed", hook("pre-tool-use.ts", pre({ tool_name: "Ba
 check("pre: other tool ignored", hook("pre-tool-use.ts", pre({ tool_name: "Grep", tool_input: { pattern: "x" } })).out === "")
 // Not the orchestrator: a subagent, another command's session, a session without a transcript.
 check("pre: subagent is a no-op", hook("pre-tool-use.ts", pre({ agent_id: "a1", agent_type: "implementer" })).out === "")
+// The unit test author's read boundary, by agent_type or by the subagent's record on disk.
+const UT = "agentic-software-development:unit-test-author"
+const blind = (path: string, over: object = {}) =>
+  hook("pre-tool-use.ts", pre({ agent_id: "u1", agent_type: UT, tool_input: { file_path: path }, ...over })).out
+check("pre: blind author may read its staged payload", blind("/wt/.agent-staging/payloads/UT.md") === "")
+check("pre: blind author may read a test family", blind("/wt/crates/platform/tests/common/mod.rs") === "")
+check("pre: blind author may not read a source body", blind("/wt/crates/platform/src/nats_auth.rs").includes('"deny"'))
+check("pre: blind author may not read a dossier", blind("/wt/.discovery/dossiers/W-014.md").includes("GAP:"))
+check("pre: .. cannot climb out of a test family", blind("/wt/tests/../src/lib.rs").includes('"deny"'))
+check("pre: blind author's Bash is not this hook's business", blind("", { tool_name: "Bash", tool_input: { command: "cat src/lib.rs" } }) === "")
+check("pre: another subagent reads freely", hook("pre-tool-use.ts", pre({ agent_id: "a1", agent_type: "agentic-software-development:implementer", tool_input: { file_path: "/wt/src/lib.rs" } })).out === "")
+{
+  // a workflow agent: no agent_type in the input, its record under <session>/subagents/workflows/<run>/
+  const runDir = join(tmp, "s-orch", "subagents", "workflows", "wf_1")
+  mkdirSync(runDir, { recursive: true })
+  writeFileSync(join(runDir, "agent-w1.meta.json"), JSON.stringify({ agentType: UT, description: "UT" }))
+  check("pre: a workflow agent's type is read from its record", blind("/wt/src/lib.rs", { agent_id: "w1", agent_type: undefined }).includes('"deny"'))
+  check("pre: the record is found beside the agent's own transcript too", blind("/wt/src/lib.rs", { agent_id: "w1", agent_type: undefined, transcript_path: join(runDir, "agent-w1.jsonl") }).includes('"deny"'))
+  check("pre: an agent with no record reads freely", blind("/wt/src/lib.rs", { agent_id: "w9", agent_type: undefined }) === "")
+}
 check("pre: other command's session is a no-op", hook("pre-tool-use.ts", pre({ session_id: "s-plan", transcript_path: plan })).out === "")
 check("pre: missing transcript is a no-op", hook("pre-tool-use.ts", pre({ session_id: "s-none", transcript_path: join(tmp, "nope.jsonl") })).out === "")
 // The answer is cached per session: the state file outlives the transcript.
@@ -209,7 +229,7 @@ check("flight: missing dossier fails open", r.code === 0 && !r.out.includes("Bui
 const lines = readFileSync(join(tmp, "agentic-software-development", "claude", "claude-hooks.log"), "utf8").trim().split("\n")
 const count = (e: string) => lines.filter((l) => l.split(" ")[1] === e).length
 check("log: timestamped, one line per event", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z (refused|nudge|recorded|restored) \S+ /.test(l)))
-check("log: refusals", count("refused") === 5)
+check("log: refusals (five orchestrator, five blind-read)", count("refused") === 10)
 check("log: nudges", count("nudge") === 2)
 check("log: restores", count("restored") === 2 + restores)
 check("log: checkpoint recorded", count("recorded") === 1)

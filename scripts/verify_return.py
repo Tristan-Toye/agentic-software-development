@@ -19,6 +19,7 @@ agent's tool list makes impossible.
     verify_return.py --root X --branch B --base SHA
         [--owned p1,p2]
         [--contract-hash H --contract-files f1,f2]
+        [--payload FILE --payload-sha256 H]
         [--release HOLDER --provider P --model M]
         [--log DOSSIER --agent ID] [--print-line --agent ID]
         [--report FILE --kind KIND [--host claude|opencode]]
@@ -42,6 +43,9 @@ What it prints (one line each unless noted):
 - the contract hash: sha256 of `--contract-files` (relative to `--root`, joined as
   compose_payloads.py joins them) against `--contract-hash` (a full hash or a
   prefix) — `stable` or `CHANGED`;
+- the payload: sha256 of `--payload` (the file a workflow spawn read) against
+  `--payload-sha256` — `stable` or `CHANGED`; a changed payload means the agent
+  may have read something other than what was linted;
 - the release of the agent's admission slot, when `--release HOLDER` is given
   (with `--provider` and `--model`): spawn_admission.py's own last line;
 - with `--log DOSSIER --agent ID`: the mechanical half of the build-log line is
@@ -305,6 +309,21 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
             parts.append("HASH CHANGED")
             flags.append("hash")
 
+    if args.payload:
+        try:
+            with open(args.payload, "rb") as fh:
+                now = hashlib.sha256(fh.read()).hexdigest()
+        except OSError as err:
+            now = ""
+            out.append(f"payload: cannot read {args.payload} ({err})")
+        if now and now.startswith((args.payload_sha256 or "").lower()) and args.payload_sha256:
+            out.append(f"payload: stable ({now[:8]})")
+        else:
+            if now:
+                out.append(f"payload: CHANGED, expected {(args.payload_sha256 or '')[:8]} now {now[:8]}")
+            parts.append("PAYLOAD CHANGED")
+            flags.append("payload")
+
     if dirty:
         out.append(f"tree: dirty, {len(dirty)} path(s): {', '.join(dirty[:3])}")
         parts.append(f"tree dirty ({len(dirty)})")
@@ -346,6 +365,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--owned", default="", help="comma list of the files/dirs/globs the agent owns")
     ap.add_argument("--contract-hash", help="the CONTRACT_HASH the payload carried (full or prefix)")
     ap.add_argument("--contract-files", default="", help="comma list of the contract files, relative to --root")
+    ap.add_argument("--payload", metavar="FILE", help="the payload file a workflow spawn read")
+    ap.add_argument("--payload-sha256", metavar="H", help="with --payload: the hash it was linted at (full or prefix)")
     ap.add_argument("--release", metavar="HOLDER", help="release this holder's admission slot")
     ap.add_argument("--provider")
     ap.add_argument("--model")
@@ -461,6 +482,16 @@ def selftest() -> int:
             check("a stable contract hash is reported", f"contract hash: stable ({digest[:8]})" in out)
             check("stubs left flag the return (an implementer must leave none)", rc == 1 and "FLAGGED stubs" in out)
             check("output is bounded", len(out.splitlines()) <= MAX_LINES)
+
+            # --- the payload a workflow spawn read: stable, then changed ---
+            put(tmp, "payload.md", "TASK: x\n")
+            payload = os.path.join(tmp, "payload.md")
+            with open(payload, "rb") as fh:
+                payload_sha = hashlib.sha256(fh.read()).hexdigest()
+            rc, out = call(base_args + ["--payload", payload, "--payload-sha256", payload_sha])
+            check("a stable payload is reported", f"payload: stable ({payload_sha[:8]})" in out and "payload" not in out.split("FLAGGED")[-1])
+            rc, out = call(base_args + ["--payload", payload, "--payload-sha256", "0" * 64])
+            check("a changed payload flags the return", "payload: CHANGED" in out and rc == 1 and "payload" in out.split("FLAGGED")[-1])
 
             # --- a fully clean return, with release and log ---
             put(root, "src/lib.rs", "pub fn a() -> u8 { 1 }\npub fn b() -> u8 { 2 }\n// todo!() in a comment\n")

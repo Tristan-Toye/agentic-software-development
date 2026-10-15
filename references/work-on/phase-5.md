@@ -14,7 +14,7 @@ are cheap, and both run while the bodies in `X` are still stubs:
    should have caught it and did not: fix the checklist (and the contract, if
    the gap traces back that far), re-spawn the author onto its file with the
    corrected checklist by the host's mechanic (Phase 4: in place under
-   opencode; delete-first under Claude Code) — or record the
+   opencode; read-then-rewrite under Claude Code) — or record the
    accepted gap in `## Build log`. Do the same for the integration author's
    map against the acceptance criteria. **When the repository owns a
    coverage script, discover its real CLI before the first invocation** —
@@ -48,20 +48,17 @@ arbitration, and the mechanic is the same in all three places. It turns on
 
 | What is vacuous | What you do |
 |---|---|
-| **Individual tests** in a file whose other tests are sound | re-spawn the author onto that file with **the tests named** and the complete intent. Under opencode it reads its own earlier output and edits in place — no delete, nothing pasted. Under Claude Code the author has `Write` alone, so even this row is delete-first: `safe_revert.py --delete` the file (it copies it out), then a fresh whole-file `Write` with the changed tests named (Phase 4). |
+| **Individual tests** in a file whose other tests are sound | re-spawn the author onto that file with **the tests named** and the complete intent. Under opencode it reads its own earlier output and edits in place — no delete, nothing pasted. Under Claude Code it reads its earlier output (its `Read` reaches the test families) and rewrites the file whole with the changed tests named — no delete. |
 | **The whole file** — a wholesale contract change, or every test in it asserts nothing | **delete it with `safe_revert.py --delete`** (Phase 4), which copies it outside the repository first; say so in the payload, and let a fresh `Write` recreate it — a re-spawn that stalls after a bare delete leaves the run at zero tests, and the recorded case was saved only by an unrelated commit. The same on either host. |
 
 **Under Claude Code, name the author by its agent ID and resume it** with the
-tests named (after the delete-first step, for a unit author) instead of a full
+tests named instead of a full
 re-spawn, per `phase-4.md` ("Under Claude Code, resume instead of re-spawn");
 a changed contract is a full re-spawn.
 
 Deleting a file to fix one weak test throws away every sound test beside it
-and pays a full blind regeneration for them — under opencode, so name the
-tests instead. Under Claude Code the regeneration is paid regardless,
-because the author cannot read what it wrote; naming the tests still tells
-it what changed, and the split into small files (Phase 3) is what keeps that
-regeneration cheap.
+and pays a full blind regeneration for them, on either host — so name the
+tests instead.
 
 Log all results in `## Build log`: promises covered, tests red, vacuous
 tests caught and how each was routed.

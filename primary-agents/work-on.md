@@ -157,7 +157,11 @@ and `phase-7.md` name; call it for nothing else.** A workflow keeps the agents'
 full reports out of your context and hands back one compact result, so the run
 takes fewer steps and every later step re-reads less. You still compose and lint
 every payload and admit every wave exactly as before; the workflow replaces
-only the spawn message and the per-return checks. Its args and results are in
+only the spawn message and the per-return checks. Its `args` name each linted
+final by `payloadPath` and `payloadSha256` — the agents read the files — so
+the launch stays small enough to approve. Never paste a payload into `args`,
+never write or copy a workflow script, and if a launch is refused or cannot be
+approved, stop and report it: never re-route the agents around it. Its args and results are in
 the phase files. When a correction or fix goes back to an agent that is still
 resumable, send it with `SendMessage` to its agent ID instead of spawning anew
 (`phase-4.md`, "Under Claude Code, resume instead of re-spawn"), and write every
@@ -311,8 +315,9 @@ between this list and a phase is a defect in this list.
 - **Blindness is structural, and informational where a tool set cannot
   reach.** The unit author's `read` and `edit` maps deny everything outside
   `.agent-staging/` and the test families under opencode, and under Claude
-  Code it has `Write` alone with a fully pasted payload and a delete-first
-  re-spawn; the integration author sees stubs
+  Code it has `Write` and a `Read` the plugin's hook confines to the same
+  boundary, its payload pasted or staged as a `PAYLOAD_FILE`; the
+  integration author sees stubs
   and has no `Bash`; the implementer's worktree has no tests. Never hand an
   agent something its blindness depends on not having, never rely on an
   instruction where an absence will do, and never widen a permission map to

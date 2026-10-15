@@ -13,6 +13,7 @@ export type HookInput = {
   transcript_path?: string
   cwd?: string
   agent_id?: string
+  agent_type?: string
   tool_name?: string
   tool_input?: Record<string, any>
   source?: string
@@ -59,6 +60,33 @@ export async function runHook(body: () => Promise<object | undefined> | object |
     // fail open
   }
   process.exit(0)
+}
+
+// ---- the subagent's type --------------------------------------------------------
+
+// A subagent's type, plugin-scoped (`agentic-software-development:unit-test-author`): the
+// hook input's `agent_type` when Claude Code sends it, else the `agentType` of the
+// subagent's own record — `<session>/subagents/[workflows/<run>/]agent-<id>.meta.json`,
+// beside the session transcript — which is where an agent a workflow spawned is recorded.
+export function agentTypeOf(input: HookInput): string | undefined {
+  if (input.agent_type) return input.agent_type
+  if (!input.agent_id || !input.session_id || !input.transcript_path) return undefined
+  const want = `agent-${input.agent_id}.meta.json`
+  // The session's transcript, or the agent's own one beside its record.
+  const own = join(dirname(input.transcript_path), want)
+  const base = join(dirname(input.transcript_path), input.session_id, "subagents")
+  try {
+    let file = existsSync(own) ? own : undefined
+    if (!file) {
+      const found = (readdirSync(base, { recursive: true }) as string[]).find((f) => f === want || f.endsWith("/" + want))
+      if (found) file = join(base, found)
+    }
+    if (!file) return undefined
+    const type = JSON.parse(readFileSync(file, "utf8"))?.agentType
+    return typeof type === "string" ? type : undefined
+  } catch {
+    return undefined
+  }
 }
 
 // ---- per-session state ----------------------------------------------------------

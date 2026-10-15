@@ -2,11 +2,12 @@
 // The shared modules on their own: config, read guard, checkpoint texts, tool definitions,
 // and the symlink proof — an opencode plugin imported through a link in another directory
 // still resolves ../../shared (config and imports) through its real path.
-import { cpSync, mkdirSync, mkdtempSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DEFAULTS, configLoader, protectRegexes } from "../config"
 import { MAX_SUMMARY_CHARS, nudgeEvery, phaseNumber, reminderText, summaryText, validateCheckpoint } from "../checkpoint"
+import { BLIND_READ_DIRS, blindRead } from "../blind-read"
 import { readGuard } from "../read-guard"
 import { TOOLS, describeTool, inputSchema } from "../tools"
 
@@ -93,6 +94,24 @@ const run = Bun.spawnSync(["bun", "--no-install", "-e", probe], { env, stdout: "
 const out = run.stdout.toString().trim()
 check("symlink: plugin loads through the link and reads the yaml next to ../../shared", out.startsWith("refused context-guard:") && out.includes("500 bytes"))
 if (!out.startsWith("refused")) console.error("probe:", out, run.stderr.toString())
+
+// ---- blind read: one boundary on both hosts -------------------------------------------
+// The directories the hook admits equal the unit test author's opencode read map and the
+// payload lint's HOOK_READ_SCOPE.
+{
+  const md = readFileSync(join(repo, "sub-agents", "unit-test-author.md"), "utf8")
+  const block = /^  read:\n((?:    .*\n)+)/m.exec(md)?.[1] ?? ""
+  const mapDirs = new Set(
+    [...block.matchAll(/^    "(?:\*\/)?([^"*]+)\/\*": allow$/gm)].map((m) => m[1]),
+  )
+  check("blind read: the hook's dirs equal the opencode read map", mapDirs.size > 0 && [...mapDirs].sort().join() === [...BLIND_READ_DIRS].sort().join())
+  const py = readFileSync(join(repo, "scripts", "check_payload.py"), "utf8")
+  const scope = /HOOK_READ_SCOPE = \{\s*"unit-test-author": \(([^)]*)\)/.exec(py)?.[1] ?? ""
+  const lintDirs = [...scope.matchAll(/"([^"]+)"/g)].map((m) => m[1])
+  check("blind read: the lint's scope equals the hook's", lintDirs.sort().join() === [...BLIND_READ_DIRS].sort().join())
+  check("blind read: relative path resolved against cwd", blindRead("src/lib.rs", "/wt") !== undefined && blindRead("tests/a.rs", "/wt") === undefined)
+  check("blind read: a dir name only counts as a whole segment", blindRead("/wt/contests/x.rs", "/") !== undefined)
+}
 
 console.log(fails.length ? "FAIL " + fails.join(" | ") : "PASS (all cases)")
 process.exit(fails.length ? 1 : 0)

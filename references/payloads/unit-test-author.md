@@ -6,10 +6,11 @@ test families, and `bash`/`glob`/`grep`/web are denied outright: name a path
 inside that map and the author opens it itself — stage the contract as
 files, name the style samples, never paste what a pointed-at path can
 carry; name a path outside the map and the tool call is refused. **Under
-Claude Code** the author has `Write` and nothing else — no `Read`, no `Edit`
-(`claude/agents/unit-test-author.md`): every path field is a dead letter,
-`CONTRACT`, `STYLE_PATHS` and `SUPPORT_PATHS` included, and so is a sentence
-that tells it to read something. The recorded wave shipped four payloads
+Claude Code** the author has `Write` and a `Read` the plugin's PreToolUse hook
+confines to `.agent-staging/` and the test families — no `Edit`, no `Glob`,
+no `Grep` (`claude/agents/unit-test-author.md`, `shared/blind-read.ts`): a path
+field outside that boundary is a dead letter, and the Claude Code skeleton
+pastes `CONTRACT`, `STYLE_SAMPLE` and `SUPPORT` regardless. The recorded wave shipped four payloads
 with all three as paths; two blind authors built from `PROMISE_CHECKLIST`
 alone and guessed the rest — 20 compile errors. So the skeleton has two
 forms, and `check_payload.py --host` refuses the wrong one for the host.
@@ -140,9 +141,8 @@ any, is still input to the contract fix).
 <opencode|claude> --root <X> --test-paths ... [--read-paths ...]` reads the
 frontmatter tool list first: under opencode it refuses a spawn whose paths
 fall outside the author's maps, naming the path and the admitted families;
-under Claude Code it refuses any `--read-paths` at all, because the tool
-list grants no `Read`, and warns when a named `TEST_PATHS` target already
-exists for an author with neither `Read` nor `Edit`. The fix is the split,
+under Claude Code it refuses a `--read-paths` entry outside the hook's
+read scope (`.agent-staging/` and the test families). The fix is the split,
 the staging or the paste, never the map or the tool list.
 
 Under opencode, a suite in a family the read map denies — `deploy/scripts/`,
@@ -150,11 +150,9 @@ the recorded case — is still writable: the edit map carries the family, the
 read map does not. Stage the file's current content under `.agent-staging/`
 yourself and have the author rewrite the whole file with `Write`. It never
 opens the original; the staged copy is its only view of what exists. Under
-Claude Code every `TEST_PATHS` file that already exists is that case,
-unconditionally: delete it with `safe_revert.py --delete` (which copies it
-out first), then spawn for a fresh whole-file `Write` with the changed tests
-named — never an in-place edit, which `Write` refuses for a file the author
-has not read, and the author cannot read (`work-on.md` Phase 4).
+Claude Code a `TEST_PATHS` file in a test family that already exists is read
+first and rewritten whole (`Write` refuses a file the author has not read);
+one outside the test families is the staged-copy case above.
 
 Absolute `TEST_PATHS` inside the base worktree. The orchestrator commits its
 output — it has no `Bash`. `.agent-staging/` lives in the base worktree too:

@@ -105,7 +105,7 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
-from check_payload import REQUIRED_TOOLS
+from check_payload import HOOK_READ_SCOPE, REQUIRED_TOOLS, readable
 
 PATH_TOOLS = ("read", "edit", "write")
 STAGING_MARKERS = (".agent-staging/",)
@@ -641,6 +641,16 @@ def spawn_validation(
                 "unreachable for this agent; paste the content instead (CONTRACT "
                 "inline, STYLE_SAMPLE, SUPPORT)"
             )
+        kind = agent_file.stem
+        if "Read" in tools and kind in HOOK_READ_SCOPE:
+            for raw in read_paths:
+                rel = resolve(root, raw) or raw
+                if not readable("/" + str(rel), kind):
+                    findings.append(
+                        f"host claude: read path '{rel}' is outside the plugin hook's "
+                        f"read scope for {kind} ({', '.join(HOOK_READ_SCOPE[kind])}): "
+                        "the Read is refused. Stage it under .agent-staging/ or paste it"
+                    )
         if test_paths and "Write" not in tools and "Edit" not in tools:
             findings.append(
                 f"host claude: frontmatter tools (line {tools_line}: {granted}) "
@@ -1058,6 +1068,12 @@ def selftest() -> int:
         check("host opencode: an existing TEST_PATH inside both maps is quiet", True, rc == 0 and "safe_revert" not in out)
         rc, _ = spawn(generated, "opencode", new, [])
         check("host asked that the file does not declare is unusable", True, rc == 2)
+        confined = troot / "unit-test-author.md"
+        confined.write_text("---\nname: unit-test-author\ntools: Read, Write\nmodel: haiku\n---\nbody\n")
+        rc, out = spawn(confined, "claude", new, style)
+        check("host claude: the hook-confined Read admits a test-family read path", True, rc == 0)
+        rc, out = spawn(confined, "claude", new, ["src/lib.rs"])
+        check("host claude: the hook-confined Read refuses a source read path", True, rc == 1 and "read scope" in out)
 
     # Frontmatter/map disagreement is a defect in the agent file itself.
     def disagreement(text: str) -> list[str]:

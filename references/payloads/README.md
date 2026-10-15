@@ -60,11 +60,13 @@ writes inside a pattern-scoped map — `.agent-staging/` and the test families
 — so a payload path inside that map is live: stage `CONTRACT` as files under
 `.agent-staging/` (hash-stampable as bytes on disk) or paste it, and *name*
 style samples as paths instead of pasting them. **Under Claude Code the same
-agent has `Write` alone**, and every path in its payload other than
-`TEST_PATHS` is a dead letter — in a field or in a sentence — so the Claude
-Code form of its skeleton pastes everything: `CONTRACT` inline,
-`STYLE_SAMPLE` in place of `STYLE_PATHS`, `SUPPORT` in place of
-`SUPPORT_PATHS`, and no sentence that tells it to read anything.
+agent has `Write` and a `Read` the plugin's hook confines to the same staging
+area and test families** (`shared/blind-read.ts`), so a path outside them is
+a dead letter — in a field or in a sentence. The Claude Code form of its
+skeleton still pastes `CONTRACT` inline, `STYLE_SAMPLE` in place of
+`STYLE_PATHS` and `SUPPORT` in place of `SUPPORT_PATHS`, and its payload
+reaches it pasted or, from a workflow, as a `PAYLOAD_FILE` under
+`.agent-staging/`.
 `check_payload.py --host claude` refuses a path the agent cannot reach;
 `--host opencode` leaves admission to the maps and
 `check_permission_maps.py`. And the dossier rule is unchanged everywhere: an
@@ -170,12 +172,11 @@ or no specific field at all.
   text states the whole result carries the tag (`/work-on` Phase 3, diff
   7; `references/formats/dossier.md` § "The observability checklist"), and the
   lint warns on an "exactly" line without one.
-- **`TEST_PATHS` for a `Write`-only author is delete-first, every time.**
-  Under Claude Code the unit author cannot read the file it wrote, and
-  `Write` refuses to overwrite a file it has not read; a re-spawn onto an
-  existing path returns `GAP:` with its finished draft undelivered. Delete
-  with `safe_revert.py --delete` before the lint and the spawn; the lint
-  refuses an existing `TEST_PATHS` file for such an author.
+- **An existing `TEST_PATHS` file is read, then rewritten whole.** `Write`
+  refuses to overwrite a file the agent has not read, so the unit author
+  reads it first; under Claude Code its hook-confined `Read` reaches the test
+  families for that. A file outside them is staged under `.agent-staging/`
+  first; the lint refuses an existing `TEST_PATHS` file the author cannot read.
 - **A convention, fixture or precedent you hand a blind author is proven
   under the target's whole shape first.** `NAMING`, `STYLE_PATHS`, `FIXTURES`
   and `HARNESS` are executable instructions, not prose. Write the idiom into a

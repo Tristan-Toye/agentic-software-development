@@ -8,7 +8,7 @@ promise you extract from a prompt:
 
 | Agent | Cannot see | Enforced by |
 |---|---|---|
-| `unit-test-author` | the implementation, the dossier, every pipeline document, anything outside `.agent-staging/` and the test families | under opencode its permission map: `read` and `edit` deny every path outside the staging area and the test families; under Claude Code its tool list, `Write` alone, with the payload pasted whole — either way the tool call is refused, not merely discouraged |
+| `unit-test-author` | the implementation, the dossier, every pipeline document, anything outside `.agent-staging/` and the test families | under opencode its permission map: `read` and `edit` deny every path outside the staging area and the test families; under Claude Code `Write` and a `Read` the plugin's PreToolUse hook confines to the same staging area and test families — either way the tool call is refused, not merely discouraged |
 | `integration-test-author` | any implementation body | the bodies are stubs on `X`; it has no Bash and cannot reach another branch |
 | `implementer` | the tests | its worktree forks from `X` at this commit, and no test exists there |
 
@@ -118,8 +118,9 @@ Degrade instead, in this order, and log which step you are on:
 
 - `unit-test-author` × **one per contract surface** — the contract staged as
   files under `.agent-staging/` inside `X` (hash the staged bytes) or pasted
-  verbatim — **pasted, always, under Claude Code**, where the author has
-  `Write` alone and every path but `TEST_PATHS` is a dead letter
+  verbatim — **pasted, always, under Claude Code**, where the author's `Read`
+  is confined to `.agent-staging/` and the test families and a path outside
+  them is a dead letter
   (`references/payloads/unit-test-author.md` carries both forms of the skeleton) — its slice
   of `PROMISE_CHECKLIST` (Phase 3, assertion-form tags included), its owned
   test paths inside `X` (every path it should produce, per the Phase 3
@@ -308,7 +309,8 @@ one object per spawn:
 
 ```
 { "agentType": "agentic-software-development:implementer", "label": "P1",
-  "prompt": "<the linted final, pasted: compose_payloads.py --emit-prompt>",
+  "payloadPath": "<the linted final, absolute, under <its worktree>/.agent-staging/>",
+  "payloadSha256": "<its hash, from .agent-staging/wave-<holder>.hashes>",
   "root": "<its worktree>", "branch": "<its branch>", "base": "<fork sha>",
   "owned": "<OWNED_PATHS or TEST_PATHS, comma list>", "kind": "implementer",
   "contractHash": "<CONTRACT_HASH>", "contractFiles": "<comma list>",
@@ -316,9 +318,21 @@ one object per spawn:
 ```
 
 `contractHash` and `contractFiles` are for a test author whose world the hash
-stamps; `reportDir` defaults to `<root>/.agent-staging/reports`. The prompt is
-the whole pasted payload, so the paste rule holds: the spawned agent sees every
-field, and the call you make carries them. Send at most nine spawns per call
+stamps; `reportDir` defaults to `<root>/.agent-staging/reports`. A workflow
+spawn is the one place the payload travels as a file, not pasted: each agent
+gets the two-line `PAYLOAD_FILE` / `PAYLOAD_SHA256` intake its file names and
+reads the final itself. The paste rule is about the per-spawn classifier, and
+a workflow's spawns are approved once, at the launch; a pasted wave is what
+breaks it — 340 KB of `args` cannot be shown, so it cannot be approved. The
+plugin's spawn guard checks every `payloadPath` against its `payloadSha256`
+(and for a secret) before the launch, and the verifier checks the hash again
+after the return (`payload` flag). **Never put a payload into `args` or into a
+script, and never write, copy or edit a workflow script**: the launch is the
+plugin's workflow by name, with these small `args`, or nothing. If the name is
+not found, use the `scriptPath` fallback from `work-on.md`; if the launch is
+refused or cannot be approved, stop and tell the user what the prompt said —
+never route the wave around it (a spawn-by-spawn retry of a refused launch is
+denied as a bypass). Send at most nine spawns per call
 (the runtime's size guideline; its hard limit is sixteen concurrent agents):
 split a larger wave into parts, each admitted and called on its own. The
 workflow is asynchronous: the call returns a run ID at once, and the compact
@@ -374,9 +388,9 @@ last wave's transcript.
 checkout supplies the script and the agent file
 (`sub-agents/unit-test-author.md` under opencode,
 `claude/agents/unit-test-author.md` under Claude Code); `X` supplies the
-paths. It reads the frontmatter tool list first: under Claude Code any
-`--read-paths` is refused, because the list grants no `Read`, and an
-existing `TEST_PATHS` target warns delete-first. Exit 1 names the offending
+paths. It reads the frontmatter tool list first: under Claude Code a
+`--read-paths` entry outside the hook's read scope (`.agent-staging/` and the
+test families) is refused. Exit 1 names the offending
 path and, under opencode, the families the map admits; fix the split, stage
 or paste the content, never the map or the tool list. Two failures this
 prevents, both silent: a path the read map admits but the edit map refuses
@@ -406,8 +420,8 @@ coincidence there is, and judging it needs exactly the judgement the hash
 removes. Its `GAP:` analysis still feeds the contract fix. Unconditional means
 the re-spawn happens by the host's mechanic (below) — in place under
 opencode, where the author edits its own earlier output onto the current
-contract; delete-first under Claude Code, where every re-spawn is — never a
-bare delete with nothing said. The recorded opencode hash re-spawn deleted
+contract; read-then-rewrite under Claude Code — never a bare delete with
+nothing said. The recorded opencode hash re-spawn deleted
 both test files and paid two regenerations for a one-sentence pin.
 
 **Name the shared idiom when a concept spans packages.** Two implementers that
@@ -513,9 +527,8 @@ field, the named tests or change requests, and (for a fix round in `X`) the
 so the message is short where a re-spawn repeats the whole payload and pays the
 cache cold. A resume message is not a payload, so `check_payload.py` does not
 run on it; the rule that a message never describes the agent's own file back
-to it stays (state the delta). A resumed `unit-test-author` still needs its
-file deleted first with `safe_revert.py --delete` (the delete-first rule
-above): the delete, then the resume naming the changed tests. **Re-spawn with
+to it stays (state the delta). A resumed `unit-test-author` reads its file again
+before it rewrites it: the resume names the changed tests. **Re-spawn with
 the full payload, linted and pasted, only when** the agent's ID is unknown (it
 was spawned by a workflow, whose compact result carries none, or the line that
 held it is gone), the agent has ended and `SendMessage` reports it unreachable,
@@ -577,18 +590,16 @@ the read map denies while the edit map admits it — `deploy/scripts/` is the
 recorded case — cannot be opened; stage the file's current content under
 `.agent-staging/` yourself and have the fresh instance rewrite the whole
 file with `Write`. **Under Claude Code every re-spawn onto an existing path
-is delete-first, unconditionally** — corrective rounds, coverage gaps,
-review CRs and hash mismatches alike. The author has `Write` alone, and
-Claude Code's `Write` refuses to overwrite a file the agent has not read,
-its own earlier output included, formatted or not: an in-place instruction
-returns "The Write tool requires Read to be called first" or a `GAP:` with
-the finished draft undelivered, and the round is lost — the recorded repo
-paid it twice across two builds, once after a formatter pass and once on a
-file nobody had touched. Delete the file with `safe_revert.py --delete` (it
-copies the file out first), then resume the same session or re-spawn with
-the complete payload and the changed tests named, and let one whole-file
-`Write` land it; the resume reuses the finished reasoning where the draft
-already exists. Two limits on either host. First, the payload names the
+is read-then-rewrite** — corrective rounds, coverage gaps, review CRs and
+hash mismatches alike. The author has `Write` and a hook-confined `Read`, and
+Claude Code's `Write` refuses to overwrite a file the agent has not read, its
+own earlier output included: the author reads the file, then lands the
+whole file in one `Write`. (When it had `Write` alone, that refusal cost the
+recorded repo two rounds; the confined `Read` is what removed the
+delete-first step.) A file outside the test families is the staged-copy
+exception above. Resume the same session where you hold its ID — it reuses
+the finished reasoning — or re-spawn with the complete payload and the
+changed tests named. Two limits on either host. First, the payload names the
 complete intent, never a diff against what the earlier instance wrote: a
 fresh instance knows the file only as it reads it on disk, or not at all.
 Second, under opencode delete first only for a clean slate — the wholesale
@@ -599,10 +610,10 @@ implementation paths, the dossier and the pipeline documents stay outside
 it, because the blindness is the permission map or the tool list, not an
 instruction not to look.
 
-The strict variant — `read` flatly denied, so nothing can be opened and
-every file is a single fresh `Write` — **is the Claude Code default**, not
-an option: every payload field is pasted, because a path in its payload is
-a dead letter, and every re-spawn is the delete-first mechanic above.
+Under Claude Code every payload field is still pasted, whatever the
+confined `Read` could reach: the paste is what the per-spawn classifier
+judges, and the only path a workflow spawn reads besides its test families
+is its own `PAYLOAD_FILE`.
 
 ### Sub-agent permission maps are load-time
 
