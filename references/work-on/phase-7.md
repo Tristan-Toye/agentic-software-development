@@ -201,7 +201,11 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
     author returns, rerun the stability gate (Phase 6) on the fixed head; the
     CR is resolved only when the test passes every run. A `PRODUCT-RACE:` note
     from the `tests` lens is not a CR: it is a Phase 6 row-6 arbitration, ruled
-    on its mechanism before any CR is routed.
+    on its mechanism before any CR is routed. A `FLAKE-EXEMPT:` note is neither
+    of these. Add it as a row of the repo's `.flake-risk-exempt.md` (create the
+    file with the table header `flake_risk.py` documents) in the commit that
+    carries the round's fixes. Copy the mechanism verbatim: the row is the
+    ruling, and the script refuses a row that has no reason.
 
   Record the routing on the CR's ledger line. A conforming CR that no
   available agent may apply is a routing question for the user, never a

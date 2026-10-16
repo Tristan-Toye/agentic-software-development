@@ -284,8 +284,10 @@ finding: a sleep inside a poll loop with a deadline is the stable form.
 - **Sleep as synchronisation** — a sleep that waits for a thread, a task, a
   process or a flow to finish, instead of a join, an await, or a poll on the
   observable condition with a deadline.
-- **Wall-clock bounds** — an upper bound under one second (`TCG 4001`), or any
-  bound on a path the contract does not bound in time.
+- **Wall-clock bounds** — an upper bound under one second (`TCG 4001`), any
+  bound on a path the contract does not bound in time, and a positive wait
+  whose named or computed value leaves little room over the normal duration
+  (the scan sees literals only).
 - **Read before the effect is done** — an assertion after the call that starts
   background work but before the signal that ends it: a resumed process still
   writing, a consumer not yet drained, a flush not yet acknowledged.
@@ -293,9 +295,17 @@ finding: a sleep inside a poll loop with a deadline is the stable form.
   database, queue, key, budget, port, path or environment variable; a static
   or global; a name derived from nothing unique, or longer than the backend's
   identifier limit.
+- **Two runs at once** — the suite beside a second copy of itself: a name
+  unique only by process id (two containers repeat pids), a process matched
+  by a fixed string, a restart of a shared service, a server-wide view,
+  statistic or reset read as if private, a shared sink read by position.
+- **Process-wide state in one binary** — the current directory, an environment
+  variable, a global subscriber or a memory high-water mark, while sibling
+  tests run as threads of the same process.
 - **Order dependence** — a test that passes only after another ran, or only
   alone.
-- **Unseeded randomness**, and **cleanup that a panic skips**.
+- **Unseeded randomness**, and **cleanup that a panic skips** — a resource made
+  before its guard, a child process not killed on drop.
 
 **Every tests CR must state, or it is a note and not a CR:**
 
@@ -317,6 +327,15 @@ your notes as `PRODUCT-RACE: <test> — <mechanism>`, and the orchestrator
 arbitrates it. The recorded "flaky" lock test was exactly that: a retry was
 added to the test five builds running, and the cause was a lock descriptor
 leaked into a child process.
+
+**A marked line you judge stable is an exemption, with its mechanism.** Put
+it in your notes as `FLAKE-EXEMPT: <path> | <kind> | <a substring of the line>
+| <why it is stable>`. Name the mechanism, never the outcome: a poll interval
+under a deadline, a negative window a slow host can only make see less, a test
+double's own latency, a sleep past a server-side window that started first.
+The orchestrator adds the row to the repo's exempt table, so the next build's
+scan reads the line as ruled. A marker you cannot clear with a mechanism is a
+CR or a `PRODUCT-RACE:`, never an exemption.
 
 The `tests` lens never asks for a change outside a test file, and its CRs go
 back to the test's author, not to an implementer.
