@@ -32,7 +32,7 @@ kinds of agent work at the same time without seeing each other's output:
                                      │
               stub red-run · run the tests · arbitrate failures
                         (the contract is the referee)
-                 stability gate: repeat the suite, find flaky tests
+                 scan flake risk; repeat affected tests when needed
                                      │
               ┌──────────────────────┼──────────────────────┐
         reviewer:style       reviewer:architecture   reviewer:performance
@@ -61,7 +61,7 @@ whichever side is easier to change.
 | Command | Does | Spawns |
 |---|---|---|
 | **`/plan <anything>`** | A Jira key, a stack trace, a paragraph of intent → an investigated dossier: the problem with anchored evidence, the approach, the contract, disjoint work packages, falsifiable criteria. Writes `status: ready`. In a repo that commits `.discovery/`, it works in a `plan/<KEY>` worktree and ends with a PR. | 1 (`reviewer`, `LENS: plan`) |
-| **`/work-on <ID>`** | Materialises the contract as real code, fans out blind and concurrent, merges, arbitrates every test failure, repeats the suite to catch flaky tests, runs three concurrent review lenses (four when the new tests carry flake risk), extracts the ADRs, opens the PR, removes the worktree. Resumable at every phase. | 3 + N, then 3 |
+| **`/work-on <ID>`** | Materialises the contract as real code, fans out blind and concurrent, merges, arbitrates every test failure, investigates flake risk with focused repetitions when needed, runs three concurrent review lenses (four when the new tests carry flake risk), extracts the ADRs, opens the PR, removes the worktree. Resumable at every phase. | 3 + N, then 3 |
 | **`/overview-dossiers`** | Status of every dossier from front matter alone, plus the pipeline health signals worth acting on. Read-only toward pipeline state; also renders `.discovery/analysis/open-work.html`, a self-contained animated dashboard; `--worktrees` overlays the live copies from sibling worktrees when `.discovery/` is committed. | 0 |
 | **`/deferred`** | The deferred-issues report for a finished change: every product-code issue the session knew about and did not tackle, with an ID, evidence and a proposed fix. Recall, not audit; `/plan D-n` seeds a dossier from a line. | 0 |
 
@@ -402,7 +402,7 @@ are in `ledger/token-spend.md`; `scripts/token_report.py` produces the numbers.
 | `scripts/prepare_wave.py` | One call per fan-out wave: every payload lint and boundary gate through the scripts that own them, only the defects printed, then the admission slots and the `PAYLOAD-LINT:` / `ADMISSION:` lines. `--selftest` checks the checker. |
 | `scripts/compose_payloads.py` | A spawn payload with every mechanical field filled from the dossier and the contract files, and every judgement field left as a `@@FILL_<FIELD>@@` placeholder the lint refuses. `--selftest` checks the checker. |
 | `scripts/git_state.py` | A worktree's state in one bounded call: branch, HEAD, ahead/behind, status counts and paths, diff stat, in-progress merge. `--selftest` checks the checker. |
-| `scripts/run_tests.py` | Runs a suite (optionally inside a Lima VM) with the whole output in a log, and prints the summed counts and each failure, bounded; cargo, nextest, pytest and TAP parsers. `--repeat N` is the Phase 6 stability gate: it names each test that failed in some runs but not all. `--selftest` checks the checker. |
+| `scripts/run_tests.py` | Runs a suite (optionally inside a Lima VM) with the whole output in a log, and prints the summed counts and each failure, bounded; cargo, nextest, pytest and TAP parsers. `--repeat N` supports targeted flake investigations: it names each test that failed in some runs but not all. Whole-suite repetitions are not mandatory. `--selftest` checks the checker. |
 | `scripts/flake_risk.py` | The lines in test files that make a test likely to flake under load — a sleep, a sub-second bound, a wall-clock read, threads or tasks, shared state, a fixed port or path, unseeded randomness. It skips the stable forms (a sleep under a deadline, a joined spawn, a lower bound, a unit-mutex lock). It reads the repo's `.flake-risk-exempt.md` for lines a review ruled harmless, each with its mechanism. Decides whether the Phase 7 `tests` lens is due, and gives it its scope. `--selftest` checks the checker. |
 | `scripts/wait_ci.py` | Waits for a PR's checks without output, then prints each check and a bounded digest of every failed job's log. `--selftest` checks the checker. |
 | `scripts/run_gates.py` | Runs a list of gate commands, one log per gate, and prints one line per gate plus the failing lines, bounded. `--selftest` checks the checker. |
@@ -443,12 +443,16 @@ sub-agent:
    an explicit yes first. `/plan` does the same when `.discovery/` is
    committed, and asks once more before it pushes the plan branch and opens
    its PR.
-3. **CI as the suite runner** — where the target has CI that runs the suite,
-   `/work-on` pushes the base branch and opens a draft PR at Phase 6 so
-   that CI's run is the suite verdict, once per head, never a local run
-   beside it. It says so with the worktree question and gets the yes there;
-   `SUITE-RUNNER:` in the build log records the decision, and
-   `validate_pipeline.py --pre-fanout` refuses without it.
+3. **Choose the suite runner by coverage** — CI supplies the integrated
+   verdict only when it covers the required suite. Repository policy or
+   partial CI can require a full local command, while CI's partial gates
+   remain useful. Record `SUITE-RUNNER:`, the full `SUITE-COMMAND` and required
+   coverage in Phase 2; `validate_pipeline.py --pre-fanout` requires the
+   runner line. When CI is the runner, `/work-on` gets authorization at the
+   worktree gate to push and open a draft PR at Phase 6. Keep the tested
+   commit, baseline, full log and omissions for the verdict. Reuse it until
+   relevant inputs change; flake investigations repeat affected tests only
+   when needed.
 
 Nothing external happens without an explicit yes: no Jira create, no Jira
 transition, no PR, no push to a protected branch. No force-push, no history

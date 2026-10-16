@@ -605,6 +605,23 @@ measurable claim, how to verify, and the result.
 - **Verify**: `claude plugin eval . --scaffold --trust-plugin --max-cost-usd 1`.
 - **Result**: not run yet.
 
+### C-135 — One coverage-complete verdict; targeted flake investigation
+
+- **Change**: Phase 2 chooses CI or local execution by actual required
+  coverage and records a separate full-suite command. Phase 6 records the
+  tested commit, baseline, full log and skipped coverage, removes mandatory
+  whole-suite repetitions and retains targeted flake investigation. Phases 7
+  and 9 reuse valid evidence and verify fixes against their identified risk.
+- **Why**: partial CI cannot replace a required service and host suite, and
+  repeating the whole suite unconditionally consumes time without a specific
+  risk to investigate. The owner approved this policy on 2026-10-16.
+- **Hypothesis**: fewer duplicate suite runs per integrated candidate; no
+  measured speedup claimed.
+- **Verify**: generated plugin freshness, documentation references and pipeline
+  validator self-tests pass; inspect the next run for complete local evidence
+  and absence of unconditional whole-suite repetitions.
+- **Result**: pending workflow use; no production run measured yet.
+
 ## Next measurement
 
 After the next runs, from the time the C-108–C-111 merge is pulled into the

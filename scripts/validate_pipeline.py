@@ -1999,9 +1999,9 @@ ADMISSION_RE = re.compile(
 )
 # `SUITE-RUNNER: ci — <workflow>, <trigger>` or `SUITE-RUNNER: local — <reason>`:
 # which runner produces the orchestrator's suite verdicts (work-on.md Phase 2).
-# CI on the pushed branch is the default where the target has one, so the
-# suite never runs locally AND in CI for one verdict; `local` keeps every run
-# on this machine and says why. Decided before the fan-out because `ci` needs
+# CI is eligible only when it covers the required integrated suite; partial
+# CI can retain its gates while `local` supplies the full verdict. Repository
+# policy and required coverage determine the choice, recorded with a reason. Decided before the fan-out because `ci` needs
 # the user's yes for the Phase 6 push and draft PR, and a yes asked after the
 # agents have returned stalls the run with a merged tree waiting on a question.
 SUITE_RUNNER_RE = re.compile(
@@ -2115,8 +2115,8 @@ PRE_FANOUT_LINES = (
     (
         "SUITE-RUNNER",
         SUITE_RUNNER_RE,
-        "The suite runner is decided at the contract commit — CI on the pushed "
-        "branch, or local with a reason — so one verdict never costs two runs.",
+        "The suite runner is decided by required coverage at the contract "
+        "commit — complete CI, or local with a reason; partial CI keeps its gates.",
         (
             "SUITE-RUNNER: ci — <workflow>, <trigger>; push and draft PR: yes",
             "SUITE-RUNNER: local — <reason>",
