@@ -24,16 +24,24 @@ a line the digest names. Log `SUITE: ci run <url> on <sha> — <N> failed /
 that did not start, or that failed before the suite ran — a checkout error,
 a missing secret, a cache step — is not a verdict: exit-2 semantics. Fix the
 CI wiring on your branch, or fall back to `local` for this head and log why.
-Under `local`: run the full suite in `X` yourself, exactly as the
-implementers' `TEST_COMMAND` runs it, through `python3
-${PLUGIN_ROOT}/scripts/run_tests.py --log <file> -- <TEST_COMMAND>` (add
-`--vm <name> --workdir <X> --env-script <file>` for a suite that runs only
-in a Linux VM). It writes the whole output to the log and prints the summed
-counts and each failure, bounded. Log `SUITE: local on <sha> — <N> failed /
-<N> passed`. Every later "the runner's
-verdict" in this document means exactly this — the runner's run on the new
-head, read the same way — and never a local run beside a CI run of the
-same head.
+Under `local`: run the full `SUITE-COMMAND` recorded in Phase 2 in `X`,
+through `python3 ${PLUGIN_ROOT}/scripts/run_tests.py --log <file> --
+<full-suite command>` (add `--vm <name> --workdir <X> --env-script <file>`
+when the command itself does not manage its required VM). An implementer's
+focused `TEST_COMMAND` is not a substitute. Keep the complete output and
+record the candidate commit, target baseline, exact command, environment,
+counts and log path as `SUITE: local on <sha>, base <sha> — <counts>; <log>`.
+Verify that the tested tree matches that commit and that relevant inputs did
+not change during the run; otherwise the evidence cannot describe that head.
+
+Under either runner, inspect the complete log for skipped or `NOT VERIFIED`
+coverage and compare executed tiers with `SUITE-COVERAGE`. An aggregator's
+successful exit can include skipped required tiers. Record each omission
+and reason; missing required coverage leaves the verdict incomplete. A
+service-free tier's opt-outs are acceptable only when the required service
+and host tiers actually ran. Every later runner verdict means this same
+coverage-complete run on the relevant inputs. Keep a green verdict while
+those inputs are unchanged; a new phase alone does not require another run.
 
 **Every head that leaves this machine passes the `GATES:` list first**
 (Phase 2, `run_gates.py`): the first push and each arbitration fix. A green
@@ -114,9 +122,9 @@ when it flips there too.
 **Row 6 needs a mechanism, or it is not a ruling.** An intermittent failure is
 a race between two things, and a ruling names both: the interleaving or the
 load condition, and where it lives. Reproduce it first with `run_tests.py
---repeat N` — the whole suite, because the load of the rest of the suite is
-what exposes most races — and put the `FLAKY name (failed X/N)` line in the
-case file. Then rule on where the race lives, **product first**:
+--repeat N` on the smallest reproducing test group under the relevant load;
+use the whole suite when that load is necessary to reproduce it. Put the
+`FLAKY name (failed X/N)` line and reproduction command in the case file. Then rule on where the race lives, **product first**:
 
 - **In the code under test** — the contract promises an outcome and the code
   does not deliver it on every interleaving → row 2. The recorded "flaky" lock
@@ -197,29 +205,7 @@ and this is a decision about how we write contracts. Phase 8 routes it to the
 right place. Two or more row-3 rulings in one run means the next `/plan` needs a
 sharper contract, and `/overview-dossiers` surfaces the count as a health signal.
 
-**Stability gate — the moment the suite first goes green, before the mutation
-check and before review.** A single green run says nothing about a test that
-fails one run in five, and the blind authors write their tests without ever
-running them under load; a flaky test also kills mutants by chance, so the
-kill table is worth nothing until the gate has passed. So
-repeat the whole suite locally, exactly as the runner's command runs it:
-`python3 ${PLUGIN_ROOT}/scripts/run_tests.py --repeat 3 --log <file> --
-<TEST_COMMAND>` (with the same `--vm` flags as the local verdict; add
-`--detach` for a long suite). It is not a verdict — like the mutants, it stays
-local under either runner and never replaces the runner's run on the head.
-Log one line:
-
-```
-STABILITY: <N> runs on <sha> — stable | FLAKY <name> (failed X/N), ...
-```
-
-Each `FLAKY` line is a row-6 arbitration and counts against the budget like
-any other. A `FLAKY` test this build did not add, in code this build did not
-touch, still gets the repeated row-5 proof before you call it upstream. Scale
-the count, never skip the gate: a suite longer than about twenty minutes runs
-`--repeat 2`, and the count goes on the log line. Skip only when the build
-changed no code a test runs (documents alone), and log the reason. Then run
-the risk scan Phase 7 needs, while the test paths are in hand:
+**Investigate flake risk before mutation checks and review.** Run
 `python3 ${PLUGIN_ROOT}/scripts/flake_risk.py <every test file this build
 added or changed>`, and log `FLAKE-RISK: <n> markers in <files> | none`.
 A marker that the repo's `.flake-risk-exempt.md` covers does not count (the
@@ -228,8 +214,28 @@ mechanism. When the scan warns `stale exempt row`, this build changed the line
 that row named. Delete the row in this build, and the scan reads the line
 afresh.
 
-Set `status: review` once the runner's verdict on the current head is green
-and the stability gate is logged.
+There is no mandatory two- or three-run whole-suite stability gate. One green
+run is a suite verdict, not proof that every test is stable.
+
+When a test flips, or a changed test's risk needs runtime investigation,
+repeat the affected test or smallest reproducing group under the relevant
+conditions with `run_tests.py --repeat N`. Preserve the command, conditions,
+logs and outcomes. Expand to the full suite only when reproducing the risk
+requires it. Log one line:
+
+```
+STABILITY: not repeated — no observed flake or runtime investigation due
+STABILITY: targeted <command>, <N> runs on <sha> — <outcomes and log>; FLAKY <name> (failed X/N), ...
+```
+
+Each observed `FLAKY` test is a row-6 arbitration and counts against the
+budget. An untouched test still needs the repeated row-5 proof before it is
+called upstream. Keep the flake-risk markers and observed flips available to
+the Phase 7 tests lens. Resolve observed flakes before treating mutant kills
+as evidence.
+
+Set `status: review` once the runner's verdict on the current relevant inputs
+is green and the flake-risk scan and any required investigation are logged.
 
 **Checkpoint after each arbitration round.** A round ends when its rulings are
 logged, its re-spawns have returned and been verified, and the runner's

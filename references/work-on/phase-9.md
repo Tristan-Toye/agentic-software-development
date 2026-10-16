@@ -73,10 +73,13 @@
     evidence — it goes in the PR description and in the Jira comment. Under
     `ci` the run is CI's on the pushed final head: push, wait, and keep the
     run URL and the counts read from its log; there is no local run beside
-    it. Under `local`, run the acceptance criteria one final time and keep
-    the output. A bookkeeping-only sync does not invalidate the earlier run:
-    if step 1 moved only bookkeeping, the evidence you already kept stands
-    and this step is a no-op.
+    it. Under `local`, use the recorded full `SUITE-COMMAND` when relevant
+    inputs changed since the last green run, and keep the output and coverage
+    evidence as in Phase 6. Reuse that run when the relevant inputs are
+    unchanged; entering Phase 9 does not require a duplicate run. A
+    bookkeeping-only sync does not invalidate the earlier run: record the
+    tested commit and final head with that explanation, run validators, and
+    retain the existing suite evidence.
  3. **Write the PR description** and show it to the user. Delegate the draft to
     `document-drafter` (`MODE: pr`, dossier excerpts verbatim, `TARGET_PATHS`
     naming a file under `.discovery/` in the main checkout — in committed

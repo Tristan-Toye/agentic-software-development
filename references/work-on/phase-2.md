@@ -118,33 +118,35 @@ This is the step everything else depends on.
    or `HOOKS: <hook> — <policy>` before the fan-out;
    `validate_pipeline.py --pre-fanout` refuses without it.
 
-   **Decide the suite runner now, beside the hook policy.** From Phase 6 on,
-   every verdict about the suite — the first green, each arbitration round,
-   each review fix, the Phase 9 sync — needs one full run, and running it
-   here and then again in the target's CI is the same run paid twice. So
-   look at the target's CI once: a workflow that runs the suite on a push or
-   a pull request (`.github/workflows/*.yml` with `on: push` or
-   `pull_request`, `bitbucket-pipelines.yml`, `.gitlab-ci.yml`), the
-   command it runs, and what it needs that this branch will carry. Where one
-   exists, **CI is the runner**: from Phase 6 the branch is pushed and a
-   draft PR opened (with the yes taken at the gates), and every full-suite
-   verdict is read from CI's run on the pushed head — never run locally as
-   well. Where none exists, or CI does not run the suite, or the user says
-   its minutes are constrained, **local is the runner** and you run the
-   suite yourself. Log one line before the fan-out; `validate_pipeline.py
-   --pre-fanout` refuses without it:
+   **Decide the suite runner by coverage, beside the hook policy.** Inspect
+   the target's repository instructions, full-suite entry point and CI
+   commands. Check the feature axes, service and host requirements, and
+   explicit skips; the presence of a workflow alone establishes nothing.
+   Choose **CI** only when its run covers the required integrated suite.
+   Push and open the draft PR at Phase 6 with the authorization taken at the
+   gates. Choose **local** when repository policy requires it, CI covers only
+   part of the suite, CI is absent, or the user constrains its minutes.
+   Keep partial CI gates running, but take the integrated verdict from the
+   full local command. For example, a repository whose CI opts out of
+   services can require its local full command with `--stack` instead.
+
+   Record the exact full-suite command separately from implementers' focused
+   `TEST_COMMAND`s, plus its required coverage, before the fan-out.
+   `validate_pipeline.py --pre-fanout` requires the runner line:
 
    ```
-   SUITE-RUNNER: ci — <workflow file>, <trigger>; push and draft PR: yes
-   SUITE-RUNNER: local — <reason>
+   SUITE-RUNNER: ci — <workflow file>, <trigger>, required coverage; push and draft PR: yes
+   SUITE-RUNNER: local — <reason CI cannot supply the required verdict>
+   SUITE-COMMAND: <exact full-suite command, working directory and VM/env options>
+   SUITE-COVERAGE: <required feature, service and host axes; expected opt-outs and where they are covered>
    ```
 
-   The decision moves verdict runs only. Runs that are not verdicts stay
-   local under either runner, because CI cannot make them: the stub red-run
-   of the new tests alone (Phase 5), a mutant run on the throwaway branch
-   (Phase 6), the one failing test at the merge-base for a row-5 proof, the
-   command verification an implementer's payload needs (Phase 4), and the
-   agents' own runs in their worktrees.
+   Run one full suite for a verdict on an integrated candidate. Reuse that
+   verdict until relevant code, tests, dependencies, deployment inputs or a
+   target merge change; do not repeat the suite just to enter another phase.
+   Focused implementation checks, the stub red-run, mutant runs, merge-base
+   proofs and targeted flake investigations still run locally. They do not
+   replace the full-suite verdict.
 
    **Record the gate list from the same read of CI.** One gate per feature
    axis a CI job compiles (`cargo check --workspace --all-targets --locked`,

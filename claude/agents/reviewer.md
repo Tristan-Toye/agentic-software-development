@@ -277,7 +277,7 @@ stability — never for coverage, and never for what they assert. The contract
 decides what a test asserts; you decide whether it observes that reliably.
 
 `SCOPE` lists the test files this build added or changed, with the lines the
-risk scan marked (`FLAKE-RISK:`) and any test the stability gate saw flip
+risk scan marked (`FLAKE-RISK:`) and any test a runtime investigation saw flip
 (`STABILITY:` in `RUN_EVIDENCE`). A marker is a reason to look, never a
 finding: a sleep inside a poll loop with a deadline is the stable form.
 

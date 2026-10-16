@@ -213,7 +213,7 @@ skip stays possible; a *silent* skip does not.
 **Gates — before anything else.** Follow
 `${PLUGIN_ROOT}/references/time-logging.md` for the time-logging gate.
 This command creates worktrees by design, so state that plainly and get the
-user's yes before Phase 2. Where the target has CI that runs the suite, this
+user's yes before Phase 2. Where the target has CI that covers the required full suite, this
 command also **pushes the base branch and opens a draft PR at Phase 6**, so
 that CI is the suite runner and no verdict costs a local run beside it
 (Phase 2 decides it): state that in the same breath and get the yes for it
@@ -331,11 +331,12 @@ between this list and a phase is a defect in this list.
   wrong, never that the test was. (Phase 7)
 - **One verdict, one run.** The suite runner is decided at the contract
   commit (`SUITE-RUNNER:`), and every full-suite verdict from Phase 6 on
-  comes from that runner's run on the head in question — CI's run on the
-  pushed branch wherever the target has CI, never a local run beside it.
-  Runs that are not verdicts — the stub red-run, the stability repeats, the
-  mutants, a row-5 proof, an implementer's own command — stay local. (Phase 2, Phase 6, Phase 7,
-  Phase 9)
+  comes from that runner's coverage-complete run on the relevant inputs.
+  Choose by actual coverage and repository policy: partial CI gates can run
+  alongside a required full local suite. Reuse a green verdict until relevant
+  inputs change; there are no unconditional whole-suite stability repeats.
+  The stub red-run, targeted flake investigations, mutants, a row-5 proof and
+  implementers' focused checks stay local. (Phase 2, Phase 6, Phase 7, Phase 9)
 - **Reviewers reply; you write.** They have no write tools. Each change
   request becomes one `## Build log` ledger line; the full document travels
   only in the fix implementer's payload, byte-for-byte.

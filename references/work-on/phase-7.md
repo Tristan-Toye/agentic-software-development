@@ -109,7 +109,7 @@ spawn the lenses in one message as written.
    and its `RUN_EVIDENCE` carries the `STABILITY:` line. It reviews whether
    each test observes its promise reliably under load — never coverage, never
    what is asserted. When it is not due, log `TESTS-LENS: not due —
-   FLAKE-RISK none, STABILITY stable` and spawn three.
+   FLAKE-RISK none, no observed flake` and spawn three.
 
 **Resolve `RULES` once, then narrow it three ways.** Run
 `ocr delegate rule --format json <the SCOPE paths>` — it returns per-path
@@ -197,10 +197,13 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
     exit 0 proves a non-assertion CR stayed non-assertion.
   - **CRs on an integration-test file** go back to `integration-test-author`,
     which can already read the file; no maintainer needed.
-  - **A `tests` CR is proven by the repeat that found the risk.** After the
-    author returns, rerun the stability gate (Phase 6) on the fixed head; the
-    CR is resolved only when the test passes every run. A `PRODUCT-RACE:` note
-    from the `tests` lens is not a CR: it is a Phase 6 row-6 arbitration, ruled
+  - **A `tests` CR is proven against the risk it identified.** After the
+    author returns, repeat the affected test or reproducing group under the
+    relevant conditions (Phase 6), recording command and outcomes. For a
+    static finding, verify the mechanism and run the affected tests. Resolve
+    observed flips only after the reproduction passes every run; obtain the
+    integrated verdict when the fix changes its relevant inputs. A
+    `PRODUCT-RACE:` note from the `tests` lens is not a CR: it is a Phase 6 row-6 arbitration, ruled
     on its mechanism before any CR is routed. A `FLAKE-EXEMPT:` note is neither
     of these. Add it as a row of the repo's `.flake-risk-exempt.md` (create the
     file with the table header `flake_risk.py` documents) in the commit that
