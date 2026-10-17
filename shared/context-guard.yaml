@@ -45,3 +45,15 @@ mask_reasoning_agents: [work-on, dossier]
 guard_agents: [work-on]
 # A read or cat without offset/limit of a file larger than this many bytes is refused.
 max_read_bytes: 20000
+
+# Bash reading windows on source and markdown (sed -n, awk NR ranges, cat/head/tail, grep
+# with a context window) are refused for the guarded agents and pointed at the nav tools:
+# code_item (modes contract, members, doc; several symbols as `A | B`), code_outline,
+# doc_section (several headings as `a | b`) and dossier_edit.py section. Each such read was
+# a turn of its own: the recorded Claude runs spent ~500 of ~1,180 orchestrator Bash calls
+# on them. Read with offset and limit stays allowed as the fallback.
+nav_redirect: true
+# A whole-file cat/head/tail of a file this small is allowed.
+nav_small_bytes: 4000
+# A grep with -A/-B/-C of at least this many lines on source is a read, not a search.
+nav_grep_context: 5

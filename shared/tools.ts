@@ -65,12 +65,15 @@ export const TOOLS: ToolDef[] = [
       "SYMBOL is a qualified name (`Type::method`, `module::fn`, `Class.method`) or a bare name when unique " +
       "(an ambiguous one lists the candidates). mode: `contract` = docs + attributes + signature with bodies " +
       "elided (impl/trait/class: each member's docs + signature; struct/enum: the whole declaration) — the cheap " +
-      "way to learn an API; `signature` = signature only; `doc` = doc comments only; `full` (default) = " +
-      "attributes + docs + the whole item. Prints a path:start-end header.",
+      "way to learn an API; `members` = a struct/enum/trait plus every impl block for it in the file " +
+      "(inherent and trait impls) in contract form, the whole API of a type in one call; `signature` = " +
+      "signature only; `doc` = doc comments only; `full` (default) = attributes + docs + the whole item. " +
+      "Several items in one call: separate the symbols with ` | ` (`Config::load | Config::save`). Prints a " +
+      "path:start-end header per item.",
     params: [
       { name: "path", type: "string", description: "a .rs or .py file" },
-      { name: "symbol", type: "string", description: "qualified or bare item name, e.g. `RunConfig::from_values`" },
-      { name: "mode", type: "string", optional: true, enum: ["full", "contract", "doc", "signature"], description: "default full" },
+      { name: "symbol", type: "string", description: "qualified or bare item name, e.g. `RunConfig::from_values`; several as `A | B`" },
+      { name: "mode", type: "string", optional: true, enum: ["full", "contract", "members", "doc", "signature"], description: "default full" },
     ],
     execute: ({ path, symbol, mode }, ctx) => run(["item", abs(path, ctx), symbol, "--mode", mode ?? "full"], ctx.directory),
   },
@@ -99,10 +102,11 @@ export const TOOLS: ToolDef[] = [
       "80-170 KB) to read ONE section: the heading through the line before the next heading of the same or " +
       "higher level. HEADING is the heading text (case-insensitive, backticks ignored) or an id that appears " +
       "in a heading: `LRN-0073`, `ADR-0150`, `W-084`, `§4`. Several matches are listed, not dumped. Pass " +
-      "`--list` as the heading to get the headings only (with line ranges).",
+      "`--list` as the heading to get the headings only (with line ranges). Several sections in one call: " +
+      "separate the headings with ` | ` (`LRN-0073 | LRN-0081`).",
     params: [
       { name: "path", type: "string", description: "a .md file" },
-      { name: "heading", type: "string", description: "heading text or id, e.g. `LRN-0073`; or `--list` for the headings" },
+      { name: "heading", type: "string", description: "heading text or id, e.g. `LRN-0073`; several as `a | b`; or `--list` for the headings" },
     ],
     execute: ({ path, heading }, ctx) => {
       const file = abs(path, ctx)
@@ -142,10 +146,13 @@ export const TOOLS: ToolDef[] = [
     description:
       "Close a /work-on phase or a stage inside one. Call it at a phase boundary, or when a stage inside a phase " +
       "is done — a wave returned, a test or review round ruled, an investigation answered — and only after that " +
-      "outcome is written to the dossier's ## Build log. Never in the middle of a stage you are still working " +
-      "from. The summary is what you will know about all earlier work: the dossier path and worktree, what just " +
+      "outcome is written to the dossier's ## Build log. Otherwise never in the middle of a stage you are still " +
+      "working from. The summary is what you will know about all earlier work: the dossier path and worktree, what just " +
       "finished and what comes next, commits and SHAs, rulings, findings and open items, and anything later steps " +
-      `must not rediscover. At most ${MAX_SUMMARY_CHARS} characters; detail belongs in the build log.`,
+      `must not rediscover. At most ${MAX_SUMMARY_CHARS} characters; detail belongs in the build log. End it with ` +
+      "a `NEXT:` line — the exact next action with the paths, branches and IDs it needs — which a restore starts " +
+      "from. Also call it, mid-stage, when you are told the context is near compaction: name the stage you are " +
+      "in (\"Phase 4 — wave 2, before compaction\").",
     hostNote: {
       opencode:
         "It drops every earlier step of this run from your context from the next request on, keeping the original " +

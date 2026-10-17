@@ -28,7 +28,8 @@ Saved snapshots:
 | `metrics/2026-09-21_baseline-before-pr86.json` | 2026-09-21 → 2026-09-28 19:29:50 (cutoff) | Baseline: 3 runs (W-067, W-072, W-086) |
 | `metrics/2026-09-28_after-pr86-to-92.json` | cutoff → 2026-10-04 23:59 | After PRs #86–#92: 4 runs (W-069, W-073, W-091, W-095 inquiry), run in parallel |
 | `metrics/2026-10-14_budget-per-dossier.json` | 2026-09-14 → 2026-10-14 09:30 UTC | `budget_report.py`: every dossier on both hosts as a share of each plan's week |
-| `metrics/2026-10-14_budget-per-dossier-with-quality.json` | the same window | the same, plus build-log quality per dossier and the seat's week calibrated from the usage log ($1,067): **the baseline for the next eval** |
+| `metrics/2026-10-14_budget-per-dossier-with-quality.json` | the same window | the same, plus build-log quality per dossier and the seat's week calibrated from the usage log ($1,067): superseded: its quality numbers stopped at the first `## ` inside the build log (a pasted change request), so most read 0 |
+| `metrics/2026-10-17_baseline-quality-corrected.json` | the same window | the same runs with the build log read to the end of the file, and the seat's week recalibrated ($1,163): **the baseline for the next eval**; compare with `budget_report.py --since <start> --whole --compare` this file |
 
 ## Results so far (baseline → after #86–#92)
 

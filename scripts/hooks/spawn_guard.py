@@ -44,6 +44,11 @@ It also denies a workflow script of its own — inline, or by a scriptPath
 outside the plugin's workflows/ — that spawns this plugin's agents with a
 payload built in: call the plugin's workflow by name instead.
 
+It also denies a spawn of one of this plugin's agents that passes a `model`
+other than the one its agent file names (`claude/agents/<name>.md`): the file
+sets the model, so a spawn omits `model`. The recorded runs spawned the Haiku
+code-scout and stub-materialiser on Sonnet that way.
+
 It never allows anything: a spawn it lets through still goes to the
 classifier. Spawns of other agents are not its business.
 
@@ -194,6 +199,33 @@ def workflow_problems(tool_input: dict) -> list[str]:
     return []
 
 
+AGENTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "claude", "agents")
+MODEL_LINE = re.compile(r"^model:\s*(\S+)\s*$", re.M)
+
+
+def file_model(agent: str) -> str | None:
+    """The model a plugin agent's file names, or None when there is no such file or line."""
+    try:
+        with open(os.path.join(AGENTS_DIR, agent + ".md"), encoding="utf-8") as fh:
+            head = fh.read().split("\n---", 2)
+    except OSError:
+        return None
+    match = MODEL_LINE.search(head[1] if len(head) > 1 and head[0].strip() == "---" else head[0])
+    return match.group(1) if match else None
+
+
+def model_problems(tool_input: dict) -> list[str]:
+    asked = str(tool_input.get("model", "") or "").strip()
+    agent = str(tool_input.get("subagent_type", ""))[len(PLUGIN):]
+    want = file_model(agent)
+    if not asked or not want or asked == want:
+        return []
+    return [
+        f"the spawn passes model {asked!r}, but {agent}'s agent file names {want!r}. The agent file sets "
+        "the model: omit `model` from the spawn"
+    ]
+
+
 def decide(event: dict) -> dict | None:
     """The hook output for one PreToolUse event, or None to let it through."""
     if os.environ.get("ASD_SPAWN_GUARD", "1").strip().lower() in ("0", "false", "off", "no"):
@@ -204,7 +236,7 @@ def decide(event: dict) -> dict | None:
     elif event.get("tool_name") in ("Agent", "Task"):
         if not str(tool_input.get("subagent_type", "")).startswith(PLUGIN):
             return None
-        found = problems(str(tool_input.get("prompt", "")))
+        found = model_problems(tool_input) + problems(str(tool_input.get("prompt", "")))
     else:
         return None
     if not found:
@@ -331,6 +363,19 @@ def selftest() -> int:
               decide({"tool_name": "Workflow", "tool_input": {"script": "await agent('read README', {agentType: '" + PLUGIN + "reviewer'})"}}) is None)
         check("other workflows are not its business",
               decide({"tool_name": "Workflow", "tool_input": {"name": "my-sweep", "args": [{"label": "x", "prompt": recorded}]}}) is None)
+    def spawn_as(agent: str, model: str | None) -> dict | None:
+        tool_input = {"subagent_type": PLUGIN + agent, "prompt": pasted}
+        if model is not None:
+            tool_input["model"] = model
+        return decide({"tool_name": "Agent", "tool_input": tool_input})
+
+    check("the agent files are found", file_model("code-scout") == "haiku" and file_model("implementer") == "sonnet")
+    out = spawn_as("code-scout", "sonnet")
+    check("a spawn overriding the file's model is denied (code-scout on sonnet)",
+          bool(out) and "omit `model`" in out["hookSpecificOutput"]["permissionDecisionReason"])
+    check("a spawn naming the file's own model passes", spawn_as("code-scout", "haiku") is None)
+    check("a spawn without a model passes", spawn_as("implementer", None) is None)
+    check("an agent with no file is not judged on its model", spawn_as("nonexistent", "opus") is None)
     check("the legacy Task name is covered", bool(spawn(recorded, tool="Task")))
     reason = spawn(recorded)["hookSpecificOutput"]["permissionDecisionReason"]
     check("the reason says how to fix it", "paste" in reason)

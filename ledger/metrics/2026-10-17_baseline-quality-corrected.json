@@ -1,0 +1,1480 @@
+{
+ "window": {
+  "since": "2026-09-14",
+  "until": "2026-10-14T09:30:00",
+  "whole": false
+ },
+ "claude_week_usd": 1162.81,
+ "claude_week_basis": "calibrated from usage log",
+ "calibration": {
+  "week_usd": 1162.81,
+  "rise_pct": 42.0,
+  "spent_usd": 488.38,
+  "from": 1791969340000,
+  "to": 1792147955000,
+  "resets_at": 1792148400
+ },
+ "unpriced_claude_models": {
+  "claude-opus-5": 12099,
+  "claude-sonnet-5": 10747,
+  "claude-haiku-5-5": 252,
+  "claude-opus-4-8": 980
+ },
+ "summary": {
+  "opencode": {
+   "runs": 15,
+   "median_cost": 12714,
+   "median_mtok_in": 139.7,
+   "median_avg_request_k": 139,
+   "median_share_pct": {
+    "Lite": 127.1,
+    "Pro": 21.2,
+    "Max": 9.1
+   },
+   "median_quality": {
+    "returns": 9,
+    "flagged_returns": 0,
+    "arbitrations": 6,
+    "defects": 1,
+    "corrections": 12,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 4,
+    "packages": 9
+   },
+   "quality_runs": 5,
+   "dossiers_per_week": {
+    "Lite": 0.8,
+    "Pro": 4.7,
+    "Max": 11.0
+   }
+  },
+  "claude": {
+   "runs": 15,
+   "median_cost": 88.99,
+   "median_mtok_in": 280.5,
+   "median_avg_request_k": 328,
+   "median_share_pct": {
+    "Team Premium seat (Max 5x tier)": 7.7
+   },
+   "median_quality": {
+    "returns": 9,
+    "flagged_returns": 0,
+    "arbitrations": 2,
+    "defects": 0,
+    "corrections": 4,
+    "workflow_runs": 0,
+    "gaps": 2,
+    "contract_changes": 0,
+    "change_requests": 1,
+    "packages": 10
+   },
+   "quality_runs": 3,
+   "dossiers_per_week": {
+    "Team Premium seat (Max 5x tier)": 13.0
+   }
+  }
+ },
+ "runs": [
+  {
+   "host": "claude",
+   "run": "W-085",
+   "cost": 55.51,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 99.2,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.4.0"
+   ],
+   "start": "2026-09-22T18:05Z",
+   "end": "2026-09-22T21:13Z",
+   "requests": 449,
+   "mtok_in": 209.9,
+   "mtok_out": 0.37,
+   "cache_read_pct": 99.5,
+   "avg_request_k": 467,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 4.8
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-085-measure-the-claim-query-plan-before-touching-its-index.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 0,
+    "defects": 4,
+    "corrections": 7,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 1,
+    "packages": 6,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-083",
+   "cost": 48.24,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 98.2,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.4.0"
+   ],
+   "start": "2026-09-22T18:05Z",
+   "end": "2026-09-22T20:58Z",
+   "requests": 379,
+   "mtok_in": 175.6,
+   "mtok_out": 0.31,
+   "cache_read_pct": 99.2,
+   "avg_request_k": 463,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 4.1
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-083-a-rust-llm-proxy-relevance-and-feasibility.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 2,
+    "defects": 0,
+    "corrections": 16,
+    "workflow_runs": 0,
+    "gaps": 1,
+    "contract_changes": 0,
+    "change_requests": 2,
+    "packages": 5,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-087",
+   "cost": 99.84,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 97.7,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.4.0"
+   ],
+   "start": "2026-09-22T21:14Z",
+   "end": "2026-09-24T10:05Z",
+   "requests": 771,
+   "mtok_in": 324.2,
+   "mtok_out": 0.7,
+   "cache_read_pct": 98.8,
+   "avg_request_k": 420,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 8.6
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-087-effect-based-tool-policy.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 1,
+    "defects": 0,
+    "corrections": 24,
+    "workflow_runs": 0,
+    "gaps": 8,
+    "contract_changes": 0,
+    "change_requests": 3,
+    "packages": 13,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-066",
+   "cost": 114.43,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 98.8,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.3.0",
+    "1.4.0"
+   ],
+   "start": "2026-09-23T10:34Z",
+   "end": "2026-09-26T07:15Z",
+   "requests": 616,
+   "mtok_in": 293.5,
+   "mtok_out": 0.59,
+   "cache_read_pct": 98.0,
+   "avg_request_k": 476,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 9.8
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-066-the-tool-turn-step.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 3,
+    "defects": 3,
+    "corrections": 11,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 2,
+    "packages": 7,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-084",
+   "cost": 166.16,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 99.5,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.4.0"
+   ],
+   "start": "2026-09-26T11:01Z",
+   "end": "2026-09-27T16:50Z",
+   "requests": 362,
+   "mtok_in": 138.4,
+   "mtok_out": 0.9,
+   "cache_read_pct": 96.3,
+   "avg_request_k": 382,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 14.3
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-084-one-fenced-shape-for-every-track-write.md",
+   "quality": {
+    "returns": 9,
+    "flagged_returns": 0,
+    "arbitrations": 2,
+    "defects": 5,
+    "corrections": 20,
+    "workflow_runs": 0,
+    "gaps": 10,
+    "contract_changes": 3,
+    "change_requests": 1,
+    "packages": 4,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-090",
+   "cost": 168.25,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 99.6,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.4.0"
+   ],
+   "start": "2026-09-26T11:01Z",
+   "end": "2026-09-28T07:57Z",
+   "requests": 732,
+   "mtok_in": 281.5,
+   "mtok_out": 1.01,
+   "cache_read_pct": 98.7,
+   "avg_request_k": 385,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 14.5
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-090-fix-the-tool-step-deferred-issues.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 4,
+    "defects": 0,
+    "corrections": 25,
+    "workflow_runs": 0,
+    "gaps": 2,
+    "contract_changes": 0,
+    "change_requests": 0,
+    "packages": 11,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-068",
+   "cost": 100.34,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 89.3,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.5.0"
+   ],
+   "start": "2026-09-29T17:48Z",
+   "end": "2026-09-30T14:56Z",
+   "requests": 960,
+   "mtok_in": 311.2,
+   "mtok_out": 0.64,
+   "cache_read_pct": 98.1,
+   "avg_request_k": 324,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 8.6
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-068-write-tools-seeding-auto-commit-and-git.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 4,
+    "defects": 0,
+    "corrections": 9,
+    "workflow_runs": 0,
+    "gaps": 7,
+    "contract_changes": 0,
+    "change_requests": 3,
+    "packages": 12,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-078",
+   "cost": 52.46,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 92.0,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.5.0"
+   ],
+   "start": "2026-09-29T17:49Z",
+   "end": "2026-09-30T08:10Z",
+   "requests": 555,
+   "mtok_in": 169.8,
+   "mtok_out": 0.33,
+   "cache_read_pct": 98.5,
+   "avg_request_k": 306,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 4.5
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-078-typed-provenance-relations-in-postgres.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 0,
+    "defects": 0,
+    "corrections": 5,
+    "workflow_runs": 0,
+    "gaps": 5,
+    "contract_changes": 0,
+    "change_requests": 2,
+    "packages": 8,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-099",
+   "cost": 88.99,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 91.6,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.3.0",
+    "1.4.0",
+    "1.5.0"
+   ],
+   "start": "2026-09-30T08:11Z",
+   "end": "2026-10-01T10:48Z",
+   "requests": 880,
+   "mtok_in": 311.3,
+   "mtok_out": 0.45,
+   "cache_read_pct": 98.7,
+   "avg_request_k": 354,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 7.7
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-099-provenance-hardening-and-typed-vocabularies.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 2,
+    "defects": 0,
+    "corrections": 15,
+    "workflow_runs": 0,
+    "gaps": 2,
+    "contract_changes": 1,
+    "change_requests": 6,
+    "packages": 13,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-096",
+   "cost": 81.29,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 89.8,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.5.0"
+   ],
+   "start": "2026-10-05T07:17Z",
+   "end": "2026-10-05T15:01Z",
+   "requests": 936,
+   "mtok_in": 280.5,
+   "mtok_out": 0.52,
+   "cache_read_pct": 98.7,
+   "avg_request_k": 300,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 7.0
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-096-record-every-model-request-and-tool-call-where-an-operator-can-query-it.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 3,
+    "defects": 0,
+    "corrections": 2,
+    "workflow_runs": 0,
+    "gaps": 11,
+    "contract_changes": 0,
+    "change_requests": 5,
+    "packages": 18,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-093",
+   "cost": 45.68,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 93.1,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.5.0"
+   ],
+   "start": "2026-10-05T15:07Z",
+   "end": "2026-10-06T10:18Z",
+   "requests": 547,
+   "mtok_in": 138.9,
+   "mtok_out": 0.3,
+   "cache_read_pct": 98.3,
+   "avg_request_k": 254,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 3.9
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-093-read-the-provider-response-and-its-prompt-cache-usage.md",
+   "quality": {
+    "returns": 8,
+    "flagged_returns": 0,
+    "arbitrations": 1,
+    "defects": 0,
+    "corrections": 3,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 3,
+    "packages": 10,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-103",
+   "cost": 54.77,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 94.9,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.5.0"
+   ],
+   "start": "2026-10-06T10:46Z",
+   "end": "2026-10-07T07:46Z",
+   "requests": 515,
+   "mtok_in": 169.0,
+   "mtok_out": 0.29,
+   "cache_read_pct": 98.4,
+   "avg_request_k": 328,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 4.7
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-103-record-reasoning-and-cache-usage-per-request.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 2,
+    "defects": 0,
+    "corrections": 2,
+    "workflow_runs": 0,
+    "gaps": 3,
+    "contract_changes": 0,
+    "change_requests": 1,
+    "packages": 11,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-097",
+   "cost": 182.88,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 93.7,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.5.0"
+   ],
+   "start": "2026-10-07T08:26Z",
+   "end": "2026-10-14T07:10Z",
+   "requests": 1650,
+   "mtok_in": 488.3,
+   "mtok_out": 0.83,
+   "cache_read_pct": 97.6,
+   "avg_request_k": 296,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 15.7
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-097-tell-the-operator-where-a-track-wastes-context.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 0,
+    "defects": 0,
+    "corrections": 1,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 6,
+    "packages": 11,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-100",
+   "cost": 131.83,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 82.1,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.5.0"
+   ],
+   "start": "2026-10-07T08:28Z",
+   "end": "2026-10-13T10:04Z",
+   "requests": 1559,
+   "mtok_in": 323.0,
+   "mtok_out": 0.58,
+   "cache_read_pct": 96.0,
+   "avg_request_k": 207,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 11.3
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-100-close-the-write-and-git-tools-deferred-issues.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 4,
+    "defects": 0,
+    "corrections": 6,
+    "workflow_runs": 0,
+    "gaps": 5,
+    "contract_changes": 0,
+    "change_requests": 7,
+    "packages": 14,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-075",
+   "cost": 21.27,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 94.7,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.6.0",
+    "1.9.0",
+    "1.10.0"
+   ],
+   "start": "2026-10-13T17:15Z",
+   "end": "2026-10-14T08:47Z",
+   "requests": 270,
+   "mtok_in": 47.5,
+   "mtok_out": 0.22,
+   "cache_read_pct": 97.4,
+   "avg_request_k": 176,
+   "full": false,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 1.8
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-075-per-instance-nats-credentials-through-auth-callout.md",
+   "quality": {
+    "returns": 14,
+    "flagged_returns": 2,
+    "arbitrations": 0,
+    "defects": 3,
+    "corrections": 4,
+    "workflow_runs": 5,
+    "gaps": 3,
+    "contract_changes": 0,
+    "change_requests": 5,
+    "packages": 11,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-098",
+   "cost": 50.96,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 87.3,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.6.0"
+   ],
+   "start": "2026-10-13T17:15Z",
+   "end": "2026-10-14T09:23Z",
+   "requests": 629,
+   "mtok_in": 160.7,
+   "mtok_out": 0.34,
+   "cache_read_pct": 98.0,
+   "avg_request_k": 256,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 4.4
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-098-refuse-a-repeated-tool-call-and-give-a-track-a-token-budget.md",
+   "quality": {
+    "returns": 16,
+    "flagged_returns": 0,
+    "arbitrations": 2,
+    "defects": 0,
+    "corrections": 4,
+    "workflow_runs": 0,
+    "gaps": 2,
+    "contract_changes": 0,
+    "change_requests": 1,
+    "packages": 15,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-106",
+   "cost": 15.76,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 88.1,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.6.0"
+   ],
+   "start": "2026-10-14T08:47Z",
+   "end": "2026-10-14T09:29Z",
+   "requests": 245,
+   "mtok_in": 42.8,
+   "mtok_out": 0.15,
+   "cache_read_pct": 97.6,
+   "avg_request_k": 175,
+   "full": false,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 1.4
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-106-read-bootstrap-values-through-a-parameter-port.md",
+   "quality": {
+    "returns": 11,
+    "flagged_returns": 0,
+    "arbitrations": 14,
+    "defects": 0,
+    "corrections": 6,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 5,
+    "packages": 11,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-074",
+   "cost": 9.7,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 86.6,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.6.1",
+    "1.9.0"
+   ],
+   "start": "2026-10-14T08:53Z",
+   "end": "2026-10-14T09:27Z",
+   "requests": 151,
+   "mtok_in": 23.5,
+   "mtok_out": 0.11,
+   "cache_read_pct": 97.1,
+   "avg_request_k": 156,
+   "full": false,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 0.8
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-074-human-input-requests-row-notify-resume-expiry.md",
+   "quality": {
+    "returns": 22,
+    "flagged_returns": 1,
+    "arbitrations": 4,
+    "defects": 0,
+    "corrections": 21,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 3,
+    "packages": 15,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-070",
+   "titles": [
+    "W-070",
+    "W-070 topic"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-backend-application-api",
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 10039,
+   "unit": "credits billed",
+   "credits_standard": 20077,
+   "orchestrator_share_pct": 88.9,
+   "start": "2026-09-17T11:30Z",
+   "end": "2026-09-18T18:15Z",
+   "requests": 846,
+   "mtok_in": 117.3,
+   "mtok_out": 0.85,
+   "cache_read_pct": 96.2,
+   "avg_request_k": 139,
+   "full": true,
+   "share_pct": {
+    "Lite": 100.4,
+    "Pro": 16.7,
+    "Max": 7.2
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-070-a-github-adapter-for-the-git-host-port.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 2,
+    "defects": 0,
+    "corrections": 7,
+    "workflow_runs": 0,
+    "gaps": 1,
+    "contract_changes": 0,
+    "change_requests": 4,
+    "packages": 9,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-076",
+   "titles": [
+    "W-076",
+    "w-076 inquiry"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-backend-application-api",
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 10083,
+   "unit": "credits billed",
+   "credits_standard": 20167,
+   "orchestrator_share_pct": 90.1,
+   "start": "2026-09-17T11:31Z",
+   "end": "2026-09-18T20:25Z",
+   "requests": 657,
+   "mtok_in": 104.2,
+   "mtok_out": 1.08,
+   "cache_read_pct": 93.2,
+   "avg_request_k": 159,
+   "full": true,
+   "share_pct": {
+    "Lite": 100.8,
+    "Pro": 16.8,
+    "Max": 7.2
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-076-collector-redaction-and-a-second-sink.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 3,
+    "defects": 0,
+    "corrections": 6,
+    "workflow_runs": 0,
+    "gaps": 1,
+    "contract_changes": 0,
+    "change_requests": 2,
+    "packages": 4,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-063",
+   "titles": [
+    "W-063"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 12235,
+   "unit": "credits billed",
+   "credits_standard": 24469,
+   "orchestrator_share_pct": 92.5,
+   "start": "2026-09-17T11:33Z",
+   "end": "2026-09-18T14:37Z",
+   "requests": 734,
+   "mtok_in": 139.7,
+   "mtok_out": 0.86,
+   "cache_read_pct": 97.0,
+   "avg_request_k": 190,
+   "full": true,
+   "share_pct": {
+    "Lite": 122.3,
+    "Pro": 20.4,
+    "Max": 8.7
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-063-tool-calls-on-the-llm-port.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 0,
+    "defects": 0,
+    "corrections": 3,
+    "workflow_runs": 0,
+    "gaps": 3,
+    "contract_changes": 0,
+    "change_requests": 1,
+    "packages": 9,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-071",
+   "titles": [
+    "W-071"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 7698,
+   "unit": "credits billed",
+   "credits_standard": 15395,
+   "orchestrator_share_pct": 89.3,
+   "start": "2026-09-17T11:33Z",
+   "end": "2026-09-18T13:31Z",
+   "requests": 693,
+   "mtok_in": 87.5,
+   "mtok_out": 0.76,
+   "cache_read_pct": 96.3,
+   "avg_request_k": 126,
+   "full": true,
+   "share_pct": {
+    "Lite": 77.0,
+    "Pro": 12.8,
+    "Max": 5.5
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-071-working-memory-regeneration-in-the-loop.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 2,
+    "defects": 0,
+    "corrections": 5,
+    "workflow_runs": 0,
+    "gaps": 4,
+    "contract_changes": 0,
+    "change_requests": 3,
+    "packages": 7,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-081",
+   "titles": [
+    "W-081 inquiry",
+    "W-081 inquiry"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-backend-infrastructure/.claude/worktrees/BEDAI-4096-eqp-credentials-route",
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 777,
+   "unit": "credits billed",
+   "credits_standard": 1554,
+   "orchestrator_share_pct": 96.5,
+   "start": "2026-09-19T07:42Z",
+   "end": "2026-09-19T08:57Z",
+   "requests": 58,
+   "mtok_in": 7.3,
+   "mtok_out": 0.08,
+   "cache_read_pct": 94.2,
+   "avg_request_k": 127,
+   "full": false,
+   "share_pct": {
+    "Lite": 7.8,
+    "Pro": 1.3,
+    "Max": 0.6
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-081-telemetry-flush-does-not-force-shipment.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 0,
+    "defects": 0,
+    "corrections": 4,
+    "workflow_runs": 0,
+    "gaps": 5,
+    "contract_changes": 0,
+    "change_requests": 1,
+    "packages": 5,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-080",
+   "titles": [
+    "W-080"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 1176,
+   "unit": "credits billed",
+   "credits_standard": 2352,
+   "orchestrator_share_pct": 97.5,
+   "start": "2026-09-19T07:43Z",
+   "end": "2026-09-19T08:57Z",
+   "requests": 89,
+   "mtok_in": 12.0,
+   "mtok_out": 0.09,
+   "cache_read_pct": 96.6,
+   "avg_request_k": 135,
+   "full": false,
+   "share_pct": {
+    "Lite": 11.8,
+    "Pro": 2.0,
+    "Max": 0.8
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-080-mask-scope-span-names-and-log-bodies.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 0,
+    "defects": 1,
+    "corrections": 5,
+    "workflow_runs": 0,
+    "gaps": 2,
+    "contract_changes": 1,
+    "change_requests": 2,
+    "packages": 4,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-064",
+   "titles": [
+    "W-064"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 7821,
+   "unit": "credits billed",
+   "credits_standard": 15643,
+   "orchestrator_share_pct": 73.1,
+   "start": "2026-09-19T07:44Z",
+   "end": "2026-09-19T15:35Z",
+   "requests": 901,
+   "mtok_in": 108.7,
+   "mtok_out": 1.23,
+   "cache_read_pct": 96.4,
+   "avg_request_k": 121,
+   "full": true,
+   "share_pct": {
+    "Lite": 78.2,
+    "Pro": 13.0,
+    "Max": 5.6
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-064-tool-registry-visibility-and-pipeline.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 1,
+    "defects": 2,
+    "corrections": 4,
+    "workflow_runs": 0,
+    "gaps": 1,
+    "contract_changes": 0,
+    "change_requests": 2,
+    "packages": 9,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-086",
+   "titles": [
+    "W-086",
+    "W-086"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 21784,
+   "unit": "credits billed",
+   "credits_standard": 43568,
+   "orchestrator_share_pct": 63.2,
+   "start": "2026-09-24T14:21Z",
+   "end": "2026-09-26T20:07Z",
+   "requests": 2162,
+   "mtok_in": 393.1,
+   "mtok_out": 1.97,
+   "cache_read_pct": 97.9,
+   "avg_request_k": 182,
+   "full": true,
+   "share_pct": {
+    "Lite": 217.8,
+    "Pro": 36.3,
+    "Max": 15.6
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-086-adversarial-assurance-for-the-risk-gate.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 10,
+    "defects": 0,
+    "corrections": 11,
+    "workflow_runs": 0,
+    "gaps": 2,
+    "contract_changes": 1,
+    "change_requests": 3,
+    "packages": 8,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-072",
+   "titles": [
+    "W-072"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 21523,
+   "unit": "credits billed",
+   "credits_standard": 43047,
+   "orchestrator_share_pct": 82.6,
+   "start": "2026-09-24T14:25Z",
+   "end": "2026-09-26T18:42Z",
+   "requests": 1600,
+   "mtok_in": 289.1,
+   "mtok_out": 1.76,
+   "cache_read_pct": 97.2,
+   "avg_request_k": 181,
+   "full": true,
+   "share_pct": {
+    "Lite": 215.2,
+    "Pro": 35.9,
+    "Max": 15.4
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-072-inbox-relay-and-the-priority-lane-supervisor.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 6,
+    "defects": 0,
+    "corrections": 9,
+    "workflow_runs": 0,
+    "gaps": 1,
+    "contract_changes": 0,
+    "change_requests": 1,
+    "packages": 9,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-067",
+   "titles": [
+    "W-067"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 13632,
+   "unit": "credits billed",
+   "credits_standard": 27265,
+   "orchestrator_share_pct": 90.5,
+   "start": "2026-09-24T14:25Z",
+   "end": "2026-09-26T15:27Z",
+   "requests": 999,
+   "mtok_in": 156.4,
+   "mtok_out": 1.11,
+   "cache_read_pct": 96.7,
+   "avg_request_k": 157,
+   "full": true,
+   "share_pct": {
+    "Lite": 136.3,
+    "Pro": 22.7,
+    "Max": 9.7
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-067-the-built-in-command-catalogue.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 3,
+    "defects": 4,
+    "corrections": 11,
+    "workflow_runs": 0,
+    "gaps": 2,
+    "contract_changes": 0,
+    "change_requests": 1,
+    "packages": 8,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-073",
+   "titles": [
+    "W-073",
+    "W-073"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/agentic-software-development",
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 28544,
+   "unit": "credits billed",
+   "credits_standard": 53312,
+   "orchestrator_share_pct": 91.1,
+   "start": "2026-10-02T11:48Z",
+   "end": "2026-10-09T12:59Z",
+   "requests": 2075,
+   "mtok_in": 314.6,
+   "mtok_out": 1.86,
+   "cache_read_pct": 97.3,
+   "avg_request_k": 152,
+   "full": true,
+   "share_pct": {
+    "Lite": 285.4,
+    "Pro": 47.6,
+    "Max": 20.4
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-073-the-ops-plane-events-heartbeats-and-broadcast.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 8,
+    "defects": 0,
+    "corrections": 28,
+    "workflow_runs": 0,
+    "gaps": 2,
+    "contract_changes": 0,
+    "change_requests": 1,
+    "packages": 10,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-069",
+   "titles": [
+    "W-069"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 16814,
+   "unit": "credits billed",
+   "credits_standard": 31664,
+   "orchestrator_share_pct": 91.6,
+   "start": "2026-10-02T11:49Z",
+   "end": "2026-10-09T20:02Z",
+   "requests": 1432,
+   "mtok_in": 174.9,
+   "mtok_out": 1.33,
+   "cache_read_pct": 96.5,
+   "avg_request_k": 122,
+   "full": true,
+   "share_pct": {
+    "Lite": 168.1,
+    "Pro": 28.0,
+    "Max": 12.0
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-069-user-registered-commands-in-the-sandbox.md",
+   "quality": {
+    "returns": 6,
+    "flagged_returns": 0,
+    "arbitrations": 4,
+    "defects": 0,
+    "corrections": 4,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 3,
+    "change_requests": 3,
+    "packages": 11,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-095",
+   "titles": [
+    "W-095",
+    "w-095 inquiry"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 13807,
+   "unit": "credits billed",
+   "credits_standard": 27615,
+   "orchestrator_share_pct": 89.7,
+   "start": "2026-10-02T11:50Z",
+   "end": "2026-10-03T23:05Z",
+   "requests": 1386,
+   "mtok_in": 155.6,
+   "mtok_out": 1.47,
+   "cache_read_pct": 96.4,
+   "avg_request_k": 112,
+   "full": true,
+   "share_pct": {
+    "Lite": 138.1,
+    "Pro": 23.0,
+    "Max": 9.9
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-095-close-the-tool-journal-deferred-ledger.md",
+   "quality": {
+    "returns": 6,
+    "flagged_returns": 0,
+    "arbitrations": 0,
+    "defects": 2,
+    "corrections": 12,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 4,
+    "packages": 9,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-091",
+   "titles": [
+    "W-091"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 35351,
+   "unit": "credits billed",
+   "credits_standard": 67665,
+   "orchestrator_share_pct": 85.4,
+   "start": "2026-10-02T11:50Z",
+   "end": "2026-10-10T07:36Z",
+   "requests": 2667,
+   "mtok_in": 430.8,
+   "mtok_out": 2.8,
+   "cache_read_pct": 96.9,
+   "avg_request_k": 162,
+   "full": true,
+   "share_pct": {
+    "Lite": 353.5,
+    "Pro": 58.9,
+    "Max": 25.3
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-091-compact-the-conversation-under-a-model-window-budget.md",
+   "quality": {
+    "returns": 12,
+    "flagged_returns": 0,
+    "arbitrations": 12,
+    "defects": 1,
+    "corrections": 22,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 5,
+    "packages": 13,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-092",
+   "titles": [
+    "W-092 reference"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 10495,
+   "unit": "credits billed",
+   "credits_standard": 17059,
+   "orchestrator_share_pct": 85.3,
+   "start": "2026-10-13T08:40Z",
+   "end": "2026-10-14T08:50Z",
+   "requests": 1272,
+   "mtok_in": 95.3,
+   "mtok_out": 1.14,
+   "cache_read_pct": 94.5,
+   "avg_request_k": 75,
+   "full": true,
+   "share_pct": {
+    "Lite": 105.0,
+    "Pro": 17.5,
+    "Max": 7.5
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-092-store-each-checkpoint-as-a-delta.md",
+   "quality": {
+    "returns": 9,
+    "flagged_returns": 0,
+    "arbitrations": 6,
+    "defects": 1,
+    "corrections": 11,
+    "workflow_runs": 0,
+    "gaps": 2,
+    "contract_changes": 0,
+    "change_requests": 3,
+    "packages": 9,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-104",
+   "titles": [
+    "W-104",
+    "W-104 reference"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 12714,
+   "unit": "credits billed",
+   "credits_standard": 22408,
+   "orchestrator_share_pct": 84.1,
+   "start": "2026-10-13T09:32Z",
+   "end": "2026-10-14T08:49Z",
+   "requests": 1539,
+   "mtok_in": 122.7,
+   "mtok_out": 1.67,
+   "cache_read_pct": 92.9,
+   "avg_request_k": 80,
+   "full": true,
+   "share_pct": {
+    "Lite": 127.1,
+    "Pro": 21.2,
+    "Max": 9.1
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-104-own-the-stack-under-test-lease-the-shared-vm-compose-per-suite.md",
+   "quality": {
+    "returns": 27,
+    "flagged_returns": 0,
+    "arbitrations": 6,
+    "defects": 2,
+    "corrections": 29,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 1,
+    "change_requests": 4,
+    "packages": 6,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-102",
+   "titles": [
+    "Error W-102",
+    "W-102"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 3686,
+   "unit": "credits billed",
+   "credits_standard": 4522,
+   "orchestrator_share_pct": 84.2,
+   "start": "2026-10-13T17:14Z",
+   "end": "2026-10-14T08:50Z",
+   "requests": 335,
+   "mtok_in": 23.1,
+   "mtok_out": 0.35,
+   "cache_read_pct": 93.0,
+   "avg_request_k": 69,
+   "full": true,
+   "share_pct": {
+    "Lite": 36.9,
+    "Pro": 6.1,
+    "Max": 2.6
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-075-deferred/.discovery/dossiers/W-102-record-context-events-in-the-usage-ledger.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 0,
+    "defects": 0,
+    "corrections": 0,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 3,
+    "packages": 5,
+    "build_log": true
+   }
+  }
+ ]
+}

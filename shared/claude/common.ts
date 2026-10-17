@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, writeFileSync } from "node:fs"
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { createReadStream } from "node:fs"
@@ -91,7 +91,7 @@ export function agentTypeOf(input: HookInput): string | undefined {
 
 // ---- per-session state ----------------------------------------------------------
 
-export type SessionState = { orchestrator?: boolean; calls?: number }
+export type SessionState = { orchestrator?: boolean; calls?: number; pressureNudged?: boolean }
 const stateFile = (session: string) => join(dataDir(), `${session.replace(/[^\w.-]/g, "_")}.json`)
 
 export function loadState(session: string): SessionState {
@@ -109,6 +109,75 @@ export function saveState(session: string, state: SessionState) {
   } catch {
     // the answer is recomputed next time
   }
+}
+
+// ---- context pressure ------------------------------------------------------------
+
+// The main thread's context at its latest request: input + cache read + cache write of the
+// last main-chain assistant record, read from the transcript's tail (no full scan).
+export function contextTokens(path: string, tailBytes = 512 * 1024): number | undefined {
+  try {
+    const fd = openSync(path, "r")
+    try {
+      const size = statSync(path).size
+      const start = Math.max(0, size - tailBytes)
+      const buf = Buffer.alloc(size - start)
+      readSync(fd, buf, 0, buf.length, start)
+      const lines = buf.toString("utf8").split("\n")
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i]
+        if (!line.includes('"usage"') || !line.includes('"assistant"')) continue
+        let rec: any
+        try {
+          rec = JSON.parse(line)
+        } catch {
+          continue
+        }
+        if (rec?.type !== "assistant" || rec.isSidechain) continue
+        const u = rec.message?.usage
+        if (!u) continue
+        return (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
+      }
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    // unknown
+  }
+  return undefined
+}
+
+// The `autoCompactWindow` Claude Code compacts this session at: the project's local
+// settings, then its shared settings, then the user's, as Claude Code layers them.
+export function compactWindow(cwd: string | undefined): number | undefined {
+  const files = [
+    ...(cwd ? [join(cwd, ".claude", "settings.local.json"), join(cwd, ".claude", "settings.json")] : []),
+    join(homedir(), ".claude", "settings.json"),
+  ]
+  for (const file of files) {
+    try {
+      const value = JSON.parse(readFileSync(file, "utf8"))?.autoCompactWindow
+      if (typeof value === "number" && value > 0) return value
+    } catch {
+      // next
+    }
+  }
+  return undefined
+}
+
+// The share of the window at which the orchestrator is asked to checkpoint; 0 = off.
+export function pressureRatio(env: Record<string, string | undefined> = process.env): number {
+  const r = Number(env.PHASE_CHECKPOINT_PRESSURE_RATIO ?? 0.75)
+  return Number.isFinite(r) && r >= 0 && r < 1 ? r : 0.75
+}
+
+export function pressureText(tokens: number, window: number): string {
+  return (
+    `[phase_checkpoint] The context is at ~${Math.round(tokens / 1000)}k of the ${Math.round(window / 1000)}k window, ` +
+    "so Claude Code will compact soon. Finish the step you are on, put its outcome in ## Build log, then call " +
+    'phase_checkpoint now — "Phase <N> — <stage>, before compaction" — with a NEXT: line naming the exact next ' +
+    "action and its paths, branches and IDs. The restore after the compaction starts from that line."
+  )
 }
 
 // ---- the transcript -------------------------------------------------------------

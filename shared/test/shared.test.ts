@@ -6,7 +6,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, 
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DEFAULTS, configLoader, protectRegexes } from "../config"
-import { MAX_SUMMARY_CHARS, nudgeEvery, phaseNumber, reminderText, summaryText, validateCheckpoint } from "../checkpoint"
+import { MAX_SUMMARY_CHARS, nextLine, nudgeEvery, phaseNumber, reminderText, summaryText, validateCheckpoint } from "../checkpoint"
 import { BLIND_READ_DIRS, blindRead } from "../blind-read"
 import { readGuard } from "../read-guard"
 import { TOOLS, describeTool, inputSchema } from "../tools"
@@ -48,11 +48,35 @@ check("guard: protected phase file", g({ kind: "read", path: "/r/references/work
 check("guard: cargo via limactl", g({ kind: "bash", command: "limactl shell vm -- cargo test" })?.includes("/pipe/scripts/run_tests.py") === true)
 check("guard: limactl in an argument", g({ kind: "bash", command: 'x.py --f "limactl shell vm cargo test"' }) === undefined)
 check("guard: cat big", g({ kind: "bash", command: `cat ${big}` }) !== undefined)
-check("guard: cat piped", g({ kind: "bash", command: `cat ${big} | head` }) === undefined)
+check("guard: cat piped into head is still a read window", g({ kind: "bash", command: `cat ${big} | head` })?.includes("code_item") === true)
+// Bash reading windows on source and markdown point at the nav tools.
+const nav = (command: string) => g({ kind: "bash", command })
+check("nav: sed -n on source", nav("sed -n 10,40p /w/src/lib.rs")?.includes("code_item") === true)
+check("nav: sed -n on a dossier names dossier_edit section", nav("sed -n 1,9p /w/.discovery/dossiers/W-1-x.md")?.includes("dossier_edit.py section") === true)
+check("nav: sed -n on other markdown names doc_section", nav("sed -n 1,9p /w/docs/rules.md")?.includes("doc_section") === true)
+check("nav: a quoted ; inside a sed script does not split it", nav("cd /w && sed -n '10,20p;30p' a.rs | head -3")?.includes("sed -n on a.rs") === true)
+check("nav: awk NR range", nav("awk 'NR>=10 && NR<=20' a.py") !== undefined)
+check("nav: rtk-wrapped sed", nav("rtk sed -n 1,9p a.py") !== undefined)
+check("nav: grep with a big context window", nav("grep -n -A 20 foo /w/src/lib.rs")?.includes("context window") === true)
+check("nav: grep with a small context window", nav("grep -C3 foo /w/src/lib.rs") === undefined)
+check("nav: plain grep for usages", nav("grep -rn 'fn foo' crates/ --include=*.rs") === undefined)
+check("nav: a small file whole", nav(`cat ${small}`) === undefined)
+check("nav: a heredoc write", nav("cat > /w/notes.md <<'EOF'\nhello\nEOF") === undefined)
+check("nav: a redirect target is not read", nav(`echo x > ${big}`) === undefined)
+check("nav: sed -i edits, it does not read", nav("sed -i '' s/a/b/ /w/src/lib.rs") === undefined)
+check("nav: yaml and toml are not its business", nav("sed -n 5,9p /w/deploy/x.yaml") === undefined)
+check("nav: protected phase files pass", nav("sed -n 1,5p /w/references/work-on/phase-4.md") === undefined)
+check("nav: tail -f follows a log", nav("tail -f /w/run.md") === undefined)
+check("nav: off when nav_redirect is false", readGuard({ kind: "bash", command: "sed -n 1,9p a.rs" }, tmp, { ...DEFAULTS, nav_redirect: false }, "/pipe") === undefined)
 
 // ---- checkpoint --------------------------------------------------------------------
 check("checkpoint: phase number", phaseNumber("Phase 4 — wave 1") === 4 && phaseNumber("stubs") === undefined)
-check("checkpoint: validate", validateCheckpoint("stubs", "x") !== undefined && validateCheckpoint("Phase 1", "x".repeat(MAX_SUMMARY_CHARS + 1)) !== undefined && validateCheckpoint("Phase 1", "ok") === undefined)
+check("checkpoint: validate", validateCheckpoint("stubs", "x") !== undefined && validateCheckpoint("Phase 1", "x".repeat(MAX_SUMMARY_CHARS + 1)) !== undefined && validateCheckpoint("Phase 1", "ok\nNEXT: go") === undefined)
+check("checkpoint: a summary needs a NEXT: line", validateCheckpoint("Phase 1", "ok")?.includes("NEXT:") === true)
+check("checkpoint: NEXT read from a list item too", nextLine("done\n- NEXT: launch wave 2 in /x") === "launch wave 2 in /x")
+const resumed = summaryText([{ phase: "Phase 1", summary: "a\nNEXT: old" }, { phase: "Phase 4 — wave 1", summary: "b\nNEXT: rule P1-P4" }])
+check("checkpoint: the restore ends on the latest NEXT", resumed.includes('## Resume here\n\nNEXT (from "Phase 4 — wave 1"): rule P1-P4') && !resumed.includes("NEXT (from \"Phase 1\")"))
+check("checkpoint: no NEXT, no resume block", !summaryText([{ phase: "Phase 1", summary: "a" }]).includes("Resume here"))
 check("checkpoint: nudge env", nudgeEvery({}) === 80 && nudgeEvery({ OPENCODE_PHASE_CHECKPOINT_NUDGE_CALLS: "3" }) === 3 && nudgeEvery({ PHASE_CHECKPOINT_NUDGE_CALLS: "0" }) === 0 && nudgeEvery({ PHASE_CHECKPOINT_NUDGE_CALLS: "x" }) === 80)
 check("checkpoint: reminder", reminderText(80).includes("80 tool calls since the last checkpoint"))
 const text = summaryText([{ phase: "Phase 1", summary: " a " }, { phase: "Phase 2", summary: "b" }])
@@ -64,7 +88,7 @@ const pc = TOOLS.find((t) => t.name === "phase_checkpoint")!
 check("tools: host sentence differs, rest shared", describeTool(pc, "claude").includes("does not cut") && describeTool(pc, "opencode").includes("drops every earlier step") && describeTool(pc, "claude").includes("At most 6000 characters"))
 check("tools: others identical on both hosts", TOOLS.filter((t) => !t.hostNote).every((t) => describeTool(t, "claude") === describeTool(t, "opencode")))
 const schema: any = inputSchema(TOOLS.find((t) => t.name === "code_item")!)
-check("tools: schema", schema.type === "object" && schema.required.join() === "path,symbol" && schema.properties.mode.enum.length === 4 && schema.properties.mode.type === "string")
+check("tools: schema", schema.type === "object" && schema.required.join() === "path,symbol" && schema.properties.mode.enum.length === 5 && schema.properties.mode.type === "string")
 check("tools: boolean param", (inputSchema(TOOLS.find((t) => t.name === "code_replace")!) as any).properties.with_docs.type === "boolean")
 
 // ---- symlink -----------------------------------------------------------------------

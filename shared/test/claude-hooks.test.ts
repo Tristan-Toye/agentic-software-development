@@ -7,7 +7,8 @@ import { join } from "node:path"
 
 const root = join(import.meta.dir, "..", "..")
 const tmp = mkdtempSync(join(tmpdir(), "hooks-"))
-const env = { ...process.env, XDG_DATA_HOME: tmp, PHASE_CHECKPOINT_NUDGE_CALLS: "3" }
+// HOME is the temp dir too: the pressure nudge reads ~/.claude/settings.json, which must not be the real one.
+const env = { ...process.env, XDG_DATA_HOME: tmp, HOME: tmp, PHASE_CHECKPOINT_NUDGE_CALLS: "3" }
 delete (env as any).CLAUDE_CONTEXT_GUARD_CONFIG
 const fails: string[] = []
 const check = (name: string, ok: boolean) => ok || fails.push(name)
@@ -117,6 +118,25 @@ for (const bad of ["", "{", "[]", '{"session_id":"q"}']) {
   check(`post: broken input ${JSON.stringify(bad)} fails open`, r.code === 0 && r.out === "")
 }
 
+// Context pressure: past 75% of the session's autoCompactWindow, one checkpoint request per cycle.
+{
+  const proj = join(tmp, "proj")
+  mkdirSync(join(proj, ".claude"), { recursive: true })
+  writeFileSync(join(proj, ".claude", "settings.json"), JSON.stringify({ autoCompactWindow: 200000 }))
+  const usage = (k: number) => ({ type: "assistant", message: { role: "assistant", usage: { input_tokens: 10, cache_read_input_tokens: k * 1000, cache_creation_input_tokens: 0 }, content: [] } })
+  const tx = (name: string, k: number) => write(name, [cmd("work-on"), usage(k)])
+  const p = (k: number, cwd = proj) => hook("post-tool-use.ts", post({ session_id: "s-press", transcript_path: tx(`press-${k}.jsonl`, k), cwd })).out
+  check("pressure: under 75% of the window is silent", p(140) === "")
+  const first = p(160)
+  check("pressure: past 75% asks for a checkpoint with a NEXT line", first.includes("before compaction") && first.includes("NEXT:") && first.includes("~160k of the 200k window"))
+  check("pressure: asked once per cycle", !p(165).includes("before compaction"))
+  check("pressure: the context falling back (a compaction) re-arms it", p(40) === "" && p(158).includes("before compaction"))
+  check("pressure: no autoCompactWindow, no request", hook("post-tool-use.ts", post({ session_id: "s-press2", transcript_path: tx("press-x.jsonl", 900), cwd: tmp })).out === "")
+  // a sidechain record is not the main thread's context
+  const side = write("press-side.jsonl", [cmd("work-on"), usage(10), { ...usage(190), isSidechain: true }])
+  check("pressure: a subagent's record is ignored", hook("post-tool-use.ts", post({ session_id: "s-press3", transcript_path: side, cwd: proj })).out === "")
+}
+
 // ---- session-start ----------------------------------------------------------------
 const compacted = write("compacted.jsonl", [
   cmd("work-on"),
@@ -124,7 +144,7 @@ const compacted = write("compacted.jsonl", [
   result("t1"),
   call("t2", "stubs done", "bad phase name"),
   result("t2", true),
-  call("t3", "Phase 4 — wave 1", "wave 1 verified, SHA abc123", "phase_checkpoint"),
+  call("t3", "Phase 4 — wave 1", "wave 1 verified, SHA abc123\nNEXT: launch wave 2 from /w/.agent-staging/payloads", "phase_checkpoint"),
   result("t3"),
   { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "mentions phase_checkpoint in prose" }] } },
 ])
@@ -134,6 +154,7 @@ r = hook("session-start.ts", start({}))
 o = r.out ? json(r.out) : undefined
 const ctx: string = o?.hookSpecificOutput?.additionalContext ?? ""
 check("start: emits SessionStart additionalContext", r.code === 0 && o?.hookSpecificOutput?.hookEventName === "SessionStart")
+check("start: the restore ends the checkpoints on the latest NEXT line", ctx.includes('## Resume here\n\nNEXT (from "Phase 4 — wave 1"): launch wave 2 from /w/.agent-staging/payloads'))
 check("start: original task", ctx.includes("## Original task") && ctx.includes("W-014") && ctx.includes("work-on"))
 check("start: summaries in order", ctx.indexOf("### Phase 1") !== -1 && ctx.indexOf("### Phase 1") < ctx.indexOf("### Phase 4 — wave 1") && ctx.includes("SHA abc123"))
 check("start: a refused call is not restored", !ctx.includes("bad phase name"))
@@ -230,7 +251,7 @@ const lines = readFileSync(join(tmp, "agentic-software-development", "claude", "
 const count = (e: string) => lines.filter((l) => l.split(" ")[1] === e).length
 check("log: timestamped, one line per event", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z (refused|nudge|recorded|restored) \S+ /.test(l)))
 check("log: refusals (five orchestrator, five blind-read)", count("refused") === 10)
-check("log: nudges", count("nudge") === 2)
+check("log: nudges (two call-count, two pressure, one call-count in the pressure session)", count("nudge") === 5)
 check("log: restores", count("restored") === 2 + restores)
 check("log: checkpoint recorded", count("recorded") === 1)
 
