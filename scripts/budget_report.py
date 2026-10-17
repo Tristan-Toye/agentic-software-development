@@ -56,6 +56,7 @@ USAGE_LOG = os.path.expanduser("~/.claude/usage-log.jsonl")
 RUN_TITLE = re.compile(r"^(?:error\s+)?(w-\d+)", re.I)
 WORK_ON = re.compile(r"agentic-software-development:work-on|<command-name>/work-on")
 # The dossier id of a /work-on invocation: its command args, or the echoed `/…:work-on W-<n>`.
+PLUGIN_VERSION = re.compile(r"agentic-software-development/agentic-software-development/(\d+\.\d+\.\d+)/")
 CLAUDE_RUN = re.compile(r"work-on</command-name>.{0,200}?<command-args>\s*(W-\d+)|work-on\s+(W-\d+)", re.S)
 MIN_CALIBRATION_PCT = 5
 MIN_RUN_COST = {"opencode": 500.0, "opencode-openai": 50.0, "claude": 2.0}  # below this a session is a probe, not a dossier
@@ -219,6 +220,7 @@ def claude_runs(projects: str, since: int, until: int, prices: dict) -> tuple[li
     unpriced: dict[str, int] = defaultdict(int)
     run_cwds: dict[str, set] = defaultdict(set)
     run_ids: dict[str, set] = defaultdict(set)
+    run_plugins: dict[str, set] = defaultdict(set)
     for path in glob.glob(os.path.join(projects, "**", "*.jsonl"), recursive=True):
         rid = None
         # A session's own transcript sits directly in its project dir; anything deeper
@@ -231,6 +233,10 @@ def claude_runs(projects: str, since: int, until: int, prices: dict) -> tuple[li
             cwd = re.search(r'"cwd":\s*"([^"]+)"', head)
             if rid and cwd:
                 run_cwds[rid].add(cwd.group(1))
+            if rid:
+                # The plugin version the session ran: the cache path its commands and hooks name.
+                with open(path, errors="replace") as fh:
+                    run_plugins[rid].update(PLUGIN_VERSION.findall(fh.read()))
         files = [path]
         if rid:
             sid = os.path.basename(path)[:-6]
@@ -263,7 +269,8 @@ def claude_runs(projects: str, since: int, until: int, prices: dict) -> tuple[li
                     a["main_usd"] += usd
     runs = [{"host": "claude", "run": rid, "cost": round(a["usd"], 2), "unit": "usd api-equivalent",
              "orchestrator_share_pct": round(100 * a["main_usd"] / a["usd"], 1),
-             "dirs": sorted(run_cwds[rid]), **common(a)}
+             "dirs": sorted(run_cwds[rid]),
+             "plugin": sorted(run_plugins[rid], key=lambda v: tuple(int(x) for x in v.split("."))), **common(a)}
             for rid, a in agg.items() if a["usd"] >= MIN_RUN_COST["claude"]]
     return runs, stream, dict(unpriced)
 
@@ -352,8 +359,10 @@ def quality(path: str) -> dict:
     start = text.find("## Build log")
     if start < 0:
         return {"build_log": False}
-    nxt = text.find("\n## ", start + 3)
-    log = text[start: nxt if nxt != -1 else len(text)].splitlines()
+    # The build log is the dossier's last section (dossier_edit.py requires it), so it runs to
+    # the end of the file: a change-request document pasted into it brings `## CR-1:` headings
+    # of its own, and stopping at the first `## ` dropped every line after one.
+    log = text[start:].splitlines()
     out = {name: sum(1 for line in log if rx.search(line)) for name, rx in QUALITY_MARKERS.items()}
     body = "\n".join(log)
     out["gaps"] = max(0, len(GAP_RE.findall(body)) - len(GAP_NEG.findall(body)))
@@ -423,13 +432,21 @@ def build(args, plans: dict) -> dict:
     since, until = iso_ms(args.since, 0), iso_ms(args.until, 2**62)
     oc = opencode_runs(args.db, since, until, plans["glm"], plans.get("codex", {}).get("credits_per_mtok"))
     cc, stream, unpriced = claude_runs(args.projects, since, until, plans["claude"]["prices_per_mtok"])
+    if getattr(args, "whole", False):
+        # Every run with activity in the window, over its whole life: a dossier that started
+        # before a change and finished after it is one dossier, not two partial ones.
+        active = {(r["host"], r["run"]) for r in oc + cc}
+        oc = [r for r in opencode_runs(args.db, 0, 2**62, plans["glm"], plans.get("codex", {}).get("credits_per_mtok"))
+              if (r["host"], r["run"]) in active]
+        cc = [r for r in claude_runs(args.projects, 0, 2**62, plans["claude"]["prices_per_mtok"])[0]
+              if (r["host"], r["run"]) in active]
     seat = next(iter(plans["claude"]["plans"].values()))
     cal = calibrate(args.usage_log, stream)
     claude_week = cal["week_usd"] if cal else seat["week_usd"]
     runs = sorted(oc + cc, key=lambda r: (r["host"], r["start"] or ""))
     shares(runs, plans, claude_week)
     add_quality(runs)
-    return {"window": {"since": args.since, "until": args.until},
+    return {"window": {"since": args.since, "until": args.until, "whole": bool(getattr(args, "whole", False))},
             "claude_week_usd": claude_week,
             "claude_week_basis": "calibrated from usage log" if cal else "plans.json week_usd",
             "calibration": cal, "unpriced_claude_models": unpriced,
@@ -454,7 +471,8 @@ def print_report(rep: dict) -> None:
     for r in rep["runs"]:
         share = ", ".join(f"{k.split(' ')[0]} {v}%" for k, v in r["share_pct"].items() if v is not None) or "n/a"
         print(f"{r['host']:<9} {r['run'] + ('' if r['full'] else '*'):<7} {r['start'] or '':<18} {r['cost']:>9} {r['unit'][:7]:<7} "
-              f"{r['mtok_in']:>6} {r['requests']:>5} {r['avg_request_k']:>5} {r['cache_read_pct']:>5}  {share}")
+              f"{r['mtok_in']:>6} {r['requests']:>5} {r['avg_request_k']:>5} {r['cache_read_pct']:>5}  {share}"
+              + (f"  plugin {'/'.join(r['plugin'])}" if r.get("plugin") else ""))
 
 
 def compare(rep: dict, before: dict) -> None:
@@ -529,6 +547,7 @@ def selftest() -> int:
         with open(os.path.join(proj, "s1.jsonl"), "w") as fh:
             fh.write('{"type":"user","message":{"content":"<command-name>/agentic-software-development:work-on</command-name>'
                      '\\n<command-message>work-on</command-message>\\n<command-args>W-777</command-args>"}}\n')
+            fh.write('{"type":"attachment","content":"/cache/agentic-software-development/agentic-software-development/1.10.0/x"}\n')
             fh.write(line("2026-10-12T10:00:00Z", "a", "claude-opus-5-5", 100000, 0))  # $2.00
             fh.write(line("2026-10-12T10:00:00Z", "a", "claude-opus-5-5", 100000, 0))  # same response: once
             fh.write(line("2026-10-12T11:00:00Z", "b", "<synthetic>", 1, 0))
@@ -545,6 +564,7 @@ def selftest() -> int:
               [(r["run"], r["cost"]) for r in cc] == [("W-777", 4.0)], cc)
         check("orchestrator share of the claude run", cc and cc[0]["orchestrator_share_pct"] == 50.0, cc)
         check("a nested transcript is never a run of its own", [r["run"] for r in cc] == ["W-777"], cc)
+        check("the plugin version a claude run used is recorded", cc and cc[0]["plugin"] == ["1.10.0"], cc)
 
         stream_total = round(sum(u for _, u in stream), 2)
         check("the calibration stream counts every file's requests", stream_total == 6.0, stream_total)
@@ -555,13 +575,14 @@ def selftest() -> int:
             fh.write("# x\n## Work packages\n| ID | Owns |\n|---|---|\n| P1 | a |\n| P2 | b |\n## Build log\n- RETURNED P1: clean\n- RETURNED P2: FLAGGED (stubs left)\n"
                      "- P3 returned with no `GAP:`\n- RETURNED U1: GAP: the window start is undefined\n"
                      "- ARBITRATION 1 — row 2\n- CORRECTION sent to P2 (resume)\n- review r1: CR-1, CR-2; r2: CR-2\n"
-                     "- WORKFLOW: phase4-wave wave1 run abc\n## Next\n- RETURNED outside the log\n")
+                     "- WORKFLOW: phase4-wave wave1 run abc\n## CR-9: a pasted change request\n- RETURNED P4 after it\n")
         q = quality(os.path.join(dossier, "W-777-x.md"))
-        check("quality counts the build log only", q["returns"] == 3 and q["flagged_returns"] == 1, q)
+        check("quality counts the build log to the end of the file, past a pasted `## CR-` heading",
+              q["returns"] == 4 and q["flagged_returns"] == 1, q)
         check("the dossier's size is its work-package rows", q["packages"] == 2, q)
         check("a negated GAP is not a gap", q["gaps"] == 1, q)
         check("arbitrations, corrections, distinct CRs, workflow runs",
-              (q["arbitrations"], q["corrections"], q["change_requests"], q["workflow_runs"]) == (1, 1, 2, 1), q)
+              (q["arbitrations"], q["corrections"], q["change_requests"], q["workflow_runs"]) == (1, 1, 3, 1), q)
         check("the dossier is found from the run's directory",
               dossier_path("W-777", [os.path.join(tmp, "repo")]) == os.path.join(dossier, "W-777-x.md"))
 
@@ -603,6 +624,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--projects", default=PROJECTS)
     ap.add_argument("--usage-log", default=USAGE_LOG)
     ap.add_argument("--plans", default=PLANS)
+    ap.add_argument("--whole", action="store_true",
+                    help="report every run active in the window over its whole life, not only the window's part")
     ap.add_argument("--json", help="write the report here")
     ap.add_argument("--compare", help="an earlier --json file")
     ap.add_argument("--selftest", action="store_true")

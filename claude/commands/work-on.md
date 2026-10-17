@@ -403,4 +403,6 @@ payload path — they can retry it from /permissions. The one exception is a
 wave or review round sent through the plugin's workflow by name: its `args`
 name each linted final by `payloadPath` and `payloadSha256`, because the
 launch is approved once and a pasted wave is too large to show. Never paste
-a payload into `args`, and never write or copy a workflow script.
+a payload into `args`, and never write or copy a workflow script. Never pass
+`model` when spawning one of this plugin's agents: its agent file sets the
+model, and the spawn guard refuses an override.
