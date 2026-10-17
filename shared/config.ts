@@ -18,6 +18,9 @@ export type Config = {
   mask_reasoning_agents: string[]
   guard_agents: string[]
   max_read_bytes: number
+  nav_redirect: boolean
+  nav_small_bytes: number
+  nav_grep_context: number
 }
 
 export const DEFAULTS: Config = {
@@ -34,12 +37,16 @@ export const DEFAULTS: Config = {
   mask_reasoning_agents: ["work-on", "dossier"],
   guard_agents: ["work-on"],
   max_read_bytes: 20000,
+  nav_redirect: true,
+  nav_small_bytes: 4000,
+  nav_grep_context: 5,
 }
 
 const num = (v: unknown, fallback: number, min = 0) => {
   const n = Number(v)
   return Number.isFinite(n) && n >= min ? Math.floor(n) : fallback
 }
+const bool = (v: unknown, fallback: boolean) => (typeof v === "boolean" ? v : fallback)
 const strings = (v: unknown, fallback: string[]) =>
   Array.isArray(v) ? v.filter((x) => typeof x === "string") : fallback
 
@@ -85,6 +92,9 @@ export function configLoader(path: string): () => Config {
           mask_reasoning_agents: strings(raw.mask_reasoning_agents, DEFAULTS.mask_reasoning_agents),
           guard_agents: strings(raw.guard_agents, DEFAULTS.guard_agents),
           max_read_bytes: num(raw.max_read_bytes, DEFAULTS.max_read_bytes, 1),
+          nav_redirect: bool(raw.nav_redirect, DEFAULTS.nav_redirect),
+          nav_small_bytes: num(raw.nav_small_bytes, DEFAULTS.nav_small_bytes),
+          nav_grep_context: num(raw.nav_grep_context, DEFAULTS.nav_grep_context, 1),
         }
         mtimeSeen = mtime
       }

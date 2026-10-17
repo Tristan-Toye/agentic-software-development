@@ -74,7 +74,9 @@ check("wrong type is isError", (await rpc("tools/call", { name: "code_item", arg
 const refused = (await rpc("tools/call", { name: "phase_checkpoint", arguments: { phase: "stubs done", summary: "x" } })).result
 check("phase_checkpoint: bad phase name -> isError", refused.isError === true && refused.content[0].text.includes('"Phase <N>'))
 check("phase_checkpoint: long summary -> isError", (await rpc("tools/call", { name: "phase_checkpoint", arguments: { phase: "Phase 1", summary: "x".repeat(6001) } })).result.isError === true)
-const ok = (await rpc("tools/call", { name: "phase_checkpoint", arguments: { phase: "Phase 4 — wave 1", summary: "wave 1 returned" } })).result
+const noNext = (await rpc("tools/call", { name: "phase_checkpoint", arguments: { phase: "Phase 4 — wave 1", summary: "wave 1 returned" } })).result
+check("phase_checkpoint: a summary without a NEXT: line -> isError naming it", noNext.isError === true && noNext.content[0].text.includes("NEXT:"))
+const ok = (await rpc("tools/call", { name: "phase_checkpoint", arguments: { phase: "Phase 4 — wave 1", summary: "wave 1 returned\nNEXT: rule the returns" } })).result
 check("phase_checkpoint: confirmed as recorded and restored after compaction", ok.isError === undefined && ok.content[0].text.includes("recorded") && ok.content[0].text.includes("restored"))
 
 // protocol errors

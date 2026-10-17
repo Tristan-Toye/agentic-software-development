@@ -50,7 +50,12 @@ record is what compaction keeps: after each compaction a hook restores the
 So on both hosts write the summary as the hand-off to the rest of the run —
 the live dossier's path, `X` and its branch, the SHAs that matter, the rulings
 and open items, the budgets spent, the next phase — and never as a diary; the
-detail is already in `## Build log`. Call it at a phase end, and at every
+detail is already in `## Build log`. End it with a `NEXT:` line — the exact
+next action with the paths, branches and IDs it needs; the tool refuses a
+summary without one — because a restore starts from that line instead of
+re-deriving where the run stands. Under Claude Code a hook also tells you when
+the context nears compaction: finish the step you are on, log it, and
+checkpoint then, `Phase <N> — <stage>, before compaction`, even mid-stage. Call it at a phase end, and at every
 stage boundary inside a phase, named `Phase <N> — <stage>` with the phase's own
 number: each Phase 4 wave once its returns are verified and logged, each Phase 6
 or Phase 7 round once its rulings are logged, and any investigation once its
@@ -111,6 +116,8 @@ not a chain you type. Before you compose a shell command, take the tool:
 | Read or write the dossier | `python3 ${PLUGIN_ROOT}/scripts/dossier_edit.py <section, log, set, add, remove or replace-section> …` |
 | The items of a source file, with line ranges and first doc lines | `code_outline` or `python3 ${PLUGIN_ROOT}/scripts/code_nav.py outline <file>` |
 | One function, type, impl or method — whole, its contract, its doc comment or its signature | `code_item` with `mode` `full`, `contract`, `doc` or `signature` (or `code_nav.py item <file> <Type::method> --mode …`) |
+| A type's whole API — the declaration and every impl block for it, bodies elided | `code_item` with `mode` `members` |
+| Several items or sections at once | one `code_item` or `doc_section` call with the names separated by a pipe: `Config::load \| Config::save`, `LRN-0073 \| LRN-0081` |
 | Where a symbol is defined | `code_find` (or `code_nav.py find <name> --root <X>`) |
 | One section or rule of a markdown file, by heading or id (`LRN-0073`, `ADR-0150`) | `doc_section` (or `code_nav.py section <file> <heading-or-id>`) |
 | Replace one item without reading its file | `code_replace` (or `code_nav.py replace <file> <symbol> --from-file <f>`) |
@@ -124,7 +131,13 @@ Under Claude Code the navigation tools are the plugin's MCP tools, named
 documents through these tools. Read a file whole only when it
 is small, and a range only when no item boundary fits; never `cd <X> && sed -n`
 or `cat` — the recorded runs spent more on those chains than on any other kind
-of step.
+of step: about 500 of the orchestrator's ~1,180 Bash calls in a recorded Claude
+run were `grep`/`sed`/`cat` windows, one turn each. The read guard refuses a
+Bash reading window on a `.rs`, `.py` or `.md` file (`sed -n`, an `awk` NR
+range, `cat`/`head`/`tail` past 4 KB, `grep` with a context window of 5 lines
+or more) and names the tool to use; ask for every item you need in one call.
+A plain `grep -n` for usages stays yours, and so does `Read` with offset and
+limit when the nav tools cannot parse a file.
 
 **Under Claude Code — two workflows, and resume over re-spawn.** The plugin
 ships two dynamic workflows in `${PLUGIN_ROOT}/workflows/`, run through the

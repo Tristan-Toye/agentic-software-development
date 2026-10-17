@@ -732,11 +732,49 @@ def cmd_outline(a: argparse.Namespace) -> int:
     return 0
 
 
+MULTI_SEP = "|"
+
+
+def several(names: str) -> list[str]:
+    """`A | B::c | D` -> ['A', 'B::c', 'D']: one call reads several items or sections."""
+    # `\|`, the markdown-escaped form, separates too
+    return [n.strip() for n in re.split(r"\\?" + re.escape(MULTI_SEP), names) if n.strip()]
+
+
+def run_each(names: list[str], one) -> int:
+    """Run `one(name)` for every name, each answer under its own rule, so a miss on one name
+    still returns the others; the exit code is the worst of them."""
+    worst = 0
+    for i, name in enumerate(names):
+        if i:
+            sys.stdout.write("\n")
+        worst = max(worst, one(name))
+    return worst
+
+
+def members(it: Item, flat: list[tuple[Item, int]], S: Source) -> str:
+    """A type and every impl block for it in the file (inherent and trait impls), each in
+    contract form: the type's whole API in one answer. A Python class is its contract."""
+    if it.lang == "python" or it.kind not in ("struct", "enum", "trait", "type", "union"):
+        return contract(it, S)
+    impls = [im for im, _ in flat if im.kind == "impl" and im.type_name == it.name]
+    parts = [contract(it, S)]
+    for im in impls:
+        parts.append(f"// {im.start_line}-{im.end_line}\n" + contract(im, S))
+    if not impls:
+        parts.append("// (no impl block for it in this file: code_find finds impls elsewhere)")
+    return "\n\n".join(parts)
+
+
 def cmd_item(a: argparse.Namespace) -> int:
+    names = several(a.symbol)
+    if len(names) > 1:
+        return run_each(names, lambda n: cmd_item(argparse.Namespace(**{**vars(a), "symbol": n})))
     lang, S, items = load(a.file)
     if lang == "md":
         return cmd_section(argparse.Namespace(file=a.file, heading=a.symbol, list=False, max_chars=a.max_chars))
-    cands = candidates(flatten(items), a.symbol)
+    flat = flatten(items)
+    cands = candidates(flat, a.symbol)
     if not cands:
         err(f"{a.symbol!r} not found in {a.file}; `outline` lists what is there")
         return 1
@@ -746,7 +784,8 @@ def cmd_item(a: argparse.Namespace) -> int:
             sys.stderr.write(f"  {a.file}:{it.start_line}-{it.end_line}  {label(it)}\n")
         return 1
     it = cands[0]
-    emit(f"{a.file}:{it.start_line}-{it.end_line}  {label(it)}\n" + render(it, a.mode, S), a.max_chars)
+    body = members(it, flat, S) if a.mode == "members" else render(it, a.mode, S)
+    emit(f"{a.file}:{it.start_line}-{it.end_line}  {label(it)}\n" + body, a.max_chars)
     return 0
 
 
@@ -817,6 +856,9 @@ def cmd_section(a: argparse.Namespace) -> int:
     if a.list:
         emit(f"{a.file}\n" + "\n".join(f"{it.start_line}-{it.end_line}  {'#' * it.level} {it.name}" for it in items), a.max_chars)
         return 0
+    names = several(a.heading)
+    if len(names) > 1:
+        return run_each(names, lambda n: cmd_section(argparse.Namespace(**{**vars(a), "heading": n})))
     q = norm(a.heading)
     exact = [it for it in items if norm(it.name) == q]
     pat = re.compile(r"(?<![\w§-])" + re.escape(q) + r"(?!\w|\.\d|-\w)")
@@ -1065,6 +1107,25 @@ def selftest() -> int:
         check("nope" not in out and "fake" not in out, "comments and raw strings hide items")
         check("Crate doc" not in out, "//! is not an item doc")
 
+        # --- members: a type and every impl block for it, one call
+        code, out, _ = run("item", rs, "Point", "--mode", "members")
+        check(code == 0 and "pub struct Point" in out and "impl<'a> Point<'a>" in out and "impl fmt::Display for Point" in out
+              and "fn new" in out and "{ … }" in out, "members: struct + inherent and trait impls, bodies elided")
+        code, out, _ = run("item", rs, "Shape", "--mode", "members")
+        check(code == 0 and "trait Shape" in out, "members of a trait")
+        code, out, _ = run("item", py, "Greeter", "--mode", "members")
+        check(code == 0 and "class Greeter" in out, "members of a Python class is its contract")
+
+        # --- several targets in one call
+        code, out, er = run("item", rs, "Point::new | largest", "--mode", "signature")
+        check(code == 0 and "fn new" in out and "fn largest" in out, "two symbols, one call")
+        code, out, er = run("item", rs, "Point::new | NoSuch")
+        check(code == 1 and "fn new" in out and "'NoSuch' not found" in er, "a miss still returns the others")
+        code, out, _ = run("item", rs, "Point::new \\| largest", "--mode", "signature")
+        check(code == 0 and "fn largest" in out, "a markdown-escaped pipe separates too")
+        code, out, _ = run("section", md, "ADR-0150 | LRN-0073")
+        check(code == 0 and "Decided." in out and "body rule" in out, "two sections, one call")
+
         # --- Rust item modes
         code, out, _ = run("item", rs, "Point::new")
         nw = L(RUST_FIXTURE, "/// Build one.")
@@ -1232,7 +1293,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("item", parents=[common], help="one item")
     p.add_argument("file")
     p.add_argument("symbol")
-    p.add_argument("--mode", choices=["full", "contract", "doc", "signature"], default="full")
+    p.add_argument("--mode", choices=["full", "contract", "doc", "signature", "members"], default="full")
     p = sub.add_parser("find", parents=[common], help="where a symbol is defined")
     p.add_argument("symbol")
     p.add_argument("--root", default=".")
