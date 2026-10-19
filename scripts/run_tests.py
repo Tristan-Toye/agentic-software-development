@@ -85,6 +85,17 @@ pytest: `FAILED path::test - message` lines and the `=== N failed, M passed
 in ...s ===` summary (counts in any order).
 bats/TAP: `not ok N desc` lines, with any following `# ...` diagnostic lines
 as detail.
+suites (a test aggregator such as a repository's `run_all_tests.sh`): one
+`<suite> PASS`, `<suite> FAIL (exit N)` or `<suite> SKIP: <reason>` line per
+suite and a summary line `<tool>: N passed, N failed, N skipped`. Each failing
+suite is one failure. When the output names its full log on a line `log
+<path>` (relative paths resolve against `--workdir`, `--cwd` or the current
+directory), the failure's detail comes from that suite's section of the log —
+from `===== <suite> =====` to `----- <suite>: <N>s -----` or the next header —
+parsed with the parsers above, or its last lines when nothing parses. The
+digest then lists every SKIP with its reason (a skip is coverage the run did
+not give) and, when `<log>` minus `.log` plus `.durations.tsv` exists with
+`<seconds>\t<verdict>\t<suite>` rows, the slowest steps and their sum.
 generic fallback (only when nothing above matched): lines containing
 `FAIL`, `FAILED`, or `Error`.
 
@@ -284,6 +295,90 @@ def parse_bats(text: str) -> tuple[Totals, list[Failure], bool]:
     return Totals(passed=oks, failed=len(failures)), failures, True
 
 
+SUITE_LINE_RE = re.compile(r"^(\S.*?) (PASS|FAIL \(exit (\d+)\)|SKIP: (.*))$", re.M)
+SUITE_SUMMARY_RE = re.compile(r"^\S+: (\d+) passed, (\d+) failed, (\d+) skipped$", re.M)
+
+
+def parse_suites(text: str) -> tuple[Totals, list[Failure], bool]:
+    """An aggregator's suite lines; matches only with its summary line, so a
+    stray `x PASS` line in some other tool's output never triggers it."""
+    summary_m = SUITE_SUMMARY_RE.search(text)
+    lines = SUITE_LINE_RE.findall(text)
+    if not summary_m or not lines:
+        return Totals(), [], False
+    totals = Totals(passed=int(summary_m.group(1)), failed=int(summary_m.group(2)),
+                    ignored=int(summary_m.group(3)))
+    failures = [Failure(f"{name} (exit {code})") for name, verdict, code, _ in lines if verdict.startswith("FAIL")]
+    return totals, failures, True
+
+
+def suite_log_path(text: str, root: str | None) -> str | None:
+    """The aggregator's full log, from its `log <path>` line, when it exists."""
+    found = re.findall(r"^log (\S+)$", text, re.M)
+    if not found:
+        return None
+    path = found[-1]
+    if not os.path.isabs(path):
+        path = os.path.join(root or os.getcwd(), path)
+    return path if os.path.isfile(path) else None
+
+
+def suite_section(log_text: str, name: str) -> str | None:
+    """One suite's section of the aggregator's log: header to closing line."""
+    start = log_text.find(f"\n===== {name} =====\n")
+    if start < 0:
+        return None
+    body_start = start + len(f"\n===== {name} =====\n")
+    ends = [i for i in (log_text.find(f"\n----- {name}: ", body_start), log_text.find("\n===== ", body_start)) if i >= 0]
+    return log_text[body_start : min(ends) if ends else len(log_text)]
+
+
+def suite_details(text: str, failures: list[Failure], root: str | None, lines_n: int) -> None:
+    """Fill each failing suite's detail from its section of the full log."""
+    path = suite_log_path(text, root)
+    if not path:
+        return
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        log_text = fh.read()
+    for fl in failures:
+        section = suite_section(log_text, re.sub(r" \(exit \d+\)$", "", fl.name))
+        if section is None:
+            fl.detail = [f"(no section for this suite in {path})"]
+            continue
+        parser, totals, inner = parse_log(section)
+        if inner and parser != "generic":
+            fl.detail = [f"{parser}: passed {totals.passed} failed {totals.failed}"]
+            for sub_fl in inner:
+                fl.detail.append(f"FAIL {sub_fl.name}")
+                fl.detail += ["  " + l for l in sub_fl.detail[:3]]
+        else:
+            fl.detail = section.strip("\n").splitlines()[-lines_n:]
+
+
+def suite_notes(text: str, root: str | None, max_items: int) -> list[str]:
+    """Every SKIP with its reason, then the slowest durations rows."""
+    out: list[str] = []
+    skips = [(name, reason) for name, verdict, _, reason in SUITE_LINE_RE.findall(text) if verdict.startswith("SKIP")]
+    for name, reason in skips[:max_items]:
+        out.append(f"SKIP {name}: {reason}")
+    if len(skips) > max_items:
+        out.append(f"(+{len(skips) - max_items} more skips, see log)")
+    path = suite_log_path(text, root)
+    tsv = path[: -len(".log")] + ".durations.tsv" if path and path.endswith(".log") else None
+    if tsv and os.path.isfile(tsv):
+        rows = []
+        with open(tsv, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) == 3 and parts[0].isdigit():
+                    rows.append((int(parts[0]), parts[1], parts[2]))
+        if rows:
+            rows.sort(key=lambda r: -r[0])
+            out.append(f"slowest of {len(rows)} steps ({sum(r[0] for r in rows)}s summed):")
+            out += [f"  {secs}s {verdict} {name}" for secs, verdict, name in rows[:5]]
+    return out
+
+
 def parse_generic(text: str) -> tuple[Totals, list[Failure], bool]:
     keep = [line for line in text.splitlines() if re.search(r"\bFAIL(?:ED)?\b|\bError\b", line)]
     if not keep:
@@ -296,6 +391,7 @@ PARSERS: list[tuple[str, "callable[[str], tuple[Totals, list[Failure], bool]]"]]
     ("nextest", parse_nextest),
     ("pytest", parse_pytest),
     ("bats/tap", parse_bats),
+    ("suites", parse_suites),
 ]
 
 
@@ -332,10 +428,15 @@ def format_body(
     lines_n: int,
     line_chars: int,
     log_text: str,
+    root: str | None = None,
 ) -> list[str]:
     """The reusable part of the digest: totals + capped failures, or (when
-    nothing parsed) the log's tail. No header — callers own that."""
+    nothing parsed) the log's tail. No header — callers own that. `root`
+    resolves a suite aggregator's relative log path."""
     out: list[str] = []
+    suites = "suites" in parser.split(",")
+    if suites:
+        suite_details(log_text, failures, root, lines_n)
     if parser:
         out.append(f"passed {totals.passed}  failed {totals.failed}  ignored {totals.ignored}  ({parser})")
         shown = failures[:max_failures]
@@ -346,6 +447,8 @@ def format_body(
         remaining = len(failures) - len(shown)
         if remaining > 0:
             out.append(f"(+{remaining} more failures, see log)")
+        if suites:
+            out += [cut(l, line_chars) for l in suite_notes(log_text, root, max_failures)]
     else:
         out.append("no recognized test output; last lines of the log:")
         for l in log_text.splitlines()[-lines_n:]:
@@ -365,10 +468,11 @@ def format_digest(
     lines_n: int,
     line_chars: int,
     log_text: str,
+    root: str | None = None,
 ) -> str:
     short = display_cmd if len(display_cmd) <= 200 else display_cmd[:197] + "..."
     out = [f"$ {short}", f"exit {exit_code}  {wall:.1f}s  log: {log_path}"]
-    out += format_body(parser, totals, failures, max_failures, lines_n, line_chars, log_text)
+    out += format_body(parser, totals, failures, max_failures, lines_n, line_chars, log_text, root)
     return "\n".join(out)
 
 
@@ -391,16 +495,21 @@ def digest_of(path: str, args: argparse.Namespace) -> tuple[str, int]:
     with open(path, encoding="utf-8", errors="replace") as fh:
         text = fh.read()
     parser, totals, failures = parse_log(text)
-    body = format_body(parser, totals, failures, args.max_failures, args.lines, args.line_chars, text)
+    body = format_body(parser, totals, failures, args.max_failures, args.lines, args.line_chars, text, run_root(args))
     head = f"digest of {path} ({len(text)} chars)"
     return "\n".join([head, *body]), len(failures)
+
+
+def run_root(args: argparse.Namespace) -> str | None:
+    """The directory the command ran in: --workdir in the VM, else --cwd."""
+    return args.workdir if args.vm else args.cwd
 
 
 def single_run(args: argparse.Namespace, argv: list[str], display: str, log_path: str) -> int:
     rc, wall, log_text = execute(argv, log_path, args.cwd if not args.vm else None)
     parser, totals, failures = parse_log(log_text)
     out = format_digest(display, rc, wall, log_path, parser, totals, failures,
-                        args.max_failures, args.lines, args.line_chars, log_text)
+                        args.max_failures, args.lines, args.line_chars, log_text, run_root(args))
     missing = names_not_run(log_text, args.test) if args.test else []
     if missing:
         out += f"\nNOT RUN (matched no test): {', '.join(missing)}"
@@ -441,7 +550,7 @@ def repeat_run(args: argparse.Namespace, argv: list[str], display: str, log_path
     if first_fail:
         parser, totals, failures, text = first_fail
         out.append("first failing run:")
-        out += ["  " + l for l in format_body(parser, totals, failures, args.max_failures, args.lines, args.line_chars, text)]
+        out += ["  " + l for l in format_body(parser, totals, failures, args.max_failures, args.lines, args.line_chars, text, run_root(args))]
     print("\n".join(out))
     return first_rc
 
@@ -571,7 +680,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workdir", help="cd here inside the VM (required with --vm)")
     ap.add_argument("--env-script", help="sourced after cd, inside the VM")
     ap.add_argument("--path-prepend", help="prepended to PATH, inside the VM ($HOME stays live there)")
-    ap.add_argument("--cwd", help="cwd for a direct (non-VM) run")
+    ap.add_argument("--cwd", help="cwd for a direct (non-VM) run; with --digest, resolves a suite aggregator's relative log path")
     ap.add_argument("--test", action="append", default=[], metavar="NAME", help="append a test filter to a cargo command")
     ap.add_argument("--repeat", type=int, default=0, metavar="N", help="run N times; report flaky tests")
     ap.add_argument("--detach", action="store_true", help="run detached; print the log path, pid file and --wait command")
@@ -662,6 +771,31 @@ Test FAILED unexpectedly
 Done.
 """
 
+SUITES_OUT = """scripts/check_a.sh PASS
+(linux) run: nextest default FAIL (exit 100)
+deploy/host/host_smoke.sh SKIP: needs deploy/secrets/init.json
+(linux) doc: harness FAIL (exit 101)
+log .discovery/run-all-tests.log
+run_all_tests.sh: 1 passed, 2 failed, 1 skipped
+"""
+
+SUITES_FULL_LOG = """
+===== scripts/check_a.sh =====
+ok
+----- scripts/check_a.sh: 2s -----
+
+===== (linux) run: nextest default =====
+    Starting 3 tests
+        FAIL [   0.023s] my-crate tests::foo
+     Summary [   0.045s] 3 tests run: 2 passed, 1 failed, 0 skipped
+----- (linux) run: nextest default: 417s -----
+
+===== (linux) doc: harness =====
+line one
+the doc build broke here
+----- (linux) doc: harness: 9s -----
+"""
+
 NO_PARSE_LOG = """Compiling...
 Linking...
 Build finished in 3.2s
@@ -728,6 +862,34 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
     check("cut respects line_chars", len(cut("a" * 500, 50)) == 50 and cut("a" * 500, 50).endswith("…"))
     check("cut leaves short lines alone", cut("short", 50) == "short")
+
+    # A suite aggregator: one failure per FAIL line, details from the full log.
+    parser, totals, fails = parse_log(SUITES_OUT)
+    check("suites parser alone matches the aggregator output", parser == "suites")
+    check("suites totals come from the summary line", totals == Totals(passed=1, failed=2, ignored=1))
+    check("suites failures are the FAIL lines", [f.name for f in fails] == ["(linux) run: nextest default (exit 100)", "(linux) doc: harness (exit 101)"])
+    check("a stray PASS line without the summary is not a suite run", not parse_suites("x PASS\n")[2])
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, ".discovery"))
+        with open(os.path.join(root, ".discovery", "run-all-tests.log"), "w", encoding="utf-8") as fh:
+            fh.write(SUITES_FULL_LOG)
+        body = format_body(parser, totals, fails, 10, 15, 300, SUITES_OUT, root)
+        check("the body names both failing suites",
+              "FAIL (linux) doc: harness (exit 101)" in body)
+        check("a failing suite's section is parsed with the other parsers", "  FAIL my-crate tests::foo" in body)
+        check("an unparsed section falls back to its last lines", "  the doc build broke here" in body)
+        check("the closing duration line is not part of the section", not any("417s -----" in l for l in body))
+        check("every SKIP is listed with its reason", "SKIP deploy/host/host_smoke.sh: needs deploy/secrets/init.json" in body)
+        check("no durations file, no slowest list", not any(l.startswith("slowest") for l in body))
+        with open(os.path.join(root, ".discovery", "run-all-tests.durations.tsv"), "w", encoding="utf-8") as fh:
+            fh.write("2\tPASS\tscripts/check_a.sh\n417\tFAIL\t(linux) run: nextest default\n9\tFAIL\t(linux) doc: harness\n")
+        parser, totals, fails = parse_log(SUITES_OUT)
+        body = format_body(parser, totals, fails, 10, 15, 300, SUITES_OUT, root)
+        check("the slowest list sums the durations", "slowest of 3 steps (428s summed):" in body)
+        check("the slowest step comes first", body[body.index("slowest of 3 steps (428s summed):") + 1] == "  417s FAIL (linux) run: nextest default")
+    parser, totals, fails = parse_log(SUITES_OUT)
+    body = format_body(parser, totals, fails, 10, 15, 300, SUITES_OUT, "/nonexistent-root")
+    check("an unresolvable log leaves the failures without detail", body[1] == "FAIL (linux) run: nextest default (exit 100)" and body[2].startswith("FAIL (linux) doc"))
 
     # --vm builds the right argv, without ever invoking limactl.
     argv, display = build_command("nightwatch", "/work/x", "deploy/host/test-env.sh", "/opt/bin", ["cargo", "test"])
