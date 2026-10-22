@@ -740,6 +740,20 @@ def compose_reviewer(ctx: dict) -> list[Field]:
             "RULES", "this lens's own slice of the resolved OCR checklist, or `none`"), block=True)
         fields["CONTEXT_DOCS"] = Field("CONTEXT_DOCS", placeholder(
             "CONTEXT_DOCS", "the ADR(s) relevant to this lens, if any"))
+        if lens == "architecture":
+            # Mechanical: the markers review_signals.py finds on the build's lines, as
+            # current-state locations. Without --review-base the field stays @@FILL.
+            if args.review_base:
+                signals = _load("review_signals")
+                try:
+                    marks, sums = signals.report(root, args.review_base, "HEAD", 40)
+                except ValueError as err:
+                    raise Refusal("review_signals: %s" % err)
+                block = signals.field_block(marks, sums)
+                fields["SIGNALS"] = Field("SIGNALS", "\n".join(l[2:] for l in block.splitlines()[1:]), block=True)
+            else:
+                fields["SIGNALS"] = Field("SIGNALS", placeholder(
+                    "SIGNALS", "review_signals.py --root X --base <baseline> --field, or pass --review-base"), block=True)
         # Never defaulted: the rulings accumulate across rounds and go into
         # every later spawn, so a silent `none` could drop a real one.
         fields["ARBITRATIONS"] = Field("ARBITRATIONS", placeholder(
@@ -747,10 +761,10 @@ def compose_reviewer(ctx: dict) -> list[Field]:
 
     apply_overrides(fields, sets, blocks={
         "DOSSIER", "CRITERIA", "SCOPE", "CONTRACT", "RUN_EVIDENCE", "RULES",
-        "ARBITRATIONS", "PRIOR_CRS",
+        "ARBITRATIONS", "PRIOR_CRS", "SIGNALS",
     })
     order = ["LENS", "DOSSIER", "WORKTREE_DIR", "SCOPE", "CONTRACT", "RUN_EVIDENCE",
-             "CRITERIA", "STANDARDS", "RULES", "CONTEXT_DOCS", "ARBITRATIONS",
+             "CRITERIA", "STANDARDS", "RULES", "SIGNALS", "CONTEXT_DOCS", "ARBITRATIONS",
              "PRIOR_CRS", "ROUND"]
     return ordered(fields, order)
 
@@ -1058,6 +1072,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--refresh-contract", nargs="+", metavar="PAYLOAD",
                         help="re-read --contract-paths and rewrite CONTRACT + CONTRACT_HASH in these payloads, in place")
+    parser.add_argument("--review-base", metavar="SHA",
+                        help="reviewer LENS=architecture: fill SIGNALS from review_signals.py over SHA..HEAD")
     parser.add_argument("--failures-from", metavar="LOG", help="fill FAILURES from run_tests.py's digest of LOG")
     parser.add_argument("--excerpt", action="append", default=[], metavar="FILE:A-B",
                         help="paste lines A-B of FILE (bounded) into --excerpt-field; repeatable")
@@ -1519,6 +1535,18 @@ def selftest() -> int:
         check("the tests lens composes like a code lens, its SCOPE asking for the marked test files",
               rc == 0 and parsed_field(rvt_text, "CONTRACT") == want and "FLAKE-RISK" in rvt_text
               and "RULES" in rvt_text, out)
+        rc, rva_path, out = run_with(dossier2_path, "RVa.md", ["reviewer", "--host", "claude", "--set", "LENS=architecture"])
+        rva_text = read_text(rva_path) if rc == 0 else ""
+        check("the architecture lens asks for SIGNALS when no --review-base is given",
+              rc == 0 and "SIGNALS:" in rva_text and "review_signals.py" in rva_text
+              and "SIGNALS" not in read_text(rv_path), out)
+        subprocess.run(["git", "-C", root, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+        rc, rva_path, out = run_with(dossier2_path, "RVb.md", ["reviewer", "--host", "claude", "--set", "LENS=architecture",
+                                                               "--review-base", "HEAD"])
+        rva_text = read_text(rva_path) if rc == 0 else ""
+        check("--review-base fills SIGNALS mechanically",
+              rc == 0 and "FAILURE-SIGNALS: none" in parsed_field(rva_text, "SIGNALS") and "@@FILL" not in parsed_field(rva_text, "SIGNALS"), out)
         rc, _p, out = run_with(dossier2_path, "RVx.md", ["reviewer", "--host", "claude", "--set", "LENS=flaky"])
         check("an unknown lens is refused", rc == 1 and "LENS=plan|style|architecture|performance|tests" in out, out)
         rc, fxc_path, out = run_with(dossier2_path, "FXC.md", ["implementer", "--host", "opencode", "--hooks", "none", "--test-command", "pytest -q",
