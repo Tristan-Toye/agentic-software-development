@@ -71,9 +71,24 @@ call per failed run), sleeps `--rerun-settle` seconds so GitHub registers the
 new attempt, waits again with the same `--timeout`, and prints the second
 round's verdict. It never reruns twice.
 
+In `--pr` mode (and `--branch` once it resolves to a PR) ONE `gh pr view <N>
+--json headRefOid,mergeStateStatus,mergeable,baseRefName` runs before polling
+and serves two guards. A DIRTY merge state or a CONFLICTING PR fails fast at
+once, without waiting out the window: GitHub suppresses `synchronize` events
+for a conflicting PR, so no check will ever start — merge origin/<base> and
+re-push. And before an all-green verdict is reported, the head commit the runs
+behind the checks ran on (`gh run view <id> --json headSha`, at most three
+distinct runs, read from the check links) must equal the PR's head: a green
+on a superseded head is not a verdict (a push that fired no run leaves the
+previous head's green as the newest result). One line names both SHAs. If the
+`gh pr view` call fails, or a check has no Actions run link, that guard is
+skipped and the wait behaves as before.
+
 Exit codes: 0 every check passed; 1 any check failed or was cancelled;
 3 timed out with checks still pending (or the idle wait timed out); 2 unusable
-input or a `gh` error (e.g. `gh pr checks` did not return JSON).
+input or a `gh` error (e.g. `gh pr checks` did not return JSON);
+4 the green checks ran on a head that is not the PR's current head (stale
+green, refused); 5 the PR is CONFLICTING/DIRTY, so its checks will never start.
 
 No third-party imports: this runs wherever python3 and gh do.
 """
@@ -238,6 +253,50 @@ def wait_idle(runner: Runner, args: argparse.Namespace) -> int:
             print(f"wait_ci: runner still busy after {args.idle_timeout:.0f}s", file=sys.stderr)
             return 3
         time.sleep(pause)
+
+
+# ----------------------------------------------------------------- pr state
+
+
+def pr_state(runner: Runner, number: int, repo: str | None) -> dict | None:
+    """The PR's head sha, merge state, mergeability and base branch, from ONE
+    `gh pr view`; None when the call fails or is not a JSON object (the
+    guards built on it are then skipped)."""
+    rc, out, _ = runner(with_repo(["gh", "pr", "view", str(number), "--json",
+                                   "headRefOid,mergeStateStatus,mergeable,baseRefName"], repo))
+    if rc != 0:
+        return None
+    try:
+        state = json.loads(out)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def conflict_line(number: int, state: dict) -> str | None:
+    """The fail-fast line when the PR is DIRTY or CONFLICTING, else None."""
+    if state.get("mergeStateStatus") != "DIRTY" and state.get("mergeable") != "CONFLICTING":
+        return None
+    base = str(state.get("baseRefName") or "base")[:100]
+    return (f"wait_ci: PR #{number} is {state.get('mergeStateStatus') or state.get('mergeable')} "
+            f"(conflicts with {base}); GitHub suppresses synchronize events, so checks will never "
+            f"start: merge origin/{base} and re-push")
+
+
+def stale_head(runner: Runner, checks: list[dict], pr_head: str, repo: str | None) -> tuple[str, str] | None:
+    """(run id, head sha) of the first run behind `checks` that ran on a head
+    other than `pr_head`; None when every run checked matches or none could be read."""
+    seen: list[str] = []
+    for c in checks:
+        ref = run_ref(c.get("link", ""))
+        if ref and ref[0] not in seen:
+            seen.append(ref[0])
+    for run_id in seen[:3]:
+        rc, out, _ = runner(with_repo(["gh", "run", "view", run_id, "--json", "headSha", "--jq", ".headSha"], repo))
+        sha = out.strip() if rc == 0 else ""
+        if re.fullmatch(r"[0-9a-fA-F]{7,64}", sha) and not (sha.startswith(pr_head) or pr_head.startswith(sha)):
+            return run_id, sha
+    return None
 
 
 # --------------------------------------------------------------------- poll
@@ -438,6 +497,13 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
             return 2
         return job_log(active_runner, checks, args)
 
+    state = pr_state(active_runner, target[1], args.repo) if target[0] == "pr" else None
+    if state:
+        line = conflict_line(target[1], state)
+        if line:
+            print(line, file=sys.stderr)
+            return 5
+
     outcome, checks, err = poll(active_runner, target, args.repo, args.timeout, args.interval, args.register_wait)
     if outcome == "error":
         print(f"wait_ci: {err}", file=sys.stderr)
@@ -454,6 +520,14 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
                 print(f"wait_ci: {err}", file=sys.stderr)
                 return 2
             print("after the rerun:")
+
+    if outcome == "done" and state and state.get("headRefOid") and checks \
+            and not any(c.get("bucket") in BAD_BUCKETS for c in checks):
+        stale = stale_head(active_runner, checks, str(state["headRefOid"]), args.repo)
+        if stale:
+            print(f"wait_ci: stale green refused: run {stale[0]} ran on {stale[1][:12]} but PR #{target[1]} "
+                  f"head is {str(state['headRefOid'])[:12]}; the push to the head started no run", file=sys.stderr)
+            return 4
 
     report(active_runner, checks, args)
 
@@ -710,6 +784,42 @@ def selftest() -> int:
     with contextlib.redirect_stdout(io.StringIO()):
         rc = main(["--pr", "9", "--rerun-failed", "--interval", "0.01"], runner=runner_rerun)
     check("a green run is not rerun", rc == 0 and len(state_rr["reruns"]) == 1)
+
+    # 12. the PR-state guards: stale green refused, DIRTY fails fast, a matching head stays green.
+    head_new, head_old = "a" * 40, "b" * 40
+    pr_calls: list[list[str]] = []
+
+    def runner_guard(pr_view: dict, run_sha: str):
+        def runner_g(cmd: list[str]) -> tuple[int, str, str]:
+            pr_calls.append(cmd)
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return 0, json.dumps(pr_view), ""
+            if cmd[:3] == ["gh", "pr", "checks"]:
+                return 0, json.dumps([{"name": "build", "state": "SUCCESS", "bucket": "pass",
+                                       "link": "https://github.com/o/r/actions/runs/30/job/31", "workflow": "CI"}]), ""
+            if cmd[:3] == ["gh", "run", "view"]:
+                return 0, run_sha + "\n", ""
+            return 1, "", "unexpected call"
+        return runner_g
+
+    clean = {"headRefOid": head_new, "mergeStateStatus": "CLEAN", "mergeable": "MERGEABLE", "baseRefName": "production"}
+    for label, view, sha, want, needle in (
+        ("a green on a superseded head is refused with both SHAs", clean, head_old, 4, (head_old[:12], head_new[:12])),
+        ("a DIRTY PR fails fast naming the base", {**clean, "mergeStateStatus": "DIRTY"}, head_new, 5, ("merge origin/production",)),
+        ("a CONFLICTING PR fails fast", {**clean, "mergeable": "CONFLICTING", "mergeStateStatus": "BLOCKED"}, head_new, 5, ("merge origin/production",)),
+        ("a matching head stays green", clean, head_new, 0, ()),
+    ):
+        pr_calls.clear()
+        out_g, err_g = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out_g), contextlib.redirect_stderr(err_g):
+            rc = main(["--pr", "9", "--interval", "0.01"], runner=runner_guard(view, sha))
+        check(label, rc == want and all(n in err_g.getvalue() for n in needle))
+        check(label + " (one pr view, bounded line)",
+              sum(1 for c in pr_calls if c[:3] == ["gh", "pr", "view"]) == 1 and len(err_g.getvalue().splitlines()) <= 1)
+        if want == 5:
+            check(label + " (never polled)", not any(c[:3] == ["gh", "pr", "checks"] for c in pr_calls))
+        if want == 4:
+            check(label + " (no report printed)", "pass" not in out_g.getvalue().replace("1/1 done, 0 failed", ""))
 
     for item in failures_list:
         print("SELFTEST FAIL  " + item)
