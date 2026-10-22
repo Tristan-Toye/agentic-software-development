@@ -30,7 +30,11 @@ file the package owns), PACKAGE,
 CRITERIA, STANDARDS, JIRA_KEY, DOSSIER (the integration author's excerpt, or
 the reviewer's build-log-free copy, generated and written under
 `.agent-staging/` by this script — never the live dossier itself),
-TEST_COMMAND/HOOKS (from the flags), MAX_SINGLE_EDIT, CITATION and NAMING
+TEST_COMMAND/HOOKS (from the flags; an implementer MODE=fix with no
+--test-command gets `run_gates.py` over the run's gates file — the dossier's
+`GATES:` line, else `.discovery/analysis/gates-<ID>.txt` — so a fix round never
+runs a narrower or stricter list than CI's; an explicit flag or --set wins),
+MAX_SINGLE_EDIT, CITATION and NAMING
 (fixed process conventions, from the skeletons, overridable with --set),
 ROUND (default 1); ARBITRATIONS is always a fill.
 
@@ -456,6 +460,25 @@ def hook_outputs_block(specs: list[str]) -> str:
     return "\n".join(lines)
 
 
+def gates_test_command(root: str, dossier_text: str, dossier_id: str) -> str | None:
+    """MODE fix, no --test-command: the run's whole gates file as one command
+    (`run_gates.py FILE --root X`), so a fix round is never narrower or stricter
+    than the GATES: list of Phase 2. The file is the dossier's `GATES: <file> —`
+    line, else `.discovery/analysis/gates-<ID>.txt`; None (the placeholder stays)
+    when the run recorded `GATES: none` or the file is not on disk."""
+    m = re.search(r"^\s*[-*]?\s*GATES:\s*(\S+)\s+—", dossier_text, re.M)
+    rel = m.group(1) if m and m.group(1).lower() != "none" else None
+    if rel is None and not m and dossier_id:
+        rel = os.path.join(".discovery", "analysis", "gates-%s.txt" % dossier_id)
+    if rel is None:
+        return None
+    path = rel if os.path.isabs(rel) else os.path.join(root, rel)
+    if not os.path.isfile(path):
+        return None
+    return "python3 %s %s --root %s" % (
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_gates.py"), path, root)
+
+
 def compose_implementer(ctx: dict) -> list[Field]:
     """WORKTREE_DIR/BRANCH: mechanical — build mode forks a per-package
     worktree and branch suffix (`references/payloads/implementer.md`,
@@ -471,7 +494,9 @@ def compose_implementer(ctx: dict) -> list[Field]:
     (build mode only — fix mode is scoped by CRS/FAILURES instead). In fix mode
     CONTRACT is the dossier's `## Contract` (the files hold the merged code).
     STANDARDS/JIRA_KEY: mechanical, from --plugin-root and the dossier.
-    TEST_COMMAND/HOOKS: mechanical when the flag is given, else judgement
+    TEST_COMMAND/HOOKS: mechanical when the flag is given (MODE fix without
+    --test-command: `run_gates.py` over the run's gates file, see
+    `gates_test_command`), else judgement
     (the orchestrator verifies these in its own shell first —
     `references/work-on/phase-4.md`) — @@FILL. CRS/FAILURES (fix mode): pure
     judgement (the merged review change requests, or a failing test's
@@ -533,9 +558,11 @@ def compose_implementer(ctx: dict) -> list[Field]:
             )
         fields["OWNED_PATHS"] = Field("OWNED_PATHS", body, block=True)
 
+    gates_cmd = None if args.test_command or mode != "fix" else gates_test_command(
+        root, dossier_text, fm.get("id", ""))
     fields["TEST_COMMAND"] = Field(
         "TEST_COMMAND",
-        args.test_command if args.test_command else placeholder(
+        args.test_command if args.test_command else gates_cmd or placeholder(
             "TEST_COMMAND", "the EXISTING suite's invocation, verified in your own shell "
             "first, and its known-red shape if the baseline is not green"),
     )
@@ -1422,6 +1449,27 @@ def selftest() -> int:
         fx_text = read_text(fx_path) if rc == 0 else ""
         check("a --set field outside the kind's order is appended, not dropped",
               rc == 0 and fx_text.count("CRITERIA: one") == 1 and fx_text.count("SUPPORT: s") == 1, out)
+        # --- #129: MODE fix TEST_COMMAND from the gates file ---
+        fix_args = ["implementer", "--host", "opencode", "--hooks", "none", "--set", "MODE=fix", "--set", "CRS=CR-1: x"]
+        rc, g0, out = run_compose("G0.md", fix_args)
+        check("fix mode without a gates file keeps the TEST_COMMAND placeholder",
+              rc == 1 or "@@FILL_TEST_COMMAND@@" in read_text(g0) if os.path.exists(g0) else True)
+        gdir = os.path.join(root, ".discovery", "analysis")
+        os.makedirs(gdir, exist_ok=True)
+        with open(os.path.join(gdir, "gates-W-014.txt"), "w", encoding="utf-8") as fh:
+            fh.write("lint: true\n")
+        rc, g1, out = run_compose("G1.md", fix_args)
+        g1_text = read_text(g1) if rc == 0 else ""
+        check("fix mode fills TEST_COMMAND from the gates file",
+              rc == 0 and "TEST_COMMAND: python3 " in g1_text and "run_gates.py" in g1_text
+              and "gates-W-014.txt --root %s" % root in g1_text, out)
+        rc, g2, out = run_compose("G2.md", fix_args + ["--test-command", "pytest -q"])
+        check("an explicit --test-command wins over the gates file",
+              rc == 0 and "TEST_COMMAND: pytest -q" in read_text(g2), out)
+        rc, g3, out = run_compose("G3.md", base_impl + [])
+        check("build mode never derives TEST_COMMAND from the gates file",
+              "run_gates.py" not in (read_text(g3) if os.path.exists(g3) else ""))
+
         dup = DOSSIER_FIXTURE.replace("## Build log", "## Acceptance criteria\n\n3. restated\n\n## Build log")
         dup_path = os.path.join(root, "dup.md")
         with open(dup_path, "w", encoding="utf-8") as fh:
