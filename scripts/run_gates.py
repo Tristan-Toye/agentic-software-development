@@ -66,7 +66,13 @@ prefix. Names are `<job>-<step name slug>`. A step is never silently dropped:
 `# from-workflow:` summary line (also printed to stderr); a step it cannot
 flatten safely (compound shell, heredoc, `${{ }}` expressions, other `if:`,
 `continue-on-error`, a non-bash `shell:`, a folded scalar) is listed as
-`# skipped: job/step - why`. The YAML parser is a minimal stdlib subset
+`# skipped: job/step - why`. So is a step that is no local pre-push gate: one
+that runs the test suite (`cargo test`, `cargo nextest run`, `pytest`, `bats`,
+`run_all_tests` — Phase 2's full-suite verdict covers it, VM and services
+included), one that needs a service the host lacks (a database or NATS URL,
+`docker`, `limactl`), one that only reports on the runner (`df`, `du`,
+`echo`), and one named by `--skip-step GLOB` (repeatable, matched on the
+derived gate name). The YAML parser is a minimal stdlib subset
 (block maps and lists, `|` blocks, plain and quoted scalars); tabs, flow
 `steps: [..]`, anchors, aliases and `<<:` are refused with exit 2.
 
@@ -80,6 +86,7 @@ import concurrent.futures
 import contextlib
 import io
 import os
+import fnmatch
 import re
 import shutil
 import subprocess
@@ -406,12 +413,44 @@ def derive_gates(paths: list[str]) -> tuple[list[tuple[str, str]], list[str], di
     return gates, unsafe, ci
 
 
-def from_workflow(paths: list[str]) -> int:
+# Steps a pre-push gate list must not run locally, each listed by name, never dropped:
+# the suite (Phase 2's one full-suite verdict covers it, with its VM and services), a step
+# that needs a service the local host lacks, and a step that only reports on the runner.
+SUITE_STEP = re.compile(r"\bcargo\s+(?:\+\S+\s+)?(?:test|nextest\s+run)\b|\bpytest\b|\bbats\b|\brun_all_tests\.sh\b")
+SERVICE_STEP = re.compile(r"postgres(?:ql)?://|DATABASE_URL|_DB_\w*=|nats://|redis://|\bpg_isready\b|(?:^|[;&|(]\s*|\$\(\s*)(?:sudo\s+)?(?:docker|docker-compose|limactl)\s")
+DIAGNOSTIC_WORD = re.compile(r"^(?:df|du|free|ls|echo|uname|nproc|lscpu|true|:)\b")
+
+
+def local_skip(cmd: str, name: str, skip_globs: list[str]) -> str | None:
+    """Why a derived gate is not a local pre-push gate, or None when it is one."""
+    for glob in skip_globs:
+        if fnmatch.fnmatch(name, glob):
+            return f"--skip-step {glob}"
+    if SUITE_STEP.search(cmd):
+        return "runs the test suite: the Phase 2 full-suite verdict (SUITE-COMMAND) covers it"
+    if SERVICE_STEP.search(cmd):
+        return "needs a service the local host lacks (database, NATS, docker, VM)"
+    body = re.sub(r"^(?:export [^;]*; )+", "", cmd).removeprefix("set -e; ")
+    pieces = [p.strip() for p in re.split(r"&&|\|\||;", body) if p.strip()]
+    if pieces and all(DIAGNOSTIC_WORD.match(p) for p in pieces):
+        return "reports on the CI runner only (df, du, echo, ...)"
+    return None
+
+
+def from_workflow(paths: list[str], skip_globs: list[str] | None = None) -> int:
     try:
         gates, unsafe, ci = derive_gates(paths)
     except WorkflowError as err:
         print(f"run_gates: --from-workflow refused: {err}", file=sys.stderr)
         return 2
+    kept = []
+    for name, cmd in gates:
+        why = local_skip(cmd, name, skip_globs or [])
+        if why:
+            unsafe.append(f"# skipped: {name} - {why}")
+        else:
+            kept.append((name, cmd))
+    gates = kept
     ci_part = ", ".join(f"{k}: {v}" for k, v in sorted(ci.items())) or "none"
     summary = (f"# from-workflow: {len(gates)} gates; {sum(ci.values())} CI-only steps skipped ({ci_part}); "
                f"{len(unsafe)} listed below as skipped")
@@ -497,12 +536,14 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--line-chars", type=int, default=300, metavar="N", help="failure excerpt char cap per line (default 300)")
     ap.add_argument("--timeout", type=float, default=None, metavar="SECONDS", help="per-gate wall-time cap")
     ap.add_argument("--from-workflow", nargs="+", metavar="FILE", help="print a gates file derived from workflow `run:` steps and run nothing")
+    ap.add_argument("--skip-step", action="append", default=[], metavar="GLOB",
+                    help="--from-workflow: list a derived gate whose name matches GLOB as skipped")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
     if args.from_workflow:
-        return from_workflow(args.from_workflow)
+        return from_workflow(args.from_workflow, args.skip_step)
     if not args.gates_file:
         ap.error("GATES_FILE is required unless --selftest")
 
@@ -597,9 +638,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Fmt
         run: cargo fmt --check
-      - name: Test sub
+      - name: Check sub
         working-directory: sub
-        run: cargo test --locked
+        run: cargo check --locked
+      - name: Suite
+        run: cargo nextest run --workspace
+      - name: Stack self-test
+        run: bash scripts/run_all_tests_stack_test.sh
+      - name: Compose up
+        run: docker compose up -d
+      - name: Disk
+        run: df -h / && du -sh target || true
+      - name: Slow
+        run: ./slow.sh
       - name: Scripts
         run: |
           # comment
@@ -763,7 +814,12 @@ def selftest() -> int:
         check("from-workflow exits 0", rc_w == 0)
         check("single-line run is a gate", "build-fmt: export RUSTFLAGS='-D warnings'; cargo fmt --check" in wout)
         check("env exported and working-directory wrapped",
-              "(cd sub && cargo test --locked)" in wout)
+              "(cd sub && cargo check --locked)" in wout)
+        check("the suite, a service step and a runner report are listed, never gates",
+              "# skipped: build-suite - runs the test suite" in wout
+              and "# skipped: build-compose-up - needs a service" in wout
+              and "# skipped: build-disk - reports on the CI runner only" in wout
+              and "build-stack-self-test: " in wout)
         check("safe block flattened to one gate", "set -e; ./a.sh; ./b.sh --x --y" in wout)
         check("compound block listed as skipped with why",
               "# skipped: build/Loop - compound shell" in wout)
@@ -771,14 +827,19 @@ def selftest() -> int:
         check("uses/secrets/github-event/service steps are counted, not gates",
               "uses: 2" in wout and "secrets: 1" in wout and "if-github: 1" in wout
               and "service-job: 1" in wout and "deploy.sh" not in wout and "pytest" not in wout)
-        check("summary on stderr too", "run_gates: from-workflow: 4 gates" in err_io.getvalue())
+        check("summary on stderr too", "run_gates: from-workflow: 6 gates" in err_io.getvalue())
         wgates = os.path.join(tmp, "from-wf.txt")
         with open(wgates, "w", encoding="utf-8") as fh:
             fh.write(wout)
         try:
-            check("derived file parses as a gates file", len(parse_gates(wout)) == 4)
+            check("derived file parses as a gates file", len(parse_gates(wout)) == 6)
         except GateFileError as err:
             check("derived file parses as a gates file", False)
+        out_io = io.StringIO()
+        with contextlib.redirect_stdout(out_io), contextlib.redirect_stderr(io.StringIO()):
+            main(["--from-workflow", wf, "--skip-step", "build-sl*"])
+        check("--skip-step lists the named step", "# skipped: build-slow - --skip-step build-sl*" in out_io.getvalue()
+              and "\nbuild-slow:" not in out_io.getvalue())
         bad = os.path.join(tmp, "bad.yml")
         with open(bad, "w", encoding="utf-8") as fh:
             fh.write("jobs:\n  a:\n    steps: [ {run: x} ]\n")

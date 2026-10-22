@@ -30,10 +30,11 @@ file the package owns), PACKAGE,
 CRITERIA, STANDARDS, JIRA_KEY, DOSSIER (the integration author's excerpt, or
 the reviewer's build-log-free copy, generated and written under
 `.agent-staging/` by this script — never the live dossier itself),
-TEST_COMMAND/HOOKS (from the flags; an implementer MODE=fix with no
---test-command gets `run_gates.py` over the run's gates file — the dossier's
-`GATES:` line, else `.discovery/analysis/gates-<ID>.txt` — so a fix round never
-runs a narrower or stricter list than CI's; an explicit flag or --set wins),
+TEST_COMMAND/HOOKS (from the flags; an implementer MODE=fix gets `run_gates.py`
+over the run's gates file — the dossier's `GATES:` line, else
+`.discovery/analysis/gates-<ID>.txt` — followed by `&& <--test-command>`, the
+test subset the orchestrator runs itself, so a fix round never runs a narrower or
+stricter list than CI's; only `--set TEST_COMMAND=` replaces it whole),
 MAX_SINGLE_EDIT, CITATION and NAMING
 (fixed process conventions, from the skeletons, overridable with --set),
 ROUND (default 1); ARBITRATIONS is always a fill.
@@ -558,11 +559,14 @@ def compose_implementer(ctx: dict) -> list[Field]:
             )
         fields["OWNED_PATHS"] = Field("OWNED_PATHS", body, block=True)
 
-    gates_cmd = None if args.test_command or mode != "fix" else gates_test_command(
-        root, dossier_text, fm.get("id", ""))
+    # MODE fix: the whole gates list first, then the test subset the orchestrator
+    # runs itself (--test-command, e.g. the VM suite), never one in place of the other.
+    gates_cmd = gates_test_command(root, dossier_text, fm.get("id", "")) if mode == "fix" else None
+    if gates_cmd and args.test_command:
+        gates_cmd = "%s && %s" % (gates_cmd, args.test_command)
     fields["TEST_COMMAND"] = Field(
         "TEST_COMMAND",
-        args.test_command if args.test_command else gates_cmd or placeholder(
+        gates_cmd or args.test_command or placeholder(
             "TEST_COMMAND", "the EXISTING suite's invocation, verified in your own shell "
             "first, and its known-red shape if the baseline is not green"),
     )
@@ -1464,8 +1468,12 @@ def selftest() -> int:
               rc == 0 and "TEST_COMMAND: python3 " in g1_text and "run_gates.py" in g1_text
               and "gates-W-014.txt --root %s" % root in g1_text, out)
         rc, g2, out = run_compose("G2.md", fix_args + ["--test-command", "pytest -q"])
-        check("an explicit --test-command wins over the gates file",
-              rc == 0 and "TEST_COMMAND: pytest -q" in read_text(g2), out)
+        g2_text = read_text(g2) if rc == 0 else ""
+        check("a --test-command runs after the gates, never instead of them",
+              rc == 0 and "gates-W-014.txt --root %s && pytest -q" % root in g2_text, out)
+        rc, g4, out = run_compose("G4.md", fix_args + ["--set", "TEST_COMMAND=make check"])
+        check("--set TEST_COMMAND replaces it whole",
+              rc == 0 and "TEST_COMMAND: make check" in read_text(g4), out)
         rc, g3, out = run_compose("G3.md", base_impl + [])
         check("build mode never derives TEST_COMMAND from the gates file",
               "run_gates.py" not in (read_text(g3) if os.path.exists(g3) else ""))
