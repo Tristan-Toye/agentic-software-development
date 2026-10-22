@@ -17,7 +17,10 @@ hosts. Plan prices and quotas live in ledger/plans.json — the one place to edi
   the standard rate, and `billed`: the off-peak half rate applied per request (Z.ai bills
   half outside Mon-Fri 06:00-10:00 UTC). Shares use `billed`.
 - **claude**: every Claude Code session that ran `/work-on` for W-<n> (resumes included),
-  plus its subagent transcripts, priced at API rates per model. The share of the seat's
+  plus its subagent transcripts, priced at API rates per model. A session that moves on
+  to another dossier is split where its phase checkpoints start naming that one, so each
+  dossier carries only its own spend (owner side work in between lands on the dossier the
+  checkpoints name at the time). The share of the seat's
   week uses the week's API-equivalent size: calibrated from ~/.claude/usage-log.jsonl (the
   status-line sampler logs the account's weekly %) when that log covers a rise of at least
   `MIN_CALIBRATION_PCT` points within one weekly window, else `week_usd` from plans.json.
@@ -36,6 +39,7 @@ No third-party imports: this runs wherever python3 does.
 from __future__ import annotations
 
 import argparse
+import bisect
 import glob
 import json
 import os
@@ -200,6 +204,59 @@ def claude_requests(path: str):
             yield ts_ms(d["timestamp"]), msg.get("model", "?"), msg["usage"], msg.get("id")
 
 
+DOSSIER_ID = re.compile(r"\bW-\d+\b")
+
+
+def dossier_switches(text: str, first: str) -> list[tuple[int, str]]:
+    """When a session moves on to another dossier: (epoch ms, id) per switch.
+
+    One session can carry several dossiers back to back (a /work-on, then a /plan and a
+    /work-on of the next one). The orchestrator names the dossier it is on in every
+    phase_checkpoint, so the checkpoints mark where one dossier's spend ends. An id counts
+    only once two checkpoints name it; a single mention is a reference to another dossier."""
+    marks = []
+    for line in text.splitlines():
+        if "phase_checkpoint" not in line or '"tool_use"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if d.get("type") != "assistant" or d.get("isSidechain") or not d.get("timestamp"):
+            continue
+        for block in (d.get("message") or {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_use" and "phase_checkpoint" in block.get("name", ""):
+                inp = block.get("input") or {}
+                phase = str(inp.get("phase", ""))
+                # The dossier a checkpoint is about is the one it names most; the phase title counts most.
+                score = defaultdict(int)
+                for i in DOSSIER_ID.findall(phase):
+                    score[i] += 10
+                for i in DOSSIER_ID.findall(json.dumps(inp)):
+                    score[i] += 1
+                marks.append((ts_ms(d["timestamp"]), dict(score)))
+    named = defaultdict(int)
+    for _, score in marks:
+        for i in score:
+            named[i] += 1
+    cur, out = first, []
+    for ms, score in marks:
+        score = {i: v for i, v in score.items() if i == first or named[i] >= 2}
+        if not score:
+            continue
+        top = max(score.values())
+        if score.get(cur) == top:
+            continue  # a tie keeps the dossier the session is on
+        cur = max(score, key=score.get)
+        out.append((ms, cur))
+    return out
+
+
+def dossier_at(rid: str, switches: list[tuple[int, str]], ms: int) -> str:
+    i = bisect.bisect_right([m for m, _ in switches], ms)
+    return switches[i - 1][1] if i else rid
+
+
 def claude_usd(model: str, usage: dict, prices: dict) -> float | None:
     p = prices.get(model.split("[")[0])
     if not p:
@@ -223,6 +280,7 @@ def claude_runs(projects: str, since: int, until: int, prices: dict) -> tuple[li
     run_plugins: dict[str, set] = defaultdict(set)
     for path in glob.glob(os.path.join(projects, "**", "*.jsonl"), recursive=True):
         rid = None
+        switches: list[tuple[int, str]] = []
         # A session's own transcript sits directly in its project dir; anything deeper
         # (subagents/, a workflow run's agent transcripts) belongs to the session above it.
         if os.path.dirname(os.path.dirname(path)) == os.path.normpath(projects):
@@ -231,12 +289,15 @@ def claude_runs(projects: str, since: int, until: int, prices: dict) -> tuple[li
             match = CLAUDE_RUN.search(head) if WORK_ON.search(head) else None
             rid = (match.group(1) or match.group(2)) if match else None
             cwd = re.search(r'"cwd":\s*"([^"]+)"', head)
-            if rid and cwd:
-                run_cwds[rid].add(cwd.group(1))
             if rid:
-                # The plugin version the session ran: the cache path its commands and hooks name.
                 with open(path, errors="replace") as fh:
-                    run_plugins[rid].update(PLUGIN_VERSION.findall(fh.read()))
+                    text = fh.read()
+                switches = dossier_switches(text, rid)
+                # The plugin version the session ran: the cache path its commands and hooks name.
+                for run in {rid} | {s for _, s in switches}:
+                    run_plugins[run].update(PLUGIN_VERSION.findall(text))
+                    if cwd:
+                        run_cwds[run].add(cwd.group(1))
         files = [path]
         if rid:
             sid = os.path.basename(path)[:-6]
@@ -244,9 +305,10 @@ def claude_runs(projects: str, since: int, until: int, prices: dict) -> tuple[li
         for f in files:
             counted = f == path  # nested files are also walked on their own: count them for the stream once
             for ms, model, usage, mid in claude_requests(f):
+                run = dossier_at(rid, switches, ms) if rid else None
                 if rid and mid:
                     if mid in run_ids[rid]:
-                        continue  # the same response recorded in two files of one run
+                        continue  # the same response recorded in two files of one session
                     run_ids[rid].add(mid)
                 usd = claude_usd(model, usage, prices)
                 if usd is None:
@@ -256,7 +318,7 @@ def claude_runs(projects: str, since: int, until: int, prices: dict) -> tuple[li
                     stream.append((ms, usd))
                 if not rid or not since <= ms <= until:
                     continue
-                a = agg[rid]
+                a = agg[run]
                 a["usd"] += usd
                 a["requests"] += 1
                 read = usage.get("cache_read_input_tokens", 0) or 0
@@ -565,6 +627,26 @@ def selftest() -> int:
         check("orchestrator share of the claude run", cc and cc[0]["orchestrator_share_pct"] == 50.0, cc)
         check("a nested transcript is never a run of its own", [r["run"] for r in cc] == ["W-777"], cc)
         check("the plugin version a claude run used is recorded", cc and cc[0]["plugin"] == ["1.10.0"], cc)
+
+        def checkpoint(ts, phase, summary=""):
+            return json.dumps({"type": "assistant", "timestamp": ts, "message": {"id": "cp" + ts, "content": [
+                {"type": "tool_use", "id": "t" + ts, "name": "mcp__plugin_agentic-software-development_nav__phase_checkpoint",
+                 "input": {"phase": phase, "summary": summary}}]}}) + "\n"
+
+        chain = os.path.join(tmp, "chain", "p")
+        os.makedirs(chain)
+        with open(os.path.join(chain, "s2.jsonl"), "w") as fh:
+            fh.write('{"type":"user","message":{"content":"<command-name>/agentic-software-development:work-on</command-name>'
+                     '<command-args>W-801</command-args>"}}\n')
+            fh.write(checkpoint("2026-10-12T10:00:00Z", "Phase 1 — W-801", "builds on W-799"))
+            fh.write(line("2026-10-12T10:05:00Z", "e", "claude-opus-5-5", 100000, 0))  # $2.00, W-801
+            fh.write(checkpoint("2026-10-12T11:00:00Z", "Phase 0 — intake of W-802", "W-801 merged; now W-802"))
+            fh.write(line("2026-10-12T11:05:00Z", "f", "claude-opus-5-5", 50000, 0))   # $1.00, W-802
+            fh.write(checkpoint("2026-10-12T12:00:00Z", "Phase 4 — W-802 wave 1, after W-801's ADR", "W-802"))
+            fh.write(line("2026-10-12T12:05:00Z", "g", "claude-opus-5-5", 50000, 0))   # $1.00, W-802
+        chained, _, _ = claude_runs(os.path.join(tmp, "chain"), 0, 2**62, plans["claude"]["prices_per_mtok"])
+        check("a session that chains dossiers splits its spend at the checkpoints",
+              sorted((r["run"], r["cost"]) for r in chained) == [("W-801", 2.0), ("W-802", 2.0)], chained)
 
         stream_total = round(sum(u for _, u in stream), 2)
         check("the calibration stream counts every file's requests", stream_total == 6.0, stream_total)
