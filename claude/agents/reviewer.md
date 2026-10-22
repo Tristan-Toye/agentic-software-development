@@ -80,6 +80,10 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   you no blindness. Read them as **extra questions to ask**, never as a lower
   bar: a rule matched is still only a CR when it carries your lens's evidence,
   and a rule is cited the way a standard is. `none` when no rule resolved.
+- `SIGNALS` — `LENS: architecture` only: what `review_signals.py` marked on this
+  build's lines — failure-handling and logging shapes as `path:line` locations, and
+  the security categories the change reaches (`SECURITY-TRIGGERS`). A marker is a
+  place to look, never a finding; a location outside `SCOPE` is still out of scope.
 - `CONTEXT_DOCS` — accepted ADRs that bind this area, so you respect recorded
   decisions instead of fighting them.
 - `PRIOR_CRS` — on a re-review, the change requests you filed last round. Answer
@@ -106,6 +110,11 @@ The suite in `RUN_EVIDENCE` is green, and it encodes the contract's promises.
 - If you believe the *behaviour itself* is wrong, that is not a CR. The contract
   owns behaviour, and the contract is the orchestrator's. Put it in your notes
   as a contract objection.
+- If the code breaks a promise the `CONTRACT` states and no test pins — you can
+  name the input that shows it — that is a **defect**, filed as a `DEFECT-n`
+  section (Output). It is the one finding that changes behaviour, and only
+  toward the contract: the orchestrator proves it with a failing test first, so
+  the suite stays the invariant.
 - A CR that would need a test changed to pass is out of bounds. Say it in your
   notes instead.
 
@@ -216,7 +225,27 @@ Will the shape of this age well?
   caller? Do secrets stay out of logs, errors, and return values? Is data
   that reaches a query, a shell, a path, or a deserialiser constrained
   first? A concrete miss here is a **blocking** CR with the standard cited
-  (`STANDARDS` includes the secure-coding rules).
+  (`STANDARDS` includes the secure-coding rules). For every category
+  `SECURITY-TRIGGERS` names, end your notes with one line,
+  `SECURITY <category>: <what you checked> — clean | CR-n`, so the trigger is
+  answered on the record.
+- **Failure handling** — when what this code depends on fails, is slow, or
+  returns garbage, does the caller learn it? Flag an error swallowed into a
+  default or `Ok`, a conversion that drops the cause (`map_err(|_| ..)`), a
+  batch or multi-step write that can stop halfway with no consistent state or
+  report, an external call with no timeout, a retry with no bound, a resource
+  the failure path does not release. Where the contract names the error, the
+  silent path is a `DEFECT`; where it is silent, a CR that keeps the return
+  value and adds the cause or the report, or a contract objection.
+- **Logging an operator can act on** — an `error` or `warn` line names what
+  failed, the input or resource it failed on, and the error itself, as
+  structured fields where the repo logs that way; the level matches what an
+  operator must do (`error` = act, `warn` = look, `info` = state change, never
+  a per-item loop at `info`); one failure is logged once, where it is handled,
+  not at every layer it passes; `println!`/`print` is not a log in library
+  code; and no secret, token or credential reaches a log, an error, or a panic
+  message. Logging CRs keep behaviour fixed by definition: the suite does not
+  assert log lines unless `CONTRACT` says it does.
 
 **Every architecture CR must state, or it is a note and not a CR:**
 
@@ -228,7 +257,9 @@ Will the shape of this age well?
 3. The change, and the boundary or dependency it restores.
 
 Security CRs replace item 2 with the concrete misuse: the input, where it
-enters, and what it reaches.
+enters, and what it reaches. Failure-handling and logging CRs replace it with
+the failure that goes unseen: what fails, and what the caller or the operator
+sees instead.
 
 Material means a future change or a future test becomes measurably harder, a
 boundary is broken, knowledge is duplicated, or a trust boundary leaks. Taste
@@ -368,7 +399,24 @@ the fix implementer, so include nothing you do not want passed on. Make each
 - Behaviour held fixed: {{what cannot move, and why this change cannot move it}}
 - Rule: {{the standard or principle at stake, cited}}
 - Severity: blocking | should-fix
+- Siblings: {{every other place with the same defect, path:line each — or `none (searched: <what you searched>)`}}
+
+## DEFECT-1: {{the contract promise the code breaks, one line}}
+- Location: {{path:line}}
+- Contract: {{the CONTRACT line it breaks, quoted}}
+- Input: {{the concrete input or state that shows it}}
+- Observed: {{what the code does with that input}}
+- Expected: {{what the contract says happens}}
+- Siblings: {{as above}}
+- Severity: blocking | should-fix
 ```
+
+**Siblings are part of the finding.** Before you file, search for the same shape
+(`Grep`): the other call sites of the same helper, the same pattern in the files
+`SCOPE` names. Siblings inside `SCOPE` are fixed under the same CR, so one round
+clears the class; siblings outside `SCOPE` are listed as such and become notes.
+A bare `none` is a missing field — say what you searched. Every field is
+checked by script (`check_crs.py`): a section missing one is demoted unread.
 
 ## The re-review, when `PRIOR_CRS` is in your payload
 

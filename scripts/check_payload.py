@@ -236,7 +236,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         "required": {"LENS", "WORKTREE_DIR", "STANDARDS", "ROUND"},
         "optional": {
             "DOSSIER", "SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA",
-            "CONTEXT_DOCS", "ARBITRATIONS", "PRIOR_CRS", "RULES",
+            "CONTEXT_DOCS", "ARBITRATIONS", "PRIOR_CRS", "RULES", "SIGNALS",
         },
     },
     "contract-reviewer": {
@@ -300,7 +300,7 @@ CONDITIONAL: dict[tuple[str, str, str], tuple[set[str], list[set[str]]]] = {
          "RULES"}, []),
     ("reviewer", "LENS", "architecture"): (
         {"SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA", "CONTEXT_DOCS", "ARBITRATIONS",
-         "RULES"}, []),
+         "RULES", "SIGNALS"}, []),
     ("reviewer", "LENS", "performance"): (
         {"SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA", "CONTEXT_DOCS", "ARBITRATIONS",
          "RULES"}, []),
