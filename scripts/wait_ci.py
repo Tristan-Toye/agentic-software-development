@@ -82,7 +82,10 @@ distinct runs, read from the check links) must equal the PR's head: a green
 on a superseded head is not a verdict (a push that fired no run leaves the
 previous head's green as the newest result). One line names both SHAs. If the
 `gh pr view` call fails, or a check has no Actions run link, that guard is
-skipped and the wait behaves as before.
+skipped and the wait behaves as before. The same `gh pr view` is repeated
+every few polls (no output unless it trips: a PR that turns DIRTY mid-wait
+exits 5) and once more when the result would be green, so the head compared
+and the conflict guard are the ones at the END of the wait, not the start.
 
 Exit codes: 0 every check passed; 1 any check failed or was cancelled;
 3 timed out with checks still pending (or the idle wait timed out); 2 unusable
@@ -111,6 +114,7 @@ LINK_RE = re.compile(r"/actions/runs/(\d+)(?:/job/(\d+))?")
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 BAD_BUCKETS = ("fail", "cancel")
 DEFAULT_REGISTER_WAIT = 120.0
+WATCH_EVERY = 4  # polls between merge-state re-checks while waiting
 NOT_REGISTERED = "no checks registered yet"
 
 Runner = "callable[[list[str]], tuple[int, str, str]]"
@@ -309,9 +313,14 @@ def poll(
     timeout: float,
     interval: float,
     register_wait: float = DEFAULT_REGISTER_WAIT,
+    watch=None,
+    watch_every: int = WATCH_EVERY,
 ) -> tuple[str, list[dict], str]:
     """Poll until no check is pending or the timeout passes. Returns
-    (outcome, checks, error) with outcome in {"done", "timeout", "error"}.
+    (outcome, checks, error) with outcome in {"done", "timeout", "error",
+    "conflict"}. `watch`, when given, is called once every `watch_every`
+    polls and returns a line (the poll then ends as "conflict" with that
+    line as the error) or None; it prints nothing itself.
     A PR with no checks registered yet is polled on for `register_wait`
     seconds (never past the timeout) before it is an error.
     Prints at most one line per state change — nothing else."""
@@ -319,7 +328,13 @@ def poll(
     unregistered_since: float | None = None
     last_summary: str | None = None
     cur_interval = max(interval, 0.001)
+    polls = 0
     while True:
+        polls += 1
+        if watch and polls % max(watch_every, 1) == 0:
+            line = watch()
+            if line:
+                return "conflict", [], line
         checks, err = fetch_checks(runner, target, repo)
         if checks is None and err.startswith(NOT_REGISTERED):
             now = time.monotonic()
@@ -504,10 +519,15 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
             print(line, file=sys.stderr)
             return 5
 
-    outcome, checks, err = poll(active_runner, target, args.repo, args.timeout, args.interval, args.register_wait)
-    if outcome == "error":
-        print(f"wait_ci: {err}", file=sys.stderr)
-        return 2
+    def watch() -> str | None:
+        fresh = pr_state(active_runner, target[1], args.repo)
+        return conflict_line(target[1], fresh) if fresh else None
+
+    watcher = watch if state else None
+    outcome, checks, err = poll(active_runner, target, args.repo, args.timeout, args.interval, args.register_wait, watcher)
+    if outcome in ("error", "conflict"):
+        print(f"wait_ci: {err}" if outcome == "error" else err, file=sys.stderr)
+        return 2 if outcome == "error" else 5
 
     if outcome == "done" and args.rerun_failed and any(c.get("bucket") in BAD_BUCKETS for c in checks):
         failed_names = [str(c.get("name")) for c in checks if c.get("bucket") in BAD_BUCKETS]
@@ -515,12 +535,18 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
         print(f"rerun: failed {', '.join(failed_names)}; re-ran run(s) {', '.join(ids) or 'none (no run id in the links)'}")
         if ids:
             time.sleep(max(args.rerun_settle, 0))
-            outcome, checks, err = poll(active_runner, target, args.repo, args.timeout, args.interval, args.register_wait)
-            if outcome == "error":
-                print(f"wait_ci: {err}", file=sys.stderr)
-                return 2
+            outcome, checks, err = poll(active_runner, target, args.repo, args.timeout, args.interval, args.register_wait, watcher)
+            if outcome in ("error", "conflict"):
+                print(f"wait_ci: {err}" if outcome == "error" else err, file=sys.stderr)
+                return 2 if outcome == "error" else 5
             print("after the rerun:")
 
+    if outcome == "done" and state and checks and not any(c.get("bucket") in BAD_BUCKETS for c in checks):
+        state = pr_state(active_runner, target[1], args.repo) or state  # the head NOW, not at the start
+        line = conflict_line(target[1], state)
+        if line:
+            print(line, file=sys.stderr)
+            return 5
     if outcome == "done" and state and state.get("headRefOid") and checks \
             and not any(c.get("bucket") in BAD_BUCKETS for c in checks):
         stale = stale_head(active_runner, checks, str(state["headRefOid"]), args.repo)
@@ -814,12 +840,44 @@ def selftest() -> int:
         with contextlib.redirect_stdout(out_g), contextlib.redirect_stderr(err_g):
             rc = main(["--pr", "9", "--interval", "0.01"], runner=runner_guard(view, sha))
         check(label, rc == want and all(n in err_g.getvalue() for n in needle))
-        check(label + " (one pr view, bounded line)",
-              sum(1 for c in pr_calls if c[:3] == ["gh", "pr", "view"]) == 1 and len(err_g.getvalue().splitlines()) <= 1)
+        check(label + " (pr view: once up front, once more before a green; bounded line)",
+              sum(1 for c in pr_calls if c[:3] == ["gh", "pr", "view"]) == (1 if want == 5 else 2) and len(err_g.getvalue().splitlines()) <= 1)
         if want == 5:
             check(label + " (never polled)", not any(c[:3] == ["gh", "pr", "checks"] for c in pr_calls))
         if want == 4:
             check(label + " (no report printed)", "pass" not in out_g.getvalue().replace("1/1 done, 0 failed", ""))
+
+    # 13. mid-wait: the head moves during the wait -> 4; the PR turns DIRTY while polling -> 5.
+    views = {"n": 0}
+
+    def runner_moves(cmd: list[str]) -> tuple[int, str, str]:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            views["n"] += 1
+            return 0, json.dumps({**clean, "headRefOid": head_new if views["n"] == 1 else head_old}), ""
+        return runner_guard(clean, head_new)(cmd)
+
+    out_m, err_m = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out_m), contextlib.redirect_stderr(err_m):
+        rc = main(["--pr", "9", "--interval", "0.01"], runner=runner_moves)
+    check("a head that moves during the wait is refused", rc == 4 and head_new[:12] in err_m.getvalue()
+          and head_old[:12] in err_m.getvalue() and views["n"] == 2 and len(err_m.getvalue().splitlines()) == 1)
+
+    polls_n = {"n": 0}
+
+    def runner_turns_dirty(cmd: list[str]) -> tuple[int, str, str]:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            dirty = polls_n["n"] >= 2
+            return 0, json.dumps({**clean, "mergeStateStatus": "DIRTY" if dirty else "CLEAN"}), ""
+        if cmd[:3] == ["gh", "pr", "checks"]:
+            polls_n["n"] += 1
+            return 0, json.dumps([{"name": "slow", "state": "IN_PROGRESS", "bucket": "pending", "link": "", "workflow": "CI"}]), ""
+        return 1, "", "unexpected call"
+
+    out_d, err_d = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out_d), contextlib.redirect_stderr(err_d):
+        rc = main(["--pr", "9", "--interval", "0.001", "--timeout", "5"], runner=runner_turns_dirty)
+    check("a PR that turns DIRTY mid-wait fails fast with 5", rc == 5 and "merge origin/production" in err_d.getvalue()
+          and len(err_d.getvalue().splitlines()) == 1 and len(out_d.getvalue().splitlines()) <= 1)
 
     for item in failures_list:
         print("SELFTEST FAIL  " + item)
