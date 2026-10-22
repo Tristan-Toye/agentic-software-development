@@ -48,6 +48,19 @@ ARBITRATIONS: |
 ROUND: 2
 ```
 
+`LENS: architecture` also carries `SIGNALS`, filled by `compose_payloads.py
+--review-base <baseline>` (`review_signals.py`): marked locations, never a diff.
+
+```
+SIGNALS: |
+  FAILURE-SIGNALS: 2 markers in 1 files (cause-dropped 1, swallow 1)
+  LOG-SIGNALS: none in 3 files
+  SECURITY-TRIGGERS: secrets 1 (deploy/secrets/seed.sh)
+  Marked lines (current state, a reason to look, never a verdict):
+    src/cloud/gcp.rs:151  failure/cause-dropped  .map_err(|_| credential_file_error(path, "cannot be read"))?;
+    src/cloud/selection.rs:288  failure/swallow  Err(_) => CloudEnvFile::default(),
+```
+
 `LENS: tests` — in the same message, only when Phase 6 logged a `FLAKY` test
 or `FLAKE-RISK:` found a marker in this build's test files. Its `SCOPE` is the
 test files and their marked lines, not the blast radius, and `RUN_EVIDENCE`

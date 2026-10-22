@@ -40,12 +40,51 @@ const modelFor = (agentType) => AGENT_MODELS[agentType] || { model: 'sonnet', ef
 //   agentType   default 'agentic-software-development:reviewer'
 //
 // returns: [{ label, lens, round, verdict: 'PASS'|'CHANGES-REQUIRED'|'incomplete'|'died',
-//             crs: [{ id, ledger_id, severity, location, claim }],
+//             crs: [{ id, ledger_id, severity, location, claim, missing }],
+//             defects: [{ id, ledger_id, location, input, missing }],
 //             answers: [{ id, status, detail }], unreached, notes, document_path }]
+// `missing` names the fields a section does not state: non-empty means demote it.
 // A lens that died has reviewed nothing: verdict 'died', never 'PASS'. A lens that answered
 // PASS but lists SCOPE locations it did not reach is 'incomplete', never 'PASS'.
 
 const MAX_LENSES = 4
+
+// The fields each section of a change-request document must state: the same table as
+// scripts/check_crs.py (shared/test/workflows.test.ts keeps the two equal). A CR missing one
+// is demoted by the fields, never the merits, so the check needs no model: it runs here, on
+// the document the reviewer returned, and each compact CR carries what it lacks.
+const REQUIRED_FIELDS = {
+  "CR": ["Location", "Observed", "Required", "Behaviour held fixed", "Rule", "Severity", "Siblings"],
+  "follow-up": ["Answers", "Location"],
+  "DEFECT": ["Location", "Contract", "Input", "Observed", "Expected", "Siblings", "Severity"],
+}
+
+// { 'CR-1': { kind, missing: [...], fields }, ... } for every CR, follow-up and DEFECT section.
+function checkDocument(doc) {
+  const out = {}
+  const parts = String(doc || '').split(/^(?=## )/m)
+  for (const part of parts) {
+    const head = /^## (CR-\d+(?: follow-up)?|DEFECT-\d+):/.exec(part)
+    if (!head) continue
+    const id = head[1]
+    const kind = id.startsWith('DEFECT') ? 'DEFECT' : id.includes('follow-up') ? 'follow-up' : 'CR'
+    const fields = {}
+    for (const m of part.matchAll(/^- ([A-Z][\w /]*?):[ \t]*(.*)$/gm)) {
+      const names = m[1].includes('/') ? m[1].split('/').map((x) => x.trim()) : [m[1].trim()]
+      for (const n of names) if (!(n in fields)) fields[n] = m[2].trim()
+    }
+    const missing = []
+    for (const name of REQUIRED_FIELDS[kind]) {
+      const v = fields[name] || ''
+      if (!v || v.startsWith('{{')) missing.push(name)
+      else if (name === 'Location' && !/\S+:\d+/.test(v)) missing.push('Location (path:line)')
+      else if (name === 'Severity' && !['blocking', 'should-fix'].includes(v.split(/\s+/)[0].replace(/[`*]/g, ''))) missing.push('Severity (blocking | should-fix)')
+      else if (name === 'Siblings' && /^`?none`?\.?$/i.test(v)) missing.push('Siblings (none: say what was searched)')
+    }
+    out[id] = { kind, missing, fields }
+  }
+  return out
+}
 
 const REVIEW_SCHEMA = {
   type: 'object',
@@ -95,7 +134,7 @@ const RETURN_FORM =
 const sq = (value) => "'" + String(value == null ? '' : value).replace(/'/g, "'\\''") + "'"
 const slug = (value) => String(value).replace(/[^\w.-]+/g, '_')
 
-const bad = (why) => [{ label: 'phase7-review', lens: '', round: 0, verdict: 'died', crs: [], answers: [], unreached: [], notes: why, document_path: '' }]
+const bad = (why) => [{ label: 'phase7-review', lens: '', round: 0, verdict: 'died', crs: [], defects: [], answers: [], unreached: [], notes: why, document_path: '' }]
 
 const wrapped = (a) => { const k = a && typeof a === 'object' && !Array.isArray(a) ? Object.keys(a) : []; return k.length === 1 && Array.isArray(a[k[0]]) ? k[0] : '' }
 const shapeMsg = (shape) => 'args must be a bare JSON array [' + shape + ', ...], not an object such as {' + (wrapped(args) || 'lenses') + ': [...]}'
@@ -151,6 +190,8 @@ async function keep(reviewed) {
     : []
   let verdict = out ? out.verdict : 'died'
   if (verdict === 'PASS' && unreached.length > 0) verdict = 'incomplete'
+  const checked = checkDocument(doc)
+  const ledgerId = (id) => (id.startsWith('DEFECT') ? 'DEFECT-' : 'CR-') + item.lens + '-' + ((/(\d+)/.exec(String(id)) || [])[1] || String(id))
   return {
     label: item.label,
     lens: item.lens,
@@ -158,8 +199,16 @@ async function keep(reviewed) {
     verdict,
     crs: crs.map((c) => {
       const n = (/(\d+)/.exec(String(c.id)) || [])[1] || String(c.id)
-      return { id: c.id, ledger_id: 'CR-' + item.lens + '-' + n, severity: c.severity, location: c.location, claim: String(c.claim).slice(0, 240) }
+      const found = checked[String(c.id).trim()]
+      // A CR the document does not hold cannot be checked: it is demoted as a whole.
+      const missing = found ? found.missing : ['the section itself (not in the document)']
+      return { id: c.id, ledger_id: 'CR-' + item.lens + '-' + n, severity: c.severity, location: c.location, claim: String(c.claim).slice(0, 240), missing }
     }),
+    // DEFECT sections: claims that the code breaks a CONTRACT promise no test pins. Phase 7
+    // proves each with a failing test before any fix; one missing a field is demoted instead.
+    defects: Object.entries(checked).filter(([, v]) => v.kind === 'DEFECT').map(([id, v]) => ({
+      id, ledger_id: ledgerId(id), location: v.fields.Location || '', input: String(v.fields.Input || '').slice(0, 240), missing: v.missing,
+    })),
     answers: out && Array.isArray(out.answers) ? out.answers : [],
     unreached,
     notes: out && typeof out.notes === 'string' ? out.notes.slice(0, 400) : '',
@@ -169,6 +218,6 @@ async function keep(reviewed) {
 
 const results = await pipeline(args, review, keep)
 return args.map((item, i) => results[i] || {
-  label: item.label, lens: item.lens, round: item.round || 0, verdict: 'died', crs: [], answers: [], unreached: [],
+  label: item.label, lens: item.lens, round: item.round || 0, verdict: 'died', crs: [], defects: [], answers: [], unreached: [],
   notes: 'the lens died or was skipped: it reviewed nothing, resume it from its transcript or re-spawn it', document_path: '',
 })
