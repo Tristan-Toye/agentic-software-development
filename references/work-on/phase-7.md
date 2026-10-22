@@ -35,6 +35,12 @@ valid is an exclusion that reached nobody. When `ocr` is missing, fall back to
 `git diff --name-only`, log `unknown`, and know that nothing was filtered —
 which is the safe direction, not the unsafe one.
 
+**Mark the signals, once per sweep.** Run `python3 ${PLUGIN_ROOT}/scripts/review_signals.py
+--root X --base <baseline>` and log its three summary lines (`FAILURE-SIGNALS:`,
+`LOG-SIGNALS:`, `SECURITY-TRIGGERS:`) as they print. Compose the architecture payload
+with `--review-base <baseline>`: `SIGNALS` is then filled by the same script, as
+current-state locations, and you never retype it. A check round carries no `SIGNALS`.
+
 Spawn the round's lenses — the three code lenses, plus `tests` when it is due
 (below) — in **one message** so they run concurrently. There is no chain,
 no short-circuit, and no restart: they review the same green state and return
@@ -78,9 +84,12 @@ lens:
 
 Write the `## Build log` ledger from `crs` — one line per change request,
 `ledger_id` and `claim` and `location` as the line below says — and, on a check
-round, from `answers`. Demote by the fields as below: the evidence fields are in
-the document, so read a CR's section of `document_path` only to check a CR whose
-evidence you cannot judge from its claim. The document is read whole once more,
+round, from `answers`. **Demotion is the script's**: a CR whose `missing` is
+non-empty is `demoted (<missing>)`, one with an empty `missing` is `accepted`, and
+you never read the document to decide either (under opencode, run
+`check_crs.py <document>` on each reply: it prints the same verdict per section).
+Read a CR's section of `document_path` only to check a CR whose evidence you
+cannot judge from its claim. The document is read whole once more,
 when you compose the fix implementer's payload, which carries it byte for byte
 (compose it from the file: never retype or edit it). A `died` lens has reviewed
 nothing: resume it (`phase-4.md`, "Under Claude Code, resume instead of
@@ -173,12 +182,26 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
   the **fix implementer's payload**: pass it there byte-for-byte, unparaphrased
   and unsoftened — it is the reviewer's work order, not yours to edit. The
   dossier records the ledger; the payload carries the transcript.
-- **Demote non-conforming CRs — by the fields, never the merits.** A CR that
-  lacks its lens's required evidence gets `demoted (<missing evidence>)` on its
-  ledger line instead of `accepted`. The rule is mechanical on purpose: you
-  check whether the evidence is *stated*, and you never overrule a reviewer
-  because you disagree with a CR that carries its evidence — that disagreement
-  goes to the user like any other conflict.
+- **Demote non-conforming CRs — by the fields, never the merits.** The fields
+  are checked by script (`missing`, or `check_crs.py`), `Siblings` included; you
+  never overrule a reviewer because you disagree with a CR that carries its
+  evidence — that disagreement goes to the user like any other conflict. The
+  fix implementer gets the document without the demoted sections:
+  `check_crs.py <document> --drop <ids> --out <fix doc>`, every kept byte as
+  the reviewer wrote it.
+- **Prove each `DEFECT` before anyone fixes it.** A defect claims the code
+  breaks a `CONTRACT` promise no test pins, so the proof is that test. Per
+  defect (`defects`, or `check_crs.py`'s `prove` lines), re-spawn
+  `unit-test-author` with the contract member, the defect's `Contract`, `Input`
+  and `Expected` lines, and nothing about the implementation; then run
+  `run_tests.py --test <name> --expect red` on the current head. `PROOF: red`
+  → log `- r<n> <lens>: DEFECT-<lens>-<k> proven — <test> red on <sha>`, commit
+  the test, and the fix implementer's `FAILURES` names it; the fix round is
+  done when `--expect green` holds on the fixed head. `PROOF FAILED` (the test
+  passes) → the defect is not real: log `not proven`, drop the section from
+  the fix document, keep the test (it pins a promise). `PROOF REFUSED` (it never
+  ran) is no verdict: fix the test, never the defect. A defect is never fixed
+  unproven, and a reviewer's word is not proof.
 - **Check who may apply each CR before you route it.** The fix implementer
   owns source and never a test. **You never apply a test CR yourself either**
   — you referee tests, so you must never author them; a test diff is always
@@ -263,7 +286,8 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
 | Round | Spawns | Who | Answers |
 |---|---|---|---|
 | **1 — sweep** | **3–4**, concurrent | the three code lenses, plus `tests` when due | Fresh subject matter, full `SCOPE`, **one pass**. |
-| fix | 1 | `implementer MODE: fix` | the merged open CRs plus any arbitration |
+| proof | 0–k | `unit-test-author`, one per `DEFECT` | a failing test, `--expect red`, before the fix |
+| fix | 1 | `implementer MODE: fix` | the merged open CRs, proven defects, any arbitration |
 | — | 0 | you | the runner's verdict on the fixed head; red means the fix was not behaviour-preserving |
 | **2 — check** | **0–4**, concurrent | **only lenses with an open CR** | own CRs: resolved / not resolved |
 | fix | 1 | `implementer MODE: fix` | what is still open |

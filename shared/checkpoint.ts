@@ -66,6 +66,14 @@ export function summaryText(list: Pick<Checkpoint, "phase" | "summary">[]): stri
   )
 }
 
+// The rules a compacted summary most often drops, measured as the refusals that follow a
+// restore: a read through Bash, and a spawn that points at its payload file.
+export const RESTORE_RULES =
+  "Rules that still hold: read with doc_section, code_item or code_outline (a Bash read of a " +
+  "source or document file, such as sed -n, a large cat or head, or grep with context, is " +
+  "refused); under Claude Code an Agent spawn carries its payload pasted into the prompt as " +
+  "`FIELD: value` lines, never a pointer to the file."
+
 // The block a restore ends on: the latest checkpoint's NEXT line, as the first action.
 export function resumeText(last: Pick<Checkpoint, "phase" | "summary"> | undefined): string {
   const next = last ? nextLine(last.summary) : undefined
@@ -74,6 +82,7 @@ export function resumeText(last: Pick<Checkpoint, "phase" | "summary"> | undefin
     `\n\n## Resume here\n\nNEXT (from "${last.phase}"): ${next}\n\n` +
     "Start with that action. Do not re-check what this restore states: the summaries above, the " +
     "in-flight list and the build-log tail below (when present) are current. Read only what the next " +
-    "action itself needs; work done after that checkpoint is in the in-flight list and the build log."
+    "action itself needs; work done after that checkpoint is in the in-flight list and the build log.\n\n" +
+    RESTORE_RULES
   )
 }

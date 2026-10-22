@@ -30,7 +30,12 @@ file the package owns), PACKAGE,
 CRITERIA, STANDARDS, JIRA_KEY, DOSSIER (the integration author's excerpt, or
 the reviewer's build-log-free copy, generated and written under
 `.agent-staging/` by this script — never the live dossier itself),
-TEST_COMMAND/HOOKS (from the flags), MAX_SINGLE_EDIT, CITATION and NAMING
+TEST_COMMAND/HOOKS (from the flags; an implementer MODE=fix gets `run_gates.py`
+over the run's gates file — the dossier's `GATES:` line, else
+`.discovery/analysis/gates-<ID>.txt` — followed by `&& <--test-command>`, the
+test subset the orchestrator runs itself, so a fix round never runs a narrower or
+stricter list than CI's; only `--set TEST_COMMAND=` replaces it whole),
+MAX_SINGLE_EDIT, CITATION and NAMING
 (fixed process conventions, from the skeletons, overridable with --set),
 ROUND (default 1); ARBITRATIONS is always a fill.
 
@@ -456,6 +461,25 @@ def hook_outputs_block(specs: list[str]) -> str:
     return "\n".join(lines)
 
 
+def gates_test_command(root: str, dossier_text: str, dossier_id: str) -> str | None:
+    """MODE fix, no --test-command: the run's whole gates file as one command
+    (`run_gates.py FILE --root X`), so a fix round is never narrower or stricter
+    than the GATES: list of Phase 2. The file is the dossier's `GATES: <file> —`
+    line, else `.discovery/analysis/gates-<ID>.txt`; None (the placeholder stays)
+    when the run recorded `GATES: none` or the file is not on disk."""
+    m = re.search(r"^\s*[-*]?\s*GATES:\s*(\S+)\s+—", dossier_text, re.M)
+    rel = m.group(1) if m and m.group(1).lower() != "none" else None
+    if rel is None and not m and dossier_id:
+        rel = os.path.join(".discovery", "analysis", "gates-%s.txt" % dossier_id)
+    if rel is None:
+        return None
+    path = rel if os.path.isabs(rel) else os.path.join(root, rel)
+    if not os.path.isfile(path):
+        return None
+    return "python3 %s %s --root %s" % (
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_gates.py"), path, root)
+
+
 def compose_implementer(ctx: dict) -> list[Field]:
     """WORKTREE_DIR/BRANCH: mechanical — build mode forks a per-package
     worktree and branch suffix (`references/payloads/implementer.md`,
@@ -471,7 +495,9 @@ def compose_implementer(ctx: dict) -> list[Field]:
     (build mode only — fix mode is scoped by CRS/FAILURES instead). In fix mode
     CONTRACT is the dossier's `## Contract` (the files hold the merged code).
     STANDARDS/JIRA_KEY: mechanical, from --plugin-root and the dossier.
-    TEST_COMMAND/HOOKS: mechanical when the flag is given, else judgement
+    TEST_COMMAND/HOOKS: mechanical when the flag is given (MODE fix without
+    --test-command: `run_gates.py` over the run's gates file, see
+    `gates_test_command`), else judgement
     (the orchestrator verifies these in its own shell first —
     `references/work-on/phase-4.md`) — @@FILL. CRS/FAILURES (fix mode): pure
     judgement (the merged review change requests, or a failing test's
@@ -533,9 +559,14 @@ def compose_implementer(ctx: dict) -> list[Field]:
             )
         fields["OWNED_PATHS"] = Field("OWNED_PATHS", body, block=True)
 
+    # MODE fix: the whole gates list first, then the test subset the orchestrator
+    # runs itself (--test-command, e.g. the VM suite), never one in place of the other.
+    gates_cmd = gates_test_command(root, dossier_text, fm.get("id", "")) if mode == "fix" else None
+    if gates_cmd and args.test_command:
+        gates_cmd = "%s && %s" % (gates_cmd, args.test_command)
     fields["TEST_COMMAND"] = Field(
         "TEST_COMMAND",
-        args.test_command if args.test_command else placeholder(
+        gates_cmd or args.test_command or placeholder(
             "TEST_COMMAND", "the EXISTING suite's invocation, verified in your own shell "
             "first, and its known-red shape if the baseline is not green"),
     )
@@ -740,6 +771,20 @@ def compose_reviewer(ctx: dict) -> list[Field]:
             "RULES", "this lens's own slice of the resolved OCR checklist, or `none`"), block=True)
         fields["CONTEXT_DOCS"] = Field("CONTEXT_DOCS", placeholder(
             "CONTEXT_DOCS", "the ADR(s) relevant to this lens, if any"))
+        if lens == "architecture":
+            # Mechanical: the markers review_signals.py finds on the build's lines, as
+            # current-state locations. Without --review-base the field stays @@FILL.
+            if args.review_base:
+                signals = _load("review_signals")
+                try:
+                    marks, sums = signals.report(root, args.review_base, "HEAD", 40)
+                except ValueError as err:
+                    raise Refusal("review_signals: %s" % err)
+                block = signals.field_block(marks, sums)
+                fields["SIGNALS"] = Field("SIGNALS", "\n".join(l[2:] for l in block.splitlines()[1:]), block=True)
+            else:
+                fields["SIGNALS"] = Field("SIGNALS", placeholder(
+                    "SIGNALS", "review_signals.py --root X --base <baseline> --field, or pass --review-base"), block=True)
         # Never defaulted: the rulings accumulate across rounds and go into
         # every later spawn, so a silent `none` could drop a real one.
         fields["ARBITRATIONS"] = Field("ARBITRATIONS", placeholder(
@@ -747,10 +792,10 @@ def compose_reviewer(ctx: dict) -> list[Field]:
 
     apply_overrides(fields, sets, blocks={
         "DOSSIER", "CRITERIA", "SCOPE", "CONTRACT", "RUN_EVIDENCE", "RULES",
-        "ARBITRATIONS", "PRIOR_CRS",
+        "ARBITRATIONS", "PRIOR_CRS", "SIGNALS",
     })
     order = ["LENS", "DOSSIER", "WORKTREE_DIR", "SCOPE", "CONTRACT", "RUN_EVIDENCE",
-             "CRITERIA", "STANDARDS", "RULES", "CONTEXT_DOCS", "ARBITRATIONS",
+             "CRITERIA", "STANDARDS", "RULES", "SIGNALS", "CONTEXT_DOCS", "ARBITRATIONS",
              "PRIOR_CRS", "ROUND"]
     return ordered(fields, order)
 
@@ -1058,6 +1103,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--refresh-contract", nargs="+", metavar="PAYLOAD",
                         help="re-read --contract-paths and rewrite CONTRACT + CONTRACT_HASH in these payloads, in place")
+    parser.add_argument("--review-base", metavar="SHA",
+                        help="reviewer LENS=architecture: fill SIGNALS from review_signals.py over SHA..HEAD")
     parser.add_argument("--failures-from", metavar="LOG", help="fill FAILURES from run_tests.py's digest of LOG")
     parser.add_argument("--excerpt", action="append", default=[], metavar="FILE:A-B",
                         help="paste lines A-B of FILE (bounded) into --excerpt-field; repeatable")
@@ -1422,6 +1469,31 @@ def selftest() -> int:
         fx_text = read_text(fx_path) if rc == 0 else ""
         check("a --set field outside the kind's order is appended, not dropped",
               rc == 0 and fx_text.count("CRITERIA: one") == 1 and fx_text.count("SUPPORT: s") == 1, out)
+        # --- #129: MODE fix TEST_COMMAND from the gates file ---
+        fix_args = ["implementer", "--host", "opencode", "--hooks", "none", "--set", "MODE=fix", "--set", "CRS=CR-1: x"]
+        rc, g0, out = run_compose("G0.md", fix_args)
+        check("fix mode without a gates file keeps the TEST_COMMAND placeholder",
+              rc == 1 or "@@FILL_TEST_COMMAND@@" in read_text(g0) if os.path.exists(g0) else True)
+        gdir = os.path.join(root, ".discovery", "analysis")
+        os.makedirs(gdir, exist_ok=True)
+        with open(os.path.join(gdir, "gates-W-014.txt"), "w", encoding="utf-8") as fh:
+            fh.write("lint: true\n")
+        rc, g1, out = run_compose("G1.md", fix_args)
+        g1_text = read_text(g1) if rc == 0 else ""
+        check("fix mode fills TEST_COMMAND from the gates file",
+              rc == 0 and "TEST_COMMAND: python3 " in g1_text and "run_gates.py" in g1_text
+              and "gates-W-014.txt --root %s" % root in g1_text, out)
+        rc, g2, out = run_compose("G2.md", fix_args + ["--test-command", "pytest -q"])
+        g2_text = read_text(g2) if rc == 0 else ""
+        check("a --test-command runs after the gates, never instead of them",
+              rc == 0 and "gates-W-014.txt --root %s && pytest -q" % root in g2_text, out)
+        rc, g4, out = run_compose("G4.md", fix_args + ["--set", "TEST_COMMAND=make check"])
+        check("--set TEST_COMMAND replaces it whole",
+              rc == 0 and "TEST_COMMAND: make check" in read_text(g4), out)
+        rc, g3, out = run_compose("G3.md", base_impl + [])
+        check("build mode never derives TEST_COMMAND from the gates file",
+              "run_gates.py" not in (read_text(g3) if os.path.exists(g3) else ""))
+
         dup = DOSSIER_FIXTURE.replace("## Build log", "## Acceptance criteria\n\n3. restated\n\n## Build log")
         dup_path = os.path.join(root, "dup.md")
         with open(dup_path, "w", encoding="utf-8") as fh:
@@ -1519,6 +1591,18 @@ def selftest() -> int:
         check("the tests lens composes like a code lens, its SCOPE asking for the marked test files",
               rc == 0 and parsed_field(rvt_text, "CONTRACT") == want and "FLAKE-RISK" in rvt_text
               and "RULES" in rvt_text, out)
+        rc, rva_path, out = run_with(dossier2_path, "RVa.md", ["reviewer", "--host", "claude", "--set", "LENS=architecture"])
+        rva_text = read_text(rva_path) if rc == 0 else ""
+        check("the architecture lens asks for SIGNALS when no --review-base is given",
+              rc == 0 and "SIGNALS:" in rva_text and "review_signals.py" in rva_text
+              and "SIGNALS" not in read_text(rv_path), out)
+        subprocess.run(["git", "-C", root, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"], check=True)
+        rc, rva_path, out = run_with(dossier2_path, "RVb.md", ["reviewer", "--host", "claude", "--set", "LENS=architecture",
+                                                               "--review-base", "HEAD"])
+        rva_text = read_text(rva_path) if rc == 0 else ""
+        check("--review-base fills SIGNALS mechanically",
+              rc == 0 and "FAILURE-SIGNALS: none" in parsed_field(rva_text, "SIGNALS") and "@@FILL" not in parsed_field(rva_text, "SIGNALS"), out)
         rc, _p, out = run_with(dossier2_path, "RVx.md", ["reviewer", "--host", "claude", "--set", "LENS=flaky"])
         check("an unknown lens is refused", rc == 1 and "LENS=plan|style|architecture|performance|tests" in out, out)
         rc, fxc_path, out = run_with(dossier2_path, "FXC.md", ["implementer", "--host", "opencode", "--hooks", "none", "--test-command", "pytest -q",

@@ -152,8 +152,9 @@ This is the step everything else depends on.
    axis a CI job compiles (`cargo check --workspace --all-targets --locked`,
    and once more per `--features` set a job uses) plus every doc and lint gate
    CI runs (`cargo doc` under its `RUSTDOCFLAGS`, clippy, fmt) — never the
-   repo's local aggregator alone, which covers fewer. Write them in
-   `run_gates.py`'s format to `.discovery/analysis/gates-<ID>.txt`, run
+   repo's local aggregator alone, which covers fewer. Generate them with
+   `run_gates.py --from-workflow <workflow files>` (it lists every skipped step),
+   or write them by hand in `run_gates.py`'s format to `.discovery/analysis/gates-<ID>.txt`, run
    `python3 ${PLUGIN_ROOT}/scripts/run_gates.py <file> --root <X>` before the
    contract commit, and log one line; `--pre-fanout` refuses without it:
 

@@ -72,6 +72,22 @@ failing run. Exit 0 when every run passed, else the first nonzero exit code.
 line in the log is reported `NOT RUN` and turns an otherwise green exit into 3,
 so a typo cannot pass as green. Only a `cargo` command takes `--test`.
 
+# Proving a defect: --expect red | green
+
+`--expect red` proves a test fails on the code as it is, `--expect green` that it passes
+after the fix — Phase 7's proof for a `DEFECT` claim, and the same shape as the
+test-strength gate's red run. The names it judges are the `--test` names (cargo) or
+`--proof-name NAME` (any runner whose result lines name the test: libtest `test NAME ...
+ok|FAILED`, pytest `-v` `path::name PASSED|FAILED` or `FAILED path::name`). It appends one
+line and replaces the exit code:
+
+    PROOF: red as expected — catalog_empty_is_refused                       exit 0
+    PROOF FAILED: expected red, got catalog_empty_is_refused (ok)           exit 4
+    PROOF REFUSED: catalog_empty_is_refused did not run — ...               exit 4
+
+A test that never ran proves nothing in either direction, so a compile error is never a
+red proof. `--expect` judges one run and refuses `--repeat`.
+
 # Parsers (auto-detected; several may apply to one log)
 
 cargo/libtest: sums `test result: ok./FAILED. X passed; Y failed; Z
@@ -106,8 +122,8 @@ never blows up the digest.
 
 Exit codes: the run command's own exit code (so callers can branch on it);
 2 for unusable input (no command, `--vm` without `--workdir`, `--test` on a
-non-cargo command); 3 a `--test` name matched nothing; 124/125 from `--wait`
-(see above).
+non-cargo command, `--expect` without names); 3 a `--test` name matched nothing; 4 an
+`--expect` proof did not hold; 124/125 from `--wait` (see above).
 
 No third-party imports: this runs wherever python3 does.
 """
@@ -204,6 +220,34 @@ def names_not_run(log_text: str, names: list[str]) -> list[str]:
     if not ran:
         return []
     return [n for n in names if not any(n in r for r in ran)]
+
+
+def outcomes(log_text: str, names: list[str]) -> dict[str, str | None]:
+    """Per name: 'failed' when a libtest or pytest result line containing it says FAILED,
+    'ok' when one says ok/PASSED and none failed, None when no result line names it."""
+    lines = re.findall(r"^test (\S+) \.\.\. (ok|FAILED)", log_text, re.M)
+    lines += [(m[0], "ok" if m[1] == "PASSED" else "FAILED")
+              for m in re.findall(r"^(\S+::\S+) (PASSED|FAILED)\b", log_text, re.M)]
+    lines += [(m, "FAILED") for m in re.findall(r"^FAILED (\S+::\S+)", log_text, re.M)]
+    out: dict[str, str | None] = {}
+    for n in names:
+        seen = {status for test, status in lines if n in test}
+        out[n] = "failed" if "FAILED" in seen else "ok" if "ok" in seen else None
+    return out
+
+
+def proof(log_text: str, names: list[str], expect: str) -> tuple[bool, str]:
+    """Whether the named tests ran with the expected outcome, and the PROOF line to log.
+    A test that did not run proves nothing either way: a compile error is red, not proof."""
+    got = outcomes(log_text, names)
+    want = "failed" if expect == "red" else "ok"
+    unrun = [n for n, o in got.items() if o is None]
+    if unrun:
+        return False, f"PROOF REFUSED: {', '.join(unrun)} did not run — a run that never reached the test proves nothing"
+    wrong = [f"{n} ({o})" for n, o in got.items() if o != want]
+    if wrong:
+        return False, f"PROOF FAILED: expected {expect}, got {', '.join(wrong)}"
+    return True, f"PROOF: {expect} as expected — {', '.join(names)}"
 
 
 def default_log_path(command: list[str]) -> str:
@@ -514,6 +558,10 @@ def single_run(args: argparse.Namespace, argv: list[str], display: str, log_path
     if missing:
         out += f"\nNOT RUN (matched no test): {', '.join(missing)}"
         rc = rc or 3
+    if args.expect:
+        held, line = proof(log_text, args.test or args.proof_name, args.expect)
+        out += "\n" + line
+        rc = 0 if held else 4
     print(out)
     return rc
 
@@ -628,6 +676,12 @@ def run(args: argparse.Namespace, own_args: list[str]) -> int:
     if args.vm and not args.workdir:
         print("run_tests: --vm requires --workdir", file=sys.stderr)
         return 2
+    if args.expect and not (args.test or args.proof_name):
+        print("run_tests: --expect needs the tests it judges: --test NAME (cargo) or --proof-name NAME", file=sys.stderr)
+        return 2
+    if args.expect and args.repeat and args.repeat > 1:
+        print("run_tests: --expect judges one run; drop --repeat", file=sys.stderr)
+        return 2
     if args.test:
         try:
             command = add_test_filters(command, args.test)
@@ -683,6 +737,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cwd", help="cwd for a direct (non-VM) run; with --digest, resolves a suite aggregator's relative log path")
     ap.add_argument("--test", action="append", default=[], metavar="NAME", help="append a test filter to a cargo command")
     ap.add_argument("--repeat", type=int, default=0, metavar="N", help="run N times; report flaky tests")
+    ap.add_argument("--expect", choices=("red", "green"), help="prove the named tests failed (red) or passed (green); exit 0 when they did, 4 when not")
+    ap.add_argument("--proof-name", action="append", default=[], metavar="NAME", help="a test --expect judges, for a command --test cannot filter")
     ap.add_argument("--detach", action="store_true", help="run detached; print the log path, pid file and --wait command")
     ap.add_argument("--wait", metavar="LOG", help="block until the detached run on LOG ends; print its digest")
     ap.add_argument("--timeout", type=float, default=3600, help="--wait: give up after this many seconds")
@@ -1003,6 +1059,14 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
     for item in failures_list:
         print("SELFTEST FAIL  " + item)
+    red_log = "running 2 tests\ntest cloud::tests::catalog_empty_is_refused ... FAILED\ntest cloud::tests::other ... ok\n"
+    check("proof: red holds on a FAILED line", proof(red_log, ["catalog_empty_is_refused"], "red")[0])
+    check("proof: green fails on a FAILED line", proof(red_log, ["catalog_empty_is_refused"], "green")[1].startswith("PROOF FAILED"))
+    check("proof: a test that never ran is refused, never red",
+          proof(CARGO_COMPILE_ERROR, ["catalog_empty_is_refused"], "red")[1].startswith("PROOF REFUSED"))
+    py_log = "tests/test_a.py::test_empty PASSED\nFAILED tests/test_a.py::test_bad - AssertionError\n"
+    check("proof: pytest lines both ways",
+          proof(py_log, ["test_empty"], "green")[0] and proof(py_log, ["test_bad"], "red")[0])
     print(f"selftest: {len(failures_list)} failure(s)")
     return 1 if failures_list else 0
 

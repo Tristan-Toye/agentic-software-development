@@ -154,6 +154,7 @@ const fakeWave = (prompt: string, opts: Opts) => {
   })
   check("wave: one dead agent does not stop the others", thrown.result[0].verdict === "clean" && thrown.result[1].verdict === "died")
   // argument checks
+  check("wave: an object wrapping the array names the bare-array shape", await (async () => { const r = await run(wave, { batch: [item("P1")] }, () => null); return r.result[0].flags[0] === "bad-args" && r.result[0].report_excerpt.includes("bare JSON array") && r.result[0].report_excerpt.includes("{batch: [...]}") && r.calls.length === 0 })())
   check("wave: empty args refused", (await run(wave, [], () => null)).result[0].flags[0] === "bad-args")
   check("wave: a pasted prompt refused, nothing spawned", await (async () => { const r = await run(wave, [item("P1", { prompt: "TASK P1" })], () => null); return r.result[0].flags[0] === "bad-args" && r.result[0].report_excerpt.includes("payloadPath") && r.calls.length === 0 })())
   check("wave: missing payloadSha256 refused", (await run(wave, [item("P1", { payloadSha256: "" })], () => null)).result[0].flags[0] === "bad-args")
@@ -171,7 +172,10 @@ const fakeWave = (prompt: string, opts: Opts) => {
 // ---- phase7-review ------------------------------------------------------------------
 const review = readFileSync(join(dir, "phase7-review.js"), "utf8")
 const lens = (name: string) => ({ lens: name, label: `r1 ${name}`, payloadPath: `/x/.agent-staging/payloads/rv-${name}.md`, payloadSha256: `sha-${name}`, round: 1, reportDir: "/x/.agent-staging/reviews" })
-const doc = "# Change requests — architecture (round 1)\n\n## CR-1: split the cache from the loader\n- Location: src/a.rs:10\n"
+const doc = "# Change requests — architecture (round 1)\n\n## CR-1: split the cache from the loader\n- Location: src/a.rs:10\n" +
+  "- Observed: one type loads and caches\n- Required: split them\n- Behaviour held fixed: same results\n- Rule: cohesion\n- Severity: blocking\n- Siblings: none\n\n" +
+  "## DEFECT-1: an empty catalog must be refused\n- Location: src/b.rs:4\n- Contract: \"refuses an empty catalog\"\n- Input: `{}`\n" +
+  "- Observed: Ok\n- Expected: Err(Empty)\n- Siblings: none (searched: from_str in src/)\n- Severity: blocking\n"
 const fakeReview = (prompt: string, opts: Opts) => {
   if (opts.agentType) {
     check("review: reviewer agent with a schema", opts.agentType === "agentic-software-development:reviewer" && !!opts.schema)
@@ -196,13 +200,23 @@ const fakeReview = (prompt: string, opts: Opts) => {
   check("review: the schema demands the unreached list", calls.some((c) => c.opts.schema && c.opts.schema.required.includes("unreached")))
   check("review: PASS lens writes no document", by("style").verdict === "PASS" && by("style").crs.length === 0 && by("style").document_path === "")
   check("review: CRs are compact with ledger ids", by("architecture").verdict === "CHANGES-REQUIRED" && by("architecture").crs[0].ledger_id === "CR-architecture-1" && by("architecture").crs[0].location === "src/a.rs:10" && by("architecture").crs[0].severity === "blocking")
+  check("review: a CR carries the fields it lacks", JSON.stringify(by("architecture").crs[0].missing) === JSON.stringify(["Siblings (none: say what was searched)"]))
+  check("review: a DEFECT section is listed to prove, by ledger id", by("architecture").defects.length === 1 && by("architecture").defects[0].ledger_id === "DEFECT-architecture-1" && by("architecture").defects[0].missing.length === 0 && by("architecture").defects[0].input === "`{}`")
+  check("review: a PASS has no defects", by("style").defects.length === 0)
+  {
+    // The field table is one table in two languages: check_crs.py and the workflow.
+    const table = (src: string, marker: string) => JSON.parse(src.slice(src.indexOf("{", src.indexOf(marker)), src.indexOf("}", src.indexOf(marker)) + 1).replace(/,\s*([}\]])/g, "$1"))
+    const py = readFileSync(join(dir, "..", "scripts", "check_crs.py"), "utf8")
+    check("review: the workflow's field table equals check_crs.py's", JSON.stringify(table(review, "const REQUIRED_FIELDS =")) === JSON.stringify(table(py, "REQUIRED = {")))
+  }
   check("review: document kept under reportDir", by("architecture").document_path === "/x/.agent-staging/reviews/r1_architecture.md")
   check("review: the verbatim document travels to the keeper", calls.some((c) => c.opts.model === "haiku" && c.prompt.includes(doc)))
   check("review: a dead lens is 'died', never PASS", by("performance").verdict === "died" && by("performance").crs.length === 0)
   check("review: the compact result holds no document text", !JSON.stringify(result).includes("# Change requests"))
-  check("review: result shape", result.every((r: any) => ["label", "lens", "round", "verdict", "crs", "answers", "unreached", "notes", "document_path"].every((k) => k in r)))
+  check("review: result shape", result.every((r: any) => ["label", "lens", "round", "verdict", "crs", "defects", "answers", "unreached", "notes", "document_path"].every((k) => k in r)))
   check("review: spawns carry the payload pointer", calls.some((c) => c.opts.agentType && c.prompt.includes("PAYLOAD_FILE: /x/.agent-staging/payloads/rv-architecture.md\nPAYLOAD_SHA256: sha-architecture")))
   check("review: a pasted prompt refused", (await run(review, [{ ...lens("style"), prompt: "LENS: style" }], () => null)).result[0].verdict === "died")
+  check("review: an object wrapping the array names the bare-array shape", await (async () => { const r = await run(review, { lenses: [lens("style")] }, () => null); return r.result[0].verdict === "died" && r.result[0].notes.includes("bare JSON array") && r.result[0].notes.includes("{lenses: [...]}") && r.calls.length === 0 })())
   check("review: bad args refused", (await run(review, [{ lens: "style" }], () => null)).result[0].verdict === "died")
   check("review: five lenses refused", (await run(review, ["style", "architecture", "performance", "tests", "style"].map(lens), () => null)).result[0].verdict === "died")
 }

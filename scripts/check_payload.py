@@ -236,7 +236,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         "required": {"LENS", "WORKTREE_DIR", "STANDARDS", "ROUND"},
         "optional": {
             "DOSSIER", "SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA",
-            "CONTEXT_DOCS", "ARBITRATIONS", "PRIOR_CRS", "RULES",
+            "CONTEXT_DOCS", "ARBITRATIONS", "PRIOR_CRS", "RULES", "SIGNALS",
         },
     },
     "contract-reviewer": {
@@ -300,7 +300,7 @@ CONDITIONAL: dict[tuple[str, str, str], tuple[set[str], list[set[str]]]] = {
          "RULES"}, []),
     ("reviewer", "LENS", "architecture"): (
         {"SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA", "CONTEXT_DOCS", "ARBITRATIONS",
-         "RULES"}, []),
+         "RULES", "SIGNALS"}, []),
     ("reviewer", "LENS", "performance"): (
         {"SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA", "CONTEXT_DOCS", "ARBITRATIONS",
          "RULES"}, []),
@@ -340,7 +340,7 @@ def field_lines(lines: list[str]) -> list[tuple[int, str, str]]:
     return found
 
 # An absolute path. Kept deliberately narrow: two or more word-bearing segments.
-ABS_PATH = re.compile(r"(?<![\w/$}])(/[\w.@+-]+(?:/[\w.@+-]+)+)")
+ABS_PATH = re.compile(r"(?<![\w/$}*])(/[\w.@+-]+(?:/[\w.@+-]+)+)")
 
 # A command that runs the rest of its line somewhere else: a path after it
 # resolves in the VM, host or container, never on this machine.
@@ -785,7 +785,8 @@ def readable(path: str, kind: str | None) -> bool:
 
 
 def dead_letter_findings(lines: list[str], kind: str | None,
-                         tools: list[str] | None) -> tuple[list[str], list[str]]:
+                         tools: list[str] | None,
+                         allow_paths: list[str] | None = None) -> tuple[list[str], list[str]]:
     """Paths and read instructions handed to an agent that cannot read them:
     every one is a dead letter, in a field or in prose. That is every path when
     the tool list grants no Read, and every path outside the hook's read scope
@@ -812,6 +813,8 @@ def dead_letter_findings(lines: list[str], kind: str | None,
             token = match.group(1)
             if scoped and readable(token, kind):
                 continue
+            if token in (allow_paths or ()):
+                continue  # named by --allow-path: the author vouches for it
             field = field_of.get(number)
             if field:
                 defects.append(
@@ -848,6 +851,12 @@ def dead_letter_findings(lines: list[str], kind: str | None,
     return defects, warnings
 
 
+# A system binary path counts as a path only where it starts a command line or
+# a code span (`/bin/bash x.sh`); in prose it names an interpreter, not a file.
+SYSTEM_BIN = re.compile(r"/(?:usr/)?(?:local/)?s?bin/")
+COMMAND_SHAPED = re.compile(r"(?:^|\n)[ \t]*$|`$")
+
+
 def bounded_read_findings(lines: list[str], kind: str | None,
                           tools: list[str] | None) -> list[str]:
     """A path an agent with Read may only partly see cannot be bounded by an
@@ -857,7 +866,8 @@ def bounded_read_findings(lines: list[str], kind: str | None,
     out: list[str] = []
     for number, name, rest in field_lines(lines):
         body = field_body(lines, name)
-        paths = [m.group(1) for m in ABS_PATH.finditer(body)]
+        paths = [m.group(1) for m in ABS_PATH.finditer(body)
+                 if not SYSTEM_BIN.match(m.group(1)) or COMMAND_SHAPED.search(body[:m.start()])]
         if not paths:
             continue
         phrase = PARTIAL_READ.search(body)
@@ -1159,7 +1169,7 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
             "payload is a dead letter; pass --host claude or --host opencode." % kind
         )
     defects.extend(missing_tool_findings(present, kind, tools))
-    dead, dead_warnings = dead_letter_findings(lines, kind, tools)
+    dead, dead_warnings = dead_letter_findings(lines, kind, tools, allow_paths)
     defects.extend(dead)
     warnings.extend(dead_warnings)
 
@@ -1213,7 +1223,8 @@ def selftest() -> int:
              must_mention: str = "", must_warn: str | None = None,
              host: str | None = None, tools: list[str] | None = None,
              live: str | None = None, worktree: bool = False,
-             allow_tokens: list[str] | None = None) -> None:
+             allow_tokens: list[str] | None = None,
+             allow_paths: list[str] | None = None) -> None:
         nonlocal groups
         groups += 1
         with tempfile.TemporaryDirectory() as tmp:
@@ -1246,7 +1257,7 @@ def selftest() -> int:
             body = text.replace("{REAL}", real)
             live_path = live.replace("{REAL}", real) if live else None
             wt = real if worktree else None
-            _, defects, warnings = lint(body.splitlines(), kind, wt, [], host, tools, live_path,
+            _, defects, warnings = lint(body.splitlines(), kind, wt, allow_paths or [], host, tools, live_path,
                                          allow_tokens)
             got = bool(defects)
             if got != expect_defect:
@@ -1286,6 +1297,28 @@ def selftest() -> int:
     case("host claude: a STYLE_PATHS path for a Read-less author is a defect naming the pasted form",
          unit_ok.replace("CONTRACT: {REAL}/tests/unit/test_retry.py", "CONTRACT: |\n  fn flush()"),
          "unit-test-author", True, "STYLE_SAMPLE", host="claude", tools=write_only)
+    prose_fragment = unit_ok.replace(
+        "CONTRACT: {REAL}/tests/unit/test_retry.py",
+        "CONTRACT: |\n  fn flush() reads projects/*/secrets/*/versions/latest")
+    rw = ["Read", "Write"]
+    case("a resource-name fragment in contract prose is not a path token",
+         prose_fragment, "unit-test-author", False, host="claude", tools=rw)
+    mount = unit_ok.replace(
+        "CONTRACT: {REAL}/tests/unit/test_retry.py",
+        "CONTRACT: |\n  fn flush() reads the mount /var/run/xsecrets/token")
+    case("an unreadable prose path stays a defect without --allow-path",
+         mount, "unit-test-author", True, "/var/run/xsecrets/token", host="claude", tools=rw)
+    case("--allow-path clears the unit author's unreadable prose path",
+         mount, "unit-test-author", False, host="claude", tools=rw,
+         allow_paths=["/var/run/xsecrets/token"])
+    bash_prose = unit_ok.replace(
+        "CONVENTIONS: |\n  Derive Debug\n",
+        "CONVENTIONS: |\n  Derive Debug; never read the file twice; scripts run under /bin/bash\n")
+    case("/bin/bash in prose beside 'never read' is no unbounded read",
+         bash_prose, "unit-test-author", False, host="opencode")
+    case("a command-shaped /bin/bash line beside 'never read' still fails",
+         bash_prose.replace("scripts run under /bin/bash", "\n  /bin/bash x.sh"),
+         "unit-test-author", True, "cannot be bounded", host="opencode")
     case("host claude: a staged CONTRACT path is a dead letter",
          unit_ok, "unit-test-author", True, "CONTRACT names the path", host="claude", tools=write_only)
     case("host claude: a SUPPORT_PATHS path is a dead letter",
