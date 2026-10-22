@@ -139,7 +139,9 @@ const rootOfPlugin = (item) => item.pluginRoot || (args && !Array.isArray(args) 
 
 const bad = (why) => [{ label: 'phase4-wave', verdict: 'died', flags: ['bad-args'], returned_line: '', report_excerpt: why, report_path: '' }]
 
-if (!items || items.length === 0) return bad('args must be a non-empty array of {agentType, label, payloadPath, payloadSha256, root, branch, base, owned, kind, pluginRoot}')
+const wrapped = (a) => { const k = a && typeof a === 'object' && !Array.isArray(a) ? Object.keys(a) : []; return k.length === 1 && Array.isArray(a[k[0]]) ? k[0] : '' }
+const shapeMsg = (shape) => 'args must be a bare JSON array [' + shape + ', ...], not an object such as {' + (wrapped(args) || 'lenses') + ': [...]}'
+if (!items || items.length === 0) return bad(shapeMsg('{agentType, label, payloadPath, payloadSha256, root, branch, base, owned, kind, pluginRoot}') + ', and non-empty')
 if (items.length > MAX_AGENTS) return bad('a wave of ' + items.length + ' exceeds the ' + MAX_AGENTS + '-agent concurrency limit; split it and call this workflow once per part')
 for (const item of items) {
   if (item && item.prompt !== undefined) return bad('item ' + item.label + ' carries a pasted prompt: pass payloadPath and payloadSha256 instead, and never put a payload into args or a script')

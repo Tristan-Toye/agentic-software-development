@@ -154,6 +154,7 @@ const fakeWave = (prompt: string, opts: Opts) => {
   })
   check("wave: one dead agent does not stop the others", thrown.result[0].verdict === "clean" && thrown.result[1].verdict === "died")
   // argument checks
+  check("wave: an object wrapping the array names the bare-array shape", await (async () => { const r = await run(wave, { batch: [item("P1")] }, () => null); return r.result[0].flags[0] === "bad-args" && r.result[0].report_excerpt.includes("bare JSON array") && r.result[0].report_excerpt.includes("{batch: [...]}") && r.calls.length === 0 })())
   check("wave: empty args refused", (await run(wave, [], () => null)).result[0].flags[0] === "bad-args")
   check("wave: a pasted prompt refused, nothing spawned", await (async () => { const r = await run(wave, [item("P1", { prompt: "TASK P1" })], () => null); return r.result[0].flags[0] === "bad-args" && r.result[0].report_excerpt.includes("payloadPath") && r.calls.length === 0 })())
   check("wave: missing payloadSha256 refused", (await run(wave, [item("P1", { payloadSha256: "" })], () => null)).result[0].flags[0] === "bad-args")
@@ -215,6 +216,7 @@ const fakeReview = (prompt: string, opts: Opts) => {
   check("review: result shape", result.every((r: any) => ["label", "lens", "round", "verdict", "crs", "defects", "answers", "unreached", "notes", "document_path"].every((k) => k in r)))
   check("review: spawns carry the payload pointer", calls.some((c) => c.opts.agentType && c.prompt.includes("PAYLOAD_FILE: /x/.agent-staging/payloads/rv-architecture.md\nPAYLOAD_SHA256: sha-architecture")))
   check("review: a pasted prompt refused", (await run(review, [{ ...lens("style"), prompt: "LENS: style" }], () => null)).result[0].verdict === "died")
+  check("review: an object wrapping the array names the bare-array shape", await (async () => { const r = await run(review, { lenses: [lens("style")] }, () => null); return r.result[0].verdict === "died" && r.result[0].notes.includes("bare JSON array") && r.result[0].notes.includes("{lenses: [...]}") && r.calls.length === 0 })())
   check("review: bad args refused", (await run(review, [{ lens: "style" }], () => null)).result[0].verdict === "died")
   check("review: five lenses refused", (await run(review, ["style", "architecture", "performance", "tests", "style"].map(lens), () => null)).result[0].verdict === "died")
 }

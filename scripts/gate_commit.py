@@ -25,7 +25,7 @@ refused: there is no way to say "everything". Every named path must have a
 change (modified, deleted, or untracked) or the call is refused before any
 gate runs.
 
-`--gates FILE` runs `run_gates.py FILE --root X` first (the gates file format is
+`--gates FILE` runs `run_gates.py FILE --root X` first (`run_gates.py --from-workflow` generates one from CI; the gates file format is
 documented there). The gates see the named paths in `$GATE_PATHS`, space
 separated, so a gate may narrow itself to them. A failing gate refuses the
 commit: nothing is staged, nothing committed. Without `--gates` no gate runs,
