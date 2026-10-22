@@ -97,7 +97,9 @@ const slug = (value) => String(value).replace(/[^\w.-]+/g, '_')
 
 const bad = (why) => [{ label: 'phase7-review', lens: '', round: 0, verdict: 'died', crs: [], answers: [], unreached: [], notes: why, document_path: '' }]
 
-if (!Array.isArray(args) || args.length === 0) return bad('args must be a non-empty array of {lens, label, payloadPath, payloadSha256, round, reportDir}')
+const wrapped = (a) => { const k = a && typeof a === 'object' && !Array.isArray(a) ? Object.keys(a) : []; return k.length === 1 && Array.isArray(a[k[0]]) ? k[0] : '' }
+const shapeMsg = (shape) => 'args must be a bare JSON array [' + shape + ', ...], not an object such as {' + (wrapped(args) || 'lenses') + ': [...]}'
+if (!Array.isArray(args) || args.length === 0) return bad(shapeMsg('{lens, label, payloadPath, payloadSha256, round, reportDir}') + ', and non-empty')
 if (args.length > MAX_LENSES) return bad('a review round has at most four lenses')
 for (const item of args) {
   if (item && item.prompt !== undefined) return bad('item ' + item.label + ' carries a pasted prompt: pass payloadPath and payloadSha256 instead, and never put a payload into args or a script')
