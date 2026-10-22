@@ -76,6 +76,7 @@ check("checkpoint: a summary needs a NEXT: line", validateCheckpoint("Phase 1", 
 check("checkpoint: NEXT read from a list item too", nextLine("done\n- NEXT: launch wave 2 in /x") === "launch wave 2 in /x")
 const resumed = summaryText([{ phase: "Phase 1", summary: "a\nNEXT: old" }, { phase: "Phase 4 — wave 1", summary: "b\nNEXT: rule P1-P4" }])
 check("checkpoint: the restore ends on the latest NEXT", resumed.includes('## Resume here\n\nNEXT (from "Phase 4 — wave 1"): rule P1-P4') && !resumed.includes("NEXT (from \"Phase 1\")"))
+check("checkpoint: the resume block restates the read and spawn rules", resumed.includes("read with doc_section") && resumed.includes("payload pasted into the prompt"))
 check("checkpoint: no NEXT, no resume block", !summaryText([{ phase: "Phase 1", summary: "a" }]).includes("Resume here"))
 check("checkpoint: nudge env", nudgeEvery({}) === 80 && nudgeEvery({ OPENCODE_PHASE_CHECKPOINT_NUDGE_CALLS: "3" }) === 3 && nudgeEvery({ PHASE_CHECKPOINT_NUDGE_CALLS: "0" }) === 0 && nudgeEvery({ PHASE_CHECKPOINT_NUDGE_CALLS: "x" }) === 80)
 check("checkpoint: reminder", reminderText(80).includes("80 tool calls since the last checkpoint"))
