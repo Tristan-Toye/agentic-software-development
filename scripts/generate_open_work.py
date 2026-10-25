@@ -26,9 +26,9 @@ build in flight lives in `../<repo>-<ID>` and a plan under review in
 attention line names the difference.
 The template lives at references/templates/open-work.html, next to this
 script's parent. Its dependency graph includes every dossier, with display-only
-root stubs. The remembered Simplify toggle hides done history except for done
-prerequisites directly bordering a non-done dossier; it never edits pipeline
-dependencies. `--signals` takes a JSON list the caller mined from the
+root stubs. The remembered Simplify toggle hides done and dropped history except
+for prerequisites directly bordering an unfinished dossier; it never edits
+pipeline dependencies. `--signals` takes a JSON list the caller mined from the
 Build logs (this script does not read dossier bodies); each item is
 {"signal": str, "dossier": str, "detail": str, "severity":
 "good|warning|serious|critical"} and is rendered verbatim.
@@ -1101,15 +1101,15 @@ const full = dependencyGraph(dossiers, false);
 const simple = dependencyGraph(dossiers, true);
 const realIds = graph => graph.ids.filter(id => !graph.nodes[id].stub).sort();
 assert.deepEqual(realIds(full), dossiers.map(d => d.id));
-assert.deepEqual(realIds(simple), ["W-002", "W-003", "W-004", "W-005", "W-006", "W-007", "W-008", "W-009", "W-012", "W-013"]);
-assert.equal(simple.hiddenDone, 3);
+assert.deepEqual(realIds(simple), ["W-002", "W-003", "W-004", "W-005", "W-006", "W-007", "W-008", "W-012", "W-013"]);
+assert.equal(simple.hiddenFinished, 4);
 for (const graph of [full, simple]) {
   for (const id of realIds(graph))
     assert.ok(graph.edges.some(([, to]) => to === id), `${id} needs a dependency or stub`);
   for (const [from, to] of graph.edges)
     assert.ok(graph.nodes[from] && graph.nodes[to], "all edge endpoints must be visible");
   const groups = flows(graph.ids, graph.edges);
-  assert.equal(groups.length, graph === full ? 7 : 6, "stubs must not join independent flows");
+  assert.equal(groups.length, graph === full ? 7 : 5, "stubs must not join independent flows");
   assert.equal(groups.flatMap(g => g.ids).length, graph.ids.length);
 }
 assert.ok(simple.edges.some(([a, b]) => a === "W-002" && b === "W-003"));
@@ -1124,6 +1124,15 @@ assert.equal(JSON.stringify(dossiers), original, "rendering must not mutate doss
 assert.deepEqual(dependencyGraph(dossiers, false), full, "full mode restores all history");
 assert.deepEqual(dependencyGraph([], true).ids, []);
 assert.deepEqual(dependencyGraph(dossiers.filter(d => d.status === "done"), true).ids, []);
+assert.deepEqual(dependencyGraph(dossiers.filter(d => d.status === "dropped"), true).ids, []);
+const finishedChain = [dossier("W-300", "done"), dossier("W-301", "dropped", ["W-300"])];
+assert.deepEqual(dependencyGraph(finishedChain, true).ids, [], "done/dropped-only flows are hidden");
+const droppedChain = [...finishedChain, dossier("W-302", "dropped", ["W-301"]), dossier("W-303", "ready", ["W-302"])];
+const droppedFrontier = dependencyGraph(droppedChain, true);
+assert.deepEqual(realIds(droppedFrontier), ["W-302", "W-303"], "only the dropped prerequisite at the unfinished frontier remains");
+assert.equal(droppedFrontier.hiddenFinished, 2);
+assert.ok(droppedFrontier.edges.some(([a, b]) => a === "W-302" && b === "W-303"));
+assert.deepEqual(realIds(dependencyGraph(droppedChain, false)), ["W-300", "W-301", "W-302", "W-303"], "full mode restores dropped history");
 const missing = dependencyGraph([dossier("W-100", "ready", ["W-NOT-FOUND"])], true);
 assert.deepEqual(missing.edges, [["W-NOT-FOUND", "W-100"]]);
 const cycle = dependencyGraph([dossier("W-200", "ready", ["W-201"]), dossier("W-201", "ready", ["W-200"])], true);
