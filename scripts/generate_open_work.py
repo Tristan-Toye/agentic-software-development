@@ -25,7 +25,10 @@ build in flight lives in `../<repo>-<ID>` and a plan under review in
 `../<repo>-plan-<KEY>`. An overlaid row carries a `live from` flag and an
 attention line names the difference.
 The template lives at references/templates/open-work.html, next to this
-script's parent. `--signals` takes a JSON list the caller mined from the
+script's parent. Its dependency graph includes every dossier, with display-only
+root stubs. The remembered Simplify toggle hides done history except for done
+prerequisites directly bordering a non-done dossier; it never edits pipeline
+dependencies. `--signals` takes a JSON list the caller mined from the
 Build logs (this script does not read dossier bodies); each item is
 {"signal": str, "dossier": str, "detail": str, "severity":
 "good|warning|serious|critical"} and is rendered verbatim.
@@ -1043,10 +1046,9 @@ def _dossier(id_: str, **kw: object) -> str:
 
 
 def _check_flows_js() -> list[str]:
-    """Run the template's own `flows()` against a graph of three independent
-    flows, so the one rectangle-per-flow rule is tested rather than asserted.
+    """Check the template's flow splitting, completed frontier and root stubs.
 
-    The function is lifted out of the template and run under node, which keeps
+    The functions are lifted out of the template and run under node, which keeps
     a single definition of the splitting rule. node is not a requirement of
     this script, so its absence skips the check instead of failing it.
     """
@@ -1058,8 +1060,13 @@ def _check_flows_js() -> list[str]:
                       template, re.DOTALL | re.MULTILINE)
     if not match:
         return ["template no longer defines flows(ids, edges)"]
+    graph_match = re.search(
+        r"^function dependencyGraph\(dossiers, simplified\) \{\n.*?^\}$",
+        template, re.DOTALL | re.MULTILINE)
+    if not graph_match:
+        return ["template no longer defines dependencyGraph(dossiers, simplified)"]
     if not shutil.which("node"):
-        print("selftest: node missing — skipped the flows() check",
+        print("selftest: node missing — skipped the dependency graph checks",
               file=sys.stderr)
         return []
 
@@ -1071,8 +1078,59 @@ def _check_flows_js() -> list[str]:
         "W-023": ["W-021", "W-022"],
     }
     edges = [[b, i] for i, bs in graph.items() for b in bs]
-    script = (f"const BY_ID = {json.dumps({k: {'blocked_by': v} for k, v in graph.items()})};\n"
-              f"{match.group(0)}\n"
+    frontier_checks = r"""
+const assert = require("node:assert/strict");
+const dossier = (id, status, blocked_by = []) => ({id, status, blocked_by});
+const dossiers = [
+  dossier("W-001", "done"),
+  dossier("W-002", "done", ["W-001"]),
+  dossier("W-003", "ready", ["W-002"]),
+  dossier("W-004", "ready", ["W-003"]),
+  dossier("W-005", "building"),
+  dossier("W-006", "review"),
+  dossier("W-007", "pr"),
+  dossier("W-008", "planned"),
+  dossier("W-009", "dropped"),
+  dossier("W-010", "done", ["W-001"]),
+  dossier("W-011", "done"),
+  dossier("W-012", "done"),
+  dossier("W-013", "ready", ["W-002", "W-012", "W-MISSING"]),
+];
+const original = JSON.stringify(dossiers);
+const full = dependencyGraph(dossiers, false);
+const simple = dependencyGraph(dossiers, true);
+const realIds = graph => graph.ids.filter(id => !graph.nodes[id].stub).sort();
+assert.deepEqual(realIds(full), dossiers.map(d => d.id));
+assert.deepEqual(realIds(simple), ["W-002", "W-003", "W-004", "W-005", "W-006", "W-007", "W-008", "W-009", "W-012", "W-013"]);
+assert.equal(simple.hiddenDone, 3);
+for (const graph of [full, simple]) {
+  for (const id of realIds(graph))
+    assert.ok(graph.edges.some(([, to]) => to === id), `${id} needs a dependency or stub`);
+  for (const [from, to] of graph.edges)
+    assert.ok(graph.nodes[from] && graph.nodes[to], "all edge endpoints must be visible");
+  const groups = flows(graph.ids, graph.edges);
+  assert.equal(groups.length, graph === full ? 7 : 6, "stubs must not join independent flows");
+  assert.equal(groups.flatMap(g => g.ids).length, graph.ids.length);
+}
+assert.ok(simple.edges.some(([a, b]) => a === "W-002" && b === "W-003"));
+assert.ok(simple.edges.some(([a, b]) => a === "W-003" && b === "W-004"));
+assert.deepEqual(simple.nodes["W-MISSING"], {id: "W-MISSING", label: "W-MISSING", title: "Missing dossier", status: "missing", stub: true});
+const history = simple.edges.find(([, to]) => to === "W-002")[0];
+assert.equal(simple.nodes[history].label, "Earlier work");
+assert.equal(simple.nodes[history].status, "done");
+const start = simple.edges.find(([, to]) => to === "W-005")[0];
+assert.equal(simple.nodes[start].label, "Start");
+assert.equal(JSON.stringify(dossiers), original, "rendering must not mutate dossier dependencies");
+assert.deepEqual(dependencyGraph(dossiers, false), full, "full mode restores all history");
+assert.deepEqual(dependencyGraph([], true).ids, []);
+assert.deepEqual(dependencyGraph(dossiers.filter(d => d.status === "done"), true).ids, []);
+const missing = dependencyGraph([dossier("W-100", "ready", ["W-NOT-FOUND"])], true);
+assert.deepEqual(missing.edges, [["W-NOT-FOUND", "W-100"]]);
+const cycle = dependencyGraph([dossier("W-200", "ready", ["W-201"]), dossier("W-201", "ready", ["W-200"])], true);
+assert.deepEqual(realIds(cycle), ["W-200", "W-201"]);
+"""
+    script = (f"{match.group(0)}\n{graph_match.group(0)}\n"
+              f"{frontier_checks}\n"
               f"const ids = {json.dumps(sorted(graph))};\n"
               f"const edges = {json.dumps(edges)};\n"
               "console.log(JSON.stringify(flows(ids, edges).map("
@@ -1080,7 +1138,7 @@ def _check_flows_js() -> list[str]:
     done = subprocess.run(["node", "-e", script], capture_output=True,
                           text=True, check=False)
     if done.returncode != 0:
-        return [f"flows() threw under node: {done.stderr.strip()}"]
+        return [f"dependency graph check failed under node: {done.stderr.strip()}"]
     got = json.loads(done.stdout)
 
     bad = []

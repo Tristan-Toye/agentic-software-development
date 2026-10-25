@@ -163,6 +163,14 @@ Independent dependency chains are drawn as one rectangle each. Two dossiers
 that block nothing in common are not one flow, and a single box would imply a
 shared left-to-right ordering they do not have.
 
+The dependency graph's **Simplify** checkbox hides completed history, retaining
+every dossier whose status is not `done` (including `dropped`) and each of its
+immediate `done` prerequisites. Turn it off to restore the full graph; the browser
+remembers the choice across live refreshes. Every root has its own display-only
+stub, so standalone dossiers appear too without joining unrelated flows.
+Missing prerequisite dossiers appear as labelled stubs. These nodes never change
+the recorded `blocked_by` fields, readiness, or dossier counts.
+
 ## The live report — for a user who wants it to keep itself current
 
 `/overview-dossiers` is a snapshot: it is accurate when it runs. Two supported ways to
