@@ -545,9 +545,9 @@ function countUp(node, target) {
 /* ---------------------------------------------------------------- graph
    A practical dependency flow: dossiers in dependency layers, left to
    right, an arrow meaning "must be done before". Independent flows get one
-   rectangle each. Simplifying keeps every non-done dossier and only the
-   done prerequisites immediately at that frontier. Stubs belong only to
-   this view; the dossier data and readiness calculation stay unchanged. */
+   rectangle each. Simplifying keeps every unfinished dossier and only the
+   done or dropped prerequisites immediately at that frontier. Stubs belong
+   only to this view; the dossier data and readiness calculation stay unchanged. */
 if (DATA.dossiers.length) {
   const h = el("h2", "graph-heading", "Dependency flows");
   h.append(el("span", "hint", "an arrow reads “must be done before” · click a dossier for its intent"));
@@ -582,10 +582,10 @@ if (DATA.dossiers.length) {
       panels.append(panel);
     });
     note.textContent = (toggle.checked
-      ? `Simplified: ${graph.hiddenDone} completed dossier${graph.hiddenDone === 1 ? "" : "s"} hidden; all non-done dossiers and their immediate done prerequisites remain.`
-      : "Full graph: every dossier is shown. Simplify hides completed history behind the frontier.")
+      ? `Simplified: ${graph.hiddenFinished} done or dropped dossier${graph.hiddenFinished === 1 ? "" : "s"} hidden; all unfinished dossiers and their immediate prerequisites remain.`
+      : "Full graph: every dossier is shown. Simplify hides done and dropped history behind the frontier.")
       + " Dashed boxes are display-only stubs for roots or missing dossiers.";
-    if (!groups.length) panels.append(el("div", "graph-note", "All dossiers are done. Turn off Simplify to see the completed flows."));
+    if (!groups.length) panels.append(el("div", "graph-note", "All dossiers are done or dropped. Turn off Simplify to see the finished flows."));
   }
   toggle.addEventListener("change", () => {
     try { localStorage.setItem("open-work-simplify", String(toggle.checked)); } catch (_) {}
@@ -595,14 +595,15 @@ if (DATA.dossiers.length) {
 }
 
 function dependencyGraph(dossiers, simplified) {
+  const finished = new Set(["done", "dropped"]);
   const byId = Object.fromEntries(dossiers.map(d => [d.id, d]));
   const visible = new Set(dossiers
-    .filter(d => !simplified || d.status !== "done").map(d => d.id));
+    .filter(d => !simplified || !finished.has(d.status)).map(d => d.id));
   if (simplified) {
     for (const d of dossiers) {
-      if (d.status === "done") continue;
+      if (finished.has(d.status)) continue;
       for (const b of d.blocked_by)
-        if (byId[b]?.status === "done") visible.add(b);
+        if (finished.has(byId[b]?.status)) visible.add(b);
     }
   }
   const nodes = Object.fromEntries(dossiers
@@ -624,7 +625,7 @@ function dependencyGraph(dossiers, simplified) {
       const history = d.blocked_by.length > 0;
       nodes[stub] = {
         id: stub, label: history ? "Earlier work" : "Start",
-        title: history ? "Completed history hidden" : "No recorded prerequisites",
+        title: history ? "Done or dropped history hidden" : "No recorded prerequisites",
         status: history ? "done" : "stub", stub: true,
       };
       edges.push([stub, d.id]);
@@ -632,7 +633,7 @@ function dependencyGraph(dossiers, simplified) {
   }
   return {
     nodes, ids: Object.keys(nodes), edges,
-    hiddenDone: dossiers.filter(d => d.status === "done" && !visible.has(d.id)).length,
+    hiddenFinished: dossiers.filter(d => finished.has(d.status) && !visible.has(d.id)).length,
   };
 }
 
