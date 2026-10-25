@@ -283,6 +283,10 @@ header .spacer { flex: 1; }
 @keyframes pulse { 0% { transform: scale(.5); opacity: .5; } 70%, 100% { transform: scale(1.6); opacity: 0; } }
 
 /* ------------------------------------------------------------------ graph */
+.graph-heading { flex-wrap: wrap; }
+.graph-heading .hint { flex: 1; }
+.graph-toggle { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 12.5px; font-weight: 400; cursor: pointer; }
+.graph-toggle input { accent-color: var(--accent); }
 .graph-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 10px; overflow-x: auto; }
 .graph-note { margin-top: 8px; font-size: 11.5px; color: var(--ink-3); padding: 0 4px 2px; }
 /* one panel per independent flow — they stack, never share a column grid */
@@ -299,6 +303,8 @@ svg.dg { display: block; margin: 0 auto; }
 .dg-node { cursor: pointer; }
 .dg-node rect { fill: var(--plane); stroke: var(--border); transition: stroke .15s ease; }
 .dg-node:hover rect { stroke: var(--ink-3); }
+.dg-node.stub { cursor: default; }
+.dg-node.stub rect { stroke-dasharray: 4 3; }
 .dg-node text { fill: var(--ink); font: 600 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .dg-node text.sub { fill: var(--ink-2); font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
 
@@ -539,47 +545,95 @@ function countUp(node, target) {
 /* ---------------------------------------------------------------- graph
    A practical dependency flow: dossiers in dependency layers, left to
    right, an arrow meaning "must be done before". Independent flows get one
-   rectangle each — see `flows()` for why they are never combined. Only
-   dossiers that take part in a dependency appear; the flight plan lists the
-   rest. Flows whose every member is done or dropped collapse to one note
-   line — a dashboard of closed work shows work, not a wall of green. */
-{
-  const edges = [];
-  const inGraph = new Set();
-  for (const d of DATA.dossiers)
-    for (const b of d.blocked_by)
-      if (BY_ID[b]) { edges.push([b, d.id]); inGraph.add(b); inGraph.add(d.id); }
+   rectangle each. Simplifying keeps every non-done dossier and only the
+   done prerequisites immediately at that frontier. Stubs belong only to
+   this view; the dossier data and readiness calculation stay unchanged. */
+if (DATA.dossiers.length) {
+  const h = el("h2", "graph-heading", "Dependency flows");
+  h.append(el("span", "hint", "an arrow reads “must be done before” · click a dossier for its intent"));
+  const toggle = Object.assign(el("input"), { type: "checkbox" });
+  toggle.setAttribute("aria-controls", "dependency-flows");
+  toggle.setAttribute("aria-describedby", "dependency-note");
+  try { toggle.checked = localStorage.getItem("open-work-simplify") === "true"; } catch (_) {}
+  const label = el("label", "graph-toggle");
+  label.append(toggle, "Simplify");
+  h.append(label);
+  const panels = el("div");
+  panels.id = "dependency-flows";
+  const note = el("div", "graph-note");
+  note.id = "dependency-note";
+  note.setAttribute("aria-live", "polite");
+  app.append(enter(h), enter(panels), enter(note));
 
-  const isOpen = id => BY_ID[id].status !== "done" && BY_ID[id].status !== "dropped";
-  const all = flows([...inGraph], edges);
-  const groups = all.filter(g => g.ids.some(isOpen));
-  const collapsed = all.filter(g => !g.ids.some(isOpen));
-  if (groups.length || collapsed.length) {
-    const many = groups.length > 1;
-    const h = el("h2", null, many ? "Dependency flows" : "Dependency flow");
-    h.append(el("span", "hint", "an arrow reads “must be done before” · click a dossier for its intent"
-      + (many ? ` · ${groups.length} independent flows, one box each` : "")
-      + (collapsed.length ? ` · ${collapsed.length} finished flow${collapsed.length === 1 ? "" : "s"} collapsed` : "")));
-    app.append(enter(h));
+  function draw() {
+    const graph = dependencyGraph(DATA.dossiers, toggle.checked);
+    const groups = flows(graph.ids, graph.edges);
+    panels.replaceChildren();
     groups.forEach((g, i) => {
       const panel = el("div", "graph-panel");
-      if (many) {
+      if (groups.length > 1) {
         const cap = el("div", "graph-cap");
+        const count = g.ids.filter(id => !graph.nodes[id].stub).length;
         cap.append(el("span", "n", `Flow ${i + 1}`));
-        cap.append(el("span", null,
-          `${g.ids.length} dossier${g.ids.length === 1 ? "" : "s"} · starts at ${g.roots.join(", ")}`));
+        cap.append(el("span", null, `${count} dossier${count === 1 ? "" : "s"}`));
         panel.append(cap);
       }
-      panel.append(depGraph(g.ids, g.edges));
-      app.append(enter(panel));
+      panel.append(depGraph(g.ids, g.edges, graph.nodes));
+      panels.append(panel);
     });
-    if (collapsed.length) app.append(enter(el("div", "graph-note",
-      `${collapsed.length} finished flow${collapsed.length === 1 ? "" : "s"} collapsed — every member done or dropped: `
-      + collapsed.map(g => g.ids.join(" → ")).join(" · ") + ".")));
-    const rest = DATA.dossiers.filter(d => !inGraph.has(d.id) && isOpen(d.id)).length;
-    if (rest > 0) app.append(enter(el("div", "graph-note",
-      `${rest} dossier${rest === 1 ? "" : "s"} with no dependencies ${rest === 1 ? "is" : "are"} not drawn — see the flight plan.`)));
+    note.textContent = (toggle.checked
+      ? `Simplified: ${graph.hiddenDone} completed dossier${graph.hiddenDone === 1 ? "" : "s"} hidden; all non-done dossiers and their immediate done prerequisites remain.`
+      : "Full graph: every dossier is shown. Simplify hides completed history behind the frontier.")
+      + " Dashed boxes are display-only stubs for roots or missing dossiers.";
+    if (!groups.length) panels.append(el("div", "graph-note", "All dossiers are done. Turn off Simplify to see the completed flows."));
   }
+  toggle.addEventListener("change", () => {
+    try { localStorage.setItem("open-work-simplify", String(toggle.checked)); } catch (_) {}
+    draw();
+  });
+  draw();
+}
+
+function dependencyGraph(dossiers, simplified) {
+  const byId = Object.fromEntries(dossiers.map(d => [d.id, d]));
+  const visible = new Set(dossiers
+    .filter(d => !simplified || d.status !== "done").map(d => d.id));
+  if (simplified) {
+    for (const d of dossiers) {
+      if (d.status === "done") continue;
+      for (const b of d.blocked_by)
+        if (byId[b]?.status === "done") visible.add(b);
+    }
+  }
+  const nodes = Object.fromEntries(dossiers
+    .filter(d => visible.has(d.id)).map(d => [d.id, d]));
+  const edges = [];
+  for (const d of dossiers) {
+    if (!visible.has(d.id)) continue;
+    let incoming = false;
+    for (const b of d.blocked_by) {
+      if (byId[b] && !visible.has(b)) continue;
+      if (!byId[b]) nodes[b] = {
+        id: b, label: b, title: "Missing dossier", status: "missing", stub: true,
+      };
+      edges.push([b, d.id]);
+      incoming = true;
+    }
+    if (!incoming) {
+      const stub = "\u0000stub:" + d.id;
+      const history = d.blocked_by.length > 0;
+      nodes[stub] = {
+        id: stub, label: history ? "Earlier work" : "Start",
+        title: history ? "Completed history hidden" : "No recorded prerequisites",
+        status: history ? "done" : "stub", stub: true,
+      };
+      edges.push([stub, d.id]);
+    }
+  }
+  return {
+    nodes, ids: Object.keys(nodes), edges,
+    hiddenDone: dossiers.filter(d => d.status === "done" && !visible.has(d.id)).length,
+  };
 }
 
 /* Split the dependency graph into independent flows: the connected components
@@ -589,6 +643,7 @@ function countUp(node, target) {
    ordering — that they do not have. Largest flow first, ties by first id. */
 function flows(ids, edges) {
   const adj = {};
+  const hasIncoming = new Set(edges.map(([, b]) => b));
   for (const id of ids) adj[id] = [];
   for (const [a, b] of edges) { adj[a].push(b); adj[b].push(a); }
 
@@ -607,21 +662,23 @@ function flows(ids, edges) {
       ids: gIds,
       edges: edges.filter(([a, b]) => group.has(a) && group.has(b)),
       /* a root has no blocker inside its own flow — where the arrows start */
-      roots: gIds.filter(id => !(BY_ID[id].blocked_by || []).some(b => group.has(b))),
+      roots: gIds.filter(id => !hasIncoming.has(id)),
     });
   }
   out.sort((x, y) => y.ids.length - x.ids.length || (x.ids[0] < y.ids[0] ? -1 : 1));
   return out;
 }
 
-function depGraph(ids, edges) {
+function depGraph(ids, edges, nodes) {
   /* layer = longest chain of blockers behind the dossier */
   const layer = {};
+  const incoming = Object.fromEntries(ids.map(id => [id, []]));
+  for (const [a, b] of edges) incoming[b].push(a);
   function depth(id, trail) {
     if (id in layer) return layer[id];
     if (trail.has(id)) return 0;                       // cycle guard
     trail.add(id);
-    const blockers = (BY_ID[id].blocked_by || []).filter(b => ids.includes(b));
+    const blockers = incoming[id];
     layer[id] = blockers.length ? 1 + Math.max(...blockers.map(b => depth(b, trail))) : 0;
     return layer[id];
   }
@@ -678,7 +735,7 @@ function depGraph(ids, edges) {
   });
 
   const svg = svgEl("svg", { class: "dg", width, height, viewBox: `0 0 ${width} ${height}`, role: "img" });
-  svg.setAttribute("aria-label", "Dependency flow: " + edges.map(([a, b]) => `${a} before ${b}`).join(", "));
+  svg.setAttribute("aria-label", "Dependency flow: " + edges.map(([a, b]) => `${nodes[a].label || a} before ${nodes[b].label || b}`).join(", "));
   const defs = svgEl("defs", {});
   const marker = svgEl("marker", { id: "dg-arrow", viewBox: "0 0 8 8", refX: 7, refY: 4,
                                    markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" });
@@ -711,20 +768,25 @@ function depGraph(ids, edges) {
   });
 
   for (const id of ids) {
-    const d = BY_ID[id], [x, y] = pos[id];
-    const g = svgEl("g", { class: "dg-node", transform: `translate(${x},${y})`, tabindex: 0 });
+    const d = nodes[id], [x, y] = pos[id];
+    const g = svgEl("g", { class: "dg-node" + (d.stub ? " stub" : ""), transform: `translate(${x},${y})` });
+    g.dataset.id = id;
+    const color = d.status === "missing" ? "var(--status-serious)" : stageVar(d.status);
     g.append(svgEl("rect", { width: PW, height: PH, rx: 9 }));
-    g.append(svgEl("rect", { width: 3, height: PH, rx: 1.5, fill: stageVar(d.status) }));
-    g.append(svgEl("circle", { cx: 17, cy: 16, r: 4.5, fill: stageVar(d.status) }));
+    g.append(svgEl("rect", { width: 3, height: PH, rx: 1.5, fill: color }));
+    g.append(svgEl("circle", { cx: 17, cy: 16, r: 4.5, fill: color }));
     const t1 = svgEl("text", { x: 28, y: 20 });
-    t1.textContent = d.id + (d.status === "done" ? " ✓" : "");
+    t1.textContent = (d.label || d.id) + (d.status === "done" ? " ✓" : "");
     const t2 = svgEl("text", { x: 12, y: 38, class: "sub" });
     const title = d.title || "";
     t2.textContent = title.length > 24 ? title.slice(0, 23).trimEnd() + "…" : title;
     g.append(t1, t2);
-    bindTip(g, () => `${d.id} — ${d.title}  ·  ${d.status}`);
-    g.addEventListener("click", () => openModal(d));
-    g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openModal(d); } });
+    bindTip(g, () => `${d.label || d.id} — ${d.title}  ·  ${d.stub ? "display-only stub" : d.status}`);
+    if (!d.stub) {
+      g.setAttribute("tabindex", "0");
+      g.addEventListener("click", () => openModal(d));
+      g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openModal(d); } });
+    }
     g.addEventListener("mouseenter", () => {
       for (const p of edgeEls)
         p.classList.toggle("hl", p.dataset.from === id || p.dataset.to === id);
