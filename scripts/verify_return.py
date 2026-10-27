@@ -410,7 +410,7 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
         if args.payload:
             try:
                 with open(args.payload, encoding="utf-8") as fh:
-                    block = ph.extract_contract_block(fh.read())
+                    block = ph.resolve_contract_block(fh.read())
             except OSError as err:
                 out.append(f"contract hash: cannot read the payload ({err})")
             if block is None:

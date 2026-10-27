@@ -26,6 +26,7 @@ No third-party imports: this runs wherever python3 does.
 from __future__ import annotations
 
 import hashlib
+import os
 
 
 def block_canonical(value: str) -> str:
@@ -72,3 +73,21 @@ def extract_contract_block(payload_text: str) -> str | None:
             break
         out.append(line[2:] if line.startswith("  ") else "")
     return "\n".join(out) + "\n"
+
+
+def resolve_contract_block(payload_text: str) -> str | None:
+    """The CONTRACT field's content: the block itself, or — the staged form
+    (issue #146, compose_payloads.py stage_oversized) — the content of the
+    absolute .agent-staging/ path a single-line CONTRACT field names. The
+    path may carry a trailing "(staged — read it whole ...)" note; the path is
+    the token before the note's open parenthesis."""
+    value = extract_contract_block(payload_text)
+    if value is None:
+        return None
+    stripped = value.strip()
+    if "\n" not in stripped and "/.agent-staging/" in stripped:
+        candidate = stripped.split(" (")[0].strip()
+        if os.path.isfile(candidate):
+            with open(candidate, encoding="utf-8") as fh:
+                return fh.read()
+    return value

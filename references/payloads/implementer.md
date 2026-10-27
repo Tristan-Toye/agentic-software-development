@@ -47,6 +47,21 @@ JIRA_KEY: PROJ-142
 # the report must end with a TOUCHED_BEYOND section (see the field rules)
 ```
 
+**The contract's non-code sections travel with it.** When `## Contract`
+holds subsections no stub file can carry — a Terraform table, a state
+machine — compose with `--contract-extra <heading>` per subsection: the
+subsection is appended to `CONTRACT` verbatim, and `CONTRACT_HASH` covers
+the combined text, so it stays identical across every author given the same
+files and extras.
+
+**A payload over the read guard's 20 KB whole-read limit ships staged.**
+`compose_payloads.py` writes the large fields itself under
+`<worktree>/.agent-staging/contract-support/` and the field names that
+absolute path with a read-it-whole note — read it in parts with offset and
+limit — while the small fields stay pasted. The staged form lints clean
+without `--allow-path`, the spawn guard admits it, and `CONTRACT_HASH`
+still verifies: the staged file holds the contract text itself.
+
 `MODE: fix` — apply the review change requests, in the base worktree, with the
 tests present and green:
 
@@ -66,6 +81,11 @@ FAILURES: |
    rather than review change requests — the implementation broke a promise,
    and the failing output is the work order. CRS is then omitted; either
    field alone is valid>
+BASELINE_COUNTS_FROM: 9c2f1ab
+                              # the tree the FAILURES counts came from: a sha,
+                              # or `pre-change tree re-run`. An earlier phase's
+                              # numbers are stale by construction after any
+                              # merge or sync; the lint refuses them unnamed
 OWNED_PATHS: src/flush.py, src/reload.py
 TEST_COMMAND: pytest -q            # now the invariant: it is green, keep it green
                                    # a file outside OWNED_PATHS that changes

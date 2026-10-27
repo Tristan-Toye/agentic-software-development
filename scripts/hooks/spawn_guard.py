@@ -115,7 +115,11 @@ def problems(prompt: str) -> list[str]:
             "the file, so a pointer reads as handing authority to unseen content. Read the "
             "linted final and paste its fields into the prompt verbatim (one `FIELD: value` "
             "per line, as the skeleton has them), with a one-line task statement above them; "
-            "files the payload names (contract, criteria, samples) stay paths"
+            "files the payload names (contract, criteria, samples) stay paths. When the "
+            "final is over the read guard's 20 KB whole-read limit, recompose it: "
+            "compose_payloads.py stages the large fields (CONTRACT, CRS, ...) as absolute "
+            "paths under <worktree>/.agent-staging/contract-support/ with a read-it-whole "
+            "note and keeps the small fields pasted — that staged form passes this guard"
         )
     if SCRATCHPAD.search(prompt):
         found.append(

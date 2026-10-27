@@ -220,6 +220,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         "optional": {
             "SHARED_IDIOM", "DELIVERY_CHANGE", "PROMISE_CHECKLIST",
             "SUPPORT_PATHS", "SUPPORT", "FAILURES", "CORRECTION",
+            "BASELINE_COUNTS_FROM",
         },
     },
     "implementer": {
@@ -229,7 +230,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         },
         "optional": {
             "PACKAGE", "CRITERIA", "CRS", "FAILURES", "SHARED_IDIOM",
-            "VERIFY_EMBEDDED",
+            "VERIFY_EMBEDDED", "BASELINE_COUNTS_FROM",
         },
     },
     "reviewer": {
@@ -340,7 +341,7 @@ def field_lines(lines: list[str]) -> list[tuple[int, str, str]]:
     return found
 
 # An absolute path. Kept deliberately narrow: two or more word-bearing segments.
-ABS_PATH = re.compile(r"(?<![\w/$}*])(/[\w.@+-]+(?:/[\w.@+-]+)+)")
+ABS_PATH = re.compile(r"(?<![\w/$}*;>])(/[\w.@+-]+(?:/[\w.@+-]+)+)")
 
 # A command that runs the rest of its line somewhere else: a path after it
 # resolves in the VM, host or container, never on this machine.
@@ -778,6 +779,16 @@ HOOK_READ_SCOPE = {
 }
 
 
+def round_relaxes_signals(kind: str | None, round_value: str | None, prior_crs: bool) -> bool:
+    """True for a Phase 7 check round: ROUND > 1 with PRIOR_CRS carries no
+    SIGNALS (round 1 established them; later rounds review change requests
+    against what round 1 saw — phase-7.md, compose_payloads.py)."""
+    if kind != "reviewer":
+        return False
+    value = (round_value or "1").strip()
+    return value.isdigit() and int(value) > 1 and prior_crs
+
+
 def readable(path: str, kind: str | None) -> bool:
     """Whether a Read-granted agent may open the path under Claude Code."""
     scope = HOOK_READ_SCOPE.get(kind or "")
@@ -809,7 +820,9 @@ def dead_letter_findings(lines: list[str], kind: str | None,
     for number, line in enumerate(lines, 1):
         if number in test_lines:
             continue
-        for match in ABS_PATH.finditer(line):
+        # #156: an inline-code span is prose (a log group name, a route shape),
+        # not a path handed to the agent — match outside the backticks.
+        for match in ABS_PATH.finditer(CODE_SPAN.sub("` `", line)):
             token = match.group(1)
             if scoped and readable(token, kind):
                 continue
@@ -854,6 +867,7 @@ def dead_letter_findings(lines: list[str], kind: str | None,
 # A system binary path counts as a path only where it starts a command line or
 # a code span (`/bin/bash x.sh`); in prose it names an interpreter, not a file.
 SYSTEM_BIN = re.compile(r"/(?:usr/)?(?:local/)?s?bin/")
+CODE_SPAN = re.compile(r"`[^`]*`")
 COMMAND_SHAPED = re.compile(r"(?:^|\n)[ \t]*$|`$")
 
 
@@ -1028,6 +1042,8 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
             if k == kind and field_value(lines, disc) == value:
                 required |= more
                 groups.extend(any_of)
+        if round_relaxes_signals(kind, field_value(lines, "ROUND"), "PRIOR_CRS" in present):
+            required.discard("SIGNALS")
         for name in sorted(required - set(present)):
             defects.append(
                 "%s is missing from this %s payload. A field left out is silent: "
@@ -1040,6 +1056,13 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
                     "one of %s is required in this %s payload and none is present."
                     % (" / ".join(sorted(group)), kind)
                 )
+        if "FAILURES" in present and "BASELINE_COUNTS_FROM" not in present:
+            defects.append(
+                "FAILURES carries suite counts, but BASELINE_COUNTS_FROM is missing. "
+                "Name the tree they came from (the sha, or `pre-change tree re-run`): "
+                "after any merge or sync lands on the branch, an earlier phase's "
+                "counts are stale by construction."
+            )
         for disc in ("MODE", "LENS"):
             wanted = {v for (k, d, v) in CONDITIONAL if k == kind and d == disc}
             if wanted and disc in present and field_value(lines, disc) not in wanted:
@@ -1088,7 +1111,8 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     for number, line in enumerate(lines, 1):
         if number in owned_lines:
             continue  # a path the agent is told to create
-        for match in ABS_PATH.finditer(mask_remote(line)):
+        # #156: an inline-code span is prose, not a path handed to the agent.
+        for match in ABS_PATH.finditer(CODE_SPAN.sub("` `", mask_remote(line))):
             path = match.group(1)
             if os.path.exists(path):
                 continue
@@ -1281,6 +1305,29 @@ def selftest() -> int:
         "CONTRACT_HASH: 3f2611f0a91c4d8e\n"
     )
     case("unit author clean", unit_ok, "unit-test-author", False, host="opencode")
+    fix_body = (
+        "WORKTREE_DIR: {REAL}\nBRANCH: b\nMODE: fix\nCONTRACT: |\n  fn flush()\n"
+        "CRS: |\n  CR-1: x\nFAILURES: |\n  === 1 failed, 7 passed ===\n"
+        "OWNED_PATHS: src/a.py\nTEST_COMMAND: pytest -q\nHOOKS: none\n"
+        "STANDARDS: {REAL}/scripts/check.py\nJIRA_KEY: X-1\n"
+    )
+    case("#149: FAILURES without BASELINE_COUNTS_FROM is a defect naming the tree rule",
+         fix_body, "implementer", True, "BASELINE_COUNTS_FROM", host="opencode")
+    case("#149: FAILURES with BASELINE_COUNTS_FROM lints clean",
+         fix_body + "BASELINE_COUNTS_FROM: 7a1486b\n", "implementer", False, host="opencode")
+    arch = (
+        "LENS: architecture\nWORKTREE_DIR: {REAL}\nSCOPE: |\n  src/a.rs :: f (changed)\n"
+        "CONTRACT: |\n  fn f()\nRUN_EVIDENCE: 3 passed\nCRITERIA: |\n  1. x\n"
+        "STANDARDS: {REAL}/scripts/check.py\nRULES: none\nCONTEXT_DOCS: none\n"
+        "ARBITRATIONS: none\nROUND: 1\n"
+    )
+    case("#159: architecture round 1 requires SIGNALS",
+         arch, "reviewer", True, "SIGNALS", host="opencode")
+    case("#159: a check round with PRIOR_CRS needs no SIGNALS",
+         arch.replace("ROUND: 1", "ROUND: 2") + "PRIOR_CRS: |\n  CR-1: x\n",
+         "reviewer", False, host="opencode")
+    case("#159: round 2 without PRIOR_CRS still requires SIGNALS",
+         arch.replace("ROUND: 1", "ROUND: 2"), "reviewer", True, "SIGNALS", host="opencode")
     case("unit author without a host warns that paths went unchecked",
          unit_ok, "unit-test-author", False, must_warn="no --host")
     case("unit author needs a style sample in one of its two forms",
@@ -1311,6 +1358,16 @@ def selftest() -> int:
     case("--allow-path clears the unit author's unreadable prose path",
          mount, "unit-test-author", False, host="claude", tools=rw,
          allow_paths=["/var/run/xsecrets/token"])
+    log_group = unit_ok.replace(
+        "CONTRACT: {REAL}/tests/unit/test_retry.py",
+        "CONTRACT: |\n  fn flush() logs to the group `/aws/staging-podcast/ingest` (quoted)")
+    case("#156: a log-group name inside a code span in contract prose is not a path",
+         log_group, "unit-test-author", False, host="claude", tools=rw)
+    escaped = unit_ok.replace(
+        "CONTRACT: {REAL}/tests/unit/test_retry.py",
+        "CONTRACT: |\n  the publisher archive &gt;/aws/staging-podcast/archive is read-only")
+    case("#156: a path after an HTML-escaped angle bracket is not handed to the agent",
+         escaped, "unit-test-author", False, host="claude", tools=rw)
     bash_prose = unit_ok.replace(
         "CONVENTIONS: |\n  Derive Debug\n",
         "CONVENTIONS: |\n  Derive Debug; never read the file twice; scripts run under /bin/bash\n")
@@ -1484,6 +1541,7 @@ def selftest() -> int:
     # Phase 6 row-1 ruling on a pre-existing test ---
     corrective = integ + (
         "FAILURES: |\n  assert census == 18, got 17\n"
+        "BASELINE_COUNTS_FROM: 9c2f1ab\n"
         "CORRECTION: |\n  1. Update EXPECTED_TABLES to 17 entries.\n"
         "  Read the whole file, then Write it back with exactly this change, "
         "nothing else.\n"
@@ -1521,9 +1579,9 @@ def selftest() -> int:
          impl.replace("PACKAGE: P1 thing\n", ""), "implementer", True, "PACKAGE is missing")
     fix = impl.replace("MODE: build", "MODE: fix").replace("PACKAGE: P1 thing\n", "").replace("CRITERIA: |\n  1. x\n", "")
     case("implementer fix needs crs or failures", fix, "implementer", True, "CRS / FAILURES")
-    case("implementer fix with failures", fix + "FAILURES: |\n  assert x\n", "implementer", False)
+    case("implementer fix with failures", fix + "FAILURES: |\n  assert x\nBASELINE_COUNTS_FROM: pre-change tree re-run\n", "implementer", False)
     case("a diff hunk header is not a template token",
-         fix + "FAILURES: |\n  @@ -1,4 +1,5 @@\n  -assert x\n  +assert y\n", "implementer", False)
+         fix + "FAILURES: |\n  @@ -1,4 +1,5 @@\n  -assert x\n  +assert y\nBASELINE_COUNTS_FROM: pre-change tree re-run\n", "implementer", False)
     case("implementer bad mode", impl.replace("MODE: build", "MODE: repair"), "implementer", True, "takes one of")
     case("implementer misnamed owned paths",
          impl.replace("OWNED_PATHS:", "OWNED_PATH:"), "implementer", True, "did you mean OWNED_PATHS")
