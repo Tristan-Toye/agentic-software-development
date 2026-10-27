@@ -17,8 +17,8 @@ agent's tool list makes impossible.
 # Usage
 
     verify_return.py --root X --branch B --base SHA
-        [--owned p1,p2]
-        [--contract-hash H --contract-files f1,f2]
+        [--owned p1,p2] [--shared-tree p1,p2]
+        [--contract-hash H [--contract-files f1,f2]]
         [--payload FILE --payload-sha256 H]
         [--release HOLDER --provider P --model M]
         [--log DOSSIER --agent ID] [--print-line --agent ID]
@@ -28,7 +28,11 @@ agent's tool list makes impossible.
 `--root` is the worktree the agent worked in; `--branch` the branch it was told
 to commit on; `--base` the sha that worktree forked from.
 
-What it prints (one line each unless noted):
+What it prints (one line each unless noted) — the `verdict:` line (and
+`RETURNED-LINE:`, when asked for) first, so a reader that loses the tail to
+truncation still has the verdict, then the detail:
+
+- `verdict: clean` or `verdict: FLAGGED <flags>`;
 
 - the worktree's state, from `git_state.py`: branch, HEAD, ahead/behind of the
   base, in-progress operation, status counts;
@@ -37,12 +41,23 @@ What it prints (one line each unless noted):
   of their combined diff (up to 5 files); `NO NEW COMMITS` when there are none;
 - `TOUCHED_BEYOND`: every file the commits or the working tree changed that is
   not under `--owned` (a comma list of files, directories, or globs; absolute
-  paths inside the root are accepted) — `none` when all are owned;
+  paths inside the root are accepted) — `none` when all are owned. Paths under
+  `--shared-tree` (the sibling authors' OWNED_PATHS in the same worktree) are
+  excluded: a concurrent author's files are judged by that author's own
+  verification, never this one's, and its dirty-tree flag likewise counts only
+  its own paths;
 - `STUBS_LEFT`: the number of `unimplemented!(` / `todo!(` calls left in the owned
   Rust files (comment lines skipped); an implementer's answer is 0;
-- the contract hash: sha256 of `--contract-files` (relative to `--root`, joined as
-  compose_payloads.py joins them) against `--contract-hash` (a full hash or a
-  prefix) — `stable` or `CHANGED`;
+- the contract hash: with `--payload`, sha256 of the CONTRACT block extracted
+  from that payload — payload_hash.py's canonical recipe, the same bytes
+  compose_payloads.py stamped — against `--contract-hash` (a full hash or a
+  prefix): `stable` or `CHANGED`. Without `--payload`, sha256 of
+  `--contract-files` (relative to `--root`, joined as compose_payloads.py
+  joins them; a directory entry is refused — the composer hashes files only)
+  against the same expected hash. When both are given and the block is stable,
+  the files are also checked against the stamped hash: `contract files: differ
+  from the stamped contract` names stubs that moved after the stamp — a
+  formatter, an edit — and the orchestrator rules on it;
 - the payload: sha256 of `--payload` (the file a workflow spawn read) against
   `--payload-sha256` — `stable` or `CHANGED`; a changed payload means the agent
   may have read something other than what was linted;
@@ -55,8 +70,9 @@ What it prints (one line each unless noted):
   adds only its ruling sentence, if there is one. The line states facts, flagged
   ones included, so a flagged return is logged as flagged.
 
-With `--report FILE --kind KIND` it also prints `UNVERIFIED: <kind> claims a
-test run but has no Bash; re-run it yourself` when the report claims a shell
+With `--report FILE --kind KIND` the report is read for claims, never facts.
+It prints `UNVERIFIED: <kind> claims a test run but has no Bash; re-run it
+yourself` when the report claims a shell
 run (`N passed`, `ran pytest` / `cargo test` / `go test` / `npm test`, `exit
 code N`, `git diff shows`) and the kind's tool list has no Bash. The list is the
 `tools:` line of `claude/agents/<kind>.md` (host `claude`, the default); under
@@ -64,7 +80,11 @@ code N`, `git diff shows`) and the kind's tool list has no Bash. The list is the
 blocks and `>` quotes are skipped, so quoted output is not a claim. A phantom
 verification is a fabricated verdict, not a wrong one: it flags the return, and
 the orchestrator re-runs that class of check itself and never logs the claim as
-fact.
+fact. The report's own footprint claims (`TOUCHED_BEYOND: ...`, "no hook
+rewrote my files") are checked against the commit range: any path the range
+shows changed that the report does not account for is flagged
+`REPORT-FOOTPRINT` with the paths named — the verdict comes from the range,
+not the report.
 
 `--print-line` (with `--agent`) prints the same line as `RETURNED-LINE: <line>`
 without writing it: the phase workflows (`workflows/phase4-wave.js`) run many of
@@ -88,6 +108,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import importlib.util
 import os
 import re
 import subprocess
@@ -96,6 +117,19 @@ import tempfile
 
 GIT = "/usr/bin/git" if os.path.exists("/usr/bin/git") else "git"
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load(name: str):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(SCRIPTS_DIR, name + ".py"))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+ph = _load("payload_hash")  # the one CONTRACT_HASH recipe, shared with compose_payloads.py
+
 MAX_LINES = 20
 STUB_RE = re.compile(r"\b(?:unimplemented|todo)!\s*\(")
 MAX_RS_FILES = 200
@@ -108,6 +142,15 @@ SHELL_CLAIMS = (
         re.IGNORECASE)),
     ("an exit code", re.compile(r"\bexit\s+(?:code|status)\s*[:=]?\s*\d+\b", re.IGNORECASE)),
     ("a git diff", re.compile(r"\b(?:ran\s+`?git\s+diff|git\s+diff\s+(?:shows|confirms|is\s+empty))", re.IGNORECASE)),
+)
+# A report's own footprint claim: its TOUCHED_BEYOND line, or a hook claim
+# asserting a clean footprint. Run phrasings, like SHELL_CLAIMS, matched
+# outside fences and quotes.
+TOUCHED_LINE = re.compile(r"^\s*[-*]?\s*TOUCHED_BEYOND:\s*(.*)$")
+HOOK_CLAIMS = (
+    re.compile(r"\bno hook rewrote\b", re.IGNORECASE),
+    re.compile(r"\bhooks?\s+(?:did\s+not|didn't)\s+(?:touch|rewrite|change)\b", re.IGNORECASE),
+    re.compile(r"\bhook outputs?\b[^.\n]*\b(?:none|no\s+changes|nothing)\b", re.IGNORECASE),
 )
 
 
@@ -142,10 +185,36 @@ def changed_files(root: str, base: str) -> tuple[list[str], list[tuple[str, str,
     """(all changed paths, numstat rows of BASE..HEAD, dirty working-tree paths)."""
     _, numstat = git(root, "diff", "--numstat", f"{base}..HEAD")
     rows = [tuple(l.split("\t", 2)) for l in numstat.splitlines() if l.count("\t") >= 2]
-    _, porcelain = git(root, "status", "--porcelain", "--untracked-files=all")
-    dirty = [l[3:].split(" -> ")[-1] for l in porcelain.splitlines() if len(l) > 3]
+    dirty = porcelain_paths(root)
     paths = sorted({r[2] for r in rows} | set(dirty))
     return paths, rows, dirty  # type: ignore[return-value]
+
+
+def porcelain_paths(root: str) -> list[str]:
+    """Working-tree paths from `git status --porcelain -z`. NUL-separated
+    records cannot be mis-split (a path's first character can never be eaten
+    by a status-prefix parse, and no quoting is ever applied); a rename or
+    copy record carries the original path as the next NUL entry, which is
+    skipped — the new path is the one on disk."""
+    rc, raw = git(root, "status", "--porcelain", "-z", "--untracked-files=all")
+    return parse_porcelain_z(raw) if rc == 0 else []
+
+
+def parse_porcelain_z(raw: str) -> list[str]:
+    out: list[str] = []
+    entries = raw.split("\0")
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if not entry:
+            continue
+        path = entry[3:] if len(entry) > 3 else ""
+        if entry[0] in "RC" and i < len(entries):
+            i += 1
+        if path:
+            out.append(path)
+    return out
 
 
 def rust_files(root: str, owned: list[str]) -> list[str]:
@@ -184,7 +253,7 @@ def contract_digest(root: str, files: list[str]) -> str:
         path = rel if os.path.isabs(rel) else os.path.join(root, rel)
         with open(path, encoding="utf-8") as fh:
             texts.append(fh.read())
-    return hashlib.sha256("\n\n".join(texts).encode("utf-8")).hexdigest()
+    return ph.contract_hash("\n\n".join(texts))
 
 
 def agent_tools(kind: str, host: str, agents_dir: str | None = None) -> list[str] | None:
@@ -223,6 +292,31 @@ def shell_claims(report: str) -> list[str]:
             if label not in kinds and pattern.search(line):
                 kinds.append(label)
     return kinds
+
+
+def footprint_claim(report: str) -> tuple[bool, list[str]]:
+    """(the report makes a footprint or hook claim, the paths its
+    TOUCHED_BEYOND line names). Outside fences and `>` quotes, like
+    shell_claims. A hook claim with no TOUCHED_BEYOND line claims a clean
+    footprint (an empty list), not no claim."""
+    claimed: list[str] | None = None
+    hook = False
+    fenced = False
+    for line in report.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced or line.lstrip().startswith(">"):
+            continue
+        match = TOUCHED_LINE.match(line)
+        if match and claimed is None:
+            claimed = [p.strip() for p in match.group(1).split(",")
+                       if p.strip() and p.strip().lower() not in ("none", "not checked")]
+        if any(rx.search(line) for rx in HOOK_CLAIMS):
+            hook = True
+    if claimed is None and hook:
+        claimed = []
+    return (claimed is not None or hook), claimed or []
 
 
 def clamp(lines: list[str]) -> list[str]:
@@ -271,15 +365,24 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
             parts.append(f"{len(rows)} files +{added}/-{deleted}")
 
     owned = relative_owned(root, args.owned) if args.owned else []
+    shared = relative_owned(root, args.shared_tree) if args.shared_tree else []
+
+    def is_shared(path: str) -> bool:
+        return bool(shared) and is_owned(path, shared)
+
     beyond: list[str] = []
     if owned:
-        beyond = [p for p in paths if not is_owned(p, owned)]
+        beyond = [p for p in paths if not is_owned(p, owned) and not is_shared(p)]
         shown = ", ".join(beyond[:5]) + (f" (+{len(beyond) - 5})" if len(beyond) > 5 else "")
         out.append(f"TOUCHED_BEYOND: {shown or 'none'}")
         if beyond:
             flags.append("touched-beyond")
         elif commits and len(rows) <= 3:
             parts[-1] += " only"
+        sibling_paths = [p for p in paths if not is_owned(p, owned) and is_shared(p)]
+        if sibling_paths:
+            out.append(f"shared-tree: {len(sibling_paths)} path(s) belong to sibling authors "
+                       "in this worktree, judged by their own verification")
         rs = rust_files(root, owned)
         if rs:
             total, per = count_stubs(root, rs)
@@ -293,21 +396,59 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
     else:
         out.append("TOUCHED_BEYOND: not checked (no --owned)")
 
-    if args.contract_hash:
-        files = [f for f in args.contract_files.split(",") if f]
+    report_text: str | None = None
+    if args.report:
         try:
-            now = contract_digest(root, files)
+            with open(args.report, encoding="utf-8") as handle:
+                report_text = handle.read()
         except OSError as err:
-            now = ""
-            out.append(f"contract hash: cannot read the contract files ({err})")
-        if now and now.startswith(args.contract_hash.lower()):
-            out.append(f"contract hash: stable ({now[:8]})")
-            parts.append("hash stable")
+            out.append(f"report: cannot read {args.report} ({err})")
+
+    if args.contract_hash:
+        expected = args.contract_hash.lower()
+        block = None
+        if args.payload:
+            try:
+                with open(args.payload, encoding="utf-8") as fh:
+                    block = ph.extract_contract_block(fh.read())
+            except OSError as err:
+                out.append(f"contract hash: cannot read the payload ({err})")
+            if block is None:
+                out.append("contract hash: the payload carries no CONTRACT block")
+        if block is not None:
+            now = ph.contract_hash(block)
+            if now.startswith(expected):
+                out.append(f"contract hash: stable ({now[:8]})")
+                parts.append("hash stable")
+            else:
+                out.append(f"contract hash: CHANGED, expected {expected[:8]} now {now[:8]}")
+                parts.append("HASH CHANGED")
+                flags.append("hash")
         else:
-            if now:
-                out.append(f"contract hash: CHANGED, expected {args.contract_hash[:8]} now {now[:8]}")
-            parts.append("HASH CHANGED")
-            flags.append("hash")
+            files = [f for f in args.contract_files.split(",") if f]
+            try:
+                now = contract_digest(root, files)
+            except OSError as err:
+                now = ""
+                out.append(f"contract hash: cannot read the contract files ({err})")
+            if now and now.startswith(expected):
+                out.append(f"contract hash: stable ({now[:8]})")
+                parts.append("hash stable")
+            else:
+                if now:
+                    out.append(f"contract hash: CHANGED, expected {expected[:8]} now {now[:8]}")
+                parts.append("HASH CHANGED")
+                flags.append("hash")
+        if args.contract_files and block is not None:
+            files = [f for f in args.contract_files.split(",") if f]
+            try:
+                disk = contract_digest(root, files)
+                if not disk.startswith(expected):
+                    out.append(f"contract files: differ from the stamped contract "
+                               f"({disk[:8]} vs {expected[:8]}) — the stubs moved after the stamp")
+                    flags.append("contract-files")
+            except OSError as err:
+                out.append(f"contract files: cannot read the contract files ({err})")
 
     if args.payload:
         try:
@@ -324,21 +465,20 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
             parts.append("PAYLOAD CHANGED")
             flags.append("payload")
 
-    if dirty:
-        out.append(f"tree: dirty, {len(dirty)} path(s): {', '.join(dirty[:3])}")
-        parts.append(f"tree dirty ({len(dirty)})")
+    own_dirty = [p for p in dirty if not is_shared(p)]
+    sibling_dirty = [p for p in dirty if is_shared(p)]
+    if own_dirty:
+        out.append(f"tree: dirty, {len(own_dirty)} path(s): {', '.join(own_dirty[:3])}")
+        parts.append(f"tree dirty ({len(own_dirty)})")
         flags.append("dirty")
     else:
         parts.append("tree exact")
+    if sibling_dirty and not own_dirty:
+        parts.append(f"tree exact for this author ({len(sibling_dirty)} sibling path(s) not judged here)")
 
     if args.report:
         tools = agent_tools(args.kind, args.host)
-        try:
-            with open(args.report, encoding="utf-8") as handle:
-                claims = shell_claims(handle.read())
-        except OSError as err:
-            claims = []
-            out.append(f"report: cannot read {args.report} ({err})")
+        claims = shell_claims(report_text) if report_text is not None else []
         if tools is None:
             out.append(f"UNVERIFIED: not checked (no tool list for {args.kind} under {args.host})")
         elif claims and not any(t.split("(")[0] == "Bash" for t in tools):
@@ -347,6 +487,16 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
             flags.append("unverified")
         else:
             out.append("UNVERIFIED: none")
+        if report_text is not None and owned and beyond:
+            makes_claim, claimed = footprint_claim(report_text)
+            if makes_claim:
+                unaccounted = [p for p in beyond if p not in claimed]
+                if unaccounted:
+                    out.append("REPORT-FOOTPRINT: the commit range shows "
+                               f"{len(unaccounted)} path(s) the report does not account for: "
+                               + ", ".join(unaccounted[:5]))
+                    parts.append(f"REPORT-FOOTPRINT: {len(unaccounted)} unaccounted path(s)")
+                    flags.append("report-footprint")
 
     if beyond:
         parts.append("TOUCHED_BEYOND: " + ", ".join(beyond[:3]) + (f" (+{len(beyond) - 3})" if len(beyond) > 3 else ""))
@@ -363,6 +513,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--branch", help="the branch it was told to commit on")
     ap.add_argument("--base", help="the sha the worktree forked from")
     ap.add_argument("--owned", default="", help="comma list of the files/dirs/globs the agent owns")
+    ap.add_argument("--shared-tree", default="",
+                    help="comma list of the sibling authors' paths in the same worktree, "
+                         "judged by their own verification, never this one's")
     ap.add_argument("--contract-hash", help="the CONTRACT_HASH the payload carried (full or prefix)")
     ap.add_argument("--contract-files", default="", help="comma list of the contract files, relative to --root")
     ap.add_argument("--payload", metavar="FILE", help="the payload file a workflow spawn read")
@@ -382,8 +535,8 @@ def main(argv: list[str] | None = None) -> int:
         return selftest()
     if not (args.root and args.branch and args.base):
         ap.error("--root, --branch and --base are required unless --selftest")
-    if args.contract_hash and not args.contract_files:
-        ap.error("--contract-hash needs --contract-files")
+    if args.contract_hash and not (args.contract_files or args.payload):
+        ap.error("--contract-hash needs --contract-files (or --payload, whose CONTRACT block it hashes)")
     if args.release and not (args.provider and args.model):
         ap.error("--release needs --provider and --model")
     if args.report and not args.kind:
@@ -398,6 +551,11 @@ def main(argv: list[str] | None = None) -> int:
     if rc != 0:
         print(f"verify_return: base {args.base} is not a commit in {args.root}", file=sys.stderr)
         return 2
+    for entry in (f for f in args.contract_files.split(",") if f):
+        if os.path.isdir(os.path.join(os.path.abspath(args.root), entry)):
+            print(f"verify_return: contract file entry is a directory: {entry} — "
+                  "compose_payloads.py hashes files only; pass the file list", file=sys.stderr)
+            return 2
 
     out, flags, parts = verify(args)
 
@@ -413,10 +571,13 @@ def main(argv: list[str] | None = None) -> int:
         if rc != 0:
             flags.append("log")
 
+    header: list[str] = []
     if args.print_line:
-        out.append(f"RETURNED-LINE: {args.agent} RETURNED: " + ", ".join(parts))
-    out.append("verdict: " + ("clean" if not flags else "FLAGGED " + ", ".join(flags)))
-    print("\n".join(clamp(out)))
+        header.append(f"RETURNED-LINE: {args.agent} RETURNED: " + ", ".join(parts))
+    header.append("verdict: " + ("clean" if not flags else "FLAGGED " + ", ".join(flags)))
+    # The RETURNED line and the verdict first: a reader that loses the tail of
+    # the output to truncation still has them.
+    print("\n".join(clamp(header + out)))
     return 1 if flags else 0
 
 
@@ -489,7 +650,7 @@ def selftest() -> int:
             with open(payload, "rb") as fh:
                 payload_sha = hashlib.sha256(fh.read()).hexdigest()
             rc, out = call(base_args + ["--payload", payload, "--payload-sha256", payload_sha])
-            check("a stable payload is reported", f"payload: stable ({payload_sha[:8]})" in out and "payload" not in out.split("FLAGGED")[-1])
+            check("a stable payload is reported", f"payload: stable ({payload_sha[:8]})" in out and "payload" not in out.splitlines()[0])
             rc, out = call(base_args + ["--payload", payload, "--payload-sha256", "0" * 64])
             check("a changed payload flags the return", "payload: CHANGED" in out and rc == 1 and "payload" in out.split("FLAGGED")[-1])
 
@@ -517,10 +678,33 @@ def selftest() -> int:
             rc, out = call(["--root", root, "--branch", "feat/other", "--base", base, "--owned", "src/lib.rs",
                             "--contract-hash", digest, "--contract-files", "contract/c.rs"])
             check("TOUCHED_BEYOND names the strays, committed and dirty", "TOUCHED_BEYOND: contract/c.rs, scratch.txt, src/other.rs" in out)
-            check("a changed contract is flagged", "contract hash: CHANGED" in out and "hash" in out.splitlines()[-1])
+            check("a changed contract is flagged", "contract hash: CHANGED" in out and "hash" in out.splitlines()[0])
             check("a dirty tree is flagged", "tree: dirty, 1 path(s): scratch.txt" in out)
             check("the wrong branch is flagged", "BRANCH: HEAD is on feat/p1, expected feat/other" in out)
-            check("every flag reaches the verdict", rc == 1 and all(w in out.splitlines()[-1] for w in ("branch", "touched-beyond", "hash", "dirty")))
+            check("every flag reaches the verdict, printed first",
+                  rc == 1 and out.splitlines()[0].startswith("verdict: FLAGGED")
+                  and all(w in out.splitlines()[0] for w in ("branch", "touched-beyond", "hash", "dirty")))
+
+            # --- the report's own footprint claims, against this commit range ---
+            put(tmp, "fp-clean.md", "Done.\nTOUCHED_BEYOND: none\nno hook rewrote my files\n")
+            put(tmp, "fp-honest.md", "Done.\nTOUCHED_BEYOND: contract/c.rs, scratch.txt, src/other.rs\n")
+
+            def with_owned_report(name: str) -> tuple[int, str]:
+                return call(["--root", root, "--branch", "feat/p1", "--base", base,
+                             "--report", os.path.join(tmp, name), "--kind", "writer",
+                             "--owned", "src/lib.rs"])
+
+            rc, out = with_owned_report("fp-clean.md")
+            check("a footprint claim the commit range contradicts is flagged, paths named",
+                  "REPORT-FOOTPRINT: the commit range shows 3 path(s) the report does not account for" in out
+                  and "src/other.rs" in out and "report-footprint" in out.splitlines()[0])
+            rc, out = with_owned_report("fp-honest.md")
+            check("a report that accounts for every range path raises no footprint flag",
+                  "REPORT-FOOTPRINT" not in out)
+            check("a hook claim with no TOUCHED_BEYOND line claims a clean footprint",
+                  footprint_claim("no hook rewrote my files\n") == (True, [])
+                  and footprint_claim("TOUCHED_BEYOND: a.rs, b.rs\n") == (True, ["a.rs", "b.rs"])
+                  and footprint_claim("all green\n") == (False, []))
 
             # --- no new commits; a directory owned; --log records the flagged facts ---
             git(root, "checkout", "-q", "-b", "feat/empty", base)
@@ -549,20 +733,91 @@ def selftest() -> int:
                     return call(report_args + ["--report", os.path.join(tmp, name), "--kind", kind])
                 rc, out = with_report("writer", "claim.md")
                 check("a Write-only agent claiming a test run is flagged",
-                      "UNVERIFIED: writer claims a test run but has no Bash; re-run it yourself" in out and "unverified" in out.splitlines()[-1])
+                      "UNVERIFIED: writer claims a test run but has no Bash; re-run it yourself" in out and "unverified" in out.splitlines()[0])
                 rc, out = with_report("builder", "claim.md")
-                check("the same claim from an agent with Bash is clean", "UNVERIFIED: none" in out and "unverified" not in out.splitlines()[-1])
+                check("the same claim from an agent with Bash is clean", "UNVERIFIED: none" in out and "unverified" not in out.splitlines()[0])
                 rc, out = with_report("writer", "quiet.md")
                 check("no claim is clean, quotes and fences included", "UNVERIFIED: none" in out)
             finally:
                 AGENTS_DIR = saved_dir
 
+            # --- porcelain -z: modified and untracked paths at the first
+            # --- directory level parse whole, first character included ---
+            check("porcelain -z records split on NUL, the rename original skipped",
+                  parse_porcelain_z("R  new_name.rs\0old_name.rs\0?? src/x.rs\0 M y.rs\0")
+                  == ["new_name.rs", "src/x.rs", "y.rs"])
+            git(root, "checkout", "-q", "-b", "feat/porcelain", base)
+            put(root, "Source/Tests/X.cs", "a\n")
+            put(root, "Infrastructure/tests/plan_counts.sh", "b\n")
+            put(root, "src/lib.rs", "pub fn a() -> u8 { 1 }\n")
+            git(root, "commit", "-q", "-am", "P1: fill a")
+            rc, out = call(["--root", root, "--branch", "feat/porcelain", "--base", base,
+                            "--owned", "Source,Infrastructure,src"])
+            check("an untracked and a modified path at the first directory level keep their first character",
+                  "tree: dirty, 2 path(s): Infrastructure/tests/plan_counts.sh, Source/Tests/X.cs" in out
+                  and "TOUCHED_BEYOND: none" in out)
+            git(root, "clean", "-qfd")
+
+            # --- a shared worktree: the sibling's paths are not this author's ---
+            git(root, "checkout", "-q", "-b", "feat/shared", base)
+            put(root, "src/lib.rs", "pub fn a() -> u8 { 1 }\npub fn b() -> u8 { 2 }\n")
+            git(root, "commit", "-q", "-am", "P1: fill both")
+            put(root, "src/sibling.rs", "pub fn s() {}\n")
+            rc, out = call(["--root", root, "--branch", "feat/shared", "--base", base,
+                            "--owned", "src/lib.rs", "--shared-tree", "src/sibling.rs"])
+            check("a sibling author's paths are not this author's TOUCHED_BEYOND",
+                  "TOUCHED_BEYOND: none" in out and "shared-tree: 1 path(s)" in out)
+            check("a sibling's dirty file does not dirty this author's tree", "tree dirty" not in out)
+            check("the shared-tree return is clean", rc == 0)
+
+            # --- CONTRACT_HASH: the payload's CONTRACT block, the composer's recipe ---
+            block_payload = ("TASK: implement\nCONTRACT: |\n  pub fn a() -> u8;\n\n"
+                             "OWNED_PATHS: src/lib.rs\n")
+            put(tmp, "p-block.md", block_payload)
+            put(tmp, "p-block-outside.md", block_payload.replace("TASK: implement", "TASK: implement now"))
+            put(tmp, "p-block-inside.md", block_payload.replace("u8;", "u16;"))
+            block_hash = ph.contract_hash("pub fn a() -> u8;\n")
+
+            def with_block(name: str, **extra: str) -> tuple[int, str]:
+                block_path = os.path.join(tmp, name)
+                with open(block_path, "rb") as fh:
+                    block_sha = hashlib.sha256(fh.read()).hexdigest()
+                argv = ["--root", root, "--branch", "feat/shared", "--base", base,
+                        "--owned", "src/lib.rs", "--shared-tree", "src/sibling.rs",
+                        "--contract-hash", block_hash, "--payload", block_path,
+                        "--payload-sha256", block_sha]
+                for key, value in extra.items():
+                    argv += ["--" + key.replace("_", "-"), value]
+                return call(argv)
+
+            rc, out = with_block("p-block.md", contract_files="contract/c.rs")
+            check("the CONTRACT block hash is the composer's canonical recipe",
+                  f"contract hash: stable ({block_hash[:8]})" in out)
+            check("contract files matching the stamp are not flagged", "contract files:" not in out)
+            rc, out = with_block("p-block-outside.md")
+            check("payload bytes changed outside CONTRACT raise no HASH-FLAG", "contract hash: stable" in out)
+            rc, out = with_block("p-block-inside.md")
+            check("a one-byte edit inside the CONTRACT block always flags",
+                  "contract hash: CHANGED" in out and "hash" in out.splitlines()[0])
+            rc, out = with_block("p-block.md", contract_files="src/lib.rs")
+            check("stub files that moved after the stamp are named",
+                  "contract files: differ from the stamped contract" in out
+                  and "contract-files" in out.splitlines()[0])
+            rc, _ = call(["--root", root, "--branch", "feat/shared", "--base", base,
+                          "--owned", "src", "--contract-hash", "a" * 64, "--contract-files", "contract"])
+            check("a directory in --contract-files is refused as the composer refuses it", rc == 2)
+            check("extract_contract_block de-indents and stops at the next field",
+                  ph.contract_hash(ph.extract_contract_block("CONTRACT: |\n  a\n\n  b\n\nNEXT: x\n"))
+                  == ph.contract_hash("a\n\nb\n"))
+
             # --- unusable input ---
+            git(root, "checkout", "-q", "feat/empty")
             # --print-line echoes the RETURNED line and writes nothing
             before = open(dossier, encoding="utf-8").read()
             rc, out = call(["--root", root, "--branch", "feat/empty", "--base", base, "--owned", "src", "--print-line", "--agent", "P3 (agent a1b2)"])
-            check("--print-line echoes the RETURNED line before the verdict",
-                  "RETURNED-LINE: P3 (agent a1b2) RETURNED: NO NEW COMMITS" in out and out.splitlines()[-1].startswith("verdict:"))
+            check("--print-line echoes the RETURNED line first, the verdict second",
+                  "RETURNED-LINE: P3 (agent a1b2) RETURNED: NO NEW COMMITS" in out
+                  and out.splitlines()[0].startswith("RETURNED-LINE:") and out.splitlines()[1].startswith("verdict:"))
             check("--print-line writes no log", open(dossier, encoding="utf-8").read() == before)
             rc, _ = call(["--root", root, "--branch", "b", "--base", base, "--print-line"])
             check("--print-line without --agent is unusable input", rc == 2)

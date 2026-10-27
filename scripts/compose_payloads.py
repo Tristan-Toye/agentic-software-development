@@ -118,7 +118,6 @@ No third-party imports: this runs wherever python3 does.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.util
 import os
 import re
@@ -140,6 +139,7 @@ def _load(name: str):
 
 cp = _load("check_payload")   # FIELDS, CONDITIONAL, GROUPS — the field tables
 de = _load("dossier_edit")    # section(), split_front_matter(), KEY_RE, Refused
+pwh = _load("payload_hash")   # the one CONTRACT_HASH recipe, shared with verify_return.py
 
 MARKER = "# compose_payloads.py: generated payload — re-run with --force to overwrite by hand"
 
@@ -277,8 +277,11 @@ def contract_bytes(paths: list[str], root: str) -> str:
     return "\n\n".join(texts)
 
 
-def contract_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+# CONTRACT_HASH is payload_hash.py's canonical block recipe — the same helper
+# verify_return.py re-derives, so the stamp and the check cannot drift apart.
+# PAYLOAD_SHA256 stays a raw sha256 (pwh.raw_sha256): it proves the payload
+# file's bytes, which must never be canonicalised.
+contract_hash = pwh.contract_hash
 
 
 def dossier_contract(dossier_text: str, args: argparse.Namespace, who: str) -> str:
@@ -1062,7 +1065,7 @@ def emit_prompt(path: str) -> str:
         raise Refusal("%s still carries template token(s) %s; compose and lint it first" % (path, ", ".join(left)))
     if not text.endswith("\n"):
         text += "\n"
-    return "%sPAYLOAD_SHA256: %s\n" % (text, contract_hash(text))
+    return "%sPAYLOAD_SHA256: %s\n" % (text, pwh.raw_sha256(text))
 
 
 def manifest_line(args: argparse.Namespace, out_path: str, fields: list[Field]) -> str:
@@ -1693,7 +1696,7 @@ def selftest() -> int:
             rc = main(["--emit-prompt", impl_path])
         prompt = out_io.getvalue()
         check("--emit-prompt prints the file's bytes then PAYLOAD_SHA256 of them",
-              rc == 0 and prompt.startswith(ep_text) and prompt.endswith("PAYLOAD_SHA256: %s\n" % contract_hash(ep_text)), prompt[-120:])
+              rc == 0 and prompt.startswith(ep_text) and prompt.endswith("PAYLOAD_SHA256: %s\n" % pwh.raw_sha256(ep_text)), prompt[-120:])
         check("the spawn guard allows the --emit-prompt output", guard.problems(prompt) == [], str(guard.problems(prompt)))
         check("the spawn guard allows it under a one-line task statement", guard.problems("Fill the bodies.\n" + prompt) == [])
         check("--emit-prompt refuses a payload with an @@FILL left", main(["--emit-prompt", ut_op_path]) == 1)

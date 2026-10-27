@@ -317,8 +317,16 @@ one object per spawn:
   "reportDir": "<X>/.agent-staging/reports", "pluginRoot": "<${PLUGIN_ROOT}, absolute>" }
 ```
 
-`contractHash` and `contractFiles` are for a test author whose world the hash
-stamps; `reportDir` defaults to `<root>/.agent-staging/reports`. A workflow
+`contractHash` and `contractFiles` go together or not at all — the hash alone
+makes `verify_return.py` exit 2 (a usage error) for every return in the wave,
+and every result comes back flagged with an empty verifier line — and
+`contractHash` is the full 64-hex `CONTRACT_HASH`, never a prefix (a truncated
+copy copied from a column-cut print once verified nothing); the workflow
+refuses both mistakes at launch, naming the item. They are for a test author
+whose world the hash stamps. When several authors share one worktree (`root`),
+pass nothing extra: the workflow hands each item its siblings' `owned` paths as
+`--shared-tree`, so an author is never flagged for a sibling's files.
+`reportDir` defaults to `<root>/.agent-staging/reports`. A workflow
 spawn is the one place the payload travels as a file, not pasted: each agent
 gets the two-line `PAYLOAD_FILE` / `PAYLOAD_SHA256` intake its file names and
 reads the final itself. The paste rule is about the per-spawn classifier, and
