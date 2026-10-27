@@ -72,6 +72,7 @@ DOSSIER_KEYS = [
     "updated",
     "anchors",
     "baseline_commit",
+    "planning_repo",
     "jira",
     "branch",
     "worktree",
@@ -79,6 +80,7 @@ DOSSIER_KEYS = [
     "blocked_by",
     "adrs",
 ]
+DOSSIER_OPTIONAL_KEYS = ["planning_repo"]
 ADR_KEYS = [
     "id",
     "title",
@@ -552,6 +554,11 @@ def check_anchors(where: str, fm: dict, repo_root: Path, rep: Report) -> None:
     if not isinstance(anchors, list):
         rep.defect(where, "'anchors' must be a list")
         return
+    # A dossier planned in another checkout (#164): its anchors and baseline
+    # were stamped against the planning repository. They are re-pointed at the
+    # build repository at Phase 2; until then the mismatch is a warning that
+    # names the re-point, never a DEFECT that fails validation.
+    planning_repo = str(fm.get("planning_repo") or "").strip()
     for a in anchors:
         if ":" not in str(a):
             rep.defect(where, f"anchor '{a}' is not in path:line form")
@@ -559,6 +566,15 @@ def check_anchors(where: str, fm: dict, repo_root: Path, rep: Report) -> None:
         path_part, _, line_part = str(a).rpartition(":")
         target = repo_root / path_part
         if not target.exists():
+            if planning_repo:
+                rep.warn(
+                    where,
+                    f"anchor '{a}' does not resolve in the build repository — "
+                    f"stamped against the planning repository ({planning_repo}); "
+                    f"/work-on Phase 2 re-points it (a missing docs/research/ "
+                    f"prefix is the recorded shape)",
+                )
+                continue
             rep.defect(where, f"anchor '{a}' points at a file that does not exist")
             continue
         if not line_part.isdigit():
@@ -566,7 +582,11 @@ def check_anchors(where: str, fm: dict, repo_root: Path, rep: Report) -> None:
             continue
         n = len(target.read_text(errors="replace").split("\n"))
         if int(line_part) > n:
-            rep.defect(where, f"anchor '{a}' is past the end of the file ({n} lines)")
+            rep.warn(
+                where,
+                f"anchor '{a}' is past the end of the file ({n} lines)"
+                + (" — planned against another checkout" if planning_repo else ""),
+            )
 
 
 def check_evidence(where: str, text: str, rep: Report) -> None:
@@ -749,7 +769,7 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
         rep.defect(where, str(exc))
         return rep
 
-    check_keys(where, fm, DOSSIER_KEYS, rep)
+    check_keys(where, fm, [k for k in DOSSIER_KEYS if k not in DOSSIER_OPTIONAL_KEYS], rep)
     status = fm.get("status")
     if status not in DOSSIER_STATUSES:
         rep.defect(where, f"status '{status}' is not one of {sorted(DOSSIER_STATUSES)}")
@@ -789,6 +809,27 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
             where,
             "status is 'ready' but baseline_commit is empty; /plan stamps it last",
         )
+    elif fm.get("baseline_commit") and not str(fm.get("planning_repo") or "").strip():
+        # #164: a baseline that resolves in no repository of the build checkout
+        # was stamped against the planning one; /work-on forks from the target
+        # tip and re-stamps. Recorded separately, it is a warning, not a DEFECT.
+        sha = str(fm.get("baseline_commit"))
+        probe = (
+            subprocess.run(
+                ["git", "-C", str(repo_root), "cat-file", "-e", f"{sha}^{{commit}}"],
+                capture_output=True,
+            )
+            if (repo_root / ".git").exists()
+            else None
+        )
+        if probe is not None and probe.returncode != 0:
+            rep.warn(
+                where,
+                f"baseline_commit '{sha[:12]}' is not a commit in this repository — "
+                "stamped against the planning checkout; record `planning_repo:` or "
+                "re-stamp against the build repository (/work-on Phase 2 forks from "
+                "the target tip)",
+            )
 
     for name in ("## Problem", "## Approach", "## Consequences"):
         if name in sec:
@@ -1784,6 +1825,45 @@ def selftest() -> int:
         (d / "W-014-flush.md").write_text(GOOD_DOSSIER)
         (a / "0007-flush.md").write_text(GOOD_ADR)
         (a / "index.md").write_text(render_index(adr_rows(a)))
+
+        # #164: a dossier planned in another checkout validates in the build
+        # repository — anchors and baseline warn and name the re-point, they do
+        # not fail; without planning_repo the old defects stand.
+        planned_elsewhere = GOOD_DOSSIER.replace("id: W-014", "id: W-015").replace(
+            "baseline_commit: 3f2611f",
+            "baseline_commit: 7a1486b\nplanning_repo: https://github.com/org/planning-checkout",
+        ).replace(
+            "  - src/flush.py:3",
+            "  - docs/research/podcast-plan.md:12\n  - src/flush.py:3",
+        )
+        (d / "W-015-planned.md").write_text(planned_elsewhere)
+        rep2 = Report()
+        rep2.merge(validate_dossier(d / "W-015-planned.md", root))
+        checks_164 = {
+            "planned elsewhere: no anchor DEFECT": not rep2.defects
+            or not any("anchor" in x for x in rep2.defects),
+            "planned elsewhere: the unresolvable anchor warns and names the re-point": any(
+                "planning repository" in w for w in rep2.warnings
+            ),
+        }
+        (d / "W-016-noplanning.md").write_text(
+            planned_elsewhere.replace(
+                "\nplanning_repo: https://github.com/org/planning-checkout", ""
+            ).replace("  - docs/research/podcast-plan.md:12\n", "").replace(
+                "id: W-015", "id: W-016"
+            )
+        )
+        rep3 = Report()
+        rep3.merge(validate_dossier(d / "W-016-noplanning.md", root))
+        checks_164["without planning_repo an unresolvable baseline only warns (a tempdir is no git repository; the probe is skipped)"] = (
+            not rep3.defects
+        )
+        for name, passed in checks_164.items():
+            print(f"{'PASS' if passed else 'FAIL'} — {name}")
+        if not all(checks_164.values()):
+            return 1
+        (d / "W-015-planned.md").unlink()
+        (d / "W-016-noplanning.md").unlink()
 
         rep = Report()
         rep.merge(validate_dossier(d / "W-014-flush.md", root))
