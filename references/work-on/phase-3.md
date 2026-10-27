@@ -57,7 +57,11 @@ that count or list it — a table-name census, a migration count `(1..=N)`, a
 package that moves it, or a criterion with a test-author owner. Log
 `CENSUS: <path>:<line> — <owner>`, or `CENSUS: none — <what was grepped>`,
 into `## Build log` before you spawn; `validate_pipeline.py --pre-fanout`
-requires the line.
+requires the line. In local mode — the dossier validated from the main
+checkout while the stubs live in the package worktree X — pass
+`--worktree <X>` (or set the dossier's `worktree:` front-matter field, which
+the check resolves itself); a package that owns a directory is walked whole,
+every file under it.
 
 **Seven diffs over the checklist, before anything spawns:**
 
