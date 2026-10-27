@@ -266,6 +266,12 @@ the concrete numbers. Every criterion must be reachable from the contract — a
 criterion the contract cannot express is a gap in the contract, so fix the
 contract.
 
+A criterion that names an exception thrown by **existing** code cites the
+throw site: a `path:line` of the `throw`/`raise` it relies on, read in the
+target branch — never inferred from a class name or a strategy name. An
+expected exception without its throw site is a guess about where the code
+fails, and the plan reviewer flags it as a change request.
+
 Every criterion ends with an owner and an environment:
 `(owner: <test path>; env: <local|vm|container|ci>)`. The owner is a test
 path from the `## Work packages` table — you just built it, so take the path

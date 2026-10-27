@@ -142,7 +142,11 @@ Check, in this order:
    common defect in a plan.
 2. **Falsifiability.** For each acceptance criterion: what observation would
    prove it false? A criterion that cannot fail is a blocking CR. This is the
-   check that catches a plan passing by exhaustion.
+   check that catches a plan passing by exhaustion. A criterion that names an
+   exception thrown by existing code carries the `path:line` of its throw
+   site — an expected exception cited by class or strategy name alone is a
+   blocking CR: open the site and confirm the throw, or send the criterion
+   back.
 3. **Buildability.** Is `## Contract` complete enough that a test author who
    sees nothing else can write a test from it? Does every documented promise
    name its behaviour for empty input, invalid input, and errors? A vague
