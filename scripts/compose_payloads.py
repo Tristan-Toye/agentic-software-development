@@ -1015,12 +1015,26 @@ def failures_digest(log: str, root: str) -> str:
 
 
 def refresh_contract(args: argparse.Namespace) -> int:
-    """Re-read the contract files and rewrite CONTRACT (and CONTRACT_HASH, where
-    the kind has it) in each named payload in place; every other byte stays."""
+    """Re-read the contract and rewrite CONTRACT (and CONTRACT_HASH, where the
+    kind has it) in each named payload in place; every other byte stays.
+
+    #171: when --dossier is given and its status is `review` (the Phase 5
+    merge has landed), the contract files hold implementation bodies, so a
+    test author's CONTRACT (a payload with a CONTRACT_HASH field) is rewritten
+    from the dossier's `## Contract` — the `MODE: fix` route — never from
+    --contract-paths; an empty section refuses. Implementer payloads (no hash
+    field) keep the files route either way."""
     if not args.root:
         raise Refusal("--refresh-contract needs --root (the contract files resolve against it)")
     text = contract_bytes(args.contract_paths, os.path.abspath(args.root))
     new_hash = contract_hash(text)
+    review = bool(args.dossier) and front_matter(read_text(args.dossier)).get("status") == "review"
+    dossier_section = None
+    if review:
+        dossier_section = section_body(read_text(args.dossier), "## Contract")
+        if not dossier_section.strip():
+            raise Refusal("the dossier's `## Contract` section is empty; a test author "
+                          "after the merge has nothing to refresh from")
     new_block = render_field(Field("CONTRACT", text, block=True)).rstrip("\n").split("\n")
     code = 0
     for path in args.refresh_contract:
@@ -1036,17 +1050,29 @@ def refresh_contract(args: argparse.Namespace) -> int:
         while end > start + 1 and not lines[end - 1].strip():
             end -= 1  # blank lines after the block belong to the file, not to it
         current = [l[2:] if l.startswith("  ") else l for l in lines[start + 1 : end]]
-        same = current == text.rstrip("\n").split("\n")
-        lines[start:end] = new_block
+        has_hash = any(re.match(r"^CONTRACT_HASH:", l) for l in lines)
+        if has_hash and dossier_section is not None:
+            refresh_text = dossier_section
+            new_hash_here = contract_hash(dossier_section)
+            new_block_here = render_field(Field("CONTRACT", dossier_section, block=True)).rstrip("\n").split("\n")
+        elif has_hash and review:
+            print("%s: REFUSED — a test author after the merge takes CONTRACT from the "
+                  "dossier's `## Contract`, not from --contract-paths (the files hold "
+                  "implementation bodies now)" % os.path.basename(path), file=sys.stderr)
+            return 1
+        else:
+            refresh_text, new_hash_here, new_block_here = text, new_hash, new_block
+        same = current == refresh_text.rstrip("\n").split("\n")
+        lines[start:end] = new_block_here
         old_hash = None
         for n, l in enumerate(lines):
             m = re.match(r"^CONTRACT_HASH:\s*(\S*)\s*$", l)
             if m:
                 old_hash = m.group(1)
-                lines[n] = "CONTRACT_HASH: %s" % new_hash
+                lines[n] = "CONTRACT_HASH: %s" % new_hash_here
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines))
-        shown = ("CONTRACT_HASH %s -> %s" % (old_hash[:8], new_hash[:8])) if old_hash is not None else "no CONTRACT_HASH field"
+        shown = ("CONTRACT_HASH %s -> %s" % ((old_hash or "")[:8], new_hash_here[:8])) if old_hash is not None else "no CONTRACT_HASH field"
         print("%s: CONTRACT %s; %s" % (os.path.basename(path), "already current" if same else "refreshed", shown))
     return code
 
@@ -1802,6 +1828,36 @@ def selftest() -> int:
         check("--refresh-contract on a payload with no CONTRACT block exits 1", rc == 1)
         rc = main(["--refresh-contract", ut_op_path, "--root", root, "--contract-paths", "src/gone.py"])
         check("--refresh-contract with a missing contract file is refused", rc == 1)
+
+        # --- #171: after the merge (dossier status review), a test author's CONTRACT
+        # --- refreshes from the dossier's ## Contract, never from the merged files ---
+        review_dossier = os.path.join(root, "W-014-review.md")
+        with open(review_dossier, "w", encoding="utf-8") as fh:
+            fh.write(DOSSIER_FIXTURE.replace("status: ready", "status: review").replace(
+                "see src/flush.py\n",
+                "```python\nclass FlushQueue:\n    def flush(self, batch_size: int) -> int: ...\n```\n"))
+        with open(os.path.join(root, "src", "flush.py"), "a", encoding="utf-8") as fh:
+            fh.write("\n    def flush(self, batch_size: int) -> int:\n        return self._write_all()\n")  # merged bodies
+        before_impl = read_text(impl_path)
+        out_io = io.StringIO()
+        with contextlib.redirect_stdout(out_io):
+            rc = main(["--refresh-contract", ut_op_path, impl_path, "--root", root,
+                       "--contract-paths", "src/flush.py", "--dossier", review_dossier])
+        after_ut, after_impl2 = read_text(ut_op_path), read_text(impl_path)
+        merged_section = section_body(read_text(review_dossier), "## Contract")
+        check("a test author after the merge refreshes from the dossier's ## Contract",
+              rc == 0 and contract_hash(parsed_field(after_ut, "CONTRACT")) == contract_hash(merged_section)
+              and ("CONTRACT_HASH: %s" % contract_hash(merged_section)) in after_ut, out_io.getvalue())
+        check("the merged file's implementation bodies never reach the test author",
+              "return self._write_all()" not in after_ut)
+        check("an implementer payload (no hash field) keeps the files route under review",
+              after_impl2 == before_impl or "def reset(self)" in after_impl2)
+        empty_review = os.path.join(root, "W-014-empty-review.md")
+        with open(empty_review, "w", encoding="utf-8") as fh:
+            fh.write(DOSSIER_FIXTURE.replace("status: ready", "status: review").replace("see src/flush.py\n", ""))
+        rc = main(["--refresh-contract", ut_op_path, "--root", root,
+                   "--contract-paths", "src/flush.py", "--dossier", empty_review])
+        check("a review dossier with an empty ## Contract refuses the refresh", rc == 1)
 
         # --- #109: after the merge CONTRACT is the dossier's ## Contract, never the files ---
         contract_section = "```\nclass FlushQueue:\n    def flush(self, batch_size: int) -> int: ...\n```\n\nflush() returns the count written."

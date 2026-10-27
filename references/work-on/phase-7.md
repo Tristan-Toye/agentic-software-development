@@ -202,8 +202,11 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
   the fix document, keep the test (it pins a promise). `PROOF REFUSED` (it never
   ran) is no verdict: fix the test, never the defect. A defect is never fixed
   unproven, and a reviewer's word is not proof.
-- **Check who may apply each CR before you route it.** The fix implementer
-  owns source and never a test. **You never apply a test CR yourself either**
+- **Check who may apply each CR before you route it.** A test CR that
+  re-spawns an author after the merge composes its `CONTRACT` from the
+  dossier's `## Contract` (`--dossier` on compose or `--refresh-contract`),
+  never from the contract files, which hold implementation bodies now. The fix
+  implementer owns source and never a test. **You never apply a test CR yourself either**
   — you referee tests, so you must never author them; a test diff is always
   a test agent's work. A CR against a test path routes by what it touches:
 
