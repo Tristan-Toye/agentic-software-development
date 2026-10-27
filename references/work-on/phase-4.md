@@ -276,7 +276,14 @@ statement; `python3 ${PLUGIN_ROOT}/scripts/compose_payloads.py --emit-prompt
 <final>` prints exactly that text with its `PAYLOAD_SHA256:` line. That is the
 only form, for every agent: a prompt that points at a payload file is refused
 by the plugin's spawn guard and, in auto mode, denied by the classifier, which
-sees the prompt and never the file. The next paragraph is the opencode form.
+sees the prompt and never the file. The one exception is a spawn that goes
+through the plugin's own workflow: its args carry `payloadPath` +
+`payloadSha256`, the spawn guard checks the file before the launch and
+`verify_return.py` checks it after the return, so a fix implementer whose
+payload dwarfs the prompt — one recorded contract plus lens documents reached
+76 KB — is spawned by file through `phase4-wave` with a single item, never
+pasted (`phase-7.md`, "Spawn one implementer in MODE: fix"). The next
+paragraph is the opencode form.
 
 **Under opencode, spawn by the file, never by retyping it.** Every agent that
 can read its payload gets a prompt of two lines — `PAYLOAD_FILE: <absolute path
@@ -540,7 +547,13 @@ before it rewrites it: the resume names the changed tests. **Re-spawn with
 the full payload, linted and pasted, only when** the agent's ID is unknown (it
 was spawned by a workflow, whose compact result carries none, or the line that
 held it is gone), the agent has ended and `SendMessage` reports it unreachable,
-or the contract changed: a `CONTRACT_HASH` mismatch, an accepted
+or the contract changed: — and an agent spawned by a workflow is corrected by a
+**full re-spawn through the same workflow** (a test author with `FAILURES` +
+`CORRECTION` folded into its payload; an implementer with the fix payload,
+spawned by file per `phase-7.md`). An agent id scavenged from the workflow's
+transcript directory is not resumable: `No transcript found for agent ID` is
+the permanent refusal, not a retry signal — each of five recorded corrective
+rounds burned a refused resume before the re-spawn: a `CONTRACT_HASH` mismatch, an accepted
 `CONTRACT-CHANGE:` or a contract fix after a `GAP:` makes the agent's world
 stale, and a stale world is rebuilt, never patched. **Where the IDs live:**
 every `Agent` spawn's result carries an agent ID; write it into the build log in

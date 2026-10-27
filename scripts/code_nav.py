@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
 """Navigate and edit code by item instead of by file or line range.
 
+This script is also the permanent fallback for the navigation MCP tools
+(`code_item`, `code_outline`, `code_find`, `doc_section`, ...): their host can
+crash with a backend error — the recorded signature is
+`w0(()=>X(Q)).then is not a function` — and the failure is in the tool host,
+not the arguments, so retrying the identical call can never help. Do not
+retry; run the same query here, same arguments, same shape:
+
+    code_item ...   ->  code_nav.py item <file> <Type::method> --mode full|contract|doc|signature
+    code_outline    ->  code_nav.py outline <file>
+    code_find       ->  code_nav.py find <name> --root <X>
+    doc_section     ->  code_nav.py section <file> <heading-or-id>
+
 An orchestrator that reads a 100 KB Rust file with `sed -n` windows, whole-file
 reads and chains of greps pays for those bytes on every later step: its whole
 context is re-billed each time. The recorded runs spent about a fifth of their

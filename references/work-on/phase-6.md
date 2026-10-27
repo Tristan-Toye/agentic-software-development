@@ -99,7 +99,10 @@ change:
 ID is known and the contract is unchanged: `SendMessage` to the test author or
 the implementer with only the correction (for the implementer, the
 `WORKTREE_DIR` it now works in), per `phase-4.md` ("Under Claude Code, resume
-instead of re-spawn"). A row-3 contract fix changes the contract, so the
+instead of re-spawn"). An agent spawned by a workflow has no resumable id —
+not even one scavenged from its transcript directory; correct it with a full
+re-spawn through the same workflow, `FAILURES` + `CORRECTION` folded into the
+payload. A row-3 contract fix changes the contract, so the
 affected agents are re-spawned with the full payload and the new
 `CONTRACT_HASH`.
 
