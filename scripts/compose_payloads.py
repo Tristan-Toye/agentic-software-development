@@ -118,7 +118,6 @@ No third-party imports: this runs wherever python3 does.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.util
 import os
 import re
@@ -140,6 +139,7 @@ def _load(name: str):
 
 cp = _load("check_payload")   # FIELDS, CONDITIONAL, GROUPS — the field tables
 de = _load("dossier_edit")    # section(), split_front_matter(), KEY_RE, Refused
+pwh = _load("payload_hash")   # the one CONTRACT_HASH recipe, shared with verify_return.py
 
 MARKER = "# compose_payloads.py: generated payload — re-run with --force to overwrite by hand"
 
@@ -277,8 +277,106 @@ def contract_bytes(paths: list[str], root: str) -> str:
     return "\n\n".join(texts)
 
 
-def contract_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+# CONTRACT_HASH is payload_hash.py's canonical block recipe — the same helper
+# verify_return.py re-derives, so the stamp and the check cannot drift apart.
+# PAYLOAD_SHA256 stays a raw sha256 (pwh.raw_sha256): it proves the payload
+# file's bytes, which must never be canonicalised.
+contract_hash = pwh.contract_hash
+
+# The read guard's whole-read limit (shared/read-guard.ts): a payload bigger
+# than this cannot be read whole to be pasted, so its large fields travel as
+# staged paths instead (stage_oversized, below).
+READ_GUARD_BYTES = 20_000
+STAGE_MARGIN = 512
+STAGE_NOTE = "staged — read it whole, in parts with offset and limit if Read refuses the whole file"
+STAGEABLE_FIELDS = {
+    "CONTRACT", "CRITERIA", "CRS", "FAILURES", "RUN_EVIDENCE", "HARNESS",
+    "STYLE_SAMPLE", "SUPPORT", "SCOPE", "RULES", "ARBITRATIONS", "PRIOR_CRS",
+    "PROMISE_CHECKLIST", "CONVENTIONS", "FIXTURES", "CONTEXT_DOCS", "CORRECTION",
+}
+# TEST_PATHS and its siblings are written absolute under --root: a relative
+# entry resolves against the composer's cwd here and the subagent's cwd there.
+ABS_LIST_FIELDS = ("TEST_PATHS", "SUPPORT_PATHS", "STYLE_PATHS")
+
+
+def contract_subsection(dossier_text: str, heading: str) -> str:
+    """One `### <heading>` subsection of `## Contract`, heading included,
+    verbatim — the non-code contract surface (a Terraform table, a state
+    machine) that no stub file can carry."""
+    body = section_body(dossier_text, "### " + heading, drop_heading=False)
+    if not body.strip():
+        raise Refusal("the dossier's `## Contract` has no `### %s` subsection "
+                      "(--contract-extra)" % heading)
+    return body
+
+
+def contract_text_for(ctx: dict) -> str:
+    """CONTRACT for a stub-file spawn: the contract files' bytes plus every
+    `--contract-extra` subsection of the dossier's `## Contract`, so the
+    non-code sections reach the authors that own them (#163). CONTRACT_HASH
+    covers the combined text, so it stays identical across every author given
+    the same files and extras."""
+    args, root = ctx["args"], ctx["root"]
+    text = contract_bytes(args.contract_paths, root)
+    for heading in args.contract_extra:
+        text = text + "\n\n" + contract_subsection(ctx["dossier_text"], heading)
+    return text
+
+
+def absolutise_list_field(field: Field, root: str) -> None:
+    """TEST_PATHS and its siblings leave absolute: each comma-or-line entry
+    that is relative is joined under --root (#170), so check_payload.py and
+    prepare_wave.py admit the payload and the manifest unchanged. Comment
+    lines and template tokens pass through untouched."""
+    if is_placeholder(field.value):
+        return
+    out_lines = []
+    for line in field.value.split("\n"):
+        tokens = line.split(",")
+        rebuilt = ",".join(
+            token if (not token.strip()
+                      or token.strip().startswith(("#", "@@"))
+                      or os.path.isabs(token.strip()))
+            else os.path.normpath(os.path.join(root, token.strip()))
+            for token in tokens)
+        out_lines.append(rebuilt)
+    field.value = "\n".join(out_lines)
+
+
+def stage_oversized(fields: list, out_path: str, root: str) -> None:
+    """Fields that push the payload past the read guard's whole-read limit
+    travel as staged paths (#146): the largest block field is written under
+    .agent-staging/contract-support/ and the field names that absolute path
+    with a read-it-whole note, again and again until the payload fits; the
+    small fields stay pasted. CONTRACT's staged file holds the contract text
+    itself, and verify_return.py resolves the staged form, so CONTRACT_HASH
+    still verifies."""
+    def rendered() -> str:
+        return MARKER + "\n" + "".join(render_field(f) for f in fields)
+
+    if len(rendered().encode("utf-8")) <= READ_GUARD_BYTES - STAGE_MARGIN:
+        return
+    staging = os.path.join(root, ".agent-staging", "contract-support")
+    os.makedirs(staging, exist_ok=True)
+    stem = re.sub(r"[^\w.-]+", "_", os.path.basename(out_path))
+    staged = []
+    while len(rendered().encode("utf-8")) > READ_GUARD_BYTES - STAGE_MARGIN:
+        candidates = [f for f in fields
+                      if f.name in STAGEABLE_FIELDS and f.block and not is_placeholder(f.value)]
+        if not candidates:
+            break
+        biggest = max(candidates, key=lambda f: len(f.value.encode("utf-8")))
+        path = os.path.join(staging, "%s-%s.md" % (stem, biggest.name.lower()))
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(biggest.value)
+        with open(path, encoding="utf-8") as fh:
+            if fh.read() != biggest.value:
+                raise Refusal("staged %s does not carry its bytes; nothing was written" % path)
+        biggest.value = "%s (%s)" % (path, STAGE_NOTE)
+        biggest.block = False
+        staged.append("%s -> %s" % (biggest.name, path))
+    if staged:
+        print("staged over the read guard's whole-read limit: " + "; ".join(staged))
 
 
 def dossier_contract(dossier_text: str, args: argparse.Namespace, who: str) -> str:
@@ -290,6 +388,11 @@ def dossier_contract(dossier_text: str, args: argparse.Namespace, who: str) -> s
         raise Refusal(
             "%s takes CONTRACT from the dossier's `## Contract`, not from files: after the "
             "merge the contract files hold the implementation. Drop --contract-paths" % who
+        )
+    if args.contract_extra:
+        raise Refusal(
+            "%s pastes the whole `## Contract` section, so --contract-extra subsections "
+            "are already in it" % who
         )
     text = section_body(dossier_text, "## Contract")
     if not text.strip():
@@ -542,7 +645,7 @@ def compose_implementer(ctx: dict) -> list[Field]:
     # depends on it — README, "CONTRACT_HASH stamps which contract an author
     # saw"); the implementer's CONTRACT is still pasted verbatim.
     contract_text = (dossier_contract(dossier_text, args, "an implementer in MODE fix") if mode == "fix"
-                     else contract_bytes(args.contract_paths, root))
+                     else contract_text_for(ctx))
     fields["CONTRACT"] = Field("CONTRACT", contract_text, block=True)
 
     if owned_paths is None:
@@ -581,6 +684,13 @@ def compose_implementer(ctx: dict) -> list[Field]:
         "JIRA_KEY", "the dossier's jira: front-matter field")))
 
     apply_overrides(fields, sets, blocks={"CRS", "FAILURES", "SHARED_IDIOM", "VERIFY_EMBEDDED", "HOOKS", "CONTRACT"})
+    if "FAILURES" in fields and not is_placeholder(fields["FAILURES"].value) \
+            and "BASELINE_COUNTS_FROM" not in fields:
+        # #149: counts without a named tree inherit an earlier phase's numbers;
+        # the field forces the composer (or the orchestrator) to say which tree.
+        fields["BASELINE_COUNTS_FROM"] = Field("BASELINE_COUNTS_FROM", placeholder(
+            "BASELINE_COUNTS_FROM", "the sha the FAILURES counts were taken at, or "
+            "`pre-change tree re-run` — never an earlier phase's numbers"))
     if args.hook_outputs:
         hooks = fields["HOOKS"]
         hooks.value = hooks.value.rstrip("\n") + "\n" + hook_outputs_block(args.hook_outputs)
@@ -608,8 +718,8 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
     become @@FILL unless given with --set. SUPPORT_PATHS/SUPPORT/
     SHARED_IDIOM/DELIVERY_CHANGE: optional judgement, included only when
     --set names them."""
-    root, args, sets, host = ctx["root"], ctx["args"], ctx["sets"], ctx["host"]
-    contract_text = contract_bytes(args.contract_paths, root)
+    sets, host = ctx["sets"], ctx["host"]
+    contract_text = contract_text_for(ctx)
     fields: dict[str, Field] = {
         "CONTRACT": Field("CONTRACT", contract_text, block=True),
         "CONTRACT_HASH": Field("CONTRACT_HASH", contract_hash(contract_text)),
@@ -673,7 +783,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     decisions only the orchestrator can make; @@FILL unless --set.
     PROMISE_CHECKLIST/SHARED_IDIOM/DELIVERY_CHANGE/SUPPORT_PATHS/SUPPORT/
     FAILURES/CORRECTION: optional, included only when --set names them."""
-    root, dossier_text, args, sets = ctx["root"], ctx["dossier_text"], ctx["args"], ctx["sets"]
+    root, dossier_text, sets = ctx["root"], ctx["dossier_text"], ctx["sets"]
     fm = ctx["fm"]
     dossier_id = fm.get("id")
     if not dossier_id:
@@ -684,7 +794,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     with open(excerpt_path, "w", encoding="utf-8") as fh:
         fh.write(excerpt(dossier_text, ("## Problem", "## Approach", "## Acceptance criteria")))
 
-    contract_text = contract_bytes(args.contract_paths, root)
+    contract_text = contract_text_for(ctx)
     fields: dict[str, Field] = {
         "WORKTREE_DIR": Field("WORKTREE_DIR", root),
         "DOSSIER": Field("DOSSIER", excerpt_path),
@@ -708,6 +818,11 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
         "CONTRACT", "HARNESS", "STYLE_SAMPLE", "PROMISE_CHECKLIST", "SHARED_IDIOM",
         "DELIVERY_CHANGE", "SUPPORT", "FAILURES", "CORRECTION",
     })
+    if "FAILURES" in fields and not is_placeholder(fields["FAILURES"].value) \
+            and "BASELINE_COUNTS_FROM" not in fields:
+        fields["BASELINE_COUNTS_FROM"] = Field("BASELINE_COUNTS_FROM", placeholder(
+            "BASELINE_COUNTS_FROM", "the sha the FAILURES counts were taken at, or "
+            "`pre-change tree re-run` — never an earlier phase's numbers"))
     order = ["WORKTREE_DIR", "DOSSIER", "CONTRACT", "PROMISE_CHECKLIST", "TEST_PATHS",
              "TEST_FRAMEWORK", "HARNESS", "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
              "BOUNDARIES", "SHARED_IDIOM", "DELIVERY_CHANGE", "FAILURES", "CORRECTION",
@@ -772,9 +887,16 @@ def compose_reviewer(ctx: dict) -> list[Field]:
         fields["CONTEXT_DOCS"] = Field("CONTEXT_DOCS", placeholder(
             "CONTEXT_DOCS", "the ADR(s) relevant to this lens, if any"))
         if lens == "architecture":
+            # #159: a check round (ROUND > 1 with PRIOR_CRS) carries no SIGNALS —
+            # round 1 established them; later rounds review change requests
+            # against what round 1 saw. phase-7.md says the same.
+            round_value = sets.get("ROUND", "1")
+            check_round = round_value.isdigit() and int(round_value) > 1 and "PRIOR_CRS" in sets
+            if check_round:
+                pass
             # Mechanical: the markers review_signals.py finds on the build's lines, as
             # current-state locations. Without --review-base the field stays @@FILL.
-            if args.review_base:
+            elif args.review_base:
                 signals = _load("review_signals")
                 try:
                     marks, sums = signals.report(root, args.review_base, "HEAD", 40)
@@ -818,6 +940,10 @@ def required_fields(kind: str, present: dict[str, Field]) -> set[str]:
     for (k, disc, value), (more, _groups) in cp.CONDITIONAL.items():
         if k == kind and present.get(disc) and present[disc].value == value:
             required |= more
+    round_field = present.get("ROUND")
+    if cp.round_relaxes_signals(kind, round_field.value if round_field else None,
+                                "PRIOR_CRS" in present):
+        required.discard("SIGNALS")
     return required
 
 
@@ -889,12 +1015,26 @@ def failures_digest(log: str, root: str) -> str:
 
 
 def refresh_contract(args: argparse.Namespace) -> int:
-    """Re-read the contract files and rewrite CONTRACT (and CONTRACT_HASH, where
-    the kind has it) in each named payload in place; every other byte stays."""
+    """Re-read the contract and rewrite CONTRACT (and CONTRACT_HASH, where the
+    kind has it) in each named payload in place; every other byte stays.
+
+    #171: when --dossier is given and its status is `review` (the Phase 5
+    merge has landed), the contract files hold implementation bodies, so a
+    test author's CONTRACT (a payload with a CONTRACT_HASH field) is rewritten
+    from the dossier's `## Contract` — the `MODE: fix` route — never from
+    --contract-paths; an empty section refuses. Implementer payloads (no hash
+    field) keep the files route either way."""
     if not args.root:
         raise Refusal("--refresh-contract needs --root (the contract files resolve against it)")
     text = contract_bytes(args.contract_paths, os.path.abspath(args.root))
     new_hash = contract_hash(text)
+    review = bool(args.dossier) and front_matter(read_text(args.dossier)).get("status") == "review"
+    dossier_section = None
+    if review:
+        dossier_section = section_body(read_text(args.dossier), "## Contract")
+        if not dossier_section.strip():
+            raise Refusal("the dossier's `## Contract` section is empty; a test author "
+                          "after the merge has nothing to refresh from")
     new_block = render_field(Field("CONTRACT", text, block=True)).rstrip("\n").split("\n")
     code = 0
     for path in args.refresh_contract:
@@ -910,17 +1050,29 @@ def refresh_contract(args: argparse.Namespace) -> int:
         while end > start + 1 and not lines[end - 1].strip():
             end -= 1  # blank lines after the block belong to the file, not to it
         current = [l[2:] if l.startswith("  ") else l for l in lines[start + 1 : end]]
-        same = current == text.rstrip("\n").split("\n")
-        lines[start:end] = new_block
+        has_hash = any(re.match(r"^CONTRACT_HASH:", l) for l in lines)
+        if has_hash and dossier_section is not None:
+            refresh_text = dossier_section
+            new_hash_here = contract_hash(dossier_section)
+            new_block_here = render_field(Field("CONTRACT", dossier_section, block=True)).rstrip("\n").split("\n")
+        elif has_hash and review:
+            print("%s: REFUSED — a test author after the merge takes CONTRACT from the "
+                  "dossier's `## Contract`, not from --contract-paths (the files hold "
+                  "implementation bodies now)" % os.path.basename(path), file=sys.stderr)
+            return 1
+        else:
+            refresh_text, new_hash_here, new_block_here = text, new_hash, new_block
+        same = current == refresh_text.rstrip("\n").split("\n")
+        lines[start:end] = new_block_here
         old_hash = None
         for n, l in enumerate(lines):
             m = re.match(r"^CONTRACT_HASH:\s*(\S*)\s*$", l)
             if m:
                 old_hash = m.group(1)
-                lines[n] = "CONTRACT_HASH: %s" % new_hash
+                lines[n] = "CONTRACT_HASH: %s" % new_hash_here
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines))
-        shown = ("CONTRACT_HASH %s -> %s" % (old_hash[:8], new_hash[:8])) if old_hash is not None else "no CONTRACT_HASH field"
+        shown = ("CONTRACT_HASH %s -> %s" % ((old_hash or "")[:8], new_hash_here[:8])) if old_hash is not None else "no CONTRACT_HASH field"
         print("%s: CONTRACT %s; %s" % (os.path.basename(path), "already current" if same else "refreshed", shown))
     return code
 
@@ -1062,7 +1214,7 @@ def emit_prompt(path: str) -> str:
         raise Refusal("%s still carries template token(s) %s; compose and lint it first" % (path, ", ".join(left)))
     if not text.endswith("\n"):
         text += "\n"
-    return "%sPAYLOAD_SHA256: %s\n" % (text, contract_hash(text))
+    return "%sPAYLOAD_SHA256: %s\n" % (text, pwh.raw_sha256(text))
 
 
 def manifest_line(args: argparse.Namespace, out_path: str, fields: list[Field]) -> str:
@@ -1111,6 +1263,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--excerpt-field", metavar="FIELD", help="the payload field --excerpt fills")
     parser.add_argument("--hook-outputs", action="append", default=[], metavar="STEP:GLOB",
                         help="implementer: a path glob a named commit-hook step rewrites on every commit; repeatable")
+    parser.add_argument("--contract-extra", action="append", default=[], metavar="HEADING",
+                        help="append this `### HEADING` subsection of the dossier's `## Contract` "
+                             "to CONTRACT (a Terraform table, a state machine the stub files "
+                             "cannot carry); repeatable")
     parser.add_argument("--no-stub-hints", action="store_true", help="leave the `# stub locations` aid out of OWNED_PATHS")
     parser.add_argument("--emit-prompt", metavar="PAYLOAD",
                         help="print PAYLOAD's bytes and its PAYLOAD_SHA256 line: the Claude Code spawn prompt")
@@ -1144,6 +1300,10 @@ def main(argv: list[str]) -> int:
 
     try:
         fields, _root = compose(args)
+        for field in fields:
+            if field.name in ABS_LIST_FIELDS:
+                absolutise_list_field(field, args.root)
+        stage_oversized(fields, args.out, args.root)
         write_payload(args.out, fields, args.force,
                       VERBATIM_FIELDS + ((args.excerpt_field,) if args.excerpt else ()))
     except Refusal as err:
@@ -1534,6 +1694,113 @@ def selftest() -> int:
         rc, _p, _o = run_compose("FFut.md", ["unit-test-author", "--host", "opencode", "--contract-paths", "src/flush.py", "--failures-from", flog])
         check("--failures-from refuses a kind with no FAILURES", rc == 1)
 
+        # --- #170: relative TEST_PATHS/SUPPORT_PATHS leave absolute, payload and manifest alike ---
+        rc, tp_path, out = run_compose("TP.md", [
+            "unit-test-author", "--host", "opencode", "--contract-paths", "src/flush.py",
+            "--set", "TEST_PATHS=tests/unit/test_new.py",
+            "--set", "SUPPORT_PATHS=src/flush.py",
+        ])
+        tp_text = read_text(tp_path) if rc == 0 else ""
+        check("a relative TEST_PATHS is written absolute under --root",
+              rc == 0 and ("TEST_PATHS: %s" % os.path.join(root, "tests/unit/test_new.py")) in tp_text, out)
+        check("a relative SUPPORT_PATHS is written absolute too",
+              ("SUPPORT_PATHS: %s" % os.path.join(root, "src/flush.py")) in tp_text)
+        man_tp = os.path.join(root, "wave-tp.txt")
+        rc, _p, out = run_compose("TP2.md", [
+            "unit-test-author", "--host", "opencode", "--contract-paths", "src/flush.py",
+            "--set", "TEST_PATHS=tests/unit/test_new.py", "--manifest", man_tp,
+        ])
+        check("the manifest test-paths line is absolute and admits unchanged",
+              rc == 0 and ("test-paths=%s" % os.path.join(root, "tests/unit/test_new.py"))
+              in read_text(man_tp), out)
+
+        # --- #163: --contract-extra carries the non-code contract subsections ---
+        extra_dossier = os.path.join(root, "W-014-extra.md")
+        with open(extra_dossier, "w", encoding="utf-8") as fh:
+            fh.write(DOSSIER_FIXTURE.replace(
+                "see src/flush.py\n",
+                "see src/flush.py\n\n### Terraform table\n\n| Resource | Table |\n|---|---|\n| store | podcast_plans |\n"))
+
+        def run_extra(out_name: str, extra: list[str]) -> tuple[int, str, str]:
+            out_path = os.path.join(root, ".agent-staging", "payloads", out_name)
+            argv = ["--kind", extra[0], "--dossier", extra_dossier, "--root", root,
+                    "--out", out_path, "--plugin-root", plugin_root] + extra[1:]
+            out_io, err_io = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out_io), contextlib.redirect_stderr(err_io):
+                rc = main(argv)
+            return rc, out_path, out_io.getvalue() + err_io.getvalue()
+
+        rc, ce_impl, out = run_extra("CE1.md", [
+            "implementer", "--host", "opencode", "--package", "P1",
+            "--contract-paths", "src/flush.py", "--test-command", "pytest -q",
+            "--hooks", "none", "--contract-extra", "Terraform table",
+        ])
+        ce_text = read_text(ce_impl) if rc == 0 else ""
+        check("--contract-extra carries the subsection verbatim to the implementer",
+              rc == 0 and "### Terraform table" in ce_text and "podcast_plans" in ce_text, out)
+        rc, ce_ut, out = run_extra("CE2.md", [
+            "unit-test-author", "--host", "opencode", "--contract-paths", "src/flush.py",
+            "--contract-extra", "Terraform table",
+        ])
+        rc, ce_it, out = run_extra("CE3.md", [
+            "integration-test-author", "--host", "opencode", "--contract-paths", "src/flush.py",
+            "--contract-extra", "Terraform table",
+        ])
+        check("CONTRACT_HASH stays identical across authors over the combined contract",
+              rc == 0 and (re.search(r"^CONTRACT_HASH: (\S+)$", read_text(ce_ut), re.M).group(1)
+                           == re.search(r"^CONTRACT_HASH: (\S+)$", read_text(ce_it), re.M).group(1)), out)
+        rc, _p, out = run_extra("CEbad.md", [
+            "unit-test-author", "--host", "opencode", "--contract-paths", "src/flush.py",
+            "--contract-extra", "No such subsection",
+        ])
+        check("--contract-extra refuses a subsection the contract does not have",
+              rc == 1 and "`### No such subsection`" in out, out)
+        rc, _p, out = run_extra("CEfix.md", [
+            "implementer", "--host", "opencode", "--hooks", "none", "--test-command", "pytest -q",
+            "--set", "MODE=fix", "--set", "CRS=CR-1: x", "--contract-extra", "Terraform table",
+        ])
+        check("--contract-extra is refused where the whole ## Contract is already pasted",
+              rc == 1 and "already in it" in out, out)
+
+        # --- #149: FAILURES carries counts -> BASELINE_COUNTS_FROM is forced ---
+        rc, bl_path, out = run_compose("BL.md", [
+            "implementer", "--host", "opencode", "--hooks", "none",
+            "--test-command", "pytest -q", "--set", "MODE=fix",
+            "--set", "FAILURES==== 1 failed, 7 passed ===",
+        ])
+        bl_text = read_text(bl_path) if rc == 0 else ""
+        check("FAILURES gains a BASELINE_COUNTS_FROM the composer cannot answer",
+              rc == 0 and "@@FILL_BASELINE_COUNTS_FROM@@" in bl_text
+              and "pre-change tree re-run" in bl_text, out)
+
+        # --- #146: a payload over the read guard's limit stages its large fields ---
+        huge = os.path.join(root, "src", "huge.py")
+        with open(huge, "w", encoding="utf-8") as fh:
+            fh.write("".join("    def m%d(self, x: int) -> int:\n        \"\"\"Member %d, pads the contract past the read guard's whole-read limit for sure.\"\"\"\n\n" % (i, i)
+                             for i in range(260)))
+        rc, st_path, out = run_compose("ST.md", [
+            "unit-test-author", "--host", "claude", "--contract-paths", "src/huge.py",
+        ])
+        st_text = read_text(st_path) if rc == 0 else ""
+        staged_file = os.path.join(root, ".agent-staging", "contract-support", "ST.md-contract.md")
+        check("an oversized CONTRACT is staged under .agent-staging/contract-support/",
+              rc == 0 and os.path.isfile(staged_file)
+              and ("CONTRACT: %s (" % staged_file) in st_text and "read it whole" in st_text, out)
+        check("the staged payload fits under the read guard's whole-read limit",
+              len(st_text.encode("utf-8")) <= READ_GUARD_BYTES - STAGE_MARGIN)
+        check("CONTRACT_HASH still stamps the contract the staged file carries",
+              ("CONTRACT_HASH: %s" % contract_hash(read_text(huge))) in st_text)
+        filled = _fill_placeholders(st_text, style_path, os.path.join(root, "tests/unit/test_new2.py"))
+        with open(st_path, "w", encoding="utf-8") as fh:
+            fh.write(filled)
+        rc2, out2 = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"),
+                          st_path, "--kind", "unit-test-author", "--host", "claude",
+                          "--worktree", root])
+        check("the staged form lints clean with no --allow-path", rc2 == 0, out2)
+        check("the staged contract resolves back to the same canonical hash",
+              pwh.contract_hash(pwh.resolve_contract_block(filled))
+              == pwh.contract_hash(read_text(huge)))
+
         # --- --refresh-contract: contract text and hash updated in place, nothing else ---
         before_ut = read_text(ut_op_path)
         old_hash = re.search(r"^CONTRACT_HASH: (\S+)$", before_ut, re.M).group(1)
@@ -1561,6 +1828,36 @@ def selftest() -> int:
         check("--refresh-contract on a payload with no CONTRACT block exits 1", rc == 1)
         rc = main(["--refresh-contract", ut_op_path, "--root", root, "--contract-paths", "src/gone.py"])
         check("--refresh-contract with a missing contract file is refused", rc == 1)
+
+        # --- #171: after the merge (dossier status review), a test author's CONTRACT
+        # --- refreshes from the dossier's ## Contract, never from the merged files ---
+        review_dossier = os.path.join(root, "W-014-review.md")
+        with open(review_dossier, "w", encoding="utf-8") as fh:
+            fh.write(DOSSIER_FIXTURE.replace("status: ready", "status: review").replace(
+                "see src/flush.py\n",
+                "```python\nclass FlushQueue:\n    def flush(self, batch_size: int) -> int: ...\n```\n"))
+        with open(os.path.join(root, "src", "flush.py"), "a", encoding="utf-8") as fh:
+            fh.write("\n    def flush(self, batch_size: int) -> int:\n        return self._write_all()\n")  # merged bodies
+        before_impl = read_text(impl_path)
+        out_io = io.StringIO()
+        with contextlib.redirect_stdout(out_io):
+            rc = main(["--refresh-contract", ut_op_path, impl_path, "--root", root,
+                       "--contract-paths", "src/flush.py", "--dossier", review_dossier])
+        after_ut, after_impl2 = read_text(ut_op_path), read_text(impl_path)
+        merged_section = section_body(read_text(review_dossier), "## Contract")
+        check("a test author after the merge refreshes from the dossier's ## Contract",
+              rc == 0 and contract_hash(parsed_field(after_ut, "CONTRACT")) == contract_hash(merged_section)
+              and ("CONTRACT_HASH: %s" % contract_hash(merged_section)) in after_ut, out_io.getvalue())
+        check("the merged file's implementation bodies never reach the test author",
+              "return self._write_all()" not in after_ut)
+        check("an implementer payload (no hash field) keeps the files route under review",
+              after_impl2 == before_impl or "def reset(self)" in after_impl2)
+        empty_review = os.path.join(root, "W-014-empty-review.md")
+        with open(empty_review, "w", encoding="utf-8") as fh:
+            fh.write(DOSSIER_FIXTURE.replace("status: ready", "status: review").replace("see src/flush.py\n", ""))
+        rc = main(["--refresh-contract", ut_op_path, "--root", root,
+                   "--contract-paths", "src/flush.py", "--dossier", empty_review])
+        check("a review dossier with an empty ## Contract refuses the refresh", rc == 1)
 
         # --- #109: after the merge CONTRACT is the dossier's ## Contract, never the files ---
         contract_section = "```\nclass FlushQueue:\n    def flush(self, batch_size: int) -> int: ...\n```\n\nflush() returns the count written."
@@ -1605,6 +1902,19 @@ def selftest() -> int:
               rc == 0 and "FAILURE-SIGNALS: none" in parsed_field(rva_text, "SIGNALS") and "@@FILL" not in parsed_field(rva_text, "SIGNALS"), out)
         rc, _p, out = run_with(dossier2_path, "RVx.md", ["reviewer", "--host", "claude", "--set", "LENS=flaky"])
         check("an unknown lens is refused", rc == 1 and "LENS=plan|style|architecture|performance|tests" in out, out)
+        rc, r2_path, out = run_with(dossier2_path, "RVr2.md", ["reviewer", "--host", "claude", "--set", "LENS=architecture",
+                                                               "--set", "ROUND=2", "--set", "PRIOR_CRS=CR-1: split the cache",
+                                                               "--review-base", "HEAD"])
+        r2_text = read_text(r2_path) if rc == 0 else ""
+        check("a check-round architecture payload composes with no SIGNALS field",
+              rc == 0 and "SIGNALS" not in r2_text, out)
+        r2_filled = _fill_placeholders(read_text(r2_path), style_path,
+                                       os.path.join(root, "tests/unit/test_new3.py"))
+        with open(r2_path, "w", encoding="utf-8") as fh:
+            fh.write(r2_filled)
+        rc2, out2 = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"),
+                          r2_path, "--kind", "reviewer", "--host", "claude", "--worktree", root])
+        check("the check-round payload lints clean with no SIGNALS", rc2 == 0, out2)
         rc, fxc_path, out = run_with(dossier2_path, "FXC.md", ["implementer", "--host", "opencode", "--hooks", "none", "--test-command", "pytest -q",
                                                                 "--set", "MODE=fix", "--set", "CRS=CR-1: x"])
         check("an implementer in MODE fix takes CONTRACT from the dossier too",
@@ -1693,7 +2003,7 @@ def selftest() -> int:
             rc = main(["--emit-prompt", impl_path])
         prompt = out_io.getvalue()
         check("--emit-prompt prints the file's bytes then PAYLOAD_SHA256 of them",
-              rc == 0 and prompt.startswith(ep_text) and prompt.endswith("PAYLOAD_SHA256: %s\n" % contract_hash(ep_text)), prompt[-120:])
+              rc == 0 and prompt.startswith(ep_text) and prompt.endswith("PAYLOAD_SHA256: %s\n" % pwh.raw_sha256(ep_text)), prompt[-120:])
         check("the spawn guard allows the --emit-prompt output", guard.problems(prompt) == [], str(guard.problems(prompt)))
         check("the spawn guard allows it under a one-line task statement", guard.problems("Fill the bodies.\n" + prompt) == [])
         check("--emit-prompt refuses a payload with an @@FILL left", main(["--emit-prompt", ut_op_path]) == 1)

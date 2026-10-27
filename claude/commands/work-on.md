@@ -120,6 +120,11 @@ not a chain you type. Before you compose a shell command, take the tool:
 | Several items or sections at once | one `code_item` or `doc_section` call with the names separated by a pipe: `Config::load \| Config::save`, `LRN-0073 \| LRN-0081` |
 | Where a symbol is defined | `code_find` (or `code_nav.py find <name> --root <X>`) |
 | One section or rule of a markdown file, by heading or id (`LRN-0073`, `ADR-0150`) | `doc_section` (or `code_nav.py section <file> <heading-or-id>`) |
+
+A navigation tool can crash host-side — `w0(()=>X(Q)).then is not a function`.
+That error is permanent for the call, not an argument bug: never retry the
+identical call; run the `code_nav.py` form named beside the tool above, same
+arguments, same output shape.
 | Replace one item without reading its file | `code_replace` (or `code_nav.py replace <file> <symbol> --from-file <f>`) |
 | A chain of lookups — where X is, what calls Y | spawn `code-scout` with the questions; it returns `path:line` rows |
 | Check a subagent's return | `python3 ${PLUGIN_ROOT}/scripts/verify_return.py …` (Phase 4) |

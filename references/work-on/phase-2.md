@@ -172,11 +172,29 @@ referee with in Phase 6, and a contract you did not write is one you cannot
 referee with.
 
 The contract stays yours; the transcription need not. Past the gate (more
-than four members) spawn `stub-materialiser` (payload in
-`references/payloads/stub-materialiser.md`) to place the contract verbatim as compiling stubs
-in `X` while you refine the packages; below it, type the stubs yourself.
-Either way, compare every signature **and every documentation-comment block**
-mechanically against `## Contract` before you commit: each contract doc
-sentence lands verbatim or is reconciled with a `## Build log` note, because
-you referee with this text and a byte of drift is a defect, not a style
-issue. Log the gate decision.
+than four members) pick the route by the contract's shape:
+
+- **Signature-only code** — every member a `;`-terminated signature with
+  documentation comments (C# declarations): run
+  `python3 ${PLUGIN_ROOT}/scripts/materialise_stubs.py --root X
+  --contract-paths <the contract files> --owned <stub targets> --check
+  [--definitions-from <live dossier>] [--build-check '<compile>']`. It copies
+  every contract line byte-for-byte, gives each member that needs one a
+  throwing body, places `### Definitions` terms (refusing one in no contract
+  byte), and runs the mechanical diff itself — no agent, no pasted payload,
+  and a 53 KB contract is as cheap as a 5 KB one.
+- **Anything else**: spawn `stub-materialiser` (payload in
+  `references/payloads/stub-materialiser.md`) to place the contract verbatim as
+  compiling stubs in `X` while you refine the packages.
+
+Below the gate, type the stubs yourself. Either way, compare every signature
+**and every documentation-comment block** mechanically against `## Contract`
+before you commit: each contract doc sentence lands verbatim or is reconciled
+with a `## Build log` note, because you referee with this text and a byte of
+drift is a defect, not a style issue. Log the gate decision and the route:
+
+```
+STUB-GATE: transform — <N> members, signature-only, materialise_stubs.py
+STUB-GATE: stub-materialiser — <N> members, <why the transform cannot run>
+STUB-GATE: self — <N> members, under the gate
+```

@@ -72,6 +72,7 @@ DOSSIER_KEYS = [
     "updated",
     "anchors",
     "baseline_commit",
+    "planning_repo",
     "jira",
     "branch",
     "worktree",
@@ -79,6 +80,7 @@ DOSSIER_KEYS = [
     "blocked_by",
     "adrs",
 ]
+DOSSIER_OPTIONAL_KEYS = ["planning_repo"]
 ADR_KEYS = [
     "id",
     "title",
@@ -552,6 +554,11 @@ def check_anchors(where: str, fm: dict, repo_root: Path, rep: Report) -> None:
     if not isinstance(anchors, list):
         rep.defect(where, "'anchors' must be a list")
         return
+    # A dossier planned in another checkout (#164): its anchors and baseline
+    # were stamped against the planning repository. They are re-pointed at the
+    # build repository at Phase 2; until then the mismatch is a warning that
+    # names the re-point, never a DEFECT that fails validation.
+    planning_repo = str(fm.get("planning_repo") or "").strip()
     for a in anchors:
         if ":" not in str(a):
             rep.defect(where, f"anchor '{a}' is not in path:line form")
@@ -559,6 +566,15 @@ def check_anchors(where: str, fm: dict, repo_root: Path, rep: Report) -> None:
         path_part, _, line_part = str(a).rpartition(":")
         target = repo_root / path_part
         if not target.exists():
+            if planning_repo:
+                rep.warn(
+                    where,
+                    f"anchor '{a}' does not resolve in the build repository — "
+                    f"stamped against the planning repository ({planning_repo}); "
+                    f"/work-on Phase 2 re-points it (a missing docs/research/ "
+                    f"prefix is the recorded shape)",
+                )
+                continue
             rep.defect(where, f"anchor '{a}' points at a file that does not exist")
             continue
         if not line_part.isdigit():
@@ -566,7 +582,11 @@ def check_anchors(where: str, fm: dict, repo_root: Path, rep: Report) -> None:
             continue
         n = len(target.read_text(errors="replace").split("\n"))
         if int(line_part) > n:
-            rep.defect(where, f"anchor '{a}' is past the end of the file ({n} lines)")
+            rep.warn(
+                where,
+                f"anchor '{a}' is past the end of the file ({n} lines)"
+                + (" — planned against another checkout" if planning_repo else ""),
+            )
 
 
 def check_evidence(where: str, text: str, rep: Report) -> None:
@@ -749,7 +769,7 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
         rep.defect(where, str(exc))
         return rep
 
-    check_keys(where, fm, DOSSIER_KEYS, rep)
+    check_keys(where, fm, [k for k in DOSSIER_KEYS if k not in DOSSIER_OPTIONAL_KEYS], rep)
     status = fm.get("status")
     if status not in DOSSIER_STATUSES:
         rep.defect(where, f"status '{status}' is not one of {sorted(DOSSIER_STATUSES)}")
@@ -789,6 +809,27 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
             where,
             "status is 'ready' but baseline_commit is empty; /plan stamps it last",
         )
+    elif fm.get("baseline_commit") and not str(fm.get("planning_repo") or "").strip():
+        # #164: a baseline that resolves in no repository of the build checkout
+        # was stamped against the planning one; /work-on forks from the target
+        # tip and re-stamps. Recorded separately, it is a warning, not a DEFECT.
+        sha = str(fm.get("baseline_commit"))
+        probe = (
+            subprocess.run(
+                ["git", "-C", str(repo_root), "cat-file", "-e", f"{sha}^{{commit}}"],
+                capture_output=True,
+            )
+            if (repo_root / ".git").exists()
+            else None
+        )
+        if probe is not None and probe.returncode != 0:
+            rep.warn(
+                where,
+                f"baseline_commit '{sha[:12]}' is not a commit in this repository — "
+                "stamped against the planning checkout; record `planning_repo:` or "
+                "re-stamp against the build repository (/work-on Phase 2 forks from "
+                "the target tip)",
+            )
 
     for name in ("## Problem", "## Approach", "## Consequences"):
         if name in sec:
@@ -908,10 +949,24 @@ def validate_adr(path: Path, repo_root: Path) -> Report:
 # --------------------------------------------------------------------------
 
 
+# Non-ADR documents that may legitimately live in docs/adr/: the index, and
+# the rules file phase-8.md 8b itself recommends creating there.
+ADR_SKIP_FILES = {"index.md", "RULES.md"}
+
+
+def adr_targets(adr_dir: Path) -> list[Path]:
+    """Every ADR under `adr_dir`; the index and RULES.md are not ADRs
+    (#165: phase-8.md 8b recommends `docs/adr/RULES.md` for a repository's
+    rules file, and a rules file there was failed as a fence-less ADR)."""
+    if not adr_dir.exists():
+        return []
+    return [p for p in sorted(adr_dir.glob("*.md")) if p.name not in ADR_SKIP_FILES]
+
+
 def adr_rows(adr_dir: Path) -> list[tuple[str, str, str]]:
     rows = []
     for p in sorted(adr_dir.glob("*.md")):
-        if p.name == "index.md":
+        if p.name in ADR_SKIP_FILES:
             continue
         try:
             fm, _, _ = split_front_matter(p.read_text())
@@ -1771,6 +1826,45 @@ def selftest() -> int:
         (a / "0007-flush.md").write_text(GOOD_ADR)
         (a / "index.md").write_text(render_index(adr_rows(a)))
 
+        # #164: a dossier planned in another checkout validates in the build
+        # repository — anchors and baseline warn and name the re-point, they do
+        # not fail; without planning_repo the old defects stand.
+        planned_elsewhere = GOOD_DOSSIER.replace("id: W-014", "id: W-015").replace(
+            "baseline_commit: 3f2611f",
+            "baseline_commit: 7a1486b\nplanning_repo: https://github.com/org/planning-checkout",
+        ).replace(
+            "  - src/flush.py:3",
+            "  - docs/research/podcast-plan.md:12\n  - src/flush.py:3",
+        )
+        (d / "W-015-planned.md").write_text(planned_elsewhere)
+        rep2 = Report()
+        rep2.merge(validate_dossier(d / "W-015-planned.md", root))
+        checks_164 = {
+            "planned elsewhere: no anchor DEFECT": not rep2.defects
+            or not any("anchor" in x for x in rep2.defects),
+            "planned elsewhere: the unresolvable anchor warns and names the re-point": any(
+                "planning repository" in w for w in rep2.warnings
+            ),
+        }
+        (d / "W-016-noplanning.md").write_text(
+            planned_elsewhere.replace(
+                "\nplanning_repo: https://github.com/org/planning-checkout", ""
+            ).replace("  - docs/research/podcast-plan.md:12\n", "").replace(
+                "id: W-015", "id: W-016"
+            )
+        )
+        rep3 = Report()
+        rep3.merge(validate_dossier(d / "W-016-noplanning.md", root))
+        checks_164["without planning_repo an unresolvable baseline only warns (a tempdir is no git repository; the probe is skipped)"] = (
+            not rep3.defects
+        )
+        for name, passed in checks_164.items():
+            print(f"{'PASS' if passed else 'FAIL'} — {name}")
+        if not all(checks_164.values()):
+            return 1
+        (d / "W-015-planned.md").unlink()
+        (d / "W-016-noplanning.md").unlink()
+
         rep = Report()
         rep.merge(validate_dossier(d / "W-014-flush.md", root))
         rep.merge(validate_adr(a / "0007-flush.md", root))
@@ -1897,6 +1991,7 @@ def selftest() -> int:
 
         finalize_ok = selftest_finalize()
         pre_fanout_ok = selftest_pre_fanout()
+        pre_fanout_local_ok = selftest_pre_fanout_local()
         mode_ok = selftest_mode()
         blockers_ok = selftest_blocker_removal()
         return (
@@ -1912,6 +2007,7 @@ def selftest() -> int:
                 and caught_dup
                 and finalize_ok
                 and pre_fanout_ok
+        and pre_fanout_local_ok
                 and mode_ok
                 and blockers_ok
             )
@@ -2045,9 +2141,14 @@ def definition_terms(contract: str) -> list[str]:
     return [t.strip().rstrip(":.,") for t in DEFINITION_TERM_RE.findall(m.group(1))]
 
 
-def check_definitions(path: Path, text: str, build_log: str, root: Path) -> int:
+def check_definitions(path: Path, text: str, build_log: str, root: Path,
+                      worktree: Path | None = None) -> int:
     """Every `### Definitions` term appears in an owned file that exists (the
-    stubs), or is logged `DOSSIER-ONLY-TERMS:`. Returns 1 on a missing term."""
+    stubs), or is logged `DOSSIER-ONLY-TERMS:`. An owned path that is a
+    directory is walked — every file under it is a stub (#169). Owned paths
+    resolve against `worktree` when given, else `root`: in local mode the
+    dossier is validated from the main checkout while the stubs live only in
+    the package worktree X (#157, #161). Returns 1 on a missing term."""
     secs = sections(text)
     terms = definition_terms(secs.get("## Contract", ""))
     if not terms:
@@ -2055,13 +2156,19 @@ def check_definitions(path: Path, text: str, build_log: str, root: Path) -> int:
     skip = {
         t.strip().lower()
         for m in DOSSIER_ONLY_RE.finditer(build_log)
-        for t in m.group(1).split(",")
+        # an em dash starts the line's reason; only the term list is terms
+        for t in m.group(1).split("\u2014")[0].split(",")
     }
+    stub_root = worktree if worktree is not None else root
     stub_text = ""
     for _, paths in parse_packages(secs.get("## Work packages", "")):
         for rel in paths:
-            f = root / rel.strip("`")
-            if f.is_file():
+            target = stub_root / rel.strip("`")
+            files = (
+                sorted(p for p in target.rglob("*") if p.is_file())
+                if target.is_dir() else ([target] if target.is_file() else [])
+            )
+            for f in files:
                 stub_text += f.read_text(encoding="utf-8", errors="replace").lower() + "\n"
     rc = 0
     for term in terms:
@@ -2156,7 +2263,24 @@ PRE_FANOUT_LINES = (
 )
 
 
-def check_pre_fanout(path: Path, root: Path | None = None) -> int:
+def front_matter_worktree(text: str, root: Path) -> Path | None:
+    """The dossier's `worktree:` front-matter field, resolved against `root`
+    (it is written relative to the main checkout, e.g. `../repo-W-014`), or
+    None. In local mode the stubs live in that worktree, not in the checkout
+    the dossier is validated from."""
+    try:
+        fm, _, _ = split_front_matter(text)
+    except ValueError:
+        return None
+    value = fm.get("worktree")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    wt = (root / value.strip()).resolve()
+    return wt if wt.is_dir() else None
+
+
+def check_pre_fanout(path: Path, root: Path | None = None,
+                     worktree: Path | None = None) -> int:
     """Check the obligations that must hold before /work-on Phase 4 fans out.
 
     Eight lines in ``## Build log``, each recording a decision the orchestrator
@@ -2190,6 +2314,7 @@ def check_pre_fanout(path: Path, root: Path | None = None) -> int:
     text = path.read_text(encoding="utf-8")
     if root is None:
         root = path.resolve().parents[2]
+    worktree = worktree or front_matter_worktree(text, root)
     body = text.split("## Build log", 1)
     if len(body) != 2:
         print(f"DEFECT  {path.name}: no '## Build log' section to check")
@@ -2229,7 +2354,7 @@ def check_pre_fanout(path: Path, root: Path | None = None) -> int:
             )
             rc = 1
 
-    rc |= check_definitions(path, text, body[1], root)
+    rc |= check_definitions(path, text, body[1], root, worktree)
 
     checklist_ids = CHECKLIST_IDS_RE.search(body[1])
     if checklist_ids and CHECKLIST_IDS_ZERO_RE.search(checklist_ids.group(1)):
@@ -2241,6 +2366,100 @@ def check_pre_fanout(path: Path, root: Path | None = None) -> int:
         )
         rc = 1
     return rc
+
+
+
+
+def selftest_pre_fanout_local() -> bool:
+    """#157/#161/#169/#165: directory owned paths walked, stubs resolved in
+    the live worktree (flag and front matter), the em-dash reason, RULES.md."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        full = (
+            "## Build log\n"
+            "- CONTRACT-REVIEW: spawned ses_1 — 12 lines, 0 DEFECT, 1 AMBIGUITY\n"
+            "- HOOKS: none\n"
+            "- PAYLOAD-LINT: 5 payloads, 1 defect fixed — P1 P2 UT-A UT-B IT\n"
+            "- ADMISSION: granted 5 slots — selftest-provider/selftest-model, cap 8, ceiling 5\n"
+            "- SUITE-RUNNER: local — no CI in this repository\n"
+            "- GATES: none — no CI workflow builds anything\n"
+            "- CENSUS: none — grepped for table censuses and migration counts\n"
+            "- CHECKLIST-IDS: none — no coverage script\n"
+        )
+        dossier = (
+            "## Contract\n\n### Definitions\n\n"
+            "- **window start** — the first instant a flush covers.\n"
+            "- **track rows** — the rows of one track, oldest first.\n\n"
+            "```python\ndef flush(): ...\n```\n\n"
+            "## Work packages\n\n| Package | Owned paths |\n|---|---|\n"
+            "| P1 | src/flush.py |\n\n"
+        )
+        ok = True
+        # #169: a package that owns a directory has every file under it walked.
+        (root / "Engine").mkdir()
+        (root / "Engine" / "PlanValidator.cs").write_text(
+            "/// <summary>The plan window is the first instant a plan covers.</summary>\n",
+            encoding="utf-8",
+        )
+        dir_dossier = dossier.replace("| P1 | src/flush.py |", "| P1 | Engine/ |").replace(
+            "### Definitions\n\n"
+            "- **window start** — the first instant a flush covers.\n"
+            "- **track rows** — the rows of one track, oldest first.\n\n",
+            "### Definitions\n\n"
+            "- **plan window** — the first instant a plan covers.\n"
+            "- **track rows** — the rows of one track, oldest first.\n\n",
+        )
+        (root / "def-dir.md").write_text(dir_dossier + full, encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as dirbuf:
+            dir_rc = check_pre_fanout(root / "def-dir.md", root)
+        ok &= dir_rc == 1 and "'track rows'" in dirbuf.getvalue() and "'plan window'" not in dirbuf.getvalue()
+
+        # #157/#161: local mode — the dossier is validated from the main
+        # checkout, the stubs live only in the worktree X.
+        x = Path(tmp) / "X-stubs"
+        (x / "src").mkdir(parents=True)
+        (x / "src" / "flush.py").write_text(
+            '\"\"\"Flush.\n\nThe window start and the track rows are documented here.\"\"\"\n',
+            encoding="utf-8",
+        )
+        (root / "src").mkdir(exist_ok=True)
+        (root / "src" / "flush.py").write_text(
+            '\"\"\"Flush — the stubs are not here in local mode.\"\"\"\n', encoding="utf-8"
+        )
+        (root / "def-wt.md").write_text(dossier + full, encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as wbuf:
+            wt_rc = check_pre_fanout(root / "def-wt.md", root, x)
+        ok &= wt_rc == 0 and "is in no owned stub file" not in wbuf.getvalue()
+        # the front-matter `worktree:` field resolves the same way when the flag is absent
+        fm_dossier = "---\nworktree: X-stubs\n---\n" + dossier
+        (root / "def-fmwt.md").write_text(fm_dossier + full, encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as fbuf:
+            fm_rc = check_pre_fanout(root / "def-fmwt.md", root)
+        ok &= fm_rc == 0 and "is in no owned stub file" not in fbuf.getvalue()
+        # without the worktree, in local mode, every term is missing
+        with contextlib.redirect_stdout(io.StringIO()) as nobuf:
+            no_rc = check_pre_fanout(root / "def-wt.md", root)
+        ok &= no_rc == 1
+
+        # #169: a DOSSIER-ONLY-TERMS line may carry its reason after an em dash.
+        (root / "def-dash.md").write_text(
+            dossier + full + "- DOSSIER-ONLY-TERMS: Track Rows — kept in the dossier for the operators\n",
+            encoding="utf-8",
+        )
+        ok &= check_pre_fanout(root / "def-dash.md", root, x) == 0
+
+        # #165: docs/adr/RULES.md is a rules file, not a fence-less ADR.
+        adr = root / "docs" / "adr"
+        adr.mkdir(parents=True)
+        (adr / "RULES.md").write_text("# Rules\n\nNo front matter: a rules file.\n", encoding="utf-8")
+        (adr / "index.md").write_text("# Index\n", encoding="utf-8")
+        (adr / "0007-flush.md").write_text(
+            "---\nid: ADR-0007\nstatus: accepted\ntitle: Coalesce flush calls\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        ok &= [p.name for p in adr_targets(adr)] == ["0007-flush.md"]
+        print(f"{'PASS' if ok else 'FAIL'} — directory owned paths walked, local-mode stubs resolved in the live worktree, the em-dash reason, RULES.md skipped")
+        return bool(ok)
 
 
 def selftest_pre_fanout() -> bool:
@@ -2324,6 +2543,8 @@ def selftest_pre_fanout() -> bool:
         bad = full.replace("— 3 gates; axes: default, fault-inject", "— several")
         (root / "gates-bad.md").write_text(bad, encoding="utf-8")
         ok &= check_pre_fanout(root / "gates-bad.md", root) == 1
+
+
 
         # A granted line is refused while the admission ledger defers that key.
         saved = os.environ.get("ASD_ADMISSION_DIR")
@@ -2523,6 +2744,13 @@ def main() -> int:
         "## Contract must reach a stub file or be in DOSSIER-ONLY-TERMS:",
     )
     ap.add_argument(
+        "--worktree",
+        help="with --pre-fanout: the worktree X that holds the stubs, when it "
+        "is not --root (local mode validates the dossier from the main "
+        "checkout while the stubs live in X; the dossier's `worktree:` front-"
+        "matter field is used when the flag is not given)",
+    )
+    ap.add_argument(
         "--mode",
         action="store_true",
         help="print which mode .discovery/ is in for --root — local, committed "
@@ -2567,7 +2795,10 @@ def main() -> int:
             print(f"DEFECT  no dossier matches '{args.dossier}' in {dossier_dir}")
             return 1
         if args.pre_fanout:
-            return check_pre_fanout(targets_d[0], root)
+            return check_pre_fanout(
+                targets_d[0], root,
+                Path(args.worktree).resolve() if args.worktree else None,
+            )
     elif args.pre_fanout:
         print("DEFECT  --pre-fanout requires --dossier <ID>")
         return 1
@@ -2579,11 +2810,7 @@ def main() -> int:
             return 1
     if args.all or (not args.dossier and not args.adr):
         targets_d = sorted(dossier_dir.glob("*.md")) if dossier_dir.exists() else []
-        targets_a = (
-            [p for p in sorted(adr_dir.glob("*.md")) if p.name != "index.md"]
-            if adr_dir.exists()
-            else []
-        )
+        targets_a = adr_targets(adr_dir)
         if not targets_d and not targets_a:
             print(f"nothing to check under {dossier_dir} or {adr_dir}")
             return 0

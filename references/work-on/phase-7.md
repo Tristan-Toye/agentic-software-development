@@ -202,8 +202,11 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
   the fix document, keep the test (it pins a promise). `PROOF REFUSED` (it never
   ran) is no verdict: fix the test, never the defect. A defect is never fixed
   unproven, and a reviewer's word is not proof.
-- **Check who may apply each CR before you route it.** The fix implementer
-  owns source and never a test. **You never apply a test CR yourself either**
+- **Check who may apply each CR before you route it.** A test CR that
+  re-spawns an author after the merge composes its `CONTRACT` from the
+  dossier's `## Contract` (`--dossier` on compose or `--refresh-contract`),
+  never from the contract files, which hold implementation bodies now. The fix
+  implementer owns source and never a test. **You never apply a test CR yourself either**
   — you referee tests, so you must never author them; a test diff is always
   a test agent's work. A CR against a test path routes by what it touches:
 
@@ -247,10 +250,19 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
   author for a test CR, the previous fix implementer for a second fix round —
   by `SendMessage` to its agent ID with only the new CRs or the `PRIOR_CRS`
   answers, per `phase-4.md` ("Under Claude Code, resume instead of
-  re-spawn"). Reviewers a workflow spawned have no ID in its result: a check
-  round re-spawns them with the full payload, by the workflow again. A fix
-  round after a contract change is a full re-spawn.
-- Spawn **one** `implementer` in `MODE: fix` with the merged change requests. It
+  re-spawn"). Reviewers a workflow spawned have no ID in its result, and an
+  id scavenged from the workflow's transcript directory is refused all the
+  same: a check round re-spawns them with the full payload, by the workflow
+  again. A fix round after a contract change is a full re-spawn.
+- Spawn **one** `implementer` in `MODE: fix` with the merged change requests.
+  Under Claude Code, spawn it **by file through the workflow when the payload
+  is large**: compose and lint the fix final under `<X>/.agent-staging/payloads/`,
+  then call `phase4-wave` once with a single item — `payloadPath`,
+  `payloadSha256`, `root` X, `branch`/`base` at the fixed head, `owned` the fix
+  `OWNED_PATHS`, `kind: implementer`. The spawn guard checks the file before
+  the launch and `verify_return.py` checks the return, so a fix payload that
+  would paste at 76 KB never passes through the prompt at all. A small payload
+  pastes as always (`phase-4.md`, "the spawn prompt IS the payload"). It
   works in `X` directly — the tests exist now, so blindness has done its job and
   keeping them green is the point — **and alone**: never while a test author
   is editing uncommitted files in `X` (a CR routed to an author runs before

@@ -54,10 +54,21 @@ so re-derive them in it, never fall back to a Phase 5 manual diff.
 migration, a table, a counted file, or moves a file, grep the tree for pins
 that count or list it — a table-name census, a migration count `(1..=N)`, a
 `[&str; N]` array, an inventory row count — and give each one an owner: the
-package that moves it, or a criterion with a test-author owner. Log
+package that moves it, or a criterion with a test-author owner. Ask the same
+question of the **checkout shape**: which existing suite cases depend on the
+shape this contract changes? A contract that adds a worktree-detecting guard
+(or any checkout-sensitive behaviour) makes a case that runs past the argument
+check behave differently in a secondary worktree than in the main checkout —
+and every package worktree IS a secondary worktree; each such case gets an
+owner and a fixture (a main-checkout copy) before the fan-out, or the wave
+prep will explain a failure the contract never predicted. Log
 `CENSUS: <path>:<line> — <owner>`, or `CENSUS: none — <what was grepped>`,
 into `## Build log` before you spawn; `validate_pipeline.py --pre-fanout`
-requires the line.
+requires the line. In local mode — the dossier validated from the main
+checkout while the stubs live in the package worktree X — pass
+`--worktree <X>` (or set the dossier's `worktree:` front-matter field, which
+the check resolves itself); a package that owns a directory is walked whole,
+every file under it.
 
 **Seven diffs over the checklist, before anything spawns:**
 

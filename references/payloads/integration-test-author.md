@@ -78,6 +78,9 @@ written for a delivery-shape change, not a correction:
 ```
 FAILURES: |
   <the failing run's output, verbatim>
+BASELINE_COUNTS_FROM: <the sha the counts were taken at, or `pre-change tree
+  re-run` — never an earlier phase's numbers: after a merge or sync lands,
+  they are stale by construction>
 CORRECTION: |
   1. <the first edit, exact and ordered>
   2. <the next edit>

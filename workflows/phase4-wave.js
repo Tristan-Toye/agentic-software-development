@@ -40,9 +40,13 @@ const modelFor = (agentType) => AGENT_MODELS[agentType] || { model: 'sonnet', ef
 //                 for a secret before the launch; the verifier checks the hash again after.
 //   root, branch, base, owned   what verify_return.py checks: the worktree the agent worked
 //                 in, the branch it was told to commit on, the sha it forked from, its
-//                 OWNED_PATHS / TEST_PATHS (comma list or array)
+//                 OWNED_PATHS / TEST_PATHS (comma list or array). Items sharing a root
+//                 automatically pass each other's owned paths as --shared-tree: a sibling's
+//                 files are judged by the sibling's own verification, never this one's.
 //   kind          the agent kind, for verify_return.py --report
-//   contractHash, contractFiles   optional, for the contract-hash check
+//   contractHash, contractFiles   both together or neither, for the contract-hash check;
+//                 contractHash is the full 64-hex CONTRACT_HASH (a prefix is refused at
+//                 launch — a truncated copy once verified nothing)
 //   reportDir     where the full report is kept (default <root>/.agent-staging/reports)
 //   pluginRoot    the plugin's checkout (${PLUGIN_ROOT}); only scripts/verify_return.py is used
 // The object form { pluginRoot, items: [...] } is accepted too.
@@ -111,6 +115,19 @@ function spawnPrompt(item) {
     'PAYLOAD_FILE: ' + item.payloadPath + '\nPAYLOAD_SHA256: ' + item.payloadSha256
 }
 
+// The owned paths of the siblings that share this item's worktree. Concurrent
+// authors in one shared X are judged against their own paths only: the
+// verifier excludes every sibling path from this item's TOUCHED_BEYOND and
+// dirty-tree flags (--shared-tree), so six authors in one tree never flag
+// each other's 21 files.
+function siblingsOwned(item) {
+  return items
+    .filter((other) => other !== item && other.root === item.root)
+    .flatMap((other) => (Array.isArray(other.owned) ? other.owned : String(other.owned || '').split(',')))
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+}
+
 function verifyPrompt(item, reportPath, report, pluginRoot) {
   const cmd = ['python3', sq(pluginRoot + '/scripts/verify_return.py'),
     '--root', sq(item.root), '--branch', sq(item.branch), '--base', sq(item.base),
@@ -118,6 +135,8 @@ function verifyPrompt(item, reportPath, report, pluginRoot) {
     '--print-line', '--agent', sq(item.label)]
   const owned = csv(item.owned)
   if (owned) cmd.push('--owned', sq(owned))
+  const shared = siblingsOwned(item)
+  if (shared.length) cmd.push('--shared-tree', sq(shared.join(',')))
   if (item.contractHash) cmd.push('--contract-hash', sq(item.contractHash), '--contract-files', sq(csv(item.contractFiles)))
   if (report) cmd.push('--report', sq(reportPath), '--kind', sq(item.kind || ''))
   const steps = []
@@ -128,7 +147,7 @@ function verifyPrompt(item, reportPath, report, pluginRoot) {
     steps.push('The agent returned no report. Write nothing.')
   }
   steps.push('Run this one command and read its whole output (its exit status 1 only means a flag was raised):\n' + cmd.join(' '))
-  steps.push('Answer with the structured object: verdict is "clean" when the last output line is "verdict: clean", else "flagged"; flags are the words after "FLAGGED " on that line, split on commas (empty when clean); returned_line is the text after "RETURNED-LINE: " on its line, verbatim.')
+  steps.push('Answer with the structured object: verdict is "clean" when the output\'s "verdict:" line (printed first, before any detail) reads "verdict: clean", else "flagged"; flags are the words after "FLAGGED " on that line, split on commas (empty when clean); returned_line is the text after "RETURNED-LINE: " on its line, verbatim.')
   return 'You verify one returned sub-agent mechanically. Do exactly the steps below with Bash and nothing else: no other command, no edit, no re-run, no judgement.\n\n' +
     steps.map((s, i) => (i + 1) + '. ' + s).join('\n') +
     (report ? '\n\n=== REPORT BEGIN ===\n' + report + '\n=== REPORT END ===' : '')
@@ -149,6 +168,10 @@ for (const item of items) {
     if (!item || typeof item[key] !== 'string' || item[key] === '') return bad('item ' + (item && item.label) + ' lacks ' + key)
   }
   if (!rootOfPlugin(item)) return bad('item ' + item.label + ' lacks pluginRoot')
+  if (item.contractHash || item.contractFiles) {
+    if (!item.contractHash || !item.contractFiles) return bad('item ' + item.label + ' must carry contractHash and contractFiles together, or neither: the hash alone makes verify_return.py exit 2 (a usage error) for every return in the wave, and every result comes back flagged with an empty verifier line')
+    if (!/^[0-9a-f]{64}$/i.test(String(item.contractHash))) return bad('item ' + item.label + ' contractHash must be the full 64-hex CONTRACT_HASH from the payload, not a prefix — a truncated hash copied from a column-cut print once went unnoticed')
+  }
 }
 if (items.length > MEDIUM_WAVE) log('Wave of ' + items.length + ' is past the medium-run guideline (under 10); prefer splitting it.')
 

@@ -79,6 +79,24 @@ def write(path: str, text: str) -> None:
     os.replace(tmp, path)
 
 
+def write_verified(path: str, new: str, what: str) -> None:
+    """Write, then read the file back and refuse a silently-lost change: the
+    Build log is the run's only durable record, and a batch that lands as
+    nothing must exit nonzero, never pass quietly (#154). Exits 1 (via
+    SystemExit) naming what was lost."""
+    write(path, new)
+    try:
+        back = read(path)
+    except OSError as err:
+        print(f"dossier_edit: wrote {path} but cannot read it back: {err}", file=sys.stderr)
+        raise SystemExit(1)
+    if back != new:
+        print(f"dossier_edit: {what} — the file does not carry what was written "
+              f"({len(back.encode('utf-8'))} bytes on disk, {len(new.encode('utf-8'))} meant); "
+              "nothing was silently kept", file=sys.stderr)
+        raise SystemExit(1)
+
+
 def headings(lines: list[str]) -> list[tuple[int, int, str]]:
     """(0-based line index, level, title) for every heading outside a fence."""
     out: list[tuple[int, int, str]] = []
@@ -318,12 +336,18 @@ def run(argv: list[str]) -> int:
         if args.cmd == "log":
             entries = sys.stdin.read().splitlines() if args.lines == ["-"] else args.lines
             new, n = append_log(text, entries)
-            write(args.dossier, new)
+            write_verified(args.dossier, new, f"appending {n} line(s) to ## Build log")
+            tail = read(args.dossier).rsplit("## Build log", 1)[1]
+            lost = [e for e in entries if e and e not in tail]
+            if lost:
+                print(f"dossier_edit: appended, but the re-read Build log is missing "
+                      f"{len(lost)} of the line(s) handed in: {lost[0][:80]}", file=sys.stderr)
+                return 1
             print(f"dossier_edit: appended {n} line(s) to ## Build log")
         elif args.cmd in ("set", "add", "remove"):
             fn = {"set": set_fields, "add": add_items, "remove": remove_items}[args.cmd]
             new, changes = fn(text, pairs_of(args.pairs))
-            write(args.dossier, new)
+            write_verified(args.dossier, new, f"{args.cmd} {args.pairs}")
             for change in changes:
                 print(f"dossier_edit: {change}")
         elif args.cmd == "replace-section":
@@ -333,7 +357,7 @@ def run(argv: list[str]) -> int:
                 print(f"dossier_edit: {err}", file=sys.stderr)
                 return 2
             new, note = replace_section(text, args.heading, new_body)
-            write(args.dossier, new)
+            write_verified(args.dossier, new, f"replacing `{args.heading}`")
             print(f"dossier_edit: {note}")
         else:
             print(section(text, args.heading))
@@ -343,6 +367,9 @@ def run(argv: list[str]) -> int:
     except ValueError as err:
         print(f"dossier_edit: {err}", file=sys.stderr)
         return 2
+    except OSError as err:
+        print(f"dossier_edit: cannot write {args.dossier}: {err}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -483,6 +510,40 @@ def selftest() -> int:
         check("run replace-section with an unreadable file is unusable input", rc == 2)
         rc = run(["remove", path, "adrs=none"])
         check("run remove of an absent item exits 0", rc == 0)
+
+        # --- #154: every write is read back; a lost one exits nonzero ---
+        ro_dir = os.path.join(tmp, "readonly")
+        os.makedirs(ro_dir)
+        ro = os.path.join(ro_dir, "W-001-x.md")
+        with open(ro, "w", encoding="utf-8") as fh:
+            fh.write(SAMPLE)
+        os.chmod(ro_dir, 0o555)  # write() replaces atomically (temp + rename), so a read-only FILE is bypassed by design; a read-only directory is the forced failure
+        try:
+            rc = run(["log", ro, "- a read-only batch"])
+            forced = rc != 0
+        finally:
+            os.chmod(ro_dir, 0o755)
+        check("a forced-failure append (a directory the writer cannot write) exits nonzero and names it", forced)
+        check("the failed append left the file untouched", read(ro) == SAMPLE)
+        real_write = globals()["write"]
+        try:
+            globals()["write"] = lambda p, t: real_write(p, t[: max(len(t) // 2, 1)])  # a write that lands half
+            try:
+                run(["log", path, "- half a write"])
+                mismatch = False
+            except SystemExit as err:
+                mismatch = err.code == 1
+        finally:
+            globals()["write"] = real_write
+        check("a silently-lost write is refused, never passed quietly", mismatch)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(SAMPLE)
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run(["log", path, "- counted"])
+        check("a successful append prints the count it added",
+              rc == 0 and "appended 1 line(s)" in buf.getvalue() and read(path).endswith("- counted\n"))
 
     for item in failures:
         print("SELFTEST FAIL  " + item)

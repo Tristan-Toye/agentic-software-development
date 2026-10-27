@@ -282,6 +282,12 @@ the concrete numbers. Every criterion must be reachable from the contract — a
 criterion the contract cannot express is a gap in the contract, so fix the
 contract.
 
+A criterion that names an exception thrown by **existing** code cites the
+throw site: a `path:line` of the `throw`/`raise` it relies on, read in the
+target branch — never inferred from a class name or a strategy name. An
+expected exception without its throw site is a guess about where the code
+fails, and the plan reviewer flags it as a change request.
+
 Every criterion ends with an owner and an environment:
 `(owner: <test path>; env: <local|vm|container|ci>)`. The owner is a test
 path from the `## Work packages` table — you just built it, so take the path
@@ -339,11 +345,22 @@ so the anchors it spot-checks are the tree the dossier was written against.
 ## Phase 7 — Write `ready`, then (committed mode) the PR
 
 Only after a `PASS`: set `status: ready`, bump `updated`, stamp
-`baseline_commit` to the current `HEAD` of `${RUN_ROOT}` — the commit at
-which your anchors are true. Stamp it last, so a run that fails part way never
-installs a baseline for code nobody checked. In committed mode stamp it
-**before** the dossier commit below: the base tip is the commit that survives
-a squash merge, and the plan commit is not.
+`baseline_commit` — the commit at which your anchors are true. Stamp it last,
+so a run that fails part way never installs a baseline for code nobody
+checked. In committed mode stamp it **before** the dossier commit below: the
+base tip is the commit that survives a squash merge, and the plan commit is
+not.
+
+**Stamp against the repository the dossier will build in.** `baseline_commit`
+and every `anchors:` path must resolve in the checkout `/work-on` will fork
+from — normally `${RUN_ROOT}` itself: stamp its current `HEAD`. When you are
+planning in a different checkout than the build repository (a plugin clone, a
+sibling repo), resolve the sha and the anchor paths in the build repository —
+`git -C <build repo>` for the sha, the build repo's tree for the paths — and
+add `planning_repo: <that checkout>` to the front matter, so the validator
+treats an unresolved anchor as a re-point to make at Phase 2, not a plan
+defect. A `baseline_commit` that exists in no repository of the build
+checkout was stamped against the wrong one.
 
 In local mode you are done — go to Phase 8. In committed mode the dossier is
 a change to review, so finish it as one:

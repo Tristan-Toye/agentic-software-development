@@ -158,7 +158,16 @@ or no specific field at all.
   orchestrator handed an agent a path instead of content, knowing the rule;
   `check_payload.py --host claude` refuses every such token, quoting it, and
   warns on a read-verb sentence. The pasted fields (`CONTRACT: |`,
-  `STYLE_SAMPLE`, `SUPPORT`) carry what the path was meant to carry.
+  `STYLE_SAMPLE`, `SUPPORT`) carry what the path was meant to carry — with
+  one exception: a payload over the read guard's 20 KB whole-read limit
+  cannot be read whole to be pasted at all, so `compose_payloads.py` stages
+  its large fields under `<worktree>/.agent-staging/contract-support/` and
+  the field names that path with a read-it-whole note. That staged form is
+  the accepted shape for an over-limit payload; the small fields stay pasted.
+- **`TEST_PATHS` and `SUPPORT_PATHS` ship absolute.** A relative entry
+  resolves against the composer's cwd when composed and the subagent's cwd
+  when read; `compose_payloads.py` joins every relative entry under `--root`
+  before writing the payload and the manifest line, so both admit unchanged.
 - **A path an agent may only partly read is not bounded by an instruction.**
   An agent with `Read` reaches every byte of a file it is told to read
   three sections of; the recorded read returned a paged view carrying the

@@ -35,7 +35,13 @@ are cheap, and both run while the bodies in `X` are still stubs:
      on the suite, and CI cannot run a subset against stubs. The bodies are
      still stubs that fail loudly, so **every new test must fail, judged one test at
      a time — never by a failure count, which a collection error also
-     satisfies**. A test that passes against a stub is vacuous — it asserts
+     satisfies**. For a Terraform target, judge each run block alone:
+      `terraform test` skips every run after a failed `expect_failures` run,
+      so a file's counts cannot be read at all — run
+      `python3 ${PLUGIN_ROOT}/scripts/tftest_runs.py <file.tftest.hcl>`,
+      which copies the module to a scratch dir per run block (keeping the
+      mock_provider and variables blocks), inits and tests each, and prints
+      one `PASS|FAIL <run name>` line per run. A test that passes against a stub is vacuous — it asserts
      nothing the implementation controls — and blocks a real failure from
      being noticed later; route it by the rule below. Fix pure harness noise
      (imports, fixtures, collection errors) yourself now, so Phase 6
