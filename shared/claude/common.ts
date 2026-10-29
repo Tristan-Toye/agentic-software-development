@@ -189,8 +189,9 @@ const textOf = (content: unknown): string =>
       ? content.map((b: any) => (typeof b?.text === "string" ? b.text : "")).join("\n")
       : ""
 
-// The /work-on command as the transcript records it: `<command-name>/<plugin>:work-on</command-name>`.
-const WORK_ON_RE = /<command-name>\/?(?:[\w.-]+:)?work-on<\/command-name>/
+// The orchestrator commands as the transcript records them:
+// `<command-name>/<plugin>:work-on</command-name>`, same shape for `stub`.
+const WORK_ON_RE = /<command-name>\/?(?:[\w.-]+:)?(?:work-on|stub)<\/command-name>/
 
 // Reads the head of the transcript (first 1 MB, whole lines) as parsed lines.
 function head(path: string): any[] {

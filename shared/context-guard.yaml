@@ -32,17 +32,18 @@ protect_tools: [phase_checkpoint, task, question, todowrite, skill, edit, write]
 protect_paths:
   - 'references/work-on/phase-\d+\.md'
   - 'primary-agents/work-on\.md'
+  - 'primary-agents/stub\.md'
 
 # Agents whose context is masked (the agent of the session's first user message).
-mask_agents: [work-on, dossier, implementer, integration-test-author, reviewer]
+mask_agents: [work-on, stub, dossier, implementer, integration-test-author, reviewer]
 # Of those, the agents whose reasoning is masked too.
-mask_reasoning_agents: [work-on, dossier]
+mask_reasoning_agents: [work-on, stub, dossier]
 
 # --- B. read guard --------------------------------------------------------------------
 
 # Agents whose wasteful reads are refused (whole dossier reads, large whole-file reads
 # and cats, cargo test through limactl without run_tests.py).
-guard_agents: [work-on]
+guard_agents: [work-on, stub]
 # A read or cat without offset/limit of a file larger than this many bytes is refused.
 max_read_bytes: 20000
 

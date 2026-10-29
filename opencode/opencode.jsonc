@@ -66,6 +66,18 @@
         "todowrite": "deny"
       }
     },
+    "stub": {
+      "permission": {
+        "skill": {
+          "*": "deny",
+          "time-logging": "allow",
+          "resolving-merge-conflicts": "allow"
+        },
+        "webfetch": "deny",
+        "websearch": "deny",
+        "todowrite": "deny"
+      }
+    },
     "dossier": {
       "permission": {
         "skill": {

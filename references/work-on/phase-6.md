@@ -33,6 +33,15 @@ record the candidate commit, target baseline, exact command, environment,
 counts and log path as `SUITE: local on <sha>, base <sha> — <counts>; <log>`.
 Verify that the tested tree matches that commit and that relevant inputs did
 not change during the run; otherwise the evidence cannot describe that head.
+Under `stub`: the same mechanics as `ci` — sync, push, draft PR,
+`wait_ci.py` — and this build's own proof stays local and focused: the stub
+red-run, the new tests green, the mutation check. No full local suite runs
+for a verdict; the integrated verdict is the `/stub` run of the release stub
+this branch merges into. Log `SUITE: stub-deferred on <sha> — CI green, new
+tests <counts>, mutation <killed>/<survived or skipped>; full suite deferred
+to /stub on <stub branch>`. A service-backed new test may hold the stack
+lease for one suite window for its own green run, through `run_tests.py
+--vm`; that run is this build's evidence, never the integrated verdict.
 
 Under either runner, inspect the complete log for skipped or `NOT VERIFIED`
 coverage and compare executed tiers with `SUITE-COVERAGE`. An aggregator's

@@ -769,7 +769,9 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
         rep.defect(where, str(exc))
         return rep
 
-    check_keys(where, fm, [k for k in DOSSIER_KEYS if k not in DOSSIER_OPTIONAL_KEYS], rep)
+    check_keys(
+        where, fm, [k for k in DOSSIER_KEYS if k not in DOSSIER_OPTIONAL_KEYS], rep
+    )
     status = fm.get("status")
     if status not in DOSSIER_STATUSES:
         rep.defect(where, f"status '{status}' is not one of {sorted(DOSSIER_STATUSES)}")
@@ -1057,7 +1059,14 @@ def own_added(
     """
     mb = git_out(root, "merge-base", base, tip).strip()
     out = git_out(
-        root, "diff", "--name-only", f"--diff-filter={diff_filter}", mb, tip, "--", pathspec
+        root,
+        "diff",
+        "--name-only",
+        f"--diff-filter={diff_filter}",
+        mb,
+        tip,
+        "--",
+        pathspec,
     )
     return {x for x in out.splitlines() if x}
 
@@ -1087,12 +1096,15 @@ def default_base(root: Path) -> str | None:
     `origin/HEAD` (the remote's default branch), or None when there is none."""
     p = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "--verify", "--quiet", "origin/HEAD"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     return "origin/HEAD" if p.returncode == 0 else None
 
 
-def check_blocker_removals(root: Path, paths: list[Path], base: str | None, rep: Report) -> None:
+def check_blocker_removals(
+    root: Path, paths: list[Path], base: str | None, rep: Report
+) -> None:
     """A blocker never silently leaves `blocked_by`.
 
     `blocked_by` is the dossier graph as well as a gate: a done blocker records
@@ -1165,7 +1177,10 @@ def check_dossier_ids(dossier_dir: Path, rep: Report) -> None:
             )
         for p in files:
             if not p.name.startswith(f"{did}-"):
-                rep.defect(p.name, f"file is named for another id than its front matter ({did})")
+                rep.defect(
+                    p.name,
+                    f"file is named for another id than its front matter ({did})",
+                )
 
 
 def plan_renumber(
@@ -1217,7 +1232,9 @@ def rewrite_dossier_ids(text: str, id_map: dict[str, str]) -> str:
     if not id_map:
         return text
     pattern = re.compile(
-        r"(?<!\d)(?:" + "|".join(sorted(map(re.escape, id_map), key=len, reverse=True)) + r")(?!\d)"
+        r"(?<!\d)(?:"
+        + "|".join(sorted(map(re.escape, id_map), key=len, reverse=True))
+        + r")(?!\d)"
     )
     return pattern.sub(lambda m: id_map[m.group(0)], text)
 
@@ -1387,7 +1404,9 @@ def run_finalize(root: Path, base: str) -> int:
         # Own = added or modified by this branch relative to the merge-base,
         # taken before the merge commit. A dossier the base branch owns is
         # never rewritten, even when it mentions the moving id.
-        own_dossiers = own_added(root, base, tip, ".discovery/dossiers", diff_filter="AM")
+        own_dossiers = own_added(
+            root, base, tip, ".discovery/dossiers", diff_filter="AM"
+        )
         moving_re = re.compile("|".join(sorted(id_map, key=len, reverse=True)))
         for p in sorted(dossier_dir.glob("*.md")):
             text = p.read_text()
@@ -1432,7 +1451,7 @@ def run_finalize(root: Path, base: str) -> int:
             for rel, new_id in sorted(renames_d.items()):
                 p = root / rel
                 old_id = next(k for k, v in dossier_map.items() if v == new_id)
-                p.replace(dossier_dir / (new_id + p.name[len(old_id):]))
+                p.replace(dossier_dir / (new_id + p.name[len(old_id) :]))
 
     if not summary:
         print("no collisions — nothing to renumber")
@@ -1623,9 +1642,15 @@ def selftest_finalize() -> bool:
         "W-{:03d}",
     )
     bounded = rewrite_dossier_ids("W-015 W-0150 W-0157 W-015.", {"W-015": "W-016"})
-    case = renames_d == {"a/W-015-own.md": "W-016"} and not defects_d and bounded == "W-016 W-0150 W-0157 W-016."
+    case = (
+        renames_d == {"a/W-015-own.md": "W-016"}
+        and not defects_d
+        and bounded == "W-016 W-0150 W-0157 W-016."
+    )
     ok &= case
-    print(f"{'PASS' if case else 'FAIL'} — dossier planner and bounded rewrite: {renames_d} / {bounded}")
+    print(
+        f"{'PASS' if case else 'FAIL'} — dossier planner and bounded rewrite: {renames_d} / {bounded}"
+    )
 
     merged = {
         "docs/learned-rules.md": (
@@ -1787,18 +1812,19 @@ def selftest_finalize() -> bool:
             "own dossier build-log quote unchanged": (
                 "wrote adrs: [ADR-0002] here by mistake" in dossier.read_text()
             ),
-            "sibling dossier byte-identical": (
-                dossiers / "W-0902-sib.md"
-            ).read_bytes() == sib_before,
+            "sibling dossier byte-identical": (dossiers / "W-0902-sib.md").read_bytes()
+            == sib_before,
             "foreign dossier untouched, NOTICE printed": (
                 dossiers / "W-0900-foreign.md"
-            ).read_bytes() == foreign_before
+            ).read_bytes()
+            == foreign_before
             and "W-0900-foreign.md" in buf1.getvalue()
             and "NOTICE" in buf1.getvalue(),
             "own dossier renumbered to W-0903": (dossiers / "W-0903-own.md").exists()
             and not (dossiers / "W-0902-own.md").exists()
             and "id: W-0903" in (dossiers / "W-0903-own.md").read_text()
-            and "Own plan W-0903 cites W-0901." in (dossiers / "W-0903-own.md").read_text(),
+            and "Own plan W-0903 cites W-0901."
+            in (dossiers / "W-0903-own.md").read_text(),
             "sibling dossier untouched": "id: W-0902"
             in (dossiers / "W-0902-sib.md").read_text(),
             "index regenerated": index_text == render_index(adr_rows(adr))
@@ -1829,12 +1855,16 @@ def selftest() -> int:
         # #164: a dossier planned in another checkout validates in the build
         # repository — anchors and baseline warn and name the re-point, they do
         # not fail; without planning_repo the old defects stand.
-        planned_elsewhere = GOOD_DOSSIER.replace("id: W-014", "id: W-015").replace(
-            "baseline_commit: 3f2611f",
-            "baseline_commit: 7a1486b\nplanning_repo: https://github.com/org/planning-checkout",
-        ).replace(
-            "  - src/flush.py:3",
-            "  - docs/research/podcast-plan.md:12\n  - src/flush.py:3",
+        planned_elsewhere = (
+            GOOD_DOSSIER.replace("id: W-014", "id: W-015")
+            .replace(
+                "baseline_commit: 3f2611f",
+                "baseline_commit: 7a1486b\nplanning_repo: https://github.com/org/planning-checkout",
+            )
+            .replace(
+                "  - src/flush.py:3",
+                "  - docs/research/podcast-plan.md:12\n  - src/flush.py:3",
+            )
         )
         (d / "W-015-planned.md").write_text(planned_elsewhere)
         rep2 = Report()
@@ -1849,15 +1879,15 @@ def selftest() -> int:
         (d / "W-016-noplanning.md").write_text(
             planned_elsewhere.replace(
                 "\nplanning_repo: https://github.com/org/planning-checkout", ""
-            ).replace("  - docs/research/podcast-plan.md:12\n", "").replace(
-                "id: W-015", "id: W-016"
             )
+            .replace("  - docs/research/podcast-plan.md:12\n", "")
+            .replace("id: W-015", "id: W-016")
         )
         rep3 = Report()
         rep3.merge(validate_dossier(d / "W-016-noplanning.md", root))
-        checks_164["without planning_repo an unresolvable baseline only warns (a tempdir is no git repository; the probe is skipped)"] = (
-            not rep3.defects
-        )
+        checks_164[
+            "without planning_repo an unresolvable baseline only warns (a tempdir is no git repository; the probe is skipped)"
+        ] = not rep3.defects
         for name, passed in checks_164.items():
             print(f"{'PASS' if passed else 'FAIL'} — {name}")
         if not all(checks_164.values()):
@@ -2007,7 +2037,7 @@ def selftest() -> int:
                 and caught_dup
                 and finalize_ok
                 and pre_fanout_ok
-        and pre_fanout_local_ok
+                and pre_fanout_local_ok
                 and mode_ok
                 and blockers_ok
             )
@@ -2054,10 +2084,16 @@ def selftest_blocker_removal() -> bool:
             ("the defect names the blocker", any("W-0001" in x for x in defects("[]"))),
             ("a kept blocker passes", not defects("[W-0001]")),
             ("an added blocker passes", not defects("[W-0001, W-0003]")),
-            ("a justified removal passes",
-             not defects("[]", "\n- BLOCKER-REMOVED: W-0001 — the dependency was wrong")),
-            ("a justification without a reason is refused",
-             bool(defects("[]", "\n- BLOCKER-REMOVED: W-0001 —"))),
+            (
+                "a justified removal passes",
+                not defects(
+                    "[]", "\n- BLOCKER-REMOVED: W-0001 — the dependency was wrong"
+                ),
+            ),
+            (
+                "a justification without a reason is refused",
+                bool(defects("[]", "\n- BLOCKER-REMOVED: W-0001 —")),
+            ),
         ]
         rep = Report()
         check_blocker_removals(root, [path], None, rep)
@@ -2093,15 +2129,16 @@ PAYLOAD_LINT_RE = re.compile(
 ADMISSION_RE = re.compile(
     r"^\s*[-*]?\s*ADMISSION:\s*(granted|skipped)\b(?P<rest>.*)$", re.MULTILINE
 )
-# `SUITE-RUNNER: ci — <workflow>, <trigger>` or `SUITE-RUNNER: local — <reason>`:
+# `SUITE-RUNNER: ci — <workflow>, <trigger>`, `SUITE-RUNNER: local — <reason>` or
+# `SUITE-RUNNER: stub — <policy>; target <stub branch>`:
 # which runner produces the orchestrator's suite verdicts (work-on.md Phase 2).
 # CI is eligible only when it covers the required integrated suite; partial
 # CI can retain its gates while `local` supplies the full verdict. Repository
-# policy and required coverage determine the choice, recorded with a reason. Decided before the fan-out because `ci` needs
+# policy and required coverage determine the choice, recorded with a reason. Decided before the fan-out because `ci` and `stub` need
 # the user's yes for the Phase 6 push and draft PR, and a yes asked after the
 # agents have returned stalls the run with a merged tree waiting on a question.
 SUITE_RUNNER_RE = re.compile(
-    r"^\s*[-*]?\s*SUITE-RUNNER:\s*(ci|local)\b(?P<rest>.*)$", re.MULTILINE
+    r"^\s*[-*]?\s*SUITE-RUNNER:\s*(ci|local|stub)\b(?P<rest>.*)$", re.MULTILINE
 )
 # `CENSUS: <path>:<line> — <owner>` or `CENSUS: none — <what was grepped>`: the
 # Phase 3 grep for count/list pins a migration, table, counted-file or moved-
@@ -2111,7 +2148,9 @@ CENSUS_RE = re.compile(r"^\s*[-*]?\s*CENSUS:\s*(none|\S.*)$", re.MULTILINE)
 # `CHECKLIST-IDS: <script> parsed <N>/<N> lines` or `CHECKLIST-IDS: none — no
 # coverage script`: the draft PROMISE_CHECKLIST ran through the repo's own
 # promise-coverage script, in its own id grammar, before the fan-out.
-CHECKLIST_IDS_RE = re.compile(r"^\s*[-*]?\s*CHECKLIST-IDS:\s*(none|\S.*)$", re.MULTILINE)
+CHECKLIST_IDS_RE = re.compile(
+    r"^\s*[-*]?\s*CHECKLIST-IDS:\s*(none|\S.*)$", re.MULTILINE
+)
 # A script that parses zero promise lines ("no promise lines found") means
 # the checklist ids do not match the script's grammar — a Phase 3 defect to
 # fix by re-deriving the ids, never a line to record and move past.
@@ -2135,14 +2174,17 @@ def definition_terms(contract: str) -> list[str]:
     """The terms `### Definitions` under `## Contract` defines: the leading
     `**term**` of each line in that subsection. Prose defined elsewhere in
     `## Contract` is not extracted; /plan puts definitions in the list."""
-    m = re.search(r"^### Definitions[ \t]*\n(.*?)(?=^#{2,3} |\Z)", contract, re.M | re.S)
+    m = re.search(
+        r"^### Definitions[ \t]*\n(.*?)(?=^#{2,3} |\Z)", contract, re.M | re.S
+    )
     if not m:
         return []
     return [t.strip().rstrip(":.,") for t in DEFINITION_TERM_RE.findall(m.group(1))]
 
 
-def check_definitions(path: Path, text: str, build_log: str, root: Path,
-                      worktree: Path | None = None) -> int:
+def check_definitions(
+    path: Path, text: str, build_log: str, root: Path, worktree: Path | None = None
+) -> int:
     """Every `### Definitions` term appears in an owned file that exists (the
     stubs), or is logged `DOSSIER-ONLY-TERMS:`. An owned path that is a
     directory is walked — every file under it is a stub (#169). Owned paths
@@ -2166,10 +2208,13 @@ def check_definitions(path: Path, text: str, build_log: str, root: Path,
             target = stub_root / rel.strip("`")
             files = (
                 sorted(p for p in target.rglob("*") if p.is_file())
-                if target.is_dir() else ([target] if target.is_file() else [])
+                if target.is_dir()
+                else ([target] if target.is_file() else [])
             )
             for f in files:
-                stub_text += f.read_text(encoding="utf-8", errors="replace").lower() + "\n"
+                stub_text += (
+                    f.read_text(encoding="utf-8", errors="replace").lower() + "\n"
+                )
     rc = 0
     for term in terms:
         if term.lower() in skip or term.lower() in stub_text:
@@ -2181,7 +2226,9 @@ def check_definitions(path: Path, text: str, build_log: str, root: Path,
         )
         rc = 1
     if not rc:
-        print(f"ok      {path.name}: {len(terms)} Definitions terms placed or dossier-only")
+        print(
+            f"ok      {path.name}: {len(terms)} Definitions terms placed or dossier-only"
+        )
     return rc
 
 
@@ -2223,10 +2270,13 @@ PRE_FANOUT_LINES = (
         "SUITE-RUNNER",
         SUITE_RUNNER_RE,
         "The suite runner is decided by required coverage at the contract "
-        "commit — complete CI, or local with a reason; partial CI keeps its gates.",
+        "commit — complete CI, local with a reason, or stub with the "
+        "deferral; partial CI keeps its gates.",
         (
             "SUITE-RUNNER: ci — <workflow>, <trigger>; push and draft PR: yes",
             "SUITE-RUNNER: local — <reason>",
+            "SUITE-RUNNER: stub — <policy source>; target <stub branch>; "
+            "integrated verdict deferred to the /stub run; push and draft PR: yes",
         ),
     ),
     (
@@ -2279,8 +2329,9 @@ def front_matter_worktree(text: str, root: Path) -> Path | None:
     return wt if wt.is_dir() else None
 
 
-def check_pre_fanout(path: Path, root: Path | None = None,
-                     worktree: Path | None = None) -> int:
+def check_pre_fanout(
+    path: Path, root: Path | None = None, worktree: Path | None = None
+) -> int:
     """Check the obligations that must hold before /work-on Phase 4 fans out.
 
     Eight lines in ``## Build log``, each recording a decision the orchestrator
@@ -2296,8 +2347,9 @@ def check_pre_fanout(path: Path, root: Path | None = None,
       the wave took its slots from the admission ledger. A ``granted`` line is
       refused while that ledger holds an unexpired reset deadline for the
       provider and model it names.
-    * ``SUITE-RUNNER: ci — ... | local — <reason>`` — which runner produces
-      the suite verdicts from Phase 6 on, decided once at the contract commit.
+    * ``SUITE-RUNNER: ci — ... | local — <reason> | stub — <policy>; target
+      <stub branch>`` — which runner produces the
+      suite verdicts from Phase 6 on, decided once at the contract commit.
     * ``GATES: <file> — <N> gates; axes: ... | none — <reason>`` — the CI
       gate list, run at every commit class.
     * ``CENSUS: <path>:<line> — <owner> | none — <what was grepped>`` — every
@@ -2335,7 +2387,11 @@ def check_pre_fanout(path: Path, root: Path | None = None,
         print(f"ok      {path.name}: {token} recorded ({match.group(1)})")
 
     granted = ADMISSION_RE.search(body[1])
-    key = re.search(r"([\w.-]+)/([\w.-]+)", granted.group("rest")) if granted and granted.group(1) == "granted" else None
+    key = (
+        re.search(r"([\w.-]+)/([\w.-]+)", granted.group("rest"))
+        if granted and granted.group(1) == "granted"
+        else None
+    )
     if key:
         try:
             sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -2344,7 +2400,9 @@ def check_pre_fanout(path: Path, root: Path | None = None,
             pending = spawn_admission.pending_deferral(key.group(1), key.group(2))
         except ImportError:
             pending = None
-            print("note    spawn_admission.py is not beside this script; the ledger was not consulted")
+            print(
+                "note    spawn_admission.py is not beside this script; the ledger was not consulted"
+            )
         if pending:
             deadline, text = pending
             print(
@@ -2366,8 +2424,6 @@ def check_pre_fanout(path: Path, root: Path | None = None,
         )
         rc = 1
     return rc
-
-
 
 
 def selftest_pre_fanout_local() -> bool:
@@ -2401,7 +2457,9 @@ def selftest_pre_fanout_local() -> bool:
             "/// <summary>The plan window is the first instant a plan covers.</summary>\n",
             encoding="utf-8",
         )
-        dir_dossier = dossier.replace("| P1 | src/flush.py |", "| P1 | Engine/ |").replace(
+        dir_dossier = dossier.replace(
+            "| P1 | src/flush.py |", "| P1 | Engine/ |"
+        ).replace(
             "### Definitions\n\n"
             "- **window start** — the first instant a flush covers.\n"
             "- **track rows** — the rows of one track, oldest first.\n\n",
@@ -2412,19 +2470,23 @@ def selftest_pre_fanout_local() -> bool:
         (root / "def-dir.md").write_text(dir_dossier + full, encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()) as dirbuf:
             dir_rc = check_pre_fanout(root / "def-dir.md", root)
-        ok &= dir_rc == 1 and "'track rows'" in dirbuf.getvalue() and "'plan window'" not in dirbuf.getvalue()
+        ok &= (
+            dir_rc == 1
+            and "'track rows'" in dirbuf.getvalue()
+            and "'plan window'" not in dirbuf.getvalue()
+        )
 
         # #157/#161: local mode — the dossier is validated from the main
         # checkout, the stubs live only in the worktree X.
         x = Path(tmp) / "X-stubs"
         (x / "src").mkdir(parents=True)
         (x / "src" / "flush.py").write_text(
-            '\"\"\"Flush.\n\nThe window start and the track rows are documented here.\"\"\"\n',
+            '"""Flush.\n\nThe window start and the track rows are documented here."""\n',
             encoding="utf-8",
         )
         (root / "src").mkdir(exist_ok=True)
         (root / "src" / "flush.py").write_text(
-            '\"\"\"Flush — the stubs are not here in local mode.\"\"\"\n', encoding="utf-8"
+            '"""Flush — the stubs are not here in local mode."""\n', encoding="utf-8"
         )
         (root / "def-wt.md").write_text(dossier + full, encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()) as wbuf:
@@ -2443,7 +2505,9 @@ def selftest_pre_fanout_local() -> bool:
 
         # #169: a DOSSIER-ONLY-TERMS line may carry its reason after an em dash.
         (root / "def-dash.md").write_text(
-            dossier + full + "- DOSSIER-ONLY-TERMS: Track Rows — kept in the dossier for the operators\n",
+            dossier
+            + full
+            + "- DOSSIER-ONLY-TERMS: Track Rows — kept in the dossier for the operators\n",
             encoding="utf-8",
         )
         ok &= check_pre_fanout(root / "def-dash.md", root, x) == 0
@@ -2451,14 +2515,18 @@ def selftest_pre_fanout_local() -> bool:
         # #165: docs/adr/RULES.md is a rules file, not a fence-less ADR.
         adr = root / "docs" / "adr"
         adr.mkdir(parents=True)
-        (adr / "RULES.md").write_text("# Rules\n\nNo front matter: a rules file.\n", encoding="utf-8")
+        (adr / "RULES.md").write_text(
+            "# Rules\n\nNo front matter: a rules file.\n", encoding="utf-8"
+        )
         (adr / "index.md").write_text("# Index\n", encoding="utf-8")
         (adr / "0007-flush.md").write_text(
             "---\nid: ADR-0007\nstatus: accepted\ntitle: Coalesce flush calls\n---\n\nBody.\n",
             encoding="utf-8",
         )
         ok &= [p.name for p in adr_targets(adr)] == ["0007-flush.md"]
-        print(f"{'PASS' if ok else 'FAIL'} — directory owned paths walked, local-mode stubs resolved in the live worktree, the em-dash reason, RULES.md skipped")
+        print(
+            f"{'PASS' if ok else 'FAIL'} — directory owned paths walked, local-mode stubs resolved in the live worktree, the em-dash reason, RULES.md skipped"
+        )
         return bool(ok)
 
 
@@ -2488,15 +2556,24 @@ def selftest_pre_fanout() -> bool:
         (root / "full.md").write_text(full, encoding="utf-8")
         ok &= check_pre_fanout(root / "full.md") == 0
         for token in (
-            "CONTRACT-REVIEW", "HOOKS", "PAYLOAD-LINT", "ADMISSION", "SUITE-RUNNER",
-            "GATES", "CENSUS", "CHECKLIST-IDS",
+            "CONTRACT-REVIEW",
+            "HOOKS",
+            "PAYLOAD-LINT",
+            "ADMISSION",
+            "SUITE-RUNNER",
+            "GATES",
+            "CENSUS",
+            "CHECKLIST-IDS",
         ):
             partial = "\n".join(
                 line for line in full.splitlines() if not line.startswith(f"- {token}:")
             )
             (root / f"no-{token}.md").write_text(partial + "\n", encoding="utf-8")
             ok &= check_pre_fanout(root / f"no-{token}.md") == 1
-        (root / "none.md").write_text("## Build log\n- HOOKS: none\n- PAYLOAD-LINT: 2 payloads, 0 defects — P1 UT\n- CONTRACT-REVIEW: skipped — two-member contract, reviewed by hand\n- ADMISSION: skipped — one spawn\n- SUITE-RUNNER: local — no CI in this repository\n- GATES: none — no CI workflow builds anything\n- CENSUS: none — grepped for table censuses and migration counts\n- CHECKLIST-IDS: none — no coverage script\n", encoding="utf-8")
+        (root / "none.md").write_text(
+            "## Build log\n- HOOKS: none\n- PAYLOAD-LINT: 2 payloads, 0 defects — P1 UT\n- CONTRACT-REVIEW: skipped — two-member contract, reviewed by hand\n- ADMISSION: skipped — one spawn\n- SUITE-RUNNER: local — no CI in this repository\n- GATES: none — no CI workflow builds anything\n- CENSUS: none — grepped for table censuses and migration counts\n- CHECKLIST-IDS: none — no coverage script\n",
+            encoding="utf-8",
+        )
         ok &= check_pre_fanout(root / "none.md") == 0
 
         # A CHECKLIST-IDS line that parsed zero promise lines is refused, not
@@ -2529,13 +2606,18 @@ def selftest_pre_fanout() -> bool:
         (root / "def-missing.md").write_text(dossier + full, encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()) as dbuf:
             miss = check_pre_fanout(root / "def-missing.md", root)
-        ok &= miss == 1 and "'track rows'" in dbuf.getvalue() and "'window start'" not in dbuf.getvalue()
+        ok &= (
+            miss == 1
+            and "'track rows'" in dbuf.getvalue()
+            and "'window start'" not in dbuf.getvalue()
+        )
         (root / "def-skipped.md").write_text(
             dossier + full + "- DOSSIER-ONLY-TERMS: Track Rows\n", encoding="utf-8"
         )
         ok &= check_pre_fanout(root / "def-skipped.md", root) == 0
         (root / "src" / "flush.py").write_text(
-            '"""Flush: window start; track rows are one track\'s rows."""\n', encoding="utf-8"
+            '"""Flush: window start; track rows are one track\'s rows."""\n',
+            encoding="utf-8",
         )
         (root / "def-placed.md").write_text(dossier + full, encoding="utf-8")
         ok &= check_pre_fanout(root / "def-placed.md", root) == 0
@@ -2543,8 +2625,6 @@ def selftest_pre_fanout() -> bool:
         bad = full.replace("— 3 gates; axes: default, fault-inject", "— several")
         (root / "gates-bad.md").write_text(bad, encoding="utf-8")
         ok &= check_pre_fanout(root / "gates-bad.md", root) == 1
-
-
 
         # A granted line is refused while the admission ledger defers that key.
         saved = os.environ.get("ASD_ADMISSION_DIR")
@@ -2554,21 +2634,31 @@ def selftest_pre_fanout() -> bool:
             import spawn_admission
 
             with contextlib.redirect_stdout(io.StringIO()):
-                spawn_admission.main([
-                    "record-error", "--provider", "selftest-provider", "--model",
-                    "selftest-model", "Limit Exhausted. Your limit will reset in 30 minutes",
-                ])
+                spawn_admission.main(
+                    [
+                        "record-error",
+                        "--provider",
+                        "selftest-provider",
+                        "--model",
+                        "selftest-model",
+                        "Limit Exhausted. Your limit will reset in 30 minutes",
+                    ]
+                )
             with contextlib.redirect_stdout(io.StringIO()) as buf:
                 deferred = check_pre_fanout(root / "full.md")
             ok &= deferred == 1 and "admission ledger holds a reset" in buf.getvalue()
         except ImportError:
-            print("SKIP  spawn_admission.py not importable; the ledger refusal was not run")
+            print(
+                "SKIP  spawn_admission.py not importable; the ledger refusal was not run"
+            )
         finally:
             if saved is None:
                 os.environ.pop("ASD_ADMISSION_DIR", None)
             else:
                 os.environ["ASD_ADMISSION_DIR"] = saved
-        print(f"\n{'PASS' if ok else 'FAIL'} — pre-fan-out lines each refused when missing, accepted when present, and a granted admission refused under a live deferral")
+        print(
+            f"\n{'PASS' if ok else 'FAIL'} — pre-fan-out lines each refused when missing, accepted when present, and a granted admission refused under a live deferral"
+        )
         return bool(ok)
 
 
@@ -2661,12 +2751,16 @@ def selftest_mode() -> bool:
         except RuntimeError as exc:
             print(f"FAIL  fixture repository could not be built: {exc}")
             return False
-        (root / ".discovery" / "dossiers" / "W-001-a.md").write_text("---\nid: W-001\n---\n")
+        (root / ".discovery" / "dossiers" / "W-001-a.md").write_text(
+            "---\nid: W-001\n---\n"
+        )
 
         mode, notes = discovery_mode(root)
         case = mode == "local" and any("not gitignored" in n for n in notes)
         ok &= case
-        print(f"{'PASS' if case else 'FAIL'} — untracked, no .gitignore: local with a warning")
+        print(
+            f"{'PASS' if case else 'FAIL'} — untracked, no .gitignore: local with a warning"
+        )
 
         (root / ".gitignore").write_text(".discovery/\n")
         mode, notes = discovery_mode(root)
@@ -2680,7 +2774,9 @@ def selftest_mode() -> bool:
         mode, notes = discovery_mode(root)
         case = mode == "committed" and sum("not gitignored" in n for n in notes) == 3
         ok &= case
-        print(f"{'PASS' if case else 'FAIL'} — tracked, no local-only patterns: committed with 3 warnings")
+        print(
+            f"{'PASS' if case else 'FAIL'} — tracked, no local-only patterns: committed with 3 warnings"
+        )
 
         (root / ".gitignore").write_text(
             ".discovery/analysis/\n.discovery/pr-draft-*.md\n.discovery/deferred-ledger.md\n"
@@ -2688,7 +2784,9 @@ def selftest_mode() -> bool:
         mode, notes = discovery_mode(root)
         case = mode == "committed" and not any("WARNING" in n for n in notes)
         ok &= case
-        print(f"{'PASS' if case else 'FAIL'} — tracked with the three patterns: committed, clean")
+        print(
+            f"{'PASS' if case else 'FAIL'} — tracked with the three patterns: committed, clean"
+        )
 
         (root / ".gitignore").write_text(".discovery/\n")
         mode, notes = discovery_mode(root)
@@ -2796,7 +2894,8 @@ def main() -> int:
             return 1
         if args.pre_fanout:
             return check_pre_fanout(
-                targets_d[0], root,
+                targets_d[0],
+                root,
                 Path(args.worktree).resolve() if args.worktree else None,
             )
     elif args.pre_fanout:
