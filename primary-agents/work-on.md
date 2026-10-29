@@ -369,7 +369,11 @@ between this list and a phase is a defect in this list.
   commit (`SUITE-RUNNER:`), and every full-suite verdict from Phase 6 on
   comes from that runner's coverage-complete run on the relevant inputs.
   Choose by actual coverage and repository policy: partial CI gates can run
-  alongside a required full local suite. Reuse a green verdict until relevant
+  alongside a required full local suite. Under `SUITE-RUNNER: stub` this
+  build owes no full-suite verdict: the integrated verdict is the `/stub`
+  run of the release stub this branch merges into, and this build's proof
+  is CI green plus the new tests and the mutation check. Reuse a green
+  verdict until relevant
   inputs change; there are no unconditional whole-suite stability repeats.
   The stub red-run, targeted flake investigations, mutants, a row-5 proof and
   implementers' focused checks stay local. (Phase 2, Phase 6, Phase 7, Phase 9)

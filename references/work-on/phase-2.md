@@ -126,9 +126,19 @@ This is the step everything else depends on.
    Push and open the draft PR at Phase 6 with the authorization taken at the
    gates. Choose **local** when repository policy requires it, CI covers only
    part of the suite, CI is absent, or the user constrains its minutes.
-   Keep partial CI gates running, but take the integrated verdict from the
-   full local command. For example, a repository whose CI opts out of
-   services can require its local full command with `--stack` instead.
+    Keep partial CI gates running, but take the integrated verdict from the
+    full local command. For example, a repository whose CI opts out of
+    services can require its local full command with `--stack` instead.
+    Choose **stub** when the repository defers its integrated verdict to a
+    weekly release stub: the pull request then merges into the accepting
+    stub — the newest `stub/<date>` on the remote with no open pull request
+    into `development`, cut from `origin/development` when none exists;
+    push that new branch only, creation is idempotent. The worktree forks
+    from the accepting stub, and `/stub` proves the whole batch later with
+    one full run. This build owes green CI on its pull request, the new
+    tests and the mutation check. A service-backed new test may hold the
+    stack lease for one suite window when its criterion demands runtime
+    proof; log the window in the build log.
 
    Record the exact full-suite command separately from implementers' focused
    `TEST_COMMAND`s, plus its required coverage, before the fan-out.
@@ -137,6 +147,7 @@ This is the step everything else depends on.
    ```
    SUITE-RUNNER: ci — <workflow file>, <trigger>, required coverage; push and draft PR: yes
    SUITE-RUNNER: local — <reason CI cannot supply the required verdict>
+   SUITE-RUNNER: stub — <policy source>; target <stub branch>; integrated verdict deferred to the /stub run; push and draft PR: yes
    SUITE-COMMAND: <exact full-suite command, working directory and VM/env options>
    SUITE-COVERAGE: <required feature, service and host axes; expected opt-outs and where they are covered>
    ```

@@ -58,7 +58,7 @@ const { tool } = (await import(
 // OPENCODE_PHASE_CHECKPOINT_LOG: unset, `true`, `1`, `on` or `yes` log to that file;
 // `false`, `0`, `off` or `no` stop logging; any other value is the log file's path.
 
-const AGENTS = new Set(["work-on"])
+const AGENTS = new Set(["work-on", "stub"])
 const NUDGE_EVERY = nudgeEvery()
 // sessionID -> the agent of its latest request (chat.params), and tool calls since the
 // session's latest checkpoint (in memory: a restart starts the count again, which only
