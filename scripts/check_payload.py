@@ -417,6 +417,9 @@ URL_CREDENTIAL = re.compile(
 # Paths a payload legitimately names that will not exist yet: a path the agent
 # is told to CREATE, or the drafter's target files.
 CREATE_HINT = re.compile(r"\b(TEST_PATHS|OWNED_PATHS|TARGET_PATHS)\b")
+# A log a command will write (`run_tests.py --log FILE`, `run_gates.py
+# --log-dir DIR`) is an output, absent until the run: never checked for existence.
+LOG_OUTPUT = re.compile(r"--log(?:-dir)?[ =]\S+")
 
 # The tool each agent kind's payload depends on, keyed by the payload field
 # that makes it so: (tool, field). Without the tool the deliverable comes back
@@ -1112,7 +1115,7 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
         if number in owned_lines:
             continue  # a path the agent is told to create
         # #156: an inline-code span is prose, not a path handed to the agent.
-        for match in ABS_PATH.finditer(CODE_SPAN.sub("` `", mask_remote(line))):
+        for match in ABS_PATH.finditer(LOG_OUTPUT.sub("--log", CODE_SPAN.sub("` `", mask_remote(line)))):
             path = match.group(1)
             if os.path.exists(path):
                 continue
@@ -1672,6 +1675,10 @@ def selftest() -> int:
          "NOTE: docker exec ci cat /srv/nonexistent-x/out\n", None, False)
     case("a local path after a remote command is still checked",
          "NOTE: ssh host 'true' && cat /no/such/place/here\n", None, True, "does not exist")
+    case("a log the command will write is not checked for existence",
+         impl.replace("TEST_COMMAND: pytest -q",
+                      "TEST_COMMAND: run_tests --log /var/tmp/nonexistent-x.log -- pytest -q"),
+         "implementer", False)
     case("a missing local path is still a defect",
          impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: cat /var/tmp/nonexistent-x"),
          "implementer", True, "does not exist")

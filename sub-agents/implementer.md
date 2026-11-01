@@ -114,6 +114,16 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
    signature — hold it exactly: the same counts and the same signature are
    "the baseline held"; any other red is yours to explain or fix, and your
    report says which.
+   **Run it once per change, and read its log, never a second run.**
+   `TEST_COMMAND` goes through `run_tests.py` (tests) or `run_gates.py`
+   (gates): you see a digest — counts and the failing tests — and the full
+   output is in the log it names. For more detail, `grep` or `sed -n` that
+   log, or `run_tests.py --digest <log> --lines 40`; never re-run the suite
+   with no edit in between just to read its output through another `tail`
+   or `grep`. The run that is cheap to repeat is the one you never repeat.
+   A green `run_gates.py` run leaves a receipt for this exact tree, so the
+   orchestrator's own gate run on your commit reuses it instead of running
+   the list again — another reason not to touch the tree after it.
 6. **Follow `STANDARDS`.** A deviation needs a reason, in your report.
 7. **Stay inside `PACKAGE`.** An improvement you notice elsewhere goes in your
    report as a suggestion, never in a commit.

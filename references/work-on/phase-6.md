@@ -53,7 +53,13 @@ coverage-complete run on the relevant inputs. Keep a green verdict while
 those inputs are unchanged; a new phase alone does not require another run.
 
 **Every head that leaves this machine passes the `GATES:` list first**
-(Phase 2, `run_gates.py`): the first push and each arbitration fix. A green
+(Phase 2, `run_gates.py`): the first push and each arbitration fix. Call
+`run_gates.py` every time: a green run on the same gates file and the same
+tree — a fix-mode implementer's, on the commit you are about to push —
+left a receipt, and the call prints `REUSED` and runs nothing. Any edit,
+commit, merge or new file outside `.discovery/dossiers/` changes the tree,
+and the list runs again. `--fresh` forces a run; never pass it to escape a
+receipt you believe in. A green
 default-feature compile is not the list.
 
 **First, check whether the target branch has moved — and if it has, sync

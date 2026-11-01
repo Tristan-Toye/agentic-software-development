@@ -176,7 +176,10 @@ This is the step everything else depends on.
 
    The list is fixed for the branch. The first push (Phase 6), every
    arbitration fix and every review fix round (Phase 7) run this same list,
-   docs-only commits included; none gets a narrower one.
+   docs-only commits included; none gets a narrower one. A green run leaves
+   a receipt keyed by the gates file and the working tree (build log
+   excluded); the next call on the same tree reuses it (`REUSED`) instead of
+   running the list twice.
 
 You write this yourself. Do not delegate it: the contract is what you will
 referee with in Phase 6, and a contract you did not write is one you cannot

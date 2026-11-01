@@ -45,13 +45,38 @@ the failure excerpt: up to N lines that match
 none match, each cut to `--line-chars` characters. `--timeout` caps each
 gate's wall time; a gate that times out is reported FAIL.
 
+# Receipts: a green run is never repeated on the same tree
+
+A full run (no `--only`) that passes writes a receipt into the worktree's own
+git dir (`git rev-parse --git-path run_gates-receipts/<gates-sha>.json`): the
+gates file's sha256, a fingerprint of the working tree, HEAD, the passed and
+skipped gate names, and the time. The next run of the same gates file on the
+same tree reuses it and runs nothing: it prints `REUSED <n> gates — receipt
+<time> on <head>` and the usual summary line with `(reused)`, exit 0. The
+case it exists for: a fix-mode implementer runs the gates in the integration
+worktree and commits, and the orchestrator's own pre-push gate run on that
+head used to repeat the whole list minutes later.
+
+The fingerprint is the tree `git write-tree` builds from the working tree
+through a throwaway index — tracked and untracked files, `.gitignore`
+honoured — minus `.discovery/dossiers/`. The build log lives in the dossier
+and the orchestrator writes it between every step, a `RETURNED` line
+included, and no gate derived from CI judges it; every other path counts,
+`.discovery/analysis/` too. So any edit, commit, merge or new file outside the
+dossiers changes the fingerprint and the gates run again. A receipt is also
+refused when a gate it skipped for a missing tool would run now. `--fresh`
+ignores receipts; `--receipt` checks for one without running anything (exit 0
+a matching green receipt, 4 none). Outside a git worktree no receipt is
+written or read.
+
 Exit codes: 0 all gates passed (skips allowed); 1 at least one gate failed;
 2 unusable input (bad gates file, duplicate or malformed gate name, unknown
 `--only` name, a workflow `--from-workflow` cannot parse); 3 the worktree has
 a merge, rebase, cherry-pick or bisect in progress (MERGE_HEAD, rebase-merge/,
 rebase-apply/, CHERRY_PICK_HEAD, BISECT_LOG in `git rev-parse --git-path`):
 a gate read a half-mutated tree once, so the run refuses to start. `--list`
-and `--from-workflow` do not check.
+and `--from-workflow` do not check. 4 `--receipt` found no matching green
+receipt.
 
 # From a CI workflow
 
@@ -87,6 +112,8 @@ import contextlib
 import io
 import os
 import fnmatch
+import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -100,6 +127,8 @@ FAILURE_RE = re.compile(r"DEFECT|FAIL|ERROR|error|Error|panicked|not ok|✗")
 
 GIT_STATE = ("MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "BISECT_LOG")
 EXIT_GIT_STATE = 3
+EXIT_NO_RECEIPT = 4
+RECEIPT_IGNORED = ".discovery/dossiers"
 
 
 def git_state_in_progress(root: str) -> str | None:
@@ -118,6 +147,82 @@ def git_state_in_progress(root: str) -> str | None:
         if os.path.exists(path):
             return marker
     return None
+
+
+def _git(root: str, *args: str, env: dict | None = None) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True,
+                              check=False, env=env)
+    except OSError:
+        return 1, ""
+    return proc.returncode, proc.stdout.strip()
+
+
+def tree_fingerprint(root: str) -> tuple[str, str] | None:
+    """(tree sha of the working tree minus RECEIPT_IGNORED, HEAD sha), or None outside a git worktree.
+
+    Built through a throwaway index so the real index is never touched."""
+    rc, head = _git(root, "rev-parse", "--verify", "--quiet", "HEAD")
+    if rc != 0 or not head:
+        return None
+    fd, index = tempfile.mkstemp(prefix="run_gates-index-")
+    os.close(fd)
+    env = dict(os.environ, GIT_INDEX_FILE=index)
+    try:
+        steps = (("read-tree", "HEAD"), ("add", "-A", "--", "."),
+                 ("rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", RECEIPT_IGNORED))
+        for step in steps:
+            if _git(root, *step, env=env)[0] != 0:
+                return None
+        rc, tree = _git(root, "write-tree", env=env)
+        return (tree, head) if rc == 0 and tree else None
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(index)
+
+
+def receipt_path(root: str, gates_sha: str) -> str | None:
+    rc, path = _git(root, "rev-parse", "--git-path", f"run_gates-receipts/{gates_sha[:16]}.json")
+    if rc != 0 or not path:
+        return None
+    return path if os.path.isabs(path) else os.path.join(root, path)
+
+
+def matching_receipt(root: str, gates_sha: str, fingerprint: tuple[str, str] | None) -> dict | None:
+    """The green receipt for this gates file on this tree, else None."""
+    if fingerprint is None:
+        return None
+    path = receipt_path(root, gates_sha)
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rec = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if rec.get("gates_sha256") != gates_sha or rec.get("tree") != fingerprint[0]:
+        return None
+    if any(shutil.which(tool) for tool in rec.get("skipped_needs", [])):
+        return None  # a gate skipped then would run now
+    return rec
+
+
+def write_receipt(root: str, gates_sha: str, fingerprint: tuple[str, str], passed: list[str],
+                  skipped: list[dict]) -> str | None:
+    path = receipt_path(root, gates_sha)
+    if not path:
+        return None
+    rec = {"gates_sha256": gates_sha, "tree": fingerprint[0], "head": fingerprint[1],
+           "passed": passed, "skipped": [g["name"] for g in skipped],
+           "skipped_needs": sorted({g["needs"] for g in skipped}),
+           "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(rec, fh)
+    except OSError:
+        return None
+    return path
 
 
 class WorkflowError(Exception):
@@ -538,6 +643,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--from-workflow", nargs="+", metavar="FILE", help="print a gates file derived from workflow `run:` steps and run nothing")
     ap.add_argument("--skip-step", action="append", default=[], metavar="GLOB",
                     help="--from-workflow: list a derived gate whose name matches GLOB as skipped")
+    ap.add_argument("--fresh", action="store_true", help="run every gate even when a green receipt matches this tree")
+    ap.add_argument("--receipt", action="store_true", help="exit 0 when a green receipt matches this tree, 4 when none; run nothing")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -549,7 +656,8 @@ def main(argv: list[str]) -> int:
 
     try:
         with open(args.gates_file, encoding="utf-8") as fh:
-            gates = parse_gates(fh.read())
+            gates_text = fh.read()
+        gates = parse_gates(gates_text)
     except (OSError, GateFileError) as err:
         print(f"run_gates: {err}", file=sys.stderr)
         return 2
@@ -575,10 +683,26 @@ def main(argv: list[str]) -> int:
               "(merge, rebase, cherry-pick or bisect in progress); finish or abort it first", file=sys.stderr)
         return EXIT_GIT_STATE
 
+    root = os.path.abspath(args.root)
+    gates_sha = hashlib.sha256(gates_text.encode("utf-8")).hexdigest()
+    full = not args.only
+    fingerprint = tree_fingerprint(root) if full else None
+    rec = matching_receipt(root, gates_sha, fingerprint) if fingerprint and not args.fresh else None
+    if args.receipt:
+        if rec:
+            print(f"run_gates: green receipt {rec['at']} on {rec['head'][:12]} matches this tree")
+            return 0
+        print("run_gates: no green receipt matches this tree" + ("" if full else " (--only never has one)"))
+        return EXIT_NO_RECEIPT
+    if rec:
+        print(f"REUSED {len(rec['passed']) + len(rec['skipped'])} gates — receipt {rec['at']} on "
+              f"{rec['head'][:12]}, same gates file and tree; --fresh runs them again")
+        print(f"run_gates: {len(rec['passed'])} passed, 0 failed, {len(rec['skipped'])} skipped (reused)")
+        return 0
+
     log_dir = args.log_dir or tempfile.mkdtemp(prefix="run_gates-")
     os.makedirs(log_dir, exist_ok=True)
     print(f"run_gates: logging to {log_dir}")
-    root = os.path.abspath(args.root)
 
     to_run = []
     results: list[tuple[str, dict, dict | None]] = [None] * len(gates)  # type: ignore[list-item]
@@ -623,6 +747,12 @@ def main(argv: list[str]) -> int:
                 print(f"    {line}")
 
     print(f"run_gates: {passed} passed, {failed} failed, {skipped} skipped")
+    if fingerprint and not failed:
+        # Fingerprint again: a gate that rewrote the tree (a formatter) leaves no receipt.
+        if tree_fingerprint(root) == fingerprint:
+            write_receipt(root, gates_sha, fingerprint,
+                          [g["name"] for kind, g, _ in results if kind == "ran"],
+                          [g for kind, g, _ in results if kind == "skip"])
     return 1 if failed else 0
 
 
@@ -802,6 +932,72 @@ def selftest() -> int:
                     os.rmdir(gp)
                 else:
                     os.remove(gp)
+
+        # --- receipts: a green run on an unchanged tree is reused ---
+        rrepo = os.path.join(tmp, "rrepo")
+        os.makedirs(rrepo)
+        rgit = lambda *a: subprocess.run(["git", "-C", rrepo, "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                                         capture_output=True, text=True)
+        if rgit("init", "-q").returncode == 0:
+            counter = os.path.join(tmp, "count.txt")
+            rg = os.path.join(tmp, "rgates.txt")
+            with open(rg, "w", encoding="utf-8") as fh:
+                fh.write(f"count: echo x >> {counter}\nmissing: true [needs: totally-not-a-real-tool-xyz]\n")
+            with open(os.path.join(rrepo, "a.txt"), "w") as fh:
+                fh.write("1\n")
+            os.makedirs(os.path.join(rrepo, ".discovery", "dossiers"))
+            with open(os.path.join(rrepo, ".discovery", "dossiers", "W-1.md"), "w") as fh:
+                fh.write("log\n")
+            rgit("add", "-A")
+            rgit("commit", "-qm", "init")
+
+            def rrun(*extra: str) -> tuple[int, str]:
+                o = io.StringIO()
+                with contextlib.redirect_stdout(o), contextlib.redirect_stderr(io.StringIO()):
+                    code = main([rg, "--root", rrepo, "--log-dir", os.path.join(tmp, "rl"), *extra])
+                return code, o.getvalue()
+
+            def runs() -> int:
+                return sum(1 for _ in open(counter)) if os.path.exists(counter) else 0
+
+            rc0, _ = rrun("--receipt")
+            check("no receipt before a run: --receipt exits 4", rc0 == 4)
+            rrun()
+            rc1, out1 = rrun()
+            check("second run on the same tree reuses the receipt", rc1 == 0 and runs() == 1
+                  and "REUSED 2 gates" in out1 and "1 passed, 0 failed, 1 skipped (reused)" in out1)
+            check("--receipt finds it", rrun("--receipt")[0] == 0)
+            with open(os.path.join(rrepo, ".discovery", "dossiers", "W-1.md"), "a") as fh:
+                fh.write("RETURNED line\n")
+            rrun()
+            check("a build-log edit in the dossier keeps the receipt", runs() == 1)
+            rgit("commit", "-qam", "log")
+            rrun()
+            check("a commit of the build log alone keeps the receipt", runs() == 1)
+            with open(os.path.join(rrepo, "a.txt"), "a") as fh:
+                fh.write("2\n")
+            rrun()
+            check("an uncommitted code edit runs the gates again", runs() == 2)
+            with open(os.path.join(rrepo, "new.txt"), "w") as fh:
+                fh.write("n\n")
+            rrun()
+            check("an untracked file runs the gates again", runs() == 3)
+            rrun("--fresh")
+            check("--fresh runs them even with a matching receipt", runs() == 4)
+            rrun("--only", "count")
+            rrun("--only", "count")
+            check("--only never reuses nor writes a receipt", runs() == 6)
+            with open(rg, "a", encoding="utf-8") as fh:
+                fh.write("other: true\n")
+            rrun()
+            check("a changed gates file runs them again", runs() == 7)
+            with open(rg, "a", encoding="utf-8") as fh:
+                fh.write("bad: false\n")
+            rrun()
+            rc_bad, _ = rrun()
+            check("a red run writes no receipt", rc_bad == 1 and runs() == 9)
+            check("the real index is untouched", "A " not in subprocess.run(
+                ["git", "-C", rrepo, "status", "--porcelain"], capture_output=True, text=True).stdout)
 
         # --- #142: --from-workflow ---
         wf = os.path.join(tmp, "ci.yml")

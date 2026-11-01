@@ -99,6 +99,11 @@ cargo-nextest: `FAIL [..] crate test::name` lines and the
 `Summary [..] N tests run: X passed, Y failed` line.
 pytest: `FAILED path::test - message` lines and the `=== N failed, M passed
 in ...s ===` summary (counts in any order).
+dotnet test: the Microsoft.Testing.Platform `Test run summary:` block
+(`total:`/`failed:`/`succeeded:`/`skipped:`, summed over the projects a loop
+ran) with each `failed <Test.Name> (<time>)` line and its indented detail,
+and VSTest's `Failed!  - Failed: N, Passed: N, Skipped: N` line with its
+`  Failed <Test.Name> [<time>]` lines; colour codes are stripped first.
 bats/TAP: `not ok N desc` lines, with any following `# ...` diagnostic lines
 as detail.
 suites (a test aggregator such as a repository's `run_all_tests.sh`): one
@@ -314,6 +319,33 @@ def parse_pytest(text: str) -> tuple[Totals, list[Failure], bool]:
     return totals, failures, True
 
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def parse_dotnet(text: str) -> tuple[Totals, list[Failure], bool]:
+    text = ANSI_RE.sub("", text)
+    mtp = re.findall(r"Test run summary: \w+!\s*\n((?:[ \t]+\w+: [^\n]*\n?)+)", text)
+    vstest = re.findall(r"(?:Passed|Failed)!\s+-\s+Failed:\s+(\d+),\s+Passed:\s+(\d+),\s+Skipped:\s+(\d+)", text)
+    if not mtp and not vstest:
+        return Totals(), [], False
+    totals = Totals()
+    for block in mtp:
+        counts = dict((k, int(v)) for k, v in re.findall(r"(\w+): (\d+)\s*$", block, re.M))
+        totals.passed += counts.get("succeeded", 0)
+        totals.failed += counts.get("failed", 0)
+        totals.ignored += counts.get("skipped", 0)
+    for failed, passed, skipped in vstest:
+        totals.passed += int(passed)
+        totals.failed += int(failed)
+        totals.ignored += int(skipped)
+    failures: list[Failure] = []
+    for m in re.finditer(r"^(?:failed (\S+) \([^)]*\)|\s+Failed (\S+) \[[^\]]*\])\n((?:[ \t]+.*\n?){0,12})", text, re.M):
+        detail = [l.strip() for l in m.group(3).splitlines()
+                  if l.strip() and not l.strip().startswith(("from ", "at ", "--- End"))]
+        failures.append(Failure(m.group(1) or m.group(2), detail))
+    return totals, failures, True
+
+
 def parse_bats(text: str) -> tuple[Totals, list[Failure], bool]:
     lines = text.splitlines()
     oks = 0
@@ -434,6 +466,7 @@ PARSERS: list[tuple[str, "callable[[str], tuple[Totals, list[Failure], bool]]"]]
     ("cargo", parse_cargo),
     ("nextest", parse_nextest),
     ("pytest", parse_pytest),
+    ("dotnet", parse_dotnet),
     ("bats/tap", parse_bats),
     ("suites", parse_suites),
 ]
@@ -807,6 +840,32 @@ NEXTEST_LOG = """    Starting 10 tests
      Summary [   0.045s] 10 tests run: 8 passed, 2 failed, 0 skipped
 """
 
+DOTNET_LOG = """\x1b[31mfailed Twipe.Ingest.Tests.LoaderTests.Reads_supplement_only (0ms)
+\x1b[m  from /w/Source/Twipe.Ingest.Tests/bin/Debug/net10.0/Twipe.Ingest.Tests.dll (net10.0|arm64)
+  Assert.Equal() Failure: Collections differ at index 0
+  Expected: "a.json"
+  Actual:   "b.json"
+    at Twipe.Ingest.Tests.LoaderTests.Reads_supplement_only() in /w/LoaderTests.cs:327
+    --- End of stack trace from previous location ---
+Exit code: 2
+
+Test run summary: Failed!
+  total: 205
+  failed: 1
+  succeeded: 204
+  skipped: 0
+  duration: 1s 118ms
+Test run completed with non-success exit code: 2
+
+Test run summary: Passed!
+  total: 43
+  failed: 0
+  succeeded: 42
+  skipped: 1
+  duration: 300ms
+Passed!  - Failed:     0, Passed:    10, Skipped:     2, Total:    12, Duration: 1 s - Old.Tests.dll (net8.0)
+"""
+
 PYTEST_LOG = """collected 10 items
 FAILED tests/test_x.py::test_y - assert 1 == 2
 FAILED tests/test_z.py::test_w - AssertionError
@@ -881,6 +940,13 @@ def selftest() -> int:
     parser, totals, fails = parse_log(PYTEST_LOG)
     check("pytest totals", totals == Totals(passed=8, failed=2))
     check("pytest failure detail", fails[0].detail == ["assert 1 == 2"])
+
+    parser, totals, fails = parse_log(DOTNET_LOG)
+    check("dotnet totals summed over projects and both formats",
+          parser == "dotnet" and totals == Totals(passed=256, failed=1, ignored=3))
+    check("dotnet failure name and detail, stack and paths dropped",
+          [f.name for f in fails] == ["Twipe.Ingest.Tests.LoaderTests.Reads_supplement_only"]
+          and fails[0].detail[:3] == ["Assert.Equal() Failure: Collections differ at index 0", 'Expected: "a.json"', 'Actual:   "b.json"'])
 
     parser, totals, fails = parse_log(BATS_LOG)
     check("bats totals", totals == Totals(passed=2, failed=1))
