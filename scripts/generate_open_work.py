@@ -10,7 +10,7 @@ or `state` — the only file it writes is the report.
 
 Usage:
     generate_open_work.py [--root .discovery] [--out PATH] [--worktrees]
-                          [--embed] [--open] [--quiet]
+                          [--embed] [--link-base URL] [--open] [--quiet]
     generate_open_work.py --uninstall         # remove hooks an old --install wrote
     generate_open_work.py --selftest
 
@@ -28,6 +28,12 @@ build in flight lives in `../<repo>-<ID>` and a plan under review in
 `--embed` omits the page's own header, so the report sits inside an iframe
 that has a title bar of its own; it follows the system light/dark setting
 (`?theme=light|dark` on the iframe URL overrides it).
+`--link-base URL` (a path such as `/repo/web` or an http(s) URL) makes every
+dossier reference in the report (graph nodes, table rows, dependency chips)
+navigate the TOP window to `<URL>/<ID>` instead of opening the report's own
+detail sheet; the pipeline dashboard passes `--link-base /repo/<repo>` with
+`--embed`, so a click in the graph lands on that dossier's dashboard route.
+Without the flag the report behaves as before.
 
 The template lives at references/templates/open-work.html, next to this
 script's parent. Its dependency graph includes every dossier, with display-only
@@ -307,7 +313,7 @@ def classify(dossiers: list[dict], errors: list[dict], root: Path,
 
 
 def build_payload(root: Path, now: dt.datetime, worktrees: bool = False,
-                  embed: bool = False) -> dict:
+                  embed: bool = False, link_base: str = "") -> dict:
     dossiers, errors = load_dossiers(root)
     if worktrees:
         overlay_worktrees(root, dossiers)
@@ -322,6 +328,7 @@ def build_payload(root: Path, now: dt.datetime, worktrees: bool = False,
     payload.update({
         "worktrees": worktrees,
         "embed": embed,
+        "link_base": link_base.rstrip("/"),
         "generated_at": now.isoformat(timespec="seconds"),
         "generated_at_human": now.strftime("%-d %b %Y, %H:%M"),
         "root": str(root),
@@ -461,6 +468,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--embed", action="store_true",
                     help="omit the page's own header, for use inside an "
                          "iframe; follows the system light/dark setting")
+    ap.add_argument("--link-base", default="", metavar="URL",
+                    help="navigate the top window to <URL>/<ID> when a "
+                         "dossier is clicked (a /path or an http(s) URL)")
     ap.add_argument("--open", action="store_true",
                     help="open the report in the default browser")
     ap.add_argument("--quiet", action="store_true",
@@ -470,6 +480,9 @@ def main(argv: list[str] | None = None) -> int:
                          "earlier --install wrote")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
+    if args.link_base and not re.match(r"^(/(?!/)|https?://)[\w./:~%-]*$",
+                                       args.link_base):
+        ap.error("--link-base must be a /path or an http(s) URL")
 
     if args.selftest:
         return selftest()
@@ -491,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
     out = (Path(args.out) if args.out
            else root / "analysis" / "open-work.html").resolve()
     payload = build_payload(root, dt.datetime.now(), worktrees=args.worktrees,
-                            embed=args.embed)
+                            embed=args.embed, link_base=args.link_base)
     write_report(out, render(TEMPLATE.read_text(encoding="utf-8"), payload))
     if not args.quiet:
         print(out)
@@ -700,6 +713,13 @@ def selftest() -> int:
         check("{{DATA_JSON}}" not in html, "placeholder replaced")
         check('"W-001"' in html, "payload embedded")
         check("</html>" in html, "template intact")
+        check('"link_base": ""' in html, "no link base without the flag")
+        lb = render(TEMPLATE.read_text(encoding="utf-8"),
+                    build_payload(root, today, embed=True,
+                                  link_base="/repo/web/"))
+        check('"link_base": "/repo/web"' in lb, "link base embedded, trimmed")
+        check("LINK_BASE" in lb and "top.location" in lb,
+              "template navigates the top window when a link base is set")
 
         # A title that tries to close the script block must stay inert.
         write("W-008-evil.md", _dossier(

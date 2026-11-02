@@ -388,6 +388,8 @@ for (const d of DATA.dossiers)
     (DEPENDENTS[b] = DEPENDENTS[b] || []).push(d.id);
 
 const EMBED = document.documentElement.hasAttribute("data-embed");
+/* --link-base: a dossier reference navigates the top window to <base>/<ID> (the dashboard's dossier route). */
+const LINK_BASE = DATA.link_base || "";
 const app = document.getElementById("app");
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let stagger = 0;
@@ -996,6 +998,11 @@ function heuristicOrder(cols, boundaries) {
 const modal = document.getElementById("modal");
 const sheet = modal.querySelector(".sheet");
 function openModal(d) {
+  if (LINK_BASE) {
+    try { top.location.href = LINK_BASE + "/" + encodeURIComponent(d.id); }
+    catch (e) { window.open(LINK_BASE + "/" + encodeURIComponent(d.id), "_top"); }
+    return;
+  }
   sheet.textContent = "";
   sheet.style.setProperty("--sheet-stage", stageVar(d.status));
   const kicker = el("div", "kicker");

@@ -12,14 +12,15 @@ export type TLEntry = {
   qid?: string
   from?: string
   kind?: string
+  phase?: string
   option?: string
   via?: string
   question?: Question
 }
 
-/** The phase number of a `Phase <n>` / `PHASE <n>` mention (the letter of `4a` dropped), or "". */
-export function phaseOfText(s: string): string {
-  return s.match(/\b(?:Phase|PHASE)\s+(\d+)[a-z]?\b/)?.[1] ?? ""
+/** The phase number of a `Phase <n>` / `PHASE <n>` mention (the letter of `4a` dropped), or "". `unit` "Step" reads `Step <n>` (a stub). */
+export function phaseOfText(s: string, unit: "Phase" | "Step" = "Phase"): string {
+  return (unit === "Step" ? s.match(/\bStep\s+(\d+)\b/) : s.match(/\b(?:Phase|PHASE)\s+(\d+)[a-z]?\b/))?.[1] ?? ""
 }
 const when = (ts: string): number => {
   const t = Date.parse(ts)
@@ -41,13 +42,13 @@ export function questionEntries(questions: Question[]): TLEntry[] {
 }
 
 /**
- * One timeline, newest first: run updates, questions with their threads, `extra` entries (a stub record),
- * and build-log lines only when there are no updates. A labelled boundary is inserted whenever the phase
- * named by a `stage` line changes.
+ * One timeline, newest first: run updates and questions with their threads, plus `extra` entries (the step
+ * boundaries of a stub). It never falls back to the build log or the record: with no updates and no questions it
+ * is empty. A labelled boundary is inserted whenever the phase (or `Step`) named by a `stage` line changes.
  */
-export function mergeTimeline(o: { updates: Update[]; questions: Question[]; log?: string[]; extra?: TLEntry[]; names?: Record<string, string> }): TLEntry[] {
+export function mergeTimeline(o: { updates: Update[]; questions: Question[]; extra?: TLEntry[]; names?: Record<string, string>; unit?: "Phase" | "Step" }): TLEntry[] {
+  const unit = o.unit ?? "Phase"
   const all: TLEntry[] = [...(o.extra ?? [])]
-  if (!o.updates.length) for (const l of o.log ?? []) all.push({ ts: "", type: "log", text: l })
   // `updates` arrive newest first from the store; chronological order is restored by the stable sort below.
   for (const u of [...o.updates].reverse()) all.push({ ts: u.ts, type: u.kind, text: u.text, stage: u.stage, auto: u.auto === true ? true : undefined })
   all.push(...questionEntries(o.questions))
@@ -55,16 +56,142 @@ export function mergeTimeline(o: { updates: Update[]; questions: Question[]; log
   const out: TLEntry[] = []
   let cur = ""
   for (const e of sorted) {
+    if (e.type === "boundary" && e.phase) cur = e.phase
     if (e.type === "stage") {
-      const p = phaseOfText(`${e.stage ?? ""} ${e.text}`)
+      const p = phaseOfText(`${e.stage ?? ""} ${e.text}`, unit)
       if (p && p !== cur) {
         cur = p
-        out.push({ ts: e.ts, type: "boundary", text: "", label: o.names?.[p] ? `Phase ${p} — ${o.names[p]}` : `Phase ${p}` })
+        out.push({ ts: e.ts, type: "boundary", text: "", phase: p, label: unit === "Step" ? `Step ${p}` : o.names?.[p] ? `Phase ${p} \u2014 ${o.names[p]}` : `Phase ${p}` })
       }
     }
     out.push(e)
   }
   return out.reverse()
+}
+
+// ---- classification and grouping (pure) ----
+export type Kind = "start" | "stage" | "question" | "answered" | "suite-green" | "suite-red" | "gate" | "pr" | "workflow" | "failed" | "waiting" | "done" | "stopped" | "note" | "reply" | "routine" | "info" | "entry" | "boundary"
+const KEY_KINDS = new Set<Kind>(["start", "stage", "question", "answered", "suite-green", "suite-red", "gate", "pr", "workflow", "failed", "waiting", "done", "stopped"])
+
+/** What an entry is, for display: its kind, whether it is a key event, and whether it is routine (collapsible). */
+export function classify(e: TLEntry): { kind: Kind; key: boolean; routine: boolean } {
+  const mk = (kind: Kind) => ({ kind, key: KEY_KINDS.has(kind), routine: kind === "routine" || kind === "info" })
+  const t = e.text
+  switch (e.type) {
+    case "boundary": return mk("boundary")
+    case "question": return mk("question")
+    case "answer": return mk("answered")
+    case "message": return mk("reply")
+    case "entry": return mk("entry")
+    case "stage": return mk("stage")
+    case "runner":
+      if (/^start\b/i.test(t)) return mk("start")
+      if (/^waiting\b/i.test(t)) return mk("waiting")
+      if (/^(answered|follow-up)\b/i.test(t)) return mk("answered")
+      if (/^done\b/i.test(t)) return mk("done")
+      if (/^stopped\b/i.test(t)) return mk("stopped")
+      if (/\bfailed\b/i.test(t)) return mk("failed")
+      if (/^stage \S+ end\b/i.test(t)) return mk("info")
+      return mk("info")
+    default: break
+  }
+  // update (hook-written `auto` lines and agent notes)
+  if (/\b(tests?|suite)\b[^.]*\b(red|fail(?:ed|ing|s)?)\b|\b(red|fail(?:ed|ing)?)\b[^.]*\b(tests?|suite)\b/i.test(t)) return mk("suite-red")
+  if (/\b(tests?|suite)\b[^.]*\b(green|pass(?:ed|es|ing)?|ok)\b|\b(green|passing)\b[^.]*\b(tests?|suite)\b/i.test(t)) return mk("suite-green")
+  if (/\bgates?\b/i.test(t)) return mk("gate")
+  if (/\b(PR|pull request)\b[^.]*\b(open(?:ed)?|merged|created)\b|\b(opened|merged|created)\b[^.]*\b(PR|pull request)\b/i.test(t)) return mk("pr")
+  if (/\bworkflow\b/i.test(t)) return mk("workflow")
+  if (/\bfailed\b/i.test(t)) return mk("failed")
+  return mk(e.auto ? "routine" : "note")
+}
+
+export type Item = { kind: Kind; key: boolean; entry: TLEntry } | { kind: "more"; key: false; entries: { kind: Kind; entry: TLEntry }[] }
+export type Group = {
+  id: string; label: string; phase: string; current: boolean; start: string; end: string; durationMs: number | null
+  summary: string; counts: { questions: number; updates: number }; items: Item[]
+}
+const firstLine = (s: string): string => s.split("\n").map((l) => l.trim()).find(Boolean) ?? ""
+
+/**
+ * Group a newest-first timeline by its boundaries; groups newest first, the first one is current. A question and
+ * its thread belong to the phase of the question's first message. Inside a group items are newest first and runs
+ * of two or more routine entries collapse into one `more` item.
+ */
+export function groupByPhase(entries: TLEntry[], first = "Setup"): Group[] {
+  type G = { g: Group; raw: { e: TLEntry; i: number }[] }
+  const groups: G[] = []
+  const qgroup = new Map<string, G>()
+  let cur: G | null = null
+  const open = (label: string, phase: string, start: string, summary: string): G => {
+    const g: G = { g: { id: `${groups.length}:${label}`, label, phase, current: false, start, end: start, durationMs: null, summary, counts: { questions: 0, updates: 0 }, items: [] }, raw: [] }
+    groups.push(g)
+    return g
+  }
+  const chrono = [...entries].reverse()
+  chrono.forEach((e, i) => {
+    if (e.type === "boundary") { cur = open(e.label ?? "", e.phase ?? "", e.ts, firstLine(e.text)); return }
+    if (!cur) cur = open(first, "", e.ts, "")
+    let g = cur
+    if (e.qid && e.type === "question") qgroup.set(e.qid, cur)
+    else if (e.qid && (e.type === "message" || e.type === "answer")) g = qgroup.get(e.qid) ?? cur
+    g.raw.push({ e, i })
+    if (e.type === "question") g.g.counts.questions++
+    else if (e.type === "update" || e.type === "stage" || e.type === "runner") g.g.counts.updates++
+    if (e.type === "stage" && !g.g.summary) g.g.summary = firstLine(e.text)
+    else if (e.type === "stage") g.g.summary = firstLine(e.text) || g.g.summary
+  })
+  const out: Group[] = []
+  groups.forEach((G, gi) => {
+    const sorted = [...G.raw].sort((a, b) => (when(a.e.ts) === when(b.e.ts) ? b.i - a.i : when(a.e.ts) < when(b.e.ts) ? 1 : -1))
+    const items: Item[] = []
+    let run: { kind: Kind; entry: TLEntry }[] = []
+    const flush = () => {
+      if (run.length === 1) items.push({ kind: run[0].kind, key: false, entry: run[0].entry })
+      else if (run.length > 1) items.push({ kind: "more", key: false, entries: run })
+      run = []
+    }
+    for (const { e } of sorted) {
+      const c = classify(e)
+      if (c.routine) run.push({ kind: c.kind, entry: e })
+      else { flush(); items.push({ kind: c.kind, key: c.key, entry: e }) }
+    }
+    flush()
+    G.g.items = items
+    const ts = G.raw.map((r) => when(r.e.ts)).filter((t) => t > -Infinity)
+    const end = ts.length ? Math.max(...ts) : NaN
+    const next = groups[gi + 1]
+    const nextStart = next ? when(next.g.start) : -Infinity
+    const s = when(G.g.start)
+    const stop = nextStart > -Infinity ? nextStart : end
+    G.g.end = Number.isNaN(stop) || stop === -Infinity ? G.g.start : new Date(stop).toISOString()
+    G.g.durationMs = s > -Infinity && stop > -Infinity && !Number.isNaN(stop) ? Math.max(0, stop - s) : null
+    out.push(G.g)
+  })
+  out.reverse()
+  if (out.length) out[0].current = true
+  return out
+}
+
+export type NowPanel = {
+  phase: string; step: number | null; since: string
+  doing: { text: string; ts: string; kind: Kind; auto: boolean } | null
+  runner: string; waiting: string[]
+}
+/** The data of the "Now" panel: the current phase, what the run is doing (newest meaningful entry), the runner state, and the open questions waiting on the owner. */
+export function nowPanel(entries: TLEntry[], groups: Group[], o: { runner?: string | null; waiting?: string[]; fallbackPhase?: string }): NowPanel {
+  const g = groups[0]
+  const phase = g?.phase || o.fallbackPhase || ""
+  const num = /^\d+$/.test(phase) ? Number(phase) : null
+  let doing: NowPanel["doing"] = null
+  let any: NowPanel["doing"] = null
+  for (const e of entries) {
+    if (e.type === "boundary" || e.type === "entry" || e.type === "log") continue
+    const c = classify(e)
+    const d = { text: e.text, ts: e.ts, kind: c.kind, auto: e.auto === true }
+    if (!any) any = d
+    if (!c.routine) { doing = d; break }
+  }
+  return { phase: g?.label ?? "", step: num, since: g?.start ?? "", doing: doing ?? any, runner: o.runner ?? "", waiting: o.waiting ?? [] }
 }
 
 /** Entries of a stub record file: each `##`/`###` heading is one; `## Step N` headings are boundaries. Dated by `(YYYY-MM-DD)` in the heading, else by position (the date before it, or `cut`). */
@@ -81,7 +208,7 @@ export function parseRecord(text: string, cut = ""): TLEntry[] {
     const d = m[1].match(/\((\d{4}-\d{2}-\d{2})\)/)?.[1]
     if (d) date = d
     const t = body.join("\n").trim()
-    out.push({ ts: date, type: /^Step\s+\d+/i.test(m[1]) ? "boundary" : "entry", label: m[1], text: t.length > 1500 ? t.slice(0, 1499) + "…" : t })
+    out.push({ ts: date, type: /^Step\s+\d+/i.test(m[1]) ? "boundary" : "entry", phase: m[1].match(/^Step\s+(\d+)/i)?.[1], label: m[1], text: t.length > 1500 ? t.slice(0, 1499) + "…" : t })
   }
   return out
 }

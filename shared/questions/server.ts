@@ -3,14 +3,15 @@
 import { mkdirSync, watch } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
-import { buildLog, getRuns, PHASE_NAMES, type Run } from "./runs.ts"
+import { buildLog, getRuns, PHASE_NAMES, questionRepo, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile } from "./stubs.ts"
 import { dossierPage, readUpdates, renderMarkdown, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
-import { logEntries, mergeTimeline, parseRecord } from "./timeline.ts"
+import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord } from "./timeline.ts"
 import { runRunner } from "./controls.ts"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
 import { api, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 
 const DIR = storeDir()
@@ -140,6 +141,38 @@ export async function scan(): Promise<void> {
   }
 }
 
+// ---- Slack progress thread per run ----
+const runSeen = new Map<string, number>()
+let scanningRuns = false
+/** Post the new lines of each run's updates store into its Slack thread; the first start line opens the thread. */
+export async function scanRunThreads(): Promise<void> {
+  if (!slackOn() || !runSlackEnabled() || scanningRuns) return
+  scanningRuns = true
+  try {
+    for (const r of await allRuns()) {
+      const key = `${r.repo}.${r.id}`
+      const chrono = readUpdates(key, runsDir(), 100000).reverse()
+      if (!chrono.length) continue
+      const side = readRunThread(runsDir(), key)
+      // A run seen for the first time without a thread is caught up silently: no backlog after a restart.
+      if (!runSeen.has(key)) { runSeen.set(key, side?.seen ?? (side ? 0 : chrono.length)); if (!side) continue }
+      const link = `http://127.0.0.1:${PORT}/repo/${encodeURIComponent(r.repo)}/${encodeURIComponent(r.id)}`
+      const { upto, msgs } = pendingSlack(chrono, runSeen.get(key)!, !!side, { repo: r.repo, id: r.id, title: r.title, link })
+      let thread = side
+      for (const m of msgs) {
+        try {
+          if (m.role === "open") {
+            const res = await api("chat.postMessage", botToken, { channel: await dmChannel(), text: m.text })
+            thread = { channel: res.channel ?? slackChannel, ts: res.ts }
+          } else if (thread) await api("chat.postMessage", botToken, { channel: thread.channel, thread_ts: thread.ts, text: m.text })
+        } catch (e) { log(`slack run thread: ${(e as Error).message}`) }
+      }
+      runSeen.set(key, upto)
+      if (thread) writeRunThread(runsDir(), key, { ...thread, seen: upto })
+    }
+  } finally { scanningRuns = false }
+}
+
 // ---- Slack inbound ----
 async function onSlackAction(a: OwnerAction): Promise<void> {
   if (a.type === "pointer") {
@@ -201,6 +234,8 @@ export async function handle(req: Request): Promise<Response> {
   const host = req.headers.get("host") ?? ""
   if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return json({ error: "bad host" }, 403)
   const path = url.pathname
+  const gr = path.match(/^\/repo\/([\w.-]+)\/graph$/)
+  if (req.method === "GET" && gr) return new Response(null, { status: 302, headers: { location: `/repo/${gr[1]}` } })
   if (req.method === "GET" && (path === "/" || path === "/questions" || /^\/repo\/[\w.-]+(\/.*)?$/.test(path))) return html(PAGE)
   if (req.method === "GET" && path === "/api/events") return events(req)
   if (req.method === "GET" && path === "/api/runs") return json({ ...(await getRuns(() => readAll(DIR))), slack: slackOn() })
@@ -212,14 +247,17 @@ export async function handle(req: Request): Promise<Response> {
   }
   const tl = path.match(/^\/api\/timeline\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && tl) {
-    const run = await findRun(tl[1], tl[2])
+    const runs = await allRuns()
+    const run = runs.find((r) => r.repo === tl[1] && r.id === tl[2])
     if (!run) return json({ error: "no such dossier" }, 404)
     let log: string[] = []
     try { log = logEntries(buildLog(readFileSync(run.file, "utf8"))) } catch { /* unreadable */ }
     const updates = readUpdates(`${run.repo}.${run.id}`, runsDir(), 1000)
-    const questions = readAll(DIR).filter((q) => q.dossier === run.id)
-    const entries = mergeTimeline({ updates, questions, log, names: PHASE_NAMES })
-    return json({ run, entries, planning: run.status === "planned" && updates.length > 0, logUsed: updates.length === 0 })
+    const questions = readAll(DIR).filter((q) => q.dossier === run.id && questionRepo(q, runs) === run.repo)
+    const entries = mergeTimeline({ updates, questions, names: PHASE_NAMES })
+    const groups = groupByPhase(entries)
+    const now = nowPanel(entries, groups, { runner: run.runner?.state, waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: run.phase })
+    return json({ run, entries, groups, now, log, empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
   }
   const dd = path.match(/^\/api\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && dd) {
@@ -237,8 +275,11 @@ export async function handle(req: Request): Promise<Response> {
     let record = ""
     try { record = file ? readFileSync(file, "utf8") : "" } catch { /* unreadable */ }
     const questions = readAll(DIR).filter((q) => q.dossier === slug || q.dossier === branch || `${q.repo}.${q.dossier}` === key)
-    const entries = mergeTimeline({ updates: readUpdates(key, runsDir(), 1000), questions, extra: parseRecord(record, stub.cut) })
-    return json({ repo, stub, key, entries, hasRecord: !!file })
+    const recordEntries = parseRecord(record, stub.cut)
+    const entries = mergeTimeline({ updates: readUpdates(key, runsDir(), 1000), questions, extra: recordEntries.filter((e) => e.type === "boundary").map((e) => ({ ...e, text: "" })), unit: "Step" })
+    const groups = groupByPhase(entries, "Before the first step")
+    const now = nowPanel(entries, groups, { runner: "", waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: "" })
+    return json({ repo, stub, key, entries, groups, now, record: recordEntries, empty: entries.every((e) => e.type === "boundary"), hasRecord: !!file })
   }
   const rl = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/log$/)
   if (req.method === "GET" && rl) {
@@ -344,11 +385,12 @@ async function main(): Promise<void> {
   }
   try {
     mkdirSync(runsDir(), { recursive: true })
-    watch(runsDir(), () => emitChange("runs"))
+    let rt: ReturnType<typeof setTimeout> | undefined
+    watch(runsDir(), () => { emitChange("runs"); clearTimeout(rt); rt = setTimeout(() => void scanRunThreads(), 300) })
   } catch (e) {
     log(`runs dir not watched: ${(e as Error).message}`)
   }
-  setInterval(() => void scan(), 10_000)
+  setInterval(() => { void scan(); void scanRunThreads() }, 10_000)
 }
 
 if (import.meta.main) await main()

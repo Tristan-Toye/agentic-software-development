@@ -20,7 +20,7 @@ export type Run = {
   phase: string; phaseName: string; lastActivity: string; logLines: number
   session: Session; pr: Pr | null; questions: string[]; answered: QA[]
   running: boolean; summary: string; updates: Update[]; runner: RunnerState | null
-  main: string; blockedBy: string[]; controls: Controls
+  main: string; blockedBy: string[]; controls: Controls; view: "run" | "dossier"
 }
 /** An answered question, as shown under the dossier it came from. */
 export type QA = { id: string; text: string; answer: string; option: string; asked: string; answeredAt: string }
@@ -123,6 +123,40 @@ export function pickDossiers(roots: string[]): { front: Front; text: string; fil
     }
   }
   return [...best.values()]
+}
+
+/** Dossiers per repository: roots are grouped by their main checkout first, because an id is unique only inside one repo. */
+export async function pickDossiersByRepo(roots: string[], mainFor: (wt: string) => Promise<string> = mainOf): Promise<{ main: string; front: Front; text: string; file: string; worktree: string }[]> {
+  const byMain = new Map<string, string[]>()
+  for (const wt of [...new Set(roots)].sort()) {
+    const m = await mainFor(wt)
+    byMain.set(m, [...(byMain.get(m) ?? []), wt])
+  }
+  const out: { main: string; front: Front; text: string; file: string; worktree: string }[] = []
+  for (const [main, wts] of byMain) for (const d of pickDossiers(wts)) out.push({ ...d, main })
+  return out
+}
+
+/** The repo a question belongs to: among the runs with its dossier id, the one named by `q.repo` or whose checkouts contain `q.root`; the only candidate otherwise. */
+export function questionRepo(q: { repo: string; dossier: string; root?: string }, runs: { repo: string; id: string; main: string; worktree: string }[]): string | undefined {
+  const c = runs.filter((r) => r.id === q.dossier)
+  const inside = (p: string, d: string) => !!p && !!d && (p === d || p.startsWith(d + "/"))
+  const hit = c.find((r) => r.repo === q.repo) ?? c.find((r) => inside(q.root ?? "", r.worktree) || inside(q.root ?? "", r.main))
+  if (hit) return hit.repo
+  return c.length === 1 ? c[0].repo : undefined
+}
+
+/** Whether a question was asked in the repo `repo` whose main checkout is `main` (named by `q.repo`, or its root is inside the checkout or a sibling worktree `<main>-...`). */
+export function questionInRepo(q: { repo: string; root?: string }, repo: string, main: string): boolean {
+  if (q.repo === repo) return true
+  const r = q.root ?? ""
+  return !!r && (r === main || r.startsWith(main + "/") || r.startsWith(main + "-"))
+}
+
+/** Which view a dossier route opens: done or dropped show the dossier; running, in progress, or any with run updates show the run. */
+export function viewFor(status: string, running: boolean, updates: number): "run" | "dossier" {
+  if (status === "done" || status === "dropped") return "dossier"
+  return running || isRunning(status) || updates > 0 ? "run" : "dossier"
 }
 
 // ---- transcripts ----
@@ -255,10 +289,10 @@ export async function mainOf(wt: string): Promise<string> {
   return main
 }
 /** Answered questions grouped by dossier id, for the view's "Q&A" expanders. */
-export function answeredBy(questions: Question[]): Map<string, QA[]> {
+export function answeredBy(questions: Question[], inRepo: (q: Question) => boolean = () => true): Map<string, QA[]> {
   const m = new Map<string, QA[]>()
   for (const q of questions) {
-    if (q.state !== "answered") continue
+    if (q.state !== "answered" || !inRepo(q)) continue
     const a: QA = { id: q.id, text: q.text, answer: q.answer?.text ?? "", option: q.answer?.option as string ?? "", asked: q.ts, answeredAt: q.answer?.ts ?? "" }
     m.set(q.dossier, [...(m.get(q.dossier) ?? []), a])
   }
@@ -296,7 +330,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
   const transcripts = listTranscripts()
   const roots = await candidateRoots(questions, transcripts)
   const runs: Run[] = []
-  for (const d of pickDossiers(roots)) {
+  for (const d of await pickDossiersByRepo(roots)) {
     const f = d.front
     const log = buildLog(d.text)
     const status = f.status ?? "planned"
@@ -313,18 +347,32 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
     }
     const repoName = baseName(await mainOf(wt))
     const runner = readRunner(`${repoName}.${f.id}`)
-    const main = await mainOf(wt)
+    const main = d.main
     const pr = isRunning(status) || runnerActive(runner) ? await prFor(wt) : null
-    const qs = questions.filter((q) => q.state === "open" && q.dossier === f.id).map((q) => q.id)
+    const qs: string[] = []
     runs.push({
       id: f.id!, title: f.title ?? "", status, jira: f.jira ?? "", updated: f.updated ?? "", created: f.created ?? "",
       repo: repoName, root: d.worktree, worktree: wt, file: d.file,
       phase, phaseName: phaseNameOf(PHASE_NAMES, phase), lastActivity: lastLine(log), logLines: Math.max(0, logLength(d.text)), session, pr, questions: qs, answered: [],
       running: isRunning(status) || runnerActive(runner), summary: summaryOf(d.text), updates: readUpdates(`${repoName}.${f.id}`), runner,
-      main, blockedBy: blockedByOf(f.blocked_by), controls: controlsFor({ status, blockedBy: blockedByOf(f.blocked_by), runner }, () => undefined),
+      main, blockedBy: blockedByOf(f.blocked_by), controls: controlsFor({ status, blockedBy: blockedByOf(f.blocked_by), runner }, () => undefined), view: "dossier",
     })
   }
   return { scannedAt: new Date(now).toISOString(), runs }
+}
+/** Questions linked to runs of their own repo only; `open` ids and `answered` Q&A per run. */
+export function linkQuestions(runs: Run[], questions: Question[]): Map<string, { open: string[]; answered: QA[] }> {
+  const out = new Map<string, { open: string[]; answered: QA[] }>()
+  const key = (repo: string, id: string) => `${repo}/${id}`
+  for (const r of runs) out.set(key(r.repo, r.id), { open: [], answered: [] })
+  for (const q of questions) {
+    const repo = questionRepo(q, runs)
+    const slot = repo === undefined ? undefined : out.get(key(repo, q.dossier))
+    if (!slot) continue
+    if (q.state === "open") slot.open.push(q.id)
+    else for (const a of answeredBy([q]).get(q.dossier) ?? []) slot.answered.push(a)
+  }
+  return out
 }
 
 let cached: RunsView = { scannedAt: "", runs: [] }
@@ -349,9 +397,11 @@ export async function getRuns(questions: () => Question[]): Promise<RunsView> {
     }).catch(() => {}).finally(() => { inflight = null })
   }
   if (!cached.scannedAt && inflight) await inflight
-  const open = questions().filter((q) => q.state === "open")
-  const ans = answeredBy(questions())
-  const live = cached.runs.map((r) => ({ ...r, ...liveStore(r), questions: open.filter((q) => q.dossier === r.id).map((q) => q.id), answered: ans.get(r.id) ?? [] }))
+  const linked = linkQuestions(cached.runs, questions())
+  const live = cached.runs.map((r) => {
+    const l = liveStore(r), qa = linked.get(`${r.repo}/${r.id}`)
+    return { ...r, ...l, questions: qa?.open ?? [], answered: qa?.answered ?? [], view: viewFor(r.status, l.running, l.updates.length) }
+  })
   const statusOf = (repo: string) => (id: string) => live.find((x) => x.repo === repo && x.id === id)?.status
   return { ...cached, runs: live.map((r) => ({ ...r, controls: controlsFor(r, statusOf(r.repo)) })) }
 }

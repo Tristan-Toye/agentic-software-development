@@ -4,14 +4,18 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Question } from "./store.ts"
 import { emitChange } from "./events.ts"
-import { answeredBy, baseName, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
+import { answeredBy, baseName, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, questionInRepo, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
 
 export type StubDossier = { id: string; title: string; status: string; repo: string; via: "merged"; answered: QA[] }
 export type Stub = {
   branch: string; cut: string; state: "accepting" | "integrating" | "merged"; stage: string
   refAge: string; pr: Pr | null; dossiers: StubDossier[]
 }
-export type RepoStubs = { repo: string; main: string; stubs: Stub[] }
+export type RepoStubs = { repo: string; main: string; stubs: Stub[]; open: string[] }
+/** The stubs that are not merged (accepting or integrating), newest first. */
+export function openStubs(stubs: Stub[]): Stub[] {
+  return stubs.filter((s) => s.state !== "merged").sort((a, b) => b.cut.localeCompare(a.cut) || b.refAge.localeCompare(a.refAge) || b.branch.localeCompare(a.branch))
+}
 export type StubsView = { scannedAt: string; repos: RepoStubs[]; openWork: { repo: string; updated: string }[] }
 
 // ---- pure parsers ----
@@ -123,9 +127,9 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
     const m = await mainOf(wt)
     byMain.set(m, [...(byMain.get(m) ?? []), wt])
   }
-  const ans = answeredBy(questions)
   const repos: RepoStubs[] = []
   for (const [main, wts] of byMain) {
+    const ans = answeredBy(questions, (q) => questionInRepo(q, baseName(main), main))
     if (noGit() || !existsSync(join(main, ".git"))) continue
     const docs: Doc[] = pickDossiers(wts)
     const byId = new Map(docs.map((d) => [d.front.id!, d]))
@@ -147,7 +151,7 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
         refAge: date, pr, dossiers,
       })
     }
-    if (stubs.length) repos.push({ repo: baseName(main), main, stubs: stubs.sort((a, b) => b.cut.localeCompare(a.cut) || b.branch.localeCompare(a.branch)) })
+    if (stubs.length) { const sorted = stubs.sort((a, b) => b.cut.localeCompare(a.cut) || b.branch.localeCompare(a.branch)); repos.push({ repo: baseName(main), main, stubs: sorted, open: openStubs(sorted).map((s) => s.branch) }) }
   }
   repos.sort((a, b) => a.repo.localeCompare(b.repo))
   return { scannedAt: new Date(now).toISOString(), repos, openWork: [] }
@@ -169,9 +173,9 @@ export function dossierSignature(wts: string[]): string {
   }
   return parts.join("|")
 }
-async function runGen(root: string, out: string, embed: boolean): Promise<boolean> {
+async function runGen(root: string, out: string, embed: boolean, linkBase = ""): Promise<boolean> {
   try {
-    const p = Bun.spawn(["python3", GEN, "--root", root, "--worktrees", "--out", out, "--quiet", ...(embed ? ["--embed"] : [])], { stdout: "ignore", stderr: "ignore", stdin: "ignore" })
+    const p = Bun.spawn(["python3", GEN, "--root", root, "--worktrees", "--out", out, "--quiet", ...(embed ? ["--embed"] : []), ...(linkBase ? ["--link-base", linkBase] : [])], { stdout: "ignore", stderr: "ignore", stdin: "ignore" })
     const t = setTimeout(() => p.kill(), 120_000)
     const code = await p.exited
     clearTimeout(t)
@@ -187,7 +191,7 @@ export async function refreshOpenWork(repo: string, root: string, wts: string[],
   mkdirSync(openWorkDir(), { recursive: true })
   const rec = { at: now, sig, inflight: true }
   lastRun.set(repo, rec)
-  try { if (!(await runGen(root, out, true))) await runGen(root, out, false) } finally { rec.inflight = false; rec.at = Date.now() }
+  try { if (!(await runGen(root, out, true, `/repo/${repo}`))) await runGen(root, out, false) } finally { rec.inflight = false; rec.at = Date.now() }
 }
 
 let cachedView: StubsView = { scannedAt: "", repos: [], openWork: [] }
@@ -220,8 +224,8 @@ export async function getStubs(questions: () => Question[]): Promise<StubsView> 
     inflight = rescan(questions()).catch(() => {}).finally(() => { inflight = null })
   }
   if (!cachedView.scannedAt && inflight) await inflight
-  const ans = answeredBy(questions())
-  return { ...cachedView, repos: cachedView.repos.map((r) => ({ ...r, stubs: r.stubs.map((s) => ({ ...s, dossiers: s.dossiers.map((d) => ({ ...d, answered: ans.get(d.id) ?? [] })) })) })) }
+  const qs = questions()
+  return { ...cachedView, repos: cachedView.repos.map((r) => { const ans = answeredBy(qs, (q) => questionInRepo(q, r.repo, r.main)); return { ...r, stubs: r.stubs.map((s) => ({ ...s, dossiers: s.dossiers.map((d) => ({ ...d, answered: ans.get(d.id) ?? [] })) })) } }) }
 }
 /** The generated report for a repo; generated on demand when missing. */
 export async function openWorkHtml(repo: string, questions: Question[]): Promise<string | null> {
