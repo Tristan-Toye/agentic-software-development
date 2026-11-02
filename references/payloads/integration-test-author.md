@@ -28,6 +28,13 @@ TEST_PATHS: /abs/path/repo-W-014/tests/integration/test_flush_flow.py
            # --expected-lines N warns when flows outnumber paths or the size
            # passes the single-write cap.
 TEST_FRAMEWORK: pytest; run with `pytest tests/integration -q`
+CITATION: |
+  // promise: <member>/<category>
+  One comment per test, the line above the test, in exactly this shape.
+  Where a file names its ticket, cite the Jira key `PROJ-142`; never a
+  planning id (the dossier id is local and gitignored). The Phase 5 index is
+  built by grepping these citations across all new test files. The composer
+  fills it; check_payload.py warns when a PROMISE_CHECKLIST has none.
 HARNESS: |
   The `app_client` fixture in tests/integration/conftest.py stands up the real
   app against a throwaway Postgres from testcontainers. Seed with
