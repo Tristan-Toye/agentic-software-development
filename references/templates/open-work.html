@@ -8,8 +8,13 @@
 /* Dark by default; an explicit choice from the toggle is remembered. Runs
    before first paint so the page never flashes light. */
 (function () {
-  var saved = localStorage.getItem("open-work-theme");
-  if (saved !== "auto") document.documentElement.dataset.theme = saved || "dark";
+  var root = document.documentElement, saved = null;
+  try { saved = localStorage.getItem("open-work-theme"); } catch (e) {}
+  if (root.hasAttribute("data-embed")) {
+    /* Inside the dashboard: follow the system unless the host asks (?theme=). */
+    var asked = new URLSearchParams(location.search).get("theme");
+    if (asked === "light" || asked === "dark") root.dataset.theme = asked;
+  } else if (saved !== "auto") root.dataset.theme = saved || "dark";
 })();
 </script>
 <style>
@@ -168,25 +173,13 @@ a { color: inherit; }
 header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
 header .meta { color: var(--ink-3); font-size: 13px; }
 header .spacer { flex: 1; }
+html[data-embed] .wrap { padding-top: 14px; padding-bottom: 28px; }
 #theme-btn {
   border: 1px solid var(--border); background: var(--surface); color: var(--ink-2);
   border-radius: 999px; padding: 4px 12px; font: inherit; font-size: 12.5px;
   cursor: pointer;
 }
 #theme-btn:hover { color: var(--ink); }
-/* live indicator — says whether the page is watching the generator's state
-   file, so a stale tab never looks like a fresh one */
-#live-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px;
-  font-size: 12px; color: var(--ink-3); cursor: default;
-}
-#live-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); flex: none; }
-#live-chip.on { color: var(--good-text); }
-#live-chip.on .dot { background: var(--status-good); }
-#live-chip.lost { color: var(--status-critical); }
-#live-chip.lost .dot { background: var(--status-critical); }
-
 /* ------------------------------------------------------------------ hero */
 .hero {
   position: relative; overflow: hidden;
@@ -308,16 +301,6 @@ svg.dg { display: block; margin: 0 auto; }
 .dg-node text { fill: var(--ink); font: 600 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .dg-node text.sub { fill: var(--ink-2); font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
 
-/* ------------------------------------------------------------------ lists */
-.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
-.rows { list-style: none; margin: 0; padding: 4px 0; }
-.rows li { display: flex; align-items: baseline; gap: 10px; padding: 9px 16px; border-top: 1px solid var(--grid); font-size: 13.5px; }
-.rows li:first-child { border-top: none; }
-.rows .icon { flex: none; width: 18px; text-align: center; }
-.rows .what { color: var(--ink); }
-.rows .who { color: var(--ink-3); font-size: 12px; margin-left: auto; white-space: nowrap; }
-.allclear { color: var(--good-text); font-weight: 600; }
-
 .empty {
   text-align: center; padding: 64px 24px; color: var(--ink-2);
   background: var(--surface); border: 1px dashed var(--baseline); border-radius: 14px; margin-top: 20px;
@@ -404,6 +387,7 @@ for (const d of DATA.dossiers)
   for (const b of d.blocked_by)
     (DEPENDENTS[b] = DEPENDENTS[b] || []).push(d.id);
 
+const EMBED = document.documentElement.hasAttribute("data-embed");
 const app = document.getElementById("app");
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let stagger = 0;
@@ -428,17 +412,15 @@ function agePhrase(d) {
   return d + " days";
 }
 
-/* ---------------------------------------------------------------- header */
-{
+/* ---------------------------------------------------------------- header
+   Omitted under --embed: the dashboard around the iframe owns the title bar. */
+if (!EMBED) {
   const h = el("header");
   h.append(el("h1", null, "Open work"));
   const meta = el("span", "meta");
   meta.append("dossiers in ", Object.assign(el("code"), { textContent: DATA.root }));
   h.append(meta, el("span", "spacer"));
   h.append(el("span", "meta", "generated " + DATA.generated_at_human));
-  const live = Object.assign(el("span"), { id: "live-chip" });
-  live.append(el("span", "dot"), el("span", "txt", "static"));
-  h.append(live);
   const btn = Object.assign(el("button"), { id: "theme-btn" });
   const label = () => "theme: " + (localStorage.getItem("open-work-theme") || "dark");
   btn.textContent = label();
@@ -996,51 +978,6 @@ function heuristicOrder(cols, boundaries) {
   }
 }
 
-/* ---------------------------------------------------------------- attention */
-{
-  app.append(enter(el("h2", null, "Needs attention")));
-  const panel = el("div", "panel");
-  const rows = el("ul", "rows");
-  if (!DATA.attention.length) {
-    const li = el("li");
-    li.append(el("span", "icon", "✓"), Object.assign(el("span", "what allclear"), { textContent: "No discrepancies. The recorded state and the disk agree." }));
-    rows.append(li);
-  }
-  for (const a of DATA.attention) {
-    const li = el("li");
-    const icon = el("span", "icon", SEV_ICON[a.severity] || "⚠︎");
-    icon.style.color = SEV_COLOR[a.severity] || "var(--status-warning)";
-    li.append(icon, el("span", "what", a.text));
-    if (a.dossier) li.append(el("span", "who mono", a.dossier));
-    rows.append(li);
-  }
-  panel.append(rows);
-  app.append(enter(panel));
-}
-
-/* ---------------------------------------------------------------- signals
-   Mined from Build-log prose by /open-work, not by the generator — so on a
-   refresh the generator did the page carries the last mined set, and says
-   when that was rather than passing it off as current. */
-if (DATA.signals.length) {
-  const h = el("h2", null, "Health signals");
-  if (DATA.signals_mined_at_human)
-    h.append(el("span", "hint", `mined ${DATA.signals_mined_at_human} · /open-work refreshes them`));
-  app.append(enter(h));
-  const panel = el("div", "panel");
-  const rows = el("ul", "rows");
-  for (const s of DATA.signals) {
-    const li = el("li");
-    const icon = el("span", "icon", SEV_ICON[s.severity] || "⚠︎");
-    icon.style.color = SEV_COLOR[s.severity] || "var(--status-warning)";
-    li.append(icon, el("span", "what", (s.signal ? s.signal + " — " : "") + (s.detail || "")));
-    if (s.dossier) li.append(el("span", "who mono", s.dossier));
-    rows.append(li);
-  }
-  panel.append(rows);
-  app.append(enter(panel));
-}
-
 } /* end non-empty branch */
 
 /* ---------------------------------------------------------------- footer */
@@ -1049,7 +986,9 @@ if (DATA.signals.length) {
   const per = STAGES.filter(s => DATA.counts.by_status[s])
     .map(s => `${DATA.counts.by_status[s]} ${s}`).join(" · ");
   f.append(el("span", null, `${DATA.counts.total} dossier${DATA.counts.total === 1 ? "" : "s"}${per ? " — " + per : ""}`));
-  f.append(el("span", null, "generated by /open-work — regenerate, never hand-edit"));
+  if (DATA.parse_errors.length)
+    f.append(el("span", null, `${DATA.parse_errors.length} file${DATA.parse_errors.length === 1 ? "" : "s"} with unparseable front matter: ` + DATA.parse_errors.map(e => e.file).join(", ")));
+  f.append(el("span", null, `generated ${DATA.generated_at_human} — regenerate, never hand-edit`));
   app.append(f);
 }
 
@@ -1129,81 +1068,6 @@ function bindTip(node, text) {
     tip.style.top = (e.clientY + 16) + "px";
   });
   node.addEventListener("mouseleave", () => { tip.style.display = "none"; });
-}
-
-/* ------------------------------------------------------------------- live
-   The report is a static file and the generator is what re-reads the
-   dossiers, so "live" here means: notice that a newer report exists and pick
-   it up. The generator writes a small state file beside the HTML holding the
-   fingerprint of everything the page shows except when it was generated; this
-   polls that file and reloads only when the fingerprint actually differs, so
-   a regeneration that changed nothing is never a reload.
-
-   A `file://` page cannot fetch its own sibling (CORS), so live is off there
-   and the chip says `static` — `--serve` is what makes it live. Reloading is
-   deferred while a dossier sheet is open, and the scroll position is carried
-   across, so an update does not throw away where the reader was. */
-{
-  const chip = document.getElementById("live-chip");
-  const txt = chip.querySelector(".txt");
-  const setChip = (cls, label, hint) => {
-    chip.className = cls;
-    txt.textContent = label;
-    chip.title = hint;
-  };
-
-  const KEY = "open-work-scroll";
-  const saved = sessionStorage.getItem(KEY);
-  if (saved !== null) {
-    sessionStorage.removeItem(KEY);
-    const restore = () => scrollTo({ top: +saved, behavior: "instant" });
-    if (document.readyState === "complete") restore();
-    else addEventListener("load", restore);
-  }
-
-  const servedOverHttp = location.protocol === "http:" || location.protocol === "https:";
-  if (!DATA.state_file || !servedOverHttp) {
-    setChip("", "static", DATA.state_file
-      ? "Opened as a file, so the page cannot poll for updates. Run the generator with --serve for a live report."
-      : "This report was generated without a state file, so it cannot poll for updates.");
-  } else {
-    const period = Math.max(1, Number(new URLSearchParams(location.search).get("poll")) || 3) * 1000;
-    let pending = false, misses = 0;
-    setChip("on", "live", `Watching ${DATA.state_file} every ${period / 1000}s — reloads when a dossier changes.`);
-
-    const reload = () => {
-      sessionStorage.setItem(KEY, String(scrollY));
-      location.reload();
-    };
-    /* A reader with a sheet open is reading it; finish, then take the update */
-    modal.querySelector(".backdrop").addEventListener("click", () => { if (pending) reload(); });
-    addEventListener("keydown", e => { if (pending && e.key === "Escape") reload(); });
-
-    const poll = async () => {
-      try {
-        const r = await fetch(DATA.state_file + "?t=" + Date.now(), { cache: "no-store" });
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        const state = await r.json();
-        misses = 0;
-        if (state.fingerprint && state.fingerprint !== DATA.fingerprint) {
-          if (modal.classList.contains("open")) {
-            pending = true;
-            setChip("on", "update ready", "A newer report is ready — close this sheet to load it.");
-          } else {
-            reload();
-          }
-        } else if (!pending) {
-          setChip("on", "live", `Up to date as of ${DATA.generated_at_human}.`);
-        }
-      } catch (err) {
-        /* One miss is a regeneration mid-write; a run of them means the
-           server is gone, and a chip claiming "live" would then be a lie. */
-        if (++misses >= 3) setChip("lost", "not live", "Lost contact with the report server — this page may be stale. " + err);
-      }
-    };
-    setInterval(poll, period);
-    poll();
-  }
 }
 </script>
 </body>
