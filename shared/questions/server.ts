@@ -224,7 +224,8 @@ export async function handle(req: Request): Promise<Response> {
 
 async function main(): Promise<void> {
   const requested = process.env.ASD_QUESTIONS_PORT
-  const server = Bun.serve({ hostname: "127.0.0.1", port: requested !== undefined && requested !== "" ? Number(requested) : 7317, fetch: handle })
+  // The first stubs and runs scan runs git and gh per repo and can pass Bun's 10 s idle default.
+  const server = Bun.serve({ hostname: "127.0.0.1", port: requested !== undefined && requested !== "" ? Number(requested) : 7317, idleTimeout: 120, fetch: handle })
   PORT = server.port ?? 7317
   console.log(`listening http://127.0.0.1:${PORT}`)
 

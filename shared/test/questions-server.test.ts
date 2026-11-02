@@ -7,7 +7,7 @@ import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, An
 import { interpretEnvelope, questionBlocks } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
 import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy } from "../questions/runs.ts"
-import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState } from "../questions/stubs.ts"
+import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile } from "../questions/stubs.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown } from "../questions/runstore.ts"
 import { execFileSync } from "node:child_process"
 
@@ -110,6 +110,13 @@ check("runs: an answered question links to its dossier, open ones are not listed
 check("stubs: merge subject to PR number", prNumberOf("Merge pull request #41 from org/feat-x") === 41 && prNumberOf("feat: thing (#42)") === 42 && prNumberOf("Merge branch 'x'") === null)
 check("stubs: pr field forms", prFieldNumber("https://github.com/o/r/pull/7") === 7 && prFieldNumber("#8") === 8 && prFieldNumber("") === null && prFieldNumber(undefined) === null)
 check("stubs: merges map to dossiers via pr:", JSON.stringify(dossiersOnMerges(["Merge pull request #41 from a/b", "x (#42)", "Merge pull request #99 from c/d", "Merge pull request #41 again"], new Map([[41, "W-1"], [42, "W-2"]]))) === '["W-1","W-2"]')
+check("stubs: a fix branch in the merge subject names its dossier", JSON.stringify(dossiersOnMerges(["Merge pull request #404 from o/fix/W-122-stub2026-11-01-census", "Merge pull request #7 from o/feat/X-9"], new Map(), new Set(["W-122"]))) === '["W-122"]')
+{
+  const m = mkdtempSync(join(tmpdir(), "asd-oq-rec-")); mkdirSync(join(m, ".discovery", "analysis"), { recursive: true })
+  writeFileSync(join(m, ".discovery", "analysis", "stub-2026-11-01-release-W-1-2.md"), "# r\n## Step 5 — full run\n")
+  writeFileSync(join(m, ".discovery", "analysis", "stub-2026-10-31.md"), "# r\n")
+  check("stubs: record file by branch slug, or by date for stub/*", (recordFile(m, "release/W-1-2") ?? "").endsWith("stub-2026-11-01-release-W-1-2.md") && (recordFile(m, "stub/2026-10-31") ?? "").endsWith("stub-2026-10-31.md") && recordFile(m, "release/other") === null)
+}
 const rec = "# Stub 2026-11-02\n## Step 1 - cut\nx\n## Step 2 \u2014 merge dossiers\n### Round 1\nfoo\n## Notes\n"
 check("stubs: stage is the last Step or Round heading", stubStage(rec) === "Round 1" && stubStage("## Step 1 \u2014 a\n## Step 2 \u2014 b\n") === "Step 2 \u2014 b" && stubStage("nothing") === "")
 check("stubs: state from the PR", stubState(null) === "accepting" && stubState({ state: "OPEN" }) === "integrating" && stubState({ state: "MERGED" }) === "merged" && stubState({ state: "CLOSED" }) === "accepting")

@@ -37,6 +37,13 @@ if [ -z "$SLACK_USER" ]; then
   exit 2
 fi
 BUN="$(command -v bun || true)"
+# The server shells out to git, gh and python3: put the directory of each, as found
+# on this shell's PATH, ahead of the defaults (gh often lives in ~/.local/bin).
+AGENT_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+for tool in python3 gh git bun; do
+  d="$(dirname "$(command -v "$tool" 2>/dev/null || echo /usr/bin/x)")"
+  case ":$AGENT_PATH:" in *":$d:"*) ;; *) AGENT_PATH="$d:$AGENT_PATH" ;; esac
+done
 if [ -z "$BUN" ]; then
   echo "bun not found on PATH" >&2
   exit 1
@@ -65,7 +72,7 @@ cat <<EOF
     <key>ASD_SLACK_USER</key>
     <string>$SLACK_USER</string>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>$AGENT_PATH</string>
   </dict>
   <key>StandardOutPath</key>
   <string>$LOG</string>

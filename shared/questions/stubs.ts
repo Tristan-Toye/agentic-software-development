@@ -25,11 +25,13 @@ export function prFieldNumber(v: string | undefined): number | null {
   return m ? Number(m[1]) : null
 }
 /** Dossier ids for merge subjects: each subject's PR number looked up in `prToDossier`. */
-export function dossiersOnMerges(subjects: string[], prToDossier: Map<number, string>): string[] {
+export function dossiersOnMerges(subjects: string[], prToDossier: Map<number, string>, known?: Set<string>): string[] {
   const ids: string[] = []
   for (const s of subjects) {
     const n = prNumberOf(s)
-    const id = n === null ? undefined : prToDossier.get(n)
+    let id = n === null ? undefined : prToDossier.get(n)
+    // A fix or plan branch names its dossier: "Merge pull request #404 from o/fix/W-122-stub…".
+    if (!id && known) id = (s.match(/\bfrom \S+?\/(\S+)/)?.[1].match(/\b[A-Z][A-Z0-9]*-\d+\b/g) ?? []).find((k) => known.has(k))
     if (id && !ids.includes(id)) ids.push(id)
   }
   return ids
@@ -96,15 +98,21 @@ async function mergeSubjects(main: string, branch: string): Promise<string[]> {
 async function refDate(main: string, branch: string): Promise<string> {
   return (await sh(["git", "-C", main, "log", "-1", "--format=%cI", `origin/${branch}`], undefined, 5000)).trim()
 }
-export function recordStage(main: string, branch: string): string {
-  const date = stubDate(branch)
-  if (!date) return ""
+/** The stub's record file: `stub-<date>.md` for `stub/<date>`, `stub-<date>-<branch slug>.md` for any branch. */
+export function recordFile(main: string, branch: string): string | null {
   const dir = join(main, ".discovery", "analysis")
+  const date = stubDate(branch), slug = branch.replace(/\//g, "-")
   try {
-    const f = readdirSync(dir).filter((n) => n.startsWith(`stub-${date}`) && n.endsWith(".md")).sort().pop()
-    return f ? stubStage(readFileSync(join(dir, f), "utf8")) : ""
-  } catch { return "" }
+    const f = readdirSync(dir).filter((n) => n.startsWith("stub-") && n.endsWith(".md") &&
+      (n.endsWith(`-${slug}.md`) || (branch.startsWith("stub/") && date !== "" && n === `stub-${date}.md`))).sort().pop()
+    return f ? join(dir, f) : null
+  } catch { return null }
 }
+export function recordStage(main: string, branch: string): string {
+  const f = recordFile(main, branch)
+  try { return f ? stubStage(readFileSync(f, "utf8")) : "" } catch { return "" }
+}
+const recordDate = (f: string | null) => (f ? f.match(/stub-(\d{4}-\d{2}-\d{2})/)?.[1] ?? "" : "")
 
 // ---- assemble ----
 type Doc = ReturnType<typeof pickDossiers>[number]
@@ -128,9 +136,10 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
       return { id, title: d?.front.title ?? "", status: d?.front.status ?? "", repo: baseName(main), via, answered: ans.get(id) ?? [] }
     }
     const stubs: Stub[] = []
-    for (const branch of await stubBranches(main)) {
+    // A stub is a `stub/*` branch, or another branch /stub integrated (it has a record file).
+    for (const branch of (await stubBranches(main)).filter((b) => b.startsWith("stub/") || recordFile(main, b) !== null)) {
       const [pr, subjects, open, date] = await Promise.all([prInto(main, branch), cached(`mg:${main}:${branch}`, () => mergeSubjects(main, branch)), openPrsTargeting(main, branch), cached(`rd:${main}:${branch}`, () => refDate(main, branch))])
-      const ids = dossiersOnMerges(subjects, prToDossier)
+      const ids = dossiersOnMerges(subjects, prToDossier, new Set(byId.keys()))
       const dossiers = ids.map((id) => mk(id, "merged"))
       for (const o of open) {
         const id = prToDossier.get(o.number) ?? [...byId.keys()].find((k) => o.headRefName.includes(k))
@@ -138,7 +147,7 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
       }
       const state = stubState(pr)
       stubs.push({
-        branch, cut: stubDate(branch) || date.slice(0, 10), state, stage: state === "integrating" ? recordStage(main, branch) : "",
+        branch, cut: stubDate(branch) || recordDate(recordFile(main, branch)) || date.slice(0, 10), state, stage: state === "integrating" ? recordStage(main, branch) : "",
         refAge: date, pr, dossiers,
       })
     }
