@@ -135,9 +135,7 @@
    ```
 
     Tell the user the output path (`.discovery/analysis/open-work.html`).
-    Status table, counts and dependency flows are current after regeneration;
-    the health-signal cards carry whatever the last `/overview-dossiers` run
-    mined. Regenerate the report; never hand-edit it.
+    Regenerate the report; never hand-edit it.
 
     **When several PRs are open and the user merges one**, the remaining PR
     branches are stale against the new target tip. Offer the refresh ritual
