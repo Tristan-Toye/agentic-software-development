@@ -55,6 +55,13 @@ boundary below, named `Stub — <stage>`, with a summary that ends in a
 `NEXT:` line naming the exact next action, the branches and the pull request
 number it needs.
 
+**Progress shows on the dashboard by itself.** Once you touch the record
+file, the plugin's hook posts your checkpoints, suite and gates results, spawns
+and PRs as this stub's updates. Add `ask_owner.py note --root R --dossier
+<branch with / as -> --text "..."` only for what no command shows, such as a
+fix round ruled or why you are waiting. Owner decisions go through
+`ask_owner.py` as `references/owner-questions.md` says.
+
 ## The stub lifecycle — the rules this command serves
 
 - A stub branch is named `stub/<cut date>`, the date in `YYYY-MM-DD`, cut

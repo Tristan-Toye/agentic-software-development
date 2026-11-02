@@ -11,6 +11,27 @@ import { join } from "node:path"
 const DOSSIER_PATH = /(\S*?)\/\.discovery\/dossiers\/([A-Z][A-Z0-9]*-\d+)[^\s'"]*\.md/
 
 /** `<repo>.<ID>` for a dossier path: the repo is the main checkout's name, also from a worktree. */
+const STUB_RECORD = /(\S*?)\/\.discovery\/analysis\/stub-(\d{4}-\d{2}-\d{2})(?:-([\w.-]+))?\.md/
+
+function mainRepo(root: string): string | undefined {
+  const common = Bun.spawnSync(["git", "-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"], { stdout: "pipe", stderr: "ignore" })
+  const dir = common.exitCode === 0 ? common.stdout.toString().trim() : ""
+  return (dir ? dir.replace(/\/\.git\/?$/, "") : root).split("/").filter(Boolean).pop()
+}
+
+/**
+ * The stub run key for a /stub record file path in `text` (a command or a file path):
+ * `<repo>.stub-<date>` for `stub-<date>.md`, `<repo>.<branch slug>` for
+ * `stub-<date>-<branch slug>.md` — the dashboard's key, the branch with / as -.
+ */
+export function keyFromStubRecord(text: string, cwd: string): string | undefined {
+  const m = text.match(STUB_RECORD)
+  if (!m) return undefined
+  const root = m[1] ? (m[1].startsWith("/") ? m[1] : join(cwd, m[1])) : cwd
+  const repo = mainRepo(root)
+  return repo ? `${repo}.${m[3] ?? `stub-${m[2]}`}` : undefined
+}
+
 export function keyFromCommand(cmd: string, cwd: string): string | undefined {
   const m = cmd.match(DOSSIER_PATH)
   let root: string | undefined, id: string | undefined

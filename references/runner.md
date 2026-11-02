@@ -89,7 +89,8 @@ The prompt tells the orchestrator these rules:
     result, each workflow started and agent spawned, and each PR opened or
     merged. This happens in every /work-on, /stub and /plan session, with or
     without a runner. Without a runner, the run key is learnt from the first
-    command that names a dossier. `ASD_RUN_UPDATES=0` turns it off.
+    command that names a dossier, or, in a /stub run, from the stub's record
+    file (`<repo>.stub-<date>` or `<repo>.<branch with / as ->`). `ASD_RUN_UPDATES=0` turns it off.
   - **`ask_owner.py note`:** an `update` line, for what no command shows.
 - **The runner's own state:** `<key>.runner.json` holds
   `{pid, started, state, stage, session, questions}`, rewritten on every

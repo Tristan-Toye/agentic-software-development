@@ -8,7 +8,7 @@ import { appendFileSync, mkdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { nudgeEvery, reminderText } from "../checkpoint"
-import { keyFromCommand, updateFor } from "./progress"
+import { keyFromCommand, keyFromStubRecord, updateFor } from "./progress"
 import {
   compactWindow,
   contextTokens,
@@ -65,8 +65,11 @@ function recordProgress(input: any) {
     if (process.env.ASD_RUN_UPDATES === "0") return
     const state = loadState(input.session_id) as any
     let key: string | undefined = process.env.ASD_RUN_KEY || state.runKey
-    if (!key && input.tool_name === "Bash") {
-      key = keyFromCommand(String(input.tool_input?.command ?? ""), String(input.cwd ?? process.cwd()))
+    if (!key) {
+      const cwd = String(input.cwd ?? process.cwd())
+      const ref = input.tool_name === "Bash" ? String(input.tool_input?.command ?? "") : String(input.tool_input?.file_path ?? "")
+      // A /stub run is known by its record file; any other run by the first command naming a dossier.
+      key = keyFromStubRecord(ref, cwd) ?? (input.tool_name === "Bash" ? keyFromCommand(ref, cwd) : undefined)
       if (key) saveState(input.session_id, { ...state, runKey: key })
     }
     if (!key) return
