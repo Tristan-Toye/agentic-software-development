@@ -1,11 +1,12 @@
 // Owner-questions server: store, API, page and the Slack envelope handlers (no network, no Slack).
 // Run: bun --no-install shared/test/questions-server.test.ts
-import { mkdtempSync, readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { interpretEnvelope, questionBlocks } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
+import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, tailTranscript, transcriptCwd } from "../questions/runs.ts"
 
 let failed = 0
 function check(name: string, ok: boolean, detail = ""): void {
@@ -65,11 +66,39 @@ check("slack: button press is an answer with that option", r.ack?.envelope_id ==
 const blocks = questionBlocks(readAll(dir)[0], 7317)
 check("slack: blocks are section, actions (one button per option), context", blocks.map((b: any) => b.type).join() === "section,actions,context" && blocks[1].elements.length === 2 && blocks[1].elements[0].value === "hand.written.Q9|A")
 
+// runs: fixtures (dossiers in two checkouts, one transcript)
+const rdir = mkdtempSync(join(tmpdir(), "asd-oq-runs-"))
+const dossier = (status: string, log: string) => `---\nid: W-7\ntitle: "Seven"\nstatus: ${status}\njira: W-7\nupdated: 2026-11-02\n---\n# W-7\n\n## Build log\n${log}`
+const repoA = join(rdir, "repoA"), repoB = join(rdir, "repoB")
+for (const r of [repoA, repoB]) mkdirSync(join(r, ".discovery", "dossiers"), { recursive: true })
+writeFileSync(join(repoA, ".discovery", "dossiers", "W-7-seven.md"), dossier("ready", "- started\n"))
+writeFileSync(join(repoB, ".discovery", "dossiers", "W-7-seven.md"), dossier("building", "- Phase 3 contract\n- PHASE 4a fan-out\n- Phase 4 wave one returned\n\n"))
+writeFileSync(join(repoA, ".discovery", "dossiers", "W-8-eight.md"), "---\nid: W-8\ntitle: Eight\nstatus: planned\n---\nno log\n")
+const fm = parseFrontMatter(dossier("building", "x\n"))
+check("runs: front matter scalars", fm.id === "W-7" && fm.title === "Seven" && fm.status === "building" && fm.jira === "W-7" && fm.updated === "2026-11-02")
+check("runs: last phase match wins, else empty", lastPhase("Phase 1 PHASE 4a Phase 4") === "4" && lastPhase("nothing") === "")
+check("runs: last non-empty line, 160 chars", lastLine(buildLog(dossier("x", "- a\n- " + "z".repeat(200) + "\n\n"))).length === 160 && lastLine(buildLog(dossier("x", "- a\n- b\n\n"))) === "- b")
+const picked = pickDossiers([repoA, repoB])
+const w7 = picked.find((d) => d.front.id === "W-7")!
+check("runs: longest build log wins and records its worktree", picked.length === 2 && w7.worktree === repoB && w7.front.status === "building")
+const projects = join(rdir, "projects"), pdir = join(projects, "-x-repoB")
+mkdirSync(pdir, { recursive: true })
+const tl = (o: object) => JSON.stringify(o) + "\n"
+const asst = (id: string, inp: number, cr: number, cc: number) => tl({ type: "assistant", timestamp: "2026-11-02T10:00:00Z", message: { id, role: "assistant", usage: { input_tokens: inp, cache_read_input_tokens: cr, cache_creation_input_tokens: cc, output_tokens: 5 } } })
+const tpath = join(pdir, "s1.jsonl")
+writeFileSync(tpath, tl({ type: "user", cwd: join(repoB, "sub"), message: {} }) + asst("m1", 1, 100, 10) + tl({ type: "user", message: {} }) + asst("m2", 3, 140000, 3000) + asst("m2", 3, 140000, 3000) + "{torn")
+const tt = tailTranscript(tpath)
+check("runs: transcript tail gives context size and request count", tt.context === 143003 && tt.requests === 2 && tt.exact, JSON.stringify(tt))
+check("runs: transcript cwd read from the head", transcriptCwd(tpath) === join(repoB, "sub"))
+writeFileSync(join(pdir, "big.jsonl"), tl({ type: "user", cwd: "/elsewhere" }) + "x".repeat(600 * 1024) + "\n" + asst("m9", 1, 2, 3))
+const big = tailTranscript(join(pdir, "big.jsonl"))
+check("runs: a large file is read from its tail only", big.context === 6 && big.requests === 1 && !big.exact, JSON.stringify(big))
+
 // server over HTTP
 const sdir = mkdtempSync(join(tmpdir(), "asd-oq-srv-"))
 writeFileSync(join(sdir, "demo.W-2.Q1.jsonl"), JSON.stringify(qLine) + "\n")
 const proc = Bun.spawn(["/opt/homebrew/bin/bun", "--no-install", join(import.meta.dir, "..", "questions", "server.ts")], {
-  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "" },
+  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: `${repoA}:${repoB}`, ASD_CLAUDE_PROJECTS: projects, ASD_RUNS_NO_GH: "1" },
   stdout: "pipe", stderr: "pipe",
 })
 const reader = proc.stdout.getReader()
@@ -98,12 +127,19 @@ try {
   check("server: first answer accepted", a.status === 201 && ((await a.json()) as any).state === "answered")
   check("server: second answer is 409", (await post("demo.W-2.Q1", { kind: "answer", option: "B", text: "files" })).status === 409)
   check("server: answered drops out of state=open", ((await (await fetch(`${base}/api/questions?state=open`)).json()) as any[]).length === 0)
+  const rv: any = await (await fetch(`${base}/api/runs`)).json()
+  const r7 = rv.runs?.find((r: any) => r.id === "W-7")
+  check("server: /api/runs lists dossiers from the injected roots", rv.runs?.length === 2 && r7?.status === "building" && r7.phase === "4" && r7.repo === "repoB", JSON.stringify(rv).slice(0, 300))
+  check("server: /api/runs session activity and context", r7?.session.state === "active" && r7.session.context === 143003 && r7.session.requests === 2 && r7.pr === null, JSON.stringify(r7?.session))
+  check("server: /api/runs carries the open-question link", rv.runs.every((r: any) => Array.isArray(r.questions)) && typeof rv.scannedAt === "string")
+  check("server: page has the Runs view and no external resources", html.includes("Needs you") && html.includes("/api/runs") && !/https?:\/\//.test(html))
   const bad = await fetch(`${base}/api/questions`, { headers: { host: "evil.example" } })
   check("server: foreign Host header refused", bad.status === 403)
 } finally {
   proc.kill()
   rmSync(dir, { recursive: true, force: true })
   rmSync(sdir, { recursive: true, force: true })
+  rmSync(rdir, { recursive: true, force: true })
 }
 console.log(failed ? `FAIL (${failed})` : "PASS (all cases)")
 process.exit(failed ? 1 : 0)

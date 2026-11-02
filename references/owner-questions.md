@@ -101,13 +101,17 @@ It prints at most 40 lines.
 - **Reminder:** an open question whose last line is an agent line is notified
   again 30 min after that line, then 1 h later, then every 2 h. A new agent
   line restarts the schedule; a server restart sends no backlog.
-- **Page** `GET /`: the open questions by dossier, then the answered ones.
-  - Each question shows its thread, the option buttons (an answer), a text
-    box with **Ask follow-up** and **Answer**.
-  - It refreshes every 3 s.
+- **Page** `GET /`: a dashboard with a header (Slack connected or not, last
+  scan), **Needs you** (open questions as cards, answered ones collapsed
+  below) and **Runs**.
+  - Each question shows its thread, the option buttons (an answer, the
+  recommendation highlighted), a text box with **Ask follow-up** and **Answer**.
+  - It refreshes every 5 s, patching the DOM so a half-written text box and
+    the scroll position survive.
 - **API:**
   - `GET /api/questions?state=open|all`
   - `GET /api/questions/<id>`
+  - `GET /api/runs`: the Runs view as JSON (below)
   - `POST /api/questions/<id>/messages` with `{"kind": "followup"|"answer", "text": "...", "option": "A"}`.
 
   The server writes the owner line with `via: page` and mirrors it into the
@@ -130,3 +134,34 @@ It prints at most 40 lines.
     and gets a ✅ reaction.
   - **Connection:** the server reconnects on a `disconnect` envelope or a
     closed socket, with backoff.
+
+## Runs
+
+`shared/questions/runs.ts`, rescanned every 30 s and cached; `GET /api/runs`
+and the page's **Runs** section show it.
+
+- **Sources:**
+  - candidate roots: the `cwd` of the newest transcript in each
+    `~/.claude/projects/*/`, every `root` of an open or answered question, and
+    `roots` in an optional `~/.agentic/repos.json`; for each git checkout also
+    its worktrees (`git worktree list --porcelain`); only dirs with
+    `.discovery/dossiers/*.md` count;
+  - per dossier id the copy with the longest `## Build log` wins, as in
+    `scripts/budget_report.py`;
+  - transcripts `~/.claude/projects/*/*.jsonl` whose `cwd` is the worktree or
+    below it, read from the last 256 KB only;
+  - `gh pr view <branch> --json number,url,state,statusCheckRollup` in the
+    worktree, for building, review and pr dossiers; cached 2 min, 10 s
+    timeout, left out on failure.
+- **Shown:** one card per dossier that is building, in review, at pr or has a
+  session active in the last 10 min: id, title, repo, status, a 0-9 phase
+  stepper (the last `Phase N` in the build log; `plan` for planned and ready
+  with none), the last build-log line, session active or idle since, context
+  size (input + cache read + cache creation tokens of the last assistant
+  message), request count (distinct assistant messages in the tail, shown with
+  `≥` when the transcript is longer than the tail), PR link with green, red
+  and pending check counts, and a badge per open question. Planned and ready
+  dossiers go in a queue table; done within 7 days in a collapsed list.
+- **Env overrides:** `ASD_RUNS_ROOTS` (colon-separated roots; replaces the
+  transcript and `repos.json` roots, questions' roots still count),
+  `ASD_CLAUDE_PROJECTS` (transcripts dir), `ASD_RUNS_NO_GH=1` (no `gh` calls).
