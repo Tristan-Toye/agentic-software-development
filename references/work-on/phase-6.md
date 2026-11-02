@@ -127,9 +127,12 @@ exercises, under `FAILURES` as a `TEST-DEFECTS:` sub-list: the test name, then
 "ruled a test defect — do not change code for this test". Without it the
 implementer bends the code to a test that is already wrong.
 
-**Under Claude Code, a re-spawn in rows 1–3 is a resume** whenever the agent's
-ID is known and the contract is unchanged: `SendMessage` to the test author or
-the implementer with only the correction (for the implementer, the
+**Under Claude Code, a round of two or more corrections in rows 1–3 is one
+`phase4-wave` call** with every corrected payload (`FAILURES` + `CORRECTION`
+folded in, composed and linted as today; an implementer's payload carries the
+`WORKTREE_DIR` it now works in). A round of one agent is a **resume** whenever the
+agent's ID is known and the contract is unchanged: `SendMessage` to the test
+author or the implementer with only the correction (for the implementer, the
 `WORKTREE_DIR` it now works in), per `phase-4.md` ("Under Claude Code, resume
 instead of re-spawn"). A re-spawned test author after the merge takes its
 `CONTRACT` from the dossier's `## Contract`, never from the contract files
@@ -137,8 +140,8 @@ instead of re-spawn"). A re-spawned test author after the merge takes its
 `--dossier <live dossier>`, which refuses the files route once its status is
 `review`. An agent spawned by a workflow has no resumable id —
 not even one scavenged from its transcript directory; correct it with a full
-re-spawn through the same workflow, `FAILURES` + `CORRECTION` folded into the
-payload. A row-3 contract fix changes the contract, so the
+re-spawn through the same workflow (a single one too), `FAILURES` + `CORRECTION`
+folded into the payload. A row-3 contract fix changes the contract, so the
 affected agents are re-spawned with the full payload and the new
 `CONTRACT_HASH`.
 

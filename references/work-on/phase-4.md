@@ -572,7 +572,12 @@ so the message is short where a re-spawn repeats the whole payload and pays the
 cache cold. A resume message is not a payload, so `check_payload.py` does not
 run on it; the rule that a message never describes the agent's own file back
 to it stays (state the delta). A resumed `unit-test-author` reads its file again
-before it rewrites it: the resume names the changed tests. **Re-spawn with
+before it rewrites it: the resume names the changed tests. **A correction round
+of two or more agents (Phase 5, Phase 6) is one `phase4-wave` call instead:**
+every corrected payload (`FAILURES` + `CORRECTION` folded in, composed and linted
+as any payload) goes in one call. A resume keeps the agent's context; a batch saves
+one orchestrator turn per agent and keeps the reports out of your context. A
+round of one agent may still resume by ID. **Re-spawn with
 the full payload, linted and pasted, only when** the agent's ID is unknown (it
 was spawned by a workflow, whose compact result carries none, or the line that
 held it is gone), the agent has ended and `SendMessage` reports it unreachable,
