@@ -123,6 +123,7 @@ the fan-out:
 | Is the empty case stated? | zero items: empty collection, null, or an error? |
 | Is the invalid case stated? | negative size, absent key, closed handle |
 | Does a member that takes an expected value for a stored key state the **absent-key** case? | `set_if(key, expected)` with no word on a key that does not exist — created, rejected, or treated as a mismatch? |
+| Does a **composed existing member** get inputs that meet its preconditions, and is its failure case stated? | a new member calls `parse(x)` with a value `parse` rejects, and the docstring says nothing about what the new member does then |
 | Are concurrency words defined? | `"coalesces"` — what does the second caller receive? |
 | Is the member's **visibility** stated? | `header_of` named as the read seam with no `pub` — the blind author cannot even compile against the contract |
 | Are the words in the docstring measurable? | `"efficiently"`, `"properly"`, `"safely"` are never promises — delete them |

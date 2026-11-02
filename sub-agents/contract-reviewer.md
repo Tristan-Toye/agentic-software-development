@@ -82,6 +82,9 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   It also carries the absent-key case: a member that takes an expected value
   for a stored key must state what happens when the key does not exist. A
   member that omits it is an `AMBIGUITY`.
+  The checklist also asks of a member that composes an existing one: does it
+  pass inputs that meet that member's preconditions, and is the failure case
+  stated? A member that omits either is an `AMBIGUITY`.
 
 ## Method
 
