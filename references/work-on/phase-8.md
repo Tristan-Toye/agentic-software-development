@@ -39,6 +39,13 @@ surfaced.
   the scrub list over the bytes on disk. You then read each file,
   run the validator, fix every DEFECT, and commit — drafting is mechanical,
   selecting and validating never are.
+  **Under Claude Code, send every ADR draft in one `phase4-wave` call** (compose
+  and lint each payload first): one item per draft with `kind: document-drafter`,
+  `owned` = its `TARGET_PATHS`, `root` = `X`, its branch, and `base` = `X`'s HEAD
+  at the spawn. The drafter never commits, so the wave verifies it with
+  `--uncommitted`: written files raise no flag, a path outside `TARGET_PATHS` or a
+  target never written does. The PR description is drafted in Phase 9
+  (`phase-9.md`), outside this call.
 - A decision an existing ADR already covers is an **amendment**: add the
   constraint to that ADR's `## Consequences` and bump its `date`. Do not mint a
   near-duplicate.

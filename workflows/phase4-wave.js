@@ -1,6 +1,6 @@
 export const meta = {
   name: 'phase4-wave',
-  description: 'One /work-on Phase 4 wave: spawn every linted payload file as its plugin sub-agent, verify each return mechanically with verify_return.py, and hand back one compact result per agent.',
+  description: 'One /work-on batch of linted payloads (Phase 4 waves, Phase 5/6 corrections, Phase 8 drafts): spawn every linted payload file as its plugin sub-agent, verify each return mechanically with verify_return.py, and hand back one compact result per agent.',
   phases: [{ title: 'Wave' }, { title: 'Verify' }],
 }
 
@@ -49,6 +49,9 @@ const modelFor = (agentType) => AGENT_MODELS[agentType] || { model: 'sonnet', ef
 //                 launch — a truncated copy once verified nothing)
 //   reportDir     where the full report is kept (default <root>/.agent-staging/reports)
 //   pluginRoot    the plugin's checkout (${PLUGIN_ROOT}); only scripts/verify_return.py is used
+//   (no field)    a document-drafter item (Phase 8 ADR drafts) sets kind 'document-drafter', owned =
+//                 its TARGET_PATHS, root = X, branch = X's branch, base = X's HEAD at the spawn: the
+//                 drafter writes files and never commits, so it is verified with --uncommitted.
 // The object form { pluginRoot, items: [...] } is accepted too.
 //
 // returns: [{ label, verdict: 'clean'|'flagged'|'died', flags: [], returned_line,
@@ -140,6 +143,7 @@ function verifyPrompt(item, reportPath, report, pluginRoot) {
   const shared = siblingsOwned(item)
   if (shared.length) cmd.push('--shared-tree', sq(shared.join(',')))
   if (item.contractHash) cmd.push('--contract-hash', sq(item.contractHash), '--contract-files', sq(csv(item.contractFiles)))
+  if (item.kind === 'document-drafter') cmd.push('--uncommitted')
   if (report) cmd.push('--report', sq(reportPath), '--kind', sq(item.kind || ''))
   const steps = []
   if (report) {
@@ -217,7 +221,19 @@ async function verify(spawned) {
   }
 }
 
-const results = await pipeline(items, spawn, verify)
+// Implementers that share one worktree (a Phase 7 or Phase 6 fix round in X) commit there,
+// so two at once race on git's index: they run one after another, each verified before the
+// next starts. Everything else runs concurrently; --shared-tree already excuses the
+// siblings' paths in each verification.
+const chainKey = (item, i) => /:implementer$/.test(item.agentType) ? 'tree:' + item.root : 'solo:' + i
+const chains = new Map()
+items.forEach((item, i) => { const k = chainKey(item, i); if (!chains.has(k)) chains.set(k, []); chains.get(k).push(i) })
+const results = new Array(items.length).fill(null)
+await parallel([...chains.values()].map((idx) => async () => {
+  for (const i of idx) {
+    try { results[i] = await verify(await spawn(items[i])) } catch (err) { results[i] = null }
+  }
+}))
 return items.map((item, i) => results[i] || {
   label: item.label, verdict: 'died', flags: ['no-result'], returned_line: '',
   report_excerpt: 'the agent or its verifier was skipped or died; read the tree before anything else', report_path: '',

@@ -661,6 +661,22 @@ measurable claim, how to verify, and the result.
   and count `REUSED … gates` lines and same-suite repeats in the transcripts.
 - **Result**: pending.
 
+### C-137 — Claude Code: correction, fix and drafting rounds as one workflow call; change requests routed by script (1.20.0)
+
+- **Change**: `compose_payloads.py --crs` routes each kept change request to the
+  work package owning its `Location`, writes one linted `MODE: fix` payload per
+  package and the `phase4-wave` args; only `UNROUTED` lines need a ruling.
+  `phase4-wave` now also runs Phase 5/6 correction rounds of two or more agents
+  and the Phase 8 ADR drafts (`verify_return.py --uncommitted`), and runs
+  implementers sharing a worktree one after another.
+- **Why**: each resume, spawn and verify was an orchestrator turn re-reading its
+  whole context; the C-136 checkpoint has change requests at 7.5 and corrections
+  at 9 per dossier, each handled one agent at a time.
+- **Hypothesis**: fewer orchestrator requests per dossier in Phases 5–8; lower
+  Claude share of the seat's week than C-136, with C-136's changes.
+- **Verify**: the C-136 command; count `WORKFLOW:` lines per phase in the build logs.
+- **Result**: pending.
+
 ## Next measurement
 
 After the next runs, from the time the C-108–C-111 merge is pulled into the

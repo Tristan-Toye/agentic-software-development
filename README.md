@@ -343,8 +343,12 @@ and admits every payload; it then calls the workflow once per wave or review
 round, which spawns the agents, verifies each return with `verify_return.py`
 through a cheap agent, and returns one compact object per agent, so the
 orchestrator's context holds a result line and an excerpt instead of every full
-report. Corrections and fix rounds resume the original agent with `SendMessage`
-to the agent ID the build log holds. opencode keeps its current flow.
+report. `phase4-wave` also takes a Phase 5/6 correction round of two or more
+agents, the Phase 7 fix round (`compose_payloads.py --crs` routes each change
+request to the package that owns its location and writes the args), and the
+Phase 8 ADR drafts; implementers that share a worktree run one after another.
+A single-agent correction resumes the original agent with `SendMessage` to the
+agent ID the build log holds. opencode keeps its current flow.
 
 What Claude Code cannot mirror:
 
