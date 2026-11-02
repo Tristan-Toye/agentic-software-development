@@ -664,7 +664,7 @@ def selftest() -> int:
 
         def start(dossier: str, *extra: str) -> subprocess.Popen:
             out = open(os.path.join(tmp, f"out.{dossier}.txt"), "w")
-            return subprocess.Popen([sys.executable, me, "--root", root, "--dossier", dossier, *extra],
+            return subprocess.Popen([sys.executable, me, "--root", root, "--dossier", dossier, "--foreground", *extra],
                                     env=env, stdout=out, stderr=subprocess.STDOUT, text=True)
 
         def owner_line(qid: str, kind: str, text: str, option: str = "") -> None:
@@ -785,6 +785,10 @@ def selftest() -> int:
         check("stop: the claude process is gone", until(lambda: not alive(cpid), 10) is True)
         check("stop recorded as a runner line", texts("W-5")[-1] == "stopped")
         write_json(os.path.join(rdir, "repo.W-6.runner.json"), {"pid": 2 ** 22 + 12345, "state": "running", "stage": 2, "session": "", "questions": []})
+        d = subprocess.run([sys.executable, me, "W-9", "--root", root], env=env, capture_output=True, text=True, timeout=30)
+        check("the default detaches and prints the pid", d.returncode == 0 and "in the background, pid" in d.stdout)
+        check("the detached child logs to <key>.runner.log", bool(until(lambda: os.path.exists(os.path.join(rdir, "repo.W-9.runner.log")))))
+        subprocess.run([sys.executable, me, "stop", "W-9", "--root", root], env=env, capture_output=True, text=True, timeout=60)
         s = subprocess.run([sys.executable, me, "status"], env=env, capture_output=True, text=True)
         check("status: a dead pid reads stopped", "repo.W-6\tstopped" in s.stdout and "repo.W-1\tdone" in s.stdout)
         write_json(os.path.join(rdir, "repo.W-7.runner.json"), {"pid": os.getpid(), "state": "running"})
@@ -809,7 +813,7 @@ def detach(argv: list[str], root: str, dossier: str) -> int:
     """Start this runner again as a background process, its output in `<key>.runner.log`; print the pid."""
     log = os.path.join(runs_dir(), key_of(root, dossier) + ".runner.log")
     os.makedirs(runs_dir(), exist_ok=True)
-    args = [sys.executable, os.path.abspath(__file__)] + [a for a in argv if a != "--detach"]
+    args = [sys.executable, os.path.abspath(__file__)] + [a for a in argv if a != "--detach"] + ["--foreground"]
     with open(log, "ab") as fh:
         p = subprocess.Popen(args, cwd=root, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
                              start_new_session=True)
@@ -856,14 +860,15 @@ def main() -> int:
     ap.add_argument("--model")
     ap.add_argument("--permission-mode", default="auto")
     ap.add_argument("--max-stages", type=int, default=20)
-    ap.add_argument("--detach", action="store_true", help="run in the background; output to <key>.runner.log")
+    ap.add_argument("--detach", action="store_true", help="the default: run in the background; output to <key>.runner.log")
+    ap.add_argument("--foreground", action="store_true", help="run in this terminal instead of the background")
     a = ap.parse_args(argv)
     if a.selftest:
         return selftest()
     if not resolve(a, ap) or not a.root or not a.dossier:
         ap.print_usage(sys.stderr)
         return 2
-    if a.detach:
+    if not a.foreground:
         return detach(argv + ([] if "--root" in argv else ["--root", a.root]), a.root, a.dossier)
     return Runner(a.root, a.dossier, a.command, a.model, a.permission_mode, a.max_stages).run()
 

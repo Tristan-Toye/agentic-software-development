@@ -138,6 +138,32 @@ for (const bad of ["", "{", "[]", '{"session_id":"q"}']) {
   check("run: a write error never fails the hook", bad.exitCode === 0 && bad.stdout.toString().trim() === "")
 }
 
+// Automatic progress updates: telling tool calls become `update` lines, no model tokens.
+{
+  const { keyFromCommand, updateFor } = await import("../claude/progress.ts")
+  const repo = join(tmp, "myrepo")
+  mkdirSync(join(repo, ".discovery", "dossiers"), { recursive: true })
+  Bun.spawnSync(["git", "init", "-q", repo])
+  check("progress: key from a dossier path", keyFromCommand(`python3 x/dossier_edit.py log ${repo}/.discovery/dossiers/W-031-thing.md 'a'`, tmp) === "myrepo.W-031")
+  check("progress: key from ask_owner --dossier/--root", keyFromCommand(`python3 ask_owner.py note --root ${repo} --dossier W-032 --text hi`, tmp) === "myrepo.W-032")
+  check("progress: no dossier, no key", keyFromCommand("ls -la", tmp) === undefined)
+  check("progress: build-log line", updateFor("Bash", { command: "python3 dossier_edit.py log d.md 'GATES round 1: 93/93'" }, {}) === "log: GATES round 1: 93/93")
+  check("progress: suite summary", updateFor("Bash", { command: "python3 run_tests.py --log x -- cargo test" }, { stdout: "...\npassed 120  failed 2  ignored 0  (cargo)\n" }) === "suite: passed 120  failed 2  ignored 0  (cargo)")
+  check("progress: PR opened", updateFor("Bash", { command: "gh pr create --base x" }, { stdout: "https://github.com/o/r/pull/12\n" }) === "PR opened: https://github.com/o/r/pull/12")
+  check("progress: workflow and spawn", updateFor("Workflow", { name: "agentic-software-development:phase4-wave", args: [{}, {}] }, {}) === "workflow started: agentic-software-development:phase4-wave — 2 agent(s)" && (updateFor("Agent", { subagent_type: "agentic-software-development:reviewer", description: "plan review" }, {}) ?? "").startsWith("spawned reviewer: plan review"))
+  check("progress: other commands stay quiet", updateFor("Bash", { command: "git status" }, { stdout: "x" }) === undefined && updateFor("Read", {}, {}) === undefined)
+  // End to end, interactive: a /work-on session learns its key, then posts its suite run.
+  const runs2 = join(tmp, "runs2")
+  const e2 = { ...env, ASD_RUNS_DIR: runs2 }
+  const run2 = (over: object) => Bun.spawnSync(["bun", "--no-install", join(root, "shared", "claude", "post-tool-use.ts")], { stdin: new TextEncoder().encode(post({ session_id: "s-prog", ...over })), env: e2 as any, stdout: "pipe", stderr: "pipe" })
+  run2({ tool_input: { command: `python3 dossier_edit.py log ${repo}/.discovery/dossiers/W-033-x.md 'Phase 4 wave 1 out'` } })
+  run2({ tool_input: { command: "python3 run_tests.py -- cargo test" }, tool_response: { stdout: "passed 3  failed 0  ignored 0  (cargo)" } })
+  const rows2 = (() => { try { return readFileSync(join(runs2, "myrepo.W-033.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) } catch { return [] } })()
+  check("progress: interactive run learns its key and posts", rows2.length === 2 && rows2.every((r) => r.kind === "update" && r.auto === true) && rows2[1].text.startsWith("suite: passed 3"))
+  const quiet = Bun.spawnSync(["bun", "--no-install", join(root, "shared", "claude", "post-tool-use.ts")], { stdin: new TextEncoder().encode(post({ session_id: "s-prog2", transcript_path: plan, tool_input: { command: `python3 dossier_edit.py log ${repo}/.discovery/dossiers/W-034-x.md 'x'` } })), env: { ...e2, ASD_RUN_UPDATES: "0" } as any, stdout: "pipe", stderr: "pipe" })
+  check("progress: ASD_RUN_UPDATES=0 turns it off", quiet.exitCode === 0 && !(() => { try { readFileSync(join(runs2, "myrepo.W-034.jsonl")); return true } catch { return false } })())
+}
+
 // Context pressure: past 75% of the session's autoCompactWindow, one checkpoint request per cycle.
 {
   const proj = join(tmp, "proj")

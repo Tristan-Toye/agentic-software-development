@@ -91,7 +91,7 @@ export function agentTypeOf(input: HookInput): string | undefined {
 
 // ---- per-session state ----------------------------------------------------------
 
-export type SessionState = { orchestrator?: boolean; calls?: number; pressureNudged?: boolean }
+export type SessionState = { orchestrator?: boolean; pipeline?: boolean; runKey?: string; calls?: number; pressureNudged?: boolean }
 const stateFile = (session: string) => join(dataDir(), `${session.replace(/[^\w.-]/g, "_")}.json`)
 
 export function loadState(session: string): SessionState {
@@ -227,6 +227,20 @@ export function isOrchestrator(input: HookInput): boolean {
   const users = records.filter((r) => r?.type === "user" && !r.isSidechain)
   const found = users.some((r) => WORK_ON_RE.test(textOf(r.message?.content)))
   if (found || users.length > 0) saveState(input.session_id, { ...state, orchestrator: found })
+  return found
+}
+
+const PIPELINE_RE = /<command-name>\/?(?:[\w.-]+:)?(?:work-on|stub|plan)<\/command-name>/
+
+/** A /work-on, /stub or /plan session (for progress updates); cached in the session state. */
+export function isPipelineSession(input: HookInput): boolean {
+  if (input.agent_id || !input.session_id) return false
+  const state = loadState(input.session_id) as SessionState & { pipeline?: boolean }
+  if (typeof state.pipeline === "boolean") return state.pipeline
+  if (!input.transcript_path) return false
+  const users = head(input.transcript_path).filter((r) => r?.type === "user" && !r.isSidechain)
+  const found = users.some((r) => PIPELINE_RE.test(textOf(r.message?.content)))
+  if (found || users.length > 0) saveState(input.session_id, { ...state, pipeline: found } as SessionState)
   return found
 }
 

@@ -329,6 +329,11 @@ so the anchors it spot-checks are the tree the dossier was written against.
   When nothing else can proceed, run `ask_owner.py wait <id>` as a background
   command under Claude Code and end the turn. Log `QUESTION:` and then
   `OWNER-RULING (<date>):` in `## Build log`. Never pick an option yourself.
+- **Progress shows on the dashboard by itself.** The plugin's hook posts your
+  checkpoints, build-log lines and reviewer spawns as the dossier's updates.
+  Add `ask_owner.py note --root R --dossier ID --text "..."` only for a
+  milestone no command shows (the investigation concluded, the contract
+  drafted).
 - **Budget: 2 review rounds.** After the second, stop and show the user the
   unresolved change requests. Never mark a plan ready by exhaustion. In
   committed mode the dossier stays `planned` and uncommitted in the plan

@@ -277,10 +277,15 @@ and an unpushed record dies with the worktree. Add it by name, never with
 (`${PLUGIN_ROOT}/references/runner.md`). Then the runner-mode rules arrive in
 the appended system prompt and take precedence: ask only through
 `ask_owner.py`, end a stage with its `phase_checkpoint` and the `RUNNER:` line
-it names, and post `ask_owner.py note` for what is worth knowing mid-stage. In
-an interactive run, with no runner, post `ask_owner.py note --root R --dossier
-ID --stage <phase> --text "..."` at each checkpoint, so the run's updates show
-there too.
+it names, and post `ask_owner.py note` for what is worth knowing mid-stage.
+
+**Progress updates, every run.** The plugin's PostToolUse hook posts most of
+them for you, at no token cost, under the runner and interactively alike:
+each `phase_checkpoint` (a stage line), each `dossier_edit.py log` line, each
+suite and gates result, each workflow started and agent spawned, and each PR
+opened or merged. Add `ask_owner.py note --root R --dossier ID --text "..."`
+only for what no command shows: a ruling you made, a plan you changed, why
+you are about to wait.
 
 ## Phase 0 — Select the dossier and route the run
 

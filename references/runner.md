@@ -6,16 +6,16 @@ starts from a clean context, and owner questions asked and answered through
 `references/owner-questions.md`. One runner owns one dossier; it never picks
 up another one while it waits.
 
-    run_dossier.py [ID] [--root R] [--detach] [--command work-on|stub]
+    run_dossier.py [ID] [--root R] [--foreground] [--command work-on|stub]
                    [--model M] [--permission-mode auto] [--max-stages N]
     run_dossier.py status [ID] [--root R]
     run_dossier.py stop ID [--root R]
     run_dossier.py --selftest
 
 The repository defaults to the one the command runs in (its git toplevel).
-It runs in the foreground; `--detach` starts it in the background with its
-output in `<key>.runner.log`, which is how the dashboard's Start and Resume
-buttons start it. Running it again after `stopped` or `failed` resumes from
+It starts in the background by default (`--detach`), with its output in
+`<key>.runner.log`, which is also how the dashboard's Start and Resume
+buttons start it; `--foreground` keeps it in the terminal. Running it again after `stopped` or `failed` resumes from
 the recorded checkpoints.
 
 ## How a stage runs
@@ -84,8 +84,13 @@ The prompt tells the orchestrator these rules:
   - **The plugin's PostToolUse hook:** a `stage` line for every
     `phase_checkpoint` call when `ASD_RUN_KEY` is set. It writes the stage
     name and the first line of the summary.
-  - **`ask_owner.py note`:** an `update` line. An interactive run, with no
-    runner, also posts `note` at each checkpoint, so its updates show too.
+  - **The same hook, for progress:** an `update` line with `auto: true` for
+    each `dossier_edit.py log` line, each `run_tests.py` and `run_gates.py`
+    result, each workflow started and agent spawned, and each PR opened or
+    merged. This happens in every /work-on, /stub and /plan session, with or
+    without a runner. Without a runner, the run key is learnt from the first
+    command that names a dossier. `ASD_RUN_UPDATES=0` turns it off.
+  - **`ask_owner.py note`:** an `update` line, for what no command shows.
 - **The runner's own state:** `<key>.runner.json` holds
   `{pid, started, state, stage, session, questions}`, rewritten on every
   change. `state` is one of `running`, `waiting`, `done`, `failed` or
