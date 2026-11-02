@@ -30,7 +30,9 @@ are cheap, and both run while the bodies in `X` are still stubs:
      a harness fix you logged, and anything else is reverted, not negotiated;
      format each author's files with the repository's own formatter, over
      exactly the named files and inside that same commit, because the author's
-     `bash` is denied. Then run the new tests there — the new files only,
+     `bash` is denied. Commit through `gate_commit.py --root X --paths
+     <TEST_PATHS> -m MESSAGE`, adding `--forbid-id <dossier id>` in local
+     mode so no committed test cites the dossier. Then run the new tests there — the new files only,
      locally, under either suite runner (Phase 2): this run is not a verdict
      on the suite, and CI cannot run a subset against stubs. The bodies are
      still stubs that fail loudly, so **every new test must fail, judged one test at
