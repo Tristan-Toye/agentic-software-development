@@ -84,7 +84,29 @@ export function updateFor(tool: string, input: any, resp: any): string | undefin
     const n = Array.isArray(input?.args) ? ` — ${input.args.length} agent(s)` : ""
     return `workflow started: ${name}${n}`
   }
-  if (tool === "Agent") return `spawned ${String(input?.subagent_type ?? "agent").replace(/^.*:/, "")}: ${shortCmd(String(input?.description ?? ""))}`
   return undefined
 }
 
+
+/**
+ * The spawn line for an Agent call: one line (agent type and description, never the
+ * prompt) with a status. A background launch is `running` until SubagentStop closes it by
+ * `agent_id`; a foreground call has already returned, so it is `done`.
+ */
+export function spawnFor(input: any, resp: any): { text: string; agent_id?: string; status: string } | undefined {
+  if (!input) return undefined
+  const type = String(input.subagent_type ?? "agent").replace(/^.*:/, "")
+  const text = `${type}: ${shortCmd(String(input.description ?? ""))}`
+  const raw = typeof resp === "string" ? resp : JSON.stringify(resp ?? "")
+  const id = (typeof resp === "object" && resp && (resp.agentId || resp.agent_id)) || raw.match(/agentId[\\"]*:\s*[\\"]*([A-Za-z0-9_-]{6,})/)?.[1]
+  const background = input.run_in_background === true || /launched successfully|running in the background/i.test(raw)
+  return { text, agent_id: id ? String(id) : undefined, status: background ? "running" : "done" }
+}
+
+/** The status a subagent ends with, from its last message: a GAP or contract change stands out. */
+export function endStatus(lastMessage: string): string {
+  const m = String(lastMessage ?? "")
+  if (/^\s*CONTRACT-CHANGE:/m.test(m)) return "contract-change"
+  if (/^\s*GAP:/m.test(m)) return "gap"
+  return "done"
+}

@@ -153,7 +153,12 @@ for (const bad of ["", "{", "[]", '{"session_id":"q"}']) {
   check("progress: build-log line", updateFor("Bash", { command: "python3 dossier_edit.py log d.md 'GATES round 1: 93/93'" }, {}) === "log: GATES round 1: 93/93")
   check("progress: suite summary", updateFor("Bash", { command: "python3 run_tests.py --log x -- cargo test" }, { stdout: "...\npassed 120  failed 2  ignored 0  (cargo)\n" }) === "suite: passed 120  failed 2  ignored 0  (cargo)")
   check("progress: PR opened", updateFor("Bash", { command: "gh pr create --base x" }, { stdout: "https://github.com/o/r/pull/12\n" }) === "PR opened: https://github.com/o/r/pull/12")
-  check("progress: workflow and spawn", updateFor("Workflow", { name: "agentic-software-development:phase4-wave", args: [{}, {}] }, {}) === "workflow started: agentic-software-development:phase4-wave — 2 agent(s)" && (updateFor("Agent", { subagent_type: "agentic-software-development:reviewer", description: "plan review" }, {}) ?? "").startsWith("spawned reviewer: plan review"))
+  check("progress: workflow started", updateFor("Workflow", { name: "agentic-software-development:phase4-wave", args: [{}, {}] }, {}) === "workflow started: agentic-software-development:phase4-wave — 2 agent(s)")
+  const { spawnFor, endStatus } = await import("../claude/progress.ts")
+  const bg = spawnFor({ subagent_type: "agentic-software-development:reviewer", description: "plan review", prompt: "SECRET PROMPT", run_in_background: true }, "Async agent launched successfully.\nagentId: a1b2c3d4e5 (internal ID)")
+  check("progress: a background spawn is one line, running, with its agent id, never the prompt", bg?.text === "reviewer: plan review" && bg.status === "running" && bg.agent_id === "a1b2c3d4e5" && !JSON.stringify(bg).includes("SECRET"))
+  check("progress: a foreground spawn is done", spawnFor({ subagent_type: "x:scribe", description: "log line" }, "report text")?.status === "done")
+  check("progress: end status", endStatus("all good") === "done" && endStatus("GAP: no import path") === "gap" && endStatus("x\nCONTRACT-CHANGE: sig") === "contract-change")
   check("progress: other commands stay quiet", updateFor("Bash", { command: "git status" }, { stdout: "x" }) === undefined && updateFor("Read", {}, {}) === undefined)
   // End to end, interactive: a /work-on session learns its key, then posts its suite run.
   const runs2 = join(tmp, "runs2")
@@ -165,6 +170,17 @@ for (const bad of ["", "{", "[]", '{"session_id":"q"}']) {
   check("progress: interactive run learns its key and posts", rows2.length === 2 && rows2.every((r) => r.kind === "update" && r.auto === true) && rows2[1].text.startsWith("suite: passed 3"))
   const quiet = Bun.spawnSync(["bun", "--no-install", join(root, "shared", "claude", "post-tool-use.ts")], { stdin: new TextEncoder().encode(post({ session_id: "s-prog2", transcript_path: plan, tool_input: { command: `python3 dossier_edit.py log ${repo}/.discovery/dossiers/W-034-x.md 'x'` } })), env: { ...e2, ASD_RUN_UPDATES: "0" } as any, stdout: "pipe", stderr: "pipe" })
   check("progress: ASD_RUN_UPDATES=0 turns it off", quiet.exitCode === 0 && !(() => { try { readFileSync(join(runs2, "myrepo.W-034.jsonl")); return true } catch { return false } })())
+}
+
+// SubagentStop: closes a spawn line by agent id in the session's run.
+{
+  const runs3 = join(tmp, "runs3")
+  const stop = (over: object, e: object) => Bun.spawnSync(["bun", "--no-install", join(root, "shared", "claude", "subagent-stop.ts")], { stdin: new TextEncoder().encode(JSON.stringify({ hook_event_name: "SubagentStop", session_id: "s-stop", agent_id: "a1b2c3d4e5", agent_type: "agentic-software-development:implementer", last_assistant_message: "GAP: x", ...over })), env: e as any, stdout: "pipe", stderr: "pipe" })
+  const p = stop({}, { ...env, ASD_RUNS_DIR: runs3, ASD_RUN_KEY: "repo.W-040" })
+  const rows3 = (() => { try { return readFileSync(join(runs3, "repo.W-040.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) } catch { return [] } })()
+  check("subagent-stop: one spawn-done line with status, exit 0, silent", p.exitCode === 0 && p.stdout.toString().trim() === "" && rows3.length === 1 && rows3[0].event === "spawn-done" && rows3[0].agent_id === "a1b2c3d4e5" && rows3[0].status === "gap" && rows3[0].text === "implementer finished")
+  const q = stop({}, { ...env, ASD_RUNS_DIR: runs3 })
+  check("subagent-stop: no run key, nothing written", q.exitCode === 0 && readFileSync(join(runs3, "repo.W-040.jsonl"), "utf8").trim().split("\n").length === 1)
 }
 
 // Context pressure: past 75% of the session's autoCompactWindow, one checkpoint request per cycle.

@@ -8,7 +8,7 @@ import { appendFileSync, mkdirSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { nudgeEvery, reminderText } from "../checkpoint"
-import { keyFromCommand, keyFromStubRecord, updateFor } from "./progress"
+import { keyFromCommand, keyFromStubRecord, spawnFor, updateFor } from "./progress"
 import {
   compactWindow,
   contextTokens,
@@ -48,17 +48,23 @@ function recordStage(input: { tool_input?: any }) {
   }
 }
 
-function appendUpdate(key: string, text: string) {
+function appendUpdate(key: string, text: string, extra: Record<string, unknown> = {}) {
   try {
     if (/[\\/]/.test(key)) return
     const dir = process.env.ASD_RUNS_DIR || join(homedir(), ".agentic", "runs")
     mkdirSync(dir, { recursive: true })
-    const line = { ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"), kind: "update", auto: true, text: text.slice(0, 3500) }
+    const line = { ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"), kind: "update", auto: true, ...extra, text: text.slice(0, 3500) }
     appendFileSync(join(dir, `${key}.jsonl`), JSON.stringify(line) + "\n")
   } catch {
     // never fail the hook
   }
 }
+
+// What an automatic line is, for the dashboard's views: progress events go on the timeline,
+// `log` copies of build-log lines only in the activity view.
+const eventOf = (text: string) =>
+  text.startsWith("log:") ? "log" : text.startsWith("suite") ? "suite" : text.startsWith("gates") ? "gates"
+    : text.startsWith("PR ") ? "pr" : text.startsWith("workflow") ? "workflow" : "other"
 
 function recordProgress(input: any) {
   try {
@@ -80,8 +86,13 @@ function recordProgress(input: any) {
       delete process.env.ASD_RUN_KEY
       return
     }
+    if (input.tool_name === "Agent") {
+      const sp = spawnFor(input.tool_input, input.tool_response)
+      if (sp) appendUpdate(key, sp.text, { event: "spawn", status: sp.status, ...(sp.agent_id ? { agent_id: sp.agent_id } : {}) })
+      return
+    }
     const text = updateFor(input.tool_name, input.tool_input, input.tool_response)
-    if (text) appendUpdate(key, text)
+    if (text) appendUpdate(key, text, { event: eventOf(text) })
   } catch {
     // never fail the hook
   }

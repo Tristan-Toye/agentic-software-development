@@ -91,6 +91,14 @@ The prompt tells the orchestrator these rules:
     without a runner. Without a runner, the run key is learnt from the first
     command that names a dossier, or, in a /stub run, from the stub's record
     file (`<repo>.stub-<date>` or `<repo>.<branch with / as ->`). `ASD_RUN_UPDATES=0` turns it off.
+  - **Line types:** every automatic line has an `event` field: `log`, `suite`,
+    `gates`, `pr`, `workflow`, `other`, `spawn` or `spawn-done`.
+    - A `spawn` line is one line, the agent type and the description, never
+      the prompt. It has a `status` (`running` for a background launch, `done`
+      for a foreground one) and its `agent_id`.
+    - The SubagentStop hook (`shared/claude/subagent-stop.ts`) closes a
+      `spawn` with a `spawn-done` line for the same `agent_id`. Its `status`
+      is `done`, `gap` or `contract-change`.
   - **`ask_owner.py note`:** an `update` line, for what no command shows.
 - **The runner's own state:** `<key>.runner.json` holds
   `{pid, started, state, stage, session, questions}`, rewritten on every
