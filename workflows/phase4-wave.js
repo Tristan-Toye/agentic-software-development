@@ -221,7 +221,19 @@ async function verify(spawned) {
   }
 }
 
-const results = await pipeline(items, spawn, verify)
+// Implementers that share one worktree (a Phase 7 or Phase 6 fix round in X) commit there,
+// so two at once race on git's index: they run one after another, each verified before the
+// next starts. Everything else runs concurrently; --shared-tree already excuses the
+// siblings' paths in each verification.
+const chainKey = (item, i) => /:implementer$/.test(item.agentType) ? 'tree:' + item.root : 'solo:' + i
+const chains = new Map()
+items.forEach((item, i) => { const k = chainKey(item, i); if (!chains.has(k)) chains.set(k, []); chains.get(k).push(i) })
+const results = new Array(items.length).fill(null)
+await parallel([...chains.values()].map((idx) => async () => {
+  for (const i of idx) {
+    try { results[i] = await verify(await spawn(items[i])) } catch (err) { results[i] = null }
+  }
+}))
 return items.map((item, i) => results[i] || {
   label: item.label, verdict: 'died', flags: ['no-result'], returned_line: '',
   report_excerpt: 'the agent or its verifier was skipped or died; read the tree before anything else', report_path: '',

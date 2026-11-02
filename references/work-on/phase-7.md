@@ -253,7 +253,8 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
   reviewer re-litigates a settled question.
 - **Under Claude Code, a fix or check round goes to the agent that holds the
   context** — the original reviewer for its own check round, the original
-  author for a test CR, the previous fix implementer for a second fix round —
+  author for a test CR, a fix implementer you spawned yourself (one the workflow
+  spawned is re-routed, below) —
   by `SendMessage` to its agent ID with only the new CRs or the `PRIOR_CRS`
   answers, per `phase-4.md` ("Under Claude Code, resume instead of
   re-spawn"). Reviewers a workflow spawned have no ID in its result, and an
@@ -273,8 +274,10 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
   on those lines only, then re-run with `--assign <id>=<package>`. Then call
   `phase4-wave` **once** with that JSON file's array as `args`. The spawn guard
   checks every file before the launch and `verify_return.py` checks every return,
-  so a fix payload never passes through the prompt. A second fix round resumes
-  the same agents (above). Every fix implementer works in `X` directly — the tests exist now, so blindness has done its job and
+  so a fix payload never passes through the prompt. Fix implementers that share
+  `X` run one after another inside the workflow. A workflow-spawned fix
+  implementer has no ID to resume, so a second fix round routes its CRs the
+  same way and calls `phase4-wave` again. Every fix implementer works in `X` directly — the tests exist now, so blindness has done its job and
   keeping them green is the point — **and alone**: never while a test author
   is editing uncommitted files in `X` (a CR routed to an author runs before
   or after the fix implementer, never beside it), and never over an
