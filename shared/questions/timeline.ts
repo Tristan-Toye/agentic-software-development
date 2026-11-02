@@ -16,6 +16,55 @@ export type TLEntry = {
   option?: string
   via?: string
   question?: Question
+  /** The automatic line's type (`log`, `suite`, `gates`, `pr`, `workflow`, `spawn`, `spawn-done`, `other`). */
+  event?: string
+  /** A spawn row's status: `running`, `done`, `gap`, `contract-change`; absent when unknown. */
+  status?: string
+  agentId?: string
+  durationMs?: number
+}
+
+/** `all` is every entry unfiltered (spawns merged); the dashboard serves `timeline` and `activity`. */
+export type View = "timeline" | "activity" | "all"
+
+/** The event of an automatic line: its `event` field, else (older files) the text prefix. */
+export function eventOf(u: { text: string; event?: string }): string {
+  if (u.event) return u.event
+  const t = u.text
+  if (/^log:/i.test(t)) return "log"
+  if (/^suite:/i.test(t)) return "suite"
+  if (/^gates:/i.test(t)) return "gates"
+  if (/^PR /.test(t)) return "pr"
+  if (/^workflow/i.test(t)) return "workflow"
+  if (/^spawned /i.test(t)) return "spawn"
+  return "other"
+}
+const FAILURE = /\b(failed|failing|red)\b/i
+/** Whether an entry belongs in the Timeline view: everything except the automatic `log` copies, `other` lines and unmerged spawn-done lines (failures stay). */
+export function inTimeline(e: TLEntry): boolean {
+  if (e.type === "update" && e.auto) {
+    const ev = e.event ?? "other"
+    if (ev === "spawn-done") return false
+    if (ev === "log") return false
+    if (ev === "other") return FAILURE.test(e.text)
+  }
+  return true
+}
+
+/** Merge each `spawn` line with the later `spawn-done` of the same `agent_id` into one entry (status of the done line, duration when both timestamps parse). Chronological in, chronological out; the done lines are consumed. */
+export function mergeSpawns(updates: Update[]): (Update & { doneTs?: string })[] {
+  const done = new Map<string, Update>()
+  for (const u of updates) if (u.auto && u.event === "spawn-done" && u.agent_id && !done.has(u.agent_id)) done.set(u.agent_id, u)
+  const used = new Set<Update>()
+  const out: (Update & { doneTs?: string })[] = []
+  for (const u of updates) {
+    if (u.auto && eventOf(u) === "spawn" && u.agent_id) {
+      const d = done.get(u.agent_id)
+      if (d && when(d.ts) >= when(u.ts)) { used.add(d); out.push({ ...u, status: d.status ?? u.status, doneTs: d.ts }); continue }
+    }
+    out.push(u)
+  }
+  return out.filter((u) => !used.has(u))
 }
 
 /** The phase number of a `Phase <n>` / `PHASE <n>` mention (the letter of `4a` dropped), or "". `unit` "Step" reads `Step <n>` (a stub). */
@@ -46,12 +95,27 @@ export function questionEntries(questions: Question[]): TLEntry[] {
  * boundaries of a stub). It never falls back to the build log or the record: with no updates and no questions it
  * is empty. A labelled boundary is inserted whenever the phase (or `Step`) named by a `stage` line changes.
  */
-export function mergeTimeline(o: { updates: Update[]; questions: Question[]; extra?: TLEntry[]; names?: Record<string, string>; unit?: "Phase" | "Step" }): TLEntry[] {
+export function mergeTimeline(o: { updates: Update[]; questions: Question[]; extra?: TLEntry[]; names?: Record<string, string>; unit?: "Phase" | "Step"; view?: View }): TLEntry[] {
   const unit = o.unit ?? "Phase"
   const all: TLEntry[] = [...(o.extra ?? [])]
   // `updates` arrive newest first from the store; chronological order is restored by the stable sort below.
-  for (const u of [...o.updates].reverse()) all.push({ ts: u.ts, type: u.kind, text: u.text, stage: u.stage, auto: u.auto === true ? true : undefined })
-  all.push(...questionEntries(o.questions))
+  const view = o.view ?? "timeline"
+  const chrono = [...o.updates].reverse()
+  for (const u of view !== "activity" ? mergeSpawns(chrono) : chrono) {
+    const e: TLEntry = { ts: u.ts, type: u.kind, text: u.text, stage: u.stage, auto: u.auto === true ? true : undefined }
+    if (u.auto) {
+      e.event = eventOf(u)
+      if (u.status) e.status = u.status
+      if (e.event === "spawn") {
+        if (u.agent_id) e.agentId = u.agent_id
+        const dt = (u as { doneTs?: string }).doneTs
+        if (dt && when(dt) > -Infinity && when(u.ts) > -Infinity) e.durationMs = Math.max(0, when(dt) - when(u.ts))
+        if (e.text.startsWith("spawned ")) e.text = e.text.slice(8)
+      }
+    }
+    all.push(e)
+  }
+  if (view !== "activity") all.push(...questionEntries(o.questions))
   const sorted = all.map((e, i) => ({ e, i, t: when(e.ts) })).sort((a, b) => (a.t === b.t ? a.i - b.i : a.t < b.t ? -1 : 1)).map((x) => x.e)
   const out: TLEntry[] = []
   let cur = ""
@@ -64,13 +128,14 @@ export function mergeTimeline(o: { updates: Update[]; questions: Question[]; ext
         out.push({ ts: e.ts, type: "boundary", text: "", phase: p, label: unit === "Step" ? `Step ${p}` : o.names?.[p] ? `Phase ${p} \u2014 ${o.names[p]}` : `Phase ${p}` })
       }
     }
-    out.push(e)
+    // Boundaries come from every stage line; each view then keeps only its own entries.
+    if (e.type === "boundary" || (view === "all" || (view === "timeline" ? inTimeline(e) : e.type === "update" && e.auto === true))) out.push(e)
   }
   return out.reverse()
 }
 
 // ---- classification and grouping (pure) ----
-export type Kind = "start" | "stage" | "question" | "answered" | "suite-green" | "suite-red" | "gate" | "pr" | "workflow" | "failed" | "waiting" | "done" | "stopped" | "note" | "reply" | "routine" | "info" | "entry" | "boundary"
+export type Kind = "spawn" | "start" | "stage" | "question" | "answered" | "suite-green" | "suite-red" | "gate" | "pr" | "workflow" | "failed" | "waiting" | "done" | "stopped" | "note" | "reply" | "routine" | "info" | "entry" | "boundary"
 const KEY_KINDS = new Set<Kind>(["start", "stage", "question", "answered", "suite-green", "suite-red", "gate", "pr", "workflow", "failed", "waiting", "done", "stopped"])
 
 /** What an entry is, for display: its kind, whether it is a key event, and whether it is routine (collapsible). */
@@ -96,6 +161,8 @@ export function classify(e: TLEntry): { kind: Kind; key: boolean; routine: boole
     default: break
   }
   // update (hook-written `auto` lines and agent notes)
+  if (e.event === "spawn") return mk("spawn")
+  if (e.auto && e.event === "workflow") return mk("workflow")
   if (/\b(tests?|suite)\b[^.]*\b(red|fail(?:ed|ing|s)?)\b|\b(red|fail(?:ed|ing)?)\b[^.]*\b(tests?|suite)\b/i.test(t)) return mk("suite-red")
   if (/\b(tests?|suite)\b[^.]*\b(green|pass(?:ed|es|ing)?|ok)\b|\b(green|passing)\b[^.]*\b(tests?|suite)\b/i.test(t)) return mk("suite-green")
   if (/\bgates?\b/i.test(t)) return mk("gate")
@@ -117,7 +184,7 @@ const firstLine = (s: string): string => s.split("\n").map((l) => l.trim()).find
  * its thread belong to the phase of the question's first message. Inside a group items are newest first and runs
  * of two or more routine entries collapse into one `more` item.
  */
-export function groupByPhase(entries: TLEntry[], first = "Setup"): Group[] {
+export function groupByPhase(entries: TLEntry[], first = "Setup", collapse = true): Group[] {
   type G = { g: Group; raw: { e: TLEntry; i: number }[] }
   const groups: G[] = []
   const qgroup = new Map<string, G>()
@@ -152,7 +219,7 @@ export function groupByPhase(entries: TLEntry[], first = "Setup"): Group[] {
     }
     for (const { e } of sorted) {
       const c = classify(e)
-      if (c.routine) run.push({ kind: c.kind, entry: e })
+      if (collapse && c.routine) run.push({ kind: c.kind, entry: e })
       else { flush(); items.push({ kind: c.kind, key: c.key, entry: e }) }
     }
     flush()

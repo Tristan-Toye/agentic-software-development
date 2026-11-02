@@ -255,9 +255,10 @@ export async function handle(req: Request): Promise<Response> {
     const updates = readUpdates(`${run.repo}.${run.id}`, runsDir(), 1000)
     const questions = readAll(DIR).filter((q) => q.dossier === run.id && questionRepo(q, runs) === run.repo)
     const entries = mergeTimeline({ updates, questions, names: PHASE_NAMES })
-    const groups = groupByPhase(entries)
+    const groups = groupByPhase(entries, "Setup", false)
+    const activity = groupByPhase(mergeTimeline({ updates, questions, names: PHASE_NAMES, view: "activity" }))
     const now = nowPanel(entries, groups, { runner: run.runner?.state, waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: run.phase })
-    return json({ run, entries, groups, now, log, empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
+    return json({ run, entries, groups, activity, now, log, empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
   }
   const dd = path.match(/^\/api\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && dd) {
@@ -276,10 +277,13 @@ export async function handle(req: Request): Promise<Response> {
     try { record = file ? readFileSync(file, "utf8") : "" } catch { /* unreadable */ }
     const questions = readAll(DIR).filter((q) => q.dossier === slug || q.dossier === branch || `${q.repo}.${q.dossier}` === key)
     const recordEntries = parseRecord(record, stub.cut)
-    const entries = mergeTimeline({ updates: readUpdates(key, runsDir(), 1000), questions, extra: recordEntries.filter((e) => e.type === "boundary").map((e) => ({ ...e, text: "" })), unit: "Step" })
-    const groups = groupByPhase(entries, "Before the first step")
+    const upd = readUpdates(key, runsDir(), 1000)
+    const extra = recordEntries.filter((e) => e.type === "boundary").map((e) => ({ ...e, text: "" }))
+    const entries = mergeTimeline({ updates: upd, questions, extra, unit: "Step" })
+    const groups = groupByPhase(entries, "Before the first step", false)
+    const activity = groupByPhase(mergeTimeline({ updates: upd, questions, extra, unit: "Step", view: "activity" }), "Before the first step")
     const now = nowPanel(entries, groups, { runner: "", waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: "" })
-    return json({ repo, stub, key, entries, groups, now, record: recordEntries, empty: entries.every((e) => e.type === "boundary"), hasRecord: !!file })
+    return json({ repo, stub, key, entries, groups, activity, now, record: recordEntries, empty: entries.every((e) => e.type === "boundary"), hasRecord: !!file })
   }
   const rl = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/log$/)
   if (req.method === "GET" && rl) {

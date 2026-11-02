@@ -16,7 +16,7 @@ export type Session = { state: "active" | "idle" | "none"; lastTs: string; conte
 export type Pr = { number: number; url: string; state: string; green: number; red: number; pending: number }
 export type Run = {
   id: string; title: string; status: string; jira: string; updated: string; created: string
-  repo: string; root: string; worktree: string; file: string
+  repo: string; repoLabel: string; root: string; worktree: string; file: string
   phase: string; phaseName: string; lastActivity: string; logLines: number
   session: Session; pr: Pr | null; questions: string[]; answered: QA[]
   running: boolean; summary: string; updates: Update[]; runner: RunnerState | null
@@ -275,6 +275,15 @@ export async function candidateRoots(questions: Question[], transcripts: TInfo[]
 }
 
 export const baseName = (p: string): string => p.split("/").filter(Boolean).pop() ?? p
+/**
+ * The name shown for a repo: its basename, except a root that is not a git checkout (it only holds `.discovery`,
+ * like `~/Documents/Twipe/repos`), which shows its path relative to the home directory. The basename stays the
+ * repo's identity in routes, keys and question matching.
+ */
+export function repoLabel(main: string, home = homedir()): string {
+  if (existsSync(join(main, ".git"))) return baseName(main)
+  return main.startsWith(home + "/") ? main.slice(home.length + 1) : baseName(main)
+}
 const mainCache = new Map<string, string>()
 /** The main checkout a worktree belongs to (itself when it is one, or not a git checkout). */
 export async function mainOf(wt: string): Promise<string> {
@@ -352,7 +361,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
     const qs: string[] = []
     runs.push({
       id: f.id!, title: f.title ?? "", status, jira: f.jira ?? "", updated: f.updated ?? "", created: f.created ?? "",
-      repo: repoName, root: d.worktree, worktree: wt, file: d.file,
+      repo: repoName, repoLabel: repoLabel(d.main), root: d.worktree, worktree: wt, file: d.file,
       phase, phaseName: phaseNameOf(PHASE_NAMES, phase), lastActivity: lastLine(log), logLines: Math.max(0, logLength(d.text)), session, pr, questions: qs, answered: [],
       running: isRunning(status) || runnerActive(runner), summary: summaryOf(d.text), updates: readUpdates(`${repoName}.${f.id}`), runner,
       main, blockedBy: blockedByOf(f.blocked_by), controls: controlsFor({ status, blockedBy: blockedByOf(f.blocked_by), runner }, () => undefined), view: "dossier",

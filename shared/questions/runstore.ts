@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-export type Update = { ts: string; kind: "runner" | "stage" | "update"; text: string; stage?: string; state?: string; auto?: boolean }
+export type Update = { ts: string; kind: "runner" | "stage" | "update"; text: string; stage?: string; state?: string; auto?: boolean; event?: string; status?: string; agent_id?: string }
 export type RunnerState = { state: "running" | "waiting" | "done" | "failed" | "stopped"; stage: string; pid: number; started: string; root: string }
 
 export const runsDir = (): string => process.env.ASD_RUNS_DIR || join(homedir(), ".agentic", "runs")
@@ -18,7 +18,7 @@ export function readUpdates(key: string, dir = runsDir(), limit = 50): Update[] 
     try {
       const o = JSON.parse(l)
       if (typeof o?.text !== "string" || !["runner", "stage", "update"].includes(o.kind)) continue
-      out.push({ ts: String(o.ts ?? ""), kind: o.kind, text: o.text, stage: typeof o.stage === "string" ? o.stage : undefined, state: typeof o.state === "string" ? o.state : undefined, ...(o.auto === true ? { auto: true } : {}) })
+      out.push({ ts: String(o.ts ?? ""), kind: o.kind, text: o.text, stage: typeof o.stage === "string" ? o.stage : undefined, state: typeof o.state === "string" ? o.state : undefined, ...(o.auto === true ? { auto: true } : {}), ...(typeof o.event === "string" ? { event: o.event } : {}), ...(typeof o.status === "string" ? { status: o.status } : {}), ...(typeof o.agent_id === "string" && o.agent_id ? { agent_id: o.agent_id } : {}) })
     } catch { /* torn line */ }
   }
   return out.reverse().slice(0, limit)

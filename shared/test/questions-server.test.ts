@@ -6,10 +6,11 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { interpretEnvelope, questionBlocks } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy } from "../questions/runs.ts"
+import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown } from "../questions/runstore.ts"
+import { mergeSpawns } from "../questions/timeline.ts"
 import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPanel } from "../questions/timeline.ts"
 import { blockedByOf, controlsFor } from "../questions/controls.ts"
 import { execFileSync } from "node:child_process"
@@ -145,7 +146,7 @@ check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n
   const ups = [U("2026-11-02T10:05:00Z", "update", "suite green"), U("2026-11-02T10:04:00Z", "stage", "wave one", { stage: "Phase 4a fan-out" }), U("2026-11-02T10:03:00Z", "update", "auto note", { auto: true }), U("2026-11-02T10:02:00Z", "stage", "contract", { stage: "Phase 3" }), U("2026-11-02T10:01:00Z", "runner", "started")]
   const tq: any = { id: "r.W-7.Q1", state: "answered", repo: "r", dossier: "W-7", root: "", text: "Which?", options: [], recommendation: "", blocks: "", ts: "2026-11-02T10:02:30Z", answer: null, lines: [
     { ts: "2026-11-02T10:02:30Z", from: "agent", kind: "question", text: "Which?" }, { ts: "2026-11-02T10:03:30Z", from: "owner", kind: "followup", text: "why?" }, { ts: "2026-11-02T10:04:30Z", from: "owner", kind: "answer", text: "A it is", option: "A" }] }
-  const tl = mergeTimeline({ updates: ups, questions: [tq], names: { "3": "Contract", "4": "Fan out" } })
+  const tl = mergeTimeline({ updates: ups, questions: [tq], names: { "3": "Contract", "4": "Fan out" }, view: "all" })
   check("timeline: newest first, questions and thread at their own timestamps, boundaries at phase changes", tl.map((e) => e.type === "boundary" ? "B:" + e.label : e.type + ":" + e.text).join("|") ===
     ["update:suite green", "answer:A it is", "stage:wave one", "B:Phase 4 — Fan out", "message:why?", "update:auto note", "question:Which?", "stage:contract", "B:Phase 3 — Contract", "runner:started"].join("|"), tl.map((e) => e.type + ":" + (e.label ?? e.text)).join("|"))
   check("timeline: auto lines are flagged and a 4a after 4 is no new boundary", tl.find((e) => e.text === "auto note")?.auto === true && tl.filter((e) => e.type === "boundary").length === 2 &&
@@ -172,7 +173,7 @@ check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n
   ]
   const tq: any = { id: "r.W-7.Q1", state: "answered", repo: "r", dossier: "W-7", root: "", text: "Which?", options: [], recommendation: "", blocks: "", ts: "2026-11-02T10:12:00Z", answer: null, lines: [
     { ts: "2026-11-02T10:12:00Z", from: "agent", kind: "question", text: "Which?" }, { ts: "2026-11-02T10:25:00Z", from: "owner", kind: "answer", text: "A", option: "A" }] }
-  const entries = mergeTimeline({ updates: ups, questions: [tq], names: { "3": "Contract", "4": "Fan out" } })
+  const entries = mergeTimeline({ updates: ups, questions: [tq], names: { "3": "Contract", "4": "Fan out" }, view: "all" })
   const groups = groupByPhase(entries)
   check("group: phases newest first, only the first is current", groups.map((g) => g.label).join("|") === "Phase 4 — Fan out|Phase 3 — Contract|Setup" && groups[0].current && !groups[1].current && !groups[2].current, groups.map((g) => g.label).join("|"))
   check("group: summary is the first line of the checkpoint, counts per phase", groups[0].summary === "wave: all three returned" && groups[1].summary === "contract committed" && groups[1].counts.questions === 1 && groups[0].counts.updates === 5, JSON.stringify(groups.map((g) => [g.summary, g.counts])))
@@ -252,11 +253,47 @@ writeFileSync(join(repoC, ".discovery", "analysis", "stub-2026-11-02.md"), rec)
 const recordedRoot = join(rdir, "recorded-root")
 const argvLog = join(rdir, "argv.log"), fakeRunner = join(rdir, "fake_runner.py")
 writeFileSync(fakeRunner, "import os, sys\nopen(os.environ['ASD_FAKE_ARGV'], 'a').write(' '.join(sys.argv[1:]) + '\\n')\nprint('fake runner ok, pid 4242')\n")
+// views: Timeline vs Activity, spawn rows, legacy lines, non-git repo label (pure)
+{
+  const A = (ts: string, text: string, extra: object = {}) => ({ ts, kind: "update", text, auto: true, ...extra }) as any
+  const N = (ts: string, text: string, kind = "update") => ({ ts, kind, text }) as any
+  const ups = [ // newest first, as the store returns them
+    A("2026-11-02T10:12:00Z", "other thing", { event: "other" }), A("2026-11-02T10:11:00Z", "tool crashed and failed", { event: "other" }),
+    A("2026-11-02T10:10:00Z", "x: orphan", { event: "spawn-done", agent_id: "zz", status: "done" }),
+    A("2026-11-02T10:09:00Z", "workflow started: build — 3 agents", { event: "workflow" }),
+    A("2026-11-02T10:08:00Z", "PR 12 opened", { event: "pr" }), A("2026-11-02T10:07:30Z", "gates: green", { event: "gates" }), A("2026-11-02T10:07:00Z", "suite: 10 passed", { event: "suite" }),
+    A("2026-11-02T10:06:00Z", "no id agent: lone", { event: "spawn", status: "done" }),
+    A("2026-11-02T10:05:30Z", "implementer: pkg b", { event: "spawn-done", agent_id: "b", status: "contract-change" }),
+    A("2026-11-02T10:05:00Z", "unit-test-author: pkg a", { event: "spawn-done", agent_id: "a", status: "gap" }),
+    A("2026-11-02T10:04:00Z", "implementer: pkg b", { event: "spawn", agent_id: "b", status: "running" }),
+    A("2026-11-02T10:03:30Z", "reviewer: never finished", { event: "spawn", agent_id: "c", status: "running" }),
+    A("2026-11-02T10:03:00Z", "unit-test-author: pkg a", { event: "spawn", agent_id: "a", status: "running" }),
+    A("2026-11-02T10:02:00Z", "log: wrote section", { event: "log" }), N("2026-11-02T10:01:30Z", "agent note"), N("2026-11-02T10:01:00Z", "runner: started", "runner"),
+    N("2026-11-02T10:00:00Z", "wave", "stage")]
+  const tl = mergeTimeline({ updates: ups, questions: [] }), ac = mergeTimeline({ updates: ups, questions: [], view: "activity" })
+  const texts = (es: any[]) => es.filter((e) => e.type !== "boundary").map((e) => e.text)
+  check("views: Timeline keeps notes, runner, stage, suite, gates, pr, workflow, spawns, failures; drops log, other and spawn-done",
+    ["agent note", "runner: started", "wave", "suite: 10 passed", "gates: green", "PR 12 opened", "workflow started: build — 3 agents", "tool crashed and failed"].every((t) => texts(tl).includes(t)) &&
+    !texts(tl).some((t) => t === "log: wrote section" || t === "other thing" || t === "x: orphan") && texts(tl).filter((t) => t.includes(": pkg")).length === 2, JSON.stringify(texts(tl)))
+  check("views: Activity is every automatic line, raw (log, other, spawn and spawn-done), and no notes", texts(ac).length === 14 && texts(ac).includes("log: wrote section") && texts(ac).includes("other thing") && texts(ac).filter((t) => t.includes("pkg")).length === 4 && !texts(ac).includes("agent note"), JSON.stringify(texts(ac)))
+  const sp = (id: string) => tl.find((e) => e.event === "spawn" && e.agentId === id)!
+  check("spawn: merged with its spawn-done: status from the done line, duration from both timestamps", sp("a").status === "gap" && sp("a").durationMs === 120_000 && sp("b").status === "contract-change" && sp("b").durationMs === 90_000)
+  check("spawn: no done line keeps its own status, no duration", sp("c").status === "running" && sp("c").durationMs === undefined)
+  check("spawn: no agent_id keeps its own status", tl.find((e) => e.text === "no id agent: lone")?.status === "done" && mergeSpawns([...ups].reverse()).length === ups.length - 2)
+  const legacy = [A("2026-11-02T11:05:00Z", "spawned reviewer: old"), A("2026-11-02T11:04:00Z", "workflow x started"), A("2026-11-02T11:03:00Z", "PR 3 opened"), A("2026-11-02T11:02:00Z", "gates: ok"), A("2026-11-02T11:01:00Z", "suite: ok"), A("2026-11-02T11:00:00Z", "log: old"), A("2026-11-02T10:59:00Z", "something")]
+  const lt = mergeTimeline({ updates: legacy, questions: [] }), la = mergeTimeline({ updates: legacy, questions: [], view: "activity" })
+  check("legacy: lines without event are classified by prefix", JSON.stringify(lt.map((e) => e.event)) === JSON.stringify(["spawn", "workflow", "pr", "gates", "suite"]) && lt[0].status === undefined && lt[0].text === "reviewer: old" && la.length === 7 && la[6].event === "other" && la[1].event === "workflow")
+  check("groups: Timeline is not collapsed, Activity collapses routine runs", groupByPhase(tl, "Setup", false).every((g) => g.items.every((i) => i.kind !== "more")) && groupByPhase(ac).some((g) => g.items.some((i) => i.kind === "more")))
+  const home = mkdtempSync(join(tmpdir(), "asd-oq-home-")); mkdirSync(join(home, "Twipe", "repos", ".discovery", "dossiers"), { recursive: true }); mkdirSync(join(home, "git", ".git"), { recursive: true })
+  check("repo label: a non-git root shows its path under the home dir; a git repo its basename", repoLabel(join(home, "Twipe", "repos"), home) === "Twipe/repos" && repoLabel(join(home, "git"), home) === "git" && repoLabel("/elsewhere/x", home) === "x")
+  rmSync(home, { recursive: true, force: true })
+}
+
 const odir = mkdtempSync(join(tmpdir(), "asd-oq-ow-")), runsDir = mkdtempSync(join(tmpdir(), "asd-oq-rd-"))
 writeFileSync(join(runsDir, "repoC.W-10.runner.json"), JSON.stringify({ pid: process.pid, state: "waiting", stage: "3", started: "s" }))
 writeFileSync(join(runsDir, "repoC.W-13.runner.json"), JSON.stringify({ pid: 2 ** 22 + 77, state: "running", stage: "3", started: "s", root: recordedRoot }))
 writeFileSync(join(runsDir, "repoC.W-10.runner.log"), Array.from({ length: 300 }, (_, i) => "line " + (i + 1)).join("\n") + "\n")
-writeFileSync(join(runsDir, "repoB.W-7.jsonl"), [{ ts: "2026-11-02T10:00:00Z", kind: "stage", text: "contract", stage: "Phase 3" }, { ts: "2026-11-02T10:05:00Z", kind: "stage", text: "wave", stage: "Phase 4" }, { ts: "2026-11-02T10:06:00Z", kind: "update", text: "tiny", auto: true }].map((x) => JSON.stringify(x)).join("\n") + "\n")
+writeFileSync(join(runsDir, "repoB.W-7.jsonl"), [{ ts: "2026-11-02T10:00:00Z", kind: "stage", text: "contract", stage: "Phase 3" }, { ts: "2026-11-02T10:05:00Z", kind: "stage", text: "wave", stage: "Phase 4" }, { ts: "2026-11-02T10:06:00Z", kind: "update", text: "tiny", auto: true, event: "gates" }].map((x) => JSON.stringify(x)).join("\n") + "\n")
 writeFileSync(join(runsDir, "repoA.W-8.jsonl"), JSON.stringify({ ts: "2026-11-02T09:00:00Z", kind: "update", text: "planning started" }) + "\n")
 writeFileSync(join(runsDir, "repoC.stub-2026-11-02.jsonl"), JSON.stringify({ ts: "2026-11-02T11:00:00Z", kind: "update", text: "stub step done" }) + "\n")
 writeFileSync(join(runsDir, "repoC.W-10.jsonl"), JSON.stringify({ ts: "2026-11-02T10:00:00Z", kind: "update", text: "ten started" }) + "\n")
@@ -300,6 +337,9 @@ try {
   check("server: /api/runs session activity and context", r7?.session.state === "active" && r7.session.context === 143003 && r7.session.requests === 2 && r7.pr === null, JSON.stringify(r7?.session))
   check("server: /api/runs carries the open-question link", rv.runs.every((r: any) => Array.isArray(r.questions)) && typeof rv.scannedAt === "string")
   check("server: page has the Runs view and no external resources", html.includes("Open questions") && html.includes("/api/runs") && html.includes("/api/stubs") && !/https?:\/\//.test(html))
+  const qo = html.match(/function queueOpen\(\) \{[^\n]*\}/)?.[0] ?? ""
+  const order = qo ? new Function("S", qo + "; return queueOpen().map(q => q.id)")({ q: [{ id: "c", state: "open", ts: "2026-11-02T10:03:00Z" }, { id: "a", state: "open", ts: "2026-11-02T10:01:00Z" }, { id: "x", state: "answered", ts: "2026-11-02T10:00:00Z" }, { id: "b", state: "open", ts: "2026-11-02T10:02:00Z" }] }) : []
+  check("home: the open questions are a queue, oldest first, and no longer a card", JSON.stringify(order) === '["a","b","c"]' && !html.includes("home:questions") && html.includes("No open questions.") && html.includes("waiting "), JSON.stringify(order))
   const r10 = rv.runs.find((r: any) => r.id === "W-10"), r9 = rv.runs.find((r: any) => r.id === "W-9")
   check("server: a ready dossier with a waiting runner is running, with its updates and summary", r10?.running === true && r10.runner?.state === "waiting" && r10.updates[0]?.text === "ten started" && r10.summary === "Ten paragraph." && r7.running === true && r9.running === false && r9.repo === "repoC", JSON.stringify(r10).slice(0, 300))
   check("server: stage carries the phase name", r7.phaseName === pn["4"])

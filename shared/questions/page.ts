@@ -132,7 +132,7 @@ function ago(ts) {
 }
 function when(ts, prefix) { if (!ts || !Date.parse(ts)) return null; return h('time', { datetime: ts, title: new Date(ts).toLocaleString(), class: 'when' }, [(prefix || '') + ago(ts)]); }
 const kfmt = (n) => n >= 1000 ? Math.round(n / 1000) + 'k' : String(n);
-const TONE = { planned: 'neutral', ready: 'info', building: 'info', review: 'warn', pr: 'warn', done: 'ok', dropped: 'neutral', running: 'info', waiting: 'warn', failed: 'bad', stopped: 'bad',
+const TONE = { planned: 'neutral', ready: 'info', building: 'info', review: 'warn', pr: 'warn', done: 'ok', dropped: 'neutral', running: 'info', waiting: 'warn', failed: 'bad', stopped: 'bad', gap: 'warn', 'contract-change': 'warn', unknown: 'neutral',
   accepting: 'info', integrating: 'warn', merged: 'ok', blocked: 'bad', green: 'ok', red: 'bad', pending: 'warn', open: 'warn' };
 function chip(text, kind, extra) { return h('span', { class: 'chip ' + (TONE[kind || text] || '') + (extra ? ' ' + extra : '') }, [text]); }
 function prChip(pr) {
@@ -172,6 +172,7 @@ const notStarted = (r) => !inProgress(r) && !isDone(r);
 const findRun = (repo, id) => S.runs.find(r => r.repo === repo && r.id === id);
 const repoNames = () => { const s = new Set(); S.runs.forEach(r => s.add(r.repo)); S.stubs.repos.forEach(r => s.add(r.repo)); return Array.from(s).sort(); };
 const openQs = (r) => S.q.filter(q => q.state === 'open' && q.dossier === r.id && qRepo(q) === r.repo);
+const rlabel = (repo) => { const r = S.runs.find(x => x.repo === repo); if (r && r.repoLabel) return r.repoLabel; const t = S.stubs.repos.find(x => x.repo === repo); return (t && t.label) || repo; };
 const allOpen = () => S.q.filter(q => q.state === 'open').sort((a, b) => (a.repo + a.dossier).localeCompare(b.repo + b.dossier) || a.ts.localeCompare(b.ts));
 function stageText(r) { if (!r.phase) return r.runner && r.runner.stage ? 'Stage ' + r.runner.stage : ''; return r.phase === 'plan' ? 'Plan' : 'Phase ' + r.phase + (r.phaseName ? ' · ' + r.phaseName : ''); }
 function itemMode(run) { if (R.forceDossier) return 'dossier'; return run.view === 'run' ? 'run' : 'dossier'; }
@@ -195,7 +196,7 @@ function msgBlock(l) {
 function qCard(q, opts) {
   const open = q.state === 'open'; const repo = qRepo(q);
   const kids = [
-    h('div', { class: 'top' }, [chip(repo, 'neutral'), h('a', { class: 'chip', href: hrefItem(repo, q.dossier) }, [q.dossier]), h('span', { class: 'grow' }), h('span', { class: 'mono' }, [q.id + ' · ']), when(q.ts)]),
+    h('div', { class: 'top' }, [chip(rlabel(repo), 'neutral'), h('a', { class: 'chip', href: hrefItem(repo, q.dossier) }, [q.dossier]), h('span', { class: 'grow' }), h('span', { class: 'mono' }, [q.id + ' · ']), opts.queue ? when(q.ts, 'waiting ') : when(q.ts)]),
     h('div', { class: 'q' }, [q.text]), q.blocks ? h('div', { class: 'blocks' }, ['Blocks: ' + q.blocks]) : null, optButtons(q)];
   if (opts.thread) kids.push(h('div', {}, q.lines.slice(1).map(msgBlock)));
   if (open) kids.push(h('textarea', { placeholder: 'Ask a follow-up, or write a free-text answer', 'data-qid': q.id }),
@@ -240,29 +241,30 @@ function section(title, n, content, key) {
 const grid = (cards, empty) => cards.length ? h('div', { class: 'grid' }, cards) : h('div', { class: 'empty' }, [empty]);
 
 // ---- views ----
+function queueOpen() { return S.q.filter(q => q.state === 'open').sort((a, b) => a.ts.localeCompare(b.ts) || a.id.localeCompare(b.id)); }
+function queueView(hit) {
+  const open = queueOpen();
+  return open.length ? h('div', { class: 'queue', 'data-k': 'queue' }, open.map(q => qCard(q, { queue: true, thread: !!hit, hit }))) : h('div', { class: 'empty', 'data-k': 'noq' }, ['No open questions.']);
+}
 function homeView() {
   const open = allOpen(); const cards = [];
-  const oldest = open.length ? open.slice().sort((a, b) => a.ts.localeCompare(b.ts))[0] : null;
   const byRepo = {}; open.forEach(q => { const r = qRepo(q); byRepo[r] = (byRepo[r] || 0) + 1; });
-  cards.push(h('a', { class: 'card', href: '/questions', 'data-k': 'home:questions' }, [
-    h('span', { class: 'title' }, ['Open questions']), h('span', { class: 'badge ' + (open.length ? 'warn' : '') }, [String(open.length)]),
-    h('span', { class: 'meta' }, [oldest ? ['oldest waiting ', when(oldest.ts)] : 'Nothing is waiting for you.']),
-    h('span', { class: 'chips' }, Object.keys(byRepo).sort().map(r => chip(r + ' ' + byRepo[r], 'open')))]));
   repoNames().forEach(repo => {
     const rs = S.runs.filter(r => r.repo === repo); const np = rs.filter(inProgress).length, ns = rs.filter(notStarted).length, nd = rs.filter(isDone).length;
     const nq = byRepo[repo] || 0; const st = newestStub(repo); const cs = [];
     if (st) cs.push(chip('stub ' + st.state, st.state)); if (nq) cs.push(chip(nq + ' open question' + (nq > 1 ? 's' : ''), 'open'));
     cards.push(h('a', { class: 'card', href: hrefRepo(repo), 'data-k': 'home:' + repo }, [
-      h('span', { class: 'title' }, [repo]), h('span', { class: 'badge ' + (np ? 'info' : '') }, [String(np)]),
+      h('span', { class: 'title' }, [rlabel(repo)]), h('span', { class: 'badge ' + (np ? 'info' : '') }, [String(np)]),
       h('span', { class: 'meta' }, [np + ' in progress · ' + ns + ' not started · ' + nd + ' done']), h('span', { class: 'chips' }, cs)]));
   });
-  return h('div', {}, [h('h1', {}, ['Pipeline']), h('p', { class: 'lead' }, ['Pick a repo to see what is running, what is next and what is done.']), h('div', { class: 'grid' }, cards)]);
+  return h('div', {}, [h('h1', {}, ['Pipeline']), h('p', { class: 'lead' }, ['Pick a repo to see what is running, what is next and what is done.']), h('div', { class: 'grid' }, cards),
+    section('Open questions', open.length, queueView(''), 'queue')]);
 }
 function questionsView() {
-  const open = allOpen(); const hq = hashQ(); const tq = hq && S.q.find(q => q.id === hq && q.state === 'answered');
-  const kids = [h('h1', {}, ['Open questions']), h('p', { class: 'lead' }, ['Every question waiting for you, across repos. Answer here or in Slack; the first answer is final.'])];
+  const hq = hashQ(); const tq = hq && S.q.find(q => q.id === hq && q.state === 'answered');
+  const kids = [h('h1', {}, ['Open questions']), h('p', { class: 'lead' }, ['Every question waiting for you, across repos, oldest first. Answer here or in Slack; the first answer is final.'])];
   if (tq) kids.push(section('Thread', null, qCard(tq, { thread: true, hit: hq }), 'thread'));
-  kids.push(open.length ? h('div', {}, open.map(q => qCard(q, { thread: true, hit: hq }))) : h('div', { class: 'empty' }, ['No open questions.']));
+  kids.push(queueView(hq));
   return h('div', {}, kids);
 }
 function latestDoing(r) { const u = r.updates.find(x => !x.auto) || r.updates[0]; return u ? u.text : (r.lastActivity || ''); }
@@ -297,7 +299,7 @@ function repoView(repo) {
   const prog = rs.filter(inProgress).sort((a, b) => ((b.updates[0] || {}).ts || b.updated || '').localeCompare((a.updates[0] || {}).ts || a.updated || ''));
   const rr = S.stubs.repos.find(x => x.repo === repo); const stubs = rr ? rr.stubs : []; const os = openStubs(repo);
   const ow = (S.stubs.openWork || []).find(o => o.repo === repo); const oq = S.q.filter(q => q.state === 'open' && qRepo(q) === repo).sort((a, b) => a.ts.localeCompare(b.ts));
-  const kids = [h('h1', {}, [repo]), h('p', { class: 'lead' }, [prog.length + ' running · ' + oq.length + ' open question' + (oq.length === 1 ? '' : 's') + ' · ' + os.length + ' open stub' + (os.length === 1 ? '' : 's')])];
+  const kids = [h('h1', {}, [rlabel(repo)]), h('p', { class: 'lead' }, [prog.length + ' running · ' + oq.length + ' open question' + (oq.length === 1 ? '' : 's') + ' · ' + os.length + ' open stub' + (os.length === 1 ? '' : 's')])];
   if (oq.length) kids.push(section('Waiting on you', oq.length, h('div', {}, oq.map(q => qCard(q, { thread: true }))), 'oq'));
   kids.push(section(os.length > 1 ? 'Open stubs' : 'This week’s stub', null, os.length ? h('div', { class: 'strip' }, os.map(s => stubStrip(repo, s))) : h('div', { class: 'empty' }, ['No open stub for this repo.']), 'week'));
   if (prog.length) kids.push(section('Running', prog.length, h('div', { class: 'strip' }, prog.map(liveCard)), 'prog'));
@@ -318,8 +320,8 @@ function header(r, mode) {
   return h('div', { class: 'panel' }, [h('h1', { style: 'margin-top:0' }, [r.id + ' · ' + r.title]), r.summary && mode === 'run' ? h('p', { class: 'sum' }, [r.summary]) : null,
     h('div', { class: 'chips' }, cs), h('div', { class: 'row' }, controls(r, true).concat(acts))]);
 }
-const ICON = { start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', reply: '↩', routine: '·', info: '·', entry: '§' };
-const KLABEL = { start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };
+const ICON = { start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', spawn: '⎇', reply: '↩', routine: '·', info: '·', entry: '§' };
+const KLABEL = { start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', spawn: 'agent', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };
 function dur(ms) { const m = Math.round(ms / 60000); if (m < 1) return '<1 min'; if (m < 60) return m + ' min'; const hh = Math.floor(m / 60); if (hh < 24) return hh + ' h ' + (m % 60 ? (m % 60) + ' min' : ''); return Math.floor(hh / 24) + ' d ' + (hh % 24) + ' h'; }
 const icon = (k) => h('span', { class: 'ic' }, [ICON[k] || '•']);
 function tlEntry(e) {
@@ -345,6 +347,7 @@ function tlItem(it) {
     if (!e.text) return h('li', { class: cls, 'data-k': dk }, [head, h('div', { class: 'tx' }, [e.label])]);
     return h('li', { class: cls, 'data-k': dk }, [head, h('details', { 'data-k': 'd:' + e.ts + e.label }, [h('summary', {}, [e.label]), h('div', { class: 'tx' }, [e.text])])]);
   }
+  if (e.event === 'spawn') return h('li', { class: cls, 'data-k': dk }, [h('div', { class: 'hd' }, [icon(k), h('span', { class: 'kind' }, ['agent']), chip(e.status || 'unknown'), e.durationMs !== undefined ? h('span', { class: 'chip' }, [dur(e.durationMs)]) : null, when(e.ts)]), h('div', { class: 'tx' }, [e.text.split('\n')[0]])]);
   return h('li', { class: cls, 'data-k': dk }, [h('div', { class: 'hd' }, [icon(k), h('span', { class: 'kind' }, [KLABEL[k] || e.type]), e.stage && e.type === 'stage' ? h('span', {}, [e.stage]) : null, when(e.ts)]), h('div', { class: 'tx' }, [e.text])]);
 }
 function itemLi(it, gk) {
@@ -359,9 +362,9 @@ function phaseGroup(g, key) {
   const gk = key + g.label;
   return h('details', { class: 'ph' + (g.current ? ' cur' : ''), 'data-k': 'ph:' + gk, 'data-cur': g.current ? '1' : '', open: g.current }, [head, h('ol', { class: 'tl' }, g.items.map(it => itemLi(it, gk)))]);
 }
-function groupsView(d, key, emptyText) {
-  if (d.empty || !d.groups || !d.groups.length) return h('div', { class: 'empty', 'data-k': 'empty' }, [emptyText]);
-  return h('div', {}, d.groups.map(g => phaseGroup(g, key)));
+function groupsView(gs, key, emptyText) {
+  if (!gs || !gs.length || gs.every(g => !g.items.length && !g.label)) return h('div', { class: 'empty', 'data-k': 'empty' }, [emptyText]);
+  return h('div', {}, gs.map(g => phaseGroup(g, key)));
 }
 function stepper(n, names) {
   const out = []; for (let i = 0; i <= 9; i++) out.push(h('span', { class: 'st' + (n === i ? ' cur' : n !== null && i < n ? ' done' : ''), title: 'Phase ' + i + (names && names[String(i)] ? ' — ' + names[String(i)] : '') }, [n === i ? 'Phase ' + i : String(i)]));
@@ -393,10 +396,11 @@ function itemView(repo, id) {
   const kids = [header(r, mode)];
   if (mode === 'run') {
     const key = repo + '/' + id; const tab = S.tab[key] || 'timeline';
-    kids.push(tabs(key, [['timeline', d && d.planning ? 'Planning' : 'Timeline'], ['log', 'Build log' + (d && d.log ? ' (' + d.log.length + ')' : '')]]));
+    kids.push(tabs(key, [['timeline', d && d.planning ? 'Planning' : 'Timeline'], ['activity', 'Activity'], ['log', 'Build log' + (d && d.log ? ' (' + d.log.length + ')' : '')]]));
     if (!d || !d.groups) kids.push(h('div', { class: 'empty' }, ['Loading…']));
     else if (tab === 'log') kids.push(d.log.length ? h('ol', { class: 'tl', 'data-k': 'log' }, d.log.slice().reverse().map((l, i) => h('li', { class: 'log', 'data-k': 'l:' + i + l.slice(0, 30) }, [h('div', { class: 'tx' }, [l])]))) : h('div', { class: 'empty' }, ['The dossier has no build log yet.']));
-    else { kids.push(nowView(d, r.runner, true)); kids.push(groupsView(d, key, 'No updates yet — the agent posts here as the run progresses')); }
+    else if (tab === 'activity') kids.push(groupsView(d.activity, key + '#a', 'No automatic activity yet'));
+    else { kids.push(nowView(d, r.runner, true)); kids.push(groupsView(d.groups, key, 'No updates yet — the agent posts here as the run progresses')); }
   } else {
     const html = d && d.html ? d.html : '';
     kids.push(h('div', { class: 'panel md', 'data-raw': '1', 'data-sig': html.length + ':' + html.slice(0, 40) + html.slice(-40), 'data-html': html }, []));
@@ -413,10 +417,11 @@ function stubView(repo, branch) {
   const impl = s.dossiers.length ? h('div', { class: 'mini' }, s.dossiers.map(x => h('div', { class: 'card', 'data-k': 'i:' + x.id }, [
     h('a', { class: 'stretch title', href: hrefItem(x.repo || repo, x.id) }, [h('span', { class: 'id' }, [x.id + ' ']), x.title]), h('div', { class: 'chips' }, [chip(x.status || '?')])]))) : h('div', { class: 'empty' }, ['No dossier is implemented on this stub yet.']);
   const key = repo + '/' + branch; const tab = S.tab[key] || 'timeline'; const body = [];
-  body.push(tabs(key, [['timeline', 'Timeline'], ['record', 'Record']]));
+  body.push(tabs(key, [['timeline', 'Timeline'], ['activity', 'Activity'], ['record', 'Record']]));
   if (!d || !d.groups) body.push(h('div', { class: 'empty' }, ['Loading…']));
   else if (tab === 'record') body.push(d.record.length ? h('ol', { class: 'tl', 'data-k': 'rec' }, d.record.slice().reverse().map(tlEntry)) : h('div', { class: 'empty' }, [d.hasRecord ? 'The record file has no sections.' : 'No record file for this stub.']));
-  else { body.push(nowView(d, null, false)); body.push(groupsView(d, key, 'No updates yet — the agent posts here as the stub progresses')); }
+  else if (tab === 'activity') body.push(groupsView(d.activity, key + '#a', 'No automatic activity yet'));
+  else { body.push(nowView(d, null, false)); body.push(groupsView(d.groups, key, 'No updates yet — the agent posts here as the stub progresses')); }
   return h('div', {}, [h('div', { class: 'panel' }, [h('h1', { class: 'mono', style: 'margin-top:0' }, [branch]), h('div', { class: 'chips' }, cs), h('div', { class: 'row small mut' }, [s.refAge ? when(s.refAge, 'ref updated ') : null]),
     h('h2', {}, ['Implemented dossiers', h('span', { class: 'n' }, [String(s.dossiers.length)])]), impl])].concat(body));
 }
@@ -426,7 +431,7 @@ function crumbs() {
   const out = []; const add = (t, href) => { if (out.length) out.push(h('span', {}, ['›'])); out.push(href ? h('a', { href }, [t]) : h('span', { class: 'cur' }, [t])); };
   add('Home', R.kind === 'home' ? null : '/');
   if (R.kind === 'questions') add('Open questions');
-  if (R.repo) add(R.repo, R.kind === 'repo' ? null : hrefRepo(R.repo));
+  if (R.repo) add(rlabel(R.repo), R.kind === 'repo' ? null : hrefRepo(R.repo));
   if (R.kind === 'item') add(R.id, R.forceDossier ? hrefItem(R.repo, R.id) : null);
   if (R.kind === 'item' && R.forceDossier) add('Dossier');
   if (R.kind === 'stub') add(R.branch);

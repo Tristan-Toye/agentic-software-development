@@ -101,8 +101,8 @@ It prints at most 40 lines.
 - **Reminder:** an open question whose last line is an agent line is notified
   again 30 min after that line, then 1 h later, then every 2 h. A new agent
   line restarts the schedule; a server restart sends no backlog.
-- **Page** `GET /`: a dashboard (see Dashboard): open questions first, then
-  running dossiers, this week's stub, stubs and open work.
+- **Page** `GET /`: a dashboard (see Dashboard): the repo cards, then the queue of
+  open questions, then running dossiers, this week's stub, stubs and open work.
   - Each question shows its thread, the option buttons (an answer, the
   recommendation highlighted), a text box with **Ask follow-up** and **Answer**.
   - It refreshes every 5 s, patching the DOM so a half-written text box and
@@ -167,10 +167,20 @@ one card-based single-page app with deep links.
   - open work: `scripts/generate_open_work.py` (see the code), served at
     `/open-work/<repo>`.
 - **Pages (all deep links):**
-  - `/` Home: an **Open questions** card (count, oldest waiting) and one card
-    per repo (in progress / not started / done, open questions, newest stub
-    state); header with Slack status and the last update;
-  - `GET /questions`: every open question with options and consequences, the
+  - `/` Home: one card per repo (in progress / not started / done, open
+    questions, newest stub state), and directly under them the **queue of
+    open questions** across all repos, oldest waiting first. Each is a compact
+    card: repo and dossier chips (the dossier chip links to the dossier), the
+    question, how long it has waited, what it blocks, and the answer controls
+    inline (options with consequences, the recommendation highlighted, the
+    follow-up box). With none it shows one muted line "No open questions."
+    There is no Open questions card. Header with Slack status and the last
+    update;
+  - **Repo label:** a root that is not a git checkout (it only holds
+    `.discovery/dossiers`, like `~/Documents/Twipe/repos`) is labelled by its
+    path relative to the home directory ("Twipe/repos") wherever a repo name
+    is shown. The basename stays the identity in routes and keys;
+  - `GET /questions`: the same queue at full width, every open question with options and consequences, the
     recommendation highlighted, thread, follow-up and answer, each linking to
     its dossier (`GET /questions#q=<id>` scrolls to one; old `/#<id>` links
     redirect);
@@ -190,29 +200,42 @@ one card-based single-page app with deep links.
     the **run view**. Both headers carry **Start** (ready, every `blocked_by`
     done; else "blocked by ..."), **Resume** (runner stopped or failed, not
     done) and **Stop** (running or waiting) with the two-step confirm.
-    `/repo/<repo>/<ID>/dossier` forces the dossier. The run view has two tabs:
+    `/repo/<repo>/<ID>/dossier` forces the dossier. The run view has three
+    views of one run (tabs; **Timeline** opens by default):
     - **Timeline** (default): a **Now** panel (**Waiting on you** first, with
       the open questions and their answer controls; the phase stepper 0-9 with
       the current phase highlighted and named; time in this phase; the newest
-      meaningful update; runner state), then the updates grouped by phase,
+      meaningful update; runner state), then the entries grouped by phase,
       newest phase first. The current phase is expanded; a finished phase is
       one line (name, duration, first line of its checkpoint summary, "2
-      questions - 14 updates") that expands. Key events (stage done, question
-      asked or answered, suite green or red, gates, PR opened or merged,
-      workflow started, failed, waiting, done) carry an icon and colour; `auto`
-      routine lines are de-emphasised and runs of two or more collapse into
-      "+N routine updates"; newest on top, relative time with the absolute time
-      on hover. A question and its thread belong to the phase of the question's
-      first message. It shows only the updates store and the questions and
-      never the build log: with neither it says "No updates yet";
-    - **Build log**: the dossier's `## Build log` lines, apart from the
-      timeline. A `planned` dossier whose updates file has lines labels the
-      timeline "Planning";
+      questions - 14 updates") that expands. It shows the agent's explicit
+      updates (`ask_owner.py note`, an `update` without `auto`), the questions
+      with thread and answer (answer controls on open ones), the runner's
+      lines, the stage lines, and only these automatic lines: `event` `suite`,
+      `gates`, `pr`, `workflow` and failures, and **agent spawns**. A spawn is
+      one row, "<agent type>: <description>" (never the prompt), with a status
+      chip `running`, `done`, `gap` or `contract-change`: the `spawn` line and
+      the later `spawn-done` line of the same `agent_id` merge into it (status
+      from the done line, the duration when both timestamps exist; no
+      `agent_id` or no done line keeps the spawn's own status). The `log`
+      copies and `other` lines are left out. Nothing collapses here. Lines of
+      an older file without an `event` are classified by text prefix (`log:`,
+      `suite:`, `gates:`, `PR `, `workflow`, `spawned ` = a spawn of unknown
+      status; else `other`). Newest on top, relative time with the absolute
+      time on hover. A question and its thread belong to the phase of the
+      question's first message. It never shows the build log: with nothing to
+      show it says "No updates yet";
+    - **Activity**: every automatic line in time order, raw, including the
+      `log` copies, `other` and unmerged spawn and spawn-done lines, under the
+      same phase grouping. Runs of two or more routine lines collapse into
+      "+N routine updates" (this is the only place that collapse applies);
+    - **Build log**: the dossier's `## Build log` lines. A `planned` dossier
+      whose updates file has lines labels the timeline "Planning";
   - `/repo/<repo>/stub/<branch>`: header (cut, state, step, PR + CI,
-    implemented dossiers as cards) with the same two-tab layout: **Timeline**
-    (Now panel and updates and questions grouped by the `## Step N` headings
-    of the record file `stub-*.md`, under key `<repo>.<branch with / as ->`)
-    and **Record** (each `##`/`###` heading of the record file as an entry,
+    implemented dossiers as cards) with the same three-way split: **Timeline**
+    (Now panel and the filtered updates and questions grouped by the `## Step
+    N` headings of the record file `stub-*.md`, under key `<repo>.<branch with
+    / as ->`), **Activity** (every automatic line) and **Record** (each `##`/`###` heading of the record file as an entry,
     dated by `(YYYY-MM-DD)` in it else by position).
   - An id is unique only within a repo: dossiers are picked per main checkout,
     and every lookup (runs, questions, stubs) is scoped by repo.

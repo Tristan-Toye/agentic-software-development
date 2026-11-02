@@ -4,14 +4,14 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Question } from "./store.ts"
 import { emitChange } from "./events.ts"
-import { answeredBy, baseName, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, questionInRepo, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
+import { answeredBy, baseName, repoLabel, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, questionInRepo, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
 
 export type StubDossier = { id: string; title: string; status: string; repo: string; via: "merged"; answered: QA[] }
 export type Stub = {
   branch: string; cut: string; state: "accepting" | "integrating" | "merged"; stage: string
   refAge: string; pr: Pr | null; dossiers: StubDossier[]
 }
-export type RepoStubs = { repo: string; main: string; stubs: Stub[]; open: string[] }
+export type RepoStubs = { repo: string; label: string; main: string; stubs: Stub[]; open: string[] }
 /** The stubs that are not merged (accepting or integrating), newest first. */
 export function openStubs(stubs: Stub[]): Stub[] {
   return stubs.filter((s) => s.state !== "merged").sort((a, b) => b.cut.localeCompare(a.cut) || b.refAge.localeCompare(a.refAge) || b.branch.localeCompare(a.branch))
@@ -151,7 +151,7 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
         refAge: date, pr, dossiers,
       })
     }
-    if (stubs.length) { const sorted = stubs.sort((a, b) => b.cut.localeCompare(a.cut) || b.branch.localeCompare(a.branch)); repos.push({ repo: baseName(main), main, stubs: sorted, open: openStubs(sorted).map((s) => s.branch) }) }
+    if (stubs.length) { const sorted = stubs.sort((a, b) => b.cut.localeCompare(a.cut) || b.branch.localeCompare(a.branch)); repos.push({ repo: baseName(main), label: repoLabel(main), main, stubs: sorted, open: openStubs(sorted).map((s) => s.branch) }) }
   }
   repos.sort((a, b) => a.repo.localeCompare(b.repo))
   return { scannedAt: new Date(now).toISOString(), repos, openWork: [] }
