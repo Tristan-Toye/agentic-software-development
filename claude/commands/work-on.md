@@ -372,6 +372,14 @@ between this list and a phase is a defect in this list.
   the change as an instruction over editing its file yourself.
 - **You detect review conflicts; the user decides them.** You are the only party
   who sees every lens.
+- **A question only the owner can settle goes through `ask_owner.py`.** Where
+  this file says to ask the user or stop for a ruling, run
+  `scripts/ask_owner.py ask` instead, as `references/owner-questions.md`
+  ("Asking, in a run") says: every option with its consequence, your
+  recommendation, and what it blocks. Keep working on what is not blocked.
+  When nothing else can proceed, run `ask_owner.py wait <id>` as a background
+  command under Claude Code and end the turn. Log `QUESTION:` and then
+  `OWNER-RULING (<date>):` in `## Build log`. Never pick an option yourself.
 - **ADRs are extracted, not generated.** Zero is a valid answer.
 - **A contract failure teaches something an ADR cannot hold.** Row-3
   arbitrations and `GAP:` returns are evidence about how to write contracts, not
