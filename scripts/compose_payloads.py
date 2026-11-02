@@ -60,10 +60,26 @@ given with --set, same as SHARED_IDIOM / DELIVERY_CHANGE for that kind.
         [--set FIELD=VALUE ...] [--plugin-root DIR] [--manifest FILE] [--force]
         [--failures-from LOG] [--excerpt FILE:A-B ... --excerpt-field FIELD]
         [--hook-outputs STEP:GLOB ...] [--no-stub-hints]
+    compose_payloads.py --kind implementer --dossier LIVE_DOSSIER --root X --host claude \\
+        --crs DOC[,DOC...] --out WAVE_ARGS.json [--assign ID=PKG ...] [--base SHA] \\
+        [--test-command CMD] [--hooks TEXT]
     compose_payloads.py --emit-prompt PAYLOAD
     compose_payloads.py --refresh-contract PAYLOAD [PAYLOAD ...] --root X \\
         --contract-paths src/flush.py
     compose_payloads.py --selftest
+
+`--crs DOC[,DOC...]` (implementer) is the Phase 7 fix round in one call: DOC are the
+round's kept change-request documents (check_crs.py's `--drop ... --out` form). Each
+section's Location paths are matched to the `## Work packages` row that owns them
+(a path equal to an owned entry, under an owned directory, or matching an owned
+glob), one linted `MODE: fix` payload per owning package is written beside `--out`
+(`fix-<ID>-<package>.md`; its CRS is the sections routed to it, byte for byte, under
+each document's own title), and `--out` receives the `phase4-wave` args array
+(`base` is `--base`, default `git rev-parse HEAD` in X). A section whose Location no
+package owns, or two packages own, is printed `UNROUTED: <id> <path> — <why>` and
+nothing is written: the orchestrator rules and re-runs with `--assign ID=PKG`
+(repeatable; the id as printed — `<document stem>/CR-n` when several documents).
+Exit 0 written and every payload linted clean; 1 unrouted, refused or a lint failure.
 
 `--refresh-contract` re-reads the contract files and rewrites the pasted
 CONTRACT block and, where the kind has one, CONTRACT_HASH in each named payload
@@ -121,7 +137,10 @@ No third-party imports: this runs wherever python3 does.
 from __future__ import annotations
 
 import argparse
+import fnmatch
+import hashlib
 import importlib.util
+import json
 import os
 import re
 import shlex
@@ -143,6 +162,7 @@ def _load(name: str):
 
 cp = _load("check_payload")   # FIELDS, CONDITIONAL, GROUPS — the field tables
 de = _load("dossier_edit")    # section(), split_front_matter(), KEY_RE, Refused
+cc = _load("check_crs")      # sections(), fields(): the change-request document reader
 pwh = _load("payload_hash")   # the one CONTRACT_HASH recipe, shared with verify_return.py
 
 MARKER = "# compose_payloads.py: generated payload — re-run with --force to overwrite by hand"
@@ -1282,6 +1302,147 @@ def append_manifest(path: str, line: str) -> None:
         fh.write(line + "\n")
 
 
+def _owns(entry: str, path: str) -> bool:
+    entry = entry.strip().strip("`")
+    if not entry:
+        return False
+    entry = entry[2:] if entry.startswith("./") else entry
+    if any(ch in entry for ch in "*?["):
+        return fnmatch.fnmatchcase(path, entry)
+    return path == entry or path.startswith(entry.rstrip("/") + "/")
+
+
+def route_crs(docs: list[tuple[str, str]], packages: list[list[str]], root: str,
+              assign: dict[str, str]) -> tuple[dict[str, list[tuple[str, str]]], list[str]]:
+    """Map every CR / follow-up / DEFECT section of DOCS [(stem, text)] to the one package
+    owning its Location paths. Returns ({package: [(stem, text slice)]}, UNROUTED lines).
+    A section with no Location, a path no package owns, or paths two packages own is
+    unrouted, unless --assign names its package; nothing is guessed."""
+    routed: dict[str, list[tuple[str, str]]] = {}
+    unrouted: list[str] = []
+    names = {c[0].split()[0]: c[0] for c in packages}
+    for key, pkg in assign.items():
+        if pkg not in names:
+            raise Refusal("--assign %s=%s: no such package (rows: %s)" % (key, pkg, ", ".join(sorted(names))))
+    used: set[str] = set()
+    for stem, text in docs:
+        for sid, start, end in cc.sections(text):
+            body = text[start:end]
+            key = sid if len(docs) == 1 else "%s/%s" % (stem, sid)
+            if key in assign:
+                used.add(key)
+                routed.setdefault(names[assign[key]], []).append((stem, body))
+                continue
+            loc = cc.fields(body).get("Location", "")
+            paths = []
+            for raw in re.findall(r"([^\s,;`()\[\]]+):\d+", loc):
+                rel = os.path.relpath(raw, root) if os.path.isabs(raw) else raw
+                paths.append(rel[2:] if rel.startswith("./") else rel)
+            shown = paths[0] if paths else (loc or "-")
+            if not paths:
+                unrouted.append("UNROUTED: %s %s — no path:line in its Location" % (key, shown))
+                continue
+            owners: set[str] = set()
+            for path in paths:
+                hit = {c[0].split()[0] for c in packages
+                       if any(_owns(e, path) for e in c[1].split(","))}
+                if not hit:
+                    unrouted.append("UNROUTED: %s %s — no package owns it" % (key, path))
+                    owners = set()
+                    break
+                owners |= hit
+            else:
+                if len(owners) == 1:
+                    routed.setdefault(names[next(iter(owners))], []).append((stem, body))
+                else:
+                    unrouted.append("UNROUTED: %s %s — owned by %s" % (key, shown, " and ".join(sorted(owners))))
+    unknown = sorted(set(assign) - used)
+    if unknown:
+        raise Refusal("--assign names no section: %s" % ", ".join(unknown))
+    return routed, unrouted
+
+
+def route_main(args: argparse.Namespace) -> int:
+    """`--crs`: route, compose one fix payload per package, lint, write the wave args."""
+    import copy
+    try:
+        docs = []
+        for path in [p for p in args.crs.split(",") if p]:
+            docs.append((os.path.splitext(os.path.basename(path))[0], read_text(path)))
+        assign = {}
+        for pair in args.assign:
+            key, sep, pkg = pair.partition("=")
+            if not sep:
+                raise Refusal("--assign expects ID=PKG, got %r" % pair)
+            assign[key.strip()] = pkg.strip()
+        if args.kind != "implementer":
+            raise Refusal("--crs routes to implementer fix payloads; --kind implementer")
+        if args.package:
+            raise Refusal("--crs picks the package itself; drop --package")
+        if not docs:
+            raise Refusal("--crs names no document")
+        dossier_text = read_text(args.dossier)
+        fm = front_matter(dossier_text)
+        root = os.path.abspath(args.root)
+        routed, unrouted = route_crs(docs, work_packages(dossier_text), root, assign)
+        total = sum(len(v) for v in routed.values())
+        if unrouted:
+            print("\n".join(unrouted))
+            print("ROUTED: %d CR to %d package(s); UNROUTED: %d; nothing written — rule, then re-run with --assign ID=PKG"
+                  % (total, len(routed), len(unrouted)))
+            return 1
+        base = args.base
+        if not base:
+            proc = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, check=False)
+            base = proc.stdout.strip()
+            if proc.returncode or not base:
+                raise Refusal("no --base and `git rev-parse HEAD` failed in %s" % root)
+        outdir = os.path.dirname(os.path.abspath(args.out))
+        titles = {stem: text[:cc.sections(text)[0][1]] if cc.sections(text) else "" for stem, text in docs}
+        items, lines = [], []
+        for pkg in sorted(routed):
+            code = pkg.split()[0]
+            crs, seen = "", set()
+            for stem, body in routed[pkg]:
+                if stem not in seen:
+                    seen.add(stem)
+                    crs += titles[stem]
+                crs += body
+            ns = copy.copy(args)
+            ns.package = pkg
+            ns.out = os.path.join(outdir, "fix-%s-%s.md" % (fm.get("id", "run"), code))
+            ns.set = list(args.set) + ["MODE=fix", "CRS=" + crs]
+            ns.contract_paths = []
+            ns.excerpt, ns.failures_from = [], None
+            fields, _ = compose(ns)
+            for field in fields:
+                if field.name in ABS_LIST_FIELDS:
+                    absolutise_list_field(field, root)
+            stage_oversized(fields, ns.out, root)
+            write_payload(ns.out, fields, True, VERBATIM_FIELDS + ("CRS",))
+            rc, out = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"), ns.out,
+                            "--kind", "implementer", "--host", args.host, "--worktree", root])
+            if rc != 0:
+                print("LINT FAIL %s %s\n%s" % (code, ns.out, "\n".join(out.splitlines()[:6])))
+                return 1
+            with open(ns.out, "rb") as fh:
+                sha = hashlib.sha256(fh.read()).hexdigest()
+            owned = [e.strip() for e in find_package_row(dossier_text, pkg)[1].split(",") if e.strip()]
+            items.append({"agentType": "agentic-software-development:implementer", "label": "FIX-" + code,
+                          "payloadPath": ns.out, "payloadSha256": sha, "root": root,
+                          "branch": fm.get("branch", ""), "base": base, "owned": owned,
+                          "kind": "implementer", "pluginRoot": os.path.abspath(args.plugin_root)})
+            lines.append("%s %d CR -> %s sha %s" % (code, len(routed[pkg]), ns.out, sha[:12]))
+        with open(args.out, "w", encoding="utf-8") as fh:
+            json.dump(items, fh, indent=1)
+    except Refusal as err:
+        print("compose_payloads: REFUSED — %s" % err, file=sys.stderr)
+        return 1
+    print("\n".join(lines))
+    print("ROUTED: %d CR to %d payload(s), all linted clean; UNROUTED: 0; wave args: %s" % (total, len(items), args.out))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--kind", choices=sorted(COMPOSERS))
@@ -1312,6 +1473,11 @@ def main(argv: list[str]) -> int:
                         help="append this `### HEADING` subsection of the dossier's `## Contract` "
                              "to CONTRACT (a Terraform table, a state machine the stub files "
                              "cannot carry); repeatable")
+    parser.add_argument("--crs", metavar="DOC[,DOC...]",
+                        help="implementer: route these change-request documents to one fix payload per owning package; --out is the phase4-wave args file")
+    parser.add_argument("--assign", action="append", default=[], metavar="ID=PKG",
+                        help="--crs: the package the orchestrator ruled for an UNROUTED id; repeatable")
+    parser.add_argument("--base", metavar="SHA", help="--crs: the sha the fix round forks from (default HEAD of --root)")
     parser.add_argument("--no-stub-hints", action="store_true", help="leave the `# stub locations` aid out of OWNED_PATHS")
     parser.add_argument("--emit-prompt", metavar="PAYLOAD",
                         help="print PAYLOAD's bytes and its PAYLOAD_SHA256 line: the Claude Code spawn prompt")
@@ -1342,6 +1508,8 @@ def main(argv: list[str]) -> int:
     if missing_cli:
         parser.error("%s required unless --selftest" % ", ".join(missing_cli))
     args.contract_paths = [p for p in args.contract_paths.split(",") if p]
+    if args.crs:
+        return route_main(args)
 
     try:
         fields, _root = compose(args)
@@ -2119,6 +2287,56 @@ def selftest() -> int:
               os.path.isfile(manifest_path)
               and "kind=implementer" in read_text(manifest_path)
               and ("payload=%s" % impl_path) in read_text(manifest_path))
+
+
+        # --- --crs: route change requests to one fix payload per package ---
+        def cr_section(n: int, loc: str) -> str:
+            return ("## CR-%d: name the cause %d\n- Location: %s\n- Observed: o\n- Required: r\n"
+                    "- Behaviour held fixed: same variant\n- Rule: errors carry their cause\n"
+                    "- Severity: should-fix\n- Siblings: none (searched: src)\n\n" % (n, n, loc))
+        with open(os.path.join(root, "src", "reload.py"), "w", encoding="utf-8") as fh:
+            fh.write("def reload():\n    pass\n")
+        crs_doc = os.path.join(root, "arch.md")
+        crs_head = "# Change requests — architecture (round 1)\n\n"
+        sec1, sec2 = cr_section(1, "src/flush.py:10"), cr_section(2, "src/reload.py:5")
+        sec3, sec4 = cr_section(3, "src/other.py:1"), cr_section(4, "src/flush.py:1, src/reload.py:2")
+        with open(crs_doc, "w", encoding="utf-8") as fh:
+            fh.write(crs_head + sec1 + sec2 + sec3 + sec4)
+        wave_json = os.path.join(root, ".agent-staging", "fixwave", "wave.json")
+        route_base = ["--kind", "implementer", "--dossier", dossier_path, "--root", root, "--host", "opencode",
+                      "--plugin-root", plugin_root, "--hooks", "none", "--test-command", "pytest -q",
+                      "--base", "abc1234", "--crs", crs_doc, "--out", wave_json]
+        out_io, err_io = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out_io), contextlib.redirect_stderr(err_io):
+            rc = main(route_base)
+        shown = out_io.getvalue() + err_io.getvalue()
+        check("--crs prints unrouted lines for an unowned and a doubly owned Location, writes nothing",
+              rc == 1 and ("UNROUTED: CR-3 src/other.py — no package owns it" in shown)
+              and ("UNROUTED: CR-4 src/flush.py:1 — owned by P1 and P2" in shown or "UNROUTED: CR-4 src/flush.py — owned by P1 and P2" in shown)
+              and not os.path.exists(wave_json), shown)
+        out_io, err_io = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out_io), contextlib.redirect_stderr(err_io):
+            rc = main(route_base + ["--assign", "CR-3=P1", "--assign", "CR-4=P2"])
+        shown = out_io.getvalue() + err_io.getvalue()
+        check("--crs with rulings writes both payloads and the args, within 15 lines",
+              rc == 0 and os.path.isfile(wave_json) and len(shown.splitlines()) <= 15
+              and "ROUTED: 4 CR to 2 payload(s)" in shown, shown)
+        wave = json.load(open(wave_json, encoding="utf-8")) if rc == 0 else []
+        p1 = next((w for w in wave if w["label"] == "FIX-P1"), {})
+        p2 = next((w for w in wave if w["label"] == "FIX-P2"), {})
+        t1 = read_text(p1["payloadPath"]) if p1 else ""
+        t2 = read_text(p2["payloadPath"]) if p2 else ""
+        want1 = "\n".join("  " + l if l.strip() else "" for l in (crs_head + sec1 + sec3).rstrip("\n").split("\n"))
+        want2 = "\n".join("  " + l if l.strip() else "" for l in (crs_head + sec2 + sec4).rstrip("\n").split("\n"))
+        check("each payload's CRS is its sections byte for byte", want1 in t1 and want2 in t2 and "CR-2" not in t1 and "CR-1" not in t2, t1[:400])
+        check("the wave args carry hash, branch, base, owned, kind",
+              bool(p1) and p1["payloadSha256"] == hashlib.sha256(open(p1["payloadPath"], "rb").read()).hexdigest()
+              and p1["branch"] == "fix/PROJ-142-flush-coalescing" and p1["base"] == "abc1234"
+              and p1["owned"] == ["src/flush.py"] and p2.get("owned") == ["src/reload.py"]
+              and p1["kind"] == "implementer" and p1["root"] == root and p1["agentType"].endswith(":implementer"), str(p1))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = main(route_base + ["--assign", "CR-9=P1", "--assign", "CR-3=P1", "--assign", "CR-4=P2"])
+        check("--assign naming no section is refused", rc == 1)
 
     for item in failures:
         print("SELFTEST FAIL  %s" % item)

@@ -260,16 +260,21 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
   id scavenged from the workflow's transcript directory is refused all the
   same: a check round re-spawns them with the full payload, by the workflow
   again. A fix round after a contract change is a full re-spawn.
-- Spawn **one** `implementer` in `MODE: fix` with the merged change requests.
-  Under Claude Code, spawn it **by file through the workflow when the payload
-  is large**: compose and lint the fix final under `<X>/.agent-staging/payloads/`,
-  then call `phase4-wave` once with a single item — `payloadPath`,
-  `payloadSha256`, `root` X, `branch`/`base` at the fixed head, `owned` the fix
-  `OWNED_PATHS`, `kind: implementer`. The spawn guard checks the file before
-  the launch and `verify_return.py` checks the return, so a fix payload that
-  would paste at 76 KB never passes through the prompt at all. A small payload
-  pastes as always (`phase-4.md`, "the spawn prompt IS the payload"). It
-  works in `X` directly — the tests exist now, so blindness has done its job and
+- Spawn the `implementer` in `MODE: fix` with the merged change requests.
+  Under opencode that is **one** implementer, its payload composed and linted
+  as above. Under Claude Code the fix round is mechanical, never composed by
+  hand: `check_crs.py <document> --drop <ids> --out <fix doc>` per lens, then
+  `compose_payloads.py --kind implementer --dossier <live> --root <X> --host claude
+  --crs <fix doc>[,<fix doc>...] --out <X>/.agent-staging/payloads/fix-wave.json
+  --test-command <cmd> --hooks <text>` routes each CR to the work package owning
+  its `Location`, writes and lints one `MODE: fix` payload per package carrying
+  exactly its CRs, and writes the `phase4-wave` args. A CR no package owns, or
+  two own, prints `UNROUTED: <id> <path> — <why>` and nothing is written: rule
+  on those lines only, then re-run with `--assign <id>=<package>`. Then call
+  `phase4-wave` **once** with that JSON file's array as `args`. The spawn guard
+  checks every file before the launch and `verify_return.py` checks every return,
+  so a fix payload never passes through the prompt. A second fix round resumes
+  the same agents (above). Every fix implementer works in `X` directly — the tests exist now, so blindness has done its job and
   keeping them green is the point — **and alone**: never while a test author
   is editing uncommitted files in `X` (a CR routed to an author runs before
   or after the fix implementer, never beside it), and never over an
