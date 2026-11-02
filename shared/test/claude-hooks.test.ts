@@ -118,6 +118,26 @@ for (const bad of ["", "{", "[]", '{"session_id":"q"}']) {
   check(`post: broken input ${JSON.stringify(bad)} fails open`, r.code === 0 && r.out === "")
 }
 
+// Under the runner: a checkpoint call is a `stage` line in $ASD_RUNS_DIR/<ASD_RUN_KEY>.jsonl.
+{
+  const runs = join(tmp, "runs")
+  const runEnv = { ...env, ASD_RUN_KEY: "repo.W-014", ASD_RUNS_DIR: runs }
+  const runHookPost = (stdin: string, e: object) =>
+    Bun.spawnSync(["bun", "--no-install", join(root, "shared", "claude", "post-tool-use.ts")], { stdin: new TextEncoder().encode(stdin), env: e as any, stdout: "pipe", stderr: "pipe" })
+  const cp = post({ session_id: "s-run", transcript_path: plan, tool_name: NAV + "phase_checkpoint", tool_input: { phase: "Phase 4 - wave 1", summary: "wave 1 merged\nNEXT: Phase 5" } })
+  const p1 = runHookPost(cp, runEnv)
+  const file = join(runs, "repo.W-014.jsonl")
+  const rows = (() => { try { return readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l)) } catch { return [] } })()
+  check("run: checkpoint exits 0 and writes one stage line", p1.exitCode === 0 && rows.length === 1)
+  check("run: stage line fields", rows[0]?.kind === "stage" && rows[0].stage === "Phase 4 - wave 1" && rows[0].text === "wave 1 merged" && /^\d{4}-\d\d-\d\dT[\d:]+Z$/.test(rows[0].ts))
+  runHookPost(post({ session_id: "s-run", transcript_path: plan }), runEnv)
+  check("run: other tools write nothing", readFileSync(file, "utf8").trim().split("\n").length === 1)
+  runHookPost(cp, { ...env, ASD_RUNS_DIR: runs })
+  check("run: no ASD_RUN_KEY writes nothing", readFileSync(file, "utf8").trim().split("\n").length === 1)
+  const bad = runHookPost(cp, { ...runEnv, ASD_RUNS_DIR: join(file, "nope") })
+  check("run: a write error never fails the hook", bad.exitCode === 0 && bad.stdout.toString().trim() === "")
+}
+
 // Context pressure: past 75% of the session's autoCompactWindow, one checkpoint request per cycle.
 {
   const proj = join(tmp, "proj")
