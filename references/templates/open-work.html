@@ -390,6 +390,7 @@ for (const d of DATA.dossiers)
 const EMBED = document.documentElement.hasAttribute("data-embed");
 /* --link-base: a dossier reference navigates the top window to <base>/<ID> (the dashboard's dossier route). */
 const LINK_BASE = DATA.link_base || "";
+const TB = DATA.direction === "tb";   // top-to-bottom flows: ranks are rows
 const app = document.getElementById("app");
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let stagger = 0;
@@ -538,7 +539,8 @@ if (DATA.dossiers.length) {
   const toggle = Object.assign(el("input"), { type: "checkbox" });
   toggle.setAttribute("aria-controls", "dependency-flows");
   toggle.setAttribute("aria-describedby", "dependency-note");
-  try { toggle.checked = localStorage.getItem("open-work-simplify") === "true"; } catch (_) {}
+  toggle.checked = !!DATA.simplify_default;      // the remembered choice, when there is one, wins
+  try { const mem = localStorage.getItem("open-work-simplify"); if (mem === "true" || mem === "false") toggle.checked = mem === "true"; } catch (_) {}
   const label = el("label", "graph-toggle");
   label.append(toggle, "Simplify");
   h.append(label);
@@ -708,18 +710,25 @@ function depGraph(ids, edges, nodes) {
   const rowOf = {};
   order.forEach(col => col.forEach((id, i) => { rowOf[id] = i; }));
 
-  const PW = 168, PH = 48, GX = 74, GY = 20, PAD = 18;
+  const PW = 168, PH = 48, PAD = 18;
+  const GX = TB ? 16 : 74, GY = TB ? 36 : 20;
   const maxRows = Math.max(...order.map(c => c.length));
-  const width = PAD * 2 + order.length * PW + (order.length - 1) * GX;
-  const height = PAD * 2 + maxRows * PH + (maxRows - 1) * GY;
+  const width = TB ? PAD * 2 + maxRows * PW + (maxRows - 1) * GX : PAD * 2 + order.length * PW + (order.length - 1) * GX;
+  const height = TB ? PAD * 2 + order.length * PH + (order.length - 1) * GY : PAD * 2 + maxRows * PH + (maxRows - 1) * GY;
   const pos = {};
   order.forEach((col, li) => {
+    if (TB) {      // a rank is a row; its nodes spread horizontally, centred
+      const off = (maxRows - col.length) * (PW + GX) / 2;
+      col.forEach((id, i) => { pos[id] = [PAD + off + i * (PW + GX), PAD + li * (PH + GY)]; });
+      return;
+    }
     const x = PAD + li * (PW + GX);
     const off = (maxRows - col.length) * (PH + GY) / 2;
     col.forEach((id, i) => { pos[id] = [x, PAD + off + i * (PH + GY)]; });
   });
 
-  const svg = svgEl("svg", { class: "dg", width, height, viewBox: `0 0 ${width} ${height}`, role: "img" });
+  const svg = svgEl("svg", { class: "dg" + (TB ? " tb" : ""), width, height, viewBox: `0 0 ${width} ${height}`, role: "img" });
+  if (TB) svg.style.cssText = "max-width:100%;height:auto";
   svg.setAttribute("aria-label", "Dependency flow: " + edges.map(([a, b]) => `${nodes[a].label || a} before ${nodes[b].label || b}`).join(", "));
   const defs = svgEl("defs", {});
   const marker = svgEl("marker", { id: "dg-arrow", viewBox: "0 0 8 8", refX: 7, refY: 4,
@@ -732,6 +741,7 @@ function depGraph(ids, edges, nodes) {
   function anchor(id, out) {
     const [x, y] = pos[id];
     if (id in dummyLayer) return [x + PW / 2, y + PH / 2];
+    if (TB) return out ? [x + PW / 2, y + PH] : [x + PW / 2, y - 2];
     return out ? [x + PW, y + PH / 2] : [x - 2, y + PH / 2];
   }
 
@@ -742,9 +752,9 @@ function depGraph(ids, edges, nodes) {
     for (let i = 0; i < chain.length - 1; i++) {
       const [x1, y1] = anchor(chain[i], true);
       const [x2, y2] = anchor(chain[i + 1], false);
-      const mx = (x1 + x2) / 2;
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
       if (i === 0) d += `M ${x1} ${y1} `;
-      d += `C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2} `;
+      d += TB ? `C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2} ` : `C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2} `;
     }
     const p = svgEl("path", { class: "dg-edge", "marker-end": "url(#dg-arrow)", d: d.trim() });
     p.dataset.from = a; p.dataset.to = b;

@@ -19,7 +19,7 @@ header .brand{font-weight:700;font-size:1rem;color:var(--fg);text-decoration:non
 .pill{font-size:12px;color:var(--mut);display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--mut);flex:none}
 .dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}.dot.warn{background:var(--warn)}.dot.info{background:var(--acc)}
-main{max-width:1180px;margin:0 auto;padding:8px 20px 64px}
+main{max-width:1380px;margin:0 auto;padding:8px 20px 64px}
 h1{font-size:1.45rem;margin:20px 0 4px}h2{font-size:.78rem;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);margin:30px 0 12px;display:flex;align-items:center;gap:8px}
 h2 .n{background:var(--chip);border-radius:10px;padding:0 8px;font-size:12px;letter-spacing:0;color:var(--fg)}
 .lead{color:var(--mut);margin:0 0 6px;max-width:70ch}
@@ -109,6 +109,15 @@ ol.tl>li.k-pr::before,ol.tl>li.k-workflow::before,ol.tl>li.k-start::before{backg
 li.k-stage .ic,li.k-done .ic,li.k-answered .ic,li.k-suite-green .ic{color:var(--ok)}li.k-suite-red .ic,li.k-failed .ic,li.k-stopped .ic{color:var(--bad)}li.k-question .ic,li.k-waiting .ic,li.k-gate .ic{color:var(--warn)}li.k-pr .ic,li.k-workflow .ic,li.k-start .ic{color:var(--acc)}
 ol.tl>li.rt,ol.tl>li.more{font-size:12px;color:var(--mut)}ol.tl>li.rt .tx{font-weight:400}ol.tl>li.more::before{width:7px;height:7px;left:-27px;top:8px}
 li.more ol{list-style:none;margin:4px 0 0;padding-left:8px}li.more ol li{margin:2px 0}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:20px;align-items:start}.cols>.scol{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow:auto;order:2}.cols>.main-col{order:1;min-width:0}
+.scol h3{margin:14px 0 8px;font-size:.78rem;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}.scol>h3:first-child{margin-top:0}
+.scard{border:1px solid var(--bd);border-radius:12px;background:var(--card);box-shadow:var(--shadow);padding:12px 14px;margin:0 0 10px;display:flex;flex-direction:column;gap:5px;min-width:0}.scard .title{font-weight:600;color:var(--fg);text-decoration:none;overflow-wrap:anywhere;font-size:.92rem}.scard .title:hover{color:var(--acc)}
+ul.tree{list-style:none;margin:6px 0 0;padding:0 0 0 10px;border-left:2px solid var(--bd)}ul.tree>li{position:relative;margin:2px 0;padding-left:10px}ul.tree>li::before{content:"";position:absolute;left:-12px;top:50%;width:10px;border-top:2px solid var(--bd)}
+a.sub-item{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:3px 6px;border-radius:8px;color:var(--fg);text-decoration:none;font-size:12.5px;min-width:0}a.sub-item:hover{background:var(--accbg)}a.sub-item.done{color:var(--mut)}
+.sid{font-weight:600;white-space:nowrap}.sname{color:var(--mut);flex:1 1 100px;min-width:0;overflow-wrap:anywhere}.qb{background:var(--warnbg);color:var(--warn);border-radius:9px;padding:0 7px;font-size:11px;font-weight:700}
+.dot.live{animation:pulse 1.4s ease-in-out infinite}@keyframes pulse{50%{opacity:.35}}@media (prefers-reduced-motion:reduce){.dot.live{animation:none}}
+details.mstubs{margin-top:10px}details.mstubs>summary{font-size:.78rem;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}
+@media (max-width:1000px){.cols{grid-template-columns:minmax(0,1fr)}.cols>.scol{position:static;max-height:none;overflow:visible;order:1}.cols>.main-col{order:2}}
 @media (max-width:560px){header{padding:8px 16px}main{padding:4px 16px 56px}.msg{max-width:96%}.grid{grid-template-columns:1fr}}
 </style></head><body>
 <header><a class="brand" href="/">Pipeline</a><nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav><span class="pill" id="slack"></span><span class="pill" id="upd"></span></header>
@@ -227,14 +236,6 @@ function controls(r, big) {
 function card(href, title, parts) {
   return h('a', { class: 'card', href }, [h('span', { class: 'title' }, [title])].concat(parts));
 }
-function stubCard(repo, s, week) {
-  const kids = [];
-  kids.push(h('span', { class: 'badge info', title: s.dossiers.length + ' dossier(s) implemented' }, [String(s.dossiers.length)]));
-  kids.push(h('div', { class: 'meta' }, [['cut ' + s.cut, s.stage].filter(Boolean).join(' · ')]));
-  if (week) kids.push(h('div', { class: 'meta' }, [s.dossiers.length ? 'Implemented: ' + s.dossiers.map(d => d.id).join(', ') : 'No dossiers merged on it yet.']));
-  const cs = [chip(s.state)]; if (s.pr) cs.push(prChip(s.pr)); kids.push(h('div', { class: 'chips' }, cs));
-  return h('div', { class: 'card', 'data-k': 'stub:' + repo + '/' + s.branch }, [h('a', { class: 'stretch title mono', href: hrefStub(repo, s.branch) }, [s.branch])].concat(kids));
-}
 function section(title, n, content, key) {
   return h('section', { 'data-k': 'sec:' + key }, [h('h2', {}, [title, n === null ? null : h('span', { class: 'n' }, [String(n)])]), content]);
 }
@@ -269,23 +270,7 @@ function questionsView() {
 }
 function latestDoing(r) { const u = r.updates.find(x => !x.auto) || r.updates[0]; return u ? u.text : (r.lastActivity || ''); }
 function stageOf9(r) { return /^\d+$/.test(r.phase || '') ? 'Stage ' + r.phase + '/9' + (r.phaseName ? ' · ' + r.phaseName : '') : stageText(r); }
-function liveCard(r) {
-  const u = r.updates[0]; const cs = [];
-  if (r.runner) cs.push(chip('runner ' + r.runner.state, r.runner.state)); else cs.push(chip(r.status));
-  if (r.pr) cs.push(prChip(r.pr)); if (u) cs.push(when(u.ts));
-  const nq = openQs(r); const kids = [h('a', { class: 'stretch title', href: hrefItem(r.repo, r.id) }, [h('span', { class: 'id' }, [r.id + ' ']), r.title])];
-  if (nq.length) kids.push(h('a', { class: 'badge warn', href: '/questions#q=' + enc(nq[0].id), title: nq.length + ' open question(s)' }, [String(nq.length)]));
-  kids.push(h('div', { class: 'meta' }, [stageOf9(r)]), h('div', { class: 'meta' }, [latestDoing(r)]), h('div', { class: 'chips' }, cs));
-  kids.push.apply(kids, controls(r));
-  return h('div', { class: 'card', 'data-k': 'live:' + r.repo + '/' + r.id }, kids);
-}
 function openStubs(repo) { const rr = S.stubs.repos.find(x => x.repo === repo); if (!rr) return []; return (rr.open || []).map(b => rr.stubs.find(s => s.branch === b)).filter(Boolean); }
-function stubStrip(repo, s) {
-  const cs = [chip(s.state)]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
-  return h('div', { class: 'card', 'data-k': 'ostub:' + repo + '/' + s.branch }, [h('a', { class: 'stretch title mono', href: hrefStub(repo, s.branch) }, [s.branch]),
-    h('span', { class: 'badge info', title: s.dossiers.length + ' dossier(s) implemented' }, [String(s.dossiers.length)]),
-    h('div', { class: 'meta' }, ['cut ' + s.cut + (s.dossiers.length ? ' · ' + s.dossiers.map(d => d.id).join(', ') : ' · nothing merged yet')]), h('div', { class: 'chips' }, cs)]);
-}
 function fitFrame(f) {
   try {
     const d = f.contentDocument; if (!d || !d.documentElement) return;
@@ -294,17 +279,44 @@ function fitFrame(f) {
   } catch (e) { /* cross-origin or gone */ }
 }
 document.addEventListener('load', (e) => { const f = e.target; if (f && f.tagName === 'IFRAME' && f.classList.contains('report')) fitFrame(f); }, true);
-function repoView(repo) {
-  const rs = S.runs.filter(r => r.repo === repo);
-  const prog = rs.filter(inProgress).sort((a, b) => ((b.updates[0] || {}).ts || b.updated || '').localeCompare((a.updates[0] || {}).ts || a.updated || ''));
+const isLive = (r) => !!r && ((r.runner && (r.runner.state === 'running' || r.runner.state === 'waiting')) || (r.session && r.session.state === 'active'));
+function subItem(repo, id, noPr, done) {
+  const r = S.runs.find(x => x.repo === repo && x.id === id); const nq = r ? openQs(r) : [];
+  const kids = [h('span', { class: 'dot' + (!done && isLive(r) ? ' info live' : done ? ' ok' : '') }), h('span', { class: 'sid' }, [id]),
+    h('span', { class: 'sname' }, [done ? ((r && r.title) || '') : [r ? stageText(r) : '', r ? r.title : ''].filter(Boolean).join(' · ')])];
+  if (noPr) kids.push(chip('no PR yet', 'neutral'));
+  if (nq.length) kids.push(h('span', { class: 'qb', title: nq.length + ' open question(s)' }, ['? ' + nq.length]));
+  return h('li', { 'data-k': 'sub:' + repo + '/' + id }, [h('a', { class: 'sub-item' + (done ? ' done' : ''), href: hrefItem(repo, id) }, kids)]);
+}
+function stubTree(repo, s) {
+  const cs = [chip(s.state)]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
+  const mem = (s.members || []).map(m => subItem(repo, m.id, m.noPr, false));
+  const done = s.dossiers.map(d => subItem(repo, d.id, false, true));
+  return h('div', { class: 'scard', 'data-k': 'ostub:' + repo + '/' + s.branch }, [
+    h('a', { class: 'title mono', href: hrefStub(repo, s.branch) }, [s.branch]),
+    h('div', { class: 'meta' }, ['cut ' + s.cut]), h('div', { class: 'chips' }, cs),
+    mem.length || done.length ? h('ul', { class: 'tree' }, mem.concat(done)) : h('div', { class: 'meta' }, ['Nothing in progress or merged yet.'])]);
+}
+function sideColumn(repo) {
   const rr = S.stubs.repos.find(x => x.repo === repo); const stubs = rr ? rr.stubs : []; const os = openStubs(repo);
+  const placed = {}; stubs.forEach(s => (s.members || []).forEach(m => { placed[m.id] = 1; }));
+  const loose = S.runs.filter(r => r.repo === repo && r.running && !placed[r.id]);
+  const merged = stubs.filter(s => s.state === 'merged');
+  const kids = [];
+  if (loose.length) kids.push(h('div', { class: 'scol-sec', 'data-k': 'loose:' + repo }, [h('h3', {}, ['In progress']), h('ul', { class: 'tree' }, loose.map(r => subItem(repo, r.id, false, false)))]));
+  kids.push(h('h3', {}, ['Open stubs']));
+  kids.push.apply(kids, os.length ? os.map(s => stubTree(repo, s)) : [h('div', { class: 'empty' }, ['No open stub for this repo.'])]);
+  if (merged.length) kids.push(h('details', { class: 'mstubs', 'data-k': 'mstubs:' + repo }, [h('summary', {}, ['Merged stubs (' + merged.length + ')']),
+    h('ul', { class: 'tree' }, merged.map(s => h('li', {}, [h('a', { class: 'sub-item', href: hrefStub(repo, s.branch) }, [h('span', { class: 'sid mono' }, [s.branch]), h('span', { class: 'sname' }, [s.dossiers.length + ' dossier(s)'])])])))]));
+  return h('aside', { class: 'scol' }, kids);
+}
+function repoView(repo) {
+  const rs = S.runs.filter(r => r.repo === repo); const prog = rs.filter(inProgress); const os = openStubs(repo);
   const ow = (S.stubs.openWork || []).find(o => o.repo === repo); const oq = S.q.filter(q => q.state === 'open' && qRepo(q) === repo).sort((a, b) => a.ts.localeCompare(b.ts));
   const kids = [h('h1', {}, [rlabel(repo)]), h('p', { class: 'lead' }, [prog.length + ' running · ' + oq.length + ' open question' + (oq.length === 1 ? '' : 's') + ' · ' + os.length + ' open stub' + (os.length === 1 ? '' : 's')])];
   if (oq.length) kids.push(section('Waiting on you', oq.length, h('div', {}, oq.map(q => qCard(q, { thread: true }))), 'oq'));
-  kids.push(section(os.length > 1 ? 'Open stubs' : 'This week’s stub', null, os.length ? h('div', { class: 'strip' }, os.map(s => stubStrip(repo, s))) : h('div', { class: 'empty' }, ['No open stub for this repo.']), 'week'));
-  if (prog.length) kids.push(section('Running', prog.length, h('div', { class: 'strip' }, prog.map(liveCard)), 'prog'));
-  kids.push(section('Open work', null, ow ? h('iframe', { class: 'report', 'data-repo': repo, src: '/open-work/' + enc(repo) + '?v=' + enc(ow.updated), title: 'Open work', scrolling: 'no', style: S.frameH[repo] ? 'height:' + S.frameH[repo] + 'px' : null }) : h('div', { class: 'empty' }, ['The open-work report is not generated yet.']), 'report'));
-  kids.push(section('Stubs', stubs.length, grid(stubs.map(s => stubCard(repo, s, false)), 'No stubs.'), 'stubs'));
+  const frame = ow ? h('iframe', { class: 'report', 'data-repo': repo, src: '/open-work/' + enc(repo) + '?v=' + enc(ow.updated), title: 'Open work', scrolling: 'no', style: S.frameH[repo] ? 'height:' + S.frameH[repo] + 'px' : null }) : h('div', { class: 'empty' }, ['The open-work report is not generated yet.']);
+  kids.push(h('div', { class: 'cols', 'data-k': 'cols' }, [h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]), sideColumn(repo)]));
   return h('div', {}, kids);
 }
 function header(r, mode) {

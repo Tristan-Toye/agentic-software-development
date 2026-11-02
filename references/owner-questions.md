@@ -184,17 +184,33 @@ one card-based single-page app with deep links.
     recommendation highlighted, thread, follow-up and answer, each linking to
     its dossier (`GET /questions#q=<id>` scrolls to one; old `/#<id>` links
     redirect);
-  - `/repo/<repo>`: open-work plus additions, top to bottom: open questions
-    of the repo inline with answer controls (when any); **Open stubs** (every
-    stub that is not merged, newest first; "This week's stub" when there is
-    one): state, step, PR + CI; **Running** dossiers as small live cards
-    (stage n/9 + name, what it is doing now, runner state, Stop/Resume); the
-    **complete open-work report** full width in a same-origin iframe sized to
-    its content (no inner scrollbar; re-sized on load, on content change and
-    on report refresh), with its own graph, Simplify toggle and tables; then
-    the Stubs cards. The report is generated with `--embed --link-base
-    /repo/<repo>`, so a click on a dossier anywhere in it navigates the top
-    window to `/repo/<repo>/<ID>`. `/repo/<repo>/graph` redirects here;
+  - `/repo/<repo>`: two columns under the repo's **open questions** (inline
+    answer controls, shown only when any are open). **Left (wide):** the
+    complete open-work report in a same-origin iframe sized to its content (no
+    inner scrollbar; re-sized on load, on content change and on report
+    refresh). It is generated with `--embed --link-base /repo/<repo>
+    --direction tb --simplify-default`, so the dependency flows run top to
+    bottom (fits the column, no horizontal scroll), Simplify starts on (a
+    choice remembered in the browser still wins), and a click on a dossier
+    navigates the top window to `/repo/<repo>/<ID>`. **Right (360 px, sticky
+    while scrolling):** every open (not merged) stub, newest first, as a card:
+    branch, state chip, step, PR + CI dot; under it a tree of its dossiers,
+    first the in-progress ones (phase n · name, a live dot while a runner or
+    session is active, an open-question badge, a "no PR yet" chip where it
+    applies), then the done ones (merged on the stub). A sub-item opens that
+    dossier's view, the card opens the stub view. Running dossiers that belong
+    to no stub form a small "In progress" list above the stubs; a collapsed
+    "Merged stubs" list closes the column. Under 1000 px the right column moves
+    above the report (single column). `/repo/<repo>/graph` redirects here.
+    **Which in-progress dossiers sit under a stub** (`stubMembers`): one whose
+    open PR targets that stub branch (`gh pr list --base <branch> --state open
+    --json number,headRefName`, cached 2 min, 10 s timeout; matched by the
+    dossier's `pr:` number or by its id in the head branch, repo-scoped;
+    `plan/...` heads never count); plus a dossier in `building`/`review` (or
+    with a live runner) that has no PR yet, under the **accepting** stub (the
+    newest open stub with no PR into development, else the newest open stub).
+    Ready and planned dossiers never appear under a stub. The data is
+    `members` on each stub in `/api/stubs`;
   - `/repo/<repo>/<ID>`: not started or done shows the full dossier with its
     answered questions; in progress, or with any run updates (not done), shows
     the **run view**. Both headers carry **Start** (ready, every `blocked_by`

@@ -3,18 +3,54 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Question } from "./store.ts"
+import { readRunner, runnerActive } from "./runstore.ts"
 import { emitChange } from "./events.ts"
 import { answeredBy, baseName, repoLabel, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, questionInRepo, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
 
 export type StubDossier = { id: string; title: string; status: string; repo: string; via: "merged"; answered: QA[] }
+/** An in-progress dossier shown under a stub; `noPr` = no PR yet, parked on the accepting stub. */
+export type StubMember = { id: string; noPr: boolean }
 export type Stub = {
   branch: string; cut: string; state: "accepting" | "integrating" | "merged"; stage: string
-  refAge: string; pr: Pr | null; dossiers: StubDossier[]
+  refAge: string; pr: Pr | null; dossiers: StubDossier[]; members: StubMember[]
 }
 export type RepoStubs = { repo: string; label: string; main: string; stubs: Stub[]; open: string[] }
 /** The stubs that are not merged (accepting or integrating), newest first. */
 export function openStubs(stubs: Stub[]): Stub[] {
   return stubs.filter((s) => s.state !== "merged").sort((a, b) => b.cut.localeCompare(a.cut) || b.refAge.localeCompare(a.refAge) || b.branch.localeCompare(a.branch))
+}
+/** An open PR whose base is a stub branch. */
+export type BasePr = { number: number; headRefName: string }
+/**
+ * Which in-progress dossiers belong under which open stub. A dossier belongs to a stub when an open PR into
+ * that stub is its own (the `pr:` number, or its id in the head branch); `plan/...` heads never count. A dossier
+ * in building/review (or with a live runner) that has no `pr:` and no PR into any stub goes under the accepting
+ * stub (the newest open stub with no PR into development; else the newest open stub) with `noPr`. Ready,
+ * planned, done and dropped dossiers never appear. Returns branch -> members; stubs with none are omitted.
+ */
+export function stubMembers(
+  stubs: { branch: string; cut: string; refAge?: string; state: Stub["state"]; pr: unknown | null }[],
+  dossiers: { id: string; status: string; pr?: string; live?: boolean }[],
+  prsByBase: Record<string, BasePr[]>,
+): Record<string, StubMember[]> {
+  const out: Record<string, StubMember[]> = {}
+  const open = openStubs(stubs.map((s) => ({ ...s, refAge: s.refAge ?? "", stage: "", dossiers: [], members: [], pr: s.pr as Pr | null })))
+  const add = (b: string, m: StubMember) => { (out[b] ??= []); if (!out[b].some((x) => x.id === m.id)) out[b].push(m) }
+  const eligible = dossiers.filter((d) => ["building", "review", "pr"].includes(d.status) || d.live === true)
+  const placed = new Set<string>()
+  for (const b of open.map((s) => s.branch)) {
+    for (const p of prsByBase[b] ?? []) {
+      if (/^plan\//.test(p.headRefName)) continue
+      const hit = eligible.find((d) => prFieldNumber(d.pr) === p.number || new RegExp(`(^|[^A-Za-z0-9])${d.id.replace(/[^\w-]/g, "")}(?![\w])`).test(p.headRefName))
+      if (hit) { add(b, { id: hit.id, noPr: false }); placed.add(hit.id) }
+    }
+  }
+  const accepting = open.find((s) => s.pr === null) ?? open[0]
+  if (accepting) for (const d of eligible) {
+    if (placed.has(d.id) || prFieldNumber(d.pr) !== null) continue
+    if (d.live || d.status === "building" || d.status === "review") add(accepting.branch, { id: d.id, noPr: true })
+  }
+  return out
 }
 export type StubsView = { scannedAt: string; repos: RepoStubs[]; openWork: { repo: string; updated: string }[] }
 
@@ -96,6 +132,12 @@ async function prInto(main: string, branch: string): Promise<Pr | null> {
     return j ? { number: j.number, url: j.url, state: j.state, ...summarizeChecks(j.statusCheckRollup) } : null
   })
 }
+async function prsBase(main: string, branch: string): Promise<BasePr[]> {
+  return cached(`base:${main}:${branch}`, async () => {
+    const l = await gh(main, ["pr", "list", "--base", branch, "--state", "open", "--json", "number,headRefName"])
+    return (l ?? []).map((x) => ({ number: Number(x.number), headRefName: String(x.headRefName ?? "") }))
+  })
+}
 async function mergeSubjects(main: string, branch: string): Promise<string[]> {
   return (await sh(["git", "-C", main, "log", "--merges", "--first-parent", "--format=%s", `origin/development..origin/${branch}`], undefined, 10_000)).split("\n").filter(Boolean)
 }
@@ -148,8 +190,15 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
       const state = stubState(pr)
       stubs.push({
         branch, cut: stubDate(branch) || recordDate(recordFile(main, branch)) || date.slice(0, 10), state, stage: state === "integrating" ? recordStage(main, branch) : "",
-        refAge: date, pr, dossiers,
+        refAge: date, pr, dossiers, members: [],
       })
+    }
+    if (stubs.length) {
+      const prsByBase: Record<string, BasePr[]> = {}
+      for (const s of openStubs(stubs)) prsByBase[s.branch] = await prsBase(main, s.branch)
+      const name = baseName(main)
+      const mem = stubMembers(stubs, docs.map((d) => ({ id: d.front.id!, status: d.front.status ?? "", pr: d.front.pr, live: runnerActive(readRunner(`${name}.${d.front.id}`)) })), prsByBase)
+      for (const s of stubs) s.members = mem[s.branch] ?? []
     }
     if (stubs.length) { const sorted = stubs.sort((a, b) => b.cut.localeCompare(a.cut) || b.branch.localeCompare(a.branch)); repos.push({ repo: baseName(main), label: repoLabel(main), main, stubs: sorted, open: openStubs(sorted).map((s) => s.branch) }) }
   }
@@ -175,7 +224,7 @@ export function dossierSignature(wts: string[]): string {
 }
 async function runGen(root: string, out: string, embed: boolean, linkBase = ""): Promise<boolean> {
   try {
-    const p = Bun.spawn(["python3", GEN, "--root", root, "--worktrees", "--out", out, "--quiet", ...(embed ? ["--embed"] : []), ...(linkBase ? ["--link-base", linkBase] : [])], { stdout: "ignore", stderr: "ignore", stdin: "ignore" })
+    const p = Bun.spawn(["python3", GEN, "--root", root, "--worktrees", "--out", out, "--quiet", ...(embed ? ["--embed", "--direction", "tb", "--simplify-default"] : []), ...(linkBase ? ["--link-base", linkBase] : [])], { stdout: "ignore", stderr: "ignore", stdin: "ignore" })
     const t = setTimeout(() => p.kill(), 120_000)
     const code = await p.exited
     clearTimeout(t)
@@ -212,7 +261,7 @@ async function rescan(questions: Question[]): Promise<void> {
     try { openWork.push({ repo, updated: new Date(statSync(join(openWorkDir(), `${repo}.html`)).mtimeMs).toISOString() }) } catch { /* not generated */ }
   }
   const next = { ...view, openWork: openWork.sort((a, b) => a.repo.localeCompare(b.repo)) }
-  const sig = JSON.stringify([next.repos.map((r) => [r.repo, r.stubs.map((s) => [s.branch, s.state, s.stage, s.pr, s.dossiers.map((d) => d.id)])]), next.openWork])
+  const sig = JSON.stringify([next.repos.map((r) => [r.repo, r.stubs.map((s) => [s.branch, s.state, s.stage, s.pr, s.dossiers.map((d) => d.id), s.members])]), next.openWork])
   cachedView = next
   if (sig !== lastSig) { lastSig = sig; emitChange("stubs") }
   emitChange("scan")

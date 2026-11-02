@@ -10,7 +10,8 @@ or `state` — the only file it writes is the report.
 
 Usage:
     generate_open_work.py [--root .discovery] [--out PATH] [--worktrees]
-                          [--embed] [--link-base URL] [--open] [--quiet]
+                          [--embed] [--link-base URL] [--direction lr|tb]
+                          [--simplify-default] [--open] [--quiet]
     generate_open_work.py --uninstall         # remove hooks an old --install wrote
     generate_open_work.py --selftest
 
@@ -34,6 +35,13 @@ navigate the TOP window to `<URL>/<ID>` instead of opening the report's own
 detail sheet; the pipeline dashboard passes `--link-base /repo/<repo>` with
 `--embed`, so a click in the graph lands on that dossier's dashboard route.
 Without the flag the report behaves as before.
+`--direction lr|tb` picks the graph layout: `lr` (default) puts dependency
+ranks in columns, left to right; `tb` lays them out top to bottom (prerequisites
+on top, a rank's nodes spread across a row, edges leave a node's bottom and
+enter the next one's top), so it fits a narrow column without horizontal
+scrolling. `--simplify-default` opens the report with the Simplify toggle on;
+the toggle still works, and a choice the user remembered in localStorage wins.
+The dashboard passes `--direction tb --simplify-default` with `--embed`.
 
 The template lives at references/templates/open-work.html, next to this
 script's parent. Its dependency graph includes every dossier, with display-only
@@ -313,7 +321,9 @@ def classify(dossiers: list[dict], errors: list[dict], root: Path,
 
 
 def build_payload(root: Path, now: dt.datetime, worktrees: bool = False,
-                  embed: bool = False, link_base: str = "") -> dict:
+                  embed: bool = False, link_base: str = "",
+                  direction: str = "lr",
+                  simplify_default: bool = False) -> dict:
     dossiers, errors = load_dossiers(root)
     if worktrees:
         overlay_worktrees(root, dossiers)
@@ -329,6 +339,8 @@ def build_payload(root: Path, now: dt.datetime, worktrees: bool = False,
         "worktrees": worktrees,
         "embed": embed,
         "link_base": link_base.rstrip("/"),
+        "direction": direction if direction in ("lr", "tb") else "lr",
+        "simplify_default": bool(simplify_default),
         "generated_at": now.isoformat(timespec="seconds"),
         "generated_at_human": now.strftime("%-d %b %Y, %H:%M"),
         "root": str(root),
@@ -471,6 +483,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--link-base", default="", metavar="URL",
                     help="navigate the top window to <URL>/<ID> when a "
                          "dossier is clicked (a /path or an http(s) URL)")
+    ap.add_argument("--direction", choices=("lr", "tb"), default="lr",
+                    help="graph layout: lr (default, ranks are columns) or "
+                         "tb (ranks are rows, fits a narrow column)")
+    ap.add_argument("--simplify-default", action="store_true",
+                    help="open with the Simplify toggle on (a choice the "
+                         "user remembered in localStorage still wins)")
     ap.add_argument("--open", action="store_true",
                     help="open the report in the default browser")
     ap.add_argument("--quiet", action="store_true",
@@ -504,7 +522,9 @@ def main(argv: list[str] | None = None) -> int:
     out = (Path(args.out) if args.out
            else root / "analysis" / "open-work.html").resolve()
     payload = build_payload(root, dt.datetime.now(), worktrees=args.worktrees,
-                            embed=args.embed, link_base=args.link_base)
+                            embed=args.embed, link_base=args.link_base,
+                            direction=args.direction,
+                            simplify_default=args.simplify_default)
     write_report(out, render(TEMPLATE.read_text(encoding="utf-8"), payload))
     if not args.quiet:
         print(out)
@@ -718,6 +738,19 @@ def selftest() -> int:
                     build_payload(root, today, embed=True,
                                   link_base="/repo/web/"))
         check('"link_base": "/repo/web"' in lb, "link base embedded, trimmed")
+        check('"direction": "lr"' in html and '"simplify_default": false' in html,
+              "defaults: left-to-right, Simplify off")
+        tbh = render(TEMPLATE.read_text(encoding="utf-8"),
+                     build_payload(root, today, direction="tb",
+                                   simplify_default=True))
+        check('"direction": "tb"' in tbh and '"simplify_default": true' in tbh,
+              "--direction tb and --simplify-default reach the page")
+        check("const TB = DATA.direction" in tbh and "DATA.simplify_default" in tbh
+              and "open-work-simplify" in tbh,
+              "template reads the direction and the Simplify default; "
+              "a remembered choice still wins")
+        check(build_payload(root, today, direction="up")["direction"] == "lr",
+              "an unknown direction falls back to lr")
         check("LINK_BASE" in lb and "top.location" in lb,
               "template navigates the top window when a link base is set")
 

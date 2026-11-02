@@ -7,7 +7,7 @@ import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, An
 import { interpretEnvelope, questionBlocks } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
 import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel } from "../questions/runs.ts"
-import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs } from "../questions/stubs.ts"
+import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown } from "../questions/runstore.ts"
 import { mergeSpawns } from "../questions/timeline.ts"
@@ -203,6 +203,17 @@ check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n
   rmSync(t, { recursive: true, force: true })
   check("view: done shows the dossier, running or with updates the run, otherwise the dossier", viewFor("done", false, 5) === "dossier" && viewFor("building", false, 0) === "run" && viewFor("ready", true, 0) === "run" && viewFor("ready", false, 2) === "run" && viewFor("ready", false, 0) === "dossier" && viewFor("planned", false, 1) === "run")
   const mkStub = (branch: string, state: string, cut: string) => ({ branch, cut, state, stage: "", refAge: cut, pr: null, dossiers: [] }) as any
+  {
+    const st = [{ branch: "stub/2026-10-24", cut: "2026-10-24", state: "integrating" as const, pr: {} }, { branch: "stub/2026-10-31", cut: "2026-10-31", state: "accepting" as const, pr: null }, { branch: "stub/2026-09-01", cut: "2026-09-01", state: "merged" as const, pr: {} }]
+    const ds = [{ id: "W-1", status: "building", pr: "#41" }, { id: "W-2", status: "review", pr: "" }, { id: "W-3", status: "building" }, { id: "W-4", status: "ready" }, { id: "W-5", status: "planned", live: false }, { id: "W-6", status: "building", pr: "" }]
+    const m = stubMembers(st, ds, { "stub/2026-10-24": [{ number: 41, headRefName: "feat/x" }, { number: 50, headRefName: "plan/W-6-plan" }, { number: 51, headRefName: "feat/W-2-thing" }, { number: 52, headRefName: "feat/W-4-r" }], "stub/2026-10-31": [] })
+    check("stubMembers: a PR into the stub places its dossier (pr: field or id in head)", m["stub/2026-10-24"]?.map((x) => x.id).sort().join() === "W-1,W-2" && m["stub/2026-10-24"].every((x) => !x.noPr))
+    check("stubMembers: building without a PR goes under the accepting stub with noPr", m["stub/2026-10-31"]?.map((x) => x.id + ":" + x.noPr).sort().join() === "W-3:true,W-6:true")
+    check("stubMembers: plan merges never count and ready/planned never appear", !JSON.stringify(m).includes("W-4") && !JSON.stringify(m).includes("W-5") && !m["stub/2026-10-24"].some((x) => x.id === "W-6") && !m["stub/2026-09-01"])
+    const m2 = stubMembers([{ branch: "stub/a", cut: "2026-01-01", state: "integrating", pr: {} }], [{ id: "W-9", status: "ready", live: true }], {})
+    check("stubMembers: with no accepting stub the newest open stub takes it; a live runner counts", m2["stub/a"]?.[0]?.id === "W-9" && m2["stub/a"][0].noPr)
+    check("stubMembers: no open stub, no members", Object.keys(stubMembers([{ branch: "stub/z", cut: "2026-01-01", state: "merged", pr: {} }], [{ id: "W-3", status: "building" }], {})).length === 0)
+  }
   const os = openStubs([mkStub("stub/2026-10-24", "merged", "2026-10-24"), mkStub("stub/2026-10-31", "accepting", "2026-10-31"), mkStub("release/W-115", "integrating", "2026-10-29")])
   check("stubs: every stub that is not merged is open, newest first", os.map((x) => x.branch).join("|") === "stub/2026-10-31|release/W-115")
 }
@@ -356,6 +367,9 @@ try {
   check("server: two repos sharing W-7 both appear, each with its own status", rv.runs.filter((r: any) => r.id === "W-7").map((r: any) => r.repo + ":" + r.status).sort().join("|") === "repoA:ready|repoB:building")
   const owr = await (await fetch(`${base}/open-work/repoC`)).text()
   check("server: the repo page's report is generated with --link-base /repo/<repo>", owr.includes('"link_base": "/repo/repoC"') && owr.includes('data-embed="1"'))
+  check("server: /api/stubs carries members per stub", sv.repos.find((x: any) => x.repo === "repoC")?.stubs.every((x: any) => Array.isArray(x.members)) === true)
+  const rpage = await (await fetch(`${base}/repo/repoC`)).text()
+  check("server: the repo page is two columns (report left, stub tree right, sticky, stacked under 1000px)", rpage.includes("grid-template-columns:minmax(0,1fr) 360px") && rpage.includes("position:sticky") && rpage.includes("max-width:1000px") && rpage.includes("function sideColumn") && rpage.includes("Merged stubs") && !rpage.includes("function liveCard") && !rpage.includes("function stubCard") && !rpage.includes("'Stubs', stubs.length"))
   const gr = await fetch(`${base}/repo/repoC/graph`, { redirect: "manual" })
   check("server: /repo/<r>/graph redirects to the repo page", gr.status === 302 && gr.headers.get("location") === "/repo/repoC")
   check("server: the dossier route chooses dossier or run view", rv.runs.find((r: any) => r.id === "W-9").view === "dossier" && rv.runs.find((r: any) => r.id === "W-11").view === "dossier" && rv.runs.find((r: any) => r.id === "W-13").view === "run" && rv.runs.find((r: any) => r.id === "W-10").view === "run" && r7.view === "run")
