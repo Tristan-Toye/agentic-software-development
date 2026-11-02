@@ -17,6 +17,7 @@ instead of a transcript.
 
     gate_commit.py --root X --paths p1,p2 -m MESSAGE
                    [--gates FILE] [--sign] [--no-verify] [--push]
+                   [--forbid-id DOSSIER_ID]
     gate_commit.py --selftest
 
 `--paths` is a comma list of files or directories, relative to `--root` (or
@@ -24,6 +25,11 @@ absolute inside it). `.`, the root itself and a path outside the root are
 refused: there is no way to say "everything". Every named path must have a
 change (modified, deleted, or untracked) or the call is refused before any
 gate runs.
+
+`--forbid-id ID` (local mode: the dossier is gitignored, so its id means
+nothing in a commit) refuses the commit when ID appears in a named path, a
+file name under it, or the text of a file under it. Nothing is staged. The
+Phase 5 test commit passes the dossier id; cite the Jira key instead.
 
 `--gates FILE` runs `run_gates.py FILE --root X` first (`run_gates.py --from-workflow` generates one from CI; the gates file format is
 documented there). The gates see the named paths in `$GATE_PATHS`, space
@@ -122,6 +128,31 @@ def commit_cmd(message: str, paths: list[str], sign: bool, no_verify: bool) -> l
     return cmd + ["--", *paths]
 
 
+def forbidden_id_hits(root: str, paths: list[str], dossier_id: str) -> list[str]:
+    """Files under `paths` whose name or text carries `dossier_id`."""
+    files: list[str] = []
+    for rel in paths:
+        full = os.path.join(root, rel)
+        if os.path.isdir(full):
+            for base, dirs, names in os.walk(full):
+                dirs[:] = [d for d in dirs if d != ".git"]
+                files += [os.path.relpath(os.path.join(base, n), root) for n in names]
+        else:
+            files.append(rel)
+    hits = []
+    for rel in files:
+        if dossier_id in rel:
+            hits.append(f"{rel} (path)")
+            continue
+        try:
+            with open(os.path.join(root, rel), encoding="utf-8", errors="ignore") as fh:
+                if dossier_id in fh.read():
+                    hits.append(f"{rel} (text)")
+        except OSError:
+            pass
+    return hits
+
+
 def refuse(lines: list[str], reason: str) -> int:
     print("\n".join(clamp([*lines, f"REFUSED: {reason}"])))
     return 1
@@ -136,6 +167,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sign", action="store_true", help="commit with -S")
     ap.add_argument("--no-verify", action="store_true", help="skip the repository's commit hooks")
     ap.add_argument("--push", action="store_true", help="push after the commit")
+    ap.add_argument("--forbid-id", metavar="DOSSIER_ID",
+                    help="local mode: refuse when this dossier id is in a named path or a file's text")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     if args.selftest:
@@ -157,6 +190,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     out_lines: list[str] = []
+    if args.forbid_id:
+        hits = forbidden_id_hits(root, paths, args.forbid_id)
+        if hits:
+            return refuse(out_lines, f"the dossier id {args.forbid_id} is local and gitignored; "
+                          f"cite the Jira key instead, in: " + ", ".join(hits[:4]))
     for path in paths:
         rc, status = git(root, "status", "--porcelain", "--untracked-files=all", "--", path)
         if rc != 0:
@@ -251,6 +289,18 @@ def selftest() -> int:
         check("commits exactly the named path", rc == 0 and names == "a.txt")
         check("the other change stays uncommitted", git(root, "status", "--porcelain")[1].strip() == "M b.txt" and "left: 1 path(s)" in out)
         check("no gates file says so", "gates: none given" in out and "commit: " in out)
+
+        # --forbid-id: a dossier id in a file's text or a path refuses, nothing staged.
+        write(root, "b.txt", "see W-123 for context\n")
+        _, head0 = git(root, "rev-parse", "HEAD")
+        rc, out = call(["--root", root, "--paths", "b.txt", "-m", "x", "--forbid-id", "W-123"])
+        check("--forbid-id refuses a file carrying the id", rc == 1 and "W-123" in out and "b.txt (text)" in out
+              and git(root, "rev-parse", "HEAD")[1] == head0 and not git(root, "diff", "--cached", "--name-only")[1].strip())
+        write(root, "test_w-123.txt", "x\n")
+        rc, out = call(["--root", root, "--paths", "test_w-123.txt", "-m", "x", "--forbid-id", "w-123"])
+        check("--forbid-id refuses an id in a path", rc == 1 and "(path)" in out)
+        os.remove(os.path.join(root, "test_w-123.txt"))
+        write(root, "b.txt", "b2\n")
 
         # An unchanged path is refused before anything happens.
         _, head = git(root, "rev-parse", "HEAD")
