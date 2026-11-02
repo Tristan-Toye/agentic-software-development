@@ -1,23 +1,53 @@
-// Pipeline "Runs" discovery: dossiers, phase, session activity, PR/CI. Contract: references/owner-questions.md (Runs).
+// Pipeline discovery: dossiers, stage, session activity, PR/CI. Contract: references/owner-questions.md (Dashboard).
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Question } from "./store.ts"
+import { readRunner, readUpdates, runnerActive, summaryOf, type RunnerState, type Update } from "./runstore.ts"
 
 export const STATUSES = ["planned", "ready", "building", "review", "pr", "done", "dropped"] as const
 const TAIL = 256 * 1024
 const HEAD = 64 * 1024
 
-export type Front = { id?: string; title?: string; status?: string; jira?: string; updated?: string; created?: string }
+export type Front = { pr?: string; id?: string; title?: string; status?: string; jira?: string; updated?: string; created?: string }
 export type Session = { state: "active" | "idle" | "none"; lastTs: string; context: number; requests: number; requestsExact: boolean }
 export type Pr = { number: number; url: string; state: string; green: number; red: number; pending: number }
 export type Run = {
   id: string; title: string; status: string; jira: string; updated: string; created: string
   repo: string; root: string; worktree: string; file: string
-  phase: string; lastActivity: string; logLines: number
-  session: Session; pr: Pr | null; questions: string[]
+  phase: string; phaseName: string; lastActivity: string; logLines: number
+  session: Session; pr: Pr | null; questions: string[]; answered: QA[]
+  running: boolean; summary: string; updates: Update[]; runner: RunnerState | null
 }
+/** An answered question, as shown under the dossier it came from. */
+export type QA = { id: string; text: string; answer: string; option: string; asked: string; answeredAt: string }
 export type RunsView = { scannedAt: string; runs: Run[] }
+
+/** Statuses of a dossier that is in flight: not planned, ready, done or dropped. */
+export const RUNNING = ["building", "review", "pr"]
+export const isRunning = (status: string): boolean => RUNNING.includes(status)
+
+/** `{ "4": "Fan out: concurrent and blind" }` from the first heading of each `phase-<n>.md`. */
+export function loadPhaseNames(dir = join(import.meta.dir, "..", "..", "references", "work-on")): Record<string, string> {
+  const out: Record<string, string> = {}
+  let names: string[] = []
+  try { names = readdirSync(dir) } catch { return out }
+  for (const n of names) {
+    const m = n.match(/^phase-(\d+)\.md$/)
+    if (!m) continue
+    try {
+      const h = readFileSync(join(dir, n), "utf8").split("\n").find((l) => /^#{1,6}\s/.test(l))
+      if (h) out[m[1]] = h.replace(/^#+\s*/, "").replace(/^Phase\s*\d+\s*[—–:-]\s*/i, "").trim()
+    } catch { /* unreadable */ }
+  }
+  return out
+}
+export const PHASE_NAMES = loadPhaseNames()
+/** Name of a phase hit such as "4" or "4a"; "plan" is the planning stage. */
+export function phaseNameOf(names: Record<string, string>, phase: string): string {
+  if (phase === "plan") return "Plan"
+  return names[phase.replace(/[a-z]$/, "")] ?? ""
+}
 
 /** Simple `key: value` scalars between the first two `---` lines. */
 export function parseFrontMatter(text: string): Front {
@@ -166,7 +196,7 @@ export function listTranscripts(projects = claudeProjects()): TInfo[] {
 }
 
 // ---- roots ----
-async function sh(cmd: string[], cwd: string | undefined, timeoutMs: number): Promise<string> {
+export async function sh(cmd: string[], cwd: string | undefined, timeoutMs: number): Promise<string> {
   try {
     const p = Bun.spawn(cmd, { cwd, stdout: "pipe", stderr: "ignore", stdin: "ignore" })
     const t = setTimeout(() => p.kill(), timeoutMs)
@@ -205,6 +235,31 @@ export async function candidateRoots(questions: Question[], transcripts: TInfo[]
   const all = new Set<string>()
   for (const r of set) for (const w of await worktreesOf(r)) all.add(w)
   return [...all].filter((w) => existsSync(join(w, ".discovery", "dossiers")))
+}
+
+export const baseName = (p: string): string => p.split("/").filter(Boolean).pop() ?? p
+const mainCache = new Map<string, string>()
+/** The main checkout a worktree belongs to (itself when it is one, or not a git checkout). */
+export async function mainOf(wt: string): Promise<string> {
+  const c = mainCache.get(wt)
+  if (c) return c
+  let main = wt
+  if (existsSync(join(wt, ".git"))) {
+    const common = (await sh(["git", "-C", wt, "rev-parse", "--path-format=absolute", "--git-common-dir"], undefined, 5000)).trim()
+    if (common.endsWith("/.git")) main = common.slice(0, -5)
+  }
+  mainCache.set(wt, main)
+  return main
+}
+/** Answered questions grouped by dossier id, for the view's "Q&A" expanders. */
+export function answeredBy(questions: Question[]): Map<string, QA[]> {
+  const m = new Map<string, QA[]>()
+  for (const q of questions) {
+    if (q.state !== "answered") continue
+    const a: QA = { id: q.id, text: q.text, answer: q.answer?.text ?? "", option: q.answer?.option as string ?? "", asked: q.ts, answeredAt: q.answer?.ts ?? "" }
+    m.set(q.dossier, [...(m.get(q.dossier) ?? []), a])
+  }
+  return m
 }
 
 // ---- PR / CI ----
@@ -253,12 +308,15 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       try { tail = tailTranscript(t.path) } catch { /* gone */ }
       session = { state: now - t.mtime < 10 * 60_000 ? "active" : "idle", lastTs: new Date(t.mtime).toISOString(), context: tail.context, requests: tail.requests, requestsExact: tail.exact }
     }
-    const pr = ["building", "review", "pr"].includes(status) ? await prFor(wt) : null
+    const repoName = baseName(await mainOf(wt))
+    const runner = readRunner(`${repoName}.${f.id}`)
+    const pr = isRunning(status) || runnerActive(runner) ? await prFor(wt) : null
     const qs = questions.filter((q) => q.state === "open" && q.dossier === f.id).map((q) => q.id)
     runs.push({
       id: f.id!, title: f.title ?? "", status, jira: f.jira ?? "", updated: f.updated ?? "", created: f.created ?? "",
-      repo: wt.split("/").filter(Boolean).pop() ?? wt, root: d.worktree, worktree: wt, file: d.file,
-      phase, lastActivity: lastLine(log), logLines: Math.max(0, logLength(d.text)), session, pr, questions: qs,
+      repo: repoName, root: d.worktree, worktree: wt, file: d.file,
+      phase, phaseName: phaseNameOf(PHASE_NAMES, phase), lastActivity: lastLine(log), logLines: Math.max(0, logLength(d.text)), session, pr, questions: qs, answered: [],
+      running: isRunning(status) || runnerActive(runner), summary: summaryOf(d.text), updates: readUpdates(`${repoName}.${f.id}`), runner,
     })
   }
   return { scannedAt: new Date(now).toISOString(), runs }
@@ -267,6 +325,12 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
 let cached: RunsView = { scannedAt: "", runs: [] }
 let inflight: Promise<void> | null = null
 let lastScan = 0
+/** Updates and runner state are cheap local reads, so they are fresh on every request. */
+function liveStore(r: Run): Pick<Run, "updates" | "runner" | "running"> {
+  const key = `${r.repo}.${r.id}`
+  const runner = readRunner(key)
+  return { updates: readUpdates(key), runner, running: isRunning(r.status) || runnerActive(runner) }
+}
 /** Cached view; a rescan starts in the background when older than 30 s. */
 export async function getRuns(questions: () => Question[]): Promise<RunsView> {
   if (!inflight && Date.now() - lastScan > 30_000) {
@@ -275,5 +339,6 @@ export async function getRuns(questions: () => Question[]): Promise<RunsView> {
   }
   if (!cached.scannedAt && inflight) await inflight
   const open = questions().filter((q) => q.state === "open")
-  return { ...cached, runs: cached.runs.map((r) => ({ ...r, questions: open.filter((q) => q.dossier === r.id).map((q) => q.id) })) }
+  const ans = answeredBy(questions())
+  return { ...cached, runs: cached.runs.map((r) => ({ ...r, ...liveStore(r), questions: open.filter((q) => q.dossier === r.id).map((q) => q.id), answered: ans.get(r.id) ?? [] })) }
 }

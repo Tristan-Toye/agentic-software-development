@@ -6,7 +6,10 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { interpretEnvelope, questionBlocks } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, tailTranscript, transcriptCwd } from "../questions/runs.ts"
+import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy } from "../questions/runs.ts"
+import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState } from "../questions/stubs.ts"
+import { readUpdates, readRunner, summaryOf, renderMarkdown } from "../questions/runstore.ts"
+import { execFileSync } from "node:child_process"
 
 let failed = 0
 function check(name: string, ok: boolean, detail = ""): void {
@@ -95,11 +98,58 @@ writeFileSync(join(pdir, "big.jsonl"), tl({ type: "user", cwd: "/elsewhere" }) +
 const big = tailTranscript(join(pdir, "big.jsonl"))
 check("runs: a large file is read from its tail only", big.context === 6 && big.requests === 1 && !big.exact, JSON.stringify(big))
 
+// phase names, running filter, answered linking
+const pn = loadPhaseNames(join(import.meta.dir, "..", "..", "references", "work-on"))
+check("runs: phase names come from the first heading of phase-<n>.md", pn["4"] === "Fan out: concurrent and blind" && pn["0"]?.startsWith("Select") && phaseNameOf(pn, "4a") === pn["4"] && phaseNameOf(pn, "plan") === "Plan" && phaseNameOf(pn, "") === "", JSON.stringify(pn).slice(0, 200))
+check("runs: running filter is building, review, pr", ["building", "review", "pr"].every(isRunning) && !["planned", "ready", "done", "dropped"].some(isRunning))
+const aq = (id: string, dossier: string, state: "open" | "answered") => ({ id, state, repo: "r", dossier, root: "", text: "Which?", options: [], recommendation: "", blocks: "", ts: "t0", answer: state === "answered" ? { ts: "t1", from: "owner", kind: "answer", text: "A it is", option: "A" } : null, lines: [] }) as any
+const ab = answeredBy([aq("r.W-7.Q1", "W-7", "answered"), aq("r.W-7.Q2", "W-7", "open"), aq("r.W-9.Q1", "W-9", "answered")])
+check("runs: an answered question links to its dossier, open ones are not listed", ab.get("W-7")?.length === 1 && ab.get("W-7")![0].id === "r.W-7.Q1" && ab.get("W-7")![0].answer === "A it is" && ab.get("W-9")?.length === 1)
+
+// stubs: pure parsers
+check("stubs: merge subject to PR number", prNumberOf("Merge pull request #41 from org/feat-x") === 41 && prNumberOf("feat: thing (#42)") === 42 && prNumberOf("Merge branch 'x'") === null)
+check("stubs: pr field forms", prFieldNumber("https://github.com/o/r/pull/7") === 7 && prFieldNumber("#8") === 8 && prFieldNumber("") === null && prFieldNumber(undefined) === null)
+check("stubs: merges map to dossiers via pr:", JSON.stringify(dossiersOnMerges(["Merge pull request #41 from a/b", "x (#42)", "Merge pull request #99 from c/d", "Merge pull request #41 again"], new Map([[41, "W-1"], [42, "W-2"]]))) === '["W-1","W-2"]')
+const rec = "# Stub 2026-11-02\n## Step 1 - cut\nx\n## Step 2 \u2014 merge dossiers\n### Round 1\nfoo\n## Notes\n"
+check("stubs: stage is the last Step or Round heading", stubStage(rec) === "Round 1" && stubStage("## Step 1 \u2014 a\n## Step 2 \u2014 b\n") === "Step 2 \u2014 b" && stubStage("nothing") === "")
+check("stubs: state from the PR", stubState(null) === "accepting" && stubState({ state: "OPEN" }) === "integrating" && stubState({ state: "MERGED" }) === "merged" && stubState({ state: "CLOSED" }) === "accepting")
+
+// run store: updates, runner liveness, summary, markdown
+const udir = mkdtempSync(join(tmpdir(), "asd-oq-upd-"))
+writeFileSync(join(udir, "repoB.W-7.jsonl"), [{ ts: "1", kind: "runner", text: "started" }, "torn{", { ts: "2", kind: "stage", text: "wave", stage: "4" }, { ts: "3", kind: "bogus", text: "x" }, { ts: "4", kind: "update", text: "suite green" }].map((x) => typeof x === "string" ? x : JSON.stringify(x)).join("\n") + "\n")
+const ups = readUpdates("repoB.W-7", udir)
+check("runstore: updates newest first, torn and unknown kinds skipped", ups.map((u) => u.text).join() === "suite green,wave,started" && ups[1].stage === "4")
+check("runstore: no file means no updates", readUpdates("nope.X-1", udir).length === 0)
+writeFileSync(join(udir, "repoB.W-7.runner.json"), JSON.stringify({ pid: 4242, started: "s", state: "running", stage: "4" }))
+check("runstore: a live pid keeps running, a dead pid reads as stopped", readRunner("repoB.W-7", udir, () => true)?.state === "running" && readRunner("repoB.W-7", udir, () => false)?.state === "stopped" && readRunner("none.X", udir) === null)
+writeFileSync(join(udir, "repoB.W-7.runner.json"), JSON.stringify({ pid: 4242, state: "done" }))
+check("runstore: a finished state is kept whatever the pid", readRunner("repoB.W-7", udir, () => false)?.state === "done")
+check("runstore: summary prefers the Problem section, caps at 300", summaryOf("---\nid: A\n---\n# A\nIntro line.\n\n## Problem\nThe cache\nis stale. More.\n\n## Approach\nx") === "The cache is stale. More." && summaryOf("---\nid: A\n---\n# T\n\nFirst para\nwraps.\n\nSecond.") === "First para wraps." && summaryOf("# T\n" + "z".repeat(400)).length === 300)
+check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n```\n<script>x</script>\n```\n| a | b |").includes("&lt;b&gt;") && !renderMarkdown("<script>alert(1)</script>").includes("<script>") && renderMarkdown("- a\n- b").includes("<li>b</li>"))
+
+// stubs: a real git fixture (bare origin + clone) with a stub branch, a merge and a record
+const git = (cwd: string, ...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...a], { cwd, stdio: "pipe" }).toString()
+const origin = join(rdir, "origin.git"), repoC = join(rdir, "repoC")
+mkdirSync(origin); git(origin, "init", "--bare", "-b", "development")
+git(rdir, "clone", origin, repoC)
+git(repoC, "checkout", "-b", "development"); writeFileSync(join(repoC, "a.txt"), "a"); git(repoC, "add", "."); git(repoC, "commit", "-m", "init"); git(repoC, "push", "origin", "development")
+git(repoC, "checkout", "-b", "stub/2026-11-02"); git(repoC, "push", "origin", "stub/2026-11-02")
+git(repoC, "checkout", "-b", "feat/w9"); writeFileSync(join(repoC, "b.txt"), "b"); git(repoC, "add", "."); git(repoC, "commit", "-m", "work")
+git(repoC, "checkout", "stub/2026-11-02"); git(repoC, "merge", "--no-ff", "feat/w9", "-m", "Merge pull request #12 from o/feat-w9"); git(repoC, "push", "origin", "stub/2026-11-02")
+git(repoC, "fetch", "origin")
+mkdirSync(join(repoC, ".discovery", "dossiers"), { recursive: true }); mkdirSync(join(repoC, ".discovery", "analysis"), { recursive: true })
+writeFileSync(join(repoC, ".discovery", "dossiers", "W-9-nine.md"), "---\nid: W-9\ntitle: Nine\nstatus: done\npr: https://x/pull/12\n---\n# W-9\n\n## Problem\nNine is broken.\n")
+writeFileSync(join(repoC, ".discovery", "dossiers", "W-10-ten.md"), "---\nid: W-10\ntitle: Ten\nstatus: ready\n---\n# W-10\n\nTen paragraph.\n")
+writeFileSync(join(repoC, ".discovery", "analysis", "stub-2026-11-02-x.md"), rec)
+const odir = mkdtempSync(join(tmpdir(), "asd-oq-ow-")), runsDir = mkdtempSync(join(tmpdir(), "asd-oq-rd-"))
+writeFileSync(join(runsDir, "repoC.W-10.runner.json"), JSON.stringify({ pid: process.pid, state: "waiting", stage: "3", started: "s" }))
+writeFileSync(join(runsDir, "repoC.W-10.jsonl"), JSON.stringify({ ts: "2026-11-02T10:00:00Z", kind: "update", text: "ten started" }) + "\n")
+
 // server over HTTP
 const sdir = mkdtempSync(join(tmpdir(), "asd-oq-srv-"))
 writeFileSync(join(sdir, "demo.W-2.Q1.jsonl"), JSON.stringify(qLine) + "\n")
 const proc = Bun.spawn(["/opt/homebrew/bin/bun", "--no-install", join(import.meta.dir, "..", "questions", "server.ts")], {
-  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: `${repoA}:${repoB}`, ASD_CLAUDE_PROJECTS: projects, ASD_RUNS_NO_GH: "1" },
+  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: `${repoA}:${repoB}:${repoC}`, ASD_OPEN_WORK_DIR: odir, ASD_RUNS_DIR: runsDir, ASD_CLAUDE_PROJECTS: projects, ASD_RUNS_NO_GH: "1" },
   stdout: "pipe", stderr: "pipe",
 })
 const reader = proc.stdout.getReader()
@@ -130,10 +180,23 @@ try {
   check("server: answered drops out of state=open", ((await (await fetch(`${base}/api/questions?state=open`)).json()) as any[]).length === 0)
   const rv: any = await (await fetch(`${base}/api/runs`)).json()
   const r7 = rv.runs?.find((r: any) => r.id === "W-7")
-  check("server: /api/runs lists dossiers from the injected roots", rv.runs?.length === 2 && r7?.status === "building" && r7.phase === "4" && r7.repo === "repoB", JSON.stringify(rv).slice(0, 300))
+  check("server: /api/runs lists dossiers from the injected roots", rv.runs?.length === 4 && r7?.status === "building" && r7.phase === "4" && r7.repo === "repoB", JSON.stringify(rv).slice(0, 300))
   check("server: /api/runs session activity and context", r7?.session.state === "active" && r7.session.context === 143003 && r7.session.requests === 2 && r7.pr === null, JSON.stringify(r7?.session))
   check("server: /api/runs carries the open-question link", rv.runs.every((r: any) => Array.isArray(r.questions)) && typeof rv.scannedAt === "string")
-  check("server: page has the Runs view and no external resources", html.includes("Needs you") && html.includes("/api/runs") && !/https?:\/\//.test(html))
+  check("server: page has the Runs view and no external resources", html.includes("Open questions") && html.includes("/api/runs") && html.includes("/api/stubs") && !/https?:\/\//.test(html))
+  const r10 = rv.runs.find((r: any) => r.id === "W-10"), r9 = rv.runs.find((r: any) => r.id === "W-9")
+  check("server: a ready dossier with a waiting runner is running, with its updates and summary", r10?.running === true && r10.runner?.state === "waiting" && r10.updates[0]?.text === "ten started" && r10.summary === "Ten paragraph." && r7.running === true && r9.running === false && r9.repo === "repoC", JSON.stringify(r10).slice(0, 300))
+  check("server: stage carries the phase name", r7.phaseName === pn["4"])
+  check("server: answered questions link to their dossier in /api/runs", rv.runs.find((r: any) => r.id === "W-1") === undefined)
+  const sv: any = await (await fetch(`${base}/api/stubs`)).json()
+  const c = sv.repos?.find((x: any) => x.repo === "repoC")?.stubs?.[0]
+  check("server: /api/stubs lists the stub with its dossier, state and stage", c?.branch === "stub/2026-11-02" && c.state === "accepting" && c.dossiers.length === 1 && c.dossiers[0].id === "W-9" && c.dossiers[0].status === "done" && !!c.refAge, JSON.stringify(sv).slice(0, 400))
+  const ow = await fetch(`${base}/open-work/repoC`)
+  check("server: /open-work/<repo> serves the generated report", ow.status === 200 && (await ow.text()).length > 100 && sv.openWork?.some((o: any) => o.repo === "repoC"))
+  check("server: unsafe or unknown open-work repo is 404", (await fetch(`${base}/open-work/nope`)).status === 404)
+  const dp = await fetch(`${base}/dossier/repoC/W-9`)
+  const dh = await dp.text()
+  check("server: /dossier/<repo>/<id> renders read-only HTML", dp.status === 200 && dh.includes("Nine is broken.") && dh.includes("<h2>Problem</h2>") && (await fetch(`${base}/dossier/repoC/NOPE`)).status === 404 && (await fetch(`${base}/dossier/repoC/W-9`, { headers: { host: "evil.example" } })).status === 403)
   const bad = await fetch(`${base}/api/questions`, { headers: { host: "evil.example" } })
   check("server: foreign Host header refused", bad.status === 403)
 } finally {
@@ -141,6 +204,9 @@ try {
   rmSync(dir, { recursive: true, force: true })
   rmSync(sdir, { recursive: true, force: true })
   rmSync(rdir, { recursive: true, force: true })
+  rmSync(odir, { recursive: true, force: true })
+  rmSync(runsDir, { recursive: true, force: true })
+  rmSync(udir, { recursive: true, force: true })
 }
 console.log(failed ? `FAIL (${failed})` : "PASS (all cases)")
 process.exit(failed ? 1 : 0)
