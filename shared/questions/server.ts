@@ -4,6 +4,9 @@ import { watch } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
 import { getRuns } from "./runs.ts"
+import { getStubs, openWorkHtml } from "./stubs.ts"
+import { dossierPage } from "./runstore.ts"
+import { readFileSync } from "node:fs"
 import { api, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 
 const DIR = storeDir()
@@ -169,6 +172,18 @@ export async function handle(req: Request): Promise<Response> {
   const path = url.pathname
   if (req.method === "GET" && path === "/") return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8" } })
   if (req.method === "GET" && path === "/api/runs") return json({ ...(await getRuns(() => readAll(DIR))), slack: slackOn() })
+  if (req.method === "GET" && path === "/api/stubs") return json(await getStubs(() => readAll(DIR)))
+  const ow = path.match(/^\/open-work\/([\w.-]+)$/)
+  if (req.method === "GET" && ow) {
+    const html = await openWorkHtml(ow[1], readAll(DIR))
+    return html === null ? json({ error: "no open-work report for that repo" }, 404) : new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } })
+  }
+  const ds = path.match(/^\/dossier\/([\w.-]+)\/([\w.-]+)$/)
+  if (req.method === "GET" && ds) {
+    const run = (await getRuns(() => readAll(DIR))).runs.find((r) => r.repo === ds[1] && r.id === ds[2])
+    if (!run) return json({ error: "no such dossier" }, 404)
+    try { return new Response(dossierPage(run.id, run.repo, readFileSync(run.file, "utf8")), { headers: { "content-type": "text/html; charset=utf-8" } }) } catch { return json({ error: "dossier unreadable" }, 404) }
+  }
   if (req.method === "GET" && path === "/api/questions") {
     const all = url.searchParams.get("state") === "open" ? readAll(DIR).filter((q) => q.state === "open") : readAll(DIR)
     return json(all)

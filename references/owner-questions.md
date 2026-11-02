@@ -101,9 +101,8 @@ It prints at most 40 lines.
 - **Reminder:** an open question whose last line is an agent line is notified
   again 30 min after that line, then 1 h later, then every 2 h. A new agent
   line restarts the schedule; a server restart sends no backlog.
-- **Page** `GET /`: a dashboard with a header (Slack connected or not, last
-  scan), **Needs you** (open questions as cards, answered ones collapsed
-  below) and **Runs**.
+- **Page** `GET /`: a dashboard (see Dashboard): open questions first, then
+  running dossiers, this week's stub, stubs and open work.
   - Each question shows its thread, the option buttons (an answer, the
   recommendation highlighted), a text box with **Ask follow-up** and **Answer**.
   - It refreshes every 5 s, patching the DOM so a half-written text box and
@@ -111,7 +110,9 @@ It prints at most 40 lines.
 - **API:**
   - `GET /api/questions?state=open|all`
   - `GET /api/questions/<id>`
-  - `GET /api/runs`: the Runs view as JSON (below)
+  - `GET /api/runs`: all dossiers with stage, session, PR, updates, runner
+    state and answered Q&A as JSON; `GET /api/stubs`: stubs per repo and the
+    open-work repos; `GET /open-work/<repo>`; `GET /dossier/<repo>/<ID>`
   - `POST /api/questions/<id>/messages` with `{"kind": "followup"|"answer", "text": "...", "option": "A"}`.
 
   The server writes the owner line with `via: page` and mirrors it into the
@@ -135,33 +136,52 @@ It prints at most 40 lines.
   - **Connection:** the server reconnects on a `disconnect` envelope or a
     closed socket, with backoff.
 
-## Runs
+## Dashboard
 
-`shared/questions/runs.ts`, rescanned every 30 s and cached; `GET /api/runs`
-and the page's **Runs** section show it.
+`shared/questions/runs.ts`, `stubs.ts` and `runstore.ts`, rescanned every 30 s
+and cached; `GET /api/runs`, `GET /api/stubs` and the page show it.
 
 - **Sources:**
   - candidate roots: the `cwd` of the newest transcript in each
-    `~/.claude/projects/*/`, every `root` of an open or answered question, and
-    `roots` in an optional `~/.agentic/repos.json`; for each git checkout also
-    its worktrees (`git worktree list --porcelain`); only dirs with
-    `.discovery/dossiers/*.md` count;
-  - per dossier id the copy with the longest `## Build log` wins, as in
-    `scripts/budget_report.py`;
-  - transcripts `~/.claude/projects/*/*.jsonl` whose `cwd` is the worktree or
-    below it, read from the last 256 KB only;
-  - `gh pr view <branch> --json number,url,state,statusCheckRollup` in the
-    worktree, for building, review and pr dossiers; cached 2 min, 10 s
-    timeout, left out on failure.
-- **Shown:** one card per dossier that is building, in review, at pr or has a
-  session active in the last 10 min: id, title, repo, status, a 0-9 phase
-  stepper (the last `Phase N` in the build log; `plan` for planned and ready
-  with none), the last build-log line, session active or idle since, context
-  size (input + cache read + cache creation tokens of the last assistant
-  message), request count (distinct assistant messages in the tail, shown with
-  `≥` when the transcript is longer than the tail), PR link with green, red
-  and pending check counts, and a badge per open question. Planned and ready
-  dossiers go in a queue table; done within 7 days in a collapsed list.
-- **Env overrides:** `ASD_RUNS_ROOTS` (colon-separated roots; replaces the
-  transcript and `repos.json` roots, questions' roots still count),
-  `ASD_CLAUDE_PROJECTS` (transcripts dir), `ASD_RUNS_NO_GH=1` (no `gh` calls).
+    `~/.claude/projects/*/`, every `root` of a question, and `roots` in an
+    optional `~/.agentic/repos.json`; each checkout's worktrees; only dirs
+    with `.discovery/dossiers/*.md` count; per dossier id the copy with the
+    longest `## Build log` wins;
+  - transcripts whose `cwd` is the worktree or below (last 256 KB): session
+    state, context size, request count;
+  - `gh pr view` per running dossier (2 min cache, 10 s timeout);
+  - phase names: the first heading of `references/work-on/phase-<n>.md`, read
+    at startup;
+  - run updates `$ASD_RUNS_DIR/<repo>.<ID>.jsonl` and runner state
+    `<repo>.<ID>.runner.json` (`references/runner.md`; a dead pid reads as
+    stopped), re-read on every request;
+  - stubs: per repo main checkout `git ls-remote --heads origin 'stub/*'
+    'release/*'`; per branch `gh pr list --head <b> --base development`
+    (state, checks) and `gh pr list --base <b> --state open`; dossiers on a
+    stub = the first-parent merges `origin/development..origin/<b>` of the
+    local refs (the server never fetches; the ref age is shown) mapped by PR
+    number to the dossiers' `pr:` field, plus dossiers with an open PR into
+    the stub. State: `accepting` (no PR into development), `integrating`
+    (stage = last `## Step N`/`Round` heading of
+    `.discovery/analysis/stub-<date>*.md`), `merged`. All cached 2 min,
+    failures omitted;
+  - open work: `scripts/generate_open_work.py --root <repo>/.discovery
+    --worktrees --out ~/.agentic/open-work/<repo>.html --quiet --embed`
+    (without `--embed` when rejected), when the dossier set or an mtime
+    changed, at most once per 30 s per repo; served at `/open-work/<repo>`.
+- **Shown (one page):** top bar (counts, Slack, last scan); **Open questions**
+  (full width, only when any); a band with **Running dossiers** (status
+  building, review or pr, or a runner running/waiting: id, title, repo,
+  status, runner state, one-paragraph summary, stage as phase number and
+  name, session, context, requests, PR + CI, open-question badges, the last 5
+  updates with the rest expandable, the build-log line only without updates,
+  a Q&A expander, **View dossier**) and **This week's stub** (the newest stub
+  of each repo with its dossiers, their status and Q&A); the **Stubs** table
+  (branch, cut, state, stage, dossiers, PR + CI); **Open work** (repo tabs,
+  iframe). Answered questions are not a list: each sits under its dossier;
+  `/#q=<id>` opens any question's thread at the top.
+- **`GET /dossier/<repo>/<ID>`:** the winning dossier copy as read-only,
+  escaped HTML.
+- **Env overrides:** `ASD_RUNS_ROOTS`, `ASD_CLAUDE_PROJECTS`,
+  `ASD_RUNS_NO_GH=1`, `ASD_STUBS_NO_GIT=1` (no stub git calls), `ASD_RUNS_DIR`,
+  `ASD_OPEN_WORK_DIR`.
