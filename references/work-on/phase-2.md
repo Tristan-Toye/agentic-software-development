@@ -60,7 +60,11 @@ This is the step everything else depends on.
    error, a return value that cannot express the promise, or a file that turns
    out to belong to a different package than `/plan` guessed. Fix both sections
    now — in the files and in the dossier — and note the change in
-   `## Build log`.
+   `## Build log`. Land the files' revision in the dossier with
+   `dossier_edit.py sync-contract <dossier> --root X`: it rebuilds each
+   `### <path>` block of `## Contract` from that file and fails, member by
+   member, on any block that is missing or truncated against the file. Never
+   hand-copy a block.
 
    **Re-check the `Depends on` column specifically.** `/plan` wrote it against
    a prose contract, where package B genuinely needed package A's types to
