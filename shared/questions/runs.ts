@@ -3,13 +3,15 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, s
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Question } from "./store.ts"
+import { emitChange } from "./events.ts"
+import { blockedByOf, controlsFor, type Controls } from "./controls.ts"
 import { readRunner, readUpdates, runnerActive, summaryOf, type RunnerState, type Update } from "./runstore.ts"
 
 export const STATUSES = ["planned", "ready", "building", "review", "pr", "done", "dropped"] as const
 const TAIL = 256 * 1024
 const HEAD = 64 * 1024
 
-export type Front = { pr?: string; id?: string; title?: string; status?: string; jira?: string; updated?: string; created?: string }
+export type Front = { pr?: string; id?: string; title?: string; status?: string; jira?: string; updated?: string; created?: string; blocked_by?: string }
 export type Session = { state: "active" | "idle" | "none"; lastTs: string; context: number; requests: number; requestsExact: boolean }
 export type Pr = { number: number; url: string; state: string; green: number; red: number; pending: number }
 export type Run = {
@@ -18,6 +20,7 @@ export type Run = {
   phase: string; phaseName: string; lastActivity: string; logLines: number
   session: Session; pr: Pr | null; questions: string[]; answered: QA[]
   running: boolean; summary: string; updates: Update[]; runner: RunnerState | null
+  main: string; blockedBy: string[]; controls: Controls
 }
 /** An answered question, as shown under the dossier it came from. */
 export type QA = { id: string; text: string; answer: string; option: string; asked: string; answeredAt: string }
@@ -310,6 +313,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
     }
     const repoName = baseName(await mainOf(wt))
     const runner = readRunner(`${repoName}.${f.id}`)
+    const main = await mainOf(wt)
     const pr = isRunning(status) || runnerActive(runner) ? await prFor(wt) : null
     const qs = questions.filter((q) => q.state === "open" && q.dossier === f.id).map((q) => q.id)
     runs.push({
@@ -317,6 +321,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       repo: repoName, root: d.worktree, worktree: wt, file: d.file,
       phase, phaseName: phaseNameOf(PHASE_NAMES, phase), lastActivity: lastLine(log), logLines: Math.max(0, logLength(d.text)), session, pr, questions: qs, answered: [],
       running: isRunning(status) || runnerActive(runner), summary: summaryOf(d.text), updates: readUpdates(`${repoName}.${f.id}`), runner,
+      main, blockedBy: blockedByOf(f.blocked_by), controls: controlsFor({ status, blockedBy: blockedByOf(f.blocked_by), runner }, () => undefined),
     })
   }
   return { scannedAt: new Date(now).toISOString(), runs }
@@ -325,6 +330,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
 let cached: RunsView = { scannedAt: "", runs: [] }
 let inflight: Promise<void> | null = null
 let lastScan = 0
+let lastSig = ""
 /** Updates and runner state are cheap local reads, so they are fresh on every request. */
 function liveStore(r: Run): Pick<Run, "updates" | "runner" | "running"> {
   const key = `${r.repo}.${r.id}`
@@ -335,10 +341,17 @@ function liveStore(r: Run): Pick<Run, "updates" | "runner" | "running"> {
 export async function getRuns(questions: () => Question[]): Promise<RunsView> {
   if (!inflight && Date.now() - lastScan > 30_000) {
     lastScan = Date.now()
-    inflight = buildRuns(questions()).then((v) => { cached = v }).catch(() => {}).finally(() => { inflight = null })
+    inflight = buildRuns(questions()).then((v) => {
+      const sig = JSON.stringify(v.runs.map((r) => [r.repo, r.id, r.status, r.phase, r.lastActivity, r.session.state, r.pr]))
+      cached = v
+      if (sig !== lastSig) { lastSig = sig; emitChange("runs") }
+      emitChange("scan")
+    }).catch(() => {}).finally(() => { inflight = null })
   }
   if (!cached.scannedAt && inflight) await inflight
   const open = questions().filter((q) => q.state === "open")
   const ans = answeredBy(questions())
-  return { ...cached, runs: cached.runs.map((r) => ({ ...r, ...liveStore(r), questions: open.filter((q) => q.dossier === r.id).map((q) => q.id), answered: ans.get(r.id) ?? [] })) }
+  const live = cached.runs.map((r) => ({ ...r, ...liveStore(r), questions: open.filter((q) => q.dossier === r.id).map((q) => q.id), answered: ans.get(r.id) ?? [] }))
+  const statusOf = (repo: string) => (id: string) => live.find((x) => x.repo === repo && x.id === id)?.status
+  return { ...cached, runs: live.map((r) => ({ ...r, controls: controlsFor(r, statusOf(r.repo)) })) }
 }

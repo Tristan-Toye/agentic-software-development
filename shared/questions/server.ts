@@ -1,12 +1,16 @@
 // Owner-questions server. Run: bun --no-install shared/questions/server.ts
 // Contract: references/owner-questions.md
-import { watch } from "node:fs"
+import { mkdirSync, watch } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
-import { getRuns } from "./runs.ts"
-import { getStubs, openWorkHtml } from "./stubs.ts"
-import { dossierPage } from "./runstore.ts"
+import { buildLog, getRuns, PHASE_NAMES, type Run } from "./runs.ts"
+import { getStubs, openWorkHtml, recordFile } from "./stubs.ts"
+import { dossierPage, readUpdates, renderMarkdown, runsDir } from "./runstore.ts"
+import { emitChange, subscribe } from "./events.ts"
+import { logEntries, mergeTimeline, parseRecord } from "./timeline.ts"
+import { runRunner } from "./controls.ts"
 import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { api, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 
 const DIR = storeDir()
@@ -164,19 +168,103 @@ async function onSlackAction(a: OwnerAction): Promise<void> {
 
 // ---- HTTP ----
 const json = (body: unknown, status = 200) => Response.json(body, { status })
+const html = (body: string) => new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } })
+const allRuns = async (): Promise<Run[]> => (await getRuns(() => readAll(DIR))).runs
+const findRun = async (repo: string, id: string): Promise<Run | undefined> => (await allRuns()).find((r) => r.repo === repo && r.id === id)
+
+/** Server-Sent Events: a `changed` event with the kinds that changed; a comment heartbeat keeps the stream open. */
+function events(req: Request): Response {
+  let un = () => {}
+  let hb: ReturnType<typeof setInterval> | undefined
+  const enc = new TextEncoder()
+  const stream = new ReadableStream({
+    start(c) {
+      const send = (t: string) => { try { c.enqueue(enc.encode(t)) } catch { /* closed */ } }
+      send("retry: 3000\n: connected\n\n")
+      un = subscribe((what) => send(`event: changed\ndata: ${JSON.stringify({ what })}\n\n`))
+      hb = setInterval(() => send(": hb\n\n"), 15_000)
+      req.signal.addEventListener("abort", () => { un(); clearInterval(hb) })
+    },
+    cancel() { un(); clearInterval(hb) },
+  })
+  return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" } })
+}
+
+/** The last 200 lines of a run's `<key>.runner.log`, or null. */
+function runnerLog(repo: string, id: string): string | null {
+  try { return readFileSync(join(runsDir(), `${repo}.${id}.runner.log`), "utf8").split("\n").slice(-201).join("\n") } catch { return null }
+}
+const inflightControl = new Set<string>()
 
 export async function handle(req: Request): Promise<Response> {
   const url = new URL(req.url)
   const host = req.headers.get("host") ?? ""
   if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return json({ error: "bad host" }, 403)
   const path = url.pathname
-  if (req.method === "GET" && path === "/") return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8" } })
+  if (req.method === "GET" && (path === "/" || path === "/questions" || /^\/repo\/[\w.-]+(\/.*)?$/.test(path))) return html(PAGE)
+  if (req.method === "GET" && path === "/api/events") return events(req)
   if (req.method === "GET" && path === "/api/runs") return json({ ...(await getRuns(() => readAll(DIR))), slack: slackOn() })
   if (req.method === "GET" && path === "/api/stubs") return json(await getStubs(() => readAll(DIR)))
   const ow = path.match(/^\/open-work\/([\w.-]+)$/)
   if (req.method === "GET" && ow) {
     const html = await openWorkHtml(ow[1], readAll(DIR))
     return html === null ? json({ error: "no open-work report for that repo" }, 404) : new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } })
+  }
+  const tl = path.match(/^\/api\/timeline\/([\w.-]+)\/([\w.-]+)$/)
+  if (req.method === "GET" && tl) {
+    const run = await findRun(tl[1], tl[2])
+    if (!run) return json({ error: "no such dossier" }, 404)
+    let log: string[] = []
+    try { log = logEntries(buildLog(readFileSync(run.file, "utf8"))) } catch { /* unreadable */ }
+    const updates = readUpdates(`${run.repo}.${run.id}`, runsDir(), 1000)
+    const questions = readAll(DIR).filter((q) => q.dossier === run.id)
+    const entries = mergeTimeline({ updates, questions, log, names: PHASE_NAMES })
+    return json({ run, entries, planning: run.status === "planned" && updates.length > 0, logUsed: updates.length === 0 })
+  }
+  const dd = path.match(/^\/api\/dossier\/([\w.-]+)\/([\w.-]+)$/)
+  if (req.method === "GET" && dd) {
+    const run = await findRun(dd[1], dd[2])
+    if (!run) return json({ error: "no such dossier" }, 404)
+    try { return json({ run, html: renderMarkdown(readFileSync(run.file, "utf8").replace(/^---\n[\s\S]*?\n---\n?/, "")) }) } catch { return json({ error: "dossier unreadable" }, 404) }
+  }
+  if (req.method === "GET" && path === "/api/stub") {
+    const repo = url.searchParams.get("repo") ?? "", branch = url.searchParams.get("branch") ?? ""
+    const rs = (await getStubs(() => readAll(DIR))).repos.find((r) => r.repo === repo)
+    const stub = rs?.stubs.find((s) => s.branch === branch)
+    if (!rs || !stub) return json({ error: "no such stub" }, 404)
+    const slug = branch.replace(/\//g, "-"), key = `${repo}.${slug}`
+    const file = recordFile(rs.main, branch)
+    let record = ""
+    try { record = file ? readFileSync(file, "utf8") : "" } catch { /* unreadable */ }
+    const questions = readAll(DIR).filter((q) => q.dossier === slug || q.dossier === branch || `${q.repo}.${q.dossier}` === key)
+    const entries = mergeTimeline({ updates: readUpdates(key, runsDir(), 1000), questions, extra: parseRecord(record, stub.cut) })
+    return json({ repo, stub, key, entries, hasRecord: !!file })
+  }
+  const rl = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/log$/)
+  if (req.method === "GET" && rl) {
+    const t = runnerLog(rl[1], rl[2])
+    return t === null ? json({ error: "no runner log" }, 404) : new Response(t, { headers: { "content-type": "text/plain; charset=utf-8" } })
+  }
+  const rc = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/(start|resume|stop)$/)
+  if (rc) {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const [, repo, id, action] = rc
+    const run = await findRun(repo, id)
+    if (!run) return json({ error: "no such dossier" }, 404)
+    const ctl = run.controls[action as "start" | "resume" | "stop"]
+    if (!ctl.show) return json({ error: `${action} is not available for this dossier` }, 409)
+    if (!ctl.ok) return json({ error: ctl.reason }, 409)
+    const root = action === "start" ? run.main : (run.runner?.root || run.main)
+    const key = `${repo}.${id}`
+    if (inflightControl.has(key)) return json({ error: "another control is running for this dossier" }, 409)
+    inflightControl.add(key)
+    try {
+      const r = await runRunner(action === "stop" ? ["stop", id, "--root", root] : [id, "--root", root])
+      emitChange("runs")
+      return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 500)
+    } finally { inflightControl.delete(key) }
   }
   const ds = path.match(/^\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && ds) {
@@ -247,11 +335,18 @@ async function main(): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     watch(DIR, () => {
+      emitChange("questions")
       clearTimeout(timer)
       timer = setTimeout(() => void scan(), 150)
     })
   } catch (e) {
     log(`fs.watch unavailable, rescan only: ${(e as Error).message}`)
+  }
+  try {
+    mkdirSync(runsDir(), { recursive: true })
+    watch(runsDir(), () => emitChange("runs"))
+  } catch (e) {
+    log(`runs dir not watched: ${(e as Error).message}`)
   }
   setInterval(() => void scan(), 10_000)
 }

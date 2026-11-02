@@ -138,8 +138,9 @@ It prints at most 40 lines.
 
 ## Dashboard
 
-`shared/questions/runs.ts`, `stubs.ts` and `runstore.ts`, rescanned every 30 s
-and cached; `GET /api/runs`, `GET /api/stubs` and the page show it.
+`shared/questions/runs.ts`, `stubs.ts`, `runstore.ts`, `timeline.ts`,
+`controls.ts` and `events.ts`, rescanned every 30 s and cached; the page is
+one card-based single-page app with deep links.
 
 - **Sources:**
   - candidate roots: the `cwd` of the newest transcript in each
@@ -150,38 +151,66 @@ and cached; `GET /api/runs`, `GET /api/stubs` and the page show it.
   - transcripts whose `cwd` is the worktree or below (last 256 KB): session
     state, context size, request count;
   - `gh pr view` per running dossier (2 min cache, 10 s timeout);
-  - phase names: the first heading of `references/work-on/phase-<n>.md`, read
-    at startup;
-  - run updates `$ASD_RUNS_DIR/<repo>.<ID>.jsonl` and runner state
-    `<repo>.<ID>.runner.json` (`references/runner.md`; a dead pid reads as
-    stopped), re-read on every request;
+  - phase names: the first heading of `references/work-on/phase-<n>.md`;
+  - run updates `$ASD_RUNS_DIR/<repo>.<ID>.jsonl` (lines may carry
+    `auto: true`) and runner state `<repo>.<ID>.runner.json`
+    (`references/runner.md`; a dead pid reads as stopped), re-read on every
+    request;
   - stubs: per repo main checkout `git ls-remote --heads origin 'stub/*'
-    'release/*'`; per branch `gh pr list --head <b> --base development`
-    (state, checks) and `gh pr list --base <b> --state open`; dossiers on a
-    stub = the first-parent merges `origin/development..origin/<b>` of the
-    local refs (the server never fetches; the ref age is shown) mapped by PR
-    number to the dossiers' `pr:` field, plus dossiers with an open PR into
-    the stub. State: `accepting` (no PR into development), `integrating`
-    (stage = last `## Step N`/`Round` heading of
-    `.discovery/analysis/stub-<date>*.md`), `merged`. All cached 2 min,
-    failures omitted;
-  - open work: `scripts/generate_open_work.py --root <repo>/.discovery
-    --worktrees --out ~/.agentic/open-work/<repo>.html --quiet --embed`
-    (without `--embed` when rejected), when the dossier set or an mtime
-    changed, at most once per 30 s per repo; served at `/open-work/<repo>`.
-- **Shown (one page):** top bar (counts, Slack, last scan); **Open questions**
-  (full width, only when any); a band with **Running dossiers** (status
-  building, review or pr, or a runner running/waiting: id, title, repo,
-  status, runner state, one-paragraph summary, stage as phase number and
-  name, session, context, requests, PR + CI, open-question badges, the last 5
-  updates with the rest expandable, the build-log line only without updates,
-  a Q&A expander, **View dossier**) and **This week's stub** (the newest stub
-  of each repo with its dossiers, their status and Q&A); the **Stubs** table
-  (branch, cut, state, stage, dossiers, PR + CI); **Open work** (repo tabs,
-  iframe). Answered questions are not a list: each sits under its dossier;
-  `/#q=<id>` opens any question's thread at the top.
-- **`GET /dossier/<repo>/<ID>`:** the winning dossier copy as read-only,
-  escaped HTML.
+    'release/*'`; per branch `gh pr list --head <b> --base development`.
+    **A stub shows only the dossiers implemented on it**: the first-parent
+    merges `origin/development..origin/<b>` of the local refs, mapped by PR
+    number to the dossiers' `pr:` field (or by a fix-branch name). An open PR
+    into the stub does not count. State: `accepting`, `integrating` (stage =
+    last `## Step N`/`Round` heading of `.discovery/analysis/stub-*.md`),
+    `merged`. Cached 2 min, failures omitted;
+  - open work: `scripts/generate_open_work.py` (see the code), served at
+    `/open-work/<repo>`.
+- **Pages (all deep links):**
+  - `/` Home: an **Open questions** card (count, oldest waiting) and one card
+    per repo (in progress / not started / done, open questions, newest stub
+    state); header with Slack status and the last update;
+  - `GET /questions`: every open question with options and consequences, the
+    recommendation highlighted, thread, follow-up and answer, each linking to
+    its dossier (`GET /questions#q=<id>` scrolls to one; old `/#<id>` links
+    redirect);
+  - `/repo/<repo>`: In progress, This week's stub, Not started, Done (newest
+    first, 12 then show all), Stubs, Dependency graph (`/repo/<repo>/graph`);
+  - `/repo/<repo>/<ID>`: not started or done shows the full dossier with its
+    answered questions; in progress shows the **run view**: header (summary,
+    status, stage, runner, context, PR + CI, View dossier) and a vertical
+    timeline, newest on top, merging updates (`auto` ones smaller),
+    questions with their thread and answer at their own times, and build-log
+    lines only without updates; a labelled divider whenever the `Phase <n>`
+    of the `stage` lines changes. A `planned` dossier whose updates file has
+    lines shows it under "Planning". `/repo/<repo>/<ID>/dossier` forces the
+    dossier;
+  - `/repo/<repo>/stub/<branch>`: header (cut, state, step, PR + CI,
+    implemented dossiers as cards) and a timeline from the record file
+    `stub-*.md` (each `##`/`###` heading an entry, dated by `(YYYY-MM-DD)` in
+    it else by position; `## Step N` headings are boundaries) plus updates and
+    questions under key `<repo>.<branch with / as ->`.
+- **Run controls** (POST, same Host/Origin checks; the button turns into
+  "Confirm ..." first, never a browser dialog). The command's one-line output
+  or error is shown on the card, with a link to the runner log:
+  - `POST /api/runs/<repo>/<ID>/start`: status `ready` and every id in
+    `blocked_by` is `done` (else "blocked by W-..."); runs
+    `python3 <plugin root>/scripts/run_dossier.py <ID> --root <main checkout>`;
+  - `POST .../resume`: not done, runner `stopped` or `failed`; same command
+    with `--root` = the `root` recorded in `<key>.runner.json`;
+  - `POST .../stop`: runner running or waiting; `run_dossier.py stop <ID>
+    --root <root>`;
+  - `GET /api/runs/<repo>/<ID>/log`: the last 200 lines of `<key>.runner.log`.
+- **Live updates:** `GET /api/events` is a Server-Sent Events stream that
+  watches the questions dir and `$ASD_RUNS_DIR` and sends
+  `event: changed` with `{"what": [...]}` (`questions`, `runs`, `stubs`,
+  `scan`) on a change and after each background rescan. The page re-fetches
+  only what changed and patches the DOM, so scroll, open expanders and typed
+  text stay; a 60 s poll runs only while the stream is down.
+- **Other API:** `GET /api/runs`, `/api/stubs`, `/api/questions`,
+  `/api/timeline/<repo>/<ID>`, `/api/dossier/<repo>/<ID>`,
+  `/api/stub?repo=&branch=`, and `GET /dossier/<repo>/<ID>` (read-only,
+  escaped HTML).
 - **Env overrides:** `ASD_RUNS_ROOTS`, `ASD_CLAUDE_PROJECTS`,
-  `ASD_RUNS_NO_GH=1`, `ASD_STUBS_NO_GIT=1` (no stub git calls), `ASD_RUNS_DIR`,
-  `ASD_OPEN_WORK_DIR`.
+  `ASD_RUNS_NO_GH=1`, `ASD_STUBS_NO_GIT=1`, `ASD_RUNS_DIR`,
+  `ASD_OPEN_WORK_DIR`, `ASD_RUNNER_BIN` (replaces the runner script path).

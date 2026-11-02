@@ -1,6 +1,6 @@
 // Owner-questions server: store, API, page and the Slack envelope handlers (no network, no Slack).
 // Run: bun --no-install shared/test/questions-server.test.ts
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, realpathSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
@@ -9,6 +9,8 @@ import { remindersDue } from "../questions/server.ts"
 import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile } from "../questions/stubs.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown } from "../questions/runstore.ts"
+import { mergeTimeline, parseRecord, logEntries } from "../questions/timeline.ts"
+import { blockedByOf, controlsFor } from "../questions/controls.ts"
 import { execFileSync } from "node:child_process"
 
 let failed = 0
@@ -134,6 +136,37 @@ check("runstore: a finished state is kept whatever the pid", readRunner("repoB.W
 check("runstore: summary prefers the Problem section, caps at 300", summaryOf("---\nid: A\n---\n# A\nIntro line.\n\n## Problem\nThe cache\nis stale. More.\n\n## Approach\nx") === "The cache is stale. More." && summaryOf("---\nid: A\n---\n# T\n\nFirst para\nwraps.\n\nSecond.") === "First para wraps." && summaryOf("# T\n" + "z".repeat(400)).length === 300)
 check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n```\n<script>x</script>\n```\n| a | b |").includes("&lt;b&gt;") && !renderMarkdown("<script>alert(1)</script>").includes("<script>") && renderMarkdown("- a\n- b").includes("<li>b</li>"))
 
+// timeline: merge, order and phase boundaries (pure)
+{
+  const U = (ts: string, kind: string, text: string, extra: object = {}) => ({ ts, kind, text, ...extra }) as any
+  // readUpdates returns newest first
+  const ups = [U("2026-11-02T10:05:00Z", "update", "suite green"), U("2026-11-02T10:04:00Z", "stage", "wave one", { stage: "Phase 4a fan-out" }), U("2026-11-02T10:03:00Z", "update", "auto note", { auto: true }), U("2026-11-02T10:02:00Z", "stage", "contract", { stage: "Phase 3" }), U("2026-11-02T10:01:00Z", "runner", "started")]
+  const tq: any = { id: "r.W-7.Q1", state: "answered", repo: "r", dossier: "W-7", root: "", text: "Which?", options: [], recommendation: "", blocks: "", ts: "2026-11-02T10:02:30Z", answer: null, lines: [
+    { ts: "2026-11-02T10:02:30Z", from: "agent", kind: "question", text: "Which?" }, { ts: "2026-11-02T10:03:30Z", from: "owner", kind: "followup", text: "why?" }, { ts: "2026-11-02T10:04:30Z", from: "owner", kind: "answer", text: "A it is", option: "A" }] }
+  const tl = mergeTimeline({ updates: ups, questions: [tq], names: { "3": "Contract", "4": "Fan out" } })
+  check("timeline: newest first, questions and thread at their own timestamps, boundaries at phase changes", tl.map((e) => e.type === "boundary" ? "B:" + e.label : e.type + ":" + e.text).join("|") ===
+    ["update:suite green", "answer:A it is", "stage:wave one", "B:Phase 4 — Fan out", "message:why?", "update:auto note", "question:Which?", "stage:contract", "B:Phase 3 — Contract", "runner:started"].join("|"), tl.map((e) => e.type + ":" + (e.label ?? e.text)).join("|"))
+  check("timeline: auto lines are flagged and a 4a after 4 is no new boundary", tl.find((e) => e.text === "auto note")?.auto === true && tl.filter((e) => e.type === "boundary").length === 2 &&
+    mergeTimeline({ updates: [U("3", "stage", "b", { stage: "Phase 4a" }), U("2", "stage", "a", { stage: "PHASE 4" })], questions: [] }).filter((e) => e.type === "boundary").length === 1)
+  const lg = logEntries("## Build log\n- Phase 3 contract\n  wrapped\n- second\n```text\nx\n```\n")
+  check("timeline: build-log entries only without updates", JSON.stringify(lg) === '["Phase 3 contract wrapped","second"]' && mergeTimeline({ updates: [], questions: [], log: lg }).map((e) => e.text).join("|") === "second|Phase 3 contract wrapped" && mergeTimeline({ updates: ups, questions: [], log: lg }).every((e) => e.type !== "log"))
+  const re = parseRecord("# Stub\n## Step 1 — cut (2026-11-01)\nbranch cut\n### Round 1 (2026-11-02)\nfoo\n## Notes\nbar\n", "2026-10-31")
+  check("timeline: a stub record gives one entry per heading, Step headings as boundaries, undated by position", re.length === 3 && re[0].type === "boundary" && re[0].ts === "2026-11-01" && re[1].type === "entry" && re[1].ts === "2026-11-02" && re[2].ts === "2026-11-02" && re[2].text === "bar" && parseRecord("## A\nx", "2026-10-31")[0].ts === "2026-10-31")
+  const stub = mergeTimeline({ updates: [], questions: [], extra: re })
+  check("timeline: the stub timeline is newest first", stub[0].label === "Notes" && stub[stub.length - 1].type === "boundary")
+}
+// controls: eligibility
+{
+  const st = (m: Record<string, string>) => (id: string) => m[id]
+  const run = (status: string, blockedBy: string[], runner: any = null) => ({ status, blockedBy, runner })
+  const rn = (state: string, root = "/r") => ({ state, stage: "", pid: 1, started: "", root }) as any
+  check("controls: blocked_by ids are read from a list value", JSON.stringify(blockedByOf("[W-1, W-22]")) === '["W-1","W-22"]' && blockedByOf("[]").length === 0 && blockedByOf(undefined).length === 0)
+  check("controls: start needs ready and every blocker done", controlsFor(run("ready", []), st({})).start.ok && controlsFor(run("ready", ["W-1"]), st({ "W-1": "done" })).start.ok && !controlsFor(run("ready", ["W-1"]), st({ "W-1": "building" })).start.ok && controlsFor(run("ready", ["W-1", "W-2"]), st({ "W-1": "done" })).start.reason === "blocked by W-2" && !controlsFor(run("planned", []), st({})).start.show && !controlsFor(run("building", []), st({})).start.show)
+  check("controls: resume for a stopped or failed runner of a dossier that is not done", controlsFor(run("building", [], rn("stopped")), st({})).resume.show && controlsFor(run("ready", [], rn("failed")), st({})).resume.ok && !controlsFor(run("done", [], rn("stopped")), st({})).resume.show && !controlsFor(run("building", [], rn("running")), st({})).resume.show && !controlsFor(run("building", [], rn("stopped", "")), st({})).resume.ok && !controlsFor(run("ready", [], rn("failed")), st({})).start.show)
+  check("controls: stop for a running or waiting runner only", controlsFor(run("building", [], rn("waiting")), st({})).stop.show && controlsFor(run("building", [], rn("running")), st({})).stop.show && !controlsFor(run("building", [], rn("stopped")), st({})).stop.show && !controlsFor(run("ready", []), st({})).stop.show)
+}
+check("stubs: no open-PR inclusion left in the code", !readFileSync(join(import.meta.dir, "..", "questions", "stubs.ts"), "utf8").includes("openPrsTargeting"))
+
 // stubs: a real git fixture (bare origin + clone) with a stub branch, a merge and a record
 const git = (cwd: string, ...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...a], { cwd, stdio: "pipe" }).toString()
 const origin = join(rdir, "origin.git"), repoC = join(rdir, "repoC")
@@ -148,15 +181,28 @@ mkdirSync(join(repoC, ".discovery", "dossiers"), { recursive: true }); mkdirSync
 writeFileSync(join(repoC, ".discovery", "dossiers", "W-9-nine.md"), "---\nid: W-9\ntitle: Nine\nstatus: done\npr: https://x/pull/12\n---\n# W-9\n\n## Problem\nNine is broken.\n")
 writeFileSync(join(repoC, ".discovery", "dossiers", "W-10-ten.md"), "---\nid: W-10\ntitle: Ten\nstatus: ready\n---\n# W-10\n\nTen paragraph.\n")
 writeFileSync(join(repoC, ".discovery", "analysis", "stub-2026-11-02-x.md"), rec)
+writeFileSync(join(repoC, ".discovery", "dossiers", "W-11-eleven.md"), "---\nid: W-11\ntitle: Eleven\nstatus: ready\nblocked_by: [W-9]\n---\n# W-11\n\nEleven paragraph.\n")
+writeFileSync(join(repoC, ".discovery", "dossiers", "W-12-twelve.md"), "---\nid: W-12\ntitle: Twelve\nstatus: ready\nblocked_by: [W-9, W-10]\n---\n# W-12\n")
+writeFileSync(join(repoC, ".discovery", "dossiers", "W-13-thirteen.md"), "---\nid: W-13\ntitle: Thirteen\nstatus: building\n---\n# W-13\n\n## Build log\n- Phase 3 x\n")
+writeFileSync(join(repoC, ".discovery", "dossiers", "W-14-fourteen.md"), "---\nid: W-14\ntitle: Fourteen\nstatus: review\npr: https://x/pull/13\n---\n# W-14\n")
+writeFileSync(join(repoC, ".discovery", "analysis", "stub-2026-11-02.md"), rec)
+const recordedRoot = join(rdir, "recorded-root")
+const argvLog = join(rdir, "argv.log"), fakeRunner = join(rdir, "fake_runner.py")
+writeFileSync(fakeRunner, "import os, sys\nopen(os.environ['ASD_FAKE_ARGV'], 'a').write(' '.join(sys.argv[1:]) + '\\n')\nprint('fake runner ok, pid 4242')\n")
 const odir = mkdtempSync(join(tmpdir(), "asd-oq-ow-")), runsDir = mkdtempSync(join(tmpdir(), "asd-oq-rd-"))
 writeFileSync(join(runsDir, "repoC.W-10.runner.json"), JSON.stringify({ pid: process.pid, state: "waiting", stage: "3", started: "s" }))
+writeFileSync(join(runsDir, "repoC.W-13.runner.json"), JSON.stringify({ pid: 2 ** 22 + 77, state: "running", stage: "3", started: "s", root: recordedRoot }))
+writeFileSync(join(runsDir, "repoC.W-10.runner.log"), Array.from({ length: 300 }, (_, i) => "line " + (i + 1)).join("\n") + "\n")
+writeFileSync(join(runsDir, "repoB.W-7.jsonl"), [{ ts: "2026-11-02T10:00:00Z", kind: "stage", text: "contract", stage: "Phase 3" }, { ts: "2026-11-02T10:05:00Z", kind: "stage", text: "wave", stage: "Phase 4" }, { ts: "2026-11-02T10:06:00Z", kind: "update", text: "tiny", auto: true }].map((x) => JSON.stringify(x)).join("\n") + "\n")
+writeFileSync(join(runsDir, "repoA.W-8.jsonl"), JSON.stringify({ ts: "2026-11-02T09:00:00Z", kind: "update", text: "planning started" }) + "\n")
+writeFileSync(join(runsDir, "repoC.stub-2026-11-02.jsonl"), JSON.stringify({ ts: "2026-11-02T11:00:00Z", kind: "update", text: "stub step done" }) + "\n")
 writeFileSync(join(runsDir, "repoC.W-10.jsonl"), JSON.stringify({ ts: "2026-11-02T10:00:00Z", kind: "update", text: "ten started" }) + "\n")
 
 // server over HTTP
 const sdir = mkdtempSync(join(tmpdir(), "asd-oq-srv-"))
 writeFileSync(join(sdir, "demo.W-2.Q1.jsonl"), JSON.stringify(qLine) + "\n")
 const proc = Bun.spawn(["/opt/homebrew/bin/bun", "--no-install", join(import.meta.dir, "..", "questions", "server.ts")], {
-  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: `${repoA}:${repoB}:${repoC}`, ASD_OPEN_WORK_DIR: odir, ASD_RUNS_DIR: runsDir, ASD_CLAUDE_PROJECTS: projects, ASD_RUNS_NO_GH: "1" },
+  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: `${repoA}:${repoB}:${repoC}`, ASD_OPEN_WORK_DIR: odir, ASD_RUNS_DIR: runsDir, ASD_CLAUDE_PROJECTS: projects, ASD_RUNS_NO_GH: "1", ASD_RUNNER_BIN: fakeRunner, ASD_FAKE_ARGV: argvLog },
   stdout: "pipe", stderr: "pipe",
 })
 const reader = proc.stdout.getReader()
@@ -187,7 +233,7 @@ try {
   check("server: answered drops out of state=open", ((await (await fetch(`${base}/api/questions?state=open`)).json()) as any[]).length === 0)
   const rv: any = await (await fetch(`${base}/api/runs`)).json()
   const r7 = rv.runs?.find((r: any) => r.id === "W-7")
-  check("server: /api/runs lists dossiers from the injected roots", rv.runs?.length === 4 && r7?.status === "building" && r7.phase === "4" && r7.repo === "repoB", JSON.stringify(rv).slice(0, 300))
+  check("server: /api/runs lists dossiers from the injected roots", rv.runs?.length === 8 && r7?.status === "building" && r7.phase === "4" && r7.repo === "repoB", JSON.stringify(rv).slice(0, 300))
   check("server: /api/runs session activity and context", r7?.session.state === "active" && r7.session.context === 143003 && r7.session.requests === 2 && r7.pr === null, JSON.stringify(r7?.session))
   check("server: /api/runs carries the open-question link", rv.runs.every((r: any) => Array.isArray(r.questions)) && typeof rv.scannedAt === "string")
   check("server: page has the Runs view and no external resources", html.includes("Open questions") && html.includes("/api/runs") && html.includes("/api/stubs") && !/https?:\/\//.test(html))
@@ -200,6 +246,54 @@ try {
   check("server: /api/stubs lists the stub with its dossier, state and stage", c?.branch === "stub/2026-11-02" && c.state === "accepting" && c.dossiers.length === 1 && c.dossiers[0].id === "W-9" && c.dossiers[0].status === "done" && !!c.refAge, JSON.stringify(sv).slice(0, 400))
   const ow = await fetch(`${base}/open-work/repoC`)
   check("server: /open-work/<repo> serves the generated report", ow.status === 200 && (await ow.text()).length > 100 && sv.openWork?.some((o: any) => o.repo === "repoC"))
+  check("server: stubs list only dossiers merged on them", c.dossiers.every((d: any) => d.via === "merged") && !c.dossiers.some((d: any) => d.id === "W-14"))
+  const r11 = rv.runs.find((r: any) => r.id === "W-11"), r12 = rv.runs.find((r: any) => r.id === "W-12"), r13 = rv.runs.find((r: any) => r.id === "W-13")
+  check("server: /api/runs carries the controls", r11.controls.start.ok && realpathSync(r11.main) === realpathSync(repoC), JSON.stringify(r11.controls))
+  check("server: a blocker that is not done blocks Start", r12.controls.start.show && !r12.controls.start.ok && r12.controls.start.reason === "blocked by W-10" && r10.controls.stop.show && r13.runner.state === "stopped" && r13.controls.resume.ok, JSON.stringify([r12.controls, r13.runner]))
+  for (const p of ["/questions", "/repo/repoC", "/repo/repoC/W-9", "/repo/repoC/W-9/dossier", "/repo/repoC/stub/stub/2026-11-02", "/repo/repoC/graph"]) {
+    const pr = await fetch(base + p); const t = await pr.text()
+    check("server: page route " + p + " is served", pr.status === 200 && t.includes("Owner questions") && t.includes("EventSource") && !/https?:\/\//.test(t))
+  }
+  const ev = await fetch(`${base}/api/timeline/repoB/W-7`), tj: any = await ev.json()
+  check("server: /api/timeline merges updates with phase boundaries, newest first", ev.status === 200 && tj.planning === false && tj.entries.map((e: any) => e.type === "boundary" ? "B:" + e.label : e.text).join("|") === "tiny|wave|B:Phase 4 \u2014 " + pn["4"] + "|contract|B:Phase 3 \u2014 " + pn["3"] && tj.entries[0].auto === true, JSON.stringify(tj.entries))
+  const pj: any = await (await fetch(`${base}/api/timeline/repoA/W-8`)).json()
+  check("server: a planned dossier with updates is a planning timeline", pj.planning === true && pj.entries[0].text === "planning started")
+  const dj: any = await (await fetch(`${base}/api/dossier/repoC/W-9`)).json()
+  check("server: /api/dossier renders the markdown", dj.html.includes("<h2>Problem</h2>") && !dj.html.includes("id: W-9") && dj.run.id === "W-9")
+  const sj: any = await (await fetch(`${base}/api/stub?repo=repoC&branch=${encodeURIComponent("stub/2026-11-02")}`)).json()
+  check("server: /api/stub timeline from the record and the stub updates, newest first", sj.hasRecord === true && sj.entries[0].text === "stub step done" && sj.entries.some((e: any) => e.type === "boundary" && e.label.startsWith("Step 2")) && sj.stub.branch === "stub/2026-11-02", JSON.stringify(sj.entries).slice(0, 400))
+  check("server: unknown stub is 404", (await fetch(`${base}/api/stub?repo=repoC&branch=nope`)).status === 404)
+  const lg = await fetch(`${base}/api/runs/repoC/W-10/log`), lt = await lg.text()
+  check("server: runner log is the last 200 lines", lg.status === 200 && lt.includes("line 300") && !lt.includes("line 100\n") && lt.split("\n").length <= 202 && (await fetch(`${base}/api/runs/repoC/W-11/log`)).status === 404)
+  const ctl = (p: string, headers: Record<string, string> = {}) => fetch(`${base}/api/runs/${p}`, { method: "POST", headers })
+  const s1 = await ctl("repoC/W-11/start")
+  const s1j: any = await s1.json()
+  check("server: Start runs the runner with the repo's main checkout and returns its line", s1.status === 200 && s1j.ok === true && s1j.output.includes("fake runner ok"), JSON.stringify(s1j))
+  check("server: Start is refused when blocked, when not ready, with a foreign origin, and by GET", (await ctl("repoC/W-12/start")).status === 409 && (await ctl("repoC/W-9/start")).status === 409 && (await ctl("repoC/W-11/start", { origin: "http://evil.example" })).status === 403 && (await fetch(`${base}/api/runs/repoC/W-11/start`)).status === 405 && (await ctl("repoC/NOPE/start")).status === 404)
+  const s2 = await ctl("repoC/W-13/resume"), s3 = await ctl("repoC/W-10/stop")
+  check("server: Resume and Stop succeed; Resume of a running dossier does not", s2.status === 200 && s3.status === 200 && (await ctl("repoC/W-10/resume")).status === 409 && (await ctl("repoC/W-11/stop")).status === 409)
+  const argv = readFileSync(argvLog, "utf8").trim().split("\n")
+  check("server: the runner got the right argv for start, resume (recorded root) and stop", argv.length === 3 && argv[0] === "W-11 --root " + realpathSync(repoC) && argv[1] === "W-13 --root " + recordedRoot && argv[2] === "stop W-10 --root " + realpathSync(repoC), JSON.stringify(argv))
+  {
+    const sse = await fetch(`${base}/api/events`), rd = sse.body!.getReader(), dec = new TextDecoder()
+    const readUntil = async (re: RegExp, ms: number): Promise<string> => {
+      let got = ""
+      const end = Date.now() + ms
+      while (Date.now() < end && !re.test(got)) {
+        const r = await Promise.race([rd.read(), new Promise<any>((res) => setTimeout(() => res({ timeout: true }), end - Date.now()))])
+        if (r.timeout || r.done) break
+        got += dec.decode(r.value)
+      }
+      return got
+    }
+    const first = await readUntil(/connected/, 3000)
+    writeFileSync(join(sdir, "demo.W-3.Q1.jsonl"), JSON.stringify({ ...qLine, dossier: "W-3" }) + "\n")
+    const second = await readUntil(/event: changed[\s\S]*\n\n/, 5000)
+    check("server: /api/events streams and emits changed on a store change", sse.headers.get("content-type")?.includes("text/event-stream") === true && first.includes("connected") && second.includes("event: changed") && second.includes("questions"), first + second)
+    writeFileSync(join(runsDir, "repoC.W-10.jsonl"), JSON.stringify({ ts: "2026-11-02T12:00:00Z", kind: "update", text: "more" }) + "\n", { flag: "a" })
+    check("server: a run update emits runs", (await readUntil(/runs/, 5000)).includes("runs"))
+    await rd.cancel()
+  }
   check("server: unsafe or unknown open-work repo is 404", (await fetch(`${base}/open-work/nope`)).status === 404)
   const dp = await fetch(`${base}/dossier/repoC/W-9`)
   const dh = await dp.text()
