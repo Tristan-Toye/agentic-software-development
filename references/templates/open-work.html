@@ -291,7 +291,6 @@ html[data-embed] .wrap { padding-top: 14px; padding-bottom: 28px; }
 }
 .graph-cap .n { font-weight: 700; color: var(--ink-2); }
 svg.dg { display: block; margin: 0 auto; }
-.dg-band { fill: var(--grid); opacity: .45; }
 .dg-edge { fill: none; stroke: var(--ink-3); stroke-width: 1.5; opacity: .4; transition: opacity .15s ease, stroke-width .15s ease; }
 .dg-edge.hl { opacity: 1; stroke-width: 2.4; }
 .dg-node { cursor: pointer; }
@@ -553,8 +552,12 @@ if (DATA.dossiers.length) {
   app.append(enter(h), enter(panels), enter(note));
 
   function draw() {
-    const graph = dependencyGraph(DATA.dossiers, toggle.checked);
-    const groups = flows(graph.ids, graph.edges);
+    const graph = dependencyGraph(DATA.dossiers, toggle.checked, TB);
+    /* tb draws everything as ONE layered graph (shared Start / Earlier-work
+       roots); lr keeps one rectangle per independent flow */
+    const groups = TB
+      ? (graph.ids.length ? [{ ids: graph.ids, edges: graph.edges }] : [])
+      : flows(graph.ids, graph.edges);
     panels.replaceChildren();
     groups.forEach((g, i) => {
       const panel = el("div", "graph-panel");
@@ -565,7 +568,7 @@ if (DATA.dossiers.length) {
         cap.append(el("span", null, `${count} dossier${count === 1 ? "" : "s"}`));
         panel.append(cap);
       }
-      panel.append(depGraph(g.ids, g.edges, graph.nodes, panels.clientWidth - 22));
+      panel.append(depGraph(g.ids, g.edges, graph.nodes));
       panels.append(panel);
     });
     note.textContent = (toggle.checked
@@ -579,19 +582,9 @@ if (DATA.dossiers.length) {
     draw();
   });
   draw();
-  /* wrapped ranks depend on the container width: re-layout when it changes */
-  if (TB && window.ResizeObserver) {
-    let lastW = panels.clientWidth, timer = 0;
-    new ResizeObserver(() => {
-      if (panels.clientWidth === lastW) return;
-      lastW = panels.clientWidth;
-      clearTimeout(timer);
-      timer = setTimeout(draw, 120);
-    }).observe(panels);
-  }
 }
 
-function dependencyGraph(dossiers, simplified) {
+function dependencyGraph(dossiers, simplified, shared) {
   const finished = new Set(["done", "dropped"]);
   const byId = Object.fromEntries(dossiers.map(d => [d.id, d]));
   const visible = new Set(dossiers
@@ -618,8 +611,9 @@ function dependencyGraph(dossiers, simplified) {
       incoming = true;
     }
     if (!incoming) {
-      const stub = "\u0000stub:" + d.id;
       const history = d.blocked_by.length > 0;
+      /* shared: one Start and one Earlier-work node for the whole graph */
+      const stub = "\u0000stub:" + (shared ? (history ? "earlier" : "start") : d.id);
       nodes[stub] = {
         id: stub, label: history ? "Earlier work" : "Start",
         title: history ? "Done or dropped history hidden" : "No recorded prerequisites",
@@ -667,7 +661,9 @@ function flows(ids, edges) {
   return out;
 }
 
-function depGraph(ids, edges, nodes, availW) {
+/* Left-to-right layout: the original column layout, unchanged. Returns the
+   node positions, the svg size and one path string per edge. */
+function lrLayout(ids, edges) {
   /* layer = longest chain of blockers behind the dossier */
   const layer = {};
   const incoming = Object.fromEntries(ids.map(id => [id, []]));
@@ -722,11 +718,10 @@ function depGraph(ids, edges, nodes, availW) {
   order.forEach(col => col.forEach((id, i) => { rowOf[id] = i; }));
 
   const PW = 168, PH = 48, PAD = 18;
-  const GX = TB ? 16 : 74, GY = TB ? 36 : 20;
-  let pos = {}, width, height, bands = [];
-  if (TB) {
-    ({ pos, width, height, bands } = tbLayout(order, availW));
-  } else {
+  const GX = 74, GY = 20;
+  const pos = {};
+  let width, height;
+  {
     const maxRows = Math.max(...order.map(c => c.length));
     width = PAD * 2 + order.length * PW + (order.length - 1) * GX;
     height = PAD * 2 + maxRows * PH + (maxRows - 1) * GY;
@@ -737,6 +732,30 @@ function depGraph(ids, edges, nodes, availW) {
     });
   }
 
+  const edgeD = hops.map(chain => {
+    let d = "";
+    for (let i = 0; i < chain.length - 1; i++) {
+      const [x1, y1] = lrAnchor(chain[i], true), [x2, y2] = lrAnchor(chain[i + 1], false);
+      const mx = (x1 + x2) / 2;
+      if (i === 0) d += `M ${x1} ${y1} `;
+      d += `C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2} `;
+    }
+    return d.trim();
+  });
+  /* a real node's box edge, or the bare center of an invisible dummy row */
+  function lrAnchor(id, out) {
+    const [x, y] = pos[id];
+    if (id in dummyLayer) return [x + PW / 2, y + PH / 2];
+    return out ? [x + PW, y + PH / 2] : [x - 2, y + PH / 2];
+  }
+  return { pos, width, height, edgeD };
+}
+
+
+function depGraph(ids, edges, nodes) {
+  const PW = 168, PH = 48;
+  const { pos, width, height, edgeD } = TB ? layeredLayout(ids, edges) : lrLayout(ids, edges);
+
   const svg = svgEl("svg", { class: "dg" + (TB ? " tb" : ""), width, height, viewBox: `0 0 ${width} ${height}`, role: "img" });
   svg.setAttribute("aria-label", "Dependency flow: " + edges.map(([a, b]) => `${nodes[a].label || a} before ${nodes[b].label || b}`).join(", "));
   const defs = svgEl("defs", {});
@@ -745,29 +764,10 @@ function depGraph(ids, edges, nodes, availW) {
   marker.append(svgEl("path", { d: "M0,0.5 L8,4 L0,7.5 Z", fill: "var(--ink-3)" }));
   defs.append(marker);
   svg.append(defs);
-  for (const b of bands)
-    svg.append(svgEl("rect", { class: "dg-band", x: b[0], y: b[1], width: b[2], height: b[3], rx: 12 }));
-
-  /* a real node's box edge, or the bare center of an invisible dummy row */
-  function anchor(id, out) {
-    const [x, y] = pos[id];
-    if (id in dummyLayer) return [x + PW / 2, y + PH / 2];
-    if (TB) return out ? [x + PW / 2, y + PH] : [x + PW / 2, y - 2];
-    return out ? [x + PW, y + PH / 2] : [x - 2, y + PH / 2];
-  }
 
   const edgeEls = [];
-  hops.forEach((chain, ei) => {
-    const [a, b] = edges[ei];
-    let d = "";
-    for (let i = 0; i < chain.length - 1; i++) {
-      const [x1, y1] = anchor(chain[i], true);
-      const [x2, y2] = anchor(chain[i + 1], false);
-      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-      if (i === 0) d += `M ${x1} ${y1} `;
-      d += TB ? `C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2} ` : `C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2} `;
-    }
-    const p = svgEl("path", { class: "dg-edge", "marker-end": "url(#dg-arrow)", d: d.trim() });
+  edges.forEach(([a, b], ei) => {
+    const p = svgEl("path", { class: "dg-edge", "marker-end": "url(#dg-arrow)", d: edgeD[ei] });
     p.dataset.from = a; p.dataset.to = b;
     svg.append(p);
     edgeEls.push(p);
@@ -805,36 +805,186 @@ function depGraph(ids, edges, nodes, availW) {
   return svg;
 }
 
-/* Top-to-bottom placement. A rank is a row of nodes at their natural size;
-   a rank wider than availW wraps into several rows (rank order kept, wrapped
-   rows close together, ranks further apart, a light band behind a wrapped
-   rank). Nodes are never scaled: if even one node does not fit, the svg is
-   wider than availW and its panel scrolls. Pure — no DOM. */
-function tbLayout(order, availW) {
-  const PW = 168, PH = 48, PAD = 18, GX = 16, GY = 36, GYW = 12, BP = 8;
-  const perRow = Math.max(1, Math.floor((availW - PAD * 2 + GX) / (PW + GX)));
-  const rows = [];                                   // {rank, ids}
-  order.forEach((col, r) => {
-    for (let i = 0; i < col.length; i += perRow) rows.push({ rank: r, ids: col.slice(i, i + perRow) });
-  });
-  const widest = Math.max(1, ...rows.map(r => r.ids.length));
-  const inner = widest * PW + (widest - 1) * GX;
-  const pos = {}, bands = [];
-  let y = PAD, prev = -1;
-  for (const row of rows) {
-    if (prev >= 0) y += row.rank === prev ? GYW : GY;
-    const x0 = PAD + (inner - (row.ids.length * PW + (row.ids.length - 1) * GX)) / 2;
-    row.ids.forEach((id, i) => { pos[id] = [x0 + i * (PW + GX), y]; });
-    row.y = y;
-    y += PH;
-    prev = row.rank;
+
+/* Top-to-bottom layered (Sugiyama-style) layout of one connected drawing.
+   1. rank   = longest path from the roots (a blocked_by cycle is tolerated);
+   2. dummy  = one invisible waypoint per rank an edge skips, so a long edge
+      travels through the gaps between the boxes of every row it crosses;
+   3. order  = barycenter/median sweeps, down then up, the best of ~10 passes
+      kept, then an adjacent-swap polish;
+   4. x      = nodes keep their natural size and a minimum gap; each rank is
+      pulled toward its neighbours' centres (weighted so dummy chains run
+      straight) and snapped to the nearest legal spacing.
+   An edge leaves a box at its bottom centre, runs vertically through each
+   dummy's slot (a slot is a column no box occupies) and crosses the gap
+   between rows as an S curve with vertical tangents, entering at the top
+   centre. So no segment can touch a box other than its own two ends.
+   Pure — no DOM. Returns pos (top-left of each real node), the svg size, one
+   path string and one point list per edge. */
+function layeredLayout(ids, edges) {
+  const PW = 168, PH = 48, PAD = 18, GX = 20, GY = 46, DW = 10;
+  const incoming = {};
+  for (const id of ids) incoming[id] = [];
+  for (const [a, b] of edges) incoming[b].push(a);
+  const rank = {};
+  function depth(id, trail) {
+    if (id in rank) return rank[id];
+    if (trail.has(id)) return 0;                       // cycle guard
+    trail.add(id);
+    const bl = incoming[id];
+    rank[id] = bl.length ? 1 + Math.max(...bl.map(b => depth(b, trail))) : 0;
+    return rank[id];
   }
-  order.forEach((col, r) => {
-    const rr = rows.filter(w => w.rank === r);
-    if (rr.length > 1)
-      bands.push([PAD - BP, rr[0].y - BP, inner + BP * 2, rr[rr.length - 1].y + PH - rr[0].y + BP * 2]);
+  for (const id of ids) depth(id, new Set());
+
+  const R = Math.max(0, ...ids.map(id => rank[id]));
+  const w = {}, layers = Array.from({ length: R + 1 }, () => []);
+  for (const id of ids) { w[id] = PW; layers[rank[id]].push(id); }
+  const up = {}, down = {};                            // id -> [[neighbour, weight]]
+  const chains = [];
+  let seq = 0;
+  function link(a, b) {
+    const wt = (w[a] === DW && w[b] === DW) ? 8 : (w[a] === DW || w[b] === DW) ? 3 : 1;
+    (down[a] = down[a] || []).push([b, wt]);
+    (up[b] = up[b] || []).push([a, wt]);
+  }
+  for (const [a, b] of edges) {
+    if (!(rank[b] > rank[a])) { chains.push(null); continue; }   // cycle leftover: drawn direct
+    const chain = [a];
+    for (let r = rank[a] + 1; r < rank[b]; r++) {
+      const d = "\u0000d" + seq++;
+      w[d] = DW; rank[d] = r; layers[r].push(d); chain.push(d);
+    }
+    chain.push(b);
+    for (let i = 0; i < chain.length - 1; i++) link(chain[i], chain[i + 1]);
+    chains.push(chain);
+  }
+
+  /* ---- order: crossing reduction */
+  function index(order) {
+    const m = {};
+    order.forEach(l => l.forEach((id, i) => { m[id] = i; }));
+    return m;
+  }
+  function crossings(order) {
+    const ix = index(order);
+    let n = 0;
+    for (let r = 0; r < R; r++) {
+      const segs = [];
+      for (const a of order[r]) for (const [b] of down[a] || []) segs.push([ix[a], ix[b]]);
+      for (let i = 0; i < segs.length; i++)
+        for (let j = i + 1; j < segs.length; j++)
+          if ((segs[i][0] - segs[j][0]) * (segs[i][1] - segs[j][1]) < 0) n++;
+    }
+    return n;
+  }
+  let order = layers.map(l => l.slice());
+  let best = order.map(l => l.slice()), bestN = crossings(best);
+  function sweep(dir, useMedian) {
+    const range = [...order.keys()];
+    if (dir < 0) range.reverse();
+    for (const r of range) {
+      if (r === (dir > 0 ? 0 : R)) continue;
+      const ix = index(order), nb = dir > 0 ? up : down;
+      const key = {};
+      order[r].forEach((id, i) => {
+        const ns = (nb[id] || []).map(([n]) => ix[n]).sort((p, q) => p - q);
+        if (!ns.length) key[id] = i;
+        else if (useMedian) {
+          const m = ns.length;
+          key[id] = m % 2 ? ns[(m - 1) / 2] : (ns[m / 2 - 1] + ns[m / 2]) / 2;
+        } else key[id] = ns.reduce((s, v) => s + v, 0) / ns.length;
+      });
+      const cur = {};
+      order[r].forEach((id, i) => { cur[id] = i; });
+      order[r] = order[r].slice().sort((p, q) => key[p] - key[q] || cur[p] - cur[q]);
+    }
+  }
+  for (let it = 0; it < 10 && bestN > 0; it++) {
+    sweep(1, it % 2 === 1); sweep(-1, it % 2 === 1);
+    const n = crossings(order);
+    if (n < bestN) { bestN = n; best = order.map(l => l.slice()); }
+  }
+  order = best;
+  for (let pass = 0; pass < 4 && bestN > 0; pass++) {          // transpose polish
+    let improved = false;
+    for (const col of order)
+      for (let i = 0; i + 1 < col.length; i++) {
+        [col[i], col[i + 1]] = [col[i + 1], col[i]];
+        const n = crossings(order);
+        if (n < bestN) { bestN = n; improved = true; }
+        else [col[i], col[i + 1]] = [col[i + 1], col[i]];
+      }
+    if (!improved) break;
+  }
+
+  /* ---- x: natural widths, minimum gap, straight dummy chains */
+  const cx = {};
+  const sep = (p, q) => (w[p] + w[q]) / 2 + GX;
+  for (const col of order) {
+    let x = 0;
+    col.forEach((id, i) => { x += i ? sep(col[i - 1], id) : w[id] / 2; cx[id] = x; });
+  }
+  function place(col, nbrOf) {
+    const ys = [], wt = [];
+    let off = 0;
+    col.forEach((id, i) => {
+      if (i) off += sep(col[i - 1], id);
+      const ns = nbrOf(id);
+      const tw = ns.reduce((s, [, k]) => s + k, 0);
+      const want = tw ? ns.reduce((s, [n, k]) => s + cx[n] * k, 0) / tw : cx[id];
+      ys.push([want - off, off]); wt.push(tw || 0.01);
+    });
+    /* pool adjacent violators: closest non-decreasing fit, i.e. the nearest legal spacing */
+    const blocks = [];
+    ys.forEach(([v], i) => {
+      blocks.push({ s: v * wt[i], w: wt[i], n: 1 });
+      while (blocks.length > 1) {
+        const b = blocks[blocks.length - 1], a = blocks[blocks.length - 2];
+        if (a.s / a.w <= b.s / b.w) break;
+        blocks.pop(); a.s += b.s; a.w += b.w; a.n += b.n;
+      }
+    });
+    let i = 0;
+    for (const b of blocks)
+      for (let k = 0; k < b.n; k++, i++) cx[col[i]] = b.s / b.w + ys[i][1];
+  }
+  const upNs = id => up[id] || [], downNs = id => down[id] || [];
+  const bothNs = id => upNs(id).concat(downNs(id));
+  for (let it = 0; it < 6; it++) {
+    for (let r = 1; r <= R; r++) place(order[r], upNs);
+    for (let r = R - 1; r >= 0; r--) place(order[r], downNs);
+  }
+  for (let it = 0; it < 6; it++) {
+    for (let r = 0; r <= R; r++) place(order[r], bothNs);
+    for (let r = R; r >= 0; r--) place(order[r], bothNs);
+  }
+  let minX = Infinity, maxX = -Infinity;
+  for (const id in cx) { minX = Math.min(minX, cx[id] - w[id] / 2); maxX = Math.max(maxX, cx[id] + w[id] / 2); }
+  const shift = PAD - minX;
+  for (const id in cx) cx[id] += shift;
+  const rowY = r => PAD + r * (PH + GY);
+  const pos = {};
+  for (const id of ids) pos[id] = [cx[id] - PW / 2, rowY(rank[id])];
+
+  /* ---- edges as point lists, then smooth paths */
+  const paths = edges.map(([a, b], ei) => {
+    const chain = chains[ei] || [a, b];
+    const pts = [[cx[a], rowY(rank[a]) + PH]];
+    for (const d of chain.slice(1, -1)) pts.push([cx[d], rowY(rank[d])], [cx[d], rowY(rank[d]) + PH]);
+    pts.push([cx[b], rowY(rank[b]) - 2]);
+    return pts;
   });
-  return { pos, bands, width: PAD * 2 + inner, height: y + PAD, perRow, rows: rows.length, nodeW: PW, nodeH: PH };
+  const edgeD = paths.map(pts => {
+    let d = `M ${pts[0][0]} ${pts[0][1]}`;
+    for (let i = 1; i < pts.length; i++) {
+      const [x1, y1] = pts[i - 1], [x2, y2] = pts[i], my = (y1 + y2) / 2;
+      d += x1 === x2 ? ` L ${x2} ${y2}` : ` C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`;
+    }
+    return d;
+  });
+  return { pos, width: maxX + shift + PAD, height: rowY(R) + PH + PAD, edgeD, paths,
+           nodeW: PW, nodeH: PH, crossings: bestN };
 }
 
 /* Order each column to minimize edge crossings. Small flows — almost all of

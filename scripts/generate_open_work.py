@@ -36,10 +36,14 @@ detail sheet; the pipeline dashboard passes `--link-base /repo/<repo>` with
 `--embed`, so a click in the graph lands on that dossier's dashboard route.
 Without the flag the report behaves as before.
 `--direction lr|tb` picks the graph layout: `lr` (default) puts dependency
-ranks in columns, left to right; `tb` lays them out top to bottom (prerequisites
-on top, a rank's nodes spread across a row, edges leave a node's bottom and
-enter the next one's top), so it fits a narrow column without horizontal
-scrolling. `--simplify-default` opens the report with the Simplify toggle on;
+ranks in columns, left to right; `tb` draws ONE layered graph top to bottom
+(all flows merged, roots sharing one display-only "Start" and one "Earlier work"
+node): longest-path ranks, a dummy waypoint for every rank an edge skips so long
+edges run through the gaps between boxes, barycenter/median crossing reduction,
+nodes at natural size with straight dummy chains. Edges leave a box's bottom
+centre and enter the next one's top centre and never cross a box; nothing wraps
+or shrinks, a drawing wider than the panel scrolls inside the panel.
+`--simplify-default` opens the report with the Simplify toggle on;
 the toggle still works, and a choice the user remembered in localStorage wins.
 The dashboard passes `--direction tb --simplify-default` with `--embed`.
 
@@ -575,10 +579,10 @@ def _check_flows_js() -> list[str]:
     if not match:
         return ["template no longer defines flows(ids, edges)"]
     graph_match = re.search(
-        r"^function dependencyGraph\(dossiers, simplified\) \{\n.*?^\}$",
+        r"^function dependencyGraph\(dossiers, simplified, shared\) \{\n.*?^\}$",
         template, re.DOTALL | re.MULTILINE)
     if not graph_match:
-        return ["template no longer defines dependencyGraph(dossiers, simplified)"]
+        return ["template no longer defines dependencyGraph(dossiers, simplified, shared)"]
     if not shutil.which("node"):
         print("selftest: node missing — skipped the dependency graph checks",
               file=sys.stderr)
@@ -751,27 +755,82 @@ def selftest() -> int:
               and "open-work-simplify" in tbh,
               "template reads the direction and the Simplify default; "
               "a remembered choice still wins")
-        # tb layout: a 12-node rank wraps at 770 px, nodes keep their size.
+        # tb layout: one layered drawing; no edge segment crosses a node box.
         node = shutil.which("node")
         if node:
-            m = re.search(r"function tbLayout\(.*?\n}\n", tbh, re.S)
+            m = re.search(r"function layeredLayout\(.*?\n}\n", tbh, re.S)
             js = (m.group(0) if m else "") + """
-const ids = Array.from({length: 12}, (_, i) => "n" + i);
-const a = tbLayout([["r"], ids], 770), b = tbLayout([["r"], ids], 5000);
-const ys = new Set(ids.map(i => a.pos[i][1]));
-console.log(JSON.stringify({rows: ys.size, w: a.nodeW, h: a.nodeH,
-  fits: a.width <= 770, wide: new Set(ids.map(i => b.pos[i][1])).size,
-  band: a.bands.length}));"""
+const fixtures = [];
+// config-harness-like: shared Start, a 12-wide rank, edges spanning 3+ ranks
+{
+  const ids = ["S", ...Array.from({length: 12}, (_, i) => "w" + i), "m1", "m2", "m3", "z", "y"];
+  const e = [];
+  for (let i = 0; i < 12; i++) e.push(["S", "w" + i]);
+  e.push(["w0", "m1"], ["w1", "m1"], ["m1", "m2"], ["m2", "m3"], ["m3", "z"],
+         ["w5", "z"], ["S", "z"], ["w11", "y"], ["w2", "y"], ["m1", "y"], ["S", "y"]);
+  fixtures.push([ids, e]);
+}
+// pseudo-random layered DAGs with many long edges
+let seed = 7; const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+for (let k = 0; k < 25; k++) {
+  const n = 8 + Math.floor(rnd() * 30), ids = Array.from({length: n}, (_, i) => "n" + i), e = [];
+  for (let j = 1; j < n; j++) for (let t = 0; t < 1 + Math.floor(rnd() * 3); t++) {
+    const i = Math.floor(rnd() * j); if (!e.some(x => x[0] === ids[i] && x[1] === ids[j])) e.push([ids[i], ids[j]]);
+  }
+  fixtures.push([ids, e]);
+}
+function sample(pts) {                       // points along the path the page draws
+  const out = [];
+  for (let i = 1; i < pts.length; i++) {
+    const [x1, y1] = pts[i - 1], [x2, y2] = pts[i], my = (y1 + y2) / 2;
+    for (let t = 0; t <= 1.0001; t += 0.02) {
+      const u = 1 - t, y = u*u*u*y1 + 3*u*u*t*my + 3*u*t*t*my + t*t*t*y2;
+      const x = x1 === x2 ? x1 : u*u*u*x1 + 3*u*u*t*x1 + 3*u*t*t*x2 + t*t*t*x2;
+      out.push([x, y]);
+    }
+  }
+  return out;
+}
+let through = 0, overlap = 0, edges = 0, wide = 0, size = [0, 0], badPath = 0;
+for (const [ids, e] of fixtures) {
+  const L = layeredLayout(ids, e);
+  size = [L.nodeW, L.nodeH];
+  const boxes = ids.map(i => L.pos[i]);
+  for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+    const [a, b] = [boxes[i], boxes[j]];
+    if (a[0] < b[0] + 168 && b[0] < a[0] + 168 && a[1] < b[1] + 48 && b[1] < a[1] + 48) overlap++;
+  }
+  L.paths.forEach((pts, ei) => {
+    edges++;
+    if (!L.edgeD[ei].startsWith("M ")) badPath++;
+    for (const [x, y] of sample(pts))
+      for (const [bx, by] of boxes)
+        if (x > bx + 1 && x < bx + 167 && y > by + 1 && y < by + 47) through++;
+  });
+  const xs = ids.map(i => L.pos[i][0]);
+  if (Math.min(...xs) >= 0 && L.width >= Math.max(...xs) + 168) wide++;
+}
+const F = layeredLayout(...fixtures[0]);
+const ys = new Set(fixtures[0][0].slice(1, 13).map(i => F.pos[i][1]));
+console.log(JSON.stringify({through, overlap, edges, wide, n: fixtures.length, size,
+  oneRow: ys.size, width: F.width, badPath}));"""
             r = subprocess.run([node, "-e", js], capture_output=True, text=True)
             try:
                 got = json.loads(r.stdout)
             except ValueError:
                 got = {}
-            check(got.get("rows", 0) >= 2 and got.get("fits") and got.get("wide") == 1
-                  and got.get("band") == 1,
-                  "tb: a 12-node rank wraps into >=2 rows at 770 px, one row when wide")
-            check((got.get("w"), got.get("h")) == (168, 48),
+                failures.append("tb layout test did not run: " + r.stderr[-300:])
+            check(got.get("edges", 0) > 50 and got.get("through") == 0,
+                  "tb: no edge segment passes through any node box "
+                  f"({got.get('edges')} edges over {got.get('n')} fixtures)")
+            check(got.get("overlap") == 0 and got.get("wide") == got.get("n"),
+                  "tb: nodes never overlap and all lie inside the drawing")
+            check(got.get("oneRow") == 1 and got.get("width", 0) > 770,
+                  "tb: a 12-wide rank stays one row (no wrapping, no shrinking)")
+            check(got.get("size") == [168, 48] and got.get("badPath") == 0,
                   "tb node size equals the lr node size (never scaled)")
+        check("dg-band" not in tbh and "tbLayout" not in tbh,
+              "tb: the wrapped-rank bands are gone")
         check(build_payload(root, today, direction="up")["direction"] == "lr",
               "an unknown direction falls back to lr")
         check("LINK_BASE" in lb and "top.location" in lb,
