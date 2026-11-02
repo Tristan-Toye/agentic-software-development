@@ -25,6 +25,21 @@ git worktree add ../<repo>-<ID>-P2 -b <branch>-p2 <X-head>
 The suffix uses a dash, never a slash: git refuses `<branch>/p1` while
 `<branch>` exists, because one ref cannot be both a name and a directory.
 
+**Then let the repository prepare each new worktree.** When `X` holds an
+executable `.worktree-setup.sh` at its root, run it once per implementer
+worktree, after the `git worktree add` and before the spawn:
+
+```
+<X>/.worktree-setup.sh <X> ../<repo>-<ID>-P1
+```
+
+It is the repository's own step, never the plugin's: a Rust repository
+clones `X`'s warm build directory into the new worktree, so an implementer's
+first build compiles the workspace crates and no dependency. Log one line per
+worktree from its last output line. A non-zero exit is logged and the spawn
+goes ahead: a worktree without the setup is slower, never wrong. Concurrent
+calls are the script's concern; run them in one shell call, one per worktree.
+
 **Spawn every independent agent in one message so they run concurrently.**
 Sequence only what `Depends on` in `## Work packages` forces. A dependent
 package forks from **its dependency's branch head** once that implementer

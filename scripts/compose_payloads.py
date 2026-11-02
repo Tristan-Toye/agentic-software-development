@@ -34,7 +34,9 @@ TEST_COMMAND/HOOKS (from the flags; an implementer MODE=fix gets `run_gates.py`
 over the run's gates file — the dossier's `GATES:` line, else
 `.discovery/analysis/gates-<ID>.txt` — followed by `&& <--test-command>`, the
 test subset the orchestrator runs itself, so a fix round never runs a narrower or
-stricter list than CI's; only `--set TEST_COMMAND=` replaces it whole),
+stricter list than CI's; only `--set TEST_COMMAND=` replaces it whole; a
+`--test-command` is wrapped in `run_tests.py --log <tmp>/run_tests-<ID>-<pkg>.log
+-- bash -c '<cmd>'`, so it runs once and the implementer greps the log),
 MAX_SINGLE_EDIT, CITATION and NAMING
 (fixed process conventions, from the skeletons, overridable with --set),
 ROUND (default 1); ARBITRATIONS is always a fill.
@@ -121,6 +123,7 @@ import argparse
 import importlib.util
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -583,6 +586,21 @@ def gates_test_command(root: str, dossier_text: str, dossier_id: str) -> str | N
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_gates.py"), path, root)
 
 
+def logged_test_command(cmd: str, dossier_id: str, tag: str) -> str:
+    """An implementer's --test-command, run once through run_tests.py: the full
+    output goes to a log the implementer greps, and only a digest (counts and
+    the failing tests) reaches its context. Recorded runs re-ran the same suite
+    with no edit between in a quarter of the implementers' test calls, only to
+    read the output through another `tail` or `grep`. A command that already
+    goes through run_tests.py or run_gates.py stays as it is."""
+    if re.search(r"\brun_(tests|gates)\.py\b", cmd):
+        return cmd
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", "%s-%s" % (dossier_id or "run", tag)).strip("-").lower()
+    log = os.path.join(tempfile.gettempdir(), "run_tests-%s.log" % slug)
+    return "python3 %s --log %s -- bash -c %s" % (
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_tests.py"), log, shlex.quote(cmd))
+
+
 def compose_implementer(ctx: dict) -> list[Field]:
     """WORKTREE_DIR/BRANCH: mechanical — build mode forks a per-package
     worktree and branch suffix (`references/payloads/implementer.md`,
@@ -665,11 +683,14 @@ def compose_implementer(ctx: dict) -> list[Field]:
     # MODE fix: the whole gates list first, then the test subset the orchestrator
     # runs itself (--test-command, e.g. the VM suite), never one in place of the other.
     gates_cmd = gates_test_command(root, dossier_text, fm.get("id", "")) if mode == "fix" else None
-    if gates_cmd and args.test_command:
-        gates_cmd = "%s && %s" % (gates_cmd, args.test_command)
+    test_cmd = logged_test_command(
+        args.test_command, fm.get("id", ""), args.package.split()[0] if args.package else mode
+    ) if args.test_command else None
+    if gates_cmd and test_cmd:
+        gates_cmd = "%s && %s" % (gates_cmd, test_cmd)
     fields["TEST_COMMAND"] = Field(
         "TEST_COMMAND",
-        gates_cmd or args.test_command or placeholder(
+        gates_cmd or test_cmd or placeholder(
             "TEST_COMMAND", "the EXISTING suite's invocation, verified in your own shell "
             "first, and its known-red shape if the baseline is not green"),
     )
@@ -1610,7 +1631,10 @@ def selftest() -> int:
         base_impl = ["implementer", "--host", "opencode", "--package", "P1", "--contract-paths", "src/flush.py", "--hooks", "none"]
         rc, ml_path, out = run_compose("ML.md", base_impl + ["--test-command", "pytest -q\n  -x"])
         ml_text = read_text(ml_path) if rc == 0 else ""
-        check("a multi-line TEST_COMMAND is written as a block", "TEST_COMMAND: |\n  pytest -q\n    -x\n" in ml_text, out)
+        check("a multi-line TEST_COMMAND is written as a block",
+              "TEST_COMMAND: |\n  python3 " in ml_text and "-- bash -c 'pytest -q\n    -x'\n" in ml_text, out)
+        check("a --test-command runs once through run_tests.py into a per-package log",
+              "run_tests.py --log %s -- bash -c" % os.path.join(tempfile.gettempdir(), "run_tests-w-014-p1.log") in ml_text, out)
         check("no composed line sits at column 0 unless it opens a field",
               not [l for l in ml_text.splitlines()[1:] if l and not l.startswith(" ") and not re.match(r"^[A-Z][A-Z0-9_-]*:", l)])
         rc2, out2 = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"), ml_path,
@@ -1646,7 +1670,8 @@ def selftest() -> int:
         rc, g2, out = run_compose("G2.md", fix_args + ["--test-command", "pytest -q"])
         g2_text = read_text(g2) if rc == 0 else ""
         check("a --test-command runs after the gates, never instead of them",
-              rc == 0 and "gates-W-014.txt --root %s && pytest -q" % root in g2_text, out)
+              rc == 0 and re.search(r"gates-W-014\.txt --root %s && python3 \S+run_tests\.py --log \S+ -- bash -c 'pytest -q'"
+                                    % re.escape(root), g2_text) is not None, out)
         rc, g4, out = run_compose("G4.md", fix_args + ["--set", "TEST_COMMAND=make check"])
         check("--set TEST_COMMAND replaces it whole",
               rc == 0 and "TEST_COMMAND: make check" in read_text(g4), out)
