@@ -1,0 +1,166 @@
+// Slack, Socket Mode without Bolt. Envelope handling is pure; I/O lives below it.
+import type { Question } from "./store.ts"
+
+export type OwnerAction =
+  | { type: "owner"; id: string; kind: "answer" | "followup"; text: string; option?: string; channel?: string; threadTs?: string }
+  | { type: "pointer"; channel: string; threadTs?: string }
+  | { type: "reconnect" }
+  | { type: "hello" }
+  | { type: "none" }
+
+export type Interpreted = { ack: { envelope_id: string } | null; action: OwnerAction }
+
+/**
+ * Turn one Socket Mode envelope into the ack to send and the action to take.
+ * `lookup(channel, threadTs)` maps a thread root to a question id (via the sidecars).
+ * `ownerUser` (optional) restricts events to that member.
+ */
+export function interpretEnvelope(
+  env: any,
+  lookup: (channel: string, threadTs: string) => string | null,
+  ownerUser = "",
+): Interpreted {
+  const ack = typeof env?.envelope_id === "string" ? { envelope_id: env.envelope_id } : null
+  const none: Interpreted = { ack, action: { type: "none" } }
+  switch (env?.type) {
+    case "hello":
+      return { ack, action: { type: "hello" } }
+    case "disconnect":
+      return { ack, action: { type: "reconnect" } }
+    case "events_api": {
+      const ev = env.payload?.event
+      if (!ev || ev.type !== "message" || ev.channel_type !== "im") return none
+      if (ev.bot_id || ev.subtype) return none
+      if (ownerUser && ev.user && ev.user !== ownerUser) return none
+      const text = String(ev.text ?? "").trim()
+      if (!text) return none
+      const threadTs: string | undefined = ev.thread_ts && ev.thread_ts !== ev.ts ? ev.thread_ts : undefined
+      const id = threadTs ? lookup(ev.channel, threadTs) : null
+      if (!id) return { ack, action: { type: "pointer", channel: ev.channel, threadTs } }
+      const m = text.match(/^answer:\s*([\s\S]*)$/i)
+      if (m) return { ack, action: { type: "owner", id, kind: "answer", text: m[1].trim(), channel: ev.channel, threadTs } }
+      return { ack, action: { type: "owner", id, kind: "followup", text, channel: ev.channel, threadTs } }
+    }
+    case "interactive": {
+      const p = env.payload
+      if (p?.type !== "block_actions") return none
+      if (ownerUser && p.user?.id && p.user.id !== ownerUser) return none
+      const value = String(p.actions?.[0]?.value ?? "")
+      const i = value.lastIndexOf("|")
+      if (i < 1) return none
+      return {
+        ack,
+        action: { type: "owner", id: value.slice(0, i), kind: "answer", text: "", option: value.slice(i + 1), channel: p.channel?.id },
+      }
+    }
+    default:
+      return none
+  }
+}
+
+export const POINTER_TEXT = "Reply in a question's thread: a plain reply asks a follow-up, `answer: ...` answers it."
+
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+}
+const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s)
+
+export function pageLink(port: number | string, id: string): string {
+  return `http://127.0.0.1:${port}/#${id}`
+}
+
+export function questionBlocks(q: Question, port: number | string, answered = false): any[] {
+  const opts = q.options
+    .map((o) => `*${esc(o.key)}* ${esc(o.label)}${o.consequence ? ` — ${esc(o.consequence)}` : ""}`)
+    .join("\n")
+  let body = `*${esc(q.repo)} · ${esc(q.dossier)}*\n${esc(q.text)}`
+  if (q.blocks) body += `\n_Blocks:_ ${esc(q.blocks)}`
+  if (opts) body += `\n\n${opts}`
+  if (q.recommendation) body += `\n\n_Recommended:_ *${esc(q.recommendation)}*`
+  if (answered && q.answer) {
+    body += `\n\n:white_check_mark: *Answered${q.answer.option ? ` (${esc(String(q.answer.option))})` : ""}:* ${esc(q.answer.text)}`
+  }
+  const blocks: any[] = [{ type: "section", text: { type: "mrkdwn", text: clip(body, 2900) } }]
+  if (!answered && q.options.length) {
+    blocks.push({
+      type: "actions",
+      elements: q.options.map((o) => ({
+        type: "button",
+        action_id: `opt_${o.key}`,
+        text: { type: "plain_text", text: clip(`${o.key}: ${o.label}`, 75) },
+        value: `${q.id}|${o.key}`,
+      })),
+    })
+  }
+  blocks.push({
+    type: "context",
+    elements: [{ type: "mrkdwn", text: `${esc(q.repo)} / ${esc(q.dossier)} / \`${esc(q.id)}\` · <${pageLink(port, q.id)}|open page>` }],
+  })
+  return blocks
+}
+
+export function keychain(service: string): string {
+  try {
+    const r = Bun.spawnSync(["security", "find-generic-password", "-s", service, "-w"], { stdout: "pipe", stderr: "ignore" })
+    return r.exitCode === 0 ? r.stdout.toString().trim() : ""
+  } catch {
+    return ""
+  }
+}
+
+export async function api(method: string, token: string, body?: unknown): Promise<any> {
+  const res = await fetch(`https://slack.com/api/${method}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json; charset=utf-8" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  const j: any = await res.json().catch(() => ({}))
+  if (!j.ok) throw new Error(`slack ${method}: ${j.error ?? res.status}`)
+  return j
+}
+
+export type Handlers = {
+  onAction: (a: OwnerAction) => Promise<void> | void
+  lookup: (channel: string, threadTs: string) => string | null
+  ownerUser: string
+  log: (m: string) => void
+}
+
+/** Run the Socket Mode loop forever, reconnecting with backoff (1 s doubling to 60 s). */
+export async function runSocket(appToken: string, h: Handlers): Promise<never> {
+  let delay = 1000
+  for (;;) {
+    try {
+      const open = await api("apps.connections.open", appToken)
+      await new Promise<void>((resolve) => {
+        const ws = new WebSocket(open.url)
+        ws.onmessage = async (e) => {
+          let env: any
+          try {
+            env = JSON.parse(String(e.data))
+          } catch {
+            return
+          }
+          const { ack, action } = interpretEnvelope(env, h.lookup, h.ownerUser)
+          if (ack) ws.send(JSON.stringify(ack))
+          if (action.type === "hello") delay = 1000
+          else if (action.type === "reconnect") ws.close()
+          else if (action.type !== "none") {
+            try {
+              await h.onAction(action)
+            } catch (err) {
+              h.log(`slack action failed: ${(err as Error).message}`)
+            }
+          }
+        }
+        ws.onclose = () => resolve()
+        ws.onerror = () => resolve()
+      })
+      h.log("slack socket closed, reconnecting")
+    } catch (err) {
+      h.log(`slack connect failed: ${(err as Error).message}`)
+    }
+    await Bun.sleep(delay)
+    delay = Math.min(delay * 2, 60000)
+  }
+}
