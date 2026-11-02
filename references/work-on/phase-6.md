@@ -110,6 +110,13 @@ change:
 | The failure reproduces on the **target branch at the merge-base**, untouched by this build | nobody — **upstream** | Prove it first (below), then fix it on your branch to keep green, log `UPSTREAM:` with the proof, and say in the PR description that the fix belongs upstream independently of this change. |
 | The failure is **intermittent** — `FLAKY` in a repeat run, or a red that a rerun of the same head turns green | **unknown until the mechanism is found** | Find the race (below), then rule on the mechanism: rows 1–3, or row 5 with a repeated proof. Never "nobody", and never a rerun until green. |
 
+**A fix round carries its row-1 rulings to the implementers.** When you
+compose a fix round, put each row-1 ruling of that round (a test ruled a test
+defect) into the payload of every implementer whose owned paths that test
+exercises, under `FAILURES` as a `TEST-DEFECTS:` sub-list: the test name, then
+"ruled a test defect — do not change code for this test". Without it the
+implementer bends the code to a test that is already wrong.
+
 **Under Claude Code, a re-spawn in rows 1–3 is a resume** whenever the agent's
 ID is known and the contract is unchanged: `SendMessage` to the test author or
 the implementer with only the correction (for the implementer, the
