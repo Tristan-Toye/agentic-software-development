@@ -49,6 +49,12 @@ their change requests together. Each payload's `CONTRACT` is the dossier's
 files hold the merged code now). Under Claude Code each spawn prompt is the
 payload itself, pasted (`compose_payloads.py --emit-prompt <final>`); the
 `PAYLOAD_FILE` pointer is the opencode form (`references/work-on/phase-4.md`).
+A field built from several documents (`ARBITRATIONS`, `PRIOR_CRS`) is either one
+`--excerpt FILE:A-B ... --excerpt-field FIELD` (FILE under `<X>`, relative or
+absolute; one outside `<X>` is refused) or a `--set 'FIELD=# FILE:A-B' ...`
+value whose first line of each slice is a `# FILE:A-B` header, so the lens can
+cite the file and lines of every pasted slice. Quote the value; the command
+runs the same under bash and zsh.
 
 **Under Claude Code, send the round through the workflow, once.** Compose and
 lint the round's payloads as above, then call the `Workflow` tool once with
