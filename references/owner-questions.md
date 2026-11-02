@@ -98,8 +98,9 @@ It prints at most 40 lines.
   - a Slack DM: the question, `blocks`, each option as a button and as a
     line with its consequence, the recommendation, and a link to the page.
 - **New agent reply:** posted into the question's Slack thread.
-- **Reminder:** an open question whose last line is an agent line older than
-  2 h is notified again, at most once per 2 h.
+- **Reminder:** an open question whose last line is an agent line is notified
+  again 30 min after that line, then 1 h later, then every 2 h. A new agent
+  line restarts the schedule; a server restart sends no backlog.
 - **Page** `GET /`: the open questions by dossier, then the answered ones.
   - Each question shows its thread, the option buttons (an answer), a text
     box with **Ask follow-up** and **Answer**.

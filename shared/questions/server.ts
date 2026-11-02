@@ -6,7 +6,13 @@ import { PAGE } from "./page.ts"
 import { api, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 
 const DIR = storeDir()
-const REMIND_MS = 2 * 3600 * 1000
+const MIN = 60 * 1000
+/** Reminders due after `elapsedMs` of waiting: at 30 min, at 1 h 30 (1 h later), then every 2 h. */
+export function remindersDue(elapsedMs: number): number {
+  if (elapsedMs < 30 * MIN) return 0
+  if (elapsedMs < 90 * MIN) return 1
+  return 2 + Math.floor((elapsedMs - 90 * MIN) / (120 * MIN))
+}
 let PORT = 0
 const log = (m: string) => console.log(`[asd-questions] ${m}`)
 
@@ -61,9 +67,9 @@ async function slackMarkAnswered(q: Question): Promise<void> {
 }
 
 // ---- Watch + notify ----
-type Seen = { n: number; remindedAt: number; marked: boolean }
+// `since`: ts of the agent line the reminders count from; `reminders`: how many were sent for it.
+type Seen = { n: number; since: string; reminders: number; marked: boolean }
 const seen = new Map<string, Seen>()
-const startedAt = Date.now()
 let scanning = false
 let again = false
 
@@ -83,7 +89,10 @@ export async function scan(): Promise<void> {
       const s = seen.get(q.id)
       if (!s) {
         const side = readSidecar(DIR, q.id)
-        seen.set(q.id, { n: q.lines.length, remindedAt: q.state === "open" ? (side ? startedAt : Date.now()) : 0, marked: q.state === "answered" })
+        const last = q.lines[q.lines.length - 1]
+        // A question already posted before this start is caught up without a burst of reminders.
+        const caughtUp = side && last.from === "agent" ? remindersDue(Date.now() - Date.parse(last.ts)) : 0
+        seen.set(q.id, { n: q.lines.length, since: last.ts, reminders: caughtUp, marked: q.state === "answered" })
         if (q.state === "open" && !side) {
           notify(`${q.repo} · ${q.dossier}`, q.id, q.text)
           if (slackOn()) await safe(slackPostQuestion(q), "slack post question")
@@ -105,8 +114,10 @@ export async function scan(): Promise<void> {
       if (q.state === "open") {
         const last = q.lines[q.lines.length - 1]
         const now = Date.now()
-        if (last.from === "agent" && now - Date.parse(last.ts) > REMIND_MS && now - s.remindedAt > REMIND_MS) {
-          s.remindedAt = now
+        if (last.from !== "agent") continue
+        if (last.ts !== s.since) { s.since = last.ts; s.reminders = 0 }
+        if (remindersDue(now - Date.parse(last.ts)) > s.reminders) {
+          s.reminders = remindersDue(now - Date.parse(last.ts))
           notify(`Still waiting: ${q.repo} · ${q.dossier}`, q.id, q.text)
           if (slackOn()) await safe(slackThread(q.id, `Reminder: still waiting for your answer. ${pageLink(PORT, q.id)}`), "slack reminder")
         }

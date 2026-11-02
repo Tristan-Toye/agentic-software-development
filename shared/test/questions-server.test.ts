@@ -5,11 +5,18 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { interpretEnvelope, questionBlocks } from "../questions/slack.ts"
+import { remindersDue } from "../questions/server.ts"
 
 let failed = 0
 function check(name: string, ok: boolean, detail = ""): void {
   if (!ok) failed++
   console.log(`${ok ? "PASS" : "FAIL"} ${name}${ok ? "" : ` ${detail}`}`)
+}
+
+{
+  const m = 60 * 1000
+  const due = [0, 29, 30, 89, 90, 209, 210, 330].map((x) => remindersDue(x * m))
+  check("reminders at 30 min, +1 h, then every 2 h", JSON.stringify(due) === JSON.stringify([0, 0, 1, 1, 2, 2, 3, 4]), JSON.stringify(due))
 }
 
 const dir = mkdtempSync(join(tmpdir(), "asd-oq-"))
