@@ -54,7 +54,14 @@ so re-derive them in it, never fall back to a Phase 5 manual diff.
 migration, a table, a counted file, or moves a file, grep the tree for pins
 that count or list it — a table-name census, a migration count `(1..=N)`, a
 `[&str; N]` array, an inventory row count — and give each one an owner: the
-package that moves it, or a criterion with a test-author owner. Ask the same
+package that moves it, or a criterion with a test-author owner. Also grep for **exact-output
+assertions over changed members**: a test that compares the whole result of a
+member this contract changes (full-map or collection equality) breaks when the
+result gains a key or an item. Recipe per language: Rust
+`grep -rnE 'assert_eq!\(.*(<member>)'`, Python `grep -rnE 'assert .*<member>.* == [\[{(]'`,
+TS/JS `grep -rnE '<member>.*(toEqual|toStrictEqual|toBe)\('`, C#/Java
+`grep -rnE '(Assert\.(Equal|AreEqual)|assertEquals)\(.*<member>'`. Each hit
+gets an owner or a criterion before the fan-out, like any other pin. Ask the same
 question of the **checkout shape**: which existing suite cases depend on the
 shape this contract changes? A contract that adds a worktree-detecting guard
 (or any checkout-sensitive behaviour) makes a case that runs past the argument
