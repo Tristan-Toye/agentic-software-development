@@ -48,10 +48,18 @@ export function lastPhase(log: string): string {
   for (const m of log.matchAll(/\bPhase (\d+[a-z]?)\b|\bPHASE (\d+[a-z]?)\b/g)) last = m[1] ?? m[2]
   return last
 }
+/** The last build-log entry, whole: a wrapped bullet is joined back, a trailing fenced block is skipped. */
 export function lastLine(log: string): string {
-  const ls = log.split("\n").map((l) => l.trim()).filter(Boolean)
-  const l = ls.length > 1 ? ls[ls.length - 1] : ""
-  return l.length > 160 ? l.slice(0, 160) : l
+  let ls = log.split("\n").map((l) => l.trim()).filter(Boolean).slice(1) // drop the "## Build log" heading
+  if (ls.length && ls[ls.length - 1].startsWith("```")) {
+    const open = ls.slice(0, -1).map((l) => l.startsWith("```")).lastIndexOf(true)
+    ls = open >= 0 ? ls.slice(0, open) : ls
+  }
+  const isStart = (l: string) => /^(- |\* |#{2,4} |[A-Z][A-Z0-9-]+(\s*\([^)]*\))?:)/.test(l)
+  let i = ls.length - 1
+  while (i > 0 && !isStart(ls[i])) i--
+  const l = ls.slice(Math.max(i, 0)).join(" ").replace(/^(- |\* |#{2,4} )/, "")
+  return l.length > 160 ? l.slice(0, 159) + "…" : l
 }
 
 /** Dossier files under one root, each parsed. */

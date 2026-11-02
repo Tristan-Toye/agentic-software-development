@@ -77,7 +77,8 @@ writeFileSync(join(repoA, ".discovery", "dossiers", "W-8-eight.md"), "---\nid: W
 const fm = parseFrontMatter(dossier("building", "x\n"))
 check("runs: front matter scalars", fm.id === "W-7" && fm.title === "Seven" && fm.status === "building" && fm.jira === "W-7" && fm.updated === "2026-11-02")
 check("runs: last phase match wins, else empty", lastPhase("Phase 1 PHASE 4a Phase 4") === "4" && lastPhase("nothing") === "")
-check("runs: last non-empty line, 160 chars", lastLine(buildLog(dossier("x", "- a\n- " + "z".repeat(200) + "\n\n"))).length === 160 && lastLine(buildLog(dossier("x", "- a\n- b\n\n"))) === "- b")
+check("runs: last non-empty line, 160 chars", lastLine(buildLog(dossier("x", "- a\n- " + "z".repeat(200) + "\n\n"))).length === 160 && lastLine(buildLog(dossier("x", "- a\n- b\n\n"))) === "b")
+check("runs: a wrapped last entry is joined, a trailing fence skipped", lastLine(buildLog(dossier("x", "- a\n- Phase 6 closed: suite\n  green on abc\n"))) === "Phase 6 closed: suite green on abc" && lastLine(buildLog(dossier("x", "- a\n### Round 1\n```text\nCR-1\n```\n"))) === "Round 1")
 const picked = pickDossiers([repoA, repoB])
 const w7 = picked.find((d) => d.front.id === "W-7")!
 check("runs: longest build log wins and records its worktree", picked.length === 2 && w7.worktree === repoB && w7.front.status === "building")
