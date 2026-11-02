@@ -218,7 +218,7 @@ expensive output of the run. Run
 python3 "${PLUGIN_ROOT}/scripts/compose_payloads.py" --kind <agent> \
   --dossier <live dossier> --root <X> --host <opencode|claude> \
   --out <X>/.agent-staging/payloads/<id>.md --package <P> \
-  --contract-paths <files> --test-command '<verified command>' \
+  --contract-paths '<f1,f2>' --test-command '<verified command>' \
   --hooks '<HOOKS>' --manifest <X>/.agent-staging/payloads/wave<k>.txt
 ```
 
@@ -229,7 +229,13 @@ leaves every judgement field as `@@FILL_<FIELD>@@` with a one-line hint.
 Replace each `@@FILL_…@@` yourself — `check_payload.py` refuses any that
 is left — or pass it with `--set FIELD=VALUE`. `--contract-paths` is for this
 phase's kinds, whose files are still stubs; a Phase 7 reviewer or fix
-implementer takes CONTRACT from the dossier instead. The manifest line it appends
+implementer takes CONTRACT from the dossier instead. Pass `--contract-paths` as
+one comma-separated string, and quote every `--set` value: the command must
+run the same under bash and zsh, which differ on unquoted word splitting, so
+never feed it an unquoted variable or an array. A `--set WORKTREE_DIR=<path>`
+is used as given; only the derived value gets the `-<package>` suffix. Each
+pasted contract file opens with a `# path:` line, and a Python file under a
+package with a `# import:` line. The manifest line it appends
 is the `prepare_wave.py` input. A composed payload is a final: the lint and
 the same-turn re-read below apply to it unchanged.
 

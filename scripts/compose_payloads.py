@@ -98,7 +98,8 @@ removed. `--excerpt` lines that are all blank are refused for the same reason.
 `--failures-from LOG` fills FAILURES (implementer `--set MODE=fix`, or the
 integration author) with run_tests.py's digest of LOG — totals, capped failing
 tests with their detail lines, every line cut — instead of a hand-pasted log.
-`--excerpt FILE:A-B` (repeatable; FILE absolute or relative to --root) pastes
+`--excerpt FILE:A-B` (repeatable; FILE relative to --root, or absolute under it, which is
+normalised to relative; an absolute path outside --root is refused) pastes
 those 1-based inclusive lines, at most 200 in all, into the field named by
 `--excerpt-field FIELD` (SUPPORT, CONVENTIONS, ...), each under a `# FILE:A-B`
 line; the field must not also be given with `--set`.
@@ -276,7 +277,7 @@ def contract_bytes(paths: list[str], root: str) -> str:
         path = raw if os.path.isabs(raw) else os.path.join(root, raw)
         if not os.path.isfile(path):
             raise Refusal("contract file not found: %s" % path)
-        texts.append(read_text(path))
+        texts.append(pwh.contract_file_text(path, raw, root, read_text(path)))
     return "\n\n".join(texts)
 
 
@@ -640,7 +641,10 @@ def compose_implementer(ctx: dict) -> list[Field]:
             raise Refusal("implementer MODE=build needs --package")
         row = find_package_row(dossier_text, args.package)
         code = args.package.split()[0]
-        fields["WORKTREE_DIR"] = Field("WORKTREE_DIR", "%s-%s" % (root.rstrip("/"), code.upper()))
+        # The per-package suffix applies to the derived value only: an explicit
+        # --set WORKTREE_DIR=... is used unchanged (apply_overrides, below).
+        if "WORKTREE_DIR" not in sets:
+            fields["WORKTREE_DIR"] = Field("WORKTREE_DIR", "%s-%s" % (root.rstrip("/"), code.upper()))
         fields["BRANCH"] = Field("BRANCH", "%s-%s" % (branch, code.lower()))
         owned_paths = [p.strip() for p in row[1].split(",") if p.strip()]
         fields["PACKAGE"] = Field("PACKAGE", row[0])
@@ -778,13 +782,19 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
 
     apply_overrides(fields, sets, blocks={
         "CONTRACT", "PROMISE_CHECKLIST", "CONVENTIONS", "FIXTURES", "STYLE_SAMPLE",
-        "SUPPORT", "SHARED_IDIOM", "DELIVERY_CHANGE", "CITATION",
+        "SUPPORT", "SHARED_IDIOM", "DELIVERY_CHANGE", "CITATION", "FAILURES", "CORRECTION",
     })
+    if "FAILURES" in fields and not is_placeholder(fields["FAILURES"].value) \
+            and "BASELINE_COUNTS_FROM" not in fields:
+        fields["BASELINE_COUNTS_FROM"] = Field("BASELINE_COUNTS_FROM", placeholder(
+            "BASELINE_COUNTS_FROM", "the sha the FAILURES counts were taken at, or "
+            "`pre-change tree re-run` — never an earlier phase's numbers"))
     order = ["CONTRACT", "PROMISE_CHECKLIST", "TEST_PATHS", "TEST_FRAMEWORK",
              "MAX_SINGLE_EDIT", "CITATION", "CONVENTIONS",
              "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
              "NAMING", "VOCABULARY", "FIXTURES", "SHARED_IDIOM",
-             "DELIVERY_CHANGE", "CONTRACT_HASH"]
+             "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "BASELINE_COUNTS_FROM",
+             "CONTRACT_HASH"]
     return ordered(fields, order)
 
 
@@ -812,8 +822,13 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     staging = os.path.join(root, ".agent-staging")
     os.makedirs(staging, exist_ok=True)
     excerpt_path = os.path.join(staging, "%s.excerpt.md" % dossier_id)
+    jira = fm.get("jira", "")
+    excerpt_text_ = excerpt(dossier_text, ("## Problem", "## Approach", "## Acceptance criteria"))
+    # #197: the dossier id is local and gitignored; a test that cites it leaks
+    # a planning id into the repo. The Jira key replaces it, or it is dropped.
+    excerpt_text_ = re.sub(re.escape(dossier_id), jira, excerpt_text_)
     with open(excerpt_path, "w", encoding="utf-8") as fh:
-        fh.write(excerpt(dossier_text, ("## Problem", "## Approach", "## Acceptance criteria")))
+        fh.write(excerpt_text_)
 
     contract_text = contract_text_for(ctx)
     fields: dict[str, Field] = {
@@ -830,6 +845,9 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
             "seed it"), block=True),
         "STYLE_SAMPLE": Field("STYLE_SAMPLE", placeholder(
             "STYLE_SAMPLE", "one existing integration test, pasted verbatim"), block=True),
+        "CITATION": Field("CITATION", CITATION_DEFAULT + "\n" + (
+            "Where a file names its ticket, cite the Jira key `%s`; never a planning id." % jira
+            if jira else "Never cite a planning id (a dossier id) in a test file."), block=True),
         "BOUNDARIES": Field("BOUNDARIES", placeholder(
             "BOUNDARIES", "which two or three seams are substituted (e.g. IClock, an "
             "external API) — everything else runs for real")),
@@ -837,7 +855,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     }
     apply_overrides(fields, sets, blocks={
         "CONTRACT", "HARNESS", "STYLE_SAMPLE", "PROMISE_CHECKLIST", "SHARED_IDIOM",
-        "DELIVERY_CHANGE", "SUPPORT", "FAILURES", "CORRECTION",
+        "DELIVERY_CHANGE", "SUPPORT", "FAILURES", "CORRECTION", "CITATION",
     })
     if "FAILURES" in fields and not is_placeholder(fields["FAILURES"].value) \
             and "BASELINE_COUNTS_FROM" not in fields:
@@ -845,7 +863,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
             "BASELINE_COUNTS_FROM", "the sha the FAILURES counts were taken at, or "
             "`pre-change tree re-run` — never an earlier phase's numbers"))
     order = ["WORKTREE_DIR", "DOSSIER", "CONTRACT", "PROMISE_CHECKLIST", "TEST_PATHS",
-             "TEST_FRAMEWORK", "HARNESS", "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
+             "TEST_FRAMEWORK", "CITATION", "HARNESS", "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
              "BOUNDARIES", "SHARED_IDIOM", "DELIVERY_CHANGE", "FAILURES", "CORRECTION",
              "CONTRACT_HASH"]
     return ordered(fields, order)
@@ -1006,20 +1024,26 @@ def excerpt_text(specs: list[str], root: str) -> str:
         if not m:
             raise Refusal("--excerpt expects FILE:A-B (line numbers), got %r" % spec)
         a, b = int(m.group("a")), int(m.group("b"))
-        path = m.group("file") if os.path.isabs(m.group("file")) else os.path.join(root, m.group("file"))
+        name = m.group("file")
+        if os.path.isabs(name):
+            rel = os.path.relpath(os.path.realpath(name), os.path.realpath(root))
+            if rel == ".." or rel.startswith(".." + os.sep):
+                raise Refusal("--excerpt %s is outside --root %s; stage the file under --root first" % (name, root))
+            name = rel
+        path = os.path.join(root, name)
         if not os.path.isfile(path):
             raise Refusal("excerpt file not found: %s" % path)
         lines = read_text(path).split("\n")
         if lines and lines[-1] == "":
             lines.pop()
         if not 1 <= a <= b <= len(lines):
-            raise Refusal("excerpt %s: lines %d-%d are outside the file (1-%d)" % (m.group("file"), a, b, len(lines)))
+            raise Refusal("excerpt %s: lines %d-%d are outside the file (1-%d)" % (name, a, b, len(lines)))
         if not any(l.strip() for l in lines[a - 1 : b]):
-            raise Refusal("excerpt %s:%d-%d is all blank lines; an empty excerpt is a stager defect" % (m.group("file"), a, b))
+            raise Refusal("excerpt %s:%d-%d is all blank lines; an empty excerpt is a stager defect" % (name, a, b))
         total += b - a + 1
         if total > MAX_EXCERPT_LINES:
             raise Refusal("excerpts total %d lines; the cap is %d" % (total, MAX_EXCERPT_LINES))
-        parts.append("# %s:%d-%d\n%s" % (m.group("file"), a, b, "\n".join(lines[a - 1 : b])))
+        parts.append("# %s:%d-%d\n%s" % (name, a, b, "\n".join(lines[a - 1 : b])))
     return "\n\n".join(parts)
 
 
@@ -1502,6 +1526,14 @@ def selftest() -> int:
         impl_text = read_text(impl_path) if rc == 0 else ""
         check("implementer WORKTREE_DIR is the P1 worktree",
               ("WORKTREE_DIR: %s-P1" % root) in impl_text)
+        rc_w, wt_path, out_w = run_compose("P1w.md", [
+            "implementer", "--host", "opencode", "--package", "P1",
+            "--contract-paths", "src/flush.py", "--test-command", "pytest -q", "--hooks", "none",
+            "--set", "WORKTREE_DIR=%s-P1" % root,
+        ])
+        wt_text = read_text(wt_path) if rc_w == 0 else ""
+        check("an explicit WORKTREE_DIR passes through unchanged, no second suffix",
+              ("WORKTREE_DIR: %s-P1\n" % root) in wt_text and "-P1-P1" not in wt_text, out_w)
         check("implementer BRANCH carries the -p1 suffix",
               "BRANCH: fix/PROJ-142-flush-coalescing-p1" in impl_text)
         check("implementer JIRA_KEY verbatim from the dossier", "JIRA_KEY: PROJ-142" in impl_text)
@@ -1561,6 +1593,47 @@ def selftest() -> int:
         excerpt_path = os.path.join(root, ".agent-staging", "W-014.excerpt.md")
         check("integration-test-author DOSSIER names the generated excerpt",
               ("DOSSIER: %s" % excerpt_path) in it_text)
+        import io, contextlib
+        base_impl = ["implementer", "--host", "opencode", "--package", "P1", "--contract-paths", "src/flush.py", "--hooks", "none"]
+        check("integration-test-author payload carries CITATION with the Jira key (#185, #197)",
+              "CITATION: |" in it_text and "cite the Jira key `PROJ-142`" in it_text)
+        id_dossier = os.path.join(root, "W-014-idleak.md")
+        with open(id_dossier, "w", encoding="utf-8") as fh:
+            fh.write(DOSSIER_FIXTURE.replace("## Approach\n", "## Approach\nSee W-014 for the history.\n", 1))
+        id_out = os.path.join(root, ".agent-staging", "payloads", "IT-id.md")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc_id = main(["--kind", "integration-test-author", "--dossier", id_dossier, "--root", root,
+                          "--out", id_out, "--plugin-root", plugin_root, "--host", "claude",
+                          "--contract-paths", "src/flush.py"])
+        id_excerpt = read_text(excerpt_path)
+        check("the integration excerpt swaps the dossier id for the Jira key (#197)",
+              rc_id == 0 and "See PROJ-142 for the history." in id_excerpt and "W-014" not in id_excerpt)
+        with open(id_dossier, "w", encoding="utf-8") as fh:
+            fh.write(DOSSIER_FIXTURE)
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["--kind", "integration-test-author", "--dossier", dossier_path, "--root", root,
+                  "--out", id_out, "--plugin-root", plugin_root, "--host", "claude",
+                  "--contract-paths", "src/flush.py"])
+        # --- #184: each pasted contract file is prefixed with its path and import ---
+        os.makedirs(os.path.join(root, "pkg", "sub"), exist_ok=True)
+        for rel in ("pkg/__init__.py", "pkg/sub/__init__.py"):
+            with open(os.path.join(root, rel), "w", encoding="utf-8") as fh:
+                fh.write("")
+        with open(os.path.join(root, "pkg", "sub", "mod.py"), "w", encoding="utf-8") as fh:
+            fh.write("def run(x):\n    \"\"\"Runs.\"\"\"\n\n\ndef _hidden():\n    pass\n\n\nclass Box:\n    pass\n")
+        pasted_c = contract_bytes(["pkg/sub/mod.py", os.path.join(root, "src", "flush.py")], root)
+        check("a pasted contract file carries # path: and, under a package, # import: (#184)",
+              pasted_c.startswith("# path: pkg/sub/mod.py\n# import: from pkg.sub.mod import run, Box\ndef run")
+              and "\n\n# path: src/flush.py\n" in pasted_c and "# import: from src" not in pasted_c)
+        # --- #194: --excerpt takes an absolute path under --root, refuses one outside ---
+        rc, ab_path, out = run_compose("EXabs.md", base_impl + [
+            "--test-command", "pytest -q", "--excerpt", os.path.join(root, "src", "flush.py") + ":1-2",
+            "--excerpt-field", "SUPPORT"])
+        check("--excerpt normalises an absolute path under --root",
+              rc == 0 and "  # src/flush.py:1-2\n" in read_text(ab_path), out)
+        rc, _p, _o = run_compose("EXout.md", base_impl + [
+            "--test-command", "pytest -q", "--excerpt", "/etc/hosts:1-1", "--excerpt-field", "SUPPORT"])
+        check("--excerpt refuses an absolute path outside --root", rc == 1)
         check("integration-test-author excerpt has the three sections, not Build log",
               os.path.isfile(excerpt_path)
               and "## Problem" in read_text(excerpt_path)
@@ -1814,7 +1887,7 @@ def selftest() -> int:
         check("the staged payload fits under the read guard's whole-read limit",
               len(st_text.encode("utf-8")) <= READ_GUARD_BYTES - STAGE_MARGIN)
         check("CONTRACT_HASH still stamps the contract the staged file carries",
-              ("CONTRACT_HASH: %s" % contract_hash(read_text(huge))) in st_text)
+              ("CONTRACT_HASH: %s" % contract_hash(contract_bytes(["src/huge.py"], root))) in st_text)
         filled = _fill_placeholders(st_text, style_path, os.path.join(root, "tests/unit/test_new2.py"))
         with open(st_path, "w", encoding="utf-8") as fh:
             fh.write(filled)
@@ -1824,11 +1897,12 @@ def selftest() -> int:
         check("the staged form lints clean with no --allow-path", rc2 == 0, out2)
         check("the staged contract resolves back to the same canonical hash",
               pwh.contract_hash(pwh.resolve_contract_block(filled))
-              == pwh.contract_hash(read_text(huge)))
+              == pwh.contract_hash(contract_bytes(["src/huge.py"], root)))
 
         # --- --refresh-contract: contract text and hash updated in place, nothing else ---
         before_ut = read_text(ut_op_path)
         old_hash = re.search(r"^CONTRACT_HASH: (\S+)$", before_ut, re.M).group(1)
+        old_contract = contract_bytes(["src/flush.py"], root)
         with open(os.path.join(root, "src", "flush.py"), "a", encoding="utf-8") as fh:
             fh.write("\n    def reset(self) -> None:\n        \"\"\"Empties the queue.\"\"\"\n")
         new_contract = contract_bytes(["src/flush.py"], root)
@@ -1840,7 +1914,7 @@ def selftest() -> int:
               rc == 0 and ("CONTRACT_HASH %s -> %s" % (old_hash[:8], contract_hash(new_contract)[:8])) in out_io.getvalue(), out_io.getvalue())
         check("--refresh-contract rewrote CONTRACT and CONTRACT_HASH", "def reset(self)" in after_ut and ("CONTRACT_HASH: %s\n" % contract_hash(new_contract)) in after_ut)
         check("--refresh-contract also rewrites an implementer's CONTRACT (no hash field)", "def reset(self)" in after_impl and "CONTRACT_HASH" not in after_impl)
-        expected = before_ut.replace(render_field(Field("CONTRACT", CONTRACT_FIXTURE, block=True)),
+        expected = before_ut.replace(render_field(Field("CONTRACT", old_contract, block=True)),
                                      render_field(Field("CONTRACT", new_contract, block=True))).replace(old_hash, contract_hash(new_contract))
         check("--refresh-contract changes only the CONTRACT block and the hash line", after_ut == expected)
         out_io = io.StringIO()

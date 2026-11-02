@@ -259,7 +259,7 @@ def contract_digest(root: str, files: list[str]) -> str:
     for rel in files:
         path = rel if os.path.isabs(rel) else os.path.join(root, rel)
         with open(path, encoding="utf-8") as fh:
-            texts.append(fh.read())
+            texts.append(ph.contract_file_text(path, rel, root, fh.read()))
     return ph.contract_hash("\n\n".join(texts))
 
 
@@ -526,7 +526,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--contract-hash", help="the CONTRACT_HASH the payload carried (full or prefix)")
     ap.add_argument("--contract-files", default="", help="comma list of the contract files, relative to --root")
     ap.add_argument("--payload", metavar="FILE", help="the payload file a workflow spawn read")
-    ap.add_argument("--payload-sha256", metavar="H", help="with --payload: the hash it was linted at (full or prefix)")
+    ap.add_argument("--payload-sha256", metavar="H", help="with --payload: the hash it was linted at (all 64 hex characters)")
     ap.add_argument("--release", metavar="HOLDER", help="release this holder's admission slot")
     ap.add_argument("--provider")
     ap.add_argument("--model")
@@ -545,6 +545,10 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--root, --branch and --base are required unless --selftest")
     if args.contract_hash and not (args.contract_files or args.payload):
         ap.error("--contract-hash needs --contract-files (or --payload, whose CONTRACT block it hashes)")
+    if args.payload_sha256 and not re.fullmatch(r"[0-9a-fA-F]{64}", args.payload_sha256):
+        ap.error("--payload-sha256 must be the full 64 hex characters (got %d): a "
+                 "truncated hash is a failed integrity check, not a prefix match; copy "
+                 "it whole from .agent-staging/wave-*.hashes" % len(args.payload_sha256))
     if args.release and not (args.provider and args.model):
         ap.error("--release needs --provider and --model")
     if args.report and not args.kind:
@@ -677,6 +681,10 @@ def selftest() -> int:
             with open(payload, "rb") as fh:
                 payload_sha = hashlib.sha256(fh.read()).hexdigest()
             rc, out = call(base_args + ["--payload", payload, "--payload-sha256", payload_sha])
+            rc, out_trunc = call(base_args + ["--payload", payload, "--payload-sha256", payload_sha[:12]])
+            check("a truncated --payload-sha256 is refused with a clear message",
+                  rc == 2 and "64 hex" in out_trunc)
+            rc, out = call(base_args + ["--payload", payload, "--payload-sha256", payload_sha])
             check("a stable payload is reported", f"payload: stable ({payload_sha[:8]})" in out and "payload" not in out.splitlines()[0])
             rc, out = call(base_args + ["--payload", payload, "--payload-sha256", "0" * 64])
             check("a changed payload flags the return", "payload: CHANGED" in out and rc == 1 and "payload" in out.split("FLAGGED")[-1])
@@ -798,12 +806,12 @@ def selftest() -> int:
             check("the shared-tree return is clean", rc == 0)
 
             # --- CONTRACT_HASH: the payload's CONTRACT block, the composer's recipe ---
-            block_payload = ("TASK: implement\nCONTRACT: |\n  pub fn a() -> u8;\n\n"
+            block_payload = ("TASK: implement\nCONTRACT: |\n  # path: contract/c.rs\n  pub fn a() -> u8;\n\n"
                              "OWNED_PATHS: src/lib.rs\n")
             put(tmp, "p-block.md", block_payload)
             put(tmp, "p-block-outside.md", block_payload.replace("TASK: implement", "TASK: implement now"))
             put(tmp, "p-block-inside.md", block_payload.replace("u8;", "u16;"))
-            block_hash = ph.contract_hash("pub fn a() -> u8;\n")
+            block_hash = ph.contract_hash("# path: contract/c.rs\npub fn a() -> u8;\n")
 
             def with_block(name: str, **extra: str) -> tuple[int, str]:
                 block_path = os.path.join(tmp, name)
