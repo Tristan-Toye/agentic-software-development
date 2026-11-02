@@ -7,9 +7,10 @@ description: >-
   green CI, runs the one full stack suite in the VM and posts its receipt as
   the required local-stack check, audits every dossier on the stub against its
   own criteria, and attributes any failure to the dossier that caused it —
-  then fixes that dossier through the implementer and reviewer flow, under a
-  budget you set. Merging the stub pull request stays the user's.
-argument-hint: [stub branch, e.g. stub/2026-10-29 — or empty for the accepting stub] [--budget N]
+  then fixes that dossier through the implementer and reviewer flow, round
+  after round, until the full stack run is green. Merging the stub pull
+  request stays the user's.
+argument-hint: [stub branch, e.g. stub/2026-10-29 — or empty for the accepting stub]
 ---
 
 # /stub — the weekly integration: stub to development
@@ -26,7 +27,7 @@ The repository you integrate is the checkout you run in; its own rules file
 and `AGENTS.md` outrank this file's defaults, as ever.
 
 The run's record is `.discovery/analysis/stub-<date>.md` in the main
-checkout — the census, every round, every receipt path, the budget ledger.
+checkout — the census, every round, every receipt path, every fix round.
 It stays local working state, like the overview HTML and the PR draft: the
 pull request body carries the durable copy. Append, never rewrite; a resumed
 run reads it before it acts.
@@ -75,9 +76,8 @@ all of it:
    as pull requests into the stub, and **merges those fix pull requests
    itself**. Nothing else is merged by this command: the stub pull request
    into `development` stays the user's, always.
-4. The **fix budget** — how many attribute-inspect-fix rounds this run may
-   spend. Default 3; the argument `--budget N` overrides it. Name the
-   number in the yes.
+4. It **iterates until the full stack run is green**: as many
+   attribute-inspect-fix rounds as it takes, with no round limit.
 
 No Jira transition, no push to a protected branch, no ruleset change beyond
 that yes. A bypass push past the stub ruleset happens only on the user's
@@ -183,16 +183,17 @@ Every `GAP`, and every contradiction between a dossier's recorded verdict
 and this run's, enters the Step 7 loop attributed to that dossier. A clean
 table on a green run ends the loop before it starts.
 
-## Step 7 — Attribute, inspect, fix — under budget
+## Step 7 — Attribute, inspect, fix — until green
 
-One round spends one budget unit and fixes one attributed failure group:
+One round fixes one attributed failure group; rounds repeat until Step 5
+reports a green full run:
 
 1. **Attribute.** Failing tests → owning crates → census rows. One dossier
    owns it: that dossier. Two or more do: resolve it with evidence — merge
    order, `git log -S`, a focused re-run against each candidate's
    merge-base — never a coin flip or a majority. Unresolved stays
    unresolved, reported, and the run stops: a wrong attribution fixes the
-   wrong dossier and spends the budget hiding it.
+   wrong dossier and hides the real cause.
 2. **Inspect.** The dossier's criteria and contract sections, the failing
    output bounded, the owning code read whole where the diff is small.
    The six-row arbitration table of `/work-on` Phase 6 applies unchanged:
@@ -213,10 +214,12 @@ One round spends one budget unit and fixes one attributed failure group:
    describe the new head before the pull request can be called green.
 
 Each round appends to the record: the attribution and its evidence, the
-fix pull request, the review round, the re-verification. The budget is a
-stop line: when the ledger hits it, stop and report the state — the pull
-request, what is red, what one more round would attempt — and name the
-override: the user's `--budget N`, never your own judgement.
+fix pull request, the review round, the re-verification. There is no round
+limit: the run ends green. It stops early only where this file already says
+so — an attribution that stays unresolved, a decision only the owner can make
+(asked through `ask_owner.py`, the run waits) — or when two consecutive rounds
+change nothing about what is red, which is reported with what each round
+tried, never retried blindly.
 
 ## Step 8 — Report
 
@@ -224,7 +227,7 @@ In chat, and as the pull request body's final edit: the pull request URL;
 the census table with every dossier's final state — CI, new tests,
 mutation, audit, fix rounds; the receipt summary — suites passed, failed,
 skipped with their waivers, build and run seconds, the head it describes;
-the budget spent against its number; any ADR-worthy lesson as a
+the number of fix rounds and what each fixed; any ADR-worthy lesson as a
 `/plan D-n` seed, never an unratified write; and the one act left — the
 user merges. Then close the time-logging session, if one was opened.
 
@@ -241,8 +244,9 @@ user merges. Then close the time-logging session, if one was opened.
 - **No direct push to a protected branch** — creation of the stub and
   pull-request merges only; a bypass push needs the user's yes for that
   push, logged.
-- **The budget is the user's dial.** Default 3, overridden by `--budget`,
-  spent one round at a time, never self-extended.
+- **Green is the exit.** Fix rounds repeat until the full stack run is
+  green; no round count ends the run, only an unresolved attribution, an
+  owner decision, or two rounds that change nothing.
 - **Everything surprising goes in the record file.** Chat output dies with
   the session; the record and the pull request do not.
 
