@@ -182,7 +182,7 @@ class Runner:
         self.state_path = os.path.join(d, self.key + ".runner.json")
         self.cp_path = os.path.join(d, self.key + ".checkpoints.json")
         self.err_path = os.path.join(d, self.key + ".stderr.log")
-        self.state: dict = {"pid": os.getpid(), "started": now(), "state": "running", "stage": 0,
+        self.state: dict = {"pid": os.getpid(), "root": root, "command": command, "started": now(), "state": "running", "stage": 0,
                             "session": "", "questions": [], "claude_pid": None}
         self.checkpoints: list[dict] = read_json(self.cp_path, [])
         self.seen_tool_ids: set[str] = set()
@@ -796,32 +796,75 @@ def selftest() -> int:
     return 1 if failures else 0
 
 
+def repo_of(cwd: str) -> str | None:
+    """The repository root of `cwd` (its git toplevel), or None outside a repository."""
+    try:
+        out = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def detach(argv: list[str], root: str, dossier: str) -> int:
+    """Start this runner again as a background process, its output in `<key>.runner.log`; print the pid."""
+    log = os.path.join(runs_dir(), key_of(root, dossier) + ".runner.log")
+    os.makedirs(runs_dir(), exist_ok=True)
+    args = [sys.executable, os.path.abspath(__file__)] + [a for a in argv if a != "--detach"]
+    with open(log, "ab") as fh:
+        p = subprocess.Popen(args, cwd=root, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
+                             start_new_session=True)
+    say(f"started {key_of(root, dossier)} in the background, pid {p.pid}; log {log}")
+    return 0
+
+
+def resolve(a: argparse.Namespace, ap: argparse.ArgumentParser) -> bool:
+    """Fill `a.dossier` from the positional id and `a.root` from the current repository."""
+    a.dossier = a.dossier or a.id
+    if a.dossier:
+        check_ident(a.dossier, "dossier id")
+    if not a.root and a.dossier:
+        a.root = repo_of(os.getcwd())
+        if not a.root:
+            print("run_dossier.py: not inside a git repository; pass --root", file=sys.stderr)
+            return False
+    if a.root:
+        a.root = os.path.abspath(a.root)
+    return True
+
+
 def main() -> int:
     argv = sys.argv[1:]
     if argv and argv[0] in ("status", "stop"):
         ap = argparse.ArgumentParser(prog=f"run_dossier.py {argv[0]}")
         need = argv[0] == "stop"
-        ap.add_argument("--root", required=need)
-        ap.add_argument("--dossier", required=need)
+        ap.add_argument("id", nargs="?", help="dossier id, e.g. W-123")
+        ap.add_argument("--root", help="repository root (default: the repository of the current directory)")
+        ap.add_argument("--dossier")
         a = ap.parse_args(argv[1:])
-        if a.dossier:
-            check_ident(a.dossier, "dossier id")
+        if not resolve(a, ap):
+            return 2
+        if need and not (a.root and a.dossier):
+            ap.print_usage(sys.stderr)
+            return 2
         return {"status": cmd_status, "stop": cmd_stop}[argv[0]](a)
     ap = argparse.ArgumentParser(description="Run one dossier through /work-on, one headless process per stage.")
+    ap.add_argument("id", nargs="?", help="dossier id, e.g. W-123")
     ap.add_argument("--selftest", action="store_true")
-    ap.add_argument("--root")
-    ap.add_argument("--dossier")
+    ap.add_argument("--root", help="repository root (default: the repository of the current directory)")
+    ap.add_argument("--dossier", help="same as the positional id")
     ap.add_argument("--command", choices=["work-on", "stub"], default="work-on")
     ap.add_argument("--model")
     ap.add_argument("--permission-mode", default="auto")
     ap.add_argument("--max-stages", type=int, default=20)
+    ap.add_argument("--detach", action="store_true", help="run in the background; output to <key>.runner.log")
     a = ap.parse_args(argv)
     if a.selftest:
         return selftest()
-    if not a.root or not a.dossier:
+    if not resolve(a, ap) or not a.root or not a.dossier:
         ap.print_usage(sys.stderr)
         return 2
-    check_ident(a.dossier, "dossier id")
+    if a.detach:
+        return detach(argv + ([] if "--root" in argv else ["--root", a.root]), a.root, a.dossier)
     return Runner(a.root, a.dossier, a.command, a.model, a.permission_mode, a.max_stages).run()
 
 

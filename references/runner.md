@@ -6,11 +6,17 @@ starts from a clean context, and owner questions asked and answered through
 `references/owner-questions.md`. One runner owns one dossier; it never picks
 up another one while it waits.
 
-    run_dossier.py --root R --dossier ID [--command work-on|stub]
+    run_dossier.py [ID] [--root R] [--detach] [--command work-on|stub]
                    [--model M] [--permission-mode auto] [--max-stages N]
-    run_dossier.py status [--root R --dossier ID]
-    run_dossier.py stop --root R --dossier ID
+    run_dossier.py status [ID] [--root R]
+    run_dossier.py stop ID [--root R]
     run_dossier.py --selftest
+
+The repository defaults to the one the command runs in (its git toplevel).
+It runs in the foreground; `--detach` starts it in the background with its
+output in `<key>.runner.log`, which is how the dashboard's Start and Resume
+buttons start it. Running it again after `stopped` or `failed` resumes from
+the recorded checkpoints.
 
 ## How a stage runs
 
