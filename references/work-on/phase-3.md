@@ -77,6 +77,14 @@ checkout while the stubs live in the package worktree X — pass
 the check resolves itself); a package that owns a directory is walked whole,
 every file under it.
 
+**A frozen count or oracle carries its derivation command beside the
+number.** Write `12 tables (grep -c 'CREATE TABLE' migrations/*.sql)`, never a
+bare `12`. Where the command and the frozen number disagree, the mechanism
+wins: record an erratum in `## Build log` and fix the number; no test is bent
+to match a stale total. An oracle never derives ground truth by running the
+subject afterwards, because it then asserts whatever the subject does; it must
+be constructible without invoking the subject.
+
 **Seven diffs over the checklist, before anything spawns:**
 
 1. **Slice it per surface, and make the slices add up.** Each unit author gets
