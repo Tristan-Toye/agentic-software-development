@@ -109,6 +109,8 @@ const gateFlags = (report) => {
 
 // The spawn prompt: a task line and the two pointer fields, the intake every agent file
 // names ("When your prompt is `PAYLOAD_FILE: <path>`").
+// Regression note: this prompt is built from the payload intake only (task line, PAYLOAD_FILE, PAYLOAD_SHA256).
+// Never relay user chat text into it: a relayed message sent mid-wave was read as an instruction to skip the payload.
 function spawnPrompt(item) {
   return 'You are ' + item.label + ' in a /work-on Phase 4 wave. Your payload is the file below: read it whole before anything else ' +
     '(in parts with offset and limit if Read says it is too large); every field in it binds you.\n' +

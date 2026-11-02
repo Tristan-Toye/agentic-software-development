@@ -54,7 +54,14 @@ so re-derive them in it, never fall back to a Phase 5 manual diff.
 migration, a table, a counted file, or moves a file, grep the tree for pins
 that count or list it — a table-name census, a migration count `(1..=N)`, a
 `[&str; N]` array, an inventory row count — and give each one an owner: the
-package that moves it, or a criterion with a test-author owner. Ask the same
+package that moves it, or a criterion with a test-author owner. Also grep for **exact-output
+assertions over changed members**: a test that compares the whole result of a
+member this contract changes (full-map or collection equality) breaks when the
+result gains a key or an item. Recipe per language: Rust
+`grep -rnE 'assert_eq!\(.*(<member>)'`, Python `grep -rnE 'assert .*<member>.* == [\[{(]'`,
+TS/JS `grep -rnE '<member>.*(toEqual|toStrictEqual|toBe)\('`, C#/Java
+`grep -rnE '(Assert\.(Equal|AreEqual)|assertEquals)\(.*<member>'`. Each hit
+gets an owner or a criterion before the fan-out, like any other pin. Ask the same
 question of the **checkout shape**: which existing suite cases depend on the
 shape this contract changes? A contract that adds a worktree-detecting guard
 (or any checkout-sensitive behaviour) makes a case that runs past the argument
@@ -69,6 +76,14 @@ checkout while the stubs live in the package worktree X — pass
 `--worktree <X>` (or set the dossier's `worktree:` front-matter field, which
 the check resolves itself); a package that owns a directory is walked whole,
 every file under it.
+
+**A frozen count or oracle carries its derivation command beside the
+number.** Write `12 tables (grep -c 'CREATE TABLE' migrations/*.sql)`, never a
+bare `12`. Where the command and the frozen number disagree, the mechanism
+wins: record an erratum in `## Build log` and fix the number; no test is bent
+to match a stale total. An oracle never derives ground truth by running the
+subject afterwards, because it then asserts whatever the subject does; it must
+be constructible without invoking the subject.
 
 **Seven diffs over the checklist, before anything spawns:**
 
