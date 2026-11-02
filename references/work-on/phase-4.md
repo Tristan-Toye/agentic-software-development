@@ -322,6 +322,14 @@ a test run but has no Bash; re-run it yourself` flags the return. A kind
 without Bash cannot have run what it reports — that verdict is fabricated, so
 run the claimed suite or diff yourself and log your result, never the claim.
 
+**A whole-file rewrite of an existing file is diffed before any behaviour
+run.** When a blind author returns a whole file for a path that already exists
+in the staged copy, diff it against the staged copy first and confirm the
+change is additions only. Existing lines that moved, vanished or were reworded
+send the file back; do not run the tests on it. The sanctioned repair is the
+anchor-based splice: the author returns only the new block and the anchor line
+it follows, and you splice it into the staged file.
+
 **Under Claude Code, send the wave through the workflow, once.** Everything
 above runs as written — compose, lint, `prepare_wave.py`, admission, the
 wave table — and then, instead of one `Agent` call per spawn followed by one
