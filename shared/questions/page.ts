@@ -113,8 +113,8 @@ li.more ol{list-style:none;margin:4px 0 0;padding-left:8px}li.more ol li{margin:
 .scol h3{margin:14px 0 8px;font-size:.78rem;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}.scol>h3:first-child{margin-top:0}
 .scard{border:1px solid var(--bd);border-radius:12px;background:var(--card);box-shadow:var(--shadow);padding:12px 14px;margin:0 0 10px;display:flex;flex-direction:column;gap:5px;min-width:0}.scard .title{font-weight:600;color:var(--fg);text-decoration:none;overflow-wrap:anywhere;font-size:.92rem}.scard .title:hover{color:var(--acc)}
 ul.tree{list-style:none;margin:6px 0 0;padding:0 0 0 10px;border-left:2px solid var(--bd)}ul.tree>li{position:relative;margin:2px 0;padding-left:10px}ul.tree>li::before{content:"";position:absolute;left:-12px;top:50%;width:10px;border-top:2px solid var(--bd)}
-a.sub-item{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:3px 6px;border-radius:8px;color:var(--fg);text-decoration:none;font-size:12.5px;min-width:0}a.sub-item:hover{background:var(--accbg)}a.sub-item.done{color:var(--mut)}
-.sid{font-weight:600;white-space:nowrap}.sname{color:var(--mut);flex:1 1 100px;min-width:0;overflow-wrap:anywhere}.qb{background:var(--warnbg);color:var(--warn);border-radius:9px;padding:0 7px;font-size:11px;font-weight:700}
+a.sub-item{display:flex;gap:6px;align-items:center;flex-wrap:nowrap;white-space:nowrap;overflow:hidden;padding:3px 6px;border-radius:8px;color:var(--fg);text-decoration:none;font-size:12.5px;min-width:0}a.sub-item:hover{background:var(--accbg)}a.sub-item.done{color:var(--mut)}
+.sid{font-weight:600;white-space:nowrap}.sname{color:var(--mut);flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.sub-item>.chip,a.sub-item>.qb,a.sub-item>.dot{flex:none}a.sub-item>.chip{font-size:10.5px;padding:0 7px}.qb{background:var(--warnbg);color:var(--warn);border-radius:9px;padding:0 7px;font-size:11px;font-weight:700}
 .dot.live{animation:pulse 1.4s ease-in-out infinite}@keyframes pulse{50%{opacity:.35}}@media (prefers-reduced-motion:reduce){.dot.live{animation:none}}
 details.mstubs{margin-top:10px}details.mstubs>summary{font-size:.78rem;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}
 @media (max-width:1000px){.cols{grid-template-columns:minmax(0,1fr)}.cols>.scol{position:static;max-height:none;overflow:visible;order:1}.cols>.main-col{order:2}}
@@ -280,10 +280,13 @@ function fitFrame(f) {
 }
 document.addEventListener('load', (e) => { const f = e.target; if (f && f.tagName === 'IFRAME' && f.classList.contains('report')) fitFrame(f); }, true);
 const isLive = (r) => !!r && ((r.runner && (r.runner.state === 'running' || r.runner.state === 'waiting')) || (r.session && r.session.state === 'active'));
-function subItem(repo, id, noPr, done) {
+function subItem(repo, id, noPr, done, ttl) {
   const r = S.runs.find(x => x.repo === repo && x.id === id); const nq = r ? openQs(r) : [];
-  const kids = [h('span', { class: 'dot' + (!done && isLive(r) ? ' info live' : done ? ' ok' : '') }), h('span', { class: 'sid' }, [id]),
-    h('span', { class: 'sname' }, [done ? ((r && r.title) || '') : [r ? stageText(r) : '', r ? r.title : ''].filter(Boolean).join(' · ')])];
+  const title = (r && r.title) || ttl || '';
+  const st = done ? 'done' : r ? stageText(r) : '';
+  const kids = [h('span', { class: 'sid mono', style: 'font-weight:700' }, [id]), h('span', { class: 'sname', title: id + (title ? ' · ' + title : '') }, [title])];
+  if (st) kids.push(chip(st, done ? 'done' : 'neutral'));
+  if (!done && isLive(r)) kids.push(h('span', { class: 'dot info live', title: 'running' }));
   if (noPr) kids.push(chip('no PR yet', 'neutral'));
   if (nq.length) kids.push(h('span', { class: 'qb', title: nq.length + ' open question(s)' }, ['? ' + nq.length]));
   return h('li', { 'data-k': 'sub:' + repo + '/' + id }, [h('a', { class: 'sub-item' + (done ? ' done' : ''), href: hrefItem(repo, id) }, kids)]);
@@ -291,7 +294,7 @@ function subItem(repo, id, noPr, done) {
 function stubTree(repo, s) {
   const cs = [chip(s.state)]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
   const mem = (s.members || []).map(m => subItem(repo, m.id, m.noPr, false));
-  const done = s.dossiers.map(d => subItem(repo, d.id, false, true));
+  const done = s.dossiers.map(d => subItem(repo, d.id, false, true, d.title));
   return h('div', { class: 'scard', 'data-k': 'ostub:' + repo + '/' + s.branch }, [
     h('a', { class: 'title mono', href: hrefStub(repo, s.branch) }, [s.branch]),
     h('div', { class: 'meta' }, ['cut ' + s.cut]), h('div', { class: 'chips' }, cs),
@@ -307,7 +310,7 @@ function sideColumn(repo) {
   kids.push(h('h3', {}, ['Open stubs']));
   kids.push.apply(kids, os.length ? os.map(s => stubTree(repo, s)) : [h('div', { class: 'empty' }, ['No open stub for this repo.'])]);
   if (merged.length) kids.push(h('details', { class: 'mstubs', 'data-k': 'mstubs:' + repo }, [h('summary', {}, ['Merged stubs (' + merged.length + ')']),
-    h('ul', { class: 'tree' }, merged.map(s => h('li', {}, [h('a', { class: 'sub-item', href: hrefStub(repo, s.branch) }, [h('span', { class: 'sid mono' }, [s.branch]), h('span', { class: 'sname' }, [s.dossiers.length + ' dossier(s)'])])])))]));
+    h('ul', { class: 'tree' }, merged.map(s => h('li', {}, [h('a', { class: 'sub-item', href: hrefStub(repo, s.branch) }, [h('span', { class: 'sid mono' }, [s.branch]), h('span', { class: 'sname', title: s.branch }, [s.dossiers.length + ' dossier(s)'])])])))]));
   return h('aside', { class: 'scol' }, kids);
 }
 function repoView(repo) {

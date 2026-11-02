@@ -63,6 +63,8 @@ import json
 import os
 import re
 import sys
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -749,6 +751,27 @@ def selftest() -> int:
               and "open-work-simplify" in tbh,
               "template reads the direction and the Simplify default; "
               "a remembered choice still wins")
+        # tb layout: a 12-node rank wraps at 770 px, nodes keep their size.
+        node = shutil.which("node")
+        if node:
+            m = re.search(r"function tbLayout\(.*?\n}\n", tbh, re.S)
+            js = (m.group(0) if m else "") + """
+const ids = Array.from({length: 12}, (_, i) => "n" + i);
+const a = tbLayout([["r"], ids], 770), b = tbLayout([["r"], ids], 5000);
+const ys = new Set(ids.map(i => a.pos[i][1]));
+console.log(JSON.stringify({rows: ys.size, w: a.nodeW, h: a.nodeH,
+  fits: a.width <= 770, wide: new Set(ids.map(i => b.pos[i][1])).size,
+  band: a.bands.length}));"""
+            r = subprocess.run([node, "-e", js], capture_output=True, text=True)
+            try:
+                got = json.loads(r.stdout)
+            except ValueError:
+                got = {}
+            check(got.get("rows", 0) >= 2 and got.get("fits") and got.get("wide") == 1
+                  and got.get("band") == 1,
+                  "tb: a 12-node rank wraps into >=2 rows at 770 px, one row when wide")
+            check((got.get("w"), got.get("h")) == (168, 48),
+                  "tb node size equals the lr node size (never scaled)")
         check(build_payload(root, today, direction="up")["direction"] == "lr",
               "an unknown direction falls back to lr")
         check("LINK_BASE" in lb and "top.location" in lb,
@@ -763,7 +786,6 @@ def selftest() -> int:
               "script-close sequence is escaped in the JSON blob")
 
         # ---- worktree overlay: the live copy beats the checked-out one
-        import shutil
         if shutil.which("git"):
             repo = Path(tmp) / "wt" / "repo"
             (repo / ".discovery" / "dossiers").mkdir(parents=True)
@@ -828,7 +850,6 @@ def selftest() -> int:
         # exact invocation, and --embed
         import contextlib
         import io
-        import subprocess
         (root / "dossiers" / "W-008-evil.md").unlink()
         out = Path(tmp) / "dash" / "open-work.html"
         ran = subprocess.run(

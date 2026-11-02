@@ -291,6 +291,7 @@ html[data-embed] .wrap { padding-top: 14px; padding-bottom: 28px; }
 }
 .graph-cap .n { font-weight: 700; color: var(--ink-2); }
 svg.dg { display: block; margin: 0 auto; }
+.dg-band { fill: var(--grid); opacity: .45; }
 .dg-edge { fill: none; stroke: var(--ink-3); stroke-width: 1.5; opacity: .4; transition: opacity .15s ease, stroke-width .15s ease; }
 .dg-edge.hl { opacity: 1; stroke-width: 2.4; }
 .dg-node { cursor: pointer; }
@@ -564,7 +565,7 @@ if (DATA.dossiers.length) {
         cap.append(el("span", null, `${count} dossier${count === 1 ? "" : "s"}`));
         panel.append(cap);
       }
-      panel.append(depGraph(g.ids, g.edges, graph.nodes));
+      panel.append(depGraph(g.ids, g.edges, graph.nodes, panels.clientWidth - 22));
       panels.append(panel);
     });
     note.textContent = (toggle.checked
@@ -578,6 +579,16 @@ if (DATA.dossiers.length) {
     draw();
   });
   draw();
+  /* wrapped ranks depend on the container width: re-layout when it changes */
+  if (TB && window.ResizeObserver) {
+    let lastW = panels.clientWidth, timer = 0;
+    new ResizeObserver(() => {
+      if (panels.clientWidth === lastW) return;
+      lastW = panels.clientWidth;
+      clearTimeout(timer);
+      timer = setTimeout(draw, 120);
+    }).observe(panels);
+  }
 }
 
 function dependencyGraph(dossiers, simplified) {
@@ -656,7 +667,7 @@ function flows(ids, edges) {
   return out;
 }
 
-function depGraph(ids, edges, nodes) {
+function depGraph(ids, edges, nodes, availW) {
   /* layer = longest chain of blockers behind the dossier */
   const layer = {};
   const incoming = Object.fromEntries(ids.map(id => [id, []]));
@@ -712,23 +723,21 @@ function depGraph(ids, edges, nodes) {
 
   const PW = 168, PH = 48, PAD = 18;
   const GX = TB ? 16 : 74, GY = TB ? 36 : 20;
-  const maxRows = Math.max(...order.map(c => c.length));
-  const width = TB ? PAD * 2 + maxRows * PW + (maxRows - 1) * GX : PAD * 2 + order.length * PW + (order.length - 1) * GX;
-  const height = TB ? PAD * 2 + order.length * PH + (order.length - 1) * GY : PAD * 2 + maxRows * PH + (maxRows - 1) * GY;
-  const pos = {};
-  order.forEach((col, li) => {
-    if (TB) {      // a rank is a row; its nodes spread horizontally, centred
-      const off = (maxRows - col.length) * (PW + GX) / 2;
-      col.forEach((id, i) => { pos[id] = [PAD + off + i * (PW + GX), PAD + li * (PH + GY)]; });
-      return;
-    }
-    const x = PAD + li * (PW + GX);
-    const off = (maxRows - col.length) * (PH + GY) / 2;
-    col.forEach((id, i) => { pos[id] = [x, PAD + off + i * (PH + GY)]; });
-  });
+  let pos = {}, width, height, bands = [];
+  if (TB) {
+    ({ pos, width, height, bands } = tbLayout(order, availW));
+  } else {
+    const maxRows = Math.max(...order.map(c => c.length));
+    width = PAD * 2 + order.length * PW + (order.length - 1) * GX;
+    height = PAD * 2 + maxRows * PH + (maxRows - 1) * GY;
+    order.forEach((col, li) => {
+      const x = PAD + li * (PW + GX);
+      const off = (maxRows - col.length) * (PH + GY) / 2;
+      col.forEach((id, i) => { pos[id] = [x, PAD + off + i * (PH + GY)]; });
+    });
+  }
 
   const svg = svgEl("svg", { class: "dg" + (TB ? " tb" : ""), width, height, viewBox: `0 0 ${width} ${height}`, role: "img" });
-  if (TB) svg.style.cssText = "max-width:100%;height:auto";
   svg.setAttribute("aria-label", "Dependency flow: " + edges.map(([a, b]) => `${nodes[a].label || a} before ${nodes[b].label || b}`).join(", "));
   const defs = svgEl("defs", {});
   const marker = svgEl("marker", { id: "dg-arrow", viewBox: "0 0 8 8", refX: 7, refY: 4,
@@ -736,6 +745,8 @@ function depGraph(ids, edges, nodes) {
   marker.append(svgEl("path", { d: "M0,0.5 L8,4 L0,7.5 Z", fill: "var(--ink-3)" }));
   defs.append(marker);
   svg.append(defs);
+  for (const b of bands)
+    svg.append(svgEl("rect", { class: "dg-band", x: b[0], y: b[1], width: b[2], height: b[3], rx: 12 }));
 
   /* a real node's box edge, or the bare center of an invisible dummy row */
   function anchor(id, out) {
@@ -792,6 +803,38 @@ function depGraph(ids, edges, nodes) {
     svg.append(g);
   }
   return svg;
+}
+
+/* Top-to-bottom placement. A rank is a row of nodes at their natural size;
+   a rank wider than availW wraps into several rows (rank order kept, wrapped
+   rows close together, ranks further apart, a light band behind a wrapped
+   rank). Nodes are never scaled: if even one node does not fit, the svg is
+   wider than availW and its panel scrolls. Pure — no DOM. */
+function tbLayout(order, availW) {
+  const PW = 168, PH = 48, PAD = 18, GX = 16, GY = 36, GYW = 12, BP = 8;
+  const perRow = Math.max(1, Math.floor((availW - PAD * 2 + GX) / (PW + GX)));
+  const rows = [];                                   // {rank, ids}
+  order.forEach((col, r) => {
+    for (let i = 0; i < col.length; i += perRow) rows.push({ rank: r, ids: col.slice(i, i + perRow) });
+  });
+  const widest = Math.max(1, ...rows.map(r => r.ids.length));
+  const inner = widest * PW + (widest - 1) * GX;
+  const pos = {}, bands = [];
+  let y = PAD, prev = -1;
+  for (const row of rows) {
+    if (prev >= 0) y += row.rank === prev ? GYW : GY;
+    const x0 = PAD + (inner - (row.ids.length * PW + (row.ids.length - 1) * GX)) / 2;
+    row.ids.forEach((id, i) => { pos[id] = [x0 + i * (PW + GX), y]; });
+    row.y = y;
+    y += PH;
+    prev = row.rank;
+  }
+  order.forEach((col, r) => {
+    const rr = rows.filter(w => w.rank === r);
+    if (rr.length > 1)
+      bands.push([PAD - BP, rr[0].y - BP, inner + BP * 2, rr[rr.length - 1].y + PH - rr[0].y + BP * 2]);
+  });
+  return { pos, bands, width: PAD * 2 + inner, height: y + PAD, perRow, rows: rows.length, nodeW: PW, nodeH: PH };
 }
 
 /* Order each column to minimize edge crossings. Small flows — almost all of
