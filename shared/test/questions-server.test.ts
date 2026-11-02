@@ -112,6 +112,7 @@ check("runs: an answered question links to its dossier, open ones are not listed
 check("stubs: merge subject to PR number", prNumberOf("Merge pull request #41 from org/feat-x") === 41 && prNumberOf("feat: thing (#42)") === 42 && prNumberOf("Merge branch 'x'") === null)
 check("stubs: pr field forms", prFieldNumber("https://github.com/o/r/pull/7") === 7 && prFieldNumber("#8") === 8 && prFieldNumber("") === null && prFieldNumber(undefined) === null)
 check("stubs: merges map to dossiers via pr:", JSON.stringify(dossiersOnMerges(["Merge pull request #41 from a/b", "x (#42)", "Merge pull request #99 from c/d", "Merge pull request #41 again"], new Map([[41, "W-1"], [42, "W-2"]]))) === '["W-1","W-2"]')
+check("stubs: a merged plan is not an implemented dossier", JSON.stringify(dossiersOnMerges(["Merge pull request #392 from o/plan/W-123-stub-prune", "Merge pull request #405 from o/feat/W-127-x"], new Map([[392, "W-123"], [405, "W-127"]]))) === '["W-127"]')
 check("stubs: a fix branch in the merge subject names its dossier", JSON.stringify(dossiersOnMerges(["Merge pull request #404 from o/fix/W-122-stub2026-11-01-census", "Merge pull request #7 from o/feat/X-9"], new Map(), new Set(["W-122"]))) === '["W-122"]')
 {
   const m = mkdtempSync(join(tmpdir(), "asd-oq-rec-")); mkdirSync(join(m, ".discovery", "analysis"), { recursive: true })

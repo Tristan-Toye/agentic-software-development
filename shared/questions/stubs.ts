@@ -29,6 +29,8 @@ export function prFieldNumber(v: string | undefined): number | null {
 export function dossiersOnMerges(subjects: string[], prToDossier: Map<number, string>, known?: Set<string>): string[] {
   const ids: string[] = []
   for (const s of subjects) {
+    // A plan merged into the stub is not an implementation on it.
+    if (/\bfrom \S+?\/plan\//.test(s)) continue
     const n = prNumberOf(s)
     let id = n === null ? undefined : prToDossier.get(n)
     // A fix or plan branch names its dossier: "Merge pull request #404 from o/fix/W-122-stub…".
