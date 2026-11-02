@@ -31,6 +31,12 @@ Without `--vm` the command runs directly (optionally in `--cwd`). With
 `--vm NAME --workdir DIR` it runs inside `limactl shell NAME -- bash -lc
 '<export PATH=...:$PATH;> cd DIR && <. ENV-SCRIPT &&> COMMAND'`.
 
+With `--vm` the VM-side runner records its pid (`/tmp/run_tests-<hostpid>-<rand>.pid`
+on the VM), and the wrapper tears that runner and its descendants down (TERM, then
+KILL) when it exits for any reason: a SIGINT/SIGTERM/SIGHUP, an error, a normal
+finish. A SIGKILL cannot be trapped, so a wrapper killed that way leaves its pid file;
+sweep it with the same teardown by hand.
+
 The VM command is built so it pastes into a fresh shell unchanged: the inner
 `bash -lc` script is one single-quoted argument (`shlex.join`, the same string
 that is run), and inside it `$HOME` / `$PATH` / a leading `~/` stay LIVE, to be
@@ -186,6 +192,7 @@ def build_command(
     env_script: str | None,
     path_prepend: str | None,
     command: list[str],
+    pidfile: str | None = None,
 ) -> tuple[list[str], str]:
     """Return (argv, display). argv is what subprocess.run receives directly
     (no shell=True at this level); display is `shlex.join(argv)` — the very
@@ -195,6 +202,8 @@ def build_command(
     if not vm:
         return list(command), joined
     parts = []
+    if pidfile:  # the VM-side runner's pid, so a host-side exit can tear it down
+        parts.append(f"echo $$ > {inner_quote(pidfile)};")
     if path_prepend:
         parts.append(f"export PATH={inner_quote(path_prepend)}:$PATH;")
     parts.append(f"cd {inner_quote(workdir or '')} &&")
@@ -204,6 +213,31 @@ def build_command(
     inner = " ".join(parts)
     argv = ["limactl", "shell", vm, "--", "bash", "-lc", inner]
     return argv, shlex.join(argv)
+
+
+def vm_pidfile() -> str:
+    """A VM-side path, unique per wrapper, where the runner records its pid."""
+    return f"/tmp/run_tests-{os.getpid()}-{os.urandom(4).hex()}.pid"
+
+
+# Kills the runner the pid file names and every descendant (the tree is read
+# first: a parent's death reparents its children out of reach), TERM then KILL.
+VM_TEARDOWN = (
+    'f="$1"; [ -r "$f" ] || exit 0; p=$(cat "$f"); '
+    'tree() { echo "$1"; for c in $(pgrep -P "$1" 2>/dev/null); do tree "$c"; done; }; '
+    '[ -n "$p" ] && kill -0 "$p" 2>/dev/null && { pids=$(tree "$p"); kill -TERM $pids 2>/dev/null; '
+    'sleep 1; kill -KILL $pids 2>/dev/null; }; rm -f "$f"; exit 0'
+)
+
+
+def vm_teardown(vm: str, pidfile: str) -> None:
+    """Best effort, never raises: stop the VM-side runner the wrapper spawned."""
+    try:
+        subprocess.run(["limactl", "shell", vm, "--", "bash", "-c", VM_TEARDOWN, "teardown", pidfile],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def add_test_filters(command: list[str], names: list[str]) -> list[str]:
@@ -556,12 +590,40 @@ def format_digest(
 # ------------------------------------------------------------------------ run
 
 
-def execute(argv: list[str], log_path: str, cwd: str | None) -> tuple[int, float, str]:
-    """One run: every byte of stdout+stderr to log_path. Returns (exit, wall, log text)."""
+def execute(
+    argv: list[str], log_path: str, cwd: str | None, vm: str | None = None, pidfile: str | None = None
+) -> tuple[int, float, str]:
+    """One run: every byte of stdout+stderr to log_path. Returns (exit, wall, log text).
+    With `vm` and `pidfile`, a host-side exit for any reason (SIGINT/SIGTERM/SIGHUP,
+    an exception, a normal finish) tears down the VM-side runner before returning,
+    so a killed wrapper leaves nothing holding the suite window or the lease."""
     os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
     start = time.time()
-    with open(log_path, "w", encoding="utf-8", errors="replace") as fh:
-        proc = subprocess.run(argv, stdout=fh, stderr=subprocess.STDOUT, cwd=cwd, check=False)
+    saved: dict[int, object] = {}
+    if vm and pidfile:
+        def bail(signum, _frame):
+            raise SystemExit(128 + signum)
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            with contextlib.suppress(ValueError, OSError):  # not the main thread
+                saved[sig] = signal.signal(sig, bail)
+    try:
+        with open(log_path, "w", encoding="utf-8", errors="replace") as fh:
+            proc = subprocess.Popen(argv, stdout=fh, stderr=subprocess.STDOUT, cwd=cwd)
+            try:
+                proc.wait()
+            finally:
+                if proc.poll() is None:
+                    proc.terminate()
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        proc.wait(timeout=5)
+                    if proc.poll() is None:
+                        proc.kill()
+                        proc.wait()
+    finally:
+        if vm and pidfile:
+            vm_teardown(vm, pidfile)
+        for sig, old in saved.items():
+            signal.signal(sig, old)  # type: ignore[arg-type]
     wall = time.time() - start
     with open(log_path, encoding="utf-8", errors="replace") as fh:
         return proc.returncode, wall, fh.read()
@@ -583,7 +645,7 @@ def run_root(args: argparse.Namespace) -> str | None:
 
 
 def single_run(args: argparse.Namespace, argv: list[str], display: str, log_path: str) -> int:
-    rc, wall, log_text = execute(argv, log_path, args.cwd if not args.vm else None)
+    rc, wall, log_text = execute(argv, log_path, args.cwd if not args.vm else None, args.vm, args.vm_pidfile)
     parser, totals, failures = parse_log(log_text)
     out = format_digest(display, rc, wall, log_path, parser, totals, failures,
                         args.max_failures, args.lines, args.line_chars, log_text, run_root(args))
@@ -610,7 +672,7 @@ def repeat_run(args: argparse.Namespace, argv: list[str], display: str, log_path
     failed_runs = 0
     for k in range(1, n + 1):
         run_log = f"{log_path}.run{k}"
-        rc, wall, text = execute(argv, run_log, args.cwd if not args.vm else None)
+        rc, wall, text = execute(argv, run_log, args.cwd if not args.vm else None, args.vm, args.vm_pidfile)
         parser, totals, failures = parse_log(text)
         bad = rc != 0 or bool(failures)
         out.append(f"RUN {k}/{n} {'fail' if bad else 'pass'}  exit {rc}  {wall:.1f}s")
@@ -722,7 +784,8 @@ def run(args: argparse.Namespace, own_args: list[str]) -> int:
             print(f"run_tests: {err}", file=sys.stderr)
             return 2
 
-    argv, display = build_command(args.vm, args.workdir, args.env_script, args.path_prepend, command)
+    args.vm_pidfile = vm_pidfile() if args.vm else None
+    argv, display = build_command(args.vm, args.workdir, args.env_script, args.path_prepend, command, args.vm_pidfile)
     if args.print_cmd:
         print(display)
         return 0
@@ -1122,6 +1185,45 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         check("--wait times out with 124", rc == 124)
         with contextlib.suppress(OSError, ValueError):
             os.kill(read_int(slow + ".pid", 0), signal.SIGTERM)
+
+        # --- --vm teardown: a killed wrapper takes the VM-side runner with it (fake limactl) ---
+        fakebin = os.path.join(tmp, "fakebin")
+        os.makedirs(fakebin)
+        fake = os.path.join(fakebin, "limactl")
+        with open(fake, "w", encoding="utf-8") as fh:
+            fh.write('#!/bin/bash\nshift 3\nexec "$@"\n')  # limactl shell VM -- CMD...: run CMD locally
+        os.chmod(fake, 0o755)
+        import glob
+        for sig, label in ((signal.SIGTERM, "SIGTERM"), (signal.SIGINT, "SIGINT")):
+            env = dict(os.environ, PATH=fakebin + os.pathsep + os.environ.get("PATH", ""))
+            wrapper = subprocess.Popen(
+                [sys.executable, os.path.abspath(__file__), "--vm", "fake", "--workdir", tmp,
+                 "--log", os.path.join(tmp, f"vm-{label}.log"), "--", "sleep", "60"],
+                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            runner = 0
+            for _ in range(100):
+                for pf in glob.glob(f"/tmp/run_tests-{wrapper.pid}-*.pid"):
+                    runner = read_int(pf, 0)
+                if runner:
+                    break
+                time.sleep(0.1)
+            alive = lambda pid: pid > 0 and subprocess.run(["kill", "-0", str(pid)], capture_output=True).returncode == 0
+            check(f"vm teardown ({label}): the runner is up and recorded", alive(runner))
+            wrapper.send_signal(sig)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                wrapper.wait(timeout=20)
+            for _ in range(50):
+                if not alive(runner):
+                    break
+                time.sleep(0.1)
+            check(f"vm teardown ({label}): the VM-side runner is gone after the wrapper is killed", not alive(runner))
+            check(f"vm teardown ({label}): the pid file is removed", not glob.glob(f"/tmp/run_tests-{wrapper.pid}-*.pid"))
+            if wrapper.poll() is None:
+                wrapper.kill()
+            if alive(runner):
+                os.kill(runner, signal.SIGKILL)
+        argv_p, _ = build_command("v", "/w", None, None, ["true"], "/tmp/p.pid")
+        check("vm argv records the runner pid first", argv_p[6].startswith("echo $$ > /tmp/p.pid; cd /w &&"))
 
     for item in failures_list:
         print("SELFTEST FAIL  " + item)
