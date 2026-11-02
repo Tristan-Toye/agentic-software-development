@@ -150,7 +150,9 @@ returns, diff its checklist against yours line by line:
   it found that you missed is a `GAP:` you would have paid per author; a
   promise you listed that it cannot derive from the docstrings is a
   checklist line no blind author can satisfy. Fix the contract and your
-  checklist together, commit on `X`, and only then fan out.
+  checklist together, commit on `X`, and only then fan out. Land the revised
+  stubs in the dossier with `dossier_edit.py sync-contract <dossier> --root X`
+  (exit 0 means every member equals its file's), not by hand-copying blocks.
 - **Its `AMBIGUITY:` lines go to the user as one question.** A docstring
   with two defensible readings, quoted with both, is the row-3 arbitration
   you are the wrong party to rule on — you wrote the sentence. Let the user

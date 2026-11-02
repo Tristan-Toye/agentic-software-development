@@ -22,6 +22,7 @@ fixed order").
     dossier_edit.py remove DOSSIER KEY=ITEM [...]        remove an item from a list field
     dossier_edit.py section DOSSIER 'HEADING'            print one section
     dossier_edit.py replace-section DOSSIER 'HEADING' --from-file F   (F or - for stdin)
+    dossier_edit.py sync-contract DOSSIER --root X      rebuild every ## Contract block from X's files
     dossier_edit.py --selftest
 
 `log` requires `## Build log` to be the last section (the fixed body order puts
@@ -43,6 +44,13 @@ heading up to the next heading of the same or a higher level, sub-sections
 included — for the file's text, keeping the heading line. It refuses `## Build
 log` (append-only, `log` only) and any section that contains it, and a new body
 that holds a heading of the section's own level or higher.
+
+`sync-contract` rebuilds each `### <path>` code block under `## Contract` from
+that file under `--root` (signatures, doc comments and constants, bodies as
+`…`; the extraction is code_nav.py's, .rs and .py), writes the dossier, then
+re-extracts both sides by symbol and compares each member's whole text. It
+never checks that a chunk is "in" the file: a truncated member is a different
+text. Any missing, truncated or extra member is listed and exits 1.
 
 Exit codes: 0 done; 1 refused (file untouched); 2 unusable input.
 
@@ -304,6 +312,169 @@ def pairs_of(items: list[str]) -> list[tuple[str, str]]:
     return out
 
 
+# ---------------------------------------------------------------- sync-contract
+
+
+def _nav():
+    """code_nav's parsers (Rust tokenizer, Python ast) and its `contract`
+    renderer: the one extraction every contract view already shares."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import code_nav
+    return code_nav
+
+
+def _py_constants(nav, text: str, S) -> list:
+    """Module-level `NAME = ...` / `NAME: T = ...` as pseudo items, with the
+    `#` comment lines directly above (a constant's documentation form)."""
+    import ast
+    lines = text.split("\n")
+    out = []
+    for st in ast.parse(text).body:
+        if isinstance(st, ast.Assign):
+            names = [t.id for t in st.targets if isinstance(t, ast.Name)]
+        elif isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name):
+            names = [st.target.id]
+        else:
+            continue
+        if not names:
+            continue
+        first = st.lineno
+        while first > 1 and lines[first - 2].lstrip().startswith("#"):
+            first -= 1
+        it = nav.Item("python", "const", names[0], names[0])
+        it.head = it.attr = it.sig_start = S.starts[first - 1]
+        it.end = it.sig_end = S.eol(st.end_lineno)
+        it.start_line, it.end_line = first, st.end_lineno
+        out.append(it)
+    return out
+
+
+def contract_members(path: str, text: str, is_block: bool = False):
+    """(top-level items in file order, Source, nav) for a .rs/.py text; raises
+    Refused for any other language, naming the supported ones."""
+    nav = _nav()
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == ".rs":
+            parser = nav.RustParser(text)
+            return parser.parse(0, len(text), ""), parser.S, nav
+        if ext == ".py":
+            if is_block:  # the contract form's body marker is not valid Python
+                text = "\n".join(ln.replace("…", "pass") if ln.strip() == "…" else ln for ln in text.split("\n"))
+            S = nav.Source(text)
+            items = nav.parse_python(text) + _py_constants(nav, text, S)
+            return sorted(items, key=lambda i: i.head), S, nav
+    except nav.Unusable as err:
+        raise Refused(f"{path}: cannot parse: {err}")
+    raise Refused(f"{path}: sync-contract reads .rs and .py (code_nav's parsers); "
+                  f"{ext or 'this file type'} is not supported — hand-write that block")
+
+
+def _render(it, S, nav) -> str:
+    return nav.contract(it, S) if it.kind != "const" or it.lang != "python" else S.text[S.line_start(it.head):it.end]
+
+
+def rebuild_block(path: str, file_text: str) -> str:
+    """The contract block for one file: every top-level member in contract form
+    (signature + docs/doc comments + constants, bodies dropped), in file order,
+    adjacent members staying adjacent and separated ones a blank line apart."""
+    items, S, nav = contract_members(path, file_text)
+    out: list[str] = []
+    prev_end = None
+    for it in items:
+        if prev_end is not None:
+            out.append("\n" if it.start_line <= prev_end + 1 else "\n\n")
+        out.append(_render(it, S, nav))
+        prev_end = it.end_line
+    return "".join(out)
+
+
+def member_map(path: str, text: str, is_block: bool = False) -> dict[str, str]:
+    """qualified name -> contract text, for every member including nested ones,
+    extracted by symbol. A repeated name (two `impl Foo`) gets `#2`, `#3`."""
+    items, S, nav = contract_members(path, text, is_block)
+    out: dict[str, str] = {}
+    for it, _ in nav.flatten(items):
+        key = f"{it.kind} {it.qname}"
+        n = 2
+        while key in out:
+            key = f"{it.kind} {it.qname}#{n}"
+            n += 1
+        out[key] = _render(it, S, nav)
+    return out
+
+
+def verify_block(path: str, block: str, file_text: str) -> list[str]:
+    """Whole-text equality per member, by symbol. Never substring presence: a
+    truncated member is a different text and is reported as such."""
+    want = member_map(path, file_text)
+    have = member_map(path, block, True)
+    bad = []
+    for key, text in want.items():
+        if key not in have:
+            bad.append(f"MISSING   {key}")
+        elif have[key] != text:
+            bad.append(f"MISMATCH  {key}  (dossier {len(have[key])} chars, file {len(text)})")
+    bad += [f"EXTRA     {key}  (in the dossier, not in the file)" for key in have if key not in want]
+    return bad
+
+
+def contract_blocks(lines: list[str]) -> list[tuple[str, int, int]]:
+    """(path, first body line, closing fence line) of each `### <path>` code
+    block under `## Contract`; `### Definitions` is skipped."""
+    hs = headings(lines)
+    n = next((k for k, (_, lv, t) in enumerate(hs) if lv == 2 and t.strip("`").lower() == "contract"), None)
+    if n is None:
+        raise Refused("no `## Contract` section")
+    end = next((j for j, lv, _ in hs[n + 1:] if lv <= 2), len(lines))
+    out = []
+    for k in range(n + 1, len(hs)):
+        i, lv, title = hs[k]
+        if i >= end:
+            break
+        if lv != 3 or title.strip("`").lower().startswith("definitions"):
+            continue
+        parts = title.strip().strip("`").split()
+        path = parts[0].strip("`") if parts else ""
+        nxt = min(hs[k + 1][0] if k + 1 < len(hs) else len(lines), end)
+        open_i = next((j for j in range(i + 1, nxt) if lines[j].strip().startswith("```")), None)
+        if open_i is None:
+            raise Refused(f"`### {title}` has no code block to rebuild")
+        close_i = next((j for j in range(open_i + 1, end) if lines[j].strip().startswith("```")), None)
+        if close_i is None:
+            raise Refused(f"`### {title}` has an unclosed code block")
+        out.append((path, open_i + 1, close_i))
+    return out
+
+
+def sync_contract(text: str, root: str) -> tuple[str, list[str], list[str]]:
+    """(new dossier text, one note per block, per-member problems found after
+    rebuilding — empty when every block equals its file's members)."""
+    lines = text.split("\n")
+    blocks = contract_blocks(lines)
+    if not blocks:
+        raise Refused("`## Contract` holds no `### <path>` code block")
+    notes: list[str] = []
+    for path, a, b in reversed(blocks):
+        fp = path if os.path.isabs(path) else os.path.join(root, path)
+        try:
+            file_text = read(fp)
+        except OSError as err:
+            raise Refused(f"{path}: cannot read {fp}: {err}")
+        lines[a:b] = rebuild_block(fp, file_text).split("\n")
+        notes.append(f"rebuilt `{path}`")
+    new = "\n".join(lines)
+    problems: list[str] = []
+    new_lines = new.split("\n")
+    for path, a, b in contract_blocks(new_lines):
+        fp = path if os.path.isabs(path) else os.path.join(root, path)
+        for p in verify_block(fp, "\n".join(new_lines[a:b]), read(fp)):
+            problems.append(f"{path}: {p}")
+    return new, list(reversed(notes)), problems
+
+
 def run(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--selftest", action="store_true", help="check the checker")
@@ -322,6 +493,9 @@ def run(argv: list[str]) -> int:
     p_rep.add_argument("dossier")
     p_rep.add_argument("heading")
     p_rep.add_argument("--from-file", required=True, metavar="F", help="the new body; - reads stdin")
+    p_syn = sub.add_parser("sync-contract", help="rebuild each ## Contract block from its file on disk, then verify")
+    p_syn.add_argument("dossier")
+    p_syn.add_argument("--root", required=True, help="the tree holding the materialised contract files")
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
@@ -359,6 +533,18 @@ def run(argv: list[str]) -> int:
             new, note = replace_section(text, args.heading, new_body)
             write_verified(args.dossier, new, f"replacing `{args.heading}`")
             print(f"dossier_edit: {note}")
+        elif args.cmd == "sync-contract":
+            new, notes, problems = sync_contract(text, args.root)
+            if new != text:
+                write_verified(args.dossier, new, "sync-contract")
+            for note in notes:
+                print(f"dossier_edit: {note}")
+            if problems:
+                for p in problems:
+                    print(f"dossier_edit: {p}", file=sys.stderr)
+                print(f"dossier_edit: {len(problems)} contract member(s) differ from the file", file=sys.stderr)
+                return 1
+            print(f"dossier_edit: {len(notes)} contract block(s) equal their files, member by member")
         else:
             print(section(text, args.heading))
     except Refused as err:
@@ -544,6 +730,56 @@ def selftest() -> int:
             rc = run(["log", path, "- counted"])
         check("a successful append prints the count it added",
               rc == 0 and "appended 1 line(s)" in buf.getvalue() and read(path).endswith("- counted\n"))
+
+    import contextlib, io
+    # sync-contract: rebuilt from the file, verified by whole-member equality.
+    PY = ('"""mod doc."""\n\nA = 1\nB = 2\nC = 3\nD = 4\n\n\n'
+          'def f(x):\n    """Return x."""\n    return x\n\n\n'
+          'class K:\n    """A K."""\n\n    def m(self):\n        """Do m."""\n        return 1\n')
+    RS = ('/// Max.\npub const MAX: u32 = 3;\n\n/// Run it.\npub fn run(a: u32) -> u32 {\n    a + 1\n}\n')
+    DOS = ("## Contract\n\n### Definitions\n\n- **t** — x\n\n### `src/m.py`\n\n```python\nstale\n```\n\n"
+           "### src/lib.rs\n\n```rust\nstale\n```\n\n## Build log\n\n- first\n")
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "src"))
+        for name, body in (("m.py", PY), ("lib.rs", RS)):
+            with open(os.path.join(td, "src", name), "w", encoding="utf-8") as fh:
+                fh.write(body)
+        new, notes, problems = sync_contract(DOS, td)
+        check("sync-contract rebuilds both blocks and verifies clean", len(notes) == 2 and problems == [])
+        check("sync keeps all four consecutive constants",
+              "A = 1\nB = 2\nC = 3\nD = 4" in new and "pub const MAX: u32 = 3;" in new)
+        check("sync drops bodies, keeps docstrings", "return x" not in new and '"""Return x."""' in new and "a + 1" not in new)
+        check("sync leaves Definitions and Build log alone", "- **t** — x" in new and new.endswith("- first\n"))
+        _, again, p2 = sync_contract(new, td)
+        check("sync is idempotent", p2 == [] and sync_contract(new, td)[0] == new)
+        trunc = new.replace("A = 1\nB = 2\nC = 3\nD = 4", "A = 1")
+        probs = verify_block("m.py", trunc.split("```python\n")[1].split("```")[0], PY)
+        check("a truncated constant chunk fails verification (substring would pass)",
+              "A = 1" in PY and any("const B" in q and q.startswith("MISSING") for q in probs))
+        cut = new.replace("Return x.", "Return")
+        check("a truncated docstring is a MISMATCH", any(q.startswith("MISMATCH  def f") for q in
+              verify_block("m.py", cut.split("```python\n")[1].split("```")[0], PY)))
+        path = os.path.join(td, "d.md")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(DOS)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run(["sync-contract", path, "--root", td])
+        check("CLI sync-contract writes the blocks and exits 0", rc == 0 and "pub fn run(a: u32) -> u32 { … }" in read(path))
+        with open(os.path.join(td, "src", "m.py"), "a", encoding="utf-8") as fh:
+            fh.write("\n\ndef g():\n    return 2\n")
+        with open(os.path.join(td, "src", "lib.txt"), "w", encoding="utf-8") as fh:
+            fh.write("x")
+        errbuf = io.StringIO()
+        with contextlib.redirect_stderr(errbuf), contextlib.redirect_stdout(io.StringIO()):
+            rc2 = run(["sync-contract", path, "--root", td])
+        check("a later-added member is picked up on re-sync", rc2 == 0 and "def g():" in read(path))
+        bad = new.replace("### src/lib.rs", "### src/lib.txt")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(bad)
+        with contextlib.redirect_stderr(errbuf), contextlib.redirect_stdout(io.StringIO()):
+            rc3 = run(["sync-contract", path, "--root", td])
+        check("an unsupported language refuses (exit 1, file untouched)", rc3 == 1 and read(path) == bad)
 
     for item in failures:
         print("SELFTEST FAIL  " + item)
