@@ -3,13 +3,13 @@ import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-export type Update = { ts: string; kind: "runner" | "stage" | "update"; text: string; stage?: string; state?: string }
-export type RunnerState = { state: "running" | "waiting" | "done" | "failed" | "stopped"; stage: string; pid: number; started: string }
+export type Update = { ts: string; kind: "runner" | "stage" | "update"; text: string; stage?: string; state?: string; auto?: boolean }
+export type RunnerState = { state: "running" | "waiting" | "done" | "failed" | "stopped"; stage: string; pid: number; started: string; root: string }
 
 export const runsDir = (): string => process.env.ASD_RUNS_DIR || join(homedir(), ".agentic", "runs")
 
-/** Updates of `<repo>.<ID>`, newest first; torn or foreign lines are skipped. */
-export function readUpdates(key: string, dir = runsDir()): Update[] {
+/** Updates of `<repo>.<ID>`, newest first, at most `limit`; torn or foreign lines are skipped. */
+export function readUpdates(key: string, dir = runsDir(), limit = 50): Update[] {
   let text = ""
   try { text = readFileSync(join(dir, `${key}.jsonl`), "utf8") } catch { return [] }
   const out: Update[] = []
@@ -18,10 +18,10 @@ export function readUpdates(key: string, dir = runsDir()): Update[] {
     try {
       const o = JSON.parse(l)
       if (typeof o?.text !== "string" || !["runner", "stage", "update"].includes(o.kind)) continue
-      out.push({ ts: String(o.ts ?? ""), kind: o.kind, text: o.text, stage: typeof o.stage === "string" ? o.stage : undefined, state: typeof o.state === "string" ? o.state : undefined })
+      out.push({ ts: String(o.ts ?? ""), kind: o.kind, text: o.text, stage: typeof o.stage === "string" ? o.stage : undefined, state: typeof o.state === "string" ? o.state : undefined, ...(o.auto === true ? { auto: true } : {}) })
     } catch { /* torn line */ }
   }
-  return out.reverse().slice(0, 50)
+  return out.reverse().slice(0, limit)
 }
 
 export function pidAlive(pid: number): boolean {
@@ -35,7 +35,7 @@ export function readRunner(key: string, dir = runsDir(), alive: (pid: number) =>
     const j = JSON.parse(readFileSync(join(dir, `${key}.runner.json`), "utf8"))
     let state = ["running", "waiting", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
     if ((state === "running" || state === "waiting") && !alive(Number(j.pid))) state = "stopped"
-    return { state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? "") }
+    return { state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "" }
   } catch { return null }
 }
 export const runnerActive = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "waiting"

@@ -3,9 +3,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Question } from "./store.ts"
+import { emitChange } from "./events.ts"
 import { answeredBy, baseName, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
 
-export type StubDossier = { id: string; title: string; status: string; repo: string; via: "merged" | "open-pr"; answered: QA[] }
+export type StubDossier = { id: string; title: string; status: string; repo: string; via: "merged"; answered: QA[] }
 export type Stub = {
   branch: string; cut: string; state: "accepting" | "integrating" | "merged"; stage: string
   refAge: string; pr: Pr | null; dossiers: StubDossier[]
@@ -89,9 +90,6 @@ async function prInto(main: string, branch: string): Promise<Pr | null> {
     return j ? { number: j.number, url: j.url, state: j.state, ...summarizeChecks(j.statusCheckRollup) } : null
   })
 }
-async function openPrsTargeting(main: string, branch: string): Promise<{ number: number; headRefName: string }[]> {
-  return cached(`op:${main}:${branch}`, async () => (await gh(main, ["pr", "list", "--base", branch, "--state", "open", "--json", "number,headRefName"])) ?? [])
-}
 async function mergeSubjects(main: string, branch: string): Promise<string[]> {
   return (await sh(["git", "-C", main, "log", "--merges", "--first-parent", "--format=%s", `origin/development..origin/${branch}`], undefined, 10_000)).split("\n").filter(Boolean)
 }
@@ -138,13 +136,9 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
     const stubs: Stub[] = []
     // A stub is a `stub/*` branch, or another branch /stub integrated (it has a record file).
     for (const branch of (await stubBranches(main)).filter((b) => b.startsWith("stub/") || recordFile(main, b) !== null)) {
-      const [pr, subjects, open, date] = await Promise.all([prInto(main, branch), cached(`mg:${main}:${branch}`, () => mergeSubjects(main, branch)), openPrsTargeting(main, branch), cached(`rd:${main}:${branch}`, () => refDate(main, branch))])
+      const [pr, subjects, date] = await Promise.all([prInto(main, branch), cached(`mg:${main}:${branch}`, () => mergeSubjects(main, branch)), cached(`rd:${main}:${branch}`, () => refDate(main, branch))])
       const ids = dossiersOnMerges(subjects, prToDossier, new Set(byId.keys()))
       const dossiers = ids.map((id) => mk(id, "merged"))
-      for (const o of open) {
-        const id = prToDossier.get(o.number) ?? [...byId.keys()].find((k) => o.headRefName.includes(k))
-        if (id && !ids.includes(id)) { ids.push(id); dossiers.push(mk(id, "open-pr")) }
-      }
       const state = stubState(pr)
       stubs.push({
         branch, cut: stubDate(branch) || recordDate(recordFile(main, branch)) || date.slice(0, 10), state, stage: state === "integrating" ? recordStage(main, branch) : "",
@@ -197,6 +191,7 @@ export async function refreshOpenWork(repo: string, root: string, wts: string[],
 let cachedView: StubsView = { scannedAt: "", repos: [], openWork: [] }
 let inflight: Promise<void> | null = null
 let lastScan = 0
+let lastSig = ""
 async function rescan(questions: Question[]): Promise<void> {
   const view = await buildStubs(questions)
   const roots = await candidateRoots(questions, listTranscripts())
@@ -210,7 +205,11 @@ async function rescan(questions: Question[]): Promise<void> {
     await refreshOpenWork(repo, root, wts)
     try { openWork.push({ repo, updated: new Date(statSync(join(openWorkDir(), `${repo}.html`)).mtimeMs).toISOString() }) } catch { /* not generated */ }
   }
-  cachedView = { ...view, openWork: openWork.sort((a, b) => a.repo.localeCompare(b.repo)) }
+  const next = { ...view, openWork: openWork.sort((a, b) => a.repo.localeCompare(b.repo)) }
+  const sig = JSON.stringify([next.repos.map((r) => [r.repo, r.stubs.map((s) => [s.branch, s.state, s.stage, s.pr, s.dossiers.map((d) => d.id)])]), next.openWork])
+  cachedView = next
+  if (sig !== lastSig) { lastSig = sig; emitChange("stubs") }
+  emitChange("scan")
 }
 /** Cached view; a rescan starts in the background when older than 30 s. Answered Q&A is refreshed on every call. */
 export async function getStubs(questions: () => Question[]): Promise<StubsView> {
