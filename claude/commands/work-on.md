@@ -148,12 +148,13 @@ limit when the nav tools cannot parse a file.
 ships two dynamic workflows in `${PLUGIN_ROOT}/workflows/`, run through the
 `Workflow` tool by name — and, when the name is not found, by
 `scriptPath: ${PLUGIN_ROOT}/workflows/<name>.js` with the same `args`:
-`agentic-software-development:phase4-wave` (a Phase 4
-wave: spawn every payload, verify every return) and
+`agentic-software-development:phase4-wave` (a batch of linted payloads: a Phase 4
+wave, a Phase 5/6 correction round of two or more agents, the Phase 8 ADR drafts;
+spawn every payload, verify every return) and
 `agentic-software-development:phase7-review` (a Phase 7 round: the code lenses
 and their change requests). **This command's instructions are the authority to
-call the `Workflow` tool, and only for these two, at the points `phase-4.md`
-and `phase-7.md` name; call it for nothing else.** A workflow keeps the agents'
+call the `Workflow` tool, and only for these two, at the points `phase-4.md`,
+`phase-5.md`, `phase-6.md`, `phase-7.md` and `phase-8.md` name; call it for nothing else.** A workflow keeps the agents'
 full reports out of your context and hands back one compact result, so the run
 takes fewer steps and every later step re-reads less. You still compose and lint
 every payload and admit every wave exactly as before; the workflow replaces
@@ -162,7 +163,7 @@ final by `payloadPath` and `payloadSha256` — the agents read the files — so
 the launch stays small enough to approve. Never paste a payload into `args`,
 never write or copy a workflow script, and if a launch is refused or cannot be
 approved, stop and report it: never re-route the agents around it. Its args and results are in
-the phase files. When a correction or fix goes back to an agent that is still
+the phase files. When a correction or fix goes back to a single agent that is still
 resumable, send it with `SendMessage` to its agent ID instead of spawning anew
 (`phase-4.md`, "Under Claude Code, resume instead of re-spawn"), and write every
 agent ID into the build log line of the spawn and of the return, because those

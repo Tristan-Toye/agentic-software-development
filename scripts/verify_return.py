@@ -22,11 +22,17 @@ agent's tool list makes impossible.
         [--payload FILE --payload-sha256 H]
         [--release HOLDER --provider P --model M]
         [--log DOSSIER --agent ID] [--print-line --agent ID]
-        [--report FILE --kind KIND [--host claude|opencode]]
+        [--report FILE --kind KIND [--host claude|opencode]] [--uncommitted]
     verify_return.py --selftest
 
 `--root` is the worktree the agent worked in; `--branch` the branch it was told
 to commit on; `--base` the sha that worktree forked from.
+
+`--uncommitted` is for an agent that writes files and never commits
+(`document-drafter`: `--owned` is its `TARGET_PATHS`). Files it wrote under
+`--owned` are the expected result, so they raise no `dirty` flag and the missing
+commit raises no `no-commits` flag; a path outside `--owned` is still
+`TOUCHED_BEYOND`, and an owned path that is absent is flagged `missing-owned`.
 
 What it prints (one line each unless noted) — the `verdict:` line (and
 `RETURNED-LINE:`, when asked for) first, so a reader that loses the tail to
@@ -352,7 +358,9 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
     commits = log.splitlines() if rc == 0 else []
     _, sha = git(root, "rev-parse", "--short", "HEAD")
     paths, rows, dirty = changed_files(root, args.base)
-    if not commits:
+    if not commits and args.uncommitted:
+        out.append("no commits expected: the agent writes files and never commits")
+    elif not commits:
         out.append("NO NEW COMMITS since the base")
         flags.append("no-commits")
     else:
@@ -473,6 +481,8 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
             flags.append("payload")
 
     own_dirty = [p for p in dirty if not is_shared(p)]
+    if args.uncommitted and args.owned:
+        own_dirty = [p for p in own_dirty if not is_owned(p, relative_owned(root, args.owned))]
     sibling_dirty = [p for p in dirty if is_shared(p)]
     if own_dirty:
         out.append(f"tree: dirty, {len(own_dirty)} path(s): {', '.join(own_dirty[:3])}")
@@ -507,7 +517,15 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
 
     if beyond:
         parts.append("TOUCHED_BEYOND: " + ", ".join(beyond[:3]) + (f" (+{len(beyond) - 3})" if len(beyond) > 3 else ""))
-    if not commits:
+    if args.uncommitted and not commits:
+        written = [p for p in dirty if owned and is_owned(p, owned)]
+        missing = [o for o in owned if not os.path.exists(os.path.join(root, o)) and not any(c in o for c in "*?[")]
+        if missing:
+            out.append("missing-owned: " + ", ".join(missing[:5]))
+            flags.append("missing-owned")
+            parts.append("MISSING: " + ", ".join(missing[:3]))
+        parts.insert(0, f"{len(written)} file(s) written, uncommitted")
+    elif not commits:
         parts.insert(0, "NO NEW COMMITS")
     else:
         parts.insert(0, f"{sha} on {branch}")
@@ -537,6 +555,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--kind", help="with --report: the agent kind, e.g. unit-test-author")
     ap.add_argument("--host", default="claude", choices=("claude", "opencode"), help="with --report: where the tool list comes from")
     ap.add_argument("--gates", metavar="FILE", help="the run's gates file: report whether run_gates.py left a green receipt for this tree")
+    ap.add_argument("--uncommitted", action="store_true",
+                    help="the agent writes files and never commits (document-drafter): owned files are expected dirty, no commit is expected")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     if args.selftest:
@@ -844,6 +864,23 @@ def selftest() -> int:
             check("extract_contract_block de-indents and stops at the next field",
                   ph.contract_hash(ph.extract_contract_block("CONTRACT: |\n  a\n\n  b\n\nNEXT: x\n"))
                   == ph.contract_hash("a\n\nb\n"))
+
+            # --- --uncommitted: a drafter writes its owned files and never commits ---
+            git(root, "checkout", "-q", "feat/empty")
+            if os.path.exists(os.path.join(root, "src/sibling.rs")):
+                os.remove(os.path.join(root, "src/sibling.rs"))
+            put(root, "docs/adr/0001-x.md", "adr\n")
+            ub = ["--root", root, "--branch", "feat/empty", "--base", base, "--uncommitted"]
+            rc, out = call(ub + ["--owned", "docs/adr/0001-x.md", "--print-line", "--agent", "D1"])
+            check("--uncommitted: an owned file written and not committed is clean",
+                  rc == 0 and "verdict: clean" in out and "1 file(s) written, uncommitted" in out)
+            rc, out = call(ub + ["--owned", "docs/adr/0001-x.md,docs/adr/0002-y.md"])
+            check("--uncommitted: an owned file never written is flagged", rc == 1 and "missing-owned" in out.splitlines()[0])
+            put(root, "docs/other.md", "x\n")
+            rc, out = call(ub + ["--owned", "docs/adr"])
+            check("--uncommitted: a path outside TARGET_PATHS is still flagged", rc == 1 and "touched-beyond" in out.splitlines()[0])
+            os.remove(os.path.join(root, "docs/other.md"))
+            os.remove(os.path.join(root, "docs/adr/0001-x.md"))
 
             # --- unusable input ---
             git(root, "checkout", "-q", "feat/empty")
