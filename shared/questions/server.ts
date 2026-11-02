@@ -16,7 +16,11 @@ export function notify(title: string, subtitle: string, body: string): void {
   const flat = (s: string) => s.replace(/\s+/g, " ").slice(0, 200)
   const script = 'on run argv\ndisplay notification (item 3 of argv) with title (item 1 of argv) subtitle (item 2 of argv)\nend run'
   try {
-    Bun.spawn(["osascript", "-e", script, flat(title), flat(subtitle), flat(body)], { stdout: "ignore", stderr: "ignore" })
+    const proc = Bun.spawn(["osascript", "-e", script, flat(title), flat(subtitle), flat(body)], { stdout: "ignore", stderr: "pipe" })
+    proc.exited.then(async (code) => {
+      if (code !== 0) log(`notification failed: osascript exit ${code}: ${(await new Response(proc.stderr).text()).trim().slice(0, 300)}`)
+      else log(`notified: ${flat(title)}`)
+    })
   } catch (e) {
     log(`notification failed: ${(e as Error).message}`)
   }

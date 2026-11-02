@@ -141,7 +141,10 @@ export async function runSocket(appToken: string, h: Handlers): Promise<never> {
           } catch {
             return
           }
+          const ev = env?.payload?.event
+          h.log(`slack envelope ${env?.type}${ev ? ` event=${ev.type} channel_type=${ev.channel_type} subtype=${ev.subtype ?? "-"} thread=${ev.thread_ts ? "yes" : "no"} bot=${ev.bot_id ? "yes" : "no"}` : ""}`)
           const { ack, action } = interpretEnvelope(env, h.lookup, h.ownerUser)
+          if (action.type !== "none" && action.type !== "hello") h.log(`slack action ${action.type}`)
           if (ack) ws.send(JSON.stringify(ack))
           if (action.type === "hello") delay = 1000
           else if (action.type === "reconnect") ws.close()
