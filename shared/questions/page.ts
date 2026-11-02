@@ -30,7 +30,7 @@ h2 .n{background:var(--chip);border-radius:10px;padding:0 8px;font-size:12px;let
 a.card:focus-visible,.card a.stretch:focus-visible{outline:none}
 .card:has(a.stretch:focus-visible),a.card:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){.card{transition:none}.card:hover,.card:focus-within{transform:none}}
-.card .title{font-weight:650;font-size:1rem;line-height:1.3;padding-right:34px;color:var(--fg);text-decoration:none;overflow-wrap:anywhere}
+.card .title{font-weight:650;font-size:1rem;line-height:1.3;padding-right:34px;color:var(--fg);text-decoration:none;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .card .title .id{color:var(--mut);font-weight:600}
 a.stretch::after{content:"";position:absolute;inset:0;border-radius:12px}
 .card .act{position:relative;z-index:2}
@@ -211,7 +211,7 @@ function runCard(r, kind) {
     if (latest) cs.push(when(latest.ts)); kids.push(h('div', { class: 'chips' }, cs));
   } else if (kind === 'notstarted') {
     kids.push(h('div', { class: 'meta' }, [r.summary || '']));
-    const cs = [chip(r.status)]; if (r.jira) cs.push(chip(r.jira, 'neutral')); if (r.runner && r.runner.state !== 'done') cs.push(chip('runner ' + r.runner.state, r.runner.state));
+    const cs = [chip(r.status)]; if (r.jira && r.jira !== 'null') cs.push(chip(r.jira, 'neutral')); if (r.runner && r.runner.state !== 'done') cs.push(chip('runner ' + r.runner.state, r.runner.state));
     kids.push(h('div', { class: 'chips' }, cs));
   } else {
     kids.push(h('div', { class: 'meta' }, [r.summary || '']));
@@ -288,7 +288,7 @@ function header(r, mode) {
   if (r.runner) cs.push(chip('runner ' + r.runner.state, r.runner.state));
   const st = stageText(r); if (st) cs.push(chip(st, 'neutral'));
   if (r.session && r.session.context) cs.push(chip('ctx ' + kfmt(r.session.context), 'neutral'));
-  if (r.pr) cs.push(prChip(r.pr)); if (r.jira) cs.push(chip(r.jira, 'neutral'));
+  if (r.pr) cs.push(prChip(r.pr)); if (r.jira && r.jira !== 'null') cs.push(chip(r.jira, 'neutral'));
   nq.forEach(q => cs.push(h('a', { class: 'chip warn', href: '/questions#q=' + enc(q.id) }, ['? open question'])));
   const acts = [];
   if (mode === 'run') acts.push(h('a', { class: 'btn', href: hrefItem(r.repo, r.id) + '/dossier' }, ['View dossier']));

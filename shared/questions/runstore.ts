@@ -51,6 +51,8 @@ export function summaryOf(text: string): string {
       const l = raw.trim()
       if (l.startsWith("```")) { fence = !fence; continue }
       if (fence) continue
+      // Evidence lines (FACT:, INFERENCE:, UNKNOWN:, anchors) are not a summary.
+      if (!cur.length && /^(?:[-*]\s+)?(?:FACT|INFERENCE|UNKNOWN|UNMEASURED|ASSUMPTION)\b/.test(l)) continue
       if (!l || /^#{1,6}\s/.test(l) || l.startsWith("<!--")) { if (cur.length) break; continue }
       cur.push(l.replace(/^[-*]\s+/, ""))
     }
