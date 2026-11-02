@@ -6,10 +6,11 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { interpretEnvelope, questionBlocks } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy } from "../questions/runs.ts"
-import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile } from "../questions/stubs.ts"
+import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy } from "../questions/runs.ts"
+import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs } from "../questions/stubs.ts"
+import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown } from "../questions/runstore.ts"
-import { mergeTimeline, parseRecord, logEntries } from "../questions/timeline.ts"
+import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPanel } from "../questions/timeline.ts"
 import { blockedByOf, controlsFor } from "../questions/controls.ts"
 import { execFileSync } from "node:child_process"
 
@@ -150,11 +151,72 @@ check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n
   check("timeline: auto lines are flagged and a 4a after 4 is no new boundary", tl.find((e) => e.text === "auto note")?.auto === true && tl.filter((e) => e.type === "boundary").length === 2 &&
     mergeTimeline({ updates: [U("3", "stage", "b", { stage: "Phase 4a" }), U("2", "stage", "a", { stage: "PHASE 4" })], questions: [] }).filter((e) => e.type === "boundary").length === 1)
   const lg = logEntries("## Build log\n- Phase 3 contract\n  wrapped\n- second\n```text\nx\n```\n")
-  check("timeline: build-log entries only without updates", JSON.stringify(lg) === '["Phase 3 contract wrapped","second"]' && mergeTimeline({ updates: [], questions: [], log: lg }).map((e) => e.text).join("|") === "second|Phase 3 contract wrapped" && mergeTimeline({ updates: ups, questions: [], log: lg }).every((e) => e.type !== "log"))
+  check("timeline: build-log lines parse, and the timeline never falls back to them", JSON.stringify(lg) === '["Phase 3 contract wrapped","second"]' && mergeTimeline({ updates: [], questions: [] }).length === 0 && mergeTimeline({ updates: ups, questions: [] }).every((e) => e.type !== "log"))
   const re = parseRecord("# Stub\n## Step 1 — cut (2026-11-01)\nbranch cut\n### Round 1 (2026-11-02)\nfoo\n## Notes\nbar\n", "2026-10-31")
   check("timeline: a stub record gives one entry per heading, Step headings as boundaries, undated by position", re.length === 3 && re[0].type === "boundary" && re[0].ts === "2026-11-01" && re[1].type === "entry" && re[1].ts === "2026-11-02" && re[2].ts === "2026-11-02" && re[2].text === "bar" && parseRecord("## A\nx", "2026-10-31")[0].ts === "2026-10-31")
   const stub = mergeTimeline({ updates: [], questions: [], extra: re })
   check("timeline: the stub timeline is newest first", stub[0].label === "Notes" && stub[stub.length - 1].type === "boundary")
+}
+
+// classification, grouping, Now panel (pure)
+{
+  const U = (ts: string, kind: string, text: string, extra: object = {}) => ({ ts, kind, text, ...extra }) as any
+  const E = (e: object) => ({ ts: "", text: "", ...e }) as any
+  const k = (kind: string, text: string, auto = false) => classify(E({ type: kind, text, auto: auto || undefined })).kind
+  check("classify: runner lines", k("runner", "start /work-on W-1 in /r") === "start" && k("runner", "waiting on Q1") === "waiting" && k("runner", "answered Q1") === "answered" && k("runner", "failed: boom") === "failed" && k("runner", "done") === "done" && k("runner", "stopped") === "stopped" && k("runner", "stage 3 start") === "info")
+  check("classify: update lines, auto key events still stand out", k("update", "run_tests: suite green (42 passed)", true) === "suite-green" && k("update", "run_tests: 3 tests failed", true) === "suite-red" && k("update", "run_gates: gates passed", true) === "gate" && k("update", "PR #12 opened", true) === "pr" && k("update", "workflow started: review", true) === "workflow" && k("update", "dossier_edit log line", true) === "routine" && k("update", "wave one returned") === "note")
+  check("classify: key flags and routine flags", classify(E({ type: "stage", text: "x" })).key && classify(E({ type: "question", text: "x" })).key && !classify(E({ type: "update", text: "x", auto: true })).key && classify(E({ type: "update", text: "x", auto: true })).routine && !classify(E({ type: "update", text: "x" })).routine)
+  const ups = [
+    U("2026-11-02T10:30:00Z", "update", "r1", { auto: true }), U("2026-11-02T10:29:00Z", "update", "r2", { auto: true }), U("2026-11-02T10:28:00Z", "update", "r3", { auto: true }), U("2026-11-02T10:27:00Z", "update", "run_tests: suite green", { auto: true }),
+    U("2026-11-02T10:20:00Z", "stage", "wave: all three returned\nmore", { stage: "Phase 4" }), U("2026-11-02T10:10:00Z", "stage", "contract committed", { stage: "Phase 3" }), U("2026-11-02T10:05:00Z", "update", "single routine", { auto: true }), U("2026-11-02T10:01:00Z", "runner", "start /work-on W-7 in /r"),
+  ]
+  const tq: any = { id: "r.W-7.Q1", state: "answered", repo: "r", dossier: "W-7", root: "", text: "Which?", options: [], recommendation: "", blocks: "", ts: "2026-11-02T10:12:00Z", answer: null, lines: [
+    { ts: "2026-11-02T10:12:00Z", from: "agent", kind: "question", text: "Which?" }, { ts: "2026-11-02T10:25:00Z", from: "owner", kind: "answer", text: "A", option: "A" }] }
+  const entries = mergeTimeline({ updates: ups, questions: [tq], names: { "3": "Contract", "4": "Fan out" } })
+  const groups = groupByPhase(entries)
+  check("group: phases newest first, only the first is current", groups.map((g) => g.label).join("|") === "Phase 4 — Fan out|Phase 3 — Contract|Setup" && groups[0].current && !groups[1].current && !groups[2].current, groups.map((g) => g.label).join("|"))
+  check("group: summary is the first line of the checkpoint, counts per phase", groups[0].summary === "wave: all three returned" && groups[1].summary === "contract committed" && groups[1].counts.questions === 1 && groups[0].counts.updates === 5, JSON.stringify(groups.map((g) => [g.summary, g.counts])))
+  check("group: a question and its answer belong to the phase of the question", groups[1].items.some((i) => i.kind === "question") && groups[1].items.some((i) => i.kind === "answered") && !groups[0].items.some((i) => i.kind === "answered"))
+  check("group: runs of routine lines collapse into +N, a lone one stays, key events stay out", groups[0].items.map((i) => i.kind).join("|") === "more|suite-green|stage" && (groups[0].items[0] as any).entries.length === 3 && groups[2].items.some((i) => i.kind === "routine" || i.kind === "more"), groups[0].items.map((i) => i.kind).join("|"))
+  check("group: finished phases carry a duration, the oldest line of a phase is last", groups[1].durationMs === 10 * 60_000 && groups[0].items[groups[0].items.length - 1].kind === "stage", String(groups[1].durationMs))
+  const np = nowPanel(entries, groups, { runner: "running", waiting: ["r.W-7.Q2"], fallbackPhase: "4" })
+  check("now: phase, step, since, newest meaningful update (not routine), runner, waiting", np.phase.startsWith("Phase 4") && np.step === 4 && np.since === "2026-11-02T10:20:00Z" && np.doing?.text === "run_tests: suite green" && np.doing.kind === "suite-green" && np.runner === "running" && np.waiting[0] === "r.W-7.Q2", JSON.stringify(np))
+  const ne = nowPanel([], [], { fallbackPhase: "plan" })
+  check("now: an empty run has no groups and no current update", groupByPhase([]).length === 0 && ne.doing === null && ne.phase === "" && ne.step === null)
+  const sg = groupByPhase(mergeTimeline({ updates: [U("2026-11-02T11:00:00Z", "update", "stub step done")], questions: [], extra: parseRecord("## Step 1 — cut (2026-11-01)\nbranch cut\n## Step 2 — integrate (2026-11-02)\nfirst\n", "2026-10-31").map((e) => ({ ...e, text: "" })), unit: "Step" }), "Before the first step")
+  check("group: a stub groups by Step headings", sg.map((g) => g.label).join("|") === "Step 2 — integrate (2026-11-02)|Step 1 — cut (2026-11-01)" && sg[0].items.some((i) => i.kind !== "more" && i.entry.text === "stub step done"), sg.map((g) => g.label).join("|"))
+}
+
+// repos: ids are unique only inside one repo
+{
+  const t = mkdtempSync(join(tmpdir(), "asd-oq-two-"))
+  for (const r of ["alpha", "beta"]) {
+    mkdirSync(join(t, r, ".discovery", "dossiers"), { recursive: true })
+    writeFileSync(join(t, r, ".discovery", "dossiers", "W-001-x.md"), `---\nid: W-001\ntitle: ${r} one\nstatus: ready\n---\n# W-001\n`)
+  }
+  const picked2 = await pickDossiersByRepo([join(t, "alpha"), join(t, "beta")], async (wt) => wt)
+  check("repos: two repos sharing a dossier id both keep it", picked2.length === 2 && picked2.map((d) => d.front.title).sort().join("|") === "alpha one|beta one" && picked2.every((d) => d.main === d.worktree))
+  const runsX = [{ repo: "alpha", id: "W-001", main: "/a", worktree: "/a" }, { repo: "beta", id: "W-001", main: "/b", worktree: "/b-W-001" }, { repo: "beta", id: "W-002", main: "/b", worktree: "/b" }]
+  const qq = (repo: string, root: string, dossier = "W-001") => ({ repo, root, dossier })
+  check("repos: a question belongs to the repo that named it or whose checkout holds its root", questionRepo(qq("alpha", ""), runsX) === "alpha" && questionRepo(qq("zzz", "/b-W-001/src"), runsX) === "beta" && questionRepo(qq("zzz", ""), runsX) === undefined && questionRepo(qq("zzz", "", "W-002"), runsX) === "beta")
+  rmSync(t, { recursive: true, force: true })
+  check("view: done shows the dossier, running or with updates the run, otherwise the dossier", viewFor("done", false, 5) === "dossier" && viewFor("building", false, 0) === "run" && viewFor("ready", true, 0) === "run" && viewFor("ready", false, 2) === "run" && viewFor("ready", false, 0) === "dossier" && viewFor("planned", false, 1) === "run")
+  const mkStub = (branch: string, state: string, cut: string) => ({ branch, cut, state, stage: "", refAge: cut, pr: null, dossiers: [] }) as any
+  const os = openStubs([mkStub("stub/2026-10-24", "merged", "2026-10-24"), mkStub("stub/2026-10-31", "accepting", "2026-10-31"), mkStub("release/W-115", "integrating", "2026-10-29")])
+  check("stubs: every stub that is not merged is open, newest first", os.map((x) => x.branch).join("|") === "stub/2026-10-31|release/W-115")
+}
+
+// Slack progress thread: which lines become messages (pure, no network)
+{
+  const o = { repo: "demo", id: "W-7", title: "Seven", link: "http://127.0.0.1:1/repo/demo/W-7" }
+  const U = (kind: string, text: string, extra: object = {}) => ({ ts: "t", kind, text, ...extra }) as any
+  const m = (u: any) => slackMessageFor(u, o)
+  check("slack run: the first start line opens the thread with repo, id and title", m(U("runner", "start /work-on W-7 in /r"))?.role === "open" && m(U("runner", "start /work-on W-7 in /r"))!.text.startsWith("▶ demo · W-7 — Seven") && m(U("runner", "start /work-on W-7 in /r"))!.text.includes(o.link))
+  check("slack run: stage done, waiting, answered, failed and done reply", m(U("stage", "contract committed", { stage: "Phase 3" }))?.role === "reply" && m(U("runner", "waiting on Q1", { state: "waiting" }))?.text.includes("Waiting on you") === true && m(U("runner", "answered Q1"))?.role === "reply" && m(U("runner", "failed: boom", { state: "failed" }))?.role === "reply" && m(U("runner", "done", { state: "done" }))?.text.includes("Done") === true)
+  check("slack run: auto routine lines and plain notes never post", m(U("update", "suite green", { auto: true })) === null && m(U("stage", "x", { auto: true })) === null && m(U("update", "a note")) === null && m(U("runner", "stage 3 start")) === null)
+  const chrono = [U("update", "early", {}), U("runner", "waiting on Q0"), U("runner", "start /work-on W-7"), U("update", "r", { auto: true }), U("stage", "contract", { stage: "Phase 3" }), U("runner", "start /work-on W-7 (resume)"), U("runner", "done", { state: "done" })]
+  const p = pendingSlack(chrono, 0, false, o)
+  check("slack run: a thread starts at its opener, a resume does not open a second one", p.upto === 7 && p.msgs.map((x) => x.role).join("|") === "open|reply|reply" && pendingSlack(chrono, 5, true, o).msgs.length === 1 && pendingSlack(chrono, 7, true, o).msgs.length === 0, p.msgs.map((x) => x.role).join("|"))
 }
 // controls: eligibility
 {
@@ -233,8 +295,8 @@ try {
   check("server: second answer is 409", (await post("demo.W-2.Q1", { kind: "answer", option: "B", text: "files" })).status === 409)
   check("server: answered drops out of state=open", ((await (await fetch(`${base}/api/questions?state=open`)).json()) as any[]).length === 0)
   const rv: any = await (await fetch(`${base}/api/runs`)).json()
-  const r7 = rv.runs?.find((r: any) => r.id === "W-7")
-  check("server: /api/runs lists dossiers from the injected roots", rv.runs?.length === 8 && r7?.status === "building" && r7.phase === "4" && r7.repo === "repoB", JSON.stringify(rv).slice(0, 300))
+  const r7 = rv.runs?.find((r: any) => r.id === "W-7" && r.repo === "repoB")
+  check("server: /api/runs lists dossiers from the injected roots", rv.runs?.length === 9 && r7?.status === "building" && r7.phase === "4" && r7.repo === "repoB", JSON.stringify(rv).slice(0, 300))
   check("server: /api/runs session activity and context", r7?.session.state === "active" && r7.session.context === 143003 && r7.session.requests === 2 && r7.pr === null, JSON.stringify(r7?.session))
   check("server: /api/runs carries the open-question link", rv.runs.every((r: any) => Array.isArray(r.questions)) && typeof rv.scannedAt === "string")
   check("server: page has the Runs view and no external resources", html.includes("Open questions") && html.includes("/api/runs") && html.includes("/api/stubs") && !/https?:\/\//.test(html))
@@ -251,7 +313,18 @@ try {
   const r11 = rv.runs.find((r: any) => r.id === "W-11"), r12 = rv.runs.find((r: any) => r.id === "W-12"), r13 = rv.runs.find((r: any) => r.id === "W-13")
   check("server: /api/runs carries the controls", r11.controls.start.ok && realpathSync(r11.main) === realpathSync(repoC), JSON.stringify(r11.controls))
   check("server: a blocker that is not done blocks Start", r12.controls.start.show && !r12.controls.start.ok && r12.controls.start.reason === "blocked by W-10" && r10.controls.stop.show && r13.runner.state === "stopped" && r13.controls.resume.ok, JSON.stringify([r12.controls, r13.runner]))
-  for (const p of ["/questions", "/repo/repoC", "/repo/repoC/W-9", "/repo/repoC/W-9/dossier", "/repo/repoC/stub/stub/2026-11-02", "/repo/repoC/graph"]) {
+  check("server: two repos sharing W-7 both appear, each with its own status", rv.runs.filter((r: any) => r.id === "W-7").map((r: any) => r.repo + ":" + r.status).sort().join("|") === "repoA:ready|repoB:building")
+  const owr = await (await fetch(`${base}/open-work/repoC`)).text()
+  check("server: the repo page's report is generated with --link-base /repo/<repo>", owr.includes('"link_base": "/repo/repoC"') && owr.includes('data-embed="1"'))
+  const gr = await fetch(`${base}/repo/repoC/graph`, { redirect: "manual" })
+  check("server: /repo/<r>/graph redirects to the repo page", gr.status === 302 && gr.headers.get("location") === "/repo/repoC")
+  check("server: the dossier route chooses dossier or run view", rv.runs.find((r: any) => r.id === "W-9").view === "dossier" && rv.runs.find((r: any) => r.id === "W-11").view === "dossier" && rv.runs.find((r: any) => r.id === "W-13").view === "run" && rv.runs.find((r: any) => r.id === "W-10").view === "run" && r7.view === "run")
+  check("server: /api/stubs lists the open (not merged) stubs per repo", sv.repos.find((x: any) => x.repo === "repoC")?.open?.includes("stub/2026-11-02") === true)
+  const tj7: any = await (await fetch(`${base}/api/timeline/repoB/W-7`)).json()
+  check("server: /api/timeline carries phase groups, the Now panel and the build log apart", tj7.groups?.[0]?.current === true && tj7.groups[0].label.startsWith("Phase 4") && tj7.now.phase.startsWith("Phase 4") && tj7.now.step === 4 && Array.isArray(tj7.log) && tj7.empty === false, JSON.stringify(tj7.now))
+  const tj13: any = await (await fetch(`${base}/api/timeline/repoC/W-13`)).json()
+  check("server: a run without updates has an empty timeline, not its build log", tj13.empty === true && tj13.entries.length === 0 && tj13.groups.length === 0 && tj13.log.length > 0, JSON.stringify(tj13.entries).slice(0, 200))
+  for (const p of ["/questions", "/repo/repoC", "/repo/repoC/W-9", "/repo/repoC/W-9/dossier", "/repo/repoC/stub/stub/2026-11-02"]) {
     const pr = await fetch(base + p); const t = await pr.text()
     check("server: page route " + p + " is served", pr.status === 200 && t.includes("Owner questions") && t.includes("EventSource") && !/https?:\/\//.test(t))
   }

@@ -82,7 +82,33 @@ textarea{width:100%;min-height:3.4em;font:inherit;background:var(--bg);color:var
 .err{color:var(--bad);font-size:13px;min-height:1em}
 details>summary{cursor:pointer;color:var(--mut);font-size:12.5px;margin:4px 0}
 .qa{margin:6px 0;font-size:13px}.qa .a{color:var(--ok)}
-iframe{width:100%;height:78vh;border:1px solid var(--bd);border-radius:12px;background:#fff}
+iframe.report{display:block;width:100%;height:900px;border:0;border-radius:12px;background:transparent}
+.btn.lg{font-size:14px;font-weight:600;padding:7px 18px;border-radius:10px}.btn.lg.go{background:var(--acc);border-color:var(--acc);color:#fff}.btn.lg.go:disabled{background:var(--chip);border-color:var(--bd);color:var(--mut)}
+.tabs{display:flex;gap:4px;margin:16px 0 8px;border-bottom:1px solid var(--bd)}.tab{font:inherit;font-size:13px;padding:6px 14px;border:0;border-bottom:2px solid transparent;background:none;color:var(--mut);cursor:pointer}.tab.on{color:var(--fg);border-bottom-color:var(--acc);font-weight:600}
+.strip{display:flex;gap:12px;flex-wrap:wrap;align-items:stretch}.strip .card{flex:1 1 280px;max-width:420px;padding:12px 14px;gap:5px}.strip .card .title{font-size:.95rem}
+.sub{margin:18px 0 6px;font-size:.78rem;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}
+.now{border:1px solid var(--bd);border-left:4px solid var(--acc);border-radius:12px;background:var(--card);padding:14px 18px;margin:14px 0;box-shadow:var(--shadow)}
+.now .lbl{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);font-weight:700}
+.now .ph1{font-size:1.15rem;font-weight:700;margin:2px 0 6px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.stepper{display:flex;gap:4px;flex-wrap:wrap;margin:8px 0}.stepper .st{min-width:26px;height:24px;border-radius:12px;background:var(--chip);color:var(--mut);font-size:12px;display:inline-flex;align-items:center;justify-content:center;padding:0 7px}
+.stepper .st.done{background:var(--okbg);color:var(--ok)}.stepper .st.cur{background:var(--acc);color:#fff;font-weight:700;padding:0 12px}
+.doing{display:flex;gap:8px;align-items:baseline;margin-top:6px}.doing .tx{font-weight:600;overflow-wrap:anywhere}
+.waitbox{border:2px solid var(--warn);background:var(--warnbg);border-radius:12px;padding:10px 14px 4px;margin:0 0 12px}
+.waitbox h3{margin:0 0 4px;font-size:1.05rem;color:var(--warn)}.waitbox .need{background:var(--card)}
+.nowait{color:var(--mut);font-size:12.5px;margin-top:8px}
+details.ph{margin:10px 0;border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:0 14px}
+details.ph>summary{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;padding:10px 0;margin:0;color:var(--fg);font-size:14px}
+details.ph.cur{border-color:var(--acc)}details.ph .pl{font-weight:700}details.ph .ps{color:var(--mut);flex:1 1 220px;min-width:0;overflow-wrap:anywhere}details.ph .pc{color:var(--mut);font-size:12px;margin-left:auto}
+details.ph>ol.tl{margin:2px 0 14px 6px}
+ol.tl>li.ev .ic{display:inline-block;min-width:1.3em;text-align:center;font-weight:700}
+ol.tl>li.key .tx{font-weight:600}
+ol.tl>li.k-stage::before,ol.tl>li.k-done::before,ol.tl>li.k-answered::before,ol.tl>li.k-suite-green::before{background:var(--ok)}
+ol.tl>li.k-suite-red::before,ol.tl>li.k-failed::before,ol.tl>li.k-stopped::before{background:var(--bad)}
+ol.tl>li.k-question::before,ol.tl>li.k-waiting::before,ol.tl>li.k-gate::before{background:var(--warn)}
+ol.tl>li.k-pr::before,ol.tl>li.k-workflow::before,ol.tl>li.k-start::before{background:var(--acc)}
+li.k-stage .ic,li.k-done .ic,li.k-answered .ic,li.k-suite-green .ic{color:var(--ok)}li.k-suite-red .ic,li.k-failed .ic,li.k-stopped .ic{color:var(--bad)}li.k-question .ic,li.k-waiting .ic,li.k-gate .ic{color:var(--warn)}li.k-pr .ic,li.k-workflow .ic,li.k-start .ic{color:var(--acc)}
+ol.tl>li.rt,ol.tl>li.more{font-size:12px;color:var(--mut)}ol.tl>li.rt .tx{font-weight:400}ol.tl>li.more::before{width:7px;height:7px;left:-27px;top:8px}
+li.more ol{list-style:none;margin:4px 0 0;padding-left:8px}li.more ol li{margin:2px 0}
 @media (max-width:560px){header{padding:8px 16px}main{padding:4px 16px 56px}.msg{max-width:96%}.grid{grid-template-columns:1fr}}
 </style></head><body>
 <header><a class="brand" href="/">Pipeline</a><nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav><span class="pill" id="slack"></span><span class="pill" id="upd"></span></header>
@@ -116,7 +142,7 @@ function prChip(pr) {
 }
 
 // ---- state ----
-const S = { q: [], runs: [], slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, qerr: {} };
+const S = { q: [], runs: [], slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, qerr: {}, tab: {}, frameH: {} };
 let R = { kind: 'home' };
 let routeSig = '';
 let scrollTarget = '';
@@ -129,7 +155,7 @@ function parseRoute() {
     const repo = seg[1];
     if (seg.length === 2) return { kind: 'repo', repo };
     if (seg[2] === 'stub' && seg[3]) return { kind: 'stub', repo, branch: seg.slice(3).join('/') };
-    if (seg[2] === 'graph') return { kind: 'graph', repo };
+    if (seg[2] === 'graph') return { kind: 'repo', repo };
     return { kind: 'item', repo, id: seg[2], forceDossier: seg[3] === 'dossier' };
   }
   return { kind: 'home' };
@@ -148,12 +174,12 @@ const repoNames = () => { const s = new Set(); S.runs.forEach(r => s.add(r.repo)
 const openQs = (r) => S.q.filter(q => q.state === 'open' && q.dossier === r.id && qRepo(q) === r.repo);
 const allOpen = () => S.q.filter(q => q.state === 'open').sort((a, b) => (a.repo + a.dossier).localeCompare(b.repo + b.dossier) || a.ts.localeCompare(b.ts));
 function stageText(r) { if (!r.phase) return r.runner && r.runner.stage ? 'Stage ' + r.runner.stage : ''; return r.phase === 'plan' ? 'Plan' : 'Phase ' + r.phase + (r.phaseName ? ' · ' + r.phaseName : ''); }
-function itemMode(run) { if (R.forceDossier) return 'dossier'; return (inProgress(run) || (run.status === 'planned' && run.updates.length)) ? 'run' : 'dossier'; }
+function itemMode(run) { if (R.forceDossier) return 'dossier'; return run.view === 'run' ? 'run' : 'dossier'; }
 function newestStub(repo) { const r = S.stubs.repos.find(x => x.repo === repo); return r && r.stubs.length ? r.stubs[0] : null; }
 const doneKey = (r) => (r.updated || '') + r.id;
 
 // ---- questions ----
-function qRepo(q) { const r = S.runs.find(x => x.id === q.dossier && x.repo === q.repo) || S.runs.find(x => x.id === q.dossier); return r ? r.repo : q.repo; }
+function qRepo(q) { const c = S.runs.filter(x => x.id === q.dossier); const r = c.find(x => x.repo === q.repo) || c.find(x => q.root && (q.root === x.worktree || q.root.indexOf(x.worktree + '/') === 0 || q.root === x.main || q.root.indexOf(x.main + '/') === 0)) || (c.length === 1 ? c[0] : null); return r ? r.repo : q.repo; }
 function optButtons(q) {
   const open = q.state === 'open';
   return h('div', { class: 'opts' }, q.options.map(o => {
@@ -179,14 +205,14 @@ function qCard(q, opts) {
 }
 
 // ---- controls ----
-function controls(r) {
+function controls(r, big) {
   const key = r.repo + '/' + r.id; const st = S.ctl[key] || {}; const kids = [];
   ['start', 'resume', 'stop'].forEach(a => {
     const c = r.controls && r.controls[a]; if (!c || !c.show) return;
     const confirming = st.confirm === a; const busy = st.busy === a;
     const label = busy ? { start: 'Starting…', resume: 'Resuming…', stop: 'Stopping…' }[a] : confirming ? 'Confirm ' + a : a.charAt(0).toUpperCase() + a.slice(1);
-    kids.push(h('button', { class: 'btn act' + (confirming ? ' confirm ' + a : ''), type: 'button', 'data-act': 'ctl', 'data-ctl': a, 'data-repo': r.repo, 'data-id': r.id, disabled: !c.ok || !!st.busy }, [label]));
-    if (confirming) kids.push(h('button', { class: 'btn act', type: 'button', 'data-act': 'ctl-cancel', 'data-repo': r.repo, 'data-id': r.id }, ['Cancel']));
+    kids.push(h('button', { class: 'btn act' + (big ? ' lg' : '') + (big && a !== 'stop' && !confirming ? ' go' : '') + (confirming ? ' confirm ' + a : ''), type: 'button', 'data-act': 'ctl', 'data-ctl': a, 'data-repo': r.repo, 'data-id': r.id, disabled: !c.ok || !!st.busy }, [label]));
+    if (confirming) kids.push(h('button', { class: 'btn act' + (big ? ' lg' : ''), type: 'button', 'data-act': 'ctl-cancel', 'data-repo': r.repo, 'data-id': r.id }, ['Cancel']));
     if (!c.ok && c.reason) kids.push(chip(c.reason, 'blocked'));
   });
   if (r.runner) kids.push(h('a', { class: 'small act', href: '/api/runs/' + enc(r.repo) + '/' + enc(r.id) + '/log', target: '_blank', rel: 'noopener' }, ['runner log']));
@@ -199,27 +225,6 @@ function controls(r) {
 // ---- cards ----
 function card(href, title, parts) {
   return h('a', { class: 'card', href }, [h('span', { class: 'title' }, [title])].concat(parts));
-}
-function runCard(r, kind) {
-  const nq = openQs(r); const kids = [];
-  const latest = r.updates[0];
-  if (nq.length) kids.push(h('a', { class: 'badge warn', href: '/questions#q=' + enc(nq[0].id), title: nq.length + ' open question(s)' }, [String(nq.length)]));
-  if (kind === 'progress') {
-    kids.push(h('div', { class: 'meta' }, [[stageText(r), r.status].filter(Boolean).join(' · ')]));
-    kids.push(h('div', { class: 'meta' }, [latest ? latest.text : (r.lastActivity || r.summary || '')]));
-    const cs = [chip(r.status)]; if (r.runner) cs.push(chip('runner ' + r.runner.state, r.runner.state)); if (r.pr) cs.push(prChip(r.pr));
-    if (latest) cs.push(when(latest.ts)); kids.push(h('div', { class: 'chips' }, cs));
-  } else if (kind === 'notstarted') {
-    kids.push(h('div', { class: 'meta' }, [r.summary || '']));
-    const cs = [chip(r.status)]; if (r.jira && r.jira !== 'null') cs.push(chip(r.jira, 'neutral')); if (r.runner && r.runner.state !== 'done') cs.push(chip('runner ' + r.runner.state, r.runner.state));
-    kids.push(h('div', { class: 'chips' }, cs));
-  } else {
-    kids.push(h('div', { class: 'meta' }, [r.summary || '']));
-    kids.push(h('div', { class: 'chips' }, [chip(r.status), r.updated ? chip(r.updated, 'neutral') : null]));
-  }
-  kids.push.apply(kids, controls(r));
-  return h('div', { class: 'card' + (kind === 'done' ? ' dim' : ''), 'data-k': kind + ':' + r.repo + '/' + r.id }, [
-    h('a', { class: 'stretch title', href: hrefItem(r.repo, r.id) }, [h('span', { class: 'id' }, [r.id + ' ']), r.title])].concat(kids));
 }
 function stubCard(repo, s, week) {
   const kids = [];
@@ -260,28 +265,45 @@ function questionsView() {
   kids.push(open.length ? h('div', {}, open.map(q => qCard(q, { thread: true, hit: hq }))) : h('div', { class: 'empty' }, ['No open questions.']));
   return h('div', {}, kids);
 }
+function latestDoing(r) { const u = r.updates.find(x => !x.auto) || r.updates[0]; return u ? u.text : (r.lastActivity || ''); }
+function stageOf9(r) { return /^\d+$/.test(r.phase || '') ? 'Stage ' + r.phase + '/9' + (r.phaseName ? ' · ' + r.phaseName : '') : stageText(r); }
+function liveCard(r) {
+  const u = r.updates[0]; const cs = [];
+  if (r.runner) cs.push(chip('runner ' + r.runner.state, r.runner.state)); else cs.push(chip(r.status));
+  if (r.pr) cs.push(prChip(r.pr)); if (u) cs.push(when(u.ts));
+  const nq = openQs(r); const kids = [h('a', { class: 'stretch title', href: hrefItem(r.repo, r.id) }, [h('span', { class: 'id' }, [r.id + ' ']), r.title])];
+  if (nq.length) kids.push(h('a', { class: 'badge warn', href: '/questions#q=' + enc(nq[0].id), title: nq.length + ' open question(s)' }, [String(nq.length)]));
+  kids.push(h('div', { class: 'meta' }, [stageOf9(r)]), h('div', { class: 'meta' }, [latestDoing(r)]), h('div', { class: 'chips' }, cs));
+  kids.push.apply(kids, controls(r));
+  return h('div', { class: 'card', 'data-k': 'live:' + r.repo + '/' + r.id }, kids);
+}
+function openStubs(repo) { const rr = S.stubs.repos.find(x => x.repo === repo); if (!rr) return []; return (rr.open || []).map(b => rr.stubs.find(s => s.branch === b)).filter(Boolean); }
+function stubStrip(repo, s) {
+  const cs = [chip(s.state)]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
+  return h('div', { class: 'card', 'data-k': 'ostub:' + repo + '/' + s.branch }, [h('a', { class: 'stretch title mono', href: hrefStub(repo, s.branch) }, [s.branch]),
+    h('span', { class: 'badge info', title: s.dossiers.length + ' dossier(s) implemented' }, [String(s.dossiers.length)]),
+    h('div', { class: 'meta' }, ['cut ' + s.cut + (s.dossiers.length ? ' · ' + s.dossiers.map(d => d.id).join(', ') : ' · nothing merged yet')]), h('div', { class: 'chips' }, cs)]);
+}
+function fitFrame(f) {
+  try {
+    const d = f.contentDocument; if (!d || !d.documentElement) return;
+    const set = () => { const hh = Math.ceil(d.documentElement.getBoundingClientRect().height); const repo = f.getAttribute('data-repo'); if (hh > 50 && Math.abs((S.frameH[repo] || 0) - hh) > 2) { S.frameH[repo] = hh; f.style.height = hh + 'px'; } };
+    set(); if (f._ro) f._ro.disconnect(); if (window.ResizeObserver) { f._ro = new ResizeObserver(set); f._ro.observe(d.documentElement); }
+  } catch (e) { /* cross-origin or gone */ }
+}
+document.addEventListener('load', (e) => { const f = e.target; if (f && f.tagName === 'IFRAME' && f.classList.contains('report')) fitFrame(f); }, true);
 function repoView(repo) {
   const rs = S.runs.filter(r => r.repo === repo);
   const prog = rs.filter(inProgress).sort((a, b) => ((b.updates[0] || {}).ts || b.updated || '').localeCompare((a.updates[0] || {}).ts || a.updated || ''));
-  const todo = rs.filter(notStarted).sort((a, b) => (a.status === b.status ? a.id.localeCompare(b.id) : a.status === 'ready' ? -1 : 1));
-  const done = rs.filter(isDone).sort((a, b) => doneKey(b).localeCompare(doneKey(a)));
-  const shown = S.showAll[repo] ? done : done.slice(0, 12);
-  const rr = S.stubs.repos.find(x => x.repo === repo); const stubs = rr ? rr.stubs : []; const week = stubs[0];
-  const ow = (S.stubs.openWork || []).find(o => o.repo === repo);
-  const doneKids = [grid(shown.map(r => runCard(r, 'done')), 'Nothing done yet.')];
-  if (done.length > 12) doneKids.push(h('p', {}, [h('button', { class: 'btn', type: 'button', 'data-act': 'toggle-done', 'data-repo': repo }, [S.showAll[repo] ? 'Show fewer' : 'Show all ' + done.length])]));
-  return h('div', {}, [h('h1', {}, [repo]),
-    section('In progress', prog.length, grid(prog.map(r => runCard(r, 'progress')), 'Nothing is running.'), 'prog'),
-    section('This week’s stub', null, week ? grid([stubCard(repo, week, true)], '') : h('div', { class: 'empty' }, ['No stub for this repo.']), 'week'),
-    section('Not started', todo.length, grid(todo.map(r => runCard(r, 'notstarted')), 'Nothing planned or ready.'), 'todo'),
-    section('Done', done.length, h('div', {}, doneKids), 'done'),
-    section('Stubs', stubs.length, grid(stubs.map(s => stubCard(repo, s, false)), 'No stubs.'), 'stubs'),
-    section('Dependency graph', null, grid([card('/repo/' + enc(repo) + '/graph', 'Dependency graph', [h('span', { class: 'meta' }, ['The open-work report: every dossier and what blocks it.']), h('span', { class: 'chips' }, [ow ? chip('updated ' + ago(ow.updated), 'neutral') : chip('not generated yet', 'neutral')])])], ''), 'graph')]);
-}
-function graphView(repo) {
-  const ow = (S.stubs.openWork || []).find(o => o.repo === repo);
-  return h('div', {}, [h('h1', {}, ['Dependency graph']), h('p', { class: 'lead' }, [repo + ' · the generated open-work report']),
-    h('iframe', { src: '/open-work/' + enc(repo) + (ow ? '?v=' + enc(ow.updated) : ''), sandbox: 'allow-scripts allow-popups', title: 'Open work' })]);
+  const rr = S.stubs.repos.find(x => x.repo === repo); const stubs = rr ? rr.stubs : []; const os = openStubs(repo);
+  const ow = (S.stubs.openWork || []).find(o => o.repo === repo); const oq = S.q.filter(q => q.state === 'open' && qRepo(q) === repo).sort((a, b) => a.ts.localeCompare(b.ts));
+  const kids = [h('h1', {}, [repo]), h('p', { class: 'lead' }, [prog.length + ' running · ' + oq.length + ' open question' + (oq.length === 1 ? '' : 's') + ' · ' + os.length + ' open stub' + (os.length === 1 ? '' : 's')])];
+  if (oq.length) kids.push(section('Waiting on you', oq.length, h('div', {}, oq.map(q => qCard(q, { thread: true }))), 'oq'));
+  kids.push(section(os.length > 1 ? 'Open stubs' : 'This week’s stub', null, os.length ? h('div', { class: 'strip' }, os.map(s => stubStrip(repo, s))) : h('div', { class: 'empty' }, ['No open stub for this repo.']), 'week'));
+  if (prog.length) kids.push(section('Running', prog.length, h('div', { class: 'strip' }, prog.map(liveCard)), 'prog'));
+  kids.push(section('Open work', null, ow ? h('iframe', { class: 'report', 'data-repo': repo, src: '/open-work/' + enc(repo) + '?v=' + enc(ow.updated), title: 'Open work', scrolling: 'no', style: S.frameH[repo] ? 'height:' + S.frameH[repo] + 'px' : null }) : h('div', { class: 'empty' }, ['The open-work report is not generated yet.']), 'report'));
+  kids.push(section('Stubs', stubs.length, grid(stubs.map(s => stubCard(repo, s, false)), 'No stubs.'), 'stubs'));
+  return h('div', {}, kids);
 }
 function header(r, mode) {
   const nq = openQs(r); const cs = [chip(r.status)];
@@ -294,28 +316,75 @@ function header(r, mode) {
   if (mode === 'run') acts.push(h('a', { class: 'btn', href: hrefItem(r.repo, r.id) + '/dossier' }, ['View dossier']));
   else if (r.updates.length || inProgress(r)) acts.push(h('a', { class: 'btn', href: hrefItem(r.repo, r.id) }, ['Back to run']));
   return h('div', { class: 'panel' }, [h('h1', { style: 'margin-top:0' }, [r.id + ' · ' + r.title]), r.summary && mode === 'run' ? h('p', { class: 'sum' }, [r.summary]) : null,
-    h('div', { class: 'chips' }, cs), h('div', { class: 'row' }, acts.concat(controls(r)))]);
+    h('div', { class: 'chips' }, cs), h('div', { class: 'row' }, controls(r, true).concat(acts))]);
 }
+const ICON = { start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', reply: '↩', routine: '·', info: '·', entry: '§' };
+const KLABEL = { start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };
+function dur(ms) { const m = Math.round(ms / 60000); if (m < 1) return '<1 min'; if (m < 60) return m + ' min'; const hh = Math.floor(m / 60); if (hh < 24) return hh + ' h ' + (m % 60 ? (m % 60) + ' min' : ''); return Math.floor(hh / 24) + ' d ' + (hh % 24) + ' h'; }
+const icon = (k) => h('span', { class: 'ic' }, [ICON[k] || '•']);
 function tlEntry(e) {
-  const li = tlItem(e); li.setAttribute('data-k', 'e:' + e.type + '|' + e.ts + '|' + (e.qid || '') + '|' + (e.label || '') + '|' + e.text.slice(0, 40)); return li;
+  const li = tlItem({ kind: e.type === 'answer' ? 'answered' : e.type === 'question' ? 'question' : e.type === 'message' ? 'reply' : 'info', key: false, entry: e }); return li;
 }
-function tlItem(e) {
+const ekey = (e) => 'e:' + e.type + '|' + e.ts + '|' + (e.qid || '') + '|' + (e.label || '') + '|' + e.text.slice(0, 40);
+function tlItem(it) {
+  const e = it.entry; const k = it.kind;
+  const cls = e.type + (e.auto ? ' auto' : '') + ' ev k-' + k + (it.key ? ' key' : '') + (it.kind === 'routine' || it.kind === 'info' ? ' rt' : '');
+  const dk = ekey(e);
   if (e.type === 'boundary') return h('li', { class: 'boundary', 'data-k': 'b:' + e.ts + e.label }, [h('div', { class: 'bound' }, [e.label]), e.text ? h('div', { class: 'tx mut' }, [e.text]) : null]);
-  const cls = e.type + (e.auto ? ' auto' : '');
-  if (e.type === 'question') { const q = S.q.find(x => x.id === e.qid) || e.question; return h('li', { class: cls }, [qCard(q, { thread: false })]); }
+  if (e.type === 'question') {
+    const q = S.q.find(x => x.id === e.qid) || e.question;
+    if (q.state === 'open') return h('li', { class: cls, 'data-k': dk }, [h('div', { class: 'hd' }, [icon(k), h('span', { class: 'kind' }, ['question asked · waiting for you']), when(e.ts)]), h('div', { class: 'tx' }, [e.text])]);
+    return h('li', { class: cls, 'data-k': dk }, [qCard(q, { thread: false })]);
+  }
   if (e.type === 'message' || e.type === 'answer') {
     const who = e.type === 'answer' ? 'Answer' + (e.option ? ' ' + e.option : '') : e.from + ' ' + e.kind;
-    return h('li', { class: cls }, [h('div', { class: 'hd' }, [h('span', { class: 'kind' }, [who + (e.via ? ' via ' + e.via : '')]), when(e.ts)]), h('div', { class: 'tx' }, [e.text])]);
+    return h('li', { class: cls, 'data-k': dk }, [h('div', { class: 'hd' }, [icon(k), h('span', { class: 'kind' }, [who + (e.via ? ' via ' + e.via : '')]), when(e.ts)]), h('div', { class: 'tx' }, [e.text])]);
   }
   if (e.type === 'entry') {
-    const head = h('div', { class: 'hd' }, [when(e.ts) || (e.ts ? h('span', {}, [e.ts]) : null)]);
-    if (!e.text) return h('li', { class: cls }, [head, h('div', { class: 'tx' }, [e.label])]);
-    return h('li', { class: cls }, [head, h('details', { 'data-k': 'd:' + e.ts + e.label }, [h('summary', {}, [e.label]), h('div', { class: 'tx' }, [e.text])])]);
+    const head = h('div', { class: 'hd' }, [icon('entry'), when(e.ts) || (e.ts ? h('span', {}, [e.ts]) : null)]);
+    if (!e.text) return h('li', { class: cls, 'data-k': dk }, [head, h('div', { class: 'tx' }, [e.label])]);
+    return h('li', { class: cls, 'data-k': dk }, [head, h('details', { 'data-k': 'd:' + e.ts + e.label }, [h('summary', {}, [e.label]), h('div', { class: 'tx' }, [e.text])])]);
   }
-  return h('li', { class: cls }, [h('div', { class: 'hd' }, [h('span', { class: 'kind' }, [e.type === 'log' ? 'build log' : e.type]), e.stage && e.type === 'stage' ? h('span', {}, [e.stage]) : null, when(e.ts)]), h('div', { class: 'tx' }, [e.text])]);
+  return h('li', { class: cls, 'data-k': dk }, [h('div', { class: 'hd' }, [icon(k), h('span', { class: 'kind' }, [KLABEL[k] || e.type]), e.stage && e.type === 'stage' ? h('span', {}, [e.stage]) : null, when(e.ts)]), h('div', { class: 'tx' }, [e.text])]);
 }
-function timeline(entries, label) {
-  return h('div', {}, [h('h2', {}, [label, h('span', { class: 'n' }, [String(entries.length)])]), entries.length ? h('ol', { class: 'tl' }, entries.map(tlEntry)) : h('div', { class: 'empty' }, ['Nothing recorded yet.'])]);
+function itemLi(it, gk) {
+  if (it.kind !== 'more') return tlItem(it);
+  const n = it.entries.length;
+  return h('li', { class: 'more', 'data-k': 'more:' + gk + it.entries[0].entry.ts + n }, [h('details', {}, [h('summary', {}, ['+' + n + ' routine update' + (n > 1 ? 's' : '') + ' · ', when(it.entries[0].entry.ts)]),
+    h('ol', {}, it.entries.map(x => h('li', { 'data-k': ekey(x.entry) }, [h('span', { class: 'mut' }, [(when(x.entry.ts) || h('span')), ' ']), x.entry.text.split('\n')[0]])))])]);
+}
+function phaseGroup(g, key) {
+  const c = g.counts; const bits = []; if (c.questions) bits.push(c.questions + ' question' + (c.questions > 1 ? 's' : '')); bits.push(c.updates + ' update' + (c.updates === 1 ? '' : 's'));
+  const head = h('summary', {}, [h('span', { class: 'pl' }, [g.label]), g.current ? chip('current', 'info') : (g.durationMs !== null ? h('span', { class: 'chip' }, [dur(g.durationMs)]) : null), g.summary ? h('span', { class: 'ps' }, [g.summary]) : null, h('span', { class: 'pc' }, [bits.join(' · ')])]);
+  const gk = key + g.label;
+  return h('details', { class: 'ph' + (g.current ? ' cur' : ''), 'data-k': 'ph:' + gk, 'data-cur': g.current ? '1' : '', open: g.current }, [head, h('ol', { class: 'tl' }, g.items.map(it => itemLi(it, gk)))]);
+}
+function groupsView(d, key, emptyText) {
+  if (d.empty || !d.groups || !d.groups.length) return h('div', { class: 'empty', 'data-k': 'empty' }, [emptyText]);
+  return h('div', {}, d.groups.map(g => phaseGroup(g, key)));
+}
+function stepper(n, names) {
+  const out = []; for (let i = 0; i <= 9; i++) out.push(h('span', { class: 'st' + (n === i ? ' cur' : n !== null && i < n ? ' done' : ''), title: 'Phase ' + i + (names && names[String(i)] ? ' — ' + names[String(i)] : '') }, [n === i ? 'Phase ' + i : String(i)]));
+  return h('div', { class: 'stepper', 'aria-label': 'Phase ' + (n === null ? '?' : n) + ' of 9' }, out);
+}
+function nowView(d, runner, withStepper) {
+  const n = d.now; const kids = [];
+  const waiting = n.waiting.map(id => S.q.find(q => q.id === id)).filter(q => q && q.state === 'open');
+  if (waiting.length) kids.push(h('div', { class: 'waitbox' }, [h('h3', {}, ['Waiting on you · ' + waiting.length + ' question' + (waiting.length > 1 ? 's' : '')])].concat(waiting.map(q => qCard(q, { thread: true })))));
+  kids.push(h('div', { class: 'lbl' }, ['Now']));
+  const head = [h('span', {}, [n.phase || 'No phase recorded yet'])];
+  if (n.since && Date.parse(n.since)) head.push(h('span', { class: 'chip' }, ['in this phase for ' + dur(Date.now() - Date.parse(n.since))]));
+  if (runner) head.push(chip('runner ' + runner.state, runner.state));
+  kids.push(h('div', { class: 'ph1' }, head));
+  if (withStepper) kids.push(stepper(n.step, d.phaseNames));
+  if (n.doing) kids.push(h('div', { class: 'doing' }, [icon(n.doing.kind), h('div', {}, [h('div', { class: 'tx' }, [n.doing.text.split('\n')[0]]), h('div', { class: 'small mut' }, [when(n.doing.ts)])])]));
+  else kids.push(h('div', { class: 'small mut' }, ['Nothing posted yet.']));
+  if (!waiting.length) kids.push(h('div', { class: 'nowait' }, ['Nothing is waiting on you.']));
+  return h('div', { class: 'now', 'data-k': 'now' }, kids);
+}
+function tabs(key, list) {
+  const cur = S.tab[key] || list[0][0];
+  return h('div', { class: 'tabs', role: 'tablist', 'data-k': 'tabs' }, list.map(t => h('button', { class: 'tab' + (cur === t[0] ? ' on' : ''), type: 'button', role: 'tab', 'data-act': 'tab', 'data-key': key, 'data-tab': t[0] }, [t[1]])));
 }
 function itemView(repo, id) {
   const r = findRun(repo, id);
@@ -323,7 +392,11 @@ function itemView(repo, id) {
   const mode = itemMode(r); const d = S.detail && S.detail.url === detailUrl() ? S.detail.data : null;
   const kids = [header(r, mode)];
   if (mode === 'run') {
-    kids.push(d && d.entries ? timeline(d.entries, d.planning ? 'Planning' : 'Timeline') : h('div', { class: 'empty' }, ['Loading…']));
+    const key = repo + '/' + id; const tab = S.tab[key] || 'timeline';
+    kids.push(tabs(key, [['timeline', d && d.planning ? 'Planning' : 'Timeline'], ['log', 'Build log' + (d && d.log ? ' (' + d.log.length + ')' : '')]]));
+    if (!d || !d.groups) kids.push(h('div', { class: 'empty' }, ['Loading…']));
+    else if (tab === 'log') kids.push(d.log.length ? h('ol', { class: 'tl', 'data-k': 'log' }, d.log.slice().reverse().map((l, i) => h('li', { class: 'log', 'data-k': 'l:' + i + l.slice(0, 30) }, [h('div', { class: 'tx' }, [l])]))) : h('div', { class: 'empty' }, ['The dossier has no build log yet.']));
+    else { kids.push(nowView(d, r.runner, true)); kids.push(groupsView(d, key, 'No updates yet — the agent posts here as the run progresses')); }
   } else {
     const html = d && d.html ? d.html : '';
     kids.push(h('div', { class: 'panel md', 'data-raw': '1', 'data-sig': html.length + ':' + html.slice(0, 40) + html.slice(-40), 'data-html': html }, []));
@@ -339,9 +412,13 @@ function stubView(repo, branch) {
   const cs = [chip(s.state), chip('cut ' + s.cut, 'neutral')]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
   const impl = s.dossiers.length ? h('div', { class: 'mini' }, s.dossiers.map(x => h('div', { class: 'card', 'data-k': 'i:' + x.id }, [
     h('a', { class: 'stretch title', href: hrefItem(x.repo || repo, x.id) }, [h('span', { class: 'id' }, [x.id + ' ']), x.title]), h('div', { class: 'chips' }, [chip(x.status || '?')])]))) : h('div', { class: 'empty' }, ['No dossier is implemented on this stub yet.']);
+  const key = repo + '/' + branch; const tab = S.tab[key] || 'timeline'; const body = [];
+  body.push(tabs(key, [['timeline', 'Timeline'], ['record', 'Record']]));
+  if (!d || !d.groups) body.push(h('div', { class: 'empty' }, ['Loading…']));
+  else if (tab === 'record') body.push(d.record.length ? h('ol', { class: 'tl', 'data-k': 'rec' }, d.record.slice().reverse().map(tlEntry)) : h('div', { class: 'empty' }, [d.hasRecord ? 'The record file has no sections.' : 'No record file for this stub.']));
+  else { body.push(nowView(d, null, false)); body.push(groupsView(d, key, 'No updates yet — the agent posts here as the stub progresses')); }
   return h('div', {}, [h('div', { class: 'panel' }, [h('h1', { class: 'mono', style: 'margin-top:0' }, [branch]), h('div', { class: 'chips' }, cs), h('div', { class: 'row small mut' }, [s.refAge ? when(s.refAge, 'ref updated ') : null]),
-    h('h2', {}, ['Implemented dossiers', h('span', { class: 'n' }, [String(s.dossiers.length)])]), impl]),
-    d && d.entries ? timeline(d.entries, 'Timeline') : h('div', { class: 'empty' }, ['Loading…'])]);
+    h('h2', {}, ['Implemented dossiers', h('span', { class: 'n' }, [String(s.dossiers.length)])]), impl])].concat(body));
 }
 
 // ---- header, crumbs ----
@@ -352,7 +429,7 @@ function crumbs() {
   if (R.repo) add(R.repo, R.kind === 'repo' ? null : hrefRepo(R.repo));
   if (R.kind === 'item') add(R.id, R.forceDossier ? hrefItem(R.repo, R.id) : null);
   if (R.kind === 'item' && R.forceDossier) add('Dossier');
-  if (R.kind === 'stub') add(R.branch); if (R.kind === 'graph') add('Dependency graph');
+  if (R.kind === 'stub') add(R.branch);
   return out;
 }
 function detailUrl() {
@@ -362,7 +439,7 @@ function detailUrl() {
 }
 function build() {
   if (!S.loaded) return h('div', { class: 'empty' }, ['Loading…']);
-  if (R.kind === 'questions') return questionsView(); if (R.kind === 'repo') return repoView(R.repo); if (R.kind === 'graph') return graphView(R.repo);
+  if (R.kind === 'questions') return questionsView(); if (R.kind === 'repo') return repoView(R.repo);
   if (R.kind === 'item') return itemView(R.repo, R.id); if (R.kind === 'stub') return stubView(R.repo, R.branch);
   return homeView();
 }
@@ -376,6 +453,7 @@ function syncAttrs(o, n) {
 function patchNode(o, n) {
   if (o.nodeType !== 1) { if (o.nodeValue !== n.nodeValue) o.nodeValue = n.nodeValue; return; }
   if (o.tagName === 'TEXTAREA') { syncAttrs(o, n); return; }
+  if (o.tagName === 'DETAILS' && o.getAttribute('data-cur') === '1' && n.getAttribute('data-cur') !== '1') o.removeAttribute('open');
   const changed = o.getAttribute('data-html') !== n.getAttribute('data-html');
   syncAttrs(o, n);
   if (o.hasAttribute('data-raw')) { if (changed) o.innerHTML = n.getAttribute('data-html') || ''; return; }
@@ -438,6 +516,7 @@ function navigate(href, replace) {
 }
 function onRoute() {
   if (location.pathname === '/' && hashQ()) { history.replaceState(null, '', '/questions#q=' + enc(hashQ())); }
+  if (/^\/repo\/[^/]+\/graph\/?$/.test(location.pathname)) history.replaceState(null, '', location.pathname.replace(/\/graph\/?$/, ''));
   R = parseRoute(); scrollTarget = R.kind === 'questions' ? hashQ() : ''; S.detail = null;
   render(); load(null);
 }
@@ -470,6 +549,7 @@ document.addEventListener('click', (e) => {
       const ta = t.closest('.need').querySelector('textarea'); if (ta && ta.value.trim()) { const v = ta.value; ta.value = ''; post(t.dataset.qid, { kind: act, text: v }); }
     } else if (act === 'ctl') control(t);
     else if (act === 'ctl-cancel') { const s = S.ctl[t.dataset.repo + '/' + t.dataset.id]; if (s) s.confirm = null; render(); }
+    else if (act === 'tab') { S.tab[t.dataset.key] = t.dataset.tab; render(); }
     else if (act === 'toggle-done') { S.showAll[t.dataset.repo] = !S.showAll[t.dataset.repo]; render(); }
     return;
   }

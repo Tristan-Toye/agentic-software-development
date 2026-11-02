@@ -174,22 +174,48 @@ one card-based single-page app with deep links.
     recommendation highlighted, thread, follow-up and answer, each linking to
     its dossier (`GET /questions#q=<id>` scrolls to one; old `/#<id>` links
     redirect);
-  - `/repo/<repo>`: In progress, This week's stub, Not started, Done (newest
-    first, 12 then show all), Stubs, Dependency graph (`/repo/<repo>/graph`);
+  - `/repo/<repo>`: open-work plus additions, top to bottom: open questions
+    of the repo inline with answer controls (when any); **Open stubs** (every
+    stub that is not merged, newest first; "This week's stub" when there is
+    one): state, step, PR + CI; **Running** dossiers as small live cards
+    (stage n/9 + name, what it is doing now, runner state, Stop/Resume); the
+    **complete open-work report** full width in a same-origin iframe sized to
+    its content (no inner scrollbar; re-sized on load, on content change and
+    on report refresh), with its own graph, Simplify toggle and tables; then
+    the Stubs cards. The report is generated with `--embed --link-base
+    /repo/<repo>`, so a click on a dossier anywhere in it navigates the top
+    window to `/repo/<repo>/<ID>`. `/repo/<repo>/graph` redirects here;
   - `/repo/<repo>/<ID>`: not started or done shows the full dossier with its
-    answered questions; in progress shows the **run view**: header (summary,
-    status, stage, runner, context, PR + CI, View dossier) and a vertical
-    timeline, newest on top, merging updates (`auto` ones smaller),
-    questions with their thread and answer at their own times, and build-log
-    lines only without updates; a labelled divider whenever the `Phase <n>`
-    of the `stage` lines changes. A `planned` dossier whose updates file has
-    lines shows it under "Planning". `/repo/<repo>/<ID>/dossier` forces the
-    dossier;
+    answered questions; in progress, or with any run updates (not done), shows
+    the **run view**. Both headers carry **Start** (ready, every `blocked_by`
+    done; else "blocked by ..."), **Resume** (runner stopped or failed, not
+    done) and **Stop** (running or waiting) with the two-step confirm.
+    `/repo/<repo>/<ID>/dossier` forces the dossier. The run view has two tabs:
+    - **Timeline** (default): a **Now** panel (**Waiting on you** first, with
+      the open questions and their answer controls; the phase stepper 0-9 with
+      the current phase highlighted and named; time in this phase; the newest
+      meaningful update; runner state), then the updates grouped by phase,
+      newest phase first. The current phase is expanded; a finished phase is
+      one line (name, duration, first line of its checkpoint summary, "2
+      questions - 14 updates") that expands. Key events (stage done, question
+      asked or answered, suite green or red, gates, PR opened or merged,
+      workflow started, failed, waiting, done) carry an icon and colour; `auto`
+      routine lines are de-emphasised and runs of two or more collapse into
+      "+N routine updates"; newest on top, relative time with the absolute time
+      on hover. A question and its thread belong to the phase of the question's
+      first message. It shows only the updates store and the questions and
+      never the build log: with neither it says "No updates yet";
+    - **Build log**: the dossier's `## Build log` lines, apart from the
+      timeline. A `planned` dossier whose updates file has lines labels the
+      timeline "Planning";
   - `/repo/<repo>/stub/<branch>`: header (cut, state, step, PR + CI,
-    implemented dossiers as cards) and a timeline from the record file
-    `stub-*.md` (each `##`/`###` heading an entry, dated by `(YYYY-MM-DD)` in
-    it else by position; `## Step N` headings are boundaries) plus updates and
-    questions under key `<repo>.<branch with / as ->`.
+    implemented dossiers as cards) with the same two-tab layout: **Timeline**
+    (Now panel and updates and questions grouped by the `## Step N` headings
+    of the record file `stub-*.md`, under key `<repo>.<branch with / as ->`)
+    and **Record** (each `##`/`###` heading of the record file as an entry,
+    dated by `(YYYY-MM-DD)` in it else by position).
+  - An id is unique only within a repo: dossiers are picked per main checkout,
+    and every lookup (runs, questions, stubs) is scoped by repo.
 - **Run controls** (POST, same Host/Origin checks; the button turns into
   "Confirm ..." first, never a browser dialog). The command's one-line output
   or error is shown on the card, with a link to the runner log:
@@ -207,8 +233,14 @@ one card-based single-page app with deep links.
   `scan`) on a change and after each background rescan. The page re-fetches
   only what changed and patches the DOM, so scroll, open expanders and typed
   text stay; a 60 s poll runs only while the stream is down.
+- **Slack progress thread** (server side, from the updates store; off with
+  `ASD_RUN_SLACK=0`): the first `runner` start line of a run opens one DM
+  message "▶ <repo> · <ID> — <title>"; each stage-done, waiting, answered,
+  failed and done line becomes a reply in that thread with a link to the run
+  view; `auto` lines never post. The thread ts and the lines already seen are
+  kept in `$ASD_RUNS_DIR/<key>.slack.json`; a restart posts no backlog.
 - **Other API:** `GET /api/runs`, `/api/stubs`, `/api/questions`,
-  `/api/timeline/<repo>/<ID>`, `/api/dossier/<repo>/<ID>`,
+  `/api/timeline/<repo>/<ID>` (entries, `groups`, `now`, `log`), `/api/dossier/<repo>/<ID>`,
   `/api/stub?repo=&branch=`, and `GET /dossier/<repo>/<ID>` (read-only,
   escaped HTML).
 - **Env overrides:** `ASD_RUNS_ROOTS`, `ASD_CLAUDE_PROJECTS`,
