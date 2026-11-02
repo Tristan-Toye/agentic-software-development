@@ -48,6 +48,43 @@ def raw_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def contract_file_text(path: str, raw: str, root: str, body: str) -> str:
+    """One pasted contract file: a `# path: <repo-relative path>` line, for a
+    .py file under a package root a `# import: from <dotted> import <names>`
+    line, then the file's bytes. compose_payloads.py pastes it and
+    verify_return.py re-derives it, so the stamp and the check agree."""
+    rel = os.path.relpath(path, root) if os.path.isabs(raw) else raw
+    head = "# path: %s\n" % rel
+    imp = python_import_line(path, body)
+    return head + (imp + "\n" if imp else "") + body
+
+
+def python_import_line(path: str, text: str) -> str:
+    """`# import: from <dotted> import <names>` for a .py file under a package
+    root (a directory chain of `__init__.py`), else "". Names are the top-level
+    public functions and classes. A file that does not parse gets no line."""
+    if not path.endswith(".py"):
+        return ""
+    import ast
+    parts = [os.path.splitext(os.path.basename(path))[0]]
+    d = os.path.dirname(os.path.abspath(path))
+    while os.path.isfile(os.path.join(d, "__init__.py")):
+        parts.insert(0, os.path.basename(d))
+        d = os.path.dirname(d)
+    if len(parts) < 2:
+        return ""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return ""
+    names = [n.name for n in tree.body
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+             and not n.name.startswith("_")]
+    if not names:
+        return ""
+    return "# import: from %s import %s" % (".".join(parts), ", ".join(names))
+
+
 def extract_contract_block(payload_text: str) -> str | None:
     """The CONTRACT field's value out of a payload file, de-indented; None
     when the payload carries no CONTRACT field. A block's lines are blank or

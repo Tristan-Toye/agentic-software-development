@@ -203,7 +203,8 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         # SUPPORT is the pasted form of SUPPORT_PATHS.
         "optional": {
             "SHARED_IDIOM", "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS",
-            "SUPPORT", "DELIVERY_CHANGE",
+            "SUPPORT", "DELIVERY_CHANGE", "FAILURES", "CORRECTION",
+            "BASELINE_COUNTS_FROM",
         },
     },
     "integration-test-author": {
@@ -220,7 +221,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         "optional": {
             "SHARED_IDIOM", "DELIVERY_CHANGE", "PROMISE_CHECKLIST",
             "SUPPORT_PATHS", "SUPPORT", "FAILURES", "CORRECTION",
-            "BASELINE_COUNTS_FROM",
+            "BASELINE_COUNTS_FROM", "CITATION",
         },
     },
     "implementer": {
@@ -262,6 +263,47 @@ FIELDS: dict[str, dict[str, set[str]]] = {
 GROUPS: dict[str, list[set[str]]] = {
     "unit-test-author": [{"STYLE_PATHS", "STYLE_SAMPLE"}],
 }
+
+# The pasted CONTRACT names each file: compose_payloads.py puts a `# path:` line
+# before every pasted file (#184).
+CONTRACT_PATH_LINE = re.compile(r"^\s*# path: \S", re.M)
+
+
+def skeleton_findings(lines: list[str], kind: str | None) -> tuple[list[str], list[str]]:
+    """Fields the test-author skeletons carry beyond the plain field list:
+    a unit CONTRACT without path lines (#184, warning), an integration
+    PROMISE_CHECKLIST without CITATION (#185, warning), and a unit TEST_PATHS
+    naming an existing file without CORRECTION (#198, defect)."""
+    defects: list[str] = []
+    warnings: list[str] = []
+    names = {name for _, name, _ in field_lines(lines)}
+    if kind == "unit-test-author":
+        body = field_body(lines, "CONTRACT")
+        if "\n" in body.strip() and not CONTRACT_PATH_LINE.search(body):
+            warnings.append(
+                "CONTRACT carries no `# path:` line: the author cannot name the module under "
+                "test. Compose it with compose_payloads.py --contract-paths, which prefixes "
+                "each pasted file with `# path:` (and `# import:` for a Python package)."
+            )
+        if "CORRECTION" not in names:
+            for number in sorted(field_line_numbers(lines, "TEST_PATHS")):
+                hit = next((m.group(1) for m in ABS_PATH.finditer(lines[number - 1])
+                            if os.path.isfile(m.group(1))), None)
+                if hit:
+                    defects.append(
+                        "line %d: TEST_PATHS %s already exists but the payload has no "
+                        "CORRECTION: a round on an existing test file names what to change "
+                        "(FAILURES + CORRECTION) and the author changes only that."
+                        % (number, hit)
+                    )
+                    break
+    if kind == "integration-test-author" and "PROMISE_CHECKLIST" in names and "CITATION" not in names:
+        warnings.append(
+            "PROMISE_CHECKLIST is given but there is no CITATION: the Phase 5 index is built "
+            "by grepping citations across the new test files, so the author needs the shape."
+        )
+    return defects, warnings
+
 
 # Path-valued fields of the unit author, and the pasted field that replaces
 # each one for an agent whose tool list grants no Read.
@@ -930,6 +972,12 @@ def excerpt_findings(lines: list[str], kind: str | None,
         print("check_payload: cannot read %s" % err, file=sys.stderr)
         raise SystemExit(2)
     defects: list[str] = []
+    # compose_payloads.py swaps the dossier id for the Jira key in the excerpt
+    # (#197); the live dossier is compared the same way.
+    fm_id = re.search(r"^id:\s*(\S+)\s*$", live_text, re.M)
+    fm_jira = re.search(r"^jira:\s*(\S+)\s*$", live_text, re.M)
+    if fm_id:
+        live_text = re.sub(re.escape(fm_id.group(1)), fm_jira.group(1) if fm_jira else "", live_text)
     for heading in EXCERPT_SECTIONS:
         ours, theirs = section_text(excerpt_text, heading), section_text(live_text, heading)
         if theirs is None:
@@ -1200,6 +1248,11 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     defects.extend(dead)
     warnings.extend(dead_warnings)
 
+    # 16. skeleton fields: contract path lines, citation, correction rounds
+    skel_defects, skel_warnings = skeleton_findings(lines, kind)
+    defects.extend(skel_defects)
+    warnings.extend(skel_warnings)
+
     # 10. a path whose read cannot be bounded
     defects.extend(bounded_read_findings(lines, kind, tools))
 
@@ -1308,6 +1361,20 @@ def selftest() -> int:
         "CONTRACT_HASH: 3f2611f0a91c4d8e\n"
     )
     case("unit author clean", unit_ok, "unit-test-author", False, host="opencode")
+    # --- #198: a unit-author round on an existing test file needs CORRECTION ---
+    unit_existing = unit_ok.replace("TEST_PATHS: {REAL}/tests/unit/test_flush.py",
+                                    "TEST_PATHS: {REAL}/tests/unit/test_retry.py")
+    case("unit author: an existing TEST_PATHS file without CORRECTION is refused",
+         unit_existing, "unit-test-author", True, "CORRECTION", host="opencode")
+    case("unit author: FAILURES + CORRECTION lint clean on an existing file",
+         unit_existing + "FAILURES: |\n  test_retry: expected 3, got 2\nBASELINE_COUNTS_FROM: pre-change tree re-run\n"
+         "CORRECTION: |\n  Change only the expected count in test_retry.\n",
+         "unit-test-author", False, host="opencode")
+    # --- #184: a multi-line unit CONTRACT with no `# path:` line warns ---
+    unit_paths = unit_ok.replace("CONTRACT: {REAL}/tests/unit/test_retry.py\n",
+                                 "CONTRACT: |\n  fn flush()\n  fn drain()\n")
+    case("unit author: a pasted CONTRACT with no path line warns", unit_paths,
+         "unit-test-author", False, must_warn="# path:", host="opencode")
     fix_body = (
         "WORKTREE_DIR: {REAL}\nBRANCH: b\nMODE: fix\nCONTRACT: |\n  fn flush()\n"
         "CRS: |\n  CR-1: x\nFAILURES: |\n  === 1 failed, 7 passed ===\n"
@@ -1407,7 +1474,8 @@ def selftest() -> int:
          pasted + "SUPPORT_PATHS: {REAL}/src/grant.rs\n",
          "unit-test-author", True, "cannot read it", host="claude", tools=["Read", "Write"])
     case("host claude: an existing TEST_PATHS file is fine once the author can Read it",
-         pasted.replace("TEST_PATHS: {REAL}/tests/unit/test_flush.py", "TEST_PATHS: {REAL}/tests/unit/test_retry.py"),
+         pasted.replace("TEST_PATHS: {REAL}/tests/unit/test_flush.py", "TEST_PATHS: {REAL}/tests/unit/test_retry.py")
+         + "CORRECTION: |\n  Change only what FAILURES names.\n",
          "unit-test-author", False, host="claude", tools=["Read", "Write"])
     case("assertion form: a whole-value line with no tag warns",
          pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
@@ -1526,6 +1594,16 @@ def selftest() -> int:
          "integration-test-author", True, "not an excerpt", host="claude", tools=rw)
     case("integration author: a routed unit surface may carry PROMISE_CHECKLIST",
          integ + "PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
+         "integration-test-author", False, host="claude", tools=rw,
+         live="{REAL}/.discovery/dossiers/W-014-x.md")
+
+    case("integration author: PROMISE_CHECKLIST without CITATION warns",
+         integ + "PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
+         "integration-test-author", False, must_warn="CITATION", host="claude", tools=rw,
+         live="{REAL}/.discovery/dossiers/W-014-x.md")
+    case("integration author: PROMISE_CHECKLIST with CITATION does not warn",
+         integ + "PROMISE_CHECKLIST: |\n  flush — return meaning: count\n"
+         "CITATION: |\n  // promise: x\n",
          "integration-test-author", False, host="claude", tools=rw,
          live="{REAL}/.discovery/dossiers/W-014-x.md")
 

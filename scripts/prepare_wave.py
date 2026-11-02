@@ -55,7 +55,10 @@ Every payload that passes lint has its sha256 recorded in
 `<root>/.agent-staging/wave-<holder>.hashes` (`wave.hashes` without a holder),
 one `<sha256>  <payload path>` line per payload, replaced on each lint. A spawn
 can prove it ships the linted bytes by comparing `sha256sum` of the payload with
-that line: a payload edited after its lint no longer matches it.
+that line: a payload edited after its lint no longer matches it. Every hash is
+the full 64 hex characters: copy it whole into a spawn or a ledger line, never
+shortened with an ellipsis or typed from memory (a truncated hash is refused as
+an integrity failure).
 
 `PAYLOAD-LINT` counts the defects fixed since the wave was first linted: each
 run records its defect count in `<root>/.agent-staging/wave-<holder>.lint`
@@ -340,6 +343,7 @@ def selftest() -> int:
         check("hashes file is wave-<holder>.hashes", path.endswith(os.path.join(".agent-staging", "wave-W-1-wave1.hashes")))
         entries = dict((l.split("  ", 1)[1], l.split("  ", 1)[0]) for l in open(path, encoding="utf-8").read().splitlines())
         check("hash is the payload's sha256", entries[other] == hashlib.sha256(b"a\n").hexdigest())
+        check("every recorded hash is the full 64 hex characters", all(len(h) == 64 for h in entries.values()))
         with open(other, "w", encoding="utf-8") as fh:
             fh.write("b\n")
         record_hashes(tmp, "W-1-wave1", [other])

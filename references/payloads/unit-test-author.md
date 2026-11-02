@@ -62,6 +62,16 @@ SHARED_IDIOM: |
   <only when a test must construct or invoke a concept two or more agents
    write — the same bytes as every other payload that carries it, test
    authors included. Omit when no concept is shared.>
+FAILURES: |
+  <a corrective round only: the failing run's output, verbatim>
+BASELINE_COUNTS_FROM: <with FAILURES: the sha the counts were taken at, or
+  `pre-change tree re-run`>
+CORRECTION: |
+  <a corrective round only; required when TEST_PATHS names a file that
+   exists. 1. the first edit, exact and ordered; 2. the next. Read the whole
+   file, then Write it back with exactly these changes, nothing else — never
+   a partial Edit, never a new test. CONVENTIONS and the rest stay as they
+   were.>
 CONTRACT_HASH: 3f2611f0a91c4d8e
 ```
 
@@ -71,7 +81,10 @@ one path in the payload:
 ```
 CONTRACT: |
   <the contract text, pasted verbatim from the files on X — the same bytes
-   CONTRACT_HASH stamps. Never a staged path: the author cannot open it.>
+   CONTRACT_HASH stamps. Never a staged path: the author cannot open it.
+   Each file opens with `# path: <repo-relative path>` and, for Python under
+   a package, `# import: from <dotted.module> import <names>` —
+   compose_payloads.py writes both, so the author imports the module right>
 PROMISE_CHECKLIST: |
   <as in the opencode form, assertion-form tags included>
 TEST_PATHS: /abs/path/repo-W-014/tests/unit/test_flush_queue.py
@@ -103,6 +116,16 @@ FIXTURES: |
    tells the author to read or open anything — it cannot.>
 SHARED_IDIOM: |
   <same rule as the opencode form>
+FAILURES: |
+  <a corrective round only: the failing run's output, verbatim>
+BASELINE_COUNTS_FROM: <with FAILURES: the sha the counts were taken at, or
+  `pre-change tree re-run`>
+CORRECTION: |
+  <a corrective round only; required when TEST_PATHS names a file that
+   exists. 1. the first edit, exact and ordered; 2. the next. Read the whole
+   file, then Write it back with exactly these changes, nothing else — never
+   a partial Edit, never a new test. CONVENTIONS and the rest stay as they
+   were.>
 CONTRACT_HASH: 3f2611f0a91c4d8e
 ```
 
@@ -128,6 +151,18 @@ authors, or route it to the `Read` + `Write` shape (`work-on.md` Phase 4).
    control cannot invert what the case asserts.
 4. A refusal helper compares the SUBJECT's exit status, never the test
    helper's own 0/1.
+
+`CONTRACT` carries the module path of every pasted file: a `# path:` line, and
+for a `.py` file under a package root a `# import:` line, ahead of the file's
+bytes. `compose_payloads.py --contract-paths` writes them; `check_payload.py`
+warns when a pasted `CONTRACT` has no `# path:` line.
+
+**A corrective round on an existing test file** carries `FAILURES` and
+`CORRECTION`, the same rules as the integration author's: the author reads the
+whole file, then Writes it back with exactly the changes `CORRECTION` names,
+and `CONVENTIONS` and the other fields stay as they were.
+`check_payload.py` requires `CORRECTION` when `TEST_PATHS` names a file that
+exists.
 
 `CONTRACT_HASH` is the orchestrator's stamp of the contract the author saw —
 hash the staged files (or the pasted text) at spawn time and paste the hash

@@ -148,6 +148,8 @@ for (const item of args) {
 }
 
 // The spawn prompt: a task line and the two pointer fields every agent file's intake names.
+// Regression note: this prompt is built from the payload intake only (task line, PAYLOAD_FILE, PAYLOAD_SHA256).
+// Never relay user chat text into it: a relayed message sent mid-wave was read as an instruction to skip the payload.
 const spawnPrompt = (item) =>
   'You are the ' + item.lens + ' lens of a /work-on Phase 7 review round (' + item.label + '). Your payload is the file below: read it whole before anything else ' +
   '(in parts with offset and limit if Read says it is too large); every field in it binds you.\n' +

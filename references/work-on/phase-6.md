@@ -43,6 +43,16 @@ to /stub on <stub branch>`. A service-backed new test may hold the stack
 lease for one suite window for its own green run, through `run_tests.py
 --vm`; that run is this build's evidence, never the integrated verdict.
 
+**A `--vm` suite run gets a tier-calibrated timeout floor and a post-kill
+sweep.** `run_tests.py --vm` tears the remote runner down on host-side exit;
+that is the first line of defence, not the only one. Set the timeout from the
+tier, never the default: a `--stack` tier that has once taken more than 2h gets
+at least 3h plus margin. After any kill or timeout, and before any re-run,
+sweep the VM: look for a living runner process, the lease `.holder` sidecar,
+and the suite-window flock. Kill the runner, remove the stale `.holder`, and
+release the flock (or wait for its owner) before starting again. A resumed run
+never starts a suite into a window another runner still holds.
+
 Under either runner, inspect the complete log for skipped or `NOT VERIFIED`
 coverage and compare executed tiers with `SUITE-COVERAGE`. An aggregator's
 successful exit can include skipped required tiers. Record each omission
@@ -109,6 +119,13 @@ change:
 | The test fails on harness noise — a compile error, a missing fixture, an import | nobody | Fix the harness yourself. It is mechanical. |
 | The failure reproduces on the **target branch at the merge-base**, untouched by this build | nobody — **upstream** | Prove it first (below), then fix it on your branch to keep green, log `UPSTREAM:` with the proof, and say in the PR description that the fix belongs upstream independently of this change. |
 | The failure is **intermittent** — `FLAKY` in a repeat run, or a red that a rerun of the same head turns green | **unknown until the mechanism is found** | Find the race (below), then rule on the mechanism: rows 1–3, or row 5 with a repeated proof. Never "nobody", and never a rerun until green. |
+
+**A fix round carries its row-1 rulings to the implementers.** When you
+compose a fix round, put each row-1 ruling of that round (a test ruled a test
+defect) into the payload of every implementer whose owned paths that test
+exercises, under `FAILURES` as a `TEST-DEFECTS:` sub-list: the test name, then
+"ruled a test defect — do not change code for this test". Without it the
+implementer bends the code to a test that is already wrong.
 
 **Under Claude Code, a re-spawn in rows 1–3 is a resume** whenever the agent's
 ID is known and the contract is unchanged: `SendMessage` to the test author or
