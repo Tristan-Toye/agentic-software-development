@@ -81,6 +81,10 @@ FAILURES: |
    rather than review change requests — the implementation broke a promise,
    and the failing output is the work order. CRS is then omitted; either
    field alone is valid>
+  TEST-DEFECTS:                # sub-list, when a Phase 6 round ruled tests defective
+    - <test name> — ruled a test defect — do not change code for this test
+                               # one line per row-1 ruling of the round whose test
+                               # this package's OWNED_PATHS reach; omit when none
 BASELINE_COUNTS_FROM: 9c2f1ab
                               # the tree the FAILURES counts came from: a sha,
                               # or `pre-change tree re-run`. An earlier phase's
