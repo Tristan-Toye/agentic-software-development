@@ -235,6 +235,14 @@ split, and a criterion whose `env` names services the machine cannot provide
 is a `/plan`-shaped defect — fix it before anything spawns, not after a red
 suite that cannot even run.
 
+A criterion whose values cross a serialization boundary (span attribute to
+collector export, struct to JSON, message to wire) pins the wire form of every
+field: the exact encoded shape, not the logical type. `intValue` as a
+digit-string is a promise; `an integer` is not. Test fixtures come from a real
+capture across the boundary, never from hand-written samples, because a
+hand-written fixture repeats the author's wrong reading of the format. The plan
+review checks for this.
+
 A criterion this machine cannot observe carries `UNVERIFIABLE-LOCALLY` plus
 the agreed substitute in the same line — the command that observes it
 elsewhere, or the deploy-check it defers to. The validator rejects the marker

@@ -178,6 +178,9 @@ Check, in this order:
    site — an expected exception cited by class or strategy name alone is a
    blocking CR: open the site and confirm the throw, or send the criterion
    back.
+   A criterion whose values cross a serialization boundary that states only
+   the logical type, with no wire form and no real-capture fixture source, is
+   a blocking CR.
 3. **Buildability.** Is `## Contract` complete enough that a test author who
    sees nothing else can write a test from it? Does every documented promise
    name its behaviour for empty input, invalid input, and errors? A vague
