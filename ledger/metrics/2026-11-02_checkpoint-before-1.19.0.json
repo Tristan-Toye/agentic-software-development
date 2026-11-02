@@ -1,0 +1,676 @@
+{
+ "window": {
+  "since": "2026-10-29T00:00:00+01:00",
+  "until": "2026-11-02T10:22:32+01:00",
+  "whole": false
+ },
+ "claude_week_usd": 1023.8,
+ "claude_week_basis": "calibrated from usage log",
+ "calibration": {
+  "week_usd": 1023.8,
+  "rise_pct": 98.0,
+  "spent_usd": 1003.32,
+  "from": 1792753406000,
+  "to": 1793349496000,
+  "resets_at": 1793358000
+ },
+ "unpriced_claude_models": {
+  "claude-haiku-5-5": 1669,
+  "claude-opus-5": 3963,
+  "claude-sonnet-5": 1735,
+  "claude-opus-4-8": 949
+ },
+ "summary": {
+  "opencode": {
+   "runs": 3,
+   "median_cost": 15168,
+   "median_mtok_in": 167.2,
+   "median_avg_request_k": 98,
+   "median_share_pct": {
+    "Lite": 151.7,
+    "Pro": 25.3,
+    "Max": 10.8
+   },
+   "median_quality": {
+    "returns": 30,
+    "flagged_returns": 1,
+    "arbitrations": 6,
+    "defects": 0,
+    "corrections": 34,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 6,
+    "packages": 10
+   },
+   "quality_runs": 3,
+   "dossiers_per_week": {
+    "Lite": 0.7,
+    "Pro": 4.0,
+    "Max": 9.3
+   }
+  },
+  "claude": {
+   "runs": 5,
+   "median_cost": 113.37,
+   "median_mtok_in": 298.6,
+   "median_avg_request_k": 247,
+   "median_share_pct": {
+    "Team Premium seat (Max 5x tier)": 11.1
+   },
+   "median_quality": {
+    "returns": 20.5,
+    "flagged_returns": 0.0,
+    "arbitrations": 2.0,
+    "defects": 0.0,
+    "corrections": 9.0,
+    "workflow_runs": 9.5,
+    "gaps": 2.0,
+    "contract_changes": 0.0,
+    "change_requests": 7.5,
+    "packages": 9.5
+   },
+   "quality_runs": 4,
+   "dossiers_per_week": {
+    "Team Premium seat (Max 5x tier)": 9.0
+   }
+  }
+ },
+ "runs": [
+  {
+   "host": "claude",
+   "run": "W-001",
+   "cost": 23.1,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 100.0,
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos",
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs",
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine"
+   ],
+   "plugin": [
+    "1.16.0"
+   ],
+   "start": "2026-10-29T11:11Z",
+   "end": "2026-11-01T10:04Z",
+   "requests": 71,
+   "mtok_in": 38.7,
+   "mtok_out": 0.04,
+   "cache_read_pct": 95.2,
+   "avg_request_k": 545,
+   "full": false,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 2.3
+   },
+   "dossier": "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine/.discovery/dossiers/W-001-foundation-contracts-runtime-terraform.md",
+   "quality": {
+    "returns": 16,
+    "flagged_returns": 0,
+    "arbitrations": 3,
+    "defects": 0,
+    "corrections": 13,
+    "workflow_runs": 7,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 10,
+    "packages": 8,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-121",
+   "cost": 72.3,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 75.0,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.16.0"
+   ],
+   "start": "2026-10-30T11:21Z",
+   "end": "2026-10-31T17:47Z",
+   "requests": 1420,
+   "mtok_in": 151.1,
+   "mtok_out": 1.08,
+   "cache_read_pct": 95.8,
+   "avg_request_k": 106,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 7.1
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-stubfix1/.discovery/dossiers/W-121-watchdog-safeguard-node-kinds-runtime.md",
+   "quality": {
+    "returns": 19,
+    "flagged_returns": 0,
+    "arbitrations": 0,
+    "defects": 0,
+    "corrections": 12,
+    "workflow_runs": 8,
+    "gaps": 2,
+    "contract_changes": 0,
+    "change_requests": 7,
+    "packages": 9,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-004",
+   "cost": 13.74,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 100.0,
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine"
+   ],
+   "plugin": [
+    "1.16.0"
+   ],
+   "start": "2026-10-30T11:39Z",
+   "end": "2026-10-30T12:17Z",
+   "requests": 59,
+   "mtok_in": 39.3,
+   "mtok_out": 0.03,
+   "cache_read_pct": 98.3,
+   "avg_request_k": 666,
+   "full": false,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 1.3
+   },
+   "dossier": "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine/.discovery/dossiers/W-004-script-stage-dialogue-engine-newsdesk-judge.md",
+   "quality": {
+    "returns": 9,
+    "flagged_returns": 0,
+    "arbitrations": 3,
+    "defects": 0,
+    "corrections": 1,
+    "workflow_runs": 6,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 15,
+    "packages": 6,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-010",
+   "cost": 201.1,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 61.7,
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine"
+   ],
+   "plugin": [
+    "1.16.0"
+   ],
+   "start": "2026-10-30T11:44Z",
+   "end": "2026-10-31T19:43Z",
+   "requests": 2317,
+   "mtok_in": 536.7,
+   "mtok_out": 4.65,
+   "cache_read_pct": 97.4,
+   "avg_request_k": 232,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 19.6
+   },
+   "dossier": "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine/.discovery/dossiers/W-010-split-selection-from-episode-planning.md",
+   "quality": {
+    "returns": 7,
+    "flagged_returns": 0,
+    "arbitrations": 2,
+    "defects": 1,
+    "corrections": 10,
+    "workflow_runs": 9,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 12,
+    "packages": 12,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-019",
+   "cost": 16.04,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 100.0,
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos"
+   ],
+   "plugin": [
+    "1.16.0"
+   ],
+   "start": "2026-10-30T14:15Z",
+   "end": "2026-10-30T15:32Z",
+   "requests": 71,
+   "mtok_in": 49.7,
+   "mtok_out": 0.03,
+   "cache_read_pct": 98.6,
+   "avg_request_k": 700,
+   "full": false,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 1.6
+   },
+   "dossier": null,
+   "quality": null
+  },
+  {
+   "host": "claude",
+   "run": "W-125",
+   "cost": 8.43,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 76.6,
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "plugin": [
+    "1.16.0"
+   ],
+   "start": "2026-10-31T09:04Z",
+   "end": "2026-10-31T13:13Z",
+   "requests": 139,
+   "mtok_in": 14.6,
+   "mtok_out": 0.17,
+   "cache_read_pct": 95.7,
+   "avg_request_k": 105,
+   "full": false,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 0.8
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/.w122-census-baseline/baseline-test-layout-census.nCNzeV/.discovery/dossiers/W-125-split-composition-root-run-into-stages.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 0,
+    "defects": 0,
+    "corrections": 0,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 5,
+    "packages": 7,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-005",
+   "cost": 16.7,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 87.7,
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos",
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs",
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine",
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-backend-application-api"
+   ],
+   "plugin": [
+    "1.12.0",
+    "1.16.0",
+    "1.17.0"
+   ],
+   "start": "2026-10-31T19:44Z",
+   "end": "2026-11-01T11:21Z",
+   "requests": 222,
+   "mtok_in": 52.8,
+   "mtok_out": 0.2,
+   "cache_read_pct": 98.8,
+   "avg_request_k": 238,
+   "full": false,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 1.6
+   },
+   "dossier": "/Users/tristan.toye/Documents/Twipe/repos/twipe-backend-application-api-W-006/.discovery/dossiers/W-005-asymmetric-partner-token-signing-factory.md",
+   "quality": {
+    "returns": 14,
+    "flagged_returns": 0,
+    "arbitrations": 1,
+    "defects": 0,
+    "corrections": 2,
+    "workflow_runs": 5,
+    "gaps": 4,
+    "contract_changes": 2,
+    "change_requests": 3,
+    "packages": 0,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-011",
+   "cost": 120.93,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 66.7,
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine"
+   ],
+   "plugin": [
+    "1.17.0"
+   ],
+   "start": "2026-10-31T21:16Z",
+   "end": "2026-11-01T10:36Z",
+   "requests": 1532,
+   "mtok_in": 378.9,
+   "mtok_out": 2.25,
+   "cache_read_pct": 98.0,
+   "avg_request_k": 247,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 11.8
+   },
+   "dossier": "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine/.discovery/dossiers/W-011-script-composition-evaluation-repair-split.md",
+   "quality": {
+    "returns": 28,
+    "flagged_returns": 0,
+    "arbitrations": 10,
+    "defects": 0,
+    "corrections": 8,
+    "workflow_runs": 11,
+    "gaps": 2,
+    "contract_changes": 2,
+    "change_requests": 8,
+    "packages": 10,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-012",
+   "cost": 57.82,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 87.7,
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine"
+   ],
+   "plugin": [
+    "1.17.0"
+   ],
+   "start": "2026-10-31T21:33Z",
+   "end": "2026-11-01T09:56Z",
+   "requests": 531,
+   "mtok_in": 174.0,
+   "mtok_out": 0.64,
+   "cache_read_pct": 98.4,
+   "avg_request_k": 328,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 5.6
+   },
+   "dossier": "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine/.discovery/dossiers/W-012-qc-measure-judge-decision-split.md",
+   "quality": {
+    "returns": 22,
+    "flagged_returns": 0,
+    "arbitrations": 2,
+    "defects": 0,
+    "corrections": 6,
+    "workflow_runs": 10,
+    "gaps": 3,
+    "contract_changes": 0,
+    "change_requests": 4,
+    "packages": 7,
+    "build_log": true
+   }
+  },
+  {
+   "host": "claude",
+   "run": "W-014",
+   "cost": 113.37,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 73.9,
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs"
+   ],
+   "plugin": [
+    "1.17.0"
+   ],
+   "start": "2026-11-01T10:38Z",
+   "end": "2026-11-02T08:02Z",
+   "requests": 1209,
+   "mtok_in": 298.6,
+   "mtok_out": 1.57,
+   "cache_read_pct": 97.1,
+   "avg_request_k": 247,
+   "full": true,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 11.1
+   },
+   "dossier": null,
+   "quality": null
+  },
+  {
+   "host": "claude",
+   "run": "W-015",
+   "cost": 15.35,
+   "unit": "usd api-equivalent",
+   "orchestrator_share_pct": 67.5,
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs"
+   ],
+   "plugin": [
+    "1.17.0"
+   ],
+   "start": "2026-11-02T08:02Z",
+   "end": "2026-11-02T09:22Z",
+   "requests": 203,
+   "mtok_in": 38.6,
+   "mtok_out": 0.31,
+   "cache_read_pct": 97.0,
+   "avg_request_k": 190,
+   "full": false,
+   "share_pct": {
+    "Team Premium seat (Max 5x tier)": 1.5
+   },
+   "dossier": null,
+   "quality": null
+  },
+  {
+   "host": "opencode",
+   "run": "W-122",
+   "titles": [
+    "w-122"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 15168,
+   "unit": "credits billed",
+   "credits_standard": 27745,
+   "orchestrator_share_pct": 79.8,
+   "start": "2026-10-28T23:00Z",
+   "end": "2026-10-31T21:51Z",
+   "requests": 1895,
+   "mtok_in": 167.2,
+   "mtok_out": 1.75,
+   "cache_read_pct": 92.6,
+   "avg_request_k": 88,
+   "full": true,
+   "share_pct": {
+    "Lite": 151.7,
+    "Pro": 25.3,
+    "Max": 10.8
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-122/.discovery/dossiers/W-122-test-binary-per-product-selection.md",
+   "quality": {
+    "returns": 38,
+    "flagged_returns": 3,
+    "arbitrations": 1,
+    "defects": 2,
+    "corrections": 36,
+    "workflow_runs": 0,
+    "gaps": 2,
+    "contract_changes": 0,
+    "change_requests": 6,
+    "packages": 13,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-116",
+   "titles": [
+    "W-116"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 20327,
+   "unit": "credits billed",
+   "credits_standard": 34660,
+   "orchestrator_share_pct": 82.5,
+   "start": "2026-10-28T23:11Z",
+   "end": "2026-10-31T08:26Z",
+   "requests": 2234,
+   "mtok_in": 218.9,
+   "mtok_out": 1.52,
+   "cache_read_pct": 94.7,
+   "avg_request_k": 98,
+   "full": true,
+   "share_pct": {
+    "Lite": 203.3,
+    "Pro": 33.9,
+    "Max": 14.5
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-122/.discovery/dossiers/W-116-triggers-registry-http-schedule.md",
+   "quality": {
+    "returns": 30,
+    "flagged_returns": 1,
+    "arbitrations": 6,
+    "defects": 0,
+    "corrections": 20,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 10,
+    "packages": 9,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-115",
+   "titles": [
+    "W-115",
+    "W-115"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/personal/repos/config-harness"
+   ],
+   "cost": 7794,
+   "unit": "credits billed",
+   "credits_standard": 12732,
+   "orchestrator_share_pct": 68.5,
+   "start": "2026-10-29T02:07Z",
+   "end": "2026-10-30T08:19Z",
+   "requests": 927,
+   "mtok_in": 90.6,
+   "mtok_out": 0.75,
+   "cache_read_pct": 92.3,
+   "avg_request_k": 98,
+   "full": true,
+   "share_pct": {
+    "Lite": 77.9,
+    "Pro": 13.0,
+    "Max": 5.6
+   },
+   "dossier": "/Users/tristan.toye/Documents/personal/repos/config-harness-W-122/.discovery/dossiers/W-115-manual-scaling-instances-lease-lag.md",
+   "quality": {
+    "returns": 3,
+    "flagged_returns": 0,
+    "arbitrations": 6,
+    "defects": 0,
+    "corrections": 34,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 5,
+    "packages": 10,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-013",
+   "titles": [
+    "W-013 inquiry"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine"
+   ],
+   "cost": 1299,
+   "unit": "credits billed",
+   "credits_standard": 2597,
+   "orchestrator_share_pct": 92.7,
+   "start": "2026-11-01T09:59Z",
+   "end": "2026-11-01T11:05Z",
+   "requests": 202,
+   "mtok_in": 12.3,
+   "mtok_out": 0.18,
+   "cache_read_pct": 92.7,
+   "avg_request_k": 61,
+   "full": false,
+   "share_pct": {
+    "Lite": 13.0,
+    "Pro": 2.2,
+    "Max": 0.9
+   },
+   "dossier": "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine/.discovery/dossiers/W-013-qc-work-registration-audio-group.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 0,
+    "defects": 0,
+    "corrections": 0,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 9,
+    "packages": 8,
+    "build_log": true
+   }
+  },
+  {
+   "host": "opencode",
+   "run": "W-007",
+   "titles": [
+    "W-007"
+   ],
+   "dirs": [
+    "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine"
+   ],
+   "cost": 1036,
+   "unit": "credits billed",
+   "credits_standard": 2072,
+   "orchestrator_share_pct": 92.3,
+   "start": "2026-11-01T09:59Z",
+   "end": "2026-11-01T10:56Z",
+   "requests": 120,
+   "mtok_in": 8.4,
+   "mtok_out": 0.16,
+   "cache_read_pct": 86.5,
+   "avg_request_k": 70,
+   "full": false,
+   "share_pct": {
+    "Lite": 10.4,
+    "Pro": 1.7,
+    "Max": 0.7
+   },
+   "dossier": "/Users/tristan.toye/Documents/Twipe/repos/twipe-ai-labs/podcast-generation-engine/.discovery/dossiers/W-007-qc-stage-python-worker-transcribe-fidelity-speaker-judge.md",
+   "quality": {
+    "returns": 0,
+    "flagged_returns": 0,
+    "arbitrations": 0,
+    "defects": 0,
+    "corrections": 0,
+    "workflow_runs": 0,
+    "gaps": 0,
+    "contract_changes": 0,
+    "change_requests": 9,
+    "packages": 8,
+    "build_log": true
+   }
+  }
+ ]
+}

@@ -623,6 +623,44 @@ measurable claim, how to verify, and the result.
   and absence of unconditional whole-suite repetitions.
 - **Result**: pending workflow use; no production run measured yet.
 
+### C-136 — Gate receipts, one logged test run per implementer, worktree seed hook, the 18-issue sweep (1.18.0–1.19.0)
+
+- **Change**: PR #201 (1.18.0, merged 2026-11-02T10:05+01:00): `run_gates.py`
+  reuses a green run on the same tree through a receipt, so Phase 6 no longer
+  re-runs gates Phase 2 or the fix round already passed; `compose_payloads.py`
+  routes implementer test commands through `run_tests.py --log`, so a suite runs
+  once per change and the output is grepped, not re-run; Phase 4 runs the
+  target's `.worktree-setup.sh` (config-harness W-123 D6 seeds `target/` by
+  clone). PR #205 (1.19.0, merged 2026-11-02T10:22+01:00): 18 graduation
+  issues; the cost-relevant ones remove re-spawns (#184 import line, #193 full
+  hashes, #194/#200 composer fixes, #198 unit CORRECTION field).
+- **Why**: the 2026-11-02 transcript analysis counted 297 test commands over
+  the 1.17.0 runs, 120 by implementers; 26% of implementer runs and 13% of
+  orchestrator runs repeated the same suite with no edit between, and the
+  fix-mode gates ran twice.
+- **Hypothesis**: fewer test and gate commands per dossier (target: no
+  same-tree repeats), fewer refused or repeated spawns, and a lower Claude
+  share of the week per dossier than the checkpoint below.
+- **Checkpoint (before)**: `ledger/metrics/2026-11-02_checkpoint-before-1.19.0.json`,
+  window 2026-10-29T00:00+01:00 → 2026-11-02T10:22:32+01:00 (plugin 1.17.0),
+  seat week $1,024 API-equivalent.
+  - Claude Code: 5 runs (3 full); median $113.37 per dossier, 11.1% of the
+    seat's week (~9 dossiers/week), 298.6 Mtok in, average request 247k,
+    orchestrator 97–99% of cost; quality medians: returns 20.5, corrections 9,
+    change requests 7.5, workflow runs 9.5.
+  - opencode (GLM): 3 runs; median 15,168 credits, Pro 25.3%, Max 10.8% of a
+    week, average request 98k.
+- **Verify**: after the next full Claude runs on 1.19.0:
+
+  ```bash
+  python3 scripts/budget_report.py --since 2026-11-02T10:22:32+01:00 \
+    --json ledger/metrics/<date>_after-1.19.0.json \
+    --compare ledger/metrics/2026-11-02_checkpoint-before-1.19.0.json
+  ```
+
+  and count `REUSED … gates` lines and same-suite repeats in the transcripts.
+- **Result**: pending.
+
 ## Next measurement
 
 After the next runs, from the time the C-108–C-111 merge is pulled into the
