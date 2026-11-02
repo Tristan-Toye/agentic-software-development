@@ -253,6 +253,17 @@ merges or pushes** — a dirty tracked dossier blocks a merge that touches it,
 and an unpushed record dies with the worktree. Add it by name, never with
 `git add -A`. State the mode in one line.
 
+## Under the runner
+
+`scripts/run_dossier.py` can run this command headless, one process per stage
+(`${PLUGIN_ROOT}/references/runner.md`). Then the runner-mode rules arrive in
+the appended system prompt and take precedence: ask only through
+`ask_owner.py`, end a stage with its `phase_checkpoint` and the `RUNNER:` line
+it names, and post `ask_owner.py note` for what is worth knowing mid-stage. In
+an interactive run, with no runner, post `ask_owner.py note --root R --dossier
+ID --stage <phase> --text "..."` at each checkpoint, so the run's updates show
+there too.
+
 ## Phase 0 — Select the dossier and route the run
 
 Read `${PLUGIN_ROOT}/references/work-on/phase-0.md` at the start of this phase.

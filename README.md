@@ -342,7 +342,7 @@ background only when nothing else can proceed. The owner answers on
 `http://127.0.0.1:7317` or in a Slack DM thread; the local server
 (`shared/questions/server.ts`) sends the notifications. Install it with
 `scripts/install_questions_agent.sh --slack-user U…`. The contract is
-`references/owner-questions.md`.
+`references/owner-questions.md`. `scripts/run_dossier.py` runs a dossier headless, one process per stage, waits on those questions without spending tokens, and writes the run's updates; see `references/runner.md`.
 
 **Claude Code only: two dynamic workflows** (`workflows/`, run through the
 `Workflow` tool as `agentic-software-development:phase4-wave` and
@@ -427,6 +427,7 @@ are in `ledger/token-spend.md`; `scripts/token_report.py` produces the numbers.
 | `scripts/gate_commit.py` | Gates, stage only the named paths, commit (signed when asked), push when asked; `--forbid-id` refuses a commit that names the dossier id; at most 12 lines out. `--selftest` checks the checker. |
 | `scripts/verify_return.py` | One call after a subagent returns: worktree state, its commits, paths touched beyond ownership, stubs left, the contract hash and the slot release, with the mechanical half of the build-log line. `--selftest` checks the checker. `--gates FILE` reports whether a green `run_gates.py` receipt matches the tree. |
 | `scripts/ask_owner.py` | Owner questions from a run: `ask`, `reply`, `wait`, `list`, `show` against the store in `~/.agentic/questions`. Works with the server down. See `references/owner-questions.md`. |
+| `scripts/run_dossier.py` | The dossier runner: one headless `claude` process per stage of `/work-on`, owner questions awaited through `ask_owner.py wait`, `status` and `stop`, updates in `~/.agentic/runs`. See `references/runner.md`. |
 | `scripts/install_questions_agent.sh` | Installs or removes (`--uninstall`) the `dev.tristan.asd-questions` LaunchAgent that runs `shared/questions/server.ts`; needs `--slack-user U…`, `--dry-run` prints the plist. |
 | `scripts/token_report.py` | Where an opencode setup spends its tokens in a time window: per agent, per orchestrator run, carried context by kind, tool adoption and bypasses, plugin events. `--json` snapshots and `--compare` diffs them; the evidence behind `ledger/token-spend.md`. `--selftest` checks the checker. |
 | `scripts/build_claude_plugin.py` | The Claude Code surface, derived from the opencode sources. `--check` fails on drift; `--selftest` checks the checker. |

@@ -20,7 +20,12 @@ line is written with one O_APPEND write of under 4 KB; longer text is cut at
     ask_owner.py wait ID [--timeout SECONDS]               # default: no timeout
     ask_owner.py list [--open] [--dossier ID]
     ask_owner.py show ID
+    ask_owner.py note --root R --dossier ID [--stage S] --text T
     ask_owner.py --selftest
+
+`note` appends an `update` line to `$ASD_RUNS_DIR/<repo>.<ID>.jsonl` (default
+~/.agentic/runs), the run's updates store (references/runner.md); same single
+O_APPEND write and 3,500-character cut.
 
 `wait` prints ANSWER (exit 0), FOLLOWUP (exit 10) or TIMEOUT (exit 3), at most
 40 lines. Python 3 standard library only.
@@ -41,7 +46,7 @@ import time
 
 CUT = 3500
 MAX_LINES = 40
-POLL = 2.0
+POLL = float(os.environ.get("ASD_OWNER_POLL") or 2.0)  # tests shorten it
 
 
 def store_dir() -> str:
@@ -191,6 +196,24 @@ def cmd_wait(a: argparse.Namespace) -> int:
         time.sleep(step)
 
 
+def runs_dir() -> str:
+    d = os.environ.get("ASD_RUNS_DIR") or os.path.expanduser("~/.agentic/runs")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def cmd_note(a: argparse.Namespace) -> int:
+    root = os.path.abspath(a.root)
+    repo = os.path.basename(root.rstrip("/")) or "root"
+    if not re.fullmatch(r"[A-Za-z0-9_.\-]+", a.dossier):
+        raise SystemExit(f"bad dossier id: {a.dossier}")
+    line = {"ts": now(), "kind": "update", "text": clip(a.text)}
+    if a.stage:
+        line["stage"] = a.stage
+    write_line(os.path.join(runs_dir(), f"{repo}.{a.dossier}.jsonl"), line)
+    return 0
+
+
 def summarise(qid: str) -> tuple[dict, str]:
     lines = read_lines(qid)
     q = lines[0] if lines else {}
@@ -318,6 +341,18 @@ def selftest() -> int:
         sh = run("show", qid, env=env).stdout
         check("show prints thread", "A) one -> does one" in sh and "owner/answer" in sh)
 
+        # note
+        env["ASD_RUNS_DIR"] = os.path.join(tmp, "runs")
+        n = run("note", "--root", root, "--dossier", "W-1", "--stage", "Phase 4", "--text", "wave 1 back", env=env)
+        nf = os.path.join(tmp, "runs", "myrepo.W-1.jsonl")
+        got = json.loads(open(nf).read().splitlines()[-1]) if os.path.exists(nf) else {}
+        check("note appends an update line", n.returncode == 0 and got.get("kind") == "update"
+              and got.get("stage") == "Phase 4" and got.get("text") == "wave 1 back" and "ts" in got)
+        run("note", "--root", root, "--dossier", "W-1", "--text", "y" * 5000, env=env)
+        raw = open(nf).read().splitlines()[-1]
+        check("note 3,500-char cut, no stage key", json.loads(raw)["text"] == "y" * 3500 + " [cut]"
+              and "stage" not in json.loads(raw) and len(raw.encode()) < 4096)
+
     print("FAILED: " + ", ".join(failures) if failures else "all ok")
     return 1 if failures else 0
 
@@ -344,13 +379,18 @@ def main() -> int:
     p.add_argument("--dossier")
     p = sub.add_parser("show")
     p.add_argument("id")
+    p = sub.add_parser("note")
+    p.add_argument("--root", required=True)
+    p.add_argument("--dossier", required=True)
+    p.add_argument("--stage")
+    p.add_argument("--text", required=True)
     a = ap.parse_args()
     if a.selftest:
         return selftest()
     if not a.cmd:
         ap.print_usage(sys.stderr)
         return 2
-    return {"ask": cmd_ask, "reply": cmd_reply, "wait": cmd_wait, "list": cmd_list, "show": cmd_show}[a.cmd](a)
+    return {"ask": cmd_ask, "reply": cmd_reply, "wait": cmd_wait, "list": cmd_list, "show": cmd_show, "note": cmd_note}[a.cmd](a)
 
 
 if __name__ == "__main__":
