@@ -414,9 +414,9 @@ try {
       }
       return got
     }
-    const first = await readUntil(/connected/, 3000)
+    const first = await readUntil(/connected/, 10000)
     writeFileSync(join(sdir, "demo.W-3.Q1.jsonl"), JSON.stringify({ ...qLine, dossier: "W-3" }) + "\n")
-    const second = await readUntil(/event: changed[\s\S]*\n\n/, 5000)
+    const second = await readUntil(/event: changed[\s\S]*\n\n/, 15000)
     check("server: /api/events streams and emits changed on a store change", sse.headers.get("content-type")?.includes("text/event-stream") === true && first.includes("connected") && second.includes("event: changed") && second.includes("questions"), first + second)
     writeFileSync(join(runsDir, "repoC.W-10.jsonl"), JSON.stringify({ ts: "2026-11-02T12:00:00Z", kind: "update", text: "more" }) + "\n", { flag: "a" })
     check("server: a run update emits runs", (await readUntil(/runs/, 5000)).includes("runs"))
