@@ -677,6 +677,56 @@ measurable claim, how to verify, and the result.
 - **Verify**: the C-136 command; count `WORKFLOW:` lines per phase in the build logs.
 - **Result**: pending.
 
+### C-138 — The runner, owner questions and the dashboard (1.21.0–1.23.0): checkpoint before the first runner builds
+
+- **Change**: PRs #211–#213, merged 2026-11-03T11:00:41+01:00.
+  - `run_dossier.py` (`work-on W-…`) runs `/work-on` headless, one
+    `claude -p` process per stage. This is the hard cut between phases:
+    each stage starts with only the checkpoints as hand-off.
+  - Owner questions are asked without blocking. The runner, not the model,
+    waits on the answer.
+  - The PostToolUse and SubagentStop hooks post progress at no token cost.
+  - The dashboard and the per-repo Slack channels.
+  - `autoCompactWindow: 200000` is now global (`~/.claude/settings.json`,
+    2026-11-02), not only config-harness.
+  - C-137's workflow batches for Phases 5–8 and the change-request routing
+    (1.20.0) land in the same window.
+- **Why**: the C-136 checkpoint put the Claude orchestrator at 97–99% of a
+  dossier's cost with an average request of 247k. Every orchestrator turn
+  re-reads its whole context, and a run carried every earlier stage until
+  compaction.
+- **Hypothesis**:
+  - Under the runner, the average request is ≤100k and falls back at every
+    stage start.
+  - The Claude share of the seat's week per dossier is below C-136's 11.1%.
+  - Waiting on the owner costs no requests.
+  - Quality is no worse: defects and arbitrations at or below the medians
+    below, and change requests no higher.
+- **Checkpoint (before)**: `ledger/metrics/2026-11-03_checkpoint-before-runner.json`.
+  - Window: 2026-11-02T10:22:32+01:00 to the merge. It holds one full run,
+    W-005: plugins 1.12.0, 1.16.0, 1.17.0 and 1.20.0 mixed; $69.03, 6.0% of
+    the seat's week, average request 99k, 1,224 requests; quality returns
+    26, corrections 5, change requests 10, arbitrations 1, defects 0.
+  - Seat week: $1,157.
+  - Compare it with C-136 (`2026-11-02_checkpoint-before-1.19.0.json`):
+    median $113, 11.1%, average request 247k.
+- **Verify**: after the first full runs on 1.23.0:
+
+  ```bash
+  python3 scripts/budget_report.py --since 2026-11-03T11:00:41+01:00 \
+    --json ledger/metrics/<date>_after-runner.json \
+    --compare ledger/metrics/2026-11-03_checkpoint-before-runner.json
+  ```
+
+  Then:
+  - Tell runner runs from interactive ones by `~/.agentic/runs/*.runner.json`:
+    a dossier key with a runner state ran under the runner.
+  - Count the stages per run in `<key>.checkpoints.json`.
+  - Count the owner questions per run in `~/.agentic/questions/<key>.Q*.jsonl`.
+  - Check the time a run spent `waiting` in `<key>.jsonl`, which should cost
+    no requests.
+- **Result**: pending.
+
 ## Next measurement
 
 After the next runs, from the time the C-108–C-111 merge is pulled into the
