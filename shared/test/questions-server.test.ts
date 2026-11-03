@@ -30,6 +30,7 @@ function check(name: string, ok: boolean, detail = ""): void {
   check("deferred: ledger items, first line per id, states and the stacked PR",
     pd.items.length === 3 && pd.items[0].title === "Retry ignores 429" && pd.items[0].loc === "src/a.rs:40" && pd.items[0].state === "fixed" && pd.items[0].note === "abc1234"
     && pd.items[1].state === "open" && pd.items[2].state === "dossier" && pd.pr === "https://github.com/o/r/pull/9", JSON.stringify(pd))
+  check("deferred: an item marked RESOLVED in place is closed", parseDeferred("- D-1 RESOLVED: renumbered — x").items[0].state === "fixed")
   const c = (status: string, open: number, state?: string) => controlsFor({ status, blockedBy: [], runner: state ? ({ state } as any) : null, deferredOpen: open }, () => "done")["fix-deferred"].show
   check("deferred: Fix all shows on pr/done with open items and no live runner", c("done", 2) && c("pr", 1) && !c("done", 0) && !c("building", 2) && !c("done", 2, "running") && c("done", 2, "done"))
   const sm = (t: string) => slackMessageFor({ ts: "t", kind: "runner", text: t } as any, { repo: "r", id: "W-1", title: "x", link: "L" })
