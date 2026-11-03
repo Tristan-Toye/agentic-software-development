@@ -419,6 +419,8 @@ read every `SCOPE` location in full (every dossier section, for `plan`), or
 anything unreached is not a pass, and the orchestrator treats it as one only
 when this line says `none`.
 
+After it, every reply also carries `NOTICED:` — one line per product-code issue you saw outside this lens's change requests and did not fix (`<path:line> — <kind> — <what is wrong>`; kind is bug, latent-bug, architecture, performance, duplication or ssot), or `NOTICED: none`. Never fix it yourself; the orchestrator logs it for the deferred ledger.
+
 **Nothing material** → reply `PASS`, then at most three one-line notes.
 
 **Material problems** → reply with `CHANGES-REQUIRED` as the first line,

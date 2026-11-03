@@ -5,7 +5,7 @@ import { join } from "node:path"
 import type { Question } from "./store.ts"
 import { emitChange } from "./events.ts"
 import { blockedByOf, controlsFor, type Controls } from "./controls.ts"
-import { readRunner, readUpdates, runnerActive, summaryOf, type RunnerState, type Update } from "./runstore.ts"
+import { readRunner, readUpdates, runnerActive, runsDir, summaryOf, type RunnerState, type Update } from "./runstore.ts"
 
 export const STATUSES = ["planned", "ready", "building", "review", "pr", "done", "dropped"] as const
 const TAIL = 256 * 1024
@@ -21,6 +21,37 @@ export type Run = {
   session: Session; pr: Pr | null; questions: string[]; answered: QA[]
   running: boolean; summary: string; updates: Update[]; runner: RunnerState | null
   main: string; blockedBy: string[]; controls: Controls; view: "run" | "dossier"
+  deferred: Deferred; deferredOpen: number
+}
+
+/** One deferred issue from a dossier's ledger (`/work-on` Phase 9, `/deferred`, `/fix-deferred`). */
+export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixed" | "dossier"; note: string }
+export type Deferred = { items: DeferredItem[]; pr: string; report: boolean }
+
+/**
+ * The deferred ledger of a build log: `- D-n <kind> <title> — <path:line> — <risk> — <why>`
+ * lines (first one per id wins), closed by `DEFERRED-FIXED: D-n <sha>` and routed by
+ * `DEFERRED-TRIAGE: D-n → dossier — …`; `DEFERRED-FIX: PR <url>` names the stacked PR.
+ */
+export function parseDeferred(log: string): { items: DeferredItem[]; pr: string } {
+  const items = new Map<string, DeferredItem>()
+  let pr = ""
+  for (const raw of log.split("\n")) {
+    const l = raw.trim()
+    const m = l.match(/^[-*]\s+(D-\d+)\s+(\S+)\s+(.*)$/)
+    if (m && !items.has(m[1])) {
+      const parts = m[3].split(/\s+—\s+/)
+      items.set(m[1], { id: m[1], kind: m[2], title: parts[0] ?? "", loc: parts[1] ?? "", risk: parts[2] ?? "", why: parts.slice(3).join(" — "), state: "open", note: "" })
+      continue
+    }
+    const fx = l.match(/^(?:[-*]\s+)?DEFERRED-FIXED:\s*(D-\d+)\s*(\S*)/)
+    if (fx && items.has(fx[1])) { const it = items.get(fx[1])!; it.state = "fixed"; it.note = fx[2]; continue }
+    const tr = l.match(/^(?:[-*]\s+)?DEFERRED-TRIAGE:\s*(D-\d+)\s*→\s*(direct|dossier)\b\s*(?:—\s*)?(.*)$/)
+    if (tr && items.has(tr[1]) && tr[2] === "dossier") { const it = items.get(tr[1])!; if (it.state !== "fixed") { it.state = "dossier"; it.note = tr[3] } continue }
+    const p = l.match(/DEFERRED-FIX:\s*PR\s+(\S+)/)
+    if (p) pr = p[1]
+  }
+  return { items: [...items.values()], pr }
 }
 /** An answered question, as shown under the dossier it came from. */
 export type QA = { id: string; text: string; answer: string; option: string; asked: string; answeredAt: string }
@@ -365,6 +396,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       phase, phaseName: phaseNameOf(PHASE_NAMES, phase), lastActivity: lastLine(log), logLines: Math.max(0, logLength(d.text)), session, pr, questions: qs, answered: [],
       running: isRunning(status) || runnerActive(runner), summary: summaryOf(d.text), updates: readUpdates(`${repoName}.${f.id}`), runner,
       main, blockedBy: blockedByOf(f.blocked_by), controls: controlsFor({ status, blockedBy: blockedByOf(f.blocked_by), runner }, () => undefined), view: "dossier",
+      ...(() => { const pd = parseDeferred(log); const deferred: Deferred = { ...pd, report: existsSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`)) }; return { deferred, deferredOpen: pd.items.filter((i) => i.state === "open").length } })(),
     })
   }
   return { scannedAt: new Date(now).toISOString(), runs }

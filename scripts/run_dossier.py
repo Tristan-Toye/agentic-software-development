@@ -223,6 +223,35 @@ class Runner:
         except OSError:
             pass
 
+    def deferred_report(self) -> None:
+        """After a /work-on run: one short extra process runs /deferred <ID> and
+        stores its report at <key>.deferred.md, which the dashboard shows and
+        /fix-deferred reads. ASD_RUNNER_DEFERRED=0 skips it."""
+        if self.command != "work-on" or os.environ.get("ASD_RUNNER_DEFERRED") == "0" or self.stopping:
+            return
+        self.event("deferred report", "running")
+        saved = (self.command, self.checkpoints)
+        self.command, self.checkpoints = "deferred", []
+        text = ""
+        try:
+            q, extra = self.spawn()
+            kind, val = self.read_turn(q, extra)
+            if kind == "result":
+                text = str(val[0])  # type: ignore[index]
+        finally:
+            kill_group(self.proc)
+            self.end_process()
+            self.command, self.checkpoints = saved
+        text = re.sub(r"^RUNNER:.*$", "", text, flags=re.M).strip() if text else ""
+        if not text:
+            self.event("deferred report: none produced")
+            return
+        path = os.path.join(runs_dir(), self.key + ".deferred.md")
+        with open(path, "w") as fh:
+            fh.write(text + "\n")
+        n = len(re.findall(r"^###\s+D-\d+", text, re.M))
+        self.event(f"deferred report: {n} issue(s)")
+
     def no_checkpoint(self, name: str) -> None:
         """A stage ended without a phase_checkpoint (the tool was missing or
         skipped): write the stage line the hook would have written, so the
@@ -530,6 +559,7 @@ class Runner:
                 continue
             if outcome == "done":
                 self.event(f"stage {started} end", "running")
+                self.deferred_report()
                 return self.finish("done", "done", 0)
             if outcome == "stopped":
                 self.end_process()
@@ -685,7 +715,7 @@ def selftest() -> int:
             os.makedirs(d)
         fake = os.path.join(fdir, "fake_claude.py")
         open(fake, "w").write(FAKE_CLAUDE)
-        env = dict(os.environ, ASD_QUESTIONS_DIR=qdir, ASD_RUNS_DIR=rdir, ASD_FAKE_DIR=fdir,
+        env = dict(os.environ, ASD_QUESTIONS_DIR=qdir, ASD_RUNS_DIR=rdir, ASD_FAKE_DIR=fdir, ASD_RUNNER_DEFERRED="0",
                    ASD_CLAUDE_BIN=f"{shlex.quote(sys.executable)} {shlex.quote(fake)}",
                    ASD_ASK_OWNER=ASK_OWNER, ASD_OWNER_POLL="0.1", ASD_RUNNER_GRACE="0.2")
 
@@ -760,6 +790,22 @@ def selftest() -> int:
         os.environ["ASD_RUNS_DIR"] = rdir
         rn = Runner(root, "W-77", "work-on", None, "auto", 5)
         rn.no_checkpoint("Phase 3 — contract")
+        fakedef = os.path.join(tmp, "fake-deferred.py")
+        with open(fakedef, "w") as fh:
+            fh.write("import json,sys\nfirst=sys.stdin.readline()\nopen(sys.argv[0]+'.first','w').write(first)\n"
+                     "print(json.dumps({'type':'result','subtype':'success','is_error':False,'session_id':'d',"
+                     "'result':'## Deferred issues — W-77\\n### D-1 — fix a\\n### D-2 — fix b\\nRUNNER: DONE'}),flush=True)\n")
+        old_bin = os.environ.get("ASD_CLAUDE_BIN")
+        os.environ["ASD_CLAUDE_BIN"] = f"{sys.executable} {fakedef}"
+        try:
+            rn.deferred_report()
+        finally:
+            if old_bin is None: os.environ.pop("ASD_CLAUDE_BIN", None)
+            else: os.environ["ASD_CLAUDE_BIN"] = old_bin
+        rep_path = os.path.join(rdir, "repo.W-77.deferred.md")
+        rep_txt = open(rep_path).read() if os.path.exists(rep_path) else ""
+        check("after DONE the /deferred report is stored, without the RUNNER line",
+              "### D-2" in rep_txt and "RUNNER:" not in rep_txt and ":deferred W-77" in open(fakedef + ".first").read())
         cps = read_json(os.path.join(rdir, "repo.W-77.checkpoints.json"), [])
         stl = [x for x in lines_of(os.path.join(rdir, "repo.W-77.jsonl")) if x.get("kind") == "stage"]
         check("a stage without a checkpoint still gets a stage line and a dossier hand-off",
@@ -897,7 +943,7 @@ def main() -> int:
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--root", help="repository root (default: the repository of the current directory)")
     ap.add_argument("--dossier", help="same as the positional id")
-    ap.add_argument("--command", choices=["work-on", "stub"], default="work-on")
+    ap.add_argument("--command", choices=["work-on", "stub", "fix-deferred"], default="work-on")
     ap.add_argument("--model")
     ap.add_argument("--permission-mode", default="auto")
     ap.add_argument("--max-stages", type=int, default=20)

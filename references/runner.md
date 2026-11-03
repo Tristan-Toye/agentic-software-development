@@ -53,6 +53,15 @@ the recorded checkpoints.
   the runner writes the `stage` line itself, so the dashboard still draws the
   phase divider. It also hands the next stage a note to resume from the
   dossier: `/work-on` resumes from its status and `## Build log` in any case.
+- **The deferred report:** after a `/work-on` run ends `RUNNER: DONE`, one
+  more short process runs `/deferred <ID>` and stores its report at
+  `<key>.deferred.md`. The runner logs `deferred report: <n> issue(s)`, which
+  the Slack run thread shows when it is not zero. `ASD_RUNNER_DEFERRED=0`
+  skips it.
+- **`--command fix-deferred`:** runs `/fix-deferred <ID>`, which fixes the
+  ledger's direct items in one stacked pull request and seeds a dossier for
+  each of the rest (`commands/fix-deferred.md`). The dashboard's "Fix all
+  deferred" button starts it.
 - **Limits:** `--max-stages` caps the number of stages a run starts
   (default 20). A crash of the process counts as `FAILED`.
 

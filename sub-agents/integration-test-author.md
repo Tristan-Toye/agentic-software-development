@@ -154,4 +154,4 @@ under load before review, so a race you leave in costs an arbitration round.
 
 The paths you wrote, one line per test mapping it to the criterion it covers,
 the boundaries you substituted, any `GAP:` lines, and any criterion you judge
-untestable at the integration level with the reason.
+untestable at the integration level with the reason. Then `NOTICED:` — one line per product-code issue you saw outside your task and did not fix (`<path:line> — <kind> — <what is wrong>`; kind is bug, latent-bug, architecture, performance, duplication or ssot), or `NOTICED: none`. Never fix it yourself; the orchestrator logs it for the deferred ledger.

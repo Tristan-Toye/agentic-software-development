@@ -212,7 +212,15 @@ one card-based single-page app with deep links.
     drawing wider than the column scrolls inside its panel. A ready dossier
     whose blockers are all done carries a ▶ (graph box, Independent chip,
     flight-plan row): two clicks POST `/api/runs/<repo>/<ID>/start`, which
-    re-checks eligibility and starts `run_dossier.py` in the background. A click on a dossier
+    re-checks eligibility and starts `run_dossier.py` in the background. The
+    right column also lists the dossiers with open deferred issues. A dossier's
+    page shows its **Deferred issues**, parsed from the ledger in its build log
+    (`- D-n <kind> <title> — <path:line> — <risk> — <why>`, closed by
+    `DEFERRED-FIXED:` and routed by `DEFERRED-TRIAGE: D-n → dossier`). Each
+    item has a Plan button that copies `/plan <ID> D-n`, the runner's full
+    report is linked at `/deferred/<repo>/<ID>`, and the header has **Fix all
+    deferred** on a `pr` or `done` dossier with open items: two clicks start
+    `run_dossier.py <ID> --command fix-deferred` in the background. A click on a dossier
     navigates the top window to `/repo/<repo>/<ID>`. **Right (360 px, sticky
     while scrolling):** every open (not merged) stub, newest first, as a card:
     branch, state chip, step, PR + CI dot; under it a tree of its dossiers,

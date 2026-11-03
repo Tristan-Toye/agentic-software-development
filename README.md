@@ -7,6 +7,7 @@ Four commands, four agents, two file kinds.
 /work-on <ID>          →  a PR, and the ADRs the build earned
 /overview-dossiers     →  what is going on
 /deferred              →  what the run noticed and did not tackle
+/fix-deferred          →  fix those in one stacked PR, or seed a dossier
 ```
 
 ## The idea
@@ -65,6 +66,7 @@ whichever side is easier to change.
 | **`/stub [branch]`** | The weekly integration: opens the release stub's PR into `development`, waits out CI, runs the one full stack suite in the VM and posts its `local-stack` receipt, audits every dossier on the stub against its own criteria, then attributes any failure to a dossier and fixes it through the implementer/reviewer flow, round after round until the full stack run is green. Merging the stub PR stays the user's. | fix rounds: 1 implementer + 1 (`reviewer`) each |
 | **`/overview-dossiers`** | Status of every dossier from front matter alone, plus the pipeline health signals worth acting on. Read-only toward pipeline state; also renders `.discovery/analysis/open-work.html`, a self-contained page the pipeline dashboard embeds and refreshes; `--worktrees` overlays the live copies from sibling worktrees when `.discovery/` is committed. | 0 |
 | **`/deferred`** | The deferred-issues report for a finished change: every product-code issue the session knew about and did not tackle, with an ID, evidence and a proposed fix. Recall, not audit; `/plan D-n` seeds a dossier from a line. | 0 |
+| **`/fix-deferred <ID>`** | Fixes a finished dossier's deferred issues in one stacked PR: direct, test-first fixes through the implementer and reviewer flow for items that stay inside one package and carry no contract change, a `/plan <ID> D-n` seed for every item that deserves its own dossier. Started from the dashboard's "Fix all deferred" button or `work-on <ID> --command fix-deferred`. |
 
 ## The agents
 

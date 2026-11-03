@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { channelNameFor, interpretEnvelope, questionBlocks } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel } from "../questions/runs.ts"
+import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown } from "../questions/runstore.ts"
@@ -21,6 +21,20 @@ function check(name: string, ok: boolean, detail = ""): void {
   console.log(`${ok ? "PASS" : "FAIL"} ${name}${ok ? "" : ` ${detail}`}`)
 }
 
+{
+  const log = ["DEFERRED: 3 — sources: own reads", "- D-1 bug Retry ignores 429 — src/a.rs:40 — high — out of scope", "- D-2 ssot Two timeouts — src/b.rs:9 — low — later",
+    "- D-3 architecture Split the planner — src/p.rs:1 — medium — too big", "- D-1 bug duplicate line wins nothing — x — y — z",
+    "DEFERRED-TRIAGE: D-3 → dossier — crosses the planner contract; seed: /plan W-1 D-3", "DEFERRED-TRIAGE: D-1 → direct — honour Retry-After",
+    "DEFERRED-FIX: PR https://github.com/o/r/pull/9 — fixed 1, to dossier 1", "DEFERRED-FIXED: D-1 abc1234"].join("\n")
+  const pd = parseDeferred(log)
+  check("deferred: ledger items, first line per id, states and the stacked PR",
+    pd.items.length === 3 && pd.items[0].title === "Retry ignores 429" && pd.items[0].loc === "src/a.rs:40" && pd.items[0].state === "fixed" && pd.items[0].note === "abc1234"
+    && pd.items[1].state === "open" && pd.items[2].state === "dossier" && pd.pr === "https://github.com/o/r/pull/9", JSON.stringify(pd))
+  const c = (status: string, open: number, state?: string) => controlsFor({ status, blockedBy: [], runner: state ? ({ state } as any) : null, deferredOpen: open }, () => "done")["fix-deferred"].show
+  check("deferred: Fix all shows on pr/done with open items and no live runner", c("done", 2) && c("pr", 1) && !c("done", 0) && !c("building", 2) && !c("done", 2, "running") && c("done", 2, "done"))
+  const sm = (t: string) => slackMessageFor({ ts: "t", kind: "runner", text: t } as any, { repo: "r", id: "W-1", title: "x", link: "L" })
+  check("deferred: the run thread gets the deferred count, not a zero", (sm("deferred report: 3 issue(s)")?.text ?? "").startsWith("📋 3 deferred issues") && sm("deferred report: 0 issue(s)") === null)
+}
 check("slack: channel names from repo names", channelNameFor("config-harness") === "config-harness" && channelNameFor("Documents/Twipe/repos") === "documents-twipe-repos" && channelNameFor("A__b.c") === "a__b-c" && channelNameFor("x".repeat(100)).length === 79)
 {
   const env = (channel_type: string, thread: boolean) => ({ type: "events_api", envelope_id: "e", payload: { event: { type: "message", channel_type, channel: "C1", user: "U1", text: "why?", ts: "2", ...(thread ? { thread_ts: "1" } : {}) } } })

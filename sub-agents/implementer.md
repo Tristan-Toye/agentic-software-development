@@ -185,3 +185,4 @@ Keep it short and factual:
   each with a one-line justification, or `TOUCHED_BEYOND: none` when you
   touched nothing outside them. Required in both build and fix modes; a path
   outside `OWNED_PATHS` missing from this list is a report defect.
+- `NOTICED:` — one line per product-code issue you saw outside your task and did not fix (`<path:line> — <kind> — <what is wrong>`; kind is bug, latent-bug, architecture, performance, duplication or ssot), or `NOTICED: none`. Never fix it yourself; the orchestrator logs it for the deferred ledger.

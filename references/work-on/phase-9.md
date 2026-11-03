@@ -181,8 +181,10 @@
    so and let the user hand-log. Never invent a duration.
  8. **Capture the deferred issues.** Your awareness of the code is at its
     highest now, and chat dies with the session; a later `/deferred` cannot
-    reconstruct what you read here. From working memory: *what product-code
-    issues are you aware of that this run did not tackle?* Sweep everything
+    reconstruct what you read here. Start from the `NOTICED:` lines in
+    `## Build log` (every stage logged them as it went, so a run whose stages
+    were separate processes keeps them), then ask working memory: *what
+    product-code issues are you aware of that this run did not tackle?* Sweep everything
     the run laid eyes on — the primary-surface files you read in full, every
     arbitration's evidence, every review reply, the `NOTICED:` harvest, every
     change request demoted for missing evidence, every `TOUCHED_BEYOND` path
