@@ -213,11 +213,16 @@ one card-based single-page app with deep links.
     whose blockers are all done carries a ▶ (graph box, Independent chip,
     flight-plan row): two clicks POST `/api/runs/<repo>/<ID>/start`, which
     re-checks eligibility and starts `run_dossier.py` in the background. The
+    server passes each dossier's live control (`--run-controls`), so a dossier
+    whose run stopped or failed shows ↻ (resume) instead, and the report is
+    regenerated when a runner starts or stops. The
     right column also lists the dossiers with open deferred issues. A dossier's
     page shows its **Deferred issues**, parsed from the ledger in its build log
     (`- D-n <kind> <title> — <path:line> — <risk> — <why>`, closed by
     `DEFERRED-FIXED:` and routed by `DEFERRED-TRIAGE: D-n → dossier`). Each
-    item has a Plan button that copies `/plan <ID> D-n`, the runner's full
+    item has a Plan button that copies `/plan <ID> D-n` (ledgers of dossiers last
+    updated before 2026-11-03 and never run by the runner are ignored,
+    `ASD_DEFERRED_SINCE`), the runner's full
     report is linked at `/deferred/<repo>/<ID>`, and the header has **Fix all
     deferred** on a `pr` or `done` dossier with open items: two clicks start
     `run_dossier.py <ID> --command fix-deferred` in the background. A click on a dossier

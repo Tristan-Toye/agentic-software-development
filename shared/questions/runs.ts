@@ -24,6 +24,15 @@ export type Run = {
   deferred: Deferred; deferredOpen: number; runnerLog: string
 }
 
+/**
+ * Deferred ledgers count from the new flow on: a dossier last updated before
+ * `ASD_DEFERRED_SINCE` (default 2026-11-03, when /fix-deferred and the runner
+ * landed) and never run by the runner has items that were most likely handled
+ * without the ledger being updated, so they are not shown.
+ */
+export function deferredSince(updated: string, runner: unknown): boolean {
+  return runner != null || updated.slice(0, 10) >= (process.env.ASD_DEFERRED_SINCE || "2026-11-03")
+}
 /** One deferred issue from a dossier's ledger (`/work-on` Phase 9, `/deferred`, `/fix-deferred`). */
 export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixed" | "dossier"; note: string }
 export type Deferred = { items: DeferredItem[]; pr: string; report: boolean }
@@ -411,7 +420,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       running: isRunning(status) || runnerActive(runner), summary: summaryOf(d.text), updates: readUpdates(`${repoName}.${f.id}`), runner,
       main, blockedBy: blockedByOf(f.blocked_by), controls: controlsFor({ status, blockedBy: blockedByOf(f.blocked_by), runner }, () => undefined), view: "dossier",
       runnerLog: runner ? join(runsDir(), `${repoName}.${f.id}.runner.log`) : "",
-      ...(() => { const pd = parseDeferred(log); const deferred: Deferred = { ...pd, report: existsSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`)) }; return { deferred, deferredOpen: pd.items.filter((i) => i.state === "open").length } })(),
+      ...(() => { const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log) : { items: [], pr: "" }; const deferred: Deferred = { ...pd, report: existsSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`)) }; return { deferred, deferredOpen: pd.items.filter((i) => i.state === "open").length } })(),
     })
   }
   return { scannedAt: new Date(now).toISOString(), runs }

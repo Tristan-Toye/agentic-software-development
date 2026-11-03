@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { channelNameFor, interpretEnvelope, questionBlocks } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred } from "../questions/runs.ts"
+import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown } from "../questions/runstore.ts"
@@ -32,6 +32,7 @@ function check(name: string, ok: boolean, detail = ""): void {
     && pd.items[1].state === "open" && pd.items[2].state === "dossier" && pd.pr === "https://github.com/o/r/pull/9", JSON.stringify(pd))
   check("phase: a phase named mid-sentence is not progress; a line-start marker is", lastPhase("- OWNER-RULING: draft PR at Phase 6 yes\n- Phase 2 closed: contract committed\nnotes about Phase 7") === "2" && lastPhase("PHASE 9: synced") === "9")
 check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "Phase 6 soon" }, { kind: "stage", stage: "Phase 2 — contract", text: "x" }, { kind: "stage", stage: "Phase 1 — gates", text: "y" }]) === "2")
+check("deferred: old dossiers are ignored unless the runner ran them", !deferredSince("2026-10-20", null) && deferredSince("2026-11-03", null) && deferredSince("2026-10-01", { state: "done" }))
 check("deferred: an item marked RESOLVED in place is closed", parseDeferred("- D-1 RESOLVED: renumbered — x").items[0].state === "fixed")
   const c = (status: string, open: number, state?: string) => controlsFor({ status, blockedBy: [], runner: state ? ({ state } as any) : null, deferredOpen: open }, () => "done")["fix-deferred"].show
   check("deferred: Fix all shows on pr/done with open items and no live runner", c("done", 2) && c("pr", 1) && !c("done", 0) && !c("building", 2) && !c("done", 2, "running") && c("done", 2, "done"))

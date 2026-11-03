@@ -347,7 +347,7 @@ def build_payload(root: Path, now: dt.datetime, worktrees: bool = False,
                   embed: bool = False, link_base: str = "",
                   direction: str = "lr",
                   simplify_default: bool = False,
-                  graph: str = "flows") -> dict:
+                  graph: str = "flows", run_controls: dict | None = None) -> dict:
     dossiers, errors = load_dossiers(root)
     if worktrees:
         overlay_worktrees(root, dossiers)
@@ -365,6 +365,7 @@ def build_payload(root: Path, now: dt.datetime, worktrees: bool = False,
         "link_base": link_base.rstrip("/"),
         "direction": direction if direction in ("lr", "tb") else "lr",
         "simplify_default": bool(simplify_default),
+        **({"run_controls": run_controls} if run_controls is not None else {}),
         **({"graph": "focus"} if graph == "focus" else {}),
         "generated_at": now.isoformat(timespec="seconds"),
         "generated_at_human": now.strftime("%-d %b %Y, %H:%M"),
@@ -505,6 +506,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--embed", action="store_true",
                     help="omit the page's own header, for use inside an "
                          "iframe; follows the system light/dark setting")
+    ap.add_argument("--run-controls", default="", metavar="FILE",
+                    help="dashboard only: JSON {dossier id: 'start'|'resume'} — the run control each ▶ offers, from the runner state")
     ap.add_argument("--link-base", default="", metavar="URL",
                     help="navigate the top window to <URL>/<ID> when a "
                          "dossier is clicked (a /path or an http(s) URL)")
@@ -553,7 +556,8 @@ def main(argv: list[str] | None = None) -> int:
                             embed=args.embed, link_base=args.link_base,
                             direction=args.direction,
                             simplify_default=args.simplify_default,
-                            graph=args.graph)
+                            graph=args.graph,
+                            run_controls=(json.loads(Path(args.run_controls).read_text()) if args.run_controls else None))
     write_report(out, render(TEMPLATE.read_text(encoding="utf-8"), payload))
     if not args.quiet:
         print(out)
