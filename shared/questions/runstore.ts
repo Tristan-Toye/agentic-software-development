@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 export type Update = { ts: string; kind: "runner" | "stage" | "update"; text: string; stage?: string; state?: string; auto?: boolean; event?: string; status?: string; agent_id?: string }
-export type RunnerState = { state: "running" | "waiting" | "done" | "failed" | "stopped"; stage: string; pid: number; started: string; root: string }
+export type RunnerState = { state: "running" | "waiting" | "paused" | "done" | "failed" | "stopped"; stage: string; pid: number; started: string; root: string; account?: string; resumesAt?: string }
 
 export const runsDir = (): string => process.env.ASD_RUNS_DIR || join(homedir(), ".agentic", "runs")
 
@@ -35,7 +35,7 @@ export function readRunner(key: string, dir = runsDir(), alive: (pid: number) =>
     const j = JSON.parse(readFileSync(join(dir, `${key}.runner.json`), "utf8"))
     let state = ["running", "waiting", "paused", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
     if ((state === "running" || state === "waiting" || state === "paused") && !alive(Number(j.pid))) state = "stopped"
-    return { state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "" }
+    return { state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "", ...(typeof j.account === "string" ? { account: j.account } : {}), ...(typeof j.resumes_at === "string" ? { resumesAt: j.resumes_at } : {}) }
   } catch { return null }
 }
 export const runnerActive = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "waiting" || r?.state === "paused"

@@ -11,6 +11,7 @@ import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, reco
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown } from "../questions/runstore.ts"
 import { mergeSpawns } from "../questions/timeline.ts"
+import { agentCounts, waitingForSlots, runStatusText, statusBlocks, openerBlocks } from "../questions/runstatus.ts"
 import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPanel } from "../questions/timeline.ts"
 import { blockedByOf, controlsFor } from "../questions/controls.ts"
 import { execFileSync } from "node:child_process"
@@ -97,6 +98,45 @@ check("slack: subtyped messages are ignored", interpretEnvelope(ev({ text: "x", 
 check("slack: other users are ignored when an owner is set", interpretEnvelope(ev({ text: "x", user: "U2", thread_ts: "111.222" }), lookup, "U1").action.type === "none")
 r = interpretEnvelope({ envelope_id: "E2", type: "interactive", payload: { type: "block_actions", user: { id: "U1" }, channel: { id: "D1" }, actions: [{ value: "hand.written.Q9|A" }] } }, lookup)
 check("slack: button press is an answer with that option", r.ack?.envelope_id === "E2" && r.action.type === "owner" && r.action.kind === "answer" && r.action.option === "A" && r.action.id === "hand.written.Q9")
+// Slack status on demand
+r = interpretEnvelope(ev({ text: "status" }), lookup)
+check("slack: status in the DM asks for every running dossier", r.action.type === "status" && !(r.action as any).id && (r.action as any).ts === "5.1")
+r = interpretEnvelope(ev({ text: "Status w-128" }), lookup)
+check("slack: status W-128 names the dossier", r.action.type === "status" && (r.action as any).id === "W-128")
+r = interpretEnvelope({ envelope_id: "E9", type: "events_api", payload: { event: { type: "message", channel_type: "group", channel: "G1", ts: "7.1", thread_ts: "6.1", user: "U1", text: "update" } } }, lookup)
+check("slack: status in a run thread keeps the thread", r.action.type === "status" && (r.action as any).threadTs === "6.1")
+r = interpretEnvelope(ev({ text: "status", thread_ts: "111.222" }), lookup)
+check("slack: status inside a question thread stays a follow-up", r.action.type === "owner")
+r = interpretEnvelope(ev({ text: "what is the status of the build?" }), lookup)
+check("slack: a sentence mentioning status is not the command", r.action.type === "pointer")
+r = interpretEnvelope({ envelope_id: "E3", type: "interactive", payload: { type: "block_actions", user: { id: "U1" }, channel: { id: "G1" }, container: { message_ts: "8.1" }, message: { ts: "8.1", blocks: [{ type: "section", text: { text: "*Status — config-harness*" } }] }, actions: [{ action_id: "run_status", value: "config-harness|" }] } }, lookup)
+check("slack: Refresh on a status message refreshes it in place, with its scope", r.action.type === "status" && (r.action as any).refresh === true && (r.action as any).repo === "config-harness" && !(r.action as any).id)
+r = interpretEnvelope({ envelope_id: "E4", type: "interactive", payload: { type: "block_actions", user: { id: "U1" }, channel: { id: "G1" }, container: { message_ts: "6.1" }, message: { ts: "6.1", blocks: [{ type: "section", text: { text: "▶ config-harness · W-1" } }] }, actions: [{ action_id: "run_status", value: "config-harness|W-1" }] } }, lookup)
+check("slack: Status on a thread opener answers in a new message for that run", r.action.type === "status" && (r.action as any).refresh === false && (r.action as any).id === "W-1")
+{
+  const T = (m: number) => new Date(Date.parse("2026-11-03T18:00:00Z") + m * 60000).toISOString()
+  const ups: any[] = [
+    { ts: T(0), kind: "runner", text: "stage 4 start" },
+    { ts: T(1), kind: "update", auto: true, event: "spawn", status: "running", agent_id: "a1", text: "implementer P1" },
+    { ts: T(1), kind: "update", auto: true, event: "spawn", status: "running", agent_id: "a2", text: "implementer P2" },
+    { ts: T(1), kind: "update", auto: true, event: "spawn", status: "running", agent_id: "a3", text: "test author" },
+    { ts: T(5), kind: "update", auto: true, event: "spawn-done", status: "done", agent_id: "a1", text: "done" },
+    { ts: T(6), kind: "update", auto: true, event: "spawn-done", status: "gap", agent_id: "a3", text: "gap" },
+    { ts: T(7), kind: "update", text: "Wave one is out.\n\nMore detail later." },
+  ].reverse()
+  const a = agentCounts(ups)
+  check("status: agents of the current stage, running and finished", a.running === 1 && a.done === 2 && a.flagged === 1, JSON.stringify(a))
+  check("status: no slot wait once agents spawned", !waitingForSlots(ups))
+  const wait = [{ ts: T(8), kind: "update", auto: true, event: "log", text: "log: ADMISSION-WAIT: refused — 0 of 16 slots free" }, ...ups] as any
+  check("status: a refused admission after the last spawn is a slot wait", waitingForSlots(wait))
+  const run = { repo: "config-harness", id: "W-1", title: "A <title>", state: "running", phase: "4", phaseName: "Fan-out", account: "b", started: T(0), context: 63000, questions: [{ id: "Q1", text: "Pick one" }], updates: ups, link: "http://x/r" }
+  const t = runStatusText(run, Date.parse(T(30)))
+  check("status: one run's text", t.includes("in progress · Phase 4 · Fan-out · account b") && t.includes("1 running, 2 finished (1 with a gap") && t.includes("Wave one is out.") && !t.includes("More detail") && t.includes("context 63k") && t.includes("❓ *Q1* Pick one") && t.includes("A &lt;title&gt;") && t.includes("⚠ quiet"), t)
+  const sb = statusBlocks([run], { repo: "config-harness" }, Date.parse(T(30)))
+  check("status: blocks carry a heading, the run and a Refresh button with the scope", sb.blocks[0].text.text.startsWith("*Status — config-harness*") && sb.blocks.at(-1).elements[0].value === "config-harness|" && sb.text.includes("W-1 running"))
+  check("status: nothing running says so", JSON.stringify(statusBlocks([], {}, 0).blocks).includes("No dossier is running."))
+  check("status: the thread opener has a Status button for its run", openerBlocks("▶ x", "r", "W-2")[1].elements[0].value === "r|W-2")
+}
 const blocks = questionBlocks(readAll(dir)[0], 7317)
 check("slack: blocks are section, actions (one button per option), context", blocks.map((b: any) => b.type).join() === "section,actions,context" && blocks[1].elements.length === 2 && blocks[1].elements[0].value === "hand.written.Q9|A")
 
