@@ -184,6 +184,11 @@ export async function scan(): Promise<void> {
 // ---- Slack progress thread per run ----
 const runSeen = new Map<string, number>()
 let scanningRuns = false
+/** The agent's own notes are markdown (bullets, tables): render them for the timeline. */
+function withHtml<T extends { type: string; auto?: boolean; text: string; html?: string }>(es: T[]): T[] {
+  for (const e of es) if (e.type === "update" && !e.auto && e.text) e.html = renderMarkdown(e.text)
+  return es
+}
 const SERVER_START = Date.now()
 /** Post the new lines of each run's updates store into its Slack thread; the first start line opens the thread. */
 export async function scanRunThreads(): Promise<void> {
@@ -302,9 +307,9 @@ export async function handle(req: Request): Promise<Response> {
     try { log = logEntries(buildLog(readFileSync(run.file, "utf8"))) } catch { /* unreadable */ }
     const updates = readUpdates(`${run.repo}.${run.id}`, runsDir(), 1000)
     const questions = readAll(DIR).filter((q) => q.dossier === run.id && questionRepo(q, runs) === run.repo)
-    const entries = mergeTimeline({ updates, questions, names: PHASE_NAMES })
+    const entries = withHtml(mergeTimeline({ updates, questions, names: PHASE_NAMES }))
     const groups = groupByPhase(entries, "Setup", false)
-    const activity = groupByPhase(mergeTimeline({ updates, questions, names: PHASE_NAMES, view: "activity" }))
+    const activity: unknown[] = []
     const now = nowPanel(entries, groups, { runner: run.runner?.state, waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: run.phase })
     return json({ run, entries, groups, activity, now, log, empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
   }
@@ -327,9 +332,9 @@ export async function handle(req: Request): Promise<Response> {
     const recordEntries = parseRecord(record, stub.cut)
     const upd = readUpdates(key, runsDir(), 1000)
     const extra = recordEntries.filter((e) => e.type === "boundary").map((e) => ({ ...e, text: "" }))
-    const entries = mergeTimeline({ updates: upd, questions, extra, unit: "Step" })
+    const entries = withHtml(mergeTimeline({ updates: upd, questions, extra, unit: "Step" }))
     const groups = groupByPhase(entries, "Before the first step", false)
-    const activity = groupByPhase(mergeTimeline({ updates: upd, questions, extra, unit: "Step", view: "activity" }), "Before the first step")
+    const activity: unknown[] = []
     const now = nowPanel(entries, groups, { runner: "", waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: "" })
     return json({ repo, stub, key, entries, groups, activity, now, record: recordEntries, empty: entries.every((e) => e.type === "boundary"), hasRecord: !!file })
   }

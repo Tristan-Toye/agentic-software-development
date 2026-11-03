@@ -21,7 +21,7 @@ export type Run = {
   session: Session; pr: Pr | null; questions: string[]; answered: QA[]
   running: boolean; summary: string; updates: Update[]; runner: RunnerState | null
   main: string; blockedBy: string[]; controls: Controls; view: "run" | "dossier"
-  deferred: Deferred; deferredOpen: number
+  deferred: Deferred; deferredOpen: number; runnerLog: string
 }
 
 /** One deferred issue from a dossier's ledger (`/work-on` Phase 9, `/deferred`, `/fix-deferred`). */
@@ -109,10 +109,21 @@ export function logLength(text: string): number {
   const i = text.indexOf("## Build log")
   return i < 0 ? -1 : text.slice(i).split("\n").length - 1
 }
+/**
+ * The phase a build log says it reached: the last line that *starts* with
+ * `Phase <n>` or `PHASE <n>` (a bullet's marker allowed), the way /work-on
+ * records a phase outcome. A phase named mid-sentence — "a draft PR at Phase 6"
+ * in a ruling — is a plan, not progress, and does not count.
+ */
 export function lastPhase(log: string): string {
   let last = ""
-  for (const m of log.matchAll(/\bPhase (\d+[a-z]?)\b|\bPHASE (\d+[a-z]?)\b/g)) last = m[1] ?? m[2]
+  for (const m of log.matchAll(/^\s*(?:[-*]\s+)?(?:\*\*)?(?:Phase|PHASE)\s+(\d+[a-z]?)\b/gm)) last = m[1]
   return last
+}
+/** The phase of the newest `stage` line in a run's updates (checkpoint names start `Phase <n>`). */
+export function stagePhase(updates: { kind: string; stage?: string; text: string }[]): string {
+  for (const u of updates) if (u.kind === "stage") { const m = `${u.stage ?? ""} ${u.text}`.match(/\b(?:Phase|PHASE)\s+(\d+[a-z]?)\b/); if (m) return m[1] }
+  return ""
 }
 /** The last build-log entry, whole: a wrapped bullet is joined back, a trailing fenced block is skipped. */
 export function lastLine(log: string): string {
@@ -376,7 +387,8 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
     const f = d.front
     const log = buildLog(d.text)
     const status = f.status ?? "planned"
-    const phaseHit = lastPhase(log)
+    // The run's own stage lines (newest first) outrank the build log's text.
+    const phaseHit = stagePhase(readUpdates(`${baseName(d.main)}.${f.id}`)) || lastPhase(log)
     const phase = phaseHit || (status === "planned" || status === "ready" ? "plan" : "")
     const wt = d.worktree
     const mine = transcripts.filter((t) => t.cwd && (t.cwd === wt || t.cwd.startsWith(wt + "/"))).sort((a, b) => b.mtime - a.mtime)
@@ -398,6 +410,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       phase, phaseName: phaseNameOf(PHASE_NAMES, phase), lastActivity: lastLine(log), logLines: Math.max(0, logLength(d.text)), session, pr, questions: qs, answered: [],
       running: isRunning(status) || runnerActive(runner), summary: summaryOf(d.text), updates: readUpdates(`${repoName}.${f.id}`), runner,
       main, blockedBy: blockedByOf(f.blocked_by), controls: controlsFor({ status, blockedBy: blockedByOf(f.blocked_by), runner }, () => undefined), view: "dossier",
+      runnerLog: runner ? join(runsDir(), `${repoName}.${f.id}.runner.log`) : "",
       ...(() => { const pd = parseDeferred(log); const deferred: Deferred = { ...pd, report: existsSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`)) }; return { deferred, deferredOpen: pd.items.filter((i) => i.state === "open").length } })(),
     })
   }

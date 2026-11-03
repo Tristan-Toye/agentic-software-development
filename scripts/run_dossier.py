@@ -71,10 +71,15 @@ PLUGIN = "agentic-software-development"
 RUNNER_RULES = """\
 You run under the dossier runner and nobody reads the terminal.
 - Ask the owner only through scripts/ask_owner.py, and never wait in the background: keep working on whatever is not blocked; when nothing can proceed, end the turn with the line `RUNNER: WAITING <id>[,<id>...]` and stop. The runner waits for you and sends the owner's message into this session as `OWNER ANSWER <id>: ...` or `OWNER FOLLOWUP <id>: ...`. On a follow-up answer it with `ask_owner.py reply`, then end the turn with `RUNNER: WAITING <id>` again.
+- Never end a turn to wait for a command: run commands in the foreground (raise the Bash timeout up to 10 minutes) or wait for them inside the same turn. A workflow or background task that notifies you later is fine, but say `waiting for <what>` in that turn; the runner keeps the session open for its notification.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
-- Within a long stage, post a one-line update when something worth knowing happens: `ask_owner.py note --root R --dossier ID --text "..."`. Examples: a wave returned, a suite went green or red, an arbitration was ruled.
+- Keep the owner informed: post an update with `ask_owner.py note --root R --dossier ID --text "..."` when a stage starts and ends and whenever something worth knowing happens (a wave returned, the suite went green or red, an arbitration was ruled, a plan changed). Write it for a person reading on a phone: what happened and what it means, in plain sentences; markdown bullets and small tables are welcome. Never paste commands, file paths, SHAs, flags or log output into an update; the build log keeps those.
 """
+
+NUDGE = ("RUNNER: your last turn ended without a RUNNER: line and nothing has happened since. "
+         "If you were waiting on a background command or workflow, check its result now and continue. "
+         "Every turn must end with a RUNNER: line (STAGE-DONE, WAITING, DONE or FAILED).")
 
 MARKER = re.compile(r"^RUNNER:\s*(STAGE-DONE|WAITING|DONE|FAILED)\b[ \t]*(.*)$")
 
@@ -377,10 +382,12 @@ class Runner:
             self.checkpoints.append({"name": str(inp.get("phase", "")), "summary": str(inp.get("summary", ""))})
             write_json(self.cp_path, self.checkpoints)
 
-    def read_turn(self, q: queue.Queue, extra: bool) -> tuple[str, object]:
-        """('result', (text, is_error)) | ('exit', code) | ('stopped', None)."""
+    def read_turn(self, q: queue.Queue, extra: bool, idle: float | None = None) -> tuple[str, object]:
+        """('result', (text, is_error)) | ('exit', code) | ('stopped', None) | ('idle', None)
+        when `idle` seconds pass with no event at all."""
         last_text = ""
         result: tuple[str, bool] | None = None
+        quiet_since = time.monotonic()
         while True:
             timeout = self.grace if (result is not None and extra) else 1.0
             try:
@@ -390,7 +397,10 @@ class Runner:
                     return "stopped", None
                 if result is not None:
                     return "result", result
+                if idle is not None and time.monotonic() - quiet_since > idle:
+                    return "idle", None
                 continue
+            quiet_since = time.monotonic()
             if ev is None:
                 if result is not None:
                     return "result", result
@@ -476,9 +486,23 @@ class Runner:
         """('next'|'done'|'failed'|'stopped', detail)."""
         n0 = len(self.checkpoints)
         q, extra = self.spawn()
+        idle = float(os.environ.get("ASD_RUNNER_IDLE") or 1200)
+        quiet = False   # the last turn ended without a RUNNER: line
+        nudges = 0
         while True:
-            kind, val = self.read_turn(q, extra)
+            kind, val = self.read_turn(q, extra, idle if quiet else None)
             extra = False
+            if kind == "idle":
+                # A turn ended "waiting" on a background command or workflow, and nothing
+                # re-invoked the session within the idle window: nudge it, twice at most.
+                if nudges >= 2:
+                    kill_group(self.proc)
+                    self.end_process()
+                    return "failed", "the turn ended with no RUNNER: line, and two nudges brought none"
+                nudges += 1
+                self.log(f"no RUNNER: line after {int(idle)} s of quiet; nudge {nudges}")
+                self.send(NUDGE)
+                continue
             if kind == "stopped":
                 return "stopped", ""
             if kind == "exit":
@@ -491,9 +515,13 @@ class Runner:
                 return "failed", "the turn ended in an error" + (f": {text.strip().splitlines()[-1][:300]}" if text.strip() else "")
             mk = parse_marker(text)
             if mk is None:
-                kill_group(self.proc)
-                self.end_process()
-                return "failed", "the turn ended with no RUNNER: line"
+                # Not a failure yet: a turn that ends while a background command or
+                # workflow runs is re-invoked by Claude Code when that work finishes.
+                if not quiet:
+                    self.log("turn ended without a RUNNER: line; waiting for background work to re-invoke it")
+                quiet = True
+                continue
+            quiet = False
             verb, rest = mk
             if verb == "STAGE-DONE":
                 self.end_process()
@@ -715,7 +743,7 @@ def selftest() -> int:
             os.makedirs(d)
         fake = os.path.join(fdir, "fake_claude.py")
         open(fake, "w").write(FAKE_CLAUDE)
-        env = dict(os.environ, ASD_QUESTIONS_DIR=qdir, ASD_RUNS_DIR=rdir, ASD_FAKE_DIR=fdir, ASD_RUNNER_DEFERRED="0",
+        env = dict(os.environ, ASD_QUESTIONS_DIR=qdir, ASD_RUNS_DIR=rdir, ASD_FAKE_DIR=fdir, ASD_RUNNER_DEFERRED="0", ASD_RUNNER_IDLE="1",
                    ASD_CLAUDE_BIN=f"{shlex.quote(sys.executable)} {shlex.quote(fake)}",
                    ASD_ASK_OWNER=ASK_OWNER, ASD_OWNER_POLL="0.1", ASD_RUNNER_GRACE="0.2")
 

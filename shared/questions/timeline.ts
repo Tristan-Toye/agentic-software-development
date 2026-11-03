@@ -40,13 +40,20 @@ export function eventOf(u: { text: string; event?: string }): string {
   return "other"
 }
 const FAILURE = /\b(failed|failing|red)\b/i
-/** Whether an entry belongs in the Timeline view: everything except the automatic `log` copies, `other` lines and unmerged spawn-done lines (failures stay). */
+/**
+ * Whether an entry belongs in the Timeline: what a person wants to read, grouped by
+ * stage. The agent's own notes, its questions with their threads, one line per agent
+ * spawn with its status, a pull request opened or merged, and a run that failed,
+ * stopped or finished. Not: command output (log copies, gates, suites, workflows),
+ * checkpoint text, or the runner's bookkeeping (stage start/end, "waiting on …" —
+ * the question itself is shown). The build log holds everything else.
+ */
 export function inTimeline(e: TLEntry): boolean {
+  if (e.type === "stage") return false
+  if (e.type === "runner") return /^(stage \d+ failed|failed|stopped|done)\b/i.test(e.text.trim())
   if (e.type === "update" && e.auto) {
     const ev = e.event ?? "other"
-    if (ev === "spawn-done") return false
-    if (ev === "log") return false
-    if (ev === "other") return FAILURE.test(e.text)
+    return ev === "spawn" || ev === "pr"
   }
   return true
 }

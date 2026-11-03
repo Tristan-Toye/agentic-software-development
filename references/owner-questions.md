@@ -248,39 +248,23 @@ one card-based single-page app with deep links.
     `/repo/<repo>/<ID>/dossier` forces the dossier. The run view has three
     views of one run (tabs; **Timeline** opens by default):
     - **Timeline** (default): a **Now** panel (**Waiting on you** first, with
-      the open questions and their answer controls; the phase stepper 0-9 with
-      the current phase highlighted and named; time in this phase; the newest
-      meaningful update; runner state), then the entries grouped by phase,
-      newest phase first. The current phase is expanded; a finished phase is
-      one line (name, duration, first line of its checkpoint summary, "2
-      questions - 14 updates") that expands. It shows the agent's explicit
-      updates (`ask_owner.py note`, an `update` without `auto`), the questions
-      with thread and answer (answer controls on open ones), the runner's
-      lines, the stage lines, and only these automatic lines: `event` `suite`,
-      `gates`, `pr`, `workflow` and failures, and **agent spawns**. A spawn is
-      one row, "<agent type>: <description>" (never the prompt), with a status
-      chip `running`, `done`, `gap` or `contract-change`: the `spawn` line and
-      the later `spawn-done` line of the same `agent_id` merge into it (status
-      from the done line, the duration when both timestamps exist; no
-      `agent_id` or no done line keeps the spawn's own status). The `log`
-      copies and `other` lines are left out. Nothing collapses here. Lines of
-      an older file without an `event` are classified by text prefix (`log:`,
-      `suite:`, `gates:`, `PR `, `workflow`, `spawned ` = a spawn of unknown
-      status; else `other`). Newest on top, relative time with the absolute
-      time on hover. A question and its thread belong to the phase of the
-      question's first message. It never shows the build log: with nothing to
-      show it says "No updates yet";
-    - **Activity**: every automatic line in time order, raw, including the
-      `log` copies, `other` and unmerged spawn and spawn-done lines, under the
-      same phase grouping. Runs of two or more routine lines collapse into
-      "+N routine updates" (this is the only place that collapse applies);
+      the answer controls, then the phase, time in it, the newest note and the
+      runner state), then the run grouped by phase, newest phase first. It
+      shows only what a person wants to read: the agent's own notes (markdown,
+      rendered: bullets and tables), its questions with their threads and
+      answer controls, one line per spawned agent with its status chip and
+      duration, a pull request opened or merged, and a stage that failed or a
+      run that stopped or finished. No commands, gates or suite lines, build-
+      log copies, checkpoint text, or runner bookkeeping such as "waiting on
+      Q-1" (the question itself is shown). With nothing to show it says "No
+      updates yet";
     - **Build log**: the dossier's `## Build log` lines. A `planned` dossier
       whose updates file has lines labels the timeline "Planning";
   - `/repo/<repo>/stub/<branch>`: header (cut, state, step, PR + CI,
-    implemented dossiers as cards) with the same three-way split: **Timeline**
+    implemented dossiers as cards) with the same split: **Timeline**
     (Now panel and the filtered updates and questions grouped by the `## Step
     N` headings of the record file `stub-*.md`, under key `<repo>.<branch with
-    / as ->`), **Activity** (every automatic line) and **Record** (each `##`/`###` heading of the record file as an entry,
+    / as ->`) and **Record** (each `##`/`###` heading of the record file as an entry,
     dated by `(YYYY-MM-DD)` in it else by position).
   - An id is unique only within a repo: dossiers are picked per main checkout,
     and every lookup (runs, questions, stubs) is scoped by repo.

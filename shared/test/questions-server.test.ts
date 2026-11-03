@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { channelNameFor, interpretEnvelope, questionBlocks } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred } from "../questions/runs.ts"
+import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown } from "../questions/runstore.ts"
@@ -30,7 +30,9 @@ function check(name: string, ok: boolean, detail = ""): void {
   check("deferred: ledger items, first line per id, states and the stacked PR",
     pd.items.length === 3 && pd.items[0].title === "Retry ignores 429" && pd.items[0].loc === "src/a.rs:40" && pd.items[0].state === "fixed" && pd.items[0].note === "abc1234"
     && pd.items[1].state === "open" && pd.items[2].state === "dossier" && pd.pr === "https://github.com/o/r/pull/9", JSON.stringify(pd))
-  check("deferred: an item marked RESOLVED in place is closed", parseDeferred("- D-1 RESOLVED: renumbered — x").items[0].state === "fixed")
+  check("phase: a phase named mid-sentence is not progress; a line-start marker is", lastPhase("- OWNER-RULING: draft PR at Phase 6 yes\n- Phase 2 closed: contract committed\nnotes about Phase 7") === "2" && lastPhase("PHASE 9: synced") === "9")
+check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "Phase 6 soon" }, { kind: "stage", stage: "Phase 2 — contract", text: "x" }, { kind: "stage", stage: "Phase 1 — gates", text: "y" }]) === "2")
+check("deferred: an item marked RESOLVED in place is closed", parseDeferred("- D-1 RESOLVED: renumbered — x").items[0].state === "fixed")
   const c = (status: string, open: number, state?: string) => controlsFor({ status, blockedBy: [], runner: state ? ({ state } as any) : null, deferredOpen: open }, () => "done")["fix-deferred"].show
   check("deferred: Fix all shows on pr/done with open items and no live runner", c("done", 2) && c("pr", 1) && !c("done", 0) && !c("building", 2) && !c("done", 2, "running") && c("done", 2, "done"))
   const sm = (t: string) => slackMessageFor({ ts: "t", kind: "runner", text: t } as any, { repo: "r", id: "W-1", title: "x", link: "L" })
@@ -106,7 +108,7 @@ writeFileSync(join(repoB, ".discovery", "dossiers", "W-7-seven.md"), dossier("bu
 writeFileSync(join(repoA, ".discovery", "dossiers", "W-8-eight.md"), "---\nid: W-8\ntitle: Eight\nstatus: planned\n---\nno log\n")
 const fm = parseFrontMatter(dossier("building", "x\n"))
 check("runs: front matter scalars", fm.id === "W-7" && fm.title === "Seven" && fm.status === "building" && fm.jira === "W-7" && fm.updated === "2026-11-02")
-check("runs: last phase match wins, else empty", lastPhase("Phase 1 PHASE 4a Phase 4") === "4" && lastPhase("nothing") === "")
+check("runs: last phase match wins, else empty", lastPhase("- Phase 1 closed\nPHASE 4a: wave\nPhase 4 done") === "4" && lastPhase("nothing") === "")
 check("runs: last non-empty line, 160 chars", lastLine(buildLog(dossier("x", "- a\n- " + "z".repeat(200) + "\n\n"))).length === 160 && lastLine(buildLog(dossier("x", "- a\n- b\n\n"))) === "b")
 check("runs: a wrapped last entry is joined, a trailing fence skipped", lastLine(buildLog(dossier("x", "- a\n- Phase 6 closed: suite\n  green on abc\n"))) === "Phase 6 closed: suite green on abc" && lastLine(buildLog(dossier("x", "- a\n### Round 1\n```text\nCR-1\n```\n"))) === "Round 1")
 const picked = pickDossiers([repoA, repoB])
@@ -306,9 +308,9 @@ writeFileSync(fakeRunner, "import os, sys\nopen(os.environ['ASD_FAKE_ARGV'], 'a'
     N("2026-11-02T10:00:00Z", "wave", "stage")]
   const tl = mergeTimeline({ updates: ups, questions: [] }), ac = mergeTimeline({ updates: ups, questions: [], view: "activity" })
   const texts = (es: any[]) => es.filter((e) => e.type !== "boundary").map((e) => e.text)
-  check("views: Timeline keeps notes, runner, stage, suite, gates, pr, workflow, spawns, failures; drops log, other and spawn-done",
-    ["agent note", "runner: started", "wave", "suite: 10 passed", "gates: green", "PR 12 opened", "workflow started: build — 3 agents", "tool crashed and failed"].every((t) => texts(tl).includes(t)) &&
-    !texts(tl).some((t) => t === "log: wrote section" || t === "other thing" || t === "x: orphan") && texts(tl).filter((t) => t.includes(": pkg")).length === 2, JSON.stringify(texts(tl)))
+  check("views: Timeline is for people — notes, PRs and one line per spawn; no commands, checkpoints or runner bookkeeping",
+    ["agent note", "PR 12 opened"].every((t) => texts(tl).includes(t)) && texts(tl).filter((t) => t.includes(": pkg")).length === 2 &&
+    !texts(tl).some((t) => ["log: wrote section", "other thing", "x: orphan", "runner: started", "wave", "suite: 10 passed", "gates: green", "workflow started: build — 3 agents", "tool crashed and failed"].includes(t)), JSON.stringify(texts(tl)))
   check("views: Activity is every automatic line, raw (log, other, spawn and spawn-done), and no notes", texts(ac).length === 14 && texts(ac).includes("log: wrote section") && texts(ac).includes("other thing") && texts(ac).filter((t) => t.includes("pkg")).length === 4 && !texts(ac).includes("agent note"), JSON.stringify(texts(ac)))
   const sp = (id: string) => tl.find((e) => e.event === "spawn" && e.agentId === id)!
   check("spawn: merged with its spawn-done: status from the done line, duration from both timestamps", sp("a").status === "gap" && sp("a").durationMs === 120_000 && sp("b").status === "contract-change" && sp("b").durationMs === 90_000)
@@ -316,7 +318,7 @@ writeFileSync(fakeRunner, "import os, sys\nopen(os.environ['ASD_FAKE_ARGV'], 'a'
   check("spawn: no agent_id keeps its own status", tl.find((e) => e.text === "no id agent: lone")?.status === "done" && mergeSpawns([...ups].reverse()).length === ups.length - 2)
   const legacy = [A("2026-11-02T11:05:00Z", "spawned reviewer: old"), A("2026-11-02T11:04:00Z", "workflow x started"), A("2026-11-02T11:03:00Z", "PR 3 opened"), A("2026-11-02T11:02:00Z", "gates: ok"), A("2026-11-02T11:01:00Z", "suite: ok"), A("2026-11-02T11:00:00Z", "log: old"), A("2026-11-02T10:59:00Z", "something")]
   const lt = mergeTimeline({ updates: legacy, questions: [] }), la = mergeTimeline({ updates: legacy, questions: [], view: "activity" })
-  check("legacy: lines without event are classified by prefix", JSON.stringify(lt.map((e) => e.event)) === JSON.stringify(["spawn", "workflow", "pr", "gates", "suite"]) && lt[0].status === undefined && lt[0].text === "reviewer: old" && la.length === 7 && la[6].event === "other" && la[1].event === "workflow")
+  check("legacy: lines without event are classified by prefix", JSON.stringify(lt.map((e) => e.event)) === JSON.stringify(["spawn", "pr"]) && lt[0].status === undefined && lt[0].text === "reviewer: old" && la.length === 7 && la[6].event === "other" && la[1].event === "workflow")
   check("groups: Timeline is not collapsed, Activity collapses routine runs", groupByPhase(tl, "Setup", false).every((g) => g.items.every((i) => i.kind !== "more")) && groupByPhase(ac).some((g) => g.items.some((i) => i.kind === "more")))
   const home = mkdtempSync(join(tmpdir(), "asd-oq-home-")); mkdirSync(join(home, "Twipe", "repos", ".discovery", "dossiers"), { recursive: true }); mkdirSync(join(home, "git", ".git"), { recursive: true })
   check("repo label: a non-git root shows its path under the home dir; a git repo its basename", repoLabel(join(home, "Twipe", "repos"), home) === "Twipe/repos" && repoLabel(join(home, "git"), home) === "git" && repoLabel("/elsewhere/x", home) === "x")
@@ -327,7 +329,7 @@ const odir = mkdtempSync(join(tmpdir(), "asd-oq-ow-")), runsDir = mkdtempSync(jo
 writeFileSync(join(runsDir, "repoC.W-10.runner.json"), JSON.stringify({ pid: process.pid, state: "waiting", stage: "3", started: "s" }))
 writeFileSync(join(runsDir, "repoC.W-13.runner.json"), JSON.stringify({ pid: 2 ** 22 + 77, state: "running", stage: "3", started: "s", root: recordedRoot }))
 writeFileSync(join(runsDir, "repoC.W-10.runner.log"), Array.from({ length: 300 }, (_, i) => "line " + (i + 1)).join("\n") + "\n")
-writeFileSync(join(runsDir, "repoB.W-7.jsonl"), [{ ts: "2026-11-02T10:00:00Z", kind: "stage", text: "contract", stage: "Phase 3" }, { ts: "2026-11-02T10:05:00Z", kind: "stage", text: "wave", stage: "Phase 4" }, { ts: "2026-11-02T10:06:00Z", kind: "update", text: "tiny", auto: true, event: "gates" }].map((x) => JSON.stringify(x)).join("\n") + "\n")
+writeFileSync(join(runsDir, "repoB.W-7.jsonl"), [{ ts: "2026-11-02T10:00:00Z", kind: "stage", text: "contract", stage: "Phase 3" }, { ts: "2026-11-02T10:05:00Z", kind: "stage", text: "wave", stage: "Phase 4" }, { ts: "2026-11-02T10:06:00Z", kind: "update", text: "tiny" }].map((x) => JSON.stringify(x)).join("\n") + "\n")
 writeFileSync(join(runsDir, "repoA.W-8.jsonl"), JSON.stringify({ ts: "2026-11-02T09:00:00Z", kind: "update", text: "planning started" }) + "\n")
 writeFileSync(join(runsDir, "repoC.stub-2026-11-02.jsonl"), JSON.stringify({ ts: "2026-11-02T11:00:00Z", kind: "update", text: "stub step done" }) + "\n")
 writeFileSync(join(runsDir, "repoC.W-10.jsonl"), JSON.stringify({ ts: "2026-11-02T10:00:00Z", kind: "update", text: "ten started" }) + "\n")
@@ -406,7 +408,7 @@ try {
     check("server: page route " + p + " is served", pr.status === 200 && t.includes("Owner questions") && t.includes("EventSource") && !/https?:\/\//.test(t))
   }
   const ev = await fetch(`${base}/api/timeline/repoB/W-7`), tj: any = await ev.json()
-  check("server: /api/timeline merges updates with phase boundaries, newest first", ev.status === 200 && tj.planning === false && tj.entries.map((e: any) => e.type === "boundary" ? "B:" + e.label : e.text).join("|") === "tiny|wave|B:Phase 4 \u2014 " + pn["4"] + "|contract|B:Phase 3 \u2014 " + pn["3"] && tj.entries[0].auto === true, JSON.stringify(tj.entries))
+  check("server: /api/timeline merges updates with phase boundaries, newest first", ev.status === 200 && tj.planning === false && tj.entries.map((e: any) => e.type === "boundary" ? "B:" + e.label : e.text).join("|") === "tiny|B:Phase 4 \u2014 " + pn["4"] + "|B:Phase 3 \u2014 " + pn["3"], JSON.stringify(tj.entries))
   const pj: any = await (await fetch(`${base}/api/timeline/repoA/W-8`)).json()
   check("server: a planned dossier with updates is a planning timeline", pj.planning === true && pj.entries[0].text === "planning started")
   const dj: any = await (await fetch(`${base}/api/dossier/repoC/W-9`)).json()

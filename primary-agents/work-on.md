@@ -290,9 +290,14 @@ and Phase 9 builds the deferred ledger from these lines.
 them for you, at no token cost, under the runner and interactively alike:
 each `phase_checkpoint` (a stage line), each `dossier_edit.py log` line, each
 suite and gates result, each workflow started and agent spawned, and each PR
-opened or merged. Add `ask_owner.py note --root R --dossier ID --text "..."`
-only for what no command shows: a ruling you made, a plan you changed, why
-you are about to wait.
+opened or merged. The dashboard's timeline shows only what a person wants to read, so post
+`ask_owner.py note --root R --dossier ID --text "..."` at the start and end of
+every phase and for what no command shows: a ruling you made, a plan you
+changed, a suite going green or red, why you are about to wait. Write each
+note for a person reading on a phone: what happened and what it means, in
+plain sentences, with markdown bullets or a small table where they help.
+Never paste commands, file paths, SHAs, flags or log output into a note; the
+build log keeps those.
 
 ## Phase 0 — Select the dossier and route the run
 
