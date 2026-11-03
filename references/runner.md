@@ -52,7 +52,9 @@ the recorded checkpoints.
 - **A turn without a `RUNNER:` line** is not a failure at once. A turn
   that ends while a background command or workflow runs is re-invoked by
   Claude Code when that work finishes, so the runner keeps the session open.
-  After `ASD_RUNNER_IDLE` seconds of silence (default 1200) it sends a nudge
+  A `RUNNER: WAITING` line that names no question id (`RUNNER: WAITING
+  gates,background`) is read the same way: a wait on background work, not
+  on the owner. After `ASD_RUNNER_IDLE` seconds of silence (default 1200) it sends a nudge
   into the same session, at most twice, and only then records `failed`.
 - **Out of tokens:** a turn that fails on a usage or rate limit (or a
   process that exits with one on stderr) does not fail the run. The runner

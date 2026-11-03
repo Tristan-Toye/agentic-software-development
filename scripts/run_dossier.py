@@ -70,8 +70,8 @@ PLUGIN = "agentic-software-development"
 
 RUNNER_RULES = """\
 You run under the dossier runner and nobody reads the terminal.
-- Ask the owner only through scripts/ask_owner.py, and never wait in the background: keep working on whatever is not blocked; when nothing can proceed, end the turn with the line `RUNNER: WAITING <id>[,<id>...]` and stop. The runner waits for you and sends the owner's message into this session as `OWNER ANSWER <id>: ...` or `OWNER FOLLOWUP <id>: ...`. On a follow-up answer it with `ask_owner.py reply`, then end the turn with `RUNNER: WAITING <id>` again.
-- Never end a turn to wait for a command: run commands in the foreground (raise the Bash timeout up to 10 minutes) or wait for them inside the same turn. A workflow or background task that notifies you later is fine, but say `waiting for <what>` in that turn; the runner keeps the session open for its notification.
+- Ask the owner only through scripts/ask_owner.py, and never wait in the background: keep working on whatever is not blocked; when nothing can proceed, end the turn with the line `RUNNER: WAITING <id>[,<id>...]` and stop. The ids are question ids from ask_owner.py only; a wait on a background command or workflow is not a WAITING line: just end the turn, and Claude Code re-invokes you when it finishes. The runner waits for you and sends the owner's message into this session as `OWNER ANSWER <id>: ...` or `OWNER FOLLOWUP <id>: ...`. On a follow-up answer it with `ask_owner.py reply`, then end the turn with `RUNNER: WAITING <id>` again.
+- Never end a turn to wait for a command: run commands in the foreground (raise the Bash timeout up to 10 minutes) or wait for them inside the same turn. A workflow or background task that notifies you later is fine, but say `waiting for <what>` in plain text in that turn (never as a `RUNNER:` line); the runner keeps the session open for its notification.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
 - Keep the owner informed: post an update with `ask_owner.py note --root R --dossier ID --text "..."` when a stage starts and ends and whenever something worth knowing happens (a wave returned, the suite went green or red, an arbitration was ruled, a plan changed). Write it for a person reading on a phone: what happened and what it means, in plain sentences; markdown bullets and small tables are welcome. Never paste commands, file paths, SHAs, flags or log output into an update; the build log keeps those.
@@ -180,6 +180,8 @@ NUDGE = ("RUNNER: your last turn ended without a RUNNER: line and nothing has ha
          "If you were waiting on a background command or workflow, check its result now and continue. "
          "Every turn must end with a RUNNER: line (STAGE-DONE, WAITING, DONE or FAILED).")
 
+# A question id from ask_owner.py: `<repo>.<ID>.Qn` (or a bare `Qn`).
+QUESTION_ID = re.compile(r"(?:^|\.)Q\d+$")
 MARKER = re.compile(r"^RUNNER:\s*(STAGE-DONE|WAITING|DONE|FAILED)\b[ \t]*(.*)$")
 
 
@@ -654,10 +656,14 @@ class Runner:
                 self.end_process()
                 return "failed", rest or "no reason given"
             ids = [i for i in re.split(r"[,\s]+", rest) if i]
-            if not ids:
-                kill_group(self.proc)
-                self.end_process()
-                return "failed", "RUNNER: WAITING with no question id"
+            qids = [i for i in ids if QUESTION_ID.search(i)]
+            if not qids:
+                # `RUNNER: WAITING gates,background,task` is a wait on background work,
+                # not on the owner: keep the session open, as for a turn with no RUNNER: line.
+                self.log(f"RUNNER: WAITING names no question ({rest[:80] or 'empty'}); waiting for background work to re-invoke it")
+                quiet = True
+                continue
+            ids = qids
             self.save(state="waiting", questions=ids)
             self.event(f"waiting on {','.join(ids)}", "waiting")
             qid, rc, out = self.owner_wait(ids)
@@ -1038,6 +1044,13 @@ def selftest() -> int:
         check("failure reasons recorded",
               any("tests red" in t for t in texts("W-2")) and any("no RUNNER: line" in t for t in texts("W-2")))
         check("failed process is gone", not alive(int(open(os.path.join(fdir, "pid.2")).read())))
+
+        # ---- 2b. WAITING on background work (no question id) is not a failure --
+        scenario([{"turns": [[{"final": "gates running\nRUNNER: WAITING gates,background,task,b1yrknlzz"}],
+                             [{"final": "gates green\nRUNNER: DONE"}]]}])
+        p = start("W-20")
+        check("WAITING without a question id keeps the session and ends DONE", p.wait(timeout=60) == 0 and state_of("W-20").get("state") == "done")
+        check("no owner question for a background wait", not os.path.exists(qfile("repo.W-20.Q1")))
 
         # ---- 3. a crashed process counts as FAILED -----------------------------
         scenario([{"crash": 3}])
