@@ -310,7 +310,7 @@ export async function handle(req: Request): Promise<Response> {
     const entries = withHtml(mergeTimeline({ updates, questions, names: PHASE_NAMES }))
     const groups = groupByPhase(entries, "Setup", false)
     const activity: unknown[] = []
-    const now = nowPanel(entries, groups, { runner: run.runner?.state, waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: run.phase })
+    const now = nowPanel(entries, groups, { runner: run.runner?.state, waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: run.phase === "plan" ? "" : run.phase })
     let html = ""
     try { html = renderMarkdown(readFileSync(run.file, "utf8").replace(/^---\n[\s\S]*?\n---\n?/, "")) } catch { /* unreadable */ }
     return json({ run, html, entries, groups, activity, now, log, empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
