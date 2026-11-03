@@ -41,7 +41,9 @@ export function parseDeferred(log: string): { items: DeferredItem[]; pr: string 
     const m = l.match(/^[-*]\s+(D-\d+)\s+(\S+)\s+(.*)$/)
     if (m && !items.has(m[1])) {
       const parts = m[3].split(/\s+—\s+/)
-      items.set(m[1], { id: m[1], kind: m[2], title: parts[0] ?? "", loc: parts[1] ?? "", risk: parts[2] ?? "", why: parts.slice(3).join(" — "), state: "open", note: "" })
+      // Older ledgers close an item in place: "- D-1 RESOLVED: …".
+      const resolved = /^resolved\b/i.test(m[2])
+      items.set(m[1], { id: m[1], kind: resolved ? "resolved" : m[2], title: parts[0] ?? "", loc: parts[1] ?? "", risk: parts[2] ?? "", why: parts.slice(3).join(" — "), state: resolved ? "fixed" : "open", note: "" })
       continue
     }
     const fx = l.match(/^(?:[-*]\s+)?DEFERRED-FIXED:\s*(D-\d+)\s*(\S*)/)
