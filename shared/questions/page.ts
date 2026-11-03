@@ -47,7 +47,8 @@ a.stretch::after{content:"";position:absolute;inset:0;border-radius:12px}
 .btn:disabled{opacity:.55;cursor:not-allowed}.btn.primary,.btn.confirm{background:var(--acc);border-color:var(--acc);color:#fff}
 .btn.confirm.stop{background:var(--bad);border-color:var(--bad)}
 .ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px}
-.ctl-msg{font-size:12px;color:var(--mut);overflow-wrap:anywhere}.ctl-msg.bad{color:var(--bad)}.ctl-msg.ok{color:var(--ok)}
+.ctl-msg{font-size:12px;color:var(--mut);overflow-wrap:anywhere}.ctl-msg.bad{color:var(--bad)}
+.df-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--bd);min-width:0}.df-row:first-of-type{border-top:0}.df-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.df-loc{font-size:11px;color:var(--mut);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.btn.sm{padding:2px 8px;font-size:12px}.b{font-weight:700}.ctl-msg.ok{color:var(--ok)}
 .empty{color:var(--mut);padding:14px 4px}
 .panel{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:16px 18px;box-shadow:var(--shadow);margin:14px 0}
 .panel .row{display:flex;gap:10px 14px;flex-wrap:wrap;align-items:center;margin:6px 0}
@@ -217,10 +218,11 @@ function qCard(q, opts) {
 // ---- controls ----
 function controls(r, big) {
   const key = r.repo + '/' + r.id; const st = S.ctl[key] || {}; const kids = [];
-  ['start', 'resume', 'stop'].forEach(a => {
+  const NAME = { start: 'Start', resume: 'Resume', stop: 'Stop', 'fix-deferred': 'Fix all deferred' };
+  ['start', 'resume', 'stop', 'fix-deferred'].forEach(a => {
     const c = r.controls && r.controls[a]; if (!c || !c.show) return;
     const confirming = st.confirm === a; const busy = st.busy === a;
-    const label = busy ? { start: 'Starting…', resume: 'Resuming…', stop: 'Stopping…' }[a] : confirming ? 'Confirm ' + a : a.charAt(0).toUpperCase() + a.slice(1);
+    const label = busy ? { start: 'Starting…', resume: 'Resuming…', stop: 'Stopping…', 'fix-deferred': 'Starting the fix…' }[a] : confirming ? 'Confirm: ' + NAME[a].toLowerCase() : NAME[a];
     kids.push(h('button', { class: 'btn act' + (big ? ' lg' : '') + (big && a !== 'stop' && !confirming ? ' go' : '') + (confirming ? ' confirm ' + a : ''), type: 'button', 'data-act': 'ctl', 'data-ctl': a, 'data-repo': r.repo, 'data-id': r.id, disabled: !c.ok || !!st.busy }, [label]));
     if (confirming) kids.push(h('button', { class: 'btn act' + (big ? ' lg' : ''), type: 'button', 'data-act': 'ctl-cancel', 'data-repo': r.repo, 'data-id': r.id }, ['Cancel']));
     if (!c.ok && c.reason) kids.push(chip(c.reason, 'blocked'));
@@ -309,6 +311,9 @@ function sideColumn(repo) {
   if (loose.length) kids.push(h('div', { class: 'scol-sec', 'data-k': 'loose:' + repo }, [h('h3', {}, ['In progress']), h('ul', { class: 'tree' }, loose.map(r => subItem(repo, r.id, false, false)))]));
   kids.push(h('h3', {}, ['Open stubs']));
   kids.push.apply(kids, os.length ? os.map(s => stubTree(repo, s)) : [h('div', { class: 'empty' }, ['No open stub for this repo.'])]);
+  const dfd = S.runs.filter(r => r.repo === repo && r.deferredOpen > 0).sort((a, b) => b.deferredOpen - a.deferredOpen);
+  if (dfd.length) kids.push(h('div', { class: 'scol-sec', 'data-k': 'dfd:' + repo }, [h('h3', {}, ['Deferred · ' + dfd.reduce((n, r) => n + r.deferredOpen, 0) + ' open']),
+    h('ul', { class: 'tree' }, dfd.map(r => h('li', {}, [h('a', { class: 'sub-item', href: hrefItem(repo, r.id) }, [h('span', { class: 'sid mono' }, [r.id]), h('span', { class: 'sname', title: r.title }, [r.title]), chip(r.deferredOpen + ' open', 'ready')])])))]));
   if (merged.length) kids.push(h('details', { class: 'mstubs', 'data-k': 'mstubs:' + repo }, [h('summary', {}, ['Merged stubs (' + merged.length + ')']),
     h('ul', { class: 'tree' }, merged.map(s => h('li', {}, [h('a', { class: 'sub-item', href: hrefStub(repo, s.branch) }, [h('span', { class: 'sid mono' }, [s.branch]), h('span', { class: 'sname', title: s.branch }, [s.dossiers.length + ' dossier(s)'])])])))]));
   return h('aside', { class: 'scol' }, kids);
@@ -422,7 +427,25 @@ function itemView(repo, id) {
     if (r.answered.length) kids.push(section('Answered questions', r.answered.length, h('div', {}, r.answered.map(a => h('div', { class: 'panel qa', 'data-k': 'qa:' + a.id }, [
       h('div', {}, ['Q: ' + a.text]), h('div', { class: 'a' }, ['A: ' + (a.option ? a.option + ' · ' : '') + a.answer + ' · ', when(a.answeredAt || a.asked)]), h('a', { class: 'small', href: '/questions#q=' + enc(a.id) }, ['thread'])]))), 'qa'));
   }
+  if (r.deferred && r.deferred.items.length) kids.push(deferredView(r));
   return h('div', {}, kids);
+}
+/* The deferred ledger: open items with a copyable /plan seed, fixed ones with their
+   commit, the ones routed to a new dossier; "Fix all deferred" sits in the header. */
+function deferredView(r) {
+  const df = r.deferred; const open = df.items.filter(i => i.state === 'open').length;
+  const rows = df.items.map(i => h('div', { class: 'df-row', 'data-k': 'df:' + i.id }, [
+    h('span', { class: 'mono b' }, [i.id]), chip(i.kind, 'neutral'),
+    h('span', { class: 'df-t', title: [i.title, i.loc, i.risk, i.why].filter(Boolean).join(' — ') }, [i.title]),
+    i.loc ? h('code', { class: 'df-loc' }, [i.loc]) : null,
+    i.state === 'fixed' ? chip('fixed' + (i.note ? ' ' + i.note.slice(0, 8) : ''), 'done')
+      : i.state === 'dossier' ? chip('→ new dossier', 'planned') : chip('open', 'ready'),
+    i.state !== 'fixed' ? h('button', { class: 'btn sm', type: 'button', 'data-act': 'copy', 'data-text': '/plan ' + r.id + ' ' + i.id, title: 'Copy the /plan seed for this item' }, ['Plan']) : null,
+  ]));
+  const links = [];
+  if (df.report) links.push(h('a', { class: 'small', href: '/deferred/' + enc(r.repo) + '/' + enc(r.id), target: '_blank', rel: 'noopener' }, ['full report']));
+  if (df.pr) links.push(h('a', { class: 'small', href: df.pr, target: '_blank', rel: 'noopener' }, ['stacked PR']));
+  return section('Deferred issues', open + ' open of ' + df.items.length, h('div', { class: 'panel' }, [links.length ? h('div', { class: 'ctl' }, links) : null, ...rows]), 'deferred');
 }
 function stubView(repo, branch) {
   const rr = S.stubs.repos.find(x => x.repo === repo); const s = rr && rr.stubs.find(x => x.branch === branch);
@@ -568,6 +591,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'followup' || act === 'answer') {
       const ta = t.closest('.need').querySelector('textarea'); if (ta && ta.value.trim()) { const v = ta.value; ta.value = ''; post(t.dataset.qid, { kind: act, text: v }); }
     } else if (act === 'ctl') control(t);
+    else if (act === 'copy') { try { navigator.clipboard.writeText(t.dataset.text); t.textContent = 'Copied'; setTimeout(() => { t.textContent = 'Plan'; }, 1500); } catch (_) {} }
     else if (act === 'ctl-cancel') { const s = S.ctl[t.dataset.repo + '/' + t.dataset.id]; if (s) s.confirm = null; render(); }
     else if (act === 'tab') { S.tab[t.dataset.key] = t.dataset.tab; render(); }
     else if (act === 'toggle-done') { S.showAll[t.dataset.repo] = !S.showAll[t.dataset.repo]; render(); }

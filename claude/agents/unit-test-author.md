@@ -212,7 +212,7 @@ arbitration round, and the orchestrator repeats the suite to find it.
 ## Report
 
 The paths you wrote, one line per test with the member and the promise it
-covers, and any `GAP:` lines.
+covers, and any `GAP:` lines. Then `NOTICED:` — one line per product-code issue you saw outside your task and did not fix (`<path:line> — <kind> — <what is wrong>`; kind is bug, latent-bug, architecture, performance, duplication or ssot), or `NOTICED: none`. Never fix it yourself; the orchestrator logs it for the deferred ledger.
 
 ---
 

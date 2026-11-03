@@ -279,6 +279,13 @@ the appended system prompt and take precedence: ask only through
 `ask_owner.py`, end a stage with its `phase_checkpoint` and the `RUNNER:` line
 it names, and post `ask_owner.py note` for what is worth knowing mid-stage.
 
+**Deferred issues, as you go.** Whenever you notice a product-code issue you
+will not fix in this run — in a file you read, an arbitration's evidence, a
+review reply, or a sub-agent's `NOTICED:` lines — log it at once with
+`dossier_edit.py log <dossier> 'NOTICED: <path:line> — <kind> — <issue>'`.
+Never keep it in memory only: under the runner each stage is a new process,
+and Phase 9 builds the deferred ledger from these lines.
+
 **Progress updates, every run.** The plugin's PostToolUse hook posts most of
 them for you, at no token cost, under the runner and interactively alike:
 each `phase_checkpoint` (a stage line), each `dossier_edit.py log` line, each

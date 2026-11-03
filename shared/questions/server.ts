@@ -338,7 +338,7 @@ export async function handle(req: Request): Promise<Response> {
     const t = runnerLog(rl[1], rl[2])
     return t === null ? json({ error: "no runner log" }, 404) : new Response(t, { headers: { "content-type": "text/plain; charset=utf-8" } })
   }
-  const rc = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/(start|resume|stop)$/)
+  const rc = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/(start|resume|stop|fix-deferred)$/)
   if (rc) {
     if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
     const origin = req.headers.get("origin")
@@ -346,18 +346,23 @@ export async function handle(req: Request): Promise<Response> {
     const [, repo, id, action] = rc
     const run = await findRun(repo, id)
     if (!run) return json({ error: "no such dossier" }, 404)
-    const ctl = run.controls[action as "start" | "resume" | "stop"]
+    const ctl = run.controls[action as "start" | "resume" | "stop" | "fix-deferred"]
     if (!ctl.show) return json({ error: `${action} is not available for this dossier` }, 409)
     if (!ctl.ok) return json({ error: ctl.reason }, 409)
-    const root = action === "start" ? run.main : (run.runner?.root || run.main)
+    const root = action === "start" || action === "fix-deferred" ? run.main : (run.runner?.root || run.main)
     const key = `${repo}.${id}`
     if (inflightControl.has(key)) return json({ error: "another control is running for this dossier" }, 409)
     inflightControl.add(key)
     try {
-      const r = await runRunner(action === "stop" ? ["stop", id, "--root", root] : [id, "--root", root])
+      const r = await runRunner(action === "stop" ? ["stop", id, "--root", root] : action === "fix-deferred" ? [id, "--root", root, "--command", "fix-deferred"] : [id, "--root", root])
       emitChange("runs")
       return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 500)
     } finally { inflightControl.delete(key) }
+  }
+  const dr = path.match(/^\/deferred\/([\w.-]+)\/([\w.-]+)$/)
+  if (req.method === "GET" && dr) {
+    try { return new Response(dossierPage(`${dr[2]} — deferred issues`, dr[1], readFileSync(join(runsDir(), `${dr[1]}.${dr[2]}.deferred.md`), "utf8")), { headers: { "content-type": "text/html; charset=utf-8" } }) }
+    catch { return json({ error: "no deferred report for this dossier" }, 404) }
   }
   const ds = path.match(/^\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && ds) {
