@@ -224,7 +224,7 @@ export function dossierSignature(wts: string[]): string {
 }
 async function runGen(root: string, out: string, embed: boolean, linkBase = ""): Promise<boolean> {
   try {
-    const p = Bun.spawn(["python3", GEN, "--root", root, "--worktrees", "--out", out, "--quiet", ...(embed ? ["--embed", "--graph", "focus", "--simplify-default"] : []), ...(linkBase ? ["--link-base", linkBase] : [])], { stdout: "ignore", stderr: "ignore", stdin: "ignore" })
+    const p = Bun.spawn(["python3", GEN, "--root", root, "--worktrees", "--out", out, "--quiet", ...(embed ? ["--embed", "--simplify-default"] : []), ...(linkBase ? ["--link-base", linkBase] : [])], { stdout: "ignore", stderr: "ignore", stdin: "ignore" })
     const t = setTimeout(() => p.kill(), 120_000)
     const code = await p.exited
     clearTimeout(t)

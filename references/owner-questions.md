@@ -189,12 +189,16 @@ one card-based single-page app with deep links.
     complete open-work report in a same-origin iframe sized to its content (no
     inner scrollbar; re-sized on load, on content change and on report
     refresh). It is generated with `--embed --link-base /repo/<repo>
-    --graph focus --simplify-default`, so the dependency drawing is the focus
-    map: lanes by readiness (in progress, ready now, blocked, not planned
-    yet; done and dropped hidden by Simplify) of wrapping chips with
-    needs/unblocks counters, a critical-path ribbon, and edges drawn only for
-    the chain of the chip under hover or focus (fits the column, no
-    horizontal scroll). Simplify starts on (a
+    --simplify-default`. Embedded, the report drops the suggested next
+    action, the count tiles and the pipeline bar, and draws the dependency
+    graph left to right as one layered drawing: each independent flow laid
+    out alone and stacked, a dossier with no dependency link at all as a chip
+    in an "Independent" row above it, no Start boxes, a root placed next to
+    its first dependent, edges orthogonal with rounded corners in per-source
+    lanes between the columns (edges from one dossier share a trunk), and on
+    hover the whole chain before and after a dossier lit while the rest
+    dims. A drawing wider than the column scrolls inside its panel.
+    Simplify starts on (a
     choice remembered in the browser still wins), and a click on a dossier
     navigates the top window to `/repo/<repo>/<ID>`. **Right (360 px, sticky
     while scrolling):** every open (not merged) stub, newest first, as a card:

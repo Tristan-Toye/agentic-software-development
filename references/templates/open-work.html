@@ -332,6 +332,12 @@ svg.dg { display: block; margin: 0 auto; }
 .dg-node rect { fill: var(--plane); stroke: var(--border); transition: stroke .15s ease; }
 .dg-node:hover rect { stroke: var(--ink-3); }
 .dg-node.stub { cursor: default; }
+svg.dg.focus .dg-node:not(.lit) { opacity: .28; }
+svg.dg.focus .dg-edge:not(.hl) { opacity: .08; }
+svg.dg.bus .dg-edge { stroke-linejoin: round; }
+.loose { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.loose-cap { font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); }
+a.fm-chip { text-decoration: none; }
 .dg-node.stub rect { stroke-dasharray: 4 3; }
 .dg-node text { fill: var(--ink); font: 600 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .dg-node text.sub { fill: var(--ink-2); font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -426,6 +432,8 @@ const EMBED = document.documentElement.hasAttribute("data-embed");
 /* --link-base: a dossier reference navigates the top window to <base>/<ID> (the dashboard's dossier route). */
 const LINK_BASE = DATA.link_base || "";
 const TB = DATA.direction === "tb";   // top-to-bottom flows: ranks are rows
+/* The dashboard (embed, left to right) draws every dossier in ONE graph with the bus layout. */
+const BUS = EMBED && !TB;
 const app = document.getElementById("app");
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let stagger = 0;
@@ -483,7 +491,7 @@ if (!DATA.dossiers.length) {
 } else {
 
 /* ---------------------------------------------------------------- hero */
-if (DATA.next_action) {
+if (DATA.next_action && !EMBED) {
   const hero = el("div", "hero");
   hero.append(el("div", "kicker", "Suggested next action"));
   const cmd = el("div", "cmd");
@@ -493,7 +501,7 @@ if (DATA.next_action) {
 }
 
 /* ---------------------------------------------------------------- tiles */
-{
+if (!EMBED) {
   const tiles = el("div", "tiles");
   const S = DATA.sections;
   const spec = [
@@ -527,7 +535,7 @@ function countUp(node, target) {
 }
 
 /* ---------------------------------------------------------------- flow bar */
-{
+if (!EMBED) {
   const present = STAGES.filter(s => (DATA.counts.by_status[s] || 0) > 0);
   if (present.length) {
     app.append(enter(el("h2", null, "Pipeline")));
@@ -589,13 +597,40 @@ if (DATA.dossiers.length && DATA.graph === "focus") {
   app.append(enter(h), enter(panels), enter(note));
 
   function draw() {
-    const graph = dependencyGraph(DATA.dossiers, toggle.checked, TB);
-    /* tb draws everything as ONE layered graph (shared Start / Earlier-work
-       roots); lr keeps one rectangle per independent flow */
-    const groups = TB
+    let graph = dependencyGraph(DATA.dossiers, toggle.checked, TB || BUS);
+    /* bus (dashboard): no Start / Earlier-work boxes — a root simply sits in
+       the first column — and a dossier with no dependency link at all is a
+       chip in the "Independent" row above the graph, not a box in it */
+    let loose = [];
+    if (BUS) {
+      const ids = graph.ids.filter(id => !id.startsWith("\u0000stub:"));
+      const edges = graph.edges.filter(([a, b]) => ids.includes(a) && ids.includes(b));
+      const linked = new Set(edges.flat());
+      loose = ids.filter(id => !linked.has(id));
+      graph = { ...graph, ids: ids.filter(id => linked.has(id)), edges };
+    }
+    /* tb and bus draw everything as ONE layered graph; lr keeps one rectangle per independent flow */
+    const groups = (TB || BUS)
       ? (graph.ids.length ? [{ ids: graph.ids, edges: graph.edges }] : [])
       : flows(graph.ids, graph.edges);
     panels.replaceChildren();
+    if (loose.length) {
+      const row = el("div", "loose");
+      row.append(el("span", "loose-cap", `Independent · ${loose.length}`));
+      const chips = el("div", "fm-chips");
+      for (const id of loose.sort()) {
+        const d = graph.nodes[id];
+        const c = el("a", "fm-chip");
+        c.href = LINK_BASE ? LINK_BASE + "/" + encodeURIComponent(id) : "#";
+        if (LINK_BASE) c.target = "_top"; else c.addEventListener("click", e => { e.preventDefault(); openModal(d); });
+        const dot = el("span", "dot"); dot.style.background = stageVar(d.status);
+        c.append(dot, el("span", "id", id), el("span", "ttl", d.title || ""));
+        c.title = `${id} — ${d.title || ""} · ${d.status}`;
+        chips.append(c);
+      }
+      row.append(chips);
+      panels.append(row);
+    }
     groups.forEach((g, i) => {
       const panel = el("div", "graph-panel");
       if (groups.length > 1) {
@@ -611,7 +646,7 @@ if (DATA.dossiers.length && DATA.graph === "focus") {
     note.textContent = (toggle.checked
       ? `Simplified: ${graph.hiddenFinished} done or dropped dossier${graph.hiddenFinished === 1 ? "" : "s"} hidden; all unfinished dossiers and their immediate prerequisites remain.`
       : "Full graph: every dossier is shown. Simplify hides done and dropped history behind the frontier.")
-      + " Dashed boxes are display-only stubs for roots or missing dossiers.";
+      + (BUS ? " Hover a dossier to light up everything before and after it; a dashed box is a missing dossier." : " Dashed boxes are display-only stubs for roots or missing dossiers.");
     if (!groups.length) panels.append(el("div", "graph-note", "All dossiers are done or dropped. Turn off Simplify to see the finished flows."));
   }
   toggle.addEventListener("change", () => {
@@ -1041,11 +1076,163 @@ function lrLayout(ids, edges) {
 }
 
 
+/* Every dossier upstream and downstream of `id`: the chain hover lights up. */
+function chainOf(id, edges) {
+  const up = {}, down = {};
+  for (const [a, b] of edges) { (down[a] = down[a] || []).push(b); (up[b] = up[b] || []).push(a); }
+  const out = new Set([id]);
+  for (const adj of [up, down]) {
+    const stack = [id];
+    while (stack.length) for (const n of adj[stack.pop()] || []) if (!out.has(n)) { out.add(n); stack.push(n); }
+  }
+  return out;
+}
+
+/* Left-to-right "bus" layout for the dashboard — the layered drawing workflow
+   tools use (GitHub Actions, Dagre with rankdir LR, yFiles' directed
+   orthogonal layout):
+   1. columns = longest chain of blockers, as lrLayout;
+   2. an edge that skips columns gets thin waypoints, so it runs in a free
+      corridor and never through a box;
+   3. order  = the same crossing minimisation as lrLayout;
+   4. y      = each box pulled toward the mean height of its neighbours over a
+      few sweeps, then pushed apart to a minimum gap in its order, so chains
+      run level instead of zig-zagging;
+   5. edges are orthogonal with rounded corners: right out of the source,
+      down or up in a vertical lane of the gap between two columns, right
+      into the target. Every source owns one lane per gap, so edges leaving
+      one dossier share their trunk (a bus) and lanes of different sources
+      never overlap. Pure — no DOM. */
+function busLayout(ids, edges) {
+  /* each independent flow is laid out alone and stacked below the previous
+     one, largest first, so one flow's tall column never leaves another
+     floating in empty space */
+  const pos = {}, edgeD = new Array(edges.length);
+  const index = new Map(edges.map(([a, b], i) => [a + "\u0001" + b, i]));
+  let top = 0, width = 0;
+  for (const f of flows(ids, edges)) {
+    const r = busLayoutOne(f.ids, f.edges, top);
+    Object.assign(pos, r.pos);
+    f.edges.forEach(([a, b], i) => { edgeD[index.get(a + "\u0001" + b)] = r.edgeD[i]; });
+    top = r.height - 6;
+    width = Math.max(width, r.width);
+  }
+  return { pos, width, height: top + 6, edgeD };
+}
+
+function busLayoutOne(ids, edges, top) {
+  const PW = 168, PH = 48, DH = 6, PAD = 18, GY = 14, R = 7, LANE = 7;
+  const layer = {};
+  const incoming = Object.fromEntries(ids.map(id => [id, []]));
+  for (const [a, b] of edges) incoming[b].push(a);
+  function depth(id, trail) {
+    if (id in layer) return layer[id];
+    if (trail.has(id)) return 0;
+    trail.add(id);
+    const bl = incoming[id];
+    layer[id] = bl.length ? 1 + Math.max(...bl.map(b => depth(b, trail))) : 0;
+    return layer[id];
+  }
+  for (const id of ids) depth(id, new Set());
+  /* a root (usually a done prerequisite) moves right, next to its earliest
+     dependent, so its edges are short instead of long wires from column 0 */
+  const out = {};
+  for (const [a, b] of edges) (out[a] = out[a] || []).push(b);
+  for (const id of ids)
+    if (!incoming[id].length && out[id]) layer[id] = Math.max(0, Math.min(...out[id].map(c => layer[c])) - 1);
+  const dummy = {};
+  let seq = 0;
+  const hops = edges.map(([a, b]) => {
+    const chain = [a];
+    for (let li = layer[a] + 1; li < layer[b]; li++) { const d = " bd" + seq++; dummy[d] = li; chain.push(d); }
+    chain.push(b);
+    return chain;
+  });
+  const L = id => layer[id] ?? dummy[id];
+  const maxLayer = Math.max(0, ...ids.map(id => layer[id]));
+  const cols = Array.from({ length: maxLayer + 1 }, () => []);
+  for (const id of ids) cols[layer[id]].push(id);
+  for (const d in dummy) cols[dummy[d]].push(d);
+  const boundaries = Array.from({ length: maxLayer }, () => []);
+  const nbr = {};
+  for (const chain of hops)
+    for (let i = 0; i < chain.length - 1; i++) {
+      const [a, b] = [chain[i], chain[i + 1]], li = L(a);
+      if (li >= 0 && li < maxLayer && L(b) === li + 1) boundaries[li].push([a, b]);
+      (nbr[a] = nbr[a] || []).push(b); (nbr[b] = nbr[b] || []).push(a);
+    }
+  const order = minimizeCrossings(cols, boundaries);
+  const h = id => (id in dummy ? DH : PH);
+
+  /* y: start stacked, then barycentre sweeps with order-preserving separation */
+  const y = {};
+  order.forEach(col => { let t = 0; for (const id of col) { y[id] = t; t += h(id) + GY; } });
+  const centre = id => y[id] + h(id) / 2;
+  function place(col) {
+    const want = col.map(id => {
+      const ns = nbr[id] || [];
+      return ns.length ? ns.reduce((s, n) => s + centre(n), 0) / ns.length - h(id) / 2 : y[id];
+    });
+    /* forward: keep order and gap; backward: shift up where the forward pass pushed too far */
+    const out = want.slice();
+    for (let i = 1; i < col.length; i++) out[i] = Math.max(out[i], out[i - 1] + h(col[i - 1]) + GY);
+    for (let i = col.length - 2; i >= 0; i--) out[i] = Math.min(out[i], out[i + 1] - h(col[i]) - GY, Math.max(want[i], out[i]));
+    for (let i = 1; i < col.length; i++) out[i] = Math.max(out[i], out[i - 1] + h(col[i - 1]) + GY);
+    col.forEach((id, i) => { y[id] = out[i]; });
+  }
+  for (let pass = 0; pass < 6; pass++) {
+    for (let c = 1; c < order.length; c++) place(order[c]);
+    for (let c = order.length - 2; c >= 0; c--) place(order[c]);
+  }
+  const minY = Math.min(...Object.values(y));
+  for (const id in y) y[id] += top + PAD - minY;
+
+  /* lanes: per gap, one per distinct source crossing it, ordered by the source's height */
+  const lanesIn = order.slice(0, -1).map((_, li) =>
+    [...new Set(boundaries[li].map(([a]) => a))].sort((p, q) => centre(p) - centre(q)));
+  const gapW = lanesIn.map(ls => Math.max(48, 26 + ls.length * LANE));
+  const colX = [];
+  let x = PAD;
+  order.forEach((_, li) => { colX[li] = x; x += PW + (gapW[li] || 0); });
+  const width = x - (gapW[order.length - 1] || 0) + PAD;
+  const height = Math.max(...Object.keys(y).map(id => y[id] + h(id))) + PAD;
+  const pos = {};
+  for (const id of ids) pos[id] = [colX[layer[id]], y[id]];
+  const laneX = (li, src) => {
+    const ls = lanesIn[li], k = ls.indexOf(src), w = gapW[li];
+    return colX[li] + PW + (w - (ls.length - 1) * LANE) / 2 + k * LANE;
+  };
+  /* one hop: source right edge -> lane -> target left edge, rounded corners */
+  function hop(a, b, first) {
+    const li = L(a);
+    const x1 = colX[li] + (a in dummy ? PW / 2 : PW), y1 = centre(a);
+    const x2 = colX[li + 1] + (b in dummy ? PW / 2 : -2), y2 = centre(b);
+    const lx = laneX(li, a);
+    let d = first ? `M ${x1} ${y1} ` : "";
+    if (Math.abs(y2 - y1) < 1) return d + `L ${x2} ${y2} `;
+    const s = Math.sign(y2 - y1), r = Math.min(R, Math.abs(y2 - y1) / 2);
+    d += `L ${lx - r} ${y1} Q ${lx} ${y1} ${lx} ${y1 + s * r} `;
+    d += `L ${lx} ${y2 - s * r} Q ${lx} ${y2} ${lx + r} ${y2} `;
+    return d + `L ${x2} ${y2} `;
+  }
+  const edgeD = hops.map(chain => {
+    let d = "";
+    for (let i = 0; i < chain.length - 1; i++) {
+      d += hop(chain[i], chain[i + 1], i === 0);
+      /* through a waypoint: straight across its column */
+      if (i + 1 < chain.length - 1) d += `L ${colX[L(chain[i + 1])] + PW} ${centre(chain[i + 1])} `;
+    }
+    return d.trim();
+  });
+  return { pos, width, height, edgeD };
+}
+
+
 function depGraph(ids, edges, nodes) {
   const PW = 168, PH = 48;
-  const { pos, width, height, edgeD } = TB ? layeredLayout(ids, edges) : lrLayout(ids, edges);
+  const { pos, width, height, edgeD } = TB ? layeredLayout(ids, edges) : BUS ? busLayout(ids, edges) : lrLayout(ids, edges);
 
-  const svg = svgEl("svg", { class: "dg" + (TB ? " tb" : ""), width, height, viewBox: `0 0 ${width} ${height}`, role: "img" });
+  const svg = svgEl("svg", { class: "dg" + (TB ? " tb" : BUS ? " bus" : ""), width, height, viewBox: `0 0 ${width} ${height}`, role: "img" });
   svg.setAttribute("aria-label", "Dependency flow: " + edges.map(([a, b]) => `${nodes[a].label || a} before ${nodes[b].label || b}`).join(", "));
   const defs = svgEl("defs", {});
   const marker = svgEl("marker", { id: "dg-arrow", viewBox: "0 0 8 8", refX: 7, refY: 4,
@@ -1082,13 +1269,21 @@ function depGraph(ids, edges, nodes) {
       g.addEventListener("click", () => openModal(d));
       g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openModal(d); } });
     }
-    g.addEventListener("mouseenter", () => {
-      for (const p of edgeEls)
-        p.classList.toggle("hl", p.dataset.from === id || p.dataset.to === id);
-    });
-    g.addEventListener("mouseleave", () => {
+    const on = () => {
+      const chain = chainOf(id, edges);
+      svg.classList.add("focus");
+      for (const p of edgeEls) p.classList.toggle("hl", chain.has(p.dataset.from) && chain.has(p.dataset.to));
+      for (const n of svg.querySelectorAll(".dg-node")) n.classList.toggle("lit", chain.has(n.dataset.id));
+    };
+    const off = () => {
+      svg.classList.remove("focus");
       for (const p of edgeEls) p.classList.remove("hl");
-    });
+      for (const n of svg.querySelectorAll(".dg-node")) n.classList.remove("lit");
+    };
+    g.addEventListener("mouseenter", on);
+    g.addEventListener("focus", on);
+    g.addEventListener("mouseleave", off);
+    g.addEventListener("blur", off);
     svg.append(g);
   }
   return svg;
