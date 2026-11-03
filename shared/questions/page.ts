@@ -7,8 +7,8 @@ export const PAGE = String.raw`<!doctype html>
 <style>
 :root{color-scheme:light dark;--bg:#f5f6f8;--fg:#1b1d21;--mut:#6b7078;--card:#fff;--bd:#e3e6eb;--acc:#2f5fe3;--accbg:#e9effd;--shadow:0 1px 2px rgba(20,24,32,.05);--lift:0 10px 28px rgba(20,24,32,.12);
 --ok:#15803d;--okbg:#e2f4e8;--warn:#a85a08;--warnbg:#fcefd8;--bad:#c62828;--badbg:#fde7e7;--chip:#eceef2}
-@media (prefers-color-scheme:dark){:root{--bg:#101215;--fg:#e6e8eb;--mut:#8f949c;--card:#1a1d22;--bd:#2c3037;--acc:#7fa8ff;--accbg:#1b2640;--shadow:0 1px 2px rgba(0,0,0,.4);--lift:0 10px 28px rgba(0,0,0,.55);
---ok:#56d364;--okbg:#16301e;--warn:#e3a54a;--warnbg:#33280f;--bad:#ff7b72;--badbg:#3a1a1a;--chip:#272b32}}
+:root{color-scheme:dark;--bg:#101215;--fg:#e6e8eb;--mut:#8f949c;--card:#1a1d22;--bd:#2c3037;--acc:#7fa8ff;--accbg:#1b2640;--shadow:0 1px 2px rgba(0,0,0,.4);--lift:0 10px 28px rgba(0,0,0,.55);
+--ok:#56d364;--okbg:#16301e;--warn:#e3a54a;--warnbg:#33280f;--bad:#ff7b72;--badbg:#3a1a1a;--chip:#272b32}
 *{box-sizing:border-box}
 body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
 a{color:var(--acc)}
@@ -318,7 +318,7 @@ function repoView(repo) {
   const ow = (S.stubs.openWork || []).find(o => o.repo === repo); const oq = S.q.filter(q => q.state === 'open' && qRepo(q) === repo).sort((a, b) => a.ts.localeCompare(b.ts));
   const kids = [h('h1', {}, [rlabel(repo)]), h('p', { class: 'lead' }, [prog.length + ' running · ' + oq.length + ' open question' + (oq.length === 1 ? '' : 's') + ' · ' + os.length + ' open stub' + (os.length === 1 ? '' : 's')])];
   if (oq.length) kids.push(section('Waiting on you', oq.length, h('div', {}, oq.map(q => qCard(q, { thread: true }))), 'oq'));
-  const frame = ow ? h('iframe', { class: 'report', 'data-repo': repo, src: '/open-work/' + enc(repo) + '?v=' + enc(ow.updated), title: 'Open work', scrolling: 'no', style: S.frameH[repo] ? 'height:' + S.frameH[repo] + 'px' : null }) : h('div', { class: 'empty' }, ['The open-work report is not generated yet.']);
+  const frame = ow ? h('iframe', { class: 'report', 'data-repo': repo, src: '/open-work/' + enc(repo) + '?theme=dark&v=' + enc(ow.updated), title: 'Open work', scrolling: 'no', style: S.frameH[repo] ? 'height:' + S.frameH[repo] + 'px' : null }) : h('div', { class: 'empty' }, ['The open-work report is not generated yet.']);
   kids.push(h('div', { class: 'cols', 'data-k': 'cols' }, [h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]), sideColumn(repo)]));
   return h('div', {}, kids);
 }

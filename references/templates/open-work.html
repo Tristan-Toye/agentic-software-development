@@ -588,7 +588,7 @@ if (DATA.dossiers.length && DATA.graph === "focus") {
   try { const mem = localStorage.getItem("open-work-simplify"); if (mem === "true" || mem === "false") toggle.checked = mem === "true"; } catch (_) {}
   const label = el("label", "graph-toggle");
   label.append(toggle, "Simplify");
-  h.append(label);
+  if (BUS) toggle.checked = true; else h.append(label);
   const panels = el("div");
   panels.id = "dependency-flows";
   const note = el("div", "graph-note");
@@ -606,8 +606,10 @@ if (DATA.dossiers.length && DATA.graph === "focus") {
       const ids = graph.ids.filter(id => !id.startsWith("\u0000stub:"));
       const edges = graph.edges.filter(([a, b]) => ids.includes(a) && ids.includes(b));
       const linked = new Set(edges.flat());
-      loose = ids.filter(id => !linked.has(id));
-      graph = { ...graph, ids: ids.filter(id => linked.has(id)), edges };
+      const fr = doneFrontier(ids, edges, graph.nodes);
+      const linked2 = new Set(fr.flat());
+      loose = ids.filter(id => !linked2.has(id) && !["done", "dropped"].includes(graph.nodes[id].status));
+      graph = { ...graph, ids: ids.filter(id => linked2.has(id)), edges: fr };
     }
     /* tb and bus draw everything as ONE layered graph; lr keeps one rectangle per independent flow */
     const groups = (TB || BUS)
@@ -643,6 +645,7 @@ if (DATA.dossiers.length && DATA.graph === "focus") {
       panel.append(depGraph(g.ids, g.edges, graph.nodes));
       panels.append(panel);
     });
+    if (BUS) { note.textContent = "Done work is shown only where it meets unfinished work. Hover a dossier to light up everything before and after it; a dashed box is a missing dossier."; if (!groups.length && !loose.length) panels.append(el("div", "graph-note", "Nothing is open: every dossier is done or dropped.")); return; }
     note.textContent = (toggle.checked
       ? `Simplified: ${graph.hiddenFinished} done or dropped dossier${graph.hiddenFinished === 1 ? "" : "s"} hidden; all unfinished dossiers and their immediate prerequisites remain.`
       : "Full graph: every dossier is shown. Simplify hides done and dropped history behind the frontier.")
@@ -1075,6 +1078,29 @@ function lrLayout(ids, edges) {
   return { pos, width, height, edgeD };
 }
 
+
+/* The done frontier, for the dashboard: done work is shown only where it
+   touches unfinished work. Edges between two finished dossiers go; a
+   finished prerequisite of X goes when another finished prerequisite of X
+   already depends on it (the newer one implies it); a finished dossier left
+   with no edge goes. What remains is one thin layer of done work in front of
+   the unfinished graph, each done box pointing straight at what it unblocked. */
+function doneFrontier(ids, edges, nodes) {
+  const fin = id => ["done", "dropped"].includes(nodes[id]?.status);
+  const blockers = Object.fromEntries(DATA.dossiers.map(d => [d.id, d.blocked_by || []]));
+  const memo = {};
+  const ancestors = id => {
+    if (memo[id]) return memo[id];
+    memo[id] = new Set();
+    for (const b of blockers[id] || []) { memo[id].add(b); for (const a of ancestors(b)) memo[id].add(a); }
+    return memo[id];
+  };
+  const kept = edges.filter(([a, b]) => !(fin(a) && fin(b)));
+  const byTarget = {};
+  for (const [a, b] of kept) (byTarget[b] = byTarget[b] || []).push(a);
+  return kept.filter(([a, b]) => !fin(a) ||
+    !byTarget[b].some(o => o !== a && fin(o) && ancestors(o).has(a)));
+}
 
 /* Every dossier upstream and downstream of `id`: the chain hover lights up. */
 function chainOf(id, edges) {

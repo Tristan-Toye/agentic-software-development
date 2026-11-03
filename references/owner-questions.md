@@ -197,7 +197,11 @@ one card-based single-page app with deep links.
     its first dependent, edges orthogonal with rounded corners in per-source
     lanes between the columns (edges from one dossier share a trunk), and on
     hover the whole chain before and after a dossier lit while the rest
-    dims. A drawing wider than the column scrolls inside its panel.
+    dims. Only the done frontier is drawn: no edge between two finished
+    dossiers, a finished prerequisite dropped when a newer finished one
+    already implies it, so done work is one thin layer in front of the open
+    graph; the Simplify toggle is hidden. The dashboard is always dark. A
+    drawing wider than the column scrolls inside its panel. (Standalone,
     Simplify starts on (a
     choice remembered in the browser still wins), and a click on a dossier
     navigates the top window to `/repo/<repo>/<ID>`. **Right (360 px, sticky
