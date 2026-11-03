@@ -414,37 +414,50 @@ function itemView(repo, id) {
   if (!r) return h('div', {}, [h('h1', {}, [id]), h('div', { class: 'empty' }, [S.loaded ? 'No such dossier in ' + repo + '.' : 'Loading…'])]);
   const mode = itemMode(r); const d = S.detail && S.detail.url === detailUrl() ? S.detail.data : null;
   const kids = [header(r, mode)];
-  if (mode === 'run') {
-    const key = repo + '/' + id; const tab = S.tab[key] || 'timeline';
-    kids.push(tabs(key, [['timeline', d && d.planning ? 'Planning' : 'Timeline'], ['log', 'Build log' + (d && d.log ? ' (' + d.log.length + ')' : '')]]));
-    if (!d || !d.groups) kids.push(h('div', { class: 'empty' }, ['Loading…']));
-    else if (tab === 'log') kids.push(d.log.length ? h('ol', { class: 'tl', 'data-k': 'log' }, d.log.slice().reverse().map((l, i) => h('li', { class: 'log', 'data-k': 'l:' + i + l.slice(0, 30) }, [h('div', { class: 'tx' }, [l])]))) : h('div', { class: 'empty' }, ['The dossier has no build log yet.']));
-    else { kids.push(nowView(d, r.runner, true)); kids.push(groupsView(d.groups, key, 'No updates yet — the agent posts here as the run progresses')); }
-  } else {
-    const html = d && d.html ? d.html : '';
+  /* Every dossier has the same tabs; a finished or not-started one opens on the
+     dossier itself, a run in progress on its timeline. Empty tabs are left out. */
+  const key = repo + '/' + id;
+  const hasTl = d && d.entries && d.entries.length > 0, hasLog = d && d.log && d.log.length > 0, nDf = r.deferred ? r.deferred.items.length : 0;
+  const list = [];
+  if (mode !== 'run') list.push(['doc', 'Dossier']);
+  if (mode === 'run' || hasTl) list.push(['timeline', d && d.planning ? 'Planning' : 'Timeline']);
+  if (mode === 'run' || hasLog) list.push(['log', 'Build log' + (hasLog ? ' (' + d.log.length + ')' : '')]);
+  if (nDf) list.push(['deferred', 'Deferred (' + r.deferredOpen + ' open / ' + nDf + ')']);
+  let tab = S.tab[key] || list[0][0]; if (!list.some(t => t[0] === tab)) tab = list[0][0];
+  if (list.length > 1) kids.push(tabs(key, list));
+  if (!d) kids.push(h('div', { class: 'empty' }, ['Loading…']));
+  else if (tab === 'doc') {
+    const html = d.html || '';
     kids.push(h('div', { class: 'panel md', 'data-raw': '1', 'data-sig': html.length + ':' + html.slice(0, 40) + html.slice(-40), 'data-html': html }, []));
     if (r.answered.length) kids.push(section('Answered questions', r.answered.length, h('div', {}, r.answered.map(a => h('div', { class: 'panel qa', 'data-k': 'qa:' + a.id }, [
       h('div', {}, ['Q: ' + a.text]), h('div', { class: 'a' }, ['A: ' + (a.option ? a.option + ' · ' : '') + a.answer + ' · ', when(a.answeredAt || a.asked)]), h('a', { class: 'small', href: '/questions#q=' + enc(a.id) }, ['thread'])]))), 'qa'));
   }
-  if (r.deferred && r.deferred.items.length) kids.push(deferredView(r));
+  else if (tab === 'log') kids.push(hasLog ? h('ol', { class: 'tl', 'data-k': 'log' }, d.log.slice().reverse().map((l, i) => h('li', { class: 'log', 'data-k': 'l:' + i + l.slice(0, 30) }, [h('div', { class: 'tx' }, [l])]))) : h('div', { class: 'empty' }, ['The dossier has no build log yet.']));
+  else if (tab === 'deferred') kids.push(deferredView(r));
+  else { if (mode === 'run') kids.push(nowView(d, r.runner, true)); kids.push(groupsView(d.groups || [], key, 'No updates yet — the agent posts here as the run progresses')); }
   return h('div', {}, kids);
 }
 /* The deferred ledger: open items with a copyable /plan seed, fixed ones with their
    commit, the ones routed to a new dossier; "Fix all deferred" sits in the header. */
+function dfState(r, i) {
+  if (i.state === 'fixed') return r.deferred.pr ? h('a', { href: r.deferred.pr, target: '_blank', rel: 'noopener', title: i.note ? 'commit ' + i.note : '' }, [chip('fixed in stacked PR', 'done')]) : chip('fixed' + (i.note ? ' · ' + i.note.slice(0, 8) : ''), 'done');
+  if (i.state === 'dossier') return i.dossier ? h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]) : chip('needs a dossier', 'planned');
+  if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('deprecated', 'neutral')]);
+  return chip('not tackled', 'ready');
+}
 function deferredView(r) {
   const df = r.deferred; const open = df.items.filter(i => i.state === 'open').length;
   const rows = df.items.map(i => h('div', { class: 'df-row', 'data-k': 'df:' + i.id }, [
     h('span', { class: 'mono b' }, [i.id]), chip(i.kind, 'neutral'),
     h('span', { class: 'df-t', title: [i.title, i.loc, i.risk, i.why].filter(Boolean).join(' — ') }, [i.title]),
     i.loc ? h('code', { class: 'df-loc' }, [i.loc]) : null,
-    i.state === 'fixed' ? chip('fixed' + (i.note ? ' ' + i.note.slice(0, 8) : ''), 'done')
-      : i.state === 'dossier' ? chip('→ new dossier', 'planned') : chip('open', 'ready'),
-    i.state !== 'fixed' ? h('button', { class: 'btn sm', type: 'button', 'data-act': 'copy', 'data-text': '/plan ' + r.id + ' ' + i.id, title: 'Copy the /plan seed for this item' }, ['Plan']) : null,
+    dfState(r, i),
+    i.state === 'open' || (i.state === 'dossier' && !i.dossier) ? h('button', { class: 'btn sm', type: 'button', 'data-act': 'copy', 'data-text': '/plan ' + r.id + ' ' + i.id, title: 'Copy the /plan seed for this item' }, ['Plan']) : null,
   ]));
   const links = [];
   if (df.report) links.push(h('a', { class: 'small', href: '/deferred/' + enc(r.repo) + '/' + enc(r.id), target: '_blank', rel: 'noopener' }, ['full report']));
   if (df.pr) links.push(h('a', { class: 'small', href: df.pr, target: '_blank', rel: 'noopener' }, ['stacked PR']));
-  return section('Deferred issues', open + ' open of ' + df.items.length, h('div', { class: 'panel' }, [links.length ? h('div', { class: 'ctl' }, links) : null, ...rows]), 'deferred');
+  return h('div', { class: 'panel', 'data-k': 'deferred' }, [links.length ? h('div', { class: 'ctl' }, links) : null, ...rows]);
 }
 function stubView(repo, branch) {
   const rr = S.stubs.repos.find(x => x.repo === repo); const s = rr && rr.stubs.find(x => x.branch === branch);
@@ -475,7 +488,7 @@ function crumbs() {
 }
 function detailUrl() {
   if (R.kind === 'stub') return '/api/stub?repo=' + enc(R.repo) + '&branch=' + enc(R.branch);
-  if (R.kind === 'item') { const r = findRun(R.repo, R.id); if (!r) return null; return (itemMode(r) === 'run' ? '/api/timeline/' : '/api/dossier/') + enc(R.repo) + '/' + enc(R.id); }
+  if (R.kind === 'item') { const r = findRun(R.repo, R.id); if (!r) return null; return '/api/timeline/' + enc(R.repo) + '/' + enc(R.id); }
   return null;
 }
 function build() {

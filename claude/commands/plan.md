@@ -85,7 +85,10 @@ points at:
   it, or `.discovery/deferred-ledger.md` when no dossier covers it. The line
   is the problem statement — its `path:line` is your first anchor, its risk
   and proposed fix seed `## Problem` and `## Approach`. Show the user the
-  restatement as usual, quoting the ledger line.
+  restatement as usual, quoting the ledger line. Once the new dossier has
+  its ID, log `DEFERRED-DOSSIER: D-3 → <new ID>` in the source dossier's
+  `## Build log` (`dossier_edit.py log`), so its ledger shows where the item
+  went.
 - **A dossier ID** (`W-014`) → a `planned` dossier that needs this command
   again: `/work-on` returned it with a `RETURNED-TO-PLAN:` line, or an
   earlier `/plan` run stopped at its review budget. Read the last lines of
