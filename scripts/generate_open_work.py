@@ -11,6 +11,7 @@ or `state` — the only file it writes is the report.
 Usage:
     generate_open_work.py [--root .discovery] [--out PATH] [--worktrees]
                           [--embed] [--link-base URL] [--direction lr|tb]
+                          [--graph flows|focus]
                           [--simplify-default] [--open] [--quiet]
     generate_open_work.py --uninstall         # remove hooks an old --install wrote
     generate_open_work.py --selftest
@@ -45,7 +46,23 @@ centre and enter the next one's top centre and never cross a box; nothing wraps
 or shrinks, a drawing wider than the panel scrolls inside the panel.
 `--simplify-default` opens the report with the Simplify toggle on;
 the toggle still works, and a choice the user remembered in localStorage wins.
-The dashboard passes `--direction tb --simplify-default` with `--embed`.
+`--graph flows|focus` picks the drawing that replaces the "Dependency flows"
+section: `flows` (default) is the node-and-edge drawing above; `focus` is the
+focus map. Lanes by what you can do, top to bottom: In progress (building,
+review, pr), Ready now (ready, every prerequisite done), Blocked (an
+unfinished prerequisite, each chip naming its first blocker), Not planned yet
+(planned, plus display-only chips for missing dossiers); Done and dropped sit
+in a last lane that Simplify hides. Each dossier is a chip (status dot, id,
+one-line title, "needs N" unfinished prerequisites, "unblocks M" direct
+dependents), most dependents first, wrapping inside the lane, so it fits any
+width. A ribbon above the lanes shows the critical path, the longest chain of
+unfinished dossiers ("4 to go", "+n similar" on ties). No edges are drawn until
+a chip takes hover, keyboard focus or a first touch tap: its transitive chain
+stays bright, the rest dims, connectors are drawn in an SVG overlay between
+those chips only, and a small panel lists Needs and Unblocks with statuses and
+an Open link. Click opens the dossier (`--link-base`); Esc or a click on empty
+space leaves focus. `--direction` is ignored in focus mode.
+The dashboard passes `--graph focus --simplify-default` with `--embed`.
 
 The template lives at references/templates/open-work.html, next to this
 script's parent. Its dependency graph includes every dossier, with display-only
@@ -329,7 +346,8 @@ def classify(dossiers: list[dict], errors: list[dict], root: Path,
 def build_payload(root: Path, now: dt.datetime, worktrees: bool = False,
                   embed: bool = False, link_base: str = "",
                   direction: str = "lr",
-                  simplify_default: bool = False) -> dict:
+                  simplify_default: bool = False,
+                  graph: str = "flows") -> dict:
     dossiers, errors = load_dossiers(root)
     if worktrees:
         overlay_worktrees(root, dossiers)
@@ -347,6 +365,7 @@ def build_payload(root: Path, now: dt.datetime, worktrees: bool = False,
         "link_base": link_base.rstrip("/"),
         "direction": direction if direction in ("lr", "tb") else "lr",
         "simplify_default": bool(simplify_default),
+        **({"graph": "focus"} if graph == "focus" else {}),
         "generated_at": now.isoformat(timespec="seconds"),
         "generated_at_human": now.strftime("%-d %b %Y, %H:%M"),
         "root": str(root),
@@ -492,6 +511,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--direction", choices=("lr", "tb"), default="lr",
                     help="graph layout: lr (default, ranks are columns) or "
                          "tb (ranks are rows, fits a narrow column)")
+    ap.add_argument("--graph", choices=("flows", "focus"), default="flows",
+                    help="dependency drawing: flows (default, node-and-edge) "
+                         "or focus (lanes of chips, edges on hover)")
     ap.add_argument("--simplify-default", action="store_true",
                     help="open with the Simplify toggle on (a choice the "
                          "user remembered in localStorage still wins)")
@@ -530,7 +552,8 @@ def main(argv: list[str] | None = None) -> int:
     payload = build_payload(root, dt.datetime.now(), worktrees=args.worktrees,
                             embed=args.embed, link_base=args.link_base,
                             direction=args.direction,
-                            simplify_default=args.simplify_default)
+                            simplify_default=args.simplify_default,
+                            graph=args.graph)
     write_report(out, render(TEMPLATE.read_text(encoding="utf-8"), payload))
     if not args.quiet:
         print(out)
@@ -680,6 +703,71 @@ assert.deepEqual(realIds(cycle), ["W-200", "W-201"]);
         if g != w:
             bad.append(f"flows()[{i}]: {g} != {w}")
     return bad
+
+
+def _check_focus_js() -> list[str]:
+    """Lane assignment, counters, ordering and critical path of the focus map."""
+    import shutil
+    import subprocess
+
+    template = TEMPLATE.read_text(encoding="utf-8")
+    m = re.search(r"^function focusModel\(dossiers\) \{\n.*?^\}$", template,
+                  re.DOTALL | re.MULTILINE)
+    if not m:
+        return ["template no longer defines focusModel(dossiers)"]
+    if not shutil.which("node"):
+        print("selftest: node missing — skipped the focus map checks",
+              file=sys.stderr)
+        return []
+    checks = r"""
+const assert = require("node:assert/strict");
+const D = (id, status, blocked_by = [], title = "T " + id) => ({id, status, blocked_by, title});
+const ds = [
+  D("W-1", "done"), D("W-2", "ready", ["W-1"]), D("W-3", "ready", ["W-2"]),
+  D("W-4", "ready", ["W-3", "W-1"]), D("W-5", "building", ["W-3"]), D("W-6", "review"),
+  D("W-7", "pr"), D("W-8", "planned"), D("W-9", "dropped"), D("W-10", "ready", ["W-GONE"]),
+  D("W-11", "ready"), D("W-12", "ready", ["W-11"]),
+];
+const m = focusModel(ds);
+const lane = id => m.items[id].lane;
+assert.equal(lane("W-2"), "ready");
+assert.equal(lane("W-3"), "blocked");
+assert.equal(lane("W-4"), "blocked");
+assert.equal(lane("W-5"), "progress");
+assert.equal(lane("W-6"), "progress");
+assert.equal(lane("W-7"), "progress");
+assert.equal(lane("W-8"), "planned");
+assert.equal(lane("W-1"), "finished");
+assert.equal(lane("W-9"), "finished");
+assert.equal(lane("W-10"), "blocked", "a missing prerequisite blocks");
+assert.equal(m.items["W-GONE"].lane, "planned");
+assert.equal(m.items["W-GONE"].status, "missing");
+assert.equal(m.items["W-10"].blocker, "W-GONE");
+assert.equal(m.items["W-4"].needs, 1);
+assert.equal(m.items["W-4"].blocker, "W-3");
+assert.equal(m.items["W-2"].needs, 0);
+assert.equal(m.items["W-2"].unblocks, 1);
+assert.equal(m.items["W-1"].unblocks, 2);
+assert.equal(m.items["W-3"].unblocks, 2);
+assert.deepEqual(m.lanes.ready.map(i => i.id), ["W-11", "W-2"], "tie on 1 dependent: id order, string compare");
+assert.deepEqual(m.lanes.blocked.map(i => i.id), ["W-3", "W-10", "W-12", "W-4"], "most dependents first, then id");
+assert.deepEqual(m.critical.path, ["W-2", "W-3", "W-4"]);
+assert.equal(m.critical.len, 3);
+assert.equal(m.critical.similar, 1, "W-2>W-3>W-5 ties with W-2>W-3>W-4");
+assert.deepEqual([...m.up("W-4")].sort(), ["W-1", "W-2", "W-3"]);
+assert.deepEqual([...m.down("W-2")].sort(), ["W-3", "W-4", "W-5"]);
+const solo = focusModel([D("A", "ready"), D("B", "ready")]);
+assert.equal(solo.critical.len, 1);
+const cyc = focusModel([D("A", "ready", ["B"]), D("B", "ready", ["A"])]);
+assert.ok(cyc.critical.len >= 1);
+assert.deepEqual(focusModel([]).critical.path, []);
+"""
+    script = f"{m.group(0)}\n{checks}"
+    done = subprocess.run(["node", "-e", script], capture_output=True,
+                          text=True, check=False)
+    if done.returncode != 0:
+        return [f"focus map check failed under node: {done.stderr.strip()[:600]}"]
+    return []
 
 
 def selftest() -> int:
@@ -993,6 +1081,21 @@ console.log(JSON.stringify({through, overlap, edges, wide, n: fixtures.length, s
         check("nothing to do" in run_uninstall(), "uninstall is idempotent")
 
         failures.extend(_check_flows_js())
+        failures.extend(_check_focus_js())
+        tpl = TEMPLATE.read_text(encoding="utf-8")
+        lr_html = render(tpl, build_payload(root, today))
+        fm_html = render(tpl, build_payload(root, today, graph="focus"))
+        check('"graph"' not in lr_html.split('id="open-work-data"')[1]
+              .split("</script>")[0],
+              "the lr payload carries no graph key")
+        check(lr_html == render(tpl, build_payload(
+            root, today, direction="lr", graph="flows")),
+              "lr output is stable across the new flag")
+        fm_data = fm_html.split('id="open-work-data"')[1].split("</script>")[0]
+        check('"graph": "focus"' in fm_data or '"graph":"focus"' in fm_data,
+              "focus payload sets graph")
+        check('class="fm-edges"' not in fm_html and "<path" not in fm_html,
+              "focus output has no edge SVG until interaction")
 
     for f in failures:
         print(f"FAIL: {f}", file=sys.stderr)
