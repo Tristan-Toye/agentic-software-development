@@ -184,7 +184,15 @@ const repoNames = () => { const s = new Set(); S.runs.forEach(r => s.add(r.repo)
 const openQs = (r) => S.q.filter(q => q.state === 'open' && q.dossier === r.id && qRepo(q) === r.repo);
 const rlabel = (repo) => { const r = S.runs.find(x => x.repo === repo); if (r && r.repoLabel) return r.repoLabel; const t = S.stubs.repos.find(x => x.repo === repo); return (t && t.label) || repo; };
 const allOpen = () => S.q.filter(q => q.state === 'open').sort((a, b) => (a.repo + a.dossier).localeCompare(b.repo + b.dossier) || a.ts.localeCompare(b.ts));
-function stageText(r) { if (!r.phase) return r.runner && r.runner.stage ? 'Stage ' + r.runner.stage : ''; return r.phase === 'plan' ? 'Plan' : 'Phase ' + r.phase + (r.phaseName ? ' · ' + r.phaseName : ''); }
+/* The /work-on phase; a run that has not reached its first checkpoint yet is "starting", a dossier nobody runs shows none. */
+function stageText(r) {
+  const live = r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state);
+  if (!r.phase || r.phase === 'plan') return live ? 'Starting' : '';
+  return 'Phase ' + r.phase + (r.phaseName ? ' · ' + r.phaseName : '');
+}
+/* The run's state in plain words, no "runner" jargon. */
+const RUN_STATE = { running: 'in progress', waiting: 'waiting for you', paused: 'paused · usage limit', stopped: 'stopped', failed: 'failed', done: 'done' };
+const runChip = (st) => chip(RUN_STATE[st] || st, st);
 function itemMode(run) { if (R.forceDossier) return 'dossier'; return run.view === 'run' ? 'run' : 'dossier'; }
 function newestStub(repo) { const r = S.stubs.repos.find(x => x.repo === repo); return r && r.stubs.length ? r.stubs[0] : null; }
 const doneKey = (r) => (r.updated || '') + r.id;
@@ -329,9 +337,9 @@ function repoView(repo) {
 }
 function header(r, mode) {
   const nq = openQs(r); const cs = [chip(r.status)];
-  if (r.runner) cs.push(chip('runner ' + r.runner.state, r.runner.state));
+  if (r.runner && r.runner.state !== 'done') cs.push(runChip(r.runner.state));
   const st = stageText(r); if (st) cs.push(chip(st, 'neutral'));
-  if (r.session && r.session.context) cs.push(chip('ctx ' + kfmt(r.session.context), 'neutral'));
+  if (r.session && r.session.context) cs.push(h('span', { title: 'Tokens in the orchestrator\'s context right now. It compacts at 200k, so this falls back after each compaction and each new stage.' }, [chip('context ' + kfmt(r.session.context) + ' / 200k', 'neutral')]));
   if (r.pr) cs.push(prChip(r.pr)); if (r.jira && r.jira !== 'null') cs.push(chip(r.jira, 'neutral'));
   nq.forEach(q => cs.push(h('a', { class: 'chip warn', href: '/questions#q=' + enc(q.id) }, ['? open question'])));
   const acts = [];
@@ -395,9 +403,9 @@ function nowView(d, runner, withStepper) {
   const waiting = n.waiting.map(id => S.q.find(q => q.id === id)).filter(q => q && q.state === 'open');
   if (waiting.length) kids.push(h('div', { class: 'waitbox' }, [h('h3', {}, ['Waiting on you · ' + waiting.length + ' question' + (waiting.length > 1 ? 's' : '')])].concat(waiting.map(q => qCard(q, { thread: true })))));
   kids.push(h('div', { class: 'lbl' }, ['Now']));
-  const head = [h('span', {}, [n.phase || 'No phase recorded yet'])];
+  const head = [h('span', {}, [n.phase || 'Starting — no phase reached yet'])];
   if (n.since && Date.parse(n.since)) head.push(h('span', { class: 'chip' }, ['in this phase for ' + dur(Date.now() - Date.parse(n.since))]));
-  if (runner) head.push(chip('runner ' + runner.state, runner.state));
+  if (runner) head.push(runChip(runner.state));
   kids.push(h('div', { class: 'ph1' }, head));
   if (withStepper) kids.push(stepper(n.step, d.phaseNames));
   if (n.doing) kids.push(h('div', { class: 'doing' }, [icon(n.doing.kind), h('div', {}, [h('div', { class: 'tx' }, [n.doing.text.split('\n')[0]]), h('div', { class: 'small mut' }, [when(n.doing.ts)])])]));
