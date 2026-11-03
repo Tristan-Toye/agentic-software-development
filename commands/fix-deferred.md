@@ -44,6 +44,10 @@ An item is a **direct fix** only when all of these hold:
   you run it now.
 - The fix can be proved: a focused test fails before it and passes after.
 
+An item that **no longer applies** (the code it names is gone, or it was
+already fixed elsewhere; verify at its `path:line`) is closed, not fixed:
+log `DEFERRED-DROPPED: D-n — <why it no longer applies>`.
+
 Every other item **deserves a dossier**. Do not fix it. Log it as a seed:
 `dossier_edit.py log <dossier> 'DEFERRED-TRIAGE: D-n → dossier — <reason>; seed: /plan <ID> D-n'`.
 Log each direct item as `DEFERRED-TRIAGE: D-n → direct — <one-line fix>`.

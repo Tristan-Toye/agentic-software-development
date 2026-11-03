@@ -25,6 +25,8 @@ export function slackMessageFor(u: Update, o: { repo: string; id: string; title:
     if (/^start\b/i.test(t)) return { role: "open", text: `▶ ${o.repo} · ${o.id}${o.title ? ` — ${o.title}` : ""}${tail}` }
     if (/^waiting\b/i.test(t)) return { role: "reply", text: `⏳ Waiting on you: ${clip(t.replace(/^waiting on\s*/i, ""))}${tail}` }
     if (/^(answered|follow-up)\b/i.test(t)) return { role: "reply", text: `✅ ${clip(t)}` }
+    if (/^paused\b/i.test(t)) return { role: "reply", text: `⏸ ${clip(t.replace(/^paused:\s*/i, "Paused: "))}${tail}` }
+    if (/^resumed\b/i.test(t)) return { role: "reply", text: `▶ ${clip(t.charAt(0).toUpperCase() + t.slice(1))}` }
     if (u.state === "failed" || /\bfailed\b/i.test(t)) return { role: "reply", text: `✖ ${clip(t)}${tail}` }
     const dm = t.match(/^deferred report: (\d+) issue/i)
     if (dm) return Number(dm[1]) ? { role: "reply", text: `📋 ${dm[1]} deferred issue${dm[1] === "1" ? "" : "s"} — fix them from the run view${tail}` } : null

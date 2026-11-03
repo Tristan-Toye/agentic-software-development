@@ -71,10 +71,40 @@ PLUGIN = "agentic-software-development"
 RUNNER_RULES = """\
 You run under the dossier runner and nobody reads the terminal.
 - Ask the owner only through scripts/ask_owner.py, and never wait in the background: keep working on whatever is not blocked; when nothing can proceed, end the turn with the line `RUNNER: WAITING <id>[,<id>...]` and stop. The runner waits for you and sends the owner's message into this session as `OWNER ANSWER <id>: ...` or `OWNER FOLLOWUP <id>: ...`. On a follow-up answer it with `ask_owner.py reply`, then end the turn with `RUNNER: WAITING <id>` again.
+- Never end a turn to wait for a command: run commands in the foreground (raise the Bash timeout up to 10 minutes) or wait for them inside the same turn. A workflow or background task that notifies you later is fine, but say `waiting for <what>` in that turn; the runner keeps the session open for its notification.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
-- Within a long stage, post a one-line update when something worth knowing happens: `ask_owner.py note --root R --dossier ID --text "..."`. Examples: a wave returned, a suite went green or red, an arbitration was ruled.
+- Keep the owner informed: post an update with `ask_owner.py note --root R --dossier ID --text "..."` when a stage starts and ends and whenever something worth knowing happens (a wave returned, the suite went green or red, an arbitration was ruled, a plan changed). Write it for a person reading on a phone: what happened and what it means, in plain sentences; markdown bullets and small tables are welcome. Never paste commands, file paths, SHAs, flags or log output into an update; the build log keeps those.
 """
+
+LIMIT_RE = re.compile(r"usage limit|rate.?limit|weekly limit|limit reached|out of (?:extra )?usage|hit your .*limit|\b429\b|overloaded", re.I)
+
+
+def usage_limit(text: str) -> bool:
+    """Whether a failed turn is a usage or rate limit (wait and retry), not a real failure."""
+    return bool(LIMIT_RE.search(text or ""))
+
+
+def limit_reset(text: str, now_s: float | None = None) -> float:
+    """When to retry after a limit: the reset epoch the CLI prints after `|`, or an ISO
+    reset time in the text, else in 30 minutes. Always at least 60 s from now."""
+    now_s = time.time() if now_s is None else now_s
+    m = re.search(r"\|(\d{10})\b", text or "") or re.search(r"resets?[_ ]?at\D{0,4}(\d{10})\b", text or "")
+    if m:
+        return max(now_s + 60, float(m.group(1)) + 60)
+    m = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))", text or "")
+    if m:
+        try:
+            ts = datetime.datetime.fromisoformat(m.group(1).replace("Z", "+00:00")).timestamp()
+            return max(now_s + 60, ts + 60)
+        except ValueError:
+            pass
+    return now_s + float(os.environ.get("ASD_RUNNER_LIMIT_WAIT") or 1800)
+
+
+NUDGE = ("RUNNER: your last turn ended without a RUNNER: line and nothing has happened since. "
+         "If you were waiting on a background command or workflow, check its result now and continue. "
+         "Every turn must end with a RUNNER: line (STAGE-DONE, WAITING, DONE or FAILED).")
 
 MARKER = re.compile(r"^RUNNER:\s*(STAGE-DONE|WAITING|DONE|FAILED)\b[ \t]*(.*)$")
 
@@ -377,10 +407,12 @@ class Runner:
             self.checkpoints.append({"name": str(inp.get("phase", "")), "summary": str(inp.get("summary", ""))})
             write_json(self.cp_path, self.checkpoints)
 
-    def read_turn(self, q: queue.Queue, extra: bool) -> tuple[str, object]:
-        """('result', (text, is_error)) | ('exit', code) | ('stopped', None)."""
+    def read_turn(self, q: queue.Queue, extra: bool, idle: float | None = None) -> tuple[str, object]:
+        """('result', (text, is_error)) | ('exit', code) | ('stopped', None) | ('idle', None)
+        when `idle` seconds pass with no event at all."""
         last_text = ""
         result: tuple[str, bool] | None = None
+        quiet_since = time.monotonic()
         while True:
             timeout = self.grace if (result is not None and extra) else 1.0
             try:
@@ -390,7 +422,10 @@ class Runner:
                     return "stopped", None
                 if result is not None:
                     return "result", result
+                if idle is not None and time.monotonic() - quiet_since > idle:
+                    return "idle", None
                 continue
+            quiet_since = time.monotonic()
             if ev is None:
                 if result is not None:
                     return "result", result
@@ -476,24 +511,54 @@ class Runner:
         """('next'|'done'|'failed'|'stopped', detail)."""
         n0 = len(self.checkpoints)
         q, extra = self.spawn()
+        idle = float(os.environ.get("ASD_RUNNER_IDLE") or 1200)
+        quiet = False   # the last turn ended without a RUNNER: line
+        nudges = 0
         while True:
-            kind, val = self.read_turn(q, extra)
+            kind, val = self.read_turn(q, extra, idle if quiet else None)
             extra = False
+            if kind == "idle":
+                # A turn ended "waiting" on a background command or workflow, and nothing
+                # re-invoked the session within the idle window: nudge it, twice at most.
+                if nudges >= 2:
+                    kill_group(self.proc)
+                    self.end_process()
+                    return "failed", "the turn ended with no RUNNER: line, and two nudges brought none"
+                nudges += 1
+                self.log(f"no RUNNER: line after {int(idle)} s of quiet; nudge {nudges}")
+                self.send(NUDGE)
+                continue
             if kind == "stopped":
                 return "stopped", ""
             if kind == "exit":
                 self.end_process()
+                try:
+                    with open(self.err_path, "rb") as fh:
+                        fh.seek(0, 2); fh.seek(max(0, fh.tell() - 4096))
+                        tail = fh.read().decode("utf-8", "replace")
+                except OSError:
+                    tail = ""
+                if usage_limit(tail):
+                    return "limit", tail.strip()
                 return "failed", f"the claude process exited with code {val} before a result"
             text, err = val  # type: ignore[misc]
+            if err and usage_limit(text):
+                kill_group(self.proc)
+                self.end_process()
+                return "limit", text.strip()
             if err:
                 kill_group(self.proc)
                 self.end_process()
                 return "failed", "the turn ended in an error" + (f": {text.strip().splitlines()[-1][:300]}" if text.strip() else "")
             mk = parse_marker(text)
             if mk is None:
-                kill_group(self.proc)
-                self.end_process()
-                return "failed", "the turn ended with no RUNNER: line"
+                # Not a failure yet: a turn that ends while a background command or
+                # workflow runs is re-invoked by Claude Code when that work finishes.
+                if not quiet:
+                    self.log("turn ended without a RUNNER: line; waiting for background work to re-invoke it")
+                quiet = True
+                continue
+            quiet = False
             verb, rest = mk
             if verb == "STAGE-DONE":
                 self.end_process()
@@ -564,6 +629,21 @@ class Runner:
             if outcome == "stopped":
                 self.end_process()
                 return self.finish("stopped", "stopped", 3)
+            if outcome == "limit":
+                # Out of tokens: pause until the limit resets, then run the same stage
+                # again (its checkpoints are the hand-off; /work-on resumes from the dossier).
+                until = limit_reset(detail)
+                at = datetime.datetime.fromtimestamp(until, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                self.save(state="paused", resumes_at=at)
+                self.event(f"paused: usage limit reached; resumes at {at}", "paused")
+                while time.time() < until and not self.stopping:
+                    time.sleep(min(30.0, max(0.5, until - time.time())))
+                if self.stopping:
+                    return self.finish("stopped", "stopped", 3)
+                self.save(resumes_at=None)
+                self.event(f"resumed after the usage limit; stage {started} again", "running")
+                started -= 1
+                continue
             self.save(state="failed")
             self.event(f"stage {started} failed: {detail}", "failed")
             if self.ask_failure(detail) == "retry":
@@ -715,7 +795,7 @@ def selftest() -> int:
             os.makedirs(d)
         fake = os.path.join(fdir, "fake_claude.py")
         open(fake, "w").write(FAKE_CLAUDE)
-        env = dict(os.environ, ASD_QUESTIONS_DIR=qdir, ASD_RUNS_DIR=rdir, ASD_FAKE_DIR=fdir, ASD_RUNNER_DEFERRED="0",
+        env = dict(os.environ, ASD_QUESTIONS_DIR=qdir, ASD_RUNS_DIR=rdir, ASD_FAKE_DIR=fdir, ASD_RUNNER_DEFERRED="0", ASD_RUNNER_IDLE="1",
                    ASD_CLAUDE_BIN=f"{shlex.quote(sys.executable)} {shlex.quote(fake)}",
                    ASD_ASK_OWNER=ASK_OWNER, ASD_OWNER_POLL="0.1", ASD_RUNNER_GRACE="0.2")
 
@@ -808,6 +888,13 @@ def selftest() -> int:
               "### D-2" in rep_txt and "RUNNER:" not in rep_txt and ":deferred W-77" in open(fakedef + ".first").read())
         cps = read_json(os.path.join(rdir, "repo.W-77.checkpoints.json"), [])
         stl = [x for x in lines_of(os.path.join(rdir, "repo.W-77.jsonl")) if x.get("kind") == "stage"]
+        check("usage limits are recognised, real errors are not",
+              usage_limit("Claude AI usage limit reached|1793962800") and usage_limit("You've hit your weekly limit · resets Nov 6")
+              and usage_limit("API Error: 429 rate_limit_error") and not usage_limit("TypeError: x is undefined"))
+        check("the reset time comes from the CLI's epoch or an ISO time, else 30 minutes",
+              limit_reset("limit reached|2000000000", 1_000_000_000) == 2000000060
+              and limit_reset("resets 2026-11-06T11:00:00+00:00", 1_000_000_000) == datetime.datetime(2026, 11, 6, 11, tzinfo=datetime.timezone.utc).timestamp() + 60
+              and limit_reset("weekly limit", 1_000_000_000) == 1_000_000_000 + 1800)
         check("a stage without a checkpoint still gets a stage line and a dossier hand-off",
               cps and cps[-1]["name"] == "Phase 3 — contract" and "Build log" in cps[-1]["summary"]
               and stl and stl[-1]["stage"] == "Phase 3 — contract")

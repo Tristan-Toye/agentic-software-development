@@ -48,7 +48,7 @@ a.stretch::after{content:"";position:absolute;inset:0;border-radius:12px}
 .btn.confirm.stop{background:var(--bad);border-color:var(--bad)}
 .ctl{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px}
 .ctl-msg{font-size:12px;color:var(--mut);overflow-wrap:anywhere}.ctl-msg.bad{color:var(--bad)}
-.df-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--bd);min-width:0}.df-row:first-of-type{border-top:0}.df-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.df-loc{font-size:11px;color:var(--mut);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.btn.sm{padding:2px 8px;font-size:12px}.b{font-weight:700}.ctl-msg.ok{color:var(--ok)}
+.df-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--bd);min-width:0}.df-row:first-of-type{border-top:0}.df-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.df-loc{font-size:11px;color:var(--mut);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.btn.sm{padding:2px 8px;font-size:12px}.btn.ghost{background:transparent;border-color:var(--bd);color:var(--mut)}.btn.ghost:hover{color:var(--fg)}.tx.md p{margin:.2em 0}.tx.md ul,.tx.md ol{margin:.2em 0 .2em 1.2em}.tx.md table{border-collapse:collapse;margin:.3em 0}.tx.md th,.tx.md td{border:1px solid var(--bd);padding:2px 8px;text-align:left}.b{font-weight:700}.ctl-msg.ok{color:var(--ok)}
 .empty{color:var(--mut);padding:14px 4px}
 .panel{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:16px 18px;box-shadow:var(--shadow);margin:14px 0}
 .panel .row{display:flex;gap:10px 14px;flex-wrap:wrap;align-items:center;margin:6px 0}
@@ -227,7 +227,7 @@ function controls(r, big) {
     if (confirming) kids.push(h('button', { class: 'btn act' + (big ? ' lg' : ''), type: 'button', 'data-act': 'ctl-cancel', 'data-repo': r.repo, 'data-id': r.id }, ['Cancel']));
     if (!c.ok && c.reason) kids.push(chip(c.reason, 'blocked'));
   });
-  if (r.runner) kids.push(h('a', { class: 'small act', href: '/api/runs/' + enc(r.repo) + '/' + enc(r.id) + '/log', target: '_blank', rel: 'noopener' }, ['runner log']));
+  if (r.runner && r.runnerLog) kids.push(h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'copy', 'data-text': r.runnerLog, 'data-label': 'Copy log path', title: r.runnerLog }, ['Copy log path']));
   const out = [];
   if (kids.length) out.push(h('div', { class: 'ctl' }, kids));
   if (st.msg) out.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad') }, [st.msg]));
@@ -355,8 +355,7 @@ function tlItem(it) {
   if (e.type === 'boundary') return h('li', { class: 'boundary', 'data-k': 'b:' + e.ts + e.label }, [h('div', { class: 'bound' }, [e.label]), e.text ? h('div', { class: 'tx mut' }, [e.text]) : null]);
   if (e.type === 'question') {
     const q = S.q.find(x => x.id === e.qid) || e.question;
-    if (q.state === 'open') return h('li', { class: cls, 'data-k': dk }, [h('div', { class: 'hd' }, [icon(k), h('span', { class: 'kind' }, ['question asked · waiting for you']), when(e.ts)]), h('div', { class: 'tx' }, [e.text])]);
-    return h('li', { class: cls, 'data-k': dk }, [qCard(q, { thread: false })]);
+    return h('li', { class: cls, 'data-k': dk }, [qCard(q, { thread: q.state !== 'open' ? false : true })]);
   }
   if (e.type === 'message' || e.type === 'answer') {
     const who = e.type === 'answer' ? 'Answer' + (e.option ? ' ' + e.option : '') : e.from + ' ' + e.kind;
@@ -368,7 +367,8 @@ function tlItem(it) {
     return h('li', { class: cls, 'data-k': dk }, [head, h('details', { 'data-k': 'd:' + e.ts + e.label }, [h('summary', {}, [e.label]), h('div', { class: 'tx' }, [e.text])])]);
   }
   if (e.event === 'spawn') return h('li', { class: cls, 'data-k': dk }, [h('div', { class: 'hd' }, [icon(k), h('span', { class: 'kind' }, ['agent']), chip(e.status || 'unknown'), e.durationMs !== undefined ? h('span', { class: 'chip' }, [dur(e.durationMs)]) : null, when(e.ts)]), h('div', { class: 'tx' }, [e.text.split('\n')[0]])]);
-  return h('li', { class: cls, 'data-k': dk }, [h('div', { class: 'hd' }, [icon(k), h('span', { class: 'kind' }, [KLABEL[k] || e.type]), e.stage && e.type === 'stage' ? h('span', {}, [e.stage]) : null, when(e.ts)]), h('div', { class: 'tx' }, [e.text])]);
+  const body = e.html ? h('div', { class: 'tx md', 'data-raw': '1', 'data-html': e.html }, []) : h('div', { class: 'tx' }, [e.text]);
+  return h('li', { class: cls, 'data-k': dk }, [h('div', { class: 'hd' }, [icon(k), h('span', { class: 'kind' }, [KLABEL[k] || e.type]), when(e.ts)]), body]);
 }
 function itemLi(it, gk) {
   if (it.kind !== 'more') return tlItem(it);
@@ -378,7 +378,7 @@ function itemLi(it, gk) {
 }
 function phaseGroup(g, key) {
   const c = g.counts; const bits = []; if (c.questions) bits.push(c.questions + ' question' + (c.questions > 1 ? 's' : '')); bits.push(c.updates + ' update' + (c.updates === 1 ? '' : 's'));
-  const head = h('summary', {}, [h('span', { class: 'pl' }, [g.label]), g.current ? chip('current', 'info') : (g.durationMs !== null ? h('span', { class: 'chip' }, [dur(g.durationMs)]) : null), g.summary ? h('span', { class: 'ps' }, [g.summary]) : null, h('span', { class: 'pc' }, [bits.join(' · ')])]);
+  const head = h('summary', {}, [h('span', { class: 'pl' }, [g.label]), g.current ? chip('current', 'info') : (g.durationMs !== null ? h('span', { class: 'chip' }, [dur(g.durationMs)]) : null), h('span', { class: 'pc' }, [bits.join(' · ')])]);
   const gk = key + g.label;
   return h('details', { class: 'ph' + (g.current ? ' cur' : ''), 'data-k': 'ph:' + gk, 'data-cur': g.current ? '1' : '', open: g.current }, [head, h('ol', { class: 'tl' }, g.items.map(it => itemLi(it, gk)))]);
 }
@@ -414,38 +414,50 @@ function itemView(repo, id) {
   if (!r) return h('div', {}, [h('h1', {}, [id]), h('div', { class: 'empty' }, [S.loaded ? 'No such dossier in ' + repo + '.' : 'Loading…'])]);
   const mode = itemMode(r); const d = S.detail && S.detail.url === detailUrl() ? S.detail.data : null;
   const kids = [header(r, mode)];
-  if (mode === 'run') {
-    const key = repo + '/' + id; const tab = S.tab[key] || 'timeline';
-    kids.push(tabs(key, [['timeline', d && d.planning ? 'Planning' : 'Timeline'], ['activity', 'Activity'], ['log', 'Build log' + (d && d.log ? ' (' + d.log.length + ')' : '')]]));
-    if (!d || !d.groups) kids.push(h('div', { class: 'empty' }, ['Loading…']));
-    else if (tab === 'log') kids.push(d.log.length ? h('ol', { class: 'tl', 'data-k': 'log' }, d.log.slice().reverse().map((l, i) => h('li', { class: 'log', 'data-k': 'l:' + i + l.slice(0, 30) }, [h('div', { class: 'tx' }, [l])]))) : h('div', { class: 'empty' }, ['The dossier has no build log yet.']));
-    else if (tab === 'activity') kids.push(groupsView(d.activity, key + '#a', 'No automatic activity yet'));
-    else { kids.push(nowView(d, r.runner, true)); kids.push(groupsView(d.groups, key, 'No updates yet — the agent posts here as the run progresses')); }
-  } else {
-    const html = d && d.html ? d.html : '';
+  /* Every dossier has the same tabs; a finished or not-started one opens on the
+     dossier itself, a run in progress on its timeline. Empty tabs are left out. */
+  const key = repo + '/' + id;
+  const hasTl = d && d.entries && d.entries.length > 0, hasLog = d && d.log && d.log.length > 0, nDf = r.deferred ? r.deferred.items.length : 0;
+  const list = [];
+  if (mode !== 'run') list.push(['doc', 'Dossier']);
+  if (mode === 'run' || hasTl) list.push(['timeline', d && d.planning ? 'Planning' : 'Timeline']);
+  if (mode === 'run' || hasLog) list.push(['log', 'Build log' + (hasLog ? ' (' + d.log.length + ')' : '')]);
+  if (nDf) list.push(['deferred', 'Deferred (' + r.deferredOpen + ' open / ' + nDf + ')']);
+  let tab = S.tab[key] || list[0][0]; if (!list.some(t => t[0] === tab)) tab = list[0][0];
+  if (list.length > 1) kids.push(tabs(key, list));
+  if (!d) kids.push(h('div', { class: 'empty' }, ['Loading…']));
+  else if (tab === 'doc') {
+    const html = d.html || '';
     kids.push(h('div', { class: 'panel md', 'data-raw': '1', 'data-sig': html.length + ':' + html.slice(0, 40) + html.slice(-40), 'data-html': html }, []));
     if (r.answered.length) kids.push(section('Answered questions', r.answered.length, h('div', {}, r.answered.map(a => h('div', { class: 'panel qa', 'data-k': 'qa:' + a.id }, [
       h('div', {}, ['Q: ' + a.text]), h('div', { class: 'a' }, ['A: ' + (a.option ? a.option + ' · ' : '') + a.answer + ' · ', when(a.answeredAt || a.asked)]), h('a', { class: 'small', href: '/questions#q=' + enc(a.id) }, ['thread'])]))), 'qa'));
   }
-  if (r.deferred && r.deferred.items.length) kids.push(deferredView(r));
+  else if (tab === 'log') kids.push(hasLog ? h('ol', { class: 'tl', 'data-k': 'log' }, d.log.slice().reverse().map((l, i) => h('li', { class: 'log', 'data-k': 'l:' + i + l.slice(0, 30) }, [h('div', { class: 'tx' }, [l])]))) : h('div', { class: 'empty' }, ['The dossier has no build log yet.']));
+  else if (tab === 'deferred') kids.push(deferredView(r));
+  else { if (mode === 'run') kids.push(nowView(d, r.runner, true)); kids.push(groupsView(d.groups || [], key, 'No updates yet — the agent posts here as the run progresses')); }
   return h('div', {}, kids);
 }
 /* The deferred ledger: open items with a copyable /plan seed, fixed ones with their
    commit, the ones routed to a new dossier; "Fix all deferred" sits in the header. */
+function dfState(r, i) {
+  if (i.state === 'fixed') return r.deferred.pr ? h('a', { href: r.deferred.pr, target: '_blank', rel: 'noopener', title: i.note ? 'commit ' + i.note : '' }, [chip('fixed in stacked PR', 'done')]) : chip('fixed' + (i.note ? ' · ' + i.note.slice(0, 8) : ''), 'done');
+  if (i.state === 'dossier') return i.dossier ? h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]) : chip('needs a dossier', 'planned');
+  if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('deprecated', 'neutral')]);
+  return chip('not tackled', 'ready');
+}
 function deferredView(r) {
   const df = r.deferred; const open = df.items.filter(i => i.state === 'open').length;
   const rows = df.items.map(i => h('div', { class: 'df-row', 'data-k': 'df:' + i.id }, [
     h('span', { class: 'mono b' }, [i.id]), chip(i.kind, 'neutral'),
     h('span', { class: 'df-t', title: [i.title, i.loc, i.risk, i.why].filter(Boolean).join(' — ') }, [i.title]),
     i.loc ? h('code', { class: 'df-loc' }, [i.loc]) : null,
-    i.state === 'fixed' ? chip('fixed' + (i.note ? ' ' + i.note.slice(0, 8) : ''), 'done')
-      : i.state === 'dossier' ? chip('→ new dossier', 'planned') : chip('open', 'ready'),
-    i.state !== 'fixed' ? h('button', { class: 'btn sm', type: 'button', 'data-act': 'copy', 'data-text': '/plan ' + r.id + ' ' + i.id, title: 'Copy the /plan seed for this item' }, ['Plan']) : null,
+    dfState(r, i),
+    i.state === 'open' || (i.state === 'dossier' && !i.dossier) ? h('button', { class: 'btn sm', type: 'button', 'data-act': 'copy', 'data-text': '/plan ' + r.id + ' ' + i.id, title: 'Copy the /plan seed for this item' }, ['Plan']) : null,
   ]));
   const links = [];
   if (df.report) links.push(h('a', { class: 'small', href: '/deferred/' + enc(r.repo) + '/' + enc(r.id), target: '_blank', rel: 'noopener' }, ['full report']));
   if (df.pr) links.push(h('a', { class: 'small', href: df.pr, target: '_blank', rel: 'noopener' }, ['stacked PR']));
-  return section('Deferred issues', open + ' open of ' + df.items.length, h('div', { class: 'panel' }, [links.length ? h('div', { class: 'ctl' }, links) : null, ...rows]), 'deferred');
+  return h('div', { class: 'panel', 'data-k': 'deferred' }, [links.length ? h('div', { class: 'ctl' }, links) : null, ...rows]);
 }
 function stubView(repo, branch) {
   const rr = S.stubs.repos.find(x => x.repo === repo); const s = rr && rr.stubs.find(x => x.branch === branch);
@@ -455,10 +467,9 @@ function stubView(repo, branch) {
   const impl = s.dossiers.length ? h('div', { class: 'mini' }, s.dossiers.map(x => h('div', { class: 'card', 'data-k': 'i:' + x.id }, [
     h('a', { class: 'stretch title', href: hrefItem(x.repo || repo, x.id) }, [h('span', { class: 'id' }, [x.id + ' ']), x.title]), h('div', { class: 'chips' }, [chip(x.status || '?')])]))) : h('div', { class: 'empty' }, ['No dossier is implemented on this stub yet.']);
   const key = repo + '/' + branch; const tab = S.tab[key] || 'timeline'; const body = [];
-  body.push(tabs(key, [['timeline', 'Timeline'], ['activity', 'Activity'], ['record', 'Record']]));
+  body.push(tabs(key, [['timeline', 'Timeline'], ['record', 'Record']]));
   if (!d || !d.groups) body.push(h('div', { class: 'empty' }, ['Loading…']));
   else if (tab === 'record') body.push(d.record.length ? h('ol', { class: 'tl', 'data-k': 'rec' }, d.record.slice().reverse().map(tlEntry)) : h('div', { class: 'empty' }, [d.hasRecord ? 'The record file has no sections.' : 'No record file for this stub.']));
-  else if (tab === 'activity') body.push(groupsView(d.activity, key + '#a', 'No automatic activity yet'));
   else { body.push(nowView(d, null, false)); body.push(groupsView(d.groups, key, 'No updates yet — the agent posts here as the stub progresses')); }
   return h('div', {}, [h('div', { class: 'panel' }, [h('h1', { class: 'mono', style: 'margin-top:0' }, [branch]), h('div', { class: 'chips' }, cs), h('div', { class: 'row small mut' }, [s.refAge ? when(s.refAge, 'ref updated ') : null]),
     h('h2', {}, ['Implemented dossiers', h('span', { class: 'n' }, [String(s.dossiers.length)])]), impl])].concat(body));
@@ -477,7 +488,7 @@ function crumbs() {
 }
 function detailUrl() {
   if (R.kind === 'stub') return '/api/stub?repo=' + enc(R.repo) + '&branch=' + enc(R.branch);
-  if (R.kind === 'item') { const r = findRun(R.repo, R.id); if (!r) return null; return (itemMode(r) === 'run' ? '/api/timeline/' : '/api/dossier/') + enc(R.repo) + '/' + enc(R.id); }
+  if (R.kind === 'item') { const r = findRun(R.repo, R.id); if (!r) return null; return '/api/timeline/' + enc(R.repo) + '/' + enc(R.id); }
   return null;
 }
 function build() {
@@ -591,7 +602,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'followup' || act === 'answer') {
       const ta = t.closest('.need').querySelector('textarea'); if (ta && ta.value.trim()) { const v = ta.value; ta.value = ''; post(t.dataset.qid, { kind: act, text: v }); }
     } else if (act === 'ctl') control(t);
-    else if (act === 'copy') { try { navigator.clipboard.writeText(t.dataset.text); t.textContent = 'Copied'; setTimeout(() => { t.textContent = 'Plan'; }, 1500); } catch (_) {} }
+    else if (act === 'copy') { const lab = t.dataset.label || t.textContent; t.dataset.label = lab; try { navigator.clipboard.writeText(t.dataset.text); t.textContent = 'Copied'; setTimeout(() => { t.textContent = lab; }, 1500); } catch (_) {} }
     else if (act === 'ctl-cancel') { const s = S.ctl[t.dataset.repo + '/' + t.dataset.id]; if (s) s.confirm = null; render(); }
     else if (act === 'tab') { S.tab[t.dataset.key] = t.dataset.tab; render(); }
     else if (act === 'toggle-done') { S.showAll[t.dataset.repo] = !S.showAll[t.dataset.repo]; render(); }

@@ -48,6 +48,18 @@ the recorded checkpoints.
       records `failed` with the reason, notifies the owner (a question
       through `ask_owner.py`: retry the stage, or stop), and acts on the
       answer.
+- **A turn without a `RUNNER:` line** is not a failure at once. A turn
+  that ends while a background command or workflow runs is re-invoked by
+  Claude Code when that work finishes, so the runner keeps the session open.
+  After `ASD_RUNNER_IDLE` seconds of silence (default 1200) it sends a nudge
+  into the same session, at most twice, and only then records `failed`.
+- **Out of tokens:** a turn that fails on a usage or rate limit (or a
+  process that exits with one on stderr) does not fail the run. The runner
+  records `paused` with `resumes_at`, posts `paused: usage limit reached;
+  resumes at <time>` (also to the Slack run thread), sleeps until the reset
+  time the CLI printed (an epoch after `|` or an ISO time; else it retries
+  every 30 minutes, `ASD_RUNNER_LIMIT_WAIT`), then runs the same stage again
+  from its checkpoints. `stop` ends a paused run.
 - **A stage with no checkpoint:** if a stage ends with `RUNNER: STAGE-DONE`
   but no `phase_checkpoint` call was seen (the tool was missing or skipped),
   the runner writes the `stage` line itself, so the dashboard still draws the

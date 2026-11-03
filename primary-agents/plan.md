@@ -101,7 +101,10 @@ points at:
   it, or `.discovery/deferred-ledger.md` when no dossier covers it. The line
   is the problem statement — its `path:line` is your first anchor, its risk
   and proposed fix seed `## Problem` and `## Approach`. Show the user the
-  restatement as usual, quoting the ledger line.
+  restatement as usual, quoting the ledger line. Once the new dossier has
+  its ID, log `DEFERRED-DOSSIER: D-3 → <new ID>` in the source dossier's
+  `## Build log` (`dossier_edit.py log`), so its ledger shows where the item
+  went.
 - **A dossier ID** (`W-014`) → a `planned` dossier that needs this command
   again: `/work-on` returned it with a `RETURNED-TO-PLAN:` line, or an
   earlier `/plan` run stopped at its review budget. Read the last lines of
@@ -345,11 +348,11 @@ so the anchors it spot-checks are the tree the dossier was written against.
   When nothing else can proceed, run `ask_owner.py wait <id>` as a background
   command under Claude Code and end the turn. Log `QUESTION:` and then
   `OWNER-RULING (<date>):` in `## Build log`. Never pick an option yourself.
-- **Progress shows on the dashboard by itself.** The plugin's hook posts your
-  checkpoints, build-log lines and reviewer spawns as the dossier's updates.
-  Add `ask_owner.py note --root R --dossier ID --text "..."` only for a
-  milestone no command shows (the investigation concluded, the contract
-  drafted).
+- **Keep the owner informed on the dashboard.** Its timeline shows your
+  notes, your questions and the agents you spawn, grouped by stage. Post
+  `ask_owner.py note --root R --dossier ID --text "..."` at each milestone:
+  the investigation concluded, the approach chosen, the contract drafted, the
+  review verdict. Write each note for a person reading on a phone: plain sentences, markdown bullets or a small table where they help, and never commands, paths, SHAs or log output.
 - **Budget: 2 review rounds.** After the second, stop and show the user the
   unresolved change requests. Never mark a plan ready by exhaustion. In
   committed mode the dossier stays `planned` and uncommitted in the plan

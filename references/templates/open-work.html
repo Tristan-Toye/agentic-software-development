@@ -339,7 +339,9 @@ svg.dg.bus .dg-edge { stroke-linejoin: round; }
 .loose { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .loose-cap { font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); }
 a.fm-chip { text-decoration: none; }
-.chip-wrap { display: inline-flex; align-items: center; gap: 4px; max-width: min(100%, 380px); min-width: 0; }
+.chip-wrap { display: inline-flex; align-items: center; gap: 2px; max-width: min(100%, 380px); min-width: 0; padding-right: 3px; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; }
+.chip-wrap > .fm-chip { border: 0; background: transparent; min-width: 0; }
+.chip-wrap > button.play { padding: 3px 7px; }
 button.play { flex: none; font: inherit; font-size: 11px; line-height: 1; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--accent); background: transparent; color: var(--accent); cursor: pointer; }
 button.play:hover, button.play[data-state="armed"] { background: var(--accent); color: var(--plane); }
 button.play:disabled { opacity: .6; cursor: default; }
@@ -449,10 +451,15 @@ const LINK_BASE = DATA.link_base || "";
    the server re-checks (not already run, not blocked) and refuses otherwise.
    First click arms it ("start?"), the second within 4 s starts the runner. */
 const REPO = (LINK_BASE.match(/^\/repo\/([^/?#]+)/) || [])[1] || "";
-function canStart(d) {
-  return !!REPO && !!d && !d.stub && d.status === "ready" &&
-    (d.blocked_by || []).every(b => BY_ID[b]?.status === "done");
+/* The ▶'s action: the dashboard passes each dossier's live control (start, or
+   resume after a stopped or failed run) from the runner state; without it, a
+   ready dossier with every blocker done can start. */
+function runAction(d) {
+  if (!REPO || !d || d.stub) return null;
+  if (DATA.run_controls) return DATA.run_controls[d.id] || null;
+  return d.status === "ready" && (d.blocked_by || []).every(b => BY_ID[b]?.status === "done") ? "start" : null;
 }
+const canStart = d => runAction(d) !== null;
 function toast(text, bad) {
   let t = document.getElementById("run-toast");
   if (!t) { t = el("div"); t.id = "run-toast"; document.body.append(t); }
@@ -461,7 +468,7 @@ function toast(text, bad) {
   clearTimeout(toast.t); t.style.opacity = "1";
   toast.t = setTimeout(() => { t.style.opacity = "0"; }, 6000);
 }
-function armStart(id, setState) {
+function armStart(id, setState, action = "start") {
   if (armStart.armed !== id) {
     armStart.armed = id; setState("armed");
     clearTimeout(armStart.t);
@@ -469,27 +476,28 @@ function armStart(id, setState) {
     return;
   }
   armStart.armed = null; setState("busy");
-  fetch(`/api/runs/${encodeURIComponent(REPO)}/${encodeURIComponent(id)}/start`, { method: "POST" })
+  fetch(`/api/runs/${encodeURIComponent(REPO)}/${encodeURIComponent(id)}/${action}`, { method: "POST" })
     .then(r => r.json().then(j => ({ ok: r.ok, j })))
     .then(({ ok, j }) => {
       setState(ok ? "started" : "idle");
-      toast(ok ? `${id} started — ${String(j.output || "").trim().split("\n").pop()}` : `${id} not started: ${j.error || j.output || "error"}`, !ok);
+      toast(ok ? `${id} ${action === "resume" ? "resumed" : "started"} — ${String(j.output || "").trim().split("\n").pop()}` : `${id} not ${action === "resume" ? "resumed" : "started"}: ${j.error || j.output || "error"}`, !ok);
     })
     .catch(e => { setState("idle"); toast(`${id} not started: ${e}`, true); });
 }
 /* An HTML ▶ button (Independent chips, flight plan rows). */
 function playButton(d) {
+  const act = runAction(d) || "start";
   const b = el("button", "play");
   b.type = "button";
   const set = st => {
     b.dataset.state = st;
-    b.textContent = st === "armed" ? "start?" : st === "busy" ? "…" : st === "started" ? "✓" : "▶";
+    b.textContent = st === "armed" ? (act === "resume" ? "resume?" : "start?") : st === "busy" ? "…" : st === "started" ? "✓" : act === "resume" ? "↻" : "▶";
     b.disabled = st === "busy" || st === "started";
   };
   set("idle");
-  b.title = `Start /work-on ${d.id} in the background`;
+  b.title = act === "resume" ? `Resume ${d.id} from its checkpoints` : `Start /work-on ${d.id} in the background`;
   b.setAttribute("aria-label", `Start ${d.id}`);
-  b.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); armStart(d.id, set); });
+  b.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); armStart(d.id, set, act); });
   return b;
 }
 const TB = DATA.direction === "tb";   // top-to-bottom flows: ranks are rows
@@ -1356,9 +1364,10 @@ function depGraph(ids, edges, nodes) {
       const pb = svgEl("g", { class: "dg-play", transform: `translate(${PW - 16},16)`, role: "button", tabindex: "0" });
       pb.setAttribute("aria-label", `Start ${d.id}`);
       pb.append(svgEl("circle", { r: 9 }), svgEl("path", { d: "M-3,-4.5 L5,0 L-3,4.5 Z" }));
-      const tip = svgEl("title", {}); tip.textContent = `Start /work-on ${d.id} in the background (click twice)`; pb.append(tip);
+      const act = runAction(d);
+      const tip = svgEl("title", {}); tip.textContent = act === "resume" ? `Resume ${d.id} from its checkpoints (click twice)` : `Start /work-on ${d.id} in the background (click twice)`; pb.append(tip);
       const set = st => { pb.classList.toggle("armed", st === "armed"); pb.classList.toggle("started", st === "started"); tip.textContent = st === "armed" ? "Click again to start" : st === "started" ? "Started" : tip.textContent; };
-      const go = e => { e.preventDefault(); e.stopPropagation(); if (!pb.classList.contains("started")) armStart(d.id, set); };
+      const go = e => { e.preventDefault(); e.stopPropagation(); if (!pb.classList.contains("started")) armStart(d.id, set, act); };
       pb.addEventListener("click", go);
       pb.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") go(e); });
       g.append(pb);

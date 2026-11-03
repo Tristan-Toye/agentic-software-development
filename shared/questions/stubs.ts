@@ -1,11 +1,11 @@
 // Weekly stubs per repo and the per-repo open-work report. Contract: references/owner-questions.md (Dashboard).
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Question } from "./store.ts"
 import { readRunner, runnerActive } from "./runstore.ts"
 import { emitChange } from "./events.ts"
-import { answeredBy, baseName, repoLabel, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, questionInRepo, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
+import { answeredBy, baseName, getRuns, repoLabel, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, questionInRepo, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
 
 export type StubDossier = { id: string; title: string; status: string; repo: string; via: "merged"; answered: QA[] }
 /** An in-progress dossier shown under a stub; `noPr` = no PR yet, parked on the accepting stub. */
@@ -30,7 +30,7 @@ export type BasePr = { number: number; headRefName: string }
  */
 export function stubMembers(
   stubs: { branch: string; cut: string; refAge?: string; state: Stub["state"]; pr: unknown | null }[],
-  dossiers: { id: string; status: string; pr?: string; live?: boolean }[],
+  dossiers: { id: string; status: string; pr?: string; live?: boolean; halted?: boolean }[],
   prsByBase: Record<string, BasePr[]>,
 ): Record<string, StubMember[]> {
   const out: Record<string, StubMember[]> = {}
@@ -48,7 +48,9 @@ export function stubMembers(
   const accepting = open.find((s) => s.pr === null) ?? open[0]
   if (accepting) for (const d of eligible) {
     if (placed.has(d.id) || prFieldNumber(d.pr) !== null) continue
-    if (d.live || d.status === "building" || d.status === "review") add(accepting.branch, { id: d.id, noPr: true })
+    // Without a PR a dossier belongs to the stub only while work on it is under way:
+    // a runner that was stopped or failed takes it off until it resumes.
+    if (d.live || (!d.halted && (d.status === "building" || d.status === "review"))) add(accepting.branch, { id: d.id, noPr: true })
   }
   return out
 }
@@ -197,7 +199,7 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
       const prsByBase: Record<string, BasePr[]> = {}
       for (const s of openStubs(stubs)) prsByBase[s.branch] = await prsBase(main, s.branch)
       const name = baseName(main)
-      const mem = stubMembers(stubs, docs.map((d) => ({ id: d.front.id!, status: d.front.status ?? "", pr: d.front.pr, live: runnerActive(readRunner(`${name}.${d.front.id}`)) })), prsByBase)
+      const mem = stubMembers(stubs, docs.map((d) => ({ id: d.front.id!, status: d.front.status ?? "", pr: d.front.pr, live: runnerActive(readRunner(`${name}.${d.front.id}`)), halted: ["stopped", "failed"].includes(readRunner(`${name}.${d.front.id}`)?.state ?? "") })), prsByBase)
       for (const s of stubs) s.members = mem[s.branch] ?? []
     }
     if (stubs.length) { const sorted = stubs.sort((a, b) => b.cut.localeCompare(a.cut) || b.branch.localeCompare(a.branch)); repos.push({ repo: baseName(main), label: repoLabel(main), main, stubs: sorted, open: openStubs(sorted).map((s) => s.branch) }) }
@@ -222,9 +224,9 @@ export function dossierSignature(wts: string[]): string {
   }
   return parts.join("|")
 }
-async function runGen(root: string, out: string, embed: boolean, linkBase = ""): Promise<boolean> {
+async function runGen(root: string, out: string, embed: boolean, linkBase = "", controlsFile = ""): Promise<boolean> {
   try {
-    const p = Bun.spawn(["python3", GEN, "--root", root, "--worktrees", "--out", out, "--quiet", ...(embed ? ["--embed", "--simplify-default"] : []), ...(linkBase ? ["--link-base", linkBase] : [])], { stdout: "ignore", stderr: "ignore", stdin: "ignore" })
+    const p = Bun.spawn(["python3", GEN, "--root", root, "--worktrees", "--out", out, "--quiet", ...(embed ? ["--embed", "--simplify-default"] : []), ...(linkBase ? ["--link-base", linkBase] : []), ...(controlsFile ? ["--run-controls", controlsFile] : [])], { stdout: "ignore", stderr: "ignore", stdin: "ignore" })
     const t = setTimeout(() => p.kill(), 120_000)
     const code = await p.exited
     clearTimeout(t)
@@ -232,15 +234,18 @@ async function runGen(root: string, out: string, embed: boolean, linkBase = ""):
   } catch { return false }
 }
 /** Regenerate `<out>/<repo>.html` when the dossiers changed, at most once per 30 s per repo. `--embed` is dropped when the script rejects it. */
-export async function refreshOpenWork(repo: string, root: string, wts: string[], now = Date.now()): Promise<void> {
+export async function refreshOpenWork(repo: string, root: string, wts: string[], now = Date.now(), controls: Record<string, string> = {}): Promise<void> {
   const out = join(openWorkDir(), `${repo}.html`)
-  const sig = dossierSignature(wts)
+  // The ▶ in the report follows the runner state, so a run that stops or starts regenerates it.
+  const sig = dossierSignature(wts) + "#" + JSON.stringify(controls)
   const st = lastRun.get(repo)
   if (st && (st.inflight || (st.sig === sig && existsSync(out)) || now - st.at < 30_000)) return
   mkdirSync(openWorkDir(), { recursive: true })
   const rec = { at: now, sig, inflight: true }
   lastRun.set(repo, rec)
-  try { if (!(await runGen(root, out, true, `/repo/${repo}`))) await runGen(root, out, false) } finally { rec.inflight = false; rec.at = Date.now() }
+  const cf = join(openWorkDir(), `${repo}.controls.json`)
+  writeFileSync(cf, JSON.stringify(controls))
+  try { if (!(await runGen(root, out, true, `/repo/${repo}`, cf))) await runGen(root, out, false) } finally { rec.inflight = false; rec.at = Date.now() }
 }
 
 let cachedView: StubsView = { scannedAt: "", repos: [], openWork: [] }
@@ -257,7 +262,13 @@ async function rescan(questions: Question[]): Promise<void> {
     const repo = baseName(main)
     if (!safeRepo(repo)) continue
     const root = existsSync(join(main, ".discovery")) ? join(main, ".discovery") : join(wts[0], ".discovery")
-    await refreshOpenWork(repo, root, wts)
+    const runs = (await getRuns(() => questions)).runs.filter((r) => r.repo === repo)
+    const controls: Record<string, string> = {}
+    for (const r of runs) {
+      if (r.controls.start.show && r.controls.start.ok) controls[r.id] = "start"
+      else if (r.controls.resume.show && r.controls.resume.ok) controls[r.id] = "resume"
+    }
+    await refreshOpenWork(repo, root, wts, Date.now(), controls)
     try { openWork.push({ repo, updated: new Date(statSync(join(openWorkDir(), `${repo}.html`)).mtimeMs).toISOString() }) } catch { /* not generated */ }
   }
   const next = { ...view, openWork: openWork.sort((a, b) => a.repo.localeCompare(b.repo)) }
