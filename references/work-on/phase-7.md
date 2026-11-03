@@ -271,7 +271,14 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
   its `Location`, writes and lints one `MODE: fix` payload per package carrying
   exactly its CRs, and writes the `phase4-wave` args. A CR no package owns, or
   two own, prints `UNROUTED: <id> <path> — <why>` and nothing is written: rule
-  on those lines only, then re-run with `--assign <id>=<package>`. Then call
+  on those lines only, then re-run with `--assign <id>=<package>`. **A fix
+  package owns every path its CRs name**, across projects: its row's
+  `OWNED_PATHS` plus each `Location` and `Siblings` path the row does not
+  cover, so an implementer never has to return half a CR as unowned. The
+  fix packages stay disjoint, as Phase 4's are: a path two fix packages
+  would both own prints `CONFLICT: <path> is named by CRs routed to <A> and
+  <B>` and nothing is written — merge the two packages' CRs into one with
+  `--assign`, or re-route the CR. Then call
   `phase4-wave` **once** with that JSON file's array as `args`. The spawn guard
   checks every file before the launch and `verify_return.py` checks every return,
   so a fix payload never passes through the prompt. Fix implementers that share

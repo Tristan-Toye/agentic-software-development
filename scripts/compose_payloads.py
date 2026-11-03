@@ -79,6 +79,9 @@ each document's own title), and `--out` receives the `phase4-wave` args array
 package owns, or two packages own, is printed `UNROUTED: <id> <path> — <why>` and
 nothing is written: the orchestrator rules and re-runs with `--assign ID=PKG`
 (repeatable; the id as printed — `<document stem>/CR-n` when several documents).
+Each fix package's OWNED_PATHS is its row plus every Location and Siblings path its
+CRs name (#217); a path two fix packages would both own prints `CONFLICT: ...` and
+nothing is written.
 Exit 0 written and every payload linted clean; 1 unrouted, refused or a lint failure.
 
 `--refresh-contract` re-reads the contract files and rewrites the pasted
@@ -341,6 +344,12 @@ def contract_text_for(ctx: dict) -> str:
     covers the combined text, so it stays identical across every author given
     the same files and extras."""
     args, root = ctx["args"], ctx["root"]
+    # #209: a test author re-spawned after the merge takes CONTRACT from the
+    # dossier alone, since the contract files then hold implementation bodies
+    # (phase-6.md row 1, phase-7.md test CRs). --contract-extra without
+    # --contract-paths is that route; CONTRACT_HASH covers the subsections.
+    if not args.contract_paths and args.contract_extra and args.kind in ("unit-test-author", "integration-test-author"):
+        return "\n\n".join(contract_subsection(ctx["dossier_text"], h) for h in args.contract_extra)
     text = contract_bytes(args.contract_paths, root)
     for heading in args.contract_extra:
         text = text + "\n\n" + contract_subsection(ctx["dossier_text"], heading)
@@ -1067,6 +1076,21 @@ def excerpt_text(specs: list[str], root: str) -> str:
     return "\n\n".join(parts)
 
 
+# CI workspace prefixes (#210): GitHub Actions on Linux (/home/runner/work/<repo>/<repo>/),
+# in a container (/__w/<repo>/<repo>/), on macOS (/Users/runner/work/<repo>/<repo>/), on
+# Windows (D:\\a\\<repo>\\<repo>\\ or D:/a/<repo>/<repo>/), and GitLab (/builds/<group>/<repo>/).
+CI_PREFIX = re.compile(
+    r"(?:/home/runner/work|/Users/runner/work|/__w)/([^/\s]+)/\1/"
+    r"|[A-Za-z]:[\\/]a[\\/]([^\\/\s]+)[\\/]\2[\\/]"
+    r"|/builds/[^/\s]+/[^/\s]+/")
+
+
+def relative_ci_paths(text: str) -> str:
+    """FAILURES with every CI workspace prefix stripped, so a stack trace copied
+    from a CI log names repo-relative paths check_payload.py can find."""
+    return CI_PREFIX.sub("", text)
+
+
 def failures_digest(log: str, root: str) -> str:
     """The FAILURES field for a log: run_tests.py's own digest body (totals,
     capped failures with their detail lines, every line cut), not the raw log."""
@@ -1159,6 +1183,9 @@ def compose(args: argparse.Namespace) -> tuple[list[Field], str]:
         if "FAILURES" in sets:
             raise Refusal("FAILURES is given twice: --set FAILURES=... and --failures-from")
         sets["FAILURES"] = failures_digest(args.failures_from, root)
+    if "FAILURES" in sets:
+        # #210: a CI log's absolute workspace paths become repo-relative ones the agent can open.
+        sets["FAILURES"] = relative_ci_paths(sets["FAILURES"])
     if args.hook_outputs and args.kind != "implementer":
         raise Refusal("--hook-outputs fills HOOKS, which only the implementer takes")
     if args.excerpt:
@@ -1312,6 +1339,60 @@ def _owns(entry: str, path: str) -> bool:
     return path == entry or path.startswith(entry.rstrip("/") + "/")
 
 
+def cr_named_paths(body: str, root: str) -> list[str]:
+    """#217: every repo path one CR section names — its Location's path:line
+    entries and its Siblings entries (with or without :line; `none` and the
+    parenthesised `(searched: ...)` note name nothing). Repo-relative, in order."""
+    fs = cc.fields(body)
+    out: list[str] = []
+    def add(raw: str) -> None:
+        raw = raw.strip().strip("`'\"")
+        raw = re.sub(r":\d+(?:-\d+)?$", "", raw)
+        if not raw or raw.lower() in ("none", "n/a", "-") or not ("/" in raw or re.search(r"\.\w+$", raw)):
+            return
+        rel = os.path.relpath(raw, root) if os.path.isabs(raw) else raw
+        rel = rel[2:] if rel.startswith("./") else rel
+        if rel not in out and not rel.startswith(".."):
+            out.append(rel)
+    for raw in re.findall(r"([^\s,;`()\[\]]+):\d+", fs.get("Location", "")):
+        add(raw)
+    sib = re.sub(r"\([^)]*\)", " ", fs.get("Siblings", ""))
+    for raw in re.split(r"[\s,;]+", sib):
+        add(raw)
+    return out
+
+
+def fix_owned_paths(routed: dict[str, list[tuple[str, str]]], packages: list[list[str]],
+                    root: str) -> tuple[dict[str, list[str]], list[str]]:
+    """#217: a fix package owns every path its routed CRs name, across projects:
+    its ## Work packages row plus each Location and Siblings path the row does
+    not cover. Returns ({package: added paths}, conflict lines). A path two fix
+    packages of this wave would both own is a conflict: merge them or re-route
+    the CR (--assign) before the spawn, so the fix packages stay disjoint."""
+    rows = {c[0]: [e.strip() for e in c[1].split(",") if e.strip()] for c in packages}
+    added: dict[str, list[str]] = {}
+    for pkg, crs in routed.items():
+        own = rows.get(pkg, [])
+        extra: list[str] = []
+        for _stem, body in crs:
+            for path in cr_named_paths(body, root):
+                if not any(_owns(e, path) for e in own) and path not in extra:
+                    extra.append(path)
+        added[pkg] = extra
+    conflicts: list[str] = []
+    pkgs = sorted(routed)
+    for i, a in enumerate(pkgs):
+        mine = rows.get(a, []) + added[a]
+        for b in pkgs[i + 1:]:
+            theirs = rows.get(b, []) + added[b]
+            both = sorted({p for p in added[a] if any(_owns(e, p) for e in theirs)}
+                          | {p for p in added[b] if any(_owns(e, p) for e in mine)})
+            for path in both:
+                conflicts.append("CONFLICT: %s is named by CRs routed to %s and %s — merge the two fix "
+                                 "packages or re-route the CR with --assign" % (path, a.split()[0], b.split()[0]))
+    return added, conflicts
+
+
 def route_crs(docs: list[tuple[str, str]], packages: list[list[str]], root: str,
               assign: dict[str, str]) -> tuple[dict[str, list[tuple[str, str]]], list[str]]:
     """Map every CR / follow-up / DEFECT section of DOCS [(stem, text)] to the one package
@@ -1391,6 +1472,12 @@ def route_main(args: argparse.Namespace) -> int:
             print("ROUTED: %d CR to %d package(s); UNROUTED: %d; nothing written — rule, then re-run with --assign ID=PKG"
                   % (total, len(routed), len(unrouted)))
             return 1
+        added, conflicts = fix_owned_paths(routed, work_packages(dossier_text), root)
+        if conflicts:
+            print("\n".join(conflicts))
+            print("ROUTED: %d CR to %d package(s); CONFLICT: %d; nothing written — the fix packages must stay disjoint"
+                  % (total, len(routed), len(conflicts)))
+            return 1
         base = args.base
         if not base:
             proc = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, check=False)
@@ -1416,6 +1503,11 @@ def route_main(args: argparse.Namespace) -> int:
             ns.excerpt, ns.failures_from = [], None
             fields, _ = compose(ns)
             for field in fields:
+                if field.name == "OWNED_PATHS" and added.get(pkg):
+                    # #217: the CRs' other paths join the row's, before the stub-hint comments.
+                    body = field.value.split("\n")
+                    at = next((i for i, l in enumerate(body) if l.lstrip().startswith("#")), len(body))
+                    field.value = "\n".join(body[:at] + added[pkg] + body[at:])
                 if field.name in ABS_LIST_FIELDS:
                     absolutise_list_field(field, root)
             stage_oversized(fields, ns.out, root)
@@ -1427,12 +1519,13 @@ def route_main(args: argparse.Namespace) -> int:
                 return 1
             with open(ns.out, "rb") as fh:
                 sha = hashlib.sha256(fh.read()).hexdigest()
-            owned = [e.strip() for e in find_package_row(dossier_text, pkg)[1].split(",") if e.strip()]
+            owned = [e.strip() for e in find_package_row(dossier_text, pkg)[1].split(",") if e.strip()] + added.get(pkg, [])
             items.append({"agentType": "agentic-software-development:implementer", "label": "FIX-" + code,
                           "payloadPath": ns.out, "payloadSha256": sha, "root": root,
                           "branch": fm.get("branch", ""), "base": base, "owned": owned,
                           "kind": "implementer", "pluginRoot": os.path.abspath(args.plugin_root)})
-            lines.append("%s %d CR -> %s sha %s" % (code, len(routed[pkg]), ns.out, sha[:12]))
+            lines.append("%s %d CR -> %s sha %s%s" % (code, len(routed[pkg]), ns.out, sha[:12],
+                                                     " (+owns %s)" % ", ".join(added[pkg]) if added.get(pkg) else ""))
         with open(args.out, "w", encoding="utf-8") as fh:
             json.dump(items, fh, indent=1)
     except Refusal as err:
@@ -1960,6 +2053,17 @@ def selftest() -> int:
         rc, _p, _o = run_compose("FFut.md", ["unit-test-author", "--host", "opencode", "--contract-paths", "src/flush.py", "--failures-from", flog])
         check("--failures-from refuses a kind with no FAILURES", rc == 1)
 
+        # --- #210: CI workspace paths in FAILURES become repo-relative ---
+        rc, ci_path, out = run_compose("FFci.md", ["implementer", "--host", "opencode", "--hooks", "none",
+                                                   "--test-command", "pytest -q", "--set", "MODE=fix",
+                                                   "--set", "FAILURES=at Run() in /home/runner/work/repo/repo/src/flush.py:line 3"])
+        ci_text = read_text(ci_path) if rc == 0 else ""
+        check("#210: a GitHub Actions path in FAILURES is rewritten repo-relative and lints",
+              rc == 0 and "in src/flush.py:line 3" in ci_text and "/home/runner" not in ci_text, out)
+        check("#210: the other CI prefixes are stripped too",
+              relative_ci_paths("/__w/r/r/a.rs D:\\a\\r\\r\\b.cs /builds/g/r/c.py /Users/runner/work/r/r/d.ts /home/runner/work/a/b/e")
+              == "a.rs b.cs c.py d.ts /home/runner/work/a/b/e")
+
         # --- #170: relative TEST_PATHS/SUPPORT_PATHS leave absolute, payload and manifest alike ---
         rc, tp_path, out = run_compose("TP.md", [
             "unit-test-author", "--host", "opencode", "--contract-paths", "src/flush.py",
@@ -2015,6 +2119,18 @@ def selftest() -> int:
         check("CONTRACT_HASH stays identical across authors over the combined contract",
               rc == 0 and (re.search(r"^CONTRACT_HASH: (\S+)$", read_text(ce_ut), re.M).group(1)
                            == re.search(r"^CONTRACT_HASH: (\S+)$", read_text(ce_it), re.M).group(1)), out)
+        rc, ce_dz, out = run_extra("CE4.md", [
+            "integration-test-author", "--host", "opencode", "--contract-extra", "Terraform table",
+        ])
+        dz = read_text(ce_dz) if rc == 0 else ""
+        check("#209: a test author takes CONTRACT from the dossier alone (no --contract-paths)",
+              rc == 0 and "### Terraform table" in dz and "podcast_plans" in dz and re.search(r"^CONTRACT_HASH: [0-9a-f]{64}$", dz, re.M) is not None, out)
+        rc, _p, out = run_extra("CE5.md", [
+            "implementer", "--host", "opencode", "--package", "P1", "--test-command", "pytest -q",
+            "--hooks", "none", "--contract-extra", "Terraform table",
+        ])
+        check("#209: an implementer in build mode still needs --contract-paths",
+              rc == 1 and "--contract-paths was not given" in out, out)
         rc, _p, out = run_extra("CEbad.md", [
             "unit-test-author", "--host", "opencode", "--contract-paths", "src/flush.py",
             "--contract-extra", "No such subsection",
@@ -2318,6 +2434,19 @@ def selftest() -> int:
         with contextlib.redirect_stdout(out_io), contextlib.redirect_stderr(err_io):
             rc = main(route_base + ["--assign", "CR-3=P1", "--assign", "CR-4=P2"])
         shown = out_io.getvalue() + err_io.getvalue()
+        check("#217: a CR ruled to P2 that names P1's path is a conflict, nothing written",
+              rc == 1 and "CONFLICT: src/flush.py is named by CRs routed to P1 and P2" in shown
+              and not os.path.exists(wave_json), shown)
+        # CR-4 now names its second file as a sibling in a path no package owns (the library project).
+        sec4 = ("## CR-4: name the cause 4\n- Location: src/reload.py:2\n- Observed: o\n- Required: r\n"
+                "- Behaviour held fixed: same variant\n- Rule: errors carry their cause\n"
+                "- Severity: should-fix\n- Siblings: lib/consts.py:4, `lib/names.py` (searched: lib, src)\n\n")
+        with open(crs_doc, "w", encoding="utf-8") as fh:
+            fh.write(crs_head + sec1 + sec2 + sec3 + sec4)
+        out_io, err_io = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out_io), contextlib.redirect_stderr(err_io):
+            rc = main(route_base + ["--assign", "CR-3=P1"])
+        shown = out_io.getvalue() + err_io.getvalue()
         check("--crs with rulings writes both payloads and the args, within 15 lines",
               rc == 0 and os.path.isfile(wave_json) and len(shown.splitlines()) <= 15
               and "ROUTED: 4 CR to 2 payload(s)" in shown, shown)
@@ -2332,10 +2461,13 @@ def selftest() -> int:
         check("the wave args carry hash, branch, base, owned, kind",
               bool(p1) and p1["payloadSha256"] == hashlib.sha256(open(p1["payloadPath"], "rb").read()).hexdigest()
               and p1["branch"] == "fix/PROJ-142-flush-coalescing" and p1["base"] == "abc1234"
-              and p1["owned"] == ["src/flush.py"] and p2.get("owned") == ["src/reload.py"]
+              and p1["owned"] == ["src/flush.py", "src/other.py"]
+              and p2.get("owned") == ["src/reload.py", "lib/consts.py", "lib/names.py"]
               and p1["kind"] == "implementer" and p1["root"] == root and p1["agentType"].endswith(":implementer"), str(p1))
+        check("#217: the fix payload's OWNED_PATHS lists the CRs' other paths",
+              "lib/consts.py" in t2 and "lib/names.py" in t2 and "src/other.py" in t1, t2[-600:])
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            rc = main(route_base + ["--assign", "CR-9=P1", "--assign", "CR-3=P1", "--assign", "CR-4=P2"])
+            rc = main(route_base + ["--assign", "CR-9=P1", "--assign", "CR-3=P1"])
         check("--assign naming no section is refused", rc == 1)
 
     for item in failures:

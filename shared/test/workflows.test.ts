@@ -168,6 +168,16 @@ const fakeWave = (prompt: string, opts: Opts) => {
     const verifyP2 = r.calls.find((c) => !c.opts.agentType && c.prompt.includes("--agent 'P2'"))
     return verifyP1.prompt.includes("--shared-tree 'src/P2.rs'") && verifyP2.prompt.includes("--shared-tree 'src/P1.rs'")
   })())
+  check("wave: test authors sharing one root (trailing slash too) get --shared-tree and --uncommitted", await (async () => {
+    const t = (l: string, root: string) => item(l, { root, kind: "integration-test-author", agentType: "agentic-software-development:integration-test-author", owned: "tests/" + l + ".rs" })
+    const r = await run(wave, [t("T1", "/wt/X"), t("T2", "/wt/X/"), item("U1", { root: "/wt/X", kind: "unit-test-author", agentType: "agentic-software-development:unit-test-author", owned: "tests/U1.rs" })], (p, o) => (o.agentType ? "ok" : { verdict: "clean", flags: [], returned_line: "r" }))
+    const v = (l: string) => r.calls.find((c) => !c.opts.agentType && c.prompt.includes("--agent '" + l + "'"))!.prompt
+    return v("T1").includes("tests/T2.rs,tests/U1.rs") && v("T2").includes("--shared-tree 'tests/T1.rs,tests/U1.rs'") && ["T1", "T2", "U1"].every((l) => v(l).includes("--uncommitted"))
+  })())
+  check("wave: an implementer is still verified on its commits", await (async () => {
+    const r = await run(wave, [item("P1")], (p, o) => (o.agentType ? "ok" : { verdict: "clean", flags: [], returned_line: "r" }))
+    return r.calls.every((c) => c.opts.agentType || !c.prompt.includes("--uncommitted"))
+  })())
   check("wave: authors in separate worktrees get no --shared-tree", await (async () => {
     const r = await run(wave, [item("P1"), item("P2")], (p, o) => (o.agentType ? "ok" : { verdict: "clean", flags: [], returned_line: "r" }))
     return r.calls.every((c) => c.opts.agentType || !c.prompt.includes("--shared-tree"))
