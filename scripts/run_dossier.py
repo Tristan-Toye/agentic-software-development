@@ -99,7 +99,81 @@ def limit_reset(text: str, now_s: float | None = None) -> float:
             return max(now_s + 60, ts + 60)
         except ValueError:
             pass
+    hr = human_reset(text, now_s)
+    if hr is not None:
+        return max(now_s + 60, hr + 60)
     return now_s + float(os.environ.get("ASD_RUNNER_LIMIT_WAIT") or 1800)
+
+
+# ---- accounts: several Claude logins, one config dir each (CLAUDE_CONFIG_DIR) ----
+ACCOUNTS_FILE = lambda: os.environ.get("ASD_ACCOUNTS") or os.path.expanduser("~/.agentic/accounts.json")
+ACCOUNT_STATE = lambda: os.environ.get("ASD_ACCOUNT_STATE") or os.path.expanduser("~/.agentic/accounts-state.json")
+
+
+def load_accounts() -> list[dict]:
+    """`~/.agentic/accounts.json`: {"accounts": [{"name": "a", "dir": "~/.claude"}, ...]}, in
+    order of preference. Without it there is one account: the default config dir."""
+    try:
+        with open(ACCOUNTS_FILE()) as fh:
+            acc = [a for a in json.load(fh).get("accounts", []) if a.get("name") and a.get("dir")]
+    except (OSError, ValueError):
+        acc = []
+    return [{"name": a["name"], "dir": os.path.expanduser(a["dir"])} for a in acc] or [{"name": "default", "dir": os.path.expanduser("~/.claude")}]
+
+
+def account_state() -> dict:
+    try:
+        with open(ACCOUNT_STATE()) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def mark_limited(name: str, until: float) -> None:
+    st = account_state()
+    st[name] = {"limited_until": until, "marked": now()}
+    write_json(ACCOUNT_STATE(), st)
+
+
+def pick_account(now_s: float | None = None, prefer: str = "") -> tuple[dict, float]:
+    """The account to run on and the time it is usable from: one that is not limited,
+    `prefer` first, else the one whose limit resets first."""
+    now_s = time.time() if now_s is None else now_s
+    accs, st = load_accounts(), account_state()
+    free_at = lambda a: float((st.get(a["name"]) or {}).get("limited_until") or 0)
+    order = sorted(accs, key=lambda a: (a["name"] != prefer, accs.index(a)))
+    for a in order:
+        if free_at(a) <= now_s:
+            return a, now_s
+    a = min(accs, key=free_at)
+    return a, free_at(a)
+
+
+MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def human_reset(text: str, now_s: float) -> float | None:
+    """"resets Nov 6 at 12pm (Europe/Brussels)" or "resets 3:30pm (Europe/Brussels)" -> epoch."""
+    m = re.search(r"resets?\s+(?:(?P<mon>[A-Za-z]{3})[a-z]*\.?\s+(?P<day>\d{1,2}),?\s+(?:at\s+)?)?(?P<h>\d{1,2})(?::(?P<mi>\d{2}))?\s*(?P<ap>am|pm)\s*(?:\((?P<tz>[A-Za-z_]+/[A-Za-z_]+|UTC)\))?", text or "", re.I)
+    if not m:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(m.group("tz")) if m.group("tz") else datetime.datetime.now().astimezone().tzinfo
+    except Exception:
+        tz = datetime.datetime.now().astimezone().tzinfo
+    h = int(m.group("h")) % 12 + (12 if m.group("ap").lower() == "pm" else 0)
+    mi = int(m.group("mi") or 0)
+    base = datetime.datetime.fromtimestamp(now_s, tz)
+    if m.group("mon") and m.group("mon").lower()[:3] in MONTHS:
+        cand = base.replace(month=MONTHS[m.group("mon").lower()[:3]], day=int(m.group("day")), hour=h, minute=mi, second=0, microsecond=0)
+        if cand.timestamp() < now_s - 86400:
+            cand = cand.replace(year=cand.year + 1)
+    else:
+        cand = base.replace(hour=h, minute=mi, second=0, microsecond=0)
+        if cand.timestamp() <= now_s:
+            cand += datetime.timedelta(days=1)
+    return cand.timestamp()
 
 
 NUDGE = ("RUNNER: your last turn ended without a RUNNER: line and nothing has happened since. "
@@ -221,13 +295,15 @@ class Runner:
         self.model = model
         self.permission_mode = permission_mode
         self.max_stages = max_stages
+        prev_acct = (read_json(os.path.join(runs_dir(), key_of(root, dossier) + ".runner.json"), {}) or {}).get("account", "")
+        self.account, _ = pick_account(prefer=prev_acct)
         self.key = key_of(root, dossier)
         d = runs_dir()
         self.updates = os.path.join(d, self.key + ".jsonl")
         self.state_path = os.path.join(d, self.key + ".runner.json")
         self.cp_path = os.path.join(d, self.key + ".checkpoints.json")
         self.err_path = os.path.join(d, self.key + ".stderr.log")
-        self.state: dict = {"pid": os.getpid(), "root": root, "command": command, "started": now(), "state": "running", "stage": 0,
+        self.state: dict = {"pid": os.getpid(), "account": self.account["name"], "root": root, "command": command, "started": now(), "state": "running", "stage": 0,
                             "session": "", "questions": [], "claude_pid": None}
         self.checkpoints: list[dict] = read_json(self.cp_path, [])
         self.seen_tool_ids: set[str] = set()
@@ -333,6 +409,11 @@ class Runner:
 
     def spawn(self) -> tuple[queue.Queue, bool]:
         env = dict(os.environ, ASD_RUN_KEY=self.key)
+        acct = getattr(self, "account", None)
+        if acct and os.path.abspath(acct["dir"]) != os.path.abspath(os.path.expanduser("~/.claude")):
+            env["CLAUDE_CONFIG_DIR"] = acct["dir"]
+        elif acct:
+            env.pop("CLAUDE_CONFIG_DIR", None)
         self.proc = subprocess.Popen(
             self.claude_cmd(), cwd=self.root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=open(self.err_path, "ab"), start_new_session=True)
@@ -633,9 +714,20 @@ class Runner:
                 # Out of tokens: pause until the limit resets, then run the same stage
                 # again (its checkpoints are the hand-off; /work-on resumes from the dossier).
                 until = limit_reset(detail)
-                at = datetime.datetime.fromtimestamp(until, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                self.save(state="paused", resumes_at=at)
-                self.event(f"paused: usage limit reached; resumes at {at}", "paused")
+                cur = self.account["name"]
+                mark_limited(cur, until)
+                nxt, usable = pick_account(prefer=cur)
+                fmt = lambda t: datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                if nxt["name"] != cur and usable <= time.time():
+                    self.account = nxt
+                    self.save(account=nxt["name"])
+                    self.event(f"switched to account {nxt['name']}: account {cur} hit its usage limit until {fmt(until)}; stage {started} again", "running")
+                    started -= 1
+                    continue
+                self.account, until = nxt, max(usable, time.time() + 60)
+                at = fmt(until)
+                self.save(state="paused", resumes_at=at, account=nxt["name"])
+                self.event(f"paused: usage limit reached on every account; resumes at {at} on account {nxt['name']}", "paused")
                 while time.time() < until and not self.stopping:
                     time.sleep(min(30.0, max(0.5, until - time.time())))
                 if self.stopping:
@@ -895,6 +987,22 @@ def selftest() -> int:
               limit_reset("limit reached|2000000000", 1_000_000_000) == 2000000060
               and limit_reset("resets 2026-11-06T11:00:00+00:00", 1_000_000_000) == datetime.datetime(2026, 11, 6, 11, tzinfo=datetime.timezone.utc).timestamp() + 60
               and limit_reset("weekly limit", 1_000_000_000) == 1_000_000_000 + 1800)
+        os.environ["ASD_ACCOUNTS"] = os.path.join(tmp, "accounts.json")
+        os.environ["ASD_ACCOUNT_STATE"] = os.path.join(tmp, "accounts-state.json")
+        write_json(os.environ["ASD_ACCOUNTS"], {"accounts": [{"name": "a", "dir": os.path.join(tmp, "ca")}, {"name": "b", "dir": os.path.join(tmp, "cb")}]})
+        t0 = 1_000_000_000
+        check("accounts: the preferred free account is used", pick_account(t0, "b")[0]["name"] == "b" and pick_account(t0)[0]["name"] == "a")
+        mark_limited("a", t0 + 3600)
+        check("accounts: a limited account hands over to the free one", pick_account(t0, "a") == (load_accounts()[1], t0))
+        mark_limited("b", t0 + 600)
+        check("accounts: all limited -> the one that resets first, with its time", pick_account(t0, "a")[0]["name"] == "b" and pick_account(t0, "a")[1] == t0 + 600)
+        for k in ("ASD_ACCOUNTS", "ASD_ACCOUNT_STATE"):
+            os.environ.pop(k, None)
+        br = datetime.datetime(2026, 11, 3, 10, 0, tzinfo=datetime.timezone.utc).timestamp()
+        check("the weekly reset text is read: 'resets Nov 6 at 12pm (Europe/Brussels)'",
+              human_reset("You've hit your weekly limit · resets Nov 6 at 12pm (Europe/Brussels)", br) == datetime.datetime(2026, 11, 6, 11, 0, tzinfo=datetime.timezone.utc).timestamp())
+        check("the session reset text is read: 'resets 3:30pm (UTC)', next occurrence",
+              human_reset("limit reached · resets 3:30pm (UTC)", br) == datetime.datetime(2026, 11, 3, 15, 30, tzinfo=datetime.timezone.utc).timestamp())
         check("a stage without a checkpoint still gets a stage line and a dossier hand-off",
               cps and cps[-1]["name"] == "Phase 3 — contract" and "Build log" in cps[-1]["summary"]
               and stl and stl[-1]["stage"] == "Phase 3 — contract")
@@ -916,7 +1024,7 @@ def selftest() -> int:
         p = start("W-2")
         qa, qb = "repo.W-2.Q1", "repo.W-2.Q2"
         check("FAILED asks the owner", bool(until(lambda: os.path.exists(qfile(qa)))))
-        check("failed state with the question while it waits", bool(until(lambda: state_of("W-2").get("state") == "failed")) and state_of("W-2").get("questions") == [qa])
+        check("failed state with the question while it waits", bool(until(lambda: state_of("W-2").get("state") == "failed" and state_of("W-2").get("questions") == [qa])))
         first = lines_of(qfile(qa))[0]
         check("owner question has retry/stop options", [o["key"] for o in first["options"]] == ["A", "B"] and "tests red" in first["text"])
         owner_line(qa, "followup", "what?")

@@ -50,7 +50,7 @@ const FAILURE = /\b(failed|failing|red)\b/i
  */
 export function inTimeline(e: TLEntry): boolean {
   if (e.type === "stage") return false
-  if (e.type === "runner") return /^(stage \d+ failed|failed|stopped|done|paused|resumed)\b/i.test(e.text.trim())
+  if (e.type === "runner") return /^(stage \d+ failed|failed|stopped|done|paused|resumed|switched to account)\b/i.test(e.text.trim())
   if (e.type === "update" && e.auto) {
     const ev = e.event ?? "other"
     return ev === "spawn" || ev === "pr"
