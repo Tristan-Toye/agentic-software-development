@@ -38,7 +38,7 @@ export function readRunner(key: string, dir = runsDir(), alive: (pid: number) =>
     return { state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "" }
   } catch { return null }
 }
-export const runnerActive = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "waiting"
+export const runnerActive = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "waiting" || r?.state === "paused"
 
 /** First paragraph of the `## Problem` section, else of the body after the front matter and title; <= 300 chars. */
 export function summaryOf(text: string): string {

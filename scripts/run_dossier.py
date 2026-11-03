@@ -77,6 +77,31 @@ You run under the dossier runner and nobody reads the terminal.
 - Keep the owner informed: post an update with `ask_owner.py note --root R --dossier ID --text "..."` when a stage starts and ends and whenever something worth knowing happens (a wave returned, the suite went green or red, an arbitration was ruled, a plan changed). Write it for a person reading on a phone: what happened and what it means, in plain sentences; markdown bullets and small tables are welcome. Never paste commands, file paths, SHAs, flags or log output into an update; the build log keeps those.
 """
 
+LIMIT_RE = re.compile(r"usage limit|rate.?limit|weekly limit|limit reached|out of (?:extra )?usage|hit your .*limit|\b429\b|overloaded", re.I)
+
+
+def usage_limit(text: str) -> bool:
+    """Whether a failed turn is a usage or rate limit (wait and retry), not a real failure."""
+    return bool(LIMIT_RE.search(text or ""))
+
+
+def limit_reset(text: str, now_s: float | None = None) -> float:
+    """When to retry after a limit: the reset epoch the CLI prints after `|`, or an ISO
+    reset time in the text, else in 30 minutes. Always at least 60 s from now."""
+    now_s = time.time() if now_s is None else now_s
+    m = re.search(r"\|(\d{10})\b", text or "") or re.search(r"resets?[_ ]?at\D{0,4}(\d{10})\b", text or "")
+    if m:
+        return max(now_s + 60, float(m.group(1)) + 60)
+    m = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))", text or "")
+    if m:
+        try:
+            ts = datetime.datetime.fromisoformat(m.group(1).replace("Z", "+00:00")).timestamp()
+            return max(now_s + 60, ts + 60)
+        except ValueError:
+            pass
+    return now_s + float(os.environ.get("ASD_RUNNER_LIMIT_WAIT") or 1800)
+
+
 NUDGE = ("RUNNER: your last turn ended without a RUNNER: line and nothing has happened since. "
          "If you were waiting on a background command or workflow, check its result now and continue. "
          "Every turn must end with a RUNNER: line (STAGE-DONE, WAITING, DONE or FAILED).")
@@ -507,8 +532,20 @@ class Runner:
                 return "stopped", ""
             if kind == "exit":
                 self.end_process()
+                try:
+                    with open(self.err_path, "rb") as fh:
+                        fh.seek(0, 2); fh.seek(max(0, fh.tell() - 4096))
+                        tail = fh.read().decode("utf-8", "replace")
+                except OSError:
+                    tail = ""
+                if usage_limit(tail):
+                    return "limit", tail.strip()
                 return "failed", f"the claude process exited with code {val} before a result"
             text, err = val  # type: ignore[misc]
+            if err and usage_limit(text):
+                kill_group(self.proc)
+                self.end_process()
+                return "limit", text.strip()
             if err:
                 kill_group(self.proc)
                 self.end_process()
@@ -592,6 +629,21 @@ class Runner:
             if outcome == "stopped":
                 self.end_process()
                 return self.finish("stopped", "stopped", 3)
+            if outcome == "limit":
+                # Out of tokens: pause until the limit resets, then run the same stage
+                # again (its checkpoints are the hand-off; /work-on resumes from the dossier).
+                until = limit_reset(detail)
+                at = datetime.datetime.fromtimestamp(until, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                self.save(state="paused", resumes_at=at)
+                self.event(f"paused: usage limit reached; resumes at {at}", "paused")
+                while time.time() < until and not self.stopping:
+                    time.sleep(min(30.0, max(0.5, until - time.time())))
+                if self.stopping:
+                    return self.finish("stopped", "stopped", 3)
+                self.save(resumes_at=None)
+                self.event(f"resumed after the usage limit; stage {started} again", "running")
+                started -= 1
+                continue
             self.save(state="failed")
             self.event(f"stage {started} failed: {detail}", "failed")
             if self.ask_failure(detail) == "retry":
@@ -836,6 +888,13 @@ def selftest() -> int:
               "### D-2" in rep_txt and "RUNNER:" not in rep_txt and ":deferred W-77" in open(fakedef + ".first").read())
         cps = read_json(os.path.join(rdir, "repo.W-77.checkpoints.json"), [])
         stl = [x for x in lines_of(os.path.join(rdir, "repo.W-77.jsonl")) if x.get("kind") == "stage"]
+        check("usage limits are recognised, real errors are not",
+              usage_limit("Claude AI usage limit reached|1793962800") and usage_limit("You've hit your weekly limit · resets Nov 6")
+              and usage_limit("API Error: 429 rate_limit_error") and not usage_limit("TypeError: x is undefined"))
+        check("the reset time comes from the CLI's epoch or an ISO time, else 30 minutes",
+              limit_reset("limit reached|2000000000", 1_000_000_000) == 2000000060
+              and limit_reset("resets 2026-11-06T11:00:00+00:00", 1_000_000_000) == datetime.datetime(2026, 11, 6, 11, tzinfo=datetime.timezone.utc).timestamp() + 60
+              and limit_reset("weekly limit", 1_000_000_000) == 1_000_000_000 + 1800)
         check("a stage without a checkpoint still gets a stage line and a dossier hand-off",
               cps and cps[-1]["name"] == "Phase 3 — contract" and "Build log" in cps[-1]["summary"]
               and stl and stl[-1]["stage"] == "Phase 3 — contract")
