@@ -138,7 +138,9 @@ It prints at most 40 lines.
     - a thread reply starting with `answer:` is a free-text `answer`;
     - any other thread reply is a `followup`;
     - a DM outside a thread gets a pointer to reply in a question's thread;
-      other messages in a repo channel are left alone.
+      other messages in a repo channel are left alone;
+    - `status`, `update` or `?` alone (or `status W-128`), outside a
+      question's thread, asks for a run status (below).
   - **After an answer:** the question message is updated to show the answer,
     and gets a ✅ reaction.
   - **Connection:** the server reconnects on a `disconnect` envelope or a
@@ -300,6 +302,17 @@ one card-based single-page app with deep links.
   failed and done line becomes a reply in that thread with a link to the run
   view; `auto` lines never post. The thread ts and the lines already seen are
   kept in `$ASD_RUNS_DIR/<key>.slack.json`; a restart posts no backlog.
+  The thread opener carries a **Status** button for that run.
+- **Status on demand** (`runstatus.ts`): `status` in a repo channel lists
+  that repo's running, waiting and paused dossiers; in a run thread, that
+  run; in the DM, every running dossier; `status W-128` names one. The reply
+  goes in a thread under the asking message. Per run: state, phase, account,
+  age; sub-agents of the current stage (running, finished, finished with a
+  gap or contract change); a wait for agent slots; last activity (⚠ quiet
+  after 20 min) and context size; the agent's last human note; open
+  questions. A **↻ Refresh** button rewrites the message in place with the
+  same scope. No Slack app change is needed: the message and interactivity
+  events are the ones questions already use.
 - **Other API:** `GET /api/runs`, `/api/stubs`, `/api/questions`,
   `/api/timeline/<repo>/<ID>` (entries, `groups`, `now`, `log`), `/api/dossier/<repo>/<ID>`,
   `/api/stub?repo=&branch=`, and `GET /dossier/<repo>/<ID>` (read-only,

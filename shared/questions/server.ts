@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
 import { api, apiGet, channelNameFor, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
+import { openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
 
 const DIR = storeDir()
 const MIN = 60 * 1000
@@ -215,7 +216,7 @@ export async function scanRunThreads(): Promise<void> {
       for (const m of msgs) {
         try {
           if (m.role === "open") {
-            const res = await api("chat.postMessage", botToken, { channel: await repoChannel(r.repo), text: m.text })
+            const res = await api("chat.postMessage", botToken, { channel: await repoChannel(r.repo), text: m.text, blocks: openerBlocks(m.text, r.repo, r.id) })
             thread = { channel: res.channel ?? slackChannel, ts: res.ts }
           } else if (thread) await api("chat.postMessage", botToken, { channel: thread.channel, thread_ts: thread.ts, text: m.text })
         } catch (e) { log(`slack run thread: ${(e as Error).message}`) }
@@ -226,8 +227,60 @@ export async function scanRunThreads(): Promise<void> {
   } finally { scanningRuns = false }
 }
 
+// ---- Slack status on demand ----
+/* `status` (or `status W-128`) in a repo channel lists that repo's running
+   dossiers; in a run thread, that run; in the DM, every running dossier.
+   The Status and Refresh buttons carry their scope and refresh in place. */
+const channelRepo = new Map<string, string>()
+async function repoOfChannel(channel: string, repos: string[]): Promise<string> {
+  for (const [repo, id] of repoChannels) if (id === channel) return repo
+  if (channelRepo.has(channel)) return channelRepo.get(channel)!
+  let repo = ""
+  try {
+    const name = (await apiGet("conversations.info", botToken, { channel })).channel?.name ?? ""
+    repo = repos.find((r) => [channelNameFor(r), `${channelNameFor(r)}-pipeline`.slice(0, 79)].includes(name)) ?? ""
+  } catch { /* a DM, or no scope: no repo */ }
+  channelRepo.set(channel, repo)
+  return repo
+}
+function statusRun(r: Run): StatusRun {
+  const key = `${r.repo}.${r.id}`
+  const questions = r.questions.map((id) => ({ id, text: readQuestion(DIR, id)?.text ?? "" }))
+  return {
+    repo: r.repo, id: r.id, title: r.title, state: r.runner?.state ?? (r.running ? "running" : ""),
+    phase: r.phase, phaseName: r.phaseName, account: r.runner?.account, started: r.runner?.started,
+    resumesAt: r.runner?.resumesAt, context: r.session?.context || undefined, questions,
+    updates: readUpdates(key, runsDir(), 3000),
+    link: `http://127.0.0.1:${PORT}/repo/${encodeURIComponent(r.repo)}/${encodeURIComponent(r.id)}`,
+  }
+}
+async function postStatus(a: Extract<OwnerAction, { type: "status" }>): Promise<void> {
+  const runs = await allRuns()
+  const repos = [...new Set(runs.map((r) => r.repo))]
+  let repo = a.repo ?? ""
+  let id = a.id ?? ""
+  if (!id && a.threadTs) {
+    const hit = runs.find((r) => { const t = readRunThread(runsDir(), `${r.repo}.${r.id}`); return t?.channel === a.channel && t.ts === a.threadTs })
+    if (hit) { repo = hit.repo; id = hit.id }
+  }
+  if (!repo) repo = await repoOfChannel(a.channel, repos)
+  const live = (r: Run) => !!r.runner && ["running", "waiting", "paused"].includes(r.runner.state)
+  const picked = runs.filter((r) => (!repo || r.repo === repo) && (id ? r.id === id : live(r)))
+  const { text, blocks } = statusBlocks(picked.map(statusRun), { repo: repo || undefined, id: id || undefined }, Date.now())
+  if (a.refresh && a.ts) {
+    // Refresh updates its own message; the Status button on a thread opener answers in that thread.
+    await api("chat.update", botToken, { channel: a.channel, ts: a.ts, text, blocks })
+    return
+  }
+  await api("chat.postMessage", botToken, { channel: a.channel, thread_ts: a.threadTs ?? a.ts, text, blocks })
+}
+
 // ---- Slack inbound ----
 async function onSlackAction(a: OwnerAction): Promise<void> {
+  if (a.type === "status") {
+    await postStatus(a)
+    return
+  }
   if (a.type === "pointer") {
     await api("chat.postMessage", botToken, { channel: a.channel, thread_ts: a.threadTs, text: POINTER_TEXT })
     return

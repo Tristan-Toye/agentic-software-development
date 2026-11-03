@@ -4,6 +4,7 @@ import type { Question } from "./store.ts"
 export type OwnerAction =
   | { type: "owner"; id: string; kind: "answer" | "followup"; text: string; option?: string; channel?: string; threadTs?: string }
   | { type: "pointer"; channel: string; threadTs?: string }
+  | { type: "status"; channel: string; ts?: string; threadTs?: string; id?: string; repo?: string; refresh?: boolean }
   | { type: "reconnect" }
   | { type: "hello" }
   | { type: "none" }
@@ -36,6 +37,9 @@ export function interpretEnvelope(
       if (!text) return none
       const threadTs: string | undefined = ev.thread_ts && ev.thread_ts !== ev.ts ? ev.thread_ts : undefined
       const id = threadTs ? lookup(ev.channel, threadTs) : null
+      // "status" (or "status W-128") outside a question's thread asks for a run update.
+      const st = !id ? text.match(STATUS_RE) : null
+      if (st) return { ack, action: { type: "status", channel: ev.channel, ts: ev.ts, threadTs, id: st[1]?.toUpperCase() } }
       // In a repo channel other talk is not ours: only a DM outside a question's thread gets the pointer.
       if (!id) return ev.channel_type === "im" ? { ack, action: { type: "pointer", channel: ev.channel, threadTs } } : { ack, action: { type: "none" } }
       const m = text.match(/^answer:\s*([\s\S]*)$/i)
@@ -47,6 +51,11 @@ export function interpretEnvelope(
       if (p?.type !== "block_actions") return none
       if (ownerUser && p.user?.id && p.user.id !== ownerUser) return none
       const value = String(p.actions?.[0]?.value ?? "")
+      if (p.actions?.[0]?.action_id === STATUS_ACTION) {
+        // value: "<repo>|<ID>" (one run), "<repo>|" (the repo's runs) or "|" (every running dossier).
+        const [repo = "", id = ""] = value.split("|")
+        return { ack, action: { type: "status", channel: p.channel?.id ?? "", ts: p.container?.message_ts ?? p.message?.ts, threadTs: p.message?.thread_ts, repo: repo || undefined, id: id || undefined, refresh: isStatusMessage(p.message) } }
+      }
       const i = value.lastIndexOf("|")
       if (i < 1) return none
       return {
@@ -59,7 +68,13 @@ export function interpretEnvelope(
   }
 }
 
-export const POINTER_TEXT = "Reply in a question's thread: a plain reply asks a follow-up, `answer: ...` answers it."
+/** `status`, `update`, `?` or `status W-128`, alone on the message. */
+export const STATUS_RE = /^(?:status|update|updates|\?)(?:\s+([A-Za-z]+-\d+))?\s*[.!?]*$/i
+export const STATUS_ACTION = "run_status"
+/** A status message (its first section is the "*Status —" heading): its Refresh button updates it in place. */
+export const isStatusMessage = (m: any): boolean => String(m?.blocks?.[0]?.text?.text ?? "").startsWith("*Status —")
+
+export const POINTER_TEXT = "Reply in a question's thread: a plain reply asks a follow-up, `answer: ...` answers it. Send `status` (or `status W-128`) for an update on the running dossiers."
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
