@@ -329,7 +329,7 @@ try {
   check("server: started", base !== "", out)
   const page = await fetch(base + "/")
   const html = await page.text()
-  check("server: page is served", page.status === 200 && html.includes("Owner questions") && html.includes("prefers-color-scheme") && !/<script[^>]+src=/.test(html))
+  check("server: page is served", page.status === 200 && html.includes("Owner questions") && html.includes("color-scheme:dark") && !/<script[^>]+src=/.test(html))
   const list: any[] = await (await fetch(`${base}/api/questions?state=open`)).json()
   check("server: GET open lists the question", list.length === 1 && list[0].id === "demo.W-2.Q1" && list[0].state === "open")
   check("server: GET one question", (await (await fetch(`${base}/api/questions/demo.W-2.Q1`)).json() as any).dossier === "W-1")
