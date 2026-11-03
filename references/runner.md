@@ -48,6 +48,11 @@ the recorded checkpoints.
       records `failed` with the reason, notifies the owner (a question
       through `ask_owner.py`: retry the stage, or stop), and acts on the
       answer.
+- **A stage with no checkpoint:** if a stage ends with `RUNNER: STAGE-DONE`
+  but no `phase_checkpoint` call was seen (the tool was missing or skipped),
+  the runner writes the `stage` line itself, so the dashboard still draws the
+  phase divider. It also hands the next stage a note to resume from the
+  dossier: `/work-on` resumes from its status and `## Build log` in any case.
 - **Limits:** `--max-stages` caps the number of stages a run starts
   (default 20). A crash of the process counts as `FAILED`.
 

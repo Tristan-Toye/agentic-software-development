@@ -223,6 +223,21 @@ class Runner:
         except OSError:
             pass
 
+    def no_checkpoint(self, name: str) -> None:
+        """A stage ended without a phase_checkpoint (the tool was missing or
+        skipped): write the stage line the hook would have written, so the
+        dashboard still draws the phase divider, and hand the next stage the
+        dossier itself — /work-on resumes from its status and ## Build log."""
+        name = name.strip() or f"stage {self.state['stage']}"
+        self.checkpoints.append({"name": name, "summary": "No checkpoint was recorded for this stage. "
+                                 "Resume from the dossier: its status and ## Build log say where the run is."})
+        write_json(self.cp_path, self.checkpoints)
+        try:
+            append_line(self.updates, {"ts": now(), "kind": "stage", "stage": clip(name),
+                                       "text": "stage ended without a checkpoint; the build log is the hand-off"})
+        except OSError:
+            pass
+
     def event(self, text: str, state: str | None = None) -> None:
         say(f"{self.key} {text}")
         self.log(text, state)
@@ -430,6 +445,7 @@ class Runner:
 
     def run_stage(self) -> tuple[str, str]:
         """('next'|'done'|'failed'|'stopped', detail)."""
+        n0 = len(self.checkpoints)
         q, extra = self.spawn()
         while True:
             kind, val = self.read_turn(q, extra)
@@ -452,6 +468,8 @@ class Runner:
             verb, rest = mk
             if verb == "STAGE-DONE":
                 self.end_process()
+                if len(self.checkpoints) == n0:
+                    self.no_checkpoint(rest)
                 return "next", rest
             if verb == "DONE":
                 self.end_process()
@@ -739,6 +757,14 @@ def selftest() -> int:
         check("runner.json done", st.get("state") == "done" and st.get("stage") == 3 and st.get("session") == "sess-3"
               and st.get("pid") and st.get("started") and st.get("questions") == [])
         check("checkpoints.json", [c["name"] for c in read_json(os.path.join(rdir, "repo.W-1.checkpoints.json"), [])] == ["Phase 2", "Phase 4"])
+        os.environ["ASD_RUNS_DIR"] = rdir
+        rn = Runner(root, "W-77", "work-on", None, "auto", 5)
+        rn.no_checkpoint("Phase 3 — contract")
+        cps = read_json(os.path.join(rdir, "repo.W-77.checkpoints.json"), [])
+        stl = [x for x in lines_of(os.path.join(rdir, "repo.W-77.jsonl")) if x.get("kind") == "stage"]
+        check("a stage without a checkpoint still gets a stage line and a dossier hand-off",
+              cps and cps[-1]["name"] == "Phase 3 — contract" and "Build log" in cps[-1]["summary"]
+              and stl and stl[-1]["stage"] == "Phase 3 — contract")
         rt = texts("W-1")
         check("runner lines: start, stages, waiting, answered, done",
               rt[0].startswith("start ") and "stage 1 start" in rt and "stage 2 end: Phase 4" in rt
