@@ -144,6 +144,7 @@ export async function scan(): Promise<void> {
 // ---- Slack progress thread per run ----
 const runSeen = new Map<string, number>()
 let scanningRuns = false
+const SERVER_START = Date.now()
 /** Post the new lines of each run's updates store into its Slack thread; the first start line opens the thread. */
 export async function scanRunThreads(): Promise<void> {
   if (!slackOn() || !runSlackEnabled() || scanningRuns) return
@@ -154,8 +155,15 @@ export async function scanRunThreads(): Promise<void> {
       const chrono = readUpdates(key, runsDir(), 100000).reverse()
       if (!chrono.length) continue
       const side = readRunThread(runsDir(), key)
-      // A run seen for the first time without a thread is caught up silently: no backlog after a restart.
-      if (!runSeen.has(key)) { runSeen.set(key, side?.seen ?? (side ? 0 : chrono.length)); if (!side) continue }
+      // A run first seen without a thread: one that began before this server
+      // started is caught up silently (no backlog after a restart); one that
+      // began since is new and gets its thread from its first line.
+      if (!runSeen.has(key)) {
+        const began = Date.parse(String(chrono[0]?.ts ?? ""))
+        const old = !side && !(began >= SERVER_START - 60_000)
+        runSeen.set(key, side?.seen ?? (old ? chrono.length : 0))
+        if (old) continue
+      }
       const link = `http://127.0.0.1:${PORT}/repo/${encodeURIComponent(r.repo)}/${encodeURIComponent(r.id)}`
       const { upto, msgs } = pendingSlack(chrono, runSeen.get(key)!, !!side, { repo: r.repo, id: r.id, title: r.title, link })
       let thread = side
