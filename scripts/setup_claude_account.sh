@@ -5,8 +5,14 @@
 # side); this script makes that dir share everything but the login with
 # ~/.claude, and registers it in ~/.agentic/accounts.json.
 #
-#   setup_claude_account.sh NAME [DIR]     # DIR defaults to ~/.claude-NAME
+#   setup_claude_account.sh NAME [DIR] [--current CNAME]
 #   setup_claude_account.sh --list
+#
+# DIR defaults to ~/.claude-NAME. The login already in ~/.claude is
+# registered as "main" unless --current names it otherwise; with --current
+# the new account NAME is registered first, so it is preferred. Example —
+# make the new login "main" and the current one "b":
+#   setup_claude_account.sh main --current b
 #
 # Shared by symlink: settings.json, CLAUDE.md, RTK.md, plugins/, hooks/,
 # commands/, skills/, agents/ — so the plugin, hooks and settings are the
@@ -24,7 +30,18 @@ if [[ "${1:-}" == "--list" ]]; then
   [[ -f "$REG" ]] && cat "$REG" || echo "no accounts registered (one account: ~/.claude)"
   exit 0
 fi
-NAME="${1:?usage: setup_claude_account.sh NAME [DIR]}"
+CURRENT=""
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --current) CURRENT="${2:?--current needs a name}"; shift 2 ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${ARGS[@]}"
+NAME="${1:?usage: setup_claude_account.sh NAME [DIR] [--current CNAME]}"
+[[ -z "$CURRENT" || "$CURRENT" =~ ^[a-z0-9_-]+$ ]] || { echo "--current must be lower-case letters, digits, - or _" >&2; exit 2; }
+[[ "$CURRENT" != "$NAME" ]] || { echo "--current must differ from NAME" >&2; exit 2; }
 [[ "$NAME" =~ ^[a-z0-9_-]+$ ]] || { echo "NAME must be lower-case letters, digits, - or _" >&2; exit 2; }
 DIR="${2:-$HOME/.claude-$NAME}"
 SRC="$HOME/.claude"
@@ -41,15 +58,21 @@ for item in settings.json CLAUDE.md RTK.md plugins hooks commands skills agents;
 done
 
 mkdir -p "$(dirname "$REG")"
-python3 - "$REG" "$NAME" "$DIR" <<'PY'
+python3 - "$REG" "$NAME" "$DIR" "$CURRENT" <<'PY'
 import json, os, sys
-reg, name, d = sys.argv[1:]
+reg, name, d, current = sys.argv[1:]
 try:
     j = json.load(open(reg))
 except (OSError, ValueError):
     j = {}
 acc = j.get("accounts") or [{"name": "main", "dir": "~/.claude"}]
-acc = [a for a in acc if a.get("name") != name] + [{"name": name, "dir": d.replace(os.path.expanduser("~"), "~", 1)}]
+if current:  # rename the ~/.claude login
+    for a in acc:
+        if os.path.expanduser(a["dir"]) == os.path.expanduser("~/.claude"):
+            a["name"] = current
+new = {"name": name, "dir": d.replace(os.path.expanduser("~"), "~", 1)}
+acc = [a for a in acc if a.get("name") != name]
+acc = [new] + acc if current else acc + [new]
 j["accounts"] = acc
 json.dump(j, open(reg, "w"), indent=2)
 print("registered:", ", ".join(f"{a['name']} ({a['dir']})" for a in acc))
