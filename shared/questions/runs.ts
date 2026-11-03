@@ -267,8 +267,19 @@ export function tailTranscript(path: string): { context: number; requests: numbe
 type TInfo = { path: string; cwd: string; mtime: number }
 const cwdCache = new Map<string, { mtime: number; cwd: string }>()
 export function claudeProjects(): string { return process.env.ASD_CLAUDE_PROJECTS || join(homedir(), ".claude", "projects") }
+/** Every account's projects dir: the default one plus each config dir in ~/.agentic/accounts.json. */
+export function allClaudeProjects(): string[] {
+  if (process.env.ASD_CLAUDE_PROJECTS) return [process.env.ASD_CLAUDE_PROJECTS]
+  const out = [claudeProjects()]
+  try {
+    const j = JSON.parse(readFileSync(join(homedir(), ".agentic", "accounts.json"), "utf8"))
+    for (const a of j.accounts ?? []) if (typeof a.dir === "string") { const p = join(a.dir.replace(/^~(?=\/|$)/, homedir()), "projects"); if (!out.includes(p)) out.push(p) }
+  } catch { /* one account */ }
+  return out
+}
 
-export function listTranscripts(projects = claudeProjects()): TInfo[] {
+export function listTranscripts(projects?: string): TInfo[] {
+  if (projects === undefined) return allClaudeProjects().flatMap((p) => listTranscripts(p))
   const out: TInfo[] = []
   let dirs: string[] = []
   try { dirs = readdirSync(projects) } catch { return out }

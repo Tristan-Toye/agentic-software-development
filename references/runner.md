@@ -11,6 +11,7 @@ up another one while it waits.
     run_dossier.py status [ID] [--root R]
     run_dossier.py stop ID [--root R]
     run_dossier.py --selftest
+    setup_claude_account.sh NAME [DIR]    # add a second login to switch to
 
 The repository defaults to the one the command runs in (its git toplevel).
 It starts in the background by default (`--detach`), with its output in
@@ -60,6 +61,18 @@ the recorded checkpoints.
   time the CLI printed (an epoch after `|` or an ISO time; else it retries
   every 30 minutes, `ASD_RUNNER_LIMIT_WAIT`), then runs the same stage again
   from its checkpoints. `stop` ends a paused run.
+- **Several accounts:** `scripts/setup_claude_account.sh NAME` adds a login
+  in its own config dir (`CLAUDE_CONFIG_DIR`, sharing settings, plugins and
+  hooks with `~/.claude` by symlink) and registers it in
+  `~/.agentic/accounts.json`; log in once with `CLAUDE_CONFIG_DIR=<dir> claude`.
+  The runner runs each stage on one account (recorded as `account` in
+  `<key>.runner.json`). On a usage limit it records the account's reset time
+  in `~/.agentic/accounts-state.json`, switches at once to an account that is
+  not limited (`switched to account …`), and when every account is limited
+  waits for the one that resets first, then continues on it. Reset times are
+  read from the CLI's epoch, an ISO time, or text like "resets Nov 6 at 12pm
+  (Europe/Brussels)". The dashboard reads session history from every
+  registered account.
 - **A stage with no checkpoint:** if a stage ends with `RUNNER: STAGE-DONE`
   but no `phase_checkpoint` call was seen (the tool was missing or skipped),
   the runner writes the `stage` line itself, so the dashboard still draws the
