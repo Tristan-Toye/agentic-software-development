@@ -93,8 +93,23 @@ def runs_dir() -> str:
     return d
 
 
+
+def main_repo_name(root: str) -> str:
+    """The main checkout's directory name for `root`, also when `root` is a
+    worktree: the dashboard names a repo by its main checkout, so a question
+    or an update posted from `../<repo>-<ID>` must carry `<repo>`."""
+    root = os.path.abspath(root)
+    try:
+        out = subprocess.run(["git", "-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                             capture_output=True, text=True, timeout=10)
+        common = out.stdout.strip() if out.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        common = ""
+    main = common[: -len("/.git")] if common.endswith("/.git") else root
+    return os.path.basename(main.rstrip("/")) or "root"
+
 def key_of(root: str, dossier: str) -> str:
-    return f"{os.path.basename(os.path.abspath(root).rstrip('/')) or 'root'}.{dossier}"
+    return f"{main_repo_name(root)}.{dossier}"
 
 
 def check_ident(value: str, what: str) -> None:

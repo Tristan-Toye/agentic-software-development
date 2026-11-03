@@ -56,7 +56,7 @@ phase; each phase's instructions are in
 its file. Read a phase file whole at the start of its phase — never a later
 phase's file ahead of time; a resumed run reads the file of the phase it
 resumes in. A phase ends when its outcome is in `## Build log`. **Then call
-`phase_checkpoint`** with the phase name and a summary. Under opencode it is
+`phase_checkpoint`** with the phase name, starting `Phase <n>` (`Phase 4 — fan-out`, `Phase 4 — wave 2`) so the dashboard files every update under its phase, and a summary. Under opencode it is
 the plugin's tool of that name; under Claude Code it is the plugin's MCP tool
 `mcp__plugin_agentic-software-development_nav__phase_checkpoint`. Under
 opencode, from the next request on, every earlier step of the run is out of

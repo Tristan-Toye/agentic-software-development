@@ -247,6 +247,7 @@ html[data-embed] .wrap { padding-top: 14px; padding-bottom: 28px; }
   transition: background .15s ease, transform .15s ease;
 }
 .fp-row:hover { background: var(--plane); transform: translateX(3px); }
+.fp-row.has-play { grid-template-columns: 14px minmax(0, 1fr) auto auto auto; }
 .fp-dot { width: 10px; height: 10px; border-radius: 50%; }
 .fp-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
 .fp-id { font-weight: 650; font-size: 12.5px; }
@@ -338,6 +339,18 @@ svg.dg.bus .dg-edge { stroke-linejoin: round; }
 .loose { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .loose-cap { font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); }
 a.fm-chip { text-decoration: none; }
+.chip-wrap { display: inline-flex; align-items: center; gap: 4px; max-width: min(100%, 380px); min-width: 0; }
+button.play { flex: none; font: inherit; font-size: 11px; line-height: 1; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--accent); background: transparent; color: var(--accent); cursor: pointer; }
+button.play:hover, button.play[data-state="armed"] { background: var(--accent); color: var(--plane); }
+button.play:disabled { opacity: .6; cursor: default; }
+.dg-play { cursor: pointer; }
+.dg-play circle { fill: transparent; stroke: var(--accent); }
+.dg-play path { fill: var(--accent); }
+.dg-play:hover circle, .dg-play.armed circle { fill: var(--accent); }
+.dg-play:hover path, .dg-play.armed path { fill: var(--plane); }
+.dg-play.started circle { fill: var(--stage-done); stroke: var(--stage-done); }
+#run-toast { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: 80%; padding: 8px 14px; border-radius: 10px; background: var(--surface); color: var(--ink); border: 1px solid var(--border); box-shadow: var(--shadow); font-size: 13px; opacity: 0; transition: opacity .2s; z-index: 50; pointer-events: none; }
+#run-toast.bad { border-color: var(--status-serious); }
 .dg-node.stub rect { stroke-dasharray: 4 3; }
 .dg-node text { fill: var(--ink); font: 600 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .dg-node text.sub { fill: var(--ink-2); font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -431,6 +444,54 @@ for (const d of DATA.dossiers)
 const EMBED = document.documentElement.hasAttribute("data-embed");
 /* --link-base: a dossier reference navigates the top window to <base>/<ID> (the dashboard's dossier route). */
 const LINK_BASE = DATA.link_base || "";
+/* ▶ Start, inside the dashboard: the same POST the dossier page's Start button
+   makes (same origin). Shown on a ready dossier whose every blocker is done;
+   the server re-checks (not already run, not blocked) and refuses otherwise.
+   First click arms it ("start?"), the second within 4 s starts the runner. */
+const REPO = (LINK_BASE.match(/^\/repo\/([^/?#]+)/) || [])[1] || "";
+function canStart(d) {
+  return !!REPO && !!d && !d.stub && d.status === "ready" &&
+    (d.blocked_by || []).every(b => BY_ID[b]?.status === "done");
+}
+function toast(text, bad) {
+  let t = document.getElementById("run-toast");
+  if (!t) { t = el("div"); t.id = "run-toast"; document.body.append(t); }
+  t.className = bad ? "bad" : "";
+  t.textContent = text;
+  clearTimeout(toast.t); t.style.opacity = "1";
+  toast.t = setTimeout(() => { t.style.opacity = "0"; }, 6000);
+}
+function armStart(id, setState) {
+  if (armStart.armed !== id) {
+    armStart.armed = id; setState("armed");
+    clearTimeout(armStart.t);
+    armStart.t = setTimeout(() => { if (armStart.armed === id) { armStart.armed = null; setState("idle"); } }, 4000);
+    return;
+  }
+  armStart.armed = null; setState("busy");
+  fetch(`/api/runs/${encodeURIComponent(REPO)}/${encodeURIComponent(id)}/start`, { method: "POST" })
+    .then(r => r.json().then(j => ({ ok: r.ok, j })))
+    .then(({ ok, j }) => {
+      setState(ok ? "started" : "idle");
+      toast(ok ? `${id} started — ${String(j.output || "").trim().split("\n").pop()}` : `${id} not started: ${j.error || j.output || "error"}`, !ok);
+    })
+    .catch(e => { setState("idle"); toast(`${id} not started: ${e}`, true); });
+}
+/* An HTML ▶ button (Independent chips, flight plan rows). */
+function playButton(d) {
+  const b = el("button", "play");
+  b.type = "button";
+  const set = st => {
+    b.dataset.state = st;
+    b.textContent = st === "armed" ? "start?" : st === "busy" ? "…" : st === "started" ? "✓" : "▶";
+    b.disabled = st === "busy" || st === "started";
+  };
+  set("idle");
+  b.title = `Start /work-on ${d.id} in the background`;
+  b.setAttribute("aria-label", `Start ${d.id}`);
+  b.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); armStart(d.id, set); });
+  return b;
+}
 const TB = DATA.direction === "tb";   // top-to-bottom flows: ranks are rows
 /* The dashboard (embed, left to right) draws every dossier in ONE graph with the bus layout. */
 const BUS = EMBED && !TB;
@@ -628,7 +689,8 @@ if (DATA.dossiers.length && DATA.graph === "focus") {
         const dot = el("span", "dot"); dot.style.background = stageVar(d.status);
         c.append(dot, el("span", "id", id), el("span", "ttl", d.title || ""));
         c.title = `${id} — ${d.title || ""} · ${d.status}`;
-        chips.append(c);
+        if (canStart(d)) { const w = el("span", "chip-wrap"); w.append(c, playButton(d)); chips.append(w); }
+        else chips.append(c);
       }
       row.append(chips);
       panels.append(row);
@@ -1290,6 +1352,17 @@ function depGraph(ids, edges, nodes) {
     t2.textContent = title.length > 24 ? title.slice(0, 23).trimEnd() + "…" : title;
     g.append(t1, t2);
     bindTip(g, () => `${d.label || d.id} — ${d.title}  ·  ${d.stub ? "display-only stub" : d.status}`);
+    if (canStart(d)) {
+      const pb = svgEl("g", { class: "dg-play", transform: `translate(${PW - 16},16)`, role: "button", tabindex: "0" });
+      pb.setAttribute("aria-label", `Start ${d.id}`);
+      pb.append(svgEl("circle", { r: 9 }), svgEl("path", { d: "M-3,-4.5 L5,0 L-3,4.5 Z" }));
+      const tip = svgEl("title", {}); tip.textContent = `Start /work-on ${d.id} in the background (click twice)`; pb.append(tip);
+      const set = st => { pb.classList.toggle("armed", st === "armed"); pb.classList.toggle("started", st === "started"); tip.textContent = st === "armed" ? "Click again to start" : st === "started" ? "Started" : tip.textContent; };
+      const go = e => { e.preventDefault(); e.stopPropagation(); if (!pb.classList.contains("started")) armStart(d.id, set); };
+      pb.addEventListener("click", go);
+      pb.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") go(e); });
+      g.append(pb);
+    }
     if (!d.stub) {
       g.setAttribute("tabindex", "0");
       g.addEventListener("click", () => openModal(d));
@@ -1670,6 +1743,7 @@ function heuristicOrder(cols, boundaries) {
     main.append(head);
     if (d.branch) main.append(el("div", "fp-sub mono", d.branch));
     row.append(dot, main, stepper(d), el("span", "fp-age", agePhrase(d.age_days)));
+    if (canStart(d)) { row.classList.add("has-play"); row.append(playButton(d)); }
     row.addEventListener("click", () => openModal(d));
     return row;
   }

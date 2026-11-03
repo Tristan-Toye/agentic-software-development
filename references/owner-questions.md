@@ -201,7 +201,10 @@ one card-based single-page app with deep links.
     dossiers, a finished prerequisite dropped when a newer finished one
     already implies it, so done work is one thin layer in front of the open
     graph; the Simplify toggle is hidden. The dashboard is always dark. A
-    drawing wider than the column scrolls inside its panel. A click on a dossier
+    drawing wider than the column scrolls inside its panel. A ready dossier
+    whose blockers are all done carries a ▶ (graph box, Independent chip,
+    flight-plan row): two clicks POST `/api/runs/<repo>/<ID>/start`, which
+    re-checks eligibility and starts `run_dossier.py` in the background. A click on a dossier
     navigates the top window to `/repo/<repo>/<ID>`. **Right (360 px, sticky
     while scrolling):** every open (not merged) stub, newest first, as a card:
     branch, state chip, step, PR + CI dot; under it a tree of its dossiers,

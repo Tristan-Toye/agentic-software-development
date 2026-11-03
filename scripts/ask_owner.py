@@ -49,6 +49,21 @@ MAX_LINES = 40
 POLL = float(os.environ.get("ASD_OWNER_POLL") or 2.0)  # tests shorten it
 
 
+
+def main_repo_name(root: str) -> str:
+    """The main checkout's directory name for `root`, also when `root` is a
+    worktree: the dashboard names a repo by its main checkout, so a question
+    or an update posted from `../<repo>-<ID>` must carry `<repo>`."""
+    root = os.path.abspath(root)
+    try:
+        out = subprocess.run(["git", "-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                             capture_output=True, text=True, timeout=10)
+        common = out.stdout.strip() if out.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        common = ""
+    main = common[: -len("/.git")] if common.endswith("/.git") else root
+    return os.path.basename(main.rstrip("/")) or "root"
+
 def store_dir() -> str:
     d = os.environ.get("ASD_QUESTIONS_DIR") or os.path.expanduser("~/.agentic/questions")
     os.makedirs(d, exist_ok=True)
@@ -120,7 +135,7 @@ def cmd_ask(a: argparse.Namespace) -> int:
     if rec and rec not in keys:
         raise SystemExit(f"--recommend {rec!r} is not one of {keys}")
     root = os.path.abspath(a.root)
-    repo = os.path.basename(root.rstrip("/")) or "root"
+    repo = main_repo_name(root)
     prefix = f"{repo}.{a.dossier}.Q"
     d = store_dir()
     pat = re.compile(re.escape(prefix) + r"(\d+)\.jsonl$")
@@ -204,7 +219,7 @@ def runs_dir() -> str:
 
 def cmd_note(a: argparse.Namespace) -> int:
     root = os.path.abspath(a.root)
-    repo = os.path.basename(root.rstrip("/")) or "root"
+    repo = main_repo_name(root)
     if not re.fullmatch(r"[A-Za-z0-9_.\-]+", a.dossier):
         raise SystemExit(f"bad dossier id: {a.dossier}")
     line = {"ts": now(), "kind": "update", "text": clip(a.text)}
@@ -340,6 +355,16 @@ def selftest() -> int:
         check("list --dossier filters", ls.strip() == "")
         sh = run("show", qid, env=env).stdout
         check("show prints thread", "A) one -> does one" in sh and "owner/answer" in sh)
+
+        # a worktree carries its main checkout's name
+        main = os.path.join(tmp, "mainrepo")
+        subprocess.run(["git", "init", "-q", main], check=True)
+        subprocess.run(["git", "-C", main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+        wt = os.path.join(tmp, "mainrepo-W-7")
+        subprocess.run(["git", "-C", main, "worktree", "add", "-q", wt], check=True)
+        check("a worktree is keyed by its main checkout", main_repo_name(wt) == "mainrepo" and main_repo_name(main) == "mainrepo")
+        wq = run("ask", "--root", wt, "--dossier", "W-7", "--question", "q?", "--option", "A|a|x", "--option", "B|b|y", "--blocks", "z", env=env).stdout.strip()
+        check("a question asked from a worktree carries the repo name", wq == "mainrepo.W-7.Q1")
 
         # note
         env["ASD_RUNS_DIR"] = os.path.join(tmp, "runs")
