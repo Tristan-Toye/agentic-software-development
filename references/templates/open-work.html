@@ -8,8 +8,13 @@
 /* Dark by default; an explicit choice from the toggle is remembered. Runs
    before first paint so the page never flashes light. */
 (function () {
-  var saved = localStorage.getItem("open-work-theme");
-  if (saved !== "auto") document.documentElement.dataset.theme = saved || "dark";
+  var root = document.documentElement, saved = null;
+  try { saved = localStorage.getItem("open-work-theme"); } catch (e) {}
+  if (root.hasAttribute("data-embed")) {
+    /* Inside the dashboard: follow the system unless the host asks (?theme=). */
+    var asked = new URLSearchParams(location.search).get("theme");
+    if (asked === "light" || asked === "dark") root.dataset.theme = asked;
+  } else if (saved !== "auto") root.dataset.theme = saved || "dark";
 })();
 </script>
 <style>
@@ -168,25 +173,13 @@ a { color: inherit; }
 header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
 header .meta { color: var(--ink-3); font-size: 13px; }
 header .spacer { flex: 1; }
+html[data-embed] .wrap { padding-top: 14px; padding-bottom: 28px; }
 #theme-btn {
   border: 1px solid var(--border); background: var(--surface); color: var(--ink-2);
   border-radius: 999px; padding: 4px 12px; font: inherit; font-size: 12.5px;
   cursor: pointer;
 }
 #theme-btn:hover { color: var(--ink); }
-/* live indicator — says whether the page is watching the generator's state
-   file, so a stale tab never looks like a fresh one */
-#live-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px;
-  font-size: 12px; color: var(--ink-3); cursor: default;
-}
-#live-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); flex: none; }
-#live-chip.on { color: var(--good-text); }
-#live-chip.on .dot { background: var(--status-good); }
-#live-chip.lost { color: var(--status-critical); }
-#live-chip.lost .dot { background: var(--status-critical); }
-
 /* ------------------------------------------------------------------ hero */
 .hero {
   position: relative; overflow: hidden;
@@ -254,6 +247,7 @@ header .spacer { flex: 1; }
   transition: background .15s ease, transform .15s ease;
 }
 .fp-row:hover { background: var(--plane); transform: translateX(3px); }
+.fp-row.has-play { grid-template-columns: 14px minmax(0, 1fr) auto auto auto; }
 .fp-dot { width: 10px; height: 10px; border-radius: 50%; }
 .fp-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
 .fp-id { font-weight: 650; font-size: 12.5px; }
@@ -288,6 +282,41 @@ header .spacer { flex: 1; }
 .graph-toggle { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 12.5px; font-weight: 400; cursor: pointer; }
 .graph-toggle input { accent-color: var(--accent); }
 .graph-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); padding: 10px; overflow-x: auto; }
+
+/* ---- focus map (--graph focus): lanes of chips, edges only on focus ---- */
+.fm { position: relative; }
+.fm-ribbon { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 12px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.fm-ribbon .head { font-weight: 650; margin-right: 6px; }
+.fm-ribbon .head small { font-weight: 400; color: var(--ink-3); margin-left: 4px; }
+.fm-ribbon .fm-chip { max-width: min(100%, 260px); }
+.fm-ribbon .fm-chip .ttl { max-width: 16ch; }
+.fm-ribbon .fm-chip .ctr, .fm-ribbon .fm-chip .by { display: none; }
+.fm-ribbon .arrow { color: var(--ink-3); }
+.fm-lane { margin: 0 0 12px; }
+.fm-lane > h3 { margin: 0 0 6px; font-size: 12px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-2); display: flex; gap: 8px; align-items: baseline; }
+.fm-lane > h3 .n { color: var(--ink-3); font-weight: 400; }
+.fm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.fm-chip { display: inline-flex; align-items: center; gap: 6px; max-width: min(100%, 340px); min-width: 0; padding: 4px 9px; font: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 999px; cursor: pointer; transition: opacity .12s, box-shadow .12s; }
+.fm-chip:hover, .fm-chip.is-focus { box-shadow: 0 0 0 2px var(--accent); }
+.fm-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.fm-chip .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.fm-chip .id { flex: none; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; }
+.fm-chip .ttl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+.fm-chip .ctr { flex: none; font-size: 10.5px; color: var(--ink-3); white-space: nowrap; }
+.fm-chip .by { flex: none; font-size: 10.5px; color: var(--status-warning); font-family: ui-monospace, Menlo, monospace; }
+.fm-chip.stub { border-style: dashed; }
+.fm.dimming .fm-chip:not(.in-chain) { opacity: .28; }
+.fm-edges { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.fm-edges path { fill: none; stroke: var(--accent); stroke-width: 1.4; opacity: .8; }
+.fm-panel { position: absolute; z-index: 5; width: min(300px, 92%); padding: 10px 12px; font-size: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-lift, 0 4px 18px rgba(0,0,0,.2)); }
+.fm-panel h4 { margin: 0 0 4px; font-size: 12.5px; }
+.fm-panel .lbl { margin-top: 6px; font-weight: 650; color: var(--ink-2); }
+.fm-panel ul { margin: 2px 0 0; padding: 0; list-style: none; }
+.fm-panel li { display: flex; gap: 6px; align-items: center; }
+.fm-panel li .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.fm-panel li .st { color: var(--ink-3); margin-left: auto; }
+.fm-panel a { display: inline-block; margin-top: 8px; color: var(--accent); font-weight: 650; }
+.fm-note { font-size: 11.5px; color: var(--ink-3); padding: 0 4px; }
 .graph-note { margin-top: 8px; font-size: 11.5px; color: var(--ink-3); padding: 0 4px 2px; }
 /* one panel per independent flow — they stack, never share a column grid */
 .graph-panel + .graph-panel { margin-top: 12px; }
@@ -304,19 +333,27 @@ svg.dg { display: block; margin: 0 auto; }
 .dg-node rect { fill: var(--plane); stroke: var(--border); transition: stroke .15s ease; }
 .dg-node:hover rect { stroke: var(--ink-3); }
 .dg-node.stub { cursor: default; }
+svg.dg.focus .dg-node:not(.lit) { opacity: .28; }
+svg.dg.focus .dg-edge:not(.hl) { opacity: .08; }
+svg.dg.bus .dg-edge { stroke-linejoin: round; }
+.loose { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.loose-cap { font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); }
+a.fm-chip { text-decoration: none; }
+.chip-wrap { display: inline-flex; align-items: center; gap: 4px; max-width: min(100%, 380px); min-width: 0; }
+button.play { flex: none; font: inherit; font-size: 11px; line-height: 1; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--accent); background: transparent; color: var(--accent); cursor: pointer; }
+button.play:hover, button.play[data-state="armed"] { background: var(--accent); color: var(--plane); }
+button.play:disabled { opacity: .6; cursor: default; }
+.dg-play { cursor: pointer; }
+.dg-play circle { fill: transparent; stroke: var(--accent); }
+.dg-play path { fill: var(--accent); }
+.dg-play:hover circle, .dg-play.armed circle { fill: var(--accent); }
+.dg-play:hover path, .dg-play.armed path { fill: var(--plane); }
+.dg-play.started circle { fill: var(--stage-done); stroke: var(--stage-done); }
+#run-toast { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: 80%; padding: 8px 14px; border-radius: 10px; background: var(--surface); color: var(--ink); border: 1px solid var(--border); box-shadow: var(--shadow); font-size: 13px; opacity: 0; transition: opacity .2s; z-index: 50; pointer-events: none; }
+#run-toast.bad { border-color: var(--status-serious); }
 .dg-node.stub rect { stroke-dasharray: 4 3; }
 .dg-node text { fill: var(--ink); font: 600 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .dg-node text.sub { fill: var(--ink-2); font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; }
-
-/* ------------------------------------------------------------------ lists */
-.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
-.rows { list-style: none; margin: 0; padding: 4px 0; }
-.rows li { display: flex; align-items: baseline; gap: 10px; padding: 9px 16px; border-top: 1px solid var(--grid); font-size: 13.5px; }
-.rows li:first-child { border-top: none; }
-.rows .icon { flex: none; width: 18px; text-align: center; }
-.rows .what { color: var(--ink); }
-.rows .who { color: var(--ink-3); font-size: 12px; margin-left: auto; white-space: nowrap; }
-.allclear { color: var(--good-text); font-weight: 600; }
 
 .empty {
   text-align: center; padding: 64px 24px; color: var(--ink-2);
@@ -404,6 +441,60 @@ for (const d of DATA.dossiers)
   for (const b of d.blocked_by)
     (DEPENDENTS[b] = DEPENDENTS[b] || []).push(d.id);
 
+const EMBED = document.documentElement.hasAttribute("data-embed");
+/* --link-base: a dossier reference navigates the top window to <base>/<ID> (the dashboard's dossier route). */
+const LINK_BASE = DATA.link_base || "";
+/* ▶ Start, inside the dashboard: the same POST the dossier page's Start button
+   makes (same origin). Shown on a ready dossier whose every blocker is done;
+   the server re-checks (not already run, not blocked) and refuses otherwise.
+   First click arms it ("start?"), the second within 4 s starts the runner. */
+const REPO = (LINK_BASE.match(/^\/repo\/([^/?#]+)/) || [])[1] || "";
+function canStart(d) {
+  return !!REPO && !!d && !d.stub && d.status === "ready" &&
+    (d.blocked_by || []).every(b => BY_ID[b]?.status === "done");
+}
+function toast(text, bad) {
+  let t = document.getElementById("run-toast");
+  if (!t) { t = el("div"); t.id = "run-toast"; document.body.append(t); }
+  t.className = bad ? "bad" : "";
+  t.textContent = text;
+  clearTimeout(toast.t); t.style.opacity = "1";
+  toast.t = setTimeout(() => { t.style.opacity = "0"; }, 6000);
+}
+function armStart(id, setState) {
+  if (armStart.armed !== id) {
+    armStart.armed = id; setState("armed");
+    clearTimeout(armStart.t);
+    armStart.t = setTimeout(() => { if (armStart.armed === id) { armStart.armed = null; setState("idle"); } }, 4000);
+    return;
+  }
+  armStart.armed = null; setState("busy");
+  fetch(`/api/runs/${encodeURIComponent(REPO)}/${encodeURIComponent(id)}/start`, { method: "POST" })
+    .then(r => r.json().then(j => ({ ok: r.ok, j })))
+    .then(({ ok, j }) => {
+      setState(ok ? "started" : "idle");
+      toast(ok ? `${id} started — ${String(j.output || "").trim().split("\n").pop()}` : `${id} not started: ${j.error || j.output || "error"}`, !ok);
+    })
+    .catch(e => { setState("idle"); toast(`${id} not started: ${e}`, true); });
+}
+/* An HTML ▶ button (Independent chips, flight plan rows). */
+function playButton(d) {
+  const b = el("button", "play");
+  b.type = "button";
+  const set = st => {
+    b.dataset.state = st;
+    b.textContent = st === "armed" ? "start?" : st === "busy" ? "…" : st === "started" ? "✓" : "▶";
+    b.disabled = st === "busy" || st === "started";
+  };
+  set("idle");
+  b.title = `Start /work-on ${d.id} in the background`;
+  b.setAttribute("aria-label", `Start ${d.id}`);
+  b.addEventListener("click", e => { e.preventDefault(); e.stopPropagation(); armStart(d.id, set); });
+  return b;
+}
+const TB = DATA.direction === "tb";   // top-to-bottom flows: ranks are rows
+/* The dashboard (embed, left to right) draws every dossier in ONE graph with the bus layout. */
+const BUS = EMBED && !TB;
 const app = document.getElementById("app");
 const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 let stagger = 0;
@@ -428,17 +519,15 @@ function agePhrase(d) {
   return d + " days";
 }
 
-/* ---------------------------------------------------------------- header */
-{
+/* ---------------------------------------------------------------- header
+   Omitted under --embed: the dashboard around the iframe owns the title bar. */
+if (!EMBED) {
   const h = el("header");
   h.append(el("h1", null, "Open work"));
   const meta = el("span", "meta");
   meta.append("dossiers in ", Object.assign(el("code"), { textContent: DATA.root }));
   h.append(meta, el("span", "spacer"));
   h.append(el("span", "meta", "generated " + DATA.generated_at_human));
-  const live = Object.assign(el("span"), { id: "live-chip" });
-  live.append(el("span", "dot"), el("span", "txt", "static"));
-  h.append(live);
   const btn = Object.assign(el("button"), { id: "theme-btn" });
   const label = () => "theme: " + (localStorage.getItem("open-work-theme") || "dark");
   btn.textContent = label();
@@ -463,7 +552,7 @@ if (!DATA.dossiers.length) {
 } else {
 
 /* ---------------------------------------------------------------- hero */
-if (DATA.next_action) {
+if (DATA.next_action && !EMBED) {
   const hero = el("div", "hero");
   hero.append(el("div", "kicker", "Suggested next action"));
   const cmd = el("div", "cmd");
@@ -473,7 +562,7 @@ if (DATA.next_action) {
 }
 
 /* ---------------------------------------------------------------- tiles */
-{
+if (!EMBED) {
   const tiles = el("div", "tiles");
   const S = DATA.sections;
   const spec = [
@@ -507,7 +596,7 @@ function countUp(node, target) {
 }
 
 /* ---------------------------------------------------------------- flow bar */
-{
+if (!EMBED) {
   const present = STAGES.filter(s => (DATA.counts.by_status[s] || 0) > 0);
   if (present.length) {
     app.append(enter(el("h2", null, "Pipeline")));
@@ -548,16 +637,19 @@ function countUp(node, target) {
    rectangle each. Simplifying keeps every unfinished dossier and only the
    done or dropped prerequisites immediately at that frontier. Stubs belong
    only to this view; the dossier data and readiness calculation stay unchanged. */
-if (DATA.dossiers.length) {
+if (DATA.dossiers.length && DATA.graph === "focus") {
+  focusMap();
+} else if (DATA.dossiers.length) {
   const h = el("h2", "graph-heading", "Dependency flows");
   h.append(el("span", "hint", "an arrow reads “must be done before” · click a dossier for its intent"));
   const toggle = Object.assign(el("input"), { type: "checkbox" });
   toggle.setAttribute("aria-controls", "dependency-flows");
   toggle.setAttribute("aria-describedby", "dependency-note");
-  try { toggle.checked = localStorage.getItem("open-work-simplify") === "true"; } catch (_) {}
+  toggle.checked = !!DATA.simplify_default;      // the remembered choice, when there is one, wins
+  try { const mem = localStorage.getItem("open-work-simplify"); if (mem === "true" || mem === "false") toggle.checked = mem === "true"; } catch (_) {}
   const label = el("label", "graph-toggle");
   label.append(toggle, "Simplify");
-  h.append(label);
+  if (BUS) toggle.checked = true; else h.append(label);
   const panels = el("div");
   panels.id = "dependency-flows";
   const note = el("div", "graph-note");
@@ -566,9 +658,43 @@ if (DATA.dossiers.length) {
   app.append(enter(h), enter(panels), enter(note));
 
   function draw() {
-    const graph = dependencyGraph(DATA.dossiers, toggle.checked);
-    const groups = flows(graph.ids, graph.edges);
+    let graph = dependencyGraph(DATA.dossiers, toggle.checked, TB || BUS);
+    /* bus (dashboard): no Start / Earlier-work boxes — a root simply sits in
+       the first column — and a dossier with no dependency link at all is a
+       chip in the "Independent" row above the graph, not a box in it */
+    let loose = [];
+    if (BUS) {
+      const ids = graph.ids.filter(id => !id.startsWith("\u0000stub:"));
+      const edges = graph.edges.filter(([a, b]) => ids.includes(a) && ids.includes(b));
+      const linked = new Set(edges.flat());
+      const fr = doneFrontier(ids, edges, graph.nodes);
+      const linked2 = new Set(fr.flat());
+      loose = ids.filter(id => !linked2.has(id) && !["done", "dropped"].includes(graph.nodes[id].status));
+      graph = { ...graph, ids: ids.filter(id => linked2.has(id)), edges: fr };
+    }
+    /* tb and bus draw everything as ONE layered graph; lr keeps one rectangle per independent flow */
+    const groups = (TB || BUS)
+      ? (graph.ids.length ? [{ ids: graph.ids, edges: graph.edges }] : [])
+      : flows(graph.ids, graph.edges);
     panels.replaceChildren();
+    if (loose.length) {
+      const row = el("div", "loose");
+      row.append(el("span", "loose-cap", `Independent · ${loose.length}`));
+      const chips = el("div", "fm-chips");
+      for (const id of loose.sort()) {
+        const d = graph.nodes[id];
+        const c = el("a", "fm-chip");
+        c.href = LINK_BASE ? LINK_BASE + "/" + encodeURIComponent(id) : "#";
+        if (LINK_BASE) c.target = "_top"; else c.addEventListener("click", e => { e.preventDefault(); openModal(d); });
+        const dot = el("span", "dot"); dot.style.background = stageVar(d.status);
+        c.append(dot, el("span", "id", id), el("span", "ttl", d.title || ""));
+        c.title = `${id} — ${d.title || ""} · ${d.status}`;
+        if (canStart(d)) { const w = el("span", "chip-wrap"); w.append(c, playButton(d)); chips.append(w); }
+        else chips.append(c);
+      }
+      row.append(chips);
+      panels.append(row);
+    }
     groups.forEach((g, i) => {
       const panel = el("div", "graph-panel");
       if (groups.length > 1) {
@@ -581,10 +707,11 @@ if (DATA.dossiers.length) {
       panel.append(depGraph(g.ids, g.edges, graph.nodes));
       panels.append(panel);
     });
+    if (BUS) { note.textContent = "Done work is shown only where it meets unfinished work. Hover a dossier to light up everything before and after it; a dashed box is a missing dossier."; if (!groups.length && !loose.length) panels.append(el("div", "graph-note", "Nothing is open: every dossier is done or dropped.")); return; }
     note.textContent = (toggle.checked
       ? `Simplified: ${graph.hiddenFinished} done or dropped dossier${graph.hiddenFinished === 1 ? "" : "s"} hidden; all unfinished dossiers and their immediate prerequisites remain.`
       : "Full graph: every dossier is shown. Simplify hides done and dropped history behind the frontier.")
-      + " Dashed boxes are display-only stubs for roots or missing dossiers.";
+      + (BUS ? " Hover a dossier to light up everything before and after it; a dashed box is a missing dossier." : " Dashed boxes are display-only stubs for roots or missing dossiers.");
     if (!groups.length) panels.append(el("div", "graph-note", "All dossiers are done or dropped. Turn off Simplify to see the finished flows."));
   }
   toggle.addEventListener("change", () => {
@@ -594,7 +721,259 @@ if (DATA.dossiers.length) {
   draw();
 }
 
-function dependencyGraph(dossiers, simplified) {
+/* ---------------------------------------------------------------- focus map
+   --graph focus: dossiers as chips in lanes by what you can do. No edges
+   until a chip takes hover or keyboard focus; then only its chain is drawn. */
+function focusModel(dossiers) {
+  const byId = Object.fromEntries(dossiers.map(d => [d.id, d]));
+  const dependents = {};
+  for (const d of dossiers) for (const b of d.blocked_by || []) (dependents[b] = dependents[b] || []).push(d.id);
+  const statusOf = id => (byId[id] ? byId[id].status : "missing");
+  const unfinished = d => (d.blocked_by || []).filter(b => statusOf(b) !== "done");
+  const items = {};
+  const missing = new Set();
+  for (const d of dossiers) {
+    for (const b of d.blocked_by || []) if (!byId[b]) missing.add(b);
+    const open = unfinished(d);
+    let lane = null;
+    if (d.status === "done" || d.status === "dropped") lane = "finished";
+    else if (["building", "review", "pr"].includes(d.status)) lane = "progress";
+    else if (d.status === "planned") lane = "planned";
+    else lane = open.length ? "blocked" : "ready";
+    items[d.id] = { id: d.id, title: d.title || "", status: d.status, lane,
+      needs: open.length, unblocks: (dependents[d.id] || []).length, blocker: open[0] || null, prereqs: d.blocked_by || [] };
+  }
+  for (const id of missing) items[id] = { id, title: "Missing dossier", status: "missing", lane: "planned", needs: 0,
+    unblocks: (dependents[id] || []).length, blocker: null, prereqs: [], stub: true };
+  const order = (a, b) => b.unblocks - a.unblocks || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const lanes = {};
+  for (const it of Object.values(items)) (lanes[it.lane] = lanes[it.lane] || []).push(it);
+  for (const k in lanes) lanes[k].sort(order);
+  /* critical path: longest chain of unfinished dossiers, by edges among them */
+  const live = new Set(dossiers.filter(d => d.status !== "done" && d.status !== "dropped").map(d => d.id));
+  const memo = {}, active = new Set();
+  function best(id) {           // {len, count, path} of the longest chain starting at id
+    if (memo[id]) return memo[id];
+    if (active.has(id)) return { len: 1, count: 1, path: [id] };
+    active.add(id);
+    let r = { len: 1, count: 1, path: [id] };
+    const next = (dependents[id] || []).filter(n => live.has(n)).sort();
+    let top = 0, cnt = 0, bp = null;
+    for (const n of next) {
+      const b = best(n);
+      if (b.len > top) { top = b.len; cnt = b.count; bp = b.path; }
+      else if (b.len === top) cnt += b.count;
+    }
+    if (bp) r = { len: top + 1, count: cnt, path: [id, ...bp] };
+    active.delete(id);
+    return (memo[id] = r);
+  }
+  let crit = { len: 0, count: 0, path: [] };
+  const ends = [...live].sort();
+  let total = 0;
+  for (const id of ends) {
+    const b = best(id);
+    if (b.len > crit.len) { crit = { len: b.len, count: 0, path: b.path }; total = b.count; }
+    else if (b.len === crit.len) total += b.count;
+  }
+  crit.similar = Math.max(0, total - 1);
+  const walk = (id, key) => {
+    const seen = new Set(), stack = [id];
+    while (stack.length) {
+      const c = stack.pop();
+      const nx = key === "up" ? (byId[c] ? byId[c].blocked_by || [] : []) : dependents[c] || [];
+      for (const n of nx) if (!seen.has(n) && n !== id) { seen.add(n); stack.push(n); }
+    }
+    return seen;
+  };
+  return { items, lanes, critical: crit, up: id => walk(id, "up"), down: id => walk(id, "down") };
+}
+
+function focusMap() {
+  const model = focusModel(DATA.dossiers);
+  const h = el("h2", "graph-heading", "Focus map");
+  h.append(el("span", "hint", "hover or focus a chip to see its chain · click to open it"));
+  const toggle = Object.assign(el("input"), { type: "checkbox" });
+  toggle.setAttribute("aria-controls", "focus-map");
+  toggle.checked = !!DATA.simplify_default;
+  try { const mem = localStorage.getItem("open-work-simplify"); if (mem === "true" || mem === "false") toggle.checked = mem === "true"; } catch (_) {}
+  const label = el("label", "graph-toggle");
+  label.append(toggle, "Simplify");
+  h.append(label);
+  const root = el("div", "fm");
+  root.id = "focus-map";
+  app.append(enter(h), enter(root));
+
+  const LANES = [["progress", "In progress"], ["ready", "Ready now"], ["blocked", "Blocked"], ["planned", "Not planned yet"], ["finished", "Done and dropped"]];
+  const chipOf = {};
+  const dot = st => { const d = el("span", "dot"); d.style.background = stageVar(st); return d; };
+  const plural = (n, w) => `${n} ${w}`;
+  function href(id) { return LINK_BASE ? LINK_BASE + "/" + encodeURIComponent(id) : "#"; }
+
+  function chip(it) {
+    const b = el("button", "fm-chip" + (it.stub ? " stub" : ""));
+    b.type = "button";
+    b.dataset.id = it.id;
+    b.title = `${it.id} — ${it.title}`;
+    b.setAttribute("aria-label", `${it.id}, ${it.title}, ${it.status}, needs ${it.needs}, unblocks ${it.unblocks}`);
+    b.append(dot(it.status), el("span", "id", it.id), el("span", "ttl", it.title));
+    if (it.lane === "blocked" && it.blocker) b.append(el("span", "by", "← " + it.blocker));
+    b.append(el("span", "ctr", `needs ${it.needs} · unblocks ${it.unblocks}`));
+    chipOf[it.id] = b;
+    return b;
+  }
+
+  let svg = null, panel = null, current = null, hideTimer = 0, touched = false;
+  function leave() {
+    clearTimeout(hideTimer);
+    current = null;
+    root.classList.remove("dimming");
+    for (const c of root.querySelectorAll(".fm-chip")) c.classList.remove("in-chain", "is-focus");
+    if (svg) svg.replaceChildren();
+    if (panel) { panel.remove(); panel = null; }
+  }
+  function rectIn(n) {
+    const r = n.getBoundingClientRect(), o = root.getBoundingClientRect();
+    return { x: r.left - o.left, y: r.top - o.top, w: r.width, h: r.height };
+  }
+  function drawEdges() {
+    if (!current) return;
+    const chain = new Set([current, ...model.up(current), ...model.down(current)]);
+    svg.replaceChildren();
+    const o = root.getBoundingClientRect();
+    svg.setAttribute("viewBox", `0 0 ${o.width} ${o.height}`);
+    for (const id of chain) {
+      const it = model.items[id];
+      if (!it || !chipOf[id]) continue;
+      for (const b of it.prereqs) {
+        if (!chain.has(b) || !chipOf[b]) continue;
+        const a = rectIn(chipOf[b]), c = rectIn(chipOf[id]);
+        let d;
+        if (a.y + a.h + 4 <= c.y) {            // prerequisite above: bottom to top
+          const x1 = a.x + a.w / 2, y1 = a.y + a.h, x2 = c.x + c.w / 2, y2 = c.y, m = (y2 - y1) / 2;
+          d = `M${x1},${y1} C${x1},${y1 + m} ${x2},${y2 - m} ${x2},${y2}`;
+        } else if (c.y + c.h + 4 <= a.y) {     // prerequisite below: top to bottom
+          const x1 = a.x + a.w / 2, y1 = a.y, x2 = c.x + c.w / 2, y2 = c.y + c.h, m = (y1 - y2) / 2;
+          d = `M${x1},${y1} C${x1},${y1 - m} ${x2},${y2 + m} ${x2},${y2}`;
+        } else {                                // same row: arc over the tops
+          const x1 = a.x + a.w / 2, x2 = c.x + c.w / 2, y = Math.min(a.y, c.y), lift = 14 + Math.min(40, Math.abs(x2 - x1) / 8);
+          d = `M${x1},${y} C${x1},${y - lift} ${x2},${y - lift} ${x2},${y}`;
+        }
+        const p = document.createElementNS(SVGNS, "path");
+        p.setAttribute("d", d);
+        svg.append(p);
+      }
+    }
+  }
+  function place() {
+    if (!current || !panel) return;
+    const r = rectIn(chipOf[current]), w = root.clientWidth;
+    panel.style.top = (r.y + r.h + 8) + "px";
+    const pw = panel.offsetWidth;
+    panel.style.left = Math.max(0, Math.min(r.x, w - pw)) + "px";
+  }
+  function enterFocus(id) {
+    if (current === id) return;
+    leave();
+    current = id;
+    const up = model.up(id), down = model.down(id);
+    root.classList.add("dimming");
+    const inChain = new Set([id, ...up, ...down]);
+    for (const c of root.querySelectorAll(".fm-chip")) {
+      if (inChain.has(c.dataset.id)) c.classList.add("in-chain");
+      if (c.dataset.id === id) c.classList.add("is-focus");
+    }
+    const it = model.items[id];
+    panel = el("div", "fm-panel");
+    panel.setAttribute("role", "group");
+    panel.setAttribute("aria-label", `${id} dependencies`);
+    panel.append(el("h4", null, `${id} — ${it.title}`));
+    const list = (name, ids) => {
+      panel.append(el("div", "lbl", `${name}: ${ids.length ? ids.length : "nothing"}`));
+      if (!ids.length) return;
+      const ul = el("ul");
+      for (const x of ids) {
+        const li = el("li"), s = model.items[x] ? model.items[x].status : "missing";
+        li.append(dot(s), el("span", null, x), el("span", "st", s));
+        ul.append(li);
+      }
+      panel.append(ul);
+    };
+    list("Needs", it.prereqs);
+    list("Unblocks", Object.values(model.items).filter(o => o.prereqs.includes(id)).map(o => o.id).sort());
+    const open = el("a", null, "Open");
+    open.href = href(id);
+    if (LINK_BASE) open.target = "_top"; else open.addEventListener("click", e => { e.preventDefault(); if (BY_ID[id]) openModal(BY_ID[id]); });
+    panel.append(open);
+    panel.addEventListener("pointerenter", () => clearTimeout(hideTimer));
+    panel.addEventListener("pointerleave", () => { hideTimer = setTimeout(leave, 200); });
+    root.append(panel);
+    place();
+    drawEdges();
+  }
+
+  function draw() {
+    leave();
+    root.replaceChildren();
+    for (const k in chipOf) delete chipOf[k];
+    svg = document.createElementNS(SVGNS, "svg");
+    svg.setAttribute("class", "fm-edges");
+    svg.setAttribute("aria-hidden", "true");
+    const cp = model.critical;
+    if (cp.len >= 2) {
+      const rb = el("div", "fm-ribbon");
+      const hd = el("span", "head", `${cp.len} to go`);
+      hd.append(el("small", null, cp.similar ? `critical path · +${cp.similar} similar` : "critical path"));
+      rb.append(hd);
+      cp.path.forEach((id, i) => {
+        if (i) rb.append(el("span", "arrow", "→"));
+        rb.append(chip(model.items[id]));
+      });
+      root.append(rb);
+    }
+    let shown = 0;
+    for (const [key, name] of LANES) {
+      if (key === "finished" && toggle.checked) continue;
+      const its = model.lanes[key] || [];
+      if (!its.length) continue;
+      shown++;
+      const lane = el("section", "fm-lane");
+      lane.append(el("h3", null, name));
+      lane.firstChild.append(el("span", "n", String(its.length)));
+      const row = el("div", "fm-chips");
+      for (const it of its) row.append(chip(it));
+      lane.append(row);
+      root.append(lane);
+    }
+    if (!shown) root.append(el("div", "fm-note", "Nothing to show. Turn off Simplify to see finished dossiers."));
+    root.append(svg);
+    for (const c of root.querySelectorAll(".fm-chip")) {
+      const id = c.dataset.id;
+      c.addEventListener("pointerenter", e => { if (e.pointerType !== "touch") { clearTimeout(hideTimer); enterFocus(id); } });
+      c.addEventListener("pointerleave", e => { if (e.pointerType !== "touch") hideTimer = setTimeout(leave, 200); });
+      c.addEventListener("focus", () => enterFocus(id));
+      c.addEventListener("pointerdown", e => { touched = e.pointerType === "touch"; });
+      c.addEventListener("click", e => {
+        if (touched && current !== id) { touched = false; enterFocus(id); e.stopPropagation(); return; }
+        touched = false;
+        if (BY_ID[id]) openModal(BY_ID[id]);
+      });
+    }
+  }
+  const relayout = () => { if (current) { place(); drawEdges(); } };
+  addEventListener("resize", relayout);
+  addEventListener("scroll", relayout, true);
+  if (typeof ResizeObserver !== "undefined") new ResizeObserver(relayout).observe(root);
+  addEventListener("keydown", e => { if (e.key === "Escape") leave(); });
+  document.addEventListener("click", e => { if (!e.target.closest(".fm-chip, .fm-panel")) leave(); });
+  toggle.addEventListener("change", () => {
+    try { localStorage.setItem("open-work-simplify", String(toggle.checked)); } catch (_) {}
+    draw();
+  });
+  draw();
+}
+
+function dependencyGraph(dossiers, simplified, shared) {
   const finished = new Set(["done", "dropped"]);
   const byId = Object.fromEntries(dossiers.map(d => [d.id, d]));
   const visible = new Set(dossiers
@@ -621,8 +1000,9 @@ function dependencyGraph(dossiers, simplified) {
       incoming = true;
     }
     if (!incoming) {
-      const stub = "\u0000stub:" + d.id;
       const history = d.blocked_by.length > 0;
+      /* shared: one Start and one Earlier-work node for the whole graph */
+      const stub = "\u0000stub:" + (shared ? (history ? "earlier" : "start") : d.id);
       nodes[stub] = {
         id: stub, label: history ? "Earlier work" : "Start",
         title: history ? "Done or dropped history hidden" : "No recorded prerequisites",
@@ -670,7 +1050,9 @@ function flows(ids, edges) {
   return out;
 }
 
-function depGraph(ids, edges, nodes) {
+/* Left-to-right layout: the original column layout, unchanged. Returns the
+   node positions, the svg size and one path string per edge. */
+function lrLayout(ids, edges) {
   /* layer = longest chain of blockers behind the dossier */
   const layer = {};
   const incoming = Object.fromEntries(ids.map(id => [id, []]));
@@ -724,18 +1106,221 @@ function depGraph(ids, edges, nodes) {
   const rowOf = {};
   order.forEach(col => col.forEach((id, i) => { rowOf[id] = i; }));
 
-  const PW = 168, PH = 48, GX = 74, GY = 20, PAD = 18;
-  const maxRows = Math.max(...order.map(c => c.length));
-  const width = PAD * 2 + order.length * PW + (order.length - 1) * GX;
-  const height = PAD * 2 + maxRows * PH + (maxRows - 1) * GY;
+  const PW = 168, PH = 48, PAD = 18;
+  const GX = 74, GY = 20;
   const pos = {};
-  order.forEach((col, li) => {
-    const x = PAD + li * (PW + GX);
-    const off = (maxRows - col.length) * (PH + GY) / 2;
-    col.forEach((id, i) => { pos[id] = [x, PAD + off + i * (PH + GY)]; });
-  });
+  let width, height;
+  {
+    const maxRows = Math.max(...order.map(c => c.length));
+    width = PAD * 2 + order.length * PW + (order.length - 1) * GX;
+    height = PAD * 2 + maxRows * PH + (maxRows - 1) * GY;
+    order.forEach((col, li) => {
+      const x = PAD + li * (PW + GX);
+      const off = (maxRows - col.length) * (PH + GY) / 2;
+      col.forEach((id, i) => { pos[id] = [x, PAD + off + i * (PH + GY)]; });
+    });
+  }
 
-  const svg = svgEl("svg", { class: "dg", width, height, viewBox: `0 0 ${width} ${height}`, role: "img" });
+  const edgeD = hops.map(chain => {
+    let d = "";
+    for (let i = 0; i < chain.length - 1; i++) {
+      const [x1, y1] = lrAnchor(chain[i], true), [x2, y2] = lrAnchor(chain[i + 1], false);
+      const mx = (x1 + x2) / 2;
+      if (i === 0) d += `M ${x1} ${y1} `;
+      d += `C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2} `;
+    }
+    return d.trim();
+  });
+  /* a real node's box edge, or the bare center of an invisible dummy row */
+  function lrAnchor(id, out) {
+    const [x, y] = pos[id];
+    if (id in dummyLayer) return [x + PW / 2, y + PH / 2];
+    return out ? [x + PW, y + PH / 2] : [x - 2, y + PH / 2];
+  }
+  return { pos, width, height, edgeD };
+}
+
+
+/* The done frontier, for the dashboard: done work is shown only where it
+   touches unfinished work. Edges between two finished dossiers go; a
+   finished prerequisite of X goes when another finished prerequisite of X
+   already depends on it (the newer one implies it); a finished dossier left
+   with no edge goes. What remains is one thin layer of done work in front of
+   the unfinished graph, each done box pointing straight at what it unblocked. */
+function doneFrontier(ids, edges, nodes) {
+  const fin = id => ["done", "dropped"].includes(nodes[id]?.status);
+  const blockers = Object.fromEntries(DATA.dossiers.map(d => [d.id, d.blocked_by || []]));
+  const memo = {};
+  const ancestors = id => {
+    if (memo[id]) return memo[id];
+    memo[id] = new Set();
+    for (const b of blockers[id] || []) { memo[id].add(b); for (const a of ancestors(b)) memo[id].add(a); }
+    return memo[id];
+  };
+  const kept = edges.filter(([a, b]) => !(fin(a) && fin(b)));
+  const byTarget = {};
+  for (const [a, b] of kept) (byTarget[b] = byTarget[b] || []).push(a);
+  return kept.filter(([a, b]) => !fin(a) ||
+    !byTarget[b].some(o => o !== a && fin(o) && ancestors(o).has(a)));
+}
+
+/* Every dossier upstream and downstream of `id`: the chain hover lights up. */
+function chainOf(id, edges) {
+  const up = {}, down = {};
+  for (const [a, b] of edges) { (down[a] = down[a] || []).push(b); (up[b] = up[b] || []).push(a); }
+  const out = new Set([id]);
+  for (const adj of [up, down]) {
+    const stack = [id];
+    while (stack.length) for (const n of adj[stack.pop()] || []) if (!out.has(n)) { out.add(n); stack.push(n); }
+  }
+  return out;
+}
+
+/* Left-to-right "bus" layout for the dashboard — the layered drawing workflow
+   tools use (GitHub Actions, Dagre with rankdir LR, yFiles' directed
+   orthogonal layout):
+   1. columns = longest chain of blockers, as lrLayout;
+   2. an edge that skips columns gets thin waypoints, so it runs in a free
+      corridor and never through a box;
+   3. order  = the same crossing minimisation as lrLayout;
+   4. y      = each box pulled toward the mean height of its neighbours over a
+      few sweeps, then pushed apart to a minimum gap in its order, so chains
+      run level instead of zig-zagging;
+   5. edges are orthogonal with rounded corners: right out of the source,
+      down or up in a vertical lane of the gap between two columns, right
+      into the target. Every source owns one lane per gap, so edges leaving
+      one dossier share their trunk (a bus) and lanes of different sources
+      never overlap. Pure — no DOM. */
+function busLayout(ids, edges) {
+  /* each independent flow is laid out alone and stacked below the previous
+     one, largest first, so one flow's tall column never leaves another
+     floating in empty space */
+  const pos = {}, edgeD = new Array(edges.length);
+  const index = new Map(edges.map(([a, b], i) => [a + "\u0001" + b, i]));
+  let top = 0, width = 0;
+  for (const f of flows(ids, edges)) {
+    const r = busLayoutOne(f.ids, f.edges, top);
+    Object.assign(pos, r.pos);
+    f.edges.forEach(([a, b], i) => { edgeD[index.get(a + "\u0001" + b)] = r.edgeD[i]; });
+    top = r.height - 6;
+    width = Math.max(width, r.width);
+  }
+  return { pos, width, height: top + 6, edgeD };
+}
+
+function busLayoutOne(ids, edges, top) {
+  const PW = 168, PH = 48, DH = 6, PAD = 18, GY = 14, R = 7, LANE = 7;
+  const layer = {};
+  const incoming = Object.fromEntries(ids.map(id => [id, []]));
+  for (const [a, b] of edges) incoming[b].push(a);
+  function depth(id, trail) {
+    if (id in layer) return layer[id];
+    if (trail.has(id)) return 0;
+    trail.add(id);
+    const bl = incoming[id];
+    layer[id] = bl.length ? 1 + Math.max(...bl.map(b => depth(b, trail))) : 0;
+    return layer[id];
+  }
+  for (const id of ids) depth(id, new Set());
+  /* a root (usually a done prerequisite) moves right, next to its earliest
+     dependent, so its edges are short instead of long wires from column 0 */
+  const out = {};
+  for (const [a, b] of edges) (out[a] = out[a] || []).push(b);
+  for (const id of ids)
+    if (!incoming[id].length && out[id]) layer[id] = Math.max(0, Math.min(...out[id].map(c => layer[c])) - 1);
+  const dummy = {};
+  let seq = 0;
+  const hops = edges.map(([a, b]) => {
+    const chain = [a];
+    for (let li = layer[a] + 1; li < layer[b]; li++) { const d = " bd" + seq++; dummy[d] = li; chain.push(d); }
+    chain.push(b);
+    return chain;
+  });
+  const L = id => layer[id] ?? dummy[id];
+  const maxLayer = Math.max(0, ...ids.map(id => layer[id]));
+  const cols = Array.from({ length: maxLayer + 1 }, () => []);
+  for (const id of ids) cols[layer[id]].push(id);
+  for (const d in dummy) cols[dummy[d]].push(d);
+  const boundaries = Array.from({ length: maxLayer }, () => []);
+  const nbr = {};
+  for (const chain of hops)
+    for (let i = 0; i < chain.length - 1; i++) {
+      const [a, b] = [chain[i], chain[i + 1]], li = L(a);
+      if (li >= 0 && li < maxLayer && L(b) === li + 1) boundaries[li].push([a, b]);
+      (nbr[a] = nbr[a] || []).push(b); (nbr[b] = nbr[b] || []).push(a);
+    }
+  const order = minimizeCrossings(cols, boundaries);
+  const h = id => (id in dummy ? DH : PH);
+
+  /* y: start stacked, then barycentre sweeps with order-preserving separation */
+  const y = {};
+  order.forEach(col => { let t = 0; for (const id of col) { y[id] = t; t += h(id) + GY; } });
+  const centre = id => y[id] + h(id) / 2;
+  function place(col) {
+    const want = col.map(id => {
+      const ns = nbr[id] || [];
+      return ns.length ? ns.reduce((s, n) => s + centre(n), 0) / ns.length - h(id) / 2 : y[id];
+    });
+    /* forward: keep order and gap; backward: shift up where the forward pass pushed too far */
+    const out = want.slice();
+    for (let i = 1; i < col.length; i++) out[i] = Math.max(out[i], out[i - 1] + h(col[i - 1]) + GY);
+    for (let i = col.length - 2; i >= 0; i--) out[i] = Math.min(out[i], out[i + 1] - h(col[i]) - GY, Math.max(want[i], out[i]));
+    for (let i = 1; i < col.length; i++) out[i] = Math.max(out[i], out[i - 1] + h(col[i - 1]) + GY);
+    col.forEach((id, i) => { y[id] = out[i]; });
+  }
+  for (let pass = 0; pass < 6; pass++) {
+    for (let c = 1; c < order.length; c++) place(order[c]);
+    for (let c = order.length - 2; c >= 0; c--) place(order[c]);
+  }
+  const minY = Math.min(...Object.values(y));
+  for (const id in y) y[id] += top + PAD - minY;
+
+  /* lanes: per gap, one per distinct source crossing it, ordered by the source's height */
+  const lanesIn = order.slice(0, -1).map((_, li) =>
+    [...new Set(boundaries[li].map(([a]) => a))].sort((p, q) => centre(p) - centre(q)));
+  const gapW = lanesIn.map(ls => Math.max(48, 26 + ls.length * LANE));
+  const colX = [];
+  let x = PAD;
+  order.forEach((_, li) => { colX[li] = x; x += PW + (gapW[li] || 0); });
+  const width = x - (gapW[order.length - 1] || 0) + PAD;
+  const height = Math.max(...Object.keys(y).map(id => y[id] + h(id))) + PAD;
+  const pos = {};
+  for (const id of ids) pos[id] = [colX[layer[id]], y[id]];
+  const laneX = (li, src) => {
+    const ls = lanesIn[li], k = ls.indexOf(src), w = gapW[li];
+    return colX[li] + PW + (w - (ls.length - 1) * LANE) / 2 + k * LANE;
+  };
+  /* one hop: source right edge -> lane -> target left edge, rounded corners */
+  function hop(a, b, first) {
+    const li = L(a);
+    const x1 = colX[li] + (a in dummy ? PW / 2 : PW), y1 = centre(a);
+    const x2 = colX[li + 1] + (b in dummy ? PW / 2 : -2), y2 = centre(b);
+    const lx = laneX(li, a);
+    let d = first ? `M ${x1} ${y1} ` : "";
+    if (Math.abs(y2 - y1) < 1) return d + `L ${x2} ${y2} `;
+    const s = Math.sign(y2 - y1), r = Math.min(R, Math.abs(y2 - y1) / 2);
+    d += `L ${lx - r} ${y1} Q ${lx} ${y1} ${lx} ${y1 + s * r} `;
+    d += `L ${lx} ${y2 - s * r} Q ${lx} ${y2} ${lx + r} ${y2} `;
+    return d + `L ${x2} ${y2} `;
+  }
+  const edgeD = hops.map(chain => {
+    let d = "";
+    for (let i = 0; i < chain.length - 1; i++) {
+      d += hop(chain[i], chain[i + 1], i === 0);
+      /* through a waypoint: straight across its column */
+      if (i + 1 < chain.length - 1) d += `L ${colX[L(chain[i + 1])] + PW} ${centre(chain[i + 1])} `;
+    }
+    return d.trim();
+  });
+  return { pos, width, height, edgeD };
+}
+
+
+function depGraph(ids, edges, nodes) {
+  const PW = 168, PH = 48;
+  const { pos, width, height, edgeD } = TB ? layeredLayout(ids, edges) : BUS ? busLayout(ids, edges) : lrLayout(ids, edges);
+
+  const svg = svgEl("svg", { class: "dg" + (TB ? " tb" : BUS ? " bus" : ""), width, height, viewBox: `0 0 ${width} ${height}`, role: "img" });
   svg.setAttribute("aria-label", "Dependency flow: " + edges.map(([a, b]) => `${nodes[a].label || a} before ${nodes[b].label || b}`).join(", "));
   const defs = svgEl("defs", {});
   const marker = svgEl("marker", { id: "dg-arrow", viewBox: "0 0 8 8", refX: 7, refY: 4,
@@ -744,25 +1329,9 @@ function depGraph(ids, edges, nodes) {
   defs.append(marker);
   svg.append(defs);
 
-  /* a real node's box edge, or the bare center of an invisible dummy row */
-  function anchor(id, out) {
-    const [x, y] = pos[id];
-    if (id in dummyLayer) return [x + PW / 2, y + PH / 2];
-    return out ? [x + PW, y + PH / 2] : [x - 2, y + PH / 2];
-  }
-
   const edgeEls = [];
-  hops.forEach((chain, ei) => {
-    const [a, b] = edges[ei];
-    let d = "";
-    for (let i = 0; i < chain.length - 1; i++) {
-      const [x1, y1] = anchor(chain[i], true);
-      const [x2, y2] = anchor(chain[i + 1], false);
-      const mx = (x1 + x2) / 2;
-      if (i === 0) d += `M ${x1} ${y1} `;
-      d += `C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2} `;
-    }
-    const p = svgEl("path", { class: "dg-edge", "marker-end": "url(#dg-arrow)", d: d.trim() });
+  edges.forEach(([a, b], ei) => {
+    const p = svgEl("path", { class: "dg-edge", "marker-end": "url(#dg-arrow)", d: edgeD[ei] });
     p.dataset.from = a; p.dataset.to = b;
     svg.append(p);
     edgeEls.push(p);
@@ -783,21 +1352,222 @@ function depGraph(ids, edges, nodes) {
     t2.textContent = title.length > 24 ? title.slice(0, 23).trimEnd() + "…" : title;
     g.append(t1, t2);
     bindTip(g, () => `${d.label || d.id} — ${d.title}  ·  ${d.stub ? "display-only stub" : d.status}`);
+    if (canStart(d)) {
+      const pb = svgEl("g", { class: "dg-play", transform: `translate(${PW - 16},16)`, role: "button", tabindex: "0" });
+      pb.setAttribute("aria-label", `Start ${d.id}`);
+      pb.append(svgEl("circle", { r: 9 }), svgEl("path", { d: "M-3,-4.5 L5,0 L-3,4.5 Z" }));
+      const tip = svgEl("title", {}); tip.textContent = `Start /work-on ${d.id} in the background (click twice)`; pb.append(tip);
+      const set = st => { pb.classList.toggle("armed", st === "armed"); pb.classList.toggle("started", st === "started"); tip.textContent = st === "armed" ? "Click again to start" : st === "started" ? "Started" : tip.textContent; };
+      const go = e => { e.preventDefault(); e.stopPropagation(); if (!pb.classList.contains("started")) armStart(d.id, set); };
+      pb.addEventListener("click", go);
+      pb.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") go(e); });
+      g.append(pb);
+    }
     if (!d.stub) {
       g.setAttribute("tabindex", "0");
       g.addEventListener("click", () => openModal(d));
       g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openModal(d); } });
     }
-    g.addEventListener("mouseenter", () => {
-      for (const p of edgeEls)
-        p.classList.toggle("hl", p.dataset.from === id || p.dataset.to === id);
-    });
-    g.addEventListener("mouseleave", () => {
+    const on = () => {
+      const chain = chainOf(id, edges);
+      svg.classList.add("focus");
+      for (const p of edgeEls) p.classList.toggle("hl", chain.has(p.dataset.from) && chain.has(p.dataset.to));
+      for (const n of svg.querySelectorAll(".dg-node")) n.classList.toggle("lit", chain.has(n.dataset.id));
+    };
+    const off = () => {
+      svg.classList.remove("focus");
       for (const p of edgeEls) p.classList.remove("hl");
-    });
+      for (const n of svg.querySelectorAll(".dg-node")) n.classList.remove("lit");
+    };
+    g.addEventListener("mouseenter", on);
+    g.addEventListener("focus", on);
+    g.addEventListener("mouseleave", off);
+    g.addEventListener("blur", off);
     svg.append(g);
   }
   return svg;
+}
+
+
+/* Top-to-bottom layered (Sugiyama-style) layout of one connected drawing.
+   1. rank   = longest path from the roots (a blocked_by cycle is tolerated);
+   2. dummy  = one invisible waypoint per rank an edge skips, so a long edge
+      travels through the gaps between the boxes of every row it crosses;
+   3. order  = barycenter/median sweeps, down then up, the best of ~10 passes
+      kept, then an adjacent-swap polish;
+   4. x      = nodes keep their natural size and a minimum gap; each rank is
+      pulled toward its neighbours' centres (weighted so dummy chains run
+      straight) and snapped to the nearest legal spacing.
+   An edge leaves a box at its bottom centre, runs vertically through each
+   dummy's slot (a slot is a column no box occupies) and crosses the gap
+   between rows as an S curve with vertical tangents, entering at the top
+   centre. So no segment can touch a box other than its own two ends.
+   Pure — no DOM. Returns pos (top-left of each real node), the svg size, one
+   path string and one point list per edge. */
+function layeredLayout(ids, edges) {
+  const PW = 168, PH = 48, PAD = 18, GX = 20, GY = 46, DW = 10;
+  const incoming = {};
+  for (const id of ids) incoming[id] = [];
+  for (const [a, b] of edges) incoming[b].push(a);
+  const rank = {};
+  function depth(id, trail) {
+    if (id in rank) return rank[id];
+    if (trail.has(id)) return 0;                       // cycle guard
+    trail.add(id);
+    const bl = incoming[id];
+    rank[id] = bl.length ? 1 + Math.max(...bl.map(b => depth(b, trail))) : 0;
+    return rank[id];
+  }
+  for (const id of ids) depth(id, new Set());
+
+  const R = Math.max(0, ...ids.map(id => rank[id]));
+  const w = {}, layers = Array.from({ length: R + 1 }, () => []);
+  for (const id of ids) { w[id] = PW; layers[rank[id]].push(id); }
+  const up = {}, down = {};                            // id -> [[neighbour, weight]]
+  const chains = [];
+  let seq = 0;
+  function link(a, b) {
+    const wt = (w[a] === DW && w[b] === DW) ? 8 : (w[a] === DW || w[b] === DW) ? 3 : 1;
+    (down[a] = down[a] || []).push([b, wt]);
+    (up[b] = up[b] || []).push([a, wt]);
+  }
+  for (const [a, b] of edges) {
+    if (!(rank[b] > rank[a])) { chains.push(null); continue; }   // cycle leftover: drawn direct
+    const chain = [a];
+    for (let r = rank[a] + 1; r < rank[b]; r++) {
+      const d = "\u0000d" + seq++;
+      w[d] = DW; rank[d] = r; layers[r].push(d); chain.push(d);
+    }
+    chain.push(b);
+    for (let i = 0; i < chain.length - 1; i++) link(chain[i], chain[i + 1]);
+    chains.push(chain);
+  }
+
+  /* ---- order: crossing reduction */
+  function index(order) {
+    const m = {};
+    order.forEach(l => l.forEach((id, i) => { m[id] = i; }));
+    return m;
+  }
+  function crossings(order) {
+    const ix = index(order);
+    let n = 0;
+    for (let r = 0; r < R; r++) {
+      const segs = [];
+      for (const a of order[r]) for (const [b] of down[a] || []) segs.push([ix[a], ix[b]]);
+      for (let i = 0; i < segs.length; i++)
+        for (let j = i + 1; j < segs.length; j++)
+          if ((segs[i][0] - segs[j][0]) * (segs[i][1] - segs[j][1]) < 0) n++;
+    }
+    return n;
+  }
+  let order = layers.map(l => l.slice());
+  let best = order.map(l => l.slice()), bestN = crossings(best);
+  function sweep(dir, useMedian) {
+    const range = [...order.keys()];
+    if (dir < 0) range.reverse();
+    for (const r of range) {
+      if (r === (dir > 0 ? 0 : R)) continue;
+      const ix = index(order), nb = dir > 0 ? up : down;
+      const key = {};
+      order[r].forEach((id, i) => {
+        const ns = (nb[id] || []).map(([n]) => ix[n]).sort((p, q) => p - q);
+        if (!ns.length) key[id] = i;
+        else if (useMedian) {
+          const m = ns.length;
+          key[id] = m % 2 ? ns[(m - 1) / 2] : (ns[m / 2 - 1] + ns[m / 2]) / 2;
+        } else key[id] = ns.reduce((s, v) => s + v, 0) / ns.length;
+      });
+      const cur = {};
+      order[r].forEach((id, i) => { cur[id] = i; });
+      order[r] = order[r].slice().sort((p, q) => key[p] - key[q] || cur[p] - cur[q]);
+    }
+  }
+  for (let it = 0; it < 10 && bestN > 0; it++) {
+    sweep(1, it % 2 === 1); sweep(-1, it % 2 === 1);
+    const n = crossings(order);
+    if (n < bestN) { bestN = n; best = order.map(l => l.slice()); }
+  }
+  order = best;
+  for (let pass = 0; pass < 4 && bestN > 0; pass++) {          // transpose polish
+    let improved = false;
+    for (const col of order)
+      for (let i = 0; i + 1 < col.length; i++) {
+        [col[i], col[i + 1]] = [col[i + 1], col[i]];
+        const n = crossings(order);
+        if (n < bestN) { bestN = n; improved = true; }
+        else [col[i], col[i + 1]] = [col[i + 1], col[i]];
+      }
+    if (!improved) break;
+  }
+
+  /* ---- x: natural widths, minimum gap, straight dummy chains */
+  const cx = {};
+  const sep = (p, q) => (w[p] + w[q]) / 2 + GX;
+  for (const col of order) {
+    let x = 0;
+    col.forEach((id, i) => { x += i ? sep(col[i - 1], id) : w[id] / 2; cx[id] = x; });
+  }
+  function place(col, nbrOf) {
+    const ys = [], wt = [];
+    let off = 0;
+    col.forEach((id, i) => {
+      if (i) off += sep(col[i - 1], id);
+      const ns = nbrOf(id);
+      const tw = ns.reduce((s, [, k]) => s + k, 0);
+      const want = tw ? ns.reduce((s, [n, k]) => s + cx[n] * k, 0) / tw : cx[id];
+      ys.push([want - off, off]); wt.push(tw || 0.01);
+    });
+    /* pool adjacent violators: closest non-decreasing fit, i.e. the nearest legal spacing */
+    const blocks = [];
+    ys.forEach(([v], i) => {
+      blocks.push({ s: v * wt[i], w: wt[i], n: 1 });
+      while (blocks.length > 1) {
+        const b = blocks[blocks.length - 1], a = blocks[blocks.length - 2];
+        if (a.s / a.w <= b.s / b.w) break;
+        blocks.pop(); a.s += b.s; a.w += b.w; a.n += b.n;
+      }
+    });
+    let i = 0;
+    for (const b of blocks)
+      for (let k = 0; k < b.n; k++, i++) cx[col[i]] = b.s / b.w + ys[i][1];
+  }
+  const upNs = id => up[id] || [], downNs = id => down[id] || [];
+  const bothNs = id => upNs(id).concat(downNs(id));
+  for (let it = 0; it < 6; it++) {
+    for (let r = 1; r <= R; r++) place(order[r], upNs);
+    for (let r = R - 1; r >= 0; r--) place(order[r], downNs);
+  }
+  for (let it = 0; it < 6; it++) {
+    for (let r = 0; r <= R; r++) place(order[r], bothNs);
+    for (let r = R; r >= 0; r--) place(order[r], bothNs);
+  }
+  let minX = Infinity, maxX = -Infinity;
+  for (const id in cx) { minX = Math.min(minX, cx[id] - w[id] / 2); maxX = Math.max(maxX, cx[id] + w[id] / 2); }
+  const shift = PAD - minX;
+  for (const id in cx) cx[id] += shift;
+  const rowY = r => PAD + r * (PH + GY);
+  const pos = {};
+  for (const id of ids) pos[id] = [cx[id] - PW / 2, rowY(rank[id])];
+
+  /* ---- edges as point lists, then smooth paths */
+  const paths = edges.map(([a, b], ei) => {
+    const chain = chains[ei] || [a, b];
+    const pts = [[cx[a], rowY(rank[a]) + PH]];
+    for (const d of chain.slice(1, -1)) pts.push([cx[d], rowY(rank[d])], [cx[d], rowY(rank[d]) + PH]);
+    pts.push([cx[b], rowY(rank[b]) - 2]);
+    return pts;
+  });
+  const edgeD = paths.map(pts => {
+    let d = `M ${pts[0][0]} ${pts[0][1]}`;
+    for (let i = 1; i < pts.length; i++) {
+      const [x1, y1] = pts[i - 1], [x2, y2] = pts[i], my = (y1 + y2) / 2;
+      d += x1 === x2 ? ` L ${x2} ${y2}` : ` C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`;
+    }
+    return d;
+  });
+  return { pos, width: maxX + shift + PAD, height: rowY(R) + PH + PAD, edgeD, paths,
+           nodeW: PW, nodeH: PH, crossings: bestN };
 }
 
 /* Order each column to minimize edge crossings. Small flows — almost all of
@@ -973,6 +1743,7 @@ function heuristicOrder(cols, boundaries) {
     main.append(head);
     if (d.branch) main.append(el("div", "fp-sub mono", d.branch));
     row.append(dot, main, stepper(d), el("span", "fp-age", agePhrase(d.age_days)));
+    if (canStart(d)) { row.classList.add("has-play"); row.append(playButton(d)); }
     row.addEventListener("click", () => openModal(d));
     return row;
   }
@@ -996,51 +1767,6 @@ function heuristicOrder(cols, boundaries) {
   }
 }
 
-/* ---------------------------------------------------------------- attention */
-{
-  app.append(enter(el("h2", null, "Needs attention")));
-  const panel = el("div", "panel");
-  const rows = el("ul", "rows");
-  if (!DATA.attention.length) {
-    const li = el("li");
-    li.append(el("span", "icon", "✓"), Object.assign(el("span", "what allclear"), { textContent: "No discrepancies. The recorded state and the disk agree." }));
-    rows.append(li);
-  }
-  for (const a of DATA.attention) {
-    const li = el("li");
-    const icon = el("span", "icon", SEV_ICON[a.severity] || "⚠︎");
-    icon.style.color = SEV_COLOR[a.severity] || "var(--status-warning)";
-    li.append(icon, el("span", "what", a.text));
-    if (a.dossier) li.append(el("span", "who mono", a.dossier));
-    rows.append(li);
-  }
-  panel.append(rows);
-  app.append(enter(panel));
-}
-
-/* ---------------------------------------------------------------- signals
-   Mined from Build-log prose by /open-work, not by the generator — so on a
-   refresh the generator did the page carries the last mined set, and says
-   when that was rather than passing it off as current. */
-if (DATA.signals.length) {
-  const h = el("h2", null, "Health signals");
-  if (DATA.signals_mined_at_human)
-    h.append(el("span", "hint", `mined ${DATA.signals_mined_at_human} · /open-work refreshes them`));
-  app.append(enter(h));
-  const panel = el("div", "panel");
-  const rows = el("ul", "rows");
-  for (const s of DATA.signals) {
-    const li = el("li");
-    const icon = el("span", "icon", SEV_ICON[s.severity] || "⚠︎");
-    icon.style.color = SEV_COLOR[s.severity] || "var(--status-warning)";
-    li.append(icon, el("span", "what", (s.signal ? s.signal + " — " : "") + (s.detail || "")));
-    if (s.dossier) li.append(el("span", "who mono", s.dossier));
-    rows.append(li);
-  }
-  panel.append(rows);
-  app.append(enter(panel));
-}
-
 } /* end non-empty branch */
 
 /* ---------------------------------------------------------------- footer */
@@ -1049,7 +1775,9 @@ if (DATA.signals.length) {
   const per = STAGES.filter(s => DATA.counts.by_status[s])
     .map(s => `${DATA.counts.by_status[s]} ${s}`).join(" · ");
   f.append(el("span", null, `${DATA.counts.total} dossier${DATA.counts.total === 1 ? "" : "s"}${per ? " — " + per : ""}`));
-  f.append(el("span", null, "generated by /open-work — regenerate, never hand-edit"));
+  if (DATA.parse_errors.length)
+    f.append(el("span", null, `${DATA.parse_errors.length} file${DATA.parse_errors.length === 1 ? "" : "s"} with unparseable front matter: ` + DATA.parse_errors.map(e => e.file).join(", ")));
+  f.append(el("span", null, `generated ${DATA.generated_at_human} — regenerate, never hand-edit`));
   app.append(f);
 }
 
@@ -1057,6 +1785,11 @@ if (DATA.signals.length) {
 const modal = document.getElementById("modal");
 const sheet = modal.querySelector(".sheet");
 function openModal(d) {
+  if (LINK_BASE) {
+    try { top.location.href = LINK_BASE + "/" + encodeURIComponent(d.id); }
+    catch (e) { window.open(LINK_BASE + "/" + encodeURIComponent(d.id), "_top"); }
+    return;
+  }
   sheet.textContent = "";
   sheet.style.setProperty("--sheet-stage", stageVar(d.status));
   const kicker = el("div", "kicker");
@@ -1129,81 +1862,6 @@ function bindTip(node, text) {
     tip.style.top = (e.clientY + 16) + "px";
   });
   node.addEventListener("mouseleave", () => { tip.style.display = "none"; });
-}
-
-/* ------------------------------------------------------------------- live
-   The report is a static file and the generator is what re-reads the
-   dossiers, so "live" here means: notice that a newer report exists and pick
-   it up. The generator writes a small state file beside the HTML holding the
-   fingerprint of everything the page shows except when it was generated; this
-   polls that file and reloads only when the fingerprint actually differs, so
-   a regeneration that changed nothing is never a reload.
-
-   A `file://` page cannot fetch its own sibling (CORS), so live is off there
-   and the chip says `static` — `--serve` is what makes it live. Reloading is
-   deferred while a dossier sheet is open, and the scroll position is carried
-   across, so an update does not throw away where the reader was. */
-{
-  const chip = document.getElementById("live-chip");
-  const txt = chip.querySelector(".txt");
-  const setChip = (cls, label, hint) => {
-    chip.className = cls;
-    txt.textContent = label;
-    chip.title = hint;
-  };
-
-  const KEY = "open-work-scroll";
-  const saved = sessionStorage.getItem(KEY);
-  if (saved !== null) {
-    sessionStorage.removeItem(KEY);
-    const restore = () => scrollTo({ top: +saved, behavior: "instant" });
-    if (document.readyState === "complete") restore();
-    else addEventListener("load", restore);
-  }
-
-  const servedOverHttp = location.protocol === "http:" || location.protocol === "https:";
-  if (!DATA.state_file || !servedOverHttp) {
-    setChip("", "static", DATA.state_file
-      ? "Opened as a file, so the page cannot poll for updates. Run the generator with --serve for a live report."
-      : "This report was generated without a state file, so it cannot poll for updates.");
-  } else {
-    const period = Math.max(1, Number(new URLSearchParams(location.search).get("poll")) || 3) * 1000;
-    let pending = false, misses = 0;
-    setChip("on", "live", `Watching ${DATA.state_file} every ${period / 1000}s — reloads when a dossier changes.`);
-
-    const reload = () => {
-      sessionStorage.setItem(KEY, String(scrollY));
-      location.reload();
-    };
-    /* A reader with a sheet open is reading it; finish, then take the update */
-    modal.querySelector(".backdrop").addEventListener("click", () => { if (pending) reload(); });
-    addEventListener("keydown", e => { if (pending && e.key === "Escape") reload(); });
-
-    const poll = async () => {
-      try {
-        const r = await fetch(DATA.state_file + "?t=" + Date.now(), { cache: "no-store" });
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        const state = await r.json();
-        misses = 0;
-        if (state.fingerprint && state.fingerprint !== DATA.fingerprint) {
-          if (modal.classList.contains("open")) {
-            pending = true;
-            setChip("on", "update ready", "A newer report is ready — close this sheet to load it.");
-          } else {
-            reload();
-          }
-        } else if (!pending) {
-          setChip("on", "live", `Up to date as of ${DATA.generated_at_human}.`);
-        }
-      } catch (err) {
-        /* One miss is a regeneration mid-write; a run of them means the
-           server is gone, and a chip claiming "live" would then be a lie. */
-        if (++misses >= 3) setChip("lost", "not live", "Lost contact with the report server — this page may be stale. " + err);
-      }
-    };
-    setInterval(poll, period);
-    poll();
-  }
 }
 </script>
 </body>

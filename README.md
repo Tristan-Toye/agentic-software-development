@@ -62,8 +62,8 @@ whichever side is easier to change.
 |---|---|---|
 | **`/plan <anything>`** | A Jira key, a stack trace, a paragraph of intent → an investigated dossier: the problem with anchored evidence, the approach, the contract, disjoint work packages, falsifiable criteria. Writes `status: ready`. In a repo that commits `.discovery/`, it works in a `plan/<KEY>` worktree and ends with a PR. | 1 (`reviewer`, `LENS: plan`) |
 | **`/work-on <ID>`** | Materialises the contract as real code, fans out blind and concurrent, merges, arbitrates every test failure, investigates flake risk with focused repetitions when needed, runs three concurrent review lenses (four when the new tests carry flake risk), extracts the ADRs, opens the PR, removes the worktree. Resumable at every phase. | 3 + N, then 3 |
-| **`/stub [branch] [--budget N]`** | The weekly integration: opens the release stub's PR into `development`, waits out CI, runs the one full stack suite in the VM and posts its `local-stack` receipt, audits every dossier on the stub against its own criteria, then attributes any failure to a dossier and fixes it through the implementer/reviewer flow under a budget. Merging the stub PR stays the user's. | fix rounds: 1 implementer + 1 (`reviewer`) each |
-| **`/overview-dossiers`** | Status of every dossier from front matter alone, plus the pipeline health signals worth acting on. Read-only toward pipeline state; also renders `.discovery/analysis/open-work.html`, a self-contained animated dashboard; `--worktrees` overlays the live copies from sibling worktrees when `.discovery/` is committed. | 0 |
+| **`/stub [branch]`** | The weekly integration: opens the release stub's PR into `development`, waits out CI, runs the one full stack suite in the VM and posts its `local-stack` receipt, audits every dossier on the stub against its own criteria, then attributes any failure to a dossier and fixes it through the implementer/reviewer flow, round after round until the full stack run is green. Merging the stub PR stays the user's. | fix rounds: 1 implementer + 1 (`reviewer`) each |
+| **`/overview-dossiers`** | Status of every dossier from front matter alone, plus the pipeline health signals worth acting on. Read-only toward pipeline state; also renders `.discovery/analysis/open-work.html`, a self-contained page the pipeline dashboard embeds and refreshes; `--worktrees` overlays the live copies from sibling worktrees when `.discovery/` is committed. | 0 |
 | **`/deferred`** | The deferred-issues report for a finished change: every product-code issue the session knew about and did not tackle, with an ID, evidence and a proposed fix. Recall, not audit; `/plan D-n` seeds a dossier from a line. | 0 |
 
 ## The agents
@@ -336,6 +336,14 @@ hook fails open (exit 0, no output). Hook events — `refused`, `nudge`,
 Tests: `bun --no-install shared/test/<name>.test.ts` (shared modules and the
 symlink proof, the hooks, the MCP server, the workflows) and `opencode/plugins/test/`.
 
+**Owner questions.** A run that needs a ruling asks it through
+`scripts/ask_owner.py`, goes on with what is not blocked, and waits in the
+background only when nothing else can proceed. The owner answers on
+`http://127.0.0.1:7317` or in a Slack DM thread; the local server
+(`shared/questions/server.ts`) sends the notifications. Install it with
+`scripts/install_questions_agent.sh --slack-user U…`. The contract is
+`references/owner-questions.md`. `scripts/run_dossier.py` runs a dossier headless, one process per stage, waits on those questions without spending tokens, and writes the run's updates; see `references/runner.md`.
+
 **Claude Code only: two dynamic workflows** (`workflows/`, run through the
 `Workflow` tool as `agentic-software-development:phase4-wave` and
 `agentic-software-development:phase7-review`). `/work-on` still composes, lints
@@ -418,6 +426,9 @@ are in `ledger/token-spend.md`; `scripts/token_report.py` produces the numbers.
 | `scripts/materialise_stubs.py` | Compiling stubs from a signature-only contract, deterministically: every contract line byte-for-byte, a throwing body per member that needs one, `### Definitions` placed, the mechanical diff run in-process — the no-agent route beside `stub-materialiser`. `--selftest` checks the checker. |
 | `scripts/gate_commit.py` | Gates, stage only the named paths, commit (signed when asked), push when asked; `--forbid-id` refuses a commit that names the dossier id; at most 12 lines out. `--selftest` checks the checker. |
 | `scripts/verify_return.py` | One call after a subagent returns: worktree state, its commits, paths touched beyond ownership, stubs left, the contract hash and the slot release, with the mechanical half of the build-log line. `--selftest` checks the checker. `--gates FILE` reports whether a green `run_gates.py` receipt matches the tree. |
+| `scripts/ask_owner.py` | Owner questions from a run: `ask`, `reply`, `wait`, `list`, `show` against the store in `~/.agentic/questions`. Works with the server down. See `references/owner-questions.md`. |
+| `scripts/run_dossier.py` | The dossier runner: one headless `claude` process per stage of `/work-on`, owner questions awaited through `ask_owner.py wait`, `status` and `stop`, updates in `~/.agentic/runs`. See `references/runner.md`. |
+| `scripts/install_questions_agent.sh` | Installs or removes (`--uninstall`) the `dev.tristan.asd-questions` LaunchAgent that runs `shared/questions/server.ts`; needs `--slack-user U…`, `--dry-run` prints the plist. |
 | `scripts/token_report.py` | Where an opencode setup spends its tokens in a time window: per agent, per orchestrator run, carried context by kind, tool adoption and bypasses, plugin events. `--json` snapshots and `--compare` diffs them; the evidence behind `ledger/token-spend.md`. `--selftest` checks the checker. |
 | `scripts/build_claude_plugin.py` | The Claude Code surface, derived from the opencode sources. `--check` fails on drift; `--selftest` checks the checker. |
 

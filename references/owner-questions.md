@@ -1,0 +1,300 @@
+# Owner questions
+
+How a run asks the owner a question it cannot settle itself, keeps working,
+and waits only when it is blocked. The owner answers from a local page or from
+a Slack DM thread, and can ask follow-ups first.
+
+Only the orchestrator asks. A sub-agent returns `GAP:` or `CONTRACT-CHANGE:`,
+and the orchestrator decides whether that needs the owner. A run never picks
+an option itself, however long it waits.
+
+## Parts
+
+- `scripts/ask_owner.py`: the CLI the orchestrator runs: `ask`, `reply`,
+  `wait`, `list`, `show`. It reads and writes the store directly, so it works
+  with the server down; the server then only adds the notifications.
+- `shared/questions/server.ts`: one Bun process, no dependencies. It watches
+  the store, notifies (macOS notification, Slack DM), serves the page on
+  `http://127.0.0.1:7317`, and appends the owner's messages from the page and
+  from Slack.
+- `scripts/install_questions_agent.sh`: installs the LaunchAgent
+  `dev.tristan.asd-questions`, which starts the server at login and keeps it
+  running.
+
+## The store
+
+One directory, `$ASD_QUESTIONS_DIR` (default `~/.agentic/questions`). One file
+per question, `<id>.jsonl`, one JSON object per line, append-only. Every
+writer appends one whole line with a single `O_APPEND` write of under 4 KB
+(longer text is cut at 3,500 characters with ` [cut]`), so concurrent writers
+never interleave.
+
+The id is `<repo>.<dossier>.Q<n>`: `<repo>` is the basename of the repository
+root, `<dossier>` the dossier id, `<n>` one more than the highest existing `n`
+for that repo and dossier. Example: `config-harness.W-123.Q2`.
+
+Line fields:
+
+| field | on | meaning |
+|---|---|---|
+| `ts` | every line | ISO 8601 UTC |
+| `from` | every line | `agent` or `owner` |
+| `kind` | every line | `question` (first line only), `reply` (agent), `followup` or `answer` (owner) |
+| `text` | every line | the message |
+| `dossier`, `repo`, `root` | `question` | dossier id, repo basename, repository root path |
+| `options` | `question` | list of `{"key": "A", "label": "...", "consequence": "..."}`, 2 to 4 |
+| `recommendation` | `question` | an option key, or empty |
+| `blocks` | `question` | what cannot proceed until it is answered |
+| `option` | `answer` | the chosen key, or empty for a free-text answer |
+| `via` | owner lines | `page`, `slack` or `cli` |
+
+A question is **open** until it has an `answer` line, then **answered**. The
+first `answer` line is final; later lines are ignored by every reader.
+
+Sidecar `<id>.slack.json` (server only): `{"channel": "...", "ts": "..."}` of
+the question's Slack message, the thread every later message goes to.
+
+## The CLI
+
+    ask_owner.py ask --root R --dossier ID --question TEXT
+                     --option "A|label|consequence" [--option ...]
+                     [--recommend A] --blocks TEXT        # prints the id
+    ask_owner.py reply ID --text TEXT
+    ask_owner.py wait ID [--timeout SECONDS]               # default: no timeout
+    ask_owner.py list [--open] [--dossier ID]
+    ask_owner.py show ID
+    ask_owner.py --selftest
+
+`wait` returns on the first owner line after the last agent line, polling the
+file every 2 s:
+
+- `ANSWER ID [option A]: <text>`, exit 0;
+- `FOLLOWUP ID: <text>`, exit 10: answer it with `reply`, then `wait` again;
+- `TIMEOUT ID`, exit 3.
+
+It prints at most 40 lines.
+
+## Asking, in a run
+
+1. Ask as soon as the question is known, with every option's consequence and
+   your recommendation, then go on with whatever does not depend on it.
+2. Record `QUESTION: <id> — <question>` in the dossier's build log.
+3. When nothing else can proceed, wait. Under Claude Code run
+   `ask_owner.py wait <id>` as a background command and end the turn: the
+   harness wakes you when it exits, and no request is made while you wait.
+   Under opencode run it in the foreground with `--timeout 3000` and repeat
+   on `TIMEOUT`.
+4. On `FOLLOWUP`, answer with `reply` (facts, not a new recommendation unless
+   asked), then wait again.
+5. On `ANSWER`, record `OWNER-RULING (<date>): <id> — <ruling>` in the build
+   log, then continue.
+
+## The server
+
+- **Watch:** it reads the store at start and on every change (`fs.watch`, plus
+  a 10 s rescan).
+- **New question:**
+  - a macOS notification (`osascript`), titled with the repo and dossier;
+  - a Slack DM: the question, `blocks`, each option as a button and as a
+    line with its consequence, the recommendation, and a link to the page.
+- **New agent reply:** posted into the question's Slack thread.
+- **Reminder:** an open question whose last line is an agent line is notified
+  again 30 min after that line, then 1 h later, then every 2 h. A new agent
+  line restarts the schedule; a server restart sends no backlog.
+- **Page** `GET /`: a dashboard (see Dashboard): the repo cards, then the queue of
+  open questions, then running dossiers, this week's stub, stubs and open work.
+  - Each question shows its thread, the option buttons (an answer, the
+  recommendation highlighted), a text box with **Ask follow-up** and **Answer**.
+  - It refreshes every 5 s, patching the DOM so a half-written text box and
+    the scroll position survive.
+- **API:**
+  - `GET /api/questions?state=open|all`
+  - `GET /api/questions/<id>`
+  - `GET /api/runs`: all dossiers with stage, session, PR, updates, runner
+    state and answered Q&A as JSON; `GET /api/stubs`: stubs per repo and the
+    open-work repos; `GET /open-work/<repo>`; `GET /dossier/<repo>/<ID>`
+  - `POST /api/questions/<id>/messages` with `{"kind": "followup"|"answer", "text": "...", "option": "A"}`.
+
+  The server writes the owner line with `via: page` and mirrors it into the
+  Slack thread.
+- **Binding:** it binds 127.0.0.1 only.
+- **Slack:** Socket Mode, over the server's own outgoing WebSocket.
+  - **Credentials:**
+    - the bot token comes from the keychain item `asd-slack-bot`;
+    - the app token comes from `asd-slack-app`;
+    - the member ID to DM is `$ASD_SLACK_USER`.
+
+    Without the tokens or the member ID the server runs without Slack and logs
+    that once.
+  - **What counts as what:**
+    - a button press is an `answer` with that option;
+    - a thread reply starting with `answer:` is a free-text `answer`;
+    - any other thread reply is a `followup`;
+    - a DM outside a thread gets a pointer to reply in a question's thread.
+  - **After an answer:** the question message is updated to show the answer,
+    and gets a ✅ reaction.
+  - **Connection:** the server reconnects on a `disconnect` envelope or a
+    closed socket, with backoff.
+
+## Dashboard
+
+`shared/questions/runs.ts`, `stubs.ts`, `runstore.ts`, `timeline.ts`,
+`controls.ts` and `events.ts`, rescanned every 30 s and cached; the page is
+one card-based single-page app with deep links.
+
+- **Sources:**
+  - candidate roots: the `cwd` of the newest transcript in each
+    `~/.claude/projects/*/`, every `root` of a question, and `roots` in an
+    optional `~/.agentic/repos.json`; each checkout's worktrees; only dirs
+    with `.discovery/dossiers/*.md` count; per dossier id the copy with the
+    longest `## Build log` wins;
+  - transcripts whose `cwd` is the worktree or below (last 256 KB): session
+    state, context size, request count;
+  - `gh pr view` per running dossier (2 min cache, 10 s timeout);
+  - phase names: the first heading of `references/work-on/phase-<n>.md`;
+  - run updates `$ASD_RUNS_DIR/<repo>.<ID>.jsonl` (lines may carry
+    `auto: true`) and runner state `<repo>.<ID>.runner.json`
+    (`references/runner.md`; a dead pid reads as stopped), re-read on every
+    request;
+  - stubs: per repo main checkout `git ls-remote --heads origin 'stub/*'
+    'release/*'`; per branch `gh pr list --head <b> --base development`.
+    **A stub shows only the dossiers implemented on it**: the first-parent
+    merges `origin/development..origin/<b>` of the local refs, mapped by PR
+    number to the dossiers' `pr:` field (or by a fix-branch name). An open PR
+    into the stub does not count. State: `accepting`, `integrating` (stage =
+    last `## Step N`/`Round` heading of `.discovery/analysis/stub-*.md`),
+    `merged`. Cached 2 min, failures omitted;
+  - open work: `scripts/generate_open_work.py` (see the code), served at
+    `/open-work/<repo>`.
+- **Pages (all deep links):**
+  - `/` Home: one card per repo (in progress / not started / done, open
+    questions, newest stub state), and directly under them the **queue of
+    open questions** across all repos, oldest waiting first. Each is a compact
+    card: repo and dossier chips (the dossier chip links to the dossier), the
+    question, how long it has waited, what it blocks, and the answer controls
+    inline (options with consequences, the recommendation highlighted, the
+    follow-up box). With none it shows one muted line "No open questions."
+    There is no Open questions card. Header with Slack status and the last
+    update;
+  - **Repo label:** a root that is not a git checkout (it only holds
+    `.discovery/dossiers`, like `~/Documents/Twipe/repos`) is labelled by its
+    path relative to the home directory ("Twipe/repos") wherever a repo name
+    is shown. The basename stays the identity in routes and keys;
+  - `GET /questions`: the same queue at full width, every open question with options and consequences, the
+    recommendation highlighted, thread, follow-up and answer, each linking to
+    its dossier (`GET /questions#q=<id>` scrolls to one; old `/#<id>` links
+    redirect);
+  - `/repo/<repo>`: two columns under the repo's **open questions** (inline
+    answer controls, shown only when any are open). **Left (wide):** the
+    complete open-work report in a same-origin iframe sized to its content (no
+    inner scrollbar; re-sized on load, on content change and on report
+    refresh). It is generated with `--embed --link-base /repo/<repo>
+    --simplify-default`. Embedded, the report drops the suggested next
+    action, the count tiles and the pipeline bar, and draws the dependency
+    graph left to right as one layered drawing: each independent flow laid
+    out alone and stacked, a dossier with no dependency link at all as a chip
+    in an "Independent" row above it, no Start boxes, a root placed next to
+    its first dependent, edges orthogonal with rounded corners in per-source
+    lanes between the columns (edges from one dossier share a trunk), and on
+    hover the whole chain before and after a dossier lit while the rest
+    dims. Only the done frontier is drawn: no edge between two finished
+    dossiers, a finished prerequisite dropped when a newer finished one
+    already implies it, so done work is one thin layer in front of the open
+    graph; the Simplify toggle is hidden. The dashboard is always dark. A
+    drawing wider than the column scrolls inside its panel. A ready dossier
+    whose blockers are all done carries a ▶ (graph box, Independent chip,
+    flight-plan row): two clicks POST `/api/runs/<repo>/<ID>/start`, which
+    re-checks eligibility and starts `run_dossier.py` in the background. A click on a dossier
+    navigates the top window to `/repo/<repo>/<ID>`. **Right (360 px, sticky
+    while scrolling):** every open (not merged) stub, newest first, as a card:
+    branch, state chip, step, PR + CI dot; under it a tree of its dossiers,
+    first the in-progress ones (phase n · name, a live dot while a runner or
+    session is active, an open-question badge, a "no PR yet" chip where it
+    applies), then the done ones (merged on the stub). A sub-item opens that
+    dossier's view, the card opens the stub view. Running dossiers that belong
+    to no stub form a small "In progress" list above the stubs; a collapsed
+    "Merged stubs" list closes the column. Under 1000 px the right column moves
+    above the report (single column). `/repo/<repo>/graph` redirects here.
+    **Which in-progress dossiers sit under a stub** (`stubMembers`): one whose
+    open PR targets that stub branch (`gh pr list --base <branch> --state open
+    --json number,headRefName`, cached 2 min, 10 s timeout; matched by the
+    dossier's `pr:` number or by its id in the head branch, repo-scoped;
+    `plan/...` heads never count); plus a dossier in `building`/`review` (or
+    with a live runner) that has no PR yet, under the **accepting** stub (the
+    newest open stub with no PR into development, else the newest open stub).
+    Ready and planned dossiers never appear under a stub. The data is
+    `members` on each stub in `/api/stubs`;
+  - `/repo/<repo>/<ID>`: not started or done shows the full dossier with its
+    answered questions; in progress, or with any run updates (not done), shows
+    the **run view**. Both headers carry **Start** (ready, every `blocked_by`
+    done; else "blocked by ..."), **Resume** (runner stopped or failed, not
+    done) and **Stop** (running or waiting) with the two-step confirm.
+    `/repo/<repo>/<ID>/dossier` forces the dossier. The run view has three
+    views of one run (tabs; **Timeline** opens by default):
+    - **Timeline** (default): a **Now** panel (**Waiting on you** first, with
+      the open questions and their answer controls; the phase stepper 0-9 with
+      the current phase highlighted and named; time in this phase; the newest
+      meaningful update; runner state), then the entries grouped by phase,
+      newest phase first. The current phase is expanded; a finished phase is
+      one line (name, duration, first line of its checkpoint summary, "2
+      questions - 14 updates") that expands. It shows the agent's explicit
+      updates (`ask_owner.py note`, an `update` without `auto`), the questions
+      with thread and answer (answer controls on open ones), the runner's
+      lines, the stage lines, and only these automatic lines: `event` `suite`,
+      `gates`, `pr`, `workflow` and failures, and **agent spawns**. A spawn is
+      one row, "<agent type>: <description>" (never the prompt), with a status
+      chip `running`, `done`, `gap` or `contract-change`: the `spawn` line and
+      the later `spawn-done` line of the same `agent_id` merge into it (status
+      from the done line, the duration when both timestamps exist; no
+      `agent_id` or no done line keeps the spawn's own status). The `log`
+      copies and `other` lines are left out. Nothing collapses here. Lines of
+      an older file without an `event` are classified by text prefix (`log:`,
+      `suite:`, `gates:`, `PR `, `workflow`, `spawned ` = a spawn of unknown
+      status; else `other`). Newest on top, relative time with the absolute
+      time on hover. A question and its thread belong to the phase of the
+      question's first message. It never shows the build log: with nothing to
+      show it says "No updates yet";
+    - **Activity**: every automatic line in time order, raw, including the
+      `log` copies, `other` and unmerged spawn and spawn-done lines, under the
+      same phase grouping. Runs of two or more routine lines collapse into
+      "+N routine updates" (this is the only place that collapse applies);
+    - **Build log**: the dossier's `## Build log` lines. A `planned` dossier
+      whose updates file has lines labels the timeline "Planning";
+  - `/repo/<repo>/stub/<branch>`: header (cut, state, step, PR + CI,
+    implemented dossiers as cards) with the same three-way split: **Timeline**
+    (Now panel and the filtered updates and questions grouped by the `## Step
+    N` headings of the record file `stub-*.md`, under key `<repo>.<branch with
+    / as ->`), **Activity** (every automatic line) and **Record** (each `##`/`###` heading of the record file as an entry,
+    dated by `(YYYY-MM-DD)` in it else by position).
+  - An id is unique only within a repo: dossiers are picked per main checkout,
+    and every lookup (runs, questions, stubs) is scoped by repo.
+- **Run controls** (POST, same Host/Origin checks; the button turns into
+  "Confirm ..." first, never a browser dialog). The command's one-line output
+  or error is shown on the card, with a link to the runner log:
+  - `POST /api/runs/<repo>/<ID>/start`: status `ready` and every id in
+    `blocked_by` is `done` (else "blocked by W-..."); runs
+    `python3 <plugin root>/scripts/run_dossier.py <ID> --root <main checkout>`;
+  - `POST .../resume`: not done, runner `stopped` or `failed`; same command
+    with `--root` = the `root` recorded in `<key>.runner.json`;
+  - `POST .../stop`: runner running or waiting; `run_dossier.py stop <ID>
+    --root <root>`;
+  - `GET /api/runs/<repo>/<ID>/log`: the last 200 lines of `<key>.runner.log`.
+- **Live updates:** `GET /api/events` is a Server-Sent Events stream that
+  watches the questions dir and `$ASD_RUNS_DIR` and sends
+  `event: changed` with `{"what": [...]}` (`questions`, `runs`, `stubs`,
+  `scan`) on a change and after each background rescan. The page re-fetches
+  only what changed and patches the DOM, so scroll, open expanders and typed
+  text stay; a 60 s poll runs only while the stream is down.
+- **Slack progress thread** (server side, from the updates store; off with
+  `ASD_RUN_SLACK=0`): the first `runner` start line of a run opens one DM
+  message "▶ <repo> · <ID> — <title>"; each stage-done, waiting, answered,
+  failed and done line becomes a reply in that thread with a link to the run
+  view; `auto` lines never post. The thread ts and the lines already seen are
+  kept in `$ASD_RUNS_DIR/<key>.slack.json`; a restart posts no backlog.
+- **Other API:** `GET /api/runs`, `/api/stubs`, `/api/questions`,
+  `/api/timeline/<repo>/<ID>` (entries, `groups`, `now`, `log`), `/api/dossier/<repo>/<ID>`,
+  `/api/stub?repo=&branch=`, and `GET /dossier/<repo>/<ID>` (read-only,
+  escaped HTML).
+- **Env overrides:** `ASD_RUNS_ROOTS`, `ASD_CLAUDE_PROJECTS`,
+  `ASD_RUNS_NO_GH=1`, `ASD_STUBS_NO_GIT=1`, `ASD_RUNS_DIR`,
+  `ASD_OPEN_WORK_DIR`, `ASD_RUNNER_BIN` (replaces the runner script path).

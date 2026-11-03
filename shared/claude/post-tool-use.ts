@@ -4,12 +4,17 @@
 // autoCompactWindow it asks once for a checkpoint with a NEXT: line, so the restore after
 // the coming compaction starts from minutes-old state. A phase_checkpoint call resets the
 // count. Fails open.
+import { appendFileSync, mkdirSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { nudgeEvery, reminderText } from "../checkpoint"
+import { keyFromCommand, keyFromStubRecord, spawnFor, updateFor } from "./progress"
 import {
   compactWindow,
   contextTokens,
   isCheckpointTool,
   isOrchestrator,
+  isPipelineSession,
   loadState,
   log,
   pressureRatio,
@@ -21,9 +26,83 @@ import {
 
 const out = (text: string) => ({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: text } })
 
+// Under the runner (ASD_RUN_KEY set) a phase_checkpoint call is also a `stage` line in the
+// run's updates store, $ASD_RUNS_DIR/<key>.jsonl (references/runner.md). One O_APPEND write;
+// a failure never reaches the hook.
+function recordStage(input: { tool_input?: any }) {
+  try {
+    const key = process.env.ASD_RUN_KEY
+    if (!key || /[\\/]/.test(key)) return
+    const dir = process.env.ASD_RUNS_DIR || join(homedir(), ".agentic", "runs")
+    mkdirSync(dir, { recursive: true })
+    const clip = (t: string) => (t.length > 3500 ? t.slice(0, 3500) + " [cut]" : t)
+    const line = {
+      ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+      kind: "stage",
+      stage: clip(String(input.tool_input?.phase ?? "")),
+      text: clip(String(input.tool_input?.summary ?? "").split("\n")[0]),
+    }
+    appendFileSync(join(dir, `${key}.jsonl`), JSON.stringify(line) + "\n")
+  } catch {
+    // never fail the hook
+  }
+}
+
+function appendUpdate(key: string, text: string, extra: Record<string, unknown> = {}) {
+  try {
+    if (/[\\/]/.test(key)) return
+    const dir = process.env.ASD_RUNS_DIR || join(homedir(), ".agentic", "runs")
+    mkdirSync(dir, { recursive: true })
+    const line = { ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"), kind: "update", auto: true, ...extra, text: text.slice(0, 3500) }
+    appendFileSync(join(dir, `${key}.jsonl`), JSON.stringify(line) + "\n")
+  } catch {
+    // never fail the hook
+  }
+}
+
+// What an automatic line is, for the dashboard's views: progress events go on the timeline,
+// `log` copies of build-log lines only in the activity view.
+const eventOf = (text: string) =>
+  text.startsWith("log:") ? "log" : text.startsWith("suite") ? "suite" : text.startsWith("gates") ? "gates"
+    : text.startsWith("PR ") ? "pr" : text.startsWith("workflow") ? "workflow" : "other"
+
+function recordProgress(input: any) {
+  try {
+    if (process.env.ASD_RUN_UPDATES === "0") return
+    const state = loadState(input.session_id) as any
+    let key: string | undefined = process.env.ASD_RUN_KEY || state.runKey
+    if (!key) {
+      const cwd = String(input.cwd ?? process.cwd())
+      const ref = input.tool_name === "Bash" ? String(input.tool_input?.command ?? "") : String(input.tool_input?.file_path ?? "")
+      // A /stub run is known by its record file; any other run by the first command naming a dossier.
+      key = keyFromStubRecord(ref, cwd) ?? (input.tool_name === "Bash" ? keyFromCommand(ref, cwd) : undefined)
+      if (key) saveState(input.session_id, { ...state, runKey: key })
+    }
+    if (!key) return
+    if (isCheckpointTool(input.tool_name) && !process.env.ASD_RUN_KEY) {
+      // Interactive run: the checkpoint is the stage line the runner's own hook path writes.
+      process.env.ASD_RUN_KEY = key
+      recordStage(input)
+      delete process.env.ASD_RUN_KEY
+      return
+    }
+    if (input.tool_name === "Agent") {
+      const sp = spawnFor(input.tool_input, input.tool_response)
+      if (sp) appendUpdate(key, sp.text, { event: "spawn", status: sp.status, ...(sp.agent_id ? { agent_id: sp.agent_id } : {}) })
+      return
+    }
+    const text = updateFor(input.tool_name, input.tool_input, input.tool_response)
+    if (text) appendUpdate(key, text, { event: eventOf(text) })
+  } catch {
+    // never fail the hook
+  }
+}
+
 await runHook(async () => {
   const input = await readInput()
   if (!input || input.agent_id || !input.session_id || !input.tool_name) return undefined
+  if (isCheckpointTool(input.tool_name) && process.env.ASD_RUN_KEY) recordStage(input)
+  if (process.env.ASD_RUN_KEY || isPipelineSession(input)) recordProgress(input)
   if (!isOrchestrator(input)) return undefined
   const state = loadState(input.session_id)
   if (isCheckpointTool(input.tool_name)) {

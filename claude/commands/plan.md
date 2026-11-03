@@ -321,6 +321,19 @@ so the anchors it spot-checks are the tree the dossier was written against.
 - A change request you disagree with is a decision for the user, not for you.
   Present the reviewer's position and yours, get a ruling, and record it in
   `## Build log`.
+- **A question only the owner can settle goes through `ask_owner.py`.** Where
+  this file says to ask the user or stop for a ruling, run
+  `scripts/ask_owner.py ask` instead, as `references/owner-questions.md`
+  ("Asking, in a run") says: every option with its consequence, your
+  recommendation, and what it blocks. Keep working on what is not blocked.
+  When nothing else can proceed, run `ask_owner.py wait <id>` as a background
+  command under Claude Code and end the turn. Log `QUESTION:` and then
+  `OWNER-RULING (<date>):` in `## Build log`. Never pick an option yourself.
+- **Progress shows on the dashboard by itself.** The plugin's hook posts your
+  checkpoints, build-log lines and reviewer spawns as the dossier's updates.
+  Add `ask_owner.py note --root R --dossier ID --text "..."` only for a
+  milestone no command shows (the investigation concluded, the contract
+  drafted).
 - **Budget: 2 review rounds.** After the second, stop and show the user the
   unresolved change requests. Never mark a plan ready by exhaustion. In
   committed mode the dossier stays `planned` and uncommitted in the plan

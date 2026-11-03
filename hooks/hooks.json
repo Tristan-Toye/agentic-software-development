@@ -56,6 +56,18 @@
           }
         ]
       }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v bun >/dev/null 2>&1 && bun \"${CLAUDE_PLUGIN_ROOT}/shared/claude/subagent-stop.ts\" || true",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

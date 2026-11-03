@@ -56,7 +56,7 @@ phase; each phase's instructions are in
 its file. Read a phase file whole at the start of its phase — never a later
 phase's file ahead of time; a resumed run reads the file of the phase it
 resumes in. A phase ends when its outcome is in `## Build log`. **Then call
-`phase_checkpoint`** with the phase name and a summary. Under opencode it is
+`phase_checkpoint`** with the phase name, starting `Phase <n>` (`Phase 4 — fan-out`, `Phase 4 — wave 2`) so the dashboard files every update under its phase, and a summary. Under opencode it is
 the plugin's tool of that name; under Claude Code it is the plugin's MCP tool
 `mcp__plugin_agentic-software-development_nav__phase_checkpoint`. Under
 opencode, from the next request on, every earlier step of the run is out of
@@ -271,6 +271,22 @@ merges or pushes** — a dirty tracked dossier blocks a merge that touches it,
 and an unpushed record dies with the worktree. Add it by name, never with
 `git add -A`. State the mode in one line.
 
+## Under the runner
+
+`scripts/run_dossier.py` can run this command headless, one process per stage
+(`${PLUGIN_ROOT}/references/runner.md`). Then the runner-mode rules arrive in
+the appended system prompt and take precedence: ask only through
+`ask_owner.py`, end a stage with its `phase_checkpoint` and the `RUNNER:` line
+it names, and post `ask_owner.py note` for what is worth knowing mid-stage.
+
+**Progress updates, every run.** The plugin's PostToolUse hook posts most of
+them for you, at no token cost, under the runner and interactively alike:
+each `phase_checkpoint` (a stage line), each `dossier_edit.py log` line, each
+suite and gates result, each workflow started and agent spawned, and each PR
+opened or merged. Add `ask_owner.py note --root R --dossier ID --text "..."`
+only for what no command shows: a ruling you made, a plan you changed, why
+you are about to wait.
+
 ## Phase 0 — Select the dossier and route the run
 
 Read `${PLUGIN_ROOT}/references/work-on/phase-0.md` at the start of this phase.
@@ -390,6 +406,14 @@ between this list and a phase is a defect in this list.
   the change as an instruction over editing its file yourself.
 - **You detect review conflicts; the user decides them.** You are the only party
   who sees every lens.
+- **A question only the owner can settle goes through `ask_owner.py`.** Where
+  this file says to ask the user or stop for a ruling, run
+  `scripts/ask_owner.py ask` instead, as `references/owner-questions.md`
+  ("Asking, in a run") says: every option with its consequence, your
+  recommendation, and what it blocks. Keep working on what is not blocked.
+  When nothing else can proceed, run `ask_owner.py wait <id>` as a background
+  command under Claude Code and end the turn. Log `QUESTION:` and then
+  `OWNER-RULING (<date>):` in `## Build log`. Never pick an option yourself.
 - **ADRs are extracted, not generated.** Zero is a valid answer.
 - **A contract failure teaches something an ADR cannot hold.** Row-3
   arbitrations and `GAP:` returns are evidence about how to write contracts, not

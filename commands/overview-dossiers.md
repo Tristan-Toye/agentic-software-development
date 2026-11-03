@@ -5,15 +5,15 @@ description: >-
   flight, what is blocked, and what is waiting on a merge — plus the pipeline
   health signals worth acting on. Read-only toward pipeline state: it spawns
   nothing and never writes a dossier; all it produces is the generated HTML
-  overview, which can be left running as a live page that follows the pipeline.
+  overview, which the pipeline dashboard embeds and keeps current.
 argument-hint: "[dossier ID for one-dossier detail, or empty for everything]"
 ---
 
 # /overview-dossiers — what is going on
 
 Read-only toward pipeline state. No spawns; never write a dossier, an ADR, or
-`state`. You read front matter and report, then render the same overview as an
-HTML file (the one file this command writes — see "The HTML overview" below).
+`state`. You read front matter and report in chat, then regenerate the HTML
+overview (the one file this command writes — see "The HTML overview" below).
 
 `${PLUGIN_ROOT}` is this plugin's checkout — the directory holding
 `primary-agents/` and `references/`. Under Claude Code it is the absolute path
@@ -45,8 +45,7 @@ matter of each such worktree's copy as the live state for that ID — say per
 row which copy you read. Two files here sharing one ID is a plan collision
 that landed; report it as a discrepancy. Pass `--worktrees` to the HTML
 generator in committed mode, so the page shows the same live copies: an
-overlaid row carries a `live from` flag, and an attention line names the
-difference from this checkout's copy.
+overlaid row carries a `live from` flag.
 
 ## `$ARGUMENTS` empty — the overview
 
@@ -73,7 +72,7 @@ with nothing under it:
    or `dropped`, or a path that no longer exists on a dossier that is
    `building`. Both mean the recorded state and the disk disagree.
 
-## Health signals — the part worth acting on
+## Health signals — the part worth acting on (chat only)
 
 A status table says what is happening. These say whether the pipeline is
 working. Read `## Build log` for the dossiers that reached `review` or later,
@@ -118,101 +117,34 @@ and report only the signals that actually fired:
   waiting on a user ruling, and nothing else will move them.
 
 Keep this section to what fired. A clean pipeline reports one line: no signals.
+These live in chat only; the HTML page does not carry them.
 
-## The HTML overview — generated on every overview run
+## The HTML overview
 
-After the chat report (overview runs only, not the detail view), render the
-same picture as a self-contained HTML dashboard:
-
-1. If health signals fired, write them to a JSON file OUTSIDE `.discovery`
-   (a scratch directory) as a list of
-   `{"signal": …, "dossier": …, "detail": …, "severity":
-   "good|warning|serious|critical"}` objects — the same findings you just
-   reported, one object per fired signal.
-2. Run the generator:
-
-   ```bash
-   python3 "${PLUGIN_ROOT}/scripts/generate_open_work.py" \
-     --root .discovery [--signals <scratch>/signals.json] [--worktrees]
-   ```
-
-   `--worktrees` in committed mode only: it overlays the live copy of each
-   dossier from the sibling worktrees (`../<repo>-<ID>`,
-   `../<repo>-plan-<KEY>`), ranked by `updated` and then by the worktree
-   named for the id. `--serve` and `--watch` honour it on every tick;
-   `--install` records it in the git hooks, while the Claude Code hook still
-   fires only for writes into this checkout's `.discovery/dossiers/`.
-
-3. Tell the user the output path it printed
-   (`.discovery/analysis/open-work.html`) so they can open it in a browser.
-   Pass `--open` only when the user asked for the report to be opened.
-
-The generator is deterministic and reads only front matter — the same seven
-overview sections defined above, computed by the script from the same fields.
-It never reads dossier bodies; the signals JSON is how your Build-log mining
-reaches the page. Its template is
-`references/templates/open-work.html`; regenerate the report, never hand-edit
-it.
-
-Beside the HTML it writes `open-work-state.json`, holding a fingerprint of
-everything the page shows apart from the generation timestamp. That file is
-what makes a live report possible, and it is the second and last file this
-command produces.
-
-Independent dependency chains are drawn as one rectangle each. Two dossiers
-that block nothing in common are not one flow, and a single box would imply a
-shared left-to-right ordering they do not have.
-
-The dependency graph's **Simplify** checkbox hides done and dropped history,
-retaining every unfinished dossier and each of its immediate `done` or `dropped`
-prerequisites. Turn it off to restore the full graph; the browser
-remembers the choice across live refreshes. Every root has its own display-only
-stub, so standalone dossiers appear too without joining unrelated flows.
-Missing prerequisite dossiers appear as labelled stubs. These nodes never change
-the recorded `blocked_by` fields, readiness, or dossier counts.
-
-## The live report — for a user who wants it to keep itself current
-
-`/overview-dossiers` is a snapshot: it is accurate when it runs. Two supported ways to
-make the page follow the pipeline instead, both user-invoked setup rather than
-part of a report run — suggest them, do not install them unasked:
+After the chat report (overview runs only, not the detail view), regenerate the
+page:
 
 ```bash
-# a live page for as long as the command runs — Ctrl-C to stop
 python3 "${PLUGIN_ROOT}/scripts/generate_open_work.py" \
-  --root .discovery --serve --open
-
-# always on: git hooks plus a Claude Code PostToolUse hook
-python3 "${PLUGIN_ROOT}/scripts/generate_open_work.py" \
-  --root .discovery --install
+  --root .discovery [--worktrees]
 ```
 
-`--serve` regenerates on dossier changes and serves the report on localhost;
-the page polls its state file and reloads only when the fingerprint changes,
-so an unchanged pipeline never disturbs a reader. A report opened as a
-`file://` path cannot poll — the browser refuses the request — so it says
-`static` in the header rather than pretending to be live. `--install` covers
-the always-on case: the Claude Code hook fires the moment `/plan` or
-`/work-on` writes a dossier, and the git hooks catch what arrives without a
-tool call (a pull, a branch switch, someone else's commit). It writes to
-`.claude/settings.local.json`, never the tracked `settings.json`, because the
-hook holds absolute paths from one machine. `--uninstall` reverses it.
+`--worktrees` in committed mode only. Tell the user the output path it printed
+(`.discovery/analysis/open-work.html`); pass `--open` only when asked.
 
-Both triggers call `.claude/hooks/open-work-report.py`, which `--install`
-writes: a launcher that resolves the current plugin install on every run.
-Neither may name the plugin's install directory, because Claude Code gives every
-marketplace commit its own directory and the generator finds its template
-relative to itself — a hook naming one keeps rendering the report through that
-commit's template after the plugin has moved on, so the page looks right when
-`/overview-dossiers` renders it and reverts the next time the hook fires. Re-running
-`--install` also repairs a hook an older version pinned that way; if a user
-reports the report reverting to an older look, that is the fix.
+The generator is deterministic and reads only front matter — the same seven
+sections as above, plus the dependency graph, with no attention lines and no
+health signals. Its template is `references/templates/open-work.html`;
+regenerate, never hand-edit. The graph's **Simplify** checkbox hides done and
+dropped history except prerequisites of unfinished work; it never changes the
+recorded `blocked_by` fields.
 
-One honesty constraint to pass on: **health signals do not auto-update.** They
-are mined from `## Build log` prose by you, not by the script, so an
-auto-regenerated page carries the signals from the last `/overview-dossiers` run — or
-none. The status table, the counts, the dependency flows and the attention rows
-are always current.
+**The live page belongs to the dashboard.** The page does not refresh itself.
+The pipeline dashboard at http://127.0.0.1:7317 (`references/owner-questions.md`)
+embeds it and re-runs the generator on every change, so point a user who wants
+a live view there. Suggest nothing else; there are no hooks to install. A user
+who ran an older `--install` can remove those hooks with
+`python3 "${PLUGIN_ROOT}/scripts/generate_open_work.py" --root .discovery --uninstall`.
 
 ## `$ARGUMENTS` names a dossier — the detail view
 
@@ -228,12 +160,12 @@ W-NNN` to build, to resume, or to close out, or `/plan W-NNN` if it is still
 
 - Read-only toward pipeline state. Never write a dossier, never write an ADR,
   never touch `state`, never spawn an agent, never run a validator. The only
-  files this command produces are the HTML overview under
-  `.discovery/analysis/` and its scratch signals JSON. In committed mode
+  file this command produces is the HTML overview under
+  `.discovery/analysis/`. In committed mode
   `.discovery/analysis/` must be gitignored: when
   `git check-ignore -q .discovery/analysis/open-work.html` fails, say so —
   the next `/plan` run adds the pattern — and never stage the report.
-- Front matter for the table; bodies only for health signals and the detail view.
+- Front matter for the table; bodies only for chat health signals and the detail view.
 - Report what the files say. A `status` that disagrees with the disk — a missing
   worktree, a merged PR still marked `pr` — is reported as a discrepancy for the
   user to resolve, and never quietly corrected here. `/work-on` fixes state;
