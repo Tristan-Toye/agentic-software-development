@@ -2,7 +2,7 @@
 
 How a run asks the owner a question it cannot settle itself, keeps working,
 and waits only when it is blocked. The owner answers from a local page or from
-a Slack DM thread, and can ask follow-ups first.
+a thread in the repo's Slack channel, and can ask follow-ups first.
 
 Only the orchestrator asks. A sub-agent returns `GAP:` or `CONTRACT-CHANGE:`,
 and the orchestrator decides whether that needs the owner. A run never picks
@@ -14,7 +14,7 @@ an option itself, however long it waits.
   `wait`, `list`, `show`. It reads and writes the store directly, so it works
   with the server down; the server then only adds the notifications.
 - `shared/questions/server.ts`: one Bun process, no dependencies. It watches
-  the store, notifies (macOS notification, Slack DM), serves the page on
+  the store, notifies (macOS notification, the repo's Slack channel), serves the page on
   `http://127.0.0.1:7317`, and appends the owner's messages from the page and
   from Slack.
 - `scripts/install_questions_agent.sh`: installs the LaunchAgent
@@ -95,7 +95,7 @@ It prints at most 40 lines.
   a 10 s rescan).
 - **New question:**
   - a macOS notification (`osascript`), titled with the repo and dossier;
-  - a Slack DM: the question, `blocks`, each option as a button and as a
+  - a Slack message in the repo's channel: the question, `blocks`, each option as a button and as a
     line with its consequence, the recommendation, and a link to the page.
 - **New agent reply:** posted into the question's Slack thread.
 - **Reminder:** an open question whose last line is an agent line is notified
@@ -122,7 +122,14 @@ It prints at most 40 lines.
   - **Credentials:**
     - the bot token comes from the keychain item `asd-slack-bot`;
     - the app token comes from `asd-slack-app`;
-    - the member ID to DM is `$ASD_SLACK_USER`.
+    - the owner's member ID is `$ASD_SLACK_USER`.
+  - **Channels:** one private channel per repo, named after the repo
+    (lower case, other characters as `-`; `<name>-pipeline` when the name is
+    someone else's channel). The server creates it on first use, invites the
+    owner, and posts that repo's questions and run threads there. The app
+    needs the bot scopes `groups:write`, `groups:read`, `groups:history`,
+    `channels:read` and the event `message.groups` for this. Without them it
+    falls back to the DM and logs why once per repo.
 
     Without the tokens or the member ID the server runs without Slack and logs
     that once.
@@ -130,7 +137,8 @@ It prints at most 40 lines.
     - a button press is an `answer` with that option;
     - a thread reply starting with `answer:` is a free-text `answer`;
     - any other thread reply is a `followup`;
-    - a DM outside a thread gets a pointer to reply in a question's thread.
+    - a DM outside a thread gets a pointer to reply in a question's thread;
+      other messages in a repo channel are left alone.
   - **After an answer:** the question message is updated to show the answer,
     and gets a ✅ reaction.
   - **Connection:** the server reconnects on a `disconnect` envelope or a
@@ -286,7 +294,7 @@ one card-based single-page app with deep links.
   only what changed and patches the DOM, so scroll, open expanders and typed
   text stay; a 60 s poll runs only while the stream is down.
 - **Slack progress thread** (server side, from the updates store; off with
-  `ASD_RUN_SLACK=0`): the first `runner` start line of a run opens one DM
+  `ASD_RUN_SLACK=0`): the first `runner` start line of a run opens one message in the repo's channel
   message "▶ <repo> · <ID> — <title>"; each stage-done, waiting, answered,
   failed and done line becomes a reply in that thread with a link to the run
   view; `auto` lines never post. The thread ts and the lines already seen are

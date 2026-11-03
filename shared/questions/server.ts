@@ -12,7 +12,7 @@ import { runRunner } from "./controls.ts"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
-import { api, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
+import { api, apiGet, channelNameFor, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 
 const DIR = storeDir()
 const MIN = 60 * 1000
@@ -52,8 +52,48 @@ async function dmChannel(): Promise<string> {
 }
 const slackOn = () => botToken !== ""
 
+/* One private channel per repo, named after it, created on first use with the
+   owner invited; everything about that repo (questions, run threads) goes
+   there. A workspace without the channel scopes falls back to the DM. */
+const repoChannels = new Map<string, string>()
+async function findChannel(name: string): Promise<{ id: string; member: boolean } | null> {
+  let cursor = ""
+  for (let page = 0; page < 20; page++) {
+    const r = await apiGet("conversations.list", botToken, { types: "private_channel,public_channel", exclude_archived: "true", limit: "999", ...(cursor ? { cursor } : {}) })
+    const c = (r.channels ?? []).find((x: any) => x.name === name)
+    if (c) return { id: c.id, member: !!c.is_member }
+    cursor = r.response_metadata?.next_cursor ?? ""
+    if (!cursor) return null
+  }
+  return null
+}
+async function repoChannel(repo: string): Promise<string> {
+  const hit = repoChannels.get(repo)
+  if (hit) return hit
+  try {
+    const base = channelNameFor(repo)
+    let id = ""
+    for (const name of [base, `${base}-pipeline`.slice(0, 79)]) {
+      const found = await findChannel(name)
+      if (found?.member) { id = found.id; break }
+      if (found) continue                       // the name is someone else's channel: try the next
+      try { id = (await api("conversations.create", botToken, { name, is_private: true })).channel.id; log(`slack channel #${name} created for ${repo}`); break }
+      catch (e) { if (!/name_taken/.test(String(e))) throw e }
+    }
+    if (!id) throw new Error("no channel name left")
+    if (owner) await api("conversations.invite", botToken, { channel: id, users: owner }).catch((e) => {
+      if (!/already_in_channel|cant_invite_self/.test(String(e))) throw e
+    })
+    repoChannels.set(repo, id)
+    return id
+  } catch (e) {
+    log(`slack repo channel for ${repo} unavailable (${(e as Error).message}); using the DM`)
+    return dmChannel()
+  }
+}
+
 async function slackPostQuestion(q: Question): Promise<void> {
-  const channel = await dmChannel()
+  const channel = await repoChannel(q.repo)
   const r = await api("chat.postMessage", botToken, {
     channel,
     text: `${q.repo} · ${q.dossier}: ${q.text}`,
@@ -170,7 +210,7 @@ export async function scanRunThreads(): Promise<void> {
       for (const m of msgs) {
         try {
           if (m.role === "open") {
-            const res = await api("chat.postMessage", botToken, { channel: await dmChannel(), text: m.text })
+            const res = await api("chat.postMessage", botToken, { channel: await repoChannel(r.repo), text: m.text })
             thread = { channel: res.channel ?? slackChannel, ts: res.ts }
           } else if (thread) await api("chat.postMessage", botToken, { channel: thread.channel, thread_ts: thread.ts, text: m.text })
         } catch (e) { log(`slack run thread: ${(e as Error).message}`) }

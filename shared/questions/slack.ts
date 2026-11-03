@@ -29,14 +29,15 @@ export function interpretEnvelope(
       return { ack, action: { type: "reconnect" } }
     case "events_api": {
       const ev = env.payload?.event
-      if (!ev || ev.type !== "message" || ev.channel_type !== "im") return none
+      if (!ev || ev.type !== "message" || !["im", "group", "channel"].includes(ev.channel_type)) return none
       if (ev.bot_id || ev.subtype) return none
       if (ownerUser && ev.user && ev.user !== ownerUser) return none
       const text = String(ev.text ?? "").trim()
       if (!text) return none
       const threadTs: string | undefined = ev.thread_ts && ev.thread_ts !== ev.ts ? ev.thread_ts : undefined
       const id = threadTs ? lookup(ev.channel, threadTs) : null
-      if (!id) return { ack, action: { type: "pointer", channel: ev.channel, threadTs } }
+      // In a repo channel other talk is not ours: only a DM outside a question's thread gets the pointer.
+      if (!id) return ev.channel_type === "im" ? { ack, action: { type: "pointer", channel: ev.channel, threadTs } } : { ack, action: { type: "none" } }
       const m = text.match(/^answer:\s*([\s\S]*)$/i)
       if (m) return { ack, action: { type: "owner", id, kind: "answer", text: m[1].trim(), channel: ev.channel, threadTs } }
       return { ack, action: { type: "owner", id, kind: "followup", text, channel: ev.channel, threadTs } }
@@ -106,6 +107,20 @@ export function keychain(service: string): string {
   } catch {
     return ""
   }
+}
+
+/** The channel name for a repo: Slack allows lower-case letters, digits, - and _, under 80 characters. */
+export function channelNameFor(repo: string): string {
+  const n = repo.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")
+  return (n || "pipeline").slice(0, 79)
+}
+
+/** A read method with query parameters (conversations.list takes no JSON body). */
+export async function apiGet(method: string, token: string, params: Record<string, string>): Promise<any> {
+  const res = await fetch(`https://slack.com/api/${method}?${new URLSearchParams(params)}`, { headers: { Authorization: `Bearer ${token}` } })
+  const j: any = await res.json().catch(() => ({}))
+  if (!j.ok) throw new Error(`slack ${method}: ${j.error ?? res.status}`)
+  return j
 }
 
 export async function api(method: string, token: string, body?: unknown): Promise<any> {

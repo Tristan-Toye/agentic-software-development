@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rm
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
-import { interpretEnvelope, questionBlocks } from "../questions/slack.ts"
+import { channelNameFor, interpretEnvelope, questionBlocks } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
 import { parseFrontMatter, lastPhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers } from "../questions/stubs.ts"
@@ -19,6 +19,14 @@ let failed = 0
 function check(name: string, ok: boolean, detail = ""): void {
   if (!ok) failed++
   console.log(`${ok ? "PASS" : "FAIL"} ${name}${ok ? "" : ` ${detail}`}`)
+}
+
+check("slack: channel names from repo names", channelNameFor("config-harness") === "config-harness" && channelNameFor("Documents/Twipe/repos") === "documents-twipe-repos" && channelNameFor("A__b.c") === "a__b-c" && channelNameFor("x".repeat(100)).length === 79)
+{
+  const env = (channel_type: string, thread: boolean) => ({ type: "events_api", envelope_id: "e", payload: { event: { type: "message", channel_type, channel: "C1", user: "U1", text: "why?", ts: "2", ...(thread ? { thread_ts: "1" } : {}) } } })
+  const look = (c: string, t: string) => (c === "C1" && t === "1" ? "r.W-1.Q1" : null)
+  check("slack: a thread reply in a repo channel is a follow-up", (interpretEnvelope(env("group", true), look, "U1").action as any).kind === "followup")
+  check("slack: other talk in a repo channel is ignored, a stray DM gets the pointer", interpretEnvelope(env("group", false), look, "U1").action.type === "none" && interpretEnvelope(env("im", false), look, "U1").action.type === "pointer")
 }
 
 {
