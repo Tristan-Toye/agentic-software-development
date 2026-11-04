@@ -74,6 +74,8 @@ export function mergeSpawns(updates: Update[]): (Update & { doneTs?: string })[]
   return out.filter((u) => !used.has(u))
 }
 
+/** The timeline section a later run on a finished dossier opens. */
+export const COMMAND_LABEL: Record<string, string> = { "fix-deferred": "Fix deferred issues", "product-summary": "Product summary" }
 /** The phase number of a `Phase <n>` / `PHASE <n>` mention (the letter of `4a` dropped), or "". `unit` "Step" reads `Step <n>` (a stub). */
 export function phaseOfText(s: string, unit: "Phase" | "Step" = "Phase"): string {
   return (unit === "Step" ? s.match(/\bStep\s+(\d+)\b/) : s.match(/\b(?:Phase|PHASE)\s+(\d+)[a-z]?\b/))?.[1] ?? ""
@@ -128,7 +130,14 @@ export function mergeTimeline(o: { updates: Update[]; questions: Question[]; ext
   let cur = ""
   for (const e of sorted) {
     if (e.type === "boundary" && e.phase) cur = e.phase
-    if (e.type === "stage") {
+    // A later run on the same dossier (/fix-deferred …) is a section of its own; its steps stay inside it even when
+    // they name a /work-on phase they reuse. A /work-on run after one starts counting phases again; a resumed one carries on.
+    const cmd = e.type === "runner" ? e.text.match(/^start \/(?:[\w-]+:)?([\w-]+)\b/)?.[1] : undefined
+    if (cmd && cmd !== "work-on" && cmd !== "stub") {
+      cur = `cmd:${cmd}`
+      out.push({ ts: e.ts, type: "boundary", text: "", phase: cur, label: COMMAND_LABEL[cmd] ?? `/${cmd}` })
+    } else if (cmd && cur.startsWith("cmd:")) cur = ""
+    if (e.type === "stage" && !cur.startsWith("cmd:")) {
       const p = phaseOfText(`${e.stage ?? ""} ${e.text}`, unit)
       if (p && p !== cur) {
         cur = p
