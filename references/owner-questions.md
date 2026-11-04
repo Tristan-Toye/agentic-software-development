@@ -255,7 +255,17 @@ one card-based single-page app with deep links.
     timeline section, "Fix deferred issues", at the runner's `start` line,
     and its steps stay inside it; while it runs the header reads "Fixing
     deferred issues", the page opens on the timeline, and the dossier's row on
-    its stub card carries a live "fixing deferred" chip. **The product summary** (`<key>.summary.md`, written by the runner after
+    its stub card carries a live "fixing deferred" chip. **Blocked by the safety check** (top of the dossier page): every call auto
+    mode refused that is not ruled on yet (`readBlocks`), with the exact command
+    and the reason. **Allow once** and **Deny** answer the agent's newest open
+    question with a ruling that names the exact command; **Always allow in this
+    repo** saves the rule in the box (default `Bash(<command>)`, widen it to a
+    prefix; `checkRule` refuses `Bash(*)` and whole interpreters) to the repo's
+    `.claude/settings.local.json` `permissions.allow`, then answers the same
+    way. It applies from the next stage; Stop and Resume apply it now. Each
+    ruling is a `block-ruling` update. POST
+    `/api/runs/<repo>/<ID>/blocks/<tool_use_id>` `{action: once|always|deny, rule}`.
+    **The product summary** (`<key>.summary.md`, written by the runner after
     Phase 9) sits above the dossier on its Dossier tab; a built dossier without
     one offers **Write product summary**, which POSTs
     `/api/runs/<repo>/<ID>/summary` and runs `run_dossier.py summary <ID>` in

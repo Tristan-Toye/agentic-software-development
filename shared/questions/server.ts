@@ -1,11 +1,11 @@
 // Owner-questions server. Run: bun --no-install shared/questions/server.ts
 // Contract: references/owner-questions.md
-import { mkdirSync, statSync, watch } from "node:fs"
+import { appendFileSync, mkdirSync, statSync, watch, writeFileSync } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
 import { buildLog, getRuns, PHASE_NAMES, questionRepo, readDossier, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile } from "./stubs.ts"
-import { dossierPage, readConversation, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
+import { checkRule, dossierPage, readBlocks, readConversation, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
 import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord } from "./timeline.ts"
 import { runRunner } from "./controls.ts"
@@ -374,7 +374,9 @@ export async function handle(req: Request): Promise<Response> {
     } catch { /* none yet */ }
     const c = readConversation(`${run.repo}.${run.id}`, run.runner?.state === "done")
     const conv = { ...c, result: c.result ? { ...c.result, html: renderMarkdown(c.result.text) } : null, chat: c.chat.map((l) => ({ ...l, html: renderMarkdown(l.text) })), canChat: !!c.result && !runnerActive(run.runner) }
-    return json({ run, html, entries, groups, activity, now, log, conv, summary, summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
+    const blocks = readBlocks(`${run.repo}.${run.id}`)
+    const openQ = questions.filter((q) => q.state === "open").sort((a, b) => b.ts.localeCompare(a.ts))[0]?.id ?? ""
+    return json({ run, html, entries, groups, activity, now, log, conv, summary, blocks, blockQuestion: openQ, summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
   }
   const dd = path.match(/^\/api\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && dd) {
@@ -405,6 +407,49 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && rl) {
     const t = runnerLog(rl[1], rl[2])
     return t === null ? json({ error: "no runner log" }, 404) : new Response(t, { headers: { "content-type": "text/plain; charset=utf-8" } })
+  }
+  const bl = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/blocks\/([\w.-]+)$/)
+  if (bl) {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const run = await findRun(bl[1], bl[2])
+    if (!run) return json({ error: "no such dossier" }, 404)
+    const key = `${run.repo}.${run.id}`
+    const b = readBlocks(key, runsDir(), 50).find((x) => x.id === bl[3])
+    if (!b) return json({ error: "no such block, or it was ruled on already" }, 404)
+    const body = await req.json().catch(() => ({})) as { action?: unknown; rule?: unknown }
+    const action = String(body.action ?? "")
+    if (!["once", "always", "deny"].includes(action)) return json({ error: "action is once, always or deny" }, 400)
+    // The agent hears the ruling through its open question: an option-style answer, which the classifier reads as the
+    // owner's own words naming the exact action.
+    const rs = await allRuns()
+    const qs = readAll(DIR).filter((q) => q.dossier === run.id && questionRepo(q, rs) === run.repo && q.state === "open").sort((a, c) => c.ts.localeCompare(a.ts))
+    const q = qs[0]
+    const what = b.tool === "Bash" ? `this exact command: \`${b.target}\`` : `${b.tool} on \`${b.target}\``
+    let rule = ""
+    if (action === "always") {
+      rule = typeof body.rule === "string" && body.rule.trim() ? body.rule.trim() : `${b.tool}(${b.target})`
+      const bad = checkRule(rule)
+      if (bad) return json({ error: bad }, 400)
+      const f = join(run.main, ".claude", "settings.local.json")
+      let cfg: any = {}
+      try { cfg = JSON.parse(readFileSync(f, "utf8")) } catch { cfg = {} }
+      cfg.permissions = cfg.permissions ?? {}
+      const allow: string[] = Array.isArray(cfg.permissions.allow) ? cfg.permissions.allow : []
+      if (!allow.includes(rule)) allow.push(rule)
+      cfg.permissions.allow = allow
+      mkdirSync(join(run.main, ".claude"), { recursive: true })
+      writeFileSync(f, JSON.stringify(cfg, null, 2) + "\n")
+    }
+    if (!q && action !== "always") return json({ error: "the agent has not asked about it yet; it asks when it cannot go on, or use Always allow" }, 409)
+    const text = action === "deny"
+      ? `Denied: do not run ${what}. Carry on without it, and say in the pull request what that leaves unverified.`
+      : `Approved${action === "always" ? ", and saved as a standing rule for this repo (" + rule + ")" : ", once"}: you may run ${what}. The safety check blocked it as: ${b.reason || "no reason given"}. I accept that risk for this ${action === "always" ? "command and the ones the rule covers" : "one command"}.`
+    if (q) appendOwner(DIR, q.id, { kind: "answer", text, option: "", via: "page" })
+    appendFileSync(join(runsDir(), `${key}.jsonl`), JSON.stringify({ ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"), kind: "update", auto: true, event: "block-ruling", tool_use_id: b.id, target: b.target, scope: action, rule, text: `block ruled: ${action}${rule ? " (" + rule + ")" : ""}` }) + "\n")
+    emitChange("runs"); emitChange("questions")
+    return json({ ok: true, output: (action === "always" ? `saved ${rule} to ${run.repo}'s .claude/settings.local.json; it applies from the next stage (Stop and Resume to apply it now)` : `sent to the agent`) + (q ? ` · answered ${q.id}` : " · no open question to answer") })
   }
   const sm = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/summary$/)
   if (sm) {

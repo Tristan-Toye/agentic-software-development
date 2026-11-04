@@ -80,6 +80,8 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .msg{max-width:88%;margin:5px 0;padding:6px 10px;border-radius:10px;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--chip)}
 .msg.owner{margin-left:auto;background:var(--accbg)}.who{font-size:11px;color:var(--mut)}
 .chip.fixing{display:inline-flex;align-items:center;gap:5px;background:var(--accbg);color:var(--acc);font-weight:600}a.srow:has(.chip.fixing){box-shadow:inset 3px 0 0 var(--acc)}
+.panel.blocked{border-left:3px solid var(--bad)}.blk{border-top:1px solid var(--bd);padding:10px 0 4px;display:flex;flex-direction:column;gap:6px}.blk-cmd{margin:0;padding:8px 10px;border-radius:8px;background:var(--chip);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto}
+.blk-rule{display:flex;gap:6px;flex-wrap:wrap}.blk-rule input{flex:1;min-width:220px;font-size:12px;padding:6px 8px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg)}
 .psum{border-left:3px solid var(--acc)}.psum h3{font-size:.95rem;margin:12px 0 4px}.psum .md p:first-child{margin-top:0}
 .result .res-hd{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--mut);margin-bottom:4px}.result .res-hd .kind{font-weight:600;color:var(--fg)}
 .chat{margin:10px 0 0;padding:8px 12px;border-radius:10px;background:var(--chip);overflow-wrap:anywhere}.chat.owner{margin-left:12%;background:var(--accbg)}.chat.agent,.chat.runner{margin-right:6%}.chat.runner{color:var(--mut)}.chat .md p:first-child{margin-top:0}.chat .md p:last-child{margin-bottom:0}
@@ -391,8 +393,8 @@ function header(r, mode) {
   return h('div', { class: 'panel' }, [h('h1', { style: 'margin-top:0' }, [r.id + ' · ' + r.title]), r.summary && mode === 'run' ? h('p', { class: 'sum' }, [r.summary]) : null,
     h('div', { class: 'chips' }, cs), h('div', { class: 'row' }, controls(r, true).concat(acts))]);
 }
-const ICON = { start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', spawn: '⎇', reply: '↩', routine: '·', info: '·', entry: '§' };
-const KLABEL = { start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', spawn: 'agent', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };
+const ICON = { blocked: '⛔', start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', spawn: '⎇', reply: '↩', routine: '·', info: '·', entry: '§' };
+const KLABEL = { blocked: 'blocked by the safety check', start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', spawn: 'agent', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };
 function dur(ms) { const m = Math.round(ms / 60000); if (m < 1) return '<1 min'; if (m < 60) return m + ' min'; const hh = Math.floor(m / 60); if (hh < 24) return hh + ' h ' + (m % 60 ? (m % 60) + ' min' : ''); return Math.floor(hh / 24) + ' d ' + (hh % 24) + ' h'; }
 const icon = (k) => h('span', { class: 'ic' }, [ICON[k] || '•']);
 function tlEntry(e) {
@@ -465,6 +467,7 @@ function itemView(repo, id) {
   if (!r) return h('div', {}, [h('h1', {}, [id]), h('div', { class: 'empty' }, [S.loaded ? 'No such dossier in ' + repo + '.' : 'Loading…'])]);
   const mode = itemMode(r); const d = S.detail && S.detail.url === detailUrl() ? S.detail.data : null;
   const kids = [header(r, mode)];
+  const bv = blockedView(r, d); if (bv) kids.push(bv);
   const res = resultView(r, d); if (res) kids.push(res);
   /* Every dossier has the same tabs; a finished or not-started one opens on the
      dossier itself, a run in progress on its timeline. Empty tabs are left out. */
@@ -499,6 +502,29 @@ function dfState(r, i) {
   if (i.state === 'dossier') return i.dossier ? h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]) : chip('needs a dossier', 'planned');
   if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('deprecated', 'neutral')]);
   return chip('not tackled', 'ready');
+}
+/* Tool calls the auto-mode safety check refused, not ruled on yet: allow once, always allow in this repo (a narrow
+   permission rule in its .claude/settings.local.json), or deny. The ruling reaches the agent as the answer to its open question. */
+function blockedView(r, d) {
+  const bs = d && d.blocks; if (!bs || !bs.length) return null;
+  const key = r.repo + '/' + r.id; const st = S.chat['blk:' + key] = S.chat['blk:' + key] || {};
+  const cards = bs.map(b => {
+    const rk = 'rule:' + b.id; if (st[rk] === undefined) st[rk] = b.tool + '(' + b.target + ')';
+    const busy = st.busy === b.id;
+    return h('div', { class: 'blk', 'data-k': 'blk:' + b.id }, [
+      h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['⛔ ' + (b.tool || 'tool') + (b.agent ? ' · a sub-agent' : '')]), when(b.ts)]),
+      h('pre', { class: 'blk-cmd' }, [b.target]),
+      b.reason ? h('div', { class: 'small' }, [h('span', { class: 'mut' }, ['Why it was blocked: ']), b.reason]) : null,
+      h('div', { class: 'ctl' }, [
+        h('button', { class: 'btn', type: 'button', 'data-act': 'blk', 'data-do': 'once', 'data-repo': r.repo, 'data-id': r.id, 'data-b': b.id, disabled: busy || !d.blockQuestion ? true : null, title: d.blockQuestion ? 'Answers the agent\'s open question with an approval naming this exact command' : 'The agent has not asked yet' }, ['Allow once']),
+        h('button', { class: 'btn', type: 'button', 'data-act': 'blk', 'data-do': 'deny', 'data-repo': r.repo, 'data-id': r.id, 'data-b': b.id, disabled: busy || !d.blockQuestion ? true : null }, ['Deny'])]),
+      h('div', { class: 'blk-rule' }, [h('input', { type: 'text', class: 'mono', 'data-rule': b.id, value: st[rk], 'aria-label': 'Permission rule' }),
+        h('button', { class: 'btn', type: 'button', 'data-act': 'blk', 'data-do': 'always', 'data-repo': r.repo, 'data-id': r.id, 'data-b': b.id, disabled: busy ? true : null }, ['Always allow in this repo'])]),
+      h('div', { class: 'small mut' }, ['Always allow saves the rule to ' + r.repo + '\'s .claude/settings.local.json (permissions.allow). Widen it to a prefix, e.g. Bash(ssh vm-test *), to cover similar commands. It applies from the next stage; Stop and Resume apply it now.'])]);
+  });
+  const kids = [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Blocked by the safety check · ' + bs.length]), d.blockQuestion ? h('span', { class: 'small mut' }, ['ruling goes to ' + d.blockQuestion]) : h('span', { class: 'small mut' }, ['the agent has not asked yet'])])].concat(cards);
+  if (st.msg) kids.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad') }, [st.msg]));
+  return h('section', { class: 'panel blocked', 'data-k': 'blocked' }, kids);
 }
 /* What the dossier changed, in product terms (/product-summary, written after Phase 9), above the dossier itself. */
 function summaryView(r, d) {
@@ -722,6 +748,18 @@ async function fixSelected(btn) {
   } catch (e) { st.msg = 'request failed'; st.ok = false; }
   st.busy = null; await load(['runs']);
 }
+async function ruleBlock(btn) {
+  const repo = btn.dataset.repo, id = btn.dataset.id, bid = btn.dataset.b, act = btn.dataset.do, key = repo + '/' + id;
+  const st = S.chat['blk:' + key] = S.chat['blk:' + key] || {};
+  const inp = document.querySelector('input[data-rule="' + bid.replace(/"/g, '') + '"]'); if (inp) st['rule:' + bid] = inp.value;
+  if (st.confirm !== act + bid) { st.confirm = act + bid; btn.textContent = 'Confirm: ' + btn.textContent; setTimeout(() => { if (st.confirm === act + bid) { st.confirm = null; render(); } }, 8000); return; }
+  st.confirm = null; st.busy = bid; st.msg = ''; render();
+  try {
+    const r = await fetch('/api/runs/' + enc(repo) + '/' + enc(id) + '/blocks/' + enc(bid), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: act, rule: st['rule:' + bid] }) });
+    const j = await r.json().catch(() => ({})); st.ok = r.ok && j.ok !== false; st.msg = j.output || j.error || ('HTTP ' + r.status);
+  } catch (e) { st.ok = false; st.msg = 'request failed'; }
+  st.busy = null; await load(['runs', 'questions']);
+}
 async function writeSummary(btn) {
   const repo = btn.dataset.repo, id = btn.dataset.id, st = S.chat['sum:' + repo + '/' + id] = S.chat['sum:' + repo + '/' + id] || {};
   st.busy = true; st.err = ''; render();
@@ -763,6 +801,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'fix-sel') fixSelected(t);
     else if (act === 'chat') sendChat(t);
     else if (act === 'summary') writeSummary(t);
+    else if (act === 'blk') ruleBlock(t);
     else if (act === 'toggle-done') { S.showAll[t.dataset.repo] = !S.showAll[t.dataset.repo]; render(); }
     return;
   }

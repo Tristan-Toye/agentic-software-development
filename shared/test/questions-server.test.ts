@@ -9,7 +9,8 @@ import { remindersDue } from "../questions/server.ts"
 import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
-import { readUpdates, readRunner, summaryOf, renderMarkdown, readConversation } from "../questions/runstore.ts"
+import { readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
+import { blockedTarget } from "../claude/permission-denied.ts"
 import { mergeSpawns } from "../questions/timeline.ts"
 import { agentCounts, waitingForSlots, runStatusText, statusBlocks, openerBlocks } from "../questions/runstatus.ts"
 import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPanel } from "../questions/timeline.ts"
@@ -55,6 +56,19 @@ check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "
   check("timeline: a fix-deferred run is a section of its own, its steps stay in it", g.length === 3 && g[0].label === "Fix deferred issues" && g[0].current && g[0].items.some((i: any) => i.entry?.text === "Started fixing W-1's deferred issues.") && g[1].label.startsWith("Phase 9"), JSON.stringify(g.map((x) => x.label)))
   const g2 = groupByPhase(mergeTimeline({ updates: [U2("2026-11-04T10:00:00Z", "stage", "y", { stage: "Phase 9 — PR again" }), U2("2026-11-04T09:59:00Z", "runner", "start /work-on W-1 in /r"), ...ups], questions: [] }))
   check("timeline: a /work-on run after a fix-deferred run counts phases again", g2[0].label.startsWith("Phase 9") && g2[1].label === "Fix deferred issues", JSON.stringify(g2.map((x) => x.label)))
+}
+{
+  const bd = mkdtempSync(join(tmpdir(), "blk-"))
+  const L = (o: any) => JSON.stringify({ kind: "update", auto: true, ...o })
+  writeFileSync(join(bd, "r.W-1.jsonl"), [L({ ts: "1", event: "blocked", tool: "Bash", target: "ssh vm rebuild", reason: "[Shared infra]", tool_use_id: "t1" }), L({ ts: "2", event: "blocked", tool: "Bash", target: "ssh vm rebuild", reason: "again", tool_use_id: "t2" }),
+    L({ ts: "3", event: "blocked", tool: "Bash", target: "cat secret", reason: "x", tool_use_id: "t3" }), L({ ts: "4", event: "block-ruling", tool_use_id: "t3", scope: "deny", target: "cat secret" }), JSON.stringify({ ts: "5", kind: "update", text: "note" })].join("\n") + "\n")
+  const bks = readBlocks("r.W-1", bd)
+  check("blocks: unruled refusals, newest first, one per target; a ruled one is gone", bks.length === 1 && bks[0].id === "t2" && bks[0].reason === "again")
+  appendFileSync(join(bd, "r.W-1.jsonl"), L({ ts: "6", event: "block-ruling", tool_use_id: "t2", scope: "always", target: "ssh vm rebuild" }) + "\n")
+  check("blocks: an always-allow ruling clears every refusal of that target", readBlocks("r.W-1", bd).length === 0)
+  rmSync(bd, { recursive: true, force: true })
+  check("blocks: a rule must be narrow", checkRule("Bash(ssh vm-test *)") === "" && checkRule("Bash(*)") !== "" && checkRule("Bash(python3 *)") !== "" && checkRule("Bash(python3 scripts/x.py --y)") === "" && checkRule("ssh x") !== "" && checkRule("Read(/etc/x)") === "")
+  check("blocks: the hook records the exact command, a path, else the input", blockedTarget("Bash", { command: "ssh vm x" }) === "ssh vm x" && blockedTarget("Write", { file_path: "/a/b" }) === "/a/b" && blockedTarget("X", { a: 1 }) === '{"a":1}')
 }
 check("branches: a build branch names the id in any case; plan, stub and trunk branches never do", isBuildBranch("feat/w-130-x", "W-130") && isBuildBranch("origin/feat/W-128-a", "W-128") && isBuildBranch("fix/W-12-deferred", "W-12") && !isBuildBranch("feat/W-1300-x", "W-130") && !isBuildBranch("plan/W-130-x", "W-130") && !isBuildBranch("origin/stub/W-130", "W-130") && !isBuildBranch("development", "W-130"))
 {
@@ -545,6 +559,17 @@ try {
     check("server: Write product summary starts the runner for a built dossier, never for one not built", sm1.status === 200 && (await sm("repoC/W-10")).status === 409)
     const fx = await fetch(`${base}/api/runs/repoC/W-9/fix-deferred`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ items: ["D-1"] }) })
     check("server: fix selected is refused for a dossier with no open deferred items", fx.status === 409)
+    appendFileSync(join(runsDir, "repoC.W-9.jsonl"), JSON.stringify({ ts: "2026-11-04T08:10:00Z", kind: "update", auto: true, event: "blocked", tool: "Bash", target: "ssh vm-test rebuild fake-llm", reason: "[Shared infrastructure]", tool_use_id: "toolu_9" }) + "\n")
+    const bt: any = await (await fetch(`${base}/api/timeline/repoC/W-9`)).json()
+    const rule = (b: unknown) => fetch(`${base}/api/runs/repoC/W-9/blocks/toolu_9`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) })
+    const r0 = await rule({ action: "once" })
+    check("server: a block shows on the dossier; Allow once needs the agent's open question", bt.blocks?.[0]?.target === "ssh vm-test rebuild fake-llm" && bt.blockQuestion === "" && r0.status === 409 && (await rule({ action: "always", rule: "Bash(*)" })).status === 400)
+    writeFileSync(join(sdir, "repoC.W-9.Q7.jsonl"), JSON.stringify({ ts: "2026-11-04T08:11:00Z", from: "agent", kind: "question", text: "May I rebuild the fixture?", repo: "repoC", dossier: "W-9", root: realpathSync(repoC), options: [{ key: "A", label: "yes" }, { key: "B", label: "no" }], recommendation: "A", blocks: "x" }) + "\n")
+    const r1 = await rule({ action: "always", rule: "Bash(ssh vm-test *)" })
+    const cfg = JSON.parse(readFileSync(join(realpathSync(repoC), ".claude", "settings.local.json"), "utf8"))
+    const qa = readFileSync(join(sdir, "repoC.W-9.Q7.jsonl"), "utf8")
+    check("server: Always allow saves the narrow rule, answers the open question naming the command, and clears the block",
+      r1.status === 200 && cfg.permissions?.allow?.includes("Bash(ssh vm-test *)") && qa.includes("ssh vm-test rebuild fake-llm") && qa.includes('"kind":"answer"') && ((await (await fetch(`${base}/api/timeline/repoC/W-9`)).json()) as any).blocks.length === 0, await r1.text().catch(() => ""))
   }
   {
     const sse = await fetch(`${base}/api/events`), rd = sse.body!.getReader(), dec = new TextDecoder()
