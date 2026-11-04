@@ -14,6 +14,7 @@ import { mergeSpawns } from "../questions/timeline.ts"
 import { agentCounts, waitingForSlots, runStatusText, statusBlocks, openerBlocks } from "../questions/runstatus.ts"
 import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPanel } from "../questions/timeline.ts"
 import { blockedByOf, controlsFor } from "../questions/controls.ts"
+import { readAccounts } from "../questions/accounts.ts"
 import { execFileSync } from "node:child_process"
 
 let failed = 0
@@ -46,6 +47,22 @@ check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "
   const rep2 = "| ID | Kind | Title | Risk | Origin | Contract | Effort |\n|---|---|---|---|---|---|---|\n| D-1 | bug | a | low | new | none | S |\n"
   const wr2 = withReport(led, rep2)
   check("deferred: the report supersedes the ledger's contract and effort; items it lacks keep theirs", wr2[0].contract === "none" && wr2[0].effort === "S" && wr2[1].contract === "internal" && wr2[1].effort === "S" && wr2[1].inReport === false)
+}
+{
+  const ah = mkdtempSync(join(tmpdir(), "acct-"))
+  mkdirSync(join(ah, "u")); mkdirSync(join(ah, "m"))
+  writeFileSync(join(ah, "accounts.json"), JSON.stringify({ accounts: [{ name: "a", dir: join(ah, "m") }, { name: "b", dir: join(ah, "x") }] }))
+  writeFileSync(join(ah, "m", ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "a@x.test", organizationName: "Org A" } }))
+  const now = Date.parse("2026-11-04T12:00:00Z")
+  writeFileSync(join(ah, "state.json"), JSON.stringify({ a: { limited_until: now / 1000 + 3600 } }))
+  writeFileSync(join(ah, "u", "b.json"), JSON.stringify({ ts: "2026-11-04T11:59:00Z", windows: { five_hour: { used_percentage: 9, resets_at: now / 1000 + 600, status: "allowed" }, seven_day: { used_percentage: 40, resets_at: now / 1000 - 60, status: "allowed" } } }))
+  const env0 = { a: process.env.ASD_ACCOUNTS, s: process.env.ASD_ACCOUNT_STATE, u: process.env.ASD_USAGE_DIR }
+  process.env.ASD_ACCOUNTS = join(ah, "accounts.json"); process.env.ASD_ACCOUNT_STATE = join(ah, "state.json"); process.env.ASD_USAGE_DIR = join(ah, "u")
+  const acs = readAccounts([{ key: "r.W-1", account: "b" }, { key: "r.W-2", account: "a" }], now)
+  check("accounts: login, limit, next account, windows (a passed reset is unknown), runs per account",
+    acs.length === 2 && acs[0].email === "a@x.test" && acs[0].limitedUntil !== "" && !acs[0].next && acs[1].next && acs[1].fiveHour?.usedPct === 9 && acs[1].week?.usedPct === null && acs[1].week?.status === "reset" && acs[0].fiveHour === null && acs[1].runs.join() === "r.W-1" && acs[0].runs.join() === "r.W-2", JSON.stringify(acs))
+  for (const [k, v] of [["ASD_ACCOUNTS", env0.a], ["ASD_ACCOUNT_STATE", env0.s], ["ASD_USAGE_DIR", env0.u]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+  rmSync(ah, { recursive: true, force: true })
 }
 check("branches: a build branch names the id in any case; plan, stub and trunk branches never do", isBuildBranch("feat/w-130-x", "W-130") && isBuildBranch("origin/feat/W-128-a", "W-128") && isBuildBranch("fix/W-12-deferred", "W-12") && !isBuildBranch("feat/W-1300-x", "W-130") && !isBuildBranch("plan/W-130-x", "W-130") && !isBuildBranch("origin/stub/W-130", "W-130") && !isBuildBranch("development", "W-130"))
 {

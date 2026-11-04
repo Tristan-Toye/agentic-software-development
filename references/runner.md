@@ -75,6 +75,12 @@ the recorded checkpoints.
   read from the CLI's epoch, an ISO time, or text like "resets Nov 6 at 12pm
   (Europe/Brussels)". The dashboard reads session history from every
   registered account.
+- **Usage per account:** every `rate_limit_event` a stage emits is recorded
+  in `~/.agentic/usage/<account>.json` (`ASD_USAGE_DIR`): the 5-hour and
+  weekly windows (`used_percentage`, `resets_at`, `status`, from
+  `unifiedWindows`). `run_dossier.py usage [--account NAME]` reads them for an
+  account nothing runs on, with one tiny haiku call each; the dashboard's
+  Accounts panel shows them.
 - **A stage with no checkpoint:** if a stage ends with `RUNNER: STAGE-DONE`
   but no `phase_checkpoint` call was seen (the tool was missing or skipped),
   the runner writes the `stage` line itself, so the dashboard still draws the

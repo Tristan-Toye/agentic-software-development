@@ -149,6 +149,35 @@ def pick_account(now_s: float | None = None, prefer: str = "") -> tuple[dict, fl
     return a, free_at(a)
 
 
+USAGE_DIR = lambda: os.environ.get("ASD_USAGE_DIR") or os.path.expanduser("~/.agentic/usage")
+
+
+def record_usage(account: str, info: dict) -> None:
+    """The account's subscription windows from a `rate_limit_event` (`rate_limit_info`): `<USAGE_DIR>/<account>.json`
+    {ts, status, windows: {five_hour|seven_day|…: {used_percentage, resets_at, status}}}. `unifiedWindows` carries every
+    window with `utilization` 0-1; without it the event names one window. Windows it does not name are kept."""
+    if not account or not isinstance(info, dict):
+        return
+    path = os.path.join(USAGE_DIR(), account + ".json")
+    cur = read_json(path, {}) or {}
+    wins = dict(cur.get("windows") or {})
+    uw = info.get("unifiedWindows")
+    pairs = uw.items() if isinstance(uw, dict) and uw else ([(info.get("rateLimitType"), info)] if info.get("rateLimitType") else [])
+    for name, w in pairs:
+        if not isinstance(w, dict) or not name:
+            continue
+        u = w.get("utilization")
+        pct = None if u is None else round(float(u) * 100 if float(u) <= 1.0 else float(u), 1)
+        prev = wins.get(name) or {}
+        wins[name] = {"used_percentage": pct if pct is not None else prev.get("used_percentage"),
+                      "resets_at": w.get("resetsAt") or prev.get("resets_at"), "status": w.get("status") or info.get("status") or prev.get("status")}
+    try:
+        os.makedirs(USAGE_DIR(), exist_ok=True)
+        write_json(path, {"ts": now(), "status": info.get("status"), "windows": wins})
+    except OSError:
+        pass
+
+
 MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
 
 
@@ -520,6 +549,9 @@ class Runner:
     # -- reading a turn ---------------------------------------------------
 
     def note_event(self, ev: dict) -> None:
+        if ev.get("type") == "rate_limit_event":
+            record_usage((getattr(self, "account", None) or {}).get("name", ""), ev.get("rate_limit_info") or {})
+            return
         if ev.get("type") == "system" and ev.get("subtype") == "init" and ev.get("session_id"):
             self.save(session=ev["session_id"])
         if ev.get("type") != "assistant":
@@ -979,6 +1011,45 @@ def cmd_chat(a: argparse.Namespace) -> int:
     return 0 if state == "idle" else 1
 
 
+def cmd_usage(a: argparse.Namespace) -> int:
+    """`usage [--account NAME]`: refresh each account's 5-hour and weekly windows with one tiny haiku call, read from
+    its `rate_limit_event`. A run's own stages record them as they go; this is for an account nothing runs on."""
+    accs = [x for x in load_accounts() if not a.account or x["name"] == a.account]
+    if not accs:
+        print(f"no account named {a.account}", file=sys.stderr)
+        return 2
+    bad = 0
+    for acc in accs:
+        env = dict(os.environ, ASD_RUN_UPDATES="0")
+        env.pop("ASD_RUN_KEY", None)
+        if os.path.abspath(acc["dir"]) != os.path.abspath(os.path.expanduser("~/.claude")):
+            env["CLAUDE_CONFIG_DIR"] = acc["dir"]
+        else:
+            env.pop("CLAUDE_CONFIG_DIR", None)
+        cmd = shlex.split(os.environ.get("ASD_CLAUDE_BIN") or "claude") + [
+            "-p", "--output-format", "stream-json", "--verbose", "--model", "haiku", "Reply with the single word ok."]
+        got = False
+        try:
+            out = subprocess.run(cmd, cwd=os.path.expanduser("~"), env=env, capture_output=True, text=True, timeout=120)
+            for line in out.stdout.splitlines():
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if ev.get("type") == "rate_limit_event":
+                    record_usage(acc["name"], ev.get("rate_limit_info") or {})
+                    got = True
+            tail = (out.stdout + out.stderr)[-2000:]
+            if not got and usage_limit(tail):
+                record_usage(acc["name"], {"status": "rejected"})
+                got = True
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        say(f"{acc['name']}: " + ("usage recorded" if got else "no usage reading"))
+        bad += 0 if got else 1
+    return 0 if not bad else 1
+
+
 def cmd_summary(a: argparse.Namespace) -> int:
     """`summary ID`: write the product summary of a finished dossier now (for builds that ended before the runner
     wrote one, or to redo it). The run's own record stays as it is."""
@@ -1185,6 +1256,14 @@ def selftest() -> int:
         check("after DONE the product summary is stored without the RUNNER line, on sonnet, and the run's model is restored",
               ok_sum and sum_txt.startswith("**In one line:**") and "RUNNER:" not in sum_txt and ":product-summary W-77" in first_sum
               and "--model sonnet" in first_sum and rn.model is None and rn.command == "work-on")
+        os.environ["ASD_USAGE_DIR"] = os.path.join(tmp, "usage")
+        record_usage("acct", {"status": "allowed", "rateLimitType": "five_hour", "unifiedWindows": {
+            "five_hour": {"utilization": 0.08, "resetsAt": 100, "status": "allowed"}, "seven_day": {"utilization": 0.4, "resetsAt": 200, "status": "allowed"}}})
+        record_usage("acct", {"status": "rejected", "rateLimitType": "seven_day", "utilization": 1.0, "resetsAt": 300})
+        uw = read_json(os.path.join(tmp, "usage", "acct.json"), {}).get("windows", {})
+        check("usage: a rate_limit_event's windows are recorded as percentages; a one-window event keeps the others",
+              uw.get("five_hour", {}).get("used_percentage") == 8.0 and uw.get("seven_day", {}).get("used_percentage") == 100.0
+              and uw.get("seven_day", {}).get("resets_at") == 300 and uw.get("five_hour", {}).get("resets_at") == 100)
         cps = read_json(os.path.join(rdir, "repo.W-77.checkpoints.json"), [])
         stl = [x for x in lines_of(os.path.join(rdir, "repo.W-77.jsonl")) if x.get("kind") == "stage"]
         check("usage limits are recognised, real errors are not",
@@ -1363,6 +1442,10 @@ def main() -> int:
             ap.print_usage(sys.stderr)
             return 2
         return cmd_chat(a)
+    if argv and argv[0] == "usage":
+        ap = argparse.ArgumentParser(prog="run_dossier.py usage")
+        ap.add_argument("--account")
+        return cmd_usage(ap.parse_args(argv[1:]))
     if argv and argv[0] == "summary":
         ap = argparse.ArgumentParser(prog="run_dossier.py summary")
         ap.add_argument("id", nargs="?", help="dossier id, e.g. W-123")
