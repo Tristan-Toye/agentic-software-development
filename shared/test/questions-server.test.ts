@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rm
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
-import { channelNameFor, interpretEnvelope, questionBlocks } from "../questions/slack.ts"
+import { channelNameFor, interpretEnvelope, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
 import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers } from "../questions/stubs.ts"
@@ -92,6 +92,12 @@ check("deferred: an item marked RESOLVED in place is closed", parseDeferred("- D
   const sm = (t: string) => slackMessageFor({ ts: "t", kind: "runner", text: t } as any, { repo: "r", id: "W-1", title: "x", link: "L" })
   check("deferred: the run thread gets the deferred count, not a zero", (sm("deferred report: 3 issue(s)")?.text ?? "").startsWith("📋 3 deferred issues") && sm("deferred report: 0 issue(s)") === null)
 }
+check("replies: typed text is always a follow-up; the question stays open", replyKind("why A?").kind === "followup" && replyKind(" go with B ").kind === "followup" && replyKind(" go with B ").text === "go with B")
+{
+  const qa = parseQuestion("r.W-1.Q1", [JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Which?" }), JSON.stringify({ ts: "2", from: "owner", kind: "followup", text: "use B" }), JSON.stringify({ ts: "3", from: "agent", kind: "answer", accepted: true, text: "I will use B.", owner_text: "use B" })].join("\n"))
+  const qo = parseQuestion("r.W-1.Q2", [JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Which?" }), JSON.stringify({ ts: "2", from: "owner", kind: "followup", text: "use B" }), JSON.stringify({ ts: "3", from: "agent", kind: "answer", text: "not accepted" })].join("\n"))
+  check("store: a typed message the agent accepted closes the question; an agent line without accepted does not", qa?.state === "answered" && qa.answer?.text === "I will use B." && qo?.state === "open")
+}
 check("slack: channel names from repo names", channelNameFor("config-harness") === "config-harness" && channelNameFor("Documents/Twipe/repos") === "documents-twipe-repos" && channelNameFor("A__b.c") === "a__b-c" && channelNameFor("x".repeat(100)).length === 79)
 {
   const env = (channel_type: string, thread: boolean) => ({ type: "events_api", envelope_id: "e", payload: { event: { type: "message", channel_type, channel: "C1", user: "U1", text: "why?", ts: "2", ...(thread ? { thread_ts: "1" } : {}) } } })
@@ -139,7 +145,7 @@ check("slack: disconnect acks and reconnects", r.ack?.envelope_id === "E0" && r.
 r = interpretEnvelope(ev({ text: "what about cost?", thread_ts: "111.222" }), lookup)
 check("slack: thread reply is a follow-up", r.ack?.envelope_id === "E1" && r.action.type === "owner" && r.action.kind === "followup" && r.action.id === "hand.written.Q9")
 r = interpretEnvelope(ev({ text: "Answer: go with A", thread_ts: "111.222" }), lookup)
-check("slack: answer: prefix is a free-text answer", r.action.type === "owner" && r.action.kind === "answer" && r.action.text === "go with A" && !r.action.option)
+check("slack: a typed reply, even with answer: in front, stays a follow-up", r.action.type === "owner" && r.action.kind === "followup" && r.action.text === "Answer: go with A" && !r.action.option)
 r = interpretEnvelope(ev({ text: "hello" }), lookup)
 check("slack: DM outside a thread gets a pointer", r.action.type === "pointer")
 r = interpretEnvelope(ev({ text: "x", thread_ts: "999.9" }), lookup)

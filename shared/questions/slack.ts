@@ -42,9 +42,8 @@ export function interpretEnvelope(
       if (st) return { ack, action: { type: "status", channel: ev.channel, ts: ev.ts, threadTs, id: st[1]?.toUpperCase() } }
       // In a repo channel other talk is not ours: only a DM outside a question's thread gets the pointer.
       if (!id) return ev.channel_type === "im" ? { ack, action: { type: "pointer", channel: ev.channel, threadTs } } : { ack, action: { type: "none" } }
-      const m = text.match(/^answer:\s*([\s\S]*)$/i)
-      if (m) return { ack, action: { type: "owner", id, kind: "answer", text: m[1].trim(), channel: ev.channel, threadTs } }
-      return { ack, action: { type: "owner", id, kind: "followup", text, channel: ev.channel, threadTs } }
+      const k = replyKind(text)
+      return { ack, action: { type: "owner", id, kind: k.kind, text: k.text, channel: ev.channel, threadTs } }
     }
     case "interactive": {
       const p = env.payload
@@ -74,7 +73,15 @@ export const STATUS_ACTION = "run_status"
 /** A status message (its first section is the "*Status —" heading): its Refresh button updates it in place. */
 export const isStatusMessage = (m: any): boolean => String(m?.blocks?.[0]?.text?.text ?? "").startsWith("*Status —")
 
-export const POINTER_TEXT = "Reply in a question's thread: a plain reply asks a follow-up, `answer: ...` answers it. Send `status` (or `status W-128`) for an update on the running dossiers."
+/**
+ * What a typed reply to a question is: always a follow-up, so the question stays open. The agent answers it, or, when
+ * it reads as an instruction it can act on, restates it and accepts it as the answer (`ask_owner.py accept`). Only an
+ * option button answers outright. The page and Slack read replies the same way.
+ */
+export function replyKind(raw: string): { kind: "followup"; text: string } {
+  return { kind: "followup", text: raw.trim() }
+}
+export const POINTER_TEXT = "Reply in a question's thread: the agent answers, or confirms what it will do with your words and closes the question; the buttons answer outright. Send `status` (or `status W-128`) for an update on the running dossiers."
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")

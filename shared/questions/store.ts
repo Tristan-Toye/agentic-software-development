@@ -49,7 +49,8 @@ export function parseQuestion(id: string, content: string): Question | null {
   }
   const q = lines.find((l) => l.kind === "question")
   if (!q) return null
-  const answer = lines.find((l) => l.from === "owner" && l.kind === "answer") ?? null
+  // An option button is the owner's answer; a typed message stays a follow-up until the agent accepts it as one.
+  const answer = lines.find((l) => l.kind === "answer" && (l.from === "owner" || l.accepted === true)) ?? null
   const str = (v: unknown) => (typeof v === "string" ? v : "")
   return {
     id,
