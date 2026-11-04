@@ -219,7 +219,9 @@ one card-based single-page app with deep links.
     server passes each dossier's live control (`--run-controls`), so a dossier
     whose run stopped or failed shows ↻ (resume) instead, and the report is
     regenerated when a runner starts or stops. The
-    right column also lists the dossiers with open deferred issues. A dossier's
+    stubs section also lists, under "Deferred on merged work", the dossiers with
+    open deferred issues that no open stub card shows (their stub merged); a
+    dossier on an open card shows its deferred count on its row instead. A dossier's
     page shows its **Deferred issues**, parsed from the ledger in its build log
     (`- D-n <kind> <title> — <path:line> — <risk> — <why> — contract: <c> — effort: <e>`;
     the report's summary table supersedes the line's contract and effort, and
@@ -243,7 +245,11 @@ one card-based single-page app with deep links.
     which starts `--command fix-deferred --items D-1,D-3`: only those items,
     one stacked PR through the implementer and review flow; an item that looks
     too big for it is put to the owner as a question (own dossier, fix here
-    anyway, or leave open). **A finished run's last reply** is the first thing
+    anyway, or leave open). **The product summary** (`<key>.summary.md`, written by the runner after
+    Phase 9) sits above the dossier on its Dossier tab; a built dossier without
+    one offers **Write product summary**, which POSTs
+    `/api/runs/<repo>/<ID>/summary` and runs `run_dossier.py summary <ID>` in
+    the background. **A finished run's last reply** is the first thing
     on the dossier page (the runner's `result` line; for older runs the agent's
     last note before its final stage ended), with the owner's chat under it: a
     message POSTs to `/api/runs/<repo>/<ID>/chat`, which runs
