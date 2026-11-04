@@ -136,9 +136,11 @@ author or the implementer with only the correction (for the implementer, the
 `WORKTREE_DIR` it now works in), per `phase-4.md` ("Under Claude Code, resume
 instead of re-spawn"). A re-spawned test author after the merge takes its
 `CONTRACT` from the dossier's `## Contract`, never from the contract files
-(they hold implementation bodies now): compose or `--refresh-contract` with
-`--dossier <live dossier>`, which refuses the files route once its status is
-`review`. An agent spawned by a workflow has no resumable id —
+(they hold implementation bodies now): compose with `--dossier <live dossier>`
+and `--contract-extra "<subsection heading>"` (repeatable) and no
+`--contract-paths`, which pastes those `## Contract` subsections as CONTRACT and
+hashes them; or `--refresh-contract` with `--dossier`, which refuses the files
+route once its status is `review`. An agent spawned by a workflow has no resumable id —
 not even one scavenged from its transcript directory; correct it with a full
 re-spawn through the same workflow (a single one too), `FAILURES` + `CORRECTION`
 folded into the payload. A row-3 contract fix changes the contract, so the

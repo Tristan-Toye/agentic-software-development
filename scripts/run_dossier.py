@@ -290,10 +290,11 @@ def kill_group(proc: subprocess.Popen | None, sig=signal.SIGTERM) -> None:
 
 class Runner:
     def __init__(self, root: str, dossier: str, command: str, model: str | None,
-                 permission_mode: str, max_stages: int):
+                 permission_mode: str, max_stages: int, items: str = ""):
         self.root = os.path.abspath(root)
         self.dossier = dossier
         self.command = command
+        self.items = items  # fix-deferred: the D-ids the owner selected, "D-1,D-3"; empty = all
         self.model = model
         self.permission_mode = permission_mode
         self.max_stages = max_stages
@@ -305,7 +306,7 @@ class Runner:
         self.state_path = os.path.join(d, self.key + ".runner.json")
         self.cp_path = os.path.join(d, self.key + ".checkpoints.json")
         self.err_path = os.path.join(d, self.key + ".stderr.log")
-        self.state: dict = {"pid": os.getpid(), "account": self.account["name"], "root": root, "command": command, "started": now(), "state": "running", "stage": 0,
+        self.state: dict = {"pid": os.getpid(), "account": self.account["name"], "root": root, "command": command, "permission_mode": permission_mode, "started": now(), "state": "running", "stage": 0,
                             "session": "", "questions": [], "claude_pid": None}
         self.checkpoints: list[dict] = read_json(self.cp_path, [])
         self.seen_tool_ids: set[str] = set()
@@ -360,6 +361,25 @@ class Runner:
         n = len(re.findall(r"^###\s+D-\d+", text, re.M))
         self.event(f"deferred report: {n} issue(s)")
 
+    def record_result(self, text: str) -> None:
+        """The finished run's last reply, as the owner would see it in a terminal:
+        a `result` line in the updates store (the dashboard shows it on top, and the
+        owner can chat with this session; `run_dossier.py chat`)."""
+        body = re.sub(r"^RUNNER:.*$", "", text or "", flags=re.M).strip()
+        sid = self.state.get("session") or ""
+        self.save(result_session=sid)
+        try:  # a chat belongs to one run's reply: the next run's reply starts a new one
+            os.remove(os.path.join(runs_dir(), self.key + ".chat.json"))
+        except OSError:
+            pass
+        if not body:
+            return
+        try:
+            append_line(self.updates, {"ts": now(), "kind": "result", "text": body[:20000], "session": sid,
+                                       "stage": str(self.state["stage"]), "command": self.command})
+        except OSError:
+            pass
+
     def no_checkpoint(self, name: str) -> None:
         """A stage ended without a phase_checkpoint (the tool was missing or
         skipped): write the stage line the hook would have written, so the
@@ -392,7 +412,8 @@ class Runner:
     def handoff(self) -> str | None:
         if not self.checkpoints:
             return None
-        rows = [f"RUNNER HAND-OFF. Task: run /{PLUGIN}:{self.command} {self.dossier} in {self.root}.",
+        args = f" {self.items}" if self.items and self.command == "fix-deferred" else ""
+        rows = [f"RUNNER HAND-OFF. Task: run /{PLUGIN}:{self.command} {self.dossier}{args} in {self.root}.",
                 "Earlier stages, in order:"]
         for i, cp in enumerate(self.checkpoints, 1):
             rows.append(f"{i}. {cp['name']}: {clip(cp['summary'], 4000)}")
@@ -431,7 +452,7 @@ class Runner:
             q.put(None)
 
         threading.Thread(target=pump, daemon=True).start()
-        self.send(f"/{PLUGIN}:{self.command} {self.dossier}")
+        self.send(f"/{PLUGIN}:{self.command} {self.dossier}" + (f" {self.items}" if self.items and self.command == "fix-deferred" else ""))
         extra = False
         hand = self.handoff()
         if hand:
@@ -649,6 +670,7 @@ class Runner:
                     self.no_checkpoint(rest)
                 return "next", rest
             if verb == "DONE":
+                self.record_result(text)
                 self.end_process()
                 return "done", ""
             if verb == "FAILED":
@@ -813,6 +835,117 @@ def cmd_stop(a: argparse.Namespace) -> int:
                 pass
     print(f"stopped {key}")
     return 0
+
+
+CHAT_RULES = """\
+The run is finished and the owner is talking to you from the dashboard; nobody reads the terminal. Answer their message
+in plain sentences, for a person reading on a phone; markdown bullets and small tables are welcome. Answer questions
+from what you know and what you can read. Change code, branches, pull requests or the dossier only when the message
+asks you to, and say exactly what you changed. Do not end with a RUNNER: line.
+"""
+
+
+def chat_session(key: str) -> tuple[str, str]:
+    """(session id, account) the owner's chat resumes: the chat's own session once it has one, else the session that
+    wrote the run's last reply (`result_session`, the last `result` line, or the last `stage N end` line)."""
+    d = runs_dir()
+    ch = read_json(os.path.join(d, key + ".chat.json"), {}) or {}
+    st = read_json(os.path.join(d, key + ".runner.json"), {}) or {}
+    acct = ch.get("account") or st.get("account") or ""
+    if ch.get("session"):
+        return ch["session"], acct
+    if st.get("result_session"):
+        return st["result_session"], acct
+    sid = ""
+    try:
+        with open(os.path.join(d, key + ".jsonl")) as fh:
+            for raw in fh:
+                try:
+                    o = json.loads(raw)
+                except ValueError:
+                    continue
+                if o.get("kind") == "result" and o.get("session"):
+                    sid = o["session"]
+                elif o.get("kind") == "runner" and re.match(r"stage \S+ end\b", str(o.get("text", ""))) and o.get("session"):
+                    sid = o["session"]
+    except OSError:
+        pass
+    return sid, acct
+
+
+def chat_line(key: str, who: str, text: str, **kw) -> None:
+    append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "chat", "from": who, "text": text[:20000], **kw})
+
+
+def cmd_chat(a: argparse.Namespace) -> int:
+    """`chat ID --text T`: the owner's message to the finished run's session. The owner line is written at once; the
+    reply (or why there is none) follows as a `chat` line from a background process, `<key>.chat.log` its output."""
+    key = key_of(a.root, a.dossier)
+    d = runs_dir()
+    text = (a.text or "").strip()
+    if not text:
+        print("run_dossier.py chat: --text is empty", file=sys.stderr)
+        return 2
+    st = read_json(os.path.join(d, key + ".runner.json"), {}) or {}
+    if st.get("state") in ("running", "waiting", "paused") and alive(st.get("pid")):
+        print(f"{key} is still running; answer its questions instead", file=sys.stderr)
+        return 2
+    cp = os.path.join(d, key + ".chat.json")
+    ch = read_json(cp, {}) or {}
+    if ch.get("state") == "thinking" and alive(ch.get("pid")) and ch.get("pid") != os.getpid():
+        print(f"{key}: the agent is still answering the last message", file=sys.stderr)
+        return 2
+    sid, acct = chat_session(key)
+    if not sid:
+        print(f"{key}: no session to talk to (the run recorded none)", file=sys.stderr)
+        return 1
+    if not a.foreground:
+        chat_line(key, "owner", text)
+        write_json(cp, {**ch, "state": "thinking", "pid": None, "session": ch.get("session") or "", "account": acct, "since": now()})
+        log = os.path.join(d, key + ".chat.log")
+        args = [sys.executable, os.path.abspath(__file__), "chat", a.dossier, "--root", a.root, "--text", text, "--foreground"]
+        with open(log, "ab") as fh:
+            p = subprocess.Popen(args, cwd=a.root, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+        write_json(cp, {**read_json(cp, {}), "pid": p.pid})
+        say(f"sent to {key}; the reply follows on the dashboard")
+        return 0
+    write_json(cp, {**read_json(cp, {}), "state": "thinking", "pid": os.getpid(), "account": acct})
+    root = st.get("root") or a.root
+    cmd = shlex.split(os.environ.get("ASD_CLAUDE_BIN") or "claude")
+    cmd += ["-p", "--resume", sid, "--output-format", "json", "--permission-mode", st.get("permission_mode") or "auto",
+            "--append-system-prompt", CHAT_RULES]
+    env = dict(os.environ, ASD_RUN_UPDATES="0")
+    env.pop("ASD_RUN_KEY", None)
+    acc = next((x for x in load_accounts() if x.get("name") == acct), None)
+    if acc and os.path.abspath(acc["dir"]) != os.path.abspath(os.path.expanduser("~/.claude")):
+        env["CLAUDE_CONFIG_DIR"] = acc["dir"]
+    elif acc:
+        env.pop("CLAUDE_CONFIG_DIR", None)
+    state, new_sid = "idle", sid
+    try:
+        out = subprocess.run(cmd, cwd=root, env=env, input=text, capture_output=True, text=True,
+                             timeout=float(os.environ.get("ASD_CHAT_TIMEOUT") or 1800))
+        try:
+            j = json.loads(out.stdout.strip().splitlines()[-1]) if out.stdout.strip() else {}
+        except ValueError:
+            j = {}
+        reply = str(j.get("result") or "").strip()
+        new_sid = str(j.get("session_id") or sid)
+        if out.returncode != 0 or j.get("is_error") or not reply:
+            why = reply or (out.stderr or "").strip().splitlines()[-1:] or [f"exit {out.returncode}"]
+            why = why if isinstance(why, str) else why[0]
+            state = "failed"
+            chat_line(key, "runner", ("The agent hit its usage limit; try again later. " if usage_limit(why) else "The agent could not answer: ") + why[:500])
+        else:
+            chat_line(key, "agent", reply, session=new_sid)
+    except subprocess.TimeoutExpired:
+        state = "failed"
+        chat_line(key, "runner", "The agent did not answer within the time limit.")
+    except OSError as e:
+        state = "failed"
+        chat_line(key, "runner", f"The agent could not be started: {e}")
+    write_json(cp, {**read_json(cp, {}), "state": state, "pid": None, "session": new_sid, "account": acct})
+    return 0 if state == "idle" else 1
 
 
 # ---------------------------------------------------------------- selftest
@@ -1017,8 +1150,25 @@ def selftest() -> int:
               rt[0].startswith("start ") and "stage 1 start" in rt and "stage 2 end: Phase 4" in rt
               and f"waiting on {q1}" in rt and f"follow-up on {q1}" in rt and f"answered {q1}" in rt and rt[-1] == "done")
         check("runner lines carry state and session",
-              all("state" in x for x in lines_of(os.path.join(rdir, "repo.W-1.jsonl"))) and
+              all("state" in x for x in lines_of(os.path.join(rdir, "repo.W-1.jsonl")) if x.get("kind") == "runner") and
               any(x.get("session") == "sess-2" for x in lines_of(os.path.join(rdir, "repo.W-1.jsonl"))))
+        check("done: the last reply is a result line without its RUNNER: line, and its session is the chat's",
+              len(texts("W-1", "result")) == 1 and texts("W-1", "result")[0].endswith("all green") and "RUNNER:" not in texts("W-1", "result")[0] and state_of("W-1").get("result_session") == "sess-3")
+        # ---- 1b. chat with the finished run's session --------------------------------
+        cfake = os.path.join(fdir, "chat_claude.py")
+        open(cfake, "w").write("import json,sys\na=sys.argv[1:]\nmsg=sys.stdin.read()\n"
+                               "print(json.dumps({'result':'re: '+msg+' @'+a[a.index('--resume')+1],'session_id':'chat-1','is_error':False}))\n")
+        cenv = dict(env, ASD_CLAUDE_BIN=f"{shlex.quote(sys.executable)} {shlex.quote(cfake)}")
+        cr = subprocess.run([sys.executable, me, "chat", "W-1", "--root", root, "--text", "why A?"], env=cenv, capture_output=True, text=True)
+        check("chat: the owner line is written at once and the reply resumes the result session",
+              cr.returncode == 0 and bool(until(lambda: any(x.get("from") == "agent" for x in lines_of(os.path.join(rdir, "repo.W-1.jsonl")) if x.get("kind") == "chat")))
+              and [x["text"] for x in lines_of(os.path.join(rdir, "repo.W-1.jsonl")) if x.get("kind") == "chat"] == ["why A?", "re: why A? @sess-3"])
+        until(lambda: read_json(os.path.join(rdir, "repo.W-1.chat.json"), {}).get("state") == "idle")
+        subprocess.run([sys.executable, me, "chat", "W-1", "--root", root, "--text", "and B?", "--foreground"], env=cenv, capture_output=True, text=True)
+        check("chat: the next message resumes the chat's own session",
+              [x["text"] for x in lines_of(os.path.join(rdir, "repo.W-1.jsonl")) if x.get("kind") == "chat"][-1] == "re: and B? @chat-1")
+        bad = subprocess.run([sys.executable, me, "--root", root, "--dossier", "W-1", "--items", "D-1"], env=env, capture_output=True, text=True)
+        check("--items only with fix-deferred", bad.returncode == 2)
         out1 = open(os.path.join(tmp, "out.W-1.txt")).read()
         check("stdout never carries model text", "SECRET-MODEL-TEXT" not in out1 and "[run_dossier] repo.W-1 stage 1 start" in out1)
 
@@ -1133,6 +1283,18 @@ def resolve(a: argparse.Namespace, ap: argparse.ArgumentParser) -> bool:
 
 def main() -> int:
     argv = sys.argv[1:]
+    if argv and argv[0] == "chat":
+        ap = argparse.ArgumentParser(prog="run_dossier.py chat")
+        ap.add_argument("id", nargs="?", help="dossier id, e.g. W-123")
+        ap.add_argument("--root", help="repository root (default: the repository of the current directory)")
+        ap.add_argument("--dossier")
+        ap.add_argument("--text", required=True)
+        ap.add_argument("--foreground", action="store_true")
+        a = ap.parse_args(argv[1:])
+        if not resolve(a, ap) or not (a.root and a.dossier):
+            ap.print_usage(sys.stderr)
+            return 2
+        return cmd_chat(a)
     if argv and argv[0] in ("status", "stop"):
         ap = argparse.ArgumentParser(prog=f"run_dossier.py {argv[0]}")
         need = argv[0] == "stop"
@@ -1155,6 +1317,7 @@ def main() -> int:
     ap.add_argument("--model")
     ap.add_argument("--permission-mode", default="auto")
     ap.add_argument("--max-stages", type=int, default=20)
+    ap.add_argument("--items", default="", help="fix-deferred only: the D-ids to fix, e.g. D-1,D-3 (default: every open item)")
     ap.add_argument("--detach", action="store_true", help="the default: run in the background; output to <key>.runner.log")
     ap.add_argument("--foreground", action="store_true", help="run in this terminal instead of the background")
     a = ap.parse_args(argv)
@@ -1163,9 +1326,13 @@ def main() -> int:
     if not resolve(a, ap) or not a.root or not a.dossier:
         ap.print_usage(sys.stderr)
         return 2
+    items = ",".join(i for i in re.split(r"[,\s]+", a.items or "") if i)
+    if items and (a.command != "fix-deferred" or not re.fullmatch(r"D-\d+(?:,D-\d+)*", items)):
+        print("run_dossier.py: --items takes D-ids (D-1,D-3) and only with --command fix-deferred", file=sys.stderr)
+        return 2
     if not a.foreground:
         return detach(argv + ([] if "--root" in argv else ["--root", a.root]), a.root, a.dossier)
-    return Runner(a.root, a.dossier, a.command, a.model, a.permission_mode, a.max_stages).run()
+    return Runner(a.root, a.dossier, a.command, a.model, a.permission_mode, a.max_stages, items).run()
 
 
 if __name__ == "__main__":

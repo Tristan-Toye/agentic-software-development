@@ -1,7 +1,7 @@
 // Pipeline discovery: dossiers, stage, session activity, PR/CI. Contract: references/owner-questions.md (Dashboard).
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { basename, join, relative } from "node:path"
 import type { Question } from "./store.ts"
 import { emitChange } from "./events.ts"
 import { blockedByOf, controlsFor, type Controls } from "./controls.ts"
@@ -34,7 +34,7 @@ export function deferredSince(updated: string, runner: unknown): boolean {
   return runner != null || updated.slice(0, 10) >= (process.env.ASD_DEFERRED_SINCE || "2026-11-03")
 }
 /** One deferred issue from a dossier's ledger (`/work-on` Phase 9, `/deferred`, `/fix-deferred`). */
-export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string }
+export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string; contract?: string; effort?: string; inReport?: boolean }
 export type Deferred = { items: DeferredItem[]; pr: string; report: boolean }
 
 /**
@@ -67,6 +67,32 @@ export function parseDeferred(log: string): { items: DeferredItem[]; pr: string 
     if (p) pr = p[1]
   }
   return { items: [...items.values()], pr }
+}
+/**
+ * The summary table of a `/deferred` report: `| ID | Kind | Title | Risk | Origin | Contract | Effort |`, columns found
+ * by their header names. Per D-id its risk, contract boundary and effort; items missing from it are not product code.
+ */
+export function parseReportTable(md: string): Map<string, { risk: string; contract: string; effort: string; title: string }> {
+  const out = new Map<string, { risk: string; contract: string; effort: string; title: string }>()
+  let cols: string[] | null = null
+  const cells = (l: string) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim())
+  for (const l of md.split("\n")) {
+    if (!l.trim().startsWith("|")) { cols = null; continue }
+    const c = cells(l)
+    if (!cols) { if (c.some((x) => /^id$/i.test(x))) cols = c.map((x) => x.toLowerCase()); continue }
+    if (c.every((x) => /^:?-+:?$/.test(x))) continue
+    const at = (n: string) => { const i = cols!.indexOf(n); return i >= 0 ? (c[i] ?? "").replace(/`/g, "") : "" }
+    const id = at("id")
+    if (/^D-\d+$/.test(id)) out.set(id, { risk: at("risk"), contract: at("contract"), effort: at("effort"), title: at("title") })
+  }
+  return out
+}
+/** The ledger's items with the report's contract and effort, when the run stored a report. */
+export function withReport(items: DeferredItem[], report: string): DeferredItem[] {
+  if (!report) return items
+  const t = parseReportTable(report)
+  if (!t.size) return items
+  return items.map((i) => { const r = t.get(i.id); return r ? { ...i, contract: r.contract, effort: r.effort, inReport: true } : { ...i, inReport: false } })
 }
 /** An answered question, as shown under the dossier it came from. */
 export type QA = { id: string; text: string; answer: string; option: string; asked: string; answeredAt: string }
@@ -182,6 +208,59 @@ export function pickDossiers(roots: string[]): { front: Front; text: string; fil
   return [...best.values()]
 }
 
+// ---- a finished build's copy on its own branch ----
+// A finished /work-on removes its worktree but keeps its branch: until the PR merges, the dossier's `done`
+// status and its ledger live only there. Such a copy stands in `file` as `git:<main>::<ref>::<path>`.
+const GIT_FILE = /^git:(.*?)::(.*?)::(.*)$/
+const NOT_BUILD = /^(?:origin\/)?(?:plan|stub)\/|^origin\/HEAD$|^(?:origin\/)?(?:main|master|development|production)$/
+const blobs = new Map<string, string>()
+export const branchFile = (main: string, ref: string, rel: string): string => `git:${main}::${ref}::${rel}`
+/** A dossier's text: from disk, or from the branch a `git:` file names. Throws when unreadable. */
+export function readDossier(file: string): string {
+  const m = file.match(GIT_FILE)
+  if (!m) return readFileSync(file, "utf8")
+  const p = Bun.spawnSync(["git", "-C", m[1], "show", `${m[2]}:${m[3]}`], { stdout: "pipe", stderr: "ignore" })
+  if (p.exitCode !== 0) throw new Error(`cannot read ${m[3]} on ${m[2]}`)
+  return p.stdout.toString()
+}
+/** Whether a branch name is the build branch of dossier `id`: the id as a whole token, any case; plan and stub branches never are. */
+export function isBuildBranch(ref: string, id: string): boolean {
+  return !NOT_BUILD.test(ref) && new RegExp(`(?:^|[/_-])${id.replace(/[^\w-]/g, "")}(?:$|[-_/])`, "i").test(ref)
+}
+/**
+ * Each picked dossier, replaced by its copy on its own build branch (local or `origin/`) when that copy's build log is
+ * longer. `git` errors leave the pick as it is.
+ */
+export async function withBranchCopies<T extends { front: Front; text: string; file: string; worktree: string }>(main: string, picked: T[]): Promise<(T & { branch?: string })[]> {
+  if (!existsSync(join(main, ".git"))) return picked
+  const refs = (await sh(["git", "-C", main, "for-each-ref", "--format=%(objectname) %(refname:short)", "refs/heads", "refs/remotes/origin"], undefined, 5000))
+    .split("\n").map((l) => l.trim().split(" ")).filter((p) => p.length === 2 && !NOT_BUILD.test(p[1]))
+  if (!refs.length) return picked
+  const out: (T & { branch?: string })[] = []
+  for (const d of picked) {
+    let best: (T & { branch?: string }) = d
+    let bestLen = logLength(d.text)
+    const rel = relative(main, d.file).startsWith("..") ? join(".discovery", "dossiers", basename(d.file)) : relative(main, d.file)
+    for (const [sha, ref] of refs) {
+      if (!isBuildBranch(ref, d.front.id!)) continue
+      const k = `${sha}:${rel}`
+      let text = blobs.get(k)
+      if (text === undefined) {
+        text = await sh(["git", "-C", main, "show", `${sha}:${rel}`], undefined, 5000)
+        if (blobs.size > 2000) blobs.clear()
+        blobs.set(k, text)
+      }
+      if (!text) continue
+      const front = parseFrontMatter(text)
+      if ((front.id ?? d.front.id) !== d.front.id) continue
+      const len = logLength(text)
+      if (len > bestLen) { bestLen = len; best = { ...d, front: { ...front, id: d.front.id }, text, file: branchFile(main, ref, rel), branch: ref } }
+    }
+    out.push(best)
+  }
+  return out
+}
+
 /** Dossiers per repository: roots are grouped by their main checkout first, because an id is unique only inside one repo. */
 export async function pickDossiersByRepo(roots: string[], mainFor: (wt: string) => Promise<string> = mainOf): Promise<{ main: string; front: Front; text: string; file: string; worktree: string }[]> {
   const byMain = new Map<string, string[]>()
@@ -190,7 +269,7 @@ export async function pickDossiersByRepo(roots: string[], mainFor: (wt: string) 
     byMain.set(m, [...(byMain.get(m) ?? []), wt])
   }
   const out: { main: string; front: Front; text: string; file: string; worktree: string }[] = []
-  for (const [main, wts] of byMain) for (const d of pickDossiers(wts)) out.push({ ...d, main })
+  for (const [main, wts] of byMain) for (const d of await withBranchCopies(main, pickDossiers(wts))) out.push({ ...d, main })
   return out
 }
 
@@ -435,7 +514,13 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       running: isRunning(status) || runnerActive(runner), summary: summaryOf(d.text), updates: readUpdates(`${repoName}.${f.id}`), runner,
       main, blockedBy: blockedByOf(f.blocked_by), controls: controlsFor({ status, blockedBy: blockedByOf(f.blocked_by), runner }, () => undefined), view: "dossier",
       runnerLog: runner ? join(runsDir(), `${repoName}.${f.id}.runner.log`) : "",
-      ...(() => { const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log) : { items: [], pr: "" }; const deferred: Deferred = { ...pd, report: existsSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`)) }; return { deferred, deferredOpen: pd.items.filter((i) => i.state === "open").length } })(),
+      ...(() => {
+        const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log) : { items: [], pr: "" }
+        let report = ""
+        try { report = readFileSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`), "utf8") } catch { /* none */ }
+        const deferred: Deferred = { items: withReport(pd.items, report), pr: pd.pr, report: report !== "" }
+        return { deferred, deferredOpen: pd.items.filter((i) => i.state === "open").length }
+      })(),
     })
   }
   return { scannedAt: new Date(now).toISOString(), runs }

@@ -61,6 +61,7 @@ const modelFor = (agentType) => AGENT_MODELS[agentType] || { model: 'sonnet', ef
 // whole wave on the first return) and never writes the build log (concurrent appends): the
 // orchestrator releases and logs from this array.
 
+const WRITE_ONLY_KINDS = new Set(['document-drafter', 'integration-test-author', 'unit-test-author'])
 const MAX_AGENTS = 16
 const MEDIUM_WAVE = 9
 const EXCERPT_CHARS = 600
@@ -125,9 +126,10 @@ function spawnPrompt(item) {
 // verifier excludes every sibling path from this item's TOUCHED_BEYOND and
 // dirty-tree flags (--shared-tree), so six authors in one tree never flag
 // each other's 21 files.
+const sameRoot = (a, b) => String(a || '').replace(/\/+$/, '') === String(b || '').replace(/\/+$/, '')
 function siblingsOwned(item) {
   return items
-    .filter((other) => other !== item && other.root === item.root)
+    .filter((other) => other !== item && sameRoot(other.root, item.root))
     .flatMap((other) => (Array.isArray(other.owned) ? other.owned : String(other.owned || '').split(',')))
     .map((entry) => entry.trim())
     .filter(Boolean)
@@ -143,7 +145,8 @@ function verifyPrompt(item, reportPath, report, pluginRoot) {
   const shared = siblingsOwned(item)
   if (shared.length) cmd.push('--shared-tree', sq(shared.join(',')))
   if (item.contractHash) cmd.push('--contract-hash', sq(item.contractHash), '--contract-files', sq(csv(item.contractFiles)))
-  if (item.kind === 'document-drafter') cmd.push('--uncommitted')
+  // Writers without Bash never commit: a drafter, and both test-author kinds (the orchestrator commits their files).
+  if (WRITE_ONLY_KINDS.has(item.kind)) cmd.push('--uncommitted')
   if (report) cmd.push('--report', sq(reportPath), '--kind', sq(item.kind || ''))
   const steps = []
   if (report) {

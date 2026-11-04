@@ -170,6 +170,18 @@ export function classify(e: TLEntry): { kind: Kind; key: boolean; routine: boole
   // update (hook-written `auto` lines and agent notes)
   if (e.event === "spawn") return mk("spawn")
   if (e.auto && e.event === "workflow") return mk("workflow")
+  // An agent's note is prose: "the gate failed, then passed alone after a fixture rebuild" is no red suite.
+  // Suite, gate and PR kinds come only from the hook's own lines, which carry the real result.
+  if (!e.auto) return mk(/^\s*(?:\*\*)?[A-Z][A-Z0-9]*-\d+ is done\b/.test(t) ? "done" : "note")
+  if (e.event === "suite") {
+    // "suite: passed 31  failed 0  ignored 0": the count decides; "suite run finished" says nothing either way.
+    const n = t.match(/\bfailed\s+(\d+)/i)
+    if (n) return mk(Number(n[1]) > 0 ? "suite-red" : "suite-green")
+    if (/\b(red|fail(?:ed|ing|s)?)\b/i.test(t)) return mk("suite-red")
+    return mk(/\b(green|pass(?:ed|es|ing)?|ok)\b/i.test(t) ? "suite-green" : "routine")
+  }
+  if (e.event === "gates") return mk("gate")
+  if (e.event === "pr") return mk("pr")
   if (/\b(tests?|suite)\b[^.]*\b(red|fail(?:ed|ing|s)?)\b|\b(red|fail(?:ed|ing)?)\b[^.]*\b(tests?|suite)\b/i.test(t)) return mk("suite-red")
   if (/\b(tests?|suite)\b[^.]*\b(green|pass(?:ed|es|ing)?|ok)\b|\b(green|passing)\b[^.]*\b(tests?|suite)\b/i.test(t)) return mk("suite-green")
   if (/\bgates?\b/i.test(t)) return mk("gate")

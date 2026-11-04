@@ -231,7 +231,25 @@ one card-based single-page app with deep links.
     `ASD_DEFERRED_SINCE`), the runner's full
     report is linked at `/deferred/<repo>/<ID>`, and the header has **Fix all
     deferred** on a `pr` or `done` dossier with open items: two clicks start
-    `run_dossier.py <ID> --command fix-deferred` in the background. A click on a dossier
+    `run_dossier.py <ID> --command fix-deferred` in the background. The
+    Deferred tab is a table (ID, kind, issue and location, risk, contract and
+    effort from the report's summary table, state); items still to tackle have
+    a tick box and the header a select-all box. **Fix selected (n)**, two
+    clicks, POSTs `{items: [...]}` to `/api/runs/<repo>/<ID>/fix-deferred`,
+    which starts `--command fix-deferred --items D-1,D-3`: only those items,
+    one stacked PR through the implementer and review flow; an item that looks
+    too big for it is put to the owner as a question (own dossier, fix here
+    anyway, or leave open). **A finished run's last reply** is the first thing
+    on the dossier page (the runner's `result` line; for older runs the agent's
+    last note before its final stage ended), with the owner's chat under it: a
+    message POSTs to `/api/runs/<repo>/<ID>/chat`, which runs
+    `run_dossier.py chat <ID> --text …`, resuming that session on its account;
+    the reply appears as it lands. **A finished build's dossier** is read from
+    its build branch (the id in the branch name, any case; local or `origin/`)
+    when that copy's build log is longer, since `/work-on` removes the worktree
+    and the checked-out branch has the pre-build copy until the PR merges; the
+    open-work report overlays the same copy. A done dossier stays under its
+    stub while its PR into the stub is open. A click on a dossier
     navigates the top window to `/repo/<repo>/<ID>`. **Right (360 px, sticky
     while scrolling):** every open (not merged) stub, newest first, as a card:
     branch, state chip, step, PR + CI dot; under it a tree of its dossiers,

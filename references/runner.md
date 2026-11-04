@@ -85,10 +85,22 @@ the recorded checkpoints.
   `<key>.deferred.md`. The runner logs `deferred report: <n> issue(s)`, which
   the Slack run thread shows when it is not zero. `ASD_RUNNER_DEFERRED=0`
   skips it.
-- **`--command fix-deferred`:** runs `/fix-deferred <ID>`, which fixes the
-  ledger's direct items in one stacked pull request and seeds a dossier for
-  each of the rest (`commands/fix-deferred.md`). The dashboard's "Fix all
-  deferred" button starts it.
+- **`--command fix-deferred [--items D-1,D-3]`:** runs `/fix-deferred <ID>
+  [items]`, which fixes the ledger's direct items (all open ones, or only the
+  listed ones) in one stacked pull request and asks the owner about each item
+  that looks big enough for a dossier of its own (`commands/fix-deferred.md`).
+  The dashboard's "Fix all deferred" and "Fix selected" buttons start it.
+- **The last reply:** on `RUNNER: DONE` the runner writes the turn's text,
+  without its `RUNNER:` line, as a `result` line (`{ts, kind: "result", text,
+  session, command}`) and records `result_session` in `<key>.runner.json`.
+- **`run_dossier.py chat ID --text T`:** the owner's message to a finished
+  run. It writes a `chat` line (`from: owner`) at once, then a background
+  process resumes the session (`<key>.chat.json` `session`, else
+  `result_session`, else the last `stage N end` line's) with `claude -p
+  --resume`, on the run's account, and writes the reply as a `chat` line
+  (`from: agent`, or `from: runner` with why there is none). Refused while
+  the run is live or the last message is still being answered. A new run's
+  reply starts a new chat.
 - **Limits:** `--max-stages` caps the number of stages a run starts
   (default 20). A crash of the process counts as `FAILED`.
 

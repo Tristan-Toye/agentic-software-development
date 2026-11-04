@@ -38,6 +38,34 @@ export function readRunner(key: string, dir = runsDir(), alive: (pid: number) =>
     return { state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "", ...(typeof j.account === "string" ? { account: j.account } : {}), ...(typeof j.resumes_at === "string" ? { resumesAt: j.resumes_at } : {}) }
   } catch { return null }
 }
+/** A finished run's last reply and the owner's chat with its session (`run_dossier.py chat`). */
+export type ChatLine = { ts: string; from: "owner" | "agent" | "runner"; text: string }
+export type Conversation = { result: { ts: string; text: string; command: string } | null; chat: ChatLine[]; busy: boolean }
+/**
+ * The run's last reply: its newest `result` line, else (runs from before the runner recorded one) the newest note the
+ * agent posted before the runner's last `stage N end`. Only for a finished run (`done`). The chat lines that follow it,
+ * and whether the agent is still answering (`<key>.chat.json` thinking with a live pid).
+ */
+export function readConversation(key: string, done: boolean, dir = runsDir(), alive: (pid: number) => boolean = pidAlive): Conversation {
+  let lines: any[] = []
+  try { lines = readFileSync(join(dir, `${key}.jsonl`), "utf8").split("\n").filter((l) => l.trim()).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean) } catch { /* none */ }
+  let result: Conversation["result"] = null
+  for (let i = lines.length - 1; i >= 0 && !result; i--) if (lines[i].kind === "result" && typeof lines[i].text === "string") result = { ts: String(lines[i].ts ?? ""), text: lines[i].text, command: String(lines[i].command ?? "") }
+  if (!result && done) {
+    let end = -1
+    for (let i = lines.length - 1; i >= 0; i--) if (lines[i].kind === "runner" && /^stage \S+ end\b/.test(String(lines[i].text))) { end = i; break }
+    for (let i = end - 1; i >= 0; i--) if (lines[i].kind === "update" && lines[i].auto !== true && typeof lines[i].text === "string" && lines[i].text.trim()) { result = { ts: String(lines[i].ts ?? ""), text: lines[i].text, command: "" }; break }
+  }
+  const since = result?.ts ?? ""
+  const chat: ChatLine[] = lines.filter((o) => o.kind === "chat" && typeof o.text === "string" && ["owner", "agent", "runner"].includes(o.from) && String(o.ts ?? "") >= since)
+    .map((o) => ({ ts: String(o.ts ?? ""), from: o.from, text: o.text }))
+  let busy = false
+  try {
+    const c = JSON.parse(readFileSync(join(dir, `${key}.chat.json`), "utf8"))
+    busy = c.state === "thinking" && (c.pid ? alive(Number(c.pid)) : Date.now() - Date.parse(String(c.since ?? "")) < 120_000)
+  } catch { /* no chat yet */ }
+  return { result, chat, busy }
+}
 export const runnerActive = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "waiting" || r?.state === "paused"
 
 /** First paragraph of the `## Problem` section, else of the body after the front matter and title; <= 300 chars. */
