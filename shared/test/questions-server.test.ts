@@ -47,6 +47,15 @@ check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "
   const wr2 = withReport(led, rep2)
   check("deferred: the report supersedes the ledger's contract and effort; items it lacks keep theirs", wr2[0].contract === "none" && wr2[0].effort === "S" && wr2[1].contract === "internal" && wr2[1].effort === "S" && wr2[1].inReport === false)
 }
+{
+  const U2 = (ts: string, kind: string, text: string, extra: object = {}) => ({ ts, kind, text, ...extra }) as any
+  const ups = [U2("2026-11-04T09:20:00Z", "stage", "triage done", { stage: "Fix-deferred — reusing Phase 7 fix machinery" }), U2("2026-11-04T09:16:00Z", "update", "Started fixing W-1's deferred issues."),
+    U2("2026-11-04T09:15:07Z", "runner", "start /fix-deferred W-1 in /r"), U2("2026-11-04T07:24:24Z", "stage", "PR ready", { stage: "Phase 9 — PR" }), U2("2026-11-04T07:00:00Z", "stage", "x", { stage: "Phase 8 — ADRs" })]
+  const g = groupByPhase(mergeTimeline({ updates: ups, questions: [] }))
+  check("timeline: a fix-deferred run is a section of its own, its steps stay in it", g.length === 3 && g[0].label === "Fix deferred issues" && g[0].current && g[0].items.some((i: any) => i.entry?.text === "Started fixing W-1's deferred issues.") && g[1].label.startsWith("Phase 9"), JSON.stringify(g.map((x) => x.label)))
+  const g2 = groupByPhase(mergeTimeline({ updates: [U2("2026-11-04T10:00:00Z", "stage", "y", { stage: "Phase 9 — PR again" }), U2("2026-11-04T09:59:00Z", "runner", "start /work-on W-1 in /r"), ...ups], questions: [] }))
+  check("timeline: a /work-on run after a fix-deferred run counts phases again", g2[0].label.startsWith("Phase 9") && g2[1].label === "Fix deferred issues", JSON.stringify(g2.map((x) => x.label)))
+}
 check("branches: a build branch names the id in any case; plan, stub and trunk branches never do", isBuildBranch("feat/w-130-x", "W-130") && isBuildBranch("origin/feat/W-128-a", "W-128") && isBuildBranch("fix/W-12-deferred", "W-12") && !isBuildBranch("feat/W-1300-x", "W-130") && !isBuildBranch("plan/W-130-x", "W-130") && !isBuildBranch("origin/stub/W-130", "W-130") && !isBuildBranch("development", "W-130"))
 {
   const g = mkdtempSync(join(tmpdir(), "brc-"))

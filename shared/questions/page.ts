@@ -79,6 +79,7 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .opt .k{font-weight:700;min-width:1.4em}.opt .l{font-weight:600}.opt .c{display:block;color:var(--mut);font-size:13px;font-weight:400}.opt .tag{font-size:11px;color:var(--ok);font-weight:600;margin-left:6px}
 .msg{max-width:88%;margin:5px 0;padding:6px 10px;border-radius:10px;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--chip)}
 .msg.owner{margin-left:auto;background:var(--accbg)}.who{font-size:11px;color:var(--mut)}
+.chip.fixing{display:inline-flex;align-items:center;gap:5px;background:var(--accbg);color:var(--acc);font-weight:600}a.srow:has(.chip.fixing){box-shadow:inset 3px 0 0 var(--acc)}
 .psum{border-left:3px solid var(--acc)}.psum h3{font-size:.95rem;margin:12px 0 4px}.psum .md p:first-child{margin-top:0}
 .result .res-hd{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--mut);margin-bottom:4px}.result .res-hd .kind{font-weight:600;color:var(--fg)}
 .chat{margin:10px 0 0;padding:8px 12px;border-radius:10px;background:var(--chip);overflow-wrap:anywhere}.chat.owner{margin-left:12%;background:var(--accbg)}.chat.agent,.chat.runner{margin-right:6%}.chat.runner{color:var(--mut)}.chat .md p:first-child{margin-top:0}.chat .md p:last-child{margin-bottom:0}
@@ -191,8 +192,10 @@ const openQs = (r) => S.q.filter(q => q.state === 'open' && q.dossier === r.id &
 const rlabel = (repo) => { const r = S.runs.find(x => x.repo === repo); if (r && r.repoLabel) return r.repoLabel; const t = S.stubs.repos.find(x => x.repo === repo); return (t && t.label) || repo; };
 const allOpen = () => S.q.filter(q => q.state === 'open').sort((a, b) => (a.repo + a.dossier).localeCompare(b.repo + b.dossier) || a.ts.localeCompare(b.ts));
 /* The /work-on phase; a run that has not reached its first checkpoint yet is "starting", a dossier nobody runs shows none. */
+const CMD_DOING = { 'fix-deferred': 'Fixing deferred issues' };
 function stageText(r) {
   const live = r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state);
+  if (live && r.runner.command && CMD_DOING[r.runner.command]) return CMD_DOING[r.runner.command];
   if (!r.phase || r.phase === 'plan') return live ? 'Starting' : '';
   return 'Phase ' + r.phase + (r.phaseName ? ' · ' + r.phaseName : '');
 }
@@ -314,6 +317,8 @@ function stubRow(repo, id, o) {
   const r = S.runs.find(x => x.repo === repo && x.id === id); const nq = r ? openQs(r) : [];
   const title = (r && r.title) || o.title || '';
   const right = [];
+  const fixing = r && r.runner && r.runner.command === 'fix-deferred' && ['running', 'waiting', 'paused'].includes(r.runner.state);
+  if (fixing) right.push(h('span', { class: 'chip fixing', title: 'A stacked PR with fixes for the deferred issues is being built' }, [h('span', { class: 'dot info live' }), r.runner.state === 'waiting' ? 'fixing deferred · waiting for you' : r.runner.state === 'paused' ? 'fixing deferred · paused' : 'fixing deferred']));
   if (o.merged) right.push(chip('merged', 'done'));
   else if (r && (r.status === 'done' || r.status === 'pr')) right.push(chip('PR open · ready to merge', 'done'));
   else { const st = r ? stageText(r) : ''; if (st) right.push(chip(st, 'neutral')); if (isLive(r)) right.push(h('span', { class: 'dot info live', title: 'running' })); }
@@ -470,7 +475,9 @@ function itemView(repo, id) {
   if (mode === 'run' || hasTl) list.push(['timeline', d && d.planning ? 'Planning' : 'Timeline']);
   if (mode === 'run' || hasLog) list.push(['log', 'Build log' + (hasLog ? ' (' + d.log.length + ')' : '')]);
   if (nDf) list.push(['deferred', 'Deferred (' + r.deferredOpen + ' open / ' + nDf + ')']);
-  let tab = S.tab[key] || list[0][0]; if (!list.some(t => t[0] === tab)) tab = list[0][0];
+  // A finished dossier opens on its dossier, but while a later run (fixing deferred issues) works, on its timeline.
+  const busy = r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state);
+  let tab = S.tab[key] || (busy && list.some(t => t[0] === 'timeline') ? 'timeline' : list[0][0]); if (!list.some(t => t[0] === tab)) tab = list[0][0];
   if (list.length > 1) kids.push(tabs(key, list));
   if (!d) kids.push(h('div', { class: 'empty' }, ['Loading…']));
   else if (tab === 'doc') {
