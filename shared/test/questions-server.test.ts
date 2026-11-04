@@ -6,10 +6,10 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { channelNameFor, interpretEnvelope, questionBlocks } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince } from "../questions/runs.ts"
+import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
-import { readUpdates, readRunner, summaryOf, renderMarkdown } from "../questions/runstore.ts"
+import { readUpdates, readRunner, summaryOf, renderMarkdown, readConversation } from "../questions/runstore.ts"
 import { mergeSpawns } from "../questions/timeline.ts"
 import { agentCounts, waitingForSlots, runStatusText, statusBlocks, openerBlocks } from "../questions/runstatus.ts"
 import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPanel } from "../questions/timeline.ts"
@@ -33,6 +33,41 @@ function check(name: string, ok: boolean, detail = ""): void {
     && pd.items[1].state === "open" && pd.items[2].state === "dossier" && pd.pr === "https://github.com/o/r/pull/9", JSON.stringify(pd))
   check("phase: a phase named mid-sentence is not progress; a line-start marker is", lastPhase("- OWNER-RULING: draft PR at Phase 6 yes\n- Phase 2 closed: contract committed\nnotes about Phase 7") === "2" && lastPhase("PHASE 9: synced") === "9")
 check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "Phase 6 soon" }, { kind: "stage", stage: "Phase 2 — contract", text: "x" }, { kind: "stage", stage: "Phase 1 — gates", text: "y" }]) === "2")
+{
+  const rep = "## Deferred issues — W-9\n\n| ID | Kind | Title | Risk | Origin | Contract | Effort |\n|---|---|---|---|---|---|---|\n| D-1 | latent-bug | Make `x` cover links | medium | new | external | M |\n| D-3 | ssot | Fix doc | low | old | none | S |\n\n| other | table |\n|---|---|\n| D-9 | x |\n"
+  const t = parseReportTable(rep)
+  check("deferred report: the summary table by its header names", t.size === 2 && t.get("D-1")?.contract === "external" && t.get("D-1")?.effort === "M" && t.get("D-1")?.title === "Make x cover links" && t.get("D-3")?.risk === "low")
+  const wr = withReport(parseDeferred("- D-1 bug a — f:1 — low — x\n- D-2 friction b — f:2 — low — y").items, rep)
+  check("deferred report: ledger items gain contract and effort; the rest is not product code", wr[0].contract === "external" && wr[0].inReport === true && wr[1].inReport === false && withReport(wr, "")[1].inReport === false)
+}
+check("branches: a build branch names the id in any case; plan, stub and trunk branches never do", isBuildBranch("feat/w-130-x", "W-130") && isBuildBranch("origin/feat/W-128-a", "W-128") && isBuildBranch("fix/W-12-deferred", "W-12") && !isBuildBranch("feat/W-1300-x", "W-130") && !isBuildBranch("plan/W-130-x", "W-130") && !isBuildBranch("origin/stub/W-130", "W-130") && !isBuildBranch("development", "W-130"))
+{
+  const g = mkdtempSync(join(tmpdir(), "brc-"))
+  const git = (...a: string[]) => execFileSync("git", ["-C", g, "-c", "user.email=t@x.invalid", "-c", "user.name=t", ...a], { stdio: "pipe" })
+  mkdirSync(join(g, ".discovery", "dossiers"), { recursive: true })
+  const f = join(g, ".discovery", "dossiers", "W-5-x.md")
+  writeFileSync(f, "---\nid: W-5\nstatus: ready\n---\n# W-5\n")
+  git("init", "-q", "-b", "development"); git("add", "-A"); git("commit", "-q", "-m", "base")
+  git("checkout", "-q", "-b", "feat/w-5-x")
+  writeFileSync(f, "---\nid: W-5\nstatus: done\npr: 7\n---\n# W-5\n## Build log\n- one\n- two\n- D-1 bug a — f:1 — low — x\n")
+  git("commit", "-q", "-am", "done"); git("checkout", "-q", "development")
+  const picked = await withBranchCopies(g, pickDossiers([g]))
+  check("branches: a finished build's branch copy replaces the checkout's older one", picked.length === 1 && picked[0].front.status === "done" && picked[0].branch === "feat/w-5-x" && picked[0].file.startsWith("git:") && readDossier(picked[0].file).includes("status: done") && readDossier(f).includes("status: ready"))
+  rmSync(g, { recursive: true, force: true })
+}
+{
+  const cd = mkdtempSync(join(tmpdir(), "conv-"))
+  const L = (o: any) => JSON.stringify(o)
+  writeFileSync(join(cd, "r.W-1.jsonl"), [L({ ts: "2026-11-04T07:24:24Z", kind: "update", text: "W-1 is done; PR ready." }), L({ ts: "2026-11-04T07:24:25Z", kind: "update", auto: true, text: "log: x" }), L({ ts: "2026-11-04T07:24:32Z", kind: "runner", text: "stage 9 end" }), L({ ts: "2026-11-04T07:26:06Z", kind: "update", text: "Deferred report ready" }), L({ ts: "2026-11-04T07:26:30Z", kind: "runner", text: "done" })].join("\n") + "\n")
+  const c0 = readConversation("r.W-1", true, cd)
+  check("conversation: an older run's reply is the agent's last note before its last stage end", c0.result?.text === "W-1 is done; PR ready." && c0.chat.length === 0 && !c0.busy && readConversation("r.W-1", false, cd).result === null)
+  appendFileSync(join(cd, "r.W-1.jsonl"), [L({ ts: "2026-11-04T08:00:00Z", kind: "result", text: "All done.", command: "work-on" }), L({ ts: "2026-11-04T07:59:00Z", kind: "chat", from: "owner", text: "old" }), L({ ts: "2026-11-04T08:01:00Z", kind: "chat", from: "owner", text: "why?" }), L({ ts: "2026-11-04T08:02:00Z", kind: "chat", from: "agent", text: "because" })].join("\n") + "\n")
+  writeFileSync(join(cd, "r.W-1.chat.json"), JSON.stringify({ state: "thinking", pid: 4242 }))
+  const c1 = readConversation("r.W-1", true, cd, (pid) => pid === 4242)
+  check("conversation: the result line wins, chat after it in order, busy while the chat pid lives", c1.result?.text === "All done." && c1.chat.map((x) => x.from + ":" + x.text).join() === "owner:why?,agent:because" && c1.busy && !readConversation("r.W-1", true, cd, () => false).busy)
+  check("conversation: chat and result lines stay out of the update stream", readUpdates("r.W-1", cd).every((u) => u.kind !== ("chat" as any)) && readUpdates("r.W-1", cd).length === 5)
+  rmSync(cd, { recursive: true, force: true })
+}
 check("deferred: dropped items are deprecated, a dossier link names the new dossier", (() => { const x = parseDeferred("- D-1 bug a — f:1 — low — x\n- D-2 bug b — f:2 — low — y\nDEFERRED-DROPPED: D-1 — code removed\nDEFERRED-DOSSIER: D-2 → W-150").items; return x[0].state === "deprecated" && x[0].note === "code removed" && x[1].state === "dossier" && x[1].dossier === "W-150" })())
 check("deferred: old dossiers are ignored unless the runner ran them", !deferredSince("2026-10-20", null) && deferredSince("2026-11-03", null) && deferredSince("2026-10-01", { state: "done" }))
 check("deferred: an item marked RESOLVED in place is closed", parseDeferred("- D-1 RESOLVED: renumbered — x").items[0].state === "fixed")
@@ -233,6 +268,9 @@ check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n
   const k = (kind: string, text: string, auto = false) => classify(E({ type: kind, text, auto: auto || undefined })).kind
   check("classify: runner lines", k("runner", "start /work-on W-1 in /r") === "start" && k("runner", "waiting on Q1") === "waiting" && k("runner", "answered Q1") === "answered" && k("runner", "failed: boom") === "failed" && k("runner", "done") === "done" && k("runner", "stopped") === "stopped" && k("runner", "stage 3 start") === "info")
   check("classify: update lines, auto key events still stand out", k("update", "run_tests: suite green (42 passed)", true) === "suite-green" && k("update", "run_tests: 3 tests failed", true) === "suite-red" && k("update", "run_gates: gates passed", true) === "gate" && k("update", "PR #12 opened", true) === "pr" && k("update", "workflow started: review", true) === "workflow" && k("update", "dossier_edit log line", true) === "routine" && k("update", "wave one returned") === "note")
+  const ev = (text: string, event: string) => classify(E({ type: "update", text, auto: true, event } as any)).kind
+  check("classify: an agent note is prose, never a suite, gate or PR event", k("update", "The repository gates never had one clean full pass: one gate failed, then passed alone after a test fixture rebuild.") === "note" && k("update", "W-128 is done and its PR is ready for your review.") === "done" && k("update", "the PR was opened") === "note")
+  check("classify: a hook suite line goes by its failed count", ev("suite: passed 31  failed 0  ignored 0  (cargo)", "suite") === "suite-green" && ev("suite: passed 2  failed 41  ignored 0  (dotnet)", "suite") === "suite-red" && ev("suite run finished", "suite") === "routine" && ev("gates: 7 passed", "gates") === "gate" && ev("PR opened: https://x/pull/1", "pr") === "pr")
   check("classify: key flags and routine flags", classify(E({ type: "stage", text: "x" })).key && classify(E({ type: "question", text: "x" })).key && !classify(E({ type: "update", text: "x", auto: true })).key && classify(E({ type: "update", text: "x", auto: true })).routine && !classify(E({ type: "update", text: "x" })).routine)
   const ups = [
     U("2026-11-02T10:30:00Z", "update", "r1", { auto: true }), U("2026-11-02T10:29:00Z", "update", "r2", { auto: true }), U("2026-11-02T10:28:00Z", "update", "r3", { auto: true }), U("2026-11-02T10:27:00Z", "update", "run_tests: suite green", { auto: true }),
@@ -470,6 +508,17 @@ try {
   const argv = readFileSync(argvLog, "utf8").trim().split("\n")
   check("server: the runner got the right argv for start, resume (recorded root) and stop", argv.length === 3 && argv[0] === "W-11 --root " + realpathSync(repoC) && argv[1] === "W-13 --root " + recordedRoot && argv[2] === "stop W-10 --root " + realpathSync(repoC), JSON.stringify(argv))
   {
+    writeFileSync(join(runsDir, "repoC.W-9.runner.json"), JSON.stringify({ pid: 1, state: "done", stage: 9, root: recordedRoot, started: "2026-11-04T07:00:00Z" }))
+    writeFileSync(join(runsDir, "repoC.W-9.jsonl"), JSON.stringify({ ts: "2026-11-04T08:00:00Z", kind: "result", text: "**All done.**", command: "work-on" }) + "\n")
+    const tj: any = await (await fetch(`${base}/api/timeline/repoC/W-9`)).json()
+    check("server: a finished run's timeline carries its reply, rendered, and offers the chat", tj.conv?.result?.text === "**All done.**" && tj.conv.result.html.includes("<strong>All done.</strong>") && tj.conv.canChat === true, JSON.stringify(tj.conv))
+    const say = (p: string, body: unknown) => fetch(`${base}/api/runs/${p}/chat`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+    const c1 = await say("repoC/W-9", { text: "why?" })
+    check("server: chat hands the message to the runner with the run's recorded root; empty text is refused", c1.status === 200 && readFileSync(argvLog, "utf8").trim().split("\n").pop() === "chat W-9 --root " + recordedRoot + " --text why?" && (await say("repoC/W-9", { text: " " })).status === 400 && (await say("repoC/NOPE", { text: "x" })).status === 404)
+    const fx = await fetch(`${base}/api/runs/repoC/W-9/fix-deferred`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ items: ["D-1"] }) })
+    check("server: fix selected is refused for a dossier with no open deferred items", fx.status === 409)
+  }
+  {
     const sse = await fetch(`${base}/api/events`), rd = sse.body!.getReader(), dec = new TextDecoder()
     const readUntil = async (re: RegExp, ms: number): Promise<string> => {
       let got = ""
@@ -483,7 +532,8 @@ try {
     }
     const first = await readUntil(/connected/, 10000)
     writeFileSync(join(sdir, "demo.W-3.Q1.jsonl"), JSON.stringify({ ...qLine, dossier: "W-3" }) + "\n")
-    const second = await readUntil(/event: changed[\s\S]*\n\n/, 15000)
+    // A background scan may announce itself first; wait for the event that names the questions store.
+    const second = await readUntil(/event: changed\ndata: [^\n]*questions[^\n]*\n\n/, 15000)
     check("server: /api/events streams and emits changed on a store change", sse.headers.get("content-type")?.includes("text/event-stream") === true && first.includes("connected") && second.includes("event: changed") && second.includes("questions"), first + second)
     writeFileSync(join(runsDir, "repoC.W-10.jsonl"), JSON.stringify({ ts: "2026-11-02T12:00:00Z", kind: "update", text: "more" }) + "\n", { flag: "a" })
     check("server: a run update emits runs", (await readUntil(/runs/, 5000)).includes("runs"))

@@ -133,6 +133,29 @@ def _first_paragraph(text: str, limit: int = 420) -> str:
     return ""
 
 
+def dossier_from_text(text: str, name: str) -> dict:
+    """One dossier's front matter plus its Problem and Approach summaries.
+    Raises ValueError when the front matter does not parse."""
+    fm, body, _line = split_front_matter(text)
+    secs = sections(body)
+    return {
+        "id": str(fm.get("id") or Path(name).stem),
+        "title": str(fm.get("title") or ""),
+        "status": str(fm.get("status") or "planned"),
+        "created": fm.get("created"),
+        "updated": fm.get("updated"),
+        "jira": fm.get("jira"),
+        "branch": fm.get("branch"),
+        "worktree": fm.get("worktree"),
+        "pr": fm.get("pr"),
+        "blocked_by": _as_list(fm.get("blocked_by")),
+        "adrs": _as_list(fm.get("adrs")),
+        "file": name,
+        "problem": _first_paragraph(secs.get("## Problem", "")),
+        "approach": _first_paragraph(secs.get("## Approach", "")),
+    }
+
+
 def load_dossiers(root: Path) -> tuple[list[dict], list[dict]]:
     """Read front matter of every dossier — plus the first paragraph of
     `## Problem` and `## Approach`, the intent summary the report shows when
@@ -141,28 +164,9 @@ def load_dossiers(root: Path) -> tuple[list[dict], list[dict]]:
     dossier_dir = root / "dossiers"
     for path in sorted(dossier_dir.glob("*.md")):
         try:
-            fm, body, _line = split_front_matter(
-                path.read_text(encoding="utf-8", errors="replace"))
+            dossiers.append(dossier_from_text(path.read_text(encoding="utf-8", errors="replace"), path.name))
         except ValueError as exc:
             errors.append({"file": path.name, "error": str(exc)})
-            continue
-        secs = sections(body)
-        dossiers.append({
-            "id": str(fm.get("id") or path.stem),
-            "title": str(fm.get("title") or ""),
-            "status": str(fm.get("status") or "planned"),
-            "created": fm.get("created"),
-            "updated": fm.get("updated"),
-            "jira": fm.get("jira"),
-            "branch": fm.get("branch"),
-            "worktree": fm.get("worktree"),
-            "pr": fm.get("pr"),
-            "blocked_by": _as_list(fm.get("blocked_by")),
-            "adrs": _as_list(fm.get("adrs")),
-            "file": path.name,
-            "problem": _first_paragraph(secs.get("## Problem", "")),
-            "approach": _first_paragraph(secs.get("## Approach", "")),
-        })
     return dossiers, errors
 
 
@@ -240,6 +244,48 @@ def overlay_worktrees(root: Path, dossiers: list[dict]) -> list[tuple[str, str]]
             dossiers.append(live)
             notes.append((did, f"{did} exists only in worktree {label} "
                                f"({live['status']}) — a plan not merged yet."))
+    return notes
+
+
+# Branches that never carry a build's own copy of a dossier.
+_NOT_BUILD = re.compile(r"^(?:origin/)?(?:plan|stub)/|^origin/HEAD$|^(?:origin/)?(?:main|master|development|production)$")
+
+
+def overlay_branches(root: Path, dossiers: list[dict]) -> list[tuple[str, str]]:
+    """Replace a dossier with its copy on its own feature branch when that copy
+    is newer (`_newer`). A finished build removes its worktree but keeps the
+    branch, and the dossier's `done` status and ledger live only there until its
+    PR merges. A branch is a dossier's own when its name holds the id as a
+    whole token (`feat/W-12-x`, `fix/W-12-deferred`); plan and stub branches
+    never count. Local branches and `origin/` ones are both read."""
+    repo = root.parent
+    refs = [r for r in (_git(repo, "for-each-ref", "--format=%(refname:short)",
+                             "refs/heads", "refs/remotes/origin") or "").splitlines()
+            if r.strip() and not _NOT_BUILD.search(r.strip())]
+    notes: list[tuple[str, str]] = []
+    for i, d in enumerate(dossiers):
+        tok = re.compile(rf"(?:^|[/_-]){re.escape(d['id'])}(?:$|[-_/])", re.I)
+        best: tuple[str, dict] | None = None
+        for ref in refs:
+            if not tok.search(ref):
+                continue
+            text = _git(repo, "show", f"{ref}:{root.name}/dossiers/{d['file']}")
+            if not text:
+                continue
+            try:
+                live = dossier_from_text(text, d["file"])
+            except ValueError:
+                continue
+            if live["id"] != d["id"]:
+                continue
+            if best is None or _newer(live, best[1]):
+                best = (ref, live)
+        if best and _newer(best[1], d):
+            ref, live = best
+            live["live_from"] = ref
+            dossiers[i] = live
+            notes.append((d["id"], f"{d['id']} is shown from branch {ref} ({live['status']}); "
+                                   f"this checkout has {d['status']}."))
     return notes
 
 
@@ -351,12 +397,13 @@ def build_payload(root: Path, now: dt.datetime, worktrees: bool = False,
     dossiers, errors = load_dossiers(root)
     if worktrees:
         overlay_worktrees(root, dossiers)
+        overlay_branches(root, dossiers)
     payload = classify(dossiers, errors, root, now.date())
     for d in dossiers:
         if d.get("live_from"):
             d["flags"].append({
                 "severity": "good", "label": f"live from {d['live_from']}",
-                "detail": "This row is the worktree's copy; the checked-out "
+                "detail": "This row is a worktree's or the feature branch's copy; the checked-out "
                           "branch changes only when a PR merges.",
             })
     payload.update({
@@ -774,6 +821,10 @@ assert.deepEqual(focusModel([]).critical.path, []);
     return []
 
 
+def by_id_plain(payload: dict) -> dict:
+    return {d["id"]: d for d in payload["dossiers"]}
+
+
 def selftest() -> int:
     failures = []
 
@@ -946,6 +997,8 @@ console.log(JSON.stringify({through, overlap, edges, wide, n: fixtures.length, s
                 _dossier("W-001", status="ready", updated="2026-08-10"))
             (repo / ".discovery" / "dossiers" / "W-003-c.md").write_text(
                 _dossier("W-003", status="ready", updated="2026-08-09"))
+            (repo / ".discovery" / "dossiers" / "W-004-d.md").write_text(
+                _dossier("W-004", status="ready", updated="2026-08-09"))
             ok_git = (g("init", "-q", "-b", "main") is not None
                       and g("add", "-A") is not None
                       and g("commit", "-q", "-m", "base") is not None
@@ -954,6 +1007,17 @@ console.log(JSON.stringify({through, overlap, edges, wide, n: fixtures.length, s
                       and g("worktree", "add", "-q", "../repo-plan-KEY", "-b", "plan/KEY") is not None)
             check(ok_git, "overlay fixture: git worktrees created")
             if ok_git:
+                # A finished build: its worktree is gone, its branch (named in
+                # lower case) keeps the `done` copy; a plan branch never counts.
+                w4 = repo / ".discovery" / "dossiers" / "W-004-d.md"
+                ok_br = g("checkout", "-q", "-b", "feat/w-004-x") is not None
+                w4.write_text(_dossier("W-004", status="done", updated="2026-08-12"))
+                ok_br = ok_br and g("commit", "-q", "-am", "done") is not None
+                ok_br = ok_br and g("checkout", "-q", "-b", "plan/W-004-y", "main") is not None
+                w4.write_text(_dossier("W-004", status="dropped", updated="2026-08-13"))
+                ok_br = ok_br and g("commit", "-q", "-am", "plan") is not None
+                ok_br = ok_br and g("checkout", "-q", "main") is not None
+                check(ok_br, "overlay fixture: feature and plan branches created")
                 (repo.parent / "repo-W-001" / ".discovery" / "dossiers" / "W-001-a.md").write_text(
                     _dossier("W-001", status="building", updated="2026-08-11",
                              worktree="../repo-W-001"))
@@ -969,7 +1033,7 @@ console.log(JSON.stringify({through, overlap, edges, wide, n: fixtures.length, s
                 plain = build_payload(repo / ".discovery", today, worktrees=False)
                 live = build_payload(repo / ".discovery", today, worktrees=True)
                 by_id = {d["id"]: d for d in live["dossiers"]}
-                check(plain["sections"]["ready"] == ["W-001"]
+                check(plain["sections"]["ready"] == ["W-001", "W-004"]
                       and "W-002" not in {d["id"] for d in plain["dossiers"]},
                       "without --worktrees the checkout's copy stands")
                 check(by_id["W-001"]["status"] == "building"
@@ -983,6 +1047,10 @@ console.log(JSON.stringify({through, overlap, edges, wide, n: fixtures.length, s
                 check(any(f["label"] == "live from ../repo-W-001"
                           for f in by_id["W-001"]["flags"]),
                       "overlaid row carries a live-from flag")
+                check(by_id["W-004"]["status"] == "done"
+                      and by_id["W-004"].get("live_from") == "feat/w-004-x"
+                      and by_id_plain(plain)["W-004"]["status"] == "ready",
+                      f"a finished build's branch copy overlays the checkout: {by_id['W-004']}")
                 check(by_id["W-003"]["status"] == "done" and "live_from" not in by_id["W-003"],
                       f"an older worktree copy never replaces a newer checkout copy: {by_id['W-003']}")
         else:

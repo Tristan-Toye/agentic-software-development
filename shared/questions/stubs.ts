@@ -5,7 +5,7 @@ import { join } from "node:path"
 import type { Question } from "./store.ts"
 import { readRunner, runnerActive } from "./runstore.ts"
 import { emitChange } from "./events.ts"
-import { answeredBy, baseName, getRuns, repoLabel, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, questionInRepo, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
+import { answeredBy, baseName, getRuns, repoLabel, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, withBranchCopies, questionInRepo, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
 
 export type StubDossier = { id: string; title: string; status: string; repo: string; via: "merged"; answered: QA[] }
 /** An in-progress dossier shown under a stub; `noPr` = no PR yet, parked on the accepting stub. */
@@ -25,8 +25,8 @@ export type BasePr = { number: number; headRefName: string }
  * Which in-progress dossiers belong under which open stub. A dossier belongs to a stub when an open PR into
  * that stub is its own (the `pr:` number, or its id in the head branch); `plan/...` heads never count. A dossier
  * in building/review (or with a live runner) that has no `pr:` and no PR into any stub goes under the accepting
- * stub (the newest open stub with no PR into development; else the newest open stub) with `noPr`. Ready,
- * planned, done and dropped dossiers never appear. Returns branch -> members; stubs with none are omitted.
+ * stub (the newest open stub with no PR into development; else the newest open stub) with `noPr`. A done
+ * dossier appears only through its open PR into the stub; ready, planned and dropped dossiers never appear. Returns branch -> members; stubs with none are omitted.
  */
 export function stubMembers(
   stubs: { branch: string; cut: string; refAge?: string; state: Stub["state"]; pr: unknown | null }[],
@@ -37,11 +37,14 @@ export function stubMembers(
   const open = openStubs(stubs.map((s) => ({ ...s, refAge: s.refAge ?? "", stage: "", dossiers: [], members: [], pr: s.pr as Pr | null })))
   const add = (b: string, m: StubMember) => { (out[b] ??= []); if (!out[b].some((x) => x.id === m.id)) out[b].push(m) }
   const eligible = dossiers.filter((d) => ["building", "review", "pr"].includes(d.status) || d.live === true)
+  // A finished build stays under its stub while its PR into the stub is open.
+  const withPr = dossiers.filter((d) => ["building", "review", "pr", "done"].includes(d.status) || d.live === true)
   const placed = new Set<string>()
   for (const b of open.map((s) => s.branch)) {
     for (const p of prsByBase[b] ?? []) {
       if (/^plan\//.test(p.headRefName)) continue
-      const hit = eligible.find((d) => prFieldNumber(d.pr) === p.number || new RegExp(`(^|[^A-Za-z0-9])${d.id.replace(/[^\w-]/g, "")}(?![\w])`).test(p.headRefName))
+      // Head branches name the id in any case: feat/w-130-… is W-130's.
+      const hit = withPr.find((d) => prFieldNumber(d.pr) === p.number || new RegExp(`(^|[^A-Za-z0-9])${d.id.replace(/[^\w-]/g, "")}(?![\w])`, "i").test(p.headRefName))
       if (hit) { add(b, { id: hit.id, noPr: false }); placed.add(hit.id) }
     }
   }
@@ -175,7 +178,7 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
   for (const [main, wts] of byMain) {
     const ans = answeredBy(questions, (q) => questionInRepo(q, baseName(main), main))
     if (noGit() || !existsSync(join(main, ".git"))) continue
-    const docs: Doc[] = pickDossiers(wts)
+    const docs: Doc[] = await withBranchCopies(main, pickDossiers(wts))
     const byId = new Map(docs.map((d) => [d.front.id!, d]))
     const prToDossier = new Map<number, string>()
     for (const d of docs) { const n = prFieldNumber(d.front.pr); if (n !== null) prToDossier.set(n, d.front.id!) }
@@ -234,10 +237,10 @@ async function runGen(root: string, out: string, embed: boolean, linkBase = "", 
   } catch { return false }
 }
 /** Regenerate `<out>/<repo>.html` when the dossiers changed, at most once per 30 s per repo. `--embed` is dropped when the script rejects it. */
-export async function refreshOpenWork(repo: string, root: string, wts: string[], now = Date.now(), controls: Record<string, string> = {}): Promise<void> {
+export async function refreshOpenWork(repo: string, root: string, wts: string[], now = Date.now(), controls: Record<string, string> = {}, refsSig = ""): Promise<void> {
   const out = join(openWorkDir(), `${repo}.html`)
   // The ▶ in the report follows the runner state, so a run that stops or starts regenerates it.
-  const sig = dossierSignature(wts) + "#" + JSON.stringify(controls)
+  const sig = dossierSignature(wts) + "#" + JSON.stringify(controls) + "#" + refsSig
   const st = lastRun.get(repo)
   if (st && (st.inflight || (st.sig === sig && existsSync(out)) || now - st.at < 30_000)) return
   mkdirSync(openWorkDir(), { recursive: true })
@@ -268,7 +271,9 @@ async function rescan(questions: Question[]): Promise<void> {
       if (r.controls.start.show && r.controls.start.ok) controls[r.id] = "start"
       else if (r.controls.resume.show && r.controls.resume.ok) controls[r.id] = "resume"
     }
-    await refreshOpenWork(repo, root, wts, Date.now(), controls)
+    // A finished build's copy lives on its branch (the report overlays it), so a moved ref regenerates the report too.
+    const refs = await sh(["git", "-C", main, "for-each-ref", "--format=%(objectname)", "refs/heads", "refs/remotes/origin"], undefined, 5000)
+    await refreshOpenWork(repo, root, wts, Date.now(), controls, String(Bun.hash(refs)))
     try { openWork.push({ repo, updated: new Date(statSync(join(openWorkDir(), `${repo}.html`)).mtimeMs).toISOString() }) } catch { /* not generated */ }
   }
   const next = { ...view, openWork: openWork.sort((a, b) => a.repo.localeCompare(b.repo)) }

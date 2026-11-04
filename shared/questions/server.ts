@@ -3,9 +3,9 @@
 import { mkdirSync, watch } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
-import { buildLog, getRuns, PHASE_NAMES, questionRepo, type Run } from "./runs.ts"
+import { buildLog, getRuns, PHASE_NAMES, questionRepo, readDossier, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile } from "./stubs.ts"
-import { dossierPage, readUpdates, renderMarkdown, runsDir } from "./runstore.ts"
+import { dossierPage, readConversation, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
 import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord } from "./timeline.ts"
 import { runRunner } from "./controls.ts"
@@ -357,7 +357,7 @@ export async function handle(req: Request): Promise<Response> {
     const run = runs.find((r) => r.repo === tl[1] && r.id === tl[2])
     if (!run) return json({ error: "no such dossier" }, 404)
     let log: string[] = []
-    try { log = logEntries(buildLog(readFileSync(run.file, "utf8"))) } catch { /* unreadable */ }
+    try { log = logEntries(buildLog(readDossier(run.file))) } catch { /* unreadable */ }
     const updates = readUpdates(`${run.repo}.${run.id}`, runsDir(), 1000)
     const questions = readAll(DIR).filter((q) => q.dossier === run.id && questionRepo(q, runs) === run.repo)
     const entries = withHtml(mergeTimeline({ updates, questions, names: PHASE_NAMES }))
@@ -365,14 +365,16 @@ export async function handle(req: Request): Promise<Response> {
     const activity: unknown[] = []
     const now = nowPanel(entries, groups, { runner: run.runner?.state, waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: run.phase === "plan" ? "" : run.phase })
     let html = ""
-    try { html = renderMarkdown(readFileSync(run.file, "utf8").replace(/^---\n[\s\S]*?\n---\n?/, "")) } catch { /* unreadable */ }
-    return json({ run, html, entries, groups, activity, now, log, empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
+    try { html = renderMarkdown(readDossier(run.file).replace(/^---\n[\s\S]*?\n---\n?/, "")) } catch { /* unreadable */ }
+    const c = readConversation(`${run.repo}.${run.id}`, run.runner?.state === "done")
+    const conv = { ...c, result: c.result ? { ...c.result, html: renderMarkdown(c.result.text) } : null, chat: c.chat.map((l) => ({ ...l, html: renderMarkdown(l.text) })), canChat: !!c.result && !runnerActive(run.runner) }
+    return json({ run, html, entries, groups, activity, now, log, conv, empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
   }
   const dd = path.match(/^\/api\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && dd) {
     const run = await findRun(dd[1], dd[2])
     if (!run) return json({ error: "no such dossier" }, 404)
-    try { return json({ run, html: renderMarkdown(readFileSync(run.file, "utf8").replace(/^---\n[\s\S]*?\n---\n?/, "")) }) } catch { return json({ error: "dossier unreadable" }, 404) }
+    try { return json({ run, html: renderMarkdown(readDossier(run.file).replace(/^---\n[\s\S]*?\n---\n?/, "")) }) } catch { return json({ error: "dossier unreadable" }, 404) }
   }
   if (req.method === "GET" && path === "/api/stub") {
     const repo = url.searchParams.get("repo") ?? "", branch = url.searchParams.get("branch") ?? ""
@@ -398,6 +400,21 @@ export async function handle(req: Request): Promise<Response> {
     const t = runnerLog(rl[1], rl[2])
     return t === null ? json({ error: "no runner log" }, 404) : new Response(t, { headers: { "content-type": "text/plain; charset=utf-8" } })
   }
+  const ch = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/chat$/)
+  if (ch) {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const run = await findRun(ch[1], ch[2])
+    if (!run) return json({ error: "no such dossier" }, 404)
+    if (runnerActive(run.runner)) return json({ error: "the run is still going; answer its questions instead" }, 409)
+    const body = await req.json().catch(() => ({})) as { text?: unknown }
+    const text = typeof body.text === "string" ? body.text.trim() : ""
+    if (!text || text.length > 8000) return json({ error: "write a message (at most 8000 characters)" }, 400)
+    const r = await runRunner(["chat", run.id, "--root", run.runner?.root || run.main, "--text", text])
+    emitChange("runs")
+    return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)
+  }
   const rc = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/(start|resume|stop|fix-deferred)$/)
   if (rc) {
     if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
@@ -410,11 +427,20 @@ export async function handle(req: Request): Promise<Response> {
     if (!ctl.show) return json({ error: `${action} is not available for this dossier` }, 409)
     if (!ctl.ok) return json({ error: ctl.reason }, 409)
     const root = action === "start" || action === "fix-deferred" ? run.main : (run.runner?.root || run.main)
+    // "Fix selected": the D-ids the owner ticked, each an item still to tackle; none = every open item.
+    let items: string[] = []
+    if (action === "fix-deferred") {
+      const body = await req.json().catch(() => ({})) as { items?: unknown }
+      items = Array.isArray(body.items) ? [...new Set(body.items.filter((x): x is string => typeof x === "string"))] : []
+      const ok = new Set(run.deferred.items.filter((i) => i.state === "open" || (i.state === "dossier" && !i.dossier)).map((i) => i.id))
+      const bad = items.filter((i) => !ok.has(i))
+      if (bad.length) return json({ error: `not an item to fix: ${bad.join(", ")}` }, 400)
+    }
     const key = `${repo}.${id}`
     if (inflightControl.has(key)) return json({ error: "another control is running for this dossier" }, 409)
     inflightControl.add(key)
     try {
-      const r = await runRunner(action === "stop" ? ["stop", id, "--root", root] : action === "fix-deferred" ? [id, "--root", root, "--command", "fix-deferred"] : [id, "--root", root])
+      const r = await runRunner(action === "stop" ? ["stop", id, "--root", root] : action === "fix-deferred" ? [id, "--root", root, "--command", "fix-deferred", ...(items.length ? ["--items", items.join(",")] : [])] : [id, "--root", root])
       emitChange("runs")
       return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 500)
     } finally { inflightControl.delete(key) }
@@ -428,7 +454,7 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && ds) {
     const run = (await getRuns(() => readAll(DIR))).runs.find((r) => r.repo === ds[1] && r.id === ds[2])
     if (!run) return json({ error: "no such dossier" }, 404)
-    try { return new Response(dossierPage(run.id, run.repo, readFileSync(run.file, "utf8")), { headers: { "content-type": "text/html; charset=utf-8" } }) } catch { return json({ error: "dossier unreadable" }, 404) }
+    try { return new Response(dossierPage(run.id, run.repo, readDossier(run.file)), { headers: { "content-type": "text/html; charset=utf-8" } }) } catch { return json({ error: "dossier unreadable" }, 404) }
   }
   if (req.method === "GET" && path === "/api/questions") {
     const all = url.searchParams.get("state") === "open" ? readAll(DIR).filter((q) => q.state === "open") : readAll(DIR)
