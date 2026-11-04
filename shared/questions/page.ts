@@ -84,6 +84,7 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .ahd{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.aname{font-weight:700;font-size:1rem;margin-right:4px}.meter .mhd{display:flex;justify-content:space-between;font-size:12.5px}.meter .ml{color:var(--mut)}.meter .mv{font-weight:600}
 .mbar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin:3px 0}.mfill{display:block;height:100%;background:var(--acc)}.mfill.ok{background:var(--ok)}.mfill.warn{background:var(--warn)}.mfill.bad{background:var(--bad)}
 .rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip.fixing{display:inline-flex;align-items:center;gap:5px;background:var(--accbg);color:var(--acc);font-weight:600}a.srow:has(.chip.fixing){box-shadow:inset 3px 0 0 var(--acc)}
 .psum{border-left:3px solid var(--acc)}.psum h3{font-size:.95rem;margin:12px 0 4px}.psum .md p:first-child{margin-top:0}
 .result .res-hd{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--mut);margin-bottom:4px}.result .res-hd .kind{font-weight:600;color:var(--fg)}
 .chat{margin:10px 0 0;padding:8px 12px;border-radius:10px;background:var(--chip);overflow-wrap:anywhere}.chat.owner{margin-left:12%;background:var(--accbg)}.chat.agent,.chat.runner{margin-right:6%}.chat.runner{color:var(--mut)}.chat .md p:first-child{margin-top:0}.chat .md p:last-child{margin-bottom:0}
@@ -196,8 +197,10 @@ const openQs = (r) => S.q.filter(q => q.state === 'open' && q.dossier === r.id &
 const rlabel = (repo) => { const r = S.runs.find(x => x.repo === repo); if (r && r.repoLabel) return r.repoLabel; const t = S.stubs.repos.find(x => x.repo === repo); return (t && t.label) || repo; };
 const allOpen = () => S.q.filter(q => q.state === 'open').sort((a, b) => (a.repo + a.dossier).localeCompare(b.repo + b.dossier) || a.ts.localeCompare(b.ts));
 /* The /work-on phase; a run that has not reached its first checkpoint yet is "starting", a dossier nobody runs shows none. */
+const CMD_DOING = { 'fix-deferred': 'Fixing deferred issues' };
 function stageText(r) {
   const live = r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state);
+  if (live && r.runner.command && CMD_DOING[r.runner.command]) return CMD_DOING[r.runner.command];
   if (!r.phase || r.phase === 'plan') return live ? 'Starting' : '';
   return 'Phase ' + r.phase + (r.phaseName ? ' · ' + r.phaseName : '');
 }
@@ -220,7 +223,8 @@ function optButtons(q) {
   }));
 }
 function msgBlock(l) {
-  return h('div', { class: 'msg ' + l.from }, [h('div', { class: 'who' }, [l.from + ' ' + l.kind + (l.option ? ' ' + l.option : '') + (l.via ? ' via ' + l.via : '') + ' · ', when(l.ts)]), h('div', {}, [l.text])]);
+  const who = l.accepted ? 'agent · took your words as the answer' : l.from === 'owner' && l.kind === 'followup' ? 'you' : l.from + ' ' + l.kind;
+  return h('div', { class: 'msg ' + l.from }, [h('div', { class: 'who' }, [who + (l.option ? ' ' + l.option : '') + (l.via ? ' via ' + l.via : '') + ' · ', when(l.ts)]), h('div', {}, [l.text])]);
 }
 function qCard(q, opts) {
   const open = q.state === 'open'; const repo = qRepo(q);
@@ -228,8 +232,9 @@ function qCard(q, opts) {
     h('div', { class: 'top' }, [chip(rlabel(repo), 'neutral'), h('a', { class: 'chip', href: hrefItem(repo, q.dossier) }, [q.dossier]), h('span', { class: 'grow' }), h('span', { class: 'mono' }, [q.id + ' · ']), opts.queue ? when(q.ts, 'waiting ') : when(q.ts)]),
     h('div', { class: 'q' }, [q.text]), q.blocks ? h('div', { class: 'blocks' }, ['Blocks: ' + q.blocks]) : null, optButtons(q)];
   if (opts.thread) kids.push(h('div', {}, q.lines.slice(1).map(msgBlock)));
-  if (open) kids.push(h('textarea', { placeholder: 'Ask a follow-up, or write a free-text answer', 'data-qid': q.id }),
-    h('div', { class: 'ctl' }, [h('button', { class: 'btn', type: 'button', 'data-act': 'followup', 'data-qid': q.id }, ['Ask follow-up']), h('button', { class: 'btn primary', type: 'button', 'data-act': 'answer', 'data-qid': q.id }, ['Answer'])]));
+  if (open) kids.push(h('textarea', { placeholder: 'Write your answer or a question for the agent', 'data-qid': q.id }),
+    h('div', { class: 'ctl' }, [h('button', { class: 'btn primary', type: 'button', 'data-act': 'reply', 'data-qid': q.id }, ['Send']),
+      h('span', { class: 'small mut' }, ['The question stays open: the agent answers you, or confirms what it will do with your words and closes it. The buttons answer outright.'])]));
   kids.push(h('div', { class: 'err' }, [S.qerr[q.id] || '']));
   return h('div', { class: 'need' + (open ? '' : ' thr') + (opts.hit === q.id ? ' hit' : ''), id: 'q-' + q.id, 'data-k': 'q:' + q.id + (opts.thread ? ':t' : ':x') }, kids);
 }
@@ -360,6 +365,8 @@ function stubRow(repo, id, o) {
   const r = S.runs.find(x => x.repo === repo && x.id === id); const nq = r ? openQs(r) : [];
   const title = (r && r.title) || o.title || '';
   const right = [];
+  const fixing = r && r.runner && r.runner.command === 'fix-deferred' && ['running', 'waiting', 'paused'].includes(r.runner.state);
+  if (fixing) right.push(h('span', { class: 'chip fixing', title: 'A stacked PR with fixes for the deferred issues is being built' }, [h('span', { class: 'dot info live' }), r.runner.state === 'waiting' ? 'fixing deferred · waiting for you' : r.runner.state === 'paused' ? 'fixing deferred · paused' : 'fixing deferred']));
   if (o.merged) right.push(chip('merged', 'done'));
   else if (r && (r.status === 'done' || r.status === 'pr')) right.push(chip('PR open · ready to merge', 'done'));
   else { const st = r ? stageText(r) : ''; if (st) right.push(chip(st, 'neutral')); if (isLive(r)) right.push(h('span', { class: 'dot info live', title: 'running' })); }
@@ -516,7 +523,9 @@ function itemView(repo, id) {
   if (mode === 'run' || hasTl) list.push(['timeline', d && d.planning ? 'Planning' : 'Timeline']);
   if (mode === 'run' || hasLog) list.push(['log', 'Build log' + (hasLog ? ' (' + d.log.length + ')' : '')]);
   if (nDf) list.push(['deferred', 'Deferred (' + r.deferredOpen + ' open / ' + nDf + ')']);
-  let tab = S.tab[key] || list[0][0]; if (!list.some(t => t[0] === tab)) tab = list[0][0];
+  // A finished dossier opens on its dossier, but while a later run (fixing deferred issues) works, on its timeline.
+  const busy = r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state);
+  let tab = S.tab[key] || (busy && list.some(t => t[0] === 'timeline') ? 'timeline' : list[0][0]); if (!list.some(t => t[0] === tab)) tab = list[0][0];
   if (list.length > 1) kids.push(tabs(key, list));
   if (!d) kids.push(h('div', { class: 'empty' }, ['Loading…']));
   else if (tab === 'doc') {
@@ -608,7 +617,7 @@ function deferredView(r) {
   }
   const kids = [];
   if (bar.length) kids.push(h('div', { class: 'dfbar', 'data-k': 'dfbar' }, bar));
-  if (pick.length) kids.push(h('div', { class: 'small mut dfnote', 'data-k': 'dfnote' }, ['Click a card to select it. Selected items are fixed in one stacked PR, test first, through the implementer and review flow; an item that looks too big for it is put to you first: its own dossier, or fix it here anyway.']));
+  if (pick.length) kids.push(h('div', { class: 'small mut dfnote', 'data-k': 'dfnote' }, ['Click a card to select it. Selected items are fixed in one stacked PR, test first, through the implementer and review flow, without asking. You are asked only about an item the agent would rather not fix there: one that deserves its own dossier, no longer applies, or is not worth it.']));
   if (st.msg && st.last === 'fix-sel') kids.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad'), 'data-k': 'dfmsg' }, [st.msg]));
   kids.push(h('div', { class: 'dfcards', 'data-k': 'dfcards' }, cards));
   if (links.length) kids.push(h('div', { class: 'ctl', 'data-k': 'dflinks' }, links));
@@ -789,8 +798,10 @@ document.addEventListener('click', (e) => {
   if (t) {
     e.preventDefault(); const act = t.dataset.act;
     if (act === 'opt') post(t.dataset.qid, { kind: 'answer', option: t.dataset.opt });
-    else if (act === 'followup' || act === 'answer') {
-      const ta = t.closest('.need').querySelector('textarea'); if (ta && ta.value.trim()) { const v = ta.value; ta.value = ''; post(t.dataset.qid, { kind: act, text: v }); }
+    else if (act === 'reply') {
+      // Same rule as Slack (replyKind): typed text is a follow-up; the agent answers it or accepts it as the answer.
+      const ta = t.closest('.need').querySelector('textarea'); const v = ta ? ta.value.trim() : '';
+      if (v) { ta.value = ''; post(t.dataset.qid, { kind: 'followup', text: v }); }
     } else if (act === 'ctl') control(t);
     else if (act === 'copy') { const lab = t.dataset.label || t.textContent; t.dataset.label = lab; try { navigator.clipboard.writeText(t.dataset.text); t.textContent = 'Copied'; setTimeout(() => { t.textContent = lab; }, 1500); } catch (_) {} }
     else if (act === 'ctl-cancel') { const s = S.ctl[t.dataset.repo + '/' + t.dataset.id]; if (s) s.confirm = null; render(); }

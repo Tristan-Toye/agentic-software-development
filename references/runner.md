@@ -99,8 +99,9 @@ the recorded checkpoints.
   skips it.
 - **`--command fix-deferred [--items D-1,D-3]`:** runs `/fix-deferred <ID>
   [items]`, which fixes the ledger's direct items (all open ones, or only the
-  listed ones) in one stacked pull request and asks the owner about each item
-  that looks big enough for a dossier of its own (`commands/fix-deferred.md`).
+  listed ones) in one stacked pull request without asking, and asks the owner
+  only about an item it would rather not fix there: one that deserves its own
+  dossier, no longer applies, or is not worth it (`commands/fix-deferred.md`).
   The dashboard's "Fix all deferred" and "Fix selected" buttons start it.
 - **The product summary:** after the deferred report, one more short
   process runs `/product-summary <ID>` (`commands/product-summary.md`) on

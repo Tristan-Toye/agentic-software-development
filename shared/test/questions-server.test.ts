@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rm
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
-import { channelNameFor, interpretEnvelope, questionBlocks } from "../questions/slack.ts"
+import { channelNameFor, interpretEnvelope, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
 import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers } from "../questions/stubs.ts"
@@ -64,6 +64,15 @@ check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "
   for (const [k, v] of [["ASD_ACCOUNTS", env0.a], ["ASD_ACCOUNT_STATE", env0.s], ["ASD_USAGE_DIR", env0.u]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
   rmSync(ah, { recursive: true, force: true })
 }
+{
+  const U2 = (ts: string, kind: string, text: string, extra: object = {}) => ({ ts, kind, text, ...extra }) as any
+  const ups = [U2("2026-11-04T09:20:00Z", "stage", "triage done", { stage: "Fix-deferred — reusing Phase 7 fix machinery" }), U2("2026-11-04T09:16:00Z", "update", "Started fixing W-1's deferred issues."),
+    U2("2026-11-04T09:15:07Z", "runner", "start /fix-deferred W-1 in /r"), U2("2026-11-04T07:24:24Z", "stage", "PR ready", { stage: "Phase 9 — PR" }), U2("2026-11-04T07:00:00Z", "stage", "x", { stage: "Phase 8 — ADRs" })]
+  const g = groupByPhase(mergeTimeline({ updates: ups, questions: [] }))
+  check("timeline: a fix-deferred run is a section of its own, its steps stay in it", g.length === 3 && g[0].label === "Fix deferred issues" && g[0].current && g[0].items.some((i: any) => i.entry?.text === "Started fixing W-1's deferred issues.") && g[1].label.startsWith("Phase 9"), JSON.stringify(g.map((x) => x.label)))
+  const g2 = groupByPhase(mergeTimeline({ updates: [U2("2026-11-04T10:00:00Z", "stage", "y", { stage: "Phase 9 — PR again" }), U2("2026-11-04T09:59:00Z", "runner", "start /work-on W-1 in /r"), ...ups], questions: [] }))
+  check("timeline: a /work-on run after a fix-deferred run counts phases again", g2[0].label.startsWith("Phase 9") && g2[1].label === "Fix deferred issues", JSON.stringify(g2.map((x) => x.label)))
+}
 check("branches: a build branch names the id in any case; plan, stub and trunk branches never do", isBuildBranch("feat/w-130-x", "W-130") && isBuildBranch("origin/feat/W-128-a", "W-128") && isBuildBranch("fix/W-12-deferred", "W-12") && !isBuildBranch("feat/W-1300-x", "W-130") && !isBuildBranch("plan/W-130-x", "W-130") && !isBuildBranch("origin/stub/W-130", "W-130") && !isBuildBranch("development", "W-130"))
 {
   const g = mkdtempSync(join(tmpdir(), "brc-"))
@@ -99,6 +108,12 @@ check("deferred: an item marked RESOLVED in place is closed", parseDeferred("- D
   check("deferred: Fix all shows on pr/done with open items and no live runner", c("done", 2) && c("pr", 1) && !c("done", 0) && !c("building", 2) && !c("done", 2, "running") && c("done", 2, "done"))
   const sm = (t: string) => slackMessageFor({ ts: "t", kind: "runner", text: t } as any, { repo: "r", id: "W-1", title: "x", link: "L" })
   check("deferred: the run thread gets the deferred count, not a zero", (sm("deferred report: 3 issue(s)")?.text ?? "").startsWith("📋 3 deferred issues") && sm("deferred report: 0 issue(s)") === null)
+}
+check("replies: typed text is always a follow-up; the question stays open", replyKind("why A?").kind === "followup" && replyKind(" go with B ").kind === "followup" && replyKind(" go with B ").text === "go with B")
+{
+  const qa = parseQuestion("r.W-1.Q1", [JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Which?" }), JSON.stringify({ ts: "2", from: "owner", kind: "followup", text: "use B" }), JSON.stringify({ ts: "3", from: "agent", kind: "answer", accepted: true, text: "I will use B.", owner_text: "use B" })].join("\n"))
+  const qo = parseQuestion("r.W-1.Q2", [JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Which?" }), JSON.stringify({ ts: "2", from: "owner", kind: "followup", text: "use B" }), JSON.stringify({ ts: "3", from: "agent", kind: "answer", text: "not accepted" })].join("\n"))
+  check("store: a typed message the agent accepted closes the question; an agent line without accepted does not", qa?.state === "answered" && qa.answer?.text === "I will use B." && qo?.state === "open")
 }
 check("slack: channel names from repo names", channelNameFor("config-harness") === "config-harness" && channelNameFor("Documents/Twipe/repos") === "documents-twipe-repos" && channelNameFor("A__b.c") === "a__b-c" && channelNameFor("x".repeat(100)).length === 79)
 {
@@ -147,7 +162,7 @@ check("slack: disconnect acks and reconnects", r.ack?.envelope_id === "E0" && r.
 r = interpretEnvelope(ev({ text: "what about cost?", thread_ts: "111.222" }), lookup)
 check("slack: thread reply is a follow-up", r.ack?.envelope_id === "E1" && r.action.type === "owner" && r.action.kind === "followup" && r.action.id === "hand.written.Q9")
 r = interpretEnvelope(ev({ text: "Answer: go with A", thread_ts: "111.222" }), lookup)
-check("slack: answer: prefix is a free-text answer", r.action.type === "owner" && r.action.kind === "answer" && r.action.text === "go with A" && !r.action.option)
+check("slack: a typed reply, even with answer: in front, stays a follow-up", r.action.type === "owner" && r.action.kind === "followup" && r.action.text === "Answer: go with A" && !r.action.option)
 r = interpretEnvelope(ev({ text: "hello" }), lookup)
 check("slack: DM outside a thread gets a pointer", r.action.type === "pointer")
 r = interpretEnvelope(ev({ text: "x", thread_ts: "999.9" }), lookup)

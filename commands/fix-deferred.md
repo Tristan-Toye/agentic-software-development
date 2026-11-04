@@ -3,9 +3,10 @@ description: >-
   Fix a finished dossier's deferred issues in one stacked pull request, all of
   them or the D-items the owner selected. Every item that is small and stays
   inside one package is implemented directly, test first, through the
-  implementer and reviewer flow, with no new dossier. An item that crosses a
-  contract boundary, or is too large or too uncertain for a direct fix, is put
-  to the owner with the argument for a dossier of its own; the owner rules.
+  implementer and reviewer flow, with no new dossier; that default is never
+  asked about. Only an item that deserves its own dossier, no longer applies,
+  or is not worth fixing is put to the owner, with the argument; the owner
+  rules.
   Started from the dashboard's Deferred tab ("Fix selected", "Fix all
   deferred") or `run_dossier.py <ID> --command fix-deferred [--items D-1,D-3]`.
 argument-hint: "<dossier ID, e.g. W-117> [D-1,D-3,...]"
@@ -43,36 +44,36 @@ and `effort:`, read its `path:line`, and fill the rest yourself, briefly. With a
 
 ## Step 2 — Triage: direct fix or new dossier
 
-An item is a **direct fix** only when all of these hold:
+The default is a **direct fix in the stacked PR**, and it is never asked
+about: the owner chose to fix these items. Log each as
+`DEFERRED-TRIAGE: D-n → direct — <one-line fix>` and go on.
 
-- **Contract boundary** is `none`, or `internal` within one work package's
-  owned paths: no public signature, documented promise, route, schema,
-  event, config key or CLI changes.
-- **Effort** is `S` or `M`.
-- **Confidence** is `verified`, or the one check that settles it is cheap and
-  you run it now.
-- The fix can be proved: a focused test fails before it and passes after.
+Ask the owner only about an item you would **not** fix here, one
+`ask_owner.py ask` per such item, asked together before Step 3:
 
-An item that **no longer applies** (the code it names is gone, or it was
-already fixed elsewhere; verify at its `path:line`) is closed, not fixed:
-log `DEFERRED-DROPPED: D-n — <why it no longer applies>`.
+- **It deserves its own dossier**: the fix changes an external contract (a
+  public signature, documented promise, route, schema, event, config key or
+  CLI that other code or people consume), its effort is `L`, or what it
+  needs is still too uncertain to prove with one focused test.
+- **It no longer applies**: the code it names is gone, or it was already
+  fixed elsewhere (verify at its `path:line`).
+- **It is not worth fixing**: the cost or the risk of the change outweighs
+  what it buys.
 
-Every other item **may deserve a dossier**. Do not decide it alone: put it
-to the owner, one `ask_owner.py ask` per item, asked together before Step 3.
-The question argues the case in plain sentences: what the item is, why it is
-too big or too risky for this stacked PR (the contract it crosses, its blast
-radius, its effort, what is still unknown), and what a dossier of its own
-would settle first. The options are:
+The question argues the case in plain sentences: what the item is, and why
+you would not fix it in this stacked PR (the contract it crosses, its blast
+radius, its effort, what is still unknown, or why it no longer matters). The
+options are:
 
-- `A` — its own dossier (recommend it when a contract changes or the effort
-  is `L`): log `DEFERRED-TRIAGE: D-n → dossier — <reason>; seed: /plan <ID> D-n`;
+- `A` — your recommendation: its own dossier (log
+  `DEFERRED-TRIAGE: D-n → dossier — <reason>; seed: /plan <ID> D-n`), or
+  drop it (log `DEFERRED-DROPPED: D-n — <why>`);
 - `B` — fix it in this stacked PR anyway: it joins the direct items, and the
-  pull request body names the contract it changes;
+  pull request body names any contract it changes;
 - `C` — leave it open for now: no log line, the item stays `open`.
 
 Go on with the direct items while the questions are open; under the runner,
 end the turn with `RUNNER: WAITING <ids>` only when nothing else can proceed.
-Log each direct item as `DEFERRED-TRIAGE: D-n → direct — <one-line fix>`.
 
 ## Step 3 — The stacked branch
 
@@ -135,8 +136,8 @@ hand. Under the runner, end with `RUNNER: DONE`.
 
 - Never widen a fix past its item. What you notice on the way becomes a new
   `NOTICED:` line, not a change.
-- Never change a contract to make a fix fit, unless the owner ruled `B` for
-  that item; then the pull request names the change.
+- Never change an external contract to make a fix fit, unless the owner
+  ruled `B` for that item; then the pull request names the change.
 - Never fix an item outside the owner's list when a list was given.
 - The dossier's own pull request is never edited, rebased or merged by this
   command. The stacked pull request is the only thing it opens, and the

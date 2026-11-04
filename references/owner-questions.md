@@ -39,7 +39,7 @@ Line fields:
 |---|---|---|
 | `ts` | every line | ISO 8601 UTC |
 | `from` | every line | `agent` or `owner` |
-| `kind` | every line | `question` (first line only), `reply` (agent), `followup` or `answer` (owner) |
+| `kind` | every line | `question` (first line only), `reply` (agent), `followup` or `answer` (owner), or `answer` with `accepted: true` (agent, below) |
 | `text` | every line | the message |
 | `dossier`, `repo`, `root` | `question` | dossier id, repo basename, repository root path |
 | `options` | `question` | list of `{"key": "A", "label": "...", "consequence": "..."}`, 2 to 4 |
@@ -113,7 +113,13 @@ It prints at most 40 lines.
     paused) with its step, account, sub-agents at work this stage, context and
     last activity; the header counts runs, working runs and sub-agents.
   - Each question shows its thread, the option buttons (an answer, the
-  recommendation highlighted), a text box with **Ask follow-up** and **Answer**.
+  recommendation highlighted), a text box with one **Send** button. Typed text is always a
+  follow-up and the question stays open: the agent answers it, or, when it
+  reads as an answer or instruction it can act on, restates what it will do
+  with `ask_owner.py accept <id> --text …`, which closes the question
+  (`from: agent, kind: answer, accepted: true`, the owner's words kept as
+  `owner_text`). Only an option button answers outright. Slack thread replies
+  follow the same rule (`replyKind`).
   - It refreshes every 5 s, patching the DOM so a half-written text box and
     the scroll position survive.
 - **API:**
@@ -144,8 +150,8 @@ It prints at most 40 lines.
     that once.
   - **What counts as what:**
     - a button press is an `answer` with that option;
-    - a thread reply starting with `answer:` is a free-text `answer`;
-    - any other thread reply is a `followup`;
+    - every thread reply is a `followup` (the agent answers it or accepts it
+      as the answer, as on the page);
     - a DM outside a thread gets a pointer to reply in a question's thread;
       other messages in a repo channel are left alone;
     - `status`, `update` or `?` alone (or `status W-128`), outside a
@@ -254,7 +260,11 @@ one card-based single-page app with deep links.
     which starts `--command fix-deferred --items D-1,D-3`: only those items,
     one stacked PR through the implementer and review flow; an item that looks
     too big for it is put to the owner as a question (own dossier, fix here
-    anyway, or leave open). **The product summary** (`<key>.summary.md`, written by the runner after
+    anyway, or leave open). **A later run on a finished dossier** (`/fix-deferred`) opens its own
+    timeline section, "Fix deferred issues", at the runner's `start` line,
+    and its steps stay inside it; while it runs the header reads "Fixing
+    deferred issues", the page opens on the timeline, and the dossier's row on
+    its stub card carries a live "fixing deferred" chip. **The product summary** (`<key>.summary.md`, written by the runner after
     Phase 9) sits above the dossier on its Dossier tab; a built dossier without
     one offers **Write product summary**, which POSTs
     `/api/runs/<repo>/<ID>/summary` and runs `run_dossier.py summary <ID>` in
