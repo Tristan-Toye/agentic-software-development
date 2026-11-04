@@ -215,7 +215,8 @@ function optButtons(q) {
   }));
 }
 function msgBlock(l) {
-  return h('div', { class: 'msg ' + l.from }, [h('div', { class: 'who' }, [l.from + ' ' + l.kind + (l.option ? ' ' + l.option : '') + (l.via ? ' via ' + l.via : '') + ' · ', when(l.ts)]), h('div', {}, [l.text])]);
+  const who = l.accepted ? 'agent · took your words as the answer' : l.from === 'owner' && l.kind === 'followup' ? 'you' : l.from + ' ' + l.kind;
+  return h('div', { class: 'msg ' + l.from }, [h('div', { class: 'who' }, [who + (l.option ? ' ' + l.option : '') + (l.via ? ' via ' + l.via : '') + ' · ', when(l.ts)]), h('div', {}, [l.text])]);
 }
 function qCard(q, opts) {
   const open = q.state === 'open'; const repo = qRepo(q);
@@ -223,9 +224,9 @@ function qCard(q, opts) {
     h('div', { class: 'top' }, [chip(rlabel(repo), 'neutral'), h('a', { class: 'chip', href: hrefItem(repo, q.dossier) }, [q.dossier]), h('span', { class: 'grow' }), h('span', { class: 'mono' }, [q.id + ' · ']), opts.queue ? when(q.ts, 'waiting ') : when(q.ts)]),
     h('div', { class: 'q' }, [q.text]), q.blocks ? h('div', { class: 'blocks' }, ['Blocks: ' + q.blocks]) : null, optButtons(q)];
   if (opts.thread) kids.push(h('div', {}, q.lines.slice(1).map(msgBlock)));
-  if (open) kids.push(h('textarea', { placeholder: 'Write your answer, or end with ? to ask the agent first', 'data-qid': q.id }),
+  if (open) kids.push(h('textarea', { placeholder: 'Write your answer or a question for the agent', 'data-qid': q.id }),
     h('div', { class: 'ctl' }, [h('button', { class: 'btn primary', type: 'button', 'data-act': 'reply', 'data-qid': q.id }, ['Send']),
-      h('span', { class: 'small mut' }, ['Ends with ? → a follow-up: the question stays open for the agent\'s reply. Otherwise it is your answer.'])]));
+      h('span', { class: 'small mut' }, ['The question stays open: the agent answers you, or confirms what it will do with your words and closes it. The buttons answer outright.'])]));
   kids.push(h('div', { class: 'err' }, [S.qerr[q.id] || '']));
   return h('div', { class: 'need' + (open ? '' : ' thr') + (opts.hit === q.id ? ' hit' : ''), id: 'q-' + q.id, 'data-k': 'q:' + q.id + (opts.thread ? ':t' : ':x') }, kids);
 }
@@ -743,10 +744,9 @@ document.addEventListener('click', (e) => {
     e.preventDefault(); const act = t.dataset.act;
     if (act === 'opt') post(t.dataset.qid, { kind: 'answer', option: t.dataset.opt });
     else if (act === 'reply') {
-      // Same rule as Slack (replyKind): a trailing ? asks a follow-up, "ask:"/"answer:" in front say it outright.
+      // Same rule as Slack (replyKind): typed text is a follow-up; the agent answers it or accepts it as the answer.
       const ta = t.closest('.need').querySelector('textarea'); const v = ta ? ta.value.trim() : '';
-      if (v) { ta.value = ''; const a = v.match(/^answer:\s*([\s\S]*)$/i), q = v.match(/^ask:\s*([\s\S]*)$/i);
-        post(t.dataset.qid, a ? { kind: 'answer', text: a[1].trim() } : q ? { kind: 'followup', text: q[1].trim() } : { kind: /\?\s*$/.test(v) ? 'followup' : 'answer', text: v }); }
+      if (v) { ta.value = ''; post(t.dataset.qid, { kind: 'followup', text: v }); }
     } else if (act === 'ctl') control(t);
     else if (act === 'copy') { const lab = t.dataset.label || t.textContent; t.dataset.label = lab; try { navigator.clipboard.writeText(t.dataset.text); t.textContent = 'Copied'; setTimeout(() => { t.textContent = lab; }, 1500); } catch (_) {} }
     else if (act === 'ctl-cancel') { const s = S.ctl[t.dataset.repo + '/' + t.dataset.id]; if (s) s.confirm = null; render(); }

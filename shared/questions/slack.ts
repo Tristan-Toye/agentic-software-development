@@ -74,18 +74,14 @@ export const STATUS_ACTION = "run_status"
 export const isStatusMessage = (m: any): boolean => String(m?.blocks?.[0]?.text?.text ?? "").startsWith("*Status —")
 
 /**
- * What a free-text reply to a question is: one that ends in "?" asks the agent a follow-up (the question stays open),
- * anything else answers it. `answer:` or `ask:` in front says it outright. The page and Slack read replies the same way.
+ * What a typed reply to a question is: always a follow-up, so the question stays open. The agent answers it, or, when
+ * it reads as an instruction it can act on, restates it and accepts it as the answer (`ask_owner.py accept`). Only an
+ * option button answers outright. The page and Slack read replies the same way.
  */
-export function replyKind(raw: string): { kind: "answer" | "followup"; text: string } {
-  const t = raw.trim()
-  const a = t.match(/^answer:\s*([\s\S]*)$/i)
-  if (a) return { kind: "answer", text: a[1].trim() }
-  const q = t.match(/^ask:\s*([\s\S]*)$/i)
-  if (q) return { kind: "followup", text: q[1].trim() }
-  return { kind: /\?\s*$/.test(t) ? "followup" : "answer", text: t }
+export function replyKind(raw: string): { kind: "followup"; text: string } {
+  return { kind: "followup", text: raw.trim() }
 }
-export const POINTER_TEXT = "Reply in a question's thread: a reply ending in `?` asks the agent a follow-up, anything else answers it (`ask:` or `answer:` in front to say it outright). Send `status` (or `status W-128`) for an update on the running dossiers."
+export const POINTER_TEXT = "Reply in a question's thread: the agent answers, or confirms what it will do with your words and closes the question; the buttons answer outright. Send `status` (or `status W-128`) for an update on the running dossiers."
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")

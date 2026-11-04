@@ -111,8 +111,9 @@ def read_lines(qid: str) -> list[dict]:
 
 
 def final_answer(lines: list[dict]) -> dict | None:
+    """The owner's answer: an option button, or a typed message the agent accepted (`accept`)."""
     for ln in lines:
-        if ln.get("from") == "owner" and ln.get("kind") == "answer":
+        if ln.get("kind") == "answer" and (ln.get("from") == "owner" or ln.get("accepted") is True):
             return ln
     return None
 
@@ -164,6 +165,22 @@ def cmd_ask(a: argparse.Namespace) -> int:
 def cmd_reply(a: argparse.Namespace) -> int:
     read_lines(a.id)
     write_line(path_of(a.id), {"ts": now(), "from": "agent", "kind": "reply", "text": clip(a.text)})
+    return 0
+
+
+def cmd_accept(a: argparse.Namespace) -> int:
+    """`accept <id> --text T`: the owner's typed message is an answer you can act on. T restates what you will do; it
+    closes the question as answered (`from: agent, kind: answer, accepted: true`, with the owner's own words)."""
+    lines = read_lines(a.id)
+    if final_answer(lines) is not None:
+        print(f"{a.id} is already answered", file=sys.stderr)
+        return 1
+    owner = [ln for ln in lines if ln.get("from") == "owner" and ln.get("kind") == "followup"]
+    if not owner:
+        print(f"{a.id}: the owner has written nothing to accept", file=sys.stderr)
+        return 1
+    write_line(path_of(a.id), {"ts": now(), "from": "agent", "kind": "answer", "accepted": True,
+                               "text": clip(a.text), "owner_text": clip(str(owner[-1].get("text", "")))})
     return 0
 
 
@@ -356,6 +373,15 @@ def selftest() -> int:
         sh = run("show", qid, env=env).stdout
         check("show prints thread", "A) one -> does one" in sh and "owner/answer" in sh)
 
+        write_line(path2, {"ts": now(), "from": "owner", "kind": "followup", "text": "just use the old port", "via": "page"})
+        acc = run("accept", qid2, "--text", "I will keep port 7317.", env=env)
+        w = run("wait", qid2, "--timeout", "1", env=env)
+        fa = final_answer(read_lines(qid2)) or {}
+        check("accept: the agent closes a typed answer it can act on, with the owner's words kept",
+              acc.returncode == 0 and w.returncode == 0 and w.stdout.strip() == f"ANSWER {qid2}: I will keep port 7317."
+              and fa.get("accepted") is True and fa.get("owner_text") == "just use the old port"
+              and run("accept", qid2, "--text", "again", env=env).returncode == 1)
+
         # a worktree carries its main checkout's name
         main = os.path.join(tmp, "mainrepo")
         subprocess.run(["git", "init", "-q", main], check=True)
@@ -396,6 +422,9 @@ def main() -> int:
     p = sub.add_parser("reply")
     p.add_argument("id")
     p.add_argument("--text", required=True)
+    p = sub.add_parser("accept")
+    p.add_argument("id")
+    p.add_argument("--text", required=True)
     p = sub.add_parser("wait")
     p.add_argument("id")
     p.add_argument("--timeout", type=float)
@@ -415,7 +444,7 @@ def main() -> int:
     if not a.cmd:
         ap.print_usage(sys.stderr)
         return 2
-    return {"ask": cmd_ask, "reply": cmd_reply, "wait": cmd_wait, "list": cmd_list, "show": cmd_show, "note": cmd_note}[a.cmd](a)
+    return {"ask": cmd_ask, "reply": cmd_reply, "accept": cmd_accept, "wait": cmd_wait, "list": cmd_list, "show": cmd_show, "note": cmd_note}[a.cmd](a)
 
 
 if __name__ == "__main__":

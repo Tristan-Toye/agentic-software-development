@@ -39,7 +39,7 @@ Line fields:
 |---|---|---|
 | `ts` | every line | ISO 8601 UTC |
 | `from` | every line | `agent` or `owner` |
-| `kind` | every line | `question` (first line only), `reply` (agent), `followup` or `answer` (owner) |
+| `kind` | every line | `question` (first line only), `reply` (agent), `followup` or `answer` (owner), or `answer` with `accepted: true` (agent, below) |
 | `text` | every line | the message |
 | `dossier`, `repo`, `root` | `question` | dossier id, repo basename, repository root path |
 | `options` | `question` | list of `{"key": "A", "label": "...", "consequence": "..."}`, 2 to 4 |
@@ -104,10 +104,13 @@ It prints at most 40 lines.
 - **Page** `GET /`: a dashboard (see Dashboard): the repo cards, then the queue of
   open questions, then running dossiers, this week's stub, stubs and open work.
   - Each question shows its thread, the option buttons (an answer, the
-  recommendation highlighted), a text box with one **Send** button: text
-  ending in `?` is a follow-up (the question stays open for the agent's
-  reply), anything else is the answer; `ask:` or `answer:` in front says it
-  outright. Slack thread replies follow the same rule (`replyKind`).
+  recommendation highlighted), a text box with one **Send** button. Typed text is always a
+  follow-up and the question stays open: the agent answers it, or, when it
+  reads as an answer or instruction it can act on, restates what it will do
+  with `ask_owner.py accept <id> --text …`, which closes the question
+  (`from: agent, kind: answer, accepted: true`, the owner's words kept as
+  `owner_text`). Only an option button answers outright. Slack thread replies
+  follow the same rule (`replyKind`).
   - It refreshes every 5 s, patching the DOM so a half-written text box and
     the scroll position survive.
 - **API:**
@@ -138,9 +141,8 @@ It prints at most 40 lines.
     that once.
   - **What counts as what:**
     - a button press is an `answer` with that option;
-    - a thread reply ending in `?` (or starting with `ask:`) is a `followup`;
-    - any other thread reply (or one starting with `answer:`) is a free-text
-      `answer`;
+    - every thread reply is a `followup` (the agent answers it or accepts it
+      as the answer, as on the page);
     - a DM outside a thread gets a pointer to reply in a question's thread;
       other messages in a repo channel are left alone;
     - `status`, `update` or `?` alone (or `status W-128`), outside a
