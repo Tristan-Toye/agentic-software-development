@@ -53,7 +53,7 @@ export function inTimeline(e: TLEntry): boolean {
   if (e.type === "runner") return /^(stage \d+ failed|failed|stopped|done|paused|resumed|switched to account)\b/i.test(e.text.trim())
   if (e.type === "update" && e.auto) {
     const ev = e.event ?? "other"
-    return ev === "spawn" || ev === "pr"
+    return ev === "spawn" || ev === "pr" || ev === "blocked"
   }
   return true
 }
@@ -151,8 +151,8 @@ export function mergeTimeline(o: { updates: Update[]; questions: Question[]; ext
 }
 
 // ---- classification and grouping (pure) ----
-export type Kind = "spawn" | "start" | "stage" | "question" | "answered" | "suite-green" | "suite-red" | "gate" | "pr" | "workflow" | "failed" | "waiting" | "done" | "stopped" | "note" | "reply" | "routine" | "info" | "entry" | "boundary"
-const KEY_KINDS = new Set<Kind>(["start", "stage", "question", "answered", "suite-green", "suite-red", "gate", "pr", "workflow", "failed", "waiting", "done", "stopped"])
+export type Kind = "blocked" | "spawn" | "start" | "stage" | "question" | "answered" | "suite-green" | "suite-red" | "gate" | "pr" | "workflow" | "failed" | "waiting" | "done" | "stopped" | "note" | "reply" | "routine" | "info" | "entry" | "boundary"
+const KEY_KINDS = new Set<Kind>(["blocked", "start", "stage", "question", "answered", "suite-green", "suite-red", "gate", "pr", "workflow", "failed", "waiting", "done", "stopped"])
 
 /** What an entry is, for display: its kind, whether it is a key event, and whether it is routine (collapsible). */
 export function classify(e: TLEntry): { kind: Kind; key: boolean; routine: boolean } {
@@ -178,6 +178,7 @@ export function classify(e: TLEntry): { kind: Kind; key: boolean; routine: boole
   }
   // update (hook-written `auto` lines and agent notes)
   if (e.event === "spawn") return mk("spawn")
+  if (e.auto && e.event === "blocked") return mk("blocked")
   if (e.auto && e.event === "workflow") return mk("workflow")
   // An agent's note is prose: "the gate failed, then passed alone after a fixture rebuild" is no red suite.
   // Suite, gate and PR kinds come only from the hook's own lines, which carry the real result.

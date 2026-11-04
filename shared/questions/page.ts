@@ -85,6 +85,12 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .mbar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin:3px 0}.mfill{display:block;height:100%;background:var(--acc)}.mfill.ok{background:var(--ok)}.mfill.warn{background:var(--warn)}.mfill.bad{background:var(--bad)}
 .rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip.fixing{display:inline-flex;align-items:center;gap:5px;background:var(--accbg);color:var(--acc);font-weight:600}a.srow:has(.chip.fixing){box-shadow:inset 3px 0 0 var(--acc)}
+.dfp{border-left:3px solid var(--acc)}.dfp-bar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--chip);margin:6px 0 4px}.dfp-bar .seg{display:block;height:100%}
+.seg.ok,.sw.ok{background:var(--ok)}.seg.acc,.sw.acc{background:var(--acc)}.seg.warn,.sw.warn{background:var(--warn)}.seg.mut,.sw.mut{background:var(--mut)}.seg.mut2,.sw.mut2{background:var(--bd)}
+.dfp-leg{display:flex;gap:12px;flex-wrap:wrap;color:var(--mut)}.dfp-leg .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.dfp-rows{margin-top:8px;border:1px solid var(--bd);border-radius:10px;overflow:hidden}.dfp-row{display:grid;grid-template-columns:max-content minmax(0,1fr) auto;gap:10px;align-items:center;padding:6px 12px;border-top:1px solid var(--bd);font-size:13px}.dfp-row:first-child{border-top:0}.dfp-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.panel.blocked{border-left:3px solid var(--bad)}.blk{border-top:1px solid var(--bd);padding:10px 0 4px;display:flex;flex-direction:column;gap:6px}.blk-cmd{margin:0;padding:8px 10px;border-radius:8px;background:var(--chip);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto}
+.blk-rule{display:flex;gap:6px;flex-wrap:wrap}.blk-rule input{flex:1;min-width:220px;font-size:12px;padding:6px 8px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg)}
 .psum{border-left:3px solid var(--acc)}.psum h3{font-size:.95rem;margin:12px 0 4px}.psum .md p:first-child{margin-top:0}
 .result .res-hd{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--mut);margin-bottom:4px}.result .res-hd .kind{font-weight:600;color:var(--fg)}
 .chat{margin:10px 0 0;padding:8px 12px;border-radius:10px;background:var(--chip);overflow-wrap:anywhere}.chat.owner{margin-left:12%;background:var(--accbg)}.chat.agent,.chat.runner{margin-right:6%}.chat.runner{color:var(--mut)}.chat .md p:first-child{margin-top:0}.chat .md p:last-child{margin-bottom:0}
@@ -322,6 +328,7 @@ function runningView() {
     if (r.agents && r.agents.running) right.push(h('span', { class: 'chip fixing' }, [h('span', { class: 'dot info live' }), r.agents.running + ' agent' + (r.agents.running === 1 ? '' : 's')]));
     if (r.session && r.session.context && r.runner.state === 'running') right.push(chip('context ' + kfmt(r.session.context), 'neutral'));
     if (nq) right.push(h('span', { class: 'qb' }, ['? ' + nq]));
+    if (r.blocked) right.push(chip('⛔ ' + r.blocked + ' blocked', 'blocked'));
     return h('a', { class: 'srow', href: hrefItem(r.repo, r.id), 'data-k': 'run:' + r.repo + '/' + r.id }, [h('span', { class: 'sid mono' }, [r.id]),
       h('span', { class: 'sname' }, [h('span', {}, [r.title]), h('span', { class: 'small mut rsub' }, [rlabel(r.repo) + ' · ' + (stageText(r) || 'starting') + (last ? ' · ' : ''), last ? when(last.ts, 'last activity ') : null])]),
       h('span', { class: 'sright' }, right)]);
@@ -439,8 +446,8 @@ function header(r, mode) {
   return h('div', { class: 'panel' }, [h('h1', { style: 'margin-top:0' }, [r.id + ' · ' + r.title]), r.summary && mode === 'run' ? h('p', { class: 'sum' }, [r.summary]) : null,
     h('div', { class: 'chips' }, cs), h('div', { class: 'row' }, controls(r, true).concat(acts))]);
 }
-const ICON = { start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', spawn: '⎇', reply: '↩', routine: '·', info: '·', entry: '§' };
-const KLABEL = { start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', spawn: 'agent', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };
+const ICON = { blocked: '⛔', start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', spawn: '⎇', reply: '↩', routine: '·', info: '·', entry: '§' };
+const KLABEL = { blocked: 'blocked by the safety check', start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', spawn: 'agent', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };
 function dur(ms) { const m = Math.round(ms / 60000); if (m < 1) return '<1 min'; if (m < 60) return m + ' min'; const hh = Math.floor(m / 60); if (hh < 24) return hh + ' h ' + (m % 60 ? (m % 60) + ' min' : ''); return Math.floor(hh / 24) + ' d ' + (hh % 24) + ' h'; }
 const icon = (k) => h('span', { class: 'ic' }, [ICON[k] || '•']);
 function tlEntry(e) {
@@ -513,7 +520,9 @@ function itemView(repo, id) {
   if (!r) return h('div', {}, [h('h1', {}, [id]), h('div', { class: 'empty' }, [S.loaded ? 'No such dossier in ' + repo + '.' : 'Loading…'])]);
   const mode = itemMode(r); const d = S.detail && S.detail.url === detailUrl() ? S.detail.data : null;
   const kids = [header(r, mode)];
+  const bv = blockedView(r, d); if (bv) kids.push(bv);
   const res = resultView(r, d); if (res) kids.push(res);
+  const dp = deferredProgress(r, d); if (dp) kids.push(dp);
   /* Every dossier has the same tabs; a finished or not-started one opens on the
      dossier itself, a run in progress on its timeline. Empty tabs are left out. */
   const key = repo + '/' + id;
@@ -543,10 +552,59 @@ function itemView(repo, id) {
 /* The deferred ledger: open items with a copyable /plan seed, fixed ones with their
    commit, the ones routed to a new dossier; "Fix all deferred" sits in the header. */
 function dfState(r, i) {
-  if (i.state === 'fixed') return r.deferred.pr ? h('a', { href: r.deferred.pr, target: '_blank', rel: 'noopener', title: i.note ? 'commit ' + i.note : '' }, [chip('fixed in stacked PR', 'done')]) : chip('fixed' + (i.note ? ' · ' + i.note.slice(0, 8) : ''), 'done');
+  if (i.state === 'fixed') return r.deferred.pr ? h('a', { href: r.deferred.pr, target: '_blank', rel: 'noopener', title: i.note ? 'commit ' + i.note : '' }, [chip('fixed · stacked PR ' + prNum(r.deferred.pr), 'done')]) : chip('fixed' + (i.note ? ' · ' + i.note.slice(0, 8) : ''), 'done');
   if (i.state === 'dossier') return i.dossier ? h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]) : chip('needs a dossier', 'planned');
-  if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('deprecated', 'neutral')]);
+  if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('dropped', 'neutral')]);
+  if (i.state === 'fixing') return h('span', { title: i.note || '' }, [chip(fixLive(r) ? 'being fixed' : 'fix not finished', fixLive(r) ? 'pending' : 'blocked')]);
   return chip('not tackled', 'ready');
+}
+/* Fixing the deferred issues: the stacked PR, where each item stands (being fixed, fixed, its own dossier, dropped,
+   left open), and the questions it waits on; live while /fix-deferred runs, the final state once it is done. */
+const fixLive = (r) => !!(r.runner && r.runner.command === 'fix-deferred' && ['running', 'waiting', 'paused'].includes(r.runner.state));
+const prNum = (u) => { const m = String(u || '').match(/(\d+)\/?$/); return m ? '#' + m[1] : 'PR'; };
+function deferredProgress(r, d) {
+  const df = r.deferred; if (!df || !df.items.length) return null;
+  const live = fixLive(r); const ran = live || !!df.pr || !!df.branch || df.items.some(i => i.state === 'fixing');
+  if (!ran) return null;
+  const n = (s) => df.items.filter(i => i.state === s).length;
+  const parts = [['fixed', n('fixed'), 'ok'], ['being fixed', n('fixing'), 'acc'], ['own dossier', n('dossier'), 'warn'], ['dropped', n('deprecated'), 'mut'], ['left open', n('open'), 'mut2']];
+  const total = df.items.length; const nq = openQs(r).length;
+  const head = [h('span', { class: 'kind' }, [live ? 'Fixing deferred issues' : 'Deferred issues · after the fix run']), live ? h('span', { class: 'dot info live' }) : null];
+  if (live) head.push(runChip(r.runner.state)); else if (r.runner && r.runner.command === 'fix-deferred' && r.runner.state !== 'done') head.push(runChip(r.runner.state));
+  if (df.pr) head.push(h('a', { class: 'chip act', href: df.pr, target: '_blank', rel: 'noopener' }, ['stacked PR ' + prNum(df.pr)]));
+  else if (df.branch) head.push(chip('branch ' + df.branch, 'neutral'));
+  if (nq) head.push(h('a', { class: 'chip warn', href: '/questions' }, ['? ' + nq + ' waiting for you']));
+  const bar = h('div', { class: 'dfp-bar' }, parts.filter(p => p[1]).map(p => h('span', { class: 'seg ' + p[2], style: 'flex:' + p[1], title: p[1] + ' ' + p[0] }, [])));
+  const legend = h('div', { class: 'dfp-leg small' }, parts.filter(p => p[1]).map(p => h('span', {}, [h('span', { class: 'sw ' + p[2] }), p[1] + ' ' + p[0]])));
+  const rows = df.items.map(i => h('div', { class: 'dfp-row', 'data-k': 'dfp:' + i.id }, [h('span', { class: 'mono b' }, [i.id]), h('span', { class: 'dfp-t', title: [i.title, i.note].filter(Boolean).join(' — ') }, [i.title]), dfState(r, i)]));
+  const last = live && r.updates && r.updates.find(u => !u.auto);
+  return h('section', { class: 'panel dfp', 'data-k': 'dfp' }, [h('div', { class: 'res-hd' }, head), bar, legend,
+    last ? h('div', { class: 'small mut' }, ['Latest: ' + last.text.split('\n')[0].slice(0, 220) + ' · ', when(last.ts)]) : null,
+    h('div', { class: 'dfp-rows' }, rows),
+    !live && n('fixing') ? h('div', { class: 'small mut' }, [n('fixing') + ' item(s) were being fixed when the run ended; the build log says where they stand.']) : null]);
+}
+/* Tool calls the auto-mode safety check refused, not ruled on yet: allow once, always allow in this repo (a narrow
+   permission rule in its .claude/settings.local.json), or deny. The ruling reaches the agent as the answer to its open question. */
+function blockedView(r, d) {
+  const bs = d && d.blocks; if (!bs || !bs.length) return null;
+  const key = r.repo + '/' + r.id; const st = S.chat['blk:' + key] = S.chat['blk:' + key] || {};
+  const cards = bs.map(b => {
+    const rk = 'rule:' + b.id; if (st[rk] === undefined) st[rk] = b.tool + '(' + b.target + ')';
+    const busy = st.busy === b.id;
+    return h('div', { class: 'blk', 'data-k': 'blk:' + b.id }, [
+      h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['⛔ ' + (b.tool || 'tool') + (b.agent ? ' · a sub-agent' : '')]), when(b.ts)]),
+      h('pre', { class: 'blk-cmd' }, [b.target]),
+      b.reason ? h('div', { class: 'small' }, [h('span', { class: 'mut' }, ['Why it was blocked: ']), b.reason]) : null,
+      h('div', { class: 'ctl' }, [
+        h('button', { class: 'btn', type: 'button', 'data-act': 'blk', 'data-do': 'once', 'data-repo': r.repo, 'data-id': r.id, 'data-b': b.id, disabled: busy || !d.blockQuestion ? true : null, title: d.blockQuestion ? 'Answers the agent\'s open question with an approval naming this exact command' : 'The agent has not asked yet' }, ['Allow once']),
+        h('button', { class: 'btn', type: 'button', 'data-act': 'blk', 'data-do': 'deny', 'data-repo': r.repo, 'data-id': r.id, 'data-b': b.id, disabled: busy || !d.blockQuestion ? true : null }, ['Deny'])]),
+      h('div', { class: 'blk-rule' }, [h('input', { type: 'text', class: 'mono', 'data-rule': b.id, value: st[rk], 'aria-label': 'Permission rule' }),
+        h('button', { class: 'btn', type: 'button', 'data-act': 'blk', 'data-do': 'always', 'data-repo': r.repo, 'data-id': r.id, 'data-b': b.id, disabled: busy ? true : null }, ['Always allow in this repo'])]),
+      h('div', { class: 'small mut' }, ['Always allow saves the rule to ' + r.repo + '\'s .claude/settings.local.json (permissions.allow) and restarts the stage when the agent gets your answer, so the rule applies at once (it redoes the work since the stage\'s last checkpoint). Widen it to a prefix, e.g. Bash(ssh vm-test *), to cover similar commands.'])]);
+  });
+  const kids = [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Blocked by the safety check · ' + bs.length]), d.blockQuestion ? h('span', { class: 'small mut' }, ['ruling goes to ' + d.blockQuestion]) : h('span', { class: 'small mut' }, ['the agent has not asked yet'])])].concat(cards);
+  if (st.msg) kids.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad') }, [st.msg]));
+  return h('section', { class: 'panel blocked', 'data-k': 'blocked' }, kids);
 }
 /* What the dossier changed, in product terms (/product-summary, written after Phase 9), above the dossier itself. */
 function summaryView(r, d) {
@@ -770,6 +828,18 @@ async function fixSelected(btn) {
   } catch (e) { st.msg = 'request failed'; st.ok = false; }
   st.busy = null; await load(['runs']);
 }
+async function ruleBlock(btn) {
+  const repo = btn.dataset.repo, id = btn.dataset.id, bid = btn.dataset.b, act = btn.dataset.do, key = repo + '/' + id;
+  const st = S.chat['blk:' + key] = S.chat['blk:' + key] || {};
+  const inp = document.querySelector('input[data-rule="' + bid.replace(/"/g, '') + '"]'); if (inp) st['rule:' + bid] = inp.value;
+  if (st.confirm !== act + bid) { st.confirm = act + bid; btn.textContent = 'Confirm: ' + btn.textContent; setTimeout(() => { if (st.confirm === act + bid) { st.confirm = null; render(); } }, 8000); return; }
+  st.confirm = null; st.busy = bid; st.msg = ''; render();
+  try {
+    const r = await fetch('/api/runs/' + enc(repo) + '/' + enc(id) + '/blocks/' + enc(bid), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: act, rule: st['rule:' + bid] }) });
+    const j = await r.json().catch(() => ({})); st.ok = r.ok && j.ok !== false; st.msg = j.output || j.error || ('HTTP ' + r.status);
+  } catch (e) { st.ok = false; st.msg = 'request failed'; }
+  st.busy = null; await load(['runs', 'questions']);
+}
 async function writeSummary(btn) {
   const repo = btn.dataset.repo, id = btn.dataset.id, st = S.chat['sum:' + repo + '/' + id] = S.chat['sum:' + repo + '/' + id] || {};
   st.busy = true; st.err = ''; render();
@@ -811,6 +881,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'fix-sel') fixSelected(t);
     else if (act === 'chat') sendChat(t);
     else if (act === 'summary') writeSummary(t);
+    else if (act === 'blk') ruleBlock(t);
     else if (act === 'usage-refresh') { S.usageBusy = true; render(); fetch('/api/accounts/refresh', { method: 'POST' }).catch(() => {}).finally(() => load(['runs'])); }
     else if (act === 'toggle-done') { S.showAll[t.dataset.repo] = !S.showAll[t.dataset.repo]; render(); }
     return;

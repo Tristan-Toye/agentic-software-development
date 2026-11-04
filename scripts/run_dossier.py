@@ -72,6 +72,7 @@ RUNNER_RULES = """\
 You run under the dossier runner and nobody reads the terminal.
 - Ask the owner only through scripts/ask_owner.py, and never wait in the background: keep working on whatever is not blocked; when nothing can proceed, end the turn with the line `RUNNER: WAITING <id>[,<id>...]` and stop. The ids are question ids from ask_owner.py only; a wait on a background command or workflow is not a WAITING line: just end the turn, and Claude Code re-invokes you when it finishes. The runner waits for you and sends the owner's message into this session as `OWNER ANSWER <id>: ...` or `OWNER FOLLOWUP <id>: ...`. A follow-up is the owner's typed message and the question stays open: if it is a question, answer it with `ask_owner.py reply`, then end the turn with `RUNNER: WAITING <id>` again; if it reads as an answer or an instruction you can act on, run `ask_owner.py accept <id> --text "<what you will do, in one or two plain sentences>"`, which closes the question, and carry on; if it is unclear, reply with your reading and ask the owner to confirm, then wait again.
 - Never end a turn to wait for a command: run commands in the foreground (raise the Bash timeout up to 10 minutes) or wait for them inside the same turn. A workflow or background task that notifies you later is fine, but say `waiting for <what>` in plain text in that turn (never as a `RUNNER:` line); the runner keeps the session open for its notification.
+- When the auto-mode safety check blocks a call you need, never work around it: ask the owner with `ask_owner.py ask`, quoting the exact command (or path) and what it is for, with options to allow it once, to allow it as a standing rule, or to go without it; carry on with what is not blocked. The dashboard's Blocked card answers that question; an approval names the exact command, so retry it as written.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
 - Keep the owner informed: post an update with `ask_owner.py note --root R --dossier ID --text "..."` when a stage starts and ends and whenever something worth knowing happens (a wave returned, the suite went green or red, an arbitration was ruled, a plan changed). Write it for a person reading on a phone: what happened and what it means, in plain sentences; markdown bullets and small tables are welcome. Never paste commands, file paths, SHAs, flags or log output into an update; the build log keeps those.
@@ -420,6 +421,26 @@ class Runner:
         self.event("product summary written")
         return True
 
+    def restart_path(self) -> str:
+        return os.path.join(runs_dir(), self.key + ".restart")
+
+    def take_restart(self) -> str | None:
+        """The dashboard's request to restart the stage once the owner's ruling arrives (`<key>.restart`, holding the
+        rule saved), consumed; None when there is none."""
+        try:
+            with open(self.restart_path()) as fh:
+                why = fh.read().strip()
+            os.remove(self.restart_path())
+            return why
+        except OSError:
+            return None
+
+    def clear_restart(self) -> None:
+        try:
+            os.remove(self.restart_path())
+        except OSError:
+            pass
+
     def record_result(self, text: str) -> None:
         """The finished run's last reply, as the owner would see it in a terminal:
         a `result` line in the updates store (the dashboard shows it on top, and the
@@ -514,6 +535,15 @@ class Runner:
         self.send(f"/{PLUGIN}:{self.command} {self.dossier}" + (f" {self.items}" if self.items and self.command == "fix-deferred" else ""))
         extra = False
         hand = self.handoff()
+        carry = getattr(self, "pending_owner", "")
+        if carry:
+            # The stage restarted so a new permission rule applies (the dashboard's "Always allow"): the owner's answer
+            # to the question the previous process asked travels with the hand-off.
+            hand = (hand + "\n" if hand else f"RUNNER HAND-OFF. Task: run /{PLUGIN}:{self.command} {self.dossier} in {self.root}.\n") + (
+                "This stage restarted so that a permission rule the owner just saved applies. Your previous process asked "
+                "the owner a question; carry on from the dossier and this answer, and retry the command the rule now allows:\n"
+                + carry)
+            self.pending_owner = ""
         if hand:
             self.send(hand)
             extra = True
@@ -727,6 +757,7 @@ class Runner:
             quiet = False
             verb, rest = mk
             if verb == "STAGE-DONE":
+                self.clear_restart()  # the next stage is a new process: it loads the new rules anyway
                 self.end_process()
                 if len(self.checkpoints) == n0:
                     self.no_checkpoint(rest)
@@ -759,6 +790,14 @@ class Runner:
                 return "failed", f"waiting on {qid or ids[0]} failed: {out[:200]}"
             self.save(state="running", questions=[i for i in ids if i != qid] if rc == 0 else ids)
             self.event(("answered " if rc == 0 else "follow-up on ") + qid, "running")
+            why = self.take_restart() if rc == 0 else None
+            if why is not None:
+                # A rule saved while the agent waited only applies to a new process: restart the stage at this safe
+                # point (the agent is waiting, nothing of its own runs) and hand the answer over.
+                self.pending_owner = "OWNER " + out
+                kill_group(self.proc)
+                self.end_process()
+                return "restart", why
             self.send("OWNER " + out)
 
     def on_term(self, *_a) -> None:
@@ -792,6 +831,10 @@ class Runner:
             outcome, detail = self.run_stage()
             if outcome == "next":
                 self.event(f"stage {started} end" + (f": {detail}" if detail else ""), "running")
+                continue
+            if outcome == "restart":
+                self.event(f"restarting stage {started} so the new permission rule applies" + (f" ({detail[:160]})" if detail else ""), "running")
+                started -= 1
                 continue
             if outcome == "done":
                 self.event(f"stage {started} end", "running")
@@ -1301,6 +1344,23 @@ def selftest() -> int:
               any(x.get("session") == "sess-2" for x in lines_of(os.path.join(rdir, "repo.W-1.jsonl"))))
         check("done: the last reply is a result line without its RUNNER: line, and its session is the chat's",
               len(texts("W-1", "result")) == 1 and texts("W-1", "result")[0].endswith("all green") and "RUNNER:" not in texts("W-1", "result")[0] and state_of("W-1").get("result_session") == "sess-3")
+        # ---- 1a. a permission rule saved while the agent waits restarts the stage ----------
+        q5 = "repo.W-5.Q1"
+        scenario([
+            {"turns": [[{"ask": 1, "dossier": "W-5", "final": "RUNNER: WAITING {id}"}]]},
+            {"turns": [[{"final": "retried, works\nRUNNER: DONE"}]]},
+        ])
+        p5 = start("W-5")
+        check("restart: the agent waits on its question", bool(until(lambda: os.path.exists(qfile(q5)) and state_of("W-5").get("state") == "waiting")))
+        with open(os.path.join(rdir, "repo.W-5.restart"), "w") as fh:
+            fh.write("Bash(ssh vm-test *)")
+        owner_line(q5, "answer", "Approved: you may run ssh vm-test rebuild", "")
+        p5.wait(timeout=60)
+        r5 = texts("W-5")
+        check("restart: the answer restarts the stage in a new process, which gets the answer with the hand-off",
+              p5.returncode == 0 and any(t.startswith("restarting stage 1 so the new permission rule applies") for t in r5)
+              and r5[-1] == "done" and not os.path.exists(os.path.join(rdir, "repo.W-5.restart"))
+              and any("OWNER ANSWER " + q5 in m and "permission rule the owner just saved" in m for m in msgs(2)))
         # ---- 1b. chat with the finished run's session --------------------------------
         cfake = os.path.join(fdir, "chat_claude.py")
         open(cfake, "w").write("import json,sys\na=sys.argv[1:]\nmsg=sys.stdin.read()\n"

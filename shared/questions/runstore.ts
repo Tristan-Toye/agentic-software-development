@@ -66,6 +66,37 @@ export function readConversation(key: string, done: boolean, dir = runsDir(), al
   } catch { /* no chat yet */ }
   return { result, chat, busy }
 }
+/** A tool call auto mode refused (the PermissionDenied hook), not ruled on yet. */
+export type Block = { id: string; ts: string; tool: string; target: string; reason: string; agent: string }
+/** The refused calls of a run that the owner has not ruled on (`block-ruling` lines), newest first, at most `limit`; one per target. */
+export function readBlocks(key: string, dir = runsDir(), limit = 5): Block[] {
+  let lines: any[] = []
+  try { lines = readFileSync(join(dir, `${key}.jsonl`), "utf8").split("\n").filter((l) => l.includes('"event":"block')).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean) } catch { return [] }
+  const ruled = new Set(lines.filter((o) => o.event === "block-ruling").map((o) => String(o.tool_use_id ?? "")))
+  const ruledTargets = new Set(lines.filter((o) => o.event === "block-ruling" && o.scope === "always").map((o) => String(o.target ?? "")))
+  const seen = new Set<string>(); const out: Block[] = []
+  for (const o of lines.reverse()) {
+    if (o.event !== "blocked" || ruled.has(String(o.tool_use_id ?? "")) || ruledTargets.has(String(o.target ?? ""))) continue
+    const t = String(o.target ?? "")
+    if (seen.has(t)) continue
+    seen.add(t)
+    out.push({ id: String(o.tool_use_id ?? ""), ts: String(o.ts ?? ""), tool: String(o.tool ?? ""), target: t, reason: String(o.reason ?? ""), agent: String(o.agent_id ?? "") })
+    if (out.length >= limit) break
+  }
+  return out
+}
+/**
+ * The permission rule "Always allow" saves: `Bash(<command>)` for a shell command (the owner may widen it to a prefix,
+ * `Bash(ssh vm-test *)`), `<Tool>(<path>)` otherwise. Refuses rules auto mode drops or that allow anything at all.
+ */
+export function checkRule(rule: string): string {
+  const m = rule.trim().match(/^([A-Z][A-Za-z]+)\((.+)\)$/s)
+  if (!m) return "a rule looks like Bash(ssh vm-test *)"
+  const inner = m[2].trim()
+  if (!inner || /^\*+$/.test(inner) || /^\*\s/.test(inner)) return "that rule would allow every command"
+  if (m[1] === "Bash" && /^(bash|sh|zsh|python3?|node|bun|npx|npm|uv|pip3?|perl|ruby)\b(\s+\*|\*|$)/.test(inner)) return "a rule for a whole interpreter is dropped in auto mode; name the command"
+  return ""
+}
 export const runnerActive = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "waiting" || r?.state === "paused"
 
 /** First paragraph of the `## Problem` section, else of the body after the front matter and title; <= 300 chars. */

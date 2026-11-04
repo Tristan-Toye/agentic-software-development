@@ -75,6 +75,19 @@ the recorded checkpoints.
   read from the CLI's epoch, an ISO time, or text like "resets Nov 6 at 12pm
   (Europe/Brussels)". The dashboard reads session history from every
   registered account.
+- **Blocked calls:** the plugin's PermissionDenied hook
+  (`shared/claude/permission-denied.ts`) records every call auto mode refuses
+  as a `blocked` update (`tool`, `target` — the exact command or path,
+  `reason`, `tool_use_id`). The runner-mode rules tell the agent never to work
+  around a block and to ask the owner, quoting the exact command. The
+  dashboard's Blocked card rules on it (owner-questions.md). How a background
+  run is allowed what auto mode blocks, since `/permissions` needs a terminal:
+  an approval in the owner's answer that names the exact action and what makes
+  it risky (the classifier reads the owner's messages, one action unless said
+  to be standing); a narrow `permissions.allow` rule in the repo's
+  `.claude/settings.local.json`, applied before the classifier from the next
+  stage; or `autoMode.environment` / `autoMode.allow` in `~/.claude/settings.json`
+  for trusted infrastructure. A `deny` rule always wins.
 - **Usage per account:** every `rate_limit_event` a stage emits is recorded
   in `~/.agentic/usage/<account>.json` (`ASD_USAGE_DIR`): the 5-hour and
   weekly windows (`used_percentage`, `resets_at`, `status`, from

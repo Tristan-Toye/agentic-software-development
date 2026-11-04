@@ -264,7 +264,26 @@ one card-based single-page app with deep links.
     timeline section, "Fix deferred issues", at the runner's `start` line,
     and its steps stay inside it; while it runs the header reads "Fixing
     deferred issues", the page opens on the timeline, and the dossier's row on
-    its stub card carries a live "fixing deferred" chip. **The product summary** (`<key>.summary.md`, written by the runner after
+    its stub card carries a live "fixing deferred" chip. **Deferred fix progress** (dossier page, under the last reply): once
+    `/fix-deferred` has run or runs, a bar and one row per item: fixed (with
+    the stacked PR), being fixed (`DEFERRED-TRIAGE: D-n → direct` without its
+    `DEFERRED-FIXED:`), own dossier, dropped, left open; the stacked PR or the
+    fix branch (`DEFERRED-FIX:`), the questions it waits on, and its latest
+    note while live. The Deferred tab's cards carry the same states.
+    **Blocked by the safety check** (top of the dossier page): every call auto
+    mode refused that is not ruled on yet (`readBlocks`), with the exact command
+    and the reason. **Allow once** and **Deny** answer the agent's newest open
+    question with a ruling that names the exact command; **Always allow in this
+    repo** saves the rule in the box (default `Bash(<command>)`, widen it to a
+    prefix; `checkRule` refuses `Bash(*)` and whole interpreters) to the repo's
+    `.claude/settings.local.json` `permissions.allow`, then answers the same
+    way. While the run is live it also leaves `<key>.restart`: when the ruling
+    reaches the runner, it restarts the stage (a new process loads the rule)
+    and hands the answer over with the checkpoints, instead of sending it into
+    the old process. A stage that ends first clears the request. Each
+    ruling is a `block-ruling` update. POST
+    `/api/runs/<repo>/<ID>/blocks/<tool_use_id>` `{action: once|always|deny, rule}`.
+    **The product summary** (`<key>.summary.md`, written by the runner after
     Phase 9) sits above the dossier on its Dossier tab; a built dossier without
     one offers **Write product summary**, which POSTs
     `/api/runs/<repo>/<ID>/summary` and runs `run_dossier.py summary <ID>` in

@@ -1,5 +1,5 @@
 {
-  "description": "agentic-software-development: refuse a tool call that repeats itself in a row (scripts/hooks/repeat_guard.py), and a sub-agent spawn the auto mode classifier cannot judge (scripts/hooks/spawn_guard.py), and the shared context mirror under bun: a read guard (shared/claude/pre-tool-use.ts), a checkpoint reminder (post-tool-use.ts) and the restore of phase_checkpoint records after a compaction (session-start.ts)",
+  "description": "agentic-software-development: refuse a tool call that repeats itself in a row (scripts/hooks/repeat_guard.py), and a sub-agent spawn the auto mode classifier cannot judge (scripts/hooks/spawn_guard.py), and the shared context mirror under bun: a read guard (shared/claude/pre-tool-use.ts), a checkpoint reminder (post-tool-use.ts) and the restore of phase_checkpoint records after a compaction (session-start.ts), and a record of every call auto mode refuses, for the dashboard's Blocked card (permission-denied.ts)",
   "hooks": {
     "PreToolUse": [
       {
@@ -64,6 +64,18 @@
           {
             "type": "command",
             "command": "command -v bun >/dev/null 2>&1 && bun \"${CLAUDE_PLUGIN_ROOT}/shared/claude/subagent-stop.ts\" || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v bun >/dev/null 2>&1 && bun \"${CLAUDE_PLUGIN_ROOT}/shared/claude/permission-denied.ts\" || true",
             "timeout": 5
           }
         ]

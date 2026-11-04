@@ -34,17 +34,17 @@ export function deferredSince(updated: string, runner: unknown): boolean {
   return runner != null || updated.slice(0, 10) >= (process.env.ASD_DEFERRED_SINCE || "2026-11-03")
 }
 /** One deferred issue from a dossier's ledger (`/work-on` Phase 9, `/deferred`, `/fix-deferred`). */
-export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string; contract?: string; effort?: string; inReport?: boolean }
-export type Deferred = { items: DeferredItem[]; pr: string; report: boolean }
+export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixing" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string; contract?: string; effort?: string; inReport?: boolean }
+export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; branch?: string }
 
 /**
  * The deferred ledger of a build log: `- D-n <kind> <title> — <path:line> — <risk> — <why>[ — contract: <c>][ — effort: <e>]`
  * lines (first one per id wins; the `contract:` and `effort:` parts may sit anywhere after the title), closed by `DEFERRED-FIXED: D-n <sha>` and routed by
  * `DEFERRED-TRIAGE: D-n → dossier — …`; `DEFERRED-FIX: PR <url>` names the stacked PR.
  */
-export function parseDeferred(log: string): { items: DeferredItem[]; pr: string } {
+export function parseDeferred(log: string): { items: DeferredItem[]; pr: string; branch: string } {
   const items = new Map<string, DeferredItem>()
-  let pr = ""
+  let pr = "", branch = ""
   for (const raw of log.split("\n")) {
     const l = raw.trim()
     const m = l.match(/^[-*]\s+(D-\d+)\s+(\S+)\s+(.*)$/)
@@ -62,6 +62,10 @@ export function parseDeferred(log: string): { items: DeferredItem[]; pr: string 
     if (fx && items.has(fx[1])) { const it = items.get(fx[1])!; it.state = "fixed"; it.note = fx[2]; continue }
     const tr = l.match(/^(?:[-*]\s+)?DEFERRED-TRIAGE:\s*(D-\d+)\s*→\s*(direct|dossier)\b\s*(?:—\s*)?(.*)$/)
     if (tr && items.has(tr[1]) && tr[2] === "dossier") { const it = items.get(tr[1])!; if (it.state !== "fixed") { it.state = "dossier"; it.note = tr[3] } continue }
+    // A direct fix under way: `/fix-deferred` triaged it into the stacked PR and has not logged it fixed yet.
+    if (tr && items.has(tr[1]) && tr[2] === "direct") { const it = items.get(tr[1])!; if (it.state === "open") { it.state = "fixing"; it.note = tr[3] } continue }
+    const br = l.match(/DEFERRED-FIX:\s*branch\s+(\S+)/)
+    if (br) { branch = br[1]; continue }
     const dr = l.match(/^(?:[-*]\s+)?DEFERRED-DROPPED:\s*(D-\d+)\s*(?:—\s*)?(.*)$/)
     if (dr && items.has(dr[1])) { const it = items.get(dr[1])!; if (it.state !== "fixed") { it.state = "deprecated"; it.note = dr[2] } continue }
     const dd = l.match(/^(?:[-*]\s+)?DEFERRED-DOSSIER:\s*(D-\d+)\s*→\s*([A-Z][A-Z0-9]*-\d+)/)
@@ -69,7 +73,7 @@ export function parseDeferred(log: string): { items: DeferredItem[]; pr: string 
     const p = l.match(/DEFERRED-FIX:\s*PR\s+(\S+)/)
     if (p) pr = p[1]
   }
-  return { items: [...items.values()], pr }
+  return { items: [...items.values()], pr, branch }
 }
 /**
  * The summary table of a `/deferred` report: `| ID | Kind | Title | Risk | Origin | Contract | Effort |`, columns found
@@ -518,10 +522,10 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       main, blockedBy: blockedByOf(f.blocked_by), controls: controlsFor({ status, blockedBy: blockedByOf(f.blocked_by), runner }, () => undefined), view: "dossier",
       runnerLog: runner ? join(runsDir(), `${repoName}.${f.id}.runner.log`) : "",
       ...(() => {
-        const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log) : { items: [], pr: "" }
+        const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log) : { items: [], pr: "", branch: "" }
         let report = ""
         try { report = readFileSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`), "utf8") } catch { /* none */ }
-        const deferred: Deferred = { items: withReport(pd.items, report), pr: pd.pr, report: report !== "" }
+        const deferred: Deferred = { items: withReport(pd.items, report), pr: pd.pr, report: report !== "", branch: pd.branch }
         return { deferred, deferredOpen: pd.items.filter((i) => i.state === "open").length }
       })(),
     })
