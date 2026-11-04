@@ -221,7 +221,9 @@ one card-based single-page app with deep links.
     regenerated when a runner starts or stops. The
     right column also lists the dossiers with open deferred issues. A dossier's
     page shows its **Deferred issues**, parsed from the ledger in its build log
-    (`- D-n <kind> <title> — <path:line> — <risk> — <why>`). Each item reads
+    (`- D-n <kind> <title> — <path:line> — <risk> — <why> — contract: <c> — effort: <e>`;
+    the report's summary table supersedes the line's contract and effort, and
+    lines from before the two fields existed show them only from the report). Each item reads
     "fixed in stacked PR" (`DEFERRED-FIXED:`), "→ dossier W-…"
     (`DEFERRED-DOSSIER: D-n → <ID>`, written by `/plan`), "needs a dossier"
     (`DEFERRED-TRIAGE: D-n → dossier`), "deprecated" (`DEFERRED-DROPPED:`) or

@@ -40,6 +40,13 @@ check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "
   const wr = withReport(parseDeferred("- D-1 bug a — f:1 — low — x\n- D-2 friction b — f:2 — low — y").items, rep)
   check("deferred report: ledger items gain contract and effort; the rest is not product code", wr[0].contract === "external" && wr[0].inReport === true && wr[1].inReport === false && withReport(wr, "")[1].inReport === false)
 }
+{
+  const led = parseDeferred("- D-1 bug a — f:1 — low: x — y — contract: external — effort: M\n- D-2 friction b — f:2 — medium — z — contract: internal: the pool seam — effort: s (minutes)\n- D-3 style c — f:3 — low — w").items
+  check("deferred: ledger lines carry contract and effort, kept out of the why", led[0].contract === "external" && led[0].effort === "M" && led[0].why === "y" && led[0].risk === "low: x" && led[1].contract === "internal" && led[1].effort === "S" && led[1].why === "z" && led[2].contract === undefined && led[2].effort === undefined)
+  const rep2 = "| ID | Kind | Title | Risk | Origin | Contract | Effort |\n|---|---|---|---|---|---|---|\n| D-1 | bug | a | low | new | none | S |\n"
+  const wr2 = withReport(led, rep2)
+  check("deferred: the report supersedes the ledger's contract and effort; items it lacks keep theirs", wr2[0].contract === "none" && wr2[0].effort === "S" && wr2[1].contract === "internal" && wr2[1].effort === "S" && wr2[1].inReport === false)
+}
 check("branches: a build branch names the id in any case; plan, stub and trunk branches never do", isBuildBranch("feat/w-130-x", "W-130") && isBuildBranch("origin/feat/W-128-a", "W-128") && isBuildBranch("fix/W-12-deferred", "W-12") && !isBuildBranch("feat/W-1300-x", "W-130") && !isBuildBranch("plan/W-130-x", "W-130") && !isBuildBranch("origin/stub/W-130", "W-130") && !isBuildBranch("development", "W-130"))
 {
   const g = mkdtempSync(join(tmpdir(), "brc-"))

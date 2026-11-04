@@ -38,8 +38,8 @@ Read the ledger: the `DEFERRED:` block and every later `D-` line in
 `/deferred` report when the runner stored one at
 `~/.agentic/runs/<repo>.<ID>.deferred.md`. The report's fields (contract
 boundary, blast radius, confidence, effort) are what the triage rules by;
-for an item the report lacks, read its `path:line` and fill those fields
-yourself, briefly. With a list, read only the listed items.
+for an item the report lacks, start from the ledger line's own `contract:`
+and `effort:`, read its `path:line`, and fill the rest yourself, briefly. With a list, read only the listed items.
 
 ## Step 2 — Triage: direct fix or new dossier
 
