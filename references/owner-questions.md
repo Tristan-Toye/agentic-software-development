@@ -104,7 +104,10 @@ It prints at most 40 lines.
 - **Page** `GET /`: a dashboard (see Dashboard): the repo cards, then the queue of
   open questions, then running dossiers, this week's stub, stubs and open work.
   - Each question shows its thread, the option buttons (an answer, the
-  recommendation highlighted), a text box with **Ask follow-up** and **Answer**.
+  recommendation highlighted), a text box with one **Send** button: text
+  ending in `?` is a follow-up (the question stays open for the agent's
+  reply), anything else is the answer; `ask:` or `answer:` in front says it
+  outright. Slack thread replies follow the same rule (`replyKind`).
   - It refreshes every 5 s, patching the DOM so a half-written text box and
     the scroll position survive.
 - **API:**
@@ -135,8 +138,9 @@ It prints at most 40 lines.
     that once.
   - **What counts as what:**
     - a button press is an `answer` with that option;
-    - a thread reply starting with `answer:` is a free-text `answer`;
-    - any other thread reply is a `followup`;
+    - a thread reply ending in `?` (or starting with `ask:`) is a `followup`;
+    - any other thread reply (or one starting with `answer:`) is a free-text
+      `answer`;
     - a DM outside a thread gets a pointer to reply in a question's thread;
       other messages in a repo channel are left alone;
     - `status`, `update` or `?` alone (or `status W-128`), outside a

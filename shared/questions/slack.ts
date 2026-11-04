@@ -42,9 +42,8 @@ export function interpretEnvelope(
       if (st) return { ack, action: { type: "status", channel: ev.channel, ts: ev.ts, threadTs, id: st[1]?.toUpperCase() } }
       // In a repo channel other talk is not ours: only a DM outside a question's thread gets the pointer.
       if (!id) return ev.channel_type === "im" ? { ack, action: { type: "pointer", channel: ev.channel, threadTs } } : { ack, action: { type: "none" } }
-      const m = text.match(/^answer:\s*([\s\S]*)$/i)
-      if (m) return { ack, action: { type: "owner", id, kind: "answer", text: m[1].trim(), channel: ev.channel, threadTs } }
-      return { ack, action: { type: "owner", id, kind: "followup", text, channel: ev.channel, threadTs } }
+      const k = replyKind(text)
+      return { ack, action: { type: "owner", id, kind: k.kind, text: k.text, channel: ev.channel, threadTs } }
     }
     case "interactive": {
       const p = env.payload
@@ -74,7 +73,19 @@ export const STATUS_ACTION = "run_status"
 /** A status message (its first section is the "*Status —" heading): its Refresh button updates it in place. */
 export const isStatusMessage = (m: any): boolean => String(m?.blocks?.[0]?.text?.text ?? "").startsWith("*Status —")
 
-export const POINTER_TEXT = "Reply in a question's thread: a plain reply asks a follow-up, `answer: ...` answers it. Send `status` (or `status W-128`) for an update on the running dossiers."
+/**
+ * What a free-text reply to a question is: one that ends in "?" asks the agent a follow-up (the question stays open),
+ * anything else answers it. `answer:` or `ask:` in front says it outright. The page and Slack read replies the same way.
+ */
+export function replyKind(raw: string): { kind: "answer" | "followup"; text: string } {
+  const t = raw.trim()
+  const a = t.match(/^answer:\s*([\s\S]*)$/i)
+  if (a) return { kind: "answer", text: a[1].trim() }
+  const q = t.match(/^ask:\s*([\s\S]*)$/i)
+  if (q) return { kind: "followup", text: q[1].trim() }
+  return { kind: /\?\s*$/.test(t) ? "followup" : "answer", text: t }
+}
+export const POINTER_TEXT = "Reply in a question's thread: a reply ending in `?` asks the agent a follow-up, anything else answers it (`ask:` or `answer:` in front to say it outright). Send `status` (or `status W-128`) for an update on the running dossiers."
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")

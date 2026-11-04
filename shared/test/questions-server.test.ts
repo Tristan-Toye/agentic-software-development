@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rm
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
-import { channelNameFor, interpretEnvelope, questionBlocks } from "../questions/slack.ts"
+import { channelNameFor, interpretEnvelope, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
 import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers } from "../questions/stubs.ts"
@@ -83,6 +83,7 @@ check("deferred: an item marked RESOLVED in place is closed", parseDeferred("- D
   const sm = (t: string) => slackMessageFor({ ts: "t", kind: "runner", text: t } as any, { repo: "r", id: "W-1", title: "x", link: "L" })
   check("deferred: the run thread gets the deferred count, not a zero", (sm("deferred report: 3 issue(s)")?.text ?? "").startsWith("📋 3 deferred issues") && sm("deferred report: 0 issue(s)") === null)
 }
+check("replies: a trailing ? is a follow-up, anything else an answer, ask:/answer: say it outright", replyKind("why A?").kind === "followup" && replyKind("go with B").kind === "answer" && replyKind("ask: compare them").kind === "followup" && replyKind("ask: compare them").text === "compare them" && replyKind("Answer: is it A?").kind === "answer" && replyKind("Answer: is it A?").text === "is it A?")
 check("slack: channel names from repo names", channelNameFor("config-harness") === "config-harness" && channelNameFor("Documents/Twipe/repos") === "documents-twipe-repos" && channelNameFor("A__b.c") === "a__b-c" && channelNameFor("x".repeat(100)).length === 79)
 {
   const env = (channel_type: string, thread: boolean) => ({ type: "events_api", envelope_id: "e", payload: { event: { type: "message", channel_type, channel: "C1", user: "U1", text: "why?", ts: "2", ...(thread ? { thread_ts: "1" } : {}) } } })

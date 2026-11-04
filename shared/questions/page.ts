@@ -223,8 +223,9 @@ function qCard(q, opts) {
     h('div', { class: 'top' }, [chip(rlabel(repo), 'neutral'), h('a', { class: 'chip', href: hrefItem(repo, q.dossier) }, [q.dossier]), h('span', { class: 'grow' }), h('span', { class: 'mono' }, [q.id + ' · ']), opts.queue ? when(q.ts, 'waiting ') : when(q.ts)]),
     h('div', { class: 'q' }, [q.text]), q.blocks ? h('div', { class: 'blocks' }, ['Blocks: ' + q.blocks]) : null, optButtons(q)];
   if (opts.thread) kids.push(h('div', {}, q.lines.slice(1).map(msgBlock)));
-  if (open) kids.push(h('textarea', { placeholder: 'Ask a follow-up, or write a free-text answer', 'data-qid': q.id }),
-    h('div', { class: 'ctl' }, [h('button', { class: 'btn', type: 'button', 'data-act': 'followup', 'data-qid': q.id }, ['Ask follow-up']), h('button', { class: 'btn primary', type: 'button', 'data-act': 'answer', 'data-qid': q.id }, ['Answer'])]));
+  if (open) kids.push(h('textarea', { placeholder: 'Write your answer, or end with ? to ask the agent first', 'data-qid': q.id }),
+    h('div', { class: 'ctl' }, [h('button', { class: 'btn primary', type: 'button', 'data-act': 'reply', 'data-qid': q.id }, ['Send']),
+      h('span', { class: 'small mut' }, ['Ends with ? → a follow-up: the question stays open for the agent\'s reply. Otherwise it is your answer.'])]));
   kids.push(h('div', { class: 'err' }, [S.qerr[q.id] || '']));
   return h('div', { class: 'need' + (open ? '' : ' thr') + (opts.hit === q.id ? ' hit' : ''), id: 'q-' + q.id, 'data-k': 'q:' + q.id + (opts.thread ? ':t' : ':x') }, kids);
 }
@@ -560,7 +561,7 @@ function deferredView(r) {
   }
   const kids = [];
   if (bar.length) kids.push(h('div', { class: 'dfbar', 'data-k': 'dfbar' }, bar));
-  if (pick.length) kids.push(h('div', { class: 'small mut dfnote', 'data-k': 'dfnote' }, ['Click a card to select it. Selected items are fixed in one stacked PR, test first, through the implementer and review flow; an item that looks too big for it is put to you first: its own dossier, or fix it here anyway.']));
+  if (pick.length) kids.push(h('div', { class: 'small mut dfnote', 'data-k': 'dfnote' }, ['Click a card to select it. Selected items are fixed in one stacked PR, test first, through the implementer and review flow, without asking. You are asked only about an item the agent would rather not fix there: one that deserves its own dossier, no longer applies, or is not worth it.']));
   if (st.msg && st.last === 'fix-sel') kids.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad'), 'data-k': 'dfmsg' }, [st.msg]));
   kids.push(h('div', { class: 'dfcards', 'data-k': 'dfcards' }, cards));
   if (links.length) kids.push(h('div', { class: 'ctl', 'data-k': 'dflinks' }, links));
@@ -741,8 +742,11 @@ document.addEventListener('click', (e) => {
   if (t) {
     e.preventDefault(); const act = t.dataset.act;
     if (act === 'opt') post(t.dataset.qid, { kind: 'answer', option: t.dataset.opt });
-    else if (act === 'followup' || act === 'answer') {
-      const ta = t.closest('.need').querySelector('textarea'); if (ta && ta.value.trim()) { const v = ta.value; ta.value = ''; post(t.dataset.qid, { kind: act, text: v }); }
+    else if (act === 'reply') {
+      // Same rule as Slack (replyKind): a trailing ? asks a follow-up, "ask:"/"answer:" in front say it outright.
+      const ta = t.closest('.need').querySelector('textarea'); const v = ta ? ta.value.trim() : '';
+      if (v) { ta.value = ''; const a = v.match(/^answer:\s*([\s\S]*)$/i), q = v.match(/^ask:\s*([\s\S]*)$/i);
+        post(t.dataset.qid, a ? { kind: 'answer', text: a[1].trim() } : q ? { kind: 'followup', text: q[1].trim() } : { kind: /\?\s*$/.test(v) ? 'followup' : 'answer', text: v }); }
     } else if (act === 'ctl') control(t);
     else if (act === 'copy') { const lab = t.dataset.label || t.textContent; t.dataset.label = lab; try { navigator.clipboard.writeText(t.dataset.text); t.textContent = 'Copied'; setTimeout(() => { t.textContent = lab; }, 1500); } catch (_) {} }
     else if (act === 'ctl-cancel') { const s = S.ctl[t.dataset.repo + '/' + t.dataset.id]; if (s) s.confirm = null; render(); }
