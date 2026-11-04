@@ -194,8 +194,9 @@ one card-based single-page app with deep links.
     recommendation highlighted, thread, follow-up and answer, each linking to
     its dossier (`GET /questions#q=<id>` scrolls to one; old `/#<id>` links
     redirect);
-  - `/repo/<repo>`: two columns under the repo's **open questions** (inline
-    answer controls, shown only when any are open). **Left (wide):** the
+  - `/repo/<repo>`: under the repo's **open questions** (inline answer
+    controls, shown only when any are open), two full-width sections, one
+    under the other: first the **stubs**, then **Open work**, the
     complete open-work report in a same-origin iframe sized to its content (no
     inner scrollbar; re-sized on load, on content change and on report
     refresh). It is generated with `--embed --link-base /repo/<repo>
@@ -250,16 +251,15 @@ one card-based single-page app with deep links.
     and the checked-out branch has the pre-build copy until the PR merges; the
     open-work report overlays the same copy. A done dossier stays under its
     stub while its PR into the stub is open. A click on a dossier
-    navigates the top window to `/repo/<repo>/<ID>`. **Right (360 px, sticky
-    while scrolling):** every open (not merged) stub, newest first, as a card:
+    navigates the top window to `/repo/<repo>/<ID>`. **The stubs section**
+    (above Open work): every open (not merged) stub, newest first, as a card:
     branch, state chip, step, PR + CI dot; under it a tree of its dossiers,
-    first the in-progress ones (phase n · name, a live dot while a runner or
+    in columns, first the in-progress ones (phase n · name, a live dot while a runner or
     session is active, an open-question badge, a "no PR yet" chip where it
     applies), then the done ones (merged on the stub). A sub-item opens that
     dossier's view, the card opens the stub view. Running dossiers that belong
     to no stub form a small "In progress" list above the stubs; a collapsed
-    "Merged stubs" list closes the column. Under 1000 px the right column moves
-    above the report (single column). `/repo/<repo>/graph` redirects here.
+    "Merged stubs" list closes the section. `/repo/<repo>/graph` redirects here.
     **Which in-progress dossiers sit under a stub** (`stubMembers`): one whose
     open PR targets that stub branch (`gh pr list --base <branch> --state open
     --json number,headRefName`, cached 2 min, 10 s timeout; matched by the
