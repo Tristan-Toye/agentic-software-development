@@ -194,8 +194,9 @@ one card-based single-page app with deep links.
     recommendation highlighted, thread, follow-up and answer, each linking to
     its dossier (`GET /questions#q=<id>` scrolls to one; old `/#<id>` links
     redirect);
-  - `/repo/<repo>`: two columns under the repo's **open questions** (inline
-    answer controls, shown only when any are open). **Left (wide):** the
+  - `/repo/<repo>`: under the repo's **open questions** (inline answer
+    controls, shown only when any are open), two full-width sections, one
+    under the other: first the **stubs**, then **Open work**, the
     complete open-work report in a same-origin iframe sized to its content (no
     inner scrollbar; re-sized on load, on content change and on report
     refresh). It is generated with `--embed --link-base /repo/<repo>
@@ -232,9 +233,10 @@ one card-based single-page app with deep links.
     report is linked at `/deferred/<repo>/<ID>`, and the header has **Fix all
     deferred** on a `pr` or `done` dossier with open items: two clicks start
     `run_dossier.py <ID> --command fix-deferred` in the background. The
-    Deferred tab is a table (ID, kind, issue and location, risk, contract and
-    effort from the report's summary table, state); items still to tackle have
-    a tick box and the header a select-all box. **Fix selected (n)**, two
+    Deferred tab lists one card per item (ID, kind, state, title, location,
+    risk, contract and effort from the report's summary table, the reason it
+    was deferred); a card still to tackle is selected by clicking it, and a
+    sticky bar above the cards has Select all and the selection count. **Fix selected (n)**, two
     clicks, POSTs `{items: [...]}` to `/api/runs/<repo>/<ID>/fix-deferred`,
     which starts `--command fix-deferred --items D-1,D-3`: only those items,
     one stacked PR through the implementer and review flow; an item that looks
@@ -250,16 +252,15 @@ one card-based single-page app with deep links.
     and the checked-out branch has the pre-build copy until the PR merges; the
     open-work report overlays the same copy. A done dossier stays under its
     stub while its PR into the stub is open. A click on a dossier
-    navigates the top window to `/repo/<repo>/<ID>`. **Right (360 px, sticky
-    while scrolling):** every open (not merged) stub, newest first, as a card:
+    navigates the top window to `/repo/<repo>/<ID>`. **The stubs section**
+    (above Open work): every open (not merged) stub, newest first, as a card:
     branch, state chip, step, PR + CI dot; under it a tree of its dossiers,
-    first the in-progress ones (phase n · name, a live dot while a runner or
+    as grouped rows (In progress, PR open · waiting for your merge, Merged into the stub; the merged group folds when it has more than six), each row the id, title and where it stands: first the in-progress ones (phase n · name, a live dot while a runner or
     session is active, an open-question badge, a "no PR yet" chip where it
     applies), then the done ones (merged on the stub). A sub-item opens that
     dossier's view, the card opens the stub view. Running dossiers that belong
     to no stub form a small "In progress" list above the stubs; a collapsed
-    "Merged stubs" list closes the column. Under 1000 px the right column moves
-    above the report (single column). `/repo/<repo>/graph` redirects here.
+    "Merged stubs" list closes the section. `/repo/<repo>/graph` redirects here.
     **Which in-progress dossiers sit under a stub** (`stubMembers`): one whose
     open PR targets that stub branch (`gh pr list --base <branch> --state open
     --json number,headRefName`, cached 2 min, 10 s timeout; matched by the

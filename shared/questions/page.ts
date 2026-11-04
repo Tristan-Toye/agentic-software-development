@@ -81,8 +81,7 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .msg.owner{margin-left:auto;background:var(--accbg)}.who{font-size:11px;color:var(--mut)}
 .result .res-hd{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--mut);margin-bottom:4px}.result .res-hd .kind{font-weight:600;color:var(--fg)}
 .chat{margin:10px 0 0;padding:8px 12px;border-radius:10px;background:var(--chip);overflow-wrap:anywhere}.chat.owner{margin-left:12%;background:var(--accbg)}.chat.agent,.chat.runner{margin-right:6%}.chat.runner{color:var(--mut)}.chat .md p:first-child{margin-top:0}.chat .md p:last-child{margin-bottom:0}
-.tblwrap{overflow-x:auto}.dft{width:100%;border-collapse:collapse;font-size:13px}.dft th{text-align:left;font-weight:600;color:var(--mut);font-size:12px;padding:6px 8px;border-bottom:1px solid var(--bd)}.dft td{padding:7px 8px;border-top:1px solid var(--bd);vertical-align:top}.dft tr.on td{background:var(--accbg)}.df-t2{min-width:220px}.df-t2 .df-loc{display:block;max-width:none;margin-top:2px}
-.cbx{width:18px;height:18px;padding:0;border:1px solid var(--bd);border-radius:4px;background:var(--bg);color:var(--fg);font-size:12px;line-height:16px;cursor:pointer}.cbx.on{background:var(--acc);border-color:var(--acc);color:#fff}.dfbar{flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.cbx{width:18px;height:18px;padding:0;border:1px solid var(--bd);border-radius:4px;background:var(--bg);color:var(--fg);font-size:12px;line-height:16px;cursor:pointer}.cbx.on{background:var(--acc);border-color:var(--acc);color:#fff}.dfbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--bd);border-radius:12px;background:var(--card);position:sticky;top:8px;z-index:2;box-shadow:var(--shadow)}.dfbar .grow{flex:1}.dfnote{margin:8px 2px 12px}.dfcards{display:flex;flex-direction:column;gap:10px}.dfc{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:6px;min-width:0}.dfc.pick{cursor:pointer}.dfc.pick:hover{border-color:var(--acc)}.dfc.on{border-color:var(--acc);background:var(--accbg)}.dfc.closed{opacity:.75}.dfc .cbx{pointer-events:none;flex:none}.dfc-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dfc-h .grow{flex:1}.dfc-t{font-weight:600;line-height:1.35;overflow-wrap:anywhere}.dfc-loc{font-size:12px;color:var(--mut);overflow-wrap:anywhere;white-space:normal}.dfc-f{display:flex;gap:6px;flex-wrap:wrap}.dfact{font-size:12px;border:1px solid var(--bd);border-radius:999px;padding:1px 9px}.dfact .l{color:var(--mut);margin-right:5px}.dfact.bad{border-color:var(--bad);color:var(--bad)}.dfact.mut{color:var(--mut)}.dfc-why{font-size:12.5px;color:var(--mut);line-height:1.4}.dfc-a{display:flex;justify-content:flex-end}
 textarea{width:100%;min-height:3.4em;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:10px;padding:8px;margin:6px 0;resize:vertical}
 .err{color:var(--bad);font-size:13px;min-height:1em}
 details>summary{cursor:pointer;color:var(--mut);font-size:12.5px;margin:4px 0}
@@ -121,7 +120,7 @@ ul.tree{list-style:none;margin:6px 0 0;padding:0 0 0 10px;border-left:2px solid 
 a.sub-item{display:flex;gap:6px;align-items:center;flex-wrap:nowrap;white-space:nowrap;overflow:hidden;padding:3px 6px;border-radius:8px;color:var(--fg);text-decoration:none;font-size:12.5px;min-width:0}a.sub-item:hover{background:var(--accbg)}a.sub-item.done{color:var(--mut)}
 .sid{font-weight:600;white-space:nowrap}.sname{color:var(--mut);flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.sub-item>.chip,a.sub-item>.qb,a.sub-item>.dot{flex:none}a.sub-item>.chip{font-size:10.5px;padding:0 7px}.qb{background:var(--warnbg);color:var(--warn);border-radius:9px;padding:0 7px;font-size:11px;font-weight:700}
 .dot.live{animation:pulse 1.4s ease-in-out infinite}@keyframes pulse{50%{opacity:.35}}@media (prefers-reduced-motion:reduce){.dot.live{animation:none}}
-.scol.full{margin-top:22px}.scol.full>h2{margin:0 0 10px}.scol.full .scard{padding:14px 18px}.scol.full .scard .title{font-size:1rem}
+.shead{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}.shead .chips{display:flex;gap:6px;flex-wrap:wrap}.sgrps{display:flex;flex-direction:column;gap:12px;margin-top:8px}.sgrp-h{font-size:12px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;margin:0 0 5px;cursor:default}details.sgrp>summary.sgrp-h{cursor:pointer}.srows{border:1px solid var(--bd);border-radius:10px;overflow:hidden}a.srow{display:grid;grid-template-columns:max-content minmax(0,1fr) auto;gap:12px;align-items:center;padding:8px 12px;border-top:1px solid var(--bd);color:var(--fg);text-decoration:none;font-size:13px}a.srow:first-child{border-top:0}a.srow:hover{background:var(--accbg)}a.srow.done{color:var(--mut)}a.srow .sid{font-weight:700}a.srow .sname{color:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow.done .sname{color:var(--mut)}.sright{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex-wrap:wrap}.sright>.chip{font-size:11px}@media (max-width:640px){a.srow{grid-template-columns:max-content minmax(0,1fr)}.sright{grid-column:1/-1;justify-content:flex-start}}.scol.full{margin:22px 0}.scol.full>h2{margin:0 0 10px}.scol.full .scard{padding:14px 18px}.scol.full .scard .title{font-size:1rem}
 ul.tree.wide{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));column-gap:18px;border-left:0;padding-left:0}ul.tree.wide>li{padding-left:0}ul.tree.wide>li::before{display:none}
 details.mstubs{margin-top:10px}details.mstubs>summary{font-size:.78rem;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}
 @media (max-width:1000px){.cols{grid-template-columns:minmax(0,1fr)}.cols>.scol{position:static;max-height:none;overflow:visible;order:1}.cols>.main-col{order:2}}
@@ -307,14 +306,40 @@ function subItem(repo, id, noPr, done, ttl) {
   if (nq.length) kids.push(h('span', { class: 'qb', title: nq.length + ' open question(s)' }, ['? ' + nq.length]));
   return h('li', { 'data-k': 'sub:' + repo + '/' + id }, [h('a', { class: 'sub-item' + (done ? ' done' : ''), href: hrefItem(repo, id) }, kids)]);
 }
+/* One dossier on a stub card: id, title, and where it stands, one clean row that scales to many. */
+function stubRow(repo, id, o) {
+  const r = S.runs.find(x => x.repo === repo && x.id === id); const nq = r ? openQs(r) : [];
+  const title = (r && r.title) || o.title || '';
+  const right = [];
+  if (o.merged) right.push(chip('merged', 'done'));
+  else if (r && (r.status === 'done' || r.status === 'pr')) right.push(chip('PR open · ready to merge', 'done'));
+  else { const st = r ? stageText(r) : ''; if (st) right.push(chip(st, 'neutral')); if (isLive(r)) right.push(h('span', { class: 'dot info live', title: 'running' })); }
+  if (o.noPr) right.push(chip('no PR yet', 'neutral'));
+  if (r && r.deferredOpen && !o.merged) right.push(h('span', { class: 'chip', title: r.deferredOpen + ' deferred item(s) still to tackle' }, [r.deferredOpen + ' deferred']));
+  if (nq.length) right.push(h('span', { class: 'qb', title: nq.length + ' open question(s)' }, ['? ' + nq.length]));
+  return h('a', { class: 'srow' + (o.merged ? ' done' : ''), href: hrefItem(repo, id), 'data-k': 'srow:' + repo + '/' + id, title: id + (title ? ' · ' + title : '') },
+    [h('span', { class: 'sid mono' }, [id]), h('span', { class: 'sname' }, [title || '—']), h('span', { class: 'sright' }, right)]);
+}
+function stubGroup(key, label, rows, fold) {
+  if (!rows.length) return null;
+  const body = h('div', { class: 'srows' }, rows);
+  const head = label + ' · ' + rows.length;
+  if (fold) return h('details', { class: 'sgrp', 'data-k': key, open: rows.length <= 6 ? true : null }, [h('summary', { class: 'sgrp-h' }, [head]), body]);
+  return h('div', { class: 'sgrp', 'data-k': key }, [h('div', { class: 'sgrp-h' }, [head]), body]);
+}
 function stubTree(repo, s) {
   const cs = [chip(s.state)]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
-  const mem = (s.members || []).map(m => subItem(repo, m.id, m.noPr, false));
-  const done = s.dossiers.map(d => subItem(repo, d.id, false, true, d.title));
+  const runOf = (id) => S.runs.find(x => x.repo === repo && x.id === id);
+  const finished = (id) => { const r = runOf(id); return !!r && (r.status === 'done' || r.status === 'pr'); };
+  const mem = s.members || [];
+  const busy = mem.filter(m => !finished(m.id)).map(m => stubRow(repo, m.id, { noPr: m.noPr }));
+  const ready = mem.filter(m => finished(m.id)).map(m => stubRow(repo, m.id, {}));
+  const merged = s.dossiers.map(d => stubRow(repo, d.id, { merged: true, title: d.title }));
+  const k = 'sg:' + repo + '/' + s.branch + ':';
+  const groups = [stubGroup(k + 'busy', 'In progress', busy), stubGroup(k + 'ready', 'PR open · waiting for your merge', ready), stubGroup(k + 'merged', 'Merged into the stub', merged, true)].filter(Boolean);
   return h('div', { class: 'scard', 'data-k': 'ostub:' + repo + '/' + s.branch }, [
-    h('a', { class: 'title mono', href: hrefStub(repo, s.branch) }, [s.branch]),
-    h('div', { class: 'meta' }, ['cut ' + s.cut]), h('div', { class: 'chips' }, cs),
-    mem.length || done.length ? h('ul', { class: 'tree wide' }, mem.concat(done)) : h('div', { class: 'meta' }, ['Nothing in progress or merged yet.'])]);
+    h('div', { class: 'shead' }, [h('a', { class: 'title mono', href: hrefStub(repo, s.branch) }, [s.branch]), h('span', { class: 'meta' }, ['cut ' + s.cut]), h('span', { class: 'chips' }, cs)]),
+    groups.length ? h('div', { class: 'sgrps' }, groups) : h('div', { class: 'meta' }, ['Nothing in progress or merged yet.'])]);
 }
 function sideColumn(repo) {
   const rr = S.stubs.repos.find(x => x.repo === repo); const stubs = rr ? rr.stubs : []; const os = openStubs(repo);
@@ -338,9 +363,9 @@ function repoView(repo) {
   const kids = [h('h1', {}, [rlabel(repo)]), h('p', { class: 'lead' }, [prog.length + ' running · ' + oq.length + ' open question' + (oq.length === 1 ? '' : 's') + ' · ' + os.length + ' open stub' + (os.length === 1 ? '' : 's')])];
   if (oq.length) kids.push(section('Waiting on you', oq.length, h('div', {}, oq.map(q => qCard(q, { thread: true }))), 'oq'));
   const frame = ow ? h('iframe', { class: 'report', 'data-repo': repo, src: '/open-work/' + enc(repo) + '?theme=dark&v=' + enc(ow.updated), title: 'Open work', scrolling: 'no', style: S.frameH[repo] ? 'height:' + S.frameH[repo] + 'px' : null }) : h('div', { class: 'empty' }, ['The open-work report is not generated yet.']);
-  // Open work, then the stubs (the current one and the next), each full width, one under the other.
-  kids.push(h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]));
+  // The stubs (the current one and the next) first, then Open work, each full width, one under the other.
   kids.push(sideColumn(repo));
+  kids.push(h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]));
   return h('div', {}, kids);
 }
 function header(r, mode) {
@@ -489,17 +514,19 @@ function deferredView(r) {
   Object.keys(sel).forEach(k => { if (!pick.some(i => i.id === k)) delete sel[k]; });
   const n = pick.filter(i => sel[i.id]).length; const all = pick.length > 0 && n === pick.length;
   const fix = r.controls && r.controls['fix-deferred']; const st = S.ctl[key] || {};
-  const tone = (v, bad) => chip(v || '—', bad ? 'blocked' : 'neutral');
-  const head = h('tr', {}, [h('th', {}, [pick.length ? cbx(all, { 'data-act': 'dsel-all', 'data-key': key, title: all ? 'Clear the selection' : 'Select every item still to tackle' }) : null]),
-    h('th', {}, ['ID']), h('th', {}, ['Kind']), h('th', {}, ['Issue']), h('th', {}, ['Risk']), h('th', {}, ['Contract']), h('th', {}, ['Effort']), h('th', {}, ['State']), h('th', {}, [''])]);
-  const rows = df.items.map(i => h('tr', { 'data-k': 'df:' + i.id, class: sel[i.id] ? 'on' : '' }, [
-    h('td', {}, [dfPickable(i) ? cbx(!!sel[i.id], { 'data-act': 'dsel', 'data-key': key, 'data-id': i.id }) : null]),
-    h('td', { class: 'mono b' }, [i.id]), h('td', {}, [chip(i.kind, 'neutral')]),
-    h('td', { class: 'df-t2' }, [h('div', {}, [i.title]), i.loc ? h('code', { class: 'df-loc' }, [i.loc]) : null, i.inReport === false ? h('div', { class: 'small mut' }, ['not product code (left out of the report)']) : null]),
-    h('td', {}, [h('span', { title: i.risk }, [(i.risk || '').split(':')[0] || '—'])]),
-    h('td', {}, [i.contract ? tone(i.contract, i.contract === 'external') : '—']), h('td', {}, [i.effort ? tone(i.effort, i.effort === 'L') : '—']),
-    h('td', {}, [dfState(r, i)]),
-    h('td', {}, [dfPickable(i) ? h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'copy', 'data-text': '/plan ' + r.id + ' ' + i.id, title: 'Copy the /plan seed for this item' }, ['Plan']) : null])]));
+  const fact = (label, v, bad) => v ? h('span', { class: 'dfact' + (bad ? ' bad' : '') }, [h('span', { class: 'l' }, [label]), v]) : null;
+  const cards = df.items.map(i => {
+    const can = dfPickable(i); const on = !!sel[i.id];
+    const riskWord = (i.risk || '').split(':')[0].trim(); const riskWhy = (i.risk || '').split(':').slice(1).join(':').trim();
+    return h('div', { class: 'dfc' + (on ? ' on' : '') + (can ? ' pick' : ' closed'), 'data-k': 'df:' + i.id, 'data-act': can ? 'dsel' : null, 'data-key': key, 'data-id': i.id, role: can ? 'checkbox' : null, 'aria-checked': can ? (on ? 'true' : 'false') : null, tabindex: can ? '0' : null }, [
+      h('div', { class: 'dfc-h' }, [can ? h('span', { class: 'cbx' + (on ? ' on' : '') }, [on ? '✓' : '']) : null, h('span', { class: 'mono b' }, [i.id]), chip(i.kind, 'neutral'), h('span', { class: 'grow' }), dfState(r, i)]),
+      h('div', { class: 'dfc-t' }, [i.title]),
+      i.loc ? h('code', { class: 'dfc-loc' }, [i.loc]) : null,
+      h('div', { class: 'dfc-f' }, [fact('Risk', riskWord, /^(high|critical)/i.test(riskWord)), fact('Contract', i.contract, i.contract === 'external'), fact('Effort', i.effort, i.effort === 'L'),
+        i.inReport === false ? h('span', { class: 'dfact mut' }, ['not product code']) : null]),
+      riskWhy || i.why ? h('div', { class: 'dfc-why' }, [[riskWhy, i.why].filter(Boolean).join(' · ')]) : null,
+      can ? h('div', { class: 'dfc-a' }, [h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'copy', 'data-text': '/plan ' + r.id + ' ' + i.id, title: 'Copy the /plan seed for this item' }, ['Copy /plan seed'])]) : null]);
+  });
   const links = [];
   if (df.report) links.push(h('a', { class: 'small', href: '/deferred/' + enc(r.repo) + '/' + enc(r.id), target: '_blank', rel: 'noopener' }, ['full report']));
   if (df.pr) links.push(h('a', { class: 'small', href: df.pr, target: '_blank', rel: 'noopener' }, ['stacked PR']));
@@ -507,16 +534,21 @@ function deferredView(r) {
   if (pick.length) {
     const confirming = st.confirm === 'fix-sel'; const busy = st.busy === 'fix-sel';
     const why = !fix || !fix.show ? (r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state) ? 'the run is still going' : 'available once the build is finished') : '';
+    bar.push(h('button', { class: 'btn sm', type: 'button', 'data-act': 'dsel-all', 'data-key': key }, [all ? 'Clear selection' : 'Select all ' + pick.length]));
+    bar.push(h('span', { class: 'small mut' }, [n + ' of ' + pick.length + ' selected']));
+    bar.push(h('span', { class: 'grow' }));
+    if (why) bar.push(chip(why, 'blocked'));
+    if (confirming) bar.push(h('button', { class: 'btn act', type: 'button', 'data-act': 'ctl-cancel', 'data-repo': r.repo, 'data-id': r.id }, ['Cancel']));
     bar.push(h('button', { class: 'btn act' + (confirming ? ' confirm' : ' go'), type: 'button', 'data-act': 'fix-sel', 'data-repo': r.repo, 'data-id': r.id, disabled: !n || !!why || !!st.busy ? true : null },
       [busy ? 'Starting the fix…' : confirming ? 'Confirm: fix ' + n + ' item' + (n === 1 ? '' : 's') : 'Fix selected (' + n + ')']));
-    if (confirming) bar.push(h('button', { class: 'btn act', type: 'button', 'data-act': 'ctl-cancel', 'data-repo': r.repo, 'data-id': r.id }, ['Cancel']));
-    if (why) bar.push(chip(why, 'blocked'));
-    bar.push(h('span', { class: 'small mut' }, ['One stacked PR, test first, through the implementer and review flow. An item that looks too big for it is put to you first: its own dossier, or fix it here anyway.']));
   }
-  if (st.msg && st.last === 'fix-sel') bar.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad') }, [st.msg]));
-  return h('div', { class: 'panel', 'data-k': 'deferred' }, [links.length ? h('div', { class: 'ctl' }, links) : null,
-    h('div', { class: 'tblwrap' }, [h('table', { class: 'dft' }, [h('thead', {}, [head]), h('tbody', {}, rows)])]),
-    bar.length ? h('div', { class: 'ctl dfbar' }, bar) : null]);
+  const kids = [];
+  if (bar.length) kids.push(h('div', { class: 'dfbar', 'data-k': 'dfbar' }, bar));
+  if (pick.length) kids.push(h('div', { class: 'small mut dfnote', 'data-k': 'dfnote' }, ['Click a card to select it. Selected items are fixed in one stacked PR, test first, through the implementer and review flow; an item that looks too big for it is put to you first: its own dossier, or fix it here anyway.']));
+  if (st.msg && st.last === 'fix-sel') kids.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad'), 'data-k': 'dfmsg' }, [st.msg]));
+  kids.push(h('div', { class: 'dfcards', 'data-k': 'dfcards' }, cards));
+  if (links.length) kids.push(h('div', { class: 'ctl', 'data-k': 'dflinks' }, links));
+  return h('div', { class: 'dfwrap', 'data-k': 'deferred' }, kids);
 }
 function stubView(repo, branch) {
   const rr = S.stubs.repos.find(x => x.repo === repo); const s = rr && rr.stubs.find(x => x.branch === branch);
@@ -678,7 +710,9 @@ async function sendChat(btn) {
   st.busy = false; await load(['runs']);
 }
 document.addEventListener('click', (e) => {
-  const t = e.target.closest ? e.target.closest('[data-act]') : null;
+  let t = e.target.closest ? e.target.closest('[data-act]') : null;
+  const inLink = e.target.closest ? e.target.closest('a[href]') : null;
+  if (t && inLink && t.contains(inLink) && t !== inLink) t = null;   // a link inside a clickable card stays a link
   if (t) {
     e.preventDefault(); const act = t.dataset.act;
     if (act === 'opt') post(t.dataset.qid, { kind: 'answer', option: t.dataset.opt });
@@ -700,6 +734,7 @@ document.addEventListener('click', (e) => {
   const h2 = a.getAttribute('href');
   if (h2 && (h2 === '/' || h2.indexOf('/questions') === 0 || h2.indexOf('/repo/') === 0)) { e.preventDefault(); navigate(h2); }
 });
+document.addEventListener('keydown', (e) => { if ((e.key === ' ' || e.key === 'Enter') && e.target.classList && e.target.classList.contains('dfc') && e.target.dataset.act === 'dsel') { e.preventDefault(); e.target.click(); } });
 window.addEventListener('popstate', onRoute);
 window.addEventListener('hashchange', () => { if (R.kind === 'questions') { scrollTarget = hashQ(); render(); } else onRoute(); });
 setInterval(() => { if (!S.live) load(null); }, 60000);   // fallback while the event stream is down
