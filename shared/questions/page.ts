@@ -296,7 +296,7 @@ function meter(label, w) {
 function accountsView() {
   const as = S.accounts || []; if (!as.length) return null;
   const cards = as.map(a => h('div', { class: 'acard' + (a.next ? ' next' : ''), 'data-k': 'acct:' + a.name }, [
-    h('div', { class: 'ahd' }, [h('span', { class: 'aname' }, [a.name]), a.next ? chip('next runs use this', 'done') : null, a.limitedUntil ? chip('limited · ' + fmtReset(a.limitedUntil).replace('resets', 'until'), 'blocked') : null,
+    h('div', { class: 'ahd' }, [h('span', { class: 'aname' }, [a.name]), a.next ? chip('next runs use this', 'done') : null, a.limitedUntil ? chip('blocked ' + fmtReset(a.limitedUntil).replace('resets ', 'until '), 'blocked') : null,
       a.runs.length ? chip(a.runs.length + ' running', 'neutral') : null]),
     h('div', { class: 'small mut' }, [[a.email, a.org].filter(Boolean).join(' · ')]),
     meter('5-hour', a.fiveHour), meter('Weekly', a.week),

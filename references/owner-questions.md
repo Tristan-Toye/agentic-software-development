@@ -105,7 +105,7 @@ It prints at most 40 lines.
   open questions, then running dossiers, this week's stub, stubs and open work.
   - **Accounts** (home): one card per registered login (`~/.agentic/accounts.json`)
     with its email and plan, "next runs use this" on the account the next
-    stage starts on, a limit chip while the runner has it marked limited, the
+    stage starts on, a "blocked until …" chip while the runner has it marked limited, the
     5-hour and weekly meters with their reset times (`~/.agentic/usage/`), and
     how many live runs use it. **↻ Check usage** POSTs `/api/accounts/refresh`,
     which runs `run_dossier.py usage` in the background.
