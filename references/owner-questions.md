@@ -254,7 +254,7 @@ one card-based single-page app with deep links.
     navigates the top window to `/repo/<repo>/<ID>`. **The stubs section**
     (above Open work): every open (not merged) stub, newest first, as a card:
     branch, state chip, step, PR + CI dot; under it a tree of its dossiers,
-    in columns, first the in-progress ones (phase n · name, a live dot while a runner or
+    as grouped rows (In progress, PR open · waiting for your merge, Merged into the stub; the merged group folds when it has more than six), each row the id, title and where it stands: first the in-progress ones (phase n · name, a live dot while a runner or
     session is active, an open-question badge, a "no PR yet" chip where it
     applies), then the done ones (merged on the stub). A sub-item opens that
     dossier's view, the card opens the stub view. Running dossiers that belong

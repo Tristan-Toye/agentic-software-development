@@ -121,7 +121,7 @@ ul.tree{list-style:none;margin:6px 0 0;padding:0 0 0 10px;border-left:2px solid 
 a.sub-item{display:flex;gap:6px;align-items:center;flex-wrap:nowrap;white-space:nowrap;overflow:hidden;padding:3px 6px;border-radius:8px;color:var(--fg);text-decoration:none;font-size:12.5px;min-width:0}a.sub-item:hover{background:var(--accbg)}a.sub-item.done{color:var(--mut)}
 .sid{font-weight:600;white-space:nowrap}.sname{color:var(--mut);flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.sub-item>.chip,a.sub-item>.qb,a.sub-item>.dot{flex:none}a.sub-item>.chip{font-size:10.5px;padding:0 7px}.qb{background:var(--warnbg);color:var(--warn);border-radius:9px;padding:0 7px;font-size:11px;font-weight:700}
 .dot.live{animation:pulse 1.4s ease-in-out infinite}@keyframes pulse{50%{opacity:.35}}@media (prefers-reduced-motion:reduce){.dot.live{animation:none}}
-.scol.full{margin:22px 0}.scol.full>h2{margin:0 0 10px}.scol.full .scard{padding:14px 18px}.scol.full .scard .title{font-size:1rem}
+.shead{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}.shead .chips{display:flex;gap:6px;flex-wrap:wrap}.sgrps{display:flex;flex-direction:column;gap:12px;margin-top:8px}.sgrp-h{font-size:12px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.03em;margin:0 0 5px;cursor:default}details.sgrp>summary.sgrp-h{cursor:pointer}.srows{border:1px solid var(--bd);border-radius:10px;overflow:hidden}a.srow{display:grid;grid-template-columns:max-content minmax(0,1fr) auto;gap:12px;align-items:center;padding:8px 12px;border-top:1px solid var(--bd);color:var(--fg);text-decoration:none;font-size:13px}a.srow:first-child{border-top:0}a.srow:hover{background:var(--accbg)}a.srow.done{color:var(--mut)}a.srow .sid{font-weight:700}a.srow .sname{color:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow.done .sname{color:var(--mut)}.sright{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex-wrap:wrap}.sright>.chip{font-size:11px}@media (max-width:640px){a.srow{grid-template-columns:max-content minmax(0,1fr)}.sright{grid-column:1/-1;justify-content:flex-start}}.scol.full{margin:22px 0}.scol.full>h2{margin:0 0 10px}.scol.full .scard{padding:14px 18px}.scol.full .scard .title{font-size:1rem}
 ul.tree.wide{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));column-gap:18px;border-left:0;padding-left:0}ul.tree.wide>li{padding-left:0}ul.tree.wide>li::before{display:none}
 details.mstubs{margin-top:10px}details.mstubs>summary{font-size:.78rem;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}
 @media (max-width:1000px){.cols{grid-template-columns:minmax(0,1fr)}.cols>.scol{position:static;max-height:none;overflow:visible;order:1}.cols>.main-col{order:2}}
@@ -307,14 +307,40 @@ function subItem(repo, id, noPr, done, ttl) {
   if (nq.length) kids.push(h('span', { class: 'qb', title: nq.length + ' open question(s)' }, ['? ' + nq.length]));
   return h('li', { 'data-k': 'sub:' + repo + '/' + id }, [h('a', { class: 'sub-item' + (done ? ' done' : ''), href: hrefItem(repo, id) }, kids)]);
 }
+/* One dossier on a stub card: id, title, and where it stands, one clean row that scales to many. */
+function stubRow(repo, id, o) {
+  const r = S.runs.find(x => x.repo === repo && x.id === id); const nq = r ? openQs(r) : [];
+  const title = (r && r.title) || o.title || '';
+  const right = [];
+  if (o.merged) right.push(chip('merged', 'done'));
+  else if (r && (r.status === 'done' || r.status === 'pr')) right.push(chip('PR open · ready to merge', 'done'));
+  else { const st = r ? stageText(r) : ''; if (st) right.push(chip(st, 'neutral')); if (isLive(r)) right.push(h('span', { class: 'dot info live', title: 'running' })); }
+  if (o.noPr) right.push(chip('no PR yet', 'neutral'));
+  if (r && r.deferredOpen && !o.merged) right.push(h('span', { class: 'chip', title: r.deferredOpen + ' deferred item(s) still to tackle' }, [r.deferredOpen + ' deferred']));
+  if (nq.length) right.push(h('span', { class: 'qb', title: nq.length + ' open question(s)' }, ['? ' + nq.length]));
+  return h('a', { class: 'srow' + (o.merged ? ' done' : ''), href: hrefItem(repo, id), 'data-k': 'srow:' + repo + '/' + id, title: id + (title ? ' · ' + title : '') },
+    [h('span', { class: 'sid mono' }, [id]), h('span', { class: 'sname' }, [title || '—']), h('span', { class: 'sright' }, right)]);
+}
+function stubGroup(key, label, rows, fold) {
+  if (!rows.length) return null;
+  const body = h('div', { class: 'srows' }, rows);
+  const head = label + ' · ' + rows.length;
+  if (fold) return h('details', { class: 'sgrp', 'data-k': key, open: rows.length <= 6 ? true : null }, [h('summary', { class: 'sgrp-h' }, [head]), body]);
+  return h('div', { class: 'sgrp', 'data-k': key }, [h('div', { class: 'sgrp-h' }, [head]), body]);
+}
 function stubTree(repo, s) {
   const cs = [chip(s.state)]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
-  const mem = (s.members || []).map(m => subItem(repo, m.id, m.noPr, false));
-  const done = s.dossiers.map(d => subItem(repo, d.id, false, true, d.title));
+  const runOf = (id) => S.runs.find(x => x.repo === repo && x.id === id);
+  const finished = (id) => { const r = runOf(id); return !!r && (r.status === 'done' || r.status === 'pr'); };
+  const mem = s.members || [];
+  const busy = mem.filter(m => !finished(m.id)).map(m => stubRow(repo, m.id, { noPr: m.noPr }));
+  const ready = mem.filter(m => finished(m.id)).map(m => stubRow(repo, m.id, {}));
+  const merged = s.dossiers.map(d => stubRow(repo, d.id, { merged: true, title: d.title }));
+  const k = 'sg:' + repo + '/' + s.branch + ':';
+  const groups = [stubGroup(k + 'busy', 'In progress', busy), stubGroup(k + 'ready', 'PR open · waiting for your merge', ready), stubGroup(k + 'merged', 'Merged into the stub', merged, true)].filter(Boolean);
   return h('div', { class: 'scard', 'data-k': 'ostub:' + repo + '/' + s.branch }, [
-    h('a', { class: 'title mono', href: hrefStub(repo, s.branch) }, [s.branch]),
-    h('div', { class: 'meta' }, ['cut ' + s.cut]), h('div', { class: 'chips' }, cs),
-    mem.length || done.length ? h('ul', { class: 'tree wide' }, mem.concat(done)) : h('div', { class: 'meta' }, ['Nothing in progress or merged yet.'])]);
+    h('div', { class: 'shead' }, [h('a', { class: 'title mono', href: hrefStub(repo, s.branch) }, [s.branch]), h('span', { class: 'meta' }, ['cut ' + s.cut]), h('span', { class: 'chips' }, cs)]),
+    groups.length ? h('div', { class: 'sgrps' }, groups) : h('div', { class: 'meta' }, ['Nothing in progress or merged yet.'])]);
 }
 function sideColumn(repo) {
   const rr = S.stubs.repos.find(x => x.repo === repo); const stubs = rr ? rr.stubs : []; const os = openStubs(repo);
