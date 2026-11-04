@@ -255,7 +255,13 @@ one card-based single-page app with deep links.
     timeline section, "Fix deferred issues", at the runner's `start` line,
     and its steps stay inside it; while it runs the header reads "Fixing
     deferred issues", the page opens on the timeline, and the dossier's row on
-    its stub card carries a live "fixing deferred" chip. **Blocked by the safety check** (top of the dossier page): every call auto
+    its stub card carries a live "fixing deferred" chip. **Deferred fix progress** (dossier page, under the last reply): once
+    `/fix-deferred` has run or runs, a bar and one row per item: fixed (with
+    the stacked PR), being fixed (`DEFERRED-TRIAGE: D-n → direct` without its
+    `DEFERRED-FIXED:`), own dossier, dropped, left open; the stacked PR or the
+    fix branch (`DEFERRED-FIX:`), the questions it waits on, and its latest
+    note while live. The Deferred tab's cards carry the same states.
+    **Blocked by the safety check** (top of the dossier page): every call auto
     mode refused that is not ruled on yet (`readBlocks`), with the exact command
     and the reason. **Allow once** and **Deny** answer the agent's newest open
     question with a ruling that names the exact command; **Always allow in this

@@ -80,6 +80,10 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .msg{max-width:88%;margin:5px 0;padding:6px 10px;border-radius:10px;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--chip)}
 .msg.owner{margin-left:auto;background:var(--accbg)}.who{font-size:11px;color:var(--mut)}
 .chip.fixing{display:inline-flex;align-items:center;gap:5px;background:var(--accbg);color:var(--acc);font-weight:600}a.srow:has(.chip.fixing){box-shadow:inset 3px 0 0 var(--acc)}
+.dfp{border-left:3px solid var(--acc)}.dfp-bar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--chip);margin:6px 0 4px}.dfp-bar .seg{display:block;height:100%}
+.seg.ok,.sw.ok{background:var(--ok)}.seg.acc,.sw.acc{background:var(--acc)}.seg.warn,.sw.warn{background:var(--warn)}.seg.mut,.sw.mut{background:var(--mut)}.seg.mut2,.sw.mut2{background:var(--bd)}
+.dfp-leg{display:flex;gap:12px;flex-wrap:wrap;color:var(--mut)}.dfp-leg .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.dfp-rows{margin-top:8px;border:1px solid var(--bd);border-radius:10px;overflow:hidden}.dfp-row{display:grid;grid-template-columns:max-content minmax(0,1fr) auto;gap:10px;align-items:center;padding:6px 12px;border-top:1px solid var(--bd);font-size:13px}.dfp-row:first-child{border-top:0}.dfp-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .panel.blocked{border-left:3px solid var(--bad)}.blk{border-top:1px solid var(--bd);padding:10px 0 4px;display:flex;flex-direction:column;gap:6px}.blk-cmd{margin:0;padding:8px 10px;border-radius:8px;background:var(--chip);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto}
 .blk-rule{display:flex;gap:6px;flex-wrap:wrap}.blk-rule input{flex:1;min-width:220px;font-size:12px;padding:6px 8px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--fg)}
 .psum{border-left:3px solid var(--acc)}.psum h3{font-size:.95rem;margin:12px 0 4px}.psum .md p:first-child{margin-top:0}
@@ -469,6 +473,7 @@ function itemView(repo, id) {
   const kids = [header(r, mode)];
   const bv = blockedView(r, d); if (bv) kids.push(bv);
   const res = resultView(r, d); if (res) kids.push(res);
+  const dp = deferredProgress(r, d); if (dp) kids.push(dp);
   /* Every dossier has the same tabs; a finished or not-started one opens on the
      dossier itself, a run in progress on its timeline. Empty tabs are left out. */
   const key = repo + '/' + id;
@@ -498,10 +503,36 @@ function itemView(repo, id) {
 /* The deferred ledger: open items with a copyable /plan seed, fixed ones with their
    commit, the ones routed to a new dossier; "Fix all deferred" sits in the header. */
 function dfState(r, i) {
-  if (i.state === 'fixed') return r.deferred.pr ? h('a', { href: r.deferred.pr, target: '_blank', rel: 'noopener', title: i.note ? 'commit ' + i.note : '' }, [chip('fixed in stacked PR', 'done')]) : chip('fixed' + (i.note ? ' · ' + i.note.slice(0, 8) : ''), 'done');
+  if (i.state === 'fixed') return r.deferred.pr ? h('a', { href: r.deferred.pr, target: '_blank', rel: 'noopener', title: i.note ? 'commit ' + i.note : '' }, [chip('fixed · stacked PR ' + prNum(r.deferred.pr), 'done')]) : chip('fixed' + (i.note ? ' · ' + i.note.slice(0, 8) : ''), 'done');
   if (i.state === 'dossier') return i.dossier ? h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]) : chip('needs a dossier', 'planned');
-  if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('deprecated', 'neutral')]);
+  if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('dropped', 'neutral')]);
+  if (i.state === 'fixing') return h('span', { title: i.note || '' }, [chip(fixLive(r) ? 'being fixed' : 'fix not finished', fixLive(r) ? 'pending' : 'blocked')]);
   return chip('not tackled', 'ready');
+}
+/* Fixing the deferred issues: the stacked PR, where each item stands (being fixed, fixed, its own dossier, dropped,
+   left open), and the questions it waits on; live while /fix-deferred runs, the final state once it is done. */
+const fixLive = (r) => !!(r.runner && r.runner.command === 'fix-deferred' && ['running', 'waiting', 'paused'].includes(r.runner.state));
+const prNum = (u) => { const m = String(u || '').match(/(\d+)\/?$/); return m ? '#' + m[1] : 'PR'; };
+function deferredProgress(r, d) {
+  const df = r.deferred; if (!df || !df.items.length) return null;
+  const live = fixLive(r); const ran = live || !!df.pr || !!df.branch || df.items.some(i => i.state === 'fixing');
+  if (!ran) return null;
+  const n = (s) => df.items.filter(i => i.state === s).length;
+  const parts = [['fixed', n('fixed'), 'ok'], ['being fixed', n('fixing'), 'acc'], ['own dossier', n('dossier'), 'warn'], ['dropped', n('deprecated'), 'mut'], ['left open', n('open'), 'mut2']];
+  const total = df.items.length; const nq = openQs(r).length;
+  const head = [h('span', { class: 'kind' }, [live ? 'Fixing deferred issues' : 'Deferred issues · after the fix run']), live ? h('span', { class: 'dot info live' }) : null];
+  if (live) head.push(runChip(r.runner.state)); else if (r.runner && r.runner.command === 'fix-deferred' && r.runner.state !== 'done') head.push(runChip(r.runner.state));
+  if (df.pr) head.push(h('a', { class: 'chip act', href: df.pr, target: '_blank', rel: 'noopener' }, ['stacked PR ' + prNum(df.pr)]));
+  else if (df.branch) head.push(chip('branch ' + df.branch, 'neutral'));
+  if (nq) head.push(h('a', { class: 'chip warn', href: '/questions' }, ['? ' + nq + ' waiting for you']));
+  const bar = h('div', { class: 'dfp-bar' }, parts.filter(p => p[1]).map(p => h('span', { class: 'seg ' + p[2], style: 'flex:' + p[1], title: p[1] + ' ' + p[0] }, [])));
+  const legend = h('div', { class: 'dfp-leg small' }, parts.filter(p => p[1]).map(p => h('span', {}, [h('span', { class: 'sw ' + p[2] }), p[1] + ' ' + p[0]])));
+  const rows = df.items.map(i => h('div', { class: 'dfp-row', 'data-k': 'dfp:' + i.id }, [h('span', { class: 'mono b' }, [i.id]), h('span', { class: 'dfp-t', title: [i.title, i.note].filter(Boolean).join(' — ') }, [i.title]), dfState(r, i)]));
+  const last = live && r.updates && r.updates.find(u => !u.auto);
+  return h('section', { class: 'panel dfp', 'data-k': 'dfp' }, [h('div', { class: 'res-hd' }, head), bar, legend,
+    last ? h('div', { class: 'small mut' }, ['Latest: ' + last.text.split('\n')[0].slice(0, 220) + ' · ', when(last.ts)]) : null,
+    h('div', { class: 'dfp-rows' }, rows),
+    !live && n('fixing') ? h('div', { class: 'small mut' }, [n('fixing') + ' item(s) were being fixed when the run ended; the build log says where they stand.']) : null]);
 }
 /* Tool calls the auto-mode safety check refused, not ruled on yet: allow once, always allow in this repo (a narrow
    permission rule in its .claude/settings.local.json), or deny. The ruling reaches the agent as the answer to its open question. */

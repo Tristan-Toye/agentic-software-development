@@ -98,6 +98,10 @@ check("branches: a build branch names the id in any case; plan, stub and trunk b
   check("conversation: chat and result lines stay out of the update stream", readUpdates("r.W-1", cd).every((u) => u.kind !== ("chat" as any)) && readUpdates("r.W-1", cd).length === 5)
   rmSync(cd, { recursive: true, force: true })
 }
+{
+  const pd = parseDeferred("- D-1 bug a — f:1 — low — x\n- D-2 bug b — f:2 — low — y\n- D-3 bug c — f:3 — low — z\n- DEFERRED-FIX: branch fix/W-1-deferred on feat/w-1 @ abc\n- DEFERRED-TRIAGE: D-1 → direct — extract it\n- DEFERRED-TRIAGE: D-2 → direct — rename\n- DEFERRED-FIXED: D-2 1234567\n- DEFERRED-FIX: PR https://x/pull/429 — fixed 1, to dossier 0")
+  check("deferred: a direct triage is being fixed until its FIXED line; the fix branch and PR are read", pd.items[0].state === "fixing" && pd.items[0].note === "extract it" && pd.items[1].state === "fixed" && pd.items[2].state === "open" && pd.branch === "fix/W-1-deferred" && pd.pr === "https://x/pull/429")
+}
 check("deferred: dropped items are deprecated, a dossier link names the new dossier", (() => { const x = parseDeferred("- D-1 bug a — f:1 — low — x\n- D-2 bug b — f:2 — low — y\nDEFERRED-DROPPED: D-1 — code removed\nDEFERRED-DOSSIER: D-2 → W-150").items; return x[0].state === "deprecated" && x[0].note === "code removed" && x[1].state === "dossier" && x[1].dossier === "W-150" })())
 check("deferred: old dossiers are ignored unless the runner ran them", !deferredSince("2026-10-20", null) && deferredSince("2026-11-03", null) && deferredSince("2026-10-01", { state: "done" }))
 check("deferred: an item marked RESOLVED in place is closed", parseDeferred("- D-1 RESOLVED: renumbered — x").items[0].state === "fixed")
