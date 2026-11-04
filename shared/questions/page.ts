@@ -79,6 +79,11 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .opt .k{font-weight:700;min-width:1.4em}.opt .l{font-weight:600}.opt .c{display:block;color:var(--mut);font-size:13px;font-weight:400}.opt .tag{font-size:11px;color:var(--ok);font-weight:600;margin-left:6px}
 .msg{max-width:88%;margin:5px 0;padding:6px 10px;border-radius:10px;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--chip)}
 .msg.owner{margin-left:auto;background:var(--accbg)}.who{font-size:11px;color:var(--mut)}
+.sec{margin:18px 0}.sechd{display:flex;align-items:center;gap:10px;margin:0 0 8px}.sechd h2{margin:0}.sechd .grow{flex:1}
+.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}.acard{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:8px}.acard.next{border-color:var(--acc)}
+.ahd{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.aname{font-weight:700;font-size:1rem;margin-right:4px}.meter .mhd{display:flex;justify-content:space-between;font-size:12.5px}.meter .ml{color:var(--mut)}.meter .mv{font-weight:600}
+.mbar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin:3px 0}.mfill{display:block;height:100%;background:var(--acc)}.mfill.ok{background:var(--ok)}.mfill.warn{background:var(--warn)}.mfill.bad{background:var(--bad)}
+.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip.fixing{display:inline-flex;align-items:center;gap:5px;background:var(--accbg);color:var(--acc);font-weight:600}a.srow:has(.chip.fixing){box-shadow:inset 3px 0 0 var(--acc)}
 .psum{border-left:3px solid var(--acc)}.psum h3{font-size:.95rem;margin:12px 0 4px}.psum .md p:first-child{margin-top:0}
 .result .res-hd{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--mut);margin-bottom:4px}.result .res-hd .kind{font-weight:600;color:var(--fg)}
@@ -159,7 +164,7 @@ function prChip(pr) {
 }
 
 // ---- state ----
-const S = { q: [], runs: [], slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {} };
+const S = { q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {} };
 let R = { kind: 'home' };
 let routeSig = '';
 let scrollTarget = '';
@@ -279,8 +284,51 @@ function homeView() {
       h('span', { class: 'title' }, [rlabel(repo)]), h('span', { class: 'badge ' + (np ? 'info' : '') }, [String(np)]),
       h('span', { class: 'meta' }, [np + ' in progress · ' + ns + ' not started · ' + nd + ' done']), h('span', { class: 'chips' }, cs)]));
   });
-  return h('div', {}, [h('h1', {}, ['Pipeline']), h('p', { class: 'lead' }, ['Pick a repo to see what is running, what is next and what is done.']), h('div', { class: 'grid' }, cards),
+  return h('div', {}, [h('h1', {}, ['Pipeline']), h('p', { class: 'lead' }, ['Pick a repo to see what is running, what is next and what is done.']),
+    accountsView(), runningView(), h('div', { class: 'grid' }, cards),
     section('Open questions', open.length, queueView(''), 'queue')]);
+}
+/* The Claude logins: which one the next stage starts on, the 5-hour and weekly windows, and the runs on each. */
+const fmtReset = (iso) => { const t = Date.parse(iso); if (!t) return ''; const d = new Date(t); const day = d.toDateString() === new Date().toDateString() ? '' : d.toLocaleDateString(undefined, { weekday: 'short' }) + ' ';
+  const mins = Math.max(0, Math.round((t - Date.now()) / 60000)); const left = mins < 60 ? mins + ' min' : Math.floor(mins / 60) + 'h' + String(mins % 60).padStart(2, '0');
+  return 'resets ' + day + d.toTimeString().slice(0, 5) + ' (in ' + left + ')'; };
+function meter(label, w) {
+  const pct = w && typeof w.usedPct === 'number' ? Math.max(0, Math.min(100, w.usedPct)) : null;
+  const tone = pct === null ? '' : pct >= 90 ? 'bad' : pct >= 70 ? 'warn' : 'ok';
+  return h('div', { class: 'meter' }, [h('div', { class: 'mhd' }, [h('span', { class: 'ml' }, [label]), h('span', { class: 'mv' }, [pct === null ? (w && w.status === 'reset' ? 'reset — not read since' : '—') : Math.round(pct) + '%'])]),
+    h('div', { class: 'mbar' }, [h('span', { class: 'mfill ' + tone, style: 'width:' + (pct || 0) + '%' })]), h('div', { class: 'small mut' }, [w && w.resetsAt ? fmtReset(w.resetsAt) : ''])]);
+}
+function accountsView() {
+  const as = S.accounts || []; if (!as.length) return null;
+  const cards = as.map(a => h('div', { class: 'acard' + (a.next ? ' next' : ''), 'data-k': 'acct:' + a.name }, [
+    h('div', { class: 'ahd' }, [h('span', { class: 'aname' }, [a.name]), a.next ? chip('next runs use this', 'done') : null, a.limitedUntil ? chip('blocked ' + fmtReset(a.limitedUntil).replace('resets ', 'until '), 'blocked') : null,
+      a.runs.length ? chip(a.runs.length + ' running', 'neutral') : null]),
+    h('div', { class: 'small mut' }, [[a.email, a.org].filter(Boolean).join(' · ')]),
+    meter('5-hour', a.fiveHour), meter('Weekly', a.week),
+    h('div', { class: 'small mut' }, [a.sampledAt ? when(a.sampledAt, 'read ') : 'never read'])]));
+  return h('section', { class: 'sec', 'data-k': 'sec:acct' }, [h('div', { class: 'sechd' }, [h('h2', {}, ['Accounts']), h('span', { class: 'grow' }),
+    h('button', { class: 'btn sm', type: 'button', 'data-act': 'usage-refresh', disabled: S.usageBusy ? true : null, title: 'One tiny haiku call per account reads its current windows' }, [S.usageBusy ? 'Checking…' : '↻ Check usage'])]),
+    h('div', { class: 'agrid' }, cards)]);
+}
+/* Every run consuming tokens right now, across repos: its state, step, account, agents at work, context and last activity. */
+function runningView() {
+  const live = S.runs.filter(r => r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state));
+  const agents = live.reduce((n, r) => n + (r.agents ? r.agents.running : 0), 0);
+  const working = live.filter(r => r.runner.state === 'running').length;
+  const rows = live.sort((a, b) => (a.repo + a.id).localeCompare(b.repo + b.id)).map(r => {
+    const last = r.updates && r.updates[0]; const nq = openQs(r).length;
+    const right = [runChip(r.runner.state)];
+    if (r.runner.account) right.push(chip('account ' + r.runner.account, 'neutral'));
+    if (r.agents && r.agents.running) right.push(h('span', { class: 'chip fixing' }, [h('span', { class: 'dot info live' }), r.agents.running + ' agent' + (r.agents.running === 1 ? '' : 's')]));
+    if (r.session && r.session.context && r.runner.state === 'running') right.push(chip('context ' + kfmt(r.session.context), 'neutral'));
+    if (nq) right.push(h('span', { class: 'qb' }, ['? ' + nq]));
+    return h('a', { class: 'srow', href: hrefItem(r.repo, r.id), 'data-k': 'run:' + r.repo + '/' + r.id }, [h('span', { class: 'sid mono' }, [r.id]),
+      h('span', { class: 'sname' }, [h('span', {}, [r.title]), h('span', { class: 'small mut rsub' }, [rlabel(r.repo) + ' · ' + (stageText(r) || 'starting') + (last ? ' · ' : ''), last ? when(last.ts, 'last activity ') : null])]),
+      h('span', { class: 'sright' }, right)]);
+  });
+  const head = live.length ? live.length + ' run' + (live.length === 1 ? '' : 's') + ' · ' + working + ' working' + (agents ? ' · ' + agents + ' sub-agent' + (agents === 1 ? '' : 's') : '') : 'Nothing is running';
+  return h('section', { class: 'sec', 'data-k': 'sec:live' }, [h('div', { class: 'sechd' }, [h('h2', {}, ['Running now']), h('span', { class: 'small mut' }, [head])]),
+    rows.length ? h('div', { class: 'srows' }, rows) : null]);
 }
 function questionsView() {
   const hq = hashQ(); const tq = hq && S.q.find(q => q.id === hq && q.state === 'answered');
@@ -665,7 +713,7 @@ async function loadDetail() {
 async function load(what) {
   const all = !what; const w = new Set(what || []); const jobs = [];
   if (all || w.has('questions')) jobs.push(fetchJ('/api/questions?state=all').then(d => { if (Array.isArray(d)) S.q = d; }));
-  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; } }));
+  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.accounts = d.accounts || []; S.usageBusy = !!d.usageBusy; } }));
   if (all || w.has('stubs') || w.has('scan')) jobs.push(fetchJ('/api/stubs').then(d => { if (d && d.repos) S.stubs = d; }));
   await Promise.all(jobs);
   await loadDetail();
@@ -763,6 +811,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'fix-sel') fixSelected(t);
     else if (act === 'chat') sendChat(t);
     else if (act === 'summary') writeSummary(t);
+    else if (act === 'usage-refresh') { S.usageBusy = true; render(); fetch('/api/accounts/refresh', { method: 'POST' }).catch(() => {}).finally(() => load(['runs'])); }
     else if (act === 'toggle-done') { S.showAll[t.dataset.repo] = !S.showAll[t.dataset.repo]; render(); }
     return;
   }
