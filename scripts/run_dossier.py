@@ -392,6 +392,26 @@ class Runner:
         self.event("product summary written")
         return True
 
+    def restart_path(self) -> str:
+        return os.path.join(runs_dir(), self.key + ".restart")
+
+    def take_restart(self) -> str | None:
+        """The dashboard's request to restart the stage once the owner's ruling arrives (`<key>.restart`, holding the
+        rule saved), consumed; None when there is none."""
+        try:
+            with open(self.restart_path()) as fh:
+                why = fh.read().strip()
+            os.remove(self.restart_path())
+            return why
+        except OSError:
+            return None
+
+    def clear_restart(self) -> None:
+        try:
+            os.remove(self.restart_path())
+        except OSError:
+            pass
+
     def record_result(self, text: str) -> None:
         """The finished run's last reply, as the owner would see it in a terminal:
         a `result` line in the updates store (the dashboard shows it on top, and the
@@ -486,6 +506,15 @@ class Runner:
         self.send(f"/{PLUGIN}:{self.command} {self.dossier}" + (f" {self.items}" if self.items and self.command == "fix-deferred" else ""))
         extra = False
         hand = self.handoff()
+        carry = getattr(self, "pending_owner", "")
+        if carry:
+            # The stage restarted so a new permission rule applies (the dashboard's "Always allow"): the owner's answer
+            # to the question the previous process asked travels with the hand-off.
+            hand = (hand + "\n" if hand else f"RUNNER HAND-OFF. Task: run /{PLUGIN}:{self.command} {self.dossier} in {self.root}.\n") + (
+                "This stage restarted so that a permission rule the owner just saved applies. Your previous process asked "
+                "the owner a question; carry on from the dossier and this answer, and retry the command the rule now allows:\n"
+                + carry)
+            self.pending_owner = ""
         if hand:
             self.send(hand)
             extra = True
@@ -696,6 +725,7 @@ class Runner:
             quiet = False
             verb, rest = mk
             if verb == "STAGE-DONE":
+                self.clear_restart()  # the next stage is a new process: it loads the new rules anyway
                 self.end_process()
                 if len(self.checkpoints) == n0:
                     self.no_checkpoint(rest)
@@ -728,6 +758,14 @@ class Runner:
                 return "failed", f"waiting on {qid or ids[0]} failed: {out[:200]}"
             self.save(state="running", questions=[i for i in ids if i != qid] if rc == 0 else ids)
             self.event(("answered " if rc == 0 else "follow-up on ") + qid, "running")
+            why = self.take_restart() if rc == 0 else None
+            if why is not None:
+                # A rule saved while the agent waited only applies to a new process: restart the stage at this safe
+                # point (the agent is waiting, nothing of its own runs) and hand the answer over.
+                self.pending_owner = "OWNER " + out
+                kill_group(self.proc)
+                self.end_process()
+                return "restart", why
             self.send("OWNER " + out)
 
     def on_term(self, *_a) -> None:
@@ -761,6 +799,10 @@ class Runner:
             outcome, detail = self.run_stage()
             if outcome == "next":
                 self.event(f"stage {started} end" + (f": {detail}" if detail else ""), "running")
+                continue
+            if outcome == "restart":
+                self.event(f"restarting stage {started} so the new permission rule applies" + (f" ({detail[:160]})" if detail else ""), "running")
+                started -= 1
                 continue
             if outcome == "done":
                 self.event(f"stage {started} end", "running")
@@ -1223,6 +1265,23 @@ def selftest() -> int:
               any(x.get("session") == "sess-2" for x in lines_of(os.path.join(rdir, "repo.W-1.jsonl"))))
         check("done: the last reply is a result line without its RUNNER: line, and its session is the chat's",
               len(texts("W-1", "result")) == 1 and texts("W-1", "result")[0].endswith("all green") and "RUNNER:" not in texts("W-1", "result")[0] and state_of("W-1").get("result_session") == "sess-3")
+        # ---- 1a. a permission rule saved while the agent waits restarts the stage ----------
+        q5 = "repo.W-5.Q1"
+        scenario([
+            {"turns": [[{"ask": 1, "dossier": "W-5", "final": "RUNNER: WAITING {id}"}]]},
+            {"turns": [[{"final": "retried, works\nRUNNER: DONE"}]]},
+        ])
+        p5 = start("W-5")
+        check("restart: the agent waits on its question", bool(until(lambda: os.path.exists(qfile(q5)) and state_of("W-5").get("state") == "waiting")))
+        with open(os.path.join(rdir, "repo.W-5.restart"), "w") as fh:
+            fh.write("Bash(ssh vm-test *)")
+        owner_line(q5, "answer", "Approved: you may run ssh vm-test rebuild", "")
+        p5.wait(timeout=60)
+        r5 = texts("W-5")
+        check("restart: the answer restarts the stage in a new process, which gets the answer with the hand-off",
+              p5.returncode == 0 and any(t.startswith("restarting stage 1 so the new permission rule applies") for t in r5)
+              and r5[-1] == "done" and not os.path.exists(os.path.join(rdir, "repo.W-5.restart"))
+              and any("OWNER ANSWER " + q5 in m and "permission rule the owner just saved" in m for m in msgs(2)))
         # ---- 1b. chat with the finished run's session --------------------------------
         cfake = os.path.join(fdir, "chat_claude.py")
         open(cfake, "w").write("import json,sys\na=sys.argv[1:]\nmsg=sys.stdin.read()\n"

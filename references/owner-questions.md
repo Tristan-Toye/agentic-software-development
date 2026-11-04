@@ -262,7 +262,10 @@ one card-based single-page app with deep links.
     repo** saves the rule in the box (default `Bash(<command>)`, widen it to a
     prefix; `checkRule` refuses `Bash(*)` and whole interpreters) to the repo's
     `.claude/settings.local.json` `permissions.allow`, then answers the same
-    way. It applies from the next stage; Stop and Resume apply it now. Each
+    way. While the run is live it also leaves `<key>.restart`: when the ruling
+    reaches the runner, it restarts the stage (a new process loads the rule)
+    and hands the answer over with the checkpoints, instead of sending it into
+    the old process. A stage that ends first clears the request. Each
     ruling is a `block-ruling` update. POST
     `/api/runs/<repo>/<ID>/blocks/<tool_use_id>` `{action: once|always|deny, rule}`.
     **The product summary** (`<key>.summary.md`, written by the runner after

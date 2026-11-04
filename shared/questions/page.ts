@@ -520,7 +520,7 @@ function blockedView(r, d) {
         h('button', { class: 'btn', type: 'button', 'data-act': 'blk', 'data-do': 'deny', 'data-repo': r.repo, 'data-id': r.id, 'data-b': b.id, disabled: busy || !d.blockQuestion ? true : null }, ['Deny'])]),
       h('div', { class: 'blk-rule' }, [h('input', { type: 'text', class: 'mono', 'data-rule': b.id, value: st[rk], 'aria-label': 'Permission rule' }),
         h('button', { class: 'btn', type: 'button', 'data-act': 'blk', 'data-do': 'always', 'data-repo': r.repo, 'data-id': r.id, 'data-b': b.id, disabled: busy ? true : null }, ['Always allow in this repo'])]),
-      h('div', { class: 'small mut' }, ['Always allow saves the rule to ' + r.repo + '\'s .claude/settings.local.json (permissions.allow). Widen it to a prefix, e.g. Bash(ssh vm-test *), to cover similar commands. It applies from the next stage; Stop and Resume apply it now.'])]);
+      h('div', { class: 'small mut' }, ['Always allow saves the rule to ' + r.repo + '\'s .claude/settings.local.json (permissions.allow) and restarts the stage when the agent gets your answer, so the rule applies at once (it redoes the work since the stage\'s last checkpoint). Widen it to a prefix, e.g. Bash(ssh vm-test *), to cover similar commands.'])]);
   });
   const kids = [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Blocked by the safety check · ' + bs.length]), d.blockQuestion ? h('span', { class: 'small mut' }, ['ruling goes to ' + d.blockQuestion]) : h('span', { class: 'small mut' }, ['the agent has not asked yet'])])].concat(cards);
   if (st.msg) kids.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad') }, [st.msg]));

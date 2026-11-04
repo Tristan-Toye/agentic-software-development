@@ -418,7 +418,7 @@ export async function handle(req: Request): Promise<Response> {
     const key = `${run.repo}.${run.id}`
     const b = readBlocks(key, runsDir(), 50).find((x) => x.id === bl[3])
     if (!b) return json({ error: "no such block, or it was ruled on already" }, 404)
-    const body = await req.json().catch(() => ({})) as { action?: unknown; rule?: unknown }
+    const body = await req.json().catch(() => ({})) as { action?: unknown; rule?: unknown; restart?: unknown }
     const action = String(body.action ?? "")
     if (!["once", "always", "deny"].includes(action)) return json({ error: "action is once, always or deny" }, 400)
     // The agent hears the ruling through its open question: an option-style answer, which the classifier reads as the
@@ -441,6 +441,8 @@ export async function handle(req: Request): Promise<Response> {
       cfg.permissions.allow = allow
       mkdirSync(join(run.main, ".claude"), { recursive: true })
       writeFileSync(f, JSON.stringify(cfg, null, 2) + "\n")
+      // A rule only reaches a new process: ask the runner to restart the stage when this ruling arrives (safe point).
+      if (runnerActive(run.runner) && body.restart !== false) writeFileSync(join(runsDir(), `${key}.restart`), rule + "\n")
     }
     if (!q && action !== "always") return json({ error: "the agent has not asked about it yet; it asks when it cannot go on, or use Always allow" }, 409)
     const text = action === "deny"
@@ -449,7 +451,8 @@ export async function handle(req: Request): Promise<Response> {
     if (q) appendOwner(DIR, q.id, { kind: "answer", text, option: "", via: "page" })
     appendFileSync(join(runsDir(), `${key}.jsonl`), JSON.stringify({ ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"), kind: "update", auto: true, event: "block-ruling", tool_use_id: b.id, target: b.target, scope: action, rule, text: `block ruled: ${action}${rule ? " (" + rule + ")" : ""}` }) + "\n")
     emitChange("runs"); emitChange("questions")
-    return json({ ok: true, output: (action === "always" ? `saved ${rule} to ${run.repo}'s .claude/settings.local.json; it applies from the next stage (Stop and Resume to apply it now)` : `sent to the agent`) + (q ? ` · answered ${q.id}` : " · no open question to answer") })
+    const restarting = action === "always" && runnerActive(run.runner) && body.restart !== false
+    return json({ ok: true, output: (action === "always" ? `saved ${rule} to ${run.repo}'s .claude/settings.local.json; ${restarting ? (q ? "the stage restarts now with your answer, so the rule applies" : "the stage restarts with the rule once the agent asks and you answer") : "it applies from the next stage"}` : `sent to the agent`) + (q ? ` · answered ${q.id}` : " · no open question to answer") })
   }
   const sm = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/summary$/)
   if (sm) {
