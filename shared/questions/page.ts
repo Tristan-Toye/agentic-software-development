@@ -555,6 +555,8 @@ function dfState(r, i) {
   if (i.state === 'fixed') return r.deferred.pr ? h('a', { href: r.deferred.pr, target: '_blank', rel: 'noopener', title: i.note ? 'commit ' + i.note : '' }, [chip('fixed · stacked PR ' + prNum(r.deferred.pr), 'done')]) : chip('fixed' + (i.note ? ' · ' + i.note.slice(0, 8) : ''), 'done');
   if (i.state === 'dossier') return i.dossier ? h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]) : chip('needs a dossier', 'planned');
   if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('dropped', 'neutral')]);
+  if (i.state === 'open' && i.keptOpen) return h('span', { title: i.ruling || '' }, [chip('left open · your ruling', 'neutral')]);
+  if (i.state === 'open' && i.question && S.q.some(q => q.id === i.question && q.state === 'open')) return h('a', { href: '/questions#q=' + enc(i.question) }, [chip('? waiting for you', 'warn')]);
   if (i.state === 'fixing') return h('span', { title: i.note || '' }, [chip(fixLive(r) ? 'being fixed' : 'fix not finished', fixLive(r) ? 'pending' : 'blocked')]);
   return chip('not tackled', 'ready');
 }
@@ -637,7 +639,8 @@ function resultView(r, d) {
 }
 /* The deferred ledger as a table: tick items (or all) and "Fix selected" runs /fix-deferred on just those, in one
    stacked PR through the implementer and review flow; an item that looks big enough for a dossier is put to the owner first. */
-const dfPickable = (i) => i.state === 'open' || (i.state === 'dossier' && !i.dossier);
+// Only an item still open can be picked for a fix; one ruled to its own dossier is seeded with /plan instead.
+const dfPickable = (i) => i.state === 'open';
 const cbx = (on, attrs) => h('button', Object.assign({ class: 'cbx' + (on ? ' on' : ''), type: 'button', role: 'checkbox', 'aria-checked': on ? 'true' : 'false' }, attrs), [on ? '✓' : '']);
 function deferredView(r) {
   const df = r.deferred; const key = r.repo + '/' + r.id;
@@ -771,7 +774,7 @@ async function loadDetail() {
 async function load(what) {
   const all = !what; const w = new Set(what || []); const jobs = [];
   if (all || w.has('questions')) jobs.push(fetchJ('/api/questions?state=all').then(d => { if (Array.isArray(d)) S.q = d; }));
-  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.accounts = d.accounts || []; S.usageBusy = !!d.usageBusy; } }));
+  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.accounts = d.accounts || []; S.usageBusy = !!d.usageBusy; } }));
   if (all || w.has('stubs') || w.has('scan')) jobs.push(fetchJ('/api/stubs').then(d => { if (d && d.repos) S.stubs = d; }));
   await Promise.all(jobs);
   await loadDetail();

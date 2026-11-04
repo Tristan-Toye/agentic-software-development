@@ -34,7 +34,7 @@ export function deferredSince(updated: string, runner: unknown): boolean {
   return runner != null || updated.slice(0, 10) >= (process.env.ASD_DEFERRED_SINCE || "2026-11-03")
 }
 /** One deferred issue from a dossier's ledger (`/work-on` Phase 9, `/deferred`, `/fix-deferred`). */
-export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixing" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string; contract?: string; effort?: string; inReport?: boolean }
+export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixing" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string; keptOpen?: boolean }
 export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; branch?: string }
 
 /**
@@ -45,6 +45,7 @@ export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; bra
 export function parseDeferred(log: string): { items: DeferredItem[]; pr: string; branch: string } {
   const items = new Map<string, DeferredItem>()
   let pr = "", branch = ""
+  const asked = new Map<string, string>() // question id -> D-id
   for (const raw of log.split("\n")) {
     const l = raw.trim()
     const m = l.match(/^[-*]\s+(D-\d+)\s+(\S+)\s+(.*)$/)
@@ -63,7 +64,24 @@ export function parseDeferred(log: string): { items: DeferredItem[]; pr: string;
     const tr = l.match(/^(?:[-*]\s+)?DEFERRED-TRIAGE:\s*(D-\d+)\s*→\s*(direct|dossier)\b\s*(?:—\s*)?(.*)$/)
     if (tr && items.has(tr[1]) && tr[2] === "dossier") { const it = items.get(tr[1])!; if (it.state !== "fixed") { it.state = "dossier"; it.note = tr[3] } continue }
     // A direct fix under way: `/fix-deferred` triaged it into the stacked PR and has not logged it fixed yet.
-    if (tr && items.has(tr[1]) && tr[2] === "direct") { const it = items.get(tr[1])!; if (it.state === "open") { it.state = "fixing"; it.note = tr[3] } continue }
+    if (tr && items.has(tr[1]) && tr[2] === "direct") { const it = items.get(tr[1])!; if (it.state === "open" || (it.state === "fixing" && it.note.startsWith("your ruling:"))) { it.state = "fixing"; it.note = tr[3] } continue }
+    // The questions /fix-deferred put to the owner and the owner's rulings: `DEFERRED-ASKED: D-n <qid>` and
+    // `DEFERRED-RULING: D-n — <ruling>`, or the free form `QUESTION: <qid> — D-n …` / `OWNER-RULING …: <qid> — <ruling>`.
+    const qa = l.match(/^(?:[-*]\s+)?(?:DEFERRED-ASKED:\s*(D-\d+)\s+(\S+\.Q\d+)|QUESTION:\s*(\S+\.Q\d+)\s*—\s*(D-\d+)\b)/)
+    if (qa) { const did = qa[1] ?? qa[4], qid = qa[2] ?? qa[3]; asked.set(qid, did); const it = items.get(did); if (it) it.question = qid; continue }
+    const ru = l.match(/^(?:[-*]\s+)?(?:DEFERRED-RULING:\s*(D-\d+)\s*(?:—\s*)?(.*)|OWNER-RULING\b[^:]*:\s*(\S+\.Q\d+)\s*—\s*(.*))$/)
+    if (ru) {
+      const did = ru[1] ?? asked.get(ru[3] ?? "") ?? (ru[4] ?? "").match(/\bD-\d+\b/)?.[0]
+      const text = (ru[2] ?? ru[4] ?? "").replace(/^D-\d+\s*/, "").trim()
+      const it = did ? items.get(did) : undefined
+      if (it && it.state === "open") {
+        it.ruling = text
+        // "stays open" / "leave it open" keeps the item for later; any other ruling sets the run to work on it.
+        if (/\b(stays? open|leave (?:it )?open|left open|keep (?:it )?open|not now|later)\b/i.test(text)) it.keptOpen = true
+        else { it.state = "fixing"; it.note = `your ruling: ${text}` }
+      }
+      continue
+    }
     const br = l.match(/DEFERRED-FIX:\s*branch\s+(\S+)/)
     if (br) { branch = br[1]; continue }
     const dr = l.match(/^(?:[-*]\s+)?DEFERRED-DROPPED:\s*(D-\d+)\s*(?:—\s*)?(.*)$/)

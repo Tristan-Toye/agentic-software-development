@@ -72,6 +72,11 @@ options are:
   pull request body names any contract it changes;
 - `C` — leave it open for now: no log line, the item stays `open`.
 
+Log each question as `DEFERRED-ASKED: D-n <question id>`, and the owner's
+ruling once it arrives as `DEFERRED-RULING: D-n — <the ruling in a few
+words>` (then the `DEFERRED-TRIAGE:`/`DEFERRED-DROPPED:` line it leads to,
+if any), so the dashboard shows where each item stands.
+
 Go on with the direct items while the questions are open; under the runner,
 end the turn with `RUNNER: WAITING <ids>` only when nothing else can proceed.
 

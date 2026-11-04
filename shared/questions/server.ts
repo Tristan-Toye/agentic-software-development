@@ -335,6 +335,8 @@ function runnerLog(repo: string, id: string): string | null {
   try { return readFileSync(join(runsDir(), `${repo}.${id}.runner.log`), "utf8").split("\n").slice(-201).join("\n") } catch { return null }
 }
 const inflightControl = new Set<string>()
+/** The page's version: an open tab reloads when the server it talks to serves a different page. */
+const PAGE_ID = String(Bun.hash(PAGE))
 const summaryInflight = new Set<string>()
 let usageInflight = false
 
@@ -352,7 +354,7 @@ export async function handle(req: Request): Promise<Response> {
     const v = await getRuns(() => readAll(DIR))
     const runs = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(readUpdates(`${r.repo}.${r.id}`, runsDir(), 3000)), blocked: readBlocks(`${r.repo}.${r.id}`).length } : r))
     const accounts = readAccounts(runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: `${r.repo}.${r.id}`, account: r.runner?.account })))
-    return json({ ...v, runs, accounts, usageBusy: usageInflight, slack: slackOn() })
+    return json({ ...v, runs, accounts, usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
   }
   if (path === "/api/accounts/refresh") {
     if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
@@ -522,7 +524,7 @@ export async function handle(req: Request): Promise<Response> {
     if (action === "fix-deferred") {
       const body = await req.json().catch(() => ({})) as { items?: unknown }
       items = Array.isArray(body.items) ? [...new Set(body.items.filter((x): x is string => typeof x === "string"))] : []
-      const ok = new Set(run.deferred.items.filter((i) => i.state === "open" || (i.state === "dossier" && !i.dossier)).map((i) => i.id))
+      const ok = new Set(run.deferred.items.filter((i) => i.state === "open").map((i) => i.id))
       const bad = items.filter((i) => !ok.has(i))
       if (bad.length) return json({ error: `not an item to fix: ${bad.join(", ")}` }, 400)
     }
