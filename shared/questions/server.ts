@@ -1,6 +1,6 @@
 // Owner-questions server. Run: bun --no-install shared/questions/server.ts
 // Contract: references/owner-questions.md
-import { mkdirSync, watch } from "node:fs"
+import { mkdirSync, statSync, watch } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
 import { buildLog, getRuns, PHASE_NAMES, questionRepo, readDossier, type Run } from "./runs.ts"
@@ -334,6 +334,7 @@ function runnerLog(repo: string, id: string): string | null {
   try { return readFileSync(join(runsDir(), `${repo}.${id}.runner.log`), "utf8").split("\n").slice(-201).join("\n") } catch { return null }
 }
 const inflightControl = new Set<string>()
+const summaryInflight = new Set<string>()
 
 export async function handle(req: Request): Promise<Response> {
   const url = new URL(req.url)
@@ -366,9 +367,14 @@ export async function handle(req: Request): Promise<Response> {
     const now = nowPanel(entries, groups, { runner: run.runner?.state, waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: run.phase === "plan" ? "" : run.phase })
     let html = ""
     try { html = renderMarkdown(readDossier(run.file).replace(/^---\n[\s\S]*?\n---\n?/, "")) } catch { /* unreadable */ }
+    let summary: { html: string; ts: string } | null = null
+    try {
+      const sp = join(runsDir(), `${run.repo}.${run.id}.summary.md`)
+      summary = { html: renderMarkdown(readFileSync(sp, "utf8")), ts: new Date(statSync(sp).mtimeMs).toISOString() }
+    } catch { /* none yet */ }
     const c = readConversation(`${run.repo}.${run.id}`, run.runner?.state === "done")
     const conv = { ...c, result: c.result ? { ...c.result, html: renderMarkdown(c.result.text) } : null, chat: c.chat.map((l) => ({ ...l, html: renderMarkdown(l.text) })), canChat: !!c.result && !runnerActive(run.runner) }
-    return json({ run, html, entries, groups, activity, now, log, conv, empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
+    return json({ run, html, entries, groups, activity, now, log, conv, summary, summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
   }
   const dd = path.match(/^\/api\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && dd) {
@@ -399,6 +405,23 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && rl) {
     const t = runnerLog(rl[1], rl[2])
     return t === null ? json({ error: "no runner log" }, 404) : new Response(t, { headers: { "content-type": "text/plain; charset=utf-8" } })
+  }
+  const sm = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/summary$/)
+  if (sm) {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const run = await findRun(sm[1], sm[2])
+    if (!run) return json({ error: "no such dossier" }, 404)
+    if (!["done", "pr", "review"].includes(run.status)) return json({ error: "nothing is built yet" }, 409)
+    if (runnerActive(run.runner)) return json({ error: "the run is still going; it writes the summary when it is done" }, 409)
+    const key = `${run.repo}.${run.id}`
+    if (summaryInflight.has(key)) return json({ error: "the summary is already being written" }, 409)
+    summaryInflight.add(key)
+    // A minute or two of model time: run it in the background, the page refreshes when the file lands.
+    void runRunner(["summary", run.id, "--root", run.runner?.root || run.main], 15 * 60_000).finally(() => { summaryInflight.delete(key); emitChange("runs") })
+    emitChange("runs")
+    return json({ ok: true, output: "writing the product summary" })
   }
   const ch = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/chat$/)
   if (ch) {

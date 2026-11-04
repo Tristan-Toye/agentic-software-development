@@ -522,6 +522,12 @@ try {
     const say = (p: string, body: unknown) => fetch(`${base}/api/runs/${p}/chat`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
     const c1 = await say("repoC/W-9", { text: "why?" })
     check("server: chat hands the message to the runner with the run's recorded root; empty text is refused", c1.status === 200 && readFileSync(argvLog, "utf8").trim().split("\n").pop() === "chat W-9 --root " + recordedRoot + " --text why?" && (await say("repoC/W-9", { text: " " })).status === 400 && (await say("repoC/NOPE", { text: "x" })).status === 404)
+    writeFileSync(join(runsDir, "repoC.W-9.summary.md"), "**In one line:** nine works.\n")
+    const tj2: any = await (await fetch(`${base}/api/timeline/repoC/W-9`)).json()
+    check("server: the product summary is rendered into the timeline payload", tj2.summary?.html.includes("<strong>In one line:</strong>") === true, JSON.stringify(tj2.summary))
+    const sm = (p: string) => fetch(`${base}/api/runs/${p}/summary`, { method: "POST" })
+    const sm1 = await sm("repoC/W-9")
+    check("server: Write product summary starts the runner for a built dossier, never for one not built", sm1.status === 200 && (await sm("repoC/W-10")).status === 409)
     const fx = await fetch(`${base}/api/runs/repoC/W-9/fix-deferred`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ items: ["D-1"] }) })
     check("server: fix selected is refused for a dossier with no open deferred items", fx.status === 409)
   }

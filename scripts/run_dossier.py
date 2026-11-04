@@ -361,6 +361,36 @@ class Runner:
         n = len(re.findall(r"^###\s+D-\d+", text, re.M))
         self.event(f"deferred report: {n} issue(s)")
 
+    def product_summary(self, live: bool = True) -> bool:
+        """After a /work-on run (and its deferred report): one short extra process
+        runs /product-summary <ID> and stores the page at <key>.summary.md, which
+        the dashboard shows above the dossier. On `ASD_RUNNER_SUMMARY_MODEL`
+        (default sonnet; empty = the run's model). ASD_RUNNER_SUMMARY=0 skips it."""
+        if (live and self.command != "work-on") or os.environ.get("ASD_RUNNER_SUMMARY") == "0" or self.stopping:
+            return False
+        self.event("product summary", "running" if live else None)
+        saved = (self.command, self.checkpoints, self.model)
+        model = os.environ.get("ASD_RUNNER_SUMMARY_MODEL", "sonnet")
+        self.command, self.checkpoints, self.model = "product-summary", [], (model or self.model)
+        text = ""
+        try:
+            q, extra = self.spawn()
+            kind, val = self.read_turn(q, extra)
+            if kind == "result" and not val[1]:  # type: ignore[index]
+                text = str(val[0])  # type: ignore[index]
+        finally:
+            kill_group(self.proc)
+            self.end_process()
+            self.command, self.checkpoints, self.model = saved
+        text = re.sub(r"^RUNNER:.*$", "", text, flags=re.M).strip() if text else ""
+        if not text:
+            self.event("product summary: none produced")
+            return False
+        with open(os.path.join(runs_dir(), self.key + ".summary.md"), "w") as fh:
+            fh.write(text + "\n")
+        self.event("product summary written")
+        return True
+
     def record_result(self, text: str) -> None:
         """The finished run's last reply, as the owner would see it in a terminal:
         a `result` line in the updates store (the dashboard shows it on top, and the
@@ -734,6 +764,7 @@ class Runner:
             if outcome == "done":
                 self.event(f"stage {started} end", "running")
                 self.deferred_report()
+                self.product_summary()
                 return self.finish("done", "done", 0)
             if outcome == "stopped":
                 self.end_process()
@@ -948,6 +979,25 @@ def cmd_chat(a: argparse.Namespace) -> int:
     return 0 if state == "idle" else 1
 
 
+def cmd_summary(a: argparse.Namespace) -> int:
+    """`summary ID`: write the product summary of a finished dossier now (for builds that ended before the runner
+    wrote one, or to redo it). The run's own record stays as it is."""
+    key = key_of(a.root, a.dossier)
+    path = os.path.join(runs_dir(), key + ".runner.json")
+    prev = read_json(path, {}) or {}
+    if prev.get("state") in ("running", "waiting", "paused") and alive(prev.get("pid")):
+        print(f"{key} is still running; the summary follows when it is done", file=sys.stderr)
+        return 2
+    r = Runner(prev.get("root") or a.root, a.dossier, "work-on", None, prev.get("permission_mode") or "auto", 1)
+    r.state = dict(prev) if prev else r.state
+    r.state_path = path if prev else os.devnull
+    ok = r.product_summary(live=False)
+    if prev:
+        write_json(path, {**read_json(path, prev), "claude_pid": None})
+    say(f"{key}: product summary " + ("written" if ok else "not produced"))
+    return 0 if ok else 1
+
+
 # ---------------------------------------------------------------- selftest
 
 FAKE_CLAUDE = r'''
@@ -1026,7 +1076,7 @@ def selftest() -> int:
             os.makedirs(d)
         fake = os.path.join(fdir, "fake_claude.py")
         open(fake, "w").write(FAKE_CLAUDE)
-        env = dict(os.environ, ASD_QUESTIONS_DIR=qdir, ASD_RUNS_DIR=rdir, ASD_FAKE_DIR=fdir, ASD_RUNNER_DEFERRED="0", ASD_RUNNER_IDLE="1",
+        env = dict(os.environ, ASD_QUESTIONS_DIR=qdir, ASD_RUNS_DIR=rdir, ASD_FAKE_DIR=fdir, ASD_RUNNER_DEFERRED="0", ASD_RUNNER_SUMMARY="0", ASD_RUNNER_IDLE="1",
                    ASD_CLAUDE_BIN=f"{shlex.quote(sys.executable)} {shlex.quote(fake)}",
                    ASD_ASK_OWNER=ASK_OWNER, ASD_OWNER_POLL="0.1", ASD_RUNNER_GRACE="0.2")
 
@@ -1117,6 +1167,24 @@ def selftest() -> int:
         rep_txt = open(rep_path).read() if os.path.exists(rep_path) else ""
         check("after DONE the /deferred report is stored, without the RUNNER line",
               "### D-2" in rep_txt and "RUNNER:" not in rep_txt and ":deferred W-77" in open(fakedef + ".first").read())
+        fakesum = os.path.join(tmp, "fake-summary.py")
+        with open(fakesum, "w") as fh:
+            fh.write("import json,sys\nfirst=sys.stdin.readline()\nopen(sys.argv[0]+'.first','w').write(first+' '.join(sys.argv[1:]))\n"
+                     "print(json.dumps({'type':'result','subtype':'success','is_error':False,'session_id':'s',"
+                     "'result':'**In one line:** grants now explain themselves.\\n### Under the hood\\n- typed detail\\nRUNNER: DONE'}),flush=True)\n")
+        os.environ["ASD_CLAUDE_BIN"] = f"{sys.executable} {fakesum}"
+        os.environ.pop("ASD_RUNNER_SUMMARY_MODEL", None)
+        try:
+            ok_sum = rn.product_summary()
+        finally:
+            if old_bin is None: os.environ.pop("ASD_CLAUDE_BIN", None)
+            else: os.environ["ASD_CLAUDE_BIN"] = old_bin
+        sum_path = os.path.join(rdir, "repo.W-77.summary.md")
+        sum_txt = open(sum_path).read() if os.path.exists(sum_path) else ""
+        first_sum = open(fakesum + ".first").read() if os.path.exists(fakesum + ".first") else ""
+        check("after DONE the product summary is stored without the RUNNER line, on sonnet, and the run's model is restored",
+              ok_sum and sum_txt.startswith("**In one line:**") and "RUNNER:" not in sum_txt and ":product-summary W-77" in first_sum
+              and "--model sonnet" in first_sum and rn.model is None and rn.command == "work-on")
         cps = read_json(os.path.join(rdir, "repo.W-77.checkpoints.json"), [])
         stl = [x for x in lines_of(os.path.join(rdir, "repo.W-77.jsonl")) if x.get("kind") == "stage"]
         check("usage limits are recognised, real errors are not",
@@ -1295,6 +1363,16 @@ def main() -> int:
             ap.print_usage(sys.stderr)
             return 2
         return cmd_chat(a)
+    if argv and argv[0] == "summary":
+        ap = argparse.ArgumentParser(prog="run_dossier.py summary")
+        ap.add_argument("id", nargs="?", help="dossier id, e.g. W-123")
+        ap.add_argument("--root", help="repository root (default: the repository of the current directory)")
+        ap.add_argument("--dossier")
+        a = ap.parse_args(argv[1:])
+        if not resolve(a, ap) or not (a.root and a.dossier):
+            ap.print_usage(sys.stderr)
+            return 2
+        return cmd_summary(a)
     if argv and argv[0] in ("status", "stop"):
         ap = argparse.ArgumentParser(prog=f"run_dossier.py {argv[0]}")
         need = argv[0] == "stop"

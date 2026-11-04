@@ -90,6 +90,14 @@ the recorded checkpoints.
   listed ones) in one stacked pull request and asks the owner about each item
   that looks big enough for a dossier of its own (`commands/fix-deferred.md`).
   The dashboard's "Fix all deferred" and "Fix selected" buttons start it.
+- **The product summary:** after the deferred report, one more short
+  process runs `/product-summary <ID>` (`commands/product-summary.md`) on
+  `ASD_RUNNER_SUMMARY_MODEL` (default `sonnet`) and stores the page at
+  `<key>.summary.md`: what the dossier adds or changes, product first, then
+  the technical shape, in about 250 words. The dashboard shows it above the
+  dossier. `ASD_RUNNER_SUMMARY=0` skips it; `run_dossier.py summary ID`
+  writes it for a build that is already done (the dashboard's "Write product
+  summary" button), leaving the run's record as it is.
 - **The last reply:** on `RUNNER: DONE` the runner writes the turn's text,
   without its `RUNNER:` line, as a `result` line (`{ts, kind: "result", text,
   session, command}`) and records `result_session` in `<key>.runner.json`.

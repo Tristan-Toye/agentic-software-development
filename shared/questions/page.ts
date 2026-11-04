@@ -79,6 +79,7 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .opt .k{font-weight:700;min-width:1.4em}.opt .l{font-weight:600}.opt .c{display:block;color:var(--mut);font-size:13px;font-weight:400}.opt .tag{font-size:11px;color:var(--ok);font-weight:600;margin-left:6px}
 .msg{max-width:88%;margin:5px 0;padding:6px 10px;border-radius:10px;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--chip)}
 .msg.owner{margin-left:auto;background:var(--accbg)}.who{font-size:11px;color:var(--mut)}
+.psum{border-left:3px solid var(--acc)}.psum h3{font-size:.95rem;margin:12px 0 4px}.psum .md p:first-child{margin-top:0}
 .result .res-hd{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--mut);margin-bottom:4px}.result .res-hd .kind{font-weight:600;color:var(--fg)}
 .chat{margin:10px 0 0;padding:8px 12px;border-radius:10px;background:var(--chip);overflow-wrap:anywhere}.chat.owner{margin-left:12%;background:var(--accbg)}.chat.agent,.chat.runner{margin-right:6%}.chat.runner{color:var(--mut)}.chat .md p:first-child{margin-top:0}.chat .md p:last-child{margin-bottom:0}
 .cbx{width:18px;height:18px;padding:0;border:1px solid var(--bd);border-radius:4px;background:var(--bg);color:var(--fg);font-size:12px;line-height:16px;cursor:pointer}.cbx.on{background:var(--acc);border-color:var(--acc);color:#fff}.dfbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--bd);border-radius:12px;background:var(--card);position:sticky;top:8px;z-index:2;box-shadow:var(--shadow)}.dfbar .grow{flex:1}.dfnote{margin:8px 2px 12px}.dfcards{display:flex;flex-direction:column;gap:10px}.dfc{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:6px;min-width:0}.dfc.pick{cursor:pointer}.dfc.pick:hover{border-color:var(--acc)}.dfc.on{border-color:var(--acc);background:var(--accbg)}.dfc.closed{opacity:.75}.dfc .cbx{pointer-events:none;flex:none}.dfc-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dfc-h .grow{flex:1}.dfc-t{font-weight:600;line-height:1.35;overflow-wrap:anywhere}.dfc-loc{font-size:12px;color:var(--mut);overflow-wrap:anywhere;white-space:normal}.dfc-f{display:flex;gap:6px;flex-wrap:wrap}.dfact{font-size:12px;border:1px solid var(--bd);border-radius:999px;padding:1px 9px}.dfact .l{color:var(--mut);margin-right:5px}.dfact.bad{border-color:var(--bad);color:var(--bad)}.dfact.mut{color:var(--mut)}.dfc-why{font-size:12.5px;color:var(--mut);line-height:1.4}.dfc-a{display:flex;justify-content:flex-end}
@@ -315,7 +316,7 @@ function stubRow(repo, id, o) {
   else if (r && (r.status === 'done' || r.status === 'pr')) right.push(chip('PR open · ready to merge', 'done'));
   else { const st = r ? stageText(r) : ''; if (st) right.push(chip(st, 'neutral')); if (isLive(r)) right.push(h('span', { class: 'dot info live', title: 'running' })); }
   if (o.noPr) right.push(chip('no PR yet', 'neutral'));
-  if (r && r.deferredOpen && !o.merged) right.push(h('span', { class: 'chip', title: r.deferredOpen + ' deferred item(s) still to tackle' }, [r.deferredOpen + ' deferred']));
+  if (r && r.deferredOpen) right.push(h('span', { class: 'chip', title: r.deferredOpen + ' deferred item(s) still to tackle' }, [r.deferredOpen + ' deferred']));
   if (nq.length) right.push(h('span', { class: 'qb', title: nq.length + ' open question(s)' }, ['? ' + nq.length]));
   return h('a', { class: 'srow' + (o.merged ? ' done' : ''), href: hrefItem(repo, id), 'data-k': 'srow:' + repo + '/' + id, title: id + (title ? ' · ' + title : '') },
     [h('span', { class: 'sid mono' }, [id]), h('span', { class: 'sname' }, [title || '—']), h('span', { class: 'sright' }, right)]);
@@ -350,8 +351,10 @@ function sideColumn(repo) {
   if (loose.length) kids.push(h('div', { class: 'scol-sec', 'data-k': 'loose:' + repo }, [h('h3', {}, ['In progress']), h('ul', { class: 'tree' }, loose.map(r => subItem(repo, r.id, false, false)))]));
   kids.push(h('h2', {}, ['Stubs']));
   kids.push.apply(kids, os.length ? os.map(s => stubTree(repo, s)) : [h('div', { class: 'empty' }, ['No open stub for this repo.'])]);
-  const dfd = S.runs.filter(r => r.repo === repo && r.deferredOpen > 0).sort((a, b) => b.deferredOpen - a.deferredOpen);
-  if (dfd.length) kids.push(h('div', { class: 'scol-sec', 'data-k': 'dfd:' + repo }, [h('h3', {}, ['Deferred · ' + dfd.reduce((n, r) => n + r.deferredOpen, 0) + ' open']),
+  // Dossiers on an open stub card show their deferred count there; this lists the rest (their stub merged).
+  const onCard = {}; os.forEach(s => { (s.members || []).forEach(m => { onCard[m.id] = 1; }); s.dossiers.forEach(d => { onCard[d.id] = 1; }); });
+  const dfd = S.runs.filter(r => r.repo === repo && r.deferredOpen > 0 && !onCard[r.id]).sort((a, b) => b.deferredOpen - a.deferredOpen);
+  if (dfd.length) kids.push(h('div', { class: 'scol-sec', 'data-k': 'dfd:' + repo }, [h('h3', {}, ['Deferred on merged work · ' + dfd.reduce((n, r) => n + r.deferredOpen, 0) + ' open']),
     h('ul', { class: 'tree' }, dfd.map(r => h('li', {}, [h('a', { class: 'sub-item', href: hrefItem(repo, r.id) }, [h('span', { class: 'sid mono' }, [r.id]), h('span', { class: 'sname', title: r.title }, [r.title]), chip(r.deferredOpen + ' open', 'ready')])])))]));
   if (merged.length) kids.push(h('details', { class: 'mstubs', 'data-k': 'mstubs:' + repo }, [h('summary', {}, ['Merged stubs (' + merged.length + ')']),
     h('ul', { class: 'tree' }, merged.map(s => h('li', {}, [h('a', { class: 'sub-item', href: hrefStub(repo, s.branch) }, [h('span', { class: 'sid mono' }, [s.branch]), h('span', { class: 'sname', title: s.branch }, [s.dossiers.length + ' dossier(s)'])])])))]));
@@ -469,6 +472,7 @@ function itemView(repo, id) {
   if (list.length > 1) kids.push(tabs(key, list));
   if (!d) kids.push(h('div', { class: 'empty' }, ['Loading…']));
   else if (tab === 'doc') {
+    const sv = summaryView(r, d); if (sv) kids.push(sv);
     const html = d.html || '';
     kids.push(h('div', { class: 'panel md', 'data-raw': '1', 'data-sig': html.length + ':' + html.slice(0, 40) + html.slice(-40), 'data-html': html }, []));
     if (r.answered.length) kids.push(section('Answered questions', r.answered.length, h('div', {}, r.answered.map(a => h('div', { class: 'panel qa', 'data-k': 'qa:' + a.id }, [
@@ -486,6 +490,18 @@ function dfState(r, i) {
   if (i.state === 'dossier') return i.dossier ? h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]) : chip('needs a dossier', 'planned');
   if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('deprecated', 'neutral')]);
   return chip('not tackled', 'ready');
+}
+/* What the dossier changed, in product terms (/product-summary, written after Phase 9), above the dossier itself. */
+function summaryView(r, d) {
+  const key = r.repo + '/' + r.id; const st = S.chat['sum:' + key] = S.chat['sum:' + key] || {};
+  if (d.summary) return h('section', { class: 'panel psum', 'data-k': 'psum' }, [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Product summary']), when(d.summary.ts)]), mdBlock(d.summary.html, 'psum:' + d.summary.ts)]);
+  const built = ['done', 'pr', 'review'].indexOf(r.status) >= 0 && !(r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state));
+  if (!built) return null;
+  const busy = d.summaryBusy || st.busy;
+  return h('section', { class: 'panel psum empty-sum', 'data-k': 'psum' }, [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Product summary'])]),
+    h('div', { class: 'ctl' }, [h('button', { class: 'btn', type: 'button', 'data-act': 'summary', 'data-repo': r.repo, 'data-id': r.id, disabled: busy ? true : null }, [busy ? 'Writing the summary…' : 'Write product summary']),
+      h('span', { class: 'small mut' }, ['This build finished before summaries were written; a short extra run writes it now.'])]),
+    st.err ? h('div', { class: 'err' }, [st.err]) : null]);
 }
 /* The finished run's last reply, as a terminal would show it, then the owner's chat with that session. */
 const mdBlock = (html, k) => h('div', { class: 'md', 'data-raw': '1', 'data-k': k, 'data-sig': html.length + ':' + html.slice(0, 40), 'data-html': html }, []);
@@ -697,6 +713,15 @@ async function fixSelected(btn) {
   } catch (e) { st.msg = 'request failed'; st.ok = false; }
   st.busy = null; await load(['runs']);
 }
+async function writeSummary(btn) {
+  const repo = btn.dataset.repo, id = btn.dataset.id, st = S.chat['sum:' + repo + '/' + id] = S.chat['sum:' + repo + '/' + id] || {};
+  st.busy = true; st.err = ''; render();
+  try {
+    const r = await fetch('/api/runs/' + enc(repo) + '/' + enc(id) + '/summary', { method: 'POST' });
+    const j = await r.json().catch(() => ({})); if (!r.ok) st.err = j.error || ('HTTP ' + r.status);
+  } catch (e) { st.err = 'request failed'; }
+  st.busy = false; await load(['runs']);
+}
 async function sendChat(btn) {
   const repo = btn.dataset.repo, id = btn.dataset.id, key = repo + '/' + id; const st = S.chat[key] = S.chat[key] || {};
   const ta = document.querySelector('textarea[data-chat="' + key.replace(/"/g, '') + '"]'); const text = ta ? ta.value.trim() : '';
@@ -726,6 +751,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'dsel-all') { const r0 = S.runs.find(x => x.repo + '/' + x.id === t.dataset.key); if (r0) { const pk = r0.deferred.items.filter(dfPickable); const m = S.dsel[t.dataset.key] = S.dsel[t.dataset.key] || {}; const all = pk.every(i => m[i.id]); pk.forEach(i => { if (all) delete m[i.id]; else m[i.id] = true; }); render(); } }
     else if (act === 'fix-sel') fixSelected(t);
     else if (act === 'chat') sendChat(t);
+    else if (act === 'summary') writeSummary(t);
     else if (act === 'toggle-done') { S.showAll[t.dataset.repo] = !S.showAll[t.dataset.repo]; render(); }
     return;
   }
