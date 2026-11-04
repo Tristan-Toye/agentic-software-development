@@ -245,7 +245,11 @@ one card-based single-page app with deep links.
     which starts `--command fix-deferred --items D-1,D-3`: only those items,
     one stacked PR through the implementer and review flow; an item that looks
     too big for it is put to the owner as a question (own dossier, fix here
-    anyway, or leave open). **The product summary** (`<key>.summary.md`, written by the runner after
+    anyway, or leave open). **A later run on a finished dossier** (`/fix-deferred`) opens its own
+    timeline section, "Fix deferred issues", at the runner's `start` line,
+    and its steps stay inside it; while it runs the header reads "Fixing
+    deferred issues", the page opens on the timeline, and the dossier's row on
+    its stub card carries a live "fixing deferred" chip. **The product summary** (`<key>.summary.md`, written by the runner after
     Phase 9) sits above the dossier on its Dossier tab; a built dossier without
     one offers **Write product summary**, which POSTs
     `/api/runs/<repo>/<ID>/summary` and runs `run_dossier.py summary <ID>` in
