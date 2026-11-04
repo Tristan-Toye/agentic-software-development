@@ -38,8 +38,8 @@ export type DeferredItem = { id: string; kind: string; title: string; loc: strin
 export type Deferred = { items: DeferredItem[]; pr: string; report: boolean }
 
 /**
- * The deferred ledger of a build log: `- D-n <kind> <title> — <path:line> — <risk> — <why>`
- * lines (first one per id wins), closed by `DEFERRED-FIXED: D-n <sha>` and routed by
+ * The deferred ledger of a build log: `- D-n <kind> <title> — <path:line> — <risk> — <why>[ — contract: <c>][ — effort: <e>]`
+ * lines (first one per id wins; the `contract:` and `effort:` parts may sit anywhere after the title), closed by `DEFERRED-FIXED: D-n <sha>` and routed by
  * `DEFERRED-TRIAGE: D-n → dossier — …`; `DEFERRED-FIX: PR <url>` names the stacked PR.
  */
 export function parseDeferred(log: string): { items: DeferredItem[]; pr: string } {
@@ -49,10 +49,13 @@ export function parseDeferred(log: string): { items: DeferredItem[]; pr: string 
     const l = raw.trim()
     const m = l.match(/^[-*]\s+(D-\d+)\s+(\S+)\s+(.*)$/)
     if (m && !items.has(m[1])) {
-      const parts = m[3].split(/\s+—\s+/)
+      const all = m[3].split(/\s+—\s+/)
+      const field = (k: string) => all.slice(1).map((p) => p.match(new RegExp(`^${k}:\\s*(\\S.*?)\\s*$`, "i"))?.[1]).find(Boolean) ?? ""
+      const contract = field("contract").replace(/[:\s].*$/, "").toLowerCase(), effort = field("effort").replace(/[\s(].*$/, "").toUpperCase()
+      const parts = [all[0], ...all.slice(1).filter((p) => !/^(contract|effort):/i.test(p))]
       // Older ledgers close an item in place: "- D-1 RESOLVED: …".
       const resolved = /^resolved\b/i.test(m[2])
-      items.set(m[1], { id: m[1], kind: resolved ? "resolved" : m[2], title: parts[0] ?? "", loc: parts[1] ?? "", risk: parts[2] ?? "", why: parts.slice(3).join(" — "), state: resolved ? "fixed" : "open", note: "", dossier: "" })
+      items.set(m[1], { id: m[1], kind: resolved ? "resolved" : m[2], title: parts[0] ?? "", loc: parts[1] ?? "", risk: parts[2] ?? "", why: parts.slice(3).join(" — "), state: resolved ? "fixed" : "open", note: "", dossier: "", ...(contract ? { contract } : {}), ...(effort ? { effort } : {}) })
       continue
     }
     const fx = l.match(/^(?:[-*]\s+)?DEFERRED-FIXED:\s*(D-\d+)\s*(\S*)/)
@@ -87,12 +90,12 @@ export function parseReportTable(md: string): Map<string, { risk: string; contra
   }
   return out
 }
-/** The ledger's items with the report's contract and effort, when the run stored a report. */
+/** The ledger's items with the report's contract and effort, when the run stored a report; an item the report lacks keeps its ledger values. */
 export function withReport(items: DeferredItem[], report: string): DeferredItem[] {
   if (!report) return items
   const t = parseReportTable(report)
   if (!t.size) return items
-  return items.map((i) => { const r = t.get(i.id); return r ? { ...i, contract: r.contract, effort: r.effort, inReport: true } : { ...i, inReport: false } })
+  return items.map((i) => { const r = t.get(i.id); return r ? { ...i, contract: r.contract.replace(/[:\s].*$/, "") || i.contract, effort: r.effort || i.effort, inReport: true } : { ...i, inReport: false } })
 }
 /** An answered question, as shown under the dossier it came from. */
 export type QA = { id: string; text: string; answer: string; option: string; asked: string; answeredAt: string }

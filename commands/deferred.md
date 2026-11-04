@@ -59,8 +59,12 @@ Merge these into the recalled list, then deduplicate:
    Phase 9 captured them at the moment the run's awareness was highest, so
    they outrank your current memory: a ledger item your recall dropped goes
    back in; a recalled item the ledger never caught stays in, and once
-   verified you append it to the ledger as its next `D-` line, so the
-   dossier keeps the complete set.
+   verified you append it to the ledger as its next `D-` line, ending with
+   its `— contract: <none|internal|external> — effort: <S|M|L>` like every
+   ledger line (`references/work-on/phase-9.md`), so the dossier keeps the
+   complete set. A ledger line's contract and effort are its author's first
+   judgement; your report's values, re-checked against the code, supersede
+   them.
 2. The dossier's `## Build log` beyond the ledger: every `NOTICED:` line,
    every `SHARED_IDIOM` collapse that never landed, every change request
    demoted for missing evidence, every arbitration whose evidence pointed at

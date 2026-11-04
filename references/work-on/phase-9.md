@@ -193,8 +193,16 @@
 
     ```
     DEFERRED: <N> — sources: <own reads, NOTICED harvest, review replies>
-    - D-1 <kind> <title> — <path:line> — <risk> — <why deferred>
+    - D-1 <kind> <title> — <path:line> — <risk> — <why deferred> — contract: <none|internal|external> — effort: <S|M|L>
     ```
+
+    Every line ends with `contract:` and `effort:`, test tooling and other
+    non-product items included: you judge them best now, and the dashboard
+    and `/fix-deferred` triage on them when no report row exists. `contract`
+    is the boundary a fix crosses (`none`; `internal` — a signature or module
+    seam; `external` — a route, schema, event, config key or CLI with
+    consumers); `effort` is `S` (under an hour), `M` (hours) or `L` (days),
+    as `/deferred` defines them.
 
     `DEFERRED: none — sources: …` is a real answer; defend it or do not
     write it. The D-IDs are minted here, once; the `/deferred` run that

@@ -256,8 +256,8 @@ Append-only. One line per event, newest last. Record: each spawn and its
 outcome, each worktree merge, each test-versus-implementation arbitration and
 its ruling, each `CONTRACT-CHANGE:` decision, each review round and its change
 requests, the deferred-issues ledger `/work-on` Phase 9 captures at close
-(one `DEFERRED:` header plus one line per untackled issue, `DEFERRED: none`
-allowed), and anything that surprised the orchestrator. This section replaces
+(one `DEFERRED:` header plus one line per untackled issue, each ending with
+its `contract:` and `effort:`; `DEFERRED: none` allowed), and anything that surprised the orchestrator. This section replaces
 the changelog, the review files, and the anomaly log.
 
 `scripts/validate_pipeline.py --pre-fanout` requires seven lines before the
