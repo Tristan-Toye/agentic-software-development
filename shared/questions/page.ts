@@ -81,8 +81,7 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .msg.owner{margin-left:auto;background:var(--accbg)}.who{font-size:11px;color:var(--mut)}
 .result .res-hd{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--mut);margin-bottom:4px}.result .res-hd .kind{font-weight:600;color:var(--fg)}
 .chat{margin:10px 0 0;padding:8px 12px;border-radius:10px;background:var(--chip);overflow-wrap:anywhere}.chat.owner{margin-left:12%;background:var(--accbg)}.chat.agent,.chat.runner{margin-right:6%}.chat.runner{color:var(--mut)}.chat .md p:first-child{margin-top:0}.chat .md p:last-child{margin-bottom:0}
-.tblwrap{overflow-x:auto}.dft{width:100%;border-collapse:collapse;font-size:13px}.dft th{text-align:left;font-weight:600;color:var(--mut);font-size:12px;padding:6px 8px;border-bottom:1px solid var(--bd)}.dft td{padding:7px 8px;border-top:1px solid var(--bd);vertical-align:top}.dft tr.on td{background:var(--accbg)}.df-t2{min-width:220px}.df-t2 .df-loc{display:block;max-width:none;margin-top:2px}
-.cbx{width:18px;height:18px;padding:0;border:1px solid var(--bd);border-radius:4px;background:var(--bg);color:var(--fg);font-size:12px;line-height:16px;cursor:pointer}.cbx.on{background:var(--acc);border-color:var(--acc);color:#fff}.dfbar{flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.cbx{width:18px;height:18px;padding:0;border:1px solid var(--bd);border-radius:4px;background:var(--bg);color:var(--fg);font-size:12px;line-height:16px;cursor:pointer}.cbx.on{background:var(--acc);border-color:var(--acc);color:#fff}.dfbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--bd);border-radius:12px;background:var(--card);position:sticky;top:8px;z-index:2;box-shadow:var(--shadow)}.dfbar .grow{flex:1}.dfnote{margin:8px 2px 12px}.dfcards{display:flex;flex-direction:column;gap:10px}.dfc{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:6px;min-width:0}.dfc.pick{cursor:pointer}.dfc.pick:hover{border-color:var(--acc)}.dfc.on{border-color:var(--acc);background:var(--accbg)}.dfc.closed{opacity:.75}.dfc .cbx{pointer-events:none;flex:none}.dfc-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dfc-h .grow{flex:1}.dfc-t{font-weight:600;line-height:1.35;overflow-wrap:anywhere}.dfc-loc{font-size:12px;color:var(--mut);overflow-wrap:anywhere;white-space:normal}.dfc-f{display:flex;gap:6px;flex-wrap:wrap}.dfact{font-size:12px;border:1px solid var(--bd);border-radius:999px;padding:1px 9px}.dfact .l{color:var(--mut);margin-right:5px}.dfact.bad{border-color:var(--bad);color:var(--bad)}.dfact.mut{color:var(--mut)}.dfc-why{font-size:12.5px;color:var(--mut);line-height:1.4}.dfc-a{display:flex;justify-content:flex-end}
 textarea{width:100%;min-height:3.4em;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:10px;padding:8px;margin:6px 0;resize:vertical}
 .err{color:var(--bad);font-size:13px;min-height:1em}
 details>summary{cursor:pointer;color:var(--mut);font-size:12.5px;margin:4px 0}
@@ -515,17 +514,19 @@ function deferredView(r) {
   Object.keys(sel).forEach(k => { if (!pick.some(i => i.id === k)) delete sel[k]; });
   const n = pick.filter(i => sel[i.id]).length; const all = pick.length > 0 && n === pick.length;
   const fix = r.controls && r.controls['fix-deferred']; const st = S.ctl[key] || {};
-  const tone = (v, bad) => chip(v || '—', bad ? 'blocked' : 'neutral');
-  const head = h('tr', {}, [h('th', {}, [pick.length ? cbx(all, { 'data-act': 'dsel-all', 'data-key': key, title: all ? 'Clear the selection' : 'Select every item still to tackle' }) : null]),
-    h('th', {}, ['ID']), h('th', {}, ['Kind']), h('th', {}, ['Issue']), h('th', {}, ['Risk']), h('th', {}, ['Contract']), h('th', {}, ['Effort']), h('th', {}, ['State']), h('th', {}, [''])]);
-  const rows = df.items.map(i => h('tr', { 'data-k': 'df:' + i.id, class: sel[i.id] ? 'on' : '' }, [
-    h('td', {}, [dfPickable(i) ? cbx(!!sel[i.id], { 'data-act': 'dsel', 'data-key': key, 'data-id': i.id }) : null]),
-    h('td', { class: 'mono b' }, [i.id]), h('td', {}, [chip(i.kind, 'neutral')]),
-    h('td', { class: 'df-t2' }, [h('div', {}, [i.title]), i.loc ? h('code', { class: 'df-loc' }, [i.loc]) : null, i.inReport === false ? h('div', { class: 'small mut' }, ['not product code (left out of the report)']) : null]),
-    h('td', {}, [h('span', { title: i.risk }, [(i.risk || '').split(':')[0] || '—'])]),
-    h('td', {}, [i.contract ? tone(i.contract, i.contract === 'external') : '—']), h('td', {}, [i.effort ? tone(i.effort, i.effort === 'L') : '—']),
-    h('td', {}, [dfState(r, i)]),
-    h('td', {}, [dfPickable(i) ? h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'copy', 'data-text': '/plan ' + r.id + ' ' + i.id, title: 'Copy the /plan seed for this item' }, ['Plan']) : null])]));
+  const fact = (label, v, bad) => v ? h('span', { class: 'dfact' + (bad ? ' bad' : '') }, [h('span', { class: 'l' }, [label]), v]) : null;
+  const cards = df.items.map(i => {
+    const can = dfPickable(i); const on = !!sel[i.id];
+    const riskWord = (i.risk || '').split(':')[0].trim(); const riskWhy = (i.risk || '').split(':').slice(1).join(':').trim();
+    return h('div', { class: 'dfc' + (on ? ' on' : '') + (can ? ' pick' : ' closed'), 'data-k': 'df:' + i.id, 'data-act': can ? 'dsel' : null, 'data-key': key, 'data-id': i.id, role: can ? 'checkbox' : null, 'aria-checked': can ? (on ? 'true' : 'false') : null, tabindex: can ? '0' : null }, [
+      h('div', { class: 'dfc-h' }, [can ? h('span', { class: 'cbx' + (on ? ' on' : '') }, [on ? '✓' : '']) : null, h('span', { class: 'mono b' }, [i.id]), chip(i.kind, 'neutral'), h('span', { class: 'grow' }), dfState(r, i)]),
+      h('div', { class: 'dfc-t' }, [i.title]),
+      i.loc ? h('code', { class: 'dfc-loc' }, [i.loc]) : null,
+      h('div', { class: 'dfc-f' }, [fact('Risk', riskWord, /^(high|critical)/i.test(riskWord)), fact('Contract', i.contract, i.contract === 'external'), fact('Effort', i.effort, i.effort === 'L'),
+        i.inReport === false ? h('span', { class: 'dfact mut' }, ['not product code']) : null]),
+      riskWhy || i.why ? h('div', { class: 'dfc-why' }, [[riskWhy, i.why].filter(Boolean).join(' · ')]) : null,
+      can ? h('div', { class: 'dfc-a' }, [h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'copy', 'data-text': '/plan ' + r.id + ' ' + i.id, title: 'Copy the /plan seed for this item' }, ['Copy /plan seed'])]) : null]);
+  });
   const links = [];
   if (df.report) links.push(h('a', { class: 'small', href: '/deferred/' + enc(r.repo) + '/' + enc(r.id), target: '_blank', rel: 'noopener' }, ['full report']));
   if (df.pr) links.push(h('a', { class: 'small', href: df.pr, target: '_blank', rel: 'noopener' }, ['stacked PR']));
@@ -533,16 +534,21 @@ function deferredView(r) {
   if (pick.length) {
     const confirming = st.confirm === 'fix-sel'; const busy = st.busy === 'fix-sel';
     const why = !fix || !fix.show ? (r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state) ? 'the run is still going' : 'available once the build is finished') : '';
+    bar.push(h('button', { class: 'btn sm', type: 'button', 'data-act': 'dsel-all', 'data-key': key }, [all ? 'Clear selection' : 'Select all ' + pick.length]));
+    bar.push(h('span', { class: 'small mut' }, [n + ' of ' + pick.length + ' selected']));
+    bar.push(h('span', { class: 'grow' }));
+    if (why) bar.push(chip(why, 'blocked'));
+    if (confirming) bar.push(h('button', { class: 'btn act', type: 'button', 'data-act': 'ctl-cancel', 'data-repo': r.repo, 'data-id': r.id }, ['Cancel']));
     bar.push(h('button', { class: 'btn act' + (confirming ? ' confirm' : ' go'), type: 'button', 'data-act': 'fix-sel', 'data-repo': r.repo, 'data-id': r.id, disabled: !n || !!why || !!st.busy ? true : null },
       [busy ? 'Starting the fix…' : confirming ? 'Confirm: fix ' + n + ' item' + (n === 1 ? '' : 's') : 'Fix selected (' + n + ')']));
-    if (confirming) bar.push(h('button', { class: 'btn act', type: 'button', 'data-act': 'ctl-cancel', 'data-repo': r.repo, 'data-id': r.id }, ['Cancel']));
-    if (why) bar.push(chip(why, 'blocked'));
-    bar.push(h('span', { class: 'small mut' }, ['One stacked PR, test first, through the implementer and review flow. An item that looks too big for it is put to you first: its own dossier, or fix it here anyway.']));
   }
-  if (st.msg && st.last === 'fix-sel') bar.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad') }, [st.msg]));
-  return h('div', { class: 'panel', 'data-k': 'deferred' }, [links.length ? h('div', { class: 'ctl' }, links) : null,
-    h('div', { class: 'tblwrap' }, [h('table', { class: 'dft' }, [h('thead', {}, [head]), h('tbody', {}, rows)])]),
-    bar.length ? h('div', { class: 'ctl dfbar' }, bar) : null]);
+  const kids = [];
+  if (bar.length) kids.push(h('div', { class: 'dfbar', 'data-k': 'dfbar' }, bar));
+  if (pick.length) kids.push(h('div', { class: 'small mut dfnote', 'data-k': 'dfnote' }, ['Click a card to select it. Selected items are fixed in one stacked PR, test first, through the implementer and review flow; an item that looks too big for it is put to you first: its own dossier, or fix it here anyway.']));
+  if (st.msg && st.last === 'fix-sel') kids.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad'), 'data-k': 'dfmsg' }, [st.msg]));
+  kids.push(h('div', { class: 'dfcards', 'data-k': 'dfcards' }, cards));
+  if (links.length) kids.push(h('div', { class: 'ctl', 'data-k': 'dflinks' }, links));
+  return h('div', { class: 'dfwrap', 'data-k': 'deferred' }, kids);
 }
 function stubView(repo, branch) {
   const rr = S.stubs.repos.find(x => x.repo === repo); const s = rr && rr.stubs.find(x => x.branch === branch);
@@ -704,7 +710,9 @@ async function sendChat(btn) {
   st.busy = false; await load(['runs']);
 }
 document.addEventListener('click', (e) => {
-  const t = e.target.closest ? e.target.closest('[data-act]') : null;
+  let t = e.target.closest ? e.target.closest('[data-act]') : null;
+  const inLink = e.target.closest ? e.target.closest('a[href]') : null;
+  if (t && inLink && t.contains(inLink) && t !== inLink) t = null;   // a link inside a clickable card stays a link
   if (t) {
     e.preventDefault(); const act = t.dataset.act;
     if (act === 'opt') post(t.dataset.qid, { kind: 'answer', option: t.dataset.opt });
@@ -726,6 +734,7 @@ document.addEventListener('click', (e) => {
   const h2 = a.getAttribute('href');
   if (h2 && (h2 === '/' || h2.indexOf('/questions') === 0 || h2.indexOf('/repo/') === 0)) { e.preventDefault(); navigate(h2); }
 });
+document.addEventListener('keydown', (e) => { if ((e.key === ' ' || e.key === 'Enter') && e.target.classList && e.target.classList.contains('dfc') && e.target.dataset.act === 'dsel') { e.preventDefault(); e.target.click(); } });
 window.addEventListener('popstate', onRoute);
 window.addEventListener('hashchange', () => { if (R.kind === 'questions') { scrollTarget = hashQ(); render(); } else onRoute(); });
 setInterval(() => { if (!S.live) load(null); }, 60000);   // fallback while the event stream is down

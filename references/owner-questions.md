@@ -233,9 +233,10 @@ one card-based single-page app with deep links.
     report is linked at `/deferred/<repo>/<ID>`, and the header has **Fix all
     deferred** on a `pr` or `done` dossier with open items: two clicks start
     `run_dossier.py <ID> --command fix-deferred` in the background. The
-    Deferred tab is a table (ID, kind, issue and location, risk, contract and
-    effort from the report's summary table, state); items still to tackle have
-    a tick box and the header a select-all box. **Fix selected (n)**, two
+    Deferred tab lists one card per item (ID, kind, state, title, location,
+    risk, contract and effort from the report's summary table, the reason it
+    was deferred); a card still to tackle is selected by clicking it, and a
+    sticky bar above the cards has Select all and the selection count. **Fix selected (n)**, two
     clicks, POSTs `{items: [...]}` to `/api/runs/<repo>/<ID>/fix-deferred`,
     which starts `--command fix-deferred --items D-1,D-3`: only those items,
     one stacked PR through the implementer and review flow; an item that looks
