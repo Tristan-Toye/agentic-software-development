@@ -81,7 +81,7 @@ the recorded checkpoints.
   `reason`, `tool_use_id`). The runner-mode rules tell the agent never to work
   around a block and to ask the owner, quoting the exact command. The
   dashboard's Blocked card rules on it (owner-questions.md). How a background
-  run is allowed what auto mode blocks, since `/permissions` needs a terminal:
+  run is allowed what auto mode blocks, since the permissions dialog needs a terminal:
   an approval in the owner's answer that names the exact action and what makes
   it risky (the classifier reads the owner's messages, one action unless said
   to be standing); a narrow `permissions.allow` rule in the repo's
@@ -147,6 +147,10 @@ The prompt tells the orchestrator these rules:
   - keep working on whatever is not blocked;
   - when nothing can proceed, end the turn with
     `RUNNER: WAITING <id>[,<id>...]`.
+- Run every test through `run_tests.py` and every gate list through
+  `run_gates.py`, never an ad-hoc script, so the timeline gets the suite and
+  gate lines; and only the tests the step names (under SUITE-MODE `stub`, the
+  new and affected tests plus CI: the full suite belongs to `/stub`).
 - End each stage with its `phase_checkpoint` call and then the line
   `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a
   new process with your checkpoints as its hand-off.
@@ -171,6 +175,9 @@ The prompt tells the orchestrator these rules:
   - **The plugin's PostToolUse hook:** a `stage` line for every
     `phase_checkpoint` call when `ASD_RUN_KEY` is set. It writes the stage
     name and the first line of the summary.
+  - **The suite line:** a `run_tests.py` call writes `suite: passed N failed M`
+    from its digest; a `--detach` or background call writes `suite started`,
+    and its `--wait` call writes the result.
   - **The same hook, for progress:** an `update` line with `auto: true` for
     each `dossier_edit.py log` line, each `run_tests.py` and `run_gates.py`
     result, each workflow started and agent spawned, and each PR opened or

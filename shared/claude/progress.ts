@@ -66,7 +66,11 @@ export function updateFor(tool: string, input: any, resp: any): string | undefin
     }
     if (/\brun_tests\.py\b/.test(cmd)) {
       const s = lastMatch(out, /^passed \d+\s+failed \d+/)
-      return s ? `suite: ${s}` : "suite run finished"
+      if (s) return `suite: ${s}`
+      if (/\s--(?:help|print-cmd|selftest)\b|\s-h\b/.test(cmd)) return undefined
+      // A detached run (`--detach`) or a background Bash call has not run yet: its `--wait` call reports the result.
+      if (/\s--detach\b/.test(cmd) || /running in background|moved to the background/i.test(out) || (resp && typeof resp === "object" && (resp.backgroundTaskId || resp.background_task_id))) return "suite started"
+      return "suite run finished"
     }
     if (/\brun_gates\.py\b/.test(cmd)) {
       const s = out.split("\n").map((l) => l.trim()).filter(Boolean).pop()

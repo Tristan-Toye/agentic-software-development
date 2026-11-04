@@ -83,7 +83,7 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}.acard{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:8px}.acard.next{border-color:var(--acc)}
 .ahd{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.aname{font-weight:700;font-size:1rem;margin-right:4px}.meter .mhd{display:flex;justify-content:space-between;font-size:12.5px}.meter .ml{color:var(--mut)}.meter .mv{font-weight:600}
 .mbar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin:3px 0}.mfill{display:block;height:100%;background:var(--acc)}.mfill.ok{background:var(--ok)}.mfill.warn{background:var(--warn)}.mfill.bad{background:var(--bad)}
-.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 0;color:var(--fg)}.nowline .nowtext{display:inline-flex;gap:6px;align-items:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .nowline{margin:2px 0 0;color:var(--mut)}.nowline .chip{font-size:11px}.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip.fixing{display:inline-flex;align-items:center;gap:5px;background:var(--accbg);color:var(--acc);font-weight:600}a.srow:has(.chip.fixing){box-shadow:inset 3px 0 0 var(--acc)}
 .dfp{border-left:3px solid var(--acc)}.dfp-bar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--chip);margin:6px 0 4px}.dfp-bar .seg{display:block;height:100%}
 .seg.ok,.sw.ok{background:var(--ok)}.seg.acc,.sw.acc{background:var(--acc)}.seg.warn,.sw.warn{background:var(--warn)}.seg.mut,.sw.mut{background:var(--mut)}.seg.mut2,.sw.mut2{background:var(--bd)}
@@ -330,7 +330,7 @@ function runningView() {
     if (nq) right.push(h('span', { class: 'qb' }, ['? ' + nq]));
     if (r.blocked) right.push(chip('⛔ ' + r.blocked + ' blocked', 'blocked'));
     return h('a', { class: 'srow', href: hrefItem(r.repo, r.id), 'data-k': 'run:' + r.repo + '/' + r.id }, [h('span', { class: 'sid mono' }, [r.id]),
-      h('span', { class: 'sname' }, [h('span', {}, [r.title]), h('span', { class: 'small mut rsub' }, [rlabel(r.repo) + ' · ' + (stageText(r) || 'starting') + (last ? ' · ' : ''), last ? when(last.ts, 'last activity ') : null])]),
+      h('span', { class: 'sname' }, [h('span', {}, [r.title]), h('span', { class: 'small mut rsub' }, [rlabel(r.repo) + ' · ' + (stageText(r) || 'starting') + (last ? ' · ' : ''), last ? when(last.ts, 'last update ') : null]), nowLine(r)]),
       h('span', { class: 'sright' }, right)]);
   });
   const head = live.length ? live.length + ' run' + (live.length === 1 ? '' : 's') + ' · ' + working + ' working' + (agents ? ' · ' + agents + ' sub-agent' + (agents === 1 ? '' : 's') : '') : 'Nothing is running';
@@ -343,6 +343,27 @@ function questionsView() {
   if (tq) kids.push(section('Thread', null, qCard(tq, { thread: true, hit: hq }), 'thread'));
   kids.push(queueView(hq));
   return h('div', {}, kids);
+}
+/* What a live run's orchestrator is on right now (its transcript): the call in flight, else the background work it waits for; and how long it has been quiet. */
+function nowDoing(r) {
+  const live = r.runner ? ['running', 'waiting'].includes(r.runner.state) : (r.session && r.session.state === 'active');
+  const a = r.session && r.session.activity; if (!live || !a) return null;
+  const since = (ts) => ts && Date.parse(ts) ? ' · for ' + dur(Date.now() - Date.parse(ts)) : '';
+  let text = '', tone = 'neutral';
+  if (a.doing) text = 'Now: ' + a.doing + since(a.doingSince);
+  else if (a.background.length) { const first = a.background.slice().sort((x, y) => (x.since || '').localeCompare(y.since || ''))[0]; text = 'Waiting on: ' + a.background.map(b => b.label).join(', ') + since(first.since); }
+  else if (r.runner && r.runner.state === 'waiting') text = '';
+  else text = 'Thinking';
+  const quietMs = a.lastTs && Date.parse(a.lastTs) ? Date.now() - Date.parse(a.lastTs) : 0;
+  const quiet = r.runner && r.runner.state === 'running' && quietMs >= 20 * 60000 ? 'quiet for ' + dur(quietMs) : '';
+  if (quiet && !a.doing && !a.background.length) tone = 'warn';
+  if (!text && !quiet) return null;
+  return { text, quiet, tone, title: a.lastTs ? 'Last transcript activity ' + new Date(a.lastTs).toLocaleString() : '' };
+}
+function nowLine(r) {
+  const n = nowDoing(r); if (!n) return null;
+  return h('div', { class: 'nowline small', title: n.title }, [n.text ? h('span', { class: 'nowtext' }, [h('span', { class: 'dot info live' }), n.text]) : null,
+    n.quiet ? chip(n.quiet + (n.tone === 'warn' ? ' ⚠' : ''), n.tone) : null]);
 }
 function latestDoing(r) { const u = r.updates.find(x => !x.auto) || r.updates[0]; return u ? u.text : (r.lastActivity || ''); }
 function stageOf9(r) { return /^\d+$/.test(r.phase || '') ? 'Stage ' + r.phase + '/9' + (r.phaseName ? ' · ' + r.phaseName : '') : stageText(r); }
@@ -444,7 +465,7 @@ function header(r, mode) {
   if (mode === 'run') acts.push(h('a', { class: 'btn', href: hrefItem(r.repo, r.id) + '/dossier' }, ['View dossier']));
   else if (r.updates.length || inProgress(r)) acts.push(h('a', { class: 'btn', href: hrefItem(r.repo, r.id) }, ['Back to run']));
   return h('div', { class: 'panel' }, [h('h1', { style: 'margin-top:0' }, [r.id + ' · ' + r.title]), r.summary && mode === 'run' ? h('p', { class: 'sum' }, [r.summary]) : null,
-    h('div', { class: 'chips' }, cs), h('div', { class: 'row' }, controls(r, true).concat(acts))]);
+    h('div', { class: 'chips' }, cs), nowLine(r), h('div', { class: 'row' }, controls(r, true).concat(acts))]);
 }
 const ICON = { blocked: '⛔', start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', spawn: '⎇', reply: '↩', routine: '·', info: '·', entry: '§' };
 const KLABEL = { blocked: 'blocked by the safety check', start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', spawn: 'agent', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };

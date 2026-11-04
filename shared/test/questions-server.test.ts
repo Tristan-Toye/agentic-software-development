@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { channelNameFor, interpretEnvelope, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier } from "../questions/runs.ts"
+import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
@@ -331,6 +331,24 @@ check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n
   check("classify: update lines, auto key events still stand out", k("update", "run_tests: suite green (42 passed)", true) === "suite-green" && k("update", "run_tests: 3 tests failed", true) === "suite-red" && k("update", "run_gates: gates passed", true) === "gate" && k("update", "PR #12 opened", true) === "pr" && k("update", "workflow started: review", true) === "workflow" && k("update", "dossier_edit log line", true) === "routine" && k("update", "wave one returned") === "note")
   const ev = (text: string, event: string) => classify(E({ type: "update", text, auto: true, event } as any)).kind
   check("classify: an agent note is prose, never a suite, gate or PR event", k("update", "The repository gates never had one clean full pass: one gate failed, then passed alone after a test fixture rebuild.") === "note" && k("update", "W-128 is done and its PR is ready for your review.") === "done" && k("update", "the PR was opened") === "note")
+{
+  const J = (o: any) => JSON.stringify(o)
+  const A = (ts: string, blocks: any[]) => J({ type: "assistant", timestamp: ts, message: { content: blocks } })
+  const U = (ts: string, content: any) => J({ type: "user", timestamp: ts, message: { content } })
+  const bash = (id: string, description: string, bg = false) => ({ type: "tool_use", id, name: "Bash", input: { command: "x", description, ...(bg ? { run_in_background: true } : {}) } })
+  const res = (id: string, text: string) => ({ type: "tool_result", tool_use_id: id, content: text })
+  const lines = [
+    A("2026-11-04T18:53:22Z", [bash("t1", "Run the VM suite", true)]), U("2026-11-04T18:53:25Z", [res("t1", "Command running in background with ID: b1. Output is being written to: /x")]),
+    A("2026-11-04T18:53:30Z", [{ type: "tool_use", id: "t2", name: "Workflow", input: { name: "agentic-software-development:phase4-wave" } }]), U("2026-11-04T18:53:31Z", [res("t2", "Workflow launched in background. Task ID: w1")]),
+    U("2026-11-04T19:00:00Z", "<task-notification>\n<task-id>w1</task-id>\n<tool-use-id>t2</tool-use-id>\n</task-notification>"),
+    A("2026-11-04T19:01:00Z", [bash("t3", "Read the digest")]),
+  ]
+  const a = activityOf(lines)
+  check("activity: the call in flight, the background work still unnotified", a.doing === "Read the digest" && a.doingSince === "2026-11-04T19:01:00Z" && a.background.length === 1 && a.background[0].label === "Run the VM suite" && a.lastTs === "2026-11-04T19:01:00Z", J(a))
+  const b = activityOf([...lines, U("2026-11-04T19:01:05Z", [res("t3", "ok")])])
+  check("activity: a finished call leaves only the background wait", b.doing === "" && b.background.length === 1, J(b))
+  check("activity: tool labels", toolLabel("Skill", { skill: "p:phase7-review" }) === "skill phase7-review" && toolLabel("Agent", { subagent_type: "p:implementer" }) === "agent implementer" && toolLabel("Workflow", { name: "p:phase4-wave" }) === "workflow p:phase4-wave")
+}
   check("classify: a hook suite line goes by its failed count", ev("suite: passed 31  failed 0  ignored 0  (cargo)", "suite") === "suite-green" && ev("suite: passed 2  failed 41  ignored 0  (dotnet)", "suite") === "suite-red" && ev("suite run finished", "suite") === "routine" && ev("gates: 7 passed", "gates") === "gate" && ev("PR opened: https://x/pull/1", "pr") === "pr")
   check("classify: key flags and routine flags", classify(E({ type: "stage", text: "x" })).key && classify(E({ type: "question", text: "x" })).key && !classify(E({ type: "update", text: "x", auto: true })).key && classify(E({ type: "update", text: "x", auto: true })).routine && !classify(E({ type: "update", text: "x" })).routine)
   const ups = [
