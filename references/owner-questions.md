@@ -103,6 +103,15 @@ It prints at most 40 lines.
   line restarts the schedule; a server restart sends no backlog.
 - **Page** `GET /`: a dashboard (see Dashboard): the repo cards, then the queue of
   open questions, then running dossiers, this week's stub, stubs and open work.
+  - **Accounts** (home): one card per registered login (`~/.agentic/accounts.json`)
+    with its email and plan, "next runs use this" on the account the next
+    stage starts on, a "blocked until …" chip while the runner has it marked limited, the
+    5-hour and weekly meters with their reset times (`~/.agentic/usage/`), and
+    how many live runs use it. **↻ Check usage** POSTs `/api/accounts/refresh`,
+    which runs `run_dossier.py usage` in the background.
+  - **Running now** (home): every live run across repos (running, waiting,
+    paused) with its step, account, sub-agents at work this stage, context and
+    last activity; the header counts runs, working runs and sub-agents.
   - Each question shows its thread, the option buttons (an answer, the
   recommendation highlighted), a text box with one **Send** button. Typed text is always a
   follow-up and the question stays open: the agent answers it, or, when it

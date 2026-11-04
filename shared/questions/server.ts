@@ -13,7 +13,8 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
 import { api, apiGet, channelNameFor, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
-import { openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
+import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
+import { readAccounts, usageDir } from "./accounts.ts"
 
 const DIR = storeDir()
 const MIN = 60 * 1000
@@ -335,6 +336,7 @@ function runnerLog(repo: string, id: string): string | null {
 }
 const inflightControl = new Set<string>()
 const summaryInflight = new Set<string>()
+let usageInflight = false
 
 export async function handle(req: Request): Promise<Response> {
   const url = new URL(req.url)
@@ -345,7 +347,24 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && gr) return new Response(null, { status: 302, headers: { location: `/repo/${gr[1]}` } })
   if (req.method === "GET" && (path === "/" || path === "/questions" || /^\/repo\/[\w.-]+(\/.*)?$/.test(path))) return html(PAGE)
   if (req.method === "GET" && path === "/api/events") return events(req)
-  if (req.method === "GET" && path === "/api/runs") return json({ ...(await getRuns(() => readAll(DIR))), slack: slackOn() })
+  if (req.method === "GET" && path === "/api/runs") {
+    // Live runs carry their agent counts (this stage); the accounts carry their windows and which runs use them.
+    const v = await getRuns(() => readAll(DIR))
+    const runs = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(readUpdates(`${r.repo}.${r.id}`, runsDir(), 3000)), blocked: readBlocks(`${r.repo}.${r.id}`).length } : r))
+    const accounts = readAccounts(runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: `${r.repo}.${r.id}`, account: r.runner?.account })))
+    return json({ ...v, runs, accounts, usageBusy: usageInflight, slack: slackOn() })
+  }
+  if (path === "/api/accounts/refresh") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    if (usageInflight) return json({ error: "already checking" }, 409)
+    usageInflight = true
+    // One tiny haiku call per account reads its windows; the page refreshes when the files land.
+    void runRunner(["usage"], 5 * 60_000).finally(() => { usageInflight = false; emitChange("runs") })
+    emitChange("runs")
+    return json({ ok: true, output: "checking the accounts" })
+  }
   if (req.method === "GET" && path === "/api/stubs") return json(await getStubs(() => readAll(DIR)))
   const ow = path.match(/^\/open-work\/([\w.-]+)$/)
   if (req.method === "GET" && ow) {
@@ -604,6 +623,10 @@ async function main(): Promise<void> {
   } catch (e) {
     log(`runs dir not watched: ${(e as Error).message}`)
   }
+  try {
+    mkdirSync(usageDir(), { recursive: true })
+    watch(usageDir(), () => emitChange("runs"))
+  } catch { /* the 10 s rescan still picks the readings up */ }
   setInterval(() => { void scan(); void scanRunThreads() }, 10_000)
 }
 

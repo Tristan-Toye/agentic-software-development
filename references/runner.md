@@ -88,6 +88,18 @@ the recorded checkpoints.
   `.claude/settings.local.json`, applied before the classifier from the next
   stage; or `autoMode.environment` / `autoMode.allow` in `~/.claude/settings.json`
   for trusted infrastructure. A `deny` rule always wins.
+- **Usage per account:** every `rate_limit_event` a stage emits is recorded
+  in `~/.agentic/usage/<account>.json` (`ASD_USAGE_DIR`): the 5-hour and
+  weekly windows (`used_percentage`, `resets_at`, `status`, from
+  `unifiedWindows`). `run_dossier.py usage [--account NAME]` reads them for an
+  account nothing runs on, with one tiny haiku call each; the dashboard's
+  Accounts panel shows them. Interactive sessions can keep the same file
+  current from the status line, whose JSON input carries
+  `rate_limits.five_hour` and `rate_limits.seven_day` (`used_percentage`,
+  `resets_at`): a status-line command that maps its `CLAUDE_CONFIG_DIR` to the
+  account name in `~/.agentic/accounts.json` and writes that shape (the
+  owner's `~/.claude/hooks/claude-usage-sampler.py` does, with `via:
+  "statusline"`).
 - **A stage with no checkpoint:** if a stage ends with `RUNNER: STAGE-DONE`
   but no `phase_checkpoint` call was seen (the tool was missing or skipped),
   the runner writes the `stage` line itself, so the dashboard still draws the
