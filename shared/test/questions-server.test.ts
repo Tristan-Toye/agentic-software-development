@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { channelNameFor, interpretEnvelope, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel } from "../questions/runs.ts"
+import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
@@ -14,7 +14,7 @@ import { blockedTarget } from "../claude/permission-denied.ts"
 import { mergeSpawns, inTimeline } from "../questions/timeline.ts"
 import { nextMerges, dossierOfPr } from "../questions/merges.ts"
 import { agentCounts, waitingForSlots, runStatusText, statusBlocks, openerBlocks } from "../questions/runstatus.ts"
-import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPanel } from "../questions/timeline.ts"
+import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPanel, splitSections, commandStep } from "../questions/timeline.ts"
 import { blockedByOf, controlsFor } from "../questions/controls.ts"
 import { readAccounts } from "../questions/accounts.ts"
 import { execFileSync } from "node:child_process"
@@ -70,10 +70,16 @@ check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "
   const U2 = (ts: string, kind: string, text: string, extra: object = {}) => ({ ts, kind, text, ...extra }) as any
   const ups = [U2("2026-11-04T09:20:00Z", "stage", "triage done", { stage: "Fix-deferred — reusing Phase 7 fix machinery" }), U2("2026-11-04T09:16:00Z", "update", "Started fixing W-1's deferred issues."),
     U2("2026-11-04T09:15:07Z", "runner", "start /fix-deferred W-1 in /r"), U2("2026-11-04T07:24:24Z", "stage", "PR ready", { stage: "Phase 9 — PR" }), U2("2026-11-04T07:00:00Z", "stage", "x", { stage: "Phase 8 — ADRs" })]
-  const g = groupByPhase(mergeTimeline({ updates: ups, questions: [] }))
-  check("timeline: a fix-deferred run is a section of its own, its steps stay in it", g.length === 3 && g[0].label === "Fix deferred issues" && g[0].current && g[0].items.some((i: any) => i.entry?.text === "Started fixing W-1's deferred issues.") && g[1].label.startsWith("Phase 9"), JSON.stringify(g.map((x) => x.label)))
-  const g2 = groupByPhase(mergeTimeline({ updates: [U2("2026-11-04T10:00:00Z", "stage", "y", { stage: "Phase 9 — PR again" }), U2("2026-11-04T09:59:00Z", "runner", "start /work-on W-1 in /r"), ...ups], questions: [] }))
-  check("timeline: a /work-on run after a fix-deferred run counts phases again", g2[0].label.startsWith("Phase 9") && g2[1].label === "Fix deferred issues", JSON.stringify(g2.map((x) => x.label)))
+  const secs = splitSections(mergeTimeline({ updates: ups, questions: [] }))
+  const impl = groupByPhase(secs[0].entries), fd = groupByPhase(secs[1].entries, "Started")
+  check("timeline: a fix-deferred run is a tab of its own; the dossier's phases stay in Implement dossier", secs.length === 2 && secs[0].label === "Implement dossier" && secs[1].cmd === "fix-deferred" && secs[1].label === "Fix deferred issues"
+    && impl.map((x) => x.label).join("|") === "Phase 9|Phase 8" && fd.map((x) => x.label).join("|") === "Step 4 — Fix, test first|Started" && fd[1].items.some((i: any) => i.entry?.text === "Started fixing W-1's deferred issues."), JSON.stringify([impl.map((x) => x.label), fd.map((x) => x.label)]))
+  const secs2 = splitSections(mergeTimeline({ updates: [U2("2026-11-04T10:00:00Z", "stage", "y", { stage: "Phase 9 — PR again" }), U2("2026-11-04T09:59:00Z", "runner", "start /work-on W-1 in /r"), ...ups], questions: [] }))
+  check("timeline: a /work-on run after a fix-deferred run goes back to Implement dossier", groupByPhase(secs2[0].entries)[0].label.startsWith("Phase 9") && secs2[1].entries.every((e) => e.cmd === "fix-deferred"), JSON.stringify(groupByPhase(secs2[0].entries).map((x) => x.label)))
+  check("timeline: fix-deferred steps by number, else by their words", commandStep("fix-deferred", "Fix-deferred — Step 3 — The stacked branch")?.n === 3 && commandStep("fix-deferred", "Phase 7 — Fix-deferred: review fixed, waiting on Q22")?.n === 5
+    && commandStep("fix-deferred", "Phase 2 — Fix-deferred — Triage")?.n === 2 && commandStep("fix-deferred", "Phase 6 — Fix-deferred — The pull request")?.n === 6 && commandStep("fix-deferred", "Phase 7 — Fix-deferred: triage and payloads")?.n === 2 && commandStep("work-on", "x") === null)
+  const ups3 = [U2("2026-11-04T12:00:00Z", "runner", "start /fix-deferred W-1 in /r"), ...ups]
+  check("timeline: a restarted fix-deferred run carries on in its tab", splitSections(mergeTimeline({ updates: ups3, questions: [] })).length === 2)
 }
 {
   const bd = mkdtempSync(join(tmpdir(), "blk-"))
@@ -387,6 +393,19 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
   check("fetch: the checked-out branch does not move", g(M, "rev-parse", "HEAD") === head0)
   check("fetch: at most once per interval", (await fetchStubRefs(M, 1e15 + 1000)) === false)
   rmSync(gd, { recursive: true, force: true })
+}
+{
+  // An item ruled to its own dossier links to the dossier /plan made from it, from that dossier's DEFERRED-SOURCE;
+  // the same issue in another dossier follows its seed; a live /plan run shows as planning.
+  const led = (id: string, extra: string) => parseDeferred(`DEFERRED:\n- D-1 bug a — x.rs:1 — r — w\n- D-7 bug b — y.rs:2 — r — w\n${extra}`)
+  const mk = (id: string, items: any[]) => ({ repo: "r", id, deferred: { items } }) as any
+  const w128 = mk("W-128", led("W-128", "- DEFERRED-TRIAGE: D-1 → dossier — design; seed: /plan W-128 D-1\n").items)
+  const w130 = mk("W-130", led("W-130", "- DEFERRED-TRIAGE: D-7 → dossier — same as W-128 D-1; seed: /plan W-128 D-1\n").items)
+  check("plan link: DEFERRED-SOURCE lines are read", JSON.stringify(deferredSources("x\n- DEFERRED-SOURCE: W-128 D-1\n")) === JSON.stringify([{ src: "W-128", item: "D-1" }]))
+  linkPlannedItems([w128, w130], new Map(), (k) => (k === "r.W-128.plan-D-1" ? "running" : undefined))
+  check("plan link: a live /plan run shows on the item and on the same issue elsewhere", w128.deferred.items[0].planning === "running" && w130.deferred.items[1].planning === "running" && w130.deferred.items[1].seed.src === "W-128")
+  linkPlannedItems([w128, w130], new Map([["r/W-128/D-1", "W-150"]]), () => "done")
+  check("plan link: once planned, both items link to the one new dossier", w128.deferred.items[0].dossier === "W-150" && w130.deferred.items[1].dossier === "W-150")
 }
   check("classify: a hook suite line goes by its failed count", ev("suite: passed 31  failed 0  ignored 0  (cargo)", "suite") === "suite-green" && ev("suite: passed 2  failed 41  ignored 0  (dotnet)", "suite") === "suite-red" && ev("suite run finished", "suite") === "routine" && ev("gates: 7 passed", "gates") === "gate" && ev("PR opened: https://x/pull/1", "pr") === "pr")
   check("classify: key flags and routine flags", classify(E({ type: "stage", text: "x" })).key && classify(E({ type: "question", text: "x" })).key && !classify(E({ type: "update", text: "x", auto: true })).key && classify(E({ type: "update", text: "x", auto: true })).routine && !classify(E({ type: "update", text: "x" })).routine)

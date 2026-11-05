@@ -85,10 +85,14 @@ points at:
   it, or `.discovery/deferred-ledger.md` when no dossier covers it. The line
   is the problem statement — its `path:line` is your first anchor, its risk
   and proposed fix seed `## Problem` and `## Approach`. Show the user the
-  restatement as usual, quoting the ledger line. Once the new dossier has
-  its ID, log `DEFERRED-DOSSIER: D-3 → <new ID>` in the source dossier's
-  `## Build log` (`dossier_edit.py log`), so its ledger shows where the item
-  went.
+  restatement as usual, quoting the ledger line. With the source given
+  (`<source ID> D-3`, as `/fix-deferred` and the dashboard's Plan it start
+  it), read that dossier's ledger. Once the new dossier has its ID, log
+  `DEFERRED-SOURCE: <source ID> D-3` in **the new dossier's own** `## Build
+  log` (`dossier_edit.py log`): the dashboard links the item to it from
+  there, and no other run's copy of the source is touched. Log
+  `DEFERRED-DOSSIER: D-3 → <new ID>` in the source dossier's `## Build log`
+  too when its copy is yours to edit (no live run on it).
 - **A dossier ID** (`W-014`) → a `planned` dossier that needs this command
   again: `/work-on` returned it with a `RETURNED-TO-PLAN:` line, or an
   earlier `/plan` run stopped at its review budget. Read the last lines of

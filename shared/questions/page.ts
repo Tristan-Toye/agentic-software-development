@@ -556,12 +556,16 @@ function itemView(repo, id) {
   const hasTl = d && d.entries && d.entries.length > 0, hasLog = d && d.log && d.log.length > 0, nDf = r.deferred ? r.deferred.items.length : 0;
   const list = [];
   if (mode !== 'run') list.push(['doc', 'Dossier']);
-  if (mode === 'run' || hasTl) list.push(['timeline', d && d.planning ? 'Planning' : 'Timeline']);
+  // One timeline tab per run: Implement dossier (the /work-on phases), then each later run (Fix deferred issues, …) with its own steps.
+  const secs = (d && d.sections) || [];
+  if (mode === 'run' || hasTl) list.push(['timeline', d && d.planning ? 'Planning' : 'Implement dossier']);
+  secs.filter(x => x.cmd).forEach(x => list.push(['tl:' + x.cmd, x.label]));
   if (mode === 'run' || hasLog) list.push(['log', 'Build log' + (hasLog ? ' (' + d.log.length + ')' : '')]);
   if (nDf) list.push(['deferred', 'Deferred (' + r.deferredOpen + ' open / ' + nDf + ')']);
   // A finished dossier opens on its dossier, but while a later run (fixing deferred issues) works, on its timeline.
   const busy = r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state);
-  let tab = S.tab[key] || (busy && list.some(t => t[0] === 'timeline') ? 'timeline' : list[0][0]); if (!list.some(t => t[0] === tab)) tab = list[0][0];
+  const liveTab = d && d.activeSection ? 'tl:' + d.activeSection : 'timeline';
+  let tab = S.tab[key] || (busy && list.some(t => t[0] === liveTab) ? liveTab : busy && list.some(t => t[0] === 'timeline') ? 'timeline' : list[0][0]); if (!list.some(t => t[0] === tab)) tab = list[0][0];
   if (list.length > 1) kids.push(tabs(key, list));
   if (!d) kids.push(h('div', { class: 'empty' }, ['Loading…']));
   else if (tab === 'doc') {
@@ -573,7 +577,12 @@ function itemView(repo, id) {
   }
   else if (tab === 'log') kids.push(hasLog ? h('ol', { class: 'tl', 'data-k': 'log' }, d.log.slice().reverse().map((l, i) => h('li', { class: 'log', 'data-k': 'l:' + i + l.slice(0, 30) }, [h('div', { class: 'tx' }, [l])]))) : h('div', { class: 'empty' }, ['The dossier has no build log yet.']));
   else if (tab === 'deferred') kids.push(deferredView(r));
-  else { if (mode === 'run') kids.push(nowView(d, r.runner, true)); kids.push(groupsView(d.groups || [], key, 'No updates yet — the agent posts here as the run progresses')); }
+  else {
+    const sec = tab.indexOf('tl:') === 0 ? secs.find(x => 'tl:' + x.cmd === tab) : null;
+    const live = (d.activeSection || '') === (sec ? sec.cmd : '');
+    if (mode === 'run' && live) kids.push(nowView(d, r.runner, true));
+    kids.push(groupsView(sec ? sec.groups : (d.groups || []), key + (sec ? ':' + sec.cmd : ''), 'No updates yet — the agent posts here as the run progresses'));
+  }
   return h('div', {}, kids);
 }
 /* The deferred ledger: open items with a copyable /plan seed, fixed ones with their
@@ -585,8 +594,11 @@ function dfState(r, i) {
   if (i.state === 'dossier') {
     if (i.dossier) return h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]);
     const cmd = '/plan ' + r.id + ' ' + i.id;
-    return h('span', { class: 'dfplan', title: 'You ruled this item to its own dossier. No dossier is written yet: run ' + cmd + ' in the repo to plan it.' }, [chip('own dossier · not planned yet', 'planned'),
-      h('button', { class: 'btn sm', type: 'button', 'data-act': 'copy', 'data-text': cmd }, ['Copy ' + cmd])]);
+    if (i.planning && ['running', 'waiting', 'paused'].includes(i.planning)) return h('span', { title: 'A /plan run is writing this dossier' + (i.planning === 'waiting' ? '; it waits for your answer' : '') }, [chip(i.planning === 'waiting' ? 'being planned · ? waiting for you' : 'being planned', i.planning === 'waiting' ? 'warn' : 'pending')]);
+    const st = S.ctl[r.repo + '/' + r.id + ':plan:' + i.id] || {};
+    return h('span', { class: 'dfplan', title: 'You ruled this item to its own dossier. No dossier is written yet' + (i.planning === 'failed' || i.planning === 'stopped' ? ' (its /plan run ' + i.planning + ')' : '') + '. Plan it starts ' + cmd + ' in the background; its questions come to you here.' }, [chip('own dossier · not planned yet', 'planned'),
+      h('button', { class: 'btn sm', type: 'button', 'data-act': 'plan-item', 'data-repo': r.repo, 'data-id': r.id, 'data-item': i.id, disabled: st.busy ? true : null }, [st.busy ? 'Starting…' : 'Plan it']),
+      h('button', { class: 'btn sm', type: 'button', 'data-act': 'copy', 'data-text': cmd }, ['Copy ' + cmd]), st.err ? h('span', { class: 'err' }, [st.err]) : null]);
   }
   if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('dropped', 'neutral')]);
   if (i.state === 'open' && i.keptOpen) return h('span', { title: i.ruling || '' }, [chip('left open · your ruling', 'neutral')]);
@@ -902,6 +914,15 @@ async function writeSummary(btn) {
   } catch (e) { st.err = 'request failed'; }
   st.busy = false; await load(['runs']);
 }
+async function planItem(btn) {
+  const repo = btn.dataset.repo, id = btn.dataset.id, item = btn.dataset.item, k = repo + '/' + id + ':plan:' + item;
+  const st = S.ctl[k] = S.ctl[k] || {}; if (st.busy) return; st.busy = true; st.err = ''; render();
+  try {
+    const r = await fetch('/api/runs/' + enc(repo) + '/' + enc(id) + '/plan-item', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ item }) });
+    const j = await r.json().catch(() => ({})); if (!(r.ok && j.ok !== false)) st.err = j.error || j.output || ('HTTP ' + r.status);
+  } catch (e) { st.err = 'request failed'; }
+  st.busy = false; await load(['runs']);
+}
 async function sendChat(btn) {
   const repo = btn.dataset.repo, id = btn.dataset.id, key = repo + '/' + id; const st = S.chat[key] = S.chat[key] || {};
   const ta = document.querySelector('textarea[data-chat="' + key.replace(/"/g, '') + '"]'); const text = ta ? ta.value.trim() : '';
@@ -933,6 +954,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'dsel-all') { const r0 = S.runs.find(x => x.repo + '/' + x.id === t.dataset.key); if (r0) { const pk = r0.deferred.items.filter(dfPickable); const m = S.dsel[t.dataset.key] = S.dsel[t.dataset.key] || {}; const all = pk.every(i => m[i.id]); pk.forEach(i => { if (all) delete m[i.id]; else m[i.id] = true; }); render(); } }
     else if (act === 'fix-sel') fixSelected(t);
     else if (act === 'chat') sendChat(t);
+    else if (act === 'plan-item') planItem(t);
     else if (act === 'summary') writeSummary(t);
     else if (act === 'blk') ruleBlock(t);
     else if (act === 'usage-refresh') { S.usageBusy = true; render(); fetch('/api/accounts/refresh', { method: 'POST' }).catch(() => {}).finally(() => load(['runs'])); }

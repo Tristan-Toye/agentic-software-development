@@ -255,9 +255,17 @@ restarted server answers at once from them while its first scan runs.
     lines from before the two fields existed show them only from the report). Each item reads
     "fixed in stacked PR" (`DEFERRED-FIXED:`), "→ dossier W-…"
     (`DEFERRED-DOSSIER: D-n → <ID>`, written by `/plan`), "own dossier · not
-    planned yet" with a Copy button for `/plan <ID> D-n` (`DEFERRED-TRIAGE: D-n
-    → dossier`: routed, no dossier written yet), "deprecated" (`DEFERRED-DROPPED:`) or
-    "not tackled". Every dossier page has the tabs Dossier (finished or not
+    planned yet" with **Plan it** (starts `run_dossier.py <ID> --command plan
+    --items D-n`: a `/plan <ID> D-n` session of its own, `<repo>.<ID>.plan-D-n`)
+    and a Copy button for the command (`DEFERRED-TRIAGE: D-n → dossier`: routed,
+    no dossier written yet), "being planned" while that run is live, then "→
+    dossier W-…" from the new dossier's `DEFERRED-SOURCE: <ID> D-n` line; an item
+    that is the same issue as another dossier's (its seed, or `DEFERRED-SAME`)
+    follows that one, "deprecated" (`DEFERRED-DROPPED:`) or
+    "not tackled". The timeline is one tab per run: **Implement dossier** (the `/work-on`
+    phases) and one per later run (**Fix deferred issues**, **After the
+    merge**), grouped by that command's own steps (`Step <n>` in the
+    checkpoint name, else its words); the Now panel follows the newest. Every dossier page has the tabs Dossier (finished or not
     started), Timeline, Build log and Deferred, each shown when it has content. Each
     item has a Plan button that copies `/plan <ID> D-n` (ledgers of dossiers last
     updated before 2026-11-03 and never run by the runner are ignored,
