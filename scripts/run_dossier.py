@@ -74,6 +74,7 @@ You run under the dossier runner and nobody reads the terminal.
 - Never end a turn to wait for a command: run commands in the foreground (raise the Bash timeout up to 10 minutes) or wait for them inside the same turn. A workflow or background task that notifies you later is fine, but say `waiting for <what>` in plain text in that turn (never as a `RUNNER:` line); the runner keeps the session open for its notification.
 - When the auto-mode safety check blocks a call you need, never work around it: ask the owner with `ask_owner.py ask`, quoting the exact command (or path) and what it is for, with options to allow it once, to allow it as a standing rule, or to go without it; carry on with what is not blocked. The dashboard's Blocked card answers that question; an approval names the exact command, so retry it as written.
 - Run every test through scripts/run_tests.py and every gate list through scripts/run_gates.py (`--vm` for the VM, `--detach` then `--wait` for a long run), never through a script or command of your own: their result lines are how the owner's timeline shows a suite going green or red. Run only the tests the command's step names: under /work-on and /fix-deferred with SUITE-MODE `stub`, that is the new and affected tests and the pull request's CI, never the full workspace or `--stack` suite, which only /stub runs.
+- Never end a stage (or the run) while a background command, workflow or agent you started is still running: it dies with this process and no notification reaches the next stage. Wait for its notification and take its result first; the runner holds a stage end that comes too early. If a checkpoint must still name work in flight, say how the next stage tells it finished or died (its report file, its branch or worktree, its output file).
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
 - Keep the owner informed: post an update with `ask_owner.py note --root R --dossier ID --text "..."` when a stage starts and ends and whenever something worth knowing happens (a wave returned, the suite went green or red, an arbitration was ruled, a plan changed). Write it for a person reading on a phone: what happened and what it means, in plain sentences; markdown bullets and small tables are welcome. Never paste commands, file paths, SHAs, flags or log output into an update; the build log keeps those.
@@ -319,6 +320,69 @@ def kill_group(proc: subprocess.Popen | None, sig=signal.SIGTERM) -> None:
         pass
 
 
+# ---- background work in flight, from the session transcript (#239) ----
+BG_LAUNCHED = re.compile(r"running in background|launched in background|moved to the background|launched successfully|running in the background", re.I)
+BG_NOTIFIED = re.compile(r"<task-notification>[\s\S]*?<tool-use-id>([^<\s]+)</tool-use-id>")
+
+
+def transcript_path(session: str, config_dir: str | None) -> str | None:
+    """The session's transcript: `<config dir>/projects/*/<session>.jsonl` (`ASD_TRANSCRIPTS_DIR` overrides the
+    projects dir)."""
+    if not session or not re.fullmatch(r"[\w-]+", session):
+        return None
+    base = os.environ.get("ASD_TRANSCRIPTS_DIR") or os.path.join(config_dir or os.path.expanduser("~/.claude"), "projects")
+    try:
+        for d in os.listdir(base):
+            f = os.path.join(base, d, session + ".jsonl")
+            if os.path.isfile(f):
+                return f
+    except OSError:
+        pass
+    return None
+
+
+def background_in_flight(lines: list[str]) -> list[str]:
+    """Labels of the background commands, workflows and agents a session launched that have not notified it yet:
+    a tool call whose result says it went to the background, minus every `<task-notification>` naming its id."""
+    calls: dict[str, str] = {}
+    bg: dict[str, str] = {}
+    for line in lines:
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        c = (o.get("message") or {}).get("content")
+        if o.get("type") == "assistant" and isinstance(c, list):
+            for b in c:
+                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
+                    i = b.get("input") or {}
+                    calls[b["id"]] = str(i.get("description") or i.get("name") or i.get("skill") or b.get("name") or "tool")[:100]
+        elif o.get("type") == "user":
+            texts = [c] if isinstance(c, str) else []
+            for b in c if isinstance(c, list) else []:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "tool_result" and b.get("tool_use_id") in calls:
+                    t = b.get("content") if isinstance(b.get("content"), str) else json.dumps(b.get("content") or "")
+                    if BG_LAUNCHED.search(t[:400]):
+                        bg[b["tool_use_id"]] = calls[b["tool_use_id"]]
+                elif b.get("type") == "text" and isinstance(b.get("text"), str):
+                    texts.append(b["text"])
+            for t in texts:
+                for m in BG_NOTIFIED.finditer(t):
+                    bg.pop(m.group(1), None)
+        elif o.get("type") == "queue-operation" and isinstance(o.get("content"), str):
+            for m in BG_NOTIFIED.finditer(o["content"]):
+                bg.pop(m.group(1), None)
+    return list(bg.values())
+
+
+HOLD_STAGE = ("RUNNER: the stage cannot end yet. Background work you started is still running and would die with this "
+              "process, with no notice to the next stage: {what}. Wait for its notification (end this turn with no RUNNER: "
+              "line; Claude Code re-invokes you when it finishes), take its result, then end the stage again.")
+HOLD_MAX = 3   # after this many held ends the runner lets the stage end, and logs what it cut off
+
+
 # owner_wait's code for "the owner wrote to the run" (not an answer).
 MESSAGE_RC = 20
 # Commands that take an argument list after the dossier id (`--items`).
@@ -559,6 +623,17 @@ class Runner:
             extra = True
         return q, extra
 
+    def background(self) -> list[str]:
+        """The session's background work still in flight (#239), from its transcript; [] when it cannot be read."""
+        path = transcript_path(str(self.state.get("session") or ""), (self.account or {}).get("dir"))
+        if not path:
+            return []
+        try:
+            with open(path, errors="replace") as fh:
+                return background_in_flight(fh.read().splitlines())
+        except OSError:
+            return []
+
     def deliver_inbox(self) -> bool:
         """Send the owner's undelivered messages (`run_dossier.py chat` on a live run) into the live session."""
         if self.proc is None or self.proc.poll() is not None:
@@ -739,6 +814,7 @@ class Runner:
         idle = float(os.environ.get("ASD_RUNNER_IDLE") or 1200)
         quiet = False   # the last turn ended without a RUNNER: line
         nudges = 0
+        holds = 0       # stage ends held while background work ran
         while True:
             kind, val = self.read_turn(q, extra, idle if quiet else None)
             extra = False
@@ -785,6 +861,17 @@ class Runner:
                 continue
             quiet = False
             verb, rest = mk
+            if verb in ("STAGE-DONE", "DONE"):
+                # #239: ending the process kills the background work it started, silently. Hold the end until it is done.
+                bg = self.background()
+                if bg and holds < HOLD_MAX:
+                    holds += 1
+                    self.log(f"stage end held ({holds}/{HOLD_MAX}): {len(bg)} background task(s) still running: " + "; ".join(bg[:4]))
+                    self.send(HOLD_STAGE.format(what="; ".join(bg[:6])))
+                    quiet = True
+                    continue
+                if bg:
+                    self.log(f"stage ended with {len(bg)} background task(s) still running, after {HOLD_MAX} holds; they stop with it: " + "; ".join(bg[:4]))
             if verb == "STAGE-DONE":
                 self.clear_restart()  # the next stage is a new process: it loads the new rules anyway
                 self.end_process()
@@ -1216,6 +1303,10 @@ for raw in sys.stdin:
         elif "reply" in a:
             subprocess.run([sys.executable, ask, "reply", a["reply"], "--text", "because"], capture_output=True)
             final = a["final"]
+        elif "append" in a:
+            with open(a["append"], "a") as fh:
+                fh.write(a["line"] + "\n")
+            final = a.get("final", final)
         elif "final" in a:
             final = a["final"]
     out({"type": "result", "subtype": "success", "is_error": False, "session_id": f"sess-{n}", "result": "SECRET-MODEL-TEXT\n" + final})
@@ -1512,6 +1603,32 @@ def selftest() -> int:
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
         p = start("W-7")
         check("a live owner of the dossier refuses a second runner", p.wait(timeout=30) == 2)
+
+        # ---- #239: a stage end waits for background work the session launched ----
+        J = lambda o: json.dumps(o)
+        lines = [J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"description": "Run the VM suite"}}]}}),
+                 J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "b1", "content": "Command running in background with ID: x1"}]}}),
+                 J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "w1", "name": "Workflow", "input": {"name": "p:phase4-wave"}}]}}),
+                 J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "w1", "content": "Workflow launched in background. Task ID: t"}]}}),
+                 J({"type": "user", "message": {"content": "<task-notification>\n<task-id>t</task-id>\n<tool-use-id>w1</tool-use-id>\n</task-notification>"}}),
+                 J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "f1", "name": "Bash", "input": {"description": "fg"}}]}}),
+                 J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "f1", "content": "ok"}]}})]
+        check("background: launched and not notified is in flight; notified or foreground is not", background_in_flight(lines) == ["Run the VM suite"])
+        tdir = os.path.join(tmp, "projects", "-repo")
+        os.makedirs(tdir, exist_ok=True)
+        tr = os.path.join(tdir, "sess-1.jsonl")
+        open(tr, "w").write("\n".join(lines[:2]) + "\n")
+        note = J({"type": "user", "message": {"content": "<task-notification>\n<tool-use-id>b1</tool-use-id>\n</task-notification>"}})
+        scenario([{"turns": [[{"checkpoint": ["Phase 3", "review spawned in the background"]}, {"final": "RUNNER: STAGE-DONE Phase 3"}],
+                             [{"append": tr, "line": note, "final": "RUNNER: STAGE-DONE Phase 3"}]]},
+                  {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        env["ASD_TRANSCRIPTS_DIR"] = os.path.join(tmp, "projects")
+        p = start("W-31")
+        rc = p.wait(timeout=60)
+        env.pop("ASD_TRANSCRIPTS_DIR")
+        held = [t for t in texts("W-31") if t.startswith("stage end held")]
+        check("background: the stage end is held while it runs, then the run goes on", rc == 0 and len(held) == 1 and "Run the VM suite" in held[0]
+              and any(m.startswith("RUNNER: the stage cannot end yet") for m in msgs(1)))
 
         # ---- the owner's message to a live run: wakes a question wait, the question stays open ----
         q30 = "repo.W-30.Q1"

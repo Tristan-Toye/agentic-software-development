@@ -84,6 +84,14 @@ check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "
   check("blocks: unruled refusals, newest first, one per target; a ruled one is gone", bks.length === 1 && bks[0].id === "t2" && bks[0].reason === "again")
   appendFileSync(join(bd, "r.W-1.jsonl"), L({ ts: "6", event: "block-ruling", tool_use_id: "t2", scope: "always", target: "ssh vm rebuild" }) + "\n")
   check("blocks: an always-allow ruling clears every refusal of that target", readBlocks("r.W-1", bd).length === 0)
+  // A refusal from an earlier stage process is not open: the runner's (python) line format, with spaces.
+  writeFileSync(join(bd, "r.W-2.jsonl"), [L({ ts: "1", event: "blocked", tool: "Bash", target: "docker compose build", reason: "x", tool_use_id: "s1" }),
+    JSON.stringify({ ts: "2", kind: "runner", text: "stage 6 start", stage: "6" }, null, 1).replace(/\n\s*/g, " "),
+    L({ ts: "3", event: "blocked", tool: "Bash", target: "ssh vm", reason: "y", tool_use_id: "s2" })].join("\n") + "\n")
+  const b2 = readBlocks("r.W-2", bd)
+  check("blocks: only the current stage process's refusals are open", b2.length === 1 && b2[0].id === "s2", JSON.stringify(b2))
+  appendFileSync(join(bd, "r.W-2.jsonl"), JSON.stringify({ ts: "4", kind: "runner", text: "start /fix-deferred W-2 in /r" }) + "\n")
+  check("blocks: a restarted run starts with none", readBlocks("r.W-2", bd).length === 0)
   rmSync(bd, { recursive: true, force: true })
   check("blocks: a rule must be narrow", checkRule("Bash(ssh vm-test *)") === "" && checkRule("Bash(*)") !== "" && checkRule("Bash(python3 *)") !== "" && checkRule("Bash(python3 scripts/x.py --y)") === "" && checkRule("ssh x") !== "" && checkRule("Read(/etc/x)") === "")
   check("blocks: the hook records the exact command, a path, else the input", blockedTarget("Bash", { command: "ssh vm x" }) === "ssh vm x" && blockedTarget("Write", { file_path: "/a/b" }) === "/a/b" && blockedTarget("X", { a: 1 }) === '{"a":1}')

@@ -1,5 +1,5 @@
 // Run updates store, runner state, dossier summary and a tiny markdown renderer. Contract: references/runner.md, references/owner-questions.md (Dashboard).
-import { readFileSync } from "node:fs"
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -69,9 +69,16 @@ export function readConversation(key: string, done: boolean, dir = runsDir(), al
 /** A tool call auto mode refused (the PermissionDenied hook), not ruled on yet. */
 export type Block = { id: string; ts: string; tool: string; target: string; reason: string; agent: string }
 /** The refused calls of a run that the owner has not ruled on (`block-ruling` lines), newest first, at most `limit`; one per target. */
+/** A runner line that starts a new stage process: a block an older process hit has no one left waiting on it. */
+const NEW_PROCESS = /^(stage \d+ start|start \/|restarting stage|resumed after)/
 export function readBlocks(key: string, dir = runsDir(), limit = 5): Block[] {
-  let lines: any[] = []
-  try { lines = readFileSync(join(dir, `${key}.jsonl`), "utf8").split("\n").filter((l) => l.includes('"event":"block')).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean) } catch { return [] }
+  let all: any[] = []
+  try { all = readFileSync(join(dir, `${key}.jsonl`), "utf8").split("\n").filter((l) => l.includes('"event":"block') || (l.includes('"runner"') && /stage \d+ start|start \/|restarting stage|resumed after/.test(l))).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean) } catch { return [] }
+  // Only the current stage process's blocks are open: the agent that hit an older one is gone, and the stage that
+  // replaced it either did without the call or will hit (and record) it again.
+  let from = 0
+  all.forEach((o, i) => { if (o.kind === "runner" && NEW_PROCESS.test(String(o.text ?? ""))) from = i + 1 })
+  const lines = all.slice(from).filter((o) => o.event === "blocked" || o.event === "block-ruling")
   const ruled = new Set(lines.filter((o) => o.event === "block-ruling").map((o) => String(o.tool_use_id ?? "")))
   const ruledTargets = new Set(lines.filter((o) => o.event === "block-ruling" && o.scope === "always").map((o) => String(o.target ?? "")))
   const seen = new Set<string>(); const out: Block[] = []
@@ -169,4 +176,22 @@ export function dossierPage(id: string, repo: string, md: string): string {
 <style>:root{color-scheme:light dark;--bg:#fff;--fg:#1b1d21;--bd:#dfe2e7;--chip:#eceef2}@media (prefers-color-scheme:dark){:root{--bg:#111316;--fg:#e6e8eb;--bd:#2c3037;--chip:#272b32}}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}main{max-width:860px;margin:0 auto;padding:16px}
 pre{background:var(--chip);padding:10px;border-radius:6px;overflow-x:auto;font-size:13px}code{background:var(--chip);padding:0 4px;border-radius:4px}h1,h2,h3{border-bottom:1px solid var(--bd);padding-bottom:3px}a{color:inherit}</style></head><body><main><p><a href="/">&larr; dashboard</a> &middot; ${esc(repo)} &middot; read-only</p>${renderMarkdown(md)}</main></body></html>`
+}
+
+/**
+ * The last scanned dashboard view on disk, so a restarted server answers at once from it while its first scan (git and
+ * gh per repo, tens of seconds) runs in the background. `ASD_VIEW_CACHE_DIR` sets the folder; under a test's own
+ * `ASD_RUNS_DIR` without it there is no cache. Outside the runs dir, so writing it never wakes the runs watcher.
+ */
+export function viewCacheDir(): string | null {
+  if (process.env.ASD_VIEW_CACHE_DIR) return process.env.ASD_VIEW_CACHE_DIR
+  return process.env.ASD_RUNS_DIR ? null : join(homedir(), ".agentic", "view-cache")
+}
+export function readViewCache<T>(name: string): T | null {
+  const d = viewCacheDir(); if (!d) return null
+  try { return JSON.parse(readFileSync(join(d, `${name}.json`), "utf8")) as T } catch { return null }
+}
+export function writeViewCache(name: string, v: unknown): void {
+  const d = viewCacheDir(); if (!d) return
+  try { mkdirSync(d, { recursive: true }); const f = join(d, `${name}.json`); writeFileSync(f + ".tmp", JSON.stringify(v)); renameSync(f + ".tmp", f) } catch { /* a cache */ }
 }
