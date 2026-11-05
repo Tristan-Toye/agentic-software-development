@@ -761,8 +761,9 @@ def check_build_log(where: str, text: str, status: str, rep: Report) -> None:
 
 
 def check_contract_id(where: str, dossier_id: str, contract: str, rep: Report) -> None:
-    """The dossier's own id inside `## Contract` is a DEFECT (#233): /work-on copies the contract into source files, so
-    the id would reach the contract commit as code text. The id anywhere else in the dossier raises nothing."""
+    """The dossier's own id inside `## Contract` is a DEFECT (#233) in local mode: /work-on copies the contract into
+    source files, so the gitignored id would reach the contract commit as code text. In committed mode the id is
+    public and this check does not run. The id anywhere else in the dossier raises nothing."""
     if not dossier_id:
         return
     pat = re.compile(r"(?<![A-Za-z0-9])" + re.escape(dossier_id) + r"(?![0-9])", re.I)
@@ -808,7 +809,10 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
             )
     if "## Contract" in sec:
         check_contract(f"{where} ## Contract", sec["## Contract"], rep)
-        check_contract_id(f"{where} ## Contract", str(fm.get("id", "")), sec["## Contract"], rep)
+        # Only where the id is local (#233): in committed mode dossiers are tracked and their ids are public, and a
+        # repository that cites them in source is following its own habit, not leaking a gitignored name.
+        if discovery_mode(repo_root)[0] != "committed":
+            check_contract_id(f"{where} ## Contract", str(fm.get("id", "")), sec["## Contract"], rep)
     if "## Work packages" in sec:
         check_disjoint(
             f"{where} ## Work packages", parse_packages(sec["## Work packages"]), rep
@@ -1917,9 +1921,20 @@ def selftest() -> int:
         r17, r18 = Report(), Report()
         r17.merge(validate_dossier(d / "W-017-idcontract.md", root))
         r18.merge(validate_dossier(d / "W-018-idlog.md", root))
+        # In committed mode (the repository tracks .discovery/) the id is public: no DEFECT.
+        croot = root / "committed"
+        (croot / ".discovery" / "dossiers").mkdir(parents=True)
+        (croot / "src").mkdir()
+        (croot / "src" / "flush.py").write_text("a\nb\nc\nd\n")
+        (croot / ".discovery" / "dossiers" / "W-017-idcontract.md").write_text((d / "W-017-idcontract.md").read_text())
+        for args in (["init", "-q"], ["add", ".discovery"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x"]):
+            subprocess.run(["git", "-C", str(croot), *args], capture_output=True, check=False)
+        r19 = Report()
+        r19.merge(validate_dossier(croot / ".discovery" / "dossiers" / "W-017-idcontract.md", croot))
         checks_233 = {
             "the dossier's own id inside ## Contract is a DEFECT naming the id": any("## Contract" in x and "W-017" in x for x in r17.defects),
             "the dossier's own id outside ## Contract raises nothing": not any("own id" in x for x in r18.defects),
+            "in committed mode the id inside ## Contract raises nothing": not any("own id" in x for x in r19.defects),
         }
         for name, passed in checks_233.items():
             print(f"{'PASS' if passed else 'FAIL'} — {name}")

@@ -63,6 +63,15 @@ the recorded checkpoints.
   time the CLI printed (an epoch after `|` or an ISO time; else it retries
   every 30 minutes, `ASD_RUNNER_LIMIT_WAIT`), then runs the same stage again
   from its checkpoints. `stop` ends a paused run.
+- **Network errors:** a turn (or a process exit) that fails on a transient
+  network or API-server error (`ENOTFOUND`, a reset, refused or timed-out
+  connection, "Can't reach the API server", a 5xx) does not fail the run
+  either. The runner records `paused` with `resumes_at`, posts `paused:
+  network error (…); retry n/8 of stage N at <time>`, waits (30 s, 1, 2, 5, 10,
+  then 15 min; `ASD_RUNNER_NET_WAIT` overrides), and runs the same stage again
+  from its checkpoints. After `ASD_RUNNER_NET_RETRIES` (default 8, about an
+  hour) in a row it becomes a failure the owner rules on ("network errors on 8
+  retries in a row: …"). A stage that ends well resets the count.
 - **Several accounts:** `scripts/setup_claude_account.sh NAME` adds a login
   in its own config dir (`CLAUDE_CONFIG_DIR`, sharing settings, plugins and
   hooks with `~/.claude` by symlink) and registers it in
