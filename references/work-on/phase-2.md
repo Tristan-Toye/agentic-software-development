@@ -94,7 +94,12 @@ This is the step everything else depends on.
 4. **Commit it on `X`.** Prefix with the Jira key. Every fan-out branch forks
    from this commit, so the contract is the one thing all of them share. In
    committed mode the dossier is in this commit too — `status: building`, the
-   revised sections, and their build-log lines.
+   revised sections, and their build-log lines. In local mode commit through
+   `gate_commit.py --root X --paths <contract files> -m MESSAGE --forbid-id
+   <dossier id>`: the id is local, and a contract commit that carries it in
+   its message or its text is refused with the file named, before any
+   fan-out branch forks from it (removing it later rewrites every commit on
+   top).
 
    **Read the repository's commit hooks before this commit, and decide the
    hook policy for the whole fan-out now.** From this commit until the last

@@ -167,9 +167,13 @@ HOOK_CLAIMS = (
 )
 
 
-def git(root: str, *args: str) -> tuple[int, str]:
+def git(root: str, *args: str, strip: bool = True) -> tuple[int, str]:
+    """`git -C root <args>`: (exit code, stdout). Single values come back stripped; pass `strip=False` for output a
+    parser reads, where leading whitespace is data (a porcelain entry ` M <path>`: its leading space is the status)."""
     proc = subprocess.run([GIT, "-C", root, *args], capture_output=True, text=True, check=False)
-    return proc.returncode, proc.stdout.strip() if proc.returncode == 0 else (proc.stdout + proc.stderr).strip()
+    if proc.returncode != 0:
+        return proc.returncode, (proc.stdout + proc.stderr).strip()
+    return 0, proc.stdout.strip() if strip else proc.stdout
 
 
 def script(name: str, *args: str) -> tuple[int, list[str]]:
@@ -209,7 +213,7 @@ def porcelain_paths(root: str) -> list[str]:
     by a status-prefix parse, and no quoting is ever applied); a rename or
     copy record carries the original path as the next NUL entry, which is
     skipped — the new path is the one on disk."""
-    rc, raw = git(root, "status", "--porcelain", "-z", "--untracked-files=all")
+    rc, raw = git(root, "status", "--porcelain", "-z", "--untracked-files=all", strip=False)
     return parse_porcelain_z(raw) if rc == 0 else []
 
 
@@ -881,6 +885,29 @@ def selftest() -> int:
             check("--uncommitted: a path outside TARGET_PATHS is still flagged", rc == 1 and "touched-beyond" in out.splitlines()[0])
             os.remove(os.path.join(root, "docs/other.md"))
             os.remove(os.path.join(root, "docs/adr/0001-x.md"))
+
+            # --- #230: the first porcelain entry keeps its leading status space ---
+            git(root, "checkout", "-q", "-b", "feat/first-entry", base)
+            put(root, "docs/adr/0003-z.md", "v1\n")
+            put(root, "aa_staged.md", "s1\n")
+            git(root, "add", "docs/adr/0003-z.md", "aa_staged.md")
+            git(root, "commit", "-q", "-m", "seed tracked files")
+            seeded = git(root, "rev-parse", "HEAD")[1]
+            put(root, "docs/adr/0003-z.md", "v2\n")
+            check("a modified-unstaged first entry ( M) keeps its whole path",
+                  porcelain_paths(root) == ["docs/adr/0003-z.md"])
+            rc, out = call(["--root", root, "--branch", "feat/first-entry", "--base", seeded, "--uncommitted",
+                            "--owned", "docs/adr/0003-z.md"])
+            check("a Write-only author who edited one existing owned file is clean",
+                  rc == 0 and "verdict: clean" in out and "touched-beyond" not in out.splitlines()[0])
+            git(root, "checkout", "-q", "--", "docs/adr/0003-z.md")
+            put(root, "aa_staged.md", "s2\n")
+            git(root, "add", "aa_staged.md")
+            check("a staged first entry (M ) keeps its whole path", porcelain_paths(root) == ["aa_staged.md"])
+            git(root, "reset", "-q", "--hard", seeded)
+            put(root, "aa_new.md", "n\n")
+            check("an untracked first entry (??) keeps its whole path", porcelain_paths(root) == ["aa_new.md"])
+            os.remove(os.path.join(root, "aa_new.md"))
 
             # --- unusable input ---
             git(root, "checkout", "-q", "feat/empty")

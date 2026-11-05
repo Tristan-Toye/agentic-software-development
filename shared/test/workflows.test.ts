@@ -140,6 +140,17 @@ const fakeWave = (prompt: string, opts: Opts) => {
   check("wave: verifier runs the plugin's verify_return.py with the paths given", calls.some((c) => c.prompt.includes("python3 '/plugin/scripts/verify_return.py' --root '/wt/P1' --branch 'feat/x-P1' --base 'abc123' --payload '/wt/P1/.agent-staging/payloads/P1.md' --payload-sha256 'sha-P1' --print-line --agent 'P1' --owned 'src/P1.rs'") && c.prompt.includes("--report '/wt/P1/.agent-staging/reports/P1.txt' --kind 'implementer'")))
 }
 {
+  // #229: a line that reports there is no gap is no gap, in every prefix and case; a real one still flags
+  const none = ["GAP: none", "- GAP: None.", "* CONTRACT-CHANGE: none", "> GAP:  NONE", "CONTRACT-CHANGE: none;"].join("\n")
+  const quiet = await run(wave, [item("P1")], (p, o) => (o.agentType ? "Done.\n" + none : { verdict: "clean", flags: [], returned_line: "P1 RETURNED: x" }))
+  check("wave: GAP: none / CONTRACT-CHANGE: none raise no flag", quiet.result[0].flags.length === 0 && quiet.result[0].verdict === "clean", JSON.stringify(quiet.result[0]))
+  const real = await run(wave, [item("P1")], (p, o) => (o.agentType ? "- GAP: nonexistent field\n> CONTRACT-CHANGE: none" : { verdict: "clean", flags: [], returned_line: "P1 RETURNED: x" }))
+  check("wave: a real GAP still flags, behind a prefix", real.result[0].flags.includes("gap") && !real.result[0].flags.includes("contract-change"))
+  const { gatedKind } = await import("../claude/progress.ts")
+  const lines = ["GAP: none", "- GAP: None.", "* CONTRACT-CHANGE: none", "> GAP: missing x", "* CONTRACT-CHANGE: f takes &mut self", "GAP: nonexistent", "GAP:", "NOTICED: GAP: x"]
+  check("gap rule: the hook and the wave agree", lines.map(gatedKind).join() === ",,,gap,contract-change,gap,gap,", lines.map(gatedKind).join())
+}
+{
   // a long GAP block is cut at 600 with a pointer to the file
   const long = Array.from({ length: 30 }, (_, i) => `GAP: line ${i} ${"z".repeat(40)}`).join("\n")
   const { result } = await run(wave, [item("P1")], (p, o) => (o.agentType ? long : { verdict: "clean", flags: [], returned_line: "P1 RETURNED: x" }))

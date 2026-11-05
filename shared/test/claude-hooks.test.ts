@@ -171,6 +171,7 @@ for (const bad of ["", "{", "[]", '{"session_id":"q"}']) {
   check("progress: a background spawn is one line, running, with its agent id, never the prompt", bg?.text === "reviewer: plan review" && bg.status === "running" && bg.agent_id === "a1b2c3d4e5" && !JSON.stringify(bg).includes("SECRET"))
   check("progress: a foreground spawn is done", spawnFor({ subagent_type: "x:scribe", description: "log line" }, "report text")?.status === "done")
   check("progress: end status", endStatus("all good") === "done" && endStatus("GAP: no import path") === "gap" && endStatus("x\nCONTRACT-CHANGE: sig") === "contract-change")
+  check("progress: GAP: none is a clean end", endStatus("Done.\nGAP: none\nCONTRACT-CHANGE: none.") === "done" && endStatus("- GAP: missing x") === "gap")
   check("progress: other commands stay quiet", updateFor("Bash", { command: "git status" }, { stdout: "x" }) === undefined && updateFor("Read", {}, {}) === undefined)
   // End to end, interactive: a /work-on session learns its key, then posts its suite run.
   const runs2 = join(tmp, "runs2")

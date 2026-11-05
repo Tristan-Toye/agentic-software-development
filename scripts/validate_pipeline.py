@@ -760,6 +760,19 @@ def check_build_log(where: str, text: str, status: str, rep: Report) -> None:
         )
 
 
+def check_contract_id(where: str, dossier_id: str, contract: str, rep: Report) -> None:
+    """The dossier's own id inside `## Contract` is a DEFECT (#233): /work-on copies the contract into source files, so
+    the id would reach the contract commit as code text. The id anywhere else in the dossier raises nothing."""
+    if not dossier_id:
+        return
+    pat = re.compile(r"(?<![A-Za-z0-9])" + re.escape(dossier_id) + r"(?![0-9])", re.I)
+    for i, line in enumerate(contract.splitlines(), 1):
+        if pat.search(line):
+            rep.defect(where, f"line {i} names the dossier's own id {dossier_id}; the contract is copied into source "
+                       "files, so the id would reach the contract commit. Describe the behaviour, or cite the Jira key")
+            return
+
+
 def validate_dossier(path: Path, repo_root: Path) -> Report:
     rep = Report()
     where = path.name
@@ -795,6 +808,7 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
             )
     if "## Contract" in sec:
         check_contract(f"{where} ## Contract", sec["## Contract"], rep)
+        check_contract_id(f"{where} ## Contract", str(fm.get("id", "")), sec["## Contract"], rep)
     if "## Work packages" in sec:
         check_disjoint(
             f"{where} ## Work packages", parse_packages(sec["## Work packages"]), rep
@@ -1894,6 +1908,25 @@ def selftest() -> int:
             return 1
         (d / "W-015-planned.md").unlink()
         (d / "W-016-noplanning.md").unlink()
+
+        # #233: the dossier's own id inside ## Contract is a DEFECT; in ## Build log it is fine.
+        (d / "W-017-idcontract.md").write_text(
+            GOOD_DOSSIER.replace("id: W-014", "id: W-017").replace(
+                "Drain queued items to the store, oldest first.", "Drain queued items (see w-017) to the store, oldest first."))
+        (d / "W-018-idlog.md").write_text(GOOD_DOSSIER.replace("id: W-014", "id: W-018") + "\nW-018: noted in the log.\n")
+        r17, r18 = Report(), Report()
+        r17.merge(validate_dossier(d / "W-017-idcontract.md", root))
+        r18.merge(validate_dossier(d / "W-018-idlog.md", root))
+        checks_233 = {
+            "the dossier's own id inside ## Contract is a DEFECT naming the id": any("## Contract" in x and "W-017" in x for x in r17.defects),
+            "the dossier's own id outside ## Contract raises nothing": not any("own id" in x for x in r18.defects),
+        }
+        for name, passed in checks_233.items():
+            print(f"{'PASS' if passed else 'FAIL'} — {name}")
+        if not all(checks_233.values()):
+            return 1
+        (d / "W-017-idcontract.md").unlink()
+        (d / "W-018-idlog.md").unlink()
 
         rep = Report()
         rep.merge(validate_dossier(d / "W-014-flush.md", root))
