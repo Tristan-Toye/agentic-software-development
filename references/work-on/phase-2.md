@@ -66,6 +66,15 @@ This is the step everything else depends on.
    member, on any block that is missing or truncated against the file. Never
    hand-copy a block.
 
+   **A stub that extends a base class outside the contract inherits that
+   base's decisions.** When the subclass overrides a hook of a template
+   method, read the template method and trace every edge promise you wrote
+   on the subclass (zero items, the empty case, duplicates, an invalid or
+   missing value) through it: a case the base raises on, refuses, or returns
+   early from never reaches the subclass body, so the promise must say what
+   the base does, or go. Note the base's `path:start-end` for the reviewer's
+   `BASE_TEMPLATES` (Phase 3).
+
    **Re-check the `Depends on` column specifically.** `/plan` wrote it against
    a prose contract, where package B genuinely needed package A's types to
    exist. Once you materialise the contract they DO exist, as stubs that

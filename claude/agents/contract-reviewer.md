@@ -43,6 +43,9 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   nothing else in the worktree except files they import for types.
 - `CRITERIA` — the acceptance criteria, verbatim. The contract must be able
   to express every one; you check that reachability.
+- `BASE_TEMPLATES` (optional) — base classes outside the contract that a
+  stub extends, as `path:start-end` ranges: the template method and what it
+  does before it calls the subclass. Read exactly these ranges.
 - `CHECKLIST_RULES` — the six-category observability checklist, verbatim:
   return meaning, named error, order, empty case, invalid case, concurrency
   semantics.
@@ -69,6 +72,16 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
 5. Check reachability: every criterion in `CRITERIA` must trace to at least
    one checklist line at least as strong as the criterion. A criterion the
    contract cannot express is a gap in the contract.
+6. Check edge promises against the base (`BASE_TEMPLATES`). For a stub that
+   overrides a hook of a template method, take every edge promise on it (the
+   empty case, the invalid case, zero items, duplicates, a missing key) and
+   trace that value through the base's template method first. When the base
+   decides the case before the subclass body runs (it raises, refuses, or
+   returns early), the subclass cannot keep the promise: that is a `DEFECT:`
+   naming the promise, the base line that decides it, and what the base does.
+   A stub that extends a base class not listed in `BASE_TEMPLATES` is itself
+   a `DEFECT:` (the edge promises cannot be checked), unless its
+   documentation says the base adds no behaviour of its own.
 
 ## Report
 

@@ -243,7 +243,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
     },
     "contract-reviewer": {
         "required": {"WORKTREE_DIR", "CONTRACT_PATHS", "CRITERIA", "CHECKLIST_RULES"},
-        "optional": set(),
+        "optional": {"BASE_TEMPLATES"},
     },
     "stub-materialiser": {
         "required": {"WORKTREE_DIR", "CONTRACT", "OWNED_PATHS", "STUB_STYLE", "BUILD_CHECK"},
@@ -1361,6 +1361,12 @@ def selftest() -> int:
         "CONTRACT_HASH: 3f2611f0a91c4d8e\n"
     )
     case("unit author clean", unit_ok, "unit-test-author", False, host="opencode")
+    # --- #238: the contract reviewer may be shown the base class a stub extends ---
+    cr_ok = ("WORKTREE_DIR: {REAL}\nCONTRACT_PATHS: src/flush.py\nCRITERIA: |\n  AC-1 flush returns the count\n"
+             "CHECKLIST_RULES: |\n  return meaning, named error, order, empty case, invalid case, concurrency\n")
+    case("contract reviewer clean", cr_ok, "contract-reviewer", False)
+    case("contract reviewer: BASE_TEMPLATES is a known field", cr_ok + "BASE_TEMPLATES: src/base.py:40-88\n", "contract-reviewer", False)
+    case("contract reviewer: an unknown field is still refused", cr_ok + "PLAN: the dossier\n", "contract-reviewer", True)
     # --- #198: a unit-author round on an existing test file needs CORRECTION ---
     unit_existing = unit_ok.replace("TEST_PATHS: {REAL}/tests/unit/test_flush.py",
                                     "TEST_PATHS: {REAL}/tests/unit/test_retry.py")
