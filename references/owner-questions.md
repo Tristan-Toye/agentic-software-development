@@ -254,8 +254,9 @@ restarted server answers at once from them while its first scan runs.
     the report's summary table supersedes the line's contract and effort, and
     lines from before the two fields existed show them only from the report). Each item reads
     "fixed in stacked PR" (`DEFERRED-FIXED:`), "→ dossier W-…"
-    (`DEFERRED-DOSSIER: D-n → <ID>`, written by `/plan`), "needs a dossier"
-    (`DEFERRED-TRIAGE: D-n → dossier`), "deprecated" (`DEFERRED-DROPPED:`) or
+    (`DEFERRED-DOSSIER: D-n → <ID>`, written by `/plan`), "own dossier · not
+    planned yet" with a Copy button for `/plan <ID> D-n` (`DEFERRED-TRIAGE: D-n
+    → dossier`: routed, no dossier written yet), "deprecated" (`DEFERRED-DROPPED:`) or
     "not tackled". Every dossier page has the tabs Dossier (finished or not
     started), Timeline, Build log and Deferred, each shown when it has content. Each
     item has a Plan button that copies `/plan <ID> D-n` (ledgers of dossiers last
