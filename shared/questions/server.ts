@@ -602,6 +602,8 @@ async function checkMerges(): Promise<void> {
     const runs = (await getRuns(() => readAll(DIR))).runs
     for (const rr of st.repos) {
       if (!rr.open.length) continue
+      // Only a main checkout: a scan that took a worktree for a repo (its `.git` is a file) must not baseline or start runs.
+      try { if (!statSync(join(rr.main, ".git")).isDirectory()) continue } catch { continue }
       const found: MergedPr[] = []
       let ok = true
       for (const base of rr.open) {

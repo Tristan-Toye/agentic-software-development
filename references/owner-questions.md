@@ -186,7 +186,10 @@ restarted server answers at once from them while its first scan runs.
   - stubs: per repo main checkout `git ls-remote --heads origin 'stub/*'
     'release/*'`; per branch `gh pr list --head <b> --base development`.
     **A stub shows only the dossiers implemented on it**: the first-parent
-    merges `origin/development..origin/<b>` of the local refs, mapped by PR
+    merges `origin/development..origin/<b>` of the local refs (the dashboard
+    fetches the `stub/*`, `release/*` and `development` remote-tracking refs
+    of each main checkout itself, every `ASD_STUB_FETCH_SECS`, default 180,
+    0 = off; nothing else moves), mapped by PR
     number to the dossiers' `pr:` field (or by a fix-branch name). An open PR
     into the stub does not count. State: `accepting`, `integrating` (stage =
     last `## Step N`/`Round` heading of `.discovery/analysis/stub-*.md`),
@@ -198,8 +201,8 @@ restarted server answers at once from them while its first scan runs.
     its dossier by `pr:` number or the id in its head branch, starts
     `run_dossier.py <ID> --command after-merge --items <PRs>` once (sonnet);
     a dossier with a live runner waits for the next poll. The first look only
-    records a baseline in `<repo>.merges.json`. `ASD_MERGE_DETECTOR=0` turns
-    it off.
+    records a baseline in `<repo>.merges.json`. Only a main checkout counts
+    (a worktree is skipped). `ASD_MERGE_DETECTOR=0` turns it off.
 - **Pages (all deep links):**
   - `/` Home: one card per repo (the badge: dossiers in progress or on the
     oldest open stub, each once; open questions; that stub's state), and directly under them the **queue of
