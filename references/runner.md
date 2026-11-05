@@ -139,8 +139,17 @@ the recorded checkpoints.
   `result_session`, else the last `stage N end` line's) with `claude -p
   --resume`, on the run's account, and writes the reply as a `chat` line
   (`from: agent`, or `from: runner` with why there is none). Refused while
-  the run is live or the last message is still being answered. A new run's
-  reply starts a new chat.
+  the last message is still being answered. A new run's reply starts a new
+  chat.
+- **A message to a live run** (the same `chat` command, the dossier page's
+  "Message the running agent" box): appended to `<key>.inbox.jsonl` and to the
+  updates as an `owner-message` line. The runner sends it into the live
+  session as `OWNER MESSAGE: …`, mid-turn, between turns, or by waking a wait
+  on a question (which stays open; the agent ends that turn waiting again). A
+  paused run gets it when it resumes. `inbox_seen` in `<key>.runner.json`
+  counts what was delivered, so a resumed run never sends one twice. The
+  message outranks an earlier answer: the agent acts on it and confirms in a
+  note.
 - **Limits:** `--max-stages` caps the number of stages a run starts
   (default 20). A crash of the process counts as `FAILED`.
 

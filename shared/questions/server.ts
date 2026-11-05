@@ -501,7 +501,7 @@ export async function handle(req: Request): Promise<Response> {
     if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
     const run = await findRun(ch[1], ch[2])
     if (!run) return json({ error: "no such dossier" }, 404)
-    if (runnerActive(run.runner)) return json({ error: "the run is still going; answer its questions instead" }, 409)
+    // A live run gets the message through its runner (run_dossier.py chat queues it); a finished one resumes its session.
     const body = await req.json().catch(() => ({})) as { text?: unknown }
     const text = typeof body.text === "string" ? body.text.trim() : ""
     if (!text || text.length > 8000) return json({ error: "write a message (at most 8000 characters)" }, 400)

@@ -370,7 +370,7 @@ function nowLine(r) {
   return h('div', { class: 'nowline small', title: n.title }, [n.text ? h('span', { class: 'nowtext' }, [h('span', { class: 'dot info live' }), n.text]) : null,
     n.quiet ? chip(n.quiet + (n.tone === 'warn' ? ' ⚠' : ''), n.tone) : null]);
 }
-function latestDoing(r) { const u = r.updates.find(x => !x.auto) || r.updates[0]; return u ? u.text : (r.lastActivity || ''); }
+function latestDoing(r) { const u = r.updates.find(x => !x.auto && x.event !== 'owner-message') || r.updates[0]; return u ? u.text : (r.lastActivity || ''); }
 function stageOf9(r) { return /^\d+$/.test(r.phase || '') ? 'Stage ' + r.phase + '/9' + (r.phaseName ? ' · ' + r.phaseName : '') : stageText(r); }
 function openStubs(repo) { const rr = S.stubs.repos.find(x => x.repo === repo); if (!rr) return []; return (rr.open || []).map(b => rr.stubs.find(s => s.branch === b)).filter(Boolean); }
 function fitFrame(f) {
@@ -548,6 +548,7 @@ function itemView(repo, id) {
   const kids = [header(r, mode)];
   const bv = blockedView(r, d); if (bv) kids.push(bv);
   const res = resultView(r, d); if (res) kids.push(res);
+  const lm = liveMessageView(r); if (lm) kids.push(lm);
   const dp = deferredProgress(r, d); if (dp) kids.push(dp);
   /* Every dossier has the same tabs; a finished or not-started one opens on the
      dossier itself, a run in progress on its timeline. Empty tabs are left out. */
@@ -605,7 +606,7 @@ function deferredProgress(r, d) {
   const bar = h('div', { class: 'dfp-bar' }, parts.filter(p => p[1]).map(p => h('span', { class: 'seg ' + p[2], style: 'flex:' + p[1], title: p[1] + ' ' + p[0] }, [])));
   const legend = h('div', { class: 'dfp-leg small' }, parts.filter(p => p[1]).map(p => h('span', {}, [h('span', { class: 'sw ' + p[2] }), p[1] + ' ' + p[0]])));
   const rows = df.items.map(i => h('div', { class: 'dfp-row', 'data-k': 'dfp:' + i.id }, [h('span', { class: 'mono b' }, [i.id]), h('span', { class: 'dfp-t', title: [i.title, i.note].filter(Boolean).join(' — ') }, [i.title]), dfState(r, i)]));
-  const last = live && r.updates && r.updates.find(u => !u.auto);
+  const last = live && r.updates && r.updates.find(u => !u.auto && u.event !== 'owner-message');
   return h('section', { class: 'panel dfp', 'data-k': 'dfp' }, [h('div', { class: 'res-hd' }, head), bar, legend,
     last ? h('div', { class: 'small mut' }, ['Latest: ' + last.text.split('\n')[0].slice(0, 220) + ' · ', when(last.ts)]) : null,
     h('div', { class: 'dfp-rows' }, rows),
@@ -662,6 +663,22 @@ function resultView(r, d) {
   }
   if (st.err) kids.push(h('div', { class: 'err', 'data-k': 'ch:err' }, [st.err]));
   return h('section', { class: 'panel result', 'data-k': 'result' }, kids);
+}
+/* A message to a live run: the runner hands it to the running agent at once (mid-turn, or by waking it while it waits
+   on a question, which stays open). For a correction to an answer already given, or a change of plan. */
+function liveMessageView(r) {
+  if (!r.runner || !['running', 'waiting', 'paused'].includes(r.runner.state)) return null;
+  const key = r.repo + '/' + r.id; const st = S.chat[key] = S.chat[key] || {};
+  const sent = (r.updates || []).filter(u => u.event === 'owner-message').slice(0, 3);
+  const delivered = (r.updates || []).find(u => u.kind === 'runner' && /^delivered \d+ message/.test(u.text));
+  const kids = [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Message the running agent'])])];
+  sent.slice().reverse().forEach((u, i) => kids.push(h('div', { class: 'chat owner', 'data-k': 'lm:' + u.ts + i }, [h('div', { class: 'who' }, ['You · ', when(u.ts),
+    delivered && delivered.ts >= u.ts ? ' · delivered' : ' · waiting for the agent']), h('div', { class: 'tx' }, [u.text])])));
+  kids.push(h('textarea', { 'data-chat': key, placeholder: 'Correct an earlier answer, or tell it what to do next. Not an answer to an open question.', disabled: st.busy ? true : null, 'data-k': 'lm:ta' }));
+  kids.push(h('div', { class: 'ctl', 'data-k': 'lm:ctl' }, [h('button', { class: 'btn primary', type: 'button', 'data-act': 'chat', 'data-repo': r.repo, 'data-id': r.id, disabled: st.busy ? true : null }, [st.busy ? 'Sending…' : 'Send']),
+    h('span', { class: 'small mut' }, [r.runner.state === 'paused' ? 'The run is paused for the usage limit; the agent gets it when it resumes.' : 'The agent gets it now and confirms in a note what it will do.'])]));
+  if (st.err) kids.push(h('div', { class: 'err', 'data-k': 'lm:err' }, [st.err]));
+  return h('section', { class: 'panel result', 'data-k': 'livemsg' }, kids);
 }
 /* The deferred ledger as a table: tick items (or all) and "Fix selected" runs /fix-deferred on just those, in one
    stacked PR through the implementer and review flow; an item that looks big enough for a dossier is put to the owner first. */

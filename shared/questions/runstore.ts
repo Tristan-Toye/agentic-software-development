@@ -54,7 +54,7 @@ export function readConversation(key: string, done: boolean, dir = runsDir(), al
   if (!result && done) {
     let end = -1
     for (let i = lines.length - 1; i >= 0; i--) if (lines[i].kind === "runner" && /^stage \S+ end\b/.test(String(lines[i].text))) { end = i; break }
-    for (let i = end - 1; i >= 0; i--) if (lines[i].kind === "update" && lines[i].auto !== true && typeof lines[i].text === "string" && lines[i].text.trim()) { result = { ts: String(lines[i].ts ?? ""), text: lines[i].text, command: "" }; break }
+    for (let i = end - 1; i >= 0; i--) if (lines[i].kind === "update" && lines[i].auto !== true && lines[i].event !== "owner-message" && typeof lines[i].text === "string" && lines[i].text.trim()) { result = { ts: String(lines[i].ts ?? ""), text: lines[i].text, command: "" }; break }
   }
   const since = result?.ts ?? ""
   const chat: ChatLine[] = lines.filter((o) => o.kind === "chat" && typeof o.text === "string" && ["owner", "agent", "runner"].includes(o.from) && String(o.ts ?? "") >= since)

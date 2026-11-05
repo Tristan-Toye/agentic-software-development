@@ -319,6 +319,8 @@ def kill_group(proc: subprocess.Popen | None, sig=signal.SIGTERM) -> None:
         pass
 
 
+# owner_wait's code for "the owner wrote to the run" (not an answer).
+MESSAGE_RC = 20
 # Commands that take an argument list after the dossier id (`--items`).
 ITEM_COMMANDS = ("fix-deferred", "after-merge")
 
@@ -333,7 +335,8 @@ class Runner:
         self.model = model
         self.permission_mode = permission_mode
         self.max_stages = max_stages
-        prev_acct = (read_json(os.path.join(runs_dir(), key_of(root, dossier) + ".runner.json"), {}) or {}).get("account", "")
+        prev = read_json(os.path.join(runs_dir(), key_of(root, dossier) + ".runner.json"), {}) or {}
+        prev_acct = prev.get("account", "")
         self.account, _ = pick_account(prefer=prev_acct)
         self.key = key_of(root, dossier)
         d = runs_dir()
@@ -342,7 +345,9 @@ class Runner:
         self.cp_path = os.path.join(d, self.key + ".checkpoints.json")
         self.err_path = os.path.join(d, self.key + ".stderr.log")
         self.state: dict = {"pid": os.getpid(), "account": self.account["name"], "root": root, "command": command, "permission_mode": permission_mode, "started": now(), "state": "running", "stage": 0,
-                            "session": "", "questions": [], "claude_pid": None}
+                            "session": "", "questions": [], "claude_pid": None,
+                            # the owner's messages already delivered: a resumed run never sends one twice
+                            "inbox_seen": int(prev.get("inbox_seen") or 0)}
         self.checkpoints: list[dict] = read_json(self.cp_path, [])
         self.seen_tool_ids: set[str] = set()
         self.stopping = False
@@ -554,6 +559,21 @@ class Runner:
             extra = True
         return q, extra
 
+    def deliver_inbox(self) -> bool:
+        """Send the owner's undelivered messages (`run_dossier.py chat` on a live run) into the live session."""
+        if self.proc is None or self.proc.poll() is not None:
+            return False
+        seen = int(self.state.get("inbox_seen") or 0)
+        new = read_inbox(self.key, seen)
+        if not new:
+            return False
+        for m in new:
+            if (m.get("text") or "").strip():
+                self.send(owner_message(m["text"].strip()))
+        self.save(inbox_seen=seen + len(new))
+        self.log(f"delivered {len(new)} message(s) from the owner to the running agent")
+        return True
+
     def send(self, text: str) -> None:
         try:
             self.proc.stdin.write(user_message(text))
@@ -615,6 +635,8 @@ class Runner:
         result: tuple[str, bool] | None = None
         quiet_since = time.monotonic()
         while True:
+            if result is None and self.deliver_inbox():
+                quiet_since = time.monotonic()  # a message between turns starts a turn of its own
             timeout = self.grace if (result is not None and extra) else 1.0
             try:
                 ev = q.get(timeout=timeout)
@@ -665,6 +687,8 @@ class Runner:
                     if p.poll() is not None:
                         out, err = p.communicate()
                         return i, p.returncode, (out.strip() or err.strip())
+                if read_inbox(self.key, int(self.state.get("inbox_seen") or 0)):
+                    return "", MESSAGE_RC, ""  # the owner wrote to the run: wake the session with it
                 if self.stopping:
                     return "", -1, ""
                 time.sleep(0.1)
@@ -789,6 +813,11 @@ class Runner:
             qid, rc, out = self.owner_wait(ids)
             if self.stopping:
                 return "stopped", ""
+            if rc == MESSAGE_RC:
+                # Not an answer: the question stays open. Deliver the message; the agent ends that turn waiting again.
+                self.save(state="running")
+                self.deliver_inbox()
+                continue
             if rc not in (0, 10):
                 kill_group(self.proc)
                 self.end_process()
@@ -988,6 +1017,34 @@ def chat_line(key: str, who: str, text: str, **kw) -> None:
     append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "chat", "from": who, "text": text[:20000], **kw})
 
 
+# ---- the owner's messages to a live run: `<key>.inbox.jsonl`, delivered by the runner into the live session ----
+def inbox_path(key: str) -> str:
+    return os.path.join(runs_dir(), key + ".inbox.jsonl")
+
+
+def read_inbox(key: str, seen: int) -> list[dict]:
+    """The owner's messages after the first `seen` lines of the inbox."""
+    try:
+        with open(inbox_path(key)) as fh:
+            lines = [l for l in fh.read().split("\n") if l.strip()]
+    except OSError:
+        return []
+    out = []
+    for l in lines[seen:]:
+        try:
+            out.append(json.loads(l))
+        except ValueError:
+            out.append({"text": ""})
+    return out
+
+
+def owner_message(text: str) -> str:
+    return ("OWNER MESSAGE (not an answer to a question; the owner typed it on the dashboard): " + text + "\n"
+            "Read it against what you are doing now. If it corrects an earlier answer or ruling, the message wins: act on it, "
+            "undo what the old answer made you do where needed, and log the change in the build log. Confirm in one short "
+            "note (ask_owner.py note) what you will do with it, or ask with ask_owner.py if it is unclear. Then carry on.")
+
+
 def cmd_chat(a: argparse.Namespace) -> int:
     """`chat ID --text T`: the owner's message to the finished run's session. The owner line is written at once; the
     reply (or why there is none) follows as a `chat` line from a background process, `<key>.chat.log` its output."""
@@ -999,8 +1056,11 @@ def cmd_chat(a: argparse.Namespace) -> int:
         return 2
     st = read_json(os.path.join(d, key + ".runner.json"), {}) or {}
     if st.get("state") in ("running", "waiting", "paused") and alive(st.get("pid")):
-        print(f"{key} is still running; answer its questions instead", file=sys.stderr)
-        return 2
+        # A live run: the runner delivers it into the running session (mid-turn, or by waking a question wait).
+        append_line(inbox_path(key), {"ts": now(), "text": text[:20000]})
+        append_line(os.path.join(d, key + ".jsonl"), {"ts": now(), "kind": "update", "event": "owner-message", "from": "owner", "text": text[:20000]})
+        say(f"sent to {key}; the running agent gets it " + ("when the usage pause ends" if st.get("state") == "paused" else "now"))
+        return 0
     cp = os.path.join(d, key + ".chat.json")
     ch = read_json(cp, {}) or {}
     if ch.get("state") == "thinking" and alive(ch.get("pid")) and ch.get("pid") != os.getpid():
@@ -1452,6 +1512,23 @@ def selftest() -> int:
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
         p = start("W-7")
         check("a live owner of the dossier refuses a second runner", p.wait(timeout=30) == 2)
+
+        # ---- the owner's message to a live run: wakes a question wait, the question stays open ----
+        q30 = "repo.W-30.Q1"
+        scenario([{"turns": [[{"ask": 1, "dossier": "W-30", "final": "RUNNER: WAITING {id}"}],
+                             [{"final": "noted\nRUNNER: WAITING " + q30}],
+                             [{"final": "RUNNER: DONE"}]]}])
+        p = start("W-30")
+        until(lambda: state_of("W-30").get("state") == "waiting")
+        r = subprocess.run([sys.executable, me, "chat", "W-30", "--root", root, "--text", "I answered Q0 wrong: use B"], env=env, capture_output=True, text=True, timeout=30)
+        check("message: chat on a live run is queued for it", r.returncode == 0 and "running agent gets it" in r.stdout)
+        got = until(lambda: [m for m in msgs(1) if m.startswith("OWNER MESSAGE")] if os.path.exists(os.path.join(fdir, "in.1.jsonl")) else None)
+        check("message: the waiting session gets it as OWNER MESSAGE", bool(got) and "use B" in got[0])
+        check("message: the runner waits on the question again, which stays open",
+              bool(until(lambda: state_of("W-30").get("state") == "waiting" and len(msgs(1)) >= 2)) and not any(x.get("from") == "owner" for x in lines_of(qfile(q30))))
+        owner_line(q30, "answer", "A", "A")
+        check("message: the answer still goes through and the run finishes", p.wait(timeout=60) == 0 and state_of("W-30").get("inbox_seen") == 1)
+        check("message: the timeline has the owner's message", any(x.get("event") == "owner-message" for x in lines_of(os.path.join(rdir, "repo.W-30.jsonl"))))
 
     print("FAILED: " + ", ".join(failures) if failures else "all ok")
     return 1 if failures else 0

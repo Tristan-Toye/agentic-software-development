@@ -182,6 +182,7 @@ export function classify(e: TLEntry): { kind: Kind; key: boolean; routine: boole
   // update (hook-written `auto` lines and agent notes)
   if (e.event === "spawn") return mk("spawn")
   if (e.auto && e.event === "step") return mk("step")
+  if (e.event === "owner-message") return mk("reply")
   if (e.auto && e.event === "blocked") return mk("blocked")
   if (e.auto && e.event === "workflow") return mk("workflow")
   // An agent's note is prose: "the gate failed, then passed alone after a fixture rebuild" is no red suite.
