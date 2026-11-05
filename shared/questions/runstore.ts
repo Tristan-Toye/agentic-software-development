@@ -1,5 +1,5 @@
 // Run updates store, runner state, dossier summary and a tiny markdown renderer. Contract: references/runner.md, references/owner-questions.md (Dashboard).
-import { readFileSync } from "node:fs"
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -176,4 +176,22 @@ export function dossierPage(id: string, repo: string, md: string): string {
 <style>:root{color-scheme:light dark;--bg:#fff;--fg:#1b1d21;--bd:#dfe2e7;--chip:#eceef2}@media (prefers-color-scheme:dark){:root{--bg:#111316;--fg:#e6e8eb;--bd:#2c3037;--chip:#272b32}}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}main{max-width:860px;margin:0 auto;padding:16px}
 pre{background:var(--chip);padding:10px;border-radius:6px;overflow-x:auto;font-size:13px}code{background:var(--chip);padding:0 4px;border-radius:4px}h1,h2,h3{border-bottom:1px solid var(--bd);padding-bottom:3px}a{color:inherit}</style></head><body><main><p><a href="/">&larr; dashboard</a> &middot; ${esc(repo)} &middot; read-only</p>${renderMarkdown(md)}</main></body></html>`
+}
+
+/**
+ * The last scanned dashboard view on disk, so a restarted server answers at once from it while its first scan (git and
+ * gh per repo, tens of seconds) runs in the background. `ASD_VIEW_CACHE_DIR` sets the folder; under a test's own
+ * `ASD_RUNS_DIR` without it there is no cache. Outside the runs dir, so writing it never wakes the runs watcher.
+ */
+export function viewCacheDir(): string | null {
+  if (process.env.ASD_VIEW_CACHE_DIR) return process.env.ASD_VIEW_CACHE_DIR
+  return process.env.ASD_RUNS_DIR ? null : join(homedir(), ".agentic", "view-cache")
+}
+export function readViewCache<T>(name: string): T | null {
+  const d = viewCacheDir(); if (!d) return null
+  try { return JSON.parse(readFileSync(join(d, `${name}.json`), "utf8")) as T } catch { return null }
+}
+export function writeViewCache(name: string, v: unknown): void {
+  const d = viewCacheDir(); if (!d) return
+  try { mkdirSync(d, { recursive: true }); const f = join(d, `${name}.json`); writeFileSync(f + ".tmp", JSON.stringify(v)); renameSync(f + ".tmp", f) } catch { /* a cache */ }
 }

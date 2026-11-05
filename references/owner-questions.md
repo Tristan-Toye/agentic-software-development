@@ -165,7 +165,9 @@ It prints at most 40 lines.
 
 `shared/questions/runs.ts`, `stubs.ts`, `runstore.ts`, `timeline.ts`,
 `controls.ts` and `events.ts`, rescanned every 30 s and cached; the page is
-one card-based single-page app with deep links.
+one card-based single-page app with deep links. The last runs and stubs views
+are also kept in `~/.agentic/view-cache/` (`ASD_VIEW_CACHE_DIR`), so a
+restarted server answers at once from them while its first scan runs.
 
 - **Sources:**
   - candidate roots: the `cwd` of the newest transcript in each

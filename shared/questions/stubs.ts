@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { Question } from "./store.ts"
-import { readRunner, runnerActive } from "./runstore.ts"
+import { readRunner, readViewCache, runnerActive, writeViewCache } from "./runstore.ts"
 import { emitChange } from "./events.ts"
 import { answeredBy, baseName, getRuns, repoLabel, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, withBranchCopies, questionInRepo, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
 
@@ -251,7 +251,8 @@ export async function refreshOpenWork(repo: string, root: string, wts: string[],
   try { if (!(await runGen(root, out, true, `/repo/${repo}`, cf))) await runGen(root, out, false) } finally { rec.inflight = false; rec.at = Date.now() }
 }
 
-let cachedView: StubsView = { scannedAt: "", repos: [], openWork: [] }
+// A restart serves the last view from disk at once; the first scan replaces it (readViewCache).
+let cachedView: StubsView = readViewCache<StubsView>("stubs") ?? { scannedAt: "", repos: [], openWork: [] }
 let inflight: Promise<void> | null = null
 let lastScan = 0
 let lastSig = ""
@@ -279,6 +280,7 @@ async function rescan(questions: Question[]): Promise<void> {
   const next = { ...view, openWork: openWork.sort((a, b) => a.repo.localeCompare(b.repo)) }
   const sig = JSON.stringify([next.repos.map((r) => [r.repo, r.stubs.map((s) => [s.branch, s.state, s.stage, s.pr, s.dossiers.map((d) => d.id), s.members])]), next.openWork])
   cachedView = next
+  writeViewCache("stubs", next)
   if (sig !== lastSig) { lastSig = sig; emitChange("stubs") }
   emitChange("scan")
 }

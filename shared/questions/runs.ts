@@ -5,7 +5,7 @@ import { basename, join, relative } from "node:path"
 import type { Question } from "./store.ts"
 import { emitChange } from "./events.ts"
 import { blockedByOf, controlsFor, type Controls } from "./controls.ts"
-import { readRunner, readUpdates, runnerActive, runsDir, summaryOf, type RunnerState, type Update } from "./runstore.ts"
+import { readRunner, readUpdates, readViewCache, runnerActive, runsDir, summaryOf, writeViewCache, type RunnerState, type Update } from "./runstore.ts"
 
 export const STATUSES = ["planned", "ready", "building", "review", "pr", "done", "dropped"] as const
 const TAIL = 256 * 1024
@@ -618,7 +618,8 @@ export function linkQuestions(runs: Run[], questions: Question[]): Map<string, {
   return out
 }
 
-let cached: RunsView = { scannedAt: "", runs: [] }
+// A restart serves the last view from disk at once; the first scan replaces it (readViewCache).
+let cached: RunsView = readViewCache<RunsView>("runs") ?? { scannedAt: "", runs: [] }
 let inflight: Promise<void> | null = null
 let lastScan = 0
 let lastSig = ""
@@ -635,6 +636,7 @@ export async function getRuns(questions: () => Question[]): Promise<RunsView> {
     inflight = buildRuns(questions()).then((v) => {
       const sig = JSON.stringify(v.runs.map((r) => [r.repo, r.id, r.status, r.phase, r.lastActivity, r.session.state, r.pr, r.session.activity?.doing ?? "", r.session.activity?.background.length ?? 0]))
       cached = v
+      writeViewCache("runs", v)
       if (sig !== lastSig) { lastSig = sig; emitChange("runs") }
       emitChange("scan")
     }).catch(() => {}).finally(() => { inflight = null })
