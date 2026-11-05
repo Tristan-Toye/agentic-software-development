@@ -83,7 +83,7 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}.acard{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:8px}.acard.next{border-color:var(--acc)}
 .ahd{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.aname{font-weight:700;font-size:1rem;margin-right:4px}.meter .mhd{display:flex;justify-content:space-between;font-size:12.5px}.meter .ml{color:var(--mut)}.meter .mv{font-weight:600}
 .mbar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin:3px 0}.mfill{display:block;height:100%;background:var(--acc)}.mfill.ok{background:var(--ok)}.mfill.warn{background:var(--warn)}.mfill.bad{background:var(--bad)}
-.nowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 0;color:var(--fg)}.nowline .nowtext{display:inline-flex;gap:6px;align-items:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .nowline{margin:2px 0 0;color:var(--mut)}.nowline .chip{font-size:11px}.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dfplan{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.nowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 0;color:var(--fg)}.nowline .nowtext{display:inline-flex;gap:6px;align-items:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .nowline{margin:2px 0 0;color:var(--mut)}.nowline .chip{font-size:11px}.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip.fixing{display:inline-flex;align-items:center;gap:5px;background:var(--accbg);color:var(--acc);font-weight:600}a.srow:has(.chip.fixing){box-shadow:inset 3px 0 0 var(--acc)}
 .dfp{border-left:3px solid var(--acc)}.dfp-bar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--chip);margin:6px 0 4px}.dfp-bar .seg{display:block;height:100%}
 .seg.ok,.sw.ok{background:var(--ok)}.seg.acc,.sw.acc{background:var(--acc)}.seg.warn,.sw.warn{background:var(--warn)}.seg.mut,.sw.mut{background:var(--mut)}.seg.mut2,.sw.mut2{background:var(--bd)}
@@ -580,7 +580,14 @@ function itemView(repo, id) {
    commit, the ones routed to a new dossier; "Fix all deferred" sits in the header. */
 function dfState(r, i) {
   if (i.state === 'fixed') return r.deferred.pr ? h('a', { href: r.deferred.pr, target: '_blank', rel: 'noopener', title: i.note ? 'commit ' + i.note : '' }, [chip('fixed · stacked PR ' + prNum(r.deferred.pr), 'done')]) : chip('fixed' + (i.note ? ' · ' + i.note.slice(0, 8) : ''), 'done');
-  if (i.state === 'dossier') return i.dossier ? h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]) : chip('needs a dossier', 'planned');
+  // Ruled to its own dossier: /fix-deferred only routes it; the dossier exists once /plan <ID> D-n has run and logged
+  // DEFERRED-DOSSIER, and then the chip links to it. Until then, say that, and hand over the exact command.
+  if (i.state === 'dossier') {
+    if (i.dossier) return h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]);
+    const cmd = '/plan ' + r.id + ' ' + i.id;
+    return h('span', { class: 'dfplan', title: 'You ruled this item to its own dossier. No dossier is written yet: run ' + cmd + ' in the repo to plan it.' }, [chip('own dossier · not planned yet', 'planned'),
+      h('button', { class: 'btn sm', type: 'button', 'data-act': 'copy', 'data-text': cmd }, ['Copy ' + cmd])]);
+  }
   if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('dropped', 'neutral')]);
   if (i.state === 'open' && i.keptOpen) return h('span', { title: i.ruling || '' }, [chip('left open · your ruling', 'neutral')]);
   if (i.state === 'open' && i.question && S.q.some(q => q.id === i.question && q.state === 'open')) return h('a', { href: '/questions#q=' + enc(i.question) }, [chip('? waiting for you', 'warn')]);
@@ -596,7 +603,7 @@ function deferredProgress(r, d) {
   const live = fixLive(r); const ran = live || !!df.pr || !!df.branch || df.items.some(i => i.state === 'fixing');
   if (!ran) return null;
   const n = (s) => df.items.filter(i => i.state === s).length;
-  const parts = [['fixed', n('fixed'), 'ok'], ['being fixed', n('fixing'), 'acc'], ['own dossier', n('dossier'), 'warn'], ['dropped', n('deprecated'), 'mut'], ['left open', n('open'), 'mut2']];
+  const parts = [['fixed', n('fixed'), 'ok'], ['being fixed', n('fixing'), 'acc'], ['to its own dossier', n('dossier'), 'warn'], ['dropped', n('deprecated'), 'mut'], ['left open', n('open'), 'mut2']];
   const total = df.items.length; const nq = openQs(r).length;
   const head = [h('span', { class: 'kind' }, [live ? 'Fixing deferred issues' : 'Deferred issues · after the fix run']), live ? h('span', { class: 'dot info live' }) : null];
   if (live) head.push(runChip(r.runner.state)); else if (r.runner && r.runner.command === 'fix-deferred' && r.runner.state !== 'done') head.push(runChip(r.runner.state));
