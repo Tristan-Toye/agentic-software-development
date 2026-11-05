@@ -41,7 +41,9 @@ export function deferredSince(updated: string, runner: unknown): boolean {
   return runner != null || updated.slice(0, 10) >= (process.env.ASD_DEFERRED_SINCE || "2026-11-03")
 }
 /** One deferred issue from a dossier's ledger (`/work-on` Phase 9, `/deferred`, `/fix-deferred`). */
-export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixing" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string; keptOpen?: boolean }
+export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixing" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string;
+  /** The item a dossier is planned from: itself, or another dossier's same issue (`seed: /plan W-128 D-3`, `DEFERRED-SAME`). */
+  seed?: { src: string; item: string }; planning?: "running" | "waiting" | "paused" | "done" | "failed" | "stopped"; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string; keptOpen?: boolean }
 export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; branch?: string }
 
 /**
@@ -69,7 +71,15 @@ export function parseDeferred(log: string): { items: DeferredItem[]; pr: string;
     const fx = l.match(/^(?:[-*]\s+)?DEFERRED-FIXED:\s*(D-\d+)\s*(\S*)/)
     if (fx && items.has(fx[1])) { const it = items.get(fx[1])!; it.state = "fixed"; it.note = fx[2]; continue }
     const tr = l.match(/^(?:[-*]\s+)?DEFERRED-TRIAGE:\s*(D-\d+)\s*→\s*(direct|dossier)\b\s*(?:—\s*)?(.*)$/)
-    if (tr && items.has(tr[1]) && tr[2] === "dossier") { const it = items.get(tr[1])!; if (it.state !== "fixed") { it.state = "dossier"; it.note = tr[3] } continue }
+    if (tr && items.has(tr[1]) && tr[2] === "dossier") {
+      const it = items.get(tr[1])!
+      if (it.state !== "fixed") { it.state = "dossier"; it.note = tr[3] }
+      const sd = tr[3].match(/seed:\s*\/plan\s+([A-Z][A-Z0-9]*-\d+)\s+(D-\d+)\b/)
+      if (sd) it.seed = { src: sd[1], item: sd[2] }
+      continue
+    }
+    const same = l.match(/^(?:[-*]\s+)?DEFERRED-SAME:\s*(D-\d+)\s*=\s*([A-Z][A-Z0-9]*-\d+)\s+(D-\d+)\b/)
+    if (same && items.has(same[1])) { items.get(same[1])!.seed = { src: same[2], item: same[3] }; continue }
     // A direct fix under way: `/fix-deferred` triaged it into the stacked PR and has not logged it fixed yet.
     if (tr && items.has(tr[1]) && tr[2] === "direct") { const it = items.get(tr[1])!; if (it.state === "open" || (it.state === "fixing" && it.note.startsWith("your ruling:"))) { it.state = "fixing"; it.note = tr[3] } continue }
     // The questions /fix-deferred put to the owner and the owner's rulings: `DEFERRED-ASKED: D-n <qid>` and
@@ -561,6 +571,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
   const transcripts = listTranscripts()
   const roots = await candidateRoots(questions, transcripts)
   const runs: Run[] = []
+  const sources = new Map<string, string>()   // "<repo>/<src ID>/<D-n>" -> the dossier /plan made from it
   for (const d of await pickDossiersByRepo(roots)) {
     const f = d.front
     const log = buildLog(d.text)
@@ -593,6 +604,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       main, blockedBy: blockedByOf(f.blocked_by), controls: controlsFor({ status, blockedBy: blockedByOf(f.blocked_by), runner }, () => undefined), view: "dossier",
       runnerLog: runner ? join(runsDir(), `${repoName}.${f.id}.runner.log`) : "",
       ...(() => {
+        for (const x of deferredSources(log)) sources.set(`${repoName}/${x.src}/${x.item}`, f.id!)
         const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log) : { items: [], pr: "", branch: "" }
         let report = ""
         try { report = readFileSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`), "utf8") } catch { /* none */ }
@@ -601,7 +613,27 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       })(),
     })
   }
+  linkPlannedItems(runs, sources)
   return { scannedAt: new Date(now).toISOString(), runs }
+}
+/**
+ * An item routed to its own dossier links to it from either side: the source's `DEFERRED-DOSSIER: D-n → <ID>`, or
+ * the new dossier's own `DEFERRED-SOURCE: <src ID> D-n` (written by /plan, in the dossier it owns, so no other
+ * run's copy is touched). An item whose /plan run (`<repo>.<ID>.plan-<D>`) is under way carries its state.
+ */
+export function deferredSources(log: string): { src: string; item: string }[] {
+  return [...log.matchAll(/^(?:[-*]\s+)?DEFERRED-SOURCE:\s*([A-Z][A-Z0-9]*-\d+)\s+(D-\d+)\b/gm)].map((m) => ({ src: m[1], item: m[2] }))
+}
+export function linkPlannedItems(runs: Run[], sources: Map<string, string>, planState: (key: string) => RunnerState["state"] | undefined = (k) => readRunner(k)?.state): void {
+  const src = sources
+  for (const r of runs) for (const i of r.deferred?.items ?? []) {
+    if (i.state !== "dossier") continue
+    // The same issue as another dossier's item is planned once, from there: follow its seed.
+    const from = i.seed && i.seed.src !== r.id ? i.seed : { src: r.id, item: i.id }
+    if (!i.dossier) i.dossier = src.get(`${r.repo}/${from.src}/${from.item}`) ?? ""
+    const st = planState(`${r.repo}.${from.src}.plan-${from.item}`)
+    if (st) i.planning = st
+  }
 }
 /** Questions linked to runs of their own repo only; `open` ids and `answered` Q&A per run. */
 export function linkQuestions(runs: Run[], questions: Question[]): Map<string, { open: string[]; answered: QA[] }> {

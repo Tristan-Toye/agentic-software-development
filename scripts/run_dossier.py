@@ -250,6 +250,12 @@ def key_of(root: str, dossier: str) -> str:
     return f"{main_repo_name(root)}.{dossier}"
 
 
+def run_key(root: str, dossier: str, command: str = "work-on", items: str = "") -> str:
+    """The run's key: `<repo>.<ID>`, and for a `plan` run of a routed deferred item `<repo>.<ID>.plan-<D-n>`, so the
+    planners of several items run at once, beside the source dossier's own run."""
+    return key_of(root, dossier) + (f".plan-{items}" if command == "plan" and items else "")
+
+
 def check_ident(value: str, what: str) -> None:
     if not re.fullmatch(r"[A-Za-z0-9_.\-]+", value):
         raise SystemExit(f"bad {what}: {value}")
@@ -386,7 +392,7 @@ HOLD_MAX = 3   # after this many held ends the runner lets the stage end, and lo
 # owner_wait's code for "the owner wrote to the run" (not an answer).
 MESSAGE_RC = 20
 # Commands that take an argument list after the dossier id (`--items`).
-ITEM_COMMANDS = ("fix-deferred", "after-merge")
+ITEM_COMMANDS = ("fix-deferred", "after-merge", "plan")
 
 
 class Runner:
@@ -399,10 +405,10 @@ class Runner:
         self.model = model
         self.permission_mode = permission_mode
         self.max_stages = max_stages
-        prev = read_json(os.path.join(runs_dir(), key_of(root, dossier) + ".runner.json"), {}) or {}
+        prev = read_json(os.path.join(runs_dir(), run_key(root, dossier, command, items) + ".runner.json"), {}) or {}
         prev_acct = prev.get("account", "")
         self.account, _ = pick_account(prefer=prev_acct)
-        self.key = key_of(root, dossier)
+        self.key = run_key(root, dossier, command, items)
         d = runs_dir()
         self.updates = os.path.join(d, self.key + ".jsonl")
         self.state_path = os.path.join(d, self.key + ".runner.json")
@@ -1604,6 +1610,17 @@ def selftest() -> int:
         p = start("W-7")
         check("a live owner of the dossier refuses a second runner", p.wait(timeout=30) == 2)
 
+        # ---- plan: one routed deferred item, under its own key beside the source dossier's run ----
+        scenario([{"turns": [[{"final": "planned W-50\nRUNNER: DONE"}]]}])
+        write_json(os.path.join(rdir, "repo.W-40.runner.json"), {"pid": os.getpid(), "state": "running"})  # the source's own run is live
+        p = start("W-40", "--command", "plan", "--items", "D-1")
+        rc = p.wait(timeout=60)
+        check("plan: runs under <repo>.<ID>.plan-<D> while the source dossier's run is live", rc == 0 and state_of("W-40.plan-D-1").get("state") == "done")
+        check("plan: the session gets /plan <ID> <D>", msgs(1)[0] == f"/{PLUGIN}:plan W-40 D-1")
+        os.remove(os.path.join(rdir, "repo.W-40.runner.json"))
+        bad = subprocess.run([sys.executable, me, "--root", root, "--dossier", "W-40", "--command", "plan", "--foreground"], env=env, capture_output=True, text=True, timeout=30)
+        check("plan: refused without exactly one --items D-n", bad.returncode == 2)
+
         # ---- #239: a stage end waits for background work the session launched ----
         J = lambda o: json.dumps(o)
         lines = [J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"description": "Run the VM suite"}}]}}),
@@ -1660,15 +1677,16 @@ def repo_of(cwd: str) -> str | None:
     return out.stdout.strip() or None if out.returncode == 0 else None
 
 
-def detach(argv: list[str], root: str, dossier: str) -> int:
+def detach(argv: list[str], root: str, dossier: str, key: str = "") -> int:
     """Start this runner again as a background process, its output in `<key>.runner.log`; print the pid."""
-    log = os.path.join(runs_dir(), key_of(root, dossier) + ".runner.log")
+    key = key or key_of(root, dossier)
+    log = os.path.join(runs_dir(), key + ".runner.log")
     os.makedirs(runs_dir(), exist_ok=True)
     args = [sys.executable, os.path.abspath(__file__)] + [a for a in argv if a != "--detach"] + ["--foreground"]
     with open(log, "ab") as fh:
         p = subprocess.Popen(args, cwd=root, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
                              start_new_session=True)
-    say(f"started {key_of(root, dossier)} in the background, pid {p.pid}; log {log}")
+    say(f"started {key} in the background, pid {p.pid}; log {log}")
     return 0
 
 
@@ -1733,7 +1751,7 @@ def main() -> int:
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--root", help="repository root (default: the repository of the current directory)")
     ap.add_argument("--dossier", help="same as the positional id")
-    ap.add_argument("--command", choices=["work-on", "stub", "fix-deferred", "after-merge"], default="work-on")
+    ap.add_argument("--command", choices=["work-on", "stub", "fix-deferred", "after-merge", "plan"], default="work-on")
     ap.add_argument("--model")
     ap.add_argument("--permission-mode", default="auto")
     ap.add_argument("--max-stages", type=int, default=20)
@@ -1748,11 +1766,16 @@ def main() -> int:
         return 2
     items = ",".join(i for i in re.split(r"[,\s]+", a.items or "") if i)
     if items and not ((a.command == "fix-deferred" and re.fullmatch(r"D-\d+(?:,D-\d+)*", items))
-                      or (a.command == "after-merge" and re.fullmatch(r"\d+(?:,\d+)*", items))):
-        print("run_dossier.py: --items takes D-ids (D-1,D-3) with --command fix-deferred, or PR numbers (429,430) with --command after-merge", file=sys.stderr)
+                      or (a.command == "after-merge" and re.fullmatch(r"\d+(?:,\d+)*", items))
+                      or (a.command == "plan" and re.fullmatch(r"D-\d+", items))):
+        print("run_dossier.py: --items takes D-ids (D-1,D-3) with --command fix-deferred, PR numbers (429,430) with --command after-merge, "
+              "or one D-id with --command plan", file=sys.stderr)
+        return 2
+    if a.command == "plan" and not items:
+        print("run_dossier.py: --command plan plans one routed deferred item: pass --items D-n", file=sys.stderr)
         return 2
     if not a.foreground:
-        return detach(argv + ([] if "--root" in argv else ["--root", a.root]), a.root, a.dossier)
+        return detach(argv + ([] if "--root" in argv else ["--root", a.root]), a.root, a.dossier, run_key(a.root, a.dossier, a.command, items))
     return Runner(a.root, a.dossier, a.command, a.model, a.permission_mode, a.max_stages, items).run()
 
 

@@ -132,6 +132,10 @@ the recorded checkpoints.
   record, cleans local branches and worktrees, retargets a stacked pull request,
   and asks before refreshing one that now conflicts; it never merges. The
   dashboard's merge detector starts it, on sonnet.
+- **`--command plan --items D-n`:** runs `/plan <ID> D-n` for one deferred
+  item routed to its own dossier, under the key `<repo>.<ID>.plan-D-n`, so
+  several items plan at once beside any run of the source. `/fix-deferred`
+  Step 7 starts one per routed item; the dashboard's Plan it starts one.
 - **The product summary:** after the deferred report, one more short
   process runs `/product-summary <ID>` (`commands/product-summary.md`) on
   `ASD_RUNNER_SUMMARY_MODEL` (default `sonnet`) and stores the page at

@@ -6,7 +6,8 @@ description: >-
   implementer and reviewer flow, with no new dossier; that default is never
   asked about. Only an item that deserves its own dossier, no longer applies,
   or is not worth fixing is put to the owner, with the argument; the owner
-  rules.
+  rules. Each item routed to its own dossier is then planned: one concurrent
+  /plan run per item.
   Started from the dashboard's Deferred tab ("Fix selected", "Fix all
   deferred") or `run_dossier.py <ID> --command fix-deferred [--items D-1,D-3]`.
 argument-hint: "<dossier ID, e.g. W-117> [D-1,D-3,...]"
@@ -30,7 +31,8 @@ outrank this file's defaults.
 Progress posts itself (the plugin's hook). Ask the owner only through
 `scripts/ask_owner.py`, as `references/owner-questions.md` says, and never
 pick an option yourself. Call `phase_checkpoint` at each step below, named
-`Fix-deferred — <step>`.
+`Fix-deferred — Step <n> — <title>` (`Fix-deferred — Step 2 — Triage`): the
+dashboard's Fix deferred issues tab groups the run by these numbers.
 
 ## Step 1 — The items
 
@@ -150,7 +152,34 @@ title is `fix(<ID>): deferred issues D-…`. The body has:
 Log `DEFERRED-FIX: PR <url> — fixed <n>, to dossier <m>`, and append
 `DEFERRED-FIXED: D-n <sha>` for each fixed item, so the dossier records
 which items are closed. Remove the worktree once the pull request URL is in
-hand. Under the runner, end with `RUNNER: DONE`.
+hand.
+
+## Step 7 — Plan the items routed to their own dossier
+
+Every item logged `DEFERRED-TRIAGE: D-n → dossier` (the owner ruled it, or a
+fix that did not hold) gets its dossier planned now, not left as a seed. One
+`/plan` run per item, all at once, each a session of its own under the
+runner (`/plan` spawns its own reviewer and scouts, which a sub-agent cannot):
+
+```bash
+python3 ${PLUGIN_ROOT}/scripts/run_dossier.py <ID> --root <repo> --command plan --items D-n
+```
+
+Each runs `/plan <ID> D-n` in the background under `<repo>.<ID>.plan-D-n`,
+mints its own dossier id (atomically, so concurrent planners never collide),
+asks the owner through `ask_owner.py`, and writes
+`DEFERRED-SOURCE: <ID> D-n` in the new dossier's build log, which links the
+item to it on the dashboard. Before starting them:
+
+- Skip an item that already has its dossier: a `DEFERRED-DOSSIER: D-n →`
+  line here, or a dossier whose build log names `DEFERRED-SOURCE: <ID> D-n`.
+- An item that is the same issue as another dossier's item (its seed names
+  `/plan <other> D-m`) is planned once, from that source; log
+  `DEFERRED-SAME: D-n = <other> D-m` here, and the dashboard follows the link.
+- Log `DEFERRED-PLANNING: D-n → <repo>.<ID>.plan-D-n` for each run started.
+
+The planners are separate runs: this one does not wait for them. Under the
+runner, end with `RUNNER: DONE`.
 
 ## Rules
 

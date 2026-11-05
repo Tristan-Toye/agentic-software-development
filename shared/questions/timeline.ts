@@ -9,6 +9,8 @@ export type TLEntry = {
   auto?: boolean
   stage?: string
   label?: string
+  /** The run section the entry belongs to: "" for /work-on (and /stub), else the later command (fix-deferred, …). */
+  cmd?: string
   qid?: string
   from?: string
   kind?: string
@@ -78,6 +80,38 @@ export function mergeSpawns(updates: Update[]): (Update & { doneTs?: string })[]
 }
 
 /** The timeline section a later run on a finished dossier opens. */
+/**
+ * The steps of a later command, for its own timeline tab: a stage line names its step as `Step <n>`, else by the
+ * step's words (checkpoints from before the numbering). Ordered: the first rule whose words match wins, so a review
+ * of a fix is the review step, and the command's own name ("Fix-deferred") is ignored.
+ */
+export const COMMAND_STEPS: Record<string, { n: number; title: string; words: RegExp }[]> = {
+  "fix-deferred": [
+    { n: 7, title: "Plan the routed items", words: /\/plan\b|\bplann(?:ing|ed)\b|\bplan (?:the|each)\b/i },
+    { n: 6, title: "The pull request", words: /\bpull request\b|\bPR\b|\bopened\b/i },
+    { n: 5, title: "Review", words: /\breview/i },
+    { n: 2, title: "Triage", words: /\btriage|\bruling|\bquestion/i },
+    { n: 3, title: "The stacked branch", words: /\bstack|\bbranch\b|\bworktree\b/i },
+    { n: 4, title: "Fix, test first", words: /\bfix|\bwave\b|\btests?\b|\bimplement|\bpayload/i },
+    { n: 1, title: "The items", words: /\bitems?\b|\bledger\b/i },
+  ],
+  "after-merge": [
+    { n: 4, title: "Open pull requests", words: /\bopen pull|\bretarget|\bconflict|\brefresh/i },
+    { n: 3, title: "Local cleanup", words: /\bclean|\bprune|\bworktree|\bpull\b/i },
+    { n: 2, title: "The dossier's record", words: /\brecord|\bfront matter|\bdossier\b/i },
+    { n: 1, title: "Fetch and confirm", words: /\bfetch|\bconfirm/i },
+    { n: 5, title: "Close", words: /\bclose|\bdone\b/i },
+  ],
+}
+/** The step a later command's stage line is on, `{ n, title }`, or null. */
+export function commandStep(cmd: string, text: string): { n: number; title: string } | null {
+  const steps = COMMAND_STEPS[cmd]
+  if (!steps) return null
+  const t = text.replace(/\bfix-deferred\b|\bafter-merge\b/gi, " ")
+  const m = t.match(/\bStep\s+(\d+)\b/i)
+  if (m) { const s = steps.find((x) => x.n === Number(m[1])); if (s) return s }
+  return steps.find((x) => x.words.test(t)) ?? null
+}
 export const COMMAND_LABEL: Record<string, string> = { "fix-deferred": "Fix deferred issues", "after-merge": "After the merge", "product-summary": "Product summary" }
 /** The phase number of a `Phase <n>` / `PHASE <n>` mention (the letter of `4a` dropped), or "". `unit` "Step" reads `Step <n>` (a stub). */
 export function phaseOfText(s: string, unit: "Phase" | "Step" = "Phase"): string {
@@ -131,15 +165,30 @@ export function mergeTimeline(o: { updates: Update[]; questions: Question[]; ext
   const sorted = all.map((e, i) => ({ e, i, t: when(e.ts) })).sort((a, b) => (a.t === b.t ? a.i - b.i : a.t < b.t ? -1 : 1)).map((x) => x.e)
   const out: TLEntry[] = []
   let cur = ""
+  let sect = ""
   for (const e of sorted) {
     if (e.type === "boundary" && e.phase) cur = e.phase
     // A later run on the same dossier (/fix-deferred …) is a section of its own; its steps stay inside it even when
     // they name a /work-on phase they reuse. A /work-on run after one starts counting phases again; a resumed one carries on.
     const cmd = e.type === "runner" ? e.text.match(/^start \/(?:[\w-]+:)?([\w-]+)\b/)?.[1] : undefined
     if (cmd && cmd !== "work-on" && cmd !== "stub") {
-      cur = `cmd:${cmd}`
-      out.push({ ts: e.ts, type: "boundary", text: "", phase: cur, label: COMMAND_LABEL[cmd] ?? `/${cmd}` })
-    } else if (cmd && cur.startsWith("cmd:")) cur = ""
+      // A resumed run of the same command (a restart) carries on in its section; a new one starts it again.
+      if (sect !== cmd) {
+        sect = cmd
+        cur = `cmd:${cmd}`
+        out.push({ ts: e.ts, type: "boundary", text: "", phase: cur, label: COMMAND_LABEL[cmd] ?? `/${cmd}`, cmd })
+      }
+    } else if (cmd) { sect = ""; if (cur.startsWith("cmd:")) cur = "" }
+    if (e.type === "stage" && sect) {
+      // The checkpoint's name says the step; its summary only when the name says nothing (a summary names the PR early).
+      const st = commandStep(sect, e.stage ?? "") ?? (e.stage ? null : commandStep(sect, e.text))
+      const p = st ? `cmd:${sect}:${st.n}` : ""
+      if (st && p !== cur) {
+        cur = p
+        out.push({ ts: e.ts, type: "boundary", text: "", phase: p, label: `Step ${st.n} \u2014 ${st.title}`, cmd: sect })
+      }
+    }
+    e.cmd = sect
     if (e.type === "stage" && !cur.startsWith("cmd:")) {
       const p = phaseOfText(`${e.stage ?? ""} ${e.text}`, unit)
       if (p && p !== cur) {
@@ -204,6 +253,30 @@ export function classify(e: TLEntry): { kind: Kind; key: boolean; routine: boole
   if (/\bworkflow\b/i.test(t)) return mk("workflow")
   if (/\bfailed\b/i.test(t)) return mk("failed")
   return mk(e.auto ? "routine" : "note")
+}
+
+/**
+ * The timeline split into one list per run section, oldest section first: the /work-on (or /stub) entries, then one
+ * per later command (fix-deferred, after-merge), each newest first. Questions and their threads go with the section
+ * they were asked in. A section boundary of a later command is dropped: its tab already names it.
+ */
+export function splitSections(entries: TLEntry[]): { cmd: string; label: string; entries: TLEntry[]; lastTs: string }[] {
+  const by = new Map<string, TLEntry[]>()
+  const qsect = new Map<string, string>()
+  for (const e of [...entries].reverse()) {
+    let c = e.cmd ?? ""
+    if (e.qid && e.type === "question") qsect.set(e.qid, c)
+    else if (e.qid && (e.type === "message" || e.type === "answer")) c = qsect.get(e.qid) ?? c
+    if (e.type === "boundary" && e.phase === `cmd:${c}`) continue
+    if (!by.has(c)) by.set(c, [])
+    by.get(c)!.push(e)
+  }
+  if (!by.has("")) by.set("", [])
+  const order = ["", ...[...by.keys()].filter((k) => k !== "")]
+  return order.map((c) => {
+    const es = by.get(c)!.reverse()
+    return { cmd: c, label: c ? COMMAND_LABEL[c] ?? `/${c}` : "Implement dossier", entries: es, lastTs: es[0]?.ts ?? "" }
+  })
 }
 
 export type Item = { kind: Kind; key: boolean; entry: TLEntry } | { kind: "more"; key: false; entries: { kind: Kind; entry: TLEntry }[] }

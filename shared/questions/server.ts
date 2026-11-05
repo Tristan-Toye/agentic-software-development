@@ -7,7 +7,7 @@ import { buildLog, getRuns, PHASE_NAMES, questionRepo, readDossier, type Run } f
 import { getStubs, openWorkHtml, recordFile } from "./stubs.ts"
 import { checkRule, dossierPage, readBlocks, readConversation, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
-import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord } from "./timeline.ts"
+import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord, splitSections } from "./timeline.ts"
 import { runRunner } from "./controls.ts"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -385,9 +385,13 @@ export async function handle(req: Request): Promise<Response> {
     const updates = readUpdates(`${run.repo}.${run.id}`, runsDir(), 1000)
     const questions = readAll(DIR).filter((q) => q.dossier === run.id && questionRepo(q, runs) === run.repo)
     const entries = withHtml(mergeTimeline({ updates, questions, names: PHASE_NAMES }))
-    const groups = groupByPhase(entries, "Setup", false)
+    // One tab per run section: Implement dossier (the /work-on phases), then each later command (its own steps).
+    const sections = splitSections(entries).map((x) => ({ cmd: x.cmd, label: x.label, lastTs: x.lastTs, groups: groupByPhase(x.entries, x.cmd ? "Started" : "Setup", false) }))
+    const groups = sections[0].groups
     const activity: unknown[] = []
-    const now = nowPanel(entries, groups, { runner: run.runner?.state, waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: run.phase === "plan" ? "" : run.phase })
+    // The Now panel follows the section the run is in now (the newest one).
+    const latest = sections.reduce((a, b) => (b.lastTs > a.lastTs ? b : a), sections[0])
+    const now = nowPanel(entries, latest.groups, { runner: run.runner?.state, waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: run.phase === "plan" ? "" : run.phase })
     let html = ""
     try { html = renderMarkdown(readDossier(run.file).replace(/^---\n[\s\S]*?\n---\n?/, "")) } catch { /* unreadable */ }
     let summary: { html: string; ts: string } | null = null
@@ -399,7 +403,7 @@ export async function handle(req: Request): Promise<Response> {
     const conv = { ...c, result: c.result ? { ...c.result, html: renderMarkdown(c.result.text) } : null, chat: c.chat.map((l) => ({ ...l, html: renderMarkdown(l.text) })), canChat: !!c.result && !runnerActive(run.runner) }
     const blocks = readBlocks(`${run.repo}.${run.id}`)
     const openQ = questions.filter((q) => q.state === "open").sort((a, b) => b.ts.localeCompare(a.ts))[0]?.id ?? ""
-    return json({ run, html, entries, groups, activity, now, log, conv, summary, blocks, blockQuestion: openQ, summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
+    return json({ run, html, entries, groups, sections, activeSection: latest.cmd, activity, now, log, conv, summary, blocks, blockQuestion: openQ, summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
   }
   const dd = path.match(/^\/api\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && dd) {
@@ -506,6 +510,22 @@ export async function handle(req: Request): Promise<Response> {
     const text = typeof body.text === "string" ? body.text.trim() : ""
     if (!text || text.length > 8000) return json({ error: "write a message (at most 8000 characters)" }, 400)
     const r = await runRunner(["chat", run.id, "--root", run.runner?.root || run.main, "--text", text])
+    emitChange("runs")
+    return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)
+  }
+  // Plan it: one item ruled to its own dossier gets a /plan run of its own (`<repo>.<ID>.plan-<D>`), beside any run of the source.
+  const pi = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/plan-item$/)
+  if (pi && req.method === "POST") {
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const run = await findRun(pi[1], pi[2])
+    if (!run) return json({ error: "no such dossier" }, 404)
+    const body = await req.json().catch(() => ({})) as { item?: unknown }
+    const item = typeof body.item === "string" ? body.item : ""
+    const it = run.deferred.items.find((i) => i.id === item)
+    if (!it || it.state !== "dossier" || it.dossier) return json({ error: "only an item ruled to its own dossier, not planned yet" }, 409)
+    if (it.planning && ["running", "waiting", "paused"].includes(it.planning)) return json({ error: "it is being planned" }, 409)
+    const r = await runRunner([run.id, "--root", run.main, "--command", "plan", "--items", item])
     emitChange("runs")
     return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)
   }
