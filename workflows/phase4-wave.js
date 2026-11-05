@@ -79,7 +79,15 @@ const VERIFY_SCHEMA = {
 const sq = (value) => "'" + String(value == null ? '' : value).replace(/'/g, "'\\''") + "'"
 const csv = (value) => (Array.isArray(value) ? value.join(',') : value == null ? '' : String(value))
 const slug = (value) => String(value).replace(/[^\w.-]+/g, '_')
-const GATED_LINE = /^\s*(?:[-*>]\s*)?(?:GAP|CONTRACT-CHANGE)\s*:/
+// A `GAP:` / `CONTRACT-CHANGE:` line that reports a real one, as 'gap' / 'contract-change', else ''. A line that
+// reports there is none (`GAP: none`, any case, trailing punctuation) is no gap. The same rule as `gatedKind` in
+// shared/claude/progress.ts (the SubagentStop status); workflow scripts cannot import, so workflows.test.ts checks both.
+const GATED_RE = /^\s*(?:[-*>]\s*)?(GAP|CONTRACT-CHANGE)\s*:\s*(.*)$/
+const gatedKind = (line) => {
+  const m = GATED_RE.exec(String(line))
+  if (!m || /^none\W*$/i.test(m[2].trim())) return ''
+  return m[1] === 'GAP' ? 'gap' : 'contract-change'
+}
 const NOTED_LINE = /^\s*(?:[-*>]\s*)?(?:NOTICED|TOUCHED_BEYOND)\b/
 
 // At most 600 characters: the GAP:/CONTRACT-CHANGE: lines verbatim first, then NOTICED /
@@ -87,7 +95,7 @@ const NOTED_LINE = /^\s*(?:[-*>]\s*)?(?:NOTICED|TOUCHED_BEYOND)\b/
 function excerptOf(report) {
   if (!report) return ''
   const lines = report.split('\n')
-  const gated = lines.filter((l) => GATED_LINE.test(l)).map((l) => l.trim())
+  const gated = lines.filter((l) => gatedKind(l)).map((l) => l.trim())
   const noted = lines.filter((l) => NOTED_LINE.test(l)).map((l) => l.trim())
   let out = gated.join('\n')
   if (out.length > EXCERPT_CHARS) return out.slice(0, EXCERPT_CHARS - 40) + '\n(more lines: read report_path)'
@@ -106,8 +114,9 @@ const gateFlags = (report) => {
   const flags = []
   if (!report) return flags
   const lines = report.split('\n')
-  if (lines.some((l) => /^\s*(?:[-*>]\s*)?GAP\s*:/.test(l))) flags.push('gap')
-  if (lines.some((l) => /^\s*(?:[-*>]\s*)?CONTRACT-CHANGE\s*:/.test(l))) flags.push('contract-change')
+  const kinds = lines.map(gatedKind)
+  if (kinds.includes('gap')) flags.push('gap')
+  if (kinds.includes('contract-change')) flags.push('contract-change')
   return flags
 }
 

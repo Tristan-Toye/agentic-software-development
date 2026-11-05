@@ -27,9 +27,10 @@ change (modified, deleted, or untracked) or the call is refused before any
 gate runs.
 
 `--forbid-id ID` (local mode: the dossier is gitignored, so its id means
-nothing in a commit) refuses the commit when ID appears in a named path, a
-file name under it, or the text of a file under it. Nothing is staged. The
-Phase 5 test commit passes the dossier id; cite the Jira key instead.
+nothing in a commit) refuses the commit when ID appears in the commit
+message, a named path, a file name under it, or the text of a file under it,
+and names each. Nothing is staged. The Phase 2 contract commit and the Phase
+5 test commit pass the dossier id; cite the Jira key instead.
 
 `--gates FILE` runs `run_gates.py FILE --root X` first (`run_gates.py --from-workflow` generates one from CI; the gates file format is
 documented there). The gates see the named paths in `$GATE_PATHS`, space
@@ -192,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
     out_lines: list[str] = []
     if args.forbid_id:
         hits = forbidden_id_hits(root, paths, args.forbid_id)
+        if args.forbid_id.lower() in (args.message or "").lower():
+            hits.insert(0, "the commit message")
         if hits:
             return refuse(out_lines, f"the dossier id {args.forbid_id} is local and gitignored; "
                           f"cite the Jira key instead, in: " + ", ".join(hits[:4]))
@@ -297,6 +300,9 @@ def selftest() -> int:
         check("--forbid-id refuses a file carrying the id", rc == 1 and "W-123" in out and "b.txt (text)" in out
               and git(root, "rev-parse", "HEAD")[1] == head0 and not git(root, "diff", "--cached", "--name-only")[1].strip())
         write(root, "test_w-123.txt", "x\n")
+        write(root, "c.txt", "clean\n")
+        rc, out = call(["--root", root, "--paths", "c.txt", "-m", "PROJ-9 contract for w-123", "--forbid-id", "W-123"])
+        check("--forbid-id refuses a message carrying the id (any case), naming it", rc == 1 and "the commit message" in out and "W-123" in out and "c.txt" not in out.split("in:")[-1])
         rc, out = call(["--root", root, "--paths", "test_w-123.txt", "-m", "x", "--forbid-id", "w-123"])
         check("--forbid-id refuses an id in a path", rc == 1 and "(path)" in out)
         os.remove(os.path.join(root, "test_w-123.txt"))

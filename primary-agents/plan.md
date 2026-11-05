@@ -244,6 +244,10 @@ that will never see the tests. The contract is the only thing they share.
   window start") in a `### Definitions` list under `## Contract`, one
   `- **term** — meaning` per term. `/work-on` copies each into the stubs'
   documentation; prose defined anywhere else never reaches them.
+- **Never name the dossier's own id in `## Contract`.** `/work-on` copies the
+  contract into source files, so the id would land in the contract commit;
+  validation reports it as a DEFECT. Describe the behaviour, or cite the Jira
+  key.
 - **A new event or typed-payload variant states, in its own documentation,
   every member it carries and every member it leaves empty.**
 - Use the language's own documentation form — XML doc comments for C#, rustdoc
