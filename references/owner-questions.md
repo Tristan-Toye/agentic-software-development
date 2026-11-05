@@ -196,6 +196,17 @@ restarted server answers at once from them while its first scan runs.
     `merged`. Cached 2 min, failures omitted;
   - open work: `scripts/generate_open_work.py` (see the code), served at
     `/open-work/<repo>`;
+  - **the Merge button** (stub card rows in "PR open · waiting for your merge",
+    and the dossier header): `GET /api/runs/<repo>/<ID>/merge` is the dry run
+    the confirm shows ("would merge #427, #429 into stub/… as one stack");
+    `POST` runs `scripts/merge_dossier.py <ID> --root <main>` in the
+    background. No agent merges: the script finds every open PR whose head
+    names the id, refuses unless they are one chain whose bottom goes into an
+    open stub, none is a draft and no run of the dossier is live, links them
+    (`gh stack link`), merges the stack (`gh stack merge <top> --yes --merge`,
+    all or nothing; one PR: `gh pr merge --merge`), checks each is MERGED,
+    marks them started for the detector and starts `/after-merge`. State:
+    `<key>.merge.json` (merging, merged, failed and why);
   - **the merge detector** (`merges.ts`): every 2 min, `gh pr list --base <stub>
     --state merged` per open stub. A PR merged since the last look, mapped to
     its dossier by `pr:` number or the id in its head branch, starts
