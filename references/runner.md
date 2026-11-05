@@ -100,6 +100,16 @@ the recorded checkpoints.
   account name in `~/.agentic/accounts.json` and writes that shape (the
   owner's `~/.claude/hooks/claude-usage-sampler.py` does, with `via:
   "statusline"`).
+- **Background work across a stage end (#239):** ending a stage ends its
+  process, and every background command, workflow or agent it started dies
+  with it, without a notification. So on `RUNNER: STAGE-DONE` or `RUNNER:
+  DONE` the runner reads the session transcript for background launches with
+  no `<task-notification>` yet. While any is in flight it holds the end: it
+  logs `stage end held (n/3): …`, tells the agent to wait for the
+  notification and end the stage again, and keeps the session open. After
+  three holds it lets the stage end and logs what it cut off. The rules tell
+  the agent the same, and a checkpoint that still names work in flight says
+  how the next stage tells it finished or died.
 - **A stage with no checkpoint:** if a stage ends with `RUNNER: STAGE-DONE`
   but no `phase_checkpoint` call was seen (the tool was missing or skipped),
   the runner writes the `stage` line itself, so the dashboard still draws the
@@ -166,6 +176,8 @@ The prompt tells the orchestrator these rules:
   `run_gates.py`, never an ad-hoc script, so the timeline gets the suite and
   gate lines; and only the tests the step names (under SUITE-MODE `stub`, the
   new and affected tests plus CI: the full suite belongs to `/stub`).
+- Never end a stage while background work it started is still running;
+  wait for its notification first (the runner holds an early end).
 - End each stage with its `phase_checkpoint` call and then the line
   `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a
   new process with your checkpoints as its hand-off.
