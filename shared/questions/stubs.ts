@@ -124,6 +124,26 @@ async function gh(main: string, args: string[]): Promise<any[] | null> {
   if (noGh()) return null
   try { const j = JSON.parse(await sh(["gh", ...args], main, 10_000)); return Array.isArray(j) ? j : null } catch { return null }
 }
+/**
+ * Refresh the stub, release and development remote-tracking refs of a main checkout, at most every
+ * `ASD_STUB_FETCH_SECS` (default 180; 0 turns it off), so a merge into a stub reaches the card without any other
+ * fetch. Only `refs/remotes/origin/...` move: no branch, worktree or index is touched. Auto gc is off for the call.
+ * A moved ref drops the cached merge lists, so the next scan reads them again.
+ */
+const lastFetch = new Map<string, number>()
+export async function fetchStubRefs(main: string, now = Date.now()): Promise<boolean> {
+  const every = Number(process.env.ASD_STUB_FETCH_SECS ?? 180) * 1000
+  if (!every || noGit() || now - (lastFetch.get(main) ?? 0) < every) return false
+  lastFetch.set(main, now)
+  const before = await sh(["git", "-C", main, "for-each-ref", "--format=%(objectname)", "refs/remotes/origin"], undefined, 5000)
+  await sh(["git", "-C", main, "-c", "gc.auto=0", "fetch", "--quiet", "--prune", "--no-tags", "origin",
+    "+refs/heads/stub/*:refs/remotes/origin/stub/*", "+refs/heads/release/*:refs/remotes/origin/release/*",
+    "+refs/heads/development:refs/remotes/origin/development"], undefined, 60_000)
+  const after = await sh(["git", "-C", main, "for-each-ref", "--format=%(objectname)", "refs/remotes/origin"], undefined, 5000)
+  if (before === after) return false
+  for (const k of [...memo.keys()]) if (k.startsWith(`mg:${main}:`) || k.startsWith(`rd:${main}:`) || k.startsWith(`ls:${main}`)) memo.delete(k)
+  return true
+}
 async function stubBranches(main: string): Promise<string[]> {
   return cached(`ls:${main}`, async () => {
     const out = await sh(["git", "-C", main, "ls-remote", "--heads", "origin", "stub/*", "release/*"], undefined, 10_000)
@@ -178,6 +198,7 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
   for (const [main, wts] of byMain) {
     const ans = answeredBy(questions, (q) => questionInRepo(q, baseName(main), main))
     if (noGit() || !existsSync(join(main, ".git"))) continue
+    await fetchStubRefs(main)
     const docs: Doc[] = await withBranchCopies(main, pickDossiers(wts))
     const byId = new Map(docs.map((d) => [d.front.id!, d]))
     const prToDossier = new Map<number, string>()

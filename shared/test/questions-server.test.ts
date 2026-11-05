@@ -7,7 +7,7 @@ import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, An
 import { channelNameFor, interpretEnvelope, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
 import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel } from "../questions/runs.ts"
-import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers } from "../questions/stubs.ts"
+import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
 import { blockedTarget } from "../claude/permission-denied.ts"
@@ -369,6 +369,24 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
   check("merges: a new merge starts one run per dossier; a busy dossier waits", JSON.stringify(second.start) === JSON.stringify([{ id: "W-128", prs: [429] }]) && second.seen["429"].state === "started" && second.seen["431"].state === "pending" && second.seen["432"].state === "pending", JSON.stringify(second))
   const third = nextMerges(second.seen, [], ds, () => false, "t2")
   check("merges: once free, the waiting dossier gets all its PRs in one run, and a started PR never starts again", JSON.stringify(third.start) === JSON.stringify([{ id: "W-141", prs: [431, 432] }]))
+}
+{
+  // The dashboard's own fetch: a merge pushed to the stub reaches origin/stub/* in the main checkout; nothing else moves.
+  const gd = mkdtempSync(join(tmpdir(), "fetch-"))
+  const g = (cwd: string, ...a: string[]) => Bun.spawnSync(["git", "-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", ...a], { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim()
+  Bun.spawnSync(["git", "init", "-q", "--bare", "-b", "development", join(gd, "origin.git")])
+  Bun.spawnSync(["git", "clone", "-q", join(gd, "origin.git"), join(gd, "pusher")])
+  const P = join(gd, "pusher")
+  g(P, "commit", "-q", "--allow-empty", "-m", "base"); g(P, "push", "-q", "origin", "HEAD:development", "HEAD:stub/2026-11-03")
+  Bun.spawnSync(["git", "clone", "-q", join(gd, "origin.git"), join(gd, "main")])
+  const M = join(gd, "main")
+  const head0 = g(M, "rev-parse", "HEAD")
+  g(P, "commit", "-q", "--allow-empty", "-m", "Merge pull request #7 from o/feat/w-7"); g(P, "push", "-q", "origin", "HEAD:stub/2026-11-03")
+  const moved = await fetchStubRefs(M, 1e15)
+  check("fetch: a merge pushed to the stub reaches origin/stub/* in the main checkout", moved && g(M, "log", "-1", "--format=%s", "origin/stub/2026-11-03") === "Merge pull request #7 from o/feat/w-7")
+  check("fetch: the checked-out branch does not move", g(M, "rev-parse", "HEAD") === head0)
+  check("fetch: at most once per interval", (await fetchStubRefs(M, 1e15 + 1000)) === false)
+  rmSync(gd, { recursive: true, force: true })
 }
   check("classify: a hook suite line goes by its failed count", ev("suite: passed 31  failed 0  ignored 0  (cargo)", "suite") === "suite-green" && ev("suite: passed 2  failed 41  ignored 0  (dotnet)", "suite") === "suite-red" && ev("suite run finished", "suite") === "routine" && ev("gates: 7 passed", "gates") === "gate" && ev("PR opened: https://x/pull/1", "pr") === "pr")
   check("classify: key flags and routine flags", classify(E({ type: "stage", text: "x" })).key && classify(E({ type: "question", text: "x" })).key && !classify(E({ type: "update", text: "x", auto: true })).key && classify(E({ type: "update", text: "x", auto: true })).routine && !classify(E({ type: "update", text: "x" })).routine)
