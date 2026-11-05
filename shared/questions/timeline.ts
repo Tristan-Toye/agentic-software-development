@@ -78,7 +78,7 @@ export function mergeSpawns(updates: Update[]): (Update & { doneTs?: string })[]
 }
 
 /** The timeline section a later run on a finished dossier opens. */
-export const COMMAND_LABEL: Record<string, string> = { "fix-deferred": "Fix deferred issues", "product-summary": "Product summary" }
+export const COMMAND_LABEL: Record<string, string> = { "fix-deferred": "Fix deferred issues", "after-merge": "After the merge", "product-summary": "Product summary" }
 /** The phase number of a `Phase <n>` / `PHASE <n>` mention (the letter of `4a` dropped), or "". `unit` "Step" reads `Step <n>` (a stub). */
 export function phaseOfText(s: string, unit: "Phase" | "Step" = "Phase"): string {
   return (unit === "Step" ? s.match(/\bStep\s+(\d+)\b/) : s.match(/\b(?:Phase|PHASE)\s+(\d+)[a-z]?\b/))?.[1] ?? ""

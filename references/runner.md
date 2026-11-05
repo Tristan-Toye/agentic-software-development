@@ -116,6 +116,12 @@ the recorded checkpoints.
   only about an item it would rather not fix there: one that deserves its own
   dossier, no longer applies, or is not worth it (`commands/fix-deferred.md`).
   The dashboard's "Fix all deferred" and "Fix selected" buttons start it.
+- **`--command after-merge --items 429,430`:** runs `/after-merge <ID> <PRs>`
+  (`commands/after-merge.md`): the cleanup after the owner merged the dossier's
+  pull request (or its stacked deferred-fix one) into the stub. It settles the
+  record, cleans local branches and worktrees, retargets a stacked pull request,
+  and asks before refreshing one that now conflicts; it never merges. The
+  dashboard's merge detector starts it, on sonnet.
 - **The product summary:** after the deferred report, one more short
   process runs `/product-summary <ID>` (`commands/product-summary.md`) on
   `ASD_RUNNER_SUMMARY_MODEL` (default `sonnet`) and stores the page at

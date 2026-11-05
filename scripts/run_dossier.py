@@ -319,13 +319,17 @@ def kill_group(proc: subprocess.Popen | None, sig=signal.SIGTERM) -> None:
         pass
 
 
+# Commands that take an argument list after the dossier id (`--items`).
+ITEM_COMMANDS = ("fix-deferred", "after-merge")
+
+
 class Runner:
     def __init__(self, root: str, dossier: str, command: str, model: str | None,
                  permission_mode: str, max_stages: int, items: str = ""):
         self.root = os.path.abspath(root)
         self.dossier = dossier
         self.command = command
-        self.items = items  # fix-deferred: the D-ids the owner selected, "D-1,D-3"; empty = all
+        self.items = items  # fix-deferred: the D-ids the owner selected, "D-1,D-3" (empty = all); after-merge: the merged PR numbers, "429,430"
         self.model = model
         self.permission_mode = permission_mode
         self.max_stages = max_stages
@@ -493,7 +497,7 @@ class Runner:
     def handoff(self) -> str | None:
         if not self.checkpoints:
             return None
-        args = f" {self.items}" if self.items and self.command == "fix-deferred" else ""
+        args = f" {self.items}" if self.items and self.command in ITEM_COMMANDS else ""
         rows = [f"RUNNER HAND-OFF. Task: run /{PLUGIN}:{self.command} {self.dossier}{args} in {self.root}.",
                 "Earlier stages, in order:"]
         for i, cp in enumerate(self.checkpoints, 1):
@@ -533,7 +537,7 @@ class Runner:
             q.put(None)
 
         threading.Thread(target=pump, daemon=True).start()
-        self.send(f"/{PLUGIN}:{self.command} {self.dossier}" + (f" {self.items}" if self.items and self.command == "fix-deferred" else ""))
+        self.send(f"/{PLUGIN}:{self.command} {self.dossier}" + (f" {self.items}" if self.items and self.command in ITEM_COMMANDS else ""))
         extra = False
         hand = self.handoff()
         carry = getattr(self, "pending_owner", "")
@@ -1535,11 +1539,11 @@ def main() -> int:
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--root", help="repository root (default: the repository of the current directory)")
     ap.add_argument("--dossier", help="same as the positional id")
-    ap.add_argument("--command", choices=["work-on", "stub", "fix-deferred"], default="work-on")
+    ap.add_argument("--command", choices=["work-on", "stub", "fix-deferred", "after-merge"], default="work-on")
     ap.add_argument("--model")
     ap.add_argument("--permission-mode", default="auto")
     ap.add_argument("--max-stages", type=int, default=20)
-    ap.add_argument("--items", default="", help="fix-deferred only: the D-ids to fix, e.g. D-1,D-3 (default: every open item)")
+    ap.add_argument("--items", default="", help="fix-deferred: the D-ids to fix, e.g. D-1,D-3 (default: every open item); after-merge: the merged PR numbers, e.g. 429,430")
     ap.add_argument("--detach", action="store_true", help="the default: run in the background; output to <key>.runner.log")
     ap.add_argument("--foreground", action="store_true", help="run in this terminal instead of the background")
     a = ap.parse_args(argv)
@@ -1549,8 +1553,9 @@ def main() -> int:
         ap.print_usage(sys.stderr)
         return 2
     items = ",".join(i for i in re.split(r"[,\s]+", a.items or "") if i)
-    if items and (a.command != "fix-deferred" or not re.fullmatch(r"D-\d+(?:,D-\d+)*", items)):
-        print("run_dossier.py: --items takes D-ids (D-1,D-3) and only with --command fix-deferred", file=sys.stderr)
+    if items and not ((a.command == "fix-deferred" and re.fullmatch(r"D-\d+(?:,D-\d+)*", items))
+                      or (a.command == "after-merge" and re.fullmatch(r"\d+(?:,\d+)*", items))):
+        print("run_dossier.py: --items takes D-ids (D-1,D-3) with --command fix-deferred, or PR numbers (429,430) with --command after-merge", file=sys.stderr)
         return 2
     if not a.foreground:
         return detach(argv + ([] if "--root" in argv else ["--root", a.root]), a.root, a.dossier)

@@ -121,7 +121,8 @@
    dossier, or a new dossier. Never reopen the worktree that produced the PR.
 
    **Post-merge cleanup runs only when the user reports the merge and asks for
-   it** — state work, not code work, so no fresh worktree. Update the dossiers
+   it, or when the dashboard's merge detector sees the merge and starts
+   `/after-merge` (`commands/after-merge.md`)** — state work, not code work, so no fresh worktree. Update the dossiers
    first (local mode: settle whatever the merge decides in the front matter;
    committed mode: `git pull` brings the `done` dossier in, and a discrepancy
    goes through a PR, never a write on the target branch; in both, prune the

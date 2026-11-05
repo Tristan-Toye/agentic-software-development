@@ -12,6 +12,7 @@ import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
 import { blockedTarget } from "../claude/permission-denied.ts"
 import { mergeSpawns, inTimeline } from "../questions/timeline.ts"
+import { nextMerges, dossierOfPr } from "../questions/merges.ts"
 import { agentCounts, waitingForSlots, runStatusText, statusBlocks, openerBlocks } from "../questions/runstatus.ts"
 import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPanel } from "../questions/timeline.ts"
 import { blockedByOf, controlsFor } from "../questions/controls.ts"
@@ -350,6 +351,17 @@ check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n
   check("activity: tool labels", toolLabel("Skill", { skill: "p:phase7-review" }) === "skill phase7-review" && toolLabel("Agent", { subagent_type: "p:implementer" }) === "agent implementer" && toolLabel("Workflow", { name: "p:phase4-wave" }) === "workflow p:phase4-wave")
 }
 check("timeline: a step line and a counted suite result are on the timeline; a bare suite line is not", inTimeline({ type: "update", auto: true, event: "step", text: "Running tests", ts: "" } as any) && inTimeline({ type: "update", auto: true, event: "suite", text: "suite: passed 3  failed 0", ts: "" } as any) && !inTimeline({ type: "update", auto: true, event: "suite", text: "suite started", ts: "" } as any))
+{
+  const P = (number: number, headRefName: string) => ({ number, headRefName, mergedAt: "2026-11-05T09:00:00Z", base: "stub/2026-11-03" })
+  const ds = [{ id: "W-128", pr: "427" }, { id: "W-130" }, { id: "W-141" }]
+  check("merges: a PR is its dossier's by pr: number or by the id in its head branch; a plan head is none", dossierOfPr(P(427, "x"), ds) === "W-128" && dossierOfPr(P(429, "fix/W-128-deferred"), ds) === "W-128" && dossierOfPr(P(1, "feat/w-130-thing"), ds) === "W-130" && dossierOfPr(P(2, "plan/W-130"), ds) === undefined)
+  const first = nextMerges(null, [P(427, "feat/w-128-a")], ds, () => false, "t0")
+  check("merges: the first look only records a baseline", first.start.length === 0 && first.seen["427"].state === "baseline")
+  const second = nextMerges(first.seen, [P(427, "feat/w-128-a"), P(429, "fix/W-128-deferred"), P(431, "fix/W-141-deferred"), P(432, "feat/w-141-b")], ds, (id) => id === "W-141", "t1")
+  check("merges: a new merge starts one run per dossier; a busy dossier waits", JSON.stringify(second.start) === JSON.stringify([{ id: "W-128", prs: [429] }]) && second.seen["429"].state === "started" && second.seen["431"].state === "pending" && second.seen["432"].state === "pending", JSON.stringify(second))
+  const third = nextMerges(second.seen, [], ds, () => false, "t2")
+  check("merges: once free, the waiting dossier gets all its PRs in one run, and a started PR never starts again", JSON.stringify(third.start) === JSON.stringify([{ id: "W-141", prs: [431, 432] }]))
+}
   check("classify: a hook suite line goes by its failed count", ev("suite: passed 31  failed 0  ignored 0  (cargo)", "suite") === "suite-green" && ev("suite: passed 2  failed 41  ignored 0  (dotnet)", "suite") === "suite-red" && ev("suite run finished", "suite") === "routine" && ev("gates: 7 passed", "gates") === "gate" && ev("PR opened: https://x/pull/1", "pr") === "pr")
   check("classify: key flags and routine flags", classify(E({ type: "stage", text: "x" })).key && classify(E({ type: "question", text: "x" })).key && !classify(E({ type: "update", text: "x", auto: true })).key && classify(E({ type: "update", text: "x", auto: true })).routine && !classify(E({ type: "update", text: "x" })).routine)
   const ups = [
