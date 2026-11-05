@@ -47,7 +47,7 @@ that holds a heading of the section's own level or higher.
 
 `sync-contract` rebuilds each `### <path>` code block under `## Contract` from
 that file under `--root` (signatures, doc comments and constants, bodies as
-`…`; the extraction is code_nav.py's, .rs and .py), writes the dossier, then
+`…`; the extraction is code_nav.py's, .rs, .py and .cs), writes the dossier, then
 re-extracts both sides by symbol and compares each member's whole text. It
 never checks that a chunk is "in" the file: a truncated member is a different
 text. Any missing, truncated or extra member is listed and exits 1.
@@ -316,7 +316,7 @@ def pairs_of(items: list[str]) -> list[tuple[str, str]]:
 
 
 def _nav():
-    """code_nav's parsers (Rust tokenizer, Python ast) and its `contract`
+    """code_nav's parsers (Rust tokenizer, Python ast, C# scanner) and its `contract`
     renderer: the one extraction every contract view already shares."""
     here = os.path.dirname(os.path.abspath(__file__))
     if here not in sys.path:
@@ -352,13 +352,16 @@ def _py_constants(nav, text: str, S) -> list:
 
 
 def contract_members(path: str, text: str, is_block: bool = False):
-    """(top-level items in file order, Source, nav) for a .rs/.py text; raises
+    """(top-level items in file order, Source, nav) for a .rs/.py/.cs text; raises
     Refused for any other language, naming the supported ones."""
     nav = _nav()
     ext = os.path.splitext(path)[1].lower()
     try:
         if ext == ".rs":
             parser = nav.RustParser(text)
+            return parser.parse(0, len(text), ""), parser.S, nav
+        if ext == ".cs":
+            parser = nav.CSharpParser(text)
             return parser.parse(0, len(text), ""), parser.S, nav
         if ext == ".py":
             if is_block:  # the contract form's body marker is not valid Python
@@ -368,7 +371,7 @@ def contract_members(path: str, text: str, is_block: bool = False):
             return sorted(items, key=lambda i: i.head), S, nav
     except nav.Unusable as err:
         raise Refused(f"{path}: cannot parse: {err}")
-    raise Refused(f"{path}: sync-contract reads .rs and .py (code_nav's parsers); "
+    raise Refused(f"{path}: sync-contract reads .rs, .py and .cs (code_nav's parsers); "
                   f"{ext or 'this file type'} is not supported — hand-write that block")
 
 
@@ -737,15 +740,29 @@ def selftest() -> int:
           'def f(x):\n    """Return x."""\n    return x\n\n\n'
           'class K:\n    """A K."""\n\n    def m(self):\n        """Do m."""\n        return 1\n')
     RS = ('/// Max.\npub const MAX: u32 = 3;\n\n/// Run it.\npub fn run(a: u32) -> u32 {\n    a + 1\n}\n')
+    CS = ('namespace Demo\n{\n    /// <summary>A shape.</summary>\n    public class Shape\n    {\n'
+          '        /// <summary>Area.</summary>\n        public double Area(int w)\n        {\n            return w;\n        }\n\n'
+          '        /// <summary>Area by h.</summary>\n        public double Area(int w, int h) => w * h;\n\n'
+          '        /// <summary>Nested.</summary>\n        public struct Inner\n        {\n            public int V;\n        }\n    }\n\n'
+          '    /// <summary>A point.</summary>\n    public record Point(int X, int Y);\n}\n')
     DOS = ("## Contract\n\n### Definitions\n\n- **t** — x\n\n### `src/m.py`\n\n```python\nstale\n```\n\n"
-           "### src/lib.rs\n\n```rust\nstale\n```\n\n## Build log\n\n- first\n")
+           "### src/lib.rs\n\n```rust\nstale\n```\n\n### src/Shape.cs\n\n```csharp\nstale\n```\n\n## Build log\n\n- first\n")
     with tempfile.TemporaryDirectory() as td:
         os.makedirs(os.path.join(td, "src"))
-        for name, body in (("m.py", PY), ("lib.rs", RS)):
+        for name, body in (("m.py", PY), ("lib.rs", RS), ("Shape.cs", CS)):
             with open(os.path.join(td, "src", name), "w", encoding="utf-8") as fh:
                 fh.write(body)
         new, notes, problems = sync_contract(DOS, td)
-        check("sync-contract rebuilds both blocks and verifies clean", len(notes) == 2 and problems == [])
+        check("sync-contract rebuilds all three blocks and verifies clean", len(notes) == 3 and problems == [])
+        check("sync rebuilds a C# block: overloads, nested type, record; bodies dropped",
+              "public double Area(int w) { … }" in new and "public double Area(int w, int h) => …;" in new
+              and "public struct Inner {\n            public int V;\n        }" in new and "public record Point(int X, int Y);" in new
+              and "/// <summary>Area.</summary>" in new and "return w;" not in new)
+        cs_block = new.split("```csharp\n")[1].split("```")[0]
+        check("a truncated C# doc comment is a MISMATCH", any(q.startswith("MISMATCH") for q in
+              verify_block("Shape.cs", cs_block.replace("A point.", "A"), CS)))
+        check("a dropped C# overload is MISSING", any(q.startswith("MISSING") and "Area(int, int)" in q for q in
+              verify_block("Shape.cs", cs_block.replace("        public double Area(int w, int h) => …;\n", ""), CS)))
         check("sync keeps all four consecutive constants",
               "A = 1\nB = 2\nC = 3\nD = 4" in new and "pub const MAX: u32 = 3;" in new)
         check("sync drops bodies, keeps docstrings", "return x" not in new and '"""Return x."""' in new and "a + 1" not in new)

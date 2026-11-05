@@ -110,10 +110,19 @@ export function spawnFor(input: any, resp: any): { text: string; agent_id?: stri
 
 /** The status a subagent ends with, from its last message: a GAP or contract change stands out. */
 export function endStatus(lastMessage: string): string {
-  const m = String(lastMessage ?? "")
-  if (/^\s*CONTRACT-CHANGE:/m.test(m)) return "contract-change"
-  if (/^\s*GAP:/m.test(m)) return "gap"
+  const kinds = String(lastMessage ?? "").split("\n").map(gatedKind)
+  if (kinds.includes("contract-change")) return "contract-change"
+  if (kinds.includes("gap")) return "gap"
   return "done"
+}
+/**
+ * A `GAP:` / `CONTRACT-CHANGE:` line that reports a real one ("gap" / "contract-change"), else "". `GAP: none` (any
+ * case, trailing punctuation) is no gap. The same rule as `gatedKind` in workflows/phase4-wave.js.
+ */
+export function gatedKind(line: string): "" | "gap" | "contract-change" {
+  const m = /^\s*(?:[-*>]\s*)?(GAP|CONTRACT-CHANGE)\s*:\s*(.*)$/.exec(String(line))
+  if (!m || /^none\W*$/i.test(m[2].trim())) return ""
+  return m[1] === "GAP" ? "gap" : "contract-change"
 }
 
 /** The first heading or `TITLE:` line of a payload file, for the spawn table; "" when unreadable. */

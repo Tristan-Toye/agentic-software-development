@@ -52,6 +52,7 @@ check("guard: cat piped into head is still a read window", g({ kind: "bash", com
 // Bash reading windows on source and markdown point at the nav tools.
 const nav = (command: string) => g({ kind: "bash", command })
 check("nav: sed -n on source", nav("sed -n 10,40p /w/src/lib.rs")?.includes("code_item") === true)
+check("nav: sed -n on C# source", nav("sed -n 10,40p /w/src/Lib.cs")?.includes("code_item") === true)
 check("nav: sed -n on a dossier names dossier_edit section", nav("sed -n 1,9p /w/.discovery/dossiers/W-1-x.md")?.includes("dossier_edit.py section") === true)
 check("nav: sed -n on other markdown names doc_section", nav("sed -n 1,9p /w/docs/rules.md")?.includes("doc_section") === true)
 check("nav: a quoted ; inside a sed script does not split it", nav("cd /w && sed -n '10,20p;30p' a.rs | head -3")?.includes("sed -n on a.rs") === true)

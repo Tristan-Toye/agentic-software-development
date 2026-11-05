@@ -46,7 +46,7 @@ function bigFileReason(file: string, size: { bytes: number; lines: number }): st
 
 // ---- Bash reading windows on source and markdown ---------------------------------------
 
-const NAV_EXT = new Set([".rs", ".py", ".md"])
+const NAV_EXT = new Set([".rs", ".py", ".cs", ".md"])
 
 // A command line cut into simple commands at unquoted `&&`, `||`, `;`, `|` and newlines,
 // each cut into words with its quotes removed. Approximate shell, enough to see what runs.

@@ -22,7 +22,9 @@ reader seeks to an item or a section instead of paging.
 
 Rust is parsed with a small tokenizer (line and nested block comments, string,
 raw string, byte string, char literal vs lifetime), so brace matching and the end
-of an item are exact, not regex guesses. Python goes through `ast`. Markdown is
+of an item are exact, not regex guesses. C# gets the same kind of scanner (comments, verbatim, interpolated and raw strings and
+preprocessor lines masked; types and members found by bracket pairing). Python goes
+through `ast`. Markdown is
 split on headings, fences respected.
 
 # Usage
@@ -30,7 +32,7 @@ split on headings, fences respected.
     code_nav.py outline FILE                        every item: lines, kind, name, first doc line
     code_nav.py item FILE SYMBOL [--mode M]         one item; M = full|contract|doc|signature
     code_nav.py find SYMBOL [--root DIR] [--kind K] [--limit 40]
-                                                    where SYMBOL is defined, across .rs and .py
+                                                    where SYMBOL is defined, across .rs, .py and .cs
     code_nav.py section FILE HEADING_OR_ID [--list] one markdown section (or the heading list)
     code_nav.py replace FILE SYMBOL --from-file F [--with-docs]
                                                     replace one item's span with the text in F
@@ -102,6 +104,12 @@ class Source:
 
     def line_start(self, off: int) -> int:
         return self.starts[self.line(off) - 1]
+
+    def head_start(self, off: int) -> int:
+        """Where a rendering of the item that starts at `off` begins: its line start, or
+        `off` itself when something else (a sibling member) shares that line."""
+        ls = self.line_start(off)
+        return ls if not self.text[ls:off].strip() else off
 
     def eol(self, line: int) -> int:
         """Offset just past the last character of 1-based `line`, newline excluded."""
@@ -531,6 +539,338 @@ class RustParser:
         return it
 
 
+# ---------------------------------------------------------------- C#
+
+CS_MODIFIERS = {
+    "public", "private", "protected", "internal", "static", "abstract", "sealed", "partial", "virtual",
+    "override", "new", "readonly", "unsafe", "extern", "async", "volatile", "required", "file", "ref",
+    "const", "fixed", "implicit", "explicit",
+}
+CS_TYPE_KW = {"class", "struct", "interface", "enum", "record"}
+CS_AUTO_BODY = re.compile(r"(\s*(?:(?:private|protected|internal|public|readonly)\s+)*(?:get|set|init)\s*;)+\s*\Z")
+
+
+def csharp_mask(src: str) -> tuple[str, list[tuple[int, int]]]:
+    """The source with comments, string and char contents and preprocessor lines
+    blanked (newlines and length kept), plus every `///` / `/** */` doc comment
+    as (start, end)."""
+    n = len(src)
+    out = list(src)
+    docs: list[tuple[int, int]] = []
+
+    def blank(a: int, b: int) -> None:
+        for k in range(a, b):
+            if out[k] != "\n":
+                out[k] = " "
+
+    def line_no(i: int) -> int:
+        return src.count("\n", 0, i) + 1
+
+    i = 0
+    while i < n:
+        c = src[i]
+        if c == "/" and src.startswith("//", i):
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            if src.startswith("///", i) and not src.startswith("////", i):
+                docs.append((i, j))
+            blank(i, j)
+            i = j
+            continue
+        if c == "/" and src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            if j < 0:
+                raise ParseError(f"unterminated block comment at line {line_no(i)}")
+            j += 2
+            if src.startswith("/**", i) and not src.startswith("/***", i) and src[i:j] != "/**/":
+                docs.append((i, j))
+            blank(i, j)
+            i = j
+            continue
+        if c == "#" and not src[src.rfind("\n", 0, i) + 1:i].strip():
+            j = src.find("\n", i)
+            j = n if j < 0 else j
+            blank(i, j)
+            i = j
+            continue
+        if c in "$@\"":
+            k = i
+            while k < n and src[k] in "$@":
+                k += 1
+            if k >= n or src[k] != '"':
+                i += 1
+                continue
+            verbatim, interp = "@" in src[i:k], "$" in src[i:k]
+            quotes = 1
+            while src.startswith('"' * (quotes + 1), k):
+                quotes += 1
+            if quotes >= 3:  # raw string literal
+                close = src.find('"' * quotes, k + quotes)
+                if close < 0:
+                    raise ParseError(f"unterminated raw string at line {line_no(i)}")
+                blank(k + quotes, close)
+                i = close + quotes
+                continue
+            if quotes == 2:  # the empty string ""
+                i = k + 2
+                continue
+            j, depth = k + 1, 0
+            while j < n:
+                ch = src[j]
+                if verbatim:
+                    if ch == '"':
+                        if src.startswith('""', j):
+                            j += 2
+                            continue
+                        break
+                elif ch == "\\":
+                    j += 2
+                    continue
+                elif ch == '"' and depth == 0:
+                    break
+                elif interp and ch == "{":
+                    if depth == 0 and src.startswith("{{", j):
+                        j += 2
+                        continue
+                    depth += 1
+                elif interp and ch == "}" and depth:
+                    depth -= 1
+                elif interp and ch == '"':  # a string inside an interpolation hole
+                    j = src.find('"', j + 1)
+                    if j < 0:
+                        break
+                j += 1
+            if j >= n:
+                raise ParseError(f"unterminated string at line {line_no(i)}")
+            blank(k + 1, j)
+            i = j + 1
+            continue
+        if c == "'":
+            if i + 1 < n and src[i + 1] == "\\":
+                j = src.find("'", i + 3)
+                j = n if j < 0 else j
+                blank(i + 1, j)
+                i = j + 1
+            elif i + 2 < n and src[i + 2] == "'":
+                blank(i + 1, i + 2)
+                i += 3
+            else:
+                i += 1
+            continue
+        i += 1
+    return "".join(out), docs
+
+
+class CSharpParser:
+    """Types (class, struct, interface, record, enum; nested too), namespaces and
+    members (methods, constructors, operators, indexers, properties, fields,
+    constants, events, delegates) with their `///` doc comments. A line scanner on
+    the masked source: brackets are paired, a member ends at its `{...}`, at `;`, or
+    at the `;` after `=>` / `=`; angle brackets are never paired, so generics cannot
+    confuse it. Overloads are named `Type.Method(int, string)` (parameter types) and
+    stay reachable by the bare `Type.Method` only when it is unambiguous. Names are not
+    qualified by namespace (a namespace is an item of its own)."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.S = Source(text)
+        self.code, self.doc_spans = csharp_mask(text)
+        self.pairs = pair_brackets(self.code)
+
+    def ws(self, p: int, end: int) -> int:
+        while p < end and self.code[p].isspace():
+            p += 1
+        return p
+
+    def rtrim(self, p: int) -> int:
+        while p > 0 and self.code[p - 1].isspace():
+            p -= 1
+        return p
+
+    def skip_stmt(self, q: int, end: int) -> int:
+        """Past the `;` that ends a statement, groups jumped."""
+        code = self.code
+        while q < end:
+            if code[q] in "([{":
+                q = self.pairs[q] + 1
+            elif code[q] == ";":
+                return q + 1
+            else:
+                q += 1
+        raise ParseError(f"statement without ';' near line {self.S.line(min(q, len(code) - 1))}")
+
+    def terminator(self, q: int, end: int) -> tuple[int, str]:
+        """(position, '{' | ';' | '=>' | '=') of the token that ends a member header."""
+        code = self.code
+        while q < end:
+            ch = code[q]
+            if ch in "([":
+                q = self.pairs[q] + 1
+            elif ch in "{;":
+                return q, ch
+            elif ch == "=":
+                if code.startswith("=>", q):
+                    return q, "=>"
+                if re.search(r"\boperator\s*[^\s\w(]*\Z", code[max(0, q - 24):q]) or code[q + 1:q + 2] == "=":
+                    q += 2 if code[q + 1:q + 2] == "=" else 1  # `operator ==`, `operator >=`
+                    continue
+                return q, "="
+            else:
+                q += 1
+        raise ParseError(f"member header without body or ';' at line {self.S.line(min(q, len(code) - 1))}")
+
+    def collapse(self, a: int, b: int) -> str:
+        """The header text with bracket groups folded to `()` / `[]` and generics dropped."""
+        code, out, q = self.code, [], a
+        while q < b:
+            if code[q] in "([":
+                out.append("()" if code[q] == "(" else "[]")
+                q = self.pairs[q] + 1
+            else:
+                out.append(code[q])
+                q += 1
+        return re.sub(r"\s+", " ", strip_angles("".join(out))).strip()
+
+    def params(self, open_: int) -> str:
+        """`int, string` for the parameter group at `open_`: types only."""
+        inner, depth, parts, cur = self.code[open_ + 1:self.pairs[open_]], 0, [], []
+        for ch in inner:
+            if ch in "<([{":
+                depth += 1
+            elif ch in ">)]}":
+                depth -= 1
+            if ch == "," and depth == 0:
+                parts.append("".join(cur))
+                cur = []
+            else:
+                cur.append(ch)
+        parts.append("".join(cur))
+        types = []
+        for prm in parts:
+            prm = re.sub(r"\s+", " ", prm.split("=")[0]).strip()
+            prm = re.sub(r"^(\[[^\]]*\]\s*)+", "", prm)
+            if prm:
+                types.append(prm.rsplit(" ", 1)[0] if " " in prm else prm)
+        return ", ".join(types)
+
+    def doc_text(self, spans: list[tuple[int, int]]) -> str:
+        lines = []
+        for a, b in spans:
+            for ln in self.text[a:b].split("\n"):
+                ln = re.sub(r"^(///|/\*\*|\*)", "", ln.strip())
+                ln = re.sub(r"\*/\Z", "", ln)
+                lines.append(re.sub(r"<[^>]*>", " ", ln))
+        return next((re.sub(r"\s+", " ", ln).strip()[:100] for ln in lines if ln.strip()), "")
+
+    def parse(self, start: int, end: int, prefix: str, owner: str = "") -> list[Item]:
+        code = self.code
+        items: list[Item] = []
+        prev_end = start
+        p = self.ws(start, end)
+        while p < end:
+            attrs: list[tuple[int, int]] = []
+            q = p
+            while q < end and code[q] == "[":
+                attrs.append((q, self.pairs[q] + 1))
+                q = self.ws(self.pairs[q] + 1, end)
+            if q >= end:
+                break
+            first = attrs[0][0] if attrs else q
+            sig_start = q
+            pos, term = self.terminator(q, end)
+            hdr = self.collapse(sig_start, pos)
+            words = re.findall(r"[A-Za-z_]\w*", hdr)
+            lead = 0
+            while lead < len(words) and words[lead] in CS_MODIFIERS:
+                lead += 1
+            kw = words[lead] if lead < len(words) else ""
+            is_const = "const" in words[:lead]
+            if kw in ("using", "global", "extern") and term == ";":
+                prev_end = pos + 1
+                p = self.ws(pos + 1, end)
+                continue
+            kind, name, owner_next = "", "", ""
+            open_: int | None = pos if term == "{" else None
+            item_end = self.pairs[pos] + 1 if term == "{" else pos + 1
+            sig_end = self.rtrim(pos) if term in ("{", "=>") else pos + 1
+            if kw == "namespace":
+                full = re.search(r"namespace\s+([\w.]+)", hdr)
+                name = full.group(1) if full else ""
+                if term == ";":  # file-scoped: the rest of the region is inside it
+                    prev_end = pos + 1
+                    p = self.ws(pos + 1, end)
+                    continue
+                kind = "namespace"
+            elif kw in CS_TYPE_KW:
+                kind = kw
+                nxt = lead + 1
+                if kw == "record" and nxt < len(words) and words[nxt] in ("struct", "class"):
+                    nxt += 1
+                name = words[nxt] if nxt < len(words) else ""
+                owner_next = name
+            elif kw == "delegate":
+                kind = "delegate"
+                m = re.search(r"([A-Za-z_]\w*)\s*\(\)", hdr)
+                name = m.group(1) if m else ""
+            elif kw == "event":
+                kind = "event"
+                name = (re.findall(r"[A-Za-z_][\w.]*", hdr.split(",")[0]) or [""])[-1]
+            elif re.search(r"\bthis \[\]|\bthis\[\]", hdr) and "()" not in hdr.split("this")[0]:
+                kind, name = "indexer", "this[]"
+            elif "()" in hdr:
+                m = re.search(r"\boperator\s*([^\s\w(]+|\w+)\s*\(\)", hdr)
+                if m:
+                    kind, name = "operator", "operator " + m.group(1)
+                else:
+                    m = re.search(r"(~?[A-Za-z_][\w.]*)\s*\(\)", hdr)
+                    name = m.group(1) if m else ""
+                    kind = "ctor" if name == owner and owner else "method"
+                    if name.startswith("~"):
+                        kind = "dtor"
+            elif term in ("{", "=>"):
+                kind = "property"
+                name = (re.findall(r"[A-Za-z_][\w.]*", hdr) or [""])[-1]
+            else:
+                kind = "const" if is_const else "field"
+                name = (re.findall(r"[A-Za-z_]\w*", hdr.split(",")[0]) or [""])[-1]
+            if not name:
+                raise ParseError(f"cannot name the member at line {self.S.line(sig_start)}")
+            if term == "=>":
+                item_end = self.skip_stmt(pos, end)
+            elif term == "=":
+                item_end = self.skip_stmt(pos, end)
+                sig_end = item_end
+            elif term == "{" and kind in ("property", "indexer", "event"):
+                after = self.ws(item_end, end)
+                if after < end and code[after] == "=" and not code.startswith("=>", after):
+                    item_end = self.skip_stmt(after, end)  # `{ get; set; } = init;`
+                    sig_end = item_end
+            spans = [(s, e) for (s, e) in self.doc_spans if prev_end <= s < sig_start]
+            head = min([first] + [s for s, _ in spans])
+            it = Item("csharp", kind, name, prefix + name, head=head, attr=first, sig_start=sig_start,
+                      sig_end=sig_end, end=item_end, open=open_, docs=spans)
+            it.type_name = name
+            it.doc_first = self.doc_text(spans)
+            it.start_line, it.end_line = self.S.line(head), self.S.line(item_end - 1)
+            if kind in ("method", "ctor", "operator", "dtor"):
+                it.body_indent = self.params(code.index("(", sig_start, pos))  # parameter types: names overloads below
+            if open_ is not None and (kind in CS_TYPE_KW and kind != "enum" or kind == "namespace"):
+                it.children = self.parse(open_ + 1, self.pairs[open_], "" if kind == "namespace" else it.qname + ".", owner_next)
+            items.append(it)
+            prev_end = item_end
+            p = self.ws(item_end, end)
+        count: dict[tuple[str, str], int] = {}
+        for it in items:
+            if it.kind in ("method", "ctor", "operator", "indexer"):
+                count[(it.kind, it.name)] = count.get((it.kind, it.name), 0) + 1
+        for it in items:
+            if count.get((it.kind, it.name), 0) > 1 and it.kind != "indexer":
+                it.aliases.append(it.qname)
+                it.qname = f"{it.qname}({it.body_indent})"
+            it.aliases += [a.replace(".", "::") for a in it.aliases] + [it.qname.replace(".", "::")]
+        return items
+
+
 # ---------------------------------------------------------------- Python
 
 
@@ -638,9 +978,9 @@ def parse_markdown(text: str) -> list[Item]:
 
 def load(path: str) -> tuple[str, Source, list[Item]]:
     ext = os.path.splitext(path)[1].lower()
-    lang = {".rs": "rust", ".py": "python", ".md": "md", ".markdown": "md"}.get(ext)
+    lang = {".rs": "rust", ".py": "python", ".cs": "csharp", ".md": "md", ".markdown": "md"}.get(ext)
     if lang is None:
-        raise Unusable(f"unsupported file type {ext or '(none)'!r} for {path} (supported: .rs .py .md)")
+        raise Unusable(f"unsupported file type {ext or '(none)'!r} for {path} (supported: .rs .py .cs .md)")
     try:
         with open(path, encoding="utf-8-sig", newline="") as fh:
             text = fh.read()
@@ -651,6 +991,9 @@ def load(path: str) -> tuple[str, Source, list[Item]]:
         return lang, parser.S, parser.parse(0, len(text), "")
     if lang == "python":
         return lang, Source(text), parse_python(text)
+    if lang == "csharp":
+        cs = CSharpParser(text)
+        return lang, cs.S, cs.parse(0, len(text), "")
     return lang, Source(text), parse_markdown(text)
 
 
@@ -690,7 +1033,7 @@ def row(it: Item, depth: int = 0) -> str:
 
 def render(it: Item, mode: str, S: Source) -> str:
     text = S.text
-    ls = S.line_start
+    ls = S.head_start
     if mode == "full":
         return text[ls(it.head):it.end]
     if mode == "doc":
@@ -703,7 +1046,7 @@ def render(it: Item, mode: str, S: Source) -> str:
 
 
 def contract(it: Item, S: Source) -> str:
-    text, ls = S.text, S.line_start
+    text, ls = S.text, S.head_start
     if it.lang == "python":
         head = text[ls(it.head):it.sig_end]
         if it.sig_end >= it.end:  # a one-line def
@@ -716,6 +1059,8 @@ def contract(it: Item, S: Source) -> str:
         else:
             parts.append(it.body_indent + "…")
         return "\n".join(parts)
+    if it.lang == "csharp":
+        return contract_csharp(it, S)
     if it.kind in ("impl", "trait", "mod") and it.open is not None:
         indent = S.indent_of(it.head)
         head = text[ls(it.head):it.sig_end] + " {"
@@ -724,6 +1069,27 @@ def contract(it: Item, S: Source) -> str:
         return "\n".join([head] + [contract(ch, S) for ch in it.children] + [indent + "}"])
     if it.kind in ("fn", "macro_rules") and it.open is not None:
         return text[ls(it.head):it.sig_end] + " { … }"
+    return text[ls(it.head):it.end]
+
+
+def contract_csharp(it: Item, S: Source) -> str:
+    """A C# type or namespace: its header and each member's docs + signature; a member:
+    docs + signature with a block body as `{ … }` and an expression body as `=> …;`.
+    Enums, delegates, fields, constants and auto-properties stay whole."""
+    text, ls = S.text, S.head_start
+    if it.open is not None and (it.kind in ("class", "struct", "interface", "record", "namespace")):
+        indent = S.indent_of(it.head)
+        head = text[ls(it.head):it.sig_end] + " {"
+        if not it.children:
+            return head + " }"
+        return "\n".join([head] + [contract(ch, S) for ch in it.children] + [indent + "}"])
+    if it.kind in ("method", "ctor", "dtor", "operator", "indexer", "property", "event"):
+        if it.open is not None:
+            if it.kind in ("property", "indexer") and CS_AUTO_BODY.match(text[it.open + 1:].split("}", 1)[0]):
+                return text[ls(it.head):it.end]
+            return text[ls(it.head):it.sig_end] + " { … }"
+        if text[it.sig_end:it.end].lstrip().startswith("=>"):
+            return text[ls(it.head):it.sig_end] + " => …;"
     return text[ls(it.head):it.end]
 
 
@@ -767,7 +1133,7 @@ def run_each(names: list[str], one) -> int:
 def members(it: Item, flat: list[tuple[Item, int]], S: Source) -> str:
     """A type and every impl block for it in the file (inherent and trait impls), each in
     contract form: the type's whole API in one answer. A Python class is its contract."""
-    if it.lang == "python" or it.kind not in ("struct", "enum", "trait", "type", "union"):
+    if it.lang != "rust" or it.kind not in ("struct", "enum", "trait", "type", "union"):
         return contract(it, S)
     impls = [im for im, _ in flat if im.kind == "impl" and im.type_name == it.name]
     parts = [contract(it, S)]
@@ -806,7 +1172,7 @@ def kind_matches(kind: str, wanted: str | None) -> bool:
         return True
     if kind == wanted:
         return True
-    return wanted in ("fn", "def") and kind in ("def", "async def", "fn")
+    return wanted in ("fn", "def", "method") and kind in ("def", "async def", "fn", "method", "ctor", "operator")
 
 
 def cmd_find(a: argparse.Namespace) -> int:
@@ -819,7 +1185,7 @@ def cmd_find(a: argparse.Namespace) -> int:
     for dirpath, dirs, files in os.walk(a.root):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
         for fn in sorted(files):
-            if not fn.endswith((".rs", ".py")):
+            if not fn.endswith((".rs", ".py", ".cs")):
                 continue
             fp = os.path.normpath(os.path.join(dirpath, fn))
             try:
@@ -906,7 +1272,7 @@ def write_atomic(path: str, text: str) -> None:
 def cmd_replace(a: argparse.Namespace) -> int:
     lang, S, items = load(a.file)
     if lang == "md":
-        err("replace works on .rs and .py files")
+        err("replace works on .rs, .py and .cs files")
         return 2
     try:
         with open(a.from_file, encoding="utf-8", newline="") as fh:
@@ -939,6 +1305,8 @@ def cmd_replace(a: argparse.Namespace) -> int:
     try:
         if lang == "python":
             ast.parse(new)
+        elif lang == "csharp":
+            CSharpParser(new).parse(0, len(new), "")
         else:
             RustParser(new)
     except (SyntaxError, ParseError) as exc:
@@ -1023,6 +1391,49 @@ pub mod outer {
 
 pub fn inner() {}
 '''
+
+CS_FIXTURE = r"""using System;
+// class Fake { }
+namespace Demo.Core
+{
+    /// <summary>A shape.</summary>
+    [Serializable]
+    public class Shape<T> where T : class
+    {
+        public const int Max = 3;
+        private readonly string _braces = "a { b } // not a comment";
+        /// <summary>Make one.</summary>
+        public Shape(int sides) : base() { }
+        /// <summary>Area of the unit shape.</summary>
+        public double Area(int w)
+        {
+            return w;
+        }
+        /// <summary>Area of a w by h shape.</summary>
+        public double Area(int w, int h) => w * h;
+        /// <summary>The name.</summary>
+        public string Name { get; set; } = "x";
+        public int Len { get { return 1; } }
+        public event EventHandler Changed;
+        /// <summary>A nested type.</summary>
+        public struct Inner
+        {
+            public int V;
+            /// <summary>Go.</summary>
+            public void Go() { }
+        }
+        public enum Color { Red, Green }
+    }
+
+    /// <summary>A point.</summary>
+    public record Point(int X, int Y);
+
+    public record Person(string N)
+    {
+        public string Hi() => $"hi {N}";
+    }
+}
+"""
 
 PY_FIXTURE = '''"""Module doc."""
 import functools
@@ -1287,6 +1698,48 @@ def selftest() -> int:
     if fails:
         sys.stderr.write("selftest FAILED:\n" + "\n".join(f"  - {f}" for f in fails) + "\n")
         return 1
+        # --- C#: types (nested, record, enum), members, overloads, doc comments
+        cs = os.path.join(tmp, "d.cs")
+        with open(cs, "w", encoding="utf-8") as fh:
+            fh.write(CS_FIXTURE)
+        code, out, _ = run("outline", cs)
+        shape = L(CS_FIXTURE, "/// <summary>A shape.")
+        check(code == 0 and f"{shape}-{L(CS_FIXTURE, 'public enum Color') + 1}  class Shape  — A shape." in out, "cs class range + doc")
+        check("  const Shape.Max" in out and "  field Shape._braces" in out, "cs const and field; a string with braces does not confuse")
+        check("  ctor Shape.Shape  — Make one." in out, "cs constructor")
+        check("  method Shape.Area(int)  — Area of the unit shape." in out and "  method Shape.Area(int, int)  — Area of a w by h shape." in out,
+              "cs overloads are named by parameter types")
+        check("  property Shape.Name  — The name." in out and "  property Shape.Len" in out and "  event Shape.Changed" in out, "cs property, event")
+        check("  struct Shape.Inner  — A nested type." in out and "    method Shape.Inner.Go  — Go." in out, "cs nested type and its member")
+        check("  enum Shape.Color" in out and "record Point  — A point." in out and "record Person" in out and "  method Person.Hi" in out, "cs enum and records")
+        check("Fake" not in out, "cs comments hide items")
+        code, out, _ = run("item", cs, "Shape.Inner.Go", "--mode", "full")
+        check(code == 0 and "public void Go() { }" in out and "/// <summary>Go.</summary>" in out, "cs item full with its doc")
+        code, out, _ = run("item", cs, "Shape::Area(int, int)", "--mode", "signature")
+        check(code == 0 and out.rstrip().endswith("public double Area(int w, int h)"), "cs signature of one overload (:: form)")
+        code, out, _ = run("item", cs, "Shape.Area(int)", "--mode", "contract")
+        check(code == 0 and "{ … }" in out and "return w" not in out and "unit shape" in out, "cs contract drops the block body")
+        code, out, er = run("item", cs, "Shape.Area")
+        check(code == 1 and "Shape.Area(int)" in er and "Shape.Area(int, int)" in er, "a bare overloaded name lists the overloads")
+        code, out, _ = run("item", cs, "Shape", "--mode", "contract")
+        check(code == 0 and "public class Shape<T> where T : class {" in out and "public double Area(int w, int h) => …;" in out
+              and "public int Len { … }" in out and 'public string Name { get; set; } = "x";' in out and "public enum Color { Red, Green }" in out
+              and "return w" not in out, "cs type contract: members with signatures, bodies elided, auto-property whole")
+        code, out, _ = run("item", cs, "Point", "--mode", "doc")
+        check(code == 0 and "A point." in out, "cs record doc")
+        code, out, _ = run("item", cs, "Point")
+        check(code == 0 and "public record Point(int X, int Y);" in out, "cs record full")
+        code, out, _ = run("find", "Hi", "--root", tmp)
+        check(code == 0 and "d.cs" in out and "method  Person.Hi" in out, "find reaches .cs files")
+        repl = os.path.join(tmp, "go.txt")
+        with open(repl, "w", encoding="utf-8") as fh:
+            fh.write("public void Go() { var x = 1; }")
+        code, out, _ = run("replace", cs, "Shape.Inner.Go", "--from-file", repl)
+        check(code == 0 and "var x = 1;" in open(cs, encoding="utf-8").read(), "cs replace re-parses and writes")
+        with open(cs, "w", encoding="utf-8") as fh:
+            fh.write("class Broken { void M() { }\n")
+        code, out, er = run("outline", cs)
+        check(code == 2, "an unbalanced C# file is unusable input (exit 2)")
     print("selftest ok")
     return 0
 
