@@ -156,7 +156,7 @@ is small, and a range only when no item boundary fits; never `cd <X> && sed -n`
 or `cat` — the recorded runs spent more on those chains than on any other kind
 of step: about 500 of the orchestrator's ~1,180 Bash calls in a recorded Claude
 run were `grep`/`sed`/`cat` windows, one turn each. The read guard refuses a
-Bash reading window on a `.rs`, `.py` or `.md` file (`sed -n`, an `awk` NR
+Bash reading window on a `.rs`, `.py`, `.cs` or `.md` file (`sed -n`, an `awk` NR
 range, `cat`/`head`/`tail` past 4 KB, `grep` with a context window of 5 lines
 or more) and names the tool to use; ask for every item you need in one call.
 A plain `grep -n` for usages stays yours, and so does `Read` with offset and

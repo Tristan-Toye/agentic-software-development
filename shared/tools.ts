@@ -9,7 +9,7 @@ import { MAX_SUMMARY_CHARS, TOOL as CHECKPOINT } from "./checkpoint"
 // live here once. phase_checkpoint has no execute: what it does differs per host.
 //
 // The code_* tools wrap scripts/code_nav.py, which parses Rust (tokenizer-exact brace
-// matching), Python (ast) and Markdown (headings, fences respected) and returns one item
+// matching), C# (masked-source brace scanner), Python (ast) and Markdown (headings, fences respected) and returns one item
 // or one section, bounded in size. They hold no state and persist nothing.
 
 export type Host = "opencode" | "claude"
@@ -51,7 +51,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "code_outline",
     description:
-      "Use instead of reading a whole Rust (.rs), Python (.py) or Markdown (.md) file to learn what is in it: " +
+      "Use instead of reading a whole Rust (.rs), Python (.py), C# (.cs) or Markdown (.md) file to learn what is in it: " +
       "returns every item (mod, fn, struct, enum, trait, impl, const, class, def; headings for markdown) with its " +
       "1-based line range, kind, qualified name and first doc line, nested items indented. Then fetch only what " +
       "you need with code_item or doc_section. Output is bounded, never the file's bytes.",
@@ -61,7 +61,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "code_item",
     description:
-      "Use instead of sed -n line windows, whole-file reads or grep chains to read ONE Rust or Python item. " +
+      "Use instead of sed -n line windows, whole-file reads or grep chains to read ONE Rust, Python or C# item. " +
       "SYMBOL is a qualified name (`Type::method`, `module::fn`, `Class.method`) or a bare name when unique " +
       "(an ambiguous one lists the candidates). mode: `contract` = docs + attributes + signature with bodies " +
       "elided (impl/trait/class: each member's docs + signature; struct/enum: the whole declaration) — the cheap " +
@@ -71,7 +71,7 @@ export const TOOLS: ToolDef[] = [
       "Several items in one call: separate the symbols with ` | ` (`Config::load | Config::save`). Prints a " +
       "path:start-end header per item.",
     params: [
-      { name: "path", type: "string", description: "a .rs or .py file" },
+      { name: "path", type: "string", description: "a .rs, .py or .cs file" },
       { name: "symbol", type: "string", description: "qualified or bare item name, e.g. `RunConfig::from_values`; several as `A | B`" },
       { name: "mode", type: "string", optional: true, enum: ["full", "contract", "members", "doc", "signature"], description: "default full" },
     ],
@@ -80,7 +80,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "code_find",
     description:
-      "Use instead of grep/glob chains to find where a Rust or Python symbol is DEFINED across a tree: one row " +
+      "Use instead of grep/glob chains to find where a Rust, Python or C# symbol is DEFINED across a tree: one row " +
       "per definition, `path:line  kind  qualified_name  — first doc line`, exact name matches first, then " +
       "suffix matches (`new` finds every `X::new`). Skips target/, .git/, node_modules/, .venv/. Not for " +
       "finding usages or text: use grep for that.",
@@ -116,14 +116,14 @@ export const TOOLS: ToolDef[] = [
   {
     name: "code_replace",
     description:
-      "Use instead of an edit that needs the old text pasted or the whole file read: replace ONE Rust or Python " +
+      "Use instead of an edit that needs the old text pasted or the whole file read: replace ONE Rust, Python or C# " +
       "item, found by symbol, with `content`. By default the span runs from the item's first attribute (or " +
       "signature) through its end and the doc comment above it is kept; with_docs=true replaces the doc " +
       "comment too. Content without leading indentation is indented like the item. Refuses an ambiguous or " +
       "missing symbol and a result that no longer parses; the file is then untouched. Returns " +
       "`replaced path:start-end (N lines -> M lines)`.",
     params: [
-      { name: "path", type: "string", description: "a .rs or .py file" },
+      { name: "path", type: "string", description: "a .rs, .py or .cs file" },
       { name: "symbol", type: "string", description: "qualified or bare item name" },
       { name: "content", type: "string", description: "the new text of the item" },
       { name: "with_docs", type: "boolean", optional: true, description: "also replace the doc comment; default false" },
