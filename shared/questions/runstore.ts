@@ -69,9 +69,16 @@ export function readConversation(key: string, done: boolean, dir = runsDir(), al
 /** A tool call auto mode refused (the PermissionDenied hook), not ruled on yet. */
 export type Block = { id: string; ts: string; tool: string; target: string; reason: string; agent: string }
 /** The refused calls of a run that the owner has not ruled on (`block-ruling` lines), newest first, at most `limit`; one per target. */
+/** A runner line that starts a new stage process: a block an older process hit has no one left waiting on it. */
+const NEW_PROCESS = /^(stage \d+ start|start \/|restarting stage|resumed after)/
 export function readBlocks(key: string, dir = runsDir(), limit = 5): Block[] {
-  let lines: any[] = []
-  try { lines = readFileSync(join(dir, `${key}.jsonl`), "utf8").split("\n").filter((l) => l.includes('"event":"block')).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean) } catch { return [] }
+  let all: any[] = []
+  try { all = readFileSync(join(dir, `${key}.jsonl`), "utf8").split("\n").filter((l) => l.includes('"event":"block') || (l.includes('"runner"') && /stage \d+ start|start \/|restarting stage|resumed after/.test(l))).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean) } catch { return [] }
+  // Only the current stage process's blocks are open: the agent that hit an older one is gone, and the stage that
+  // replaced it either did without the call or will hit (and record) it again.
+  let from = 0
+  all.forEach((o, i) => { if (o.kind === "runner" && NEW_PROCESS.test(String(o.text ?? ""))) from = i + 1 })
+  const lines = all.slice(from).filter((o) => o.event === "blocked" || o.event === "block-ruling")
   const ruled = new Set(lines.filter((o) => o.event === "block-ruling").map((o) => String(o.tool_use_id ?? "")))
   const ruledTargets = new Set(lines.filter((o) => o.event === "block-ruling" && o.scope === "always").map((o) => String(o.target ?? "")))
   const seen = new Set<string>(); const out: Block[] = []

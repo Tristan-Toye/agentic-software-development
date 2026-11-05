@@ -278,8 +278,11 @@ one card-based single-page app with deep links.
     fix branch (`DEFERRED-FIX:`), the questions it waits on, and its latest
     note while live. The Deferred tab's cards carry the same states.
     **Blocked by the safety check** (top of the dossier page): every call auto
-    mode refused that is not ruled on yet (`readBlocks`), with the exact command
-    and the reason. **Allow once** and **Deny** answer the agent's newest open
+    mode refused in the current stage process that is not ruled on yet
+    (`readBlocks`), with the exact command and the reason. A refusal from an
+    earlier process (before the latest `stage N start`, restart or resume) is
+    not open: nobody waits on it any more, and a stage that still needs the
+    call hits it again. **Allow once** and **Deny** answer the agent's newest open
     question with a ruling that names the exact command; **Always allow in this
     repo** saves the rule in the box (default `Bash(<command>)`, widen it to a
     prefix; `checkRule` refuses `Bash(*)` and whole interpreters) to the repo's
