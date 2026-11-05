@@ -190,10 +190,17 @@ one card-based single-page app with deep links.
     last `## Step N`/`Round` heading of `.discovery/analysis/stub-*.md`),
     `merged`. Cached 2 min, failures omitted;
   - open work: `scripts/generate_open_work.py` (see the code), served at
-    `/open-work/<repo>`.
+    `/open-work/<repo>`;
+  - **the merge detector** (`merges.ts`): every 2 min, `gh pr list --base <stub>
+    --state merged` per open stub. A PR merged since the last look, mapped to
+    its dossier by `pr:` number or the id in its head branch, starts
+    `run_dossier.py <ID> --command after-merge --items <PRs>` once (sonnet);
+    a dossier with a live runner waits for the next poll. The first look only
+    records a baseline in `<repo>.merges.json`. `ASD_MERGE_DETECTOR=0` turns
+    it off.
 - **Pages (all deep links):**
-  - `/` Home: one card per repo (in progress / not started / done, open
-    questions, newest stub state), and directly under them the **queue of
+  - `/` Home: one card per repo (the badge: dossiers in progress or on the
+    oldest open stub, each once; open questions; that stub's state), and directly under them the **queue of
     open questions** across all repos, oldest waiting first. Each is a compact
     card: repo and dossier chips (the dossier chip links to the dossier), the
     question, how long it has waited, what it blocks, and the answer controls

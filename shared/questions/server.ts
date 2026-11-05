@@ -15,6 +15,8 @@ import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./
 import { api, apiGet, channelNameFor, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
 import { readAccounts, usageDir } from "./accounts.ts"
+import { mergeDetectorEnabled, nextMerges, readMergeSeen, writeMergeSeen, type MergedPr } from "./merges.ts"
+import { sh } from "./runs.ts"
 
 const DIR = storeDir()
 const MIN = 60 * 1000
@@ -188,7 +190,7 @@ const runSeen = new Map<string, number>()
 let scanningRuns = false
 /** The agent's own notes are markdown (bullets, tables): render them for the timeline. */
 function withHtml<T extends { type: string; auto?: boolean; text: string; html?: string }>(es: T[]): T[] {
-  for (const e of es) if (e.type === "update" && !e.auto && e.text) e.html = renderMarkdown(e.text)
+  for (const e of es) if (e.type === "update" && (!e.auto || (e as any).event === "step") && e.text) e.html = renderMarkdown(e.text)
   return es
 }
 const SERVER_START = Date.now()
@@ -335,6 +337,8 @@ function runnerLog(repo: string, id: string): string | null {
   try { return readFileSync(join(runsDir(), `${repo}.${id}.runner.log`), "utf8").split("\n").slice(-201).join("\n") } catch { return null }
 }
 const inflightControl = new Set<string>()
+/** The page's version: an open tab reloads when the server it talks to serves a different page. */
+const PAGE_ID = String(Bun.hash(PAGE))
 const summaryInflight = new Set<string>()
 let usageInflight = false
 
@@ -352,7 +356,7 @@ export async function handle(req: Request): Promise<Response> {
     const v = await getRuns(() => readAll(DIR))
     const runs = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(readUpdates(`${r.repo}.${r.id}`, runsDir(), 3000)), blocked: readBlocks(`${r.repo}.${r.id}`).length } : r))
     const accounts = readAccounts(runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: `${r.repo}.${r.id}`, account: r.runner?.account })))
-    return json({ ...v, runs, accounts, usageBusy: usageInflight, slack: slackOn() })
+    return json({ ...v, runs, accounts, usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
   }
   if (path === "/api/accounts/refresh") {
     if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
@@ -497,7 +501,7 @@ export async function handle(req: Request): Promise<Response> {
     if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
     const run = await findRun(ch[1], ch[2])
     if (!run) return json({ error: "no such dossier" }, 404)
-    if (runnerActive(run.runner)) return json({ error: "the run is still going; answer its questions instead" }, 409)
+    // A live run gets the message through its runner (run_dossier.py chat queues it); a finished one resumes its session.
     const body = await req.json().catch(() => ({})) as { text?: unknown }
     const text = typeof body.text === "string" ? body.text.trim() : ""
     if (!text || text.length > 8000) return json({ error: "write a message (at most 8000 characters)" }, 400)
@@ -522,7 +526,7 @@ export async function handle(req: Request): Promise<Response> {
     if (action === "fix-deferred") {
       const body = await req.json().catch(() => ({})) as { items?: unknown }
       items = Array.isArray(body.items) ? [...new Set(body.items.filter((x): x is string => typeof x === "string"))] : []
-      const ok = new Set(run.deferred.items.filter((i) => i.state === "open" || (i.state === "dossier" && !i.dossier)).map((i) => i.id))
+      const ok = new Set(run.deferred.items.filter((i) => i.state === "open").map((i) => i.id))
       const bad = items.filter((i) => !ok.has(i))
       if (bad.length) return json({ error: `not an item to fix: ${bad.join(", ")}` }, 400)
     }
@@ -584,6 +588,48 @@ export async function handle(req: Request): Promise<Response> {
   return json({ error: "method not allowed" }, 405)
 }
 
+/**
+ * The merge detector: every 2 minutes, the PRs merged into each open stub (GitHub). A dossier's PR that merged since
+ * the last look starts `/after-merge` for that dossier on the runner (sonnet), once; a dossier whose runner is live
+ * waits for the next poll. The first look only records what is already merged. `ASD_MERGE_DETECTOR=0` turns it off.
+ */
+let mergeInflight = false
+async function checkMerges(): Promise<void> {
+  if (mergeInflight || !mergeDetectorEnabled() || process.env.ASD_RUNS_NO_GH === "1") return
+  mergeInflight = true
+  try {
+    const st = await getStubs(() => readAll(DIR))
+    const runs = (await getRuns(() => readAll(DIR))).runs
+    for (const rr of st.repos) {
+      if (!rr.open.length) continue
+      const found: MergedPr[] = []
+      let ok = true
+      for (const base of rr.open) {
+        const out = await sh(["gh", "pr", "list", "--base", base, "--state", "merged", "--limit", "50", "--json", "number,headRefName,mergedAt"], rr.main, 15_000)
+        let l: any[] | null = null
+        try { l = JSON.parse(out) } catch { /* gh failed */ }
+        if (!Array.isArray(l)) { ok = false; break }
+        for (const x of l) found.push({ number: Number(x.number), headRefName: String(x.headRefName ?? ""), mergedAt: String(x.mergedAt ?? ""), base })
+      }
+      if (!ok) continue   // a failed gh call never counts as "nothing merged": the baseline would miss it
+      const mine = runs.filter((r) => r.repo === rr.repo)
+      const dossiers = mine.map((r) => ({ id: r.id, pr: r.pr ? String(r.pr.number) : undefined }))
+      const busy = (id: string) => runnerActive(mine.find((r) => r.id === id)?.runner ?? null)
+      const now = new Date().toISOString()
+      const next = nextMerges(readMergeSeen(rr.repo), found, dossiers, busy, now)
+      writeMergeSeen(rr.repo, next.seen)
+      for (const s of next.start) {
+        const r = await runRunner([s.id, "--root", rr.main, "--command", "after-merge", "--items", s.prs.join(","), "--model", "sonnet"])
+        log(`merge detector: ${rr.repo} ${s.id} PR ${s.prs.join(",")} merged — after-merge ${r.ok ? "started" : "not started: " + r.output}`)
+        if (!r.ok) { const seen = readMergeSeen(rr.repo) ?? {}; for (const n of s.prs) if (seen[String(n)]) seen[String(n)].state = "pending"; writeMergeSeen(rr.repo, seen) }
+      }
+      if (next.start.length) emitChange("runs")
+    }
+  } catch (e) {
+    log(`merge detector: ${(e as Error).message}`)
+  } finally { mergeInflight = false }
+}
+
 async function main(): Promise<void> {
   const requested = process.env.ASD_QUESTIONS_PORT
   // The first stubs and runs scan runs git and gh per repo and can pass Bun's 10 s idle default.
@@ -628,6 +674,8 @@ async function main(): Promise<void> {
     watch(usageDir(), () => emitChange("runs"))
   } catch { /* the 10 s rescan still picks the readings up */ }
   setInterval(() => { void scan(); void scanRunThreads() }, 10_000)
+  setTimeout(() => void checkMerges(), 20_000)
+  setInterval(() => void checkMerges(), 120_000)
 }
 
 if (import.meta.main) await main()

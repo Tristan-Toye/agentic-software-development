@@ -12,7 +12,14 @@ const TAIL = 256 * 1024
 const HEAD = 64 * 1024
 
 export type Front = { pr?: string; id?: string; title?: string; status?: string; jira?: string; updated?: string; created?: string; blocked_by?: string }
-export type Session = { state: "active" | "idle" | "none"; lastTs: string; context: number; requests: number; requestsExact: boolean }
+export type Session = { state: "active" | "idle" | "none"; lastTs: string; context: number; requests: number; requestsExact: boolean; activity?: Activity }
+/**
+ * What the orchestrator is doing right now, from its transcript: the tool call still in flight (`doing`, with the
+ * Bash description or the agent, workflow or skill it names), the background commands, workflows and agents it
+ * launched that have not notified it yet (`background`), and when the transcript last moved (`lastTs`). An empty
+ * `doing` with background work means it ended its turn to wait for that work.
+ */
+export type Activity = { doing: string; doingSince: string; background: { label: string; since: string }[]; lastTs: string }
 export type Pr = { number: number; url: string; state: string; green: number; red: number; pending: number }
 export type Run = {
   id: string; title: string; status: string; jira: string; updated: string; created: string
@@ -34,7 +41,7 @@ export function deferredSince(updated: string, runner: unknown): boolean {
   return runner != null || updated.slice(0, 10) >= (process.env.ASD_DEFERRED_SINCE || "2026-11-03")
 }
 /** One deferred issue from a dossier's ledger (`/work-on` Phase 9, `/deferred`, `/fix-deferred`). */
-export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixing" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string; contract?: string; effort?: string; inReport?: boolean }
+export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixing" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string; keptOpen?: boolean }
 export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; branch?: string }
 
 /**
@@ -45,6 +52,7 @@ export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; bra
 export function parseDeferred(log: string): { items: DeferredItem[]; pr: string; branch: string } {
   const items = new Map<string, DeferredItem>()
   let pr = "", branch = ""
+  const asked = new Map<string, string>() // question id -> D-id
   for (const raw of log.split("\n")) {
     const l = raw.trim()
     const m = l.match(/^[-*]\s+(D-\d+)\s+(\S+)\s+(.*)$/)
@@ -63,7 +71,24 @@ export function parseDeferred(log: string): { items: DeferredItem[]; pr: string;
     const tr = l.match(/^(?:[-*]\s+)?DEFERRED-TRIAGE:\s*(D-\d+)\s*→\s*(direct|dossier)\b\s*(?:—\s*)?(.*)$/)
     if (tr && items.has(tr[1]) && tr[2] === "dossier") { const it = items.get(tr[1])!; if (it.state !== "fixed") { it.state = "dossier"; it.note = tr[3] } continue }
     // A direct fix under way: `/fix-deferred` triaged it into the stacked PR and has not logged it fixed yet.
-    if (tr && items.has(tr[1]) && tr[2] === "direct") { const it = items.get(tr[1])!; if (it.state === "open") { it.state = "fixing"; it.note = tr[3] } continue }
+    if (tr && items.has(tr[1]) && tr[2] === "direct") { const it = items.get(tr[1])!; if (it.state === "open" || (it.state === "fixing" && it.note.startsWith("your ruling:"))) { it.state = "fixing"; it.note = tr[3] } continue }
+    // The questions /fix-deferred put to the owner and the owner's rulings: `DEFERRED-ASKED: D-n <qid>` and
+    // `DEFERRED-RULING: D-n — <ruling>`, or the free form `QUESTION: <qid> — D-n …` / `OWNER-RULING …: <qid> — <ruling>`.
+    const qa = l.match(/^(?:[-*]\s+)?(?:DEFERRED-ASKED:\s*(D-\d+)\s+(\S+\.Q\d+)|QUESTION:\s*(\S+\.Q\d+)\s*—\s*(D-\d+)\b)/)
+    if (qa) { const did = qa[1] ?? qa[4], qid = qa[2] ?? qa[3]; asked.set(qid, did); const it = items.get(did); if (it) it.question = qid; continue }
+    const ru = l.match(/^(?:[-*]\s+)?(?:DEFERRED-RULING:\s*(D-\d+)\s*(?:—\s*)?(.*)|OWNER-RULING\b[^:]*:\s*(\S+\.Q\d+)\s*—\s*(.*))$/)
+    if (ru) {
+      const did = ru[1] ?? asked.get(ru[3] ?? "") ?? (ru[4] ?? "").match(/\bD-\d+\b/)?.[0]
+      const text = (ru[2] ?? ru[4] ?? "").replace(/^D-\d+\s*/, "").trim()
+      const it = did ? items.get(did) : undefined
+      if (it && it.state === "open") {
+        it.ruling = text
+        // "stays open" / "leave it open" keeps the item for later; any other ruling sets the run to work on it.
+        if (/\b(stays? open|leave (?:it )?open|left open|keep (?:it )?open|not now|later)\b/i.test(text)) it.keptOpen = true
+        else { it.state = "fixing"; it.note = `your ruling: ${text}` }
+      }
+      continue
+    }
     const br = l.match(/DEFERRED-FIX:\s*branch\s+(\S+)/)
     if (br) { branch = br[1]; continue }
     const dr = l.match(/^(?:[-*]\s+)?DEFERRED-DROPPED:\s*(D-\d+)\s*(?:—\s*)?(.*)$/)
@@ -325,7 +350,7 @@ export function transcriptCwd(path: string): string {
 }
 
 /** Context size and request count from the tail of a transcript. Requests are counted over the tail only unless the file fits it. */
-export function tailTranscript(path: string): { context: number; requests: number; exact: boolean; lastTs: string } {
+export function tailTranscript(path: string): { context: number; requests: number; exact: boolean; lastTs: string; activity: Activity } {
   const size = statSync(path).size
   const start = Math.max(0, size - TAIL)
   let lines = readRange(path, start, size - start).split("\n")
@@ -347,7 +372,50 @@ export function tailTranscript(path: string): { context: number; requests: numbe
       lastTs = o.timestamp ?? ""
     }
   }
-  return { context, requests: ids.size + anon, exact: start === 0, lastTs }
+  return { context, requests: ids.size + anon, exact: start === 0, lastTs, activity: activityOf(lines) }
+}
+
+const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s)
+/** A tool call's one-line label: its description, else the agent, workflow or skill it names, else the tool. */
+export function toolLabel(name: string, input: any): string {
+  const i = input ?? {}
+  if (typeof i.description === "string" && i.description.trim()) return clip(i.description.trim(), 120)
+  if (name === "Workflow") return "workflow " + String(i.name ?? i.scriptPath ?? "").split("/").pop()
+  if (name === "Skill") return "skill " + String(i.skill ?? "").replace(/^.*:/, "")
+  if (name === "Agent" || name === "Task") return "agent " + String(i.subagent_type ?? "").replace(/^.*:/, "")
+  if (typeof i.file_path === "string") return name + " " + i.file_path.split("/").pop()
+  return name.replace(/^mcp__[^_]+(?:_[^_]+)*?__/, "")
+}
+const BG_RE = /running in background|launched in background|moved to the background|launched successfully|running in the background/i
+/** The orchestrator's activity, read from the transcript lines given (oldest first). */
+export function activityOf(lines: string[]): Activity {
+  const open = new Map<string, { label: string; since: string }>()
+  const bg = new Map<string, { label: string; since: string }>()
+  let lastTs = ""
+  for (const line of lines) {
+    let o: any
+    try { o = JSON.parse(line) } catch { continue }
+    const ts = typeof o?.timestamp === "string" ? o.timestamp : ""
+    const c = o?.message?.content
+    if (o?.type === "assistant" && Array.isArray(c)) {
+      if (ts) lastTs = ts
+      for (const b of c) if (b?.type === "tool_use" && b.id) open.set(b.id, { label: toolLabel(String(b.name ?? ""), b.input), since: ts })
+    } else if (o?.type === "user") {
+      if (ts) lastTs = ts
+      const texts: string[] = typeof c === "string" ? [c] : []
+      if (Array.isArray(c)) for (const b of c) {
+        if (b?.type === "tool_result" && b.tool_use_id) {
+          const t = typeof b.content === "string" ? b.content : JSON.stringify(b.content ?? "")
+          const was = open.get(b.tool_use_id)
+          open.delete(b.tool_use_id)
+          if (was && BG_RE.test(t.slice(0, 400))) bg.set(b.tool_use_id, was)
+        } else if (b?.type === "text" && typeof b.text === "string") texts.push(b.text)
+      }
+      for (const t of texts) for (const m of t.matchAll(/<task-notification>[\s\S]*?<tool-use-id>([^<\s]+)<\/tool-use-id>/g)) bg.delete(m[1])
+    }
+  }
+  const last = [...open.values()].pop()
+  return { doing: last?.label ?? "", doingSince: last?.since ?? "", background: [...bg.values()], lastTs }
 }
 
 type TInfo = { path: string; cwd: string; mtime: number }
@@ -501,16 +569,19 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
     const phaseHit = stagePhase(readUpdates(`${baseName(d.main)}.${f.id}`)) || lastPhase(log)
     const phase = phaseHit || (status === "planned" || status === "ready" ? "plan" : "")
     const wt = d.worktree
-    const mine = transcripts.filter((t) => t.cwd && (t.cwd === wt || t.cwd.startsWith(wt + "/"))).sort((a, b) => b.mtime - a.mtime)
+    const repoName = baseName(await mainOf(wt))
+    const runner = readRunner(`${repoName}.${f.id}`)
+    // A live runner names its session: that transcript, wherever it runs (a /fix-deferred run works from the main
+    // checkout, not the dossier's worktree). Otherwise the newest transcript working in the worktree.
+    const own = runner?.session && runnerActive(runner) ? transcripts.filter((t) => t.path.endsWith(`/${runner.session}.jsonl`)) : []
+    const mine = own.length ? own : transcripts.filter((t) => t.cwd && (t.cwd === wt || t.cwd.startsWith(wt + "/"))).sort((a, b) => b.mtime - a.mtime)
     let session: Session = { state: "none", lastTs: "", context: 0, requests: 0, requestsExact: true }
     if (mine.length) {
       const t = mine[0]
-      let tail = { context: 0, requests: 0, exact: true, lastTs: "" }
+      let tail: ReturnType<typeof tailTranscript> | null = null
       try { tail = tailTranscript(t.path) } catch { /* gone */ }
-      session = { state: now - t.mtime < 10 * 60_000 ? "active" : "idle", lastTs: new Date(t.mtime).toISOString(), context: tail.context, requests: tail.requests, requestsExact: tail.exact }
+      session = { state: now - t.mtime < 10 * 60_000 ? "active" : "idle", lastTs: new Date(t.mtime).toISOString(), context: tail?.context ?? 0, requests: tail?.requests ?? 0, requestsExact: tail?.exact ?? true, ...(tail ? { activity: tail.activity } : {}) }
     }
-    const repoName = baseName(await mainOf(wt))
-    const runner = readRunner(`${repoName}.${f.id}`)
     const main = d.main
     const pr = isRunning(status) || runnerActive(runner) ? await prFor(wt) : null
     const qs: string[] = []
@@ -562,7 +633,7 @@ export async function getRuns(questions: () => Question[]): Promise<RunsView> {
   if (!inflight && Date.now() - lastScan > 30_000) {
     lastScan = Date.now()
     inflight = buildRuns(questions()).then((v) => {
-      const sig = JSON.stringify(v.runs.map((r) => [r.repo, r.id, r.status, r.phase, r.lastActivity, r.session.state, r.pr]))
+      const sig = JSON.stringify(v.runs.map((r) => [r.repo, r.id, r.status, r.phase, r.lastActivity, r.session.state, r.pr, r.session.activity?.doing ?? "", r.session.activity?.background.length ?? 0]))
       cached = v
       if (sig !== lastSig) { lastSig = sig; emitChange("runs") }
       emitChange("scan")

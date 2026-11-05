@@ -152,6 +152,18 @@ for (const bad of ["", "{", "[]", '{"session_id":"q"}']) {
   check("progress: no dossier, no key", keyFromCommand("ls -la", tmp) === undefined)
   check("progress: build-log line", updateFor("Bash", { command: "python3 dossier_edit.py log d.md 'GATES round 1: 93/93'" }, {}) === "log: GATES round 1: 93/93")
   check("progress: suite summary", updateFor("Bash", { command: "python3 run_tests.py --log x -- cargo test" }, { stdout: "...\npassed 120  failed 2  ignored 0  (cargo)\n" }) === "suite: passed 120  failed 2  ignored 0  (cargo)")
+  check("progress: a detached suite is only started", updateFor("Bash", { command: "python3 run_tests.py --detach --vm v --workdir w -- cargo test" }, { stdout: "pid 1\nlog /x\n" }) === "suite started")
+  check("progress: a background suite is only started", updateFor("Bash", { command: "python3 run_tests.py -- cargo test" }, { stdout: "Command running in background with ID: b1" }) === "suite started")
+  check("progress: run_tests --help is no suite", updateFor("Bash", { command: "python3 run_tests.py --help" }, { stdout: "usage: run_tests.py" }) === undefined)
+  {
+    const { stepFor } = await import("../claude/progress")
+    const t = (p: string) => (p.endsWith("P6.md") ? "Turn waits for the summary" : "")
+    const wave = stepFor("Workflow", { name: "agentic-software-development:phase4-wave", args: JSON.stringify([{ agentType: "x:implementer", label: "FIX-P6", payloadPath: "/a/P6.md" }, { agentType: "x:unit-test-author", label: "UT", owned: ["a.rs", "b.rs"] }]) }, t) ?? ""
+    check("step: a wave lists its agents as a table", wave.startsWith("Spawning 2 agents (phase4-wave):") && wave.includes("| implementer | FIX-P6 | Turn waits for the summary |") && wave.includes("| unit-test-author | UT | a.rs, b.rs |"), wave)
+    check("step: tests, waits, gates, CI", stepFor("Bash", { command: "python3 run_tests.py --vm v -- cargo test -p x", description: "Run the D-1 proving test" }) === "Running tests: Run the D-1 proving test"
+      && stepFor("Bash", { command: "python3 run_tests.py --wait /x.log" }) === "Waiting for the test run to finish" && stepFor("Bash", { command: "python3 run_gates.py --list g" }) === "Running the gates"
+      && stepFor("Bash", { command: "python3 wait_ci.py 42" }) === "Waiting for CI on the pull request" && stepFor("Bash", { command: "ls" }) === undefined)
+  }
   check("progress: PR opened", updateFor("Bash", { command: "gh pr create --base x" }, { stdout: "https://github.com/o/r/pull/12\n" }) === "PR opened: https://github.com/o/r/pull/12")
   check("progress: workflow started", updateFor("Workflow", { name: "agentic-software-development:phase4-wave", args: [{}, {}] }, {}) === "workflow started: agentic-software-development:phase4-wave — 2 agent(s)")
   const { spawnFor, endStatus } = await import("../claude/progress.ts")

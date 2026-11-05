@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 export type Update = { ts: string; kind: "runner" | "stage" | "update"; text: string; stage?: string; state?: string; auto?: boolean; event?: string; status?: string; agent_id?: string }
-export type RunnerState = { state: "running" | "waiting" | "paused" | "done" | "failed" | "stopped"; stage: string; pid: number; started: string; root: string; account?: string; resumesAt?: string; command?: string }
+export type RunnerState = { state: "running" | "waiting" | "paused" | "done" | "failed" | "stopped"; stage: string; pid: number; started: string; root: string; account?: string; resumesAt?: string; command?: string; session?: string }
 
 export const runsDir = (): string => process.env.ASD_RUNS_DIR || join(homedir(), ".agentic", "runs")
 
@@ -35,7 +35,7 @@ export function readRunner(key: string, dir = runsDir(), alive: (pid: number) =>
     const j = JSON.parse(readFileSync(join(dir, `${key}.runner.json`), "utf8"))
     let state = ["running", "waiting", "paused", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
     if ((state === "running" || state === "waiting" || state === "paused") && !alive(Number(j.pid))) state = "stopped"
-    return { state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "", ...(typeof j.account === "string" ? { account: j.account } : {}), ...(typeof j.resumes_at === "string" ? { resumesAt: j.resumes_at } : {}), ...(typeof j.command === "string" ? { command: j.command } : {}) }
+    return { state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "", ...(typeof j.account === "string" ? { account: j.account } : {}), ...(typeof j.resumes_at === "string" ? { resumesAt: j.resumes_at } : {}), ...(typeof j.command === "string" ? { command: j.command } : {}), ...(typeof j.session === "string" && j.session ? { session: j.session } : {}) }
   } catch { return null }
 }
 /** A finished run's last reply and the owner's chat with its session (`run_dossier.py chat`). */
@@ -54,7 +54,7 @@ export function readConversation(key: string, done: boolean, dir = runsDir(), al
   if (!result && done) {
     let end = -1
     for (let i = lines.length - 1; i >= 0; i--) if (lines[i].kind === "runner" && /^stage \S+ end\b/.test(String(lines[i].text))) { end = i; break }
-    for (let i = end - 1; i >= 0; i--) if (lines[i].kind === "update" && lines[i].auto !== true && typeof lines[i].text === "string" && lines[i].text.trim()) { result = { ts: String(lines[i].ts ?? ""), text: lines[i].text, command: "" }; break }
+    for (let i = end - 1; i >= 0; i--) if (lines[i].kind === "update" && lines[i].auto !== true && lines[i].event !== "owner-message" && typeof lines[i].text === "string" && lines[i].text.trim()) { result = { ts: String(lines[i].ts ?? ""), text: lines[i].text, command: "" }; break }
   }
   const since = result?.ts ?? ""
   const chat: ChatLine[] = lines.filter((o) => o.kind === "chat" && typeof o.text === "string" && ["owner", "agent", "runner"].includes(o.from) && String(o.ts ?? "") >= since)

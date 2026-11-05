@@ -43,8 +43,9 @@ const FAILURE = /\b(failed|failing|red)\b/i
 /**
  * Whether an entry belongs in the Timeline: what a person wants to read, grouped by
  * stage. The agent's own notes, its questions with their threads, one line per agent
- * spawn with its status, a pull request opened or merged, and a run that failed,
- * stopped or finished. Not: command output (log copies, gates, suites, workflows),
+ * spawn with its status, each next step the hook records (`step`), a suite result
+ * with its counts, a pull request opened or merged, and a run that failed,
+ * stopped or finished. Not: command output (log copies, gates, workflows),
  * checkpoint text, or the runner's bookkeeping (stage start/end, "waiting on …" —
  * the question itself is shown). The build log holds everything else.
  */
@@ -53,7 +54,9 @@ export function inTimeline(e: TLEntry): boolean {
   if (e.type === "runner") return /^(stage \d+ failed|failed|stopped|done|paused|resumed|switched to account)\b/i.test(e.text.trim())
   if (e.type === "update" && e.auto) {
     const ev = e.event ?? "other"
-    return ev === "spawn" || ev === "pr" || ev === "blocked"
+    // The next step ("Running tests: …", a wave's agent table) and a suite's result with its counts.
+    if (ev === "suite") return /\bfailed\s+\d+/i.test(e.text)
+    return ev === "spawn" || ev === "pr" || ev === "blocked" || ev === "step"
   }
   return true
 }
@@ -75,7 +78,7 @@ export function mergeSpawns(updates: Update[]): (Update & { doneTs?: string })[]
 }
 
 /** The timeline section a later run on a finished dossier opens. */
-export const COMMAND_LABEL: Record<string, string> = { "fix-deferred": "Fix deferred issues", "product-summary": "Product summary" }
+export const COMMAND_LABEL: Record<string, string> = { "fix-deferred": "Fix deferred issues", "after-merge": "After the merge", "product-summary": "Product summary" }
 /** The phase number of a `Phase <n>` / `PHASE <n>` mention (the letter of `4a` dropped), or "". `unit` "Step" reads `Step <n>` (a stub). */
 export function phaseOfText(s: string, unit: "Phase" | "Step" = "Phase"): string {
   return (unit === "Step" ? s.match(/\bStep\s+(\d+)\b/) : s.match(/\b(?:Phase|PHASE)\s+(\d+)[a-z]?\b/))?.[1] ?? ""
@@ -151,7 +154,7 @@ export function mergeTimeline(o: { updates: Update[]; questions: Question[]; ext
 }
 
 // ---- classification and grouping (pure) ----
-export type Kind = "blocked" | "spawn" | "start" | "stage" | "question" | "answered" | "suite-green" | "suite-red" | "gate" | "pr" | "workflow" | "failed" | "waiting" | "done" | "stopped" | "note" | "reply" | "routine" | "info" | "entry" | "boundary"
+export type Kind = "blocked" | "step" | "spawn" | "start" | "stage" | "question" | "answered" | "suite-green" | "suite-red" | "gate" | "pr" | "workflow" | "failed" | "waiting" | "done" | "stopped" | "note" | "reply" | "routine" | "info" | "entry" | "boundary"
 const KEY_KINDS = new Set<Kind>(["blocked", "start", "stage", "question", "answered", "suite-green", "suite-red", "gate", "pr", "workflow", "failed", "waiting", "done", "stopped"])
 
 /** What an entry is, for display: its kind, whether it is a key event, and whether it is routine (collapsible). */
@@ -178,6 +181,8 @@ export function classify(e: TLEntry): { kind: Kind; key: boolean; routine: boole
   }
   // update (hook-written `auto` lines and agent notes)
   if (e.event === "spawn") return mk("spawn")
+  if (e.auto && e.event === "step") return mk("step")
+  if (e.event === "owner-message") return mk("reply")
   if (e.auto && e.event === "blocked") return mk("blocked")
   if (e.auto && e.event === "workflow") return mk("workflow")
   // An agent's note is prose: "the gate failed, then passed alone after a fixture rebuild" is no red suite.

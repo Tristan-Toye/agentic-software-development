@@ -89,7 +89,7 @@ export function runStatusText(r: StatusRun, now: number): string {
       lines.push(`Last activity ${ago(last.ts, now)}${r.state === "running" && quiet >= 20 ? " ⚠ quiet" : ""}${r.context ? ` · context ${Math.round(r.context / 1000)}k / 200k` : ""}`)
     }
   }
-  const note = r.updates.find((u) => u.kind === "update" && !u.auto && u.text.trim())
+  const note = r.updates.find((u) => u.kind === "update" && !u.auto && u.event !== "owner-message" && u.text.trim())
   if (note) {
     const para = note.text.trim().split(/\n\s*\n/)[0].replace(/\s*\n\s*/g, " ")
     lines.push(`_Last note (${ago(note.ts, now)}):_ ${esc(clip(para, 400))}`)

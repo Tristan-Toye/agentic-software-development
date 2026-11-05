@@ -81,7 +81,7 @@ the recorded checkpoints.
   `reason`, `tool_use_id`). The runner-mode rules tell the agent never to work
   around a block and to ask the owner, quoting the exact command. The
   dashboard's Blocked card rules on it (owner-questions.md). How a background
-  run is allowed what auto mode blocks, since `/permissions` needs a terminal:
+  run is allowed what auto mode blocks, since the permissions dialog needs a terminal:
   an approval in the owner's answer that names the exact action and what makes
   it risky (the classifier reads the owner's messages, one action unless said
   to be standing); a narrow `permissions.allow` rule in the repo's
@@ -116,6 +116,12 @@ the recorded checkpoints.
   only about an item it would rather not fix there: one that deserves its own
   dossier, no longer applies, or is not worth it (`commands/fix-deferred.md`).
   The dashboard's "Fix all deferred" and "Fix selected" buttons start it.
+- **`--command after-merge --items 429,430`:** runs `/after-merge <ID> <PRs>`
+  (`commands/after-merge.md`): the cleanup after the owner merged the dossier's
+  pull request (or its stacked deferred-fix one) into the stub. It settles the
+  record, cleans local branches and worktrees, retargets a stacked pull request,
+  and asks before refreshing one that now conflicts; it never merges. The
+  dashboard's merge detector starts it, on sonnet.
 - **The product summary:** after the deferred report, one more short
   process runs `/product-summary <ID>` (`commands/product-summary.md`) on
   `ASD_RUNNER_SUMMARY_MODEL` (default `sonnet`) and stores the page at
@@ -133,8 +139,17 @@ the recorded checkpoints.
   `result_session`, else the last `stage N end` line's) with `claude -p
   --resume`, on the run's account, and writes the reply as a `chat` line
   (`from: agent`, or `from: runner` with why there is none). Refused while
-  the run is live or the last message is still being answered. A new run's
-  reply starts a new chat.
+  the last message is still being answered. A new run's reply starts a new
+  chat.
+- **A message to a live run** (the same `chat` command, the dossier page's
+  "Message the running agent" box): appended to `<key>.inbox.jsonl` and to the
+  updates as an `owner-message` line. The runner sends it into the live
+  session as `OWNER MESSAGE: …`, mid-turn, between turns, or by waking a wait
+  on a question (which stays open; the agent ends that turn waiting again). A
+  paused run gets it when it resumes. `inbox_seen` in `<key>.runner.json`
+  counts what was delivered, so a resumed run never sends one twice. The
+  message outranks an earlier answer: the agent acts on it and confirms in a
+  note.
 - **Limits:** `--max-stages` caps the number of stages a run starts
   (default 20). A crash of the process counts as `FAILED`.
 
@@ -147,6 +162,10 @@ The prompt tells the orchestrator these rules:
   - keep working on whatever is not blocked;
   - when nothing can proceed, end the turn with
     `RUNNER: WAITING <id>[,<id>...]`.
+- Run every test through `run_tests.py` and every gate list through
+  `run_gates.py`, never an ad-hoc script, so the timeline gets the suite and
+  gate lines; and only the tests the step names (under SUITE-MODE `stub`, the
+  new and affected tests plus CI: the full suite belongs to `/stub`).
 - End each stage with its `phase_checkpoint` call and then the line
   `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a
   new process with your checkpoints as its hand-off.
@@ -171,6 +190,9 @@ The prompt tells the orchestrator these rules:
   - **The plugin's PostToolUse hook:** a `stage` line for every
     `phase_checkpoint` call when `ASD_RUN_KEY` is set. It writes the stage
     name and the first line of the summary.
+  - **The suite line:** a `run_tests.py` call writes `suite: passed N failed M`
+    from its digest; a `--detach` or background call writes `suite started`,
+    and its `--wait` call writes the result.
   - **The same hook, for progress:** an `update` line with `auto: true` for
     each `dossier_edit.py log` line, each `run_tests.py` and `run_gates.py`
     result, each workflow started and agent spawned, and each PR opened or

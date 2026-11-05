@@ -1,5 +1,6 @@
 // Automatic progress updates for the run's updates store (references/runner.md). Pure
 // functions, so the hook test can call them without running the hook.
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
 // ---- Automatic progress updates (references/runner.md, "The updates store") ----
@@ -66,7 +67,11 @@ export function updateFor(tool: string, input: any, resp: any): string | undefin
     }
     if (/\brun_tests\.py\b/.test(cmd)) {
       const s = lastMatch(out, /^passed \d+\s+failed \d+/)
-      return s ? `suite: ${s}` : "suite run finished"
+      if (s) return `suite: ${s}`
+      if (/\s--(?:help|print-cmd|selftest)\b|\s-h\b/.test(cmd)) return undefined
+      // A detached run (`--detach`) or a background Bash call has not run yet: its `--wait` call reports the result.
+      if (/\s--detach\b/.test(cmd) || /running in background|moved to the background/i.test(out) || (resp && typeof resp === "object" && (resp.backgroundTaskId || resp.background_task_id))) return "suite started"
+      return "suite run finished"
     }
     if (/\brun_gates\.py\b/.test(cmd)) {
       const s = out.split("\n").map((l) => l.trim()).filter(Boolean).pop()
@@ -109,4 +114,56 @@ export function endStatus(lastMessage: string): string {
   if (/^\s*CONTRACT-CHANGE:/m.test(m)) return "contract-change"
   if (/^\s*GAP:/m.test(m)) return "gap"
   return "done"
+}
+
+/** The first heading or `TITLE:` line of a payload file, for the spawn table; "" when unreadable. */
+export function payloadTitle(path: string): string {
+  try {
+    const text = readFileSync(path, "utf8").slice(0, 16_000)
+    const t = text.match(/^TITLE:\s*(.+)$/m) ?? text.match(/^\s*#{2,3}\s+(?:CR-\d+[:.]?\s*)?(.+)$/m) ?? text.match(/^\s*#\s+(?!compose_payloads)(.+)$/m)
+    return t ? t[1].trim().slice(0, 100) : ""
+  } catch { return "" }
+}
+const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim()
+
+/**
+ * The step a tool call is about to take, as a short owner-facing line (PreToolUse), or undefined. A wave or review
+ * workflow lists its agents as a small table (agent, label, what it works on); a test, gate or PR call names itself.
+ * `title` reads a payload's title; injectable for tests.
+ */
+export function stepFor(tool: string, input: any, title: (path: string) => string = payloadTitle): string | undefined {
+  const i = input ?? {}
+  if (tool === "Workflow") {
+    const name = String(i.name ?? i.scriptPath ?? "workflow").split("/").pop()!.replace(/^.*:/, "").replace(/\.js$/, "")
+    let args: any = i.args
+    if (typeof args === "string") { try { args = JSON.parse(args) } catch { args = undefined } }
+    const list: any[] = Array.isArray(args) ? args : Array.isArray(args?.payloads) ? args.payloads : []
+    if (!list.length) return `Starting the ${name} workflow`
+    const rows = list.slice(0, 20).map((a) => {
+      const type = String(a?.agentType ?? a?.kind ?? "agent").replace(/^.*:/, "")
+      const what = (a?.payloadPath ? title(String(a.payloadPath)) : "") || (Array.isArray(a?.owned) ? a.owned.join(", ") : "") || String(a?.lens ?? "")
+      return `| ${cell(type)} | ${cell(String(a?.label ?? ""))} | ${cell(what).slice(0, 120)} |`
+    })
+    const more = list.length > 20 ? `\n…and ${list.length - 20} more` : ""
+    return `Spawning ${list.length} agent${list.length === 1 ? "" : "s"} (${name}):\n\n| Agent | Label | Works on |\n|---|---|---|\n${rows.join("\n")}${more}`
+  }
+  if (tool === "Skill") {
+    const s = String(i.skill ?? "").replace(/^.*:/, "")
+    return s ? `Starting ${s}` : undefined
+  }
+  if (tool !== "Bash") return undefined
+  const cmd = String(i.command ?? "")
+  const what = typeof i.description === "string" && i.description.trim() ? `: ${i.description.trim().slice(0, 140)}` : ""
+  if (/\brun_tests\.py\b/.test(cmd)) {
+    if (/\s--(?:help|print-cmd|selftest|digest)\b|\s-h\b/.test(cmd)) return undefined
+    if (/\s--wait\b/.test(cmd)) return "Waiting for the test run to finish"
+    const names = [...cmd.matchAll(/\s--test[ =](\S+)/g)].map((m) => m[1].replace(/^["']|["']$/g, ""))
+    return `Running tests${what}${names.length ? ` (${names.slice(0, 5).join(", ")}${names.length > 5 ? ", …" : ""})` : ""}`
+  }
+  if (/\brun_gates\.py\b/.test(cmd)) return `Running the gates${what}`
+  if (/\bwait_ci\.py\b/.test(cmd)) return "Waiting for CI on the pull request"
+  if (/\bgh\s+pr\s+create\b/.test(cmd)) return "Opening the pull request"
+  if (/\bgit\s+push\b/.test(cmd)) return "Pushing the branch"
+  if (/\bgit\s+merge\b/.test(cmd) && !/--abort/.test(cmd)) return `Merging${what}`
+  return undefined
 }

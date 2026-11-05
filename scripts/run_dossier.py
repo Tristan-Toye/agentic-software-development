@@ -73,6 +73,7 @@ You run under the dossier runner and nobody reads the terminal.
 - Ask the owner only through scripts/ask_owner.py, and never wait in the background: keep working on whatever is not blocked; when nothing can proceed, end the turn with the line `RUNNER: WAITING <id>[,<id>...]` and stop. The ids are question ids from ask_owner.py only; a wait on a background command or workflow is not a WAITING line: just end the turn, and Claude Code re-invokes you when it finishes. The runner waits for you and sends the owner's message into this session as `OWNER ANSWER <id>: ...` or `OWNER FOLLOWUP <id>: ...`. A follow-up is the owner's typed message and the question stays open: if it is a question, answer it with `ask_owner.py reply`, then end the turn with `RUNNER: WAITING <id>` again; if it reads as an answer or an instruction you can act on, run `ask_owner.py accept <id> --text "<what you will do, in one or two plain sentences>"`, which closes the question, and carry on; if it is unclear, reply with your reading and ask the owner to confirm, then wait again.
 - Never end a turn to wait for a command: run commands in the foreground (raise the Bash timeout up to 10 minutes) or wait for them inside the same turn. A workflow or background task that notifies you later is fine, but say `waiting for <what>` in plain text in that turn (never as a `RUNNER:` line); the runner keeps the session open for its notification.
 - When the auto-mode safety check blocks a call you need, never work around it: ask the owner with `ask_owner.py ask`, quoting the exact command (or path) and what it is for, with options to allow it once, to allow it as a standing rule, or to go without it; carry on with what is not blocked. The dashboard's Blocked card answers that question; an approval names the exact command, so retry it as written.
+- Run every test through scripts/run_tests.py and every gate list through scripts/run_gates.py (`--vm` for the VM, `--detach` then `--wait` for a long run), never through a script or command of your own: their result lines are how the owner's timeline shows a suite going green or red. Run only the tests the command's step names: under /work-on and /fix-deferred with SUITE-MODE `stub`, that is the new and affected tests and the pull request's CI, never the full workspace or `--stack` suite, which only /stub runs.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
 - Keep the owner informed: post an update with `ask_owner.py note --root R --dossier ID --text "..."` when a stage starts and ends and whenever something worth knowing happens (a wave returned, the suite went green or red, an arbitration was ruled, a plan changed). Write it for a person reading on a phone: what happened and what it means, in plain sentences; markdown bullets and small tables are welcome. Never paste commands, file paths, SHAs, flags or log output into an update; the build log keeps those.
@@ -318,17 +319,24 @@ def kill_group(proc: subprocess.Popen | None, sig=signal.SIGTERM) -> None:
         pass
 
 
+# owner_wait's code for "the owner wrote to the run" (not an answer).
+MESSAGE_RC = 20
+# Commands that take an argument list after the dossier id (`--items`).
+ITEM_COMMANDS = ("fix-deferred", "after-merge")
+
+
 class Runner:
     def __init__(self, root: str, dossier: str, command: str, model: str | None,
                  permission_mode: str, max_stages: int, items: str = ""):
         self.root = os.path.abspath(root)
         self.dossier = dossier
         self.command = command
-        self.items = items  # fix-deferred: the D-ids the owner selected, "D-1,D-3"; empty = all
+        self.items = items  # fix-deferred: the D-ids the owner selected, "D-1,D-3" (empty = all); after-merge: the merged PR numbers, "429,430"
         self.model = model
         self.permission_mode = permission_mode
         self.max_stages = max_stages
-        prev_acct = (read_json(os.path.join(runs_dir(), key_of(root, dossier) + ".runner.json"), {}) or {}).get("account", "")
+        prev = read_json(os.path.join(runs_dir(), key_of(root, dossier) + ".runner.json"), {}) or {}
+        prev_acct = prev.get("account", "")
         self.account, _ = pick_account(prefer=prev_acct)
         self.key = key_of(root, dossier)
         d = runs_dir()
@@ -337,7 +345,9 @@ class Runner:
         self.cp_path = os.path.join(d, self.key + ".checkpoints.json")
         self.err_path = os.path.join(d, self.key + ".stderr.log")
         self.state: dict = {"pid": os.getpid(), "account": self.account["name"], "root": root, "command": command, "permission_mode": permission_mode, "started": now(), "state": "running", "stage": 0,
-                            "session": "", "questions": [], "claude_pid": None}
+                            "session": "", "questions": [], "claude_pid": None,
+                            # the owner's messages already delivered: a resumed run never sends one twice
+                            "inbox_seen": int(prev.get("inbox_seen") or 0)}
         self.checkpoints: list[dict] = read_json(self.cp_path, [])
         self.seen_tool_ids: set[str] = set()
         self.stopping = False
@@ -492,7 +502,7 @@ class Runner:
     def handoff(self) -> str | None:
         if not self.checkpoints:
             return None
-        args = f" {self.items}" if self.items and self.command == "fix-deferred" else ""
+        args = f" {self.items}" if self.items and self.command in ITEM_COMMANDS else ""
         rows = [f"RUNNER HAND-OFF. Task: run /{PLUGIN}:{self.command} {self.dossier}{args} in {self.root}.",
                 "Earlier stages, in order:"]
         for i, cp in enumerate(self.checkpoints, 1):
@@ -532,7 +542,7 @@ class Runner:
             q.put(None)
 
         threading.Thread(target=pump, daemon=True).start()
-        self.send(f"/{PLUGIN}:{self.command} {self.dossier}" + (f" {self.items}" if self.items and self.command == "fix-deferred" else ""))
+        self.send(f"/{PLUGIN}:{self.command} {self.dossier}" + (f" {self.items}" if self.items and self.command in ITEM_COMMANDS else ""))
         extra = False
         hand = self.handoff()
         carry = getattr(self, "pending_owner", "")
@@ -548,6 +558,21 @@ class Runner:
             self.send(hand)
             extra = True
         return q, extra
+
+    def deliver_inbox(self) -> bool:
+        """Send the owner's undelivered messages (`run_dossier.py chat` on a live run) into the live session."""
+        if self.proc is None or self.proc.poll() is not None:
+            return False
+        seen = int(self.state.get("inbox_seen") or 0)
+        new = read_inbox(self.key, seen)
+        if not new:
+            return False
+        for m in new:
+            if (m.get("text") or "").strip():
+                self.send(owner_message(m["text"].strip()))
+        self.save(inbox_seen=seen + len(new))
+        self.log(f"delivered {len(new)} message(s) from the owner to the running agent")
+        return True
 
     def send(self, text: str) -> None:
         try:
@@ -610,6 +635,8 @@ class Runner:
         result: tuple[str, bool] | None = None
         quiet_since = time.monotonic()
         while True:
+            if result is None and self.deliver_inbox():
+                quiet_since = time.monotonic()  # a message between turns starts a turn of its own
             timeout = self.grace if (result is not None and extra) else 1.0
             try:
                 ev = q.get(timeout=timeout)
@@ -660,6 +687,8 @@ class Runner:
                     if p.poll() is not None:
                         out, err = p.communicate()
                         return i, p.returncode, (out.strip() or err.strip())
+                if read_inbox(self.key, int(self.state.get("inbox_seen") or 0)):
+                    return "", MESSAGE_RC, ""  # the owner wrote to the run: wake the session with it
                 if self.stopping:
                     return "", -1, ""
                 time.sleep(0.1)
@@ -784,6 +813,11 @@ class Runner:
             qid, rc, out = self.owner_wait(ids)
             if self.stopping:
                 return "stopped", ""
+            if rc == MESSAGE_RC:
+                # Not an answer: the question stays open. Deliver the message; the agent ends that turn waiting again.
+                self.save(state="running")
+                self.deliver_inbox()
+                continue
             if rc not in (0, 10):
                 kill_group(self.proc)
                 self.end_process()
@@ -983,6 +1017,34 @@ def chat_line(key: str, who: str, text: str, **kw) -> None:
     append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "chat", "from": who, "text": text[:20000], **kw})
 
 
+# ---- the owner's messages to a live run: `<key>.inbox.jsonl`, delivered by the runner into the live session ----
+def inbox_path(key: str) -> str:
+    return os.path.join(runs_dir(), key + ".inbox.jsonl")
+
+
+def read_inbox(key: str, seen: int) -> list[dict]:
+    """The owner's messages after the first `seen` lines of the inbox."""
+    try:
+        with open(inbox_path(key)) as fh:
+            lines = [l for l in fh.read().split("\n") if l.strip()]
+    except OSError:
+        return []
+    out = []
+    for l in lines[seen:]:
+        try:
+            out.append(json.loads(l))
+        except ValueError:
+            out.append({"text": ""})
+    return out
+
+
+def owner_message(text: str) -> str:
+    return ("OWNER MESSAGE (not an answer to a question; the owner typed it on the dashboard): " + text + "\n"
+            "Read it against what you are doing now. If it corrects an earlier answer or ruling, the message wins: act on it, "
+            "undo what the old answer made you do where needed, and log the change in the build log. Confirm in one short "
+            "note (ask_owner.py note) what you will do with it, or ask with ask_owner.py if it is unclear. Then carry on.")
+
+
 def cmd_chat(a: argparse.Namespace) -> int:
     """`chat ID --text T`: the owner's message to the finished run's session. The owner line is written at once; the
     reply (or why there is none) follows as a `chat` line from a background process, `<key>.chat.log` its output."""
@@ -994,8 +1056,11 @@ def cmd_chat(a: argparse.Namespace) -> int:
         return 2
     st = read_json(os.path.join(d, key + ".runner.json"), {}) or {}
     if st.get("state") in ("running", "waiting", "paused") and alive(st.get("pid")):
-        print(f"{key} is still running; answer its questions instead", file=sys.stderr)
-        return 2
+        # A live run: the runner delivers it into the running session (mid-turn, or by waking a question wait).
+        append_line(inbox_path(key), {"ts": now(), "text": text[:20000]})
+        append_line(os.path.join(d, key + ".jsonl"), {"ts": now(), "kind": "update", "event": "owner-message", "from": "owner", "text": text[:20000]})
+        say(f"sent to {key}; the running agent gets it " + ("when the usage pause ends" if st.get("state") == "paused" else "now"))
+        return 0
     cp = os.path.join(d, key + ".chat.json")
     ch = read_json(cp, {}) or {}
     if ch.get("state") == "thinking" and alive(ch.get("pid")) and ch.get("pid") != os.getpid():
@@ -1448,6 +1513,23 @@ def selftest() -> int:
         p = start("W-7")
         check("a live owner of the dossier refuses a second runner", p.wait(timeout=30) == 2)
 
+        # ---- the owner's message to a live run: wakes a question wait, the question stays open ----
+        q30 = "repo.W-30.Q1"
+        scenario([{"turns": [[{"ask": 1, "dossier": "W-30", "final": "RUNNER: WAITING {id}"}],
+                             [{"final": "noted\nRUNNER: WAITING " + q30}],
+                             [{"final": "RUNNER: DONE"}]]}])
+        p = start("W-30")
+        until(lambda: state_of("W-30").get("state") == "waiting")
+        r = subprocess.run([sys.executable, me, "chat", "W-30", "--root", root, "--text", "I answered Q0 wrong: use B"], env=env, capture_output=True, text=True, timeout=30)
+        check("message: chat on a live run is queued for it", r.returncode == 0 and "running agent gets it" in r.stdout)
+        got = until(lambda: [m for m in msgs(1) if m.startswith("OWNER MESSAGE")] if os.path.exists(os.path.join(fdir, "in.1.jsonl")) else None)
+        check("message: the waiting session gets it as OWNER MESSAGE", bool(got) and "use B" in got[0])
+        check("message: the runner waits on the question again, which stays open",
+              bool(until(lambda: state_of("W-30").get("state") == "waiting" and len(msgs(1)) >= 2)) and not any(x.get("from") == "owner" for x in lines_of(qfile(q30))))
+        owner_line(q30, "answer", "A", "A")
+        check("message: the answer still goes through and the run finishes", p.wait(timeout=60) == 0 and state_of("W-30").get("inbox_seen") == 1)
+        check("message: the timeline has the owner's message", any(x.get("event") == "owner-message" for x in lines_of(os.path.join(rdir, "repo.W-30.jsonl"))))
+
     print("FAILED: " + ", ".join(failures) if failures else "all ok")
     return 1 if failures else 0
 
@@ -1534,11 +1616,11 @@ def main() -> int:
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--root", help="repository root (default: the repository of the current directory)")
     ap.add_argument("--dossier", help="same as the positional id")
-    ap.add_argument("--command", choices=["work-on", "stub", "fix-deferred"], default="work-on")
+    ap.add_argument("--command", choices=["work-on", "stub", "fix-deferred", "after-merge"], default="work-on")
     ap.add_argument("--model")
     ap.add_argument("--permission-mode", default="auto")
     ap.add_argument("--max-stages", type=int, default=20)
-    ap.add_argument("--items", default="", help="fix-deferred only: the D-ids to fix, e.g. D-1,D-3 (default: every open item)")
+    ap.add_argument("--items", default="", help="fix-deferred: the D-ids to fix, e.g. D-1,D-3 (default: every open item); after-merge: the merged PR numbers, e.g. 429,430")
     ap.add_argument("--detach", action="store_true", help="the default: run in the background; output to <key>.runner.log")
     ap.add_argument("--foreground", action="store_true", help="run in this terminal instead of the background")
     a = ap.parse_args(argv)
@@ -1548,8 +1630,9 @@ def main() -> int:
         ap.print_usage(sys.stderr)
         return 2
     items = ",".join(i for i in re.split(r"[,\s]+", a.items or "") if i)
-    if items and (a.command != "fix-deferred" or not re.fullmatch(r"D-\d+(?:,D-\d+)*", items)):
-        print("run_dossier.py: --items takes D-ids (D-1,D-3) and only with --command fix-deferred", file=sys.stderr)
+    if items and not ((a.command == "fix-deferred" and re.fullmatch(r"D-\d+(?:,D-\d+)*", items))
+                      or (a.command == "after-merge" and re.fullmatch(r"\d+(?:,\d+)*", items))):
+        print("run_dossier.py: --items takes D-ids (D-1,D-3) with --command fix-deferred, or PR numbers (429,430) with --command after-merge", file=sys.stderr)
         return 2
     if not a.foreground:
         return detach(argv + ([] if "--root" in argv else ["--root", a.root]), a.root, a.dossier)

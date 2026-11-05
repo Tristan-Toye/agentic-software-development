@@ -83,7 +83,7 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}.acard{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:8px}.acard.next{border-color:var(--acc)}
 .ahd{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.aname{font-weight:700;font-size:1rem;margin-right:4px}.meter .mhd{display:flex;justify-content:space-between;font-size:12.5px}.meter .ml{color:var(--mut)}.meter .mv{font-weight:600}
 .mbar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin:3px 0}.mfill{display:block;height:100%;background:var(--acc)}.mfill.ok{background:var(--ok)}.mfill.warn{background:var(--warn)}.mfill.bad{background:var(--bad)}
-.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 0;color:var(--fg)}.nowline .nowtext{display:inline-flex;gap:6px;align-items:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .nowline{margin:2px 0 0;color:var(--mut)}.nowline .chip{font-size:11px}.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip.fixing{display:inline-flex;align-items:center;gap:5px;background:var(--accbg);color:var(--acc);font-weight:600}a.srow:has(.chip.fixing){box-shadow:inset 3px 0 0 var(--acc)}
 .dfp{border-left:3px solid var(--acc)}.dfp-bar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--chip);margin:6px 0 4px}.dfp-bar .seg{display:block;height:100%}
 .seg.ok,.sw.ok{background:var(--ok)}.seg.acc,.sw.acc{background:var(--acc)}.seg.warn,.sw.warn{background:var(--warn)}.seg.mut,.sw.mut{background:var(--mut)}.seg.mut2,.sw.mut2{background:var(--bd)}
@@ -283,12 +283,17 @@ function homeView() {
   const open = allOpen(); const cards = [];
   const byRepo = {}; open.forEach(q => { const r = qRepo(q); byRepo[r] = (byRepo[r] || 0) + 1; });
   repoNames().forEach(repo => {
-    const rs = S.runs.filter(r => r.repo === repo); const np = rs.filter(inProgress).length, ns = rs.filter(notStarted).length, nd = rs.filter(isDone).length;
-    const nq = byRepo[repo] || 0; const st = newestStub(repo); const cs = [];
-    if (st) cs.push(chip('stub ' + st.state, st.state)); if (nq) cs.push(chip(nq + ' open question' + (nq > 1 ? 's' : ''), 'open'));
+    // The badge: the dossiers in flight, each counted once: in progress, or on the oldest open stub (merged into it or parked under it).
+    const rs = S.runs.filter(r => r.repo === repo); const prog = rs.filter(inProgress).map(r => r.id);
+    const os = openStubs(repo); const cur = os.length ? os[os.length - 1] : null;
+    const onStub = cur ? Array.from(new Set(cur.dossiers.map(d => d.id).concat(cur.members.map(m => m.id)))) : [];
+    const n = new Set(prog.concat(onStub)).size;
+    const nq = byRepo[repo] || 0; const cs = [];
+    if (cur) cs.push(chip('stub ' + cur.state, cur.state)); if (nq) cs.push(chip(nq + ' open question' + (nq > 1 ? 's' : ''), 'open'));
+    const meta = prog.length + ' in progress' + (cur ? ' · ' + onStub.length + ' on ' + cur.branch : ' · no open stub');
     cards.push(h('a', { class: 'card', href: hrefRepo(repo), 'data-k': 'home:' + repo }, [
-      h('span', { class: 'title' }, [rlabel(repo)]), h('span', { class: 'badge ' + (np ? 'info' : '') }, [String(np)]),
-      h('span', { class: 'meta' }, [np + ' in progress · ' + ns + ' not started · ' + nd + ' done']), h('span', { class: 'chips' }, cs)]));
+      h('span', { class: 'title' }, [rlabel(repo)]), h('span', { class: 'badge ' + (n ? 'info' : ''), title: 'Dossiers in progress or on the oldest open stub, each counted once' }, [String(n)]),
+      h('span', { class: 'meta' }, [meta]), h('span', { class: 'chips' }, cs)]));
   });
   return h('div', {}, [h('h1', {}, ['Pipeline']), h('p', { class: 'lead' }, ['Pick a repo to see what is running, what is next and what is done.']),
     accountsView(), runningView(), h('div', { class: 'grid' }, cards),
@@ -330,7 +335,7 @@ function runningView() {
     if (nq) right.push(h('span', { class: 'qb' }, ['? ' + nq]));
     if (r.blocked) right.push(chip('⛔ ' + r.blocked + ' blocked', 'blocked'));
     return h('a', { class: 'srow', href: hrefItem(r.repo, r.id), 'data-k': 'run:' + r.repo + '/' + r.id }, [h('span', { class: 'sid mono' }, [r.id]),
-      h('span', { class: 'sname' }, [h('span', {}, [r.title]), h('span', { class: 'small mut rsub' }, [rlabel(r.repo) + ' · ' + (stageText(r) || 'starting') + (last ? ' · ' : ''), last ? when(last.ts, 'last activity ') : null])]),
+      h('span', { class: 'sname' }, [h('span', {}, [r.title]), h('span', { class: 'small mut rsub' }, [rlabel(r.repo) + ' · ' + (stageText(r) || 'starting') + (last ? ' · ' : ''), last ? when(last.ts, 'last update ') : null]), nowLine(r)]),
       h('span', { class: 'sright' }, right)]);
   });
   const head = live.length ? live.length + ' run' + (live.length === 1 ? '' : 's') + ' · ' + working + ' working' + (agents ? ' · ' + agents + ' sub-agent' + (agents === 1 ? '' : 's') : '') : 'Nothing is running';
@@ -344,7 +349,28 @@ function questionsView() {
   kids.push(queueView(hq));
   return h('div', {}, kids);
 }
-function latestDoing(r) { const u = r.updates.find(x => !x.auto) || r.updates[0]; return u ? u.text : (r.lastActivity || ''); }
+/* What a live run's orchestrator is on right now (its transcript): the call in flight, else the background work it waits for; and how long it has been quiet. */
+function nowDoing(r) {
+  const live = r.runner ? ['running', 'waiting'].includes(r.runner.state) : (r.session && r.session.state === 'active');
+  const a = r.session && r.session.activity; if (!live || !a) return null;
+  const since = (ts) => ts && Date.parse(ts) ? ' · for ' + dur(Date.now() - Date.parse(ts)) : '';
+  let text = '', tone = 'neutral';
+  if (a.doing) text = 'Now: ' + a.doing + since(a.doingSince);
+  else if (a.background.length) { const first = a.background.slice().sort((x, y) => (x.since || '').localeCompare(y.since || ''))[0]; text = 'Waiting on: ' + a.background.map(b => b.label).join(', ') + since(first.since); }
+  else if (r.runner && r.runner.state === 'waiting') text = '';
+  else text = 'Thinking';
+  const quietMs = a.lastTs && Date.parse(a.lastTs) ? Date.now() - Date.parse(a.lastTs) : 0;
+  const quiet = r.runner && r.runner.state === 'running' && quietMs >= 20 * 60000 ? 'quiet for ' + dur(quietMs) : '';
+  if (quiet && !a.doing && !a.background.length) tone = 'warn';
+  if (!text && !quiet) return null;
+  return { text, quiet, tone, title: a.lastTs ? 'Last transcript activity ' + new Date(a.lastTs).toLocaleString() : '' };
+}
+function nowLine(r) {
+  const n = nowDoing(r); if (!n) return null;
+  return h('div', { class: 'nowline small', title: n.title }, [n.text ? h('span', { class: 'nowtext' }, [h('span', { class: 'dot info live' }), n.text]) : null,
+    n.quiet ? chip(n.quiet + (n.tone === 'warn' ? ' ⚠' : ''), n.tone) : null]);
+}
+function latestDoing(r) { const u = r.updates.find(x => !x.auto && x.event !== 'owner-message') || r.updates[0]; return u ? u.text : (r.lastActivity || ''); }
 function stageOf9(r) { return /^\d+$/.test(r.phase || '') ? 'Stage ' + r.phase + '/9' + (r.phaseName ? ' · ' + r.phaseName : '') : stageText(r); }
 function openStubs(repo) { const rr = S.stubs.repos.find(x => x.repo === repo); if (!rr) return []; return (rr.open || []).map(b => rr.stubs.find(s => s.branch === b)).filter(Boolean); }
 function fitFrame(f) {
@@ -444,10 +470,10 @@ function header(r, mode) {
   if (mode === 'run') acts.push(h('a', { class: 'btn', href: hrefItem(r.repo, r.id) + '/dossier' }, ['View dossier']));
   else if (r.updates.length || inProgress(r)) acts.push(h('a', { class: 'btn', href: hrefItem(r.repo, r.id) }, ['Back to run']));
   return h('div', { class: 'panel' }, [h('h1', { style: 'margin-top:0' }, [r.id + ' · ' + r.title]), r.summary && mode === 'run' ? h('p', { class: 'sum' }, [r.summary]) : null,
-    h('div', { class: 'chips' }, cs), h('div', { class: 'row' }, controls(r, true).concat(acts))]);
+    h('div', { class: 'chips' }, cs), nowLine(r), h('div', { class: 'row' }, controls(r, true).concat(acts))]);
 }
-const ICON = { blocked: '⛔', start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', spawn: '⎇', reply: '↩', routine: '·', info: '·', entry: '§' };
-const KLABEL = { blocked: 'blocked by the safety check', start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', spawn: 'agent', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };
+const ICON = { step: '→', blocked: '⛔', start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', spawn: '⎇', reply: '↩', routine: '·', info: '·', entry: '§' };
+const KLABEL = { step: 'next step', blocked: 'blocked by the safety check', start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', spawn: 'agent', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };
 function dur(ms) { const m = Math.round(ms / 60000); if (m < 1) return '<1 min'; if (m < 60) return m + ' min'; const hh = Math.floor(m / 60); if (hh < 24) return hh + ' h ' + (m % 60 ? (m % 60) + ' min' : ''); return Math.floor(hh / 24) + ' d ' + (hh % 24) + ' h'; }
 const icon = (k) => h('span', { class: 'ic' }, [ICON[k] || '•']);
 function tlEntry(e) {
@@ -522,6 +548,7 @@ function itemView(repo, id) {
   const kids = [header(r, mode)];
   const bv = blockedView(r, d); if (bv) kids.push(bv);
   const res = resultView(r, d); if (res) kids.push(res);
+  const lm = liveMessageView(r); if (lm) kids.push(lm);
   const dp = deferredProgress(r, d); if (dp) kids.push(dp);
   /* Every dossier has the same tabs; a finished or not-started one opens on the
      dossier itself, a run in progress on its timeline. Empty tabs are left out. */
@@ -555,6 +582,8 @@ function dfState(r, i) {
   if (i.state === 'fixed') return r.deferred.pr ? h('a', { href: r.deferred.pr, target: '_blank', rel: 'noopener', title: i.note ? 'commit ' + i.note : '' }, [chip('fixed · stacked PR ' + prNum(r.deferred.pr), 'done')]) : chip('fixed' + (i.note ? ' · ' + i.note.slice(0, 8) : ''), 'done');
   if (i.state === 'dossier') return i.dossier ? h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]) : chip('needs a dossier', 'planned');
   if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('dropped', 'neutral')]);
+  if (i.state === 'open' && i.keptOpen) return h('span', { title: i.ruling || '' }, [chip('left open · your ruling', 'neutral')]);
+  if (i.state === 'open' && i.question && S.q.some(q => q.id === i.question && q.state === 'open')) return h('a', { href: '/questions#q=' + enc(i.question) }, [chip('? waiting for you', 'warn')]);
   if (i.state === 'fixing') return h('span', { title: i.note || '' }, [chip(fixLive(r) ? 'being fixed' : 'fix not finished', fixLive(r) ? 'pending' : 'blocked')]);
   return chip('not tackled', 'ready');
 }
@@ -577,7 +606,7 @@ function deferredProgress(r, d) {
   const bar = h('div', { class: 'dfp-bar' }, parts.filter(p => p[1]).map(p => h('span', { class: 'seg ' + p[2], style: 'flex:' + p[1], title: p[1] + ' ' + p[0] }, [])));
   const legend = h('div', { class: 'dfp-leg small' }, parts.filter(p => p[1]).map(p => h('span', {}, [h('span', { class: 'sw ' + p[2] }), p[1] + ' ' + p[0]])));
   const rows = df.items.map(i => h('div', { class: 'dfp-row', 'data-k': 'dfp:' + i.id }, [h('span', { class: 'mono b' }, [i.id]), h('span', { class: 'dfp-t', title: [i.title, i.note].filter(Boolean).join(' — ') }, [i.title]), dfState(r, i)]));
-  const last = live && r.updates && r.updates.find(u => !u.auto);
+  const last = live && r.updates && r.updates.find(u => !u.auto && u.event !== 'owner-message');
   return h('section', { class: 'panel dfp', 'data-k': 'dfp' }, [h('div', { class: 'res-hd' }, head), bar, legend,
     last ? h('div', { class: 'small mut' }, ['Latest: ' + last.text.split('\n')[0].slice(0, 220) + ' · ', when(last.ts)]) : null,
     h('div', { class: 'dfp-rows' }, rows),
@@ -635,9 +664,26 @@ function resultView(r, d) {
   if (st.err) kids.push(h('div', { class: 'err', 'data-k': 'ch:err' }, [st.err]));
   return h('section', { class: 'panel result', 'data-k': 'result' }, kids);
 }
+/* A message to a live run: the runner hands it to the running agent at once (mid-turn, or by waking it while it waits
+   on a question, which stays open). For a correction to an answer already given, or a change of plan. */
+function liveMessageView(r) {
+  if (!r.runner || !['running', 'waiting', 'paused'].includes(r.runner.state)) return null;
+  const key = r.repo + '/' + r.id; const st = S.chat[key] = S.chat[key] || {};
+  const sent = (r.updates || []).filter(u => u.event === 'owner-message').slice(0, 3);
+  const delivered = (r.updates || []).find(u => u.kind === 'runner' && /^delivered \d+ message/.test(u.text));
+  const kids = [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Message the running agent'])])];
+  sent.slice().reverse().forEach((u, i) => kids.push(h('div', { class: 'chat owner', 'data-k': 'lm:' + u.ts + i }, [h('div', { class: 'who' }, ['You · ', when(u.ts),
+    delivered && delivered.ts >= u.ts ? ' · delivered' : ' · waiting for the agent']), h('div', { class: 'tx' }, [u.text])])));
+  kids.push(h('textarea', { 'data-chat': key, placeholder: 'Correct an earlier answer, or tell it what to do next. Not an answer to an open question.', disabled: st.busy ? true : null, 'data-k': 'lm:ta' }));
+  kids.push(h('div', { class: 'ctl', 'data-k': 'lm:ctl' }, [h('button', { class: 'btn primary', type: 'button', 'data-act': 'chat', 'data-repo': r.repo, 'data-id': r.id, disabled: st.busy ? true : null }, [st.busy ? 'Sending…' : 'Send']),
+    h('span', { class: 'small mut' }, [r.runner.state === 'paused' ? 'The run is paused for the usage limit; the agent gets it when it resumes.' : 'The agent gets it now and confirms in a note what it will do.'])]));
+  if (st.err) kids.push(h('div', { class: 'err', 'data-k': 'lm:err' }, [st.err]));
+  return h('section', { class: 'panel result', 'data-k': 'livemsg' }, kids);
+}
 /* The deferred ledger as a table: tick items (or all) and "Fix selected" runs /fix-deferred on just those, in one
    stacked PR through the implementer and review flow; an item that looks big enough for a dossier is put to the owner first. */
-const dfPickable = (i) => i.state === 'open' || (i.state === 'dossier' && !i.dossier);
+// Only an item still open can be picked for a fix; one ruled to its own dossier is seeded with /plan instead.
+const dfPickable = (i) => i.state === 'open';
 const cbx = (on, attrs) => h('button', Object.assign({ class: 'cbx' + (on ? ' on' : ''), type: 'button', role: 'checkbox', 'aria-checked': on ? 'true' : 'false' }, attrs), [on ? '✓' : '']);
 function deferredView(r) {
   const df = r.deferred; const key = r.repo + '/' + r.id;
@@ -771,7 +817,7 @@ async function loadDetail() {
 async function load(what) {
   const all = !what; const w = new Set(what || []); const jobs = [];
   if (all || w.has('questions')) jobs.push(fetchJ('/api/questions?state=all').then(d => { if (Array.isArray(d)) S.q = d; }));
-  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.accounts = d.accounts || []; S.usageBusy = !!d.usageBusy; } }));
+  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.accounts = d.accounts || []; S.usageBusy = !!d.usageBusy; } }));
   if (all || w.has('stubs') || w.has('scan')) jobs.push(fetchJ('/api/stubs').then(d => { if (d && d.repos) S.stubs = d; }));
   await Promise.all(jobs);
   await loadDetail();

@@ -72,6 +72,11 @@ options are:
   pull request body names any contract it changes;
 - `C` — leave it open for now: no log line, the item stays `open`.
 
+Log each question as `DEFERRED-ASKED: D-n <question id>`, and the owner's
+ruling once it arrives as `DEFERRED-RULING: D-n — <the ruling in a few
+words>` (then the `DEFERRED-TRIAGE:`/`DEFERRED-DROPPED:` line it leads to,
+if any), so the dashboard shows where each item stands.
+
 Go on with the direct items while the questions are open; under the runner,
 end the turn with `RUNNER: WAITING <ids>` only when nothing else can proceed.
 
@@ -104,8 +109,23 @@ fix machinery exactly:
 Each implementer first writes a focused test that fails on the defect, then
 fixes it, so every item ends with its own proving test.
 
-Run the gates and the affected suites through `run_gates.py` and
-`run_tests.py`, as Phase 6 does. A suite that stays red after one fix round
+Then prove the branch, scoped to what it changed. The dossier's
+`SUITE-COMMAND` and `SUITE:` lines say its suite mode:
+
+- **`stub`** (the integrated suite is deferred to `/stub`): run each item's
+  proving test and the tests of the packages the fixes touched, through
+  `run_tests.py` (`--vm` with the dossier's env script when they need the VM;
+  `--detach`/`--wait` for a run over 10 minutes), and the pull request's CI
+  through `wait_ci.py` (Step 6). Never run the full workspace or the `--stack`
+  suite here: that is `/stub`'s job on the release stub. A service-backed
+  test may hold the stack lease for its own run, through `run_tests.py`.
+- **`ci`**: the same focused local runs, and CI is the verdict.
+- **`local`**: Phase 6's full `SUITE-COMMAND`, through `run_tests.py`.
+
+Run the gates through `run_gates.py`, scoped to the changed paths. Every test
+and gate run goes through these two scripts, never a script of your own: their
+result lines are how the owner's timeline shows the suite. Those runs are also
+the evidence Step 5's reviewers get. A suite that stays red after one fix round
 for an item turns that item into a dossier seed: revert its commits with
 `safe_revert.py`, log `DEFERRED-TRIAGE: D-n → dossier — fix did not hold`,
 and go on with the rest.

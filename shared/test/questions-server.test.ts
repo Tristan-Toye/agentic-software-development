@@ -6,12 +6,13 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { channelNameFor, interpretEnvelope, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier } from "../questions/runs.ts"
+import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
 import { blockedTarget } from "../claude/permission-denied.ts"
-import { mergeSpawns } from "../questions/timeline.ts"
+import { mergeSpawns, inTimeline } from "../questions/timeline.ts"
+import { nextMerges, dossierOfPr } from "../questions/merges.ts"
 import { agentCounts, waitingForSlots, runStatusText, statusBlocks, openerBlocks } from "../questions/runstatus.ts"
 import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPanel } from "../questions/timeline.ts"
 import { blockedByOf, controlsFor } from "../questions/controls.ts"
@@ -118,6 +119,10 @@ check("branches: a build branch names the id in any case; plan, stub and trunk b
 {
   const pd = parseDeferred("- D-1 bug a — f:1 — low — x\n- D-2 bug b — f:2 — low — y\n- D-3 bug c — f:3 — low — z\n- DEFERRED-FIX: branch fix/W-1-deferred on feat/w-1 @ abc\n- DEFERRED-TRIAGE: D-1 → direct — extract it\n- DEFERRED-TRIAGE: D-2 → direct — rename\n- DEFERRED-FIXED: D-2 1234567\n- DEFERRED-FIX: PR https://x/pull/429 — fixed 1, to dossier 0")
   check("deferred: a direct triage is being fixed until its FIXED line; the fix branch and PR are read", pd.items[0].state === "fixing" && pd.items[0].note === "extract it" && pd.items[1].state === "fixed" && pd.items[2].state === "open" && pd.branch === "fix/W-1-deferred" && pd.pr === "https://x/pull/429")
+}
+{
+  const pr = parseDeferred("- D-2 gap a — f:1 — low — x\n- D-9 perf b — f:2 — low — y\n- D-4 bug c — f:3 — low — z\n- QUESTION: r.W-1.Q6 — D-2 dossier, fix here or leave open\n- QUESTION: r.W-1.Q13 — D-9 dossier, fix here or leave open\n- DEFERRED-ASKED: D-4 r.W-1.Q20\n- OWNER-RULING (2026-11-04): r.W-1.Q6 — D-2 stays open\n- OWNER-RULING (2026-11-04): r.W-1.Q13 — D-9 measure it now and come back to the owner").items
+  check("deferred: questions and rulings — left open by the owner, worked on after another ruling, asked and waiting", pr[0].keptOpen === true && pr[0].state === "open" && pr[0].question === "r.W-1.Q6" && pr[1].state === "fixing" && pr[1].note.includes("measure it now") && pr[2].question === "r.W-1.Q20" && pr[2].state === "open" && !pr[2].keptOpen)
 }
 check("deferred: dropped items are deprecated, a dossier link names the new dossier", (() => { const x = parseDeferred("- D-1 bug a — f:1 — low — x\n- D-2 bug b — f:2 — low — y\nDEFERRED-DROPPED: D-1 — code removed\nDEFERRED-DOSSIER: D-2 → W-150").items; return x[0].state === "deprecated" && x[0].note === "code removed" && x[1].state === "dossier" && x[1].dossier === "W-150" })())
 check("deferred: old dossiers are ignored unless the runner ran them", !deferredSince("2026-10-20", null) && deferredSince("2026-11-03", null) && deferredSince("2026-10-01", { state: "done" }))
@@ -327,6 +332,36 @@ check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n
   check("classify: update lines, auto key events still stand out", k("update", "run_tests: suite green (42 passed)", true) === "suite-green" && k("update", "run_tests: 3 tests failed", true) === "suite-red" && k("update", "run_gates: gates passed", true) === "gate" && k("update", "PR #12 opened", true) === "pr" && k("update", "workflow started: review", true) === "workflow" && k("update", "dossier_edit log line", true) === "routine" && k("update", "wave one returned") === "note")
   const ev = (text: string, event: string) => classify(E({ type: "update", text, auto: true, event } as any)).kind
   check("classify: an agent note is prose, never a suite, gate or PR event", k("update", "The repository gates never had one clean full pass: one gate failed, then passed alone after a test fixture rebuild.") === "note" && k("update", "W-128 is done and its PR is ready for your review.") === "done" && k("update", "the PR was opened") === "note")
+{
+  const J = (o: any) => JSON.stringify(o)
+  const A = (ts: string, blocks: any[]) => J({ type: "assistant", timestamp: ts, message: { content: blocks } })
+  const U = (ts: string, content: any) => J({ type: "user", timestamp: ts, message: { content } })
+  const bash = (id: string, description: string, bg = false) => ({ type: "tool_use", id, name: "Bash", input: { command: "x", description, ...(bg ? { run_in_background: true } : {}) } })
+  const res = (id: string, text: string) => ({ type: "tool_result", tool_use_id: id, content: text })
+  const lines = [
+    A("2026-11-04T18:53:22Z", [bash("t1", "Run the VM suite", true)]), U("2026-11-04T18:53:25Z", [res("t1", "Command running in background with ID: b1. Output is being written to: /x")]),
+    A("2026-11-04T18:53:30Z", [{ type: "tool_use", id: "t2", name: "Workflow", input: { name: "agentic-software-development:phase4-wave" } }]), U("2026-11-04T18:53:31Z", [res("t2", "Workflow launched in background. Task ID: w1")]),
+    U("2026-11-04T19:00:00Z", "<task-notification>\n<task-id>w1</task-id>\n<tool-use-id>t2</tool-use-id>\n</task-notification>"),
+    A("2026-11-04T19:01:00Z", [bash("t3", "Read the digest")]),
+  ]
+  const a = activityOf(lines)
+  check("activity: the call in flight, the background work still unnotified", a.doing === "Read the digest" && a.doingSince === "2026-11-04T19:01:00Z" && a.background.length === 1 && a.background[0].label === "Run the VM suite" && a.lastTs === "2026-11-04T19:01:00Z", J(a))
+  const b = activityOf([...lines, U("2026-11-04T19:01:05Z", [res("t3", "ok")])])
+  check("activity: a finished call leaves only the background wait", b.doing === "" && b.background.length === 1, J(b))
+  check("activity: tool labels", toolLabel("Skill", { skill: "p:phase7-review" }) === "skill phase7-review" && toolLabel("Agent", { subagent_type: "p:implementer" }) === "agent implementer" && toolLabel("Workflow", { name: "p:phase4-wave" }) === "workflow p:phase4-wave")
+}
+check("timeline: a step line and a counted suite result are on the timeline; a bare suite line is not", inTimeline({ type: "update", auto: true, event: "step", text: "Running tests", ts: "" } as any) && inTimeline({ type: "update", auto: true, event: "suite", text: "suite: passed 3  failed 0", ts: "" } as any) && !inTimeline({ type: "update", auto: true, event: "suite", text: "suite started", ts: "" } as any))
+{
+  const P = (number: number, headRefName: string) => ({ number, headRefName, mergedAt: "2026-11-05T09:00:00Z", base: "stub/2026-11-03" })
+  const ds = [{ id: "W-128", pr: "427" }, { id: "W-130" }, { id: "W-141" }]
+  check("merges: a PR is its dossier's by pr: number or by the id in its head branch; a plan head is none", dossierOfPr(P(427, "x"), ds) === "W-128" && dossierOfPr(P(429, "fix/W-128-deferred"), ds) === "W-128" && dossierOfPr(P(1, "feat/w-130-thing"), ds) === "W-130" && dossierOfPr(P(2, "plan/W-130"), ds) === undefined)
+  const first = nextMerges(null, [P(427, "feat/w-128-a")], ds, () => false, "t0")
+  check("merges: the first look only records a baseline", first.start.length === 0 && first.seen["427"].state === "baseline")
+  const second = nextMerges(first.seen, [P(427, "feat/w-128-a"), P(429, "fix/W-128-deferred"), P(431, "fix/W-141-deferred"), P(432, "feat/w-141-b")], ds, (id) => id === "W-141", "t1")
+  check("merges: a new merge starts one run per dossier; a busy dossier waits", JSON.stringify(second.start) === JSON.stringify([{ id: "W-128", prs: [429] }]) && second.seen["429"].state === "started" && second.seen["431"].state === "pending" && second.seen["432"].state === "pending", JSON.stringify(second))
+  const third = nextMerges(second.seen, [], ds, () => false, "t2")
+  check("merges: once free, the waiting dossier gets all its PRs in one run, and a started PR never starts again", JSON.stringify(third.start) === JSON.stringify([{ id: "W-141", prs: [431, 432] }]))
+}
   check("classify: a hook suite line goes by its failed count", ev("suite: passed 31  failed 0  ignored 0  (cargo)", "suite") === "suite-green" && ev("suite: passed 2  failed 41  ignored 0  (dotnet)", "suite") === "suite-red" && ev("suite run finished", "suite") === "routine" && ev("gates: 7 passed", "gates") === "gate" && ev("PR opened: https://x/pull/1", "pr") === "pr")
   check("classify: key flags and routine flags", classify(E({ type: "stage", text: "x" })).key && classify(E({ type: "question", text: "x" })).key && !classify(E({ type: "update", text: "x", auto: true })).key && classify(E({ type: "update", text: "x", auto: true })).routine && !classify(E({ type: "update", text: "x" })).routine)
   const ups = [
