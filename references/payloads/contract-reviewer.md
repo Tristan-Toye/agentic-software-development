@@ -17,10 +17,18 @@ WORKTREE_DIR: /abs/path/repo-W-014
 CONTRACT_PATHS: src/flush.py
 CRITERIA: |
   <the acceptance criteria, verbatim>
+BASE_TEMPLATES: src/pipeline/base.py:40-88   # optional: a base class outside the
+                                             # contract a stub extends — its template
+                                             # method, what it does before the hook
 CHECKLIST_RULES: |
   <the observability checklist from references/formats/dossier.md, pasted verbatim —
    the six categories, the visibility question, the unmeasurable-words rule>
 ```
+
+`BASE_TEMPLATES` is required in practice whenever a stub extends a base
+class that is not part of the contract: the base's template method can decide
+an edge case (raise on zero outputs, refuse duplicates) before the subclass
+body runs, and a reviewer that sees only the subclass stubs cannot see that.
 
 It returns its own full checklist plus `AMBIGUITY:` and `DEFECT:` lines. The
 orchestrator diffs the two checklists: every disagreement is a contract

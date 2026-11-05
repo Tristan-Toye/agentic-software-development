@@ -143,7 +143,14 @@ either is invisible to you for the same reason. `contract-reviewer` never
 sees the dossier, the plan, or your checklist — its payload is the
 materialised contract files (`CONTRACT_PATHS`), the acceptance criteria
 verbatim, and the observability-checklist rules (`CHECKLIST_RULES`), and it
-derives its **own** `PROMISE_CHECKLIST` from the stubs alone. When it
+derives its **own** `PROMISE_CHECKLIST` from the stubs alone. **When a stub
+extends a base class that is not in the contract, stage that base's template
+method in `BASE_TEMPLATES`** (`path:start-end`, the template method and what
+it runs before the hook): the reviewer checks every edge promise on the
+subclass against it. One build promised an empty output map for zero formats
+and single handling of duplicate targets, but the sealed base raised and
+refused first; two arbitrations, two re-spawns and the last arbitration round
+paid for it. When it
 returns, diff its checklist against yours line by line:
 
 - **Every disagreement is a contract defect caught pre-fan-out.** A promise
