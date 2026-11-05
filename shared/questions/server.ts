@@ -188,7 +188,7 @@ const runSeen = new Map<string, number>()
 let scanningRuns = false
 /** The agent's own notes are markdown (bullets, tables): render them for the timeline. */
 function withHtml<T extends { type: string; auto?: boolean; text: string; html?: string }>(es: T[]): T[] {
-  for (const e of es) if (e.type === "update" && !e.auto && e.text) e.html = renderMarkdown(e.text)
+  for (const e of es) if (e.type === "update" && (!e.auto || (e as any).event === "step") && e.text) e.html = renderMarkdown(e.text)
   return es
 }
 const SERVER_START = Date.now()

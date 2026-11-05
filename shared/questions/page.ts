@@ -283,12 +283,17 @@ function homeView() {
   const open = allOpen(); const cards = [];
   const byRepo = {}; open.forEach(q => { const r = qRepo(q); byRepo[r] = (byRepo[r] || 0) + 1; });
   repoNames().forEach(repo => {
-    const rs = S.runs.filter(r => r.repo === repo); const np = rs.filter(inProgress).length, ns = rs.filter(notStarted).length, nd = rs.filter(isDone).length;
-    const nq = byRepo[repo] || 0; const st = newestStub(repo); const cs = [];
-    if (st) cs.push(chip('stub ' + st.state, st.state)); if (nq) cs.push(chip(nq + ' open question' + (nq > 1 ? 's' : ''), 'open'));
+    // The badge: the dossiers in flight, each counted once: in progress, or on the oldest open stub (merged into it or parked under it).
+    const rs = S.runs.filter(r => r.repo === repo); const prog = rs.filter(inProgress).map(r => r.id);
+    const os = openStubs(repo); const cur = os.length ? os[os.length - 1] : null;
+    const onStub = cur ? Array.from(new Set(cur.dossiers.map(d => d.id).concat(cur.members.map(m => m.id)))) : [];
+    const n = new Set(prog.concat(onStub)).size;
+    const nq = byRepo[repo] || 0; const cs = [];
+    if (cur) cs.push(chip('stub ' + cur.state, cur.state)); if (nq) cs.push(chip(nq + ' open question' + (nq > 1 ? 's' : ''), 'open'));
+    const meta = prog.length + ' in progress' + (cur ? ' · ' + onStub.length + ' on ' + cur.branch : ' · no open stub');
     cards.push(h('a', { class: 'card', href: hrefRepo(repo), 'data-k': 'home:' + repo }, [
-      h('span', { class: 'title' }, [rlabel(repo)]), h('span', { class: 'badge ' + (np ? 'info' : '') }, [String(np)]),
-      h('span', { class: 'meta' }, [np + ' in progress · ' + ns + ' not started · ' + nd + ' done']), h('span', { class: 'chips' }, cs)]));
+      h('span', { class: 'title' }, [rlabel(repo)]), h('span', { class: 'badge ' + (n ? 'info' : ''), title: 'Dossiers in progress or on the oldest open stub, each counted once' }, [String(n)]),
+      h('span', { class: 'meta' }, [meta]), h('span', { class: 'chips' }, cs)]));
   });
   return h('div', {}, [h('h1', {}, ['Pipeline']), h('p', { class: 'lead' }, ['Pick a repo to see what is running, what is next and what is done.']),
     accountsView(), runningView(), h('div', { class: 'grid' }, cards),
@@ -467,8 +472,8 @@ function header(r, mode) {
   return h('div', { class: 'panel' }, [h('h1', { style: 'margin-top:0' }, [r.id + ' · ' + r.title]), r.summary && mode === 'run' ? h('p', { class: 'sum' }, [r.summary]) : null,
     h('div', { class: 'chips' }, cs), nowLine(r), h('div', { class: 'row' }, controls(r, true).concat(acts))]);
 }
-const ICON = { blocked: '⛔', start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', spawn: '⎇', reply: '↩', routine: '·', info: '·', entry: '§' };
-const KLABEL = { blocked: 'blocked by the safety check', start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', spawn: 'agent', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };
+const ICON = { step: '→', blocked: '⛔', start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', spawn: '⎇', reply: '↩', routine: '·', info: '·', entry: '§' };
+const KLABEL = { step: 'next step', blocked: 'blocked by the safety check', start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', spawn: 'agent', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };
 function dur(ms) { const m = Math.round(ms / 60000); if (m < 1) return '<1 min'; if (m < 60) return m + ' min'; const hh = Math.floor(m / 60); if (hh < 24) return hh + ' h ' + (m % 60 ? (m % 60) + ' min' : ''); return Math.floor(hh / 24) + ' d ' + (hh % 24) + ' h'; }
 const icon = (k) => h('span', { class: 'ic' }, [ICON[k] || '•']);
 function tlEntry(e) {

@@ -11,7 +11,7 @@ import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, reco
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
 import { blockedTarget } from "../claude/permission-denied.ts"
-import { mergeSpawns } from "../questions/timeline.ts"
+import { mergeSpawns, inTimeline } from "../questions/timeline.ts"
 import { agentCounts, waitingForSlots, runStatusText, statusBlocks, openerBlocks } from "../questions/runstatus.ts"
 import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPanel } from "../questions/timeline.ts"
 import { blockedByOf, controlsFor } from "../questions/controls.ts"
@@ -349,6 +349,7 @@ check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n
   check("activity: a finished call leaves only the background wait", b.doing === "" && b.background.length === 1, J(b))
   check("activity: tool labels", toolLabel("Skill", { skill: "p:phase7-review" }) === "skill phase7-review" && toolLabel("Agent", { subagent_type: "p:implementer" }) === "agent implementer" && toolLabel("Workflow", { name: "p:phase4-wave" }) === "workflow p:phase4-wave")
 }
+check("timeline: a step line and a counted suite result are on the timeline; a bare suite line is not", inTimeline({ type: "update", auto: true, event: "step", text: "Running tests", ts: "" } as any) && inTimeline({ type: "update", auto: true, event: "suite", text: "suite: passed 3  failed 0", ts: "" } as any) && !inTimeline({ type: "update", auto: true, event: "suite", text: "suite started", ts: "" } as any))
   check("classify: a hook suite line goes by its failed count", ev("suite: passed 31  failed 0  ignored 0  (cargo)", "suite") === "suite-green" && ev("suite: passed 2  failed 41  ignored 0  (dotnet)", "suite") === "suite-red" && ev("suite run finished", "suite") === "routine" && ev("gates: 7 passed", "gates") === "gate" && ev("PR opened: https://x/pull/1", "pr") === "pr")
   check("classify: key flags and routine flags", classify(E({ type: "stage", text: "x" })).key && classify(E({ type: "question", text: "x" })).key && !classify(E({ type: "update", text: "x", auto: true })).key && classify(E({ type: "update", text: "x", auto: true })).routine && !classify(E({ type: "update", text: "x" })).routine)
   const ups = [
