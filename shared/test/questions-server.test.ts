@@ -401,6 +401,8 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
   const mk = (id: string, items: any[]) => ({ repo: "r", id, deferred: { items } }) as any
   const w128 = mk("W-128", led("W-128", "- DEFERRED-TRIAGE: D-1 → dossier — design; seed: /plan W-128 D-1\n").items)
   const w130 = mk("W-130", led("W-130", "- DEFERRED-TRIAGE: D-7 → dossier — same as W-128 D-1; seed: /plan W-128 D-1\n").items)
+  const late = parseDeferred("DEFERRED:\n- D-1 bug a — x.rs:1 — r — w\n- DEFERRED-TRIAGE: D-11 → dossier — a wake port across processes; seed: /plan W-141 D-11\n")
+  check("deferred: an item triaged without a ledger line is still an item, routed, with its seed", late.items.length === 2 && late.items[1].id === "D-11" && late.items[1].state === "dossier" && late.items[1].title === "a wake port across processes" && late.items[1].seed?.src === "W-141", JSON.stringify(late.items[1]))
   check("plan link: DEFERRED-SOURCE lines are read", JSON.stringify(deferredSources("x\n- DEFERRED-SOURCE: W-128 D-1\n")) === JSON.stringify([{ src: "W-128", item: "D-1" }]))
   linkPlannedItems([w128, w130], new Map(), (k) => (k === "r.W-128.plan-D-1" ? "running" : undefined))
   check("plan link: a live /plan run shows on the item and on the same issue elsewhere", w128.deferred.items[0].planning === "running" && w130.deferred.items[1].planning === "running" && w130.deferred.items[1].seed.src === "W-128")

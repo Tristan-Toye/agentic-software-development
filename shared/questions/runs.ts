@@ -71,6 +71,9 @@ export function parseDeferred(log: string): { items: DeferredItem[]; pr: string;
     const fx = l.match(/^(?:[-*]\s+)?DEFERRED-FIXED:\s*(D-\d+)\s*(\S*)/)
     if (fx && items.has(fx[1])) { const it = items.get(fx[1])!; it.state = "fixed"; it.note = fx[2]; continue }
     const tr = l.match(/^(?:[-*]\s+)?DEFERRED-TRIAGE:\s*(D-\d+)\s*→\s*(direct|dossier)\b\s*(?:—\s*)?(.*)$/)
+    // An item first raised after the ledger (in a review reply, or a question) is triaged without a ledger line of
+    // its own: the triage line makes it an item, and the /deferred report fills in its fields when it has them.
+    if (tr && !items.has(tr[1])) items.set(tr[1], { id: tr[1], kind: "noticed", title: tr[3].split(/;\s*seed:/)[0].trim() || tr[1], loc: "", risk: "", why: "", state: "open", note: "", dossier: "" })
     if (tr && items.has(tr[1]) && tr[2] === "dossier") {
       const it = items.get(tr[1])!
       if (it.state !== "fixed") { it.state = "dossier"; it.note = tr[3] }
