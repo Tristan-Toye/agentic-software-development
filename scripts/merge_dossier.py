@@ -178,25 +178,21 @@ def stub_into_dev(root: str, stub: str) -> str:
 
 
 def accepting_stub(root: str, old: str) -> tuple[str, str]:
-    """The stub new work goes to: the newest stub/* with no pull request into development, which must already hold the
-    integrated `old` stub (it was cut, or synced, after `old` merged). None yet: cut stub/<today> from development."""
+    """The stub new work goes to, by the one rule every flow shares (scripts/stub_target.py): the accepting stub, or a
+    new one cut from development only once no stub is being integrated. It must already hold the integrated `old`."""
+    sys.path.insert(0, HERE)
+    from stub_target import target
+    try:
+        rc, b = target(root, False)
+    except RuntimeError as e:
+        return "", str(e)
+    if rc == 3:
+        return "", f"{b.split()[-1]} is being integrated; the next stub is cut once it merges"
     subprocess.run(["git", "-C", root, "fetch", "-q", "origin", "--prune"], capture_output=True, timeout=180)
-    out = subprocess.run(["git", "-C", root, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/stub/"],
-                         capture_output=True, text=True, timeout=30).stdout.split()
-    stubs = sorted((b.removeprefix("origin/") for b in out), reverse=True)
-    for b in stubs:
-        if b == old or stub_into_dev(root, b):
-            continue
-        held = subprocess.run(["git", "-C", root, "merge-base", "--is-ancestor", f"origin/{old}", f"origin/{b}"], capture_output=True).returncode == 0
-        if not held:
-            return "", f"the accepting stub {b} does not hold {old} yet; it takes development first (/stub Step 1), then the dossier moves"
-        return b, ""
-    import datetime as _d
-    new = "stub/" + _d.date.today().isoformat()
-    r = subprocess.run(["git", "-C", root, "push", "origin", f"origin/development:refs/heads/{new}"], capture_output=True, text=True, timeout=120)
-    if r.returncode != 0 and "already exists" not in r.stderr:
-        return "", f"could not cut {new}: {r.stderr.strip()[:200]}"
-    return new, ""
+    held = subprocess.run(["git", "-C", root, "merge-base", "--is-ancestor", f"origin/{old}", f"origin/{b}"], capture_output=True).returncode == 0
+    if not held:
+        return "", f"the accepting stub {b} does not hold {old} yet; it takes development first (/stub Step 1), then the dossier moves"
+    return b, ""
 
 
 def mark_detector(repo: str, chain: list[dict], dossier: str) -> None:

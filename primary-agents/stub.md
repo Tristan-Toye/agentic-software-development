@@ -68,9 +68,12 @@ or wait. Write each note for a person reading on a phone: plain sentences, markd
 - A stub branch is named `stub/<cut date>`, the date in `YYYY-MM-DD`, cut
   from `origin/development`. Creation is idempotent: fetch, then push the
   branch only when `git ls-remote` names no such ref.
-- **The accepting stub** is the newest `stub/*` on the remote with no open
-  pull request into `development`. The first flow that needs a target — a
-  `/work-on` Phase 2, or this command — creates one when none exists.
+- **The accepting stub** is the newest `stub/*` on the remote with no
+  pull request into `development`. A new one is cut from
+  `origin/development` (`scripts/stub_target.py`) only when no stub is being
+  integrated: never while a stub's pull request into development is open,
+  so the new stub starts with the whole integrated batch. A build that needs
+  a stub meanwhile waits at that breakpoint (`RUNNER: WAITING stub`).
 - The moment this command opens a stub's pull request, that stub is
   **closed** to new dossiers. A dossier started later targets a new stub cut
   the same way, dated that later day. Never retarget a dossier pull request
