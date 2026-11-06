@@ -80,6 +80,7 @@ You run under the dossier runner and nobody reads the terminal.
 - Never end a stage (or the run) while a background command, workflow or agent you started is still running: it dies with this process and no notification reaches the next stage. Wait for its notification and take its result first; the runner holds a stage end that comes too early. If a checkpoint must still name work in flight, say how the next stage tells it finished or died (its report file, its branch or worktree, its output file).
 - Gates already settled for this run: the worktree gate is yes, and {time_logging}
 - The plugin's references (`references/work-on/phase-*.md`, `formats/*`, `runner.md`) are long and the same in every stage: read only the section your step needs (`ref_section` with the document's short name, `phase-4` or `formats/dossier`, and a heading or `--list`), not whole files; the phase file you start a phase with is the one you read whole, and never the same section twice in one stage.
+- Phase 2 takes its stub from `python3 scripts/stub_target.py --root R` (the plugin's scripts). Exit 3 (`wait <stub>`) means that stub is being integrated and no new one may be cut until it is in development: end the turn with the line `RUNNER: WAITING stub`; the runner waits without tokens and sends `STUB READY: <branch>` once the new stub is cut. Never cut a stub yourself.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
 - Keep the owner informed: post an update with `ask_owner.py note --root R --dossier ID --text "..."` when a stage starts and ends and whenever something worth knowing happens (a wave returned, the suite went green or red, an arbitration was ruled, a plan changed). Write it for a person reading on a phone: what happened and what it means, in plain sentences; markdown bullets and small tables are welcome. Never paste commands, file paths, SHAs, flags or log output into an update; the build log keeps those.
@@ -512,7 +513,7 @@ def slot_census(me: str) -> tuple[int, list[tuple[str, str]]]:
 # owner_wait's code for "the owner wrote to the run" (not an answer).
 MESSAGE_RC = 20
 # Commands that take an argument list after the dossier id (`--items`).
-ITEM_COMMANDS = ("fix-deferred", "after-merge", "plan", "resolve-merge")
+ITEM_COMMANDS = ("fix-deferred", "after-merge", "plan", "resolve-merge", "stub")
 
 
 class Runner:
@@ -688,11 +689,17 @@ class Runner:
         cmd += ["--model", self.model or runner_model(None)]
         return cmd
 
+    def command_line(self) -> str:
+        """The command the stage starts with. A /stub run's key is the stub's slug (stub-2026-11-03); the command takes
+        the branch itself (stub/2026-11-03), carried in --items."""
+        if self.command == "stub" and self.items:
+            return f"/{PLUGIN}:stub {self.items}"
+        return f"/{PLUGIN}:{self.command} {self.dossier}" + (f" {self.items}" if self.items and self.command in ITEM_COMMANDS else "")
+
     def handoff(self) -> str | None:
         if not self.checkpoints:
             return None
-        args = f" {self.items}" if self.items and self.command in ITEM_COMMANDS else ""
-        rows = [f"RUNNER HAND-OFF. Task: run /{PLUGIN}:{self.command} {self.dossier}{args} in {self.root}.",
+        rows = [f"RUNNER HAND-OFF. Task: run {self.command_line()} in {self.root}.",
                 "Earlier stages, in order:"]
         for i, cp in enumerate(self.checkpoints, 1):
             rows.append(f"{i}. {cp['name']}: {clip(cp['summary'], 4000)}")
@@ -732,14 +739,14 @@ class Runner:
             q.put(None)
 
         threading.Thread(target=pump, daemon=True).start()
-        self.send(f"/{PLUGIN}:{self.command} {self.dossier}" + (f" {self.items}" if self.items and self.command in ITEM_COMMANDS else ""))
+        self.send(self.command_line())
         extra = False
         hand = self.handoff()
         carry = getattr(self, "pending_owner", "")
         if carry:
             # The stage restarted so a new permission rule applies (the dashboard's "Always allow"): the owner's answer
             # to the question the previous process asked travels with the hand-off.
-            hand = (hand + "\n" if hand else f"RUNNER HAND-OFF. Task: run /{PLUGIN}:{self.command} {self.dossier} in {self.root}.\n") + (
+            hand = (hand + "\n" if hand else f"RUNNER HAND-OFF. Task: run {self.command_line()} in {self.root}.\n") + (
                 "This stage restarted so that a permission rule the owner just saved applies. Your previous process asked "
                 "the owner a question; carry on from the dossier and this answer, and retry the command the rule now allows:\n"
                 + carry)
@@ -780,6 +787,25 @@ class Runner:
                 self.event(f"queued: {held} of {cap} runs are working (ASD_RUNNER_MAX_LIVE); this one starts when a slot frees", "queued")
             time.sleep(float(os.environ.get("ASD_RUNNER_SLOT_POLL") or 10))
         return False
+
+    def wait_for_stub(self) -> str | None:
+        """Poll scripts/stub_target.py until a stub can be built on (the integrated one merged, the next one cut)."""
+        self.save(state="waiting", questions=[])
+        self.event("waiting for the stub being integrated to merge into development; a new stub is cut then", "waiting")
+        poll = float(os.environ.get("ASD_STUB_POLL") or 300)
+        script = os.environ.get("ASD_STUB_TARGET_BIN") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "stub_target.py")
+        while not self.stopping:
+            r = subprocess.run([sys.executable, script, "--root", self.root], capture_output=True, text=True)
+            if r.returncode == 0 and r.stdout.strip():
+                branch = r.stdout.strip().splitlines()[-1]
+                self.event(f"stub ready: {branch}", "running")
+                return branch
+            if r.returncode not in (0, 3):
+                self.log(f"stub_target failed: {(r.stderr or r.stdout).strip()[:200]}; trying again")
+            end = time.time() + poll
+            while time.time() < end and not self.stopping:
+                time.sleep(min(5.0, poll))
+        return None
 
     def forward_dropped(self) -> bool:
         """Send on the completion notices the CLI dropped. A background command or workflow that finishes while no turn
@@ -1107,6 +1133,17 @@ class Runner:
                 self.end_process()
                 return "failed", rest or "no reason given"
             ids = [i for i in re.split(r"[,\s]+", rest) if i]
+            if ids[:1] == ["stub"]:
+                # The breakpoint for a new stub: the current one is being integrated, and a new stub is cut only once it
+                # is in development. Wait here, spending nothing, then hand the session the branch to build on.
+                branch = self.wait_for_stub()
+                if branch is None:
+                    return "stopped", ""
+                if not self.take_slot():
+                    return "stopped", ""
+                self.send(f"STUB READY: {branch}. The integrated stub is in development and {branch} is cut from it: "
+                          "fork from it and carry on with the step you stopped at.")
+                continue
             qids = [i for i in ids if QUESTION_ID.search(i)]
             if not qids:
                 # `RUNNER: WAITING gates,background,task` is a wait on background work,
@@ -1925,6 +1962,19 @@ def selftest() -> int:
         until(lambda: not any(alive(x) for x in fakes), 15)
         env.pop("ASD_RUNNER_NET_WAIT"); env.pop("ASD_RUNNER_NET_RETRIES")
 
+        # ---- the stub breakpoint: wait (no tokens) until a stub can be built on, then hand it over ----
+        st_fake = os.path.join(tmp, "stub_target_fake.py")
+        open(st_fake, "w").write("import os,sys\nc=os.path.join(os.path.dirname(__file__),'st.count')\nn=int(open(c).read())+1 if os.path.exists(c) else 1\nopen(c,'w').write(str(n))\n"
+                                 "print('wait stub/2026-11-03' if n < 2 else 'stub/2026-11-09'); sys.exit(3 if n < 2 else 0)\n")
+        scenario([{"turns": [[{"final": "the stub is being integrated\nRUNNER: WAITING stub"}], [{"final": "RUNNER: DONE"}]]}])
+        env.update(ASD_STUB_TARGET_BIN=st_fake, ASD_STUB_POLL="0.2")
+        p = start("W-39")
+        rc = p.wait(timeout=60)
+        env.pop("ASD_STUB_TARGET_BIN"); env.pop("ASD_STUB_POLL")
+        check("stub breakpoint: waits without a question, then sends STUB READY with the new stub",
+              rc == 0 and any(t.startswith("waiting for the stub being integrated") for t in texts("W-39"))
+              and any(m.startswith("STUB READY: stub/2026-11-09") for m in msgs(1)) and not any("asked" in t for t in texts("W-39")))
+
         # ---- a completion notice the CLI dropped is sent on, so a waiting session wakes ----
         tdir2 = os.path.join(tmp, "projects2", "-repo"); os.makedirs(tdir2, exist_ok=True)
         note = "<task-notification>\n<task-id>bxdrop1</task-id>\n<status>completed</status>\n</task-notification>"
@@ -2109,7 +2159,8 @@ def main() -> int:
     items = ",".join(i for i in re.split(r"[,\s]+", a.items or "") if i)
     if items and not ((a.command == "fix-deferred" and re.fullmatch(r"D-\d+(?:,D-\d+)*", items))
                       or (a.command in ("after-merge", "resolve-merge") and re.fullmatch(r"\d+(?:,\d+)*", items))
-                      or (a.command == "plan" and re.fullmatch(r"D-\d+", items))):
+                      or (a.command == "plan" and re.fullmatch(r"D-\d+", items))
+                      or (a.command == "stub" and re.fullmatch(r"(?:stub|release)/[\w.-]+", items))):
         print("run_dossier.py: --items takes D-ids (D-1,D-3) with --command fix-deferred, PR numbers (429,430) with --command after-merge, "
               "or one D-id with --command plan", file=sys.stderr)
         return 2

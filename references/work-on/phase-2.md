@@ -149,9 +149,16 @@ This is the step everything else depends on.
     services can require its local full command with `--stack` instead.
     Choose **stub** when the repository defers its integrated verdict to a
     weekly release stub: the pull request then merges into the accepting
-    stub — the newest `stub/<date>` on the remote with no open pull request
-    into `development`, cut from `origin/development` when none exists;
-    push that new branch only, creation is idempotent. The worktree forks
+    stub. Take it from `python3 ${PLUGIN_ROOT}/scripts/stub_target.py --root
+    <repo>`: the newest `stub/<date>` with no pull request into
+    `development`, or a new one it cuts from `origin/development`, but only
+    when no stub is being integrated. Exit 3 (`wait <stub>`) means that stub's
+    pull request into development is open: a new stub must start with its
+    batch, so it is cut only once that one has merged. This is a breakpoint:
+    under the runner end the turn with `RUNNER: WAITING stub` (the runner
+    waits without tokens and sends `STUB READY: <branch>`); in a terminal run
+    `stub_target.py --wait`, or stop and tell the user. Never cut a stub by
+    hand. The worktree forks
     from the accepting stub, and `/stub` proves the whole batch later with
     one full run. This build owes green CI on its pull request, the new
     tests and the mutation check. A service-backed new test may hold the

@@ -183,6 +183,16 @@ the recorded checkpoints.
   PRs conflicting with their base, and the dossier's agent merges the base in,
   resolves keeping both sides, checks no hunk was lost, proves it with the
   affected tests and gates, and pushes. It never merges into the stub.
+- **The stub breakpoint, `RUNNER: WAITING stub`:** a build whose Phase 2
+  finds the stub being integrated (`stub_target.py` exit 3) ends its turn
+  with it. The runner records `waiting`, polls `stub_target.py` every
+  `ASD_STUB_POLL` seconds (default 300) without spending tokens, and once the
+  integrated stub has merged and the new stub is cut, takes a run slot and
+  sends `STUB READY: <branch>` into the same session.
+- **`--command stub --items stub/<date>`:** runs `/stub <branch>` under the
+  key `<repo>.stub-<date>` (the branch with `/` as `-`), so the stub page and
+  the hooks' stub records share one timeline. The dashboard's Integrate starts
+  it after the merge queue has merged the stub's finished dossiers.
 - **`--command plan`:** runs `/plan <ID>` for a planned dossier, under its own
   key; the dashboard's Plan button starts it.
 - **`--command plan --items D-n`:** runs `/plan <ID> D-n` for one deferred

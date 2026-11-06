@@ -35,6 +35,8 @@ import re
 import shlex
 import subprocess
 import sys
+import contextlib
+import io
 import tempfile
 import time
 
@@ -147,10 +149,50 @@ def plan(root: str, dossier: str) -> tuple[list[dict], str]:
     base = chain[0].get("baseRefName", "")
     if not is_stub(base):
         return [], f"#{chain[0]['number']} goes into {base}, not a stub; only work on a stub is merged here"
+    # A dossier still in flight when its stub was integrated moves to the next stub, but only once its old stub is in
+    # development: before that, the next stub lacks the old batch and the retargeted PR would carry it along.
+    state = stub_into_dev(root, base)
+    picked = (read_json(os.path.join(runs_dir(), f"{repo_name(root)}.{base.replace('/', '-')}.integrate.json"), {}) or {}).get("finished") or []
+    if state == "open" and dossier not in picked:
+        return [], f"its stub {base} is being integrated into development; it moves to the next stub once that merges"
+    if state == "merged":
+        nxt, why = accepting_stub(root, base)
+        if not nxt:
+            return [], why
+        rc, out = gh(root, "pr", "edit", str(chain[0]["number"]), "--base", nxt)
+        if rc != 0:
+            return [], f"could not move #{chain[0]['number']} from {base} to {nxt}: {out[:200]}"
+        append_line(os.path.join(runs_dir(), f"{repo_name(root)}.{dossier}.jsonl"), {"ts": now(), "kind": "runner", "text": f"moved #{chain[0]['number']} from {base} (integrated) to the accepting stub {nxt}"})
+        chain[0]["baseRefName"] = nxt
     drafts = [p for p in chain if p.get("isDraft")]
     if drafts:
         return [], "still a draft: " + ", ".join(f"#{p['number']}" for p in drafts) + "; mark it ready for review first"
     return chain, ""
+
+
+def stub_into_dev(root: str, stub: str) -> str:
+    """The stub's pull request into development: "open", "merged", or "" (none: it still accepts dossiers)."""
+    rc, out = gh(root, "pr", "list", "--head", stub, "--base", "development", "--state", "all", "--json", "state", "-q", "[.[].state] | join(\",\")")
+    states = out.split(",") if rc == 0 and out else []
+    return "open" if "OPEN" in states else "merged" if "MERGED" in states else ""
+
+
+def accepting_stub(root: str, old: str) -> tuple[str, str]:
+    """The stub new work goes to, by the one rule every flow shares (scripts/stub_target.py): the accepting stub, or a
+    new one cut from development only once no stub is being integrated. It must already hold the integrated `old`."""
+    sys.path.insert(0, HERE)
+    from stub_target import target
+    try:
+        rc, b = target(root, False)
+    except RuntimeError as e:
+        return "", str(e)
+    if rc == 3:
+        return "", f"{b.split()[-1]} is being integrated; the next stub is cut once it merges"
+    subprocess.run(["git", "-C", root, "fetch", "-q", "origin", "--prune"], capture_output=True, timeout=180)
+    held = subprocess.run(["git", "-C", root, "merge-base", "--is-ancestor", f"origin/{old}", f"origin/{b}"], capture_output=True).returncode == 0
+    if not held:
+        return "", f"the accepting stub {b} does not hold {old} yet; it takes development first (/stub Step 1), then the dossier moves"
+    return b, ""
 
 
 def mark_detector(repo: str, chain: list[dict], dossier: str) -> None:
@@ -380,6 +422,77 @@ def unqueue(root: str, dossier: str) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- integrate a stub
+# Part 1: every finished dossier on the stub goes through the merge queue, first in first out (PR number order).
+# Part 2: the /stub run on the runner (key <repo>.<stub slug>) proves the batch and opens the stub's PR. Dossiers still
+# in flight (a draft PR, or a live run) stay out: their stub closes, and the merge queue moves them to the next stub
+# once this one is in development.
+
+def integrate(root: str, branch: str) -> int:
+    repo = repo_name(root); slug = branch.replace("/", "-"); key = f"{repo}.{slug}"
+    log = os.path.join(runs_dir(), key + ".jsonl")
+    st_path = os.path.join(runs_dir(), key + ".integrate.json")
+    def state(**kw):
+        write_json(st_path, {**(read_json(st_path, {}) or {}), "ts": now(), "pid": os.getpid(), **kw})
+    def line(text, kind="runner"):
+        append_line(log, {"ts": now(), "kind": kind, "text": text})
+    line(f"start /merge-queue {branch}")
+    # Step 1: the stub's pull request into development. Opening it closes the stub: new work goes to the next one.
+    into = stub_into_dev(root, branch)
+    if into == "merged":
+        state(state="failed", error=f"{branch} is already merged into development"); return 1
+    if not into:
+        date = branch.split("/", 1)[1]
+        rc, out = gh(root, "pr", "create", "--base", "development", "--head", branch, "--title", f"Stub {date}: integrating",
+                     "--body", "Integration of this stub, started from the dashboard's Integrate.\n\n"
+                     "1. The merge queue merges every finished dossier on the stub, one by one.\n"
+                     "2. /stub runs the full stack suite, audits each dossier against its criteria, and fixes what fails.\n\n"
+                     "## Receipt\n\npending\n\n## Fix rounds\n")
+        if rc != 0:
+            state(state="failed", error="could not open the stub's PR into development: " + out[-200:]); return 1
+        line(f"Opened the stub's pull request into development ({out.strip().splitlines()[-1] if out.strip() else ''}): {branch} is closed, new work goes to the next stub.", "update")
+    rc, out = gh(root, "pr", "list", "--base", branch, "--state", "open", "--limit", "100", "--json", "number,headRefName,isDraft")
+    if rc != 0:
+        state(state="failed", error="gh pr list failed: " + out[:200]); return 1
+    prs = sorted(json.loads(out or "[]"), key=lambda p: p["number"])
+    ids = []
+    for p in prs:
+        m = re.search(r"([A-Za-z][A-Za-z0-9]*-\d+)", p["headRefName"])
+        if m and not p["headRefName"].startswith("plan/"):
+            i = m.group(1).upper()
+            if i not in [x[0] for x in ids]:
+                ids.append((i, p))
+    finished = [i for i, p in ids if not p.get("isDraft") and not run_live(f"{repo}.{i}")]
+    inflight = [i for i, p in ids if i not in finished]
+    state(state="merging", finished=finished, inflight=inflight, error="")
+    line(("Integrating " + branch + ". Merging the finished dossiers first, in order: " + (", ".join(finished) or "none") + "."
+          + (" Still in flight, so they move to the next stub once this one is in development: " + ", ".join(inflight) + "." if inflight else "")), "update")
+    for i in finished:
+        with contextlib.redirect_stdout(io.StringIO()):
+            enqueue(root, i)
+    poll = float(os.environ.get("ASD_MERGE_POLL") or 15)
+    end = time.time() + float(os.environ.get("ASD_MERGE_RUN_TIMEOUT") or 8 * 3600)
+    while time.time() < end:
+        sts = {i: (read_json(os.path.join(runs_dir(), f"{repo}.{i}.merge.json"), {}) or {}) for i in finished}
+        if all(v.get("state") in ("merged", "failed", "cancelled") for v in sts.values()):
+            break
+        time.sleep(poll)
+    bad = {i: v for i, v in sts.items() if v.get("state") != "merged"}
+    if bad:
+        why = "; ".join(f"{i}: {v.get('state')} {v.get('error', '')[:120]}" for i, v in bad.items())
+        line("The merge queue did not merge every finished dossier, so /stub did not start: " + why, "update")
+        state(state="failed", error=why); return 1
+    line("All finished dossiers are merged into " + branch + ". Starting /stub: the full stack run, the audit and the stub's PR into development.", "update")
+    start_stub(root, branch, slug)
+    state(state="stub", note="/stub runs")
+    return 0
+
+
+def start_stub(root: str, branch: str, slug: str) -> str:
+    r = subprocess.run([sys.executable, RUNNER, slug, "--root", root, "--command", "stub", "--items", branch], capture_output=True, text=True, timeout=60)
+    return (r.stdout or r.stderr).strip()[:200]
+
+
 def fail(state_path: str, nums: list[int], base: str, why: str) -> int:
     write_json(state_path, {"state": "failed", "prs": nums, "base": base, "error": why, "ts": now()})
     print(f"merge_dossier: failed — {why}")
@@ -395,7 +508,13 @@ a = sys.argv[1:]
 open(os.path.join(d, "calls.txt"), "a").write(" ".join(a) + "\n")
 prs = json.load(open(os.path.join(d, "prs.json")))
 if a[:2] == ["pr", "list"]:
-    print(json.dumps([p for p in prs if p.get("state", "OPEN") == "OPEN"])); sys.exit(0)
+    if "--head" in a and a[a.index("--head") + 1].startswith(("stub/", "release/")):
+        print("OPEN" if os.path.exists(os.path.join(d, "stubpr.txt")) else ""); sys.exit(0)
+    sel = [p for p in prs if p.get("state", "OPEN") == "OPEN"]
+    if "--base" in a: sel = [p for p in sel if p["baseRefName"] == a[a.index("--base") + 1]] if a[a.index("--base") + 1].startswith("stub/") else sel
+    print(json.dumps(sel)); sys.exit(0)
+if a[:2] == ["pr", "create"]:
+    open(os.path.join(d, "stubpr.txt"), "w").write(" ".join(a)); print("https://github.com/o/r/pull/900"); sys.exit(0)
 if a[:2] == ["stack", "link"]:
     open(os.path.join(d, "linked.txt"), "w").write(" ".join(a[2:]))
     sys.exit(int(os.environ.get("FAKE_LINK_RC", "0")))
@@ -525,6 +644,33 @@ print("started")
         m128 = [i for i, c in enumerate(calls) if c.startswith("stack merge 429")]
         m130 = [i for i, c in enumerate(calls) if c.startswith("pr merge 500")]
         check("queue: the script merges each, W-128 before W-130", bool(m128) and bool(m130) and m128[0] < m130[0], str(calls))
+        # ---- integrate: the finished dossiers through the queue, the one in flight left, then /stub ----
+        for f in ("runs.txt", "calls.txt"):
+            if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
+        for n in os.listdir(rdir):
+            if n.endswith((".merge.json", ".runner.json")) or n.startswith("repo.merge-queue"): os.remove(os.path.join(rdir, n))
+        prs3 = [P(427, "feat/W-128-x", "stub/s"), P(429, "fix/W-128-deferred", "feat/W-128-x"), P(500, "feat/w-130-y", "stub/s"), P(600, "feat/W-131-z", "stub/s", True)]
+        json.dump(prs3, open(os.path.join(fdir, "prs.json"), "w"))
+        old = dict(os.environ)
+        os.environ.update(env, ASD_RUNNER_BIN=fr, ASD_MERGE_POLL="0.2")
+        RUNNER = fr   # integrate starts /stub in this process; the queue's worker reads ASD_RUNNER_BIN
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = integrate(root, "stub/s")
+        finally:
+            os.environ.clear(); os.environ.update(old)
+        runs = open(os.path.join(fdir, "runs.txt")).read().split("\n")
+        ist = read_json(os.path.join(rdir, "repo.stub-s.integrate.json"), {})
+        tl = [json.loads(x)["text"] for x in open(os.path.join(rdir, "repo.stub-s.jsonl"))]
+        check("integrate: finished dossiers merge first, FIFO, then /stub starts; the draft stays in flight",
+              rc == 0 and runs[:3] == ["W-128 after-merge", "W-130 after-merge", "stub-s stub"] and ist.get("state") == "stub" and ist.get("inflight") == ["W-131"], str(runs) + str(ist))
+        check("integrate: the stub's timeline gets its own merge-queue section and notes", tl[0] == "start /merge-queue stub/s" and any("W-131" in t for t in tl))
+        spr = open(os.path.join(fdir, "stubpr.txt")).read() if os.path.exists(os.path.join(fdir, "stubpr.txt")) else ""
+        check("integrate: step 1 opens the stub's PR into development, before any merge", "--base development --head stub/s" in spr and any("is closed" in t for t in tl))
+        with contextlib.redirect_stdout(io.StringIO()):
+            os.environ.update(env)
+            late = plan(root, "W-131")
+        check("integrate: a dossier not picked waits while the stub's PR is open", not late[0] and "being integrated" in late[1], str(late))
         check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged")
         RUNNER = saved
     print("FAILED: " + ", ".join(fails) if fails else "all ok")
@@ -540,12 +686,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--enqueue", action="store_true", help="add to the repository's merge queue (FIFO) and start its worker")
     ap.add_argument("--unqueue", action="store_true", help="take out of the merge queue")
     ap.add_argument("--worker", action="store_true", help="work the repository's merge queue to the end")
+    ap.add_argument("--integrate", metavar="STUB", help="merge every finished dossier on the stub through the queue, then start /stub")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if a.selftest:
         return selftest()
     if a.worker and a.root:
         return worker(os.path.abspath(a.root))
+    if a.integrate and a.root:
+        if not re.fullmatch(r"(?:stub|release)/[\w.-]+", a.integrate):
+            print("merge_dossier: --integrate takes a stub branch, e.g. stub/2026-11-03", file=sys.stderr); return 2
+        return integrate(os.path.abspath(a.root), a.integrate)
     if not a.id or not a.root or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*-\d+", a.id):
         ap.print_usage(sys.stderr)
         return 2
