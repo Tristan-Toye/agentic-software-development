@@ -28,6 +28,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
 DOC_RE = re.compile(r"^(\.discovery/|docs/)|\.md$")
 ID_RE = re.compile(r"^\.discovery/dossiers/([A-Z][A-Z0-9]*-\d+)-[^/]*\.md$")
@@ -102,12 +103,21 @@ def merge(root: str, dry: bool) -> int:
     done: set[int] = set()
     merged_ids: set[str] = set()
     failed = False
+    waited = 0.0
     while True:
         rs, err = rows(root, merged_ids)
         if err:
             print(f"merge_docs_prs: {err}")
             return 1
         ready = [r for r in rs if r["ready"] and r["number"] not in done]
+        # Every merge into development makes GitHub recompute each other PR's mergeability, and it answers UNKNOWN for
+        # a while: wait for its answer (up to ASD_DOCPRS_WAIT seconds) instead of skipping PRs that are ready.
+        unknown = [r for r in rs if r["number"] not in done and r["blocked"].startswith("GitHub has not computed")]
+        if not ready and unknown and waited < float(os.environ.get("ASD_DOCPRS_WAIT") or 180):
+            step = float(os.environ.get("ASD_DOCPRS_POLL") or 10)
+            time.sleep(step); waited += step
+            continue
+        waited = 0.0
         if not ready:
             for r in rs:
                 if not r["ready"]:
@@ -131,11 +141,16 @@ import json, os, sys
 d = os.environ["FAKE_DIR"]; a = sys.argv[1:]
 open(os.path.join(d, "calls.txt"), "a").write(" ".join(a) + "\n")
 prs = json.load(open(os.path.join(d, "prs.json")))
-if a[:2] == ["pr", "list"]: print(json.dumps([p for p in prs if p.get("state", "OPEN") == "OPEN"])); sys.exit(0)
+if a[:2] == ["pr", "list"]:
+    flag = os.path.join(d, "recompute")
+    out = [p for p in prs if p.get("state", "OPEN") == "OPEN"]
+    if os.path.exists(flag):   # right after a merge GitHub answers UNKNOWN once
+        os.remove(flag); out = [dict(p, mergeable="UNKNOWN") for p in out]
+    print(json.dumps(out)); sys.exit(0)
 if a[:2] == ["pr", "merge"]:
     for p in prs:
         if str(p["number"]) == a[2]: p["state"] = "MERGED"
-    json.dump(prs, open(os.path.join(d, "prs.json"), "w")); sys.exit(0)
+    json.dump(prs, open(os.path.join(d, "prs.json"), "w")); open(os.path.join(d, "recompute"), "w").write("1"); sys.exit(0)
 sys.exit(3)
 '''
 
@@ -160,7 +175,7 @@ def selftest() -> int:
                P(438, "plan/c", [".discovery/dossiers/W-148-c.md"]), P(434, "docs/r", ["docs/r.md", "reading.html"]),
                P(500, "feat/x", ["src/x.rs"]), P(439, "plan/d", [".discovery/dossiers/W-150-d.md"], statusCheckRollup=[{"status": "IN_PROGRESS"}])]
         json.dump(prs, open(os.path.join(tmp, "prs.json"), "w"))
-        os.environ.update(ASD_GH_BIN=f"{sys.executable} {os.path.join(tmp, 'gh.py')}", FAKE_DIR=tmp)
+        os.environ.update(ASD_GH_BIN=f"{sys.executable} {os.path.join(tmp, 'gh.py')}", FAKE_DIR=tmp, ASD_DOCPRS_POLL="0.05")
         rs, _ = rows(root)
         by = {r["number"]: r for r in rs}
         check("list: only plan/* and docs/* PRs, oldest first", [r["number"] for r in rs] == [434, 436, 437, 438, 439], str([r["number"] for r in rs]))
@@ -174,6 +189,7 @@ def selftest() -> int:
         calls = open(os.path.join(tmp, "calls.txt")).read()
         check("merge: merges the ready ones in order, skips the rest with why", rc == 0 and "pr merge 436 --merge" in calls and "pr merge 438 --merge" in calls
               and "pr merge 437" not in calls and "pr merge 434" not in calls and "skip #437" in buf.getvalue(), buf.getvalue())
+        check("merge: GitHub's UNKNOWN after a merge is waited out, not skipped", "not computed" not in buf.getvalue())
     print("FAILED: " + ", ".join(fails) if fails else "all ok")
     return 1 if fails else 0
 
