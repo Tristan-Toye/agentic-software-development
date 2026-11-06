@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import glob
 import json
 import os
 import re
@@ -62,19 +63,27 @@ def repo_name(root: str) -> str:
     return os.path.basename(main.rstrip("/"))
 
 
-# A network blip or a GitHub 5xx is not a verdict on the PR: wait it out (ten minutes by default) before calling it a failure.
-TRANSIENT_RE = re.compile(r"error connecting to|could not resolve host|temporary failure in name resolution|connection (?:reset|refused|timed out)|i/o timeout|tls handshake|network is unreachable|unexpected eof|http (?:502|503|504)|http 5\d\d:|the remote end hung up|timed out", re.I)
+# An outage or a GitHub 5xx is not a verdict on the PR: the queue waits it out, however long it lasts, and carries on
+# where it was. Backs off to five minutes between tries. ASD_MERGE_NET_TRIES sets a limit; the default, 0, is none.
+TRANSIENT_RE = re.compile(r"error connecting to|could not resolve host|temporary failure in name resolution|no such host|dial tcp|server misbehaving"
+                          r"|connection (?:reset|refused|timed out)|operation timed out|i/o timeout|tls handshake|network is unreachable|unexpected eof"
+                          r"|failed to connect|could not read from remote|http (?:502|503|504)|http 5\d\d:|the remote end hung up|timed out", re.I)
+NET_WAITED = 0.0   # seconds this worker spent waiting out outages: not counted against any check's time limit
 
 
 def retry_network(call) -> tuple[int, str]:
-    tries = int(os.environ.get("ASD_MERGE_NET_TRIES") or 20)
+    global NET_WAITED
+    tries = int(os.environ.get("ASD_MERGE_NET_TRIES") or 0)
     wait = float(os.environ.get("ASD_MERGE_NET_WAIT") or 30)
-    for i in range(tries):
+    i = 0
+    while True:
         rc, out = call()
-        if rc == 0 or not TRANSIENT_RE.search(out) or i == tries - 1:
+        i += 1
+        if rc == 0 or not TRANSIENT_RE.search(out) or (tries and i >= tries):
             return rc, out
-        time.sleep(wait)
-    return rc, out
+        pause = min(wait * 2 ** min(i - 1, 10), 300.0)
+        time.sleep(pause)
+        NET_WAITED += pause
 
 
 def gh(root: str, *args: str, timeout: int = 600) -> tuple[int, str]:
@@ -332,6 +341,8 @@ def wait_run(key: str, since: str, timeout_s: float) -> str:
     end = time.time() + timeout_s
     while time.time() < end:
         st = read_json(os.path.join(runs_dir(), key + ".runner.json"), {}) or {}
+        if st.get("state") in ("paused", "queued"):   # an outage, a usage limit or a run slot: not the run taking too long
+            end += poll
         if str(st.get("started") or "") >= since and not run_live(key):
             return str(st.get("state") or "stopped") if alive(st.get("pid")) or st.get("state") in ("done", "failed", "stopped") else "stopped"
         time.sleep(poll)
@@ -506,8 +517,11 @@ def rerun_failed(root: str, head: str) -> bool:
 def wait_checks(root: str, nums: list[int], timeout_s: float) -> dict[int, str]:
     poll = float(os.environ.get("ASD_MERGE_POLL") or 15)
     end = time.time() + timeout_s
+    waited = NET_WAITED
     while True:
         st = {n: checks_state(root, n) for n in nums}
+        end += NET_WAITED - waited
+        waited = NET_WAITED
         if "pending" not in st.values() or time.time() > end:
             return st
         time.sleep(poll)
@@ -665,6 +679,8 @@ def mergeable_doc_pr(root: str, n: int) -> dict:
         p = json.loads(out) if rc == 0 else {}
     except ValueError:
         p = {}
+    if p and p.get("state") == "MERGED":   # it landed before an interruption (a killed worker, a batch that got through)
+        set_state(key, state="merged", error="", pid=None, note="merged into " + str(p.get("baseRefName"))); return {}
     if not p or p.get("state") != "OPEN":
         set_state(key, state="failed", error="not an open pull request", pid=None); return {}
     if p.get("isDraft"):
@@ -735,6 +751,9 @@ def work_batch(root: str, nums: list[int]) -> list[int]:
     rc, out = gh(root, "pr", "create", "--base", base, "--head", branch, "--title", f"plans: batch of {label}",
                  "--body", f"The merge queue checks and merges {label} together, in one CI run. Each of them reads as merged once this lands.")
     m = re.search(r"/pull/(\d+)", out) if rc == 0 else None
+    if not m:   # the worker was interrupted after opening it: carry on with the same PR
+        rc, out = gh(root, "pr", "view", branch, "--json", "number", "-q", '"/pull/\(.number)"')
+        m = re.search(r"/pull/(\d+)", out) if rc == 0 else None
     if not m:
         git(root, "push", "-q", "origin", "--delete", branch)
         return done
@@ -851,6 +870,20 @@ def worker(root: str) -> int:
             write_json(queue_path(repo), q)
 
 
+def revive() -> int:
+    """Start a worker for every merge queue with work and no live worker (killed by a logout, a reboot, a crash)."""
+    for path in glob.glob(os.path.join(runs_dir(), "*.merge-queue.json")):
+        q = read_json(path, {}) or {}
+        root = q.get("root")
+        if not (q.get("items") and root and os.path.isdir(root)) or (q.get("worker") and alive(q["worker"])):
+            continue
+        with open(path[:-5] + ".log", "ab") as fh:
+            subprocess.Popen([sys.executable, os.path.abspath(__file__), "--worker", "--root", root], stdin=subprocess.DEVNULL,
+                             stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+        print(f"merge_dossier: restarted the merge queue of {os.path.basename(root)}")
+    return 0
+
+
 def unqueue(root: str, dossier: str) -> int:
     """Take a dossier out of the queue, unless it is the one being worked on."""
     repo = repo_name(root)
@@ -957,6 +990,11 @@ if a[:2] == ["pr", "list"]:
     sel = [p for p in prs if p.get("state", "OPEN") == "OPEN"]
     if "--base" in a: sel = [p for p in sel if p["baseRefName"] == a[a.index("--base") + 1]] if a[a.index("--base") + 1].startswith("stub/") else sel
     print(json.dumps(sel)); sys.exit(0)
+if a[:2] == ["pr", "view"] and a[2].startswith("plan/queue-batch-"):
+    print("/pull/901"); sys.exit(0)
+if a[:2] == ["pr", "create"] and a[a.index("--head") + 1].startswith("plan/queue-batch-") and os.environ.get("FAKE_BATCH_EXISTS"):
+    prs.append({"number": 901, "headRefName": a[a.index("--head") + 1], "baseRefName": a[a.index("--base") + 1], "isDraft": False, "title": "b", "url": "u"})
+    json.dump(prs, open(os.path.join(d, "prs.json"), "w")); print("a pull request for branch already exists"); sys.exit(1)
 if a[:2] == ["pr", "create"] and a[a.index("--head") + 1].startswith("plan/queue-batch-"):
     prs.append({"number": 901, "headRefName": a[a.index("--head") + 1], "baseRefName": a[a.index("--base") + 1], "isDraft": False, "title": "b", "url": "u", "bucket": os.environ.get("FAKE_BATCH_BUCKET", "pass")})
     json.dump(prs, open(os.path.join(d, "prs.json"), "w")); print("https://github.com/o/r/pull/901"); sys.exit(0)
@@ -1185,7 +1223,7 @@ print("started")
         # ---- a batch of non-code PRs: one CI run, one merge; each member reads merged; trouble goes back to one at a time ----
         def batch_scenario(tag: str, **extra) -> tuple[dict, dict, str, str]:
             a, b = f"plan/{tag}-a", f"plan/{tag}-b"
-            ia, ib = (500, 501) if tag == "ok" else (510, 511) if tag == "red" else (520, 521) if tag == "mark" else (530, 531)
+            ia, ib = (500, 501) if tag == "ok" else (510, 511) if tag == "red" else (520, 521) if tag == "mark" else (530, 531) if tag == "moved" else (540, 541)
             for br, did in ((a, f"W-{ia}"), (b, f"W-{ia}")):   # the same new id on both: the later one is renumbered
                 g("checkout", "-q", "development", cwd=pusher); g("pull", "-q", "origin", "development", cwd=pusher)
                 g("checkout", "-q", "-b", br, cwd=pusher)
@@ -1235,6 +1273,23 @@ print("started")
         g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "moved on GitHub", cwd=pusher); g("push", "-q", "origin", "plan/stale", cwd=pusher)
         moved = fix_ids(clone, "development", "plan/stale", [("W-147", ".discovery/dossiers/W-147-stale.md")], False)
         check("ids: a branch that moved on GitHub is renumbered from where it is, not refused", moved == "", moved)
+        sa, sb, cc, _ = batch_scenario("again", FAKE_BATCH_EXISTS="1")
+        check("resume: a batch PR already open from before an interruption is carried on with", "pr merge 901 --merge" in cc and sa.get("state") == "merged" and sb.get("state") == "merged", cc + str(sa))
+        saved_env = dict(os.environ)
+        os.environ.update(env, ASD_MERGE_POLL="0.1", ASD_MERGE_BATCH="0", ASD_RUNNER_BIN=fr)
+        try:
+            rq = repo_name(clone)
+            json.dump([dict(P(700, "docs/landed", "development"), files=[{"path": "docs/l.md"}], state="MERGED"), dict(P(701, "docs/next", "development"), files=[{"path": "docs/n.md"}])], open(os.path.join(fdir, "prs.json"), "w"))
+            write_json(queue_path(rq), {"items": [{"id": "#700", "pr": 700, "ts": now()}, {"id": "#701", "pr": 701, "ts": now()}], "root": clone, "worker": 999999})
+            revive()
+            for _ in range(300):
+                q = read_json(queue_path(rq), {}) or {}
+                if not q.get("items") and not (q.get("worker") and alive(q["worker"])): break
+                time.sleep(0.1)
+            s700 = read_json(os.path.join(rdir, f"{rq}.pr-700.merge.json"), {}); s701 = read_json(os.path.join(rdir, f"{rq}.pr-701.merge.json"), {})
+        finally:
+            os.environ.clear(); os.environ.update(saved_env)
+        check("resume: a queue whose worker died restarts, reads what landed meanwhile as merged and carries on", s700.get("state") == "merged" and s701.get("state") == "merged", str(s700) + str(s701))
         sa, sb, cc, _ = batch_scenario("moved", FAKE_NO_AUTOMARK="1", FAKE_HEAD="pushed-during-the-batch")
         check("batch: a member pushed to during the batch is left open and says so, never closed", "pr close 530" not in cc and sa.get("state") == "failed" and "changed" in sa.get("error", ""), cc + str(sa))
         check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged")
@@ -1252,12 +1307,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--enqueue", action="store_true", help="add to the repository's merge queue (FIFO) and start its worker")
     ap.add_argument("--unqueue", action="store_true", help="take out of the merge queue")
     ap.add_argument("--worker", action="store_true", help="work the repository's merge queue to the end")
+    ap.add_argument("--revive", action="store_true", help="restart any merge queue with work whose worker is gone")
     ap.add_argument("--enqueue-pr", metavar="N", type=int, help="add a non-code PR into development to the merge queue")
     ap.add_argument("--integrate", metavar="STUB", help="merge every finished dossier on the stub through the queue, then start /stub")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if a.selftest:
         return selftest()
+    if a.revive:
+        return revive()
     if a.worker and a.root:
         return worker(os.path.abspath(a.root))
     if a.enqueue_pr and a.root:
