@@ -1294,6 +1294,7 @@ class Runner:
                 self.event(f"stage {started} end", "running")
                 self.deferred_report()
                 self.product_summary()
+                self.ready_fix_pr()
                 return self.finish("done", "done", 0)
             if outcome == "stopped":
                 self.end_process()
@@ -1353,6 +1354,19 @@ class Runner:
             if self.stopping:
                 return self.finish("stopped", "stopped", 3)
             return self.finish("failed", f"failed: {detail}", 1)
+
+    def ready_fix_pr(self) -> None:
+        """A finished /fix-deferred leaves no draft behind, whatever the agent did: `gh stack link` opens one unless told
+        otherwise, and the merge queue refuses a stack with a draft in it. Best effort: no PR yet is not an error."""
+        if self.command != "fix-deferred":
+            return
+        try:
+            p = subprocess.run(shlex.split(os.environ.get("ASD_GH_BIN") or "gh") + ["pr", "ready", f"fix/{self.dossier}-deferred"], cwd=self.root,
+                               capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+            if p.returncode == 0 and "already" not in (p.stdout + p.stderr).lower():
+                self.log(f"marked fix/{self.dossier}-deferred ready for review")
+        except (OSError, subprocess.TimeoutExpired) as e:
+            self.log(f"could not mark fix/{self.dossier}-deferred ready: {e}")
 
     def finish(self, state: str, text: str, rc: int) -> int:
         self.end_process()
@@ -2000,6 +2014,18 @@ def selftest() -> int:
         check("stop: runner exits 3, state stopped", r.returncode == 0 and p.wait(timeout=30) == 3 and state_of("W-5").get("state") == "stopped")
         check("stop: the claude process is gone", until(lambda: not alive(cpid), 10) is True)
         check("stop recorded as a runner line", texts("W-5")[-1] == "stopped")
+        with open(os.path.join(fdir, "gh_ready.py"), "w") as fh:
+            fh.write("import os,sys\nopen(os.path.join(os.path.dirname(os.path.abspath(__file__)),'ready.txt'),'a').write(' '.join(sys.argv[1:])+'\\n')\n")
+        env["ASD_GH_BIN"] = f"{sys.executable} {os.path.join(fdir, 'gh_ready.py')}"
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-75", "--command", "fix-deferred")
+        p.wait(timeout=60)
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-76", "--command", "after-merge")
+        p.wait(timeout=60)
+        env.pop("ASD_GH_BIN")
+        rd = open(os.path.join(fdir, "ready.txt")).read() if os.path.exists(os.path.join(fdir, "ready.txt")) else ""
+        check("fix-deferred: a finished run marks its PR ready; no other command does", "pr ready fix/W-75-deferred" in rd and "W-76" not in rd)
         scenario([{"hang": True, "turns": []}])
         p = start("W-71")
         until(lambda: state_of("W-71").get("claude_pid"))
