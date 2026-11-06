@@ -83,7 +83,7 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}.acard{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:8px}.acard.next{border-color:var(--acc)}
 .ahd{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.aname{font-weight:700;font-size:1rem;margin-right:4px}.meter .mhd{display:flex;justify-content:space-between;font-size:12.5px}.meter .ml{color:var(--mut)}.meter .mv{font-weight:600}
 .mbar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin:3px 0}.mfill{display:block;height:100%;background:var(--acc)}.mfill.ok{background:var(--ok)}.mfill.warn{background:var(--warn)}.mfill.bad{background:var(--bad)}
-.mergectl{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.dfplan{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.nowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 0;color:var(--fg)}.nowline .nowtext{display:inline-flex;gap:6px;align-items:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .nowline{margin:2px 0 0;color:var(--mut)}.nowline .chip{font-size:11px}.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qchat{display:flex;flex-direction:column;gap:6px;margin:10px 0}.qchat .cm{max-width:88%;padding:7px 10px;border-radius:10px;border:1px solid var(--bd)}.qchat .cm.me{align-self:flex-end;background:var(--accbg)}.qchat .cm.them{align-self:flex-start}.qchat .cm .who{font-size:11px;color:var(--mut);margin-bottom:2px}.qchat .cm .tx{white-space:pre-wrap}.qchat .cm.wait{color:var(--mut);font-size:12px}.mergectl{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.dfplan{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.nowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 0;color:var(--fg)}.nowline .nowtext{display:inline-flex;gap:6px;align-items:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .nowline{margin:2px 0 0;color:var(--mut)}.nowline .chip{font-size:11px}.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip.fixing{display:inline-flex;align-items:center;gap:5px;background:var(--accbg);color:var(--acc);font-weight:600}a.srow:has(.chip.fixing){box-shadow:inset 3px 0 0 var(--acc)}
 .dfp{border-left:3px solid var(--acc)}.dfp-bar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--chip);margin:6px 0 4px}.dfp-bar .seg{display:block;height:100%}
 .seg.ok,.sw.ok{background:var(--ok)}.seg.acc,.sw.acc{background:var(--acc)}.seg.warn,.sw.warn{background:var(--warn)}.seg.mut,.sw.mut{background:var(--mut)}.seg.mut2,.sw.mut2{background:var(--bd)}
@@ -236,11 +236,22 @@ function qCard(q, opts) {
   const open = q.state === 'open'; const repo = qRepo(q);
   const kids = [
     h('div', { class: 'top' }, [chip(rlabel(repo), 'neutral'), h('a', { class: 'chip', href: hrefItem(repo, q.dossier) }, [q.dossier]), h('span', { class: 'grow' }), h('span', { class: 'mono' }, [q.id + ' · ']), opts.queue ? when(q.ts, 'waiting ') : when(q.ts)]),
-    h('div', { class: 'q' }, [q.text]), q.blocks ? h('div', { class: 'blocks' }, ['Blocks: ' + q.blocks]) : null, optButtons(q)];
-  if (opts.thread) kids.push(h('div', {}, q.lines.slice(1).map(msgBlock)));
-  if (open) kids.push(h('textarea', { placeholder: 'Write your answer or a question for the agent', 'data-qid': q.id }),
+    h('div', { class: 'q' }, [q.text]), q.blocks ? h('div', { class: 'blocks' }, ['Blocks: ' + q.blocks]) : null];
+  // An open question is a chat until a button closes it: your messages and the agent's replies, in order, then the
+  // buttons (the question's own, plus any the agent offered in a reply, such as its reading of your words).
+  const talk = q.lines.slice(1).filter(l => (l.from === 'owner' && l.kind === 'followup') || (l.from === 'agent' && l.kind === 'reply'));
+  if (open && talk.length) {
+    const last = talk[talk.length - 1];
+    kids.push(h('div', { class: 'qchat', 'data-k': 'qc:' + q.id }, talk.map((l, i) => h('div', { class: 'cm ' + (l.from === 'owner' ? 'me' : 'them'), 'data-k': 'qc:' + q.id + ':' + i }, [
+      h('div', { class: 'who' }, [(l.from === 'owner' ? 'You' : 'Agent') + (l.via ? ' via ' + l.via : '') + ' · ', when(l.ts)]), h('div', { class: 'tx' }, [l.text]),
+      l.options && l.options.length ? h('div', { class: 'small mut' }, ['Added ' + l.options.map(o => o.key + ' · ' + o.label).join(', ') + ' to the buttons below']) : null]))
+      .concat(last.from === 'owner' ? [h('div', { class: 'cm them wait', 'data-k': 'qc:' + q.id + ':wait' }, [h('span', { class: 'dot info live' }), ' Waiting for the agent\'s reply…'])] : [])));
+  }
+  kids.push(optButtons(q));
+  if (opts.thread && !open) kids.push(h('div', {}, q.lines.slice(1).map(msgBlock)));
+  if (open) kids.push(h('textarea', { placeholder: talk.length ? 'Reply to the agent' : 'Ask the agent something, or tell it what you want', 'data-qid': q.id }),
     h('div', { class: 'ctl' }, [h('button', { class: 'btn primary', type: 'button', 'data-act': 'reply', 'data-qid': q.id }, ['Send']),
-      h('span', { class: 'small mut' }, ['The question stays open: the agent answers you, or confirms what it will do with your words and closes it. The buttons answer outright.'])]));
+      h('span', { class: 'small mut' }, ['Your message goes to the agent and it replies here. Only a button answers and closes the question; the agent adds one for what it takes your words to mean.'])]));
   kids.push(h('div', { class: 'err' }, [S.qerr[q.id] || '']));
   return h('div', { class: 'need' + (open ? '' : ' thr') + (opts.hit === q.id ? ' hit' : ''), id: 'q-' + q.id, 'data-k': 'q:' + q.id + (opts.thread ? ':t' : ':x') }, kids);
 }

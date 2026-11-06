@@ -163,8 +163,23 @@ def cmd_ask(a: argparse.Namespace) -> int:
 
 
 def cmd_reply(a: argparse.Namespace) -> int:
-    read_lines(a.id)
-    write_line(path_of(a.id), {"ts": now(), "from": "agent", "kind": "reply", "text": clip(a.text)})
+    """`reply <id> --text T [--option KEY|label|consequence ...]`: the agent's message in the question's chat. An
+    option adds a button to the question (a key it does not have yet), so the owner closes it with a press: offer
+    your reading of the owner's typed words as one ("D|Do it as you wrote: …|…"), never close it yourself."""
+    lines = read_lines(a.id)
+    if final_answer(lines) is not None:
+        print(f"{a.id} is already answered", file=sys.stderr)
+        return 1
+    have = {o.get("key") for ln in lines for o in (ln.get("options") or []) if isinstance(o, dict)}
+    opts = [parse_option(o) for o in (a.option or [])]
+    for o in opts:
+        if o["key"] in have:
+            raise SystemExit(f"option {o['key']} exists already; pick a new key")
+        have.add(o["key"])
+    line = {"ts": now(), "from": "agent", "kind": "reply", "text": clip(a.text)}
+    if opts:
+        line["options"] = opts
+    write_line(path_of(a.id), line)
     return 0
 
 
@@ -336,6 +351,10 @@ def selftest() -> int:
         path = os.path.join(env["ASD_QUESTIONS_DIR"], qid + ".jsonl")
         check("reply appends", run("reply", qid, "--text", "fact", env=env).returncode == 0
               and json.loads(open(path).read().splitlines()[-1])["kind"] == "reply")
+        r = run("reply", qid, "--text", "So you mean: keep the overlap.", "--option", "D|Confirm: keep the overlap|the turn does not wait", env=env)
+        last = json.loads(open(path).read().splitlines()[-1])
+        check("a reply can add a button", r.returncode == 0 and last.get("options") == [{"key": "D", "label": "Confirm: keep the overlap", "consequence": "the turn does not wait"}])
+        check("a reply cannot reuse an option key", run("reply", qid, "--text", "x", "--option", "A|again|c", env=env).returncode != 0)
 
         def owner(kind, text, option="", delay=0.5):
             time.sleep(delay)
@@ -422,6 +441,7 @@ def main() -> int:
     p = sub.add_parser("reply")
     p.add_argument("id")
     p.add_argument("--text", required=True)
+    p.add_argument("--option", action="append", help="KEY|label|consequence: a button this reply adds")
     p = sub.add_parser("accept")
     p.add_argument("id")
     p.add_argument("--text", required=True)

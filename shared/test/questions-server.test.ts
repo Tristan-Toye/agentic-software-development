@@ -148,6 +148,13 @@ check("deferred: an item marked RESOLVED in place is closed", parseDeferred("- D
 }
 check("replies: typed text is always a follow-up; the question stays open", replyKind("why A?").kind === "followup" && replyKind(" go with B ").kind === "followup" && replyKind(" go with B ").text === "go with B")
 {
+  {
+    const J = (o: any) => JSON.stringify(o)
+    const qc = parseQuestion("r.W-1.Q9", [J({ ts: "1", from: "agent", kind: "question", text: "Which?", options: [{ key: "A", label: "one", consequence: "c" }, { key: "B", label: "two", consequence: "c" }] }),
+      J({ ts: "2", from: "owner", kind: "followup", text: "go for D instead" }),
+      J({ ts: "3", from: "agent", kind: "reply", text: "You mean D: keep the overlap.", options: [{ key: "D", label: "Confirm: keep the overlap", consequence: "no wait" }, { key: "A", label: "dup", consequence: "x" }] })].join("\n"))
+    check("question chat: a reply's option becomes a button; the question stays open until one is pressed", qc!.state === "open" && qc!.options.map((o) => o.key).join() === "A,B,D" && qc!.options[2].label === "Confirm: keep the overlap")
+  }
   const qa = parseQuestion("r.W-1.Q1", [JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Which?" }), JSON.stringify({ ts: "2", from: "owner", kind: "followup", text: "use B" }), JSON.stringify({ ts: "3", from: "agent", kind: "answer", accepted: true, text: "I will use B.", owner_text: "use B" })].join("\n"))
   const qo = parseQuestion("r.W-1.Q2", [JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Which?" }), JSON.stringify({ ts: "2", from: "owner", kind: "followup", text: "use B" }), JSON.stringify({ ts: "3", from: "agent", kind: "answer", text: "not accepted" })].join("\n"))
   check("store: a typed message the agent accepted closes the question; an agent line without accepted does not", qa?.state === "answered" && qa.answer?.text === "I will use B." && qo?.state === "open")
