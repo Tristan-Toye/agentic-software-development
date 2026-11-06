@@ -337,13 +337,31 @@ def conflicting(root: str, nums: list[int]) -> tuple[list[int], str]:
     return bad, ""
 
 
+def behind(root: str, nums: list[int]) -> list[int]:
+    """The PRs a strict branch rule refuses until they hold the latest base. UNKNOWN (right after a merge) is asked again."""
+    tries = int(os.environ.get("ASD_MERGE_MERGEABLE_TRIES") or 12)
+    out = []
+    for n in nums:
+        st = ""
+        for _ in range(tries):
+            rc, st = gh(root, "pr", "view", str(n), "--json", "mergeStateStatus", "-q", ".mergeStateStatus")
+            if rc != 0 or st.strip() != "UNKNOWN":
+                break
+            time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15) / 3)
+        if rc == 0 and st.strip() == "BEHIND":
+            out.append(n)
+    return out
+
+
 # ---------------------------------------------------------------- shared steps: what blocks a merge, fixed
 # The same steps settle a dossier's stack (into its stub) and a non-code PR (into development), cheapest first:
 #   1. GitHub's mergeability: UNKNOWN right after another merge, so it is asked again (conflicting()).
 #   2. Id collisions, mechanical: a dossier id or an ADR/LRN number the PR adds that the base (or another open PR)
 #      already has is renumbered on the PR's branch, in a scratch worktree, then pushed (no agent).
-#   3. Red checks: failed jobs are re-run once (flaky checks), then waited for.
-#   4. What is left (a content conflict, a check still red): the dossier's own agent, a fresh /resolve-merge run under
+#   3. A branch behind its base: every merge puts the rest of the queue behind, and a strict branch rule refuses them,
+#      so the base is merged into the branch (gh pr update-branch) and its checks run again.
+#   4. Red checks: failed jobs are re-run once (flaky checks), then waited for.
+#   5. What is left (a content conflict, a check still red): the dossier's own agent, a fresh /resolve-merge run under
 #      the dossier's key (a live run of it gets a message instead), then the steps again, once.
 
 ID_FILE_RE = re.compile(r"^\.discovery/dossiers/([A-Z][A-Z0-9]*-\d+)-[^/]+\.md$")
@@ -477,6 +495,25 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
     run_timeout = float(os.environ.get("ASD_MERGE_RUN_TIMEOUT") or 4 * 3600)
     check_timeout = float(os.environ.get("ASD_MERGE_CHECK_TIMEOUT") or 3600)
     agent_used = rerun_used = False
+    updates = 0
+
+    def update_behind() -> tuple[bool, str]:
+        """(updated any, why it could not). A conflict from the update comes back as CONFLICTING on the next round."""
+        nonlocal updates
+        stale = behind(root, nums)
+        if not stale:
+            return False, ""
+        updates += 1
+        if updates > 5:
+            return False, "still behind its base after 5 updates: " + ", ".join(f"#{n}" for n in stale)
+        note("fixing", "updating " + ", ".join(f"#{n}" for n in stale) + " with the latest " + base)
+        for n in stale:
+            rc, out = gh(root, "pr", "update-branch", str(n), timeout=300)
+            if rc != 0 and "conflict" not in out.lower():
+                return False, f"could not update #{n}: {out[-200:]}"
+        time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15))   # let GitHub see the push and start the checks
+        return True, ""
+
     while True:
         # 2. ids, mechanical (the bottom PR carries the dossier; stacked ones are fixes)
         bottom = prs[0]
@@ -492,6 +529,13 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
         bad, err = conflicting(root, nums)
         if err:
             return err
+        # 3. up to date with the base, before spending a wait on checks that would have to run again
+        if not bad:
+            updated, why = update_behind()
+            if why:
+                return why
+            if updated:
+                continue
         # 3. checks (re-run red ones once)
         st = wait_checks(root, nums, check_timeout) if not bad else {}
         red = [n for n, v in st.items() if v == "red"]
@@ -505,6 +549,11 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
                 red = [n for n, v in st.items() if v == "red"]
         pending = [n for n, v in st.items() if v == "pending"]
         if not bad and not red and not pending:
+            updated, why = update_behind()   # a merge from outside the queue can land while the checks ran
+            if why:
+                return why
+            if updated:
+                continue
             return ""
         if pending and not bad and not red:
             return "checks still running after " + str(int(check_timeout / 60)) + " min: " + ", ".join(f"#{n}" for n in pending)
@@ -601,11 +650,14 @@ def work_pr(root: str, n: int) -> None:
         set_state(key, state=state, error="", pid=os.getpid(), note=text)
         if ids:
             append_line(os.path.join(runs_dir(), f"{repo}.{agent_id}.jsonl"), {"ts": now(), "kind": "runner", "text": f"merge queue (#{n}): " + text})
-    why = settle(root, key, agent_id, [p], p["baseRefName"], [], note)
-    if why:
-        set_state(key, state="failed", error=why, pid=None); return
-    set_state(key, state="merging", pid=os.getpid())
-    rc, out = gh(root, "pr", "merge", str(n), "--merge", timeout=300)
+    for _ in range(3):
+        why = settle(root, key, agent_id, [p], p["baseRefName"], [], note)
+        if why:
+            set_state(key, state="failed", error=why, pid=None); return
+        set_state(key, state="merging", pid=os.getpid())
+        rc, out = gh(root, "pr", "merge", str(n), "--merge", timeout=300)
+        if not (rc != 0 and "not up to date" in out):   # another merge won the race: settle again
+            break
     rc2, st = gh(root, "pr", "view", str(n), "--json", "state", "-q", ".state")
     if rc != 0 or st.strip() != "MERGED":
         set_state(key, state="failed", error=(out[-300:] if rc != 0 else f"not merged afterwards ({st.strip()})"), pid=None); return
@@ -756,6 +808,7 @@ if a[:2] == ["stack", "link"]:
     sys.exit(int(os.environ.get("FAKE_LINK_RC", "0")))
 if a[:2] in (["stack", "merge"], ["pr", "merge"]):
     if os.environ.get("FAKE_MERGE_RC", "0") != "0": print("merge blocked by branch protection"); sys.exit(1)
+    if a[0] == "pr" and next((p for p in prs if str(p["number"]) == a[2]), {}).get("mss") == "BEHIND": print("the head branch is not up to date with the base branch"); sys.exit(1)
     nums = open(os.path.join(d, "linked.txt")).read().split() if a[0] == "stack" else [a[2]]
     for p in prs:
         if str(p["number"]) in nums: p["state"] = "MERGED"
@@ -763,6 +816,12 @@ if a[:2] in (["stack", "merge"], ["pr", "merge"]):
 if a[:2] == ["pr", "checks"]:
     p = next(p for p in prs if str(p["number"]) == a[2]); print(p.get("bucket", "pass")); sys.exit(0)
 if a[:2] == ["run", "list"]: print("[]"); sys.exit(0)
+if a[:2] == ["pr", "update-branch"]:
+    for p in prs:
+        if str(p["number"]) == a[2]: p["mss"] = "CLEAN"
+    json.dump(prs, open(os.path.join(d, "prs.json"), "w")); sys.exit(0)
+if a[:2] == ["pr", "view"] and "mergeStateStatus" in a:
+    p = next(p for p in prs if str(p["number"]) == a[2]); print(p.get("mss", "CLEAN")); sys.exit(0)
 if a[:2] == ["pr", "view"] and "number,state,baseRefName,headRefName,isDraft,files" in a:
     p = next(p for p in prs if str(p["number"]) == a[2]); print(json.dumps(dict(p, state=p.get("state", "OPEN")))); sys.exit(0)
 if a[:2] == ["pr", "view"]:
@@ -926,12 +985,13 @@ print("started")
         for f in ("calls.txt", "runs.txt", "stubpr.txt"):
             if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
         prs4 = [dict(P(437, "plan/b", "development"), files=[{"path": ".discovery/dossiers/W-147-second.md"}]),
-                dict(P(434, "docs/r", "development"), files=[{"path": "docs/r.md"}, {"path": "reading.html"}])]
+                dict(P(434, "docs/r", "development"), files=[{"path": "docs/r.md"}, {"path": "reading.html"}]),
+                dict(P(438, "docs/behind", "development"), files=[{"path": "docs/behind.md"}], mss="BEHIND")]
         json.dump(prs4, open(os.path.join(fdir, "prs.json"), "w"))
         old = dict(os.environ)
         os.environ.update(env, ASD_RUNNER_BIN=fr, ASD_MERGE_POLL="0.1")
         try:
-            enqueue_pr(clone, 437); enqueue_pr(clone, 434)
+            enqueue_pr(clone, 437); enqueue_pr(clone, 434); enqueue_pr(clone, 438)
             qp = queue_path(repo_name(clone))
             for _ in range(400):
                 q = read_json(qp, {}) or {}
@@ -948,6 +1008,9 @@ print("started")
         check("non-code PR: a colliding dossier id is renumbered on its branch, with its mentions, then merged",
               "W-148-second.md" in tree and "W-147-second.md" not in tree and "id: W-148" in body and "W-148 here" in body and s437.get("state") == "merged" and "pr merge 437 --merge" in calls, tree + str(s437))
         check("non-code PR: one that changes code is refused with why, never merged", s434.get("state") == "failed" and "changes code" in s434.get("error", "") and "pr merge 434" not in calls)
+        s438 = read_json(os.path.join(rdir, f"{rn}.pr-438.merge.json"), {})
+        check("non-code PR: a branch behind its base is updated, then merged, not dropped", s438.get("state") == "merged" and "pr update-branch 438" in calls
+              and calls.index("pr update-branch 438") < calls.index("pr merge 438 --merge"), str(s438))
         check("non-code PR: the stub, its PR and /stub are never touched", "pr create" not in calls and "stack" not in calls and not os.path.exists(os.path.join(fdir, "runs.txt")))
         check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged")
         RUNNER = saved
