@@ -83,6 +83,19 @@ You run under the dossier runner and nobody reads the terminal.
 LIMIT_RE = re.compile(r"usage limit|rate.?limit|weekly limit|limit reached|out of (?:extra )?usage|hit your .*limit|\b429\b|overloaded", re.I)
 
 
+NETWORK_RE = re.compile(r"ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EPIPE"
+                        r"|can'?t reach the API|unable to connect|fetch failed|socket hang ?up|network (?:error|is unreachable)"
+                        r"|connection (?:error|reset|refused|closed)|timed? ?out|API Error: 5\d\d|\b50[0234]\b|internal server error"
+                        r"|bad gateway|service unavailable|gateway time-?out", re.I)
+# Waits between network retries, seconds; the last one repeats until ASD_RUNNER_NET_RETRIES attempts (default 8, ~1 h).
+NETWORK_BACKOFF = (30, 60, 120, 300, 600, 900)
+
+
+def network_error(text: str) -> bool:
+    """Whether a failed turn is a transient network or server error (wait and retry the stage), not a real failure."""
+    return bool(NETWORK_RE.search(text or "")) and not usage_limit(text)
+
+
 def usage_limit(text: str) -> bool:
     """Whether a failed turn is a usage or rate limit (wait and retry), not a real failure."""
     return bool(LIMIT_RE.search(text or ""))
@@ -847,12 +860,18 @@ class Runner:
                     tail = ""
                 if usage_limit(tail):
                     return "limit", tail.strip()
+                if network_error(tail):
+                    return "network", tail.strip().splitlines()[-1][:300] if tail.strip() else "network error"
                 return "failed", f"the claude process exited with code {val} before a result"
             text, err = val  # type: ignore[misc]
             if err and usage_limit(text):
                 kill_group(self.proc)
                 self.end_process()
                 return "limit", text.strip()
+            if err and network_error(text):
+                kill_group(self.proc)
+                self.end_process()
+                return "network", text.strip().splitlines()[-1][:300] if text.strip() else "network error"
             if err:
                 kill_group(self.proc)
                 self.end_process()
@@ -947,6 +966,7 @@ class Runner:
         self.save()
         self.event(f"start /{self.command} {self.dossier} in {self.root}", "running")
         started = 0
+        net_tries = 0   # network errors in a row; a stage that ends well resets it
         while True:
             if self.stopping:
                 return self.finish("stopped", "stopped", 3)
@@ -956,6 +976,8 @@ class Runner:
             self.save(stage=started, state="running", questions=[])
             self.event(f"stage {started} start", "running")
             outcome, detail = self.run_stage()
+            if outcome != "network":
+                net_tries = 0
             if outcome == "next":
                 self.event(f"stage {started} end" + (f": {detail}" if detail else ""), "running")
                 continue
@@ -971,6 +993,26 @@ class Runner:
             if outcome == "stopped":
                 self.end_process()
                 return self.finish("stopped", "stopped", 3)
+            if outcome == "network":
+                # A transient network or API-server error: pause, then run the same stage again from its checkpoints,
+                # backing off; only after ASD_RUNNER_NET_RETRIES attempts does it become a failure the owner rules on.
+                net_tries += 1
+                limit_n = int(os.environ.get("ASD_RUNNER_NET_RETRIES") or 8)
+                if net_tries <= limit_n:
+                    wait = float(os.environ.get("ASD_RUNNER_NET_WAIT") or NETWORK_BACKOFF[min(net_tries, len(NETWORK_BACKOFF)) - 1])
+                    until = time.time() + wait
+                    at = datetime.datetime.fromtimestamp(until, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    self.save(state="paused", resumes_at=at)
+                    self.event(f"paused: network error ({detail[:160]}); retry {net_tries}/{limit_n} of stage {started} at {at}", "paused")
+                    while time.time() < until and not self.stopping:
+                        time.sleep(min(5.0, max(0.2, until - time.time())))
+                    if self.stopping:
+                        return self.finish("stopped", "stopped", 3)
+                    self.save(resumes_at=None)
+                    self.event(f"resumed after the network error; stage {started} again", "running")
+                    started -= 1
+                    continue
+                detail = f"network errors on {limit_n} retries in a row: {detail}"
             if outcome == "limit":
                 # Out of tokens: pause until the limit resets, then run the same stage
                 # again (its checkpoints are the hand-off; /work-on resumes from the dossier).
@@ -1315,6 +1357,10 @@ for raw in sys.stdin:
             final = a.get("final", final)
         elif "final" in a:
             final = a["final"]
+    err = next((a["error"] for a in acts if "error" in a), None)
+    if err:
+        out({"type": "result", "subtype": "error_during_execution", "is_error": True, "session_id": f"sess-{n}", "result": err})
+        continue
     out({"type": "result", "subtype": "success", "is_error": False, "session_id": f"sess-{n}", "result": "SECRET-MODEL-TEXT\n" + final})
     if script.get("exit_after_turn"):
         break
@@ -1609,6 +1655,30 @@ def selftest() -> int:
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
         p = start("W-7")
         check("a live owner of the dossier refuses a second runner", p.wait(timeout=30) == 2)
+
+        # ---- a network error pauses and retries the stage by itself; only after the retries does it ask ----
+        net = "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"
+        check("network: ENOTFOUND and 5xx are network errors; a usage limit is not", network_error(net) and network_error("API Error: 503 Service Unavailable") and not network_error("usage limit reached") and not network_error("the contract is wrong"))
+        scenario([{"turns": [[{"error": net}]]}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        env["ASD_RUNNER_NET_WAIT"] = "0.2"
+        p = start("W-32")
+        rc = p.wait(timeout=60)
+        t32 = texts("W-32")
+        check("network: paused, resumed and finished, with no question", rc == 0 and any(t.startswith("paused: network error") and "retry 1/8" in t for t in t32)
+              and any(t.startswith("resumed after the network error") for t in t32) and not any("asked" in t for t in t32))
+        scenario([{"turns": [[{"error": net}]]}, {"turns": [[{"error": net}]]}])
+        env["ASD_RUNNER_NET_RETRIES"] = "1"
+        p = start("W-33")
+        asked = until(lambda: any("asked" in t for t in texts("W-33")), 30)
+        check("network: after the retries it asks the owner, naming the network errors", bool(asked) and any("network errors on 1 retries" in t for t in texts("W-33")))
+        q33 = (state_of("W-33").get("questions") or [""])[0]
+        owner_line(q33, "answer", "Stop", "B")   # the owner rules Stop on the failure question
+        check("network: the owner's Stop ends the run", p.wait(timeout=30) == 1)
+        fakes = [int(open(os.path.join(fdir, f)).read()) for f in os.listdir(fdir) if f.startswith("pid.")]
+        until(lambda: not any(alive(x) for x in fakes), 15)
+        fakes = [int(open(os.path.join(fdir, f)).read()) for f in os.listdir(fdir) if f.startswith("pid.")]
+        until(lambda: not any(alive(x) for x in fakes), 15)
+        env.pop("ASD_RUNNER_NET_WAIT"); env.pop("ASD_RUNNER_NET_RETRIES")
 
         # ---- plan: one routed deferred item, under its own key beside the source dossier's run ----
         scenario([{"turns": [[{"final": "planned W-50\nRUNNER: DONE"}]]}])
