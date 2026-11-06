@@ -562,7 +562,7 @@ function docPrsView(repo) {
 /* A non-code PR's state: its merge-queue step when queued, else ready, or what the queue will have to fix. */
 function docPrState(p) {
   const q = p.queue;
-  const QL = { queued: 'in the merge queue' + (q && q.position ? ' · #' + q.position : ''), waiting: 'waits for its run', fixing: 'renumbering', rerunning: 're-running red checks', resolving: 'its agent is resolving', merging: 'merging…', merged: 'merged' };
+  const QL = { queued: 'in the merge queue' + (q && q.position ? ' · #' + q.position : ''), waiting: 'waits for its run', fixing: q && /^updating/.test(q.note || '') ? 'updating · then its checks' : 'renumbering', rerunning: 're-running red checks', resolving: 'its agent is resolving', merging: 'merging…', merged: 'merged' };
   if (q && QL[q.state]) return h('span', { title: q.note || '' }, [h('span', { class: 'chip ' + (q.state === 'merged' ? 'done' : 'fixing') }, [q.state === 'merged' ? null : h('span', { class: 'dot info live' }), QL[q.state]])]);
   if (q && q.state === 'failed') return h('span', { title: q.error || '' }, [chip('could not merge: ' + (q.error || '').slice(0, 60), 'blocked')]);
   if (p.ready) return chip('ready to merge', 'done');

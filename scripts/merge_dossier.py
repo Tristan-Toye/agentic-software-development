@@ -224,7 +224,8 @@ def merge(root: str, dossier: str, method: str, dry: bool, no_cleanup: bool = Fa
         return 0
     write_json(state_path, {"state": "merging", "prs": nums, "base": base, "error": "", "ts": now(), "pid": os.getpid()})
     if len(nums) > 1:
-        rc, out = gh(root, "stack", "link", *[str(n) for n in nums])
+        # Without --base, linking moves the bottom PR to the repository's default branch.
+        rc, out = gh(root, "stack", "link", "--base", base, *[str(n) for n in nums])
         if rc != 0:
             return fail(state_path, nums, base, f"gh stack link {' '.join(map(str, nums))} failed: {out[-300:]}")
         rc, out = gh(root, "stack", "merge", str(nums[-1]), "--yes", f"--{method}", timeout=1800)
@@ -804,7 +805,7 @@ if a[:2] == ["pr", "list"]:
 if a[:2] == ["pr", "create"]:
     open(os.path.join(d, "stubpr.txt"), "w").write(" ".join(a)); print("https://github.com/o/r/pull/900"); sys.exit(0)
 if a[:2] == ["stack", "link"]:
-    open(os.path.join(d, "linked.txt"), "w").write(" ".join(a[2:]))
+    open(os.path.join(d, "linked.txt"), "w").write(" ".join(a[a.index("--base") + 2:]))
     sys.exit(int(os.environ.get("FAKE_LINK_RC", "0")))
 if a[:2] in (["stack", "merge"], ["pr", "merge"]):
     if os.environ.get("FAKE_MERGE_RC", "0") != "0": print("merge blocked by branch protection"); sys.exit(1)
@@ -884,7 +885,7 @@ def selftest() -> int:
         key = "repo.W-128"
         st = read_json(os.path.join(rdir, key + ".merge.json"), {})
         check("merge: links the stack bottom to top, then merges it up to the top PR with a merge commit",
-              rc == 0 and "stack link 427 429" in calls and "stack merge 429 --yes --merge" in calls and st.get("state") == "merged")
+              rc == 0 and "stack link --base stub/2026-11-03 427 429" in calls and "stack merge 429 --yes --merge" in calls and st.get("state") == "merged")
         seen = read_json(os.path.join(rdir, "repo.merges.json"), {})
         check("merge: the detector will not start a second cleanup", seen.get("427", {}).get("state") == "started" and seen.get("429", {}).get("state") == "started")
         args = open(fake_runner + ".args").read()
