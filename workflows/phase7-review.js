@@ -88,8 +88,9 @@ function checkDocument(doc) {
 
 const REVIEW_SCHEMA = {
   type: 'object',
-  required: ['verdict', 'crs', 'document', 'unreached'],
+  required: ['verdict', 'crs', 'document', 'unreached', 'payload_last'],
   properties: {
+    payload_last: { type: 'string' },
     verdict: { type: 'string', enum: ['PASS', 'CHANGES-REQUIRED'] },
     crs: {
       type: 'array',
@@ -150,10 +151,16 @@ for (const item of args) {
 // The spawn prompt: a task line and the two pointer fields every agent file's intake names.
 // Regression note: this prompt is built from the payload intake only (task line, PAYLOAD_FILE, PAYLOAD_SHA256).
 // Never relay user chat text into it: a relayed message sent mid-wave was read as an instruction to skip the payload.
+// #257: a read hook (a context-saving plugin) can replace a large file's Read result with a short note, and an agent
+// that never saw its payload returned as if it had worked. Its proof of a whole read is the payload's last line.
+const READ_RULE = '\nRead check: your payload\'s last non-empty line proves you read it whole. If what Read returned is not your payload ' +
+  '(a note, a redirect, a summary or a cut), read the file again in parts with offset and limit, 120 lines at a time, to its end. ' +
+  'Set payload_last to that last line, verbatim. If you cannot read it whole, set payload_last to ' +
+  'UNREAD: <what Read gave you>, verdict CHANGES-REQUIRED and no crs.'
 const spawnPrompt = (item) =>
   'You are the ' + item.lens + ' lens of a /work-on Phase 7 review round (' + item.label + '). Your payload is the file below: read it whole before anything else ' +
   '(in parts with offset and limit if Read says it is too large); every field in it binds you.\n' +
-  'PAYLOAD_FILE: ' + item.payloadPath + '\nPAYLOAD_SHA256: ' + item.payloadSha256
+  'PAYLOAD_FILE: ' + item.payloadPath + '\nPAYLOAD_SHA256: ' + item.payloadSha256 + READ_RULE
 
 async function review(item) {
   const out = await agent(spawnPrompt(item) + RETURN_FORM, {
@@ -192,6 +199,10 @@ async function keep(reviewed) {
     : []
   let verdict = out ? out.verdict : 'died'
   if (verdict === 'PASS' && unreached.length > 0) verdict = 'incomplete'
+  // #257: a reviewer that could not read its payload whole reviewed nothing; the orchestrator checks payload_last
+  // against the payload's real last line (verify_return.py --payload-last) for every other return.
+  const payloadLast = out && typeof out.payload_last === 'string' ? out.payload_last.trim() : ''
+  if (out && (payloadLast === '' || /^UNREAD\b/i.test(payloadLast))) verdict = 'unread'
   const checked = checkDocument(doc)
   const ledgerId = (id) => (id.startsWith('DEFECT') ? 'DEFECT-' : 'CR-') + item.lens + '-' + ((/(\d+)/.exec(String(id)) || [])[1] || String(id))
   return {
@@ -211,6 +222,7 @@ async function keep(reviewed) {
     defects: Object.entries(checked).filter(([, v]) => v.kind === 'DEFECT').map(([id, v]) => ({
       id, ledger_id: ledgerId(id), location: v.fields.Location || '', input: String(v.fields.Input || '').slice(0, 240), missing: v.missing,
     })),
+    payload_last: payloadLast,
     answers: out && Array.isArray(out.answers) ? out.answers : [],
     unreached,
     notes: out && typeof out.notes === 'string' ? out.notes.slice(0, 400) : '',

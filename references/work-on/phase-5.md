@@ -32,7 +32,14 @@ are cheap, and both run while the bodies in `X` are still stubs:
      exactly the named files and inside that same commit, because the author's
      `bash` is denied. Commit through `gate_commit.py --root X --paths
      <TEST_PATHS> -m MESSAGE`, adding `--forbid-id <dossier id>` in local
-     mode so no committed test cites the dossier. Then run the new tests there — the new files only,
+     mode so no committed test cites the dossier. `gate_commit.py` snapshots the
+     authors' bytes and compares them with what was committed: exit 3 with
+     `HOOK-REWROTE-TEST: <file>: \`old\` -> \`new\`` means a commit hook (a
+     spell fixer with `--write-changes`, a formatter) changed a test file
+     after its author wrote it. A changed literal is a changed oracle, and a
+     green suite after it is no evidence: restore the author's bytes, exempt
+     them in the hook's config by the narrowest pattern, and commit again
+     (#262). Then run the new tests there — the new files only,
      locally, under either suite runner (Phase 2): this run is not a verdict
      on the suite, and CI cannot run a subset against stubs. The bodies are
      still stubs that fail loudly, so **every new test must fail, judged one test at
