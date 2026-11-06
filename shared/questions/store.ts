@@ -59,7 +59,12 @@ export function parseQuestion(id: string, content: string): Question | null {
     dossier: str(q.dossier),
     root: str(q.root),
     text: str(q.text),
-    options: Array.isArray(q.options) ? (q.options as Option[]) : [],
+    // The question's buttons, then any the agent added in its replies (`ask_owner.py reply --option`), new keys only.
+    options: (() => {
+      const out: Option[] = Array.isArray(q.options) ? [...(q.options as Option[])] : []
+      for (const l of lines) if (l.kind === "reply" && Array.isArray((l as any).options)) for (const o of (l as any).options as Option[]) if (o && o.key && !out.some((x) => x.key === o.key)) out.push(o)
+      return out
+    })(),
     recommendation: str(q.recommendation),
     blocks: str(q.blocks),
     ts: str(q.ts),

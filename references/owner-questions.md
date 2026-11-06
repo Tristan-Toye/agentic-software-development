@@ -112,14 +112,17 @@ It prints at most 40 lines.
   - **Running now** (home): every live run across repos (running, waiting,
     paused) with its step, account, sub-agents at work this stage, context and
     last activity; the header counts runs, working runs and sub-agents.
-  - Each question shows its thread, the option buttons (an answer, the
-  recommendation highlighted), a text box with one **Send** button. Typed text is always a
-  follow-up and the question stays open: the agent answers it, or, when it
-  reads as an answer or instruction it can act on, restates what it will do
-  with `ask_owner.py accept <id> --text …`, which closes the question
-  (`from: agent, kind: answer, accepted: true`, the owner's words kept as
-  `owner_text`). Only an option button answers outright. Slack thread replies
-  follow the same rule (`replyKind`).
+  - Each open question is a **chat until a button closes it**: the question,
+  then the owner's typed messages and the agent's replies in order ("Waiting
+  for the agent's reply…" while the owner spoke last), then the buttons, then a
+  text box with one **Send** button. Typed text is always a follow-up and the
+  question stays open. The agent answers it in the chat, and when it reads as
+  an answer or an instruction it adds that reading as a button
+  (`ask_owner.py reply <id> --text … --option "D|Confirm: <reading>|<what
+  happens>"`). **Only a button closes a question**, so every question ends with
+  one press; the agent never closes one itself. (`ask_owner.py accept`, and an
+  `answer` with `accepted: true` from older runs, still count as an answer.)
+  Slack thread replies follow the same rule (`replyKind`).
   - It refreshes every 5 s, patching the DOM so a half-written text box and
     the scroll position survive.
 - **API:**
@@ -150,8 +153,8 @@ It prints at most 40 lines.
     that once.
   - **What counts as what:**
     - a button press is an `answer` with that option;
-    - every thread reply is a `followup` (the agent answers it or accepts it
-      as the answer, as on the page);
+    - every thread reply is a `followup` (the agent answers it and, when it
+      reads as an answer, adds a button for it, as on the page);
     - a DM outside a thread gets a pointer to reply in a question's thread;
       other messages in a repo channel are left alone;
     - `status`, `update` or `?` alone (or `status W-128`), outside a

@@ -74,9 +74,9 @@ export const STATUS_ACTION = "run_status"
 export const isStatusMessage = (m: any): boolean => String(m?.blocks?.[0]?.text?.text ?? "").startsWith("*Status —")
 
 /**
- * What a typed reply to a question is: always a follow-up, so the question stays open. The agent answers it, or, when
- * it reads as an instruction it can act on, restates it and accepts it as the answer (`ask_owner.py accept`). Only an
- * option button answers outright. The page and Slack read replies the same way.
+ * What a typed reply to a question is: always a follow-up, so the question stays open. The agent answers it, and when
+ * it reads as an answer or an instruction it adds its reading as a button (`ask_owner.py reply --option`). Only an
+ * option button answers. The page and Slack read replies the same way.
  */
 export function replyKind(raw: string): { kind: "followup"; text: string } {
   return { kind: "followup", text: raw.trim() }
