@@ -137,6 +137,16 @@ It prints at most 40 lines.
   Slack thread replies follow the same rule (`replyKind`).
   - It refreshes every 5 s, patching the DOM so a half-written text box and
     the scroll position survive.
+- **The runs MCP server** (`shared/claude/runs-mcp.ts`, registered in the
+  plugin's `.mcp.json` as `runs`): the dashboard for agents. It is a thin
+  client of this HTTP API (port `ASD_QUESTIONS_PORT`, default 7317), with no
+  state or rules of its own, so the page, Slack and agents always agree. Read:
+  `runs_overview`, `run_detail`, `deferred`, `stubs`, `questions`, `question`,
+  `runner_log`. Act, exactly as the page's buttons: `answer_question`,
+  `reply_question`, `message_run`, `run_control` (start, resume, stop,
+  fix-deferred), `plan_item`, `merge_preview`, `merge`, `block_ruling`,
+  `write_summary`, `refresh_usage`. A dashboard that is down is reported as
+  such. Test: `shared/test/runs-mcp.test.ts`.
 - **API:**
   - `GET /api/questions?state=open|all`
   - `GET /api/questions/<id>`
