@@ -427,11 +427,16 @@ def collisions(root: str, base: str, head: str, others: list[str]) -> tuple[list
     """([(dossier id, file)] to renumber, whether an ADR number collides). A dossier id collides with the base or with
     an id another open PR's branch adds (the PR earlier in the queue keeps it)."""
     taken_d, taken_a = ids_on(root, f"origin/{base}")
+    _, tree = git(root, "ls-tree", "--name-only", f"origin/{base}", ".discovery/dossiers/")
+    on_base = set(tree.split("\n"))
+    theirs: set[str] = set()
     for o in others:
         d, _ = added_ids(root, base, o)
         taken_d |= {i for i, _ in d}
+        theirs |= {f for _, f in d}
     dos, adrs = added_ids(root, base, head)
-    return [(i, f) for i, f in dos if i in taken_d], any(a in taken_a for a in adrs)
+    # The same file is the same dossier, not a collision: a branch cut after a plan landed carries that plan's dossier too.
+    return [(i, f) for i, f in dos if i in taken_d and f not in on_base and f not in theirs], any(a in taken_a for a in adrs)
 
 
 def next_free_id(root: str, prefix: str) -> str:
@@ -484,6 +489,26 @@ def fix_ids(root: str, base: str, head: str, renumber: list[tuple[str, str]], ad
                 return "commit failed: " + out[-200:]
         rc, out = git(wt, "push", "-q", "origin", f"HEAD:{head}")
         return "" if rc == 0 else "push failed: " + out[-200:]
+    finally:
+        git(root, "worktree", "remove", "--force", wt)
+
+
+def merge_base_in(root: str, head: str, base: str) -> str:
+    """Merge the base into the branch and push; "" or why not. A conflict is left for the next round to find."""
+    wt = os.path.join(tempfile.mkdtemp(prefix="asd-update-"), "w")
+    rc, out = git(root, "fetch", "-q", "origin", head, base)
+    if rc != 0:
+        return "fetch failed: " + out[:160]
+    rc, out = git(root, "worktree", "add", "-q", "--detach", wt, f"origin/{head}")
+    if rc != 0:
+        return "could not check out " + head + ": " + out[:160]
+    try:
+        rc, out = git(wt, "merge", "--no-edit", "--no-ff", f"origin/{base}")
+        if rc != 0:
+            git(wt, "merge", "--abort")
+            return ""
+        rc, out = git(wt, "push", "-q", "origin", f"HEAD:{head}")
+        return "" if rc == 0 else "push failed: " + out[-160:]
     finally:
         git(root, "worktree", "remove", "--force", wt)
 
@@ -549,7 +574,11 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
         for n in stale:
             rc, out = gh(root, "pr", "update-branch", str(n), timeout=300)
             if rc != 0 and "conflict" not in out.lower():
-                return False, f"could not update #{n}: {out[-200:]}"
+                # GitHub can refuse this on a stacked PR: the same merge, by hand.
+                p = next(x for x in prs if x["number"] == n)
+                why = merge_base_in(root, p["headRefName"], p["baseRefName"])
+                if why:
+                    return False, f"could not update #{n}: {out[-120:]}; {why}"
         time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15))   # let GitHub see the push and start the checks
         return True, ""
 
@@ -889,6 +918,15 @@ def revive() -> int:
             subprocess.Popen([sys.executable, os.path.abspath(__file__), "--worker", "--root", root], stdin=subprocess.DEVNULL,
                              stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
         print(f"merge_dossier: restarted the merge queue of {os.path.basename(root)}")
+    # An integration whose process died while it waited for the queue: picked up again, so /stub still starts after it.
+    for path in glob.glob(os.path.join(runs_dir(), "*.integrate.json")):
+        st = read_json(path, {}) or {}
+        if st.get("state") == "merging" and st.get("root") and st.get("branch") and os.path.isdir(st["root"]) and not alive(st.get("pid")):
+            with open(path[:-5] + ".log", "ab") as fh:
+                p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--integrate", st["branch"], "--root", st["root"]], stdin=subprocess.DEVNULL,
+                                     stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+            write_json(path, {**st, "pid": p.pid, "ts": now()})
+            print(f"merge_dossier: restarted the integration of {st['branch']}")
     return 0
 
 
@@ -936,28 +974,37 @@ def integrate(root: str, branch: str) -> int:
         if rc != 0:
             state(state="failed", error="could not open the stub's PR into development: " + out[-200:]); return 1
         line(f"Opened the stub's pull request into development ({out.strip().splitlines()[-1] if out.strip() else ''}): {branch} is closed, new work goes to the next stub.", "update")
-    rc, out = gh(root, "pr", "list", "--base", branch, "--state", "open", "--limit", "100", "--json", "number,headRefName,isDraft")
+    rc, out = gh(root, "pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,baseRefName,isDraft")
     if rc != 0:
         state(state="failed", error="gh pr list failed: " + out[:200]); return 1
-    prs = sorted(json.loads(out or "[]"), key=lambda p: p["number"])
+    everything = json.loads(out or "[]")
+    prs = sorted([p for p in everything if p.get("baseRefName") == branch and p["headRefName"] != branch], key=lambda p: p["number"])
     ids = []
+    others = []   # no dossier's stack: never merged from here, only named, so the owner can decide about it
     for p in prs:
         m = re.search(r"([A-Za-z][A-Za-z0-9]*-\d+)", p["headRefName"])
-        if m and not p["headRefName"].startswith("plan/"):
+        if m and not p["headRefName"].startswith(("plan/", "docs/")):
             i = m.group(1).upper()
             if i not in [x[0] for x in ids]:
                 ids.append((i, p))
-    finished = [i for i, p in ids if not p.get("isDraft") and not run_live(f"{repo}.{i}")]
+        else:
+            others.append(p)
+    def ready(i: str, p: dict) -> bool:
+        """Every PR of the dossier's stack is out of draft (the queue refuses a stack with a draft in it), and no run is live."""
+        chain, _ = chain_of(everything, i)
+        return not any(x.get("isDraft") for x in (chain or [p])) and not run_live(f"{repo}.{i}")
+    finished = [i for i, p in ids if ready(i, p)]
     inflight = [i for i, p in ids if i not in finished]
-    state(state="merging", finished=finished, inflight=inflight, error="")
+    state(state="merging", finished=finished, inflight=inflight, error="", root=root, branch=branch)
     line(("Integrating " + branch + ". Merging the finished dossiers first, in order: " + (", ".join(finished) or "none") + "."
-          + (" Still in flight, so they move to the next stub once this one is in development: " + ", ".join(inflight) + "." if inflight else "")), "update")
+          + (" Still in flight, so they move to the next stub once this one is in development: " + ", ".join(inflight) + "." if inflight else "")
+          + (" Not part of this integration, because no dossier owns them; retarget them to the next stub: " + ", ".join(f"#{p['number']} {p['headRefName']}" for p in others) + "." if others else "")), "update")
     for i in finished:
         with contextlib.redirect_stdout(io.StringIO()):
             enqueue(root, i)
     poll = float(os.environ.get("ASD_MERGE_POLL") or 15)
-    end = time.time() + float(os.environ.get("ASD_MERGE_RUN_TIMEOUT") or 8 * 3600)
-    while time.time() < end:
+    sts: dict = {}
+    while True:   # as long as it takes: each stack ends merged or failed, and the queue survives outages and restarts
         sts = {i: (read_json(os.path.join(runs_dir(), f"{repo}.{i}.merge.json"), {}) or {}) for i in finished}
         if all(v.get("state") in ("merged", "failed", "cancelled") for v in sts.values()):
             break
@@ -1030,6 +1077,10 @@ if a[:2] == ["pr", "checks"]:
 if a[:2] == ["run", "list"]: print("[]"); sys.exit(0)
 if a[:2] == ["pr", "update-branch"] and os.environ.get("FAKE_NET_BLIP") and not os.path.exists(os.path.join(d, "blipped")):
     open(os.path.join(d, "blipped"), "w").close(); print("error connecting to api.github.com"); sys.exit(1)
+if a[:2] == ["pr", "update-branch"] and os.environ.get("FAKE_UPDATE_REFUSED"):
+    for p in prs:
+        if str(p["number"]) == a[2]: p["mss"] = "CLEAN"
+    json.dump(prs, open(os.path.join(d, "prs.json"), "w")); print("Cannot update: the pull request is part of a stack"); sys.exit(1)
 if a[:2] == ["pr", "update-branch"]:
     for p in prs:
         if str(p["number"]) == a[2]: p["mss"] = "CLEAN"
@@ -1165,7 +1216,8 @@ print("started")
             if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
         for n in os.listdir(rdir):
             if n.endswith((".merge.json", ".runner.json")) or n.startswith("repo.merge-queue"): os.remove(os.path.join(rdir, n))
-        prs3 = [P(427, "feat/W-128-x", "stub/s"), P(429, "fix/W-128-deferred", "feat/W-128-x"), P(500, "feat/w-130-y", "stub/s"), P(600, "feat/W-131-z", "stub/s", True)]
+        prs3 = [P(427, "feat/W-128-x", "stub/s"), P(429, "fix/W-128-deferred", "feat/W-128-x"), P(500, "feat/w-130-y", "stub/s"), P(600, "feat/W-131-z", "stub/s", True),
+                P(700, "feat/W-140-a", "stub/s"), P(701, "fix/W-140-deferred", "feat/W-140-a", True), P(800, "docs/notes-12", "stub/s")]
         json.dump(prs3, open(os.path.join(fdir, "prs.json"), "w"))
         old = dict(os.environ)
         os.environ.update(env, ASD_RUNNER_BIN=fr, ASD_MERGE_POLL="0.2")
@@ -1179,13 +1231,32 @@ print("started")
         ist = read_json(os.path.join(rdir, "repo.stub-s.integrate.json"), {})
         tl = [json.loads(x)["text"] for x in open(os.path.join(rdir, "repo.stub-s.jsonl"))]
         check("integrate: finished dossiers merge first, FIFO, then /stub starts; the draft stays in flight",
-              rc == 0 and runs[:3] == ["W-128 after-merge", "W-130 after-merge", "stub-s stub"] and ist.get("state") == "stub" and ist.get("inflight") == ["W-131"], str(runs) + str(ist))
+              rc == 0 and runs[:3] == ["W-128 after-merge", "W-130 after-merge", "stub-s stub"] and ist.get("state") == "stub" and ist.get("inflight") == ["W-131", "W-140"], str(runs) + str(ist))
+        calls_i = open(os.path.join(fdir, "calls.txt")).read()
+        check("integrate: a stack with a draft on top waits like a draft, instead of failing the integration", "stack merge 701" not in calls_i and "pr merge 700" not in calls_i)
+        check("integrate: a PR no dossier owns is named, and left alone", "pr merge 800" not in calls_i and any("#800 docs/notes-12" in t for t in [json.loads(x)["text"] for x in open(os.path.join(rdir, "repo.stub-s.jsonl"))]))
         check("integrate: the stub's timeline gets its own merge-queue section and notes", tl[0] == "start /merge-queue stub/s" and any("W-131" in t for t in tl))
         spr = open(os.path.join(fdir, "stubpr.txt")).read() if os.path.exists(os.path.join(fdir, "stubpr.txt")) else ""
         check("integrate: step 1 opens the stub's PR into development, before any merge", "--base development --head stub/s" in spr and any("is closed" in t for t in tl))
         with contextlib.redirect_stdout(io.StringIO()):
             os.environ.update(env)
             late = plan(root, "W-131")
+        saved_env = dict(os.environ)
+        os.environ.update(env, ASD_RUNNER_BIN=fr, ASD_MERGE_POLL="0.1")
+        try:
+            json.dump([], open(os.path.join(fdir, "prs.json"), "w"))
+            ip = os.path.join(rdir, "repo.stub-t.integrate.json")
+            write_json(ip, {"state": "merging", "pid": 999999, "root": root, "branch": "stub/t", "finished": []})
+            with contextlib.redirect_stdout(io.StringIO()):
+                revive()
+            for _ in range(100):
+                if (read_json(ip, {}) or {}).get("state") == "stub": break
+                time.sleep(0.1)
+            rv = read_json(ip, {})
+        finally:
+            os.environ.clear(); os.environ.update(saved_env)
+            json.dump(prs3, open(os.path.join(fdir, "prs.json"), "w"))
+        check("resume: an integration whose process died is picked up again and still starts /stub", rv.get("state") == "stub", str(rv))
         check("integrate: a dossier not picked waits while the stub's PR is open", not late[0] and "being integrated" in late[1], str(late))
         # ---- non-code PRs into development: a colliding dossier id is renumbered by script, then merged; the stub is untouched ----
         g = lambda *x, cwd=None: subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", *x], cwd=cwd, capture_output=True, text=True)
@@ -1223,6 +1294,12 @@ print("started")
         calls = open(os.path.join(fdir, "calls.txt")).read() if os.path.exists(os.path.join(fdir, "calls.txt")) else ""
         check("non-code PR: a colliding dossier id is renumbered on its branch, with its mentions, then merged",
               "W-148-second.md" in tree and "W-147-second.md" not in tree and "id: W-148" in body and "W-148 here" in body and s437.get("state") == "merged" and "pr merge 437 --merge" in calls, tree + str(s437))
+        g("checkout", "-q", "development", cwd=pusher); g("pull", "-q", "origin", "development", cwd=pusher); g("checkout", "-q", "-b", "plan/same-file", cwd=pusher)
+        open(os.path.join(pusher, ".discovery", "dossiers", "W-147-first.md"), "w").write("---\nid: W-147\n---\n# first, later\n")
+        open(os.path.join(pusher, ".discovery", "dossiers", "W-147-other.md"), "w").write("---\nid: W-147\n---\n# someone else\n")
+        g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "same", cwd=pusher); g("push", "-q", "origin", "plan/same-file", cwd=pusher); g("fetch", "-q", "origin", cwd=clone)
+        same = collisions(clone, "development", "plan/same-file", [])[0]
+        check("ids: a dossier already on the base under the same file is the same dossier; another file with its id is a collision", [f for _, f in same] == [".discovery/dossiers/W-147-other.md"], str(same))
         check("non-code PR: one that changes code is refused with why, never merged", s434.get("state") == "failed" and "changes code" in s434.get("error", "") and "pr merge 434" not in calls)
         s438 = read_json(os.path.join(rdir, f"{rn}.pr-438.merge.json"), {})
         check("non-code PR: a branch behind its base is updated, then merged, not dropped", s438.get("state") == "merged" and "pr update-branch 438" in calls
@@ -1273,6 +1350,19 @@ print("started")
         finally:
             os.environ.clear(); os.environ.update(saved_env)
         check("network: a blip while updating a branch is retried, not a failure", why == "" and os.path.exists(os.path.join(fdir, "blipped")), why)
+        g("checkout", "-q", "development", cwd=pusher); g("pull", "-q", "origin", "development", cwd=pusher); g("checkout", "-q", "-b", "plan/refused", cwd=pusher)
+        open(os.path.join(pusher, "refused.md"), "w").write("x\n"); g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "refused", cwd=pusher); g("push", "-q", "origin", "plan/refused", cwd=pusher)
+        g("checkout", "-q", "development", cwd=pusher); open(os.path.join(pusher, "base-moved.md"), "w").write("x\n"); g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "base moved", cwd=pusher); g("push", "-q", "origin", "HEAD:development", cwd=pusher)
+        saved_env = dict(os.environ)
+        os.environ.update(env, FAKE_UPDATE_REFUSED="1", ASD_MERGE_POLL="0.1")
+        try:
+            json.dump([dict(P(601, "plan/refused", "development"), mss="BEHIND")], open(os.path.join(fdir, "prs.json"), "w"))
+            why2 = settle(clone, "repo.pr-601", "PR-601", [{"number": 601, "headRefName": "plan/refused", "baseRefName": "development"}], "development", [], lambda *a: None)
+        finally:
+            os.environ.clear(); os.environ.update(saved_env)
+        g("fetch", "-q", "origin", cwd=clone)
+        has = subprocess.run(["git", "-C", clone, "ls-tree", "--name-only", "origin/plan/refused"], capture_output=True, text=True).stdout
+        check("update: a refused update-branch merges the base in by hand", why2 == "" and "base-moved.md" in has, why2 + has)
         g("checkout", "-q", "development", cwd=pusher); g("pull", "-q", "origin", "development", cwd=pusher); g("checkout", "-q", "-b", "plan/stale", cwd=pusher)
         open(os.path.join(pusher, ".discovery", "dossiers", "W-147-stale.md"), "w").write("---\nid: W-147\n---\n# stale\n")
         g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "stale", cwd=pusher); g("push", "-q", "origin", "plan/stale", cwd=pusher)
