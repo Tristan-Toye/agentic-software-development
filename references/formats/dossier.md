@@ -91,6 +91,8 @@ them needs to see the others.
 
 - Signatures and documentation comments only. **No bodies** — a body is the
   implementer's work.
+- What the dossier is about, not whole files: what it adds or changes, and what
+  it names. Unchanged neighbours a builder only reads go in `SUPPORT`.
 - Terms the signatures lean on are defined in a `### Definitions` list under
   `## Contract`, one `- **term** — meaning` each. Phase 2 copies every one into
   the stubs' documentation; `validate_pipeline.py --pre-fanout` refuses a term
