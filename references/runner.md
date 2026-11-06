@@ -92,6 +92,14 @@ the recorded checkpoints.
   `queued` (`queued_since`) and waits, longest-queued first; the dashboard
   shows "queued · waiting for a slot". So a usage-limit reset, or many Start
   presses, no longer sets ten sessions going in the same minute.
+- **Replies on open questions, mid-run:** an agent may ask and keep working
+  on what is not blocked. Each question records the run that asked it
+  (`run`, the run key). While the run works, the runner checks that run's
+  open questions every 20 s (`ASD_RUNNER_QFWD_EVERY`) and sends each new owner
+  line on once, as `OWNER FOLLOWUP <id>: …` or `OWNER ANSWER <id> …`, logging
+  `sent on n owner replies on open questions`. A question the run is waiting
+  on is left to the wait. Before, a follow-up typed while the agent worked was
+  passed on only when the agent next waited on that question.
 - **Dropped completion notices:** a background command or workflow that
   finishes while no turn runs is announced by a `<task-notification>`, and
   headless sessions have been seen to `remove` it from the queue instead of

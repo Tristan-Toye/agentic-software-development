@@ -144,6 +144,7 @@ def cmd_ask(a: argparse.Namespace) -> int:
     line = {
         "ts": now(), "from": "agent", "kind": "question", "text": clip(a.question),
         "dossier": a.dossier, "repo": repo, "root": root, "options": options,
+        **({"run": os.environ["ASD_RUN_KEY"]} if os.environ.get("ASD_RUN_KEY") else {}),
         "recommendation": rec, "blocks": clip(a.blocks),
     }
     while True:
