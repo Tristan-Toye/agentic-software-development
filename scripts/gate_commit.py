@@ -154,6 +154,42 @@ def forbidden_id_hits(root: str, paths: list[str], dossier_id: str) -> list[str]
     return hits
 
 
+# Test files, fixtures and corpora: a rewrite there changes what a test proves.
+TEST_PATH_RE = re.compile(r"(^|/)(tests?|testdata|fixtures?|corpora|corpus|spec)(/|$)|(_test|_tests|\.test|\.spec)\.[\w]+$|(^|/)test_[^/]+$")
+
+
+def snapshot(root: str, paths: list[str]) -> dict[str, bytes]:
+    """The bytes of every file under the named paths, as the author left them."""
+    out: dict[str, bytes] = {}
+    for rel in paths:
+        full = os.path.join(root, rel)
+        files = [os.path.join(b, n) for b, d, ns in os.walk(full) for n in ns if ".git" not in d] if os.path.isdir(full) else [full]
+        for f in files:
+            try:
+                with open(f, "rb") as fh:
+                    out[os.path.relpath(f, root)] = fh.read()
+            except OSError:
+                pass
+    return out
+
+
+def hook_rewrites(root: str, before: dict[str, bytes]) -> dict[str, list[tuple[str, str]]]:
+    """Files whose committed bytes differ from the author's: {path: [(old line, new line), ...]}."""
+    import difflib
+    out: dict[str, list[tuple[str, str]]] = {}
+    for rel, old in before.items():
+        p = subprocess.run([GIT, "-C", root, "show", f"HEAD:{rel}"], capture_output=True)
+        if p.returncode != 0 or p.stdout == old:
+            continue
+        a, b = old.decode("utf-8", "replace").splitlines(), p.stdout.decode("utf-8", "replace").splitlines()
+        pairs = []
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b).get_opcodes():
+            if tag != "equal":
+                pairs += list(zip(a[i1:i2] or [""], b[j1:j2] or [""]))
+        out[rel] = pairs or [("(bytes)", "(bytes)")]
+    return out
+
+
 def refuse(lines: list[str], reason: str) -> int:
     print("\n".join(clamp([*lines, f"REFUSED: {reason}"])))
     return 1
@@ -213,6 +249,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         out_lines.append("gates: none given (no --gates file)")
 
+    # #262: snapshot the author's bytes before the commit hooks run. A hook that rewrites a staged file (a spell
+    # fixer with --write-changes, a formatter) changes a test's input or expected literal and the test can still pass.
+    before = snapshot(root, paths)
     rc, text = git(root, "add", "--", *paths)
     if rc != 0:
         return refuse(out_lines, f"git add failed: {text[:200]}")
@@ -226,6 +265,16 @@ def main(argv: list[str] | None = None) -> int:
     out_lines.append(f"commit: {sha} {subject[:80]} ({len(names.splitlines())} file(s))")
 
     code = 0
+    rewrites = hook_rewrites(root, before)
+    for f, hunks in rewrites.items():
+        kind = "HOOK-REWROTE-TEST" if TEST_PATH_RE.search(f) else "hook rewrote"
+        for old, new in hunks[:6]:
+            out_lines.append(f"{kind}: {f}: `{old.strip()[:90]}` -> `{new.strip()[:90]}`")
+    if any(TEST_PATH_RE.search(f) for f in rewrites):
+        out_lines.append("HOOK-REWROTE-TEST: a commit hook changed a test file after its author wrote it. A changed literal is a changed oracle: "
+                         "restore the author's bytes, exempt them in the hook's config by the narrowest pattern, and commit again; "
+                         "a green suite after the rewrite is no evidence.")
+        code = 3
     if args.push:
         rc, _ = git(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
         rc, text = git(root, "push") if rc == 0 else git(root, "push", "-u", "origin", "HEAD")
@@ -350,6 +399,25 @@ def selftest() -> int:
         check("a non-repo root is unusable input", rc == 2)
         rc, _ = call(["--root", root, "--paths", "a.txt", "-m", "x", "--gates", os.path.join(tmp, "none.txt")])
         check("a missing gates file is unusable input", rc == 2)
+
+        # #262: a commit hook that rewrites a staged test literal is reported, and the call exits 3.
+        hook = os.path.join(root, ".git", "hooks", "pre-commit")
+        with open(hook, "w") as fh:
+            fh.write("#!/bin/sh\nfor f in $(git diff --cached --name-only); do sed -i.bak 's/-oout/-out/' \"$f\" && rm -f \"$f.bak\" && git add \"$f\"; done\n")
+        os.chmod(hook, 0o755)
+        git(root, "config", "core.hooksPath", os.path.dirname(hook))   # this repo runs no hooks otherwise
+        os.makedirs(os.path.join(root, "tests"), exist_ok=True)
+        write(root, "tests/curl_test.sh", "curl -oout.txt http://x\n")
+        rc, out = call(["--root", root, "--paths", "tests/curl_test.sh", "-m", "add test"])
+        check("a hook's rewrite of a test literal is named, exit 3", rc == 3 and "HOOK-REWROTE-TEST: tests/curl_test.sh: `curl -oout.txt http://x` -> `curl -out.txt http://x`" in out)
+        write(root, "notes.md", "see -oout here\n")
+        rc, out = call(["--root", root, "--paths", "notes.md", "-m", "notes"])
+        check("a rewrite outside tests is reported, not an error", rc == 0 and "hook rewrote: notes.md" in out)
+        write(root, "tests/clean_test.sh", "echo ok\n")
+        rc, out = call(["--root", root, "--paths", "tests/clean_test.sh", "-m", "clean"])
+        check("no rewrite, no report", rc == 0 and "rewrote" not in out.lower())
+        os.remove(hook)
+        git(root, "config", "core.hooksPath", "/dev/null")
 
     for item in failures:
         print("SELFTEST FAIL  " + item)

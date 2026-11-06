@@ -356,6 +356,16 @@ send the file back; do not run the tests on it. The sanctioned repair is the
 anchor-based splice: the author returns only the new block and the anchor line
 it follows, and you splice it into the staged file.
 
+**A return flagged `payload-unread` read nothing whole** (#257). Every
+workflow spawn begins its report with `PAYLOAD-LAST: <its payload's last
+line>`; `verify_return.py` compares it with the file. A report without that
+exact line (or with `PAYLOAD-UNREAD:`) means a read hook or a size limit cut
+the payload, and whatever the agent did was done without its fields: discard
+its work and spawn it again (a resume carries the same cut read). A Phase 7
+review carries the same proof as `payload_last`: check each with
+`verify_return.py --payload <its payload> --payload-last '<payload_last>'`;
+the workflow already turns an `UNREAD:` one into verdict `unread`.
+
 ### Under Claude Code, send the wave through the workflow, once
 
 **Under Claude Code, send the wave through the workflow, once.** Everything

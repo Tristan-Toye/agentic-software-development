@@ -176,6 +176,16 @@ def git(root: str, *args: str, strip: bool = True) -> tuple[int, str]:
     return 0, proc.stdout.strip() if strip else proc.stdout
 
 
+def payload_last_line(path: str) -> str:
+    """The payload's last non-empty line, stripped: what a whole read sees and a cut read does not."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = [l.strip() for l in fh.read().splitlines() if l.strip()]
+    except OSError:
+        return ""
+    return lines[-1] if lines else ""
+
+
 def script(name: str, *args: str) -> tuple[int, list[str]]:
     proc = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, name), *args], capture_output=True, text=True, check=False)
     return proc.returncode, (proc.stdout + proc.stderr).splitlines()
@@ -484,6 +494,21 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
             parts.append("PAYLOAD CHANGED")
             flags.append("payload")
 
+    # #257: an agent whose payload Read was cut (a context-saving hook) never saw its fields. The workflow asks it to
+    # begin its report with its payload's last non-empty line; a report without that exact line read nothing whole.
+    if args.payload and report_text is not None:
+        last = payload_last_line(args.payload)
+        said = re.search(r"^\s*PAYLOAD-LAST:[ \t]*(.*?)\s*$", report_text, re.M)
+        unread = re.search(r"^\s*PAYLOAD-UNREAD:", report_text, re.M)
+        if unread or (last and (not said or said.group(1).strip() != last)):
+            why = "the agent says it could not read its payload" if unread else \
+                "its report does not name the payload's last line" if not said else "the last line it names is not the payload's"
+            out.append(f"payload read: UNREAD — {why}; it worked from a cut payload or none (a read hook, or a file too large)")
+            parts.append("PAYLOAD UNREAD")
+            flags.append("payload-unread")
+        elif last:
+            out.append("payload read: whole (its last line echoed)")
+
     own_dirty = [p for p in dirty if not is_shared(p)]
     if args.uncommitted and args.owned:
         own_dirty = [p for p in own_dirty if not is_owned(p, relative_owned(root, args.owned))]
@@ -548,6 +573,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--contract-hash", help="the CONTRACT_HASH the payload carried (full or prefix)")
     ap.add_argument("--contract-files", default="", help="comma list of the contract files, relative to --root")
     ap.add_argument("--payload", metavar="FILE", help="the payload file a workflow spawn read")
+    ap.add_argument("--payload-last", metavar="TEXT", help="with --payload only: check a reviewer's payload_last against the "
+                    "payload's real last line, print whole or UNREAD, exit 0 or 1, and nothing else")
     ap.add_argument("--payload-sha256", metavar="H", help="with --payload: the hash it was linted at (all 64 hex characters)")
     ap.add_argument("--release", metavar="HOLDER", help="release this holder's admission slot")
     ap.add_argument("--provider")
@@ -565,6 +592,13 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     if args.selftest:
         return selftest()
+    if args.payload_last is not None:
+        if not args.payload:
+            ap.error("--payload-last needs --payload")
+        last = payload_last_line(args.payload)
+        ok = bool(last) and args.payload_last.strip() == last and not args.payload_last.strip().upper().startswith("UNREAD")
+        print("payload read: whole" if ok else f"payload read: UNREAD — named {args.payload_last.strip()[:80]!r}, the payload ends {last[:80]!r}")
+        return 0 if ok else 1
     if not (args.root and args.branch and args.base):
         ap.error("--root, --branch and --base are required unless --selftest")
     if args.contract_hash and not (args.contract_files or args.payload):
@@ -868,6 +902,20 @@ def selftest() -> int:
             check("extract_contract_block de-indents and stops at the next field",
                   ph.contract_hash(ph.extract_contract_block("CONTRACT: |\n  a\n\n  b\n\nNEXT: x\n"))
                   == ph.contract_hash("a\n\nb\n"))
+
+            # --- #257: a report must echo the payload's last line; a cut read is flagged ---
+            pl = os.path.join(tmp, "pl.md"); open(pl, "w").write("TASK: x\nOWNED_PATHS: src/lib.rs\nEND: last line here\n")
+            plsha = hashlib.sha256(open(pl, "rb").read()).hexdigest()
+            for name, body, want in (("whole.md", "PAYLOAD-LAST: END: last line here\nDone.\n", "whole"),
+                                     ("cut.md", "Done, nothing to change.\n", "UNREAD"),
+                                     ("says.md", "PAYLOAD-UNREAD: Read returned a note pointing at ctx_search\n", "UNREAD")):
+                put(tmp, name, body)
+                rc, out = call(["--root", root, "--branch", "feat/empty", "--base", base, "--payload", pl, "--payload-sha256", plsha,
+                                "--report", os.path.join(tmp, name), "--kind", "writer"])
+                check(f"#257: payload read {want} for {name}", f"payload read: {want}" in out and (("payload-unread" in out.splitlines()[0]) == (want == "UNREAD")))
+            rc, out = call(["--payload", pl, "--payload-last", "END: last line here"])
+            rc2, out2 = call(["--payload", pl, "--payload-last", "UNREAD: a note"])
+            check("#257: --payload-last checks a reviewer's echo", rc == 0 and "whole" in out and rc2 == 1 and "UNREAD" in out2)
 
             # --- --uncommitted: a drafter writes its owned files and never commits ---
             git(root, "checkout", "-q", "feat/empty")
