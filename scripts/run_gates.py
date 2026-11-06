@@ -611,7 +611,9 @@ def run_gate(command: str, root: str, timeout: float | None) -> dict:
         return {"rc": proc.returncode, "output": proc.stdout + proc.stderr,
                 "elapsed": time.perf_counter() - start, "timed_out": False}
     except subprocess.TimeoutExpired as err:
-        out = (err.stdout or "") + (err.stderr or "")
+        # TimeoutExpired can carry raw bytes even under text=True.
+        text = lambda v: v.decode("utf-8", "replace") if isinstance(v, bytes) else (v or "")
+        out = text(err.stdout) + text(err.stderr)
         return {"rc": None, "output": out, "elapsed": time.perf_counter() - start, "timed_out": True}
 
 
@@ -824,6 +826,9 @@ def selftest() -> int:
             failures.append(name)
 
     with tempfile.TemporaryDirectory() as tmp:
+        timed = run_gate("printf partial; exec sleep 5", tmp, 0.5)
+        check("a gate that prints and outlives its timeout is a timed-out result, its output kept",
+              timed["timed_out"] and timed["rc"] is None and "partial" in timed["output"])
         long_line = "x" * 70_000
         fail_script = os.path.join(tmp, "fail.py")
         with open(fail_script, "w", encoding="utf-8") as fh:
