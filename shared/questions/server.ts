@@ -544,6 +544,39 @@ export async function handle(req: Request): Promise<Response> {
     emitChange("runs")
     return json({ ok: r.exitCode === 0, text: (r.stdout.toString() || r.stderr.toString()).trim().replace(/^merge_dossier:\s*/, "") }, r.exitCode === 0 ? 200 : 500)
   }
+  // Non-code PRs into development (plan/*, docs/*): the list with why each can or cannot merge, and "Merge all"
+  // (scripts/merge_docs_prs.py, in the background; no agent merges). The list is cached a minute: it asks gh per PR.
+  const dp = path.match(/^\/api\/repo\/([\w.-]+)\/doc-prs(\/merge)?$/)
+  if (dp) {
+    const repo = dp[1]
+    const main = (await allRuns()).find((r) => r.repo === repo)?.main
+    if (!main) return json({ error: "no such repo" }, 404)
+    const stateFile = join(runsDir(), `${repo}.docmerge.json`)
+    let st: any = {}
+    try { st = JSON.parse(readFileSync(stateFile, "utf8")) } catch { /* never merged */ }
+    const merging = !!st.pid && (() => { try { process.kill(Number(st.pid), 0); return true } catch { return false } })()
+    let log = ""
+    try { log = readFileSync(join(runsDir(), `${repo}.docmerge.log`), "utf8").trim().split("\n").slice(-12).join("\n") } catch { /* none */ }
+    if (req.method === "POST" && dp[2]) {
+      const origin = req.headers.get("origin")
+      if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+      if (merging) return json({ error: "already merging" }, 409)
+      const fd = openSync(join(runsDir(), `${repo}.docmerge.log`), "w")
+      const proc = Bun.spawn(["python3", join(import.meta.dir, "..", "..", "scripts", "merge_docs_prs.py"), "merge", "--root", main], { stdout: fd, stderr: fd, stdin: "ignore" })
+      writeFileSync(stateFile, JSON.stringify({ pid: proc.pid, started: new Date().toISOString() }))
+      proc.exited.then(() => { docPrsCache.delete(repo); emitChange("runs") })
+      return json({ ok: true })
+    }
+    if (req.method !== "GET") return json({ error: "method not allowed" }, 405)
+    const c = docPrsCache.get(repo)
+    let prs: any = c && Date.now() - c.at < 60_000 && !url.searchParams.has("fresh") ? c.v : null
+    if (!prs) {
+      const r = Bun.spawnSync(["python3", join(import.meta.dir, "..", "..", "scripts", "merge_docs_prs.py"), "list", "--root", main], { stdout: "pipe", stderr: "pipe" })
+      try { prs = JSON.parse(r.stdout.toString()) } catch { prs = { error: (r.stderr.toString() || "list failed").slice(0, 300) } }
+      docPrsCache.set(repo, { at: Date.now(), v: prs })
+    }
+    return json({ ...prs, merging, log })
+  }
   // Plan it: one item ruled to its own dossier gets a /plan run of its own (`<repo>.<ID>.plan-<D>`), beside any run of the source.
   const pi = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/plan-item$/)
   if (pi && req.method === "POST") {
@@ -682,6 +715,7 @@ function mergeState(key: string): { state: string; prs: number[]; base: string; 
     return j
   } catch { return null }
 }
+const docPrsCache = new Map<string, { at: number; v: any }>()
 const mergeScript = (): string => process.env.ASD_MERGE_BIN || join(import.meta.dir, "..", "..", "scripts", "merge_dossier.py")
 
 /**

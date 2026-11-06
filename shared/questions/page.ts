@@ -170,7 +170,7 @@ function prChip(pr) {
 }
 
 // ---- state ----
-const S = { q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {} };
+const S = { q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {} };
 let R = { kind: 'home' };
 let routeSig = '';
 let scrollTarget = '';
@@ -503,6 +503,31 @@ function sideColumn(repo) {
     h('ul', { class: 'tree' }, merged.map(s => h('li', {}, [h('a', { class: 'sub-item', href: hrefStub(repo, s.branch) }, [h('span', { class: 'sid mono' }, [s.branch]), h('span', { class: 'sname', title: s.branch }, [s.dossiers.length + ' dossier(s)'])])])))]));
   return h('section', { class: 'scol full', 'data-k': 'sec:stubs' }, kids);
 }
+/* Non-code PRs into development: plans and research documents, which may skip the stub. Each row says whether it can
+   merge now and why not; Merge all merges the ready ones by script, oldest first. */
+function docPrsView(repo) {
+  const st = S.docPrs[repo];
+  if (!st) { S.docPrs[repo] = { loading: true }; fetch('/api/repo/' + enc(repo) + '/doc-prs').then(r => r.json()).then(j => { S.docPrs[repo] = j; render(); }).catch(() => { S.docPrs[repo] = { error: 'request failed' }; render(); }); return null; }
+  if (st.loading) return null;
+  const prs = st.prs || []; if (!prs.length && !st.merging && !st.error) return null;
+  const ready = prs.filter(p => p.ready).length;
+  const rows = prs.map(p => h('a', { class: 'srow', href: p.url, target: '_blank', rel: 'noopener', 'data-k': 'dp:' + p.number }, [h('span', { class: 'sid mono' }, ['#' + p.number]),
+    h('span', { class: 'sname' }, [h('span', {}, [(p.dossier ? p.dossier + ' · ' : '') + p.title]), h('span', { class: 'small mut rsub' }, [p.kind + ' · ' + p.head])]),
+    h('span', { class: 'sright' }, [p.ready ? chip('ready to merge', 'done') : h('span', { title: p.blocked }, [chip(p.blocked.slice(0, 60), p.duplicate || !p.docsOnly ? 'blocked' : 'neutral')])])]));
+  const head = [h('h2', {}, ['Non-code PRs into development']), h('span', { class: 'small mut' }, [prs.length + ' open · ' + ready + ' ready']), h('span', { class: 'grow' }),
+    h('button', { class: 'btn sm', type: 'button', 'data-act': 'docprs-refresh', 'data-repo': repo }, ['↻']),
+    h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'docprs-merge', 'data-repo': repo, disabled: st.merging || !ready ? true : null, title: 'Merges every ready plan and docs PR into development with a merge commit, oldest first; the rest stay, with why' }, [st.merging ? 'Merging…' : 'Merge all ready (' + ready + ')'])];
+  return h('section', { class: 'sec', 'data-k': 'sec:docprs' }, [h('div', { class: 'sechd' }, head),
+    st.error ? h('div', { class: 'err' }, [st.error]) : null, rows.length ? h('div', { class: 'srows' }, rows) : null,
+    st.log ? h('details', { 'data-k': 'dp:log' }, [h('summary', { class: 'small mut' }, ['Last merge run']), h('pre', { class: 'small' }, [st.log])]) : null]);
+}
+async function docPrsAct(btn, act) {
+  const repo = btn.dataset.repo;
+  if (act === 'docprs-merge') { S.docPrs[repo] = Object.assign({}, S.docPrs[repo], { merging: true }); render(); await fetch('/api/repo/' + enc(repo) + '/doc-prs/merge', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {}); }
+  const j = await fetch('/api/repo/' + enc(repo) + '/doc-prs?fresh=1').then(r => r.json()).catch(() => ({ error: 'request failed' }));
+  S.docPrs[repo] = j; render();
+  if (j.merging) setTimeout(() => docPrsAct({ dataset: { repo } }, 'docprs-refresh'), 5000);
+}
 function repoView(repo) {
   const rs = S.runs.filter(r => r.repo === repo); const prog = rs.filter(inProgress); const os = openStubs(repo);
   const ow = (S.stubs.openWork || []).find(o => o.repo === repo); const oq = S.q.filter(q => q.state === 'open' && qRepo(q) === repo).sort((a, b) => a.ts.localeCompare(b.ts));
@@ -511,6 +536,7 @@ function repoView(repo) {
   const frame = ow ? h('iframe', { class: 'report', 'data-repo': repo, src: '/open-work/' + enc(repo) + '?theme=dark&v=' + enc(ow.updated), title: 'Open work', scrolling: 'no', style: S.frameH[repo] ? 'height:' + S.frameH[repo] + 'px' : null }) : h('div', { class: 'empty' }, ['The open-work report is not generated yet.']);
   // The stubs (the current one and the next) first, then Open work, each full width, one under the other.
   kids.push(sideColumn(repo));
+  const dp = docPrsView(repo); if (dp) kids.push(dp);
   kids.push(h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]));
   return h('div', {}, kids);
 }
@@ -1012,6 +1038,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'fix-sel') fixSelected(t);
     else if (act === 'chat') sendChat(t);
     else if (act === 'plan-item') planItem(t);
+    else if (act === 'docprs-merge' || act === 'docprs-refresh') docPrsAct(t, act);
     else if (act === 'merge-plan' || act === 'merge-go' || act === 'merge-cancel' || act === 'merge-unqueue') mergeAct(t, act);
     else if (act === 'summary') writeSummary(t);
     else if (act === 'blk') ruleBlock(t);
