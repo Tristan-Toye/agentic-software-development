@@ -500,7 +500,7 @@ function stubTree(repo, s) {
   // The whole card opens the stub's page (its rows stay links to their dossiers); an open stub can be integrated.
   const integ = s.state === 'accepting' ? integrateBtn(repo, s.branch) : null;
   return h('div', { class: 'scard clickable', 'data-href': hrefStub(repo, s.branch), title: 'Open ' + s.branch, 'data-k': 'ostub:' + repo + '/' + s.branch }, [
-    h('div', { class: 'shead' }, [h('a', { class: 'title mono', href: hrefStub(repo, s.branch) }, [s.branch]), h('span', { class: 'meta' }, ['cut ' + s.cut]), h('span', { class: 'chips' }, cs), h('span', { class: 'grow' }), integ, h('a', { class: 'small', href: hrefStub(repo, s.branch) }, ['Open stub ›'])]),
+    h('div', { class: 'shead' }, [h('a', { class: 'title mono', href: hrefStub(repo, s.branch) }, [s.branch]), h('span', { class: 'meta' }, ['cut ' + s.cut]), h('span', { class: 'chips' }, cs), h('span', { class: 'grow' }), integ]),
     groups.length ? h('div', { class: 'sgrps' }, groups) : h('div', { class: 'meta' }, ['Nothing in progress or merged yet.'])]);
 }
 function sideColumn(repo) {
