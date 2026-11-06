@@ -227,8 +227,18 @@ restarted server answers at once from them while its first scan runs.
   - **the Merge button** (stub card rows in "PR open · waiting for your merge",
     and the dossier header): `GET /api/runs/<repo>/<ID>/merge` is the dry run
     the confirm shows ("would merge #427, #429 into stub/… as one stack");
-    `POST` runs `scripts/merge_dossier.py <ID> --root <main>` in the
-    background. No agent merges: the script finds every open PR whose head
+    `POST` puts the dossier in its repository's **merge queue**
+    (`merge_dossier.py --enqueue`, `<repo>.merge-queue.json`, first in, first
+    out; `{cancel: true}` leaves it). One worker per repository works the queue
+    to the end, one dossier at a time: it waits for the dossier's own run, asks
+    GitHub whether its PRs conflict, and if they do starts the dossier's agent
+    on `/resolve-merge` (merge the stub into each branch, keep both sides,
+    check no hunk was lost, prove it, push; never rebase or force-push) and
+    waits for it; then merges by script, then runs `/after-merge` to its end,
+    then takes the next. A dossier that still conflicts, or whose run fails,
+    is marked failed with why and the queue goes on. Chips: in the merge queue
+    · #n, merge waits for its run, resolving merge conflicts, merging…, merged
+    · cleaning up. No agent merges: the script finds every open PR whose head
     names the id, refuses unless they are one chain whose bottom goes into an
     open stub, none is a draft and no run of the dossier is live, links them
     (`gh stack link`), merges the stack (`gh stack merge <top> --yes --merge`,

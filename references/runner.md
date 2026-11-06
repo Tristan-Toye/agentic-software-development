@@ -166,6 +166,11 @@ the recorded checkpoints.
   record, cleans local branches and worktrees, retargets a stacked pull request,
   and asks before refreshing one that now conflicts; it never merges. The
   dashboard's merge detector starts it, on sonnet.
+- **`--command resolve-merge --items 427,429`:** runs `/resolve-merge <ID>
+  <PRs>` (`commands/resolve-merge.md`): the merge queue found the dossier's
+  PRs conflicting with their base, and the dossier's agent merges the base in,
+  resolves keeping both sides, checks no hunk was lost, proves it with the
+  affected tests and gates, and pushes. It never merges into the stub.
 - **`--command plan`:** runs `/plan <ID>` for a planned dossier, under its own
   key; the dashboard's Plan button starts it.
 - **`--command plan --items D-n`:** runs `/plan <ID> D-n` for one deferred
