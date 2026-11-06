@@ -12,6 +12,8 @@ promise you extract from a prompt:
 | `integration-test-author` | any implementation body | the bodies are stubs on `X`; it has no Bash and cannot reach another branch |
 | `implementer` | the tests | its worktree forks from `X` at this commit, and no test exists there |
 
+### Worktrees: one per concurrent implementer, and none for the test authors
+
 **Worktrees: one per concurrent implementer, and none for the test authors.**
 The test authors write into `X` directly — neither can read an implementation
 body, so a separate branch buys them nothing. Only the implementer, the one
@@ -24,6 +26,8 @@ git worktree add ../<repo>-<ID>-P2 -b <branch>-p2 <X-head>
 
 The suffix uses a dash, never a slash: git refuses `<branch>/p1` while
 `<branch>` exists, because one ref cannot be both a name and a directory.
+
+### Then let the repository prepare each new worktree
 
 **Then let the repository prepare each new worktree.** When `X` holds an
 executable `.worktree-setup.sh` at its root, run it once per implementer
@@ -40,6 +44,8 @@ worktree from its last output line. A non-zero exit is logged and the spawn
 goes ahead: a worktree without the setup is slower, never wrong. Concurrent
 calls are the script's concern; run them in one shell call, one per worktree.
 
+### Spawn every independent agent in one message so they run concurrently
+
 **Spawn every independent agent in one message so they run concurrently.**
 Sequence only what `Depends on` in `## Work packages` forces. A dependent
 package forks from **its dependency's branch head** once that implementer
@@ -55,6 +61,8 @@ message *between* spawns: a wave that planned eight issues seven, nothing
 announces the eighth, and the gap surfaces phases later as a criterion no
 test covers. A difference is a spawn defect logged in `## Build log`, never
 something the next message explains away.
+
+### One call admits the wave
 
 **One call admits the wave.** The lint, the boundary gates and the admission
 below are three checks per payload, and each run as its own step pays your
@@ -75,6 +83,8 @@ for every test author, unchanged, prints only the defects and warnings,
 acquires the slots only when every spawn passes, and appends the
 `PAYLOAD-LINT:` and `ADMISSION:` lines. Fix what it prints and run it again.
 The paragraphs below stay the rules; the script is how you run them.
+
+### Admission before the spawn message
 
 **Admission before the spawn message — mandatory.** The wave table carries
 a slot count beside the agent count (one slot per spawn). Acquire them from
@@ -110,6 +120,8 @@ account — the provider's error stays the account-global signal, and
 `ASD_ADMISSION_DIR` can point every machine at one synced directory. Agents
 never learn any of this: an agent told about admission control waits on the
 wrong thing.
+
+### Under rate pressure, narrow the wave — never re-send the same batch
 
 **Under rate pressure, narrow the wave — never re-send the same batch.**
 Concurrency is the default because it is free when the quota allows it. Once
@@ -208,6 +220,8 @@ pure-function surfaces. Log the routing per surface in the wave table.
   round verified green on both while the embedded program was syntactically
   dead.
 
+### Compose each payload with the script, then write only the judgement
+
 **Compose each payload with the script, then write only the judgement.**
 Most fields are copies — the contract bytes and their hash, the package row
 and its owned paths, the criteria, the dossier excerpt, the worktree and
@@ -291,6 +305,8 @@ satisfies the placeholder by guessing instead of disclosing. The lint refuses
 the token, so a src paste fails before it ships; the same-turn re-read keeps
 the file you linted and the file you paste the same file.
 
+### Under Claude Code the spawn prompt IS the payload
+
 **Under Claude Code the spawn prompt IS the payload.** Paste the linted final
 into the prompt, one `FIELD: value` per line, under a one-line task
 statement; `python3 ${PLUGIN_ROOT}/scripts/compose_payloads.py --emit-prompt
@@ -306,6 +322,8 @@ payload dwarfs the prompt — one recorded contract plus lens documents reached
 pasted (`phase-7.md`, "Spawn one implementer in MODE: fix"). The next
 paragraph is the opencode form.
 
+### Under opencode, spawn by the file, never by retyping it
+
 **Under opencode, spawn by the file, never by retyping it.** Every agent that
 can read its payload gets a prompt of two lines — `PAYLOAD_FILE: <absolute path
 of the final>` and `PAYLOAD_SHA256: <the hash prepare_wave.py recorded in
@@ -314,6 +332,8 @@ step. That is every opencode agent here: `unit-test-author`'s read map admits
 `.agent-staging/`. Retyping a linted payload costs its whole length again as
 output and keeps it in your context for the rest of the phase; the recorded
 fan-outs retyped 1.77 M characters.
+
+### Check every return with one call
 
 **Check every return with one call.** When an agent returns, run
 `python3 ${PLUGIN_ROOT}/scripts/verify_return.py --root <its worktree> --branch
@@ -335,6 +355,8 @@ change is additions only. Existing lines that moved, vanished or were reworded
 send the file back; do not run the tests on it. The sanctioned repair is the
 anchor-based splice: the author returns only the new block and the anchor line
 it follows, and you splice it into the staged file.
+
+### Under Claude Code, send the wave through the workflow, once
 
 **Under Claude Code, send the wave through the workflow, once.** Everything
 above runs as written — compose, lint, `prepare_wave.py`, admission, the
@@ -418,6 +440,8 @@ The workflow never touches the contract, the tree, `X`'s branch or a ruling.
 Under opencode there is no workflow: spawn by the file and verify each return
 with `verify_return.py` as written above.
 
+### Checkpoint after each wave
+
 **Checkpoint after each wave.** When every agent of a wave has returned and
 its `RETURNED` lines and rulings are in `## Build log`, call `phase_checkpoint`
 with `Phase 4 — wave <k>` and the hand-off: the waves still to spawn, the
@@ -444,6 +468,8 @@ for a Claude Code spawn — the recorded check printed `OK … 2 read path(s)
 admitted` for an author that could open neither — passes as evidence and is
 a dead letter at run time, found only because a canary spawn disclosed it.
 
+### Gate the integration-test-author the same way before it spawns
+
 **Gate the `integration-test-author` the same way before it spawns.** It has
 no path map, so the check is size and split, not admission: `python3
 scripts/check_permission_maps.py --agent sub-agents/integration-test-author.md
@@ -468,6 +494,8 @@ contract; read-then-rewrite under Claude Code — never a bare delete with
 nothing said. The recorded opencode hash re-spawn deleted
 both test files and paid two regenerations for a one-sentence pin.
 
+### Name the shared idiom when a concept spans packages
+
 **Name the shared idiom when a concept spans packages.** Two implementers that
 each need the same helper, type, or error-mapping shape each invent one, and
 invented idioms diverge — the collapse costs more than the build saved. When
@@ -477,11 +505,15 @@ deliberate while the agents run; plan its collapse in the same run — record th
 copy count and the collapse target in `## Build log` now, and land the collapse
 with the merge or the review fix.
 
+### With three or more unit authors, canary the smallest surface first
+
 **With three or more unit authors, canary the smallest surface first.** Spawn
 it alone, wait for its return, and fix every `GAP:` it surfaces in the
 contract before the rest fan out — the same contract defect priced once
 instead of per author. Two authors cost more to sequence than the gap costs
 to fix; six do not.
+
+### Commit for the test authors yourself — at Phase 5, not now
 
 **Commit for the test authors yourself — at Phase 5, not now.** Neither has
 `Bash`, so neither can commit. Each implementer commits its own work in its own
@@ -497,6 +529,8 @@ worktree.
 > rule against looking. If you must commit a test early, every implementer
 > already spawned is no longer blind: say so in `## Build log`, and treat its
 > tests as implementation-aware.
+
+### Cap what one blind write carries
 
 **Cap what one blind write carries.** `MAX_SINGLE_EDIT` — around 300–400
 lines — bounds a single `Write` or `Edit` from the author; a deliverable
@@ -537,6 +571,8 @@ construction. A second empty return goes to the user as an infrastructure
 problem. Never classify an empty-artifact return as a `GAP:`, a vacuous
 test, or a weak oracle, and never let one pass as success.
 
+### After the second empty return, change something before you spawn again
+
 **After the second empty return, change something before you spawn again.**
 Three recorded runs sent the same agent shape eleven, six and six times.
 Escalate in this order and log the step: (1) canary the shape with a trivial
@@ -560,6 +596,8 @@ did not.** The agent's transcript carries its finished reasoning, so a
 resume lands the remaining work instead of regenerating all of it. A resume
 message is a payload like any other, and every payload rule binds it — it is
 not a place to be terse about what changed.
+
+### Under Claude Code, resume instead of re-spawn
 
 **Under Claude Code, resume instead of re-spawn.** A correction, a
 `DELIVERY_CHANGE`, a `GAP:` fix for one author, a coverage gap, a Phase 6
@@ -599,6 +637,8 @@ list that hook prints also carries every ID since the last checkpoint. After a
 names the agents a later round will resume. `validate_pipeline.py` reads none of
 these lines, so their wording is free; keep it greppable.
 
+### Uncommitted agent work has no second copy
+
 **Uncommitted agent work has no second copy.** Never run `git checkout --`,
 `git restore`, `git stash` or `git clean` yourself over a path an in-flight
 or recently dead agent may hold uncommitted; the recorded cases destroyed a
@@ -620,6 +660,8 @@ blindness invariant for nothing the copy does not give. An agent that died
 between staging and committing is committed by you on its branch, never
 reset. Recovery is the copy, or `git checkout <commit> -- <path>` against a
 commit that holds the file.
+
+### Handle two returns immediately, never silently
 
 **Handle two returns immediately, never silently:**
 
