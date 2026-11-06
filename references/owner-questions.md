@@ -245,6 +245,15 @@ restarted server answers at once from them while its first scan runs.
     all or nothing; one PR: `gh pr merge --merge`), checks each is MERGED,
     marks them started for the detector and starts `/after-merge`. State:
     `<key>.merge.json` (merging, merged, failed and why);
+  - **Non-code PRs into development** (repo page, under the stubs): every
+    open `plan/*` or `docs/*` PR into `development`, the PRs that may skip the
+    stub, each with why it can or cannot merge now (`scripts/merge_docs_prs.py
+    list`): code files in it, a draft, a conflict, red or running checks, or a
+    dossier id that another open PR or `development` already has (two
+    concurrent plans can mint one number; renumber the later one with
+    `validate_pipeline.py --finalize-ids`). **Merge all ready** merges the
+    ready ones by script, oldest first, with a merge commit, reading the list
+    again after each merge (`GET`/`POST /api/repo/<repo>/doc-prs[/merge]`).
   - **the merge detector** (`merges.ts`): every 2 min, `gh pr list --base <stub>
     --state merged` per open stub. A PR merged since the last look, mapped to
     its dossier by `pr:` number or the id in its head branch, starts
