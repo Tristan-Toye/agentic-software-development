@@ -146,7 +146,10 @@ It prints at most 40 lines.
   `reply_question`, `message_run`, `run_control` (start, resume, stop,
   fix-deferred), `plan_item`, `merge_preview`, `merge`, `block_ruling`,
   `write_summary`, `refresh_usage`. A dashboard that is down is reported as
-  such. Test: `shared/test/runs-mcp.test.ts`.
+  such. **Only sessions in this plugin's own repository** (any worktree of
+  it; `ASD_RUNS_MCP_REPOS` widens the list) get the tools: elsewhere,
+  runner stages and implementers included, `tools/list` is empty and a call
+  is refused. Test: `shared/test/runs-mcp.test.ts`.
 - **API:**
   - `GET /api/questions?state=open|all`
   - `GET /api/questions/<id>`

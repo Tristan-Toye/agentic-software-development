@@ -233,6 +233,21 @@ const TOOLS: Tool[] = [
   },
 ]
 
+/**
+ * Only sessions in this plugin's own repository get the tools (any worktree of it): the server can merge, start and
+ * stop runs, and answer for the owner, so no session in a target repository (a runner stage, an implementer) may
+ * drive it. The session's project is CLAUDE_PROJECT_DIR (Claude Code sets it), else the cwd; its main checkout's
+ * name must be in ASD_RUNS_MCP_REPOS (default "agentic-software-development"). Elsewhere tools/list is empty.
+ */
+export function allowedHere(dir = process.env.CLAUDE_PROJECT_DIR || process.cwd()): boolean {
+  const ok = (process.env.ASD_RUNS_MCP_REPOS || "agentic-software-development").split(",").map((x) => x.trim()).filter(Boolean)
+  const r = Bun.spawnSync(["git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"], { stdout: "pipe", stderr: "ignore" })
+  const common = r.exitCode === 0 ? r.stdout.toString().trim() : ""
+  const main = common ? common.replace(/\/\.git\/?$/, "") : ""
+  return !!main && ok.includes(main.split("/").filter(Boolean).pop() ?? "")
+}
+const ALLOWED = allowedHere()
+
 export const TOOL_NAMES = TOOLS.map((t) => t.name)
 const schema = (t: Tool) => ({
   type: "object",
@@ -274,8 +289,9 @@ async function handle(msg: Rpc): Promise<object | undefined> {
     case "ping":
       return reply({})
     case "tools/list":
-      return reply({ tools: TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: schema(t) })) })
+      return reply({ tools: ALLOWED ? TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: schema(t) })) : [] })
     case "tools/call": {
+      if (!ALLOWED) return reply(text("the runs tools work only in sessions in the agentic-software-development repository (ASD_RUNS_MCP_REPOS)", true))
       const result = await callTool(String(msg.params?.name ?? ""), msg.params?.arguments ?? {})
       return result ? reply(result) : fail(-32602, `unknown tool: ${msg.params?.name}`)
     }

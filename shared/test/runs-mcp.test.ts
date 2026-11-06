@@ -30,8 +30,8 @@ while (!/listening http:\/\/127\.0\.0\.1:(\d+)/.test(dout)) {
 }
 const port = dout.match(/127\.0\.0\.1:(\d+)/)?.[1] ?? ""
 
-function mcp(p: string) {
-  const proc = Bun.spawn(["bun", "--no-install", join(root, "shared", "claude", "runs-mcp.ts")], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...process.env, ASD_QUESTIONS_PORT: p, ASD_RUNS_MCP_TIMEOUT_MS: "20000" } })
+function mcp(p: string, dir?: string) {
+  const proc = Bun.spawn(["bun", "--no-install", join(root, "shared", "claude", "runs-mcp.ts")], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...process.env, ASD_QUESTIONS_PORT: p, ASD_RUNS_MCP_TIMEOUT_MS: "20000", CLAUDE_PROJECT_DIR: dir ?? root } })
   const reader = proc.stdout.getReader(); const dec = new TextDecoder(); let buf = ""; let id = 0
   const next = async (): Promise<any> => {
     while (!buf.includes("\n")) { const { value, done } = await reader.read(); if (done) throw new Error("server closed"); buf += dec.decode(value) }
@@ -72,6 +72,12 @@ try {
   check("an unknown dossier is refused, not an exception", nod.isError === true && /refused \(HTTP 404\)/.test(nod.content[0].text), JSON.stringify(nod))
   m.proc.kill()
 
+  const other = mcp(port, mkdtempSync(join(tmpdir(), "runs-mcp-elsewhere-")))
+  await other.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } })
+  const ol = await other.rpc("tools/list")
+  const oc = await other.call("answer_question", { id: "demo.W-2.Q2", option: "A" })
+  check("outside this repository: no tools, and a call is refused", (ol.result?.tools ?? []).length === 0 && oc.isError === true && /only in sessions/.test(oc.content[0].text), JSON.stringify(ol))
+  other.proc.kill()
   const down = mcp("1")
   await down.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } })
   const dn = await down.call("runs_overview")
