@@ -35,8 +35,12 @@ function sizeOf(file: string, cwd: string): { bytes: number; lines: number } | u
 
 function bigFileReason(file: string, size: { bytes: number; lines: number }): string {
   const ext = extname(file).toLowerCase()
+  // The plugin's own documents: by short name, no path.
+  const ref = file.match(/\/(?:references|commands)\/(.+)\.md$/)
   const how =
-    ext === ".md"
+    ext === ".md" && ref && /agentic-software-development/.test(file)
+      ? `use ref_section with name \`${ref[1].replace(/^work-on\//, "")}\` and the heading you need (\`--list\` for the headings)`
+      : ext === ".md"
       ? "use doc_section for the heading you need"
       : SOURCE_EXT.has(ext)
         ? "use code_outline for the shape of the file and code_item for one item"

@@ -44,7 +44,7 @@ const write = (name: string, records: object[]) => {
   return path
 }
 const workOn = write("work-on.jsonl", [{ type: "mode" }, cmd("work-on")])
-const plan = write("plan.jsonl", [cmd("plan")])
+const plan = write("plan.jsonl", [cmd("deferred")]) // a non-orchestrating command (/plan now orchestrates too)
 const dossier = "/repo/.discovery/dossiers/W-014.md"
 const big = join(tmp, "big.rs")
 writeFileSync(big, "fn a() {}\n".repeat(3000))
@@ -87,6 +87,13 @@ check("pre: another subagent reads freely", hook("pre-tool-use.ts", pre({ agent_
   check("pre: an agent with no record reads freely", blind("/wt/src/lib.rs", { agent_id: "w9", agent_type: undefined }) === "")
 }
 check("pre: other command's session is a no-op", hook("pre-tool-use.ts", pre({ session_id: "s-plan", transcript_path: plan })).out === "")
+{
+  // A runner stage starts with a bare "/plugin:plan W-1" line, no command tag; /plan sessions are guarded too.
+  const bare = write("bare.jsonl", [{ type: "user", message: { role: "user", content: "/agentic-software-development:plan W-128 D-1" } }])
+  const big = join(tmp, "big.md"); writeFileSync(big, "# t\n" + "x".repeat(30000) + "\n")
+  const r = hook("pre-tool-use.ts", JSON.stringify({ session_id: "s-bare", transcript_path: bare, cwd: tmp, hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: big } }))
+  check("pre: a runner-style /plan session is guarded (a large whole read is refused)", r.out.includes("deny"))
+}
 check("pre: missing transcript is a no-op", hook("pre-tool-use.ts", pre({ session_id: "s-none", transcript_path: join(tmp, "nope.jsonl") })).out === "")
 // The answer is cached per session: the state file outlives the transcript.
 const state = JSON.parse(readFileSync(join(tmp, "agentic-software-development", "claude", "s-orch.json"), "utf8"))
@@ -328,10 +335,10 @@ check("flight: missing dossier fails open", r.code === 0 && !r.out.includes("Bui
 const lines = readFileSync(join(tmp, "agentic-software-development", "claude", "claude-hooks.log"), "utf8").trim().split("\n")
 const count = (e: string) => lines.filter((l) => l.split(" ")[1] === e).length
 check("log: timestamped, one line per event", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z (refused|nudge|recorded|restored) \S+ /.test(l)))
-check("log: refusals (five orchestrator, five blind-read)", count("refused") === 10)
+check("log: refusals (six orchestrator, one a runner-style /plan session; five blind-read)", count("refused") === 11)
 check("log: nudges (two call-count, two pressure, one call-count in the pressure session)", count("nudge") === 5)
 check("log: restores", count("restored") === 2 + restores)
-check("log: checkpoint recorded", count("recorded") === 1)
+check("log: checkpoints recorded (the interactive one, and the runner stage's two: a runner stage is an orchestrator now)", count("recorded") === 3)
 
 console.log(fails.length ? "FAIL " + fails.join(" | ") : "PASS (all cases)")
 process.exit(fails.length ? 1 : 0)

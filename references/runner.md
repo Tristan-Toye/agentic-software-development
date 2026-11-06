@@ -75,7 +75,11 @@ the recorded checkpoints.
   yes, and time logging is **off** (no Tempo, no question, no read of
   `time-logging.md`) unless `ASD_RUNNER_TIME_LOGGING=on`, then it runs in the
   first stage only. The rules also ask for the plugin's references by section
-  (`doc_section`, offset and limit): 15 runs read them in full ~1,300 times.
+  (the nav `ref_section` tool: a short name such as `phase-4` or
+  `formats/dossier` and a heading): 15 runs read them in full ~1,300 times.
+  A runner stage counts as a pipeline orchestrator for the plugin's hooks
+  (`ASD_RUN_KEY`), so the read guard and the checkpoint reminders apply in it;
+  before, they only recognised a command typed in a terminal.
 - **Accounts bound to an email:** an entry in `accounts.json` may carry
   `email`. An account whose config dir is logged in as another email, or as
   the same email as an account listed before it, is skipped while a good one

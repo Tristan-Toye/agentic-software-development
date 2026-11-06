@@ -47,6 +47,23 @@ function run(args: string[], cwd: string): string {
 
 const abs = (path: string, ctx: ToolContext) => (isAbsolute(path) ? path : resolve(ctx.directory, path))
 
+// The plugin's own documents, found by short name, so an agent never guesses a path into the plugin cache or reads
+// a 40 KB phase file whole for one rule: references/**, commands/*, claude/commands/*, skills/**/SKILL.md.
+const PLUGIN_ROOT = join(dirname(realpathSync(import.meta.path)), "..")
+export function pluginDocs(): string[] {
+  const out: string[] = []
+  for (const pat of ["references/**/*.md", "commands/*.md", "claude/commands/*.md"]) for (const f of new Bun.Glob(pat).scanSync({ cwd: PLUGIN_ROOT })) out.push(f)
+  return out.sort()
+}
+/** The plugin document a short name means: `phase-4` → references/work-on/phase-4.md, `formats/dossier`, `runner`, `payloads/implementer`, `fix-deferred` (a command). */
+export function resolveRef(name: string): { file?: string; candidates: string[] } {
+  const want = name.trim().replace(/\.md$/, "").replace(/^\/+/, "").replace(/^references\//, "")
+  const docs = pluginDocs()
+  const exact = docs.filter((d) => d.replace(/\.md$/, "") === `references/${want}` || d.replace(/\.md$/, "") === want)
+  const tail = exact.length ? exact : docs.filter((d) => d.replace(/\.md$/, "").endsWith("/" + want) || d.replace(/\.md$/, "") === want)
+  return tail.length === 1 ? { file: join(PLUGIN_ROOT, tail[0]), candidates: tail } : { candidates: tail }
+}
+
 export const TOOLS: ToolDef[] = [
   {
     name: "code_outline",
@@ -111,6 +128,30 @@ export const TOOLS: ToolDef[] = [
     execute: ({ path, heading }, ctx) => {
       const file = abs(path, ctx)
       return run(String(heading).trim() === "--list" ? ["section", file, "--list"] : ["section", file, heading], ctx.directory)
+    },
+  },
+  {
+    name: "ref_section",
+    description:
+      "Use instead of Read on the pipeline's own documents (phase files, formats, payload skeletons, runner, the " +
+      "commands): read ONE section of a plugin reference by its short name, with no path. NAME is `phase-4`, " +
+      "`phase-6`, `formats/dossier`, `formats/README`, `payloads/implementer`, `runner`, `owner-questions`, " +
+      "`fix-deferred`, …; HEADING is the section's heading text (case-insensitive; part of it is enough when it " +
+      "is unique), or `--list` for the document's headings with line ranges, the cheap first call. Several " +
+      "sections: `a | b`. An unknown NAME lists the documents that exist.",
+    params: [
+      { name: "name", type: "string", description: "the document's short name, e.g. `phase-4` or `formats/dossier`" },
+      { name: "heading", type: "string", description: "heading text, several as `a | b`, or `--list`" },
+    ],
+    execute: ({ name, heading }, ctx) => {
+      const r = resolveRef(String(name))
+      if (!r.file) {
+        const all = pluginDocs().map((d) => d.replace(/^references\//, "").replace(/\.md$/, ""))
+        return r.candidates.length > 1
+          ? `ref_section: "${name}" is ambiguous: ${r.candidates.join(", ")}`
+          : `ref_section: no plugin document "${name}". Documents: ${all.join(", ")}`
+      }
+      return run(String(heading).trim() === "--list" ? ["section", r.file, "--list"] : ["section", r.file, heading], ctx.directory)
     },
   },
   {

@@ -189,9 +189,11 @@ const textOf = (content: unknown): string =>
       ? content.map((b: any) => (typeof b?.text === "string" ? b.text : "")).join("\n")
       : ""
 
-// The orchestrator commands as the transcript records them:
-// `<command-name>/<plugin>:work-on</command-name>`, same shape for `stub`.
-const WORK_ON_RE = /<command-name>\/?(?:[\w.-]+:)?(?:work-on|stub)<\/command-name>/
+// The orchestrator commands as the transcript records them: `<command-name>/<plugin>:work-on</command-name>` when typed
+// in a terminal, or the bare `/<plugin>:work-on W-1` line a runner stage starts with (no tag). Every pipeline command
+// whose session orchestrates agents counts: work-on, stub, plan, fix-deferred, resolve-merge, after-merge.
+const PIPELINE_CMDS = "work-on|stub|plan|fix-deferred|resolve-merge|after-merge"
+const WORK_ON_RE = new RegExp(`<command-name>\\/?(?:[\\w.-]+:)?(?:${PIPELINE_CMDS})<\\/command-name>|^\\s*\\/(?:[\\w.-]+:)?(?:${PIPELINE_CMDS})\\b`, "m")
 
 // Reads the head of the transcript (first 1 MB, whole lines) as parsed lines.
 function head(path: string): any[] {
@@ -220,6 +222,8 @@ function head(path: string): any[] {
 // not cached: the answer may change.
 export function isOrchestrator(input: HookInput): boolean {
   if (input.agent_id || !input.session_id) return false
+  // A runner stage (run_dossier.py sets ASD_RUN_KEY in the session's environment) is always a pipeline orchestrator.
+  if (process.env.ASD_RUN_KEY) return true
   const state = loadState(input.session_id)
   if (typeof state.orchestrator === "boolean") return state.orchestrator
   if (!input.transcript_path) return false

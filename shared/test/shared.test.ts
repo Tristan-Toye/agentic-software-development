@@ -85,7 +85,7 @@ const text = summaryText([{ phase: "Phase 1", summary: " a " }, { phase: "Phase 
 check("checkpoint: summary in order", text.startsWith("## Completed phases") && text.indexOf("### Phase 1\n\na") < text.indexOf("### Phase 2"))
 
 // ---- tools -------------------------------------------------------------------------
-check("tools: six, named", TOOLS.map((t) => t.name).join() === "code_outline,code_item,code_find,doc_section,code_replace,phase_checkpoint")
+check("tools: seven, named", TOOLS.map((t) => t.name).join() === "code_outline,code_item,code_find,doc_section,ref_section,code_replace,phase_checkpoint")
 const pc = TOOLS.find((t) => t.name === "phase_checkpoint")!
 check("tools: host sentence differs, rest shared", describeTool(pc, "claude").includes("does not cut") && describeTool(pc, "opencode").includes("drops every earlier step") && describeTool(pc, "claude").includes("At most 6000 characters"))
 check("tools: others identical on both hosts", TOOLS.filter((t) => !t.hostNote).every((t) => describeTool(t, "claude") === describeTool(t, "opencode")))

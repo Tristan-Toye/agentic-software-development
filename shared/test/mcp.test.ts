@@ -47,7 +47,7 @@ send({ jsonrpc: "2.0", method: "notifications/initialized" }) // a notification:
 check("ping", JSON.stringify((await rpc("ping")).result) === "{}")
 
 const list = (await rpc("tools/list")).result.tools
-check("tools/list: six", list.map((t: any) => t.name).join() === "code_outline,code_item,code_find,doc_section,code_replace,phase_checkpoint")
+check("tools/list: seven", list.map((t: any) => t.name).join() === "code_outline,code_item,code_find,doc_section,ref_section,code_replace,phase_checkpoint")
 check(
   "tools/list: valid JSON Schema",
   list.every(
