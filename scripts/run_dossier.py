@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import glob
 import json
 import os
 import queue
@@ -540,6 +541,8 @@ class Runner:
                             "session": "", "questions": [], "claude_pid": None,
                             # the owner's messages already delivered: a resumed run never sends one twice
                             "inbox_seen": int(prev.get("inbox_seen") or 0)}
+        self.state["model"] = self.model
+        self.stop_marker = os.path.join(d, self.key + ".stop-requested")
         self.checkpoints: list[dict] = read_json(self.cp_path, [])
         self.seen_tool_ids: set[str] = set()
         self.stopping = False
@@ -1254,6 +1257,10 @@ class Runner:
         if prev.get("state") in ("running", "waiting", "queued") and alive(prev.get("pid")) and prev.get("pid") != os.getpid():
             say(f"{self.key} is already run by pid {prev['pid']}")
             return 2
+        try:
+            os.remove(self.stop_marker)
+        except OSError:
+            pass
         if prev.get("state") == "done":
             self.checkpoints = []
             write_json(self.cp_path, [])
@@ -1349,6 +1356,15 @@ class Runner:
 
     def finish(self, state: str, text: str, rc: int) -> int:
         self.end_process()
+        if state == "stopped" and self.stopping and not os.path.exists(self.stop_marker):
+            # A SIGTERM nobody asked for: a logout or a shutdown, not the owner. The state stays as it is, so `revive`
+            # picks the run up again once this process is gone.
+            self.event("interrupted from outside (a logout or a shutdown); it restarts when it can")
+            return rc
+        try:
+            os.remove(self.stop_marker)
+        except OSError:
+            pass
         self.save(state=state, questions=[])
         self.event(text, state)
         return rc
@@ -1378,6 +1394,42 @@ def cmd_status(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_revive() -> int:
+    """Restart every run that was killed rather than stopped: its record still says it is working, its process is gone
+    (a logout, a reboot, a crash). It runs the same stage again from its checkpoints, as Resume does. A run dead for over
+    ASD_RUNNER_REVIVE_HOURS (default 48) stays down, and one that keeps dying is left stopped after 3 restarts in an hour."""
+    hours = float(os.environ.get("ASD_RUNNER_REVIVE_HOURS") or 48)
+    for path in glob.glob(os.path.join(runs_dir(), "*.runner.json")):
+        st = read_json(path, {}) or {}
+        root = st.get("root") or ""
+        if st.get("state") not in ("running", "waiting", "paused", "queued") or alive(st.get("pid")) or not os.path.isdir(root):
+            continue
+        if time.time() - os.path.getmtime(path) > hours * 3600:
+            continue
+        key = os.path.basename(path)[:-len(".runner.json")]
+        prefix = main_repo_name(root) + "."
+        if not key.startswith(prefix):
+            continue
+        dossier = re.sub(r"\.plan-D-\d+$", "", key[len(prefix):])
+        guard = os.path.join(runs_dir(), key + ".revive.json")
+        recent = [t for t in (read_json(guard, []) or []) if time.time() - t < 3600]
+        if len(recent) >= 3:
+            st["state"] = "stopped"
+            write_json(path, st)
+            append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "runner", "text": "not restarted: its process died 3 times within an hour; Resume it by hand", "state": "stopped"})
+            continue
+        write_json(guard, recent + [time.time()])
+        append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "runner", "text": "its process was gone; restarting from the checkpoints"})
+        args = [sys.executable, os.path.abspath(__file__), dossier, "--root", root, "--command", st.get("command") or "work-on"]
+        if st.get("items"):
+            args += ["--items", st["items"]]
+        if st.get("model"):
+            args += ["--model", st["model"]]
+        subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+        print(f"run_dossier: restarted {key}")
+    return 0
+
+
 def cmd_stop(a: argparse.Namespace) -> int:
     key = key_of(a.root, a.dossier)
     path = os.path.join(runs_dir(), key + ".runner.json")
@@ -1388,6 +1440,7 @@ def cmd_stop(a: argparse.Namespace) -> int:
     pid, cpid = st.get("pid"), st.get("claude_pid")
     if st.get("state") in ("running", "waiting", "queued") or alive(cpid):
         if alive(pid):
+            open(os.path.join(runs_dir(), key + ".stop-requested"), "w").close()   # the owner's stop, not a logout
             os.kill(pid, signal.SIGTERM)  # the runner's handler kills the claude group and records stopped
             end = time.monotonic() + 20
             while alive(pid) and time.monotonic() < end:
@@ -1947,6 +2000,23 @@ def selftest() -> int:
         check("stop: runner exits 3, state stopped", r.returncode == 0 and p.wait(timeout=30) == 3 and state_of("W-5").get("state") == "stopped")
         check("stop: the claude process is gone", until(lambda: not alive(cpid), 10) is True)
         check("stop recorded as a runner line", texts("W-5")[-1] == "stopped")
+        scenario([{"hang": True, "turns": []}])
+        p = start("W-71")
+        until(lambda: state_of("W-71").get("claude_pid"))
+        p.terminate(); p.wait(timeout=30)
+        st71 = state_of("W-71")
+        check("revive: a SIGTERM nobody asked for keeps the run's state, so it can restart", st71.get("state") == "running" and any("interrupted" in t for t in texts("W-71")))
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        r = subprocess.run([sys.executable, me, "revive"], env=env, capture_output=True, text=True, timeout=60)
+        done71 = until(lambda: state_of("W-71").get("state") == "done", 30)
+        check("revive: the killed run restarts and finishes", "restarted repo.W-71" in r.stdout and bool(done71))
+        write_json(os.path.join(rdir, "repo.W-72.runner.json"), {"pid": 2 ** 22 + 12346, "state": "stopped", "root": root, "command": "work-on"})
+        write_json(os.path.join(rdir, "repo.W-73.runner.json"), {"pid": 2 ** 22 + 12347, "state": "running", "root": root, "command": "work-on"})
+        write_json(os.path.join(rdir, "repo.W-73.revive.json"), [time.time()] * 3)
+        write_json(os.path.join(rdir, "repo.W-74.runner.json"), {"pid": 2 ** 22 + 12348, "state": "running", "root": root, "command": "work-on"})
+        os.utime(os.path.join(rdir, "repo.W-74.runner.json"), (time.time() - 72 * 3600, time.time() - 72 * 3600))
+        r = subprocess.run([sys.executable, me, "revive"], env=env, capture_output=True, text=True, timeout=60)
+        check("revive: a stopped run, one dying over and over, and one long dead all stay down", "W-72" not in r.stdout and "W-73" not in r.stdout and "W-74" not in r.stdout and state_of("W-73").get("state") == "stopped")
         write_json(os.path.join(rdir, "repo.W-6.runner.json"), {"pid": 2 ** 22 + 12345, "state": "running", "stage": 2, "session": "", "questions": []})
         d = subprocess.run([sys.executable, me, "W-9", "--root", root], env=env, capture_output=True, text=True, timeout=30)
         check("the default detaches and prints the pid", d.returncode == 0 and "in the background, pid" in d.stdout)
@@ -2201,6 +2271,8 @@ def main() -> int:
             ap.print_usage(sys.stderr)
             return 2
         return cmd_chat(a)
+    if argv and argv[0] == "revive":
+        return cmd_revive()
     if argv and argv[0] == "usage":
         ap = argparse.ArgumentParser(prog="run_dossier.py usage")
         ap.add_argument("--account")

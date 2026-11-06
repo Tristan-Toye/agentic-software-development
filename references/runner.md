@@ -118,6 +118,13 @@ the recorded checkpoints.
   `ASD_RUNNER_NET_RETRIES` makes it a failure the owner rules on after that many
   in a row ("network errors on 8 retries in a row: …"); the default, 0, never
   does. A stage that ends well resets the count.
+- **A run killed rather than stopped:** a SIGTERM nobody asked for (a logout, a
+  shutdown) leaves its state as it is, and so does a SIGKILL or a crash; the Stop
+  button writes `<key>.stop-requested` first, so only that reads as stopped. The
+  dashboard runs `run_dossier.py revive` at startup and every 2 minutes: a run
+  whose record says working and whose process is gone goes on from its
+  checkpoints. A run dead for over `ASD_RUNNER_REVIVE_HOURS` (default 48) stays
+  down, and one that dies 3 times within an hour is left stopped.
 - **Several accounts:** `scripts/setup_claude_account.sh NAME` adds a login
   in its own config dir (`CLAUDE_CONFIG_DIR`, sharing settings, plugins and
   hooks with `~/.claude` by symlink) and registers it in

@@ -5,6 +5,14 @@ import type { RunnerState } from "./runstore.ts"
 export type Ctl = { show: boolean; ok: boolean; reason: string; command?: string }
 export type Controls = { start: Ctl; resume: Ctl; stop: Ctl; "fix-deferred": Ctl }
 
+/** The dossier and the stop target of a run. A dossier a /plan run of a deferred item minted (W-155 from W-145 D-1) still
+ *  runs under its source: Resume plans W-145 D-1 again, never "W-155 D-1", and Stop names the whole key. */
+export function runTarget(repo: string, id: string, runKey?: string): { dossier: string; stop: string } {
+  const k = runKey?.startsWith(repo + ".") ? runKey.slice(repo.length + 1) : ""
+  const m = k.match(/^(.+)\.plan-D-\d+$/)
+  return m ? { dossier: m[1], stop: k } : { dossier: id, stop: id }
+}
+
 /** Dossier ids named in a `blocked_by` front-matter value such as `[W-1, W-2]`. */
 export function blockedByOf(v: string | undefined): string[] {
   return [...new Set((v ?? "").match(/\b[A-Z][A-Z0-9]*-\d+\b/g) ?? [])]

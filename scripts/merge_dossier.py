@@ -618,6 +618,14 @@ def work_one(root: str, dossier: str) -> None:
         set_state(key, state="waiting", error="", pid=os.getpid(), note="waiting for the dossier's own run to finish")
         while run_live(key):
             time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15))
+    # A worker killed around the merge (a logout, a reboot) comes back to PRs GitHub has already merged. The merge
+    # detector starts their /after-merge, so all that is left here is to say so.
+    prior = read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}
+    if prior.get("prs") and prior.get("state") in ("merging", "cleanup"):
+        merged = [gh(root, "pr", "view", str(n), "--json", "state", "-q", ".state") for n in prior["prs"]]
+        if all(rc == 0 and st.strip() == "MERGED" for rc, st in merged):
+            set_state(key, state="merged", error="", pid=None, note="merged; found so after the merge queue restarted")
+            return
     chain, why = plan(root, dossier)
     if not chain:
         set_state(key, state="failed", error=why, pid=None); return
@@ -752,7 +760,7 @@ def work_batch(root: str, nums: list[int]) -> list[int]:
                  "--body", f"The merge queue checks and merges {label} together, in one CI run. Each of them reads as merged once this lands.")
     m = re.search(r"/pull/(\d+)", out) if rc == 0 else None
     if not m:   # the worker was interrupted after opening it: carry on with the same PR
-        rc, out = gh(root, "pr", "view", branch, "--json", "number", "-q", '"/pull/\(.number)"')
+        rc, out = gh(root, "pr", "view", branch, "--json", "number", "-q", r'"/pull/\(.number)"')
         m = re.search(r"/pull/(\d+)", out) if rc == 0 else None
     if not m:
         git(root, "push", "-q", "origin", "--delete", branch)
@@ -1290,6 +1298,17 @@ print("started")
         finally:
             os.environ.clear(); os.environ.update(saved_env)
         check("resume: a queue whose worker died restarts, reads what landed meanwhile as merged and carries on", s700.get("state") == "merged" and s701.get("state") == "merged", str(s700) + str(s701))
+        saved_env = dict(os.environ)
+        os.environ.update(env, ASD_MERGE_POLL="0.1", ASD_RUNNER_BIN=fr)
+        try:
+            rq = repo_name(clone)
+            json.dump([dict(P(710, "feat/W-77-x", "stub/2026-11-03"), state="MERGED")], open(os.path.join(fdir, "prs.json"), "w"))
+            write_json(os.path.join(rdir, f"{rq}.W-77.merge.json"), {"state": "merging", "prs": [710], "pid": 999999})
+            work_one(clone, "W-77")
+            s77 = read_json(os.path.join(rdir, f"{rq}.W-77.merge.json"), {})
+        finally:
+            os.environ.clear(); os.environ.update(saved_env)
+        check("resume: a stack that merged before the worker died reads merged, not failed", s77.get("state") == "merged" and not s77.get("error"), str(s77))
         sa, sb, cc, _ = batch_scenario("moved", FAKE_NO_AUTOMARK="1", FAKE_HEAD="pushed-during-the-batch")
         check("batch: a member pushed to during the batch is left open and says so, never closed", "pr close 530" not in cc and sa.get("state") == "failed" and "changed" in sa.get("error", ""), cc + str(sa))
         check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged")
