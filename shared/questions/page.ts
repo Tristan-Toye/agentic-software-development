@@ -83,7 +83,7 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}.acard{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:8px}.acard.next{border-color:var(--acc)}
 .ahd{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.aname{font-weight:700;font-size:1rem;margin-right:4px}.meter .mhd{display:flex;justify-content:space-between;font-size:12.5px}.meter .ml{color:var(--mut)}.meter .mv{font-weight:600}
 .mbar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin:3px 0}.mfill{display:block;height:100%;background:var(--acc)}.mfill.ok{background:var(--ok)}.mfill.warn{background:var(--warn)}.mfill.bad{background:var(--bad)}
-.dfplan{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.nowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 0;color:var(--fg)}.nowline .nowtext{display:inline-flex;gap:6px;align-items:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .nowline{margin:2px 0 0;color:var(--mut)}.nowline .chip{font-size:11px}.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mergectl{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.dfplan{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.nowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 0;color:var(--fg)}.nowline .nowtext{display:inline-flex;gap:6px;align-items:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .nowline{margin:2px 0 0;color:var(--mut)}.nowline .chip{font-size:11px}.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip.fixing{display:inline-flex;align-items:center;gap:5px;background:var(--accbg);color:var(--acc);font-weight:600}a.srow:has(.chip.fixing){box-shadow:inset 3px 0 0 var(--acc)}
 .dfp{border-left:3px solid var(--acc)}.dfp-bar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--chip);margin:6px 0 4px}.dfp-bar .seg{display:block;height:100%}
 .seg.ok,.sw.ok{background:var(--ok)}.seg.acc,.sw.acc{background:var(--acc)}.seg.warn,.sw.warn{background:var(--warn)}.seg.mut,.sw.mut{background:var(--mut)}.seg.mut2,.sw.mut2{background:var(--bd)}
@@ -394,6 +394,36 @@ function subItem(repo, id, noPr, done, ttl) {
   return h('li', { 'data-k': 'sub:' + repo + '/' + id }, [h('a', { class: 'sub-item' + (done ? ' done' : ''), href: hrefItem(repo, id) }, kids)]);
 }
 /* One dossier on a stub card: id, title, and where it stands, one clean row that scales to many. */
+/* Merge: all of the dossier's open PRs into its stub as one GitHub stack (gh stack merge, no agent), then the
+   cleanup run. Merge shows what it would do; Confirm does it. Only for work finished and waiting on a stub. */
+function mergeCtl(r) {
+  if (!r) return null;
+  const k = r.repo + '/' + r.id + ':merge'; const st = S.ctl[k] || {}; const m = r.merge;
+  if (m && m.state === 'merging') return h('span', { class: 'chip fixing', title: 'Merging ' + m.prs.map(n => '#' + n).join(', ') + ' into ' + m.base }, [h('span', { class: 'dot info live' }), 'merging…']);
+  const live = r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state);
+  if (live || !(r.status === 'done' || r.status === 'pr')) return null;
+  const kids = [];
+  if (m && m.state === 'failed' && !st.plan) kids.push(h('span', { class: 'chip blocked', title: m.error }, ['merge failed']));
+  if (st.plan && st.ok) kids.push(h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'merge-go', 'data-repo': r.repo, 'data-id': r.id, disabled: st.busy ? true : null, title: 'Merges with a merge commit, all or nothing' }, [st.busy ? 'Merging…' : 'Confirm: ' + st.plan.replace(/^would /, '')]),
+    h('button', { class: 'btn sm', type: 'button', 'data-act': 'merge-cancel', 'data-repo': r.repo, 'data-id': r.id }, ['Cancel']));
+  else if (st.plan) kids.push(h('span', { class: 'chip blocked', title: st.plan }, ['cannot merge: ' + st.plan.replace(/^refused — /, '').slice(0, 90)]));
+  else kids.push(h('button', { class: 'btn sm', type: 'button', 'data-act': 'merge-plan', 'data-repo': r.repo, 'data-id': r.id, disabled: st.busy ? true : null, title: 'Merge all of this dossier\'s PRs into its stub as one stack, then clean up' }, [st.busy ? 'Checking…' : 'Merge']));
+  if (st.err) kids.push(h('span', { class: 'err' }, [st.err]));
+  return h('span', { class: 'mergectl' }, kids);
+}
+async function mergeAct(btn, act) {
+  const repo = btn.dataset.repo, id = btn.dataset.id, k = repo + '/' + id + ':merge'; const st = S.ctl[k] = S.ctl[k] || {};
+  if (act === 'merge-cancel') { S.ctl[k] = {}; render(); return; }
+  if (st.busy) return; st.busy = true; st.err = ''; render();
+  try {
+    const url = '/api/runs/' + enc(repo) + '/' + enc(id) + '/merge';
+    const r = await fetch(url, act === 'merge-go' ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' } : {});
+    const j = await r.json().catch(() => ({}));
+    if (act === 'merge-plan') { if (r.ok) { st.plan = j.text || ''; st.ok = !!j.ok; } else st.err = j.error || ('HTTP ' + r.status); }
+    else if (r.ok && j.ok) S.ctl[k] = {}; else st.err = j.error || ('HTTP ' + r.status);
+  } catch (e) { st.err = 'request failed'; }
+  if (S.ctl[k]) S.ctl[k].busy = false; await load(['runs']);
+}
 function stubRow(repo, id, o) {
   const r = S.runs.find(x => x.repo === repo && x.id === id); const nq = r ? openQs(r) : [];
   const title = (r && r.title) || o.title || '';
@@ -401,7 +431,7 @@ function stubRow(repo, id, o) {
   const fixing = r && r.runner && r.runner.command === 'fix-deferred' && ['running', 'waiting', 'paused'].includes(r.runner.state);
   if (fixing) right.push(h('span', { class: 'chip fixing', title: 'A stacked PR with fixes for the deferred issues is being built' }, [h('span', { class: 'dot info live' }), r.runner.state === 'waiting' ? 'fixing deferred · waiting for you' : r.runner.state === 'paused' ? 'fixing deferred · paused' : 'fixing deferred']));
   if (o.merged) right.push(chip('merged', 'done'));
-  else if (r && (r.status === 'done' || r.status === 'pr')) right.push(chip('PR open · ready to merge', 'done'));
+  else if (r && (r.status === 'done' || r.status === 'pr')) { right.push(chip('PR open · ready to merge', 'done')); if (!o.noPr) { const mc = mergeCtl(r); if (mc) right.push(mc); } }
   else { const st = r ? stageText(r) : ''; if (st) right.push(chip(st, 'neutral')); if (isLive(r)) right.push(h('span', { class: 'dot info live', title: 'running' })); }
   if (o.noPr) right.push(chip('no PR yet', 'neutral'));
   if (r && r.deferredOpen) right.push(h('span', { class: 'chip', title: r.deferredOpen + ' deferred item(s) still to tackle' }, [r.deferredOpen + ' deferred']));
@@ -459,6 +489,8 @@ function repoView(repo) {
   kids.push(h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]));
   return h('div', {}, kids);
 }
+/* The dossier sits on an open stub with a PR into it (the stub card's "PR open · waiting for your merge"). */
+function onOpenStub(r) { return openStubs(r.repo).some(s => (s.members || []).some(m => m.id === r.id && !m.noPr)); }
 function header(r, mode) {
   const nq = openQs(r); const cs = [chip(r.status)];
   if (r.runner && r.runner.state !== 'done') cs.push(runChip(r.runner.state));
@@ -470,7 +502,7 @@ function header(r, mode) {
   if (mode === 'run') acts.push(h('a', { class: 'btn', href: hrefItem(r.repo, r.id) + '/dossier' }, ['View dossier']));
   else if (r.updates.length || inProgress(r)) acts.push(h('a', { class: 'btn', href: hrefItem(r.repo, r.id) }, ['Back to run']));
   return h('div', { class: 'panel' }, [h('h1', { style: 'margin-top:0' }, [r.id + ' · ' + r.title]), r.summary && mode === 'run' ? h('p', { class: 'sum' }, [r.summary]) : null,
-    h('div', { class: 'chips' }, cs), nowLine(r), h('div', { class: 'row' }, controls(r, true).concat(acts))]);
+    h('div', { class: 'chips' }, cs), nowLine(r), h('div', { class: 'row' }, controls(r, true).concat(onOpenStub(r) ? [mergeCtl(r)] : [], acts))]);
 }
 const ICON = { step: '→', blocked: '⛔', start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', spawn: '⎇', reply: '↩', routine: '·', info: '·', entry: '§' };
 const KLABEL = { step: 'next step', blocked: 'blocked by the safety check', start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', spawn: 'agent', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };
@@ -955,6 +987,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'fix-sel') fixSelected(t);
     else if (act === 'chat') sendChat(t);
     else if (act === 'plan-item') planItem(t);
+    else if (act === 'merge-plan' || act === 'merge-go' || act === 'merge-cancel') mergeAct(t, act);
     else if (act === 'summary') writeSummary(t);
     else if (act === 'blk') ruleBlock(t);
     else if (act === 'usage-refresh') { S.usageBusy = true; render(); fetch('/api/accounts/refresh', { method: 'POST' }).catch(() => {}).finally(() => load(['runs'])); }

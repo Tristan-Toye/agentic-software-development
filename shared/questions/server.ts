@@ -1,6 +1,6 @@
 // Owner-questions server. Run: bun --no-install shared/questions/server.ts
 // Contract: references/owner-questions.md
-import { appendFileSync, mkdirSync, statSync, watch, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, openSync, statSync, watch, writeFileSync } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
 import { buildLog, getRuns, PHASE_NAMES, questionRepo, readDossier, type Run } from "./runs.ts"
@@ -355,6 +355,7 @@ export async function handle(req: Request): Promise<Response> {
     // Live runs carry their agent counts (this stage); the accounts carry their windows and which runs use them.
     const v = await getRuns(() => readAll(DIR))
     const runs = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(readUpdates(`${r.repo}.${r.id}`, runsDir(), 3000)), blocked: readBlocks(`${r.repo}.${r.id}`).length } : r))
+      .map((r) => { const m = mergeState(`${r.repo}.${r.id}`); return m ? { ...r, merge: m } : r })
     const accounts = readAccounts(runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: `${r.repo}.${r.id}`, account: r.runner?.account })))
     return json({ ...v, runs, accounts, usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
   }
@@ -513,6 +514,30 @@ export async function handle(req: Request): Promise<Response> {
     emitChange("runs")
     return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)
   }
+  // Merge: all of a dossier's open PRs into its stub as one GitHub stack (scripts/merge_dossier.py, no agent), then
+  // the /after-merge cleanup. GET is the dry run the confirm button shows; POST starts it in the background.
+  const mg = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/merge$/)
+  if (mg && (req.method === "GET" || req.method === "POST")) {
+    const origin = req.headers.get("origin")
+    if (req.method === "POST" && origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const run = await findRun(mg[1], mg[2])
+    if (!run) return json({ error: "no such dossier" }, 404)
+    const m = mergeState(`${run.repo}.${run.id}`)
+    if (m?.state === "merging") return json({ error: "already merging " + m.prs.map((n) => "#" + n).join(", ") }, 409)
+    const args = ["python3", mergeScript(), run.id, "--root", run.main]
+    if (req.method === "GET") {
+      const r = Bun.spawnSync([...args, "--dry-run"], { stdout: "pipe", stderr: "pipe" })
+      const line = (r.stdout.toString() || r.stderr.toString()).trim().split("\n").pop()?.replace(/^merge_dossier:\s*/, "") ?? ""
+      return json({ ok: r.exitCode === 0, text: line })
+    }
+    const logf = join(runsDir(), `${run.repo}.${run.id}.merge.log`)
+    try {
+      const fd = openSync(logf, "a")
+      Bun.spawn(args, { stdout: fd, stderr: fd, stdin: "ignore" }).unref()
+    } catch (e) { return json({ error: (e as Error).message }, 500) }
+    emitChange("runs")
+    return json({ ok: true })
+  }
   // Plan it: one item ruled to its own dossier gets a /plan run of its own (`<repo>.<ID>.plan-<D>`), beside any run of the source.
   const pi = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/plan-item$/)
   if (pi && req.method === "POST") {
@@ -607,6 +632,16 @@ export async function handle(req: Request): Promise<Response> {
   }
   return json({ error: "method not allowed" }, 405)
 }
+
+/** The Merge button's state, `<key>.merge.json` from scripts/merge_dossier.py; a "merging" whose process is gone is failed. */
+function mergeState(key: string): { state: string; prs: number[]; base: string; error: string; ts: string } | null {
+  try {
+    const j = JSON.parse(readFileSync(join(runsDir(), `${key}.merge.json`), "utf8"))
+    if (j.state === "merging" && j.pid) { try { process.kill(Number(j.pid), 0) } catch { return { ...j, state: "failed", error: "the merge process stopped before it finished" } } }
+    return j
+  } catch { return null }
+}
+const mergeScript = (): string => process.env.ASD_MERGE_BIN || join(import.meta.dir, "..", "..", "scripts", "merge_dossier.py")
 
 /**
  * The merge detector: every 2 minutes, the PRs merged into each open stub (GitHub). A dossier's PR that merged since

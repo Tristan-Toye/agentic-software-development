@@ -141,8 +141,13 @@ request, never hidden.
 
 ## Step 6 — The pull request
 
-Push the branch and open the pull request against the base from Step 3. The
-title is `fix(<ID>): deferred issues D-…`. The body has:
+Push the branch and open the pull request against the base from Step 3 as
+**a GitHub stack** with the dossier's own pull request, never as a loose PR:
+`gh stack link <dossier PR number> fix/<ID>-deferred` (bottom to top; it
+creates the PR with the right base and links both into one stack, or adds it
+to the dossier's existing stack). Then set its title and body with
+`gh pr edit`. The owner's Merge button merges the whole stack at once
+(`gh stack merge`). The title is `fix(<ID>): deferred issues D-…`. The body has:
 
 - one row per item: D-ID, kind, title, `fixed (<sha>)` or
   `→ dossier (/plan <ID> D-n)`;
