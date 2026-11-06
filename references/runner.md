@@ -63,6 +63,19 @@ the recorded checkpoints.
   time the CLI printed (an epoch after `|` or an ISO time; else it retries
   every 30 minutes, `ASD_RUNNER_LIMIT_WAIT`), then runs the same stage again
   from its checkpoints. `stop` ends a paused run.
+- **The model:** the orchestrator runs on `claude-opus-5-5`, passed as an exact
+  id (`ASD_RUNNER_MODEL` overrides it), never on an alias: `opus` resolves per
+  login, and on one it resolved to `claude-fable-5-1` for a day. `--model` with
+  Fable is refused before anything starts, and the model the session reports
+  (its init line, each turn) is checked: any other model stops the stage and
+  the owner is asked. The spawn guard refuses any sub-agent or workflow agent
+  named for Fable; sub-agents run on their agent files' Sonnet or Haiku.
+- **Run slots:** at most `ASD_RUNNER_MAX_LIVE` runs (default 4; 0 = no limit)
+  work at once. A run takes a slot before each stage and after an owner's
+  answer; only `running` runs hold one. Without a free slot it records
+  `queued` (`queued_since`) and waits, longest-queued first; the dashboard
+  shows "queued · waiting for a slot". So a usage-limit reset, or many Start
+  presses, no longer sets ten sessions going in the same minute.
 - **Network errors:** a turn (or a process exit) that fails on a transient
   network or API-server error (`ENOTFOUND`, a reset, refused or timed-out
   connection, "Can't reach the API server", a 5xx) does not fail the run

@@ -9,7 +9,7 @@ export type Controls = { start: Ctl; resume: Ctl; stop: Ctl; "fix-deferred": Ctl
 export function blockedByOf(v: string | undefined): string[] {
   return [...new Set((v ?? "").match(/\b[A-Z][A-Z0-9]*-\d+\b/g) ?? [])]
 }
-const active = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "waiting" || r?.state === "paused"
+const active = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "waiting" || r?.state === "paused" || r?.state === "queued"
 
 /** Which of Start, Resume and Stop a dossier offers. `statusOf` gives the status of a blocker id, if known. */
 export function controlsFor(d: { status: string; blockedBy: string[]; runner: RunnerState | null; deferredOpen?: number }, statusOf: (id: string) => string | undefined): Controls {

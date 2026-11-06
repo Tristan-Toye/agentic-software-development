@@ -62,7 +62,7 @@ export function waitingForSlots(updates: Update[]): boolean {
 
 const STATE: Record<string, string> = {
   running: "🟢 in progress", waiting: "🟡 waiting for you", paused: "⏸ paused · usage limit",
-  stopped: "⏹ stopped", failed: "✖ failed", done: "🏁 done",
+  queued: "⏳ queued · waiting for a run slot", stopped: "⏹ stopped", failed: "✖ failed", done: "🏁 done",
 }
 const hhmm = (ts: string) => { const d = new Date(ts); return Number.isFinite(d.getTime()) ? d.toTimeString().slice(0, 5) : "" }
 
@@ -72,7 +72,7 @@ export function runStatusText(r: StatusRun, now: number): string {
   lines.push(`*<${r.link}|${esc(r.id)}>* — ${esc(clip(r.title, 90))}`)
   const head: string[] = [STATE[r.state] ?? (r.state || "not running")]
   if (r.phase && r.phase !== "plan") head.push(`Phase ${esc(r.phase)}${r.phaseName ? ` · ${esc(r.phaseName)}` : ""}`)
-  else if (["running", "waiting", "paused"].includes(r.state)) head.push("starting")
+  else if (["running", "waiting", "paused", "queued"].includes(r.state)) head.push("starting")
   if (r.state === "paused" && r.resumesAt) head.push(`resumes ${hhmm(r.resumesAt)}`)
   if (r.account) head.push(`account ${esc(r.account)}`)
   if (r.started) head.push(`started ${ago(r.started, now)}`)

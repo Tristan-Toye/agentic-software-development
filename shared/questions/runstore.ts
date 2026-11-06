@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 export type Update = { ts: string; kind: "runner" | "stage" | "update"; text: string; stage?: string; state?: string; auto?: boolean; event?: string; status?: string; agent_id?: string }
-export type RunnerState = { state: "running" | "waiting" | "paused" | "done" | "failed" | "stopped"; stage: string; pid: number; started: string; root: string; account?: string; resumesAt?: string; command?: string; session?: string; items?: string }
+export type RunnerState = { state: "running" | "waiting" | "paused" | "queued" | "done" | "failed" | "stopped"; stage: string; pid: number; started: string; root: string; account?: string; resumesAt?: string; command?: string; session?: string; items?: string }
 
 export const runsDir = (): string => process.env.ASD_RUNS_DIR || join(homedir(), ".agentic", "runs")
 
@@ -33,8 +33,8 @@ export function pidAlive(pid: number): boolean {
 export function readRunner(key: string, dir = runsDir(), alive: (pid: number) => boolean = pidAlive): RunnerState | null {
   try {
     const j = JSON.parse(readFileSync(join(dir, `${key}.runner.json`), "utf8"))
-    let state = ["running", "waiting", "paused", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
-    if ((state === "running" || state === "waiting" || state === "paused") && !alive(Number(j.pid))) state = "stopped"
+    let state = ["running", "waiting", "paused", "queued", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
+    if ((state === "running" || state === "waiting" || state === "paused" || state === "queued") && !alive(Number(j.pid))) state = "stopped"
     return { state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "", ...(typeof j.account === "string" ? { account: j.account } : {}), ...(typeof j.resumes_at === "string" ? { resumesAt: j.resumes_at } : {}), ...(typeof j.command === "string" ? { command: j.command } : {}), ...(typeof j.session === "string" && j.session ? { session: j.session } : {}), ...(typeof j.items === "string" && j.items ? { items: j.items } : {}) }
   } catch { return null }
 }
@@ -104,7 +104,7 @@ export function checkRule(rule: string): string {
   if (m[1] === "Bash" && /^(bash|sh|zsh|python3?|node|bun|npx|npm|uv|pip3?|perl|ruby)\b(\s+\*|\*|$)/.test(inner)) return "a rule for a whole interpreter is dropped in auto mode; name the command"
   return ""
 }
-export const runnerActive = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "waiting" || r?.state === "paused"
+export const runnerActive = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "waiting" || r?.state === "paused" || r?.state === "queued"
 
 /** First paragraph of the `## Problem` section, else of the body after the front matter and title; <= 300 chars. */
 export function summaryOf(text: string): string {

@@ -109,6 +109,10 @@ It prints at most 40 lines.
     5-hour and weekly meters with their reset times (`~/.agentic/usage/`), and
     how many live runs use it. **↻ Check usage** POSTs `/api/accounts/refresh`,
     which runs `run_dossier.py usage` in the background.
+  - **Accounts:** a limit the runner recorded no longer shows once a later
+    reading says the account's windows are open (`limitSuperseded`; the
+    runner's `pick_account` uses the same rule). Two accounts logged in with
+    the same email are flagged "same login as …": they share one set of limits.
   - **Running now** (home): every live run across repos (running, waiting,
     paused) with its step, account, sub-agents at work this stage, context and
     last activity; the header counts runs, working runs and sub-agents. A

@@ -267,7 +267,7 @@ async function postStatus(a: Extract<OwnerAction, { type: "status" }>): Promise<
     if (hit) { repo = hit.repo; id = hit.id }
   }
   if (!repo) repo = await repoOfChannel(a.channel, repos)
-  const live = (r: Run) => !!r.runner && ["running", "waiting", "paused"].includes(r.runner.state)
+  const live = (r: Run) => !!r.runner && ["running", "waiting", "paused", "queued"].includes(r.runner.state)
   const picked = runs.filter((r) => (!repo || r.repo === repo) && (id ? r.id === id : live(r)))
   const { text, blocks } = statusBlocks(picked.map(statusRun), { repo: repo || undefined, id: id || undefined }, Date.now())
   if (a.refresh && a.ts) {
@@ -550,7 +550,7 @@ export async function handle(req: Request): Promise<Response> {
     const item = typeof body.item === "string" ? body.item : ""
     const it = run.deferred.items.find((i) => i.id === item)
     if (!it || it.state !== "dossier" || it.dossier) return json({ error: "only an item ruled to its own dossier, not planned yet" }, 409)
-    if (it.planning && ["running", "waiting", "paused"].includes(it.planning)) return json({ error: "it is being planned" }, 409)
+    if (it.planning && ["running", "waiting", "paused", "queued"].includes(it.planning)) return json({ error: "it is being planned" }, 409)
     const r = await runRunner([run.id, "--root", run.main, "--command", "plan", "--items", item])
     emitChange("runs")
     return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)

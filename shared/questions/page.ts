@@ -160,7 +160,7 @@ function ago(ts) {
 }
 function when(ts, prefix) { if (!ts || !Date.parse(ts)) return null; return h('time', { datetime: ts, title: new Date(ts).toLocaleString(), class: 'when' }, [(prefix || '') + ago(ts)]); }
 const kfmt = (n) => n >= 1000 ? Math.round(n / 1000) + 'k' : String(n);
-const TONE = { planned: 'neutral', ready: 'info', building: 'info', review: 'warn', pr: 'warn', done: 'ok', dropped: 'neutral', running: 'info', waiting: 'warn', failed: 'bad', stopped: 'bad', gap: 'warn', 'contract-change': 'warn', unknown: 'neutral',
+const TONE = { planned: 'neutral', ready: 'info', building: 'info', review: 'warn', pr: 'warn', done: 'ok', dropped: 'neutral', running: 'info', waiting: 'warn', queued: 'neutral', failed: 'bad', stopped: 'bad', gap: 'warn', 'contract-change': 'warn', unknown: 'neutral',
   accepting: 'info', integrating: 'warn', merged: 'ok', blocked: 'bad', green: 'ok', red: 'bad', pending: 'warn', open: 'warn' };
 function chip(text, kind, extra) { return h('span', { class: 'chip ' + (TONE[kind || text] || '') + (extra ? ' ' + extra : '') }, [text]); }
 function prChip(pr) {
@@ -205,13 +205,13 @@ const allOpen = () => S.q.filter(q => q.state === 'open').sort((a, b) => (a.repo
 /* The /work-on phase; a run that has not reached its first checkpoint yet is "starting", a dossier nobody runs shows none. */
 const CMD_DOING = { 'fix-deferred': 'Fixing deferred issues' };
 function stageText(r) {
-  const live = r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state);
+  const live = r.runner && ['running', 'waiting', 'paused', 'queued'].includes(r.runner.state);
   if (live && r.runner.command && CMD_DOING[r.runner.command]) return CMD_DOING[r.runner.command];
   if (!r.phase || r.phase === 'plan') return live ? 'Starting' : '';
   return 'Phase ' + r.phase + (r.phaseName ? ' · ' + r.phaseName : '');
 }
 /* The run's state in plain words, no "runner" jargon. */
-const RUN_STATE = { running: 'in progress', waiting: 'waiting for you', paused: 'paused · usage limit', stopped: 'stopped', failed: 'failed', done: 'done' };
+const RUN_STATE = { running: 'in progress', waiting: 'waiting for you', paused: 'paused · usage limit', queued: 'queued · waiting for a slot', stopped: 'stopped', failed: 'failed', done: 'done' };
 const runChip = (st) => chip(RUN_STATE[st] || st, st);
 function itemMode(run) { if (R.forceDossier) return 'dossier'; return run.view === 'run' ? 'run' : 'dossier'; }
 function newestStub(repo) { const r = S.stubs.repos.find(x => x.repo === repo); return r && r.stubs.length ? r.stubs[0] : null; }
@@ -327,6 +327,7 @@ function accountsView() {
     h('div', { class: 'ahd' }, [h('span', { class: 'aname' }, [a.name]), a.next ? chip('next runs use this', 'done') : null, a.limitedUntil ? chip('blocked ' + fmtReset(a.limitedUntil).replace('resets ', 'until '), 'blocked') : null,
       a.runs.length ? chip(a.runs.length + ' running', 'neutral') : null]),
     h('div', { class: 'small mut' }, [[a.email, a.org].filter(Boolean).join(' · ')]),
+    a.sameLoginAs ? h('div', { class: 'small', title: 'Both config dirs are logged in with the same email, so they share one set of limits: switching between them gains nothing. Log one of them in with your other account.' }, [chip('same login as ' + a.sameLoginAs, 'blocked')]) : null,
     meter('5-hour', a.fiveHour), meter('Weekly', a.week),
     h('div', { class: 'small mut' }, [a.sampledAt ? when(a.sampledAt, 'read ') : 'never read'])]));
   return h('section', { class: 'sec', 'data-k': 'sec:acct' }, [h('div', { class: 'sechd' }, [h('h2', {}, ['Accounts']), h('span', { class: 'grow' }),
@@ -335,7 +336,7 @@ function accountsView() {
 }
 /* Every run consuming tokens right now, across repos: its state, step, account, agents at work, context and last activity. */
 function runningView() {
-  const live = S.runs.filter(r => r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state));
+  const live = S.runs.filter(r => r.runner && ['running', 'waiting', 'paused', 'queued'].includes(r.runner.state));
   const agents = live.reduce((n, r) => n + (r.agents ? r.agents.running : 0), 0);
   const working = live.filter(r => r.runner.state === 'running').length;
   const rows = live.sort((a, b) => (a.repo + a.id).localeCompare(b.repo + b.id)).map(r => {
@@ -420,7 +421,7 @@ function mergeCtl(r) {
   if (!r) return null;
   const k = r.repo + '/' + r.id + ':merge'; const st = S.ctl[k] || {}; const m = r.merge;
   if (m && m.state === 'merging') return h('span', { class: 'chip fixing', title: 'Merging ' + m.prs.map(n => '#' + n).join(', ') + ' into ' + m.base }, [h('span', { class: 'dot info live' }), 'merging…']);
-  const live = r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state);
+  const live = r.runner && ['running', 'waiting', 'paused', 'queued'].includes(r.runner.state);
   if (live || !(r.status === 'done' || r.status === 'pr')) return null;
   const kids = [];
   if (m && m.state === 'failed' && !st.plan) kids.push(h('span', { class: 'chip blocked', title: m.error }, ['merge failed']));
@@ -448,7 +449,7 @@ function stubRow(repo, id, o) {
   const r = S.runs.find(x => x.repo === repo && x.id === id); const nq = r ? openQs(r) : [];
   const title = (r && r.title) || o.title || '';
   const right = [];
-  const fixing = r && r.runner && r.runner.command === 'fix-deferred' && ['running', 'waiting', 'paused'].includes(r.runner.state);
+  const fixing = r && r.runner && r.runner.command === 'fix-deferred' && ['running', 'waiting', 'paused', 'queued'].includes(r.runner.state);
   if (fixing) right.push(h('span', { class: 'chip fixing', title: 'A stacked PR with fixes for the deferred issues is being built' }, [h('span', { class: 'dot info live' }), r.runner.state === 'waiting' ? 'fixing deferred · waiting for you' : r.runner.state === 'paused' ? 'fixing deferred · paused' : 'fixing deferred']));
   if (o.merged) right.push(chip('merged', 'done'));
   else if (r && (r.status === 'done' || r.status === 'pr')) { right.push(chip('PR open · ready to merge', 'done')); if (!o.noPr) { const mc = mergeCtl(r); if (mc) right.push(mc); } }
@@ -615,7 +616,7 @@ function itemView(repo, id) {
   if (mode === 'run' || hasLog) list.push(['log', 'Build log' + (hasLog ? ' (' + d.log.length + ')' : '')]);
   if (nDf) list.push(['deferred', 'Deferred (' + r.deferredOpen + ' open / ' + nDf + ')']);
   // A finished dossier opens on its dossier, but while a later run (fixing deferred issues) works, on its timeline.
-  const busy = r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state);
+  const busy = r.runner && ['running', 'waiting', 'paused', 'queued'].includes(r.runner.state);
   const liveTab = d && d.activeSection ? 'tl:' + d.activeSection : 'timeline';
   let tab = S.tab[key] || (busy && list.some(t => t[0] === liveTab) ? liveTab : busy && list.some(t => t[0] === 'timeline') ? 'timeline' : list[0][0]); if (!list.some(t => t[0] === tab)) tab = list[0][0];
   if (list.length > 1) kids.push(tabs(key, list));
@@ -646,7 +647,7 @@ function dfState(r, i) {
   if (i.state === 'dossier') {
     if (i.dossier) return h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]);
     const cmd = '/plan ' + r.id + ' ' + i.id;
-    if (i.planning && ['running', 'waiting', 'paused'].includes(i.planning)) return h('span', { title: 'A /plan run is writing this dossier' + (i.planning === 'waiting' ? '; it waits for your answer' : '') }, [chip(i.planning === 'waiting' ? 'being planned · ? waiting for you' : 'being planned', i.planning === 'waiting' ? 'warn' : 'pending')]);
+    if (i.planning && ['running', 'waiting', 'paused', 'queued'].includes(i.planning)) return h('span', { title: 'A /plan run is writing this dossier' + (i.planning === 'waiting' ? '; it waits for your answer' : '') }, [chip(i.planning === 'waiting' ? 'being planned · ? waiting for you' : 'being planned', i.planning === 'waiting' ? 'warn' : 'pending')]);
     const st = S.ctl[r.repo + '/' + r.id + ':plan:' + i.id] || {};
     return h('span', { class: 'dfplan', title: 'You ruled this item to its own dossier. No dossier is written yet' + (i.planning === 'failed' || i.planning === 'stopped' ? ' (its /plan run ' + i.planning + ')' : '') + '. Plan it starts ' + cmd + ' in the background; its questions come to you here.' }, [chip('own dossier · not planned yet', 'planned'),
       h('button', { class: 'btn sm', type: 'button', 'data-act': 'plan-item', 'data-repo': r.repo, 'data-id': r.id, 'data-item': i.id, disabled: st.busy ? true : null }, [st.busy ? 'Starting…' : 'Plan it']),
@@ -660,7 +661,7 @@ function dfState(r, i) {
 }
 /* Fixing the deferred issues: the stacked PR, where each item stands (being fixed, fixed, its own dossier, dropped,
    left open), and the questions it waits on; live while /fix-deferred runs, the final state once it is done. */
-const fixLive = (r) => !!(r.runner && r.runner.command === 'fix-deferred' && ['running', 'waiting', 'paused'].includes(r.runner.state));
+const fixLive = (r) => !!(r.runner && r.runner.command === 'fix-deferred' && ['running', 'waiting', 'paused', 'queued'].includes(r.runner.state));
 const prNum = (u) => { const m = String(u || '').match(/(\d+)\/?$/); return m ? '#' + m[1] : 'PR'; };
 function deferredProgress(r, d) {
   const df = r.deferred; if (!df || !df.items.length) return null;
@@ -710,7 +711,7 @@ function blockedView(r, d) {
 function summaryView(r, d) {
   const key = r.repo + '/' + r.id; const st = S.chat['sum:' + key] = S.chat['sum:' + key] || {};
   if (d.summary) return h('section', { class: 'panel psum', 'data-k': 'psum' }, [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Product summary']), when(d.summary.ts)]), mdBlock(d.summary.html, 'psum:' + d.summary.ts)]);
-  const built = ['done', 'pr', 'review'].indexOf(r.status) >= 0 && !(r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state));
+  const built = ['done', 'pr', 'review'].indexOf(r.status) >= 0 && !(r.runner && ['running', 'waiting', 'paused', 'queued'].includes(r.runner.state));
   if (!built) return null;
   const busy = d.summaryBusy || st.busy;
   return h('section', { class: 'panel psum empty-sum', 'data-k': 'psum' }, [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Product summary'])]),
@@ -738,7 +739,7 @@ function resultView(r, d) {
 /* A message to a live run: the runner hands it to the running agent at once (mid-turn, or by waking it while it waits
    on a question, which stays open). For a correction to an answer already given, or a change of plan. */
 function liveMessageView(r) {
-  if (!r.runner || !['running', 'waiting', 'paused'].includes(r.runner.state)) return null;
+  if (!r.runner || !['running', 'waiting', 'paused', 'queued'].includes(r.runner.state)) return null;
   const key = r.repo + '/' + r.id; const st = S.chat[key] = S.chat[key] || {};
   const sent = (r.updates || []).filter(u => u.event === 'owner-message').slice(0, 3);
   const delivered = (r.updates || []).find(u => u.kind === 'runner' && /^delivered \d+ message/.test(u.text));
@@ -781,7 +782,7 @@ function deferredView(r) {
   const bar = [];
   if (pick.length) {
     const confirming = st.confirm === 'fix-sel'; const busy = st.busy === 'fix-sel';
-    const why = !fix || !fix.show ? (r.runner && ['running', 'waiting', 'paused'].includes(r.runner.state) ? 'the run is still going' : 'available once the build is finished') : '';
+    const why = !fix || !fix.show ? (r.runner && ['running', 'waiting', 'paused', 'queued'].includes(r.runner.state) ? 'the run is still going' : 'available once the build is finished') : '';
     bar.push(h('button', { class: 'btn sm', type: 'button', 'data-act': 'dsel-all', 'data-key': key }, [all ? 'Clear selection' : 'Select all ' + pick.length]));
     bar.push(h('span', { class: 'small mut' }, [n + ' of ' + pick.length + ' selected']));
     bar.push(h('span', { class: 'grow' }));
