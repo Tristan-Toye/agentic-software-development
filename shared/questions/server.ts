@@ -640,6 +640,12 @@ export async function handle(req: Request): Promise<Response> {
       const ok = new Set(run.deferred.items.filter((i) => i.state === "open").map((i) => i.id))
       const bad = items.filter((i) => !ok.has(i))
       if (bad.length) return json({ error: `not an item to fix: ${bad.join(", ")}` }, 400)
+      // "Fix all deferred" means every open item except the ones the owner ruled to leave open: name them explicitly,
+      // so the run never sweeps a kept-open item in. (Ticking one by hand still fixes it.)
+      if (!items.length) {
+        items = run.deferred.items.filter((i) => i.state === "open" && !i.keptOpen).map((i) => i.id)
+        if (!items.length) return json({ error: "nothing to fix: every open item was ruled to stay open" }, 409)
+      }
     }
     const key = `${repo}.${id}`
     if (inflightControl.has(key)) return json({ error: "another control is running for this dossier" }, 409)

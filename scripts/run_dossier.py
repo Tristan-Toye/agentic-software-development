@@ -807,6 +807,63 @@ class Runner:
                 time.sleep(min(5.0, poll))
         return None
 
+    def forward_owner_replies(self) -> bool:
+        """Send on what the owner wrote on this run's open questions while the run was not waiting on them. The agent
+        may ask and keep working; the runner used to pass a reply on only inside a wait, so a follow-up typed meanwhile
+        sat unread. Checked every 20 s; each owner line goes once, in the wait's own form (OWNER FOLLOWUP / ANSWER).
+        A question the run is waiting on is left to the wait."""
+        nowm = time.monotonic()
+        if nowm - getattr(self, "_fwdq_checked", 0.0) < float(os.environ.get("ASD_RUNNER_QFWD_EVERY") or 20):
+            return False
+        self._fwdq_checked = nowm
+        if self.proc is None or self.proc.poll() is not None:
+            return False
+        qdir = os.environ.get("ASD_QUESTIONS_DIR") or os.path.expanduser("~/.agentic/questions")
+        prefix = self.key_q_prefix()
+        waiting = set(self.state.get("questions") or [])
+        done = dict(self.state.get("fwd_q") or {})
+        started = str(self.state.get("started") or "")
+        sent = 0
+        try:
+            names = [n for n in os.listdir(qdir) if n.startswith(prefix) and n.endswith(".jsonl")]
+        except OSError:
+            return False
+        for n in names:
+            qid = n[:-6]
+            if qid in waiting:
+                continue
+            try:
+                with open(os.path.join(qdir, n)) as fh:
+                    lines = [json.loads(l) for l in fh if l.strip()]
+            except (OSError, ValueError):
+                continue
+            q = lines[0] if lines else {}
+            # This run's question: asked by its run key, or (older questions) asked since this runner started.
+            if q.get("run") and q["run"] != self.key:
+                continue
+            if not q.get("run") and str(q.get("ts") or "") < started:
+                continue
+            last_agent = max((i for i, l in enumerate(lines) if l.get("from") == "agent"), default=0)
+            for l in lines[last_agent + 1:]:
+                if l.get("from") != "owner" or str(l.get("ts") or "") <= str(done.get(qid) or ""):
+                    continue
+                if l.get("kind") == "answer":
+                    opt = l.get("option") or ""
+                    self.send(f"OWNER ANSWER {qid}{f' [option {opt}]' if opt else ''}: {l.get('text', '')}")
+                else:
+                    self.send(f"OWNER FOLLOWUP {qid}: {l.get('text', '')} (the owner wrote this on your open question while you worked; "
+                              "answer it in the question's chat with ask_owner.py reply)")
+                done[qid] = str(l.get("ts") or "")
+                sent += 1
+        if sent:
+            self.save(fwd_q=done)
+            self.log(f"sent on {sent} owner repl{'y' if sent == 1 else 'ies'} on open questions")
+        return bool(sent)
+
+    def key_q_prefix(self) -> str:
+        """Question ids of this run's dossier: `<repo>.<ID>.Q`."""
+        return key_of(self.root, self.dossier) + ".Q"
+
     def forward_dropped(self) -> bool:
         """Send on the completion notices the CLI dropped. A background command or workflow that finishes while no turn
         is running is announced by a `<task-notification>`; headless sessions have been seen to `remove` it from the
@@ -941,6 +998,8 @@ class Runner:
         while True:
             if result is None and self.deliver_inbox():
                 quiet_since = time.monotonic()  # a message between turns starts a turn of its own
+            if result is None and self.forward_owner_replies():
+                quiet_since = time.monotonic()  # the owner wrote on an open question while the agent worked
             if result is None and idle is not None and self.forward_dropped():
                 quiet_since = time.monotonic()  # a dropped notification, sent on: the session works again
             timeout = self.grace if (result is not None and extra) else 1.0
@@ -1961,6 +2020,20 @@ def selftest() -> int:
         fakes = [int(open(os.path.join(fdir, f)).read()) for f in os.listdir(fdir) if f.startswith("pid.")]
         until(lambda: not any(alive(x) for x in fakes), 15)
         env.pop("ASD_RUNNER_NET_WAIT"); env.pop("ASD_RUNNER_NET_RETRIES")
+
+        # ---- a reply on an open question the run is not waiting on is sent on mid-run ----
+        scenario([{"turns": [[{"ask": 1, "dossier": "W-41", "final": "asked, carrying on with other work"}], [{"final": "RUNNER: DONE"}]]}])
+        env.update(ASD_RUNNER_QFWD_EVERY="0.2", ASD_RUNNER_IDLE="60")
+        p = start("W-41")
+        q41 = "repo.W-41.Q1"
+        until(lambda: os.path.exists(qfile(q41)) and any("carrying on" in x for x in texts("W-41") + [""]) or os.path.exists(os.path.join(fdir, "in.1.jsonl")), 20)
+        time.sleep(0.5)
+        owner_line(q41, "followup", "what exactly is the problem?")
+        rc = p.wait(timeout=60)
+        env.pop("ASD_RUNNER_QFWD_EVERY"); env["ASD_RUNNER_IDLE"] = "1"
+        fwd = [m for m in msgs(1) if m.startswith(f"OWNER FOLLOWUP {q41}")]
+        check("question reply: sent on mid-run, once, and the run goes on", rc == 0 and len(fwd) == 1 and "what exactly is the problem?" in fwd[0]
+              and json.loads(open(qfile(q41)).readline()).get("run") == "repo.W-41")
 
         # ---- the stub breakpoint: wait (no tokens) until a stub can be built on, then hand it over ----
         st_fake = os.path.join(tmp, "stub_target_fake.py")

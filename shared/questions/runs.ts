@@ -614,7 +614,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
         let report = ""
         try { report = readFileSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`), "utf8") } catch { /* none */ }
         const deferred: Deferred = { items: withReport(pd.items, report), pr: pd.pr, report: report !== "", branch: pd.branch }
-        return { deferred, deferredOpen: pd.items.filter((i) => i.state === "open").length }
+        return { deferred, deferredOpen: pd.items.filter((i) => i.state === "open" && !i.keptOpen).length }
       })(),
     })
   }
