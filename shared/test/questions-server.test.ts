@@ -15,7 +15,7 @@ import { mergeSpawns, inTimeline } from "../questions/timeline.ts"
 import { nextMerges, dossierOfPr } from "../questions/merges.ts"
 import { agentCounts, waitingForSlots, runStatusText, statusBlocks, openerBlocks } from "../questions/runstatus.ts"
 import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPanel, splitSections, commandStep } from "../questions/timeline.ts"
-import { blockedByOf, controlsFor } from "../questions/controls.ts"
+import { blockedByOf, controlsFor, runTarget } from "../questions/controls.ts"
 import { readAccounts } from "../questions/accounts.ts"
 import { execFileSync } from "node:child_process"
 
@@ -332,6 +332,8 @@ check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n
     && h.includes('<a href="https://github.com/o/r/pull/431" target="_blank" rel="noopener">#431</a>') && !h.includes('href="javascript') && h.includes("<li>top<ul><li>nested</li></ul></li>") && h.includes("<ol><li>one</li></ol>"))
   check("runstore: a pipe block without a separator row stays preformatted", renderMarkdown("| a |\n| b |").startsWith("<pre>"))
 }
+check("controls: a dossier a plan run minted resumes and stops under its source", runTarget("r", "W-155", "r.W-145.plan-D-1").dossier === "W-145" && runTarget("r", "W-155", "r.W-145.plan-D-1").stop === "W-145.plan-D-1"
+  && runTarget("r", "W-1", "r.W-1").dossier === "W-1" && runTarget("r", "W-1", "r.W-1").stop === "W-1" && runTarget("r", "W-1").dossier === "W-1")
 {
   const it = (id: string, extra: object = {}) => ({ id, state: "open", ...extra }) as any
   const items = [it("D-1"), it("D-2", { question: "q.Q1" }), it("D-3", { question: "q.Q2" }), it("D-4", { keptOpen: true }), it("D-5", { state: "fixing" })]

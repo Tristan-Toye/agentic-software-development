@@ -8,7 +8,7 @@ import { getStubs, openWorkHtml, recordFile } from "./stubs.ts"
 import { checkRule, dossierPage, readBlocks, readConversation, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
 import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord, splitSections } from "./timeline.ts"
-import { runRunner } from "./controls.ts"
+import { runRunner, runTarget, runnerScript } from "./controls.ts"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
@@ -676,7 +676,8 @@ export async function handle(req: Request): Promise<Response> {
       // Start runs the dossier's next flow (plan or work-on); Resume runs the flow that stopped, with its items.
       const flow = action === "start" ? [`--command`, ctl.command || "work-on"]
         : action === "resume" ? ["--command", ctl.command || "work-on", ...(run.runner?.items ? ["--items", run.runner.items] : [])] : []
-      const r = await runRunner(action === "stop" ? ["stop", id, "--root", root] : action === "fix-deferred" ? [id, "--root", root, "--command", "fix-deferred", ...(items.length ? ["--items", items.join(",")] : [])] : [id, "--root", root, ...flow])
+      const target = runTarget(repo, id, run.runKey)
+      const r = await runRunner(action === "stop" ? ["stop", target.stop, "--root", root] : action === "fix-deferred" ? [id, "--root", root, "--command", "fix-deferred", ...(items.length ? ["--items", items.join(",")] : [])] : [target.dossier, "--root", root, ...flow])
       emitChange("runs")
       return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 500)
     } finally { inflightControl.delete(key) }
@@ -864,7 +865,11 @@ async function main(): Promise<void> {
   setTimeout(() => void checkMerges(), 20_000)
   setInterval(() => void checkMerges(), 120_000)
   // A merge queue outlives its worker (a logout, a reboot, a crash): pick it up again where it was.
-  const reviveQueues = () => { try { Bun.spawn(["python3", mergeScript(), "--revive"], { stdout: "ignore", stderr: "ignore", stdin: "ignore" }).unref() } catch { /* the next tick tries again */ } }
+  // A run killed rather than stopped (its record says working, its process is gone) goes on from its checkpoints too.
+  const reviveQueues = () => { try {
+    Bun.spawn(["python3", mergeScript(), "--revive"], { stdout: "ignore", stderr: "ignore", stdin: "ignore" }).unref()
+    Bun.spawn(["python3", runnerScript(), "revive"], { stdout: "ignore", stderr: "ignore", stdin: "ignore" }).unref()
+  } catch { /* the next tick tries again */ } }
   setTimeout(reviveQueues, 5_000)
   setInterval(reviveQueues, 120_000)
 }
