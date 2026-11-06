@@ -327,6 +327,7 @@ function accountsView() {
     h('div', { class: 'ahd' }, [h('span', { class: 'aname' }, [a.name]), a.next ? chip('next runs use this', 'done') : null, a.limitedUntil ? chip('blocked ' + fmtReset(a.limitedUntil).replace('resets ', 'until '), 'blocked') : null,
       a.runs.length ? chip(a.runs.length + ' running', 'neutral') : null]),
     h('div', { class: 'small mut' }, [[a.email, a.org].filter(Boolean).join(' · ')]),
+    a.expected && a.email && a.expected.toLowerCase() !== a.email.toLowerCase() ? h('div', { class: 'small', title: 'accounts.json binds this account to ' + a.expected + ', but its config dir is logged in as ' + a.email + '. The runner does not use it until it is logged in as ' + a.expected + ' again: CLAUDE_CONFIG_DIR=' + a.dir + ' claude, then /login.' }, [chip('logged in as the wrong account · not used', 'blocked')]) : null,
     a.sameLoginAs ? h('div', { class: 'small', title: 'Both config dirs are logged in with the same email, so they share one set of limits: switching between them gains nothing. Log one of them in with your other account.' }, [chip('same login as ' + a.sameLoginAs, 'blocked')]) : null,
     meter('5-hour', a.fiveHour), meter('Weekly', a.week),
     h('div', { class: 'small mut' }, [a.sampledAt ? when(a.sampledAt, 'read ') : 'never read'])]));

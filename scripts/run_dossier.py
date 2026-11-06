@@ -68,6 +68,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ASK_OWNER = os.path.join(HERE, "ask_owner.py")
 PLUGIN = "agentic-software-development"
 
+TIME_LOGGING_OFF = ("time logging is off: do not log time to Tempo, do not ask the owner about it, and do not read "
+                    "references/time-logging.md (ASD_RUNNER_TIME_LOGGING=on turns the gate back on).")
+TIME_LOGGING_ON = "time logging is on: follow references/time-logging.md once, in the first stage only."
 RUNNER_RULES = """\
 You run under the dossier runner and nobody reads the terminal.
 - Ask the owner only through scripts/ask_owner.py, and never wait in the background: keep working on whatever is not blocked; when nothing can proceed, end the turn with the line `RUNNER: WAITING <id>[,<id>...]` and stop. The ids are question ids from ask_owner.py only; a wait on a background command or workflow is not a WAITING line: just end the turn, and Claude Code re-invokes you when it finishes. The runner waits for you and sends the owner's message into this session as `OWNER ANSWER <id>: ...` or `OWNER FOLLOWUP <id>: ...`. A follow-up is the owner's typed message and the question stays open, as a chat, until the owner presses a button: if it is a question, answer it with `ask_owner.py reply <id> --text "..."`; if it reads as an answer or an instruction, reply with your reading and add it as a button, `ask_owner.py reply <id> --text "<what you take it to mean, and what you will do>" --option "D|Confirm: <your reading in a few words>|<what happens>"` (a key the question does not have yet); if it is unclear, reply with your question. Then end the turn with `RUNNER: WAITING <id>` again. Never close a question yourself: only the owner's button does, and every question ends with one.
@@ -75,10 +78,20 @@ You run under the dossier runner and nobody reads the terminal.
 - When the auto-mode safety check blocks a call you need, never work around it: ask the owner with `ask_owner.py ask`, quoting the exact command (or path) and what it is for, with options to allow it once, to allow it as a standing rule, or to go without it; carry on with what is not blocked. The dashboard's Blocked card answers that question; an approval names the exact command, so retry it as written.
 - Run every test through scripts/run_tests.py and every gate list through scripts/run_gates.py (`--vm` for the VM, `--detach` then `--wait` for a long run), never through a script or command of your own: their result lines are how the owner's timeline shows a suite going green or red. Run only the tests the command's step names: under /work-on and /fix-deferred with SUITE-MODE `stub`, that is the new and affected tests and the pull request's CI, never the full workspace or `--stack` suite, which only /stub runs.
 - Never end a stage (or the run) while a background command, workflow or agent you started is still running: it dies with this process and no notification reaches the next stage. Wait for its notification and take its result first; the runner holds a stage end that comes too early. If a checkpoint must still name work in flight, say how the next stage tells it finished or died (its report file, its branch or worktree, its output file).
+- Gates already settled for this run: the worktree gate is yes, and {time_logging}
+- The plugin's references (`references/work-on/phase-*.md`, `formats/*`, `runner.md`) are long and the same in every stage: read only the section your step needs (`doc_section`, or `Read` with offset and limit), not whole files, and never the same section twice in one stage.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
 - Keep the owner informed: post an update with `ask_owner.py note --root R --dossier ID --text "..."` when a stage starts and ends and whenever something worth knowing happens (a wave returned, the suite went green or red, an arbitration was ruled, a plan changed). Write it for a person reading on a phone: what happened and what it means, in plain sentences; markdown bullets and small tables are welcome. Never paste commands, file paths, SHAs, flags or log output into an update; the build log keeps those.
 """
+
+def runner_rules() -> str:
+    """The appended rules, with the run's settled gates: time logging is off unless ASD_RUNNER_TIME_LOGGING=on.
+    Every stage is a new session running the command again, so a gate the command opens with ("time logging first")
+    would otherwise be read, and asked, at every stage."""
+    on = (os.environ.get("ASD_RUNNER_TIME_LOGGING") or "off").strip().lower() in ("on", "1", "true", "yes")
+    return RUNNER_RULES.replace("{time_logging}", TIME_LOGGING_ON if on else TIME_LOGGING_OFF)
+
 
 LIMIT_RE = re.compile(r"usage limit|rate.?limit|weekly limit|limit reached|out of (?:extra )?usage|hit your .*limit|\b429\b|overloaded", re.I)
 
@@ -134,7 +147,27 @@ def load_accounts() -> list[dict]:
             acc = [a for a in json.load(fh).get("accounts", []) if a.get("name") and a.get("dir")]
     except (OSError, ValueError):
         acc = []
-    return [{"name": a["name"], "dir": os.path.expanduser(a["dir"])} for a in acc] or [{"name": "default", "dir": os.path.expanduser("~/.claude")}]
+    return [{"name": a["name"], "dir": os.path.expanduser(a["dir"]), **({"email": str(a["email"])} if a.get("email") else {})} for a in acc] \
+        or [{"name": "default", "dir": os.path.expanduser("~/.claude")}]
+
+
+def account_login(d: str) -> str:
+    """The email a config dir is logged in as: `<dir>/.claude.json`, or `~/.claude.json` for the default `~/.claude`."""
+    home = os.path.expanduser("~")
+    f = os.path.join(home, ".claude.json") if os.path.abspath(d) == os.path.join(home, ".claude") else os.path.join(d, ".claude.json")
+    return str(((read_json(f, {}) or {}).get("oauthAccount") or {}).get("emailAddress") or "")
+
+
+def account_problem(a: dict, accs: list[dict]) -> str:
+    """Why an account must not be used, or "": its dir is logged in as another email than the one it is bound to
+    (`email` in accounts.json), or as the same email as an account listed before it (switching would gain nothing)."""
+    got = account_login(a["dir"])
+    if a.get("email") and got and got.lower() != a["email"].lower():
+        return f"{a['dir']} is logged in as {got}, not {a['email']}"
+    for b in accs[: accs.index(a)]:
+        if got and account_login(b["dir"]).lower() == got.lower():
+            return f"same login ({got}) as account {b['name']}"
+    return ""
 
 
 def account_state() -> dict:
@@ -155,7 +188,9 @@ def pick_account(now_s: float | None = None, prefer: str = "") -> tuple[dict, fl
     """The account to run on and the time it is usable from: one that is not limited,
     `prefer` first, else the one whose limit resets first."""
     now_s = time.time() if now_s is None else now_s
-    accs, st = load_accounts(), account_state()
+    all_accs, st = load_accounts(), account_state()
+    # An account logged in as the wrong email, or as a twin of another, is skipped while a good one exists.
+    accs = [a for a in all_accs if not account_problem(a, all_accs)] or all_accs
     free_at = lambda a: 0.0 if limit_superseded(st.get(a["name"]), read_json(os.path.join(USAGE_DIR(), a["name"] + ".json"), {})) else float((st.get(a["name"]) or {}).get("limited_until") or 0)
     order = sorted(accs, key=lambda a: (a["name"] != prefer, accs.index(a)))
     for a in order:
@@ -649,7 +684,7 @@ class Runner:
     def claude_cmd(self) -> list[str]:
         cmd = shlex.split(os.environ.get("ASD_CLAUDE_BIN") or "claude")
         cmd += ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-                "--permission-mode", self.permission_mode, "--append-system-prompt", RUNNER_RULES]
+                "--permission-mode", self.permission_mode, "--append-system-prompt", runner_rules()]
         cmd += ["--model", self.model or runner_model(None)]
         return cmd
 
@@ -1787,10 +1822,19 @@ def selftest() -> int:
         os.remove(os.path.join(rdir, "repo.W-90.runner.json"))
         env.pop("ASD_RUNNER_MAX_LIVE"); env.pop("ASD_RUNNER_SLOT_POLL")
 
+        # ---- accounts bound to an email: a dir logged in as someone else, or as a twin, is skipped ----
+        ah = os.path.join(tmp, "acchome"); os.makedirs(os.path.join(ah, "d1")); os.makedirs(os.path.join(ah, "d2")); os.makedirs(os.path.join(ah, "d3"))
+        for d, em in (("d1", "work@x"), ("d2", "work@x"), ("d3", "me@y")):
+            write_json(os.path.join(ah, d, ".claude.json"), {"oauthAccount": {"emailAddress": em}})
+        accs = [{"name": "a", "dir": os.path.join(ah, "d1"), "email": "me@y"}, {"name": "b", "dir": os.path.join(ah, "d2")}, {"name": "c", "dir": os.path.join(ah, "d3")}]
+        check("accounts: a dir logged in as another email than its own is not used", "not me@y" in account_problem(accs[0], accs))
+        check("accounts: a twin of an earlier login is not used; a distinct one is", "same login" in account_problem(accs[2] if False else accs[1], [dict(accs[0], email=""), accs[1]]) and account_problem(accs[2], accs) == "")
+
         # ---- the orchestrator's model: pinned to an exact id, never Fable ----
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
         p = start("W-34")
         check("model: the orchestrator gets --model claude-opus-5-5 by default", p.wait(timeout=60) == 0 and "--model claude-opus-5-5" in open(os.path.join(fdir, "env.1")).read())
+        check("runner rules: time logging is settled off; references are read by section", "time logging is off" in open(os.path.join(fdir, "env.1")).read() and "doc_section" in open(os.path.join(fdir, "env.1")).read())
         bad = subprocess.run([sys.executable, me, "--root", root, "--dossier", "W-35", "--model", "claude-fable-5-1", "--foreground"], env=env, capture_output=True, text=True, timeout=30)
         check("model: Fable is refused before anything starts", bad.returncode != 0 and "not allowed" in (bad.stdout + bad.stderr))
         scenario([{"init_model": "claude-fable-5-1", "turns": [[{"final": "RUNNER: DONE"}]]}])
@@ -1882,6 +1926,14 @@ def selftest() -> int:
         owner_line(q30, "answer", "A", "A")
         check("message: the answer still goes through and the run finishes", p.wait(timeout=60) == 0 and state_of("W-30").get("inbox_seen") == 1)
         check("message: the timeline has the owner's message", any(x.get("event") == "owner-message" for x in lines_of(os.path.join(rdir, "repo.W-30.jsonl"))))
+
+        # Before the temp dir goes: every fake claude process and runner child this test started must be gone.
+        for _ in range(100):
+            pids = [int(open(os.path.join(fdir, f)).read() or 0) for f in os.listdir(fdir) if f.startswith("pid.")]
+            if not any(alive(x) for x in pids):
+                break
+            time.sleep(0.1)
+        time.sleep(0.3)
 
     print("FAILED: " + ", ".join(failures) if failures else "all ok")
     return 1 if failures else 0

@@ -13,6 +13,7 @@ export type Account = {
   fiveHour: Window | null; week: Window | null
   runs: string[]                  // live runs on it: "<repo>.<ID>"
   sameLoginAs?: string            // another registered account logged in with the same email: switching gains nothing
+  expected?: string               // the email accounts.json binds it to; when the login differs the runner does not use it
 }
 /**
  * A limit the runner recorded no longer holds once a later reading of the account says its windows are open (the
@@ -51,8 +52,8 @@ function windowOf(w: any, now: number): Window | null {
  * the one that frees first, as `pick_account` in run_dossier.py), its windows and the live runs on it.
  */
 export function readAccounts(liveRuns: { key: string; account?: string }[], now = Date.now()): Account[] {
-  const list: { name: string; dir: string }[] = (readJson(accountsFile())?.accounts ?? []).filter((a: any) => a?.name && a?.dir).map((a: any) => ({ name: String(a.name), dir: expand(String(a.dir)) }))
-  const accs = list.length ? list : [{ name: "default", dir: join(home(), ".claude") }]
+  const list: { name: string; dir: string; email?: string }[] = (readJson(accountsFile())?.accounts ?? []).filter((a: any) => a?.name && a?.dir).map((a: any) => ({ name: String(a.name), dir: expand(String(a.dir)), ...(a.email ? { email: String(a.email) } : {}) }))
+  const accs: { name: string; dir: string; email?: string }[] = list.length ? list : [{ name: "default", dir: join(home(), ".claude") }]
   const st = readJson(accountStateFile()) ?? {}
   const usage = (n: string): any => readJson(join(usageDir(), `${n}.json`)) ?? {}
   const freeAt = (n: string): number => (limitSuperseded(st?.[n], usage(n)) ? 0 : Number(st?.[n]?.limited_until ?? 0) * 1000)
@@ -64,7 +65,7 @@ export function readAccounts(liveRuns: { key: string; account?: string }[], now 
     const me = logins.get(a.name)!
     const twin = me.email ? accs.find((b) => b.name !== a.name && logins.get(b.name)!.email === me.email)?.name : undefined
     return {
-      name: a.name, dir: a.dir, ...me, ...(twin ? { sameLoginAs: twin } : {}), limitedUntil: lim > now ? new Date(lim).toISOString() : "", next: a.name === usable?.name,
+      name: a.name, dir: a.dir, ...me, ...(twin ? { sameLoginAs: twin } : {}), ...(a.email ? { expected: a.email } : {}), limitedUntil: lim > now ? new Date(lim).toISOString() : "", next: a.name === usable?.name,
       sampledAt: String(u.ts ?? ""), fiveHour: windowOf(u.windows?.five_hour, now), week: windowOf(u.windows?.seven_day, now),
       runs: liveRuns.filter((r) => r.account === a.name).map((r) => r.key),
     }

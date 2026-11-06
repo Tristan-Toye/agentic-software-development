@@ -127,11 +127,27 @@ which is not minted yet. A `<base>` with no remote forks from the local
 branch instead; say so. This worktree is `${RUN_ROOT}` from here. In local
 mode this step does not exist.
 
-## Phase 2 — Investigate, yourself
+## Phase 2 — Investigate: scouts search, you judge
 
-There is no discovery agent. You have `Read`, `Grep`, `Glob` and `Bash`, and
-you are the strongest model in the pipeline — the isolation a sub-agent offers
-buys nothing here and costs a context round trip.
+You are the strongest model in the pipeline and the most expensive one per
+token, so spend your context on judgement, not on searching. **Send the
+lookups to `code-scout`** (the small model): where a symbol is defined, who
+calls it, which files hold a pattern, what a member promises, which tests
+name a thing. Ask several scouts at once, each with a few numbered questions
+(`ROOT`, `QUESTIONS`, `LIMIT`), in one message, and take their `path:line`
+rows back. Then open **only** the anchors you will cite or must reason over,
+in ranges. One recorded run of six plans made 907 search calls itself and
+spawned no scout; most of its cost was those results written into its own
+context. Read, grep and run commands yourself only for the one or two
+questions a scout cannot answer (a reproduction, an experiment, history).
+
+**Keep the findings on disk as you go**, in
+`${RUN_ROOT}/.agent-staging/plan-<key>/findings.md` (`<key>` is the dossier id,
+or the source id and item, `W-128-D-3`): one line per settled finding with its
+label and anchor (`FACT src/x.rs:41 — …`, `UNKNOWN — …, answered by …`), and
+the open questions. A restarted session (a usage limit, a network error, the
+runner's next stage) reads that file and carries on from it instead of
+searching again.
 
 Work in `${RUN_ROOT}`: open, grep and blame there, so every anchor you write
 is true at the commit Phase 7 stamps. In committed mode that tree is the
@@ -155,6 +171,13 @@ one line in the report, never a reason to read the older tree.
    outside the repository.
 5. **Record what you cannot settle** as `UNKNOWN` with the name of who or what
    answers it. Never launder an unknown into an inference.
+
+**Checkpoint each phase.** Call `phase_checkpoint` at the end of every
+phase below, named `Phase <n> — <title>`, and in Phase 2 after every few
+settled findings: the summary names the findings file, what is settled, what
+is open, and a `NEXT:` line. Under the runner each restart starts from these
+checkpoints; a plan with none redoes its whole investigation (one recorded
+plan restarted seven times with no checkpoint and was still at intake).
 
 ## Phase 3 — Scope: one dossier by default
 
