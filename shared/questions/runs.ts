@@ -711,6 +711,14 @@ let cached: RunsView = readViewCache<RunsView>("runs") ?? { scannedAt: "", runs:
 let inflight: Promise<void> | null = null
 let lastScan = 0
 let lastSig = ""
+/**
+ * The deferred items that need the owner, the count a dossier's row shows. With no fix run live, every open item not
+ * left open by a ruling. While `/fix-deferred` is live the open items are in the agent's hands, so only those whose
+ * question still waits on the owner count.
+ */
+export function undecidedDeferred(items: DeferredItem[], fixLive: boolean, openQuestions: Set<string>): number {
+  return items.filter((i) => i.state === "open" && !i.keptOpen && (!fixLive || (!!i.question && openQuestions.has(i.question)))).length
+}
 /** Updates and runner state are cheap local reads, so they are fresh on every request. */
 function liveStore(r: Run): Pick<Run, "updates" | "runner" | "running" | "deferred" | "deferredOpen"> {
   const key = r.runKey || `${r.repo}.${r.id}`

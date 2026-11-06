@@ -471,7 +471,7 @@ function stubRow(repo, id, o) {
     if ((r.status === 'done' || r.status === 'pr') && !o.noPr) { const mc = mergeCtl(r); if (mc) right.push(mc); }
   }
   if (o.noPr && !(r && !o.working && (r.status === 'done' || r.status === 'pr'))) right.push(chip('no PR yet', 'neutral'));
-  if (r && r.deferredOpen) right.push(h('span', { class: 'chip', title: r.deferredOpen + ' deferred item(s) still to tackle' }, [r.deferredOpen + ' deferred']));
+  if (r && r.deferredUndecided) right.push(h('span', { class: 'chip', title: r.deferredUndecided + ' deferred item(s) waiting on your decision' }, [r.deferredUndecided + ' deferred']));
   if (nq.length) right.push(h('span', { class: 'qb', title: nq.length + ' open question(s)' }, ['? ' + nq.length]));
   return h('a', { class: 'srow' + (o.merged ? ' done' : ''), href: hrefItem(repo, id), 'data-k': 'srow:' + repo + '/' + id, title: id + (title ? ' · ' + title : '') },
     [h('span', { class: 'sid mono' }, [id]), h('span', { class: 'sname' }, [title || '—']), h('span', { class: 'sright' }, right)]);
@@ -534,9 +534,9 @@ function sideColumn(repo) {
   kids.push.apply(kids, os.length ? os.map(s => stubTree(repo, s)) : [h('div', { class: 'empty' }, ['No open stub for this repo.'])]);
   // Dossiers on an open stub card show their deferred count there; this lists the rest (their stub merged).
   const onCard = {}; os.forEach(s => { (s.members || []).forEach(m => { onCard[m.id] = 1; }); s.dossiers.forEach(d => { onCard[d.id] = 1; }); });
-  const dfd = S.runs.filter(r => r.repo === repo && r.deferredOpen > 0 && !onCard[r.id]).sort((a, b) => b.deferredOpen - a.deferredOpen);
-  if (dfd.length) kids.push(h('div', { class: 'scol-sec', 'data-k': 'dfd:' + repo }, [h('h3', {}, ['Deferred on merged work · ' + dfd.reduce((n, r) => n + r.deferredOpen, 0) + ' open']),
-    h('ul', { class: 'tree' }, dfd.map(r => h('li', {}, [h('a', { class: 'sub-item', href: hrefItem(repo, r.id) }, [h('span', { class: 'sid mono' }, [r.id]), h('span', { class: 'sname', title: r.title }, [r.title]), chip(r.deferredOpen + ' open', 'ready')])])))]));
+  const dfd = S.runs.filter(r => r.repo === repo && r.deferredUndecided > 0 && !onCard[r.id]).sort((a, b) => b.deferredUndecided - a.deferredUndecided);
+  if (dfd.length) kids.push(h('div', { class: 'scol-sec', 'data-k': 'dfd:' + repo }, [h('h3', {}, ['Deferred on merged work · ' + dfd.reduce((n, r) => n + r.deferredUndecided, 0) + ' open']),
+    h('ul', { class: 'tree' }, dfd.map(r => h('li', {}, [h('a', { class: 'sub-item', href: hrefItem(repo, r.id) }, [h('span', { class: 'sid mono' }, [r.id]), h('span', { class: 'sname', title: r.title }, [r.title]), chip(r.deferredUndecided + ' open', 'ready')])])))]));
   if (merged.length) kids.push(h('details', { class: 'mstubs', 'data-k': 'mstubs:' + repo }, [h('summary', {}, ['Merged stubs (' + merged.length + ')']),
     h('ul', { class: 'tree' }, merged.map(s => h('li', {}, [h('a', { class: 'sub-item', href: hrefStub(repo, s.branch) }, [h('span', { class: 'sid mono' }, [s.branch]), h('span', { class: 'sname', title: s.branch }, [s.dossiers.length + ' dossier(s)'])])])))]));
   return h('section', { class: 'scol full', 'data-k': 'sec:stubs' }, kids);

@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { channelNameFor, interpretEnvelope, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
+import { undecidedDeferred, parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
@@ -331,6 +331,13 @@ check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n
   check("runstore: pipe tables become tables, http links become links, nested lists nest", h.includes("<th>Outcome</th>") && h.includes("<td><code>a|b</code> <strong>fixed</strong></td>")
     && h.includes('<a href="https://github.com/o/r/pull/431" target="_blank" rel="noopener">#431</a>') && !h.includes('href="javascript') && h.includes("<li>top<ul><li>nested</li></ul></li>") && h.includes("<ol><li>one</li></ol>"))
   check("runstore: a pipe block without a separator row stays preformatted", renderMarkdown("| a |\n| b |").startsWith("<pre>"))
+}
+{
+  const it = (id: string, extra: object = {}) => ({ id, state: "open", ...extra }) as any
+  const items = [it("D-1"), it("D-2", { question: "q.Q1" }), it("D-3", { question: "q.Q2" }), it("D-4", { keptOpen: true }), it("D-5", { state: "fixing" })]
+  const open = new Set(["q.Q2"])
+  check("deferred: with no fix run every open item not left open counts", undecidedDeferred(items, false, open) === 3)
+  check("deferred: during a fix run only items with a question still open count", undecidedDeferred(items, true, open) === 1)
 }
 
 // timeline: merge, order and phase boundaries (pure)

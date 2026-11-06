@@ -3,7 +3,7 @@
 import { appendFileSync, mkdirSync, openSync, readdirSync, statSync, watch, writeFileSync } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
-import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, type Run } from "./runs.ts"
+import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, undecidedDeferred, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile } from "./stubs.ts"
 import { checkRule, dossierPage, readBlocks, readConversation, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
@@ -354,8 +354,10 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && path === "/api/runs") {
     // Live runs carry their agent counts (this stage); the accounts carry their windows and which runs use them.
     const v = await getRuns(() => readAll(DIR))
+    const openQs = new Set(readAll(DIR).filter((q) => q.state === "open").map((q) => q.id))
     const runs = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(readUpdates(`${r.repo}.${r.id}`, runsDir(), 3000)), blocked: readBlocks(`${r.repo}.${r.id}`).length } : r))
       .map((r) => { const m = mergeState(`${r.repo}.${r.id}`); return m ? { ...r, merge: m } : r })
+      .map((r) => ({ ...r, deferredUndecided: undecidedDeferred(r.deferred.items, r.runner?.command === "fix-deferred" && runnerActive(r.runner), openQs) }))
     const plans = planRuns(runs)
     const accounts = readAccounts([...runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: r.runKey || `${r.repo}.${r.id}`, account: r.runner?.account })), ...plans.map((p) => ({ key: p.key, account: p.account }))])
     return json({ ...v, runs, plans, accounts, usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
