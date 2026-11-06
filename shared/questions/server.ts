@@ -1,11 +1,11 @@
 // Owner-questions server. Run: bun --no-install shared/questions/server.ts
 // Contract: references/owner-questions.md
-import { appendFileSync, mkdirSync, openSync, statSync, watch, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, openSync, readdirSync, statSync, watch, writeFileSync } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
 import { buildLog, getRuns, PHASE_NAMES, questionRepo, readDossier, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile } from "./stubs.ts"
-import { checkRule, dossierPage, readBlocks, readConversation, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
+import { checkRule, dossierPage, readBlocks, readConversation, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
 import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord, splitSections } from "./timeline.ts"
 import { runRunner } from "./controls.ts"
@@ -356,8 +356,9 @@ export async function handle(req: Request): Promise<Response> {
     const v = await getRuns(() => readAll(DIR))
     const runs = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(readUpdates(`${r.repo}.${r.id}`, runsDir(), 3000)), blocked: readBlocks(`${r.repo}.${r.id}`).length } : r))
       .map((r) => { const m = mergeState(`${r.repo}.${r.id}`); return m ? { ...r, merge: m } : r })
-    const accounts = readAccounts(runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: `${r.repo}.${r.id}`, account: r.runner?.account })))
-    return json({ ...v, runs, accounts, usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
+    const plans = planRuns(runs)
+    const accounts = readAccounts([...runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: r.runKey || `${r.repo}.${r.id}`, account: r.runner?.account })), ...plans.map((p) => ({ key: p.key, account: p.account }))])
+    return json({ ...v, runs, plans, accounts, usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
   }
   if (path === "/api/accounts/refresh") {
     if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
@@ -383,7 +384,7 @@ export async function handle(req: Request): Promise<Response> {
     if (!run) return json({ error: "no such dossier" }, 404)
     let log: string[] = []
     try { log = logEntries(buildLog(readDossier(run.file))) } catch { /* unreadable */ }
-    const updates = readUpdates(`${run.repo}.${run.id}`, runsDir(), 1000)
+    const updates = readUpdates(run.runKey || `${run.repo}.${run.id}`, runsDir(), 1000)
     const questions = readAll(DIR).filter((q) => q.dossier === run.id && questionRepo(q, runs) === run.repo)
     const entries = withHtml(mergeTimeline({ updates, questions, names: PHASE_NAMES }))
     // One tab per run section: Implement dossier (the /work-on phases), then each later command (its own steps).
@@ -579,7 +580,10 @@ export async function handle(req: Request): Promise<Response> {
     if (inflightControl.has(key)) return json({ error: "another control is running for this dossier" }, 409)
     inflightControl.add(key)
     try {
-      const r = await runRunner(action === "stop" ? ["stop", id, "--root", root] : action === "fix-deferred" ? [id, "--root", root, "--command", "fix-deferred", ...(items.length ? ["--items", items.join(",")] : [])] : [id, "--root", root])
+      // Start runs the dossier's next flow (plan or work-on); Resume runs the flow that stopped, with its items.
+      const flow = action === "start" ? [`--command`, ctl.command || "work-on"]
+        : action === "resume" ? ["--command", ctl.command || "work-on", ...(run.runner?.items ? ["--items", run.runner.items] : [])] : []
+      const r = await runRunner(action === "stop" ? ["stop", id, "--root", root] : action === "fix-deferred" ? [id, "--root", root, "--command", "fix-deferred", ...(items.length ? ["--items", items.join(",")] : [])] : [id, "--root", root, ...flow])
       emitChange("runs")
       return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 500)
     } finally { inflightControl.delete(key) }
@@ -631,6 +635,31 @@ export async function handle(req: Request): Promise<Response> {
     }
   }
   return json({ error: "method not allowed" }, 405)
+}
+
+/**
+ * Live /plan runs of a deferred item whose dossier is not written yet (`<repo>.<src>.plan-<D-n>.runner.json` with no
+ * dossier carrying its key): Running now shows them, linked to the source dossier, until the new dossier takes over.
+ */
+function planRuns(runs: Run[]): { key: string; repo: string; src: string; item: string; title: string; state: string; started: string; account?: string; stage: string; last: string; lastTs: string }[] {
+  const taken = new Set(runs.map((r) => r.runKey).filter(Boolean))
+  let names: string[] = []
+  try { names = readdirSync(runsDir()).filter((n) => /\.plan-D-\d+\.runner\.json$/.test(n)) } catch { return [] }
+  const out = []
+  for (const n of names) {
+    const key = n.replace(/\.runner\.json$/, "")
+    if (taken.has(key)) continue
+    const m = key.match(/^(.+)\.([A-Z][A-Z0-9]*-\d+)\.plan-(D-\d+)$/)
+    if (!m) continue
+    const rn = readRunner(key)
+    if (!rn || !runnerActive(rn)) continue
+    const src = runs.find((r) => r.repo === m[1] && r.id === m[2])
+    const it = src?.deferred.items.find((i) => i.id === m[3])
+    const ups = readUpdates(key, runsDir(), 50)
+    const note = ups.find((u) => !u.auto && u.kind === "update") ?? ups[0]
+    out.push({ key, repo: m[1], src: m[2], item: m[3], title: it?.title || `${m[2]} ${m[3]}`, state: rn.state, started: rn.started, account: rn.account, stage: rn.stage, last: note?.text ?? "", lastTs: note?.ts ?? "" })
+  }
+  return out
 }
 
 /** The Merge button's state, `<key>.merge.json` from scripts/merge_dossier.py; a "merging" whose process is gone is failed. */

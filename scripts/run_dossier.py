@@ -427,7 +427,7 @@ class Runner:
         self.state_path = os.path.join(d, self.key + ".runner.json")
         self.cp_path = os.path.join(d, self.key + ".checkpoints.json")
         self.err_path = os.path.join(d, self.key + ".stderr.log")
-        self.state: dict = {"pid": os.getpid(), "account": self.account["name"], "root": root, "command": command, "permission_mode": permission_mode, "started": now(), "state": "running", "stage": 0,
+        self.state: dict = {"pid": os.getpid(), "account": self.account["name"], "root": root, "command": command, "items": items, "permission_mode": permission_mode, "started": now(), "state": "running", "stage": 0,
                             "session": "", "questions": [], "claude_pid": None,
                             # the owner's messages already delivered: a resumed run never sends one twice
                             "inbox_seen": int(prev.get("inbox_seen") or 0)}
@@ -1688,8 +1688,11 @@ def selftest() -> int:
         check("plan: runs under <repo>.<ID>.plan-<D> while the source dossier's run is live", rc == 0 and state_of("W-40.plan-D-1").get("state") == "done")
         check("plan: the session gets /plan <ID> <D>", msgs(1)[0] == f"/{PLUGIN}:plan W-40 D-1")
         os.remove(os.path.join(rdir, "repo.W-40.runner.json"))
-        bad = subprocess.run([sys.executable, me, "--root", root, "--dossier", "W-40", "--command", "plan", "--foreground"], env=env, capture_output=True, text=True, timeout=30)
-        check("plan: refused without exactly one --items D-n", bad.returncode == 2)
+        bad = subprocess.run([sys.executable, me, "--root", root, "--dossier", "W-40", "--command", "plan", "--items", "D-1,D-2", "--foreground"], env=env, capture_output=True, text=True, timeout=30)
+        check("plan: refused with more than one item", bad.returncode == 2)
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-41", "--command", "plan")
+        check("plan: with no item it plans the dossier itself under its own key", p.wait(timeout=60) == 0 and msgs(1)[0] == f"/{PLUGIN}:plan W-41" and state_of("W-41").get("command") == "plan")
 
         # ---- #239: a stage end waits for background work the session launched ----
         J = lambda o: json.dumps(o)
@@ -1840,9 +1843,6 @@ def main() -> int:
                       or (a.command == "plan" and re.fullmatch(r"D-\d+", items))):
         print("run_dossier.py: --items takes D-ids (D-1,D-3) with --command fix-deferred, PR numbers (429,430) with --command after-merge, "
               "or one D-id with --command plan", file=sys.stderr)
-        return 2
-    if a.command == "plan" and not items:
-        print("run_dossier.py: --command plan plans one routed deferred item: pass --items D-n", file=sys.stderr)
         return 2
     if not a.foreground:
         return detach(argv + ([] if "--root" in argv else ["--root", a.root]), a.root, a.dossier, run_key(a.root, a.dossier, a.command, items))
