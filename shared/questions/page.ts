@@ -713,6 +713,8 @@ function dfState(r, i) {
   // Ruled to its own dossier: /fix-deferred only routes it; the dossier exists once /plan <ID> D-n has run and logged
   // DEFERRED-DOSSIER, and then the chip links to it. Until then, say that, and hand over the exact command.
   if (i.state === 'dossier') {
+    // Planned in an open plan PR: the dossier exists on its plan branch only until that PR merges into development.
+    if (i.dossier && i.planBranch) return h('span', { title: 'Planned as ' + i.dossier + ' on ' + i.planBranch + '; its plan PR into development is not merged yet' }, [chip('planned as ' + i.dossier + ' · plan PR open', 'planned')]);
     if (i.dossier) return h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]);
     const cmd = '/plan ' + r.id + ' ' + i.id;
     if (i.planning && ['running', 'waiting', 'paused', 'queued'].includes(i.planning)) return h('span', { title: 'A /plan run is writing this dossier' + (i.planning === 'waiting' ? '; it waits for your answer' : '') }, [chip(i.planning === 'waiting' ? 'being planned · ? waiting for you' : 'being planned', i.planning === 'waiting' ? 'warn' : 'pending')]);
