@@ -45,7 +45,7 @@ export function deferredSince(updated: string, runner: unknown): boolean {
 /** One deferred issue from a dossier's ledger (`/work-on` Phase 9, `/deferred`, `/fix-deferred`). */
 export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixing" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string;
   /** The item a dossier is planned from: itself, or another dossier's same issue (`seed: /plan W-128 D-3`, `DEFERRED-SAME`). */
-  seed?: { src: string; item: string }; planning?: "running" | "waiting" | "paused" | "done" | "failed" | "stopped"; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string; keptOpen?: boolean }
+  seed?: { src: string; item: string }; planBranch?: string; planning?: "running" | "waiting" | "paused" | "done" | "failed" | "stopped"; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string; keptOpen?: boolean }
 export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; branch?: string }
 
 /**
@@ -618,7 +618,17 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       })(),
     })
   }
-  linkPlannedItems(runs, sources)
+  // Dossiers planned but not merged yet live only on their plan/* branch (the scan leaves plan branches out): read
+  // their DEFERRED-SOURCE lines there, so an item planned in an open plan PR links to it.
+  const planOn = new Map<string, string>()   // "<repo>/<src>/<D-n>" -> the plan branch
+  for (const main of new Set(runs.map((r) => r.main))) {
+    const repoName = baseName(main)
+    for (const x of await planBranchSources(main)) {
+      const k = `${repoName}/${x.src}/${x.item}`
+      if (!sources.has(k)) { sources.set(k, x.id); planOn.set(k, x.branch) }
+    }
+  }
+  linkPlannedItems(runs, sources, undefined, planOn)
   return { scannedAt: new Date(now).toISOString(), runs }
 }
 /**
@@ -645,13 +655,38 @@ export function runnerOf(repo: string, id: string, log: string, read: (key: stri
 export function deferredSources(log: string): { src: string; item: string }[] {
   return [...log.matchAll(/^(?:[-*]\s+)?DEFERRED-SOURCE:\s*([A-Z][A-Z0-9]*-\d+)\s+(D-\d+)\b/gm)].map((m) => ({ src: m[1], item: m[2] }))
 }
-export function linkPlannedItems(runs: Run[], sources: Map<string, string>, planState: (key: string) => RunnerState["state"] | undefined = (k) => readRunner(k)?.state): void {
+const planCache = new Map<string, { sig: string; v: { src: string; item: string; id: string; branch: string }[] }>()
+/** DEFERRED-SOURCE lines of the dossiers each open plan/* branch adds over development (cached by the branch tips). */
+export async function planBranchSources(main: string): Promise<{ src: string; item: string; id: string; branch: string }[]> {
+  const refs = (await sh(["git", "-C", main, "for-each-ref", "--format=%(objectname) %(refname:short)", "refs/remotes/origin/plan/"], undefined, 5000)).trim()
+  const c = planCache.get(main)
+  if (c && c.sig === refs) return c.v
+  const out: { src: string; item: string; id: string; branch: string }[] = []
+  for (const line of refs ? refs.split("\n") : []) {
+    const ref = line.split(" ")[1]
+    if (!ref) continue
+    const files = (await sh(["git", "-C", main, "diff", "--name-only", `origin/development...${ref}`, "--", ".discovery/dossiers"], undefined, 10000)).split("\n").filter((f) => /\.md$/.test(f))
+    for (const f of files) {
+      const id = f.match(/([A-Z][A-Z0-9]*-\d+)-[^/]*\.md$/)?.[1]
+      if (!id) continue
+      const text = await sh(["git", "-C", main, "show", `${ref}:${f}`], undefined, 10000)
+      for (const x of deferredSources(text)) out.push({ ...x, id, branch: ref.replace(/^origin\//, "") })
+    }
+  }
+  planCache.set(main, { sig: refs, v: out })
+  return out
+}
+export function linkPlannedItems(runs: Run[], sources: Map<string, string>, planState: (key: string) => RunnerState["state"] | undefined = (k) => readRunner(k)?.state, planOn: Map<string, string> = new Map()): void {
   const src = sources
   for (const r of runs) for (const i of r.deferred?.items ?? []) {
     if (i.state !== "dossier") continue
     // The same issue as another dossier's item is planned once, from there: follow its seed.
     const from = i.seed && i.seed.src !== r.id ? i.seed : { src: r.id, item: i.id }
-    if (!i.dossier) i.dossier = src.get(`${r.repo}/${from.src}/${from.item}`) ?? ""
+    if (!i.dossier) {
+      const k = `${r.repo}/${from.src}/${from.item}`
+      i.dossier = src.get(k) ?? ""
+      if (i.dossier && planOn.has(k)) i.planBranch = planOn.get(k)
+    }
     const st = planState(`${r.repo}.${from.src}.plan-${from.item}`)
     if (st) i.planning = st
   }
