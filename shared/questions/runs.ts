@@ -45,7 +45,7 @@ export function deferredSince(updated: string, runner: unknown): boolean {
 /** One deferred issue from a dossier's ledger (`/work-on` Phase 9, `/deferred`, `/fix-deferred`). */
 export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixing" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string;
   /** The item a dossier is planned from: itself, or another dossier's same issue (`seed: /plan W-128 D-3`, `DEFERRED-SAME`). */
-  seed?: { src: string; item: string }; planBranch?: string; planning?: "running" | "waiting" | "paused" | "done" | "failed" | "stopped"; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string; keptOpen?: boolean }
+  seed?: { src: string; item: string }; planBranch?: string; ownerKept?: boolean; planning?: "running" | "waiting" | "paused" | "done" | "failed" | "stopped"; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string; keptOpen?: boolean }
 export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; branch?: string }
 
 /**
@@ -712,10 +712,28 @@ let inflight: Promise<void> | null = null
 let lastScan = 0
 let lastSig = ""
 /** Updates and runner state are cheap local reads, so they are fresh on every request. */
-function liveStore(r: Run): Pick<Run, "updates" | "runner" | "running"> {
+function liveStore(r: Run): Pick<Run, "updates" | "runner" | "running" | "deferred" | "deferredOpen"> {
   const key = r.runKey || `${r.repo}.${r.id}`
   const runner = readRunner(key)
-  return { updates: readUpdates(key), runner, running: isRunning(r.status) || runnerActive(runner) }
+  const deferred = withOwnerRulings(r.deferred, `${r.repo}.${r.id}`)
+  return { updates: readUpdates(key), runner, running: isRunning(r.status) || runnerActive(runner), deferred,
+    deferredOpen: deferred.items.filter((i) => i.state === "open" && !i.keptOpen).length }
+}
+/**
+ * The owner's own rulings on deferred items, made on the dashboard: `<key>.deferred-owner.json`
+ * `{ "D-2": { "keepOpen": true, "ts": "…" } }`. Kept beside the run, not in the dossier, which a live run may be
+ * editing. "Leave open" marks an open item kept open (not counted, not swept in by Fix all); "Reopen" undoes it.
+ */
+export function ownerRulingsFile(key: string, dir = runsDir()): string { return join(dir, `${key}.deferred-owner.json`) }
+export function withOwnerRulings(d: Deferred, key: string, dir = runsDir()): Deferred {
+  let o: Record<string, { keepOpen?: boolean; ts?: string }> = {}
+  try { o = JSON.parse(readFileSync(ownerRulingsFile(key, dir), "utf8")) } catch { return d }
+  return { ...d, items: d.items.map((i) => {
+    const r = o[i.id]
+    if (!r || i.state !== "open") return i
+    if (r.keepOpen) return { ...i, keptOpen: true, ruling: i.ruling || "left open on the dashboard", ownerKept: true }
+    return i.keptOpen ? { ...i, keptOpen: false, ruling: "", ownerKept: false } : i
+  }) }
 }
 /** Cached view; a rescan starts in the background when older than 30 s. */
 export async function getRuns(questions: () => Question[]): Promise<RunsView> {

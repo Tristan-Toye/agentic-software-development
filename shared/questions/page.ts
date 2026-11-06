@@ -825,7 +825,7 @@ function liveMessageView(r) {
 /* The deferred ledger as a table: tick items (or all) and "Fix selected" runs /fix-deferred on just those, in one
    stacked PR through the implementer and review flow; an item that looks big enough for a dossier is put to the owner first. */
 // Only an item still open can be picked for a fix; one ruled to its own dossier is seeded with /plan instead.
-const dfPickable = (i) => i.state === 'open';
+const dfPickable = (i) => i.state === 'open' && !i.keptOpen;
 const cbx = (on, attrs) => h('button', Object.assign({ class: 'cbx' + (on ? ' on' : ''), type: 'button', role: 'checkbox', 'aria-checked': on ? 'true' : 'false' }, attrs), [on ? '✓' : '']);
 function deferredView(r) {
   const df = r.deferred; const key = r.repo + '/' + r.id;
@@ -844,7 +844,9 @@ function deferredView(r) {
       h('div', { class: 'dfc-f' }, [fact('Risk', riskWord, /^(high|critical)/i.test(riskWord)), fact('Contract', i.contract, i.contract === 'external'), fact('Effort', i.effort, i.effort === 'L'),
         i.inReport === false ? h('span', { class: 'dfact mut' }, ['not product code']) : null]),
       riskWhy || i.why ? h('div', { class: 'dfc-why' }, [[riskWhy, i.why].filter(Boolean).join(' · ')]) : null,
-      can ? h('div', { class: 'dfc-a' }, [h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'copy', 'data-text': '/plan ' + r.id + ' ' + i.id, title: 'Copy the /plan seed for this item' }, ['Copy /plan seed'])]) : null]);
+      can ? h('div', { class: 'dfc-a' }, [h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'copy', 'data-text': '/plan ' + r.id + ' ' + i.id, title: 'Copy the /plan seed for this item' }, ['Copy /plan seed']),
+        h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'df-keep', 'data-repo': r.repo, 'data-id': r.id, 'data-item': i.id, 'data-keep': '1', title: 'Leave this item open for now: it is no longer counted or picked up by Fix all deferred' }, ['Leave open'])])
+        : i.state === 'open' && i.keptOpen && i.ownerKept ? h('div', { class: 'dfc-a' }, [h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'df-keep', 'data-repo': r.repo, 'data-id': r.id, 'data-item': i.id, 'data-keep': '0', title: 'Count it as open again' }, ['Reopen'])]) : null]);
   });
   const links = [];
   if (df.report) links.push(h('a', { class: 'small', href: '/deferred/' + enc(r.repo) + '/' + enc(r.id), target: '_blank', rel: 'noopener' }, ['full report']));
@@ -1089,6 +1091,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'fix-sel') fixSelected(t);
     else if (act === 'chat') sendChat(t);
     else if (act === 'plan-item') planItem(t);
+    else if (act === 'df-keep') { fetch('/api/runs/' + enc(t.dataset.repo) + '/' + enc(t.dataset.id) + '/deferred-keep', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ item: t.dataset.item, keepOpen: t.dataset.keep === '1' }) }).catch(() => {}).finally(() => load(['runs'])); }
     else if (act === 'stub-confirm') { S.ctl[t.dataset.key] = { confirm: true }; render(); }
     else if (act === 'stub-cancel') { S.ctl[t.dataset.key] = {}; render(); }
     else if (act === 'stub-ctl') stubCtl(t);

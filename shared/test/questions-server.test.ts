@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { channelNameFor, interpretEnvelope, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources } from "../questions/runs.ts"
+import { parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
@@ -153,6 +153,9 @@ check("replies: typed text is always a follow-up; the question stays open", repl
     const qc = parseQuestion("r.W-1.Q9", [J({ ts: "1", from: "agent", kind: "question", text: "Which?", options: [{ key: "A", label: "one", consequence: "c" }, { key: "B", label: "two", consequence: "c" }] }),
       J({ ts: "2", from: "owner", kind: "followup", text: "go for D instead" }),
       J({ ts: "3", from: "agent", kind: "reply", text: "You mean D: keep the overlap.", options: [{ key: "D", label: "Confirm: keep the overlap", consequence: "no wait" }, { key: "A", label: "dup", consequence: "x" }] })].join("\n"))
+    const qr = parseQuestion("r.W-1.Q10", [J({ ts: "1", from: "agent", kind: "question", text: "Which?", recommendation: "A", options: [{ key: "A", label: "one", consequence: "c" }, { key: "D", label: "four", consequence: "c" }] }),
+      J({ ts: "2", from: "agent", kind: "reply", text: "Measured: D is better.", recommend: "D" })].join("\n"))
+    check("question chat: a reply moves the recommendation", qr!.recommendation === "D")
     check("question chat: a reply's option becomes a button; the question stays open until one is pressed", qc!.state === "open" && qc!.options.map((o) => o.key).join() === "A,B,D" && qc!.options[2].label === "Confirm: keep the overlap")
   }
   const qa = parseQuestion("r.W-1.Q1", [JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Which?" }), JSON.stringify({ ts: "2", from: "owner", kind: "followup", text: "use B" }), JSON.stringify({ ts: "3", from: "agent", kind: "answer", accepted: true, text: "I will use B.", owner_text: "use B" })].join("\n"))
@@ -420,6 +423,16 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
   const { limitSuperseded } = await import("../questions/accounts.ts")
   check("accounts: a limit marked before an open reading no longer shows", limitSuperseded({ marked: "2026-11-06T08:53:41Z" }, { ts: "2026-11-06T11:01:17Z", windows: { five_hour: { used_percentage: 2, status: "allowed" }, seven_day: { used_percentage: 0, status: "allowed" } } })
     && !limitSuperseded({ marked: "2026-11-06T08:53:41Z" }, { ts: "2026-11-06T08:00:00Z", windows: { five_hour: { used_percentage: 2, status: "allowed" } } }))
+}
+{
+  // Leave open on the dashboard: an open item is kept open (not counted), Reopen undoes it; a fixed item is untouched.
+  const od = mkdtempSync(join(tmpdir(), "owner-"))
+  const led = parseDeferred("DEFERRED:\n- D-1 bug a — x.rs:1 — r — w\n- D-2 bug b — y.rs:2 — r — w\n- DEFERRED-FIXED: D-1 abc\n")
+  writeFileSync(ownerRulingsFile("r.W-1", od), JSON.stringify({ "D-2": { keepOpen: true }, "D-1": { keepOpen: true } }))
+  const kept = withOwnerRulings({ items: led.items, pr: "", report: false, branch: "" } as any, "r.W-1", od)
+  check("leave open: an open item is kept open; a fixed one is untouched", kept.items[1].keptOpen === true && kept.items[1].ownerKept === true && kept.items[0].state === "fixed" && !kept.items[0].keptOpen)
+  writeFileSync(ownerRulingsFile("r.W-1", od), JSON.stringify({ "D-2": { keepOpen: false } }))
+  check("leave open: reopen undoes it", withOwnerRulings({ items: kept.items, pr: "", report: false, branch: "" } as any, "r.W-1", od).items[1].keptOpen === false)
 }
   check("classify: a hook suite line goes by its failed count", ev("suite: passed 31  failed 0  ignored 0  (cargo)", "suite") === "suite-green" && ev("suite: passed 2  failed 41  ignored 0  (dotnet)", "suite") === "suite-red" && ev("suite run finished", "suite") === "routine" && ev("gates: 7 passed", "gates") === "gate" && ev("PR opened: https://x/pull/1", "pr") === "pr")
   check("classify: key flags and routine flags", classify(E({ type: "stage", text: "x" })).key && classify(E({ type: "question", text: "x" })).key && !classify(E({ type: "update", text: "x", auto: true })).key && classify(E({ type: "update", text: "x", auto: true })).routine && !classify(E({ type: "update", text: "x" })).routine)
