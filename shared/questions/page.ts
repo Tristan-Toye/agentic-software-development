@@ -474,9 +474,9 @@ function stubGroup(key, label, rows, fold) {
 /* Integrate: merge every finished dossier on the stub through the merge queue (first in, first out), then run /stub. */
 function integrateBtn(repo, branch) {
   const k = repo + '/' + branch + ':integrate'; const st = S.ctl[k] || {};
-  if (st.confirm) return h('span', { class: 'mergectl' }, [h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'integrate', 'data-repo': repo, 'data-branch': branch, title: 'Merges the finished dossiers on this stub one by one (conflicts go to their agent), then runs /stub: the full stack run, the audit, the stub\'s PR into development. Dossiers still in flight move to the next stub.' }, [st.busy ? 'Starting…' : 'Confirm: integrate']),
+  if (st.confirm) return h('span', { class: 'mergectl' }, [h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'integrate', 'data-repo': repo, 'data-branch': branch, title: 'First opens the stub\'s PR into development, which closes the stub: new work goes to the next one. Then merges the finished dossiers on it one by one (conflicts go to their agent), then runs /stub: the full stack run and the audit. Dossiers still in flight move to the next stub.' }, [st.busy ? 'Starting…' : 'Confirm: integrate']),
     h('button', { class: 'btn sm', type: 'button', 'data-act': 'stub-cancel', 'data-key': k }, ['Cancel'])]);
-  return h('button', { class: 'btn sm', type: 'button', 'data-act': 'stub-confirm', 'data-key': k, title: 'Merge the finished dossiers, then run /stub' }, ['Integrate']);
+  return h('button', { class: 'btn sm', type: 'button', 'data-act': 'stub-confirm', 'data-key': k, title: 'Close the stub (its PR into development), merge the finished dossiers, then run /stub' }, ['Integrate']);
 }
 async function stubCtl(btn) {
   const repo = btn.dataset.repo, branch = btn.dataset.branch, op = btn.dataset.op, k = repo + '/' + branch + ':' + (op === 'integrate' ? 'integrate' : 'run');

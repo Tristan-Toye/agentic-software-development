@@ -246,8 +246,11 @@ restarted server answers at once from them while its first scan runs.
     marks them started for the detector and starts `/after-merge`. State:
     `<key>.merge.json` (merging, merged, failed and why);
   - **Integrate a stub** (the open stub's card and its page): **Integrate**
-    runs `merge_dossier.py --integrate <stub>` in the background. Part 1: every
-    finished dossier on the stub (a ready PR, no live run) goes through the
+    runs `merge_dossier.py --integrate <stub>` in the background. First it
+    opens the stub's PR into development, which **closes the stub at once**:
+    the next build cuts or takes the next stub. Part 1: every
+    finished dossier on the stub at that moment (a ready PR, no live run; the
+    merge queue lets only these into a closed stub) goes through the
     merge queue, first in first out, conflicts to its own agent, cleanup after
     each. Part 2, once all merged: `/stub` on the runner (key
     `<repo>.<stub slug>`: the full stack run, the audit, the stub's PR into

@@ -118,7 +118,9 @@ cut date and the commit it cut from; the merges ahead of
 `origin/development`, oldest first; the dossiers still open against the stub
 (`gh pr list --base <stub> --state open`) — they will miss this
 integration, so proceeding past them needs the user's yes naming each one,
-except when the dashboard's **Integrate** started this run: its merge queue
+except when the dashboard's **Integrate** started this run: it opened the
+stub's pull request first (titled `Stub <date>: integrating`; Step 3 edits it,
+never opens a second), and its merge queue
 merged every finished dossier first and recorded the ones still in flight
 (a draft pull request or a live run) in the stub's timeline; those are
 already ruled, they move to the next stub once this one is in development,
