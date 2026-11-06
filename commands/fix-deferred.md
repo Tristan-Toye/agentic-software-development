@@ -143,9 +143,11 @@ request, never hidden.
 
 Push the branch and open the pull request against the base from Step 3 as
 **a GitHub stack** with the dossier's own pull request, never as a loose PR:
-`gh stack link <dossier PR number> fix/<ID>-deferred` (bottom to top; it
-creates the PR with the right base and links both into one stack, or adds it
-to the dossier's existing stack). Then set its title and body with
+`gh stack link --base <the dossier PR's base> <dossier PR number> fix/<ID>-deferred`
+(bottom to top; it creates the PR with the right base and links both into one
+stack, or adds it to the dossier's existing stack). Never leave out `--base`:
+without it, linking moves the dossier's PR to the repository's default branch,
+so a code PR would skip the stub. Then set its title and body with
 `gh pr edit`. The owner's Merge button merges the whole stack at once
 (`gh stack merge`). The title is `fix(<ID>): deferred issues D-…`. The body has:
 

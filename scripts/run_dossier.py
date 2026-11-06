@@ -965,8 +965,10 @@ class Runner:
         if ev.get("type") == "system" and ev.get("subtype") == "init" and ev.get("session_id"):
             self.save(session=ev["session_id"])
         # The model the session really runs on: anything but the pinned one (Fable above all) ends the stage at once.
+        # A sub-agent's message (parent_tool_use_id set) has its own model, Sonnet by design: only Fable is refused there.
         got = ev.get("model") if ev.get("type") == "system" and ev.get("subtype") == "init" else (ev.get("message") or {}).get("model") if ev.get("type") == "assistant" else None
-        if isinstance(got, str) and not getattr(self, "wrong_model", "") and not model_ok(self.model or runner_model(None), got):
+        wrong = isinstance(got, str) and (FORBIDDEN_MODEL.search(got) if ev.get("parent_tool_use_id") else not model_ok(self.model or runner_model(None), got))
+        if wrong and not getattr(self, "wrong_model", ""):
             self.wrong_model = got
             self.log(f"the session runs on {got}, not {self.model or runner_model(None)}: stopping the stage")
             kill_group(self.proc)
@@ -1651,6 +1653,9 @@ for raw in sys.stdin:
             with open(a["append"], "a") as fh:
                 fh.write(a["line"] + "\n")
             final = a.get("final", final)
+        elif "subagent" in a:
+            out({"type": "assistant", "parent_tool_use_id": "toolu_1", "message": {"model": a["subagent"], "content": [{"type": "text", "text": "x"}]}})
+            final = a.get("final", final)
         elif "final" in a:
             final = a["final"]
     err = next((a["error"] for a in acts if "error" in a), None)
@@ -1994,6 +1999,16 @@ def selftest() -> int:
         check("model: a session that reports another model is stopped and the owner asked", bool(asked) and any("ran on claude-fable-5-1" in t for t in texts("W-36")))
         q36 = (state_of("W-36").get("questions") or [""])[0]
         owner_line(q36, "answer", "Stop", "B")
+        p.wait(timeout=30)
+        scenario([{"turns": [[{"subagent": "claude-sonnet-5-5", "final": "RUNNER: DONE"}]]}])
+        p = start("W-37")
+        p.wait(timeout=60)
+        check("model: a Sonnet sub-agent's message does not stop the session", not any("ran on" in t for t in texts("W-37")) and state_of("W-37").get("state") == "done")
+        scenario([{"turns": [[{"subagent": "claude-fable-5-1", "final": "RUNNER: DONE"}]]}])
+        p = start("W-38")
+        asked = until(lambda: any("asked" in t for t in texts("W-38")), 30)
+        check("model: a Fable sub-agent still stops the session", bool(asked) and any("ran on claude-fable-5-1" in t for t in texts("W-38")))
+        owner_line((state_of("W-38").get("questions") or [""])[0], "answer", "Stop", "B")
         p.wait(timeout=30)
         check("model: model_ok", model_ok("claude-opus-5-5", "claude-opus-5-5") and model_ok("sonnet", "claude-sonnet-5-5") and not model_ok("claude-opus-5-5", "claude-fable-5-1") and not model_ok("opus", "claude-fable-5-1"))
 
