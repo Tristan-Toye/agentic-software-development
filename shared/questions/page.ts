@@ -453,12 +453,24 @@ function stubRow(repo, id, o) {
   const r = S.runs.find(x => x.repo === repo && x.id === id); const nq = r ? openQs(r) : [];
   const title = (r && r.title) || o.title || '';
   const right = [];
-  const fixing = r && r.runner && r.runner.command === 'fix-deferred' && ['running', 'waiting', 'paused', 'queued'].includes(r.runner.state);
-  if (fixing) right.push(h('span', { class: 'chip fixing', title: 'A stacked PR with fixes for the deferred issues is being built' }, [h('span', { class: 'dot info live' }), r.runner.state === 'waiting' ? 'fixing deferred · waiting for you' : r.runner.state === 'paused' ? 'fixing deferred · paused' : 'fixing deferred']));
   if (o.merged) right.push(chip('merged', 'done'));
-  else if (r && (r.status === 'done' || r.status === 'pr')) { right.push(chip('PR open · ready to merge', 'done')); if (!o.noPr) { const mc = mergeCtl(r); if (mc) right.push(mc); } }
-  else { const st = r ? stageText(r) : ''; if (st) right.push(chip(st, 'neutral')); if (isLive(r)) right.push(h('span', { class: 'dot info live', title: 'running' })); }
-  if (o.noPr) right.push(chip('no PR yet', 'neutral'));
+  else if (o.working) {
+    // What it is doing: the run's command and state, the merge queue's step, or the build's phase.
+    const rn = r && r.runner; const m = r && r.merge;
+    const CMD = { 'work-on': stageText(r) || 'building', plan: 'planning', 'fix-deferred': 'fixing deferred issues', 'resolve-merge': 'resolving merge conflicts', 'after-merge': 'cleaning up after the merge', stub: 'integrating' };
+    const MQ = { waiting: 'merge waits for its run', resolving: 'resolving merge conflicts', merging: 'merging', cleanup: 'merged · cleaning up' };
+    let what = m && MQ[m.state] ? MQ[m.state] : rn ? (CMD[rn.command] || rn.command || 'working') : (stageText(r) || 'working');
+    if (rn && rn.state === 'waiting') what += ' · waiting for you'; else if (rn && rn.state === 'paused') what += ' · paused (usage limit)'; else if (rn && rn.state === 'queued') what += ' · queued for a slot';
+    right.push(h('span', { class: 'chip ' + (rn && rn.state === 'waiting' ? 'warn' : 'fixing'), title: (r && r.updates && r.updates[0] ? r.updates[0].text.slice(0, 200) : '') }, [h('span', { class: 'dot info live' }), what]));
+  } else if (r) {
+    const rn = r.runner;
+    if (r.merge && r.merge.state === 'queued') right.push(chip('in the merge queue' + (r.merge.position ? ' · #' + r.merge.position : ''), 'pending'));
+    else if (rn && ['stopped', 'failed'].includes(rn.state)) right.push(chip((rn.command || 'run') + ' ' + rn.state, 'blocked'));
+    else if (r.status === 'done' || r.status === 'pr') right.push(chip(o.noPr ? 'finished · no PR' : 'PR ready · waiting for your merge', 'done'));
+    else { const st = stageText(r); right.push(chip(st ? st + ' · not running' : 'not started', 'neutral')); }
+    if ((r.status === 'done' || r.status === 'pr') && !o.noPr) { const mc = mergeCtl(r); if (mc) right.push(mc); }
+  }
+  if (o.noPr && !(r && !o.working && (r.status === 'done' || r.status === 'pr'))) right.push(chip('no PR yet', 'neutral'));
   if (r && r.deferredOpen) right.push(h('span', { class: 'chip', title: r.deferredOpen + ' deferred item(s) still to tackle' }, [r.deferredOpen + ' deferred']));
   if (nq.length) right.push(h('span', { class: 'qb', title: nq.length + ' open question(s)' }, ['? ' + nq.length]));
   return h('a', { class: 'srow' + (o.merged ? ' done' : ''), href: hrefItem(repo, id), 'data-k': 'srow:' + repo + '/' + id, title: id + (title ? ' · ' + title : '') },
@@ -489,14 +501,22 @@ async function stubCtl(btn) {
 }
 function stubTree(repo, s) {
   const cs = [chip(s.state)]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
+  // Two groups only: Working (a live run of any kind: building, planning, fixing deferred items, resolving a merge,
+  // cleaning up, or queued for a slot) and Not working (nothing runs: a PR waiting for your merge, stopped, failed, or
+  // not started). Merged dossiers fold away below.
   const runOf = (id) => S.runs.find(x => x.repo === repo && x.id === id);
-  const finished = (id) => { const r = runOf(id); return !!r && (r.status === 'done' || r.status === 'pr'); };
+  // A dossier with a runner works when its run is live (or the merge queue is busy with it); only one without a runner
+  // falls back to recent session activity (a build run in a terminal).
+  const working = (id) => { const r = runOf(id); if (!r) return false;
+    if (r.merge && ['waiting', 'resolving', 'merging', 'cleanup'].includes(r.merge.state)) return true;
+    if (r.runner) return ['running', 'waiting', 'paused', 'queued'].includes(r.runner.state);
+    return !!(r.session && r.session.state === 'active'); };
   const mem = s.members || [];
-  const busy = mem.filter(m => !finished(m.id)).map(m => stubRow(repo, m.id, { noPr: m.noPr }));
-  const ready = mem.filter(m => finished(m.id)).map(m => stubRow(repo, m.id, {}));
+  const busy = mem.filter(m => working(m.id)).map(m => stubRow(repo, m.id, { noPr: m.noPr, working: true }));
+  const idle = mem.filter(m => !working(m.id)).map(m => stubRow(repo, m.id, { noPr: m.noPr }));
   const merged = s.dossiers.map(d => stubRow(repo, d.id, { merged: true, title: d.title }));
   const k = 'sg:' + repo + '/' + s.branch + ':';
-  const groups = [stubGroup(k + 'busy', 'In progress', busy), stubGroup(k + 'ready', 'PR open · waiting for your merge', ready), stubGroup(k + 'merged', 'Merged into the stub', merged, true)].filter(Boolean);
+  const groups = [stubGroup(k + 'busy', 'Working', busy), stubGroup(k + 'idle', 'Not working', idle), stubGroup(k + 'merged', 'Merged into the stub', merged, true)].filter(Boolean);
   // The whole card opens the stub's page (its rows stay links to their dossiers); an open stub can be integrated.
   const integ = s.state === 'accepting' ? integrateBtn(repo, s.branch) : null;
   return h('div', { class: 'scard clickable', 'data-href': hrefStub(repo, s.branch), title: 'Open ' + s.branch, 'data-k': 'ostub:' + repo + '/' + s.branch }, [
