@@ -1536,7 +1536,7 @@ def selftest() -> int:
             time.sleep(0.05)
         return None
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:  # a detached child may still write as it goes
         qdir, rdir, fdir = (os.path.join(tmp, x) for x in ("q", "runs", "fake"))
         root = os.path.join(tmp, "repo")
         for d in (qdir, rdir, fdir, root):
