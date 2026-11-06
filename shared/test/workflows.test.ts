@@ -130,7 +130,8 @@ const fakeWave = (prompt: string, opts: Opts) => {
   check("wave: one compact entry per item, in order", Array.isArray(result) && result.map((r: any) => r.label).join() === "P1,P2,P3,P4")
   check("wave: entry shape", result.every((r: any) => ["label", "verdict", "flags", "returned_line", "report_excerpt", "report_path"].every((k) => k in r) && Array.isArray(r.flags)))
   check("wave: spawns carry agentType, label and the payload pointer", calls.filter((c) => c.opts.agentType).length === 4 && calls.some((c) => c.opts.label === "P2" && c.opts.agentType === "agentic-software-development:unit-test-author" && c.prompt.includes("\nPAYLOAD_FILE: /wt/P2/.agent-staging/payloads/P2.md\nPAYLOAD_SHA256: sha-P2")))
-  check("wave: a spawn prompt is small (the payload stays in its file)", calls.filter((c) => c.opts.agentType).every((c) => c.prompt.length < 400))
+  check("wave: a spawn prompt is small (the payload stays in its file)", calls.filter((c) => c.opts.agentType).every((c) => c.prompt.length < 1000))
+  check("wave: every spawn asks for the payload's last line (#257)", calls.filter((c) => c.opts.agentType).every((c) => c.prompt.includes("PAYLOAD-LAST:") && c.prompt.includes("offset and limit, 120 lines")))
   check("wave: clean return", by("P1").verdict === "clean" && by("P1").flags.length === 0 && by("P1").returned_line.startsWith("P1 RETURNED") && by("P1").report_path.endsWith("/wt/P1/.agent-staging/reports/P1.txt"))
   check("wave: GAP line passes through verbatim and flags the item", by("P2").verdict === "flagged" && by("P2").flags.includes("gap") && by("P2").report_excerpt.includes("GAP: the contract does not say what flush returns on an empty window"))
   check("wave: CONTRACT-CHANGE passes through", by("P4").flags.includes("contract-change") && by("P4").report_excerpt.startsWith("CONTRACT-CHANGE: flush(x) must take &mut self"))
@@ -213,13 +214,15 @@ const doc = "# Change requests — architecture (round 1)\n\n## CR-1: split the 
 const fakeReview = (prompt: string, opts: Opts) => {
   if (opts.agentType) {
     check("review: reviewer agent with a schema", opts.agentType === "agentic-software-development:reviewer" && !!opts.schema)
-    if (prompt.includes("rv-style.md")) return { verdict: "PASS", crs: [], document: "", notes: "clean", unreached: ["none"] }
+    if (prompt.includes("rv-style.md")) return { verdict: "PASS", crs: [], document: "", notes: "clean", unreached: ["none"], payload_last: "END" }
     if (prompt.includes("rv-performance.md")) return null
-    if (prompt.includes("rv-tests.md")) return { verdict: "PASS", crs: [], document: "", notes: "", unreached: ["tests/flush_test.rs :: reload_drains_queue"] }
+    if (prompt.includes("rv-tests.md")) return { verdict: "PASS", crs: [], document: "", notes: "", unreached: ["tests/flush_test.rs :: reload_drains_queue"], payload_last: "END" }
+    if (prompt.includes("rv-unread.md")) return { verdict: "CHANGES-REQUIRED", crs: [], document: "", unreached: [], payload_last: "UNREAD: Read returned a note pointing at ctx_search" }
     return {
       verdict: "CHANGES-REQUIRED",
       crs: [{ id: "CR-1", severity: "blocking", location: "src/a.rs:10", claim: "split the cache from the loader" }],
       document: doc,
+      payload_last: "END",
     }
   }
   check("review: keeper is cheap", opts.model === "haiku")
@@ -229,6 +232,8 @@ const fakeReview = (prompt: string, opts: Opts) => {
   const { result, calls } = await run(review, [lens("style"), lens("architecture"), lens("performance"), lens("tests")], fakeReview)
   const by = (l: string) => result.find((r: any) => r.lens === l)
   check("review: one entry per lens, four with tests due", result.length === 4)
+  const un = await run(review, [lens("unread")], fakeReview)
+  check("review: a reviewer that could not read its payload is 'unread', never PASS (#257)", un.result[0].verdict === "unread" && /^UNREAD/.test(un.result[0].payload_last))
   check("review: UNREACHED none is no unreached location", by("style").verdict === "PASS" && by("style").unreached.length === 0)
   check("review: a PASS with an unreached location is 'incomplete', never PASS", by("tests").verdict === "incomplete" && by("tests").unreached[0] === "tests/flush_test.rs :: reload_drains_queue")
   check("review: the schema demands the unreached list", calls.some((c) => c.opts.schema && c.opts.schema.required.includes("unreached")))

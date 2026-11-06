@@ -124,10 +124,16 @@ const gateFlags = (report) => {
 // names ("When your prompt is `PAYLOAD_FILE: <path>`").
 // Regression note: this prompt is built from the payload intake only (task line, PAYLOAD_FILE, PAYLOAD_SHA256).
 // Never relay user chat text into it: a relayed message sent mid-wave was read as an instruction to skip the payload.
+// #257: a read hook (a context-saving plugin) can replace a large file's Read result with a short note, and an agent
+// that never saw its payload returned as if it had worked. Its proof of a whole read is the payload's last line.
+const READ_RULE = '\nRead check: your payload\'s last non-empty line proves you read it whole. If what Read returned is not your payload ' +
+  '(a note, a redirect, a summary or a cut), read the file again in parts with offset and limit, 120 lines at a time, to its end. ' +
+  'Begin your report with the line PAYLOAD-LAST: <that last line, verbatim>. If you cannot read it whole, return only ' +
+  'PAYLOAD-UNREAD: <what Read gave you> and write nothing.'
 function spawnPrompt(item) {
   return 'You are ' + item.label + ' in a /work-on Phase 4 wave. Your payload is the file below: read it whole before anything else ' +
     '(in parts with offset and limit if Read says it is too large); every field in it binds you.\n' +
-    'PAYLOAD_FILE: ' + item.payloadPath + '\nPAYLOAD_SHA256: ' + item.payloadSha256
+    'PAYLOAD_FILE: ' + item.payloadPath + '\nPAYLOAD_SHA256: ' + item.payloadSha256 + READ_RULE
 }
 
 // The owned paths of the siblings that share this item's worktree. Concurrent
