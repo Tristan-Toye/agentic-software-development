@@ -63,7 +63,11 @@ This is the step everything else depends on.
    `## Build log`. Land the files' revision in the dossier with
    `dossier_edit.py sync-contract <dossier> --root X`: it rebuilds each
    `### <path>` block of `## Contract` from that file and fails, member by
-   member, on any block that is missing or truncated against the file. Never
+   member, on any block that is missing or truncated against the file. A block
+   keeps the members it names, plus the file's members added or changed since
+   `baseline_commit` and those the dossier's work packages, criteria, approach
+   or checklist mention in backticks; the rest of the file stays out. Name an
+   unchanged member in its block when a blind author needs it. Never
    hand-copy a block.
 
    **A stub that extends a base class outside the contract inherits that

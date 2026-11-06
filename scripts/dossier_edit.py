@@ -51,6 +51,11 @@ that file under `--root` (signatures, doc comments and constants, bodies as
 re-extracts both sides by symbol and compares each member's whole text. It
 never checks that a chunk is "in" the file: a truncated member is a different
 text. Any missing, truncated or extra member is listed and exits 1.
+With a `baseline_commit` in the front matter a block holds what the dossier is
+about, not the whole file: the members it already names, plus (in the first
+block of a path) the members the file added or changed since that commit,
+test modules aside. Without one, or when that commit is not in the repository,
+a block holds the whole file.
 
 Exit codes: 0 done; 1 refused (file untouched); 2 unusable input.
 
@@ -62,6 +67,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import subprocess
 import sys
 import tempfile
 
@@ -424,6 +430,131 @@ def verify_block(path: str, block: str, file_text: str) -> list[str]:
     return bad
 
 
+# A contract holds what the dossier is about, not all of each file it touches. With a `baseline_commit` a block keeps
+# the members it already names, the members the file added or changed since that commit, and the members the dossier's
+# own text mentions (work packages, criteria, approach, checklist): everything a blind author, a reviewer or a payload
+# needs, and new stubs join by themselves.
+
+
+def _own(it, S, nav) -> str:
+    """A member's contract text; a container's without its members, so a member's change is not the container's."""
+    kids = it.children
+    it.children = []
+    try:
+        return _render(it, S, nav)
+    finally:
+        it.children = kids
+
+
+def scoped_members(path: str, text: str, is_block: bool = False):
+    """(top-level items, Source, nav, {id(item): key}, {key: own contract text}). Repeated containers (two `impl Foo`)
+    share one key: what tells them apart is their members, and a block holding only some would number them differently."""
+    items, S, nav = contract_members(path, text, is_block)
+    keys: dict[int, str] = {}
+    own: dict[str, str] = {}
+    for it, _ in nav.flatten(items):
+        key = f"{it.kind} {it.qname}"
+        if not it.children:
+            n = 2
+            while key in own:
+                key = f"{it.kind} {it.qname}#{n}"
+                n += 1
+        keys[id(it)] = key
+        own.setdefault(key, _own(it, S, nav))
+    return items, S, nav, keys, own
+
+
+def _is_test_item(it, S) -> bool:
+    return "cfg(test)" in S.text[S.line_start(it.head):it.sig_end]
+
+
+def changed_keys(path: str, file_text: str, base_text: str | None) -> set[str]:
+    """The members the file added or changed since the baseline (signature, docs, constants), never its test modules."""
+    items, S, nav, keys, own = scoped_members(path, file_text)
+    if base_text is None:
+        base = {}
+    else:
+        try:
+            base = scoped_members(path, base_text)[4]
+        except Refused:
+            base = {}
+    out: set[str] = set()
+
+    def walk(its) -> None:
+        for it in its:
+            if _is_test_item(it, S):
+                continue
+            k = keys[id(it)]
+            if base.get(k) != own[k]:
+                out.add(k)
+            walk(it.children)
+    walk(items)
+    return out
+
+
+def scoped_block(path: str, file_text: str, scope: set[str]) -> str:
+    """The contract block holding only `scope`; a container stays when it or one of its members is in scope."""
+    items, S, nav, keys, _ = scoped_members(path, file_text)
+
+    def keep(it) -> bool:
+        it.children = [c for c in it.children if keep(c)]
+        return keys[id(it)] in scope or bool(it.children)
+    out: list[str] = []
+    prev_end = None
+    for it in items:
+        if not keep(it):
+            continue
+        if prev_end is not None:
+            out.append("\n" if it.start_line <= prev_end + 1 else "\n\n")
+        out.append(_render(it, S, nav))
+        prev_end = it.end_line
+    return "".join(out)
+
+
+def verify_scoped(path: str, block: str, file_text: str, scope: set[str]) -> list[str]:
+    """Whole-text equality per in-scope member, by symbol, against the file."""
+    want = scoped_members(path, file_text)[4]
+    have = scoped_members(path, block, True)[4]
+    bad = []
+    for key in sorted(scope):
+        if key not in have:
+            bad.append(f"MISSING   {key}")
+        elif have[key] != want.get(key):
+            bad.append(f"MISMATCH  {key}  (dossier {len(have[key])} chars, file {len(want.get(key) or '')})")
+    return bad
+
+
+MENTION_SECTIONS = re.compile(r"^#{2,3} +(?:Approach|Work packages|Acceptance criteria|PROMISE_CHECKLIST)\b.*?(?=^#{2,3} |\Z)", re.M | re.S)
+
+
+def mentioned_names(text: str) -> set[str]:
+    """The identifiers in backticks in the sections that tell a builder what to do (four letters up: not `new`, `run`)."""
+    names: set[str] = set()
+    for sec in MENTION_SECTIONS.finditer(text):
+        for tok in re.findall(r"`([^`\n]+)`", sec.group(0)):
+            names.update(re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", tok))
+    return names
+
+
+def mentioned_keys(path: str, file_text: str, names: set[str]) -> set[str]:
+    items, S, nav, keys, _ = scoped_members(path, file_text)
+    return {keys[id(it)] for it, _ in nav.flatten(items) if it.name in names and not _is_test_item(it, S)}
+
+
+def baseline_of(text: str) -> str:
+    m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    b = re.search(r"^baseline_commit:\s*([0-9a-fA-F]{7,40})\s*$", m.group(1), re.M) if m else None
+    return b.group(1) if b else ""
+
+
+def git_show(root: str, commit: str, path: str) -> str | None:
+    """The file at `commit`; None when it did not exist there. Raises OSError when the commit is not there at all."""
+    if subprocess.run(["git", "-C", root, "cat-file", "-e", f"{commit}^{{commit}}"], capture_output=True).returncode != 0:
+        raise OSError(f"baseline {commit} not in {root}")
+    p = subprocess.run(["git", "-C", root, "show", f"{commit}:{path}"], capture_output=True)
+    return p.stdout.decode("utf-8", "replace") if p.returncode == 0 else None
+
+
 def contract_blocks(lines: list[str]) -> list[tuple[str, int, int]]:
     """(path, first body line, closing fence line) of each `### <path>` code
     block under `## Contract`; `### Definitions` is skipped."""
@@ -460,6 +591,12 @@ def sync_contract(text: str, root: str) -> tuple[str, list[str], list[str]]:
     if not blocks:
         raise Refused("`## Contract` holds no `### <path>` code block")
     notes: list[str] = []
+    baseline = baseline_of(text)
+    if baseline:
+        scoped = sync_scoped(lines, blocks, root, baseline)
+        if scoped is not None:
+            return scoped
+        notes.append(f"baseline {baseline[:8]} is not in {root}: every block holds its whole file")
     for path, a, b in reversed(blocks):
         fp = path if os.path.isabs(path) else os.path.join(root, path)
         try:
@@ -475,7 +612,66 @@ def sync_contract(text: str, root: str) -> tuple[str, list[str], list[str]]:
         fp = path if os.path.isabs(path) else os.path.join(root, path)
         for p in verify_block(fp, "\n".join(new_lines[a:b]), read(fp)):
             problems.append(f"{path}: {p}")
-    return new, list(reversed(notes)), problems
+    return new, notes[:1 if baseline else 0] + list(reversed(notes[1 if baseline else 0:])), problems
+
+
+def sync_scoped(lines: list[str], blocks: list[tuple[str, int, int]], root: str, baseline: str):
+    """sync_contract under a baseline: each block keeps the members it names, and the first block of a path also takes
+    the path's added or changed members no block names. None when the baseline commit is not available."""
+    mentions = mentioned_names("\n".join(lines))
+    named: list[set[str]] = []
+    unread: list[str] = []
+    files: dict[str, tuple[str, set[str]]] = {}
+    try:
+        for path, a, b in blocks:
+            fp = path if os.path.isabs(path) else os.path.join(root, path)
+            try:
+                block_keys = set(scoped_members(fp, "\n".join(lines[a:b]), True)[4])
+            except Refused as err:
+                if "is not supported" in str(err):
+                    raise
+                block_keys = set()
+                unread.append(f"{path}: the block could not be parsed, so it names nothing: {err}")
+            named.append(block_keys)
+            if path not in files:
+                try:
+                    file_text = read(fp)
+                except OSError as err:
+                    raise Refused(f"{path}: cannot read {fp}: {err}")
+                rel = os.path.relpath(fp, root)
+                files[path] = (file_text, changed_keys(fp, file_text, git_show(root, baseline, rel)))
+    except OSError:
+        return None
+    all_named = {}
+    for (path, _, _), keys in zip(blocks, named):
+        all_named.setdefault(path, set()).update(keys)
+    notes: list[str] = []
+    problems: list[str] = []
+    out = list(lines)
+    seen: set[str] = set()
+    plans = []
+    for (path, a, b), keys in zip(blocks, named):
+        file_text, changed = files[path]
+        fp = path if os.path.isabs(path) else os.path.join(root, path)
+        present = set(scoped_members(fp, file_text)[4])
+        gone = sorted(keys - present)
+        scope = (keys & present) | ((changed | mentioned_keys(fp, file_text, mentions)) - all_named[path] if path not in seen else set())
+        seen.add(path)
+        block = scoped_block(fp, file_text, scope)
+        if not scope:
+            problems.append(f"{path}: EMPTY     the block names no member of the file and nothing changed since {baseline[:8]}")
+        new_keys = len(scope - keys)
+        notes.append(f"rebuilt `{path}`: {len(scope)} member(s), {new_keys} added (changed since the baseline or named in the dossier)"
+                     + (f"; no longer in the file: {', '.join(gone)}" if gone else ""))
+        plans.append((a, b, block, fp, file_text, scope, path))
+    for a, b, block, *_ in reversed(plans):
+        out[a:b] = block.split("\n")
+    new = "\n".join(out)
+    new_lines = new.split("\n")
+    for (path, a, b), plan in zip(contract_blocks(new_lines), plans):
+        for p in verify_scoped(plan[3], "\n".join(new_lines[a:b]), plan[4], plan[5]):
+            problems.append(f"{path}: {p}")
+    return new, notes + unread, problems
 
 
 def run(argv: list[str]) -> int:
@@ -797,6 +993,46 @@ def selftest() -> int:
         with contextlib.redirect_stderr(errbuf), contextlib.redirect_stdout(io.StringIO()):
             rc3 = run(["sync-contract", path, "--root", td])
         check("an unsupported language refuses (exit 1, file untouched)", rc3 == 1 and read(path) == bad)
+
+    # sync-contract under a baseline: named + changed only, nothing a reader needs lost.
+    with tempfile.TemporaryDirectory() as td:
+        g = lambda *x: subprocess.run(["git", "-C", td, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", *x], capture_output=True, text=True)
+        g("init", "-q")
+        os.makedirs(os.path.join(td, "src"))
+        lib = os.path.join(td, "src", "lib.rs")
+        BASE = ("/// Old pub.\npub fn untouched() -> u8 {\n    1\n}\n\n/// Named.\npub fn named() -> u8 {\n    2\n}\n\n"
+                "/// Will change.\npub fn changes() -> u8 {\n    3\n}\n\nimpl K {\n    /// Old method.\n    pub fn old(&self) {\n        a();\n    }\n"
+                "    /// Second.\n    pub fn second(&self) {\n        b();\n    }\n}\n")
+        open(lib, "w", encoding="utf-8").write(BASE)
+        g("add", "-A"); g("commit", "-q", "-m", "base")
+        sha = g("rev-parse", "HEAD").stdout.strip()
+        NOW = BASE.replace("/// Will change.\npub fn changes() -> u8", "/// Will change.\npub fn changes(a: u8) -> u8") \
+            .replace("    /// Second.", "    /// Added.\n    pub fn added(&self) {\n        c();\n    }\n    /// Second.") \
+            + "\n#[cfg(test)]\nmod tests {\n    fn t() {\n        x();\n    }\n}\n"
+        open(lib, "w", encoding="utf-8").write(NOW)
+        SD = (f"---\nid: W-1\nbaseline_commit: {sha}\n---\n\n## Contract\n\n### `src/lib.rs` — one\n\n```rust\n/// Named.\npub fn named() -> u8 {{ … }}\n```\n\n"
+              "### `src/lib.rs` — two\n\n```rust\nimpl K {\n    /// Second.\n    pub fn second(&self) { … }\n}\n```\n\n## Build log\n\n- x\n")
+        new, notes, probs = sync_contract(SD, td)
+        one = new.split("— one")[1].split("### ")[0]; two = new.split("— two")[1].split("## Build")[0]
+        check("scoped sync: a member no block names and nothing changed is left out", "untouched" not in new and "pub fn old" not in new)
+        check("scoped sync: a named member stays, in its own block", "pub fn named" in one and "pub fn second" in two and "pub fn second" not in one)
+        check("scoped sync: a changed or new member joins the first block of its path, once", "changes(a: u8)" in one and "pub fn added" in one and new.count("pub fn added") == 1 and "changes" not in two)
+        cited = SD.replace("## Build log", "## Work packages\n\n- WP-1: calls `untouched`\n\n## Build log")
+        check("scoped sync: an unchanged member the dossier's work packages mention joins", "pub fn untouched" in sync_contract(cited, td)[0])
+        check("scoped sync: a method keeps its impl; bodies and test modules never appear", "impl K {" in two and "a();" not in new and "cfg(test)" not in new and "x();" not in new)
+        check("scoped sync verifies clean and is idempotent", probs == [] and sync_contract(new, td)[0] == new)
+        cut = new.replace("/// Named.", "/// Nam")
+        check("scoped sync: a stale doc comment in a block is rebuilt from the file", sync_contract(cut, td)[0] == new)
+        gone = SD.replace("pub fn named() -> u8 { … }", "pub fn renamed() -> u8 { … }")
+        n2 = sync_contract(gone, td)[1]
+        check("scoped sync: a named member gone from the file is reported", any("renamed" in x for x in n2))
+        whole = SD.replace(sha, "0" * 40)
+        n3, notes3, _ = sync_contract(whole, td)
+        check("scoped sync: a baseline not in the repository keeps every member, and says so", "pub fn untouched" in n3 and "not in" in notes3[0])
+        fresh = os.path.join(td, "src", "new.rs")
+        open(fresh, "w", encoding="utf-8").write("/// New.\npub fn brand_new() {\n    y();\n}\n")
+        n4 = sync_contract(SD.replace("### `src/lib.rs` — two", "### `src/new.rs` — two").replace("impl K {\n    /// Second.\n    pub fn second(&self) { … }\n}", "stale"), td)[0]
+        check("scoped sync: a file new since the baseline is whole", "pub fn brand_new() { … }" in n4)
 
     for item in failures:
         print("SELFTEST FAIL  " + item)
