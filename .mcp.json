@@ -2,7 +2,15 @@
   "mcpServers": {
     "nav": {
       "command": "bun",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/shared/claude/mcp.ts"]
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/shared/claude/mcp.ts"
+      ]
+    },
+    "runs": {
+      "command": "bun",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/shared/claude/runs-mcp.ts"
+      ]
     }
   }
 }

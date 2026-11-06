@@ -70,6 +70,18 @@ the recorded checkpoints.
   (its init line, each turn) is checked: any other model stops the stage and
   the owner is asked. The spawn guard refuses any sub-agent or workflow agent
   named for Fable; sub-agents run on their agent files' Sonnet or Haiku.
+- **Gates settled once:** every stage is a new session running the command
+  again, so the rules tell it the gates are settled: the worktree gate is
+  yes, and time logging is **off** (no Tempo, no question, no read of
+  `time-logging.md`) unless `ASD_RUNNER_TIME_LOGGING=on`, then it runs in the
+  first stage only. The rules also ask for the plugin's references by section
+  (`doc_section`, offset and limit): 15 runs read them in full ~1,300 times.
+- **Accounts bound to an email:** an entry in `accounts.json` may carry
+  `email`. An account whose config dir is logged in as another email, or as
+  the same email as an account listed before it, is skipped while a good one
+  exists; the dashboard marks it "logged in as the wrong account · not used".
+  Keep runner logins in config dirs of their own (`setup_claude_account.sh`),
+  never in the `~/.claude` you log in to interactively.
 - **Run slots:** at most `ASD_RUNNER_MAX_LIVE` runs (default 4; 0 = no limit)
   work at once. A run takes a slot before each stage and after an owner's
   answer; only `running` runs hold one. Without a free slot it records
