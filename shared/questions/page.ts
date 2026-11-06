@@ -548,16 +548,25 @@ function docPrsView(repo) {
   if (!st) { S.docPrs[repo] = { loading: true }; fetch('/api/repo/' + enc(repo) + '/doc-prs').then(r => r.json()).then(j => { S.docPrs[repo] = j; render(); }).catch(() => { S.docPrs[repo] = { error: 'request failed' }; render(); }); return null; }
   if (st.loading) return null;
   const prs = st.prs || []; if (!prs.length && !st.merging && !st.error) return null;
-  const ready = prs.filter(p => p.ready).length;
+  const ready = prs.filter(p => p.ready).length; const queueable = prs.filter(p => !p.draft && !(p.queue && ['queued', 'waiting', 'fixing', 'rerunning', 'resolving', 'merging'].includes(p.queue.state))).length;
   const rows = prs.map(p => h('a', { class: 'srow', href: p.url, target: '_blank', rel: 'noopener', 'data-k': 'dp:' + p.number }, [h('span', { class: 'sid mono' }, ['#' + p.number]),
     h('span', { class: 'sname' }, [h('span', {}, [(p.dossier ? p.dossier + ' · ' : '') + p.title]), h('span', { class: 'small mut rsub' }, [p.kind + ' · ' + p.head])]),
-    h('span', { class: 'sright' }, [p.ready ? chip('ready to merge', 'done') : h('span', { title: p.blocked }, [chip(p.blocked.slice(0, 60), p.duplicate || !p.docsOnly ? 'blocked' : 'neutral')])])]));
+    h('span', { class: 'sright' }, [docPrState(p)])]));
   const head = [h('h2', {}, ['Non-code PRs into development']), h('span', { class: 'small mut' }, [prs.length + ' open · ' + ready + ' ready']), h('span', { class: 'grow' }),
     h('button', { class: 'btn sm', type: 'button', 'data-act': 'docprs-refresh', 'data-repo': repo }, ['↻']),
-    h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'docprs-merge', 'data-repo': repo, disabled: st.merging || !ready ? true : null, title: 'Merges every ready plan and docs PR into development with a merge commit, oldest first; the rest stay, with why' }, [st.merging ? 'Merging…' : 'Merge all ready (' + ready + ')'])];
+    h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'docprs-merge', 'data-repo': repo, disabled: st.merging || !queueable ? true : null, title: 'Puts every open plan and docs PR in the merge queue, oldest first. The queue fixes what blocks each one (a taken dossier number renumbered, red checks re-run, then the dossier\'s agent for a conflict or a check still red) and merges it. It never touches a stub.' }, [st.merging ? 'Queueing…' : 'Merge all (' + queueable + ')'])];
   return h('section', { class: 'sec', 'data-k': 'sec:docprs' }, [h('div', { class: 'sechd' }, head),
     st.error ? h('div', { class: 'err' }, [st.error]) : null, rows.length ? h('div', { class: 'srows' }, rows) : null,
     st.log ? h('details', { 'data-k': 'dp:log' }, [h('summary', { class: 'small mut' }, ['Last merge run']), h('pre', { class: 'small' }, [st.log])]) : null]);
+}
+/* A non-code PR's state: its merge-queue step when queued, else ready, or what the queue will have to fix. */
+function docPrState(p) {
+  const q = p.queue;
+  const QL = { queued: 'in the merge queue' + (q && q.position ? ' · #' + q.position : ''), waiting: 'waits for its run', fixing: 'renumbering', rerunning: 're-running red checks', resolving: 'its agent is resolving', merging: 'merging…', merged: 'merged' };
+  if (q && QL[q.state]) return h('span', { title: q.note || '' }, [h('span', { class: 'chip ' + (q.state === 'merged' ? 'done' : 'fixing') }, [q.state === 'merged' ? null : h('span', { class: 'dot info live' }), QL[q.state]])]);
+  if (q && q.state === 'failed') return h('span', { title: q.error || '' }, [chip('could not merge: ' + (q.error || '').slice(0, 60), 'blocked')]);
+  if (p.ready) return chip('ready to merge', 'done');
+  return h('span', { title: p.blocked + ' — Merge all lets the queue fix this' }, [chip(p.blocked.replace(/; renumber it.*$/, '').slice(0, 60), !p.docsOnly || p.draft ? 'blocked' : 'neutral')]);
 }
 async function docPrsAct(btn, act) {
   const repo = btn.dataset.repo;

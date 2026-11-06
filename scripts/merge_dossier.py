@@ -337,6 +337,190 @@ def conflicting(root: str, nums: list[int]) -> tuple[list[int], str]:
     return bad, ""
 
 
+# ---------------------------------------------------------------- shared steps: what blocks a merge, fixed
+# The same steps settle a dossier's stack (into its stub) and a non-code PR (into development), cheapest first:
+#   1. GitHub's mergeability: UNKNOWN right after another merge, so it is asked again (conflicting()).
+#   2. Id collisions, mechanical: a dossier id or an ADR/LRN number the PR adds that the base (or another open PR)
+#      already has is renumbered on the PR's branch, in a scratch worktree, then pushed (no agent).
+#   3. Red checks: failed jobs are re-run once (flaky checks), then waited for.
+#   4. What is left (a content conflict, a check still red): the dossier's own agent, a fresh /resolve-merge run under
+#      the dossier's key (a live run of it gets a message instead), then the steps again, once.
+
+ID_FILE_RE = re.compile(r"^\.discovery/dossiers/([A-Z][A-Z0-9]*-\d+)-[^/]+\.md$")
+ADR_FILE_RE = re.compile(r"^docs/adr/(\d{4})-[^/]+\.md$")
+
+
+def git(root: str, *args: str, timeout: int = 300) -> tuple[int, str]:
+    try:
+        p = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, "timed out"
+    return p.returncode, (p.stdout if p.returncode == 0 else p.stdout + p.stderr).strip()
+
+
+def ids_on(root: str, ref: str) -> tuple[set[str], set[str]]:
+    """(dossier ids, ADR numbers) in a tree."""
+    _, d = git(root, "ls-tree", "--name-only", ref, ".discovery/dossiers/")
+    _, a = git(root, "ls-tree", "--name-only", ref, "docs/adr/")
+    return ({m.group(1) for l in d.splitlines() if (m := ID_FILE_RE.match(l.strip()))},
+            {m.group(1) for l in a.splitlines() if (m := ADR_FILE_RE.match(l.strip()))})
+
+
+def added_ids(root: str, base: str, head: str) -> tuple[list[tuple[str, str]], list[str]]:
+    """What the branch adds over its base: [(dossier id, file)], [ADR number]."""
+    _, out = git(root, "diff", "--name-only", "--diff-filter=A", f"origin/{base}...origin/{head}")
+    dos = [(m.group(1), l) for l in out.splitlines() if (m := ID_FILE_RE.match(l))]
+    adrs = [m.group(1) for l in out.splitlines() if (m := ADR_FILE_RE.match(l))]
+    return dos, adrs
+
+
+def collisions(root: str, base: str, head: str, others: list[str]) -> tuple[list[tuple[str, str]], bool]:
+    """([(dossier id, file)] to renumber, whether an ADR number collides). A dossier id collides with the base or with
+    an id another open PR's branch adds (the PR earlier in the queue keeps it)."""
+    taken_d, taken_a = ids_on(root, f"origin/{base}")
+    for o in others:
+        d, _ = added_ids(root, base, o)
+        taken_d |= {i for i, _ in d}
+    dos, adrs = added_ids(root, base, head)
+    return [(i, f) for i, f in dos if i in taken_d], any(a in taken_a for a in adrs)
+
+
+def next_free_id(root: str, prefix: str) -> str:
+    """The next dossier id no branch on origin holds: base, stubs, plans and every open PR's head."""
+    git(root, "fetch", "-q", "origin", "--prune")
+    _, refs = git(root, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/")
+    nums = []
+    for r in refs.split():
+        d, _ = ids_on(root, r)
+        nums += [int(i.split("-")[1]) for i in d if i.startswith(prefix + "-")]
+    return f"{prefix}-{max(nums or [0]) + 1}"
+
+
+def fix_ids(root: str, base: str, head: str, renumber: list[tuple[str, str]], adr: bool) -> str:
+    """Renumber colliding ids on the branch, mechanically; "" or why it could not."""
+    wt = os.path.join(tempfile.mkdtemp(prefix="asd-ids-"), "w")
+    rc, out = git(root, "worktree", "add", "-q", "--detach", wt, f"origin/{head}")
+    if rc != 0:
+        return "could not check out " + head + ": " + out[:160]
+    try:
+        rc, out = git(wt, "merge", "--no-edit", "--no-ff", f"origin/{base}")
+        if rc != 0:
+            git(wt, "merge", "--abort")
+            return "conflict"   # a content conflict: the agent's step
+        notes = []
+        for old, f in renumber:
+            new = next_free_id(root, old.split("-")[0])
+            nf = f.replace(f"/{old}-", f"/{new}-", 1)
+            git(wt, "mv", f, nf)
+            path = os.path.join(wt, nf)
+            text = open(path, encoding="utf-8").read()
+            open(path, "w", encoding="utf-8").write(re.sub(rf"(?<![A-Za-z0-9]){re.escape(old)}(?![0-9])", new, text))
+            git(wt, "add", nf)
+            notes.append(f"{old} -> {new}")
+        if adr:
+            vp = os.path.join(HERE, "validate_pipeline.py")
+            r = subprocess.run([sys.executable, vp, "--finalize-ids", "--base", f"origin/{base}"], cwd=wt, capture_output=True, text=True)
+            if r.returncode != 0:
+                return "renumbering ADRs failed: " + (r.stdout + r.stderr).strip()[-200:]
+            git(wt, "add", "-A")
+            notes.append("ADR numbers finalized")
+        rc, _ = git(wt, "diff", "--cached", "--quiet")
+        if rc != 0:
+            rc, out = git(wt, "commit", "-q", "-m", "renumber ids the base already holds: " + ", ".join(notes))
+            if rc != 0:
+                return "commit failed: " + out[-200:]
+        rc, out = git(wt, "push", "-q", "origin", f"HEAD:{head}")
+        return "" if rc == 0 else "push failed: " + out[-200:]
+    finally:
+        git(root, "worktree", "remove", "--force", wt)
+
+
+def checks_state(root: str, n: int) -> str:
+    """green | pending | red, from the PR's checks."""
+    rc, out = gh(root, "pr", "checks", str(n), "--json", "bucket", "-q", "[.[].bucket] | join(\",\")")
+    if rc not in (0, 1, 8):
+        return "pending"
+    b = out.split(",") if out else []
+    return "red" if any(x in ("fail", "cancel") for x in b) else "pending" if "pending" in b else "green"
+
+
+def rerun_failed(root: str, head: str) -> bool:
+    """Re-run the failed jobs of the branch's newest runs, once; whether any was re-run."""
+    rc, out = gh(root, "run", "list", "--branch", head, "--limit", "20", "--json", "databaseId,conclusion,headSha")
+    try:
+        runs = json.loads(out or "[]") if rc == 0 else []
+    except ValueError:
+        runs = []
+    if not runs:
+        return False
+    tip = runs[0].get("headSha")
+    did = False
+    for r in runs:
+        if r.get("headSha") == tip and r.get("conclusion") in ("failure", "cancelled", "timed_out"):
+            did = gh(root, "run", "rerun", str(r["databaseId"]), "--failed")[0] == 0 or did
+    return did
+
+
+def wait_checks(root: str, nums: list[int], timeout_s: float) -> dict[int, str]:
+    poll = float(os.environ.get("ASD_MERGE_POLL") or 15)
+    end = time.time() + timeout_s
+    while True:
+        st = {n: checks_state(root, n) for n in nums}
+        if "pending" not in st.values() or time.time() > end:
+            return st
+        time.sleep(poll)
+
+
+def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, others: list[str], note) -> str:
+    """Make the PRs mergeable and green, cheapest step first; "" when ready to merge, else why not."""
+    nums = [p["number"] for p in prs]
+    run_timeout = float(os.environ.get("ASD_MERGE_RUN_TIMEOUT") or 4 * 3600)
+    check_timeout = float(os.environ.get("ASD_MERGE_CHECK_TIMEOUT") or 3600)
+    agent_used = rerun_used = False
+    while True:
+        # 2. ids, mechanical (the bottom PR carries the dossier; stacked ones are fixes)
+        bottom = prs[0]
+        ren, adr = collisions(root, bottom["baseRefName"], bottom["headRefName"], others)
+        if ren or adr:
+            note("fixing", "renumbering " + ", ".join(i for i, _ in ren) + (" and ADR numbers" if adr else "") + " the base already holds")
+            why = fix_ids(root, bottom["baseRefName"], bottom["headRefName"], ren, adr)
+            if why and why != "conflict":
+                return why
+            if not why:
+                time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15))   # let GitHub see the push
+        # 1. mergeability
+        bad, err = conflicting(root, nums)
+        if err:
+            return err
+        # 3. checks (re-run red ones once)
+        st = wait_checks(root, nums, check_timeout) if not bad else {}
+        red = [n for n, v in st.items() if v == "red"]
+        if red and not rerun_used:
+            rerun_used = True
+            heads = [p["headRefName"] for p in prs if p["number"] in red]
+            if any(rerun_failed(root, h) for h in heads):
+                note("rerunning", "checks red on " + ", ".join(f"#{n}" for n in red) + "; re-running the failed jobs once")
+                time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15))
+                st = wait_checks(root, nums, check_timeout)
+                red = [n for n, v in st.items() if v == "red"]
+        pending = [n for n, v in st.items() if v == "pending"]
+        if not bad and not red and not pending:
+            return ""
+        if pending and not bad and not red:
+            return "checks still running after " + str(int(check_timeout / 60)) + " min: " + ", ".join(f"#{n}" for n in pending)
+        # 4. the dossier's agent
+        if agent_used:
+            return ("still conflicting: " + ", ".join(f"#{n}" for n in bad)) if bad else ("checks still red: " + ", ".join(f"#{n}" for n in red))
+        agent_used = True
+        what = ("conflicts in " + ", ".join(f"#{n}" for n in bad)) if bad else ("red checks on " + ", ".join(f"#{n}" for n in red))
+        note("resolving", what + "; the dossier's agent resolves it")
+        since = now()
+        start_run(root, agent_id, "resolve-merge", nums)
+        end = wait_run(f"{repo_name(root)}.{agent_id}", since, run_timeout)
+        if end != "done":
+            return f"the resolution run ended {end}"
+
+
 def work_one(root: str, dossier: str) -> None:
     repo = repo_name(root); key = f"{repo}.{dossier}"
     run_timeout = float(os.environ.get("ASD_MERGE_RUN_TIMEOUT") or 4 * 3600)
@@ -344,25 +528,16 @@ def work_one(root: str, dossier: str) -> None:
         set_state(key, state="waiting", error="", pid=os.getpid(), note="waiting for the dossier's own run to finish")
         while run_live(key):
             time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15))
-    for attempt in range(1, 3):
-        chain, why = plan(root, dossier)
-        if not chain:
-            set_state(key, state="failed", error=why, pid=None); return
-        nums = [p["number"] for p in chain]
-        bad, err = conflicting(root, nums)
-        if err:
-            set_state(key, state="failed", error=err, pid=None); return
-        if not bad:
-            break
-        if attempt == 2:
-            set_state(key, state="failed", prs=nums, error="still conflicting after the agent's resolution: " + ", ".join(f"#{n}" for n in bad), pid=None); return
-        since = now()
-        set_state(key, state="resolving", prs=nums, error="", pid=os.getpid(), note="conflicts in " + ", ".join(f"#{n}" for n in bad) + "; the dossier's agent resolves them")
-        append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "runner", "text": "merge queue: " + ", ".join(f"#{n}" for n in bad) + " conflict with their base; starting /resolve-merge"})
-        start_run(root, dossier, "resolve-merge", nums)
-        end = wait_run(key, since, run_timeout)
-        if end != "done":
-            set_state(key, state="failed", prs=nums, error=f"the conflict resolution run ended {end}; the queue went on without this dossier", pid=None); return
+    chain, why = plan(root, dossier)
+    if not chain:
+        set_state(key, state="failed", error=why, pid=None); return
+    nums = [p["number"] for p in chain]
+    def note(state, text):
+        set_state(key, state=state, prs=nums, error="", pid=os.getpid(), note=text)
+        append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "runner", "text": "merge queue: " + text})
+    why = settle(root, key, dossier, chain, chain[0]["baseRefName"], [], note)
+    if why:
+        set_state(key, state="failed", prs=nums, error=why, pid=None); return
     set_state(key, state="merging", pid=os.getpid())
     import io, contextlib
     buf = io.StringIO()
@@ -379,6 +554,64 @@ def work_one(root: str, dossier: str) -> None:
     set_state(key, state="merged", pid=None, note=f"merged; cleanup {end}")
 
 
+DOC_PATH_RE = re.compile(r"^(\.discovery/|docs/)|\.md$")
+
+
+def enqueue_pr(root: str, n: int) -> int:
+    """Add a non-code PR into development (a plan or research PR) to the repository's merge queue, once."""
+    repo = repo_name(root)
+    with locked(repo):
+        q = read_json(queue_path(repo), {}) or {}
+        items = q.get("items") or []
+        if not any(i.get("pr") == n for i in items):
+            items.append({"id": f"#{n}", "pr": n, "ts": now()})
+        q["items"], q["root"] = items, root
+        write_json(queue_path(repo), q)
+        set_state(f"{repo}.pr-{n}", state="queued", position=[i["id"] for i in items].index(f"#{n}") + 1, error="", pid=None)
+        worker_ = q.get("worker")
+        if not (worker_ and alive(worker_)):
+            log = os.path.join(runs_dir(), f"{repo}.merge-queue.log")
+            with open(log, "ab") as fh:
+                p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--worker", "--root", root], stdin=subprocess.DEVNULL,
+                                     stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
+            q["worker"] = p.pid
+            write_json(queue_path(repo), q)
+    return 0
+
+
+def work_pr(root: str, n: int) -> None:
+    """One non-code PR into development through the shared steps, then merged by script (no cleanup run)."""
+    repo = repo_name(root); key = f"{repo}.pr-{n}"
+    rc, out = gh(root, "pr", "view", str(n), "--json", "number,state,baseRefName,headRefName,isDraft,files")
+    try:
+        p = json.loads(out) if rc == 0 else {}
+    except ValueError:
+        p = {}
+    if not p or p.get("state") != "OPEN":
+        set_state(key, state="failed", error="not an open pull request", pid=None); return
+    if p.get("isDraft"):
+        set_state(key, state="failed", error="still a draft: mark it ready for review first", pid=None); return
+    files = [f.get("path", "") for f in p.get("files") or []]
+    code = [f for f in files if not DOC_PATH_RE.search(f)]
+    if code:
+        set_state(key, state="failed", error="changes code (" + ", ".join(code[:3]) + "): code reaches development only through a stub; retarget it to the stub, or drop those files", pid=None); return
+    ids = [m.group(1) for f in files if (m := ID_FILE_RE.match(f))]
+    agent_id = ids[0] if ids else f"PR-{n}"
+    def note(state, text):
+        set_state(key, state=state, error="", pid=os.getpid(), note=text)
+        if ids:
+            append_line(os.path.join(runs_dir(), f"{repo}.{agent_id}.jsonl"), {"ts": now(), "kind": "runner", "text": f"merge queue (#{n}): " + text})
+    why = settle(root, key, agent_id, [p], p["baseRefName"], [], note)
+    if why:
+        set_state(key, state="failed", error=why, pid=None); return
+    set_state(key, state="merging", pid=os.getpid())
+    rc, out = gh(root, "pr", "merge", str(n), "--merge", timeout=300)
+    rc2, st = gh(root, "pr", "view", str(n), "--json", "state", "-q", ".state")
+    if rc != 0 or st.strip() != "MERGED":
+        set_state(key, state="failed", error=(out[-300:] if rc != 0 else f"not merged afterwards ({st.strip()})"), pid=None); return
+    set_state(key, state="merged", pid=None, note="merged into " + p["baseRefName"])
+
+
 def worker(root: str) -> int:
     """Work the repository's merge queue to the end, one dossier at a time."""
     repo = repo_name(root)
@@ -392,15 +625,18 @@ def worker(root: str) -> int:
             q = read_json(queue_path(repo), {}) or {}
             items = q.get("items") or []
             for i, it in enumerate(items):   # the rest learn their place
-                set_state(f"{repo}.{it['id']}", position=i + 1) if i else None
+                set_state(f"{repo}.pr-{it['pr']}" if it.get("pr") else f"{repo}.{it['id']}", position=i + 1) if i else None
             if not items:
                 q["worker"] = None; write_json(queue_path(repo), q)
                 return 0
-            head = items[0]["id"]
+            head = items[0]["id"]; head_pr = items[0].get("pr")
         try:
-            work_one(q.get("root") or root, head)
+            if head_pr:
+                work_pr(q.get("root") or root, int(head_pr))
+            else:
+                work_one(q.get("root") or root, head)
         except Exception as e:  # one dossier's failure never stops the queue
-            set_state(f"{repo}.{head}", state="failed", error=f"{type(e).__name__}: {e}", pid=None)
+            set_state(f"{repo}.pr-{head_pr}" if head_pr else f"{repo}.{head}", state="failed", error=f"{type(e).__name__}: {e}", pid=None)
         with locked(repo):
             q = read_json(queue_path(repo), {}) or {}
             q["items"] = [i for i in (q.get("items") or []) if i["id"] != head]
@@ -524,6 +760,11 @@ if a[:2] in (["stack", "merge"], ["pr", "merge"]):
     for p in prs:
         if str(p["number"]) in nums: p["state"] = "MERGED"
     json.dump(prs, open(os.path.join(d, "prs.json"), "w")); sys.exit(0)
+if a[:2] == ["pr", "checks"]:
+    p = next(p for p in prs if str(p["number"]) == a[2]); print(p.get("bucket", "pass")); sys.exit(0)
+if a[:2] == ["run", "list"]: print("[]"); sys.exit(0)
+if a[:2] == ["pr", "view"] and "number,state,baseRefName,headRefName,isDraft,files" in a:
+    p = next(p for p in prs if str(p["number"]) == a[2]); print(json.dumps(dict(p, state=p.get("state", "OPEN")))); sys.exit(0)
 if a[:2] == ["pr", "view"]:
     p = next(p for p in prs if str(p["number"]) == a[2])
     print(p.get("mergeable", "MERGEABLE") if "mergeable" in a else p.get("state", "OPEN")); sys.exit(0)
@@ -671,6 +912,43 @@ print("started")
             os.environ.update(env)
             late = plan(root, "W-131")
         check("integrate: a dossier not picked waits while the stub's PR is open", not late[0] and "being integrated" in late[1], str(late))
+        # ---- non-code PRs into development: a colliding dossier id is renumbered by script, then merged; the stub is untouched ----
+        g = lambda *x, cwd=None: subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", *x], cwd=cwd, capture_output=True, text=True)
+        origin = os.path.join(tmp, "o.git"); clone = os.path.join(tmp, "clone"); pusher = os.path.join(tmp, "pusher")
+        g("init", "-q", "--bare", "-b", "development", origin); g("clone", "-q", origin, pusher)
+        os.makedirs(os.path.join(pusher, ".discovery", "dossiers"))
+        open(os.path.join(pusher, ".discovery", "dossiers", "W-147-first.md"), "w").write("---\nid: W-147\n---\n# first\n")
+        g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "base", cwd=pusher); g("push", "-q", "origin", "HEAD:development", cwd=pusher)
+        g("checkout", "-q", "-b", "plan/b", cwd=pusher)
+        open(os.path.join(pusher, ".discovery", "dossiers", "W-147-second.md"), "w").write("---\nid: W-147\n---\n# second, W-147 here\n")
+        g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "plan b", cwd=pusher); g("push", "-q", "origin", "plan/b", cwd=pusher)
+        g("clone", "-q", origin, clone); g("config", "commit.gpgsign", "false", cwd=clone); g("config", "user.email", "t@t", cwd=clone); g("config", "user.name", "t", cwd=clone)
+        for f in ("calls.txt", "runs.txt", "stubpr.txt"):
+            if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
+        prs4 = [dict(P(437, "plan/b", "development"), files=[{"path": ".discovery/dossiers/W-147-second.md"}]),
+                dict(P(434, "docs/r", "development"), files=[{"path": "docs/r.md"}, {"path": "reading.html"}])]
+        json.dump(prs4, open(os.path.join(fdir, "prs.json"), "w"))
+        old = dict(os.environ)
+        os.environ.update(env, ASD_RUNNER_BIN=fr, ASD_MERGE_POLL="0.1")
+        try:
+            enqueue_pr(clone, 437); enqueue_pr(clone, 434)
+            qp = queue_path(repo_name(clone))
+            for _ in range(400):
+                q = read_json(qp, {}) or {}
+                if not q.get("items") and not (q.get("worker") and alive(q["worker"])): break
+                time.sleep(0.1)
+        finally:
+            os.environ.clear(); os.environ.update(old)
+        g("fetch", "-q", "origin", cwd=clone)
+        tree = subprocess.run(["git", "-C", clone, "ls-tree", "--name-only", "origin/plan/b", ".discovery/dossiers/"], capture_output=True, text=True).stdout
+        body = subprocess.run(["git", "-C", clone, "show", "origin/plan/b:.discovery/dossiers/W-148-second.md"], capture_output=True, text=True).stdout
+        rn = repo_name(clone)
+        s437 = read_json(os.path.join(rdir, f"{rn}.pr-437.merge.json"), {}); s434 = read_json(os.path.join(rdir, f"{rn}.pr-434.merge.json"), {})
+        calls = open(os.path.join(fdir, "calls.txt")).read() if os.path.exists(os.path.join(fdir, "calls.txt")) else ""
+        check("non-code PR: a colliding dossier id is renumbered on its branch, with its mentions, then merged",
+              "W-148-second.md" in tree and "W-147-second.md" not in tree and "id: W-148" in body and "W-148 here" in body and s437.get("state") == "merged" and "pr merge 437 --merge" in calls, tree + str(s437))
+        check("non-code PR: one that changes code is refused with why, never merged", s434.get("state") == "failed" and "changes code" in s434.get("error", "") and "pr merge 434" not in calls)
+        check("non-code PR: the stub, its PR and /stub are never touched", "pr create" not in calls and "stack" not in calls and not os.path.exists(os.path.join(fdir, "runs.txt")))
         check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged")
         RUNNER = saved
     print("FAILED: " + ", ".join(fails) if fails else "all ok")
@@ -686,6 +964,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--enqueue", action="store_true", help="add to the repository's merge queue (FIFO) and start its worker")
     ap.add_argument("--unqueue", action="store_true", help="take out of the merge queue")
     ap.add_argument("--worker", action="store_true", help="work the repository's merge queue to the end")
+    ap.add_argument("--enqueue-pr", metavar="N", type=int, help="add a non-code PR into development to the merge queue")
     ap.add_argument("--integrate", metavar="STUB", help="merge every finished dossier on the stub through the queue, then start /stub")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
@@ -693,6 +972,8 @@ def main(argv: list[str] | None = None) -> int:
         return selftest()
     if a.worker and a.root:
         return worker(os.path.abspath(a.root))
+    if a.enqueue_pr and a.root:
+        return enqueue_pr(os.path.abspath(a.root), a.enqueue_pr)
     if a.integrate and a.root:
         if not re.fullmatch(r"(?:stub|release)/[\w.-]+", a.integrate):
             print("merge_dossier: --integrate takes a stub branch, e.g. stub/2026-11-03", file=sys.stderr); return 2

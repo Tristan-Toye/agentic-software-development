@@ -14,8 +14,12 @@ argument-hint: "<dossier ID, e.g. W-128> <PR numbers, bottom to top, e.g. 427,42
 # /resolve-merge — resolve the conflicts that stop the merge queue
 
 `$ARGUMENTS` is the dossier ID and its pull requests, bottom to top (the
-dossier's own pull request first, then the stacked ones on it). The merge
-queue found at least one of them conflicting with its base. Refuse when a
+dossier's own pull request first, then the stacked ones on it), or one plan or
+research pull request into development (its dossier's ID, or `PR-<n>` when it
+holds none). The merge queue found at least one of them **conflicting** with
+its base, or with a **check still red** after one re-run of its failed jobs.
+It already renumbered every id the base holds, by script; what reaches you is
+what a script cannot settle. Refuse when a
 listed pull request is not open (`gh pr view <n> --json state,headRefName,baseRefName,mergeable`).
 
 `${PLUGIN_ROOT}` is this plugin's checkout; under Claude Code take it from
@@ -56,6 +60,14 @@ way, after that one is pushed. Then resolve each conflict:
 - When two intents cannot both hold (the same behaviour changed two ways), do
   not choose: ask the owner with both versions and what each one does, and
   wait.
+
+## Step 2b — A red check, no conflict
+
+Read why it failed (`gh pr checks <n>`, `gh run view <run> --log-failed`).
+Fix it on the branch, inside what the pull request changed: a spelling or
+link a docs check names, a validator's finding on a plan document, a test the
+change broke. A failure the change did not cause (an outage, a flaky job that
+failed twice) is put to the owner with the evidence, never patched around.
 
 ## Step 3 — Prove it
 
