@@ -101,7 +101,8 @@ NETWORK_RE = re.compile(r"ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|
                         r"|can'?t reach the API|unable to connect|fetch failed|socket hang ?up|network (?:error|is unreachable)"
                         r"|connection (?:error|reset|refused|closed)|timed? ?out|API Error: 5\d\d|\b50[0234]\b|internal server error"
                         r"|bad gateway|service unavailable|gateway time-?out", re.I)
-# Waits between network retries, seconds; the last one repeats until ASD_RUNNER_NET_RETRIES attempts (default 8, ~1 h).
+# Waits between network retries, seconds; the last one repeats for as long as the outage lasts (ASD_RUNNER_NET_RETRIES
+# sets a limit; the default, 0, is none).
 NETWORK_BACKOFF = (30, 60, 120, 300, 600, 900)
 
 
@@ -1292,15 +1293,16 @@ class Runner:
                 return self.finish("stopped", "stopped", 3)
             if outcome == "network":
                 # A transient network or API-server error: pause, then run the same stage again from its checkpoints,
-                # backing off; only after ASD_RUNNER_NET_RETRIES attempts does it become a failure the owner rules on.
+                # backing off, however long it lasts: an outage says nothing about the work. Only with
+                # ASD_RUNNER_NET_RETRIES set does it become a failure the owner rules on.
                 net_tries += 1
-                limit_n = int(os.environ.get("ASD_RUNNER_NET_RETRIES") or 8)
-                if net_tries <= limit_n:
+                limit_n = int(os.environ.get("ASD_RUNNER_NET_RETRIES") or 0)
+                if not limit_n or net_tries <= limit_n:
                     wait = float(os.environ.get("ASD_RUNNER_NET_WAIT") or NETWORK_BACKOFF[min(net_tries, len(NETWORK_BACKOFF)) - 1])
                     until = time.time() + wait
                     at = datetime.datetime.fromtimestamp(until, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     self.save(state="paused", resumes_at=at)
-                    self.event(f"paused: network error ({detail[:160]}); retry {net_tries}/{limit_n} of stage {started} at {at}", "paused")
+                    self.event(f"paused: network error ({detail[:160]}); retry {net_tries}{'/' + str(limit_n) if limit_n else ''} of stage {started} at {at}", "paused")
                     while time.time() < until and not self.stopping:
                         time.sleep(min(5.0, max(0.2, until - time.time())))
                     if self.stopping:
@@ -2020,7 +2022,7 @@ def selftest() -> int:
         p = start("W-32")
         rc = p.wait(timeout=60)
         t32 = texts("W-32")
-        check("network: paused, resumed and finished, with no question", rc == 0 and any(t.startswith("paused: network error") and "retry 1/8" in t for t in t32)
+        check("network: paused, resumed and finished, with no question", rc == 0 and any(t.startswith("paused: network error") and "retry 1 of stage" in t for t in t32)
               and any(t.startswith("resumed after the network error") for t in t32) and not any("asked" in t for t in t32))
         scenario([{"turns": [[{"error": net}]]}, {"turns": [[{"error": net}]]}])
         env["ASD_RUNNER_NET_RETRIES"] = "1"

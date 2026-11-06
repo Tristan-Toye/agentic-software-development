@@ -863,6 +863,10 @@ async function main(): Promise<void> {
   setInterval(() => { void scan(); void scanRunThreads() }, 10_000)
   setTimeout(() => void checkMerges(), 20_000)
   setInterval(() => void checkMerges(), 120_000)
+  // A merge queue outlives its worker (a logout, a reboot, a crash): pick it up again where it was.
+  const reviveQueues = () => { try { Bun.spawn(["python3", mergeScript(), "--revive"], { stdout: "ignore", stderr: "ignore", stdin: "ignore" }).unref() } catch { /* the next tick tries again */ } }
+  setTimeout(reviveQueues, 5_000)
+  setInterval(reviveQueues, 120_000)
 }
 
 if (import.meta.main) await main()
