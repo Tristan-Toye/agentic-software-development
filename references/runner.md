@@ -183,6 +183,10 @@ the recorded checkpoints.
   PRs conflicting with their base, and the dossier's agent merges the base in,
   resolves keeping both sides, checks no hunk was lost, proves it with the
   affected tests and gates, and pushes. It never merges into the stub.
+- **`--command stub --items stub/<date>`:** runs `/stub <branch>` under the
+  key `<repo>.stub-<date>` (the branch with `/` as `-`), so the stub page and
+  the hooks' stub records share one timeline. The dashboard's Integrate starts
+  it after the merge queue has merged the stub's finished dossiers.
 - **`--command plan`:** runs `/plan <ID>` for a planned dossier, under its own
   key; the dashboard's Plan button starts it.
 - **`--command plan --items D-n`:** runs `/plan <ID> D-n` for one deferred

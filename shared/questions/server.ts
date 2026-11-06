@@ -429,8 +429,35 @@ export async function handle(req: Request): Promise<Response> {
     const entries = withHtml(mergeTimeline({ updates: upd, questions, extra, unit: "Step" }))
     const groups = groupByPhase(entries, "Before the first step", false)
     const activity: unknown[] = []
-    const now = nowPanel(entries, groups, { runner: "", waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: "" })
-    return json({ repo, stub, key, entries, groups, activity, now, record: recordEntries, empty: entries.every((e) => e.type === "boundary"), hasRecord: !!file })
+    const runner = readRunner(key)
+    const now = nowPanel(entries, groups, { runner: runner?.state ?? "", waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: "" })
+    let integrate: any = null
+    try { integrate = JSON.parse(readFileSync(join(runsDir(), `${key}.integrate.json`), "utf8")) } catch { /* never integrated */ }
+    if (integrate?.state === "merging" && integrate.pid) { try { process.kill(Number(integrate.pid), 0) } catch { integrate = { ...integrate, state: "failed", error: "the integration stopped before the merges were done; press Integrate again" } } }
+    return json({ repo, stub, key, entries, groups, activity, now, runner, integrate, record: recordEntries, empty: entries.every((e) => e.type === "boundary"), hasRecord: !!file })
+  }
+  // Integrate a stub: its finished dossiers through the merge queue (FIFO), then /stub on the runner; and Stop/Resume of
+  // that /stub run. POST {repo, branch, action: integrate|stop|resume}.
+  if (req.method === "POST" && path === "/api/stub/control") {
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const b = await req.json().catch(() => ({})) as { repo?: string; branch?: string; action?: string }
+    const rs = (await getStubs(() => readAll(DIR))).repos.find((r) => r.repo === b.repo)
+    const stub = rs?.stubs.find((x) => x.branch === b.branch)
+    if (!rs || !stub || !/^(stub|release)\/[\w.-]+$/.test(stub.branch)) return json({ error: "no such stub" }, 404)
+    const slug = stub.branch.replace(/\//g, "-")
+    if (b.action === "integrate") {
+      const fd = openSync(join(runsDir(), `${rs.repo}.${slug}.integrate.log`), "a")
+      Bun.spawn(["python3", mergeScript(), "--integrate", stub.branch, "--root", rs.main], { stdout: fd, stderr: fd, stdin: "ignore" }).unref()
+      emitChange("stubs")
+      return json({ ok: true })
+    }
+    if (b.action === "stop" || b.action === "resume") {
+      const r = await runRunner(b.action === "stop" ? ["stop", slug, "--root", rs.main] : [slug, "--root", rs.main, "--command", "stub", "--items", stub.branch])
+      emitChange("stubs")
+      return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)
+    }
+    return json({ error: "action is integrate, stop or resume" }, 400)
   }
   const rl = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/log$/)
   if (req.method === "GET" && rl) {

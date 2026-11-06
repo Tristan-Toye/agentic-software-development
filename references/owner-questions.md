@@ -245,6 +245,20 @@ restarted server answers at once from them while its first scan runs.
     all or nothing; one PR: `gh pr merge --merge`), checks each is MERGED,
     marks them started for the detector and starts `/after-merge`. State:
     `<key>.merge.json` (merging, merged, failed and why);
+  - **Integrate a stub** (the open stub's card and its page): **Integrate**
+    runs `merge_dossier.py --integrate <stub>` in the background. Part 1: every
+    finished dossier on the stub (a ready PR, no live run) goes through the
+    merge queue, first in first out, conflicts to its own agent, cleanup after
+    each. Part 2, once all merged: `/stub` on the runner (key
+    `<repo>.<stub slug>`: the full stack run, the audit, the stub's PR into
+    development). A dossier still in flight (a draft PR or a live run) is left
+    out; once the stub is in development, the merge queue moves its PR to the
+    accepting stub (one that already holds the integrated batch; it cuts
+    `stub/<today>` from development when none exists) and merges it there.
+    Before that it waits, so its PR never carries the old batch. The stub page
+    shows the run like a dossier's: state, Stop, Resume /stub, the Now panel,
+    and its timeline with a "Merge the finished dossiers" section, then the
+    /stub steps. The whole stub card opens that page.
   - **Non-code PRs into development** (repo page, under the stubs): every
     open `plan/*` or `docs/*` PR into `development`, the PRs that may skip the
     stub, each with why it can or cannot merge now (`scripts/merge_docs_prs.py

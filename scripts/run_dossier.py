@@ -512,7 +512,7 @@ def slot_census(me: str) -> tuple[int, list[tuple[str, str]]]:
 # owner_wait's code for "the owner wrote to the run" (not an answer).
 MESSAGE_RC = 20
 # Commands that take an argument list after the dossier id (`--items`).
-ITEM_COMMANDS = ("fix-deferred", "after-merge", "plan", "resolve-merge")
+ITEM_COMMANDS = ("fix-deferred", "after-merge", "plan", "resolve-merge", "stub")
 
 
 class Runner:
@@ -688,11 +688,17 @@ class Runner:
         cmd += ["--model", self.model or runner_model(None)]
         return cmd
 
+    def command_line(self) -> str:
+        """The command the stage starts with. A /stub run's key is the stub's slug (stub-2026-11-03); the command takes
+        the branch itself (stub/2026-11-03), carried in --items."""
+        if self.command == "stub" and self.items:
+            return f"/{PLUGIN}:stub {self.items}"
+        return f"/{PLUGIN}:{self.command} {self.dossier}" + (f" {self.items}" if self.items and self.command in ITEM_COMMANDS else "")
+
     def handoff(self) -> str | None:
         if not self.checkpoints:
             return None
-        args = f" {self.items}" if self.items and self.command in ITEM_COMMANDS else ""
-        rows = [f"RUNNER HAND-OFF. Task: run /{PLUGIN}:{self.command} {self.dossier}{args} in {self.root}.",
+        rows = [f"RUNNER HAND-OFF. Task: run {self.command_line()} in {self.root}.",
                 "Earlier stages, in order:"]
         for i, cp in enumerate(self.checkpoints, 1):
             rows.append(f"{i}. {cp['name']}: {clip(cp['summary'], 4000)}")
@@ -732,14 +738,14 @@ class Runner:
             q.put(None)
 
         threading.Thread(target=pump, daemon=True).start()
-        self.send(f"/{PLUGIN}:{self.command} {self.dossier}" + (f" {self.items}" if self.items and self.command in ITEM_COMMANDS else ""))
+        self.send(self.command_line())
         extra = False
         hand = self.handoff()
         carry = getattr(self, "pending_owner", "")
         if carry:
             # The stage restarted so a new permission rule applies (the dashboard's "Always allow"): the owner's answer
             # to the question the previous process asked travels with the hand-off.
-            hand = (hand + "\n" if hand else f"RUNNER HAND-OFF. Task: run /{PLUGIN}:{self.command} {self.dossier} in {self.root}.\n") + (
+            hand = (hand + "\n" if hand else f"RUNNER HAND-OFF. Task: run {self.command_line()} in {self.root}.\n") + (
                 "This stage restarted so that a permission rule the owner just saved applies. Your previous process asked "
                 "the owner a question; carry on from the dossier and this answer, and retry the command the rule now allows:\n"
                 + carry)
@@ -2109,7 +2115,8 @@ def main() -> int:
     items = ",".join(i for i in re.split(r"[,\s]+", a.items or "") if i)
     if items and not ((a.command == "fix-deferred" and re.fullmatch(r"D-\d+(?:,D-\d+)*", items))
                       or (a.command in ("after-merge", "resolve-merge") and re.fullmatch(r"\d+(?:,\d+)*", items))
-                      or (a.command == "plan" and re.fullmatch(r"D-\d+", items))):
+                      or (a.command == "plan" and re.fullmatch(r"D-\d+", items))
+                      or (a.command == "stub" and re.fullmatch(r"(?:stub|release)/[\w.-]+", items))):
         print("run_dossier.py: --items takes D-ids (D-1,D-3) with --command fix-deferred, PR numbers (429,430) with --command after-merge, "
               "or one D-id with --command plan", file=sys.stderr)
         return 2

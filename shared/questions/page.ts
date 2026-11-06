@@ -83,7 +83,7 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}.acard{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:8px}.acard.next{border-color:var(--acc)}
 .ahd{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.aname{font-weight:700;font-size:1rem;margin-right:4px}.meter .mhd{display:flex;justify-content:space-between;font-size:12.5px}.meter .ml{color:var(--mut)}.meter .mv{font-weight:600}
 .mbar{height:7px;border-radius:4px;background:var(--chip);overflow:hidden;margin:3px 0}.mfill{display:block;height:100%;background:var(--acc)}.mfill.ok{background:var(--ok)}.mfill.warn{background:var(--warn)}.mfill.bad{background:var(--bad)}
-.qchat{display:flex;flex-direction:column;gap:6px;margin:10px 0}.qchat .cm{max-width:88%;padding:7px 10px;border-radius:10px;border:1px solid var(--bd)}.qchat .cm.me{align-self:flex-end;background:var(--accbg)}.qchat .cm.them{align-self:flex-start}.qchat .cm .who{font-size:11px;color:var(--mut);margin-bottom:2px}.qchat .cm .tx{white-space:pre-wrap}.qchat .cm.wait{color:var(--mut);font-size:12px}.mergectl{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.dfplan{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.nowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 0;color:var(--fg)}.nowline .nowtext{display:inline-flex;gap:6px;align-items:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .nowline{margin:2px 0 0;color:var(--mut)}.nowline .chip{font-size:11px}.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qchat{display:flex;flex-direction:column;gap:6px;margin:10px 0}.qchat .cm{max-width:88%;padding:7px 10px;border-radius:10px;border:1px solid var(--bd)}.qchat .cm.me{align-self:flex-end;background:var(--accbg)}.qchat .cm.them{align-self:flex-start}.qchat .cm .who{font-size:11px;color:var(--mut);margin-bottom:2px}.qchat .cm .tx{white-space:pre-wrap}.qchat .cm.wait{color:var(--mut);font-size:12px}.scard.clickable{cursor:pointer}.scard.clickable:hover{border-color:var(--acc)}.mergectl{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.dfplan{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}.nowline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 0;color:var(--fg)}.nowline .nowtext{display:inline-flex;gap:6px;align-items:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .nowline{margin:2px 0 0;color:var(--mut)}.nowline .chip{font-size:11px}.rsub{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}a.srow .sname>span:first-child{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip.fixing{display:inline-flex;align-items:center;gap:5px;background:var(--accbg);color:var(--acc);font-weight:600}a.srow:has(.chip.fixing){box-shadow:inset 3px 0 0 var(--acc)}
 .dfp{border-left:3px solid var(--acc)}.dfp-bar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--chip);margin:6px 0 4px}.dfp-bar .seg{display:block;height:100%}
 .seg.ok,.sw.ok{background:var(--ok)}.seg.acc,.sw.acc{background:var(--acc)}.seg.warn,.sw.warn{background:var(--warn)}.seg.mut,.sw.mut{background:var(--mut)}.seg.mut2,.sw.mut2{background:var(--bd)}
@@ -471,6 +471,22 @@ function stubGroup(key, label, rows, fold) {
   if (fold) return h('details', { class: 'sgrp', 'data-k': key, open: rows.length <= 6 ? true : null }, [h('summary', { class: 'sgrp-h' }, [head]), body]);
   return h('div', { class: 'sgrp', 'data-k': key }, [h('div', { class: 'sgrp-h' }, [head]), body]);
 }
+/* Integrate: merge every finished dossier on the stub through the merge queue (first in, first out), then run /stub. */
+function integrateBtn(repo, branch) {
+  const k = repo + '/' + branch + ':integrate'; const st = S.ctl[k] || {};
+  if (st.confirm) return h('span', { class: 'mergectl' }, [h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'integrate', 'data-repo': repo, 'data-branch': branch, title: 'Merges the finished dossiers on this stub one by one (conflicts go to their agent), then runs /stub: the full stack run, the audit, the stub\'s PR into development. Dossiers still in flight move to the next stub.' }, [st.busy ? 'Starting…' : 'Confirm: integrate']),
+    h('button', { class: 'btn sm', type: 'button', 'data-act': 'stub-cancel', 'data-key': k }, ['Cancel'])]);
+  return h('button', { class: 'btn sm', type: 'button', 'data-act': 'stub-confirm', 'data-key': k, title: 'Merge the finished dossiers, then run /stub' }, ['Integrate']);
+}
+async function stubCtl(btn) {
+  const repo = btn.dataset.repo, branch = btn.dataset.branch, op = btn.dataset.op, k = repo + '/' + branch + ':' + (op === 'integrate' ? 'integrate' : 'run');
+  const st = S.ctl[k] = S.ctl[k] || {}; if (st.busy) return; st.busy = true; st.err = ''; render();
+  try {
+    const r = await fetch('/api/stub/control', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repo, branch, action: op }) });
+    const j = await r.json().catch(() => ({})); if (!(r.ok && j.ok !== false)) st.err = j.error || j.output || ('HTTP ' + r.status);
+  } catch (e) { st.err = 'request failed'; }
+  S.ctl[k] = st.err ? { err: st.err } : {}; await load(['stubs', 'runs']); if (R.kind === 'stub') loadDetail();
+}
 function stubTree(repo, s) {
   const cs = [chip(s.state)]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
   const runOf = (id) => S.runs.find(x => x.repo === repo && x.id === id);
@@ -481,8 +497,10 @@ function stubTree(repo, s) {
   const merged = s.dossiers.map(d => stubRow(repo, d.id, { merged: true, title: d.title }));
   const k = 'sg:' + repo + '/' + s.branch + ':';
   const groups = [stubGroup(k + 'busy', 'In progress', busy), stubGroup(k + 'ready', 'PR open · waiting for your merge', ready), stubGroup(k + 'merged', 'Merged into the stub', merged, true)].filter(Boolean);
-  return h('div', { class: 'scard', 'data-k': 'ostub:' + repo + '/' + s.branch }, [
-    h('div', { class: 'shead' }, [h('a', { class: 'title mono', href: hrefStub(repo, s.branch) }, [s.branch]), h('span', { class: 'meta' }, ['cut ' + s.cut]), h('span', { class: 'chips' }, cs)]),
+  // The whole card opens the stub's page (its rows stay links to their dossiers); an open stub can be integrated.
+  const integ = s.state === 'accepting' ? integrateBtn(repo, s.branch) : null;
+  return h('div', { class: 'scard clickable', 'data-href': hrefStub(repo, s.branch), title: 'Open ' + s.branch, 'data-k': 'ostub:' + repo + '/' + s.branch }, [
+    h('div', { class: 'shead' }, [h('a', { class: 'title mono', href: hrefStub(repo, s.branch) }, [s.branch]), h('span', { class: 'meta' }, ['cut ' + s.cut]), h('span', { class: 'chips' }, cs), h('span', { class: 'grow' }), integ, h('a', { class: 'small', href: hrefStub(repo, s.branch) }, ['Open stub ›'])]),
     groups.length ? h('div', { class: 'sgrps' }, groups) : h('div', { class: 'meta' }, ['Nothing in progress or merged yet.'])]);
 }
 function sideColumn(repo) {
@@ -840,8 +858,19 @@ function stubView(repo, branch) {
   body.push(tabs(key, [['timeline', 'Timeline'], ['record', 'Record']]));
   if (!d || !d.groups) body.push(h('div', { class: 'empty' }, ['Loading…']));
   else if (tab === 'record') body.push(d.record.length ? h('ol', { class: 'tl', 'data-k': 'rec' }, d.record.slice().reverse().map(tlEntry)) : h('div', { class: 'empty' }, [d.hasRecord ? 'The record file has no sections.' : 'No record file for this stub.']));
-  else { body.push(nowView(d, null, false)); body.push(groupsView(d.groups, key, 'No updates yet — the agent posts here as the stub progresses')); }
+  else { body.push(nowView(d, d.runner, !!(d.runner && ['running', 'waiting', 'paused', 'queued'].includes(d.runner.state)))); body.push(groupsView(d.groups, key, 'No updates yet — the agent posts here as the stub progresses')); }
+  // The stub's own run, like a dossier's: Integrate (merge queue, then /stub), its state, Stop and Resume.
+  const rn = d && d.runner; const ig = d && d.integrate; const ctl = [];
+  if (rn && rn.state !== 'done') cs.push(runChip(rn.state));
+  if (ig) { const IL = { merging: 'merging the finished dossiers', stub: '/stub runs', failed: 'integration stopped' }; cs.push(h('span', { title: ig.error || ig.note || '' }, [chip(IL[ig.state] || ig.state, ig.state === 'failed' ? 'blocked' : 'pending')])); }
+  const liveRun = rn && ['running', 'waiting', 'paused', 'queued'].includes(rn.state);
+  if (s.state === 'accepting' && !liveRun && !(ig && ig.state === 'merging')) ctl.push(integrateBtn(repo, branch));
+  if (liveRun) ctl.push(h('button', { class: 'btn', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'stop', 'data-repo': repo, 'data-branch': branch }, ['Stop']));
+  else if (rn && ['stopped', 'failed'].includes(rn.state)) ctl.push(h('button', { class: 'btn', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'resume', 'data-repo': repo, 'data-branch': branch }, ['Resume /stub']));
+  const err = (S.ctl[repo + '/' + branch + ':integrate'] || {}).err || (S.ctl[repo + '/' + branch + ':run'] || {}).err;
+  if (ig && ig.inflight && ig.inflight.length) ctl.push(h('span', { class: 'small mut' }, ['In flight, moving to the next stub: ' + ig.inflight.join(', ')]));
   return h('div', {}, [h('div', { class: 'panel' }, [h('h1', { class: 'mono', style: 'margin-top:0' }, [branch]), h('div', { class: 'chips' }, cs), h('div', { class: 'row small mut' }, [s.refAge ? when(s.refAge, 'ref updated ') : null]),
+    ctl.length ? h('div', { class: 'row' }, ctl) : null, err ? h('div', { class: 'err' }, [err]) : null,
     h('h2', {}, ['Implemented dossiers', h('span', { class: 'n' }, [String(s.dossiers.length)])]), impl])].concat(body));
 }
 
@@ -1038,6 +1067,9 @@ document.addEventListener('click', (e) => {
     else if (act === 'fix-sel') fixSelected(t);
     else if (act === 'chat') sendChat(t);
     else if (act === 'plan-item') planItem(t);
+    else if (act === 'stub-confirm') { S.ctl[t.dataset.key] = { confirm: true }; render(); }
+    else if (act === 'stub-cancel') { S.ctl[t.dataset.key] = {}; render(); }
+    else if (act === 'stub-ctl') stubCtl(t);
     else if (act === 'docprs-merge' || act === 'docprs-refresh') docPrsAct(t, act);
     else if (act === 'merge-plan' || act === 'merge-go' || act === 'merge-cancel' || act === 'merge-unqueue') mergeAct(t, act);
     else if (act === 'summary') writeSummary(t);
@@ -1047,6 +1079,9 @@ document.addEventListener('click', (e) => {
     return;
   }
   const a = e.target.closest ? e.target.closest('a[href]') : null;
+  // A stub card opens its stub page from anywhere but its own links and buttons.
+  const card = !a && e.target.closest ? e.target.closest('.scard[data-href]') : null;
+  if (card && !e.target.closest('button,textarea,input,details>summary')) { e.preventDefault(); navigate(card.dataset.href); return; }
   if (!a || a.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button) return;
   const h2 = a.getAttribute('href');
   if (h2 && (h2 === '/' || h2.indexOf('/questions') === 0 || h2.indexOf('/repo/') === 0)) { e.preventDefault(); navigate(h2); }
