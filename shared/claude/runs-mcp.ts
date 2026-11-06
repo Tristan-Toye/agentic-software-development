@@ -207,9 +207,9 @@ const TOOLS: Tool[] = [
   },
   {
     name: "merge",
-    description: "Merges ALL of a dossier's open PRs into its stub on GitHub, as one GitHub stack (gh stack merge, all or nothing), then starts the /after-merge cleanup run. Irreversible: check merge_preview first and merge only when the owner asked for it.",
-    params: [P.repo, P.id],
-    run: (a) => act(`/api/runs/${enc(a.repo)}/${enc(a.id)}/merge`, {}),
+    description: "Puts a dossier in its repository's merge queue (first in, first out), as the Merge button. The queue merges ALL of the dossier's open PRs into its stub on GitHub as one stack: conflicts first go to the dossier's agent (/resolve-merge), then the script merges, then /after-merge runs, then the next dossier. Irreversible once merged: check merge_preview first and merge only when the owner asked for it. cancel=\"yes\" takes it out of the queue again.",
+    params: [P.repo, P.id, { name: "cancel", type: "string", description: "\"yes\" to leave the queue", optional: true }],
+    run: (a) => act(`/api/runs/${enc(a.repo)}/${enc(a.id)}/merge`, a.cancel === "yes" ? { cancel: true } : {}),
   },
   {
     name: "block_ruling",

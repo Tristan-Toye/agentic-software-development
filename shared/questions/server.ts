@@ -524,20 +524,25 @@ export async function handle(req: Request): Promise<Response> {
     const run = await findRun(mg[1], mg[2])
     if (!run) return json({ error: "no such dossier" }, 404)
     const m = mergeState(`${run.repo}.${run.id}`)
-    if (m?.state === "merging") return json({ error: "already merging " + m.prs.map((n) => "#" + n).join(", ") }, 409)
     const args = ["python3", mergeScript(), run.id, "--root", run.main]
+    const body = req.method === "POST" ? await req.json().catch(() => ({})) as { cancel?: unknown } : {}
+    // Cancel: leave the queue (refused for the dossier being merged now).
+    if (req.method === "POST" && body.cancel === true) {
+      const r = Bun.spawnSync([...args, "--unqueue"], { stdout: "pipe", stderr: "pipe" })
+      emitChange("runs")
+      return json({ ok: r.exitCode === 0, text: r.stdout.toString().trim().replace(/^merge_dossier:\s*/, "") }, r.exitCode === 0 ? 200 : 409)
+    }
+    if (req.method === "POST" && m && ["queued", "waiting", "resolving", "merging", "cleanup"].includes(m.state)) return json({ error: `already in the merge queue (${m.state})` }, 409)
     if (req.method === "GET") {
       const r = Bun.spawnSync([...args, "--dry-run"], { stdout: "pipe", stderr: "pipe" })
       const line = (r.stdout.toString() || r.stderr.toString()).trim().split("\n").pop()?.replace(/^merge_dossier:\s*/, "") ?? ""
       return json({ ok: r.exitCode === 0, text: line })
     }
-    const logf = join(runsDir(), `${run.repo}.${run.id}.merge.log`)
-    try {
-      const fd = openSync(logf, "a")
-      Bun.spawn(args, { stdout: fd, stderr: fd, stdin: "ignore" }).unref()
-    } catch (e) { return json({ error: (e as Error).message }, 500) }
+    // Merge: join the repository's merge queue (first in, first out); its worker resolves conflicts through the
+    // dossier's agent, merges by script and runs the cleanup, one dossier at a time.
+    const r = Bun.spawnSync([...args, "--enqueue"], { stdout: "pipe", stderr: "pipe" })
     emitChange("runs")
-    return json({ ok: true })
+    return json({ ok: r.exitCode === 0, text: (r.stdout.toString() || r.stderr.toString()).trim().replace(/^merge_dossier:\s*/, "") }, r.exitCode === 0 ? 200 : 500)
   }
   // Plan it: one item ruled to its own dossier gets a /plan run of its own (`<repo>.<ID>.plan-<D>`), beside any run of the source.
   const pi = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/plan-item$/)
@@ -663,10 +668,17 @@ function planRuns(runs: Run[]): { key: string; repo: string; src: string; item: 
 }
 
 /** The Merge button's state, `<key>.merge.json` from scripts/merge_dossier.py; a "merging" whose process is gone is failed. */
-function mergeState(key: string): { state: string; prs: number[]; base: string; error: string; ts: string } | null {
+function mergeState(key: string): { state: string; prs: number[]; base: string; error: string; ts: string; position?: number; note?: string } | null {
+  const alive = (pid: unknown) => { try { process.kill(Number(pid), 0); return true } catch { return false } }
   try {
     const j = JSON.parse(readFileSync(join(runsDir(), `${key}.merge.json`), "utf8"))
-    if (j.state === "merging" && j.pid) { try { process.kill(Number(j.pid), 0) } catch { return { ...j, state: "failed", error: "the merge process stopped before it finished" } } }
+    if (["waiting", "resolving", "merging", "cleanup"].includes(j.state) && j.pid && !alive(j.pid)) return { ...j, state: "failed", error: "the merge queue stopped before this dossier was done; press Merge again" }
+    if (j.state === "queued") {
+      const repo = key.replace(/\.[A-Z][A-Z0-9]*-\d+$/, "")
+      let q: any = {}
+      try { q = JSON.parse(readFileSync(join(runsDir(), `${repo}.merge-queue.json`), "utf8")) } catch { /* none */ }
+      if (!(q.worker && alive(q.worker))) return { ...j, state: "failed", error: "the merge queue stopped; press Merge again" }
+    }
     return j
   } catch { return null }
 }

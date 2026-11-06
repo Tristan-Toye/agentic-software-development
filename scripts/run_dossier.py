@@ -512,7 +512,7 @@ def slot_census(me: str) -> tuple[int, list[tuple[str, str]]]:
 # owner_wait's code for "the owner wrote to the run" (not an answer).
 MESSAGE_RC = 20
 # Commands that take an argument list after the dossier id (`--items`).
-ITEM_COMMANDS = ("fix-deferred", "after-merge", "plan")
+ITEM_COMMANDS = ("fix-deferred", "after-merge", "plan", "resolve-merge")
 
 
 class Runner:
@@ -1536,7 +1536,7 @@ def selftest() -> int:
             time.sleep(0.05)
         return None
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:  # a detached child may still write as it goes
         qdir, rdir, fdir = (os.path.join(tmp, x) for x in ("q", "runs", "fake"))
         root = os.path.join(tmp, "repo")
         for d in (qdir, rdir, fdir, root):
@@ -2022,7 +2022,7 @@ def main() -> int:
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--root", help="repository root (default: the repository of the current directory)")
     ap.add_argument("--dossier", help="same as the positional id")
-    ap.add_argument("--command", choices=["work-on", "stub", "fix-deferred", "after-merge", "plan"], default="work-on")
+    ap.add_argument("--command", choices=["work-on", "stub", "fix-deferred", "after-merge", "plan", "resolve-merge"], default="work-on")
     ap.add_argument("--model")
     ap.add_argument("--permission-mode", default="auto")
     ap.add_argument("--max-stages", type=int, default=20)
@@ -2037,7 +2037,7 @@ def main() -> int:
         return 2
     items = ",".join(i for i in re.split(r"[,\s]+", a.items or "") if i)
     if items and not ((a.command == "fix-deferred" and re.fullmatch(r"D-\d+(?:,D-\d+)*", items))
-                      or (a.command == "after-merge" and re.fullmatch(r"\d+(?:,\d+)*", items))
+                      or (a.command in ("after-merge", "resolve-merge") and re.fullmatch(r"\d+(?:,\d+)*", items))
                       or (a.command == "plan" and re.fullmatch(r"D-\d+", items))):
         print("run_dossier.py: --items takes D-ids (D-1,D-3) with --command fix-deferred, PR numbers (429,430) with --command after-merge, "
               "or one D-id with --command plan", file=sys.stderr)

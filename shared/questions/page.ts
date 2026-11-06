@@ -421,12 +421,15 @@ function subItem(repo, id, noPr, done, ttl) {
 function mergeCtl(r) {
   if (!r) return null;
   const k = r.repo + '/' + r.id + ':merge'; const st = S.ctl[k] || {}; const m = r.merge;
-  if (m && m.state === 'merging') return h('span', { class: 'chip fixing', title: 'Merging ' + m.prs.map(n => '#' + n).join(', ') + ' into ' + m.base }, [h('span', { class: 'dot info live' }), 'merging…']);
+  // The merge queue: first in, first out; conflicts go to the dossier's agent, the script merges, then the cleanup runs.
+  const QLABEL = { queued: m && m.position ? 'in the merge queue · #' + m.position : 'in the merge queue', waiting: 'merge waits for its run', resolving: 'resolving merge conflicts', merging: 'merging…', cleanup: 'merged · cleaning up' };
+  if (m && QLABEL[m.state]) return h('span', { class: 'mergectl' }, [h('span', { class: 'chip fixing', title: (m.note || '') + (m.prs && m.prs.length ? ' · ' + m.prs.map(n => '#' + n).join(', ') : '') }, [h('span', { class: 'dot info live' }), QLABEL[m.state]]),
+    m.state === 'queued' && m.position > 1 ? h('button', { class: 'btn sm', type: 'button', 'data-act': 'merge-unqueue', 'data-repo': r.repo, 'data-id': r.id }, ['Leave queue']) : null]);
   const live = r.runner && ['running', 'waiting', 'paused', 'queued'].includes(r.runner.state);
   if (live || !(r.status === 'done' || r.status === 'pr')) return null;
   const kids = [];
   if (m && m.state === 'failed' && !st.plan) kids.push(h('span', { class: 'chip blocked', title: m.error }, ['merge failed']));
-  if (st.plan && st.ok) kids.push(h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'merge-go', 'data-repo': r.repo, 'data-id': r.id, disabled: st.busy ? true : null, title: 'Merges with a merge commit, all or nothing' }, [st.busy ? 'Merging…' : 'Confirm: ' + st.plan.replace(/^would /, '')]),
+  if (st.plan && st.ok) kids.push(h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'merge-go', 'data-repo': r.repo, 'data-id': r.id, disabled: st.busy ? true : null, title: 'Merges with a merge commit, all or nothing' }, [st.busy ? 'Queueing…' : 'Confirm: queue to ' + st.plan.replace(/^would /, '')]),
     h('button', { class: 'btn sm', type: 'button', 'data-act': 'merge-cancel', 'data-repo': r.repo, 'data-id': r.id }, ['Cancel']));
   else if (st.plan) kids.push(h('span', { class: 'chip blocked', title: st.plan }, ['cannot merge: ' + st.plan.replace(/^refused — /, '').slice(0, 90)]));
   else kids.push(h('button', { class: 'btn sm', type: 'button', 'data-act': 'merge-plan', 'data-repo': r.repo, 'data-id': r.id, disabled: st.busy ? true : null, title: 'Merge all of this dossier\'s PRs into its stub as one stack, then clean up' }, [st.busy ? 'Checking…' : 'Merge']));
@@ -439,7 +442,7 @@ async function mergeAct(btn, act) {
   if (st.busy) return; st.busy = true; st.err = ''; render();
   try {
     const url = '/api/runs/' + enc(repo) + '/' + enc(id) + '/merge';
-    const r = await fetch(url, act === 'merge-go' ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' } : {});
+    const r = await fetch(url, act === 'merge-go' || act === 'merge-unqueue' ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: act === 'merge-unqueue' ? '{"cancel":true}' : '{}' } : {});
     const j = await r.json().catch(() => ({}));
     if (act === 'merge-plan') { if (r.ok) { st.plan = j.text || ''; st.ok = !!j.ok; } else st.err = j.error || ('HTTP ' + r.status); }
     else if (r.ok && j.ok) S.ctl[k] = {}; else st.err = j.error || ('HTTP ' + r.status);
@@ -1009,7 +1012,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'fix-sel') fixSelected(t);
     else if (act === 'chat') sendChat(t);
     else if (act === 'plan-item') planItem(t);
-    else if (act === 'merge-plan' || act === 'merge-go' || act === 'merge-cancel') mergeAct(t, act);
+    else if (act === 'merge-plan' || act === 'merge-go' || act === 'merge-cancel' || act === 'merge-unqueue') mergeAct(t, act);
     else if (act === 'summary') writeSummary(t);
     else if (act === 'blk') ruleBlock(t);
     else if (act === 'usage-refresh') { S.usageBusy = true; render(); fetch('/api/accounts/refresh', { method: 'POST' }).catch(() => {}).finally(() => load(['runs'])); }
