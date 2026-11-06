@@ -132,7 +132,9 @@ It prints at most 40 lines.
   an answer or an instruction it adds that reading as a button
   (`ask_owner.py reply <id> --text … --option "D|Confirm: <reading>|<what
   happens>"`). **Only a button closes a question**, so every question ends with
-  one press; the agent never closes one itself. (`ask_owner.py accept`, and an
+  one press; the agent never closes one itself. When its recommendation
+  changes, the agent moves it (`ask_owner.py reply <id> --text … --recommend
+  <key>`), and the page highlights the new key. (`ask_owner.py accept`, and an
   `answer` with `accepted: true` from older runs, still count as an answer.)
   Slack thread replies follow the same rule (`replyKind`).
   - It refreshes every 5 s, patching the DOM so a half-written text box and

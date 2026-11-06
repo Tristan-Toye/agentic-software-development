@@ -65,7 +65,8 @@ export function parseQuestion(id: string, content: string): Question | null {
       for (const l of lines) if (l.kind === "reply" && Array.isArray((l as any).options)) for (const o of (l as any).options as Option[]) if (o && o.key && !out.some((x) => x.key === o.key)) out.push(o)
       return out
     })(),
-    recommendation: str(q.recommendation),
+    // The latest reply that names a recommendation moves it (ask_owner.py reply --recommend).
+    recommendation: str([...lines].reverse().find((l) => l.kind === "reply" && typeof (l as any).recommend === "string")?.["recommend" as keyof Line] ?? q.recommendation),
     blocks: str(q.blocks),
     ts: str(q.ts),
     answer,

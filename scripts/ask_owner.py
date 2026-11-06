@@ -180,6 +180,12 @@ def cmd_reply(a: argparse.Namespace) -> int:
     line = {"ts": now(), "from": "agent", "kind": "reply", "text": clip(a.text)}
     if opts:
         line["options"] = opts
+    # The recommendation can move: when the reply changes what you recommend, name the new key (an existing option,
+    # or one this reply adds); the dashboard highlights it instead of the question's first recommendation.
+    if getattr(a, "recommend", None):
+        if a.recommend not in have:
+            raise SystemExit(f"--recommend {a.recommend}: no such option (the question's, or one this reply adds)")
+        line["recommend"] = a.recommend
     write_line(path_of(a.id), line)
     return 0
 
@@ -356,6 +362,9 @@ def selftest() -> int:
         last = json.loads(open(path).read().splitlines()[-1])
         check("a reply can add a button", r.returncode == 0 and last.get("options") == [{"key": "D", "label": "Confirm: keep the overlap", "consequence": "the turn does not wait"}])
         check("a reply cannot reuse an option key", run("reply", qid, "--text", "x", "--option", "A|again|c", env=env).returncode != 0)
+        r = run("reply", qid, "--text", "Having measured it, D is better.", "--recommend", "D", env=env)
+        check("a reply can move the recommendation to an option that exists", r.returncode == 0 and json.loads(open(path).read().splitlines()[-1]).get("recommend") == "D")
+        check("a reply cannot recommend an option that does not exist", run("reply", qid, "--text", "x", "--recommend", "Z", env=env).returncode != 0)
 
         def owner(kind, text, option="", delay=0.5):
             time.sleep(delay)
@@ -443,6 +452,7 @@ def main() -> int:
     p.add_argument("id")
     p.add_argument("--text", required=True)
     p.add_argument("--option", action="append", help="KEY|label|consequence: a button this reply adds")
+    p.add_argument("--recommend", help="KEY: the option you now recommend, when it changed")
     p = sub.add_parser("accept")
     p.add_argument("id")
     p.add_argument("--text", required=True)

@@ -3,7 +3,7 @@
 import { appendFileSync, mkdirSync, openSync, readdirSync, statSync, watch, writeFileSync } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
-import { buildLog, getRuns, PHASE_NAMES, questionRepo, readDossier, type Run } from "./runs.ts"
+import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile } from "./stubs.ts"
 import { checkRule, dossierPage, readBlocks, readConversation, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
@@ -603,6 +603,26 @@ export async function handle(req: Request): Promise<Response> {
       docPrsCache.set(repo, { at: Date.now(), v: prs })
     }
     return json({ ...prs, merging, log })
+  }
+  // Leave open / Reopen: the owner's own ruling on an open deferred item, kept beside the run (withOwnerRulings).
+  const lo = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/deferred-keep$/)
+  if (lo && req.method === "POST") {
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const run = await findRun(lo[1], lo[2])
+    if (!run) return json({ error: "no such dossier" }, 404)
+    const body = await req.json().catch(() => ({})) as { item?: unknown; keepOpen?: unknown }
+    const item = typeof body.item === "string" ? body.item : ""
+    const it = run.deferred.items.find((i) => i.id === item)
+    if (!it || it.state !== "open") return json({ error: "only an open item can be left open or reopened" }, 409)
+    const f = ownerRulingsFile(`${run.repo}.${run.id}`)
+    let o: Record<string, unknown> = {}
+    try { o = JSON.parse(readFileSync(f, "utf8")) } catch { /* first ruling */ }
+    o[item] = { keepOpen: body.keepOpen !== false, ts: new Date().toISOString() }
+    writeFileSync(f, JSON.stringify(o, null, 1))
+    appendFileSync(join(runsDir(), `${run.repo}.${run.id}.jsonl`), JSON.stringify({ ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"), kind: "update", text: `${item} ${body.keepOpen !== false ? "left open" : "reopened"} by the owner on the dashboard` }) + "\n")
+    emitChange("runs")
+    return json({ ok: true })
   }
   // Plan it: one item ruled to its own dossier gets a /plan run of its own (`<repo>.<ID>.plan-<D>`), beside any run of the source.
   const pi = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/plan-item$/)
