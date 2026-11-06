@@ -81,7 +81,7 @@ the recorded checkpoints.
   the same email as an account listed before it, is skipped while a good one
   exists; the dashboard marks it "logged in as the wrong account · not used".
   Keep runner logins in config dirs of their own (`setup_claude_account.sh`),
-  never in the `~/.claude` you `/login` from interactively.
+  never in the `~/.claude` you log in to interactively.
 - **Run slots:** at most `ASD_RUNNER_MAX_LIVE` runs (default 4; 0 = no limit)
   work at once. A run takes a slot before each stage and after an owner's
   answer; only `running` runs hold one. Without a free slot it records
