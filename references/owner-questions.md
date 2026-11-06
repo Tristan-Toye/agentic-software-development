@@ -111,7 +111,15 @@ It prints at most 40 lines.
     which runs `run_dossier.py usage` in the background.
   - **Running now** (home): every live run across repos (running, waiting,
     paused) with its step, account, sub-agents at work this stage, context and
-    last activity; the header counts runs, working runs and sub-agents.
+    last activity; the header counts runs, working runs and sub-agents. A
+    `/plan` run counts like a build: a dossier being planned is live (Running
+    now, the stub card's In progress, its timeline), including one `/plan` is
+    writing from a deferred item (its run `<repo>.<src>.plan-<D-n>`, found
+    through the dossier's `DEFERRED-SOURCE` line, `runnerOf`). Before that
+    dossier exists, the run shows as "Planning: <item>" linked to the source.
+  - **Start runs the next flow:** **Plan** on a planned dossier (`/plan <ID>`,
+    `run_dossier.py <ID> --command plan`), **Start** on a ready one
+    (`/work-on`); **Resume** reruns the flow that stopped, with its items.
   - Each open question is a **chat until a button closes it**: the question,
   then the owner's typed messages and the agent's replies in order ("Waiting
   for the agent's reply…" while the owner spoke last), then the buttons, then a

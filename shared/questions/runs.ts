@@ -29,6 +29,8 @@ export type Run = {
   running: boolean; summary: string; updates: Update[]; runner: RunnerState | null
   main: string; blockedBy: string[]; controls: Controls; view: "run" | "dossier"
   deferred: Deferred; deferredOpen: number; runnerLog: string
+  /** The key of the run shown for this dossier: `<repo>.<ID>`, or the /plan run of the deferred item it comes from. */
+  runKey?: string
 }
 
 /**
@@ -584,7 +586,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
     const phase = phaseHit || (status === "planned" || status === "ready" ? "plan" : "")
     const wt = d.worktree
     const repoName = baseName(await mainOf(wt))
-    const runner = readRunner(`${repoName}.${f.id}`)
+    const { key: runKey, runner } = runnerOf(repoName, f.id!, log)
     // A live runner names its session: that transcript, wherever it runs (a /fix-deferred run works from the main
     // checkout, not the dossier's worktree). Otherwise the newest transcript working in the worktree.
     const own = runner?.session && runnerActive(runner) ? transcripts.filter((t) => t.path.endsWith(`/${runner.session}.jsonl`)) : []
@@ -603,9 +605,9 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       id: f.id!, title: f.title ?? "", status, jira: f.jira ?? "", updated: f.updated ?? "", created: f.created ?? "",
       repo: repoName, repoLabel: repoLabel(d.main), root: d.worktree, worktree: wt, file: d.file,
       phase, phaseName: phaseNameOf(PHASE_NAMES, phase), lastActivity: lastLine(log), logLines: Math.max(0, logLength(d.text)), session, pr, questions: qs, answered: [],
-      running: isRunning(status) || runnerActive(runner), summary: summaryOf(d.text), updates: readUpdates(`${repoName}.${f.id}`), runner,
+      running: isRunning(status) || runnerActive(runner), summary: summaryOf(d.text), updates: readUpdates(runKey), runner, runKey,
       main, blockedBy: blockedByOf(f.blocked_by), controls: controlsFor({ status, blockedBy: blockedByOf(f.blocked_by), runner }, () => undefined), view: "dossier",
-      runnerLog: runner ? join(runsDir(), `${repoName}.${f.id}.runner.log`) : "",
+      runnerLog: runner ? join(runsDir(), `${runKey}.runner.log`) : "",
       ...(() => {
         for (const x of deferredSources(log)) sources.set(`${repoName}/${x.src}/${x.item}`, f.id!)
         const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log) : { items: [], pr: "", branch: "" }
@@ -624,6 +626,22 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
  * the new dossier's own `DEFERRED-SOURCE: <src ID> D-n` (written by /plan, in the dossier it owns, so no other
  * run's copy is touched). An item whose /plan run (`<repo>.<ID>.plan-<D>`) is under way carries its state.
  */
+/**
+ * The run of a dossier and its key: its own `<repo>.<ID>` run, else, for a dossier /plan is writing from a deferred
+ * item, that planning run (`<repo>.<src>.plan-<D-n>`, named by the dossier's `DEFERRED-SOURCE` line). So a dossier
+ * being planned is live like one being built: Running now, the stub card, its timeline.
+ */
+export function runnerOf(repo: string, id: string, log: string, read: (key: string) => RunnerState | null = (k) => readRunner(k)): { key: string; runner: RunnerState | null } {
+  const ownKey = `${repo}.${id}`
+  const own = read(ownKey)
+  if (own) return { key: ownKey, runner: own }
+  for (const x of deferredSources(log)) {
+    const k = `${repo}.${x.src}.plan-${x.item}`
+    const r = read(k)
+    if (r) return { key: k, runner: r }
+  }
+  return { key: ownKey, runner: null }
+}
 export function deferredSources(log: string): { src: string; item: string }[] {
   return [...log.matchAll(/^(?:[-*]\s+)?DEFERRED-SOURCE:\s*([A-Z][A-Z0-9]*-\d+)\s+(D-\d+)\b/gm)].map((m) => ({ src: m[1], item: m[2] }))
 }
@@ -660,7 +678,7 @@ let lastScan = 0
 let lastSig = ""
 /** Updates and runner state are cheap local reads, so they are fresh on every request. */
 function liveStore(r: Run): Pick<Run, "updates" | "runner" | "running"> {
-  const key = `${r.repo}.${r.id}`
+  const key = r.runKey || `${r.repo}.${r.id}`
   const runner = readRunner(key)
   return { updates: readUpdates(key), runner, running: isRunning(r.status) || runnerActive(runner) }
 }

@@ -259,11 +259,12 @@ function qCard(q, opts) {
 // ---- controls ----
 function controls(r, big) {
   const key = r.repo + '/' + r.id; const st = S.ctl[key] || {}; const kids = [];
-  const NAME = { start: 'Start', resume: 'Resume', stop: 'Stop', 'fix-deferred': 'Fix all deferred' };
+  // Start runs the dossier's next flow: Plan for a planned dossier, Start (build) for a ready one.
+  const NAME = { start: r.controls && r.controls.start && r.controls.start.command === 'plan' ? 'Plan' : 'Start', resume: 'Resume', stop: 'Stop', 'fix-deferred': 'Fix all deferred' };
   ['start', 'resume', 'stop', 'fix-deferred'].forEach(a => {
     const c = r.controls && r.controls[a]; if (!c || !c.show) return;
     const confirming = st.confirm === a; const busy = st.busy === a;
-    const label = busy ? { start: 'Starting…', resume: 'Resuming…', stop: 'Stopping…', 'fix-deferred': 'Starting the fix…' }[a] : confirming ? 'Confirm: ' + NAME[a].toLowerCase() : NAME[a];
+    const label = busy ? { start: NAME.start === 'Plan' ? 'Starting the plan…' : 'Starting…', resume: 'Resuming…', stop: 'Stopping…', 'fix-deferred': 'Starting the fix…' }[a] : confirming ? 'Confirm: ' + NAME[a].toLowerCase() : NAME[a];
     kids.push(h('button', { class: 'btn act' + (big ? ' lg' : '') + (big && a !== 'stop' && !confirming ? ' go' : '') + (confirming ? ' confirm ' + a : ''), type: 'button', 'data-act': 'ctl', 'data-ctl': a, 'data-repo': r.repo, 'data-id': r.id, disabled: !c.ok || !!st.busy }, [label]));
     if (confirming) kids.push(h('button', { class: 'btn act' + (big ? ' lg' : ''), type: 'button', 'data-act': 'ctl-cancel', 'data-repo': r.repo, 'data-id': r.id }, ['Cancel']));
     if (!c.ok && c.reason) kids.push(chip(c.reason, 'blocked'));
@@ -349,7 +350,15 @@ function runningView() {
       h('span', { class: 'sname' }, [h('span', {}, [r.title]), h('span', { class: 'small mut rsub' }, [rlabel(r.repo) + ' · ' + (stageText(r) || 'starting') + (last ? ' · ' : ''), last ? when(last.ts, 'last update ') : null]), nowLine(r)]),
       h('span', { class: 'sright' }, right)]);
   });
-  const head = live.length ? live.length + ' run' + (live.length === 1 ? '' : 's') + ' · ' + working + ' working' + (agents ? ' · ' + agents + ' sub-agent' + (agents === 1 ? '' : 's') : '') : 'Nothing is running';
+  // A /plan run of a deferred item before its dossier exists: linked to the source dossier's Deferred tab.
+  (S.plans || []).forEach(p => {
+    const right = [runChip(p.state)]; if (p.account) right.push(chip('account ' + p.account, 'neutral'));
+    rows.push(h('a', { class: 'srow', href: hrefItem(p.repo, p.src), 'data-k': 'plan:' + p.key }, [h('span', { class: 'sid mono' }, [p.src + ' ' + p.item]),
+      h('span', { class: 'sname' }, [h('span', {}, ['Planning: ' + p.title]), h('span', { class: 'small mut rsub' }, [rlabel(p.repo) + ' · new dossier from ' + p.src + ' ' + p.item + (p.lastTs ? ' · ' : ''), p.lastTs ? when(p.lastTs, 'last update ') : null])]),
+      h('span', { class: 'sright' }, right)]));
+  });
+  const nAll = live.length + (S.plans || []).length;
+  const head = nAll ? nAll + ' run' + (nAll === 1 ? '' : 's') + ' · ' + (working + (S.plans || []).filter(p => p.state === 'running').length) + ' working' + (agents ? ' · ' + agents + ' sub-agent' + (agents === 1 ? '' : 's') : '') : 'Nothing is running';
   return h('section', { class: 'sec', 'data-k': 'sec:live' }, [h('div', { class: 'sechd' }, [h('h2', {}, ['Running now']), h('span', { class: 'small mut' }, [head])]),
     rows.length ? h('div', { class: 'srows' }, rows) : null]);
 }
@@ -879,7 +888,7 @@ async function loadDetail() {
 async function load(what) {
   const all = !what; const w = new Set(what || []); const jobs = [];
   if (all || w.has('questions')) jobs.push(fetchJ('/api/questions?state=all').then(d => { if (Array.isArray(d)) S.q = d; }));
-  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.accounts = d.accounts || []; S.usageBusy = !!d.usageBusy; } }));
+  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.accounts = d.accounts || []; S.plans = d.plans || []; S.usageBusy = !!d.usageBusy; } }));
   if (all || w.has('stubs') || w.has('scan')) jobs.push(fetchJ('/api/stubs').then(d => { if (d && d.repos) S.stubs = d; }));
   await Promise.all(jobs);
   await loadDetail();

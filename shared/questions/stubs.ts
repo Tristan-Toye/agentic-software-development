@@ -5,7 +5,7 @@ import { join } from "node:path"
 import type { Question } from "./store.ts"
 import { readRunner, readViewCache, runnerActive, writeViewCache } from "./runstore.ts"
 import { emitChange } from "./events.ts"
-import { answeredBy, baseName, getRuns, repoLabel, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, withBranchCopies, questionInRepo, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
+import { answeredBy, baseName, buildLog, getRuns, repoLabel, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, runnerOf, withBranchCopies, questionInRepo, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
 
 export type StubDossier = { id: string; title: string; status: string; repo: string; via: "merged"; answered: QA[] }
 /** An in-progress dossier shown under a stub; `noPr` = no PR yet, parked on the accepting stub. */
@@ -223,7 +223,7 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
       const prsByBase: Record<string, BasePr[]> = {}
       for (const s of openStubs(stubs)) prsByBase[s.branch] = await prsBase(main, s.branch)
       const name = baseName(main)
-      const mem = stubMembers(stubs, docs.map((d) => ({ id: d.front.id!, status: d.front.status ?? "", pr: d.front.pr, live: runnerActive(readRunner(`${name}.${d.front.id}`)), halted: ["stopped", "failed"].includes(readRunner(`${name}.${d.front.id}`)?.state ?? "") })), prsByBase)
+      const mem = stubMembers(stubs, docs.map((d) => ({ id: d.front.id!, status: d.front.status ?? "", pr: d.front.pr, live: runnerActive(runnerOf(name, d.front.id!, buildLog(d.text)).runner), halted: ["stopped", "failed"].includes(runnerOf(name, d.front.id!, buildLog(d.text)).runner?.state ?? "") })), prsByBase)
       for (const s of stubs) s.members = mem[s.branch] ?? []
     }
     if (stubs.length) { const sorted = stubs.sort((a, b) => b.cut.localeCompare(a.cut) || b.branch.localeCompare(a.branch)); repos.push({ repo: baseName(main), label: repoLabel(main), main, stubs: sorted, open: openStubs(sorted).map((s) => s.branch) }) }

@@ -2,7 +2,7 @@
 import { join } from "node:path"
 import type { RunnerState } from "./runstore.ts"
 
-export type Ctl = { show: boolean; ok: boolean; reason: string }
+export type Ctl = { show: boolean; ok: boolean; reason: string; command?: string }
 export type Controls = { start: Ctl; resume: Ctl; stop: Ctl; "fix-deferred": Ctl }
 
 /** Dossier ids named in a `blocked_by` front-matter value such as `[W-1, W-2]`. */
@@ -15,8 +15,11 @@ const active = (r: RunnerState | null): boolean => r?.state === "running" || r?.
 export function controlsFor(d: { status: string; blockedBy: string[]; runner: RunnerState | null; deferredOpen?: number }, statusOf: (id: string) => string | undefined): Controls {
   const open = d.blockedBy.filter((id) => statusOf(id) !== "done")
   const stopped = d.runner?.state === "stopped" || d.runner?.state === "failed"
-  const start: Ctl = { show: d.status === "ready" && !active(d.runner) && !stopped, ok: open.length === 0, reason: open.length ? `blocked by ${open.join(", ")}` : "" }
-  const resume: Ctl = { show: d.status !== "done" && d.status !== "dropped" && stopped, ok: !!d.runner?.root, reason: d.runner?.root ? "" : "no root recorded in the runner state" }
+  // Start runs the dossier's next flow: a planned dossier is planned (/plan), a ready one built (/work-on).
+  const startable = d.status === "ready" || d.status === "planned"
+  const start: Ctl = { show: startable && !active(d.runner) && !stopped, ok: d.status === "planned" || open.length === 0, reason: d.status === "ready" && open.length ? `blocked by ${open.join(", ")}` : "", command: d.status === "planned" ? "plan" : "work-on" }
+  // Resume picks up the flow that stopped, whichever it was.
+  const resume: Ctl = { show: d.status !== "done" && d.status !== "dropped" && stopped, ok: !!d.runner?.root, reason: d.runner?.root ? "" : "no root recorded in the runner state", command: d.runner?.command || "work-on" }
   const stop: Ctl = { show: active(d.runner), ok: true, reason: "" }
   /* Fix all deferred: a finished build (pr or done) with open ledger items and no live runner. */
   const fix: Ctl = { show: (d.status === "pr" || d.status === "done") && (d.deferredOpen ?? 0) > 0 && !active(d.runner), ok: true, reason: "" }
