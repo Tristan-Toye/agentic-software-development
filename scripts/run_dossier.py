@@ -781,6 +781,56 @@ class Runner:
             time.sleep(float(os.environ.get("ASD_RUNNER_SLOT_POLL") or 10))
         return False
 
+    def forward_dropped(self) -> bool:
+        """Send on the completion notices the CLI dropped. A background command or workflow that finishes while no turn
+        is running is announced by a `<task-notification>`; headless sessions have been seen to `remove` it from the
+        queue instead of delivering it, so the session waits forever for news it was already sent. Checked at most every
+        30 s while the session is idle; each dropped notice is sent once, as a user message."""
+        nowm = time.monotonic()
+        if nowm - getattr(self, "_fwd_checked", 0.0) < float(os.environ.get("ASD_RUNNER_FWD_EVERY") or 30):
+            return False
+        self._fwd_checked = nowm
+        if self.proc is None or self.proc.poll() is not None:
+            return False
+        path = transcript_path(str(self.state.get("session") or ""), (self.account or {}).get("dir"))
+        if not path:
+            return False
+        done = set(self.state.get("forwarded") or [])
+        try:
+            with open(path, errors="replace") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            return False
+        delivered, dropped = set(), {}
+        for line in lines:
+            if '"queue-operation"' not in line:
+                continue
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            c = o.get("content") if isinstance(o.get("content"), str) else ""
+            m = re.search(r"<task-id>([^<\s]+)</task-id>", c)
+            if not m:
+                continue
+            if o.get("operation") == "dequeue":
+                delivered.add(m.group(1))
+            if o.get("operation") == "remove":
+                dropped[m.group(1)] = c
+        # A notice delivered later (its own dequeue, or a task-notification inside a user message) is not re-sent.
+        for line in lines:
+            if '"type":"user"' in line.replace(" ", "") and "<task-notification>" in line:
+                for m in re.finditer(r"<task-id>([^<\s\\]+)</task-id>", line):
+                    delivered.add(m.group(1))
+        todo = [(t, c) for t, c in dropped.items() if t not in done and t not in delivered]
+        if not todo:
+            return False
+        for t, c in todo:
+            self.send("BACKGROUND TASK FINISHED (the CLI dropped this notice instead of delivering it; read the task's output and carry on):\n" + c)
+        self.save(forwarded=sorted(done | {t for t, _ in todo}))
+        self.log(f"sent on {len(todo)} dropped background notice(s): " + ", ".join(t for t, _ in todo))
+        return True
+
     def deliver_inbox(self) -> bool:
         """Send the owner's undelivered messages (`run_dossier.py chat` on a live run) into the live session."""
         if self.proc is None or self.proc.poll() is not None:
@@ -865,6 +915,8 @@ class Runner:
         while True:
             if result is None and self.deliver_inbox():
                 quiet_since = time.monotonic()  # a message between turns starts a turn of its own
+            if result is None and idle is not None and self.forward_dropped():
+                quiet_since = time.monotonic()  # a dropped notification, sent on: the session works again
             timeout = self.grace if (result is not None and extra) else 1.0
             try:
                 ev = q.get(timeout=timeout)
@@ -876,7 +928,10 @@ class Runner:
                 if idle is not None and time.monotonic() - quiet_since > idle:
                     return "idle", None
                 continue
-            quiet_since = time.monotonic()
+            # Only the session's own work is activity: a queue or system event (a notification the CLI then drops)
+            # must not keep the idle nudge from ever firing.
+            if not isinstance(ev, dict) or ev.get("type") in ("assistant", "user", "result"):
+                quiet_since = time.monotonic()
             if ev is None:
                 if result is not None:
                     return "result", result
@@ -1869,6 +1924,22 @@ def selftest() -> int:
         fakes = [int(open(os.path.join(fdir, f)).read()) for f in os.listdir(fdir) if f.startswith("pid.")]
         until(lambda: not any(alive(x) for x in fakes), 15)
         env.pop("ASD_RUNNER_NET_WAIT"); env.pop("ASD_RUNNER_NET_RETRIES")
+
+        # ---- a completion notice the CLI dropped is sent on, so a waiting session wakes ----
+        tdir2 = os.path.join(tmp, "projects2", "-repo"); os.makedirs(tdir2, exist_ok=True)
+        note = "<task-notification>\n<task-id>bxdrop1</task-id>\n<status>completed</status>\n</task-notification>"
+        with open(os.path.join(tdir2, "sess-1.jsonl"), "w") as fh:
+            fh.write(json.dumps({"type": "queue-operation", "operation": "enqueue", "content": note}) + "\n")
+            fh.write(json.dumps({"type": "queue-operation", "operation": "remove", "content": note}) + "\n")
+        scenario([{"turns": [[{"final": "waiting for the wave"}], [{"final": "RUNNER: DONE"}]]}])
+        env.update(ASD_TRANSCRIPTS_DIR=os.path.join(tmp, "projects2"), ASD_RUNNER_FWD_EVERY="0.2", ASD_RUNNER_IDLE="60")
+        p = start("W-38")
+        rc = p.wait(timeout=60)
+        for k in ("ASD_TRANSCRIPTS_DIR", "ASD_RUNNER_FWD_EVERY"): env.pop(k)
+        env["ASD_RUNNER_IDLE"] = "1"
+        check("dropped notice: sent on as a message, the session wakes and finishes, once",
+              rc == 0 and sum(1 for m in msgs(1) if m.startswith("BACKGROUND TASK FINISHED") and "bxdrop1" in m) == 1
+              and any(t.startswith("sent on 1 dropped background notice") for t in texts("W-38")))
 
         # ---- plan: one routed deferred item, under its own key beside the source dossier's run ----
         scenario([{"turns": [[{"final": "planned W-50\nRUNNER: DONE"}]]}])

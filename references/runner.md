@@ -92,6 +92,14 @@ the recorded checkpoints.
   `queued` (`queued_since`) and waits, longest-queued first; the dashboard
   shows "queued · waiting for a slot". So a usage-limit reset, or many Start
   presses, no longer sets ten sessions going in the same minute.
+- **Dropped completion notices:** a background command or workflow that
+  finishes while no turn runs is announced by a `<task-notification>`, and
+  headless sessions have been seen to `remove` it from the queue instead of
+  delivering it (W-131 waited 80 minutes for news it was sent). While a session
+  is idle the runner reads its transcript every 30 s (`ASD_RUNNER_FWD_EVERY`)
+  and sends each dropped notice on once, as a message, logging `sent on n
+  dropped background notice(s)`. The idle nudge counts only the session's own
+  turns as activity, so queue events no longer keep it from firing.
 - **Network errors:** a turn (or a process exit) that fails on a transient
   network or API-server error (`ENOTFOUND`, a reset, refused or timed-out
   connection, "Can't reach the API server", a 5xx) does not fail the run
