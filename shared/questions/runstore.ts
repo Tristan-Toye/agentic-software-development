@@ -132,9 +132,29 @@ export function summaryOf(text: string): string {
 }
 
 const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
-const inline = (s: string): string => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+/** Inline markdown on escaped text: `code`, **bold**, and [text](http(s) url) links (other schemes stay text). */
+const inline = (s: string): string => {
+  const codes: string[] = []
+  return esc(s)
+    .replace(/`([^`]+)`/g, (_, c) => `\u0000${codes.push(c) - 1}\u0000`)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[+i]}</code>`)
+}
 
-/** Minimal read-only markdown: headings, paragraphs, lists, code fences, inline code, tables as preformatted. Everything escaped. */
+const LIST_RE = /^(\s*)([-*]|\d+\.)\s+/
+const cells = (row: string): string[] => row.trim().replace(/^\|/, "").replace(/\|$/, "").split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"))
+
+/** A pipe table: a header row, a `---` separator row, then body rows. Without the separator it is not a table. */
+function table(rows: string[]): string {
+  if (rows.length < 2 || !/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(rows[1])) return `<pre>${esc(rows.join("\n"))}</pre>`
+  const head = cells(rows[0]).map((c) => `<th>${inline(c)}</th>`).join("")
+  const body = rows.slice(2).map((r) => `<tr>${cells(r).map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`
+}
+
+/** Minimal read-only markdown: headings, paragraphs, nested lists, code fences, pipe tables, inline code, bold and
+ *  http(s) links. Everything escaped. */
 export function renderMarkdown(md: string): string {
   const out: string[] = []
   const lines = md.split("\n")
@@ -149,18 +169,31 @@ export function renderMarkdown(md: string): string {
     } else if (/^\s*\|/.test(l)) {
       const t: string[] = []
       for (; i < lines.length && /^\s*\|/.test(lines[i]); i++) t.push(lines[i])
-      out.push(`<pre>${esc(t.join("\n"))}</pre>`)
+      out.push(table(t))
     } else if (/^#{1,6}\s/.test(l)) {
       const n = l.match(/^#+/)![0].length
       out.push(`<h${n}>${inline(l.replace(/^#+\s*/, ""))}</h${n}>`); i++
-    } else if (/^\s*([-*]|\d+\.)\s/.test(l)) {
-      const items: string[] = []
-      for (; i < lines.length && /^\s*([-*]|\d+\.)\s/.test(lines[i]); i++) {
-        let item = lines[i].replace(/^\s*([-*]|\d+\.)\s/, "")
-        while (i + 1 < lines.length && /^\s{2,}\S/.test(lines[i + 1]) && !/^\s*([-*]|\d+\.)\s/.test(lines[i + 1])) item += " " + lines[++i].trim()
-        items.push(`<li>${inline(item)}</li>`)
+    } else if (LIST_RE.test(l)) {
+      // Items with their indent; a deeper indent opens a nested list inside the previous item.
+      const items: { ind: number; ord: boolean; text: string }[] = []
+      for (; i < lines.length && LIST_RE.test(lines[i]); i++) {
+        const m = lines[i].match(LIST_RE)!
+        let text = lines[i].slice(m[0].length)
+        while (i + 1 < lines.length && /^\s{2,}\S/.test(lines[i + 1]) && !LIST_RE.test(lines[i + 1])) text += " " + lines[++i].trim()
+        items.push({ ind: m[1].replace(/\t/g, "    ").length, ord: /\d/.test(m[2]), text })
       }
-      out.push(`<ul>${items.join("")}</ul>`)
+      let k = 0
+      const level = (ind: number): string => {
+        const ord = items[k].ord
+        const lis: string[] = []
+        while (k < items.length && items[k].ind >= ind && !(items[k].ind === ind && items[k].ord !== ord)) {
+          if (items[k].ind > ind && lis.length) { lis[lis.length - 1] = lis[lis.length - 1].replace(/<\/li>$/, level(items[k].ind) + "</li>"); continue }
+          lis.push(`<li>${inline(items[k++].text)}</li>`)
+        }
+        const tag = ord ? "ol" : "ul"
+        return `<${tag}>${lis.join("")}</${tag}>`
+      }
+      while (k < items.length) out.push(level(items[k].ind))
     } else if (!l.trim()) i++
     else {
       const p: string[] = []

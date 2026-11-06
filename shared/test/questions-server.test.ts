@@ -326,6 +326,12 @@ writeFileSync(join(udir, "repoB.W-7.runner.json"), JSON.stringify({ pid: 4242, s
 check("runstore: a finished state is kept whatever the pid", readRunner("repoB.W-7", udir, () => false)?.state === "done")
 check("runstore: summary prefers the Problem section, caps at 300", summaryOf("---\nid: A\n---\n# A\nIntro line.\n\n## Problem\nThe cache\nis stale. More.\n\n## Approach\nx") === "The cache is stale. More." && summaryOf("---\nid: A\n---\n# T\n\nFirst para\nwraps.\n\nSecond.") === "First para wraps." && summaryOf("# T\n" + "z".repeat(400)).length === 300)
 check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n```\n<script>x</script>\n```\n| a | b |").includes("&lt;b&gt;") && !renderMarkdown("<script>alert(1)</script>").includes("<script>") && renderMarkdown("- a\n- b").includes("<li>b</li>"))
+{
+  const h = renderMarkdown("See [#431](https://github.com/o/r/pull/431) [x](javascript:alert(1))\n\n| Item | Outcome |\n|---|---|\n| D-1 | `a\\|b` **fixed** |\n\n- top\n  - nested\n1. one")
+  check("runstore: pipe tables become tables, http links become links, nested lists nest", h.includes("<th>Outcome</th>") && h.includes("<td><code>a|b</code> <strong>fixed</strong></td>")
+    && h.includes('<a href="https://github.com/o/r/pull/431" target="_blank" rel="noopener">#431</a>') && !h.includes('href="javascript') && h.includes("<li>top<ul><li>nested</li></ul></li>") && h.includes("<ol><li>one</li></ol>"))
+  check("runstore: a pipe block without a separator row stays preformatted", renderMarkdown("| a |\n| b |").startsWith("<pre>"))
+}
 
 // timeline: merge, order and phase boundaries (pure)
 {

@@ -712,8 +712,15 @@ if (DATA.dossiers.length && DATA.graph === "focus") {
         cap.append(el("span", null, `${count} dossier${count === 1 ? "" : "s"}`));
         panel.append(cap);
       }
-      panel.append(depGraph(g.ids, g.edges, graph.nodes));
+      const svg = depGraph(g.ids, g.edges, graph.nodes);
+      panel.append(svg);
       panels.append(panel);
+      // A graph only a little wider than its panel shrinks to fit (no clipped right column); a much wider one keeps
+      // its size and scrolls, so its labels stay readable.
+      requestAnimationFrame(() => {
+        const room = panel.clientWidth - 20, w = Number(svg.getAttribute("width")) || 0;
+        if (room > 0 && w > room && w <= room * 1.25) { svg.style.width = "100%"; svg.style.height = "auto"; }
+      });
     });
     if (BUS) { note.textContent = "Done work is shown only where it meets unfinished work. Hover a dossier to light up everything before and after it; a dashed box is a missing dossier."; if (!groups.length && !loose.length) panels.append(el("div", "graph-note", "Nothing is open: every dossier is done or dropped.")); return; }
     note.textContent = (toggle.checked
