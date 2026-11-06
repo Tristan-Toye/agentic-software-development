@@ -12,6 +12,16 @@ export type Account = {
   sampledAt: string               // when the windows were last read (a stage's rate_limit_event, or `run_dossier.py usage`)
   fiveHour: Window | null; week: Window | null
   runs: string[]                  // live runs on it: "<repo>.<ID>"
+  sameLoginAs?: string            // another registered account logged in with the same email: switching gains nothing
+}
+/**
+ * A limit the runner recorded no longer holds once a later reading of the account says its windows are open (the
+ * login changed, or the window reset early): the mark is from before that reading and its windows are "allowed".
+ */
+export function limitSuperseded(mark: { marked?: string } | undefined, u: any): boolean {
+  if (!mark?.marked || !u?.ts || Date.parse(u.ts) <= Date.parse(mark.marked)) return false
+  const ws = [u.windows?.five_hour, u.windows?.seven_day].filter(Boolean)
+  return ws.length > 0 && ws.every((w: any) => w.status !== "rejected" && !(typeof w.used_percentage === "number" && w.used_percentage >= 100))
 }
 
 const home = (): string => process.env.HOME || homedir()
@@ -44,13 +54,17 @@ export function readAccounts(liveRuns: { key: string; account?: string }[], now 
   const list: { name: string; dir: string }[] = (readJson(accountsFile())?.accounts ?? []).filter((a: any) => a?.name && a?.dir).map((a: any) => ({ name: String(a.name), dir: expand(String(a.dir)) }))
   const accs = list.length ? list : [{ name: "default", dir: join(home(), ".claude") }]
   const st = readJson(accountStateFile()) ?? {}
-  const freeAt = (n: string): number => Number(st?.[n]?.limited_until ?? 0) * 1000
+  const usage = (n: string): any => readJson(join(usageDir(), `${n}.json`)) ?? {}
+  const freeAt = (n: string): number => (limitSuperseded(st?.[n], usage(n)) ? 0 : Number(st?.[n]?.limited_until ?? 0) * 1000)
   const usable = accs.find((a) => freeAt(a.name) <= now) ?? [...accs].sort((a, b) => freeAt(a.name) - freeAt(b.name))[0]
+  const logins = new Map(accs.map((a) => [a.name, login(a.dir)]))
   return accs.map((a) => {
-    const u = readJson(join(usageDir(), `${a.name}.json`)) ?? {}
+    const u = usage(a.name)
     const lim = freeAt(a.name)
+    const me = logins.get(a.name)!
+    const twin = me.email ? accs.find((b) => b.name !== a.name && logins.get(b.name)!.email === me.email)?.name : undefined
     return {
-      name: a.name, dir: a.dir, ...login(a.dir), limitedUntil: lim > now ? new Date(lim).toISOString() : "", next: a.name === usable?.name,
+      name: a.name, dir: a.dir, ...me, ...(twin ? { sameLoginAs: twin } : {}), limitedUntil: lim > now ? new Date(lim).toISOString() : "", next: a.name === usable?.name,
       sampledAt: String(u.ts ?? ""), fiveHour: windowOf(u.windows?.five_hour, now), week: windowOf(u.windows?.seven_day, now),
       runs: liveRuns.filter((r) => r.account === a.name).map((r) => r.key),
     }

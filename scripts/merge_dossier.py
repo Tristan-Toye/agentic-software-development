@@ -131,7 +131,7 @@ def plan(root: str, dossier: str) -> tuple[list[dict], str]:
     """Resolve and check: (the chain, "") or ([], why it cannot merge)."""
     key = f"{repo_name(root)}.{dossier}"
     st = read_json(os.path.join(runs_dir(), key + ".runner.json"), {}) or {}
-    if st.get("state") in ("running", "waiting", "paused") and alive(st.get("pid")):
+    if st.get("state") in ("running", "waiting", "paused", "queued") and alive(st.get("pid")):
         return [], f"a {st.get('command') or 'run'} run of {dossier} is still live; merge when it is finished"
     rc, out = gh(root, "pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,baseRefName,isDraft,title,url")
     if rc != 0:

@@ -156,7 +156,7 @@ def pick_account(now_s: float | None = None, prefer: str = "") -> tuple[dict, fl
     `prefer` first, else the one whose limit resets first."""
     now_s = time.time() if now_s is None else now_s
     accs, st = load_accounts(), account_state()
-    free_at = lambda a: float((st.get(a["name"]) or {}).get("limited_until") or 0)
+    free_at = lambda a: 0.0 if limit_superseded(st.get(a["name"]), read_json(os.path.join(USAGE_DIR(), a["name"] + ".json"), {})) else float((st.get(a["name"]) or {}).get("limited_until") or 0)
     order = sorted(accs, key=lambda a: (a["name"] != prefer, accs.index(a)))
     for a in order:
         if free_at(a) <= now_s:
@@ -166,6 +166,18 @@ def pick_account(now_s: float | None = None, prefer: str = "") -> tuple[dict, fl
 
 
 USAGE_DIR = lambda: os.environ.get("ASD_USAGE_DIR") or os.path.expanduser("~/.agentic/usage")
+
+
+def limit_superseded(mark: dict | None, usage: dict | None) -> bool:
+    """A recorded limit no longer holds once a later reading says the account's windows are open (its login changed,
+    or the window reset early). The same rule as `limitSuperseded` in shared/questions/accounts.ts."""
+    try:
+        if not mark or not usage or not mark.get("marked") or not usage.get("ts") or usage["ts"] <= mark["marked"]:
+            return False
+    except TypeError:
+        return False
+    ws = [w for w in ((usage.get("windows") or {}).get(k) for k in ("five_hour", "seven_day")) if isinstance(w, dict)]
+    return bool(ws) and all(w.get("status") != "rejected" and not (isinstance(w.get("used_percentage"), (int, float)) and w["used_percentage"] >= 100) for w in ws)
 
 
 def record_usage(account: str, info: dict) -> None:
@@ -402,6 +414,66 @@ HOLD_STAGE = ("RUNNER: the stage cannot end yet. Background work you started is 
 HOLD_MAX = 3   # after this many held ends the runner lets the stage end, and logs what it cut off
 
 
+# ---- the orchestrator's model: pinned, never an alias, never Fable ----
+# "opus" is an alias each login resolves for itself: on one account it resolved to claude-fable-5-1, at 2.5x the
+# price, and ran every orchestrator on it for a day. The runner passes an exact id and checks the one the session
+# reports; ASD_RUNNER_MODEL overrides it (an Opus or Sonnet id).
+DEFAULT_MODEL = "claude-opus-5-5"
+FORBIDDEN_MODEL = re.compile(r"fable", re.I)
+
+
+def runner_model(requested: str | None) -> str:
+    m = (requested or os.environ.get("ASD_RUNNER_MODEL") or DEFAULT_MODEL).strip()
+    if FORBIDDEN_MODEL.search(m):
+        raise SystemExit(f"run_dossier.py: model {m} is not allowed; the orchestrator runs on {DEFAULT_MODEL}")
+    return m
+
+
+def model_ok(expected: str, actual: str) -> bool:
+    """The model the session reports matches the pinned one: the same id, or (for an alias) the same family; never Fable."""
+    if not actual or actual == "<synthetic>":
+        return True
+    if FORBIDDEN_MODEL.search(actual):
+        return False
+    if expected in ("opus", "sonnet", "haiku"):
+        return expected in actual
+    return actual.split("[")[0] == expected.split("[")[0]
+
+
+# ---- run slots: at most ASD_RUNNER_MAX_LIVE runs work at once (default 4) ----
+# Ten runs resuming at one limit reset spent a whole 5-hour window in 12 minutes. A run takes a slot before each
+# stage and after an owner's answer; only `running` runs hold one (waiting, paused and queued runs spend nothing).
+# Without a free slot it records `queued` and waits its turn: the longest-queued run goes first.
+
+
+def max_live() -> int:
+    try:
+        return max(0, int(os.environ.get("ASD_RUNNER_MAX_LIVE") or 4))
+    except ValueError:
+        return 4
+
+
+def slot_census(me: str) -> tuple[int, list[tuple[str, str]]]:
+    """(runs holding a slot, [(queued_since, key)] of runs waiting for one), other than `me`, live pids only."""
+    held, queued = 0, []
+    try:
+        names = [n for n in os.listdir(runs_dir()) if n.endswith(".runner.json")]
+    except OSError:
+        return 0, []
+    for n in names:
+        key = n[: -len(".runner.json")]
+        if key == me:
+            continue
+        st = read_json(os.path.join(runs_dir(), n), {}) or {}
+        if not alive(st.get("pid")):
+            continue
+        if st.get("state") == "running":
+            held += 1
+        elif st.get("state") == "queued":
+            queued.append((str(st.get("queued_since") or ""), key))
+    return held, sorted(queued)
+
+
 # owner_wait's code for "the owner wrote to the run" (not an answer).
 MESSAGE_RC = 20
 # Commands that take an argument list after the dossier id (`--items`).
@@ -415,7 +487,7 @@ class Runner:
         self.dossier = dossier
         self.command = command
         self.items = items  # fix-deferred: the D-ids the owner selected, "D-1,D-3" (empty = all); after-merge: the merged PR numbers, "429,430"
-        self.model = model
+        self.model = runner_model(model) if command != "product-summary" else model
         self.permission_mode = permission_mode
         self.max_stages = max_stages
         prev = read_json(os.path.join(runs_dir(), run_key(root, dossier, command, items) + ".runner.json"), {}) or {}
@@ -578,8 +650,7 @@ class Runner:
         cmd = shlex.split(os.environ.get("ASD_CLAUDE_BIN") or "claude")
         cmd += ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                 "--permission-mode", self.permission_mode, "--append-system-prompt", RUNNER_RULES]
-        if self.model:
-            cmd += ["--model", self.model]
+        cmd += ["--model", self.model or runner_model(None)]
         return cmd
 
     def handoff(self) -> str | None:
@@ -604,6 +675,7 @@ class Runner:
         return "\n".join(rows)
 
     def spawn(self) -> tuple[queue.Queue, bool]:
+        self.wrong_model = ""
         env = dict(os.environ, ASD_RUN_KEY=self.key)
         acct = getattr(self, "account", None)
         if acct and os.path.abspath(acct["dir"]) != os.path.abspath(os.path.expanduser("~/.claude")):
@@ -652,6 +724,27 @@ class Runner:
                 return background_in_flight(fh.read().splitlines())
         except OSError:
             return []
+
+    def take_slot(self) -> bool:
+        """Wait for a run slot (max_live); False when the run was stopped while it waited."""
+        cap = max_live()
+        if cap == 0:
+            return True
+        since = ""
+        while not self.stopping:
+            held, queued = slot_census(self.key)
+            ahead = [k for s, k in queued if since and s < since]
+            if held < cap and (not since or not ahead):
+                if since:
+                    self.event(f"slot free; {held + 1} of {cap} runs working", "running")
+                self.save(state="running", queued_since=None)
+                return True
+            if not since:
+                since = now()
+                self.save(state="queued", queued_since=since)
+                self.event(f"queued: {held} of {cap} runs are working (ASD_RUNNER_MAX_LIVE); this one starts when a slot frees", "queued")
+            time.sleep(float(os.environ.get("ASD_RUNNER_SLOT_POLL") or 10))
+        return False
 
     def deliver_inbox(self) -> bool:
         """Send the owner's undelivered messages (`run_dossier.py chat` on a live run) into the live session."""
@@ -703,6 +796,12 @@ class Runner:
             return
         if ev.get("type") == "system" and ev.get("subtype") == "init" and ev.get("session_id"):
             self.save(session=ev["session_id"])
+        # The model the session really runs on: anything but the pinned one (Fable above all) ends the stage at once.
+        got = ev.get("model") if ev.get("type") == "system" and ev.get("subtype") == "init" else (ev.get("message") or {}).get("model") if ev.get("type") == "assistant" else None
+        if isinstance(got, str) and not getattr(self, "wrong_model", "") and not model_ok(self.model or runner_model(None), got):
+            self.wrong_model = got
+            self.log(f"the session runs on {got}, not {self.model or runner_model(None)}: stopping the stage")
+            kill_group(self.proc)
         if ev.get("type") != "assistant":
             return
         content = (ev.get("message") or {}).get("content")
@@ -858,12 +957,18 @@ class Runner:
                         tail = fh.read().decode("utf-8", "replace")
                 except OSError:
                     tail = ""
+                if getattr(self, "wrong_model", ""):
+                    return "failed", f"the session ran on {self.wrong_model}, not {self.model or runner_model(None)}; the runner refuses any other model (set the account's model, or ASD_RUNNER_MODEL)"
                 if usage_limit(tail):
                     return "limit", tail.strip()
                 if network_error(tail):
                     return "network", tail.strip().splitlines()[-1][:300] if tail.strip() else "network error"
                 return "failed", f"the claude process exited with code {val} before a result"
             text, err = val  # type: ignore[misc]
+            if getattr(self, "wrong_model", ""):
+                kill_group(self.proc)
+                self.end_process()
+                return "failed", f"the session ran on {self.wrong_model}, not {self.model or runner_model(None)}; the runner refuses any other model (set the account's model, or ASD_RUNNER_MODEL)"
             if err and usage_limit(text):
                 kill_group(self.proc)
                 self.end_process()
@@ -934,7 +1039,9 @@ class Runner:
                 kill_group(self.proc)
                 self.end_process()
                 return "failed", f"waiting on {qid or ids[0]} failed: {out[:200]}"
-            self.save(state="running", questions=[i for i in ids if i != qid] if rc == 0 else ids)
+            self.save(questions=[i for i in ids if i != qid] if rc == 0 else ids)
+            if not self.take_slot():
+                return "stopped", ""
             self.event(("answered " if rc == 0 else "follow-up on ") + qid, "running")
             why = self.take_restart() if rc == 0 else None
             if why is not None:
@@ -955,7 +1062,7 @@ class Runner:
 
     def run(self) -> int:
         prev = read_json(self.state_path, {})
-        if prev.get("state") in ("running", "waiting") and alive(prev.get("pid")) and prev.get("pid") != os.getpid():
+        if prev.get("state") in ("running", "waiting", "queued") and alive(prev.get("pid")) and prev.get("pid") != os.getpid():
             say(f"{self.key} is already run by pid {prev['pid']}")
             return 2
         if prev.get("state") == "done":
@@ -973,7 +1080,9 @@ class Runner:
             if started >= self.max_stages:
                 return self.finish("stopped", f"--max-stages {self.max_stages} reached", 4)
             started += 1
-            self.save(stage=started, state="running", questions=[])
+            self.save(stage=started, questions=[])
+            if not self.take_slot():
+                return self.finish("stopped", "stopped", 3)
             self.event(f"stage {started} start", "running")
             outcome, detail = self.run_stage()
             if outcome != "network":
@@ -1070,7 +1179,7 @@ def cmd_status(a: argparse.Namespace) -> int:
             continue
         st = read_json(os.path.join(d, f), {})
         state = st.get("state", "?")
-        if state in ("running", "waiting") and not alive(st.get("pid")):
+        if state in ("running", "waiting", "queued") and not alive(st.get("pid")):
             state = "stopped"
         q = ",".join(st.get("questions") or [])
         rows.append(f"{key}\t{state}\tstage {st.get('stage', 0)}\tsession {st.get('session') or '-'}"
@@ -1087,7 +1196,7 @@ def cmd_stop(a: argparse.Namespace) -> int:
         print(f"no run for {key}")
         return 1
     pid, cpid = st.get("pid"), st.get("claude_pid")
-    if st.get("state") in ("running", "waiting") or alive(cpid):
+    if st.get("state") in ("running", "waiting", "queued") or alive(cpid):
         if alive(pid):
             os.kill(pid, signal.SIGTERM)  # the runner's handler kills the claude group and records stopped
             end = time.monotonic() + 20
@@ -1099,7 +1208,7 @@ def cmd_stop(a: argparse.Namespace) -> int:
             except (ProcessLookupError, PermissionError):
                 pass
         st = read_json(path, st)
-        if st.get("state") in ("running", "waiting"):
+        if st.get("state") in ("running", "waiting", "queued"):
             st.update(state="stopped", claude_pid=None, questions=[])
             write_json(path, st)
             try:
@@ -1190,7 +1299,7 @@ def cmd_chat(a: argparse.Namespace) -> int:
         print("run_dossier.py chat: --text is empty", file=sys.stderr)
         return 2
     st = read_json(os.path.join(d, key + ".runner.json"), {}) or {}
-    if st.get("state") in ("running", "waiting", "paused") and alive(st.get("pid")):
+    if st.get("state") in ("running", "waiting", "paused", "queued") and alive(st.get("pid")):
         # A live run: the runner delivers it into the running session (mid-turn, or by waking a question wait).
         append_line(inbox_path(key), {"ts": now(), "text": text[:20000]})
         append_line(os.path.join(d, key + ".jsonl"), {"ts": now(), "kind": "update", "event": "owner-message", "from": "owner", "text": text[:20000]})
@@ -1218,7 +1327,7 @@ def cmd_chat(a: argparse.Namespace) -> int:
     write_json(cp, {**read_json(cp, {}), "state": "thinking", "pid": os.getpid(), "account": acct})
     root = st.get("root") or a.root
     cmd = shlex.split(os.environ.get("ASD_CLAUDE_BIN") or "claude")
-    cmd += ["-p", "--resume", sid, "--output-format", "json", "--permission-mode", st.get("permission_mode") or "auto",
+    cmd += ["-p", "--resume", sid, "--output-format", "json", "--model", runner_model(None), "--permission-mode", st.get("permission_mode") or "auto",
             "--append-system-prompt", CHAT_RULES]
     env = dict(os.environ, ASD_RUN_UPDATES="0")
     env.pop("ASD_RUN_KEY", None)
@@ -1299,7 +1408,7 @@ def cmd_summary(a: argparse.Namespace) -> int:
     key = key_of(a.root, a.dossier)
     path = os.path.join(runs_dir(), key + ".runner.json")
     prev = read_json(path, {}) or {}
-    if prev.get("state") in ("running", "waiting", "paused") and alive(prev.get("pid")):
+    if prev.get("state") in ("running", "waiting", "paused", "queued") and alive(prev.get("pid")):
         print(f"{key} is still running; the summary follows when it is done", file=sys.stderr)
         return 2
     r = Runner(prev.get("root") or a.root, a.dossier, "work-on", None, prev.get("permission_mode") or "auto", 1)
@@ -1327,7 +1436,8 @@ open(os.path.join(d, f"env.{n}"), "w").write(os.environ.get("ASD_RUN_KEY", "") +
 ask = os.path.join(os.environ["ASD_ASK_OWNER"])
 def out(o):
     sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
-out({"type": "system", "subtype": "init", "session_id": f"sess-{n}"})
+argm = sys.argv[sys.argv.index("--model") + 1] if "--model" in sys.argv else ""
+out({"type": "system", "subtype": "init", "session_id": f"sess-{n}", "model": script.get("init_model", argm)})
 if script.get("crash") is not None:
     sys.exit(script["crash"])
 turn = 0
@@ -1506,7 +1616,7 @@ def selftest() -> int:
         first_sum = open(fakesum + ".first").read() if os.path.exists(fakesum + ".first") else ""
         check("after DONE the product summary is stored without the RUNNER line, on sonnet, and the run's model is restored",
               ok_sum and sum_txt.startswith("**In one line:**") and "RUNNER:" not in sum_txt and ":product-summary W-77" in first_sum
-              and "--model sonnet" in first_sum and rn.model is None and rn.command == "work-on")
+              and "--model sonnet" in first_sum and rn.model == DEFAULT_MODEL and rn.command == "work-on")
         os.environ["ASD_USAGE_DIR"] = os.path.join(tmp, "usage")
         record_usage("acct", {"status": "allowed", "rateLimitType": "five_hour", "unifiedWindows": {
             "five_hour": {"utilization": 0.08, "resetsAt": 100, "status": "allowed"}, "seven_day": {"utilization": 0.4, "resetsAt": 200, "status": "allowed"}}})
@@ -1655,6 +1765,42 @@ def selftest() -> int:
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
         p = start("W-7")
         check("a live owner of the dossier refuses a second runner", p.wait(timeout=30) == 2)
+
+        check("accounts: a limit marked before an open reading no longer holds", limit_superseded({"marked": "2026-11-06T08:53:41Z"}, {"ts": "2026-11-06T11:01:17Z", "windows": {"five_hour": {"used_percentage": 2.0, "status": "allowed"}, "seven_day": {"used_percentage": 0, "status": "allowed"}}})
+              and not limit_superseded({"marked": "2026-11-06T08:53:41Z"}, {"ts": "2026-11-06T08:50:00Z", "windows": {"five_hour": {"used_percentage": 2.0, "status": "allowed"}}})
+              and not limit_superseded({"marked": "2026-11-06T08:53:41Z"}, {"ts": "2026-11-06T09:00:00Z", "windows": {"five_hour": {"used_percentage": 100, "status": "rejected"}}}))
+        # ---- run slots: a full house queues the run; it starts when a slot frees ----
+        for n in os.listdir(rdir):   # earlier cases left fake live runs behind: they would hold the slot
+            if n.endswith(".runner.json"):
+                stx = read_json(os.path.join(rdir, n), {}) or {}
+                if stx.get("state") in ("running", "queued"):
+                    write_json(os.path.join(rdir, n), {**stx, "state": "done"})
+        busy = {"pid": os.getpid(), "state": "running"}
+        write_json(os.path.join(rdir, "repo.W-90.runner.json"), busy)
+        env["ASD_RUNNER_MAX_LIVE"] = "1"; env["ASD_RUNNER_SLOT_POLL"] = "0.2"
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-37")
+        queued = until(lambda: state_of("W-37").get("state") == "queued", 20)
+        check("slots: with every slot taken the run is queued, its claude not started", bool(queued) and not os.path.exists(os.path.join(fdir, "pid.1")))
+        write_json(os.path.join(rdir, "repo.W-90.runner.json"), {**busy, "state": "waiting"})
+        check("slots: a run waiting on the owner frees its slot; the queued one starts and finishes", p.wait(timeout=60) == 0 and any(t.startswith("slot free") for t in texts("W-37")))
+        os.remove(os.path.join(rdir, "repo.W-90.runner.json"))
+        env.pop("ASD_RUNNER_MAX_LIVE"); env.pop("ASD_RUNNER_SLOT_POLL")
+
+        # ---- the orchestrator's model: pinned to an exact id, never Fable ----
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-34")
+        check("model: the orchestrator gets --model claude-opus-5-5 by default", p.wait(timeout=60) == 0 and "--model claude-opus-5-5" in open(os.path.join(fdir, "env.1")).read())
+        bad = subprocess.run([sys.executable, me, "--root", root, "--dossier", "W-35", "--model", "claude-fable-5-1", "--foreground"], env=env, capture_output=True, text=True, timeout=30)
+        check("model: Fable is refused before anything starts", bad.returncode != 0 and "not allowed" in (bad.stdout + bad.stderr))
+        scenario([{"init_model": "claude-fable-5-1", "turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-36")
+        asked = until(lambda: any("asked" in t for t in texts("W-36")), 30)
+        check("model: a session that reports another model is stopped and the owner asked", bool(asked) and any("ran on claude-fable-5-1" in t for t in texts("W-36")))
+        q36 = (state_of("W-36").get("questions") or [""])[0]
+        owner_line(q36, "answer", "Stop", "B")
+        p.wait(timeout=30)
+        check("model: model_ok", model_ok("claude-opus-5-5", "claude-opus-5-5") and model_ok("sonnet", "claude-sonnet-5-5") and not model_ok("claude-opus-5-5", "claude-fable-5-1") and not model_ok("opus", "claude-fable-5-1"))
 
         # ---- a network error pauses and retries the stage by itself; only after the retries does it ask ----
         net = "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"
@@ -1844,6 +1990,7 @@ def main() -> int:
         print("run_dossier.py: --items takes D-ids (D-1,D-3) with --command fix-deferred, PR numbers (429,430) with --command after-merge, "
               "or one D-id with --command plan", file=sys.stderr)
         return 2
+    runner_model(a.model)  # refuses a forbidden model before anything starts
     if not a.foreground:
         return detach(argv + ([] if "--root" in argv else ["--root", a.root]), a.root, a.dossier, run_key(a.root, a.dossier, a.command, items))
     return Runner(a.root, a.dossier, a.command, a.model, a.permission_mode, a.max_stages, items).run()

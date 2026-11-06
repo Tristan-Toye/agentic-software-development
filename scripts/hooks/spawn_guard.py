@@ -235,6 +235,10 @@ def decide(event: dict) -> dict | None:
     if os.environ.get("ASD_SPAWN_GUARD", "1").strip().lower() in ("0", "false", "off", "no"):
         return None
     tool_input = event.get("tool_input") or {}
+    # No agent, of this plugin or any other, runs on Fable: it costs 2.5x Opus and the pipeline never needs it.
+    if event.get("tool_name") in ("Agent", "Task", "Workflow") and re.search(r"fable", json.dumps(tool_input.get("model", "")) + (json.dumps(tool_input.get("script", "")) if event.get("tool_name") == "Workflow" else ""), re.I):
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": "spawn guard: no agent runs on Fable. Orchestrators run on Opus, sub-agents on Sonnet or Haiku; drop the model or name one of those."}}
     if event.get("tool_name") == "Workflow":
         found = workflow_problems(tool_input)
     elif event.get("tool_name") in ("Agent", "Task"):
@@ -380,6 +384,10 @@ def selftest() -> int:
     check("a spawn naming the file's own model passes", spawn_as("code-scout", "haiku") is None)
     check("a spawn without a model passes", spawn_as("implementer", None) is None)
     check("an agent with no file is not judged on its model", spawn_as("nonexistent", "opus") is None)
+    fab = decide({"tool_name": "Agent", "tool_input": {"subagent_type": "general-purpose", "model": "claude-fable-5-1", "prompt": "x"}})
+    check("no agent runs on Fable, whoever's", fab is not None and "Fable" in fab["hookSpecificOutput"]["permissionDecisionReason"])
+    wf = decide({"tool_name": "Workflow", "tool_input": {"script": "agent('x', {model: 'fable'})"}})
+    check("no workflow agent runs on Fable", wf is not None)
     check("the legacy Task name is covered", bool(spawn(recorded, tool="Task")))
     reason = spawn(recorded)["hookSpecificOutput"]["permissionDecisionReason"]
     check("the reason says how to fix it", "paste" in reason)

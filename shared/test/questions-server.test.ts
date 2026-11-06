@@ -416,6 +416,11 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
   linkPlannedItems([w128, w130], new Map([["r/W-128/D-1", "W-150"]]), () => "done")
   check("plan link: once planned, both items link to the one new dossier", w128.deferred.items[0].dossier === "W-150" && w130.deferred.items[1].dossier === "W-150")
 }
+{
+  const { limitSuperseded } = await import("../questions/accounts.ts")
+  check("accounts: a limit marked before an open reading no longer shows", limitSuperseded({ marked: "2026-11-06T08:53:41Z" }, { ts: "2026-11-06T11:01:17Z", windows: { five_hour: { used_percentage: 2, status: "allowed" }, seven_day: { used_percentage: 0, status: "allowed" } } })
+    && !limitSuperseded({ marked: "2026-11-06T08:53:41Z" }, { ts: "2026-11-06T08:00:00Z", windows: { five_hour: { used_percentage: 2, status: "allowed" } } }))
+}
   check("classify: a hook suite line goes by its failed count", ev("suite: passed 31  failed 0  ignored 0  (cargo)", "suite") === "suite-green" && ev("suite: passed 2  failed 41  ignored 0  (dotnet)", "suite") === "suite-red" && ev("suite run finished", "suite") === "routine" && ev("gates: 7 passed", "gates") === "gate" && ev("PR opened: https://x/pull/1", "pr") === "pr")
   check("classify: key flags and routine flags", classify(E({ type: "stage", text: "x" })).key && classify(E({ type: "question", text: "x" })).key && !classify(E({ type: "update", text: "x", auto: true })).key && classify(E({ type: "update", text: "x", auto: true })).routine && !classify(E({ type: "update", text: "x" })).routine)
   const ups = [
