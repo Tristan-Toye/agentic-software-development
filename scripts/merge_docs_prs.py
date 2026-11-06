@@ -43,6 +43,13 @@ def gh(root: str, *args: str, timeout: int = 120) -> tuple[int, str]:
     return p.returncode, (p.stdout if p.returncode == 0 else p.stdout + p.stderr).strip()
 
 
+def read_state(root: str, n: int) -> dict:
+    """The merge queue's state of this PR (`<repo>.pr-<n>.merge.json`), if it was queued."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from merge_dossier import repo_name, runs_dir, read_json
+    return read_json(os.path.join(runs_dir(), f"{repo_name(root)}.pr-{n}.merge.json"), {}) or {}
+
+
 def checks_of(rollup: list) -> str:
     states = [str(c.get("conclusion") or c.get("state") or c.get("status") or "").upper() for c in rollup or []]
     if any(s in ("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED") for s in states):
@@ -95,44 +102,30 @@ def rows(root: str, merged_ids: set[str] | None = None) -> tuple[list[dict], str
             "checks are red" if r["checks"] == "red" else "checks still running" if r["checks"] == "pending" else \
             "GitHub has not computed mergeability yet" if r["mergeable"] == "UNKNOWN" else ""
         r["ready"], r["blocked"] = not why, why
+        st = read_state(root, p["number"])
+        if st:
+            r["queue"] = {k: st.get(k) for k in ("state", "position", "note", "error") if st.get(k) is not None}
         out_rows.append(r)
     return out_rows, ""
 
 
 def merge(root: str, dry: bool) -> int:
-    done: set[int] = set()
-    merged_ids: set[str] = set()
-    failed = False
-    waited = 0.0
-    while True:
-        rs, err = rows(root, merged_ids)
-        if err:
-            print(f"merge_docs_prs: {err}")
-            return 1
-        ready = [r for r in rs if r["ready"] and r["number"] not in done]
-        # Every merge into development makes GitHub recompute each other PR's mergeability, and it answers UNKNOWN for
-        # a while: wait for its answer (up to ASD_DOCPRS_WAIT seconds) instead of skipping PRs that are ready.
-        unknown = [r for r in rs if r["number"] not in done and r["blocked"].startswith("GitHub has not computed")]
-        if not ready and unknown and waited < float(os.environ.get("ASD_DOCPRS_WAIT") or 180):
-            step = float(os.environ.get("ASD_DOCPRS_POLL") or 10)
-            time.sleep(step); waited += step
-            continue
-        waited = 0.0
-        if not ready:
-            for r in rs:
-                if not r["ready"]:
-                    print(f"skip #{r['number']} {r['head']}: {r['blocked']}")
-            return 1 if failed else 0
-        r = ready[0]
-        done.add(r["number"])
-        if dry:
-            print(f"would merge #{r['number']} {r['head']}")
-            continue
-        rc, out = gh(root, "pr", "merge", str(r["number"]), "--merge", timeout=300)
-        print(f"{'merged' if rc == 0 else 'FAILED'} #{r['number']} {r['head']}" + ("" if rc == 0 else f": {out[-200:]}"))
-        failed = failed or rc != 0
-        if rc == 0 and r["dossier"]:
-            merged_ids.update(r["dossier"].split(","))
+    """Merge all: every open plan/docs PR into development (not a draft) joins the repository's merge queue, oldest
+    first. The queue's shared steps settle each one (GitHub's mergeability, a taken dossier id renumbered by script,
+    red checks re-run once, then the dossier's agent) and merge it by script. Nothing here touches a stub."""
+    rs, err = rows(root)
+    if err:
+        print(f"merge_docs_prs: {err}")
+        return 1
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from merge_dossier import enqueue_pr
+    for r in rs:
+        if r["draft"]:
+            print(f"skip #{r['number']} {r['head']}: draft"); continue
+        print(f"{'would queue' if dry else 'queued'} #{r['number']} {r['head']}")
+        if not dry:
+            enqueue_pr(root, r["number"])
+    return 0
 
 
 # ---------------------------------------------------------------- selftest
@@ -183,13 +176,17 @@ def selftest() -> int:
         check("list: the second PR with the same dossier id waits for renumbering", by[436]["ready"] and not by[437]["ready"] and "W-147" in by[437]["blocked"])
         check("list: pending checks wait", not by[439]["ready"] and "running" in by[439]["blocked"])
         import io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = merge(root, False)
-        calls = open(os.path.join(tmp, "calls.txt")).read()
-        check("merge: merges the ready ones in order, skips the rest with why", rc == 0 and "pr merge 436 --merge" in calls and "pr merge 438 --merge" in calls
-              and "pr merge 437" not in calls and "pr merge 434" not in calls and "skip #437" in buf.getvalue(), buf.getvalue())
-        check("merge: GitHub's UNKNOWN after a merge is waited out, not skipped", "not computed" not in buf.getvalue())
+        queued = []
+        import merge_dossier as md
+        md_enq = md.enqueue_pr
+        md.enqueue_pr = lambda root_, n: queued.append(n) or 0
+        try:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = merge(root, False)
+        finally:
+            md.enqueue_pr = md_enq
+        check("merge all: every open plan/docs PR joins the merge queue, oldest first (the queue settles each)", rc == 0 and queued == [434, 436, 437, 438, 439], str(queued) + buf.getvalue())
     print("FAILED: " + ", ".join(fails) if fails else "all ok")
     return 1 if fails else 0
 

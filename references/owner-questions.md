@@ -264,15 +264,26 @@ restarted server answers at once from them while its first scan runs.
     shows the run like a dossier's: state, Stop, Resume /stub, the Now panel,
     and its timeline with a "Merge the finished dossiers" section, then the
     /stub steps. The whole stub card opens that page.
+  - **One merge queue for both kinds of PR** (`merge_dossier.py`): a
+    dossier's stack into its stub, and a plan or docs PR into development
+    (`--enqueue-pr`). FIFO per repository, one worker. Each item goes through
+    the same steps, cheapest first: GitHub's mergeability asked again while it
+    says UNKNOWN; a dossier id or ADR number the base already holds renumbered
+    on the branch by script (`--finalize-ids` for ADRs), pushed; red checks
+    re-run once; then the dossier's agent (`/resolve-merge`, a fresh run under
+    the dossier's key) for a content conflict or a check still red; then the
+    script merges. A stack also runs `/after-merge`; a non-code PR does not, and
+    nothing in it touches a stub. An item that still cannot merge is marked
+    failed with why, and the queue goes on.
   - **Non-code PRs into development** (repo page, under the stubs): every
     open `plan/*` or `docs/*` PR into `development`, the PRs that may skip the
     stub, each with why it can or cannot merge now (`scripts/merge_docs_prs.py
     list`): code files in it, a draft, a conflict, red or running checks, or a
     dossier id that another open PR or `development` already has (two
     concurrent plans can mint one number; renumber the later one with
-    `validate_pipeline.py --finalize-ids`). **Merge all ready** merges the
-    ready ones by script, oldest first, with a merge commit, reading the list
-    again after each merge (`GET`/`POST /api/repo/<repo>/doc-prs[/merge]`).
+    `validate_pipeline.py --finalize-ids`). **Merge all** puts every open
+    non-draft one in the merge queue above, oldest first; each row shows its
+    queue step (`GET`/`POST /api/repo/<repo>/doc-prs[/merge]`).
   - **the merge detector** (`merges.ts`): every 2 min, `gh pr list --base <stub>
     --state merged` per open stub. A PR merged since the last look, mapped to
     its dossier by `pr:` number or the id in its head branch, starts
