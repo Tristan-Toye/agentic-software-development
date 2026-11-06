@@ -548,7 +548,7 @@ function docPrsView(repo) {
   if (!st) { S.docPrs[repo] = { loading: true }; fetch('/api/repo/' + enc(repo) + '/doc-prs').then(r => r.json()).then(j => { S.docPrs[repo] = j; render(); }).catch(() => { S.docPrs[repo] = { error: 'request failed' }; render(); }); return null; }
   if (st.loading) return null;
   const prs = st.prs || []; if (!prs.length && !st.merging && !st.error) return null;
-  const ready = prs.filter(p => p.ready).length; const queueable = prs.filter(p => !p.draft && !(p.queue && ['queued', 'waiting', 'fixing', 'rerunning', 'resolving', 'merging'].includes(p.queue.state))).length;
+  const ready = prs.filter(p => p.ready).length; const queueable = prs.filter(p => !p.draft && !(p.queue && ['queued', 'waiting', 'fixing', 'batching', 'rerunning', 'resolving', 'merging'].includes(p.queue.state))).length;
   const rows = prs.map(p => h('a', { class: 'srow', href: p.url, target: '_blank', rel: 'noopener', 'data-k': 'dp:' + p.number }, [h('span', { class: 'sid mono' }, ['#' + p.number]),
     h('span', { class: 'sname' }, [h('span', {}, [(p.dossier ? p.dossier + ' · ' : '') + p.title]), h('span', { class: 'small mut rsub' }, [p.kind + ' · ' + p.head])]),
     h('span', { class: 'sright' }, [docPrState(p)])]));
@@ -562,7 +562,7 @@ function docPrsView(repo) {
 /* A non-code PR's state: its merge-queue step when queued, else ready, or what the queue will have to fix. */
 function docPrState(p) {
   const q = p.queue;
-  const QL = { queued: 'in the merge queue' + (q && q.position ? ' · #' + q.position : ''), waiting: 'waits for its run', fixing: q && /^updating/.test(q.note || '') ? 'updating · then its checks' : 'renumbering', rerunning: 're-running red checks', resolving: 'its agent is resolving', merging: 'merging…', merged: 'merged' };
+  const QL = { queued: 'in the merge queue' + (q && q.position ? ' · #' + q.position : ''), waiting: 'waits for its run', fixing: q && /^updating/.test(q.note || '') ? 'updating · then its checks' : 'renumbering', batching: 'in batch' + (q && q.batch ? ' #' + q.batch : '') + ' · waiting for its checks', rerunning: 're-running red checks', resolving: 'its agent is resolving', merging: 'merging…', merged: 'merged' };
   if (q && QL[q.state]) return h('span', { title: q.note || '' }, [h('span', { class: 'chip ' + (q.state === 'merged' ? 'done' : 'fixing') }, [q.state === 'merged' ? null : h('span', { class: 'dot info live' }), QL[q.state]])]);
   if (q && q.state === 'failed') return h('span', { title: q.error || '' }, [chip('could not merge: ' + (q.error || '').slice(0, 60), 'blocked')]);
   if (p.ready) return chip('ready to merge', 'done');

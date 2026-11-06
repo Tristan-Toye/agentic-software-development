@@ -283,7 +283,11 @@ restarted server answers at once from them while its first scan runs.
     concurrent plans can mint one number; renumber the later one with
     `validate_pipeline.py --finalize-ids`). **Merge all** puts every open
     non-draft one in the merge queue above, oldest first; each row shows its
-    queue step (`GET`/`POST /api/repo/<repo>/doc-prs[/merge]`).
+    queue step (`GET`/`POST /api/repo/<repo>/doc-prs[/merge]`). Non-code PRs
+    waiting in a row go through as one batch: one `plan/queue-batch-*` PR, one
+    CI run, one merge. A member that conflicts or a batch that stays red goes
+    one PR at a time (`ASD_MERGE_BATCH=0` always does). A network blip or a
+    GitHub 5xx is waited out, ten minutes by default, before anything fails.
   - **the merge detector** (`merges.ts`): every 2 min, `gh pr list --base <stub>
     --state merged` per open stub. A PR merged since the last look, mapped to
     its dossier by `pr:` number or the id in its head branch, starts

@@ -76,7 +76,7 @@ def rows(root: str, merged_ids: set[str] | None = None) -> tuple[list[dict], str
         prs = json.loads(out or "[]")
     except ValueError:
         return [], "gh pr list gave no JSON"
-    prs = sorted([p for p in prs if re.match(r"(plan|docs)/", p.get("headRefName", ""))], key=lambda p: p["number"])
+    prs = sorted([p for p in prs if re.match(r"(plan|docs)/", p.get("headRefName", "")) and not p["headRefName"].startswith("plan/queue-batch-")], key=lambda p: p["number"])  # a batch PR is the queue's own
     taken = dev_ids(root) | (merged_ids or set())   # ids merged in this run count even before the fetch shows them
     seen: dict[str, int] = {}
     out_rows = []
