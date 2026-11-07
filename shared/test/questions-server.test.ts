@@ -334,6 +334,8 @@ check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n
 }
 check("controls: a dossier a plan run minted resumes and stops under its source", runTarget("r", "W-155", "r.W-145.plan-D-1").dossier === "W-145" && runTarget("r", "W-155", "r.W-145.plan-D-1").stop === "W-145.plan-D-1"
   && runTarget("r", "W-1", "r.W-1").dossier === "W-1" && runTarget("r", "W-1", "r.W-1").stop === "W-1" && runTarget("r", "W-1").dossier === "W-1")
+check("controls: Start on a minted dossier builds that dossier, never its source", runTarget("r", "W-147", "r.W-130.plan-D-1", "start").dossier === "W-147"
+  && runTarget("r", "W-147", "r.W-130.plan-D-1", "resume").dossier === "W-130" && runTarget("r", "W-147", "r.W-130.plan-D-1", "stop").stop === "W-130.plan-D-1")
 {
   const it = (id: string, extra: object = {}) => ({ id, state: "open", ...extra }) as any
   const items = [it("D-1"), it("D-2", { question: "q.Q1" }), it("D-3", { question: "q.Q2" }), it("D-4", { keptOpen: true }), it("D-5", { state: "fixing" })]

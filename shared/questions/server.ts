@@ -676,7 +676,7 @@ export async function handle(req: Request): Promise<Response> {
       // Start runs the dossier's next flow (plan or work-on); Resume runs the flow that stopped, with its items.
       const flow = action === "start" ? [`--command`, ctl.command || "work-on"]
         : action === "resume" ? ["--command", ctl.command || "work-on", ...(run.runner?.items ? ["--items", run.runner.items] : [])] : []
-      const target = runTarget(repo, id, run.runKey)
+      const target = runTarget(repo, id, run.runKey, action)
       const r = await runRunner(action === "stop" ? ["stop", target.stop, "--root", root] : action === "fix-deferred" ? [id, "--root", root, "--command", "fix-deferred", ...(items.length ? ["--items", items.join(",")] : [])] : [target.dossier, "--root", root, ...flow])
       emitChange("runs")
       return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 500)
