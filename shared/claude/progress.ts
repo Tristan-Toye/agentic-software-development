@@ -56,6 +56,22 @@ const textOf = (resp: any): string =>
 const lastMatch = (text: string, re: RegExp) => text.split("\n").map((l) => l.trim()).filter((l) => re.test(l)).pop()
 const shortCmd = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 200)
 
+/** Whether the command starts this script, not merely names it: `ps aux | grep run_tests.py` and `cat run_tests.py.log` do not. */
+export function invokes(cmd: string, script: string): boolean {
+  const parts: string[] = []
+  let cur = "", quote = ""
+  for (const c of cmd) {
+    if (quote) { if (c === quote) quote = ""; cur += c }
+    else if (c === "'" || c === '"') { quote = c; cur += c }
+    else if (c === ";" || c === "&" || c === "|" || c === "\n" || c === "(") { parts.push(cur); cur = "" }
+    else cur += c
+  }
+  parts.push(cur)
+  const name = script.replace(".", "\\.")
+  const re = new RegExp(`^(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*(?:(?:timeout\\s+\\S+|nohup|time|exec|env)\\s+)*(?:\\S*python[\\d.]*\\s+(?:-\\S+\\s+)*)?["']?[^\\s"']*\\b${name}["']?(?:\\s|$)`)
+  return parts.some((p) => re.test(p.trim()))
+}
+
 /** The update a tool call is worth, or undefined. */
 export function updateFor(tool: string, input: any, resp: any): string | undefined {
   if (tool === "Bash") {
@@ -65,7 +81,7 @@ export function updateFor(tool: string, input: any, resp: any): string | undefin
       const q = cmd.match(/\blog\s+\S+\s+(?:'([^']*)'|"([^"]*)")/)
       return q ? `log: ${shortCmd(q[1] ?? q[2])}` : undefined
     }
-    if (/\brun_tests\.py\b/.test(cmd)) {
+    if (invokes(cmd, "run_tests.py")) {
       const s = lastMatch(out, /^passed \d+\s+failed \d+/)
       if (s) return `suite: ${s}`
       if (/\s--(?:help|print-cmd|selftest)\b|\s-h\b/.test(cmd)) return undefined
@@ -73,7 +89,7 @@ export function updateFor(tool: string, input: any, resp: any): string | undefin
       if (/\s--detach\b/.test(cmd) || /running in background|moved to the background/i.test(out) || (resp && typeof resp === "object" && (resp.backgroundTaskId || resp.background_task_id))) return "suite started"
       return "suite run finished"
     }
-    if (/\brun_gates\.py\b/.test(cmd)) {
+    if (invokes(cmd, "run_gates.py")) {
       const s = out.split("\n").map((l) => l.trim()).filter(Boolean).pop()
       return s ? `gates: ${shortCmd(s)}` : undefined
     }
@@ -163,13 +179,13 @@ export function stepFor(tool: string, input: any, title: (path: string) => strin
   if (tool !== "Bash") return undefined
   const cmd = String(i.command ?? "")
   const what = typeof i.description === "string" && i.description.trim() ? `: ${i.description.trim().slice(0, 140)}` : ""
-  if (/\brun_tests\.py\b/.test(cmd)) {
+  if (invokes(cmd, "run_tests.py")) {
     if (/\s--(?:help|print-cmd|selftest|digest)\b|\s-h\b/.test(cmd)) return undefined
     if (/\s--wait\b/.test(cmd)) return "Waiting for the test run to finish"
     const names = [...cmd.matchAll(/\s--test[ =](\S+)/g)].map((m) => m[1].replace(/^["']|["']$/g, ""))
     return `Running tests${what}${names.length ? ` (${names.slice(0, 5).join(", ")}${names.length > 5 ? ", …" : ""})` : ""}`
   }
-  if (/\brun_gates\.py\b/.test(cmd)) return `Running the gates${what}`
+  if (invokes(cmd, "run_gates.py")) return `Running the gates${what}`
   if (/\bwait_ci\.py\b/.test(cmd)) return "Waiting for CI on the pull request"
   if (/\bgh\s+pr\s+create\b/.test(cmd)) return "Opening the pull request"
   if (/\bgit\s+push\b/.test(cmd)) return "Pushing the branch"
