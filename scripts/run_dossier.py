@@ -815,7 +815,8 @@ class Runner:
         """Send on what the owner wrote on this run's open questions while the run was not waiting on them. The agent
         may ask and keep working; the runner used to pass a reply on only inside a wait, so a follow-up typed meanwhile
         sat unread. Checked every 20 s; each owner line goes once, in the wait's own form (OWNER FOLLOWUP / ANSWER).
-        A question the run is waiting on is left to the wait."""
+        A question the run is waiting on is left to the wait. A reply from before this run started answers an earlier
+        run: a new agent would take that old "Stop" as an order about its own work, so it is never sent."""
         nowm = time.monotonic()
         if nowm - getattr(self, "_fwdq_checked", 0.0) < float(os.environ.get("ASD_RUNNER_QFWD_EVERY") or 20):
             return False
@@ -849,7 +850,7 @@ class Runner:
                 continue
             last_agent = max((i for i, l in enumerate(lines) if l.get("from") == "agent"), default=0)
             for l in lines[last_agent + 1:]:
-                if l.get("from") != "owner" or str(l.get("ts") or "") <= str(done.get(qid) or ""):
+                if l.get("from") != "owner" or str(l.get("ts") or "") <= str(done.get(qid) or "") or str(l.get("ts") or "") < started:
                     continue
                 if l.get("kind") == "answer":
                     opt = l.get("option") or ""
@@ -2192,6 +2193,23 @@ def selftest() -> int:
         fwd = [m for m in msgs(1) if m.startswith(f"OWNER FOLLOWUP {q41}")]
         check("question reply: sent on mid-run, once, and the run goes on", rc == 0 and len(fwd) == 1 and "what exactly is the problem?" in fwd[0]
               and json.loads(open(qfile(q41)).readline()).get("run") == "repo.W-41")
+
+        # ---- an earlier run's answer on the same dossier is history: a new run never receives it ----
+        os.makedirs(os.path.dirname(qfile("repo.W-42.Q9")), exist_ok=True)
+        with open(qfile("repo.W-42.Q9"), "w") as fh:
+            fh.write(json.dumps({"ts": "2026-01-01T00:00:00Z", "from": "agent", "kind": "question", "text": "failed; retry?", "run": "repo.W-42"}) + "\n")
+            fh.write(json.dumps({"ts": "2026-01-01T00:05:00Z", "from": "owner", "kind": "answer", "text": "Stop", "option": "B"}) + "\n")
+        scenario([{"turns": [[{"ask": 1, "dossier": "W-42", "final": "asked, carrying on with other work"}], [{"final": "RUNNER: DONE"}]]}])
+        env.update(ASD_RUNNER_QFWD_EVERY="0.2", ASD_RUNNER_IDLE="60")
+        p = start("W-42")
+        q42 = "repo.W-42.Q10"
+        until(lambda: os.path.exists(qfile(q42)) and os.path.exists(os.path.join(fdir, "in.1.jsonl")), 20)
+        time.sleep(0.5)
+        owner_line(q42, "followup", "and this one?")
+        rc = p.wait(timeout=60)
+        env.pop("ASD_RUNNER_QFWD_EVERY"); env["ASD_RUNNER_IDLE"] = "1"
+        check("question reply: an earlier run's answer is not sent to a new run, today's still is",
+              rc == 0 and not any("repo.W-42.Q9" in m for m in msgs(1)) and any(m.startswith(f"OWNER FOLLOWUP {q42}") for m in msgs(1)))
 
         # ---- the stub breakpoint: wait (no tokens) until a stub can be built on, then hand it over ----
         st_fake = os.path.join(tmp, "stub_target_fake.py")
