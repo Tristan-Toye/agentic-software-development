@@ -305,6 +305,11 @@ async function rescan(questions: Question[]): Promise<void> {
   if (sig !== lastSig) { lastSig = sig; emitChange("stubs") }
   emitChange("scan")
 }
+/** A run started or resumed from the dashboard: the next scan runs at once and regenerates the report, so a reload shows no stale ▶. */
+export function refreshAfterControl(repo: string): void {
+  lastRun.delete(repo)
+  lastScan = 0
+}
 /** Cached view; a rescan starts in the background when older than 30 s. Answered Q&A is refreshed on every call. */
 export async function getStubs(questions: () => Question[]): Promise<StubsView> {
   if (!inflight && Date.now() - lastScan > 30_000) {

@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, openSync, readdirSync, statSync, watch, writ
 import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
 import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, undecidedDeferred, type Run } from "./runs.ts"
-import { getStubs, openWorkHtml, recordFile } from "./stubs.ts"
+import { getStubs, openWorkHtml, recordFile, refreshAfterControl } from "./stubs.ts"
 import { checkRule, dossierPage, readBlocks, readConversation, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
 import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord, splitSections } from "./timeline.ts"
@@ -678,6 +678,7 @@ export async function handle(req: Request): Promise<Response> {
         : action === "resume" ? ["--command", ctl.command || "work-on", ...(run.runner?.items ? ["--items", run.runner.items] : [])] : []
       const target = runTarget(repo, id, run.runKey, action)
       const r = await runRunner(action === "stop" ? ["stop", target.stop, "--root", root] : action === "fix-deferred" ? [id, "--root", root, "--command", "fix-deferred", ...(items.length ? ["--items", items.join(",")] : [])] : [target.dossier, "--root", root, ...flow])
+      if (r.ok) { refreshAfterControl(repo); void getStubs(() => readAll(DIR)) }
       emitChange("runs")
       return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 500)
     } finally { inflightControl.delete(key) }
