@@ -312,12 +312,14 @@ def enqueue(root: str, dossier: str) -> int:
     with locked(repo):
         q = read_json(queue_path(repo), {}) or {}
         items = q.get("items") or []
-        if not any(i["id"] == dossier for i in items):
+        waiting = any(i["id"] == dossier for i in items)
+        if not waiting:
             items.append({"id": dossier, "ts": now()})
         q["items"], q["root"] = items, root
         write_json(queue_path(repo), q)
         pos = [i["id"] for i in items].index(dossier) + 1
-        set_state(f"{repo}.{dossier}", state="queued", position=pos, error="", prs=[], pid=None)
+        if not waiting:   # one already in the queue keeps its state: the worker may be busy with it
+            set_state(f"{repo}.{dossier}", state="queued", position=pos, error="", prs=[], pid=None)
         worker = q.get("worker")
         if not (worker and alive(worker)):
             log = os.path.join(runs_dir(), f"{repo}.merge-queue.log")
@@ -333,6 +335,21 @@ def enqueue(root: str, dossier: str) -> int:
 def run_live(key: str) -> bool:
     st = read_json(os.path.join(runs_dir(), key + ".runner.json"), {}) or {}
     return st.get("state") in ("running", "waiting", "paused", "queued") and alive(st.get("pid"))
+
+
+QUEUE_RUNS = ("resolve-merge", "after-merge")
+
+
+def still_building(key: str) -> bool:
+    """A live run that is the dossier's own work. A run the merge queue started (`QUEUE_RUNS`) means the stack is already being merged."""
+    st = read_json(os.path.join(runs_dir(), key + ".runner.json"), {}) or {}
+    return run_live(key) and st.get("command") not in QUEUE_RUNS
+
+
+def picked_stacks(ids: list, ready, before: list) -> list:
+    """The stacks an integration merges: those ready now, and those an earlier start of the same integration picked.
+    A restart never drops a stack, whatever it is doing at that moment."""
+    return [i for i, p in ids if i in before or ready(i, p)]
 
 
 def wait_run(key: str, since: str, timeout_s: float) -> str:
@@ -1027,8 +1044,8 @@ def integrate(root: str, branch: str) -> int:
     def ready(i: str, p: dict) -> bool:
         """Every PR of the dossier's stack is out of draft (the queue refuses a stack with a draft in it), and no run is live."""
         chain, _ = chain_of(everything, i)
-        return not any(x.get("isDraft") for x in (chain or [p])) and not run_live(f"{repo}.{i}")
-    finished = [i for i, p in ids if ready(i, p)]
+        return not any(x.get("isDraft") for x in (chain or [p])) and not still_building(f"{repo}.{i}")
+    finished = picked_stacks(ids, ready, (read_json(st_path, {}) or {}).get("finished") or [])
     inflight = [i for i, p in ids if i not in finished]
     state(state="merging", finished=finished, inflight=inflight, error="", root=root, branch=branch)
     line(("Integrating " + branch + ". Merging the finished dossiers first, in order: " + (", ".join(finished) or "none") + "."
@@ -1294,6 +1311,24 @@ print("started")
             os.environ.clear(); os.environ.update(saved_env)
             json.dump(prs3, open(os.path.join(fdir, "prs.json"), "w"))
         check("resume: an integration whose process died is picked up again and still starts /stub", rv.get("state") == "stub", str(rv))
+        saved_env = dict(os.environ)
+        os.environ.update(env)
+        try:
+            for cmd, want in (("resolve-merge", False), ("after-merge", False), ("work-on", True), ("fix-deferred", True)):
+                write_json(os.path.join(rdir, "repo.W-77.runner.json"), {"state": "running", "pid": os.getpid(), "command": cmd})
+                check(f"integrate: a live {cmd} run {'keeps a stack in flight' if want else 'does not put a stack in flight'}", still_building("repo.W-77") is want)
+            os.remove(os.path.join(rdir, "repo.W-77.runner.json"))
+            two = [("W-1", {}), ("W-2", {}), ("W-3", {})]
+            check("integrate: a restart keeps the stacks it picked before, even when one is not ready now", picked_stacks(two, lambda i, p: i == "W-3", ["W-1"]) == ["W-1", "W-3"])
+            write_json(queue_path("repo"), {"items": [{"id": "W-77", "ts": "t"}], "root": root, "worker": os.getpid()})
+            set_state("repo.W-77", state="resolving", position=1, error="", prs=[7], pid=os.getpid())
+            with contextlib.redirect_stdout(io.StringIO()):
+                enqueue(root, "W-77")
+            kept = read_json(os.path.join(rdir, "repo.W-77.merge.json"), {})
+            check("enqueue: a stack already in the queue keeps its state", kept.get("state") == "resolving" and kept.get("prs") == [7], str(kept))
+            write_json(queue_path("repo"), {})
+        finally:
+            os.environ.clear(); os.environ.update(saved_env)
         check("integrate: a dossier not picked waits while the stub's PR is open", not late[0] and "being integrated" in late[1], str(late))
         # ---- non-code PRs into development: a colliding dossier id is renumbered by script, then merged; the stub is untouched ----
         g = lambda *x, cwd=None: subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", *x], cwd=cwd, capture_output=True, text=True)
