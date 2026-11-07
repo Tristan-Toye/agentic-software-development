@@ -9,7 +9,7 @@ import { remindersDue } from "../questions/server.ts"
 import { undecidedDeferred, parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
-import { canIntegrate, readIntegrate, readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
+import { canIntegrate, integrationStopped, markIntegrating, readIntegrate, readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
 import { blockedTarget } from "../claude/permission-denied.ts"
 import { mergeSpawns, inTimeline } from "../questions/timeline.ts"
 import { nextMerges, dossierOfPr } from "../questions/merges.ts"
@@ -253,6 +253,7 @@ check("slack: Status on a thread opener answers in a new message for that run", 
   const run = { repo: "config-harness", id: "W-1", title: "A <title>", state: "running", phase: "4", phaseName: "Fan-out", account: "b", started: T(0), context: 63000, questions: [{ id: "Q1", text: "Pick one" }], updates: ups, link: "http://x/r" }
   const t = runStatusText(run, Date.parse(T(30)))
   check("status: one run's text", t.includes("in progress · Phase 4 · Fan-out · account b") && t.includes("1 running, 2 finished (1 with a gap") && t.includes("Wave one is out.") && !t.includes("More detail") && t.includes("context 63k") && t.includes("❓ *Q1* Pick one") && t.includes("A &lt;title&gt;") && t.includes("⚠ quiet"), t)
+  check("status: a run held for the stub reads queued, not waiting for you", runStatusText({ ...run, state: "waiting", waitingFor: "stub" }, Date.parse(T(30))).includes("queued · waiting for the stub") && runStatusText({ ...run, state: "waiting" }, Date.parse(T(30))).includes("waiting for you"))
   const sb = statusBlocks([run], { repo: "config-harness" }, Date.parse(T(30)))
   check("status: blocks carry a heading, the run and a Refresh button with the scope", sb.blocks[0].text.text.startsWith("*Status — config-harness*") && sb.blocks.at(-1).elements[0].value === "config-harness|" && sb.text.includes("W-1 running"))
   check("status: nothing running says so", JSON.stringify(statusBlocks([], {}, 0).blocks).includes("No dossier is running."))
@@ -329,6 +330,16 @@ check("integrate: a failed integration offers it again, a merged stub never", ca
 check("integrate: not while the stub's run is live", !canIntegrate("integrating", { state: "failed" }, { state: "running" }) && !canIntegrate("accepting", null, { state: "waiting" }))
 writeFileSync(join(udir, "repoB.stub-a.integrate.json"), JSON.stringify({ state: "merging", pid: 12345 }))
 check("integrate: a merging integration whose process is gone reads as failed", readIntegrate("repoB.stub-a", udir, () => false)?.state === "failed" && readIntegrate("repoB.stub-a", udir, () => true)?.state === "merging" && readIntegrate("repoB.none", udir) === null)
+check("integrate: stopped when the merges failed or /stub ended early; not while it works, and not when /stub is done", integrationStopped({ state: "failed" }, null) && integrationStopped({ state: "stub" }, { state: "stopped" }) && integrationStopped({ state: "stub" }, { state: "failed" }) && !integrationStopped({ state: "merging" }, null) && !integrationStopped({ state: "stub" }, { state: "running" }) && !integrationStopped({ state: "stub" }, { state: "done" }) && !integrationStopped(null, null))
+writeFileSync(join(udir, "repoB.stub-b.integrate.json"), JSON.stringify({ state: "failed", error: "red", finished: ["W-1"] }))
+markIntegrating("repoB.stub-b", { pid: process.pid, root: "/r", branch: "stub/b" }, udir)
+{
+  const m = readIntegrate("repoB.stub-b", udir, () => true)
+  check("integrate: a press reads as merging at once, clears the error and keeps what an earlier start picked", m?.state === "merging" && m?.error === "" && (m as any)?.finished?.[0] === "W-1" && !canIntegrate("integrating", m, null))
+}
+writeFileSync(join(udir, "repoB.W-70.runner.json"), JSON.stringify({ state: "waiting", pid: 1, questions: [] }))
+writeFileSync(join(udir, "repoB.W-71.runner.json"), JSON.stringify({ state: "waiting", pid: 1, questions: ["repoB.W-71.Q1"] }))
+check("runstore: a run waiting with no question waits for the stub; with one, for the owner", readRunner("repoB.W-70", udir, () => true)?.waitingFor === "stub" && readRunner("repoB.W-71", udir, () => true)?.waitingFor === undefined && readRunner("repoB.W-70", udir, () => false)?.waitingFor === undefined)
 check("runstore: summary prefers the Problem section, caps at 300", summaryOf("---\nid: A\n---\n# A\nIntro line.\n\n## Problem\nThe cache\nis stale. More.\n\n## Approach\nx") === "The cache is stale. More." && summaryOf("---\nid: A\n---\n# T\n\nFirst para\nwraps.\n\nSecond.") === "First para wraps." && summaryOf("# T\n" + "z".repeat(400)).length === 300)
 check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n```\n<script>x</script>\n```\n| a | b |").includes("&lt;b&gt;") && !renderMarkdown("<script>alert(1)</script>").includes("<script>") && renderMarkdown("- a\n- b").includes("<li>b</li>"))
 {
