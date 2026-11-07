@@ -904,7 +904,7 @@ function stubView(repo, branch) {
   if (ig) { const IL = { merging: 'merging the finished dossiers', stub: '/stub runs', failed: 'integration stopped' }; cs.push(h('span', { title: ig.error || ig.note || '' }, [chip(IL[ig.state] || ig.state, ig.state === 'failed' ? 'blocked' : 'pending')])); }
   if (ig && ig.state === 'merging') { const hold = holdsChip(repo, ig.finished || []); if (hold) cs.push(hold); }
   const liveRun = rn && ['running', 'waiting', 'paused', 'queued'].includes(rn.state);
-  if (s.state === 'accepting' && !liveRun && !(ig && ig.state === 'merging')) ctl.push(integrateBtn(repo, branch));
+  if ((s.state === 'accepting' || (s.state === 'integrating' && ig && ig.state === 'failed')) && !liveRun && !(ig && ig.state === 'merging')) ctl.push(integrateBtn(repo, branch));
   if (liveRun) ctl.push(h('button', { class: 'btn', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'stop', 'data-repo': repo, 'data-branch': branch }, ['Stop']));
   else if (rn && ['stopped', 'failed'].includes(rn.state)) ctl.push(h('button', { class: 'btn', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'resume', 'data-repo': repo, 'data-branch': branch }, ['Resume /stub']));
   const err = (S.ctl[repo + '/' + branch + ':integrate'] || {}).err || (S.ctl[repo + '/' + branch + ':run'] || {}).err;
