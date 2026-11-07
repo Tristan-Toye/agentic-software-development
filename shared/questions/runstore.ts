@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 export type Update = { ts: string; kind: "runner" | "stage" | "update"; text: string; stage?: string; state?: string; auto?: boolean; event?: string; status?: string; agent_id?: string }
-export type RunnerState = { state: "running" | "waiting" | "paused" | "queued" | "done" | "failed" | "stopped"; stage: string; pid: number; started: string; root: string; account?: string; resumesAt?: string; command?: string; session?: string; items?: string }
+export type RunnerState = { state: "running" | "waiting" | "paused" | "queued" | "done" | "failed" | "stopped"; waitingFor?: "stub"; stage: string; pid: number; started: string; root: string; account?: string; resumesAt?: string; command?: string; session?: string; items?: string }
 
 export const runsDir = (): string => process.env.ASD_RUNS_DIR || join(homedir(), ".agentic", "runs")
 
@@ -17,6 +17,31 @@ export function readIntegrate(key: string, dir = runsDir(), alive: (pid: number)
     if (j?.state === "merging" && j.pid && !alive(Number(j.pid))) return { ...j, state: "failed", error: "the integration stopped before the merges were done; press Integrate again" }
     return j
   } catch { return null }
+}
+
+/** Integrate was just pressed: reads as merging at once, before the process it started has written anything. What an earlier start picked stays. */
+export function markIntegrating(key: string, fields: { pid: number; root: string; branch: string }, dir = runsDir()): void {
+  const path = join(dir, `${key}.integrate.json`)
+  let cur: Record<string, unknown> = {}
+  try { cur = JSON.parse(readFileSync(path, "utf8")) } catch { /* the first integration */ }
+  const tmp = `${path}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify({ ...cur, ...fields, state: "merging", error: "", ts: new Date().toISOString().replace(/\.\d+Z$/, "Z") }))
+  renameSync(tmp, path)
+}
+
+/** The stub's PR is open, but nothing is working on it: its merges failed, or its /stub run ended without finishing. */
+export function integrationStopped(integrate: { state: string } | null, runner: { state: string } | null): boolean {
+  return integrate?.state === "failed" || (integrate?.state === "stub" && !!runner && ["stopped", "failed"].includes(runner.state))
+}
+
+/** What a stub whose PR is open is actually doing, in words for its card and page. */
+export function integrationPhase(integrate: { state: string } | null, runner: { state: string } | null): string {
+  if (integrationStopped(integrate, runner)) return "integration stopped"
+  if (integrate?.state === "merging") return "merging dossiers into stub"
+  if (runner && ["running", "waiting", "paused", "queued"].includes(runner.state)) return "validating stub"
+  if (integrate?.state === "merged") return "merged into development"
+  if (runner?.state === "done") return "validation finished · your merge"
+  return "integrating"
 }
 
 /** Whether Integrate is offered, on the stub's card and on its page: an open stub, or one whose integration failed and can be retried. Never while its merges or its /stub run are going. */
@@ -52,7 +77,9 @@ export function readRunner(key: string, dir = runsDir(), alive: (pid: number) =>
     const j = JSON.parse(readFileSync(join(dir, `${key}.runner.json`), "utf8"))
     let state = ["running", "waiting", "paused", "queued", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
     if ((state === "running" || state === "waiting" || state === "paused" || state === "queued") && !alive(Number(j.pid))) state = "stopped"
-    return { state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "", ...(typeof j.account === "string" ? { account: j.account } : {}), ...(typeof j.resumes_at === "string" ? { resumesAt: j.resumes_at } : {}), ...(typeof j.command === "string" ? { command: j.command } : {}), ...(typeof j.session === "string" && j.session ? { session: j.session } : {}), ...(typeof j.items === "string" && j.items ? { items: j.items } : {}) }
+    // A run that waits with no question is waiting for the stub being integrated (`wait_for_stub`), not for the owner.
+    const waitingFor = state === "waiting" && Array.isArray(j.questions) && j.questions.length === 0 ? { waitingFor: "stub" as const } : {}
+    return { ...waitingFor, state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "", ...(typeof j.account === "string" ? { account: j.account } : {}), ...(typeof j.resumes_at === "string" ? { resumesAt: j.resumes_at } : {}), ...(typeof j.command === "string" ? { command: j.command } : {}), ...(typeof j.session === "string" && j.session ? { session: j.session } : {}), ...(typeof j.items === "string" && j.items ? { items: j.items } : {}) }
   } catch { return null }
 }
 /** A finished run's last reply and the owner's chat with its session (`run_dossier.py chat`). */

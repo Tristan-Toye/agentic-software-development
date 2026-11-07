@@ -5,7 +5,7 @@ import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSid
 import { PAGE } from "./page.ts"
 import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, undecidedDeferred, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile, refreshAfterControl } from "./stubs.ts"
-import { canIntegrate, checkRule, dossierPage, readBlocks, readConversation, readIntegrate, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
+import { canIntegrate, checkRule, dossierPage, integrationPhase, integrationStopped, markIntegrating, readBlocks, readConversation, readIntegrate, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
 import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord, splitSections } from "./timeline.ts"
 import { runRunner, runTarget, runnerScript } from "./controls.ts"
@@ -250,6 +250,7 @@ function statusRun(r: Run): StatusRun {
   const key = `${r.repo}.${r.id}`
   const questions = r.questions.map((id) => ({ id, text: readQuestion(DIR, id)?.text ?? "" }))
   return {
+    ...(r.runner?.waitingFor ? { waitingFor: r.runner.waitingFor } : {}),
     repo: r.repo, id: r.id, title: r.title, state: r.runner?.state ?? (r.running ? "running" : ""),
     phase: r.phase, phaseName: r.phaseName, account: r.runner?.account, started: r.runner?.started,
     resumesAt: r.runner?.resumesAt, context: r.session?.context || undefined, questions,
@@ -377,7 +378,9 @@ export async function handle(req: Request): Promise<Response> {
     const view = await getStubs(() => readAll(DIR))
     return json({ ...view, repos: view.repos.map((r) => ({ ...r, stubs: r.stubs.map((s) => {
       const key = `${r.repo}.${s.branch.replace(/\//g, "-")}`
-      return { ...s, canIntegrate: canIntegrate(s.state, readIntegrate(key), readRunner(key)) }
+      const integrate = readIntegrate(key), runner = readRunner(key)
+      const stopped = s.state === "integrating" && integrationStopped(integrate, runner)
+      return { ...s, canIntegrate: canIntegrate(s.state, integrate, runner), stopped, stoppedWhy: stopped ? integrate?.error ?? "" : "", ...(s.state === "integrating" ? { phase: integrationPhase(integrate, runner) } : {}) }
     }) })) })
   }
   const ow = path.match(/^\/open-work\/([\w.-]+)$/)
@@ -456,7 +459,9 @@ export async function handle(req: Request): Promise<Response> {
     const slug = stub.branch.replace(/\//g, "-")
     if (b.action === "integrate") {
       const fd = openSync(join(runsDir(), `${rs.repo}.${slug}.integrate.log`), "a")
-      Bun.spawn(["python3", mergeScript(), "--integrate", stub.branch, "--root", rs.main], { stdout: fd, stderr: fd, stdin: "ignore" }).unref()
+      const proc = Bun.spawn(["python3", mergeScript(), "--integrate", stub.branch, "--root", rs.main], { stdout: fd, stderr: fd, stdin: "ignore" })
+      proc.unref()
+      markIntegrating(`${rs.repo}.${slug}`, { pid: proc.pid, root: rs.main, branch: stub.branch })   // so the button goes with this response
       emitChange("stubs")
       return json({ ok: true })
     }
@@ -860,7 +865,7 @@ async function main(): Promise<void> {
   try {
     mkdirSync(runsDir(), { recursive: true })
     let rt: ReturnType<typeof setTimeout> | undefined
-    watch(runsDir(), () => { emitChange("runs"); clearTimeout(rt); rt = setTimeout(() => void scanRunThreads(), 300) })
+    watch(runsDir(), (_e, name) => { emitChange("runs"); if (/\.(integrate|land|runner)\.json$/.test(String(name ?? "")) && /\.(stub|release)-/.test(String(name ?? ""))) emitChange("stubs"); clearTimeout(rt); rt = setTimeout(() => void scanRunThreads(), 300) })
   } catch (e) {
     log(`runs dir not watched: ${(e as Error).message}`)
   }

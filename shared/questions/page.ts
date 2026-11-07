@@ -163,6 +163,8 @@ const kfmt = (n) => n >= 1000 ? Math.round(n / 1000) + 'k' : String(n);
 const TONE = { planned: 'neutral', ready: 'info', building: 'info', review: 'warn', pr: 'warn', done: 'ok', dropped: 'neutral', running: 'info', waiting: 'warn', queued: 'neutral', failed: 'bad', stopped: 'bad', gap: 'warn', 'contract-change': 'warn', unknown: 'neutral',
   accepting: 'info', integrating: 'warn', merged: 'ok', blocked: 'bad', green: 'ok', red: 'bad', pending: 'warn', open: 'warn' };
 function chip(text, kind, extra) { return h('span', { class: 'chip ' + (TONE[kind || text] || '') + (extra ? ' ' + extra : '') }, [text]); }
+/* A stub's PR being open says nothing about whether anything is working on it. */
+function stubChip(s) { return s.stopped ? h('span', { title: s.stoppedWhy || 'Nothing is working on it. Integrate or Resume /stub picks it up again.' }, [chip('integration stopped', 'blocked')]) : chip(s.phase || s.state, s.state); }
 function prChip(pr) {
   const tone = pr.red ? 'red' : pr.pending ? 'pending' : pr.green ? 'green' : 'neutral';
   const a = h('a', { class: 'chip act ' + (TONE[tone] || ''), href: pr.url, target: '_blank', rel: 'noopener', title: 'checks: ' + pr.green + ' green, ' + pr.red + ' red, ' + pr.pending + ' pending' }, [h('span', { class: 'dot' }), 'PR #' + pr.number + ' · ' + pr.green + '/' + pr.red + '/' + pr.pending]);
@@ -212,7 +214,9 @@ function stageText(r) {
 }
 /* The run's state in plain words, no "runner" jargon. */
 const RUN_STATE = { running: 'in progress', waiting: 'waiting for you', paused: 'paused · usage limit', queued: 'queued · waiting for a slot', stopped: 'stopped', failed: 'failed', done: 'done' };
-const runChip = (st) => chip(RUN_STATE[st] || st, st);
+const waitsForStub = (rn) => !!rn && rn.state === 'waiting' && rn.waitingFor === 'stub';
+/* A runner's state, or just a state's name. A run held for the stub is not waiting for you. */
+const runChip = (x) => { const st = (x && x.state) || x; return waitsForStub(x) ? chip('queued · waiting for the stub', 'queued') : chip(RUN_STATE[st] || st, st); };
 function itemMode(run) { if (R.forceDossier) return 'dossier'; return run.view === 'run' ? 'run' : 'dossier'; }
 function newestStub(repo) { const r = S.stubs.repos.find(x => x.repo === repo); return r && r.stubs.length ? r.stubs[0] : null; }
 const doneKey = (r) => (r.updated || '') + r.id;
@@ -342,7 +346,7 @@ function runningView() {
   const working = live.filter(r => r.runner.state === 'running').length;
   const rows = live.sort((a, b) => (a.repo + a.id).localeCompare(b.repo + b.id)).map(r => {
     const last = r.updates && r.updates[0]; const nq = openQs(r).length;
-    const right = [runChip(r.runner.state)];
+    const right = [runChip(r.runner)];
     if (r.runner.account) right.push(chip('account ' + r.runner.account, 'neutral'));
     if (r.agents && r.agents.running) right.push(h('span', { class: 'chip fixing' }, [h('span', { class: 'dot info live' }), r.agents.running + ' agent' + (r.agents.running === 1 ? '' : 's')]));
     if (r.session && r.session.context && r.runner.state === 'running') right.push(chip('context ' + kfmt(r.session.context), 'neutral'));
@@ -460,8 +464,8 @@ function stubRow(repo, id, o) {
     const CMD = { 'work-on': stageText(r) || 'building', plan: 'planning', 'fix-deferred': 'fixing deferred issues', 'resolve-merge': 'resolving merge conflicts', 'after-merge': 'cleaning up after the merge', stub: 'integrating' };
     const MQ = { waiting: 'merge waits for its run', resolving: 'resolving merge conflicts', merging: 'merging', cleanup: 'merged · cleaning up' };
     let what = m && MQ[m.state] ? MQ[m.state] : rn ? (CMD[rn.command] || rn.command || 'working') : (stageText(r) || 'working');
-    if (rn && rn.state === 'waiting') what += ' · waiting for you'; else if (rn && rn.state === 'paused') what += ' · paused (usage limit)'; else if (rn && rn.state === 'queued') what += ' · queued for a slot';
-    right.push(h('span', { class: 'chip ' + (rn && rn.state === 'waiting' ? 'warn' : 'fixing'), title: (r && r.updates && r.updates[0] ? r.updates[0].text.slice(0, 200) : '') }, [h('span', { class: 'dot info live' }), what]));
+    if (waitsForStub(rn)) what = 'queued · waiting for the stub'; else if (rn && rn.state === 'waiting') what += ' · waiting for you'; else if (rn && rn.state === 'paused') what += ' · paused (usage limit)'; else if (rn && rn.state === 'queued') what += ' · queued for a slot';
+    right.push(h('span', { class: 'chip ' + (rn && rn.state === 'waiting' && !waitsForStub(rn) ? 'warn' : 'fixing'), title: (r && r.updates && r.updates[0] ? r.updates[0].text.slice(0, 200) : '') }, [h('span', { class: 'dot info live' }), what]));
   } else if (r) {
     const rn = r.runner;
     if (r.merge && r.merge.state === 'queued') right.push(chip('in the merge queue' + (r.merge.position ? ' · #' + r.merge.position : ''), 'pending'));
@@ -505,7 +509,7 @@ async function stubCtl(btn) {
   S.ctl[k] = st.err ? { err: st.err } : {}; await load(['stubs', 'runs']); if (R.kind === 'stub') loadDetail();
 }
 function stubTree(repo, s) {
-  const cs = [chip(s.state)]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
+  const cs = [stubChip(s)]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
   // Two groups only: Working (a live run of any kind: building, planning, fixing deferred items, resolving a merge,
   // cleaning up, or queued for a slot) and Not working (nothing runs: a PR waiting for your merge, stopped, failed, or
   // not started). Merged dossiers fold away below.
@@ -597,7 +601,7 @@ function repoView(repo) {
 function onOpenStub(r) { return openStubs(r.repo).some(s => (s.members || []).some(m => m.id === r.id && !m.noPr)); }
 function header(r, mode) {
   const nq = openQs(r); const cs = [chip(r.status)];
-  if (r.runner && r.runner.state !== 'done') cs.push(runChip(r.runner.state));
+  if (r.runner && r.runner.state !== 'done') cs.push(runChip(r.runner));
   const st = stageText(r); if (st) cs.push(chip(st, 'neutral'));
   if (r.session && r.session.context) cs.push(h('span', { title: 'Tokens in the orchestrator\'s context right now. It compacts at 200k, so this falls back after each compaction and each new stage.' }, [chip('context ' + kfmt(r.session.context) + ' / 200k', 'neutral')]));
   if (r.pr) cs.push(prChip(r.pr)); if (r.jira && r.jira !== 'null') cs.push(chip(r.jira, 'neutral'));
@@ -665,7 +669,7 @@ function nowView(d, runner, withStepper) {
   kids.push(h('div', { class: 'lbl' }, ['Now']));
   const head = [h('span', {}, [n.phase || 'Starting — no phase reached yet'])];
   if (n.since && Date.parse(n.since)) head.push(h('span', { class: 'chip' }, ['in this phase for ' + dur(Date.now() - Date.parse(n.since))]));
-  if (runner) head.push(runChip(runner.state));
+  if (runner) head.push(runChip(runner));
   kids.push(h('div', { class: 'ph1' }, head));
   if (withStepper) kids.push(stepper(n.step, d.phaseNames));
   if (n.doing) kids.push(h('div', { class: 'doing' }, [icon(n.doing.kind), h('div', {}, [h('div', { class: 'tx' }, [n.doing.text.split('\n')[0]]), h('div', { class: 'small mut' }, [when(n.doing.ts)])])]));
@@ -756,7 +760,7 @@ function deferredProgress(r, d) {
   const parts = [['fixed', n('fixed'), 'ok'], ['being fixed', n('fixing'), 'acc'], ['to its own dossier', n('dossier'), 'warn'], ['dropped', n('deprecated'), 'mut'], ['left open', df.items.filter(i => i.state === 'open' && i.keptOpen).length, 'mut2'], ['not tackled', df.items.filter(i => i.state === 'open' && !i.keptOpen).length, 'mut2']];
   const total = df.items.length; const nq = openQs(r).length;
   const head = [h('span', { class: 'kind' }, [live ? 'Fixing deferred issues' : 'Deferred issues · after the fix run']), live ? h('span', { class: 'dot info live' }) : null];
-  if (live) head.push(runChip(r.runner.state)); else if (r.runner && r.runner.command === 'fix-deferred' && r.runner.state !== 'done') head.push(runChip(r.runner.state));
+  if (live) head.push(runChip(r.runner)); else if (r.runner && r.runner.command === 'fix-deferred' && r.runner.state !== 'done') head.push(runChip(r.runner));
   if (df.pr) head.push(h('a', { class: 'chip act', href: df.pr, target: '_blank', rel: 'noopener' }, ['stacked PR ' + prNum(df.pr)]));
   else if (df.branch) head.push(chip('branch ' + df.branch, 'neutral'));
   if (nq) head.push(h('a', { class: 'chip warn', href: '/questions' }, ['? ' + nq + ' waiting for you']));
@@ -890,7 +894,7 @@ function stubView(repo, branch) {
   const rr = S.stubs.repos.find(x => x.repo === repo); const s = rr && rr.stubs.find(x => x.branch === branch);
   if (!s) return h('div', {}, [h('h1', {}, [branch]), h('div', { class: 'empty' }, [S.loaded ? 'No such stub.' : 'Loading…'])]);
   const d = S.detail && S.detail.url === detailUrl() ? S.detail.data : null;
-  const cs = [chip(s.state), chip('cut ' + s.cut, 'neutral')]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
+  const cs = [stubChip(s), chip('cut ' + s.cut, 'neutral')]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
   const impl = s.dossiers.length ? h('div', { class: 'mini' }, s.dossiers.map(x => h('div', { class: 'card', 'data-k': 'i:' + x.id }, [
     h('a', { class: 'stretch title', href: hrefItem(x.repo || repo, x.id) }, [h('span', { class: 'id' }, [x.id + ' ']), x.title]), h('div', { class: 'chips' }, [chip(x.status || '?')])]))) : h('div', { class: 'empty' }, ['No dossier is implemented on this stub yet.']);
   const key = repo + '/' + branch; const tab = S.tab[key] || 'timeline'; const body = [];
@@ -900,8 +904,7 @@ function stubView(repo, branch) {
   else { body.push(nowView(d, d.runner, !!(d.runner && ['running', 'waiting', 'paused', 'queued'].includes(d.runner.state)))); body.push(groupsView(d.groups, key, 'No updates yet — the agent posts here as the stub progresses')); }
   // The stub's own run, like a dossier's: Integrate (merge queue, then /stub), its state, Stop and Resume.
   const rn = d && d.runner; const ig = d && d.integrate; const ctl = [];
-  if (rn && rn.state !== 'done') cs.push(runChip(rn.state));
-  if (ig) { const IL = { merging: 'merging the finished dossiers', stub: '/stub runs', failed: 'integration stopped' }; cs.push(h('span', { title: ig.error || ig.note || '' }, [chip(IL[ig.state] || ig.state, ig.state === 'failed' ? 'blocked' : 'pending')])); }
+  if (rn && rn.state !== 'done') cs.push(runChip(rn));
   if (ig && ig.state === 'merging') { const hold = holdsChip(repo, ig.finished || []); if (hold) cs.push(hold); }
   if (d && d.land && d.land.state === 'waiting') cs.push(h('span', { title: (d.land.reasons || []).join('\n') }, [chip('auto-merge is holding it', 'pending')]));
   const liveRun = rn && ['running', 'waiting', 'paused', 'queued'].includes(rn.state);
