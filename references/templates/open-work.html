@@ -350,7 +350,7 @@ button.play:disabled { opacity: .6; cursor: default; }
 .dg-play path { fill: var(--accent); }
 .dg-play:hover circle, .dg-play.armed circle { fill: var(--accent); }
 .dg-play:hover path, .dg-play.armed path { fill: var(--plane); }
-.dg-play.started circle { fill: var(--stage-done); stroke: var(--stage-done); }
+.dg-play.busy { opacity: .5; cursor: default; }
 #run-toast { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: 80%; padding: 8px 14px; border-radius: 10px; background: var(--surface); color: var(--ink); border: 1px solid var(--border); box-shadow: var(--shadow); font-size: 13px; opacity: 0; transition: opacity .2s; z-index: 50; pointer-events: none; }
 #run-toast.bad { border-color: var(--status-serious); }
 .dg-node.stub rect { stroke-dasharray: 4 3; }
@@ -454,8 +454,9 @@ const REPO = (LINK_BASE.match(/^\/repo\/([^/?#]+)/) || [])[1] || "";
 /* The ▶'s action: the dashboard passes each dossier's live control (start, or
    resume after a stopped or failed run) from the runner state; without it, a
    ready dossier with every blocker done can start. */
+const STARTED = new Set();   // started from this page: no ▶ until the report regenerates from the runner state
 function runAction(d) {
-  if (!REPO || !d || d.stub) return null;
+  if (!REPO || !d || d.stub || STARTED.has(d.id)) return null;
   if (DATA.run_controls) return DATA.run_controls[d.id] || null;
   return d.status === "ready" && (d.blocked_by || []).every(b => BY_ID[b]?.status === "done") ? "start" : null;
 }
@@ -479,20 +480,30 @@ function armStart(id, setState, action = "start") {
   fetch(`/api/runs/${encodeURIComponent(REPO)}/${encodeURIComponent(id)}/${action}`, { method: "POST" })
     .then(r => r.json().then(j => ({ ok: r.ok, j })))
     .then(({ ok, j }) => {
-      setState(ok ? "started" : "idle");
+      if (ok) dropPlay(id); else setState("idle");
       toast(ok ? `${id} ${action === "resume" ? "resumed" : "started"} — ${String(j.output || "").trim().split("\n").pop()}` : `${id} not ${action === "resume" ? "resumed" : "started"}: ${j.error || j.output || "error"}`, !ok);
     })
     .catch(e => { setState("idle"); toast(`${id} not started: ${e}`, true); });
+}
+/* A started dossier has no ▶ any more, wherever it is drawn: graph node, chip or flight plan row. */
+function dropPlay(id) {
+  STARTED.add(id);
+  document.querySelectorAll("[data-run-id]").forEach(n => {
+    if (n.dataset.runId !== id) return;
+    n.closest(".fp-row")?.classList.remove("has-play");
+    n.remove();
+  });
 }
 /* An HTML ▶ button (Independent chips, flight plan rows). */
 function playButton(d) {
   const act = runAction(d) || "start";
   const b = el("button", "play");
   b.type = "button";
+  b.dataset.runId = d.id;
   const set = st => {
     b.dataset.state = st;
-    b.textContent = st === "armed" ? (act === "resume" ? "resume?" : "start?") : st === "busy" ? "…" : st === "started" ? "✓" : act === "resume" ? "↻" : "▶";
-    b.disabled = st === "busy" || st === "started";
+    b.textContent = st === "armed" ? (act === "resume" ? "resume?" : "start?") : st === "busy" ? "…" : act === "resume" ? "↻" : "▶";
+    b.disabled = st === "busy";
   };
   set("idle");
   b.title = act === "resume" ? `Resume ${d.id} from its checkpoints` : `Start /work-on ${d.id} in the background`;
@@ -1369,12 +1380,13 @@ function depGraph(ids, edges, nodes) {
     bindTip(g, () => `${d.label || d.id} — ${d.title}  ·  ${d.stub ? "display-only stub" : d.status}`);
     if (canStart(d)) {
       const pb = svgEl("g", { class: "dg-play", transform: `translate(${PW - 16},16)`, role: "button", tabindex: "0" });
+      pb.dataset.runId = d.id;
       pb.setAttribute("aria-label", `Start ${d.id}`);
       pb.append(svgEl("circle", { r: 9 }), svgEl("path", { d: "M-3,-4.5 L5,0 L-3,4.5 Z" }));
       const act = runAction(d);
       const tip = svgEl("title", {}); tip.textContent = act === "resume" ? `Resume ${d.id} from its checkpoints (click twice)` : `Start /work-on ${d.id} in the background (click twice)`; pb.append(tip);
-      const set = st => { pb.classList.toggle("armed", st === "armed"); pb.classList.toggle("started", st === "started"); tip.textContent = st === "armed" ? "Click again to start" : st === "started" ? "Started" : tip.textContent; };
-      const go = e => { e.preventDefault(); e.stopPropagation(); if (!pb.classList.contains("started")) armStart(d.id, set, act); };
+      const set = st => { pb.classList.toggle("armed", st === "armed"); pb.classList.toggle("busy", st === "busy"); tip.textContent = st === "armed" ? "Click again to start" : tip.textContent; };
+      const go = e => { e.preventDefault(); e.stopPropagation(); if (!pb.classList.contains("busy")) armStart(d.id, set, act); };
       pb.addEventListener("click", go);
       pb.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") go(e); });
       g.append(pb);
