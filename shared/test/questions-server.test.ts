@@ -683,6 +683,7 @@ try {
     check("server: /api/stubs offers Integrate from the integration file at once, without a rescan", s0.state === "accepting" && offered === true && during === false, JSON.stringify({ state: s0.state, offered, during }))
   }
   const rpage = await (await fetch(`${base}/repo/repoC`)).text()
+  check("server: every step of the merge queue that needs no owner has its own label", ["fixing: 'merge queue", "rerunning: 'merge queue", "resolving: 'merge queue"].every((x) => rpage.includes(x)))
   check("server: the repo page is two columns (report left, stub tree right, sticky, stacked under 1000px)", rpage.includes("grid-template-columns:minmax(0,1fr) 360px") && rpage.includes("position:sticky") && rpage.includes("max-width:1000px") && rpage.includes("function sideColumn") && rpage.includes("Merged stubs") && !rpage.includes("function liveCard") && !rpage.includes("function stubCard") && !rpage.includes("'Stubs', stubs.length"))
   const gr = await fetch(`${base}/repo/repoC/graph`, { redirect: "manual" })
   check("server: /repo/<r>/graph redirects to the repo page", gr.status === 302 && gr.headers.get("location") === "/repo/repoC")
