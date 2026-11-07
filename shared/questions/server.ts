@@ -440,7 +440,9 @@ export async function handle(req: Request): Promise<Response> {
     const runner = readRunner(key)
     const now = nowPanel(entries, groups, { runner: runner?.state ?? "", waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: "" })
     const integrate = readIntegrate(key)
-    return json({ repo, stub, key, entries, groups, activity, now, runner, integrate, record: recordEntries, empty: entries.every((e) => e.type === "boundary"), hasRecord: !!file })
+    let land: any = null
+    try { land = JSON.parse(readFileSync(join(runsDir(), `${key}.land.json`), "utf8")) } catch { /* the scripted merge has not looked at it */ }
+    return json({ repo, stub, key, entries, groups, activity, now, runner, integrate, land, record: recordEntries, empty: entries.every((e) => e.type === "boundary"), hasRecord: !!file })
   }
   // Integrate a stub: its finished dossiers through the merge queue (FIFO), then /stub on the runner; and Stop/Resume of
   // that /stub run. POST {repo, branch, action: integrate|stop|resume}.

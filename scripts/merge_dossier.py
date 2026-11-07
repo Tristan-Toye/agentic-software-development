@@ -979,6 +979,9 @@ def revive() -> int:
                                      stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
             write_json(path, {**st, "pid": p.pid, "ts": now()})
             print(f"merge_dossier: restarted the integration of {st['branch']}")
+    # A stub whose /stub run may be finished, in a repository that opted in to the scripted merge.
+    from land_stub import land_all
+    land_all()
     return 0
 
 

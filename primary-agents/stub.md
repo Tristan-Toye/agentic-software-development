@@ -96,8 +96,9 @@ all of it:
    **posts the `local-stack` receipt** on that pull request.
 3. It **spawns implementers and reviewers in worktrees** to fix failures,
    as pull requests into the stub, and **merges those fix pull requests
-   itself**. Nothing else is merged by this command: the stub pull request
-   into `development` stays the user's, always.
+   itself**. Nothing else is merged by this command: you never merge the stub
+   pull request into `development`. The user does, or `land_stub.py` does when
+   the user turned it on for this repository.
 4. It **iterates until the full stack run is green**: as many
    attribute-inspect-fix rounds as it takes, with no round limit.
 
@@ -258,7 +259,26 @@ mutation, audit, fix rounds; the receipt summary — suites passed, failed,
 skipped with their waivers, build and run seconds, the head it describes;
 the number of fix rounds and what each fixed; any ADR-worthy lesson as a
 `/plan D-n` seed, never an unratified write; and the one act left — the
-user merges. Then close the time-logging session, if one was opened.
+merge into `development`, which is never yours. Then close the time-logging
+session, if one was opened.
+
+End the pull request body with this block, every line at the start of its own
+line, written last and true of the head it names. `land_stub.py` reads it; with
+no block, or any other value, the pull request waits for the user:
+
+```
+STUB-RESULT: green
+STUB-HEAD: <the full SHA of the head the receipt describes>
+STUB-GAPS: <the number of GAP lines left in the Step 6 table>
+STUB-UNRESOLVED: <unresolved attributions and change requests>
+ATTENTION: <one line per thing the user should see before this merges>
+```
+
+`STUB-RESULT` is `green` only when the run ended green; otherwise write `red`.
+Write an `ATTENTION:` line for a waived `SKIP`, an ADR-worthy lesson, a
+contradiction you ruled on, or anything else the record calls surprising. Leave
+them out only when there is nothing to say; a dossier in flight is named in the
+report and needs none.
 
 ## Invariants
 
@@ -268,8 +288,9 @@ user merges. Then close the time-logging session, if one was opened.
   tiers is not green; every `SKIP` is inspected and named.
 - **Attribution is evidence or it is nothing.** An ambiguous failure stops
   the run; it never selects a convenient dossier.
-- **The pipeline merges only its own fix pull requests.** The stub pull
-  request into `development` is the user's, without exception.
+- **The agent merges only its own fix pull requests.** The stub pull request
+  into `development` is the user's, or `land_stub.py`'s where the user turned it
+  on and every check it makes holds; never an agent's.
 - **No direct push to a protected branch** — creation of the stub and
   pull-request merges only; a bypass push needs the user's yes for that
   push, logged.
