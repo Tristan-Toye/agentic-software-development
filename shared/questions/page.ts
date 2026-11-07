@@ -422,11 +422,13 @@ function subItem(repo, id, noPr, done, ttl) {
 /* One dossier on a stub card: id, title, and where it stands, one clean row that scales to many. */
 /* Merge: all of the dossier's open PRs into its stub as one GitHub stack (gh stack merge, no agent), then the
    cleanup run. Merge shows what it would do; Confirm does it. Only for work finished and waiting on a stub. */
+/* The merge queue's steps while it works on a stack. Nothing here needs the owner; a PR that does reads "waiting for your merge". */
+const MERGE_STEP = { waiting: 'merge waits for its run', fixing: 'merge queue · preparing the merge', rerunning: 'merge queue · re-running failed checks', resolving: 'merge queue · the agent is fixing it', merging: 'merging', cleanup: 'merged · cleaning up' };
 function mergeCtl(r) {
   if (!r) return null;
   const k = r.repo + '/' + r.id + ':merge'; const st = S.ctl[k] || {}; const m = r.merge;
   // The merge queue: first in, first out; conflicts go to the dossier's agent, the script merges, then the cleanup runs.
-  const QLABEL = { queued: m && m.position ? 'in the merge queue · #' + m.position : 'in the merge queue', waiting: 'merge waits for its run', resolving: 'resolving merge conflicts', merging: 'merging…', cleanup: 'merged · cleaning up' };
+  const QLABEL = { queued: m && m.position ? 'in the merge queue · #' + m.position : 'in the merge queue', ...MERGE_STEP, merging: 'merging…' };
   if (m && QLABEL[m.state]) return h('span', { class: 'mergectl' }, [h('span', { class: 'chip fixing', title: (m.note || '') + (m.prs && m.prs.length ? ' · ' + m.prs.map(n => '#' + n).join(', ') : '') }, [h('span', { class: 'dot info live' }), QLABEL[m.state]]),
     m.state === 'queued' && m.position > 1 ? h('button', { class: 'btn sm', type: 'button', 'data-act': 'merge-unqueue', 'data-repo': r.repo, 'data-id': r.id }, ['Leave queue']) : null]);
   const live = r.runner && ['running', 'waiting', 'paused', 'queued'].includes(r.runner.state);
@@ -461,9 +463,8 @@ function stubRow(repo, id, o) {
   else if (o.working) {
     // What it is doing: the run's command and state, the merge queue's step, or the build's phase.
     const rn = r && r.runner; const m = r && r.merge;
-    const CMD = { 'work-on': stageText(r) || 'building', plan: 'planning', 'fix-deferred': 'fixing deferred issues', 'resolve-merge': 'resolving merge conflicts', 'after-merge': 'cleaning up after the merge', stub: 'integrating' };
-    const MQ = { waiting: 'merge waits for its run', resolving: 'resolving merge conflicts', merging: 'merging', cleanup: 'merged · cleaning up' };
-    let what = m && MQ[m.state] ? MQ[m.state] : rn ? (CMD[rn.command] || rn.command || 'working') : (stageText(r) || 'working');
+    const CMD = { 'work-on': stageText(r) || 'building', plan: 'planning', 'fix-deferred': 'fixing deferred issues', 'resolve-merge': 'the agent is fixing the merge', 'after-merge': 'cleaning up after the merge', stub: 'integrating' };
+    let what = m && MERGE_STEP[m.state] ? MERGE_STEP[m.state] : rn ? (CMD[rn.command] || rn.command || 'working') : (stageText(r) || 'working');
     if (waitsForStub(rn)) what = 'queued · waiting for the stub'; else if (rn && rn.state === 'waiting') what += ' · waiting for you'; else if (rn && rn.state === 'paused') what += ' · paused (usage limit)'; else if (rn && rn.state === 'queued') what += ' · queued for a slot';
     right.push(h('span', { class: 'chip ' + (rn && rn.state === 'waiting' && !waitsForStub(rn) ? 'warn' : 'fixing'), title: (r && r.updates && r.updates[0] ? r.updates[0].text.slice(0, 200) : '') }, [h('span', { class: 'dot info live' }), what]));
   } else if (r) {
@@ -517,7 +518,7 @@ function stubTree(repo, s) {
   // A dossier with a runner works when its run is live (or the merge queue is busy with it); only one without a runner
   // falls back to recent session activity (a build run in a terminal).
   const working = (id) => { const r = runOf(id); if (!r) return false;
-    if (r.merge && ['waiting', 'resolving', 'merging', 'cleanup'].includes(r.merge.state)) return true;
+    if (r.merge && MERGE_STEP[r.merge.state]) return true;
     if (r.runner) return ['running', 'waiting', 'paused', 'queued'].includes(r.runner.state);
     return !!(r.session && r.session.state === 'active'); };
   const mem = s.members || [];
