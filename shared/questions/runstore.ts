@@ -34,6 +34,16 @@ export function integrationStopped(integrate: { state: string } | null, runner: 
   return integrate?.state === "failed" || (integrate?.state === "stub" && !!runner && ["stopped", "failed"].includes(runner.state))
 }
 
+/** What a stub whose PR is open is actually doing, in words for its card and page. */
+export function integrationPhase(integrate: { state: string } | null, runner: { state: string } | null): string {
+  if (integrationStopped(integrate, runner)) return "integration stopped"
+  if (integrate?.state === "merging") return "merging dossiers into stub"
+  if (runner && ["running", "waiting", "paused", "queued"].includes(runner.state)) return "validating stub"
+  if (integrate?.state === "merged") return "merged into development"
+  if (runner?.state === "done") return "validation finished · your merge"
+  return "integrating"
+}
+
 /** Whether Integrate is offered, on the stub's card and on its page: an open stub, or one whose integration failed and can be retried. Never while its merges or its /stub run are going. */
 export function canIntegrate(stubState: string, integrate: { state: string } | null, runner: { state: string } | null): boolean {
   if (runner && ["running", "waiting", "paused", "queued"].includes(runner.state)) return false

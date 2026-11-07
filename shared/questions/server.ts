@@ -5,7 +5,7 @@ import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSid
 import { PAGE } from "./page.ts"
 import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, undecidedDeferred, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile, refreshAfterControl } from "./stubs.ts"
-import { canIntegrate, checkRule, dossierPage, integrationStopped, markIntegrating, readBlocks, readConversation, readIntegrate, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
+import { canIntegrate, checkRule, dossierPage, integrationPhase, integrationStopped, markIntegrating, readBlocks, readConversation, readIntegrate, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
 import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord, splitSections } from "./timeline.ts"
 import { runRunner, runTarget, runnerScript } from "./controls.ts"
@@ -380,7 +380,7 @@ export async function handle(req: Request): Promise<Response> {
       const key = `${r.repo}.${s.branch.replace(/\//g, "-")}`
       const integrate = readIntegrate(key), runner = readRunner(key)
       const stopped = s.state === "integrating" && integrationStopped(integrate, runner)
-      return { ...s, canIntegrate: canIntegrate(s.state, integrate, runner), stopped, stoppedWhy: stopped ? integrate?.error ?? "" : "" }
+      return { ...s, canIntegrate: canIntegrate(s.state, integrate, runner), stopped, stoppedWhy: stopped ? integrate?.error ?? "" : "", ...(s.state === "integrating" ? { phase: integrationPhase(integrate, runner) } : {}) }
     }) })) })
   }
   const ow = path.match(/^\/open-work\/([\w.-]+)$/)
