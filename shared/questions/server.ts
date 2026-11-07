@@ -5,7 +5,7 @@ import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSid
 import { PAGE } from "./page.ts"
 import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, undecidedDeferred, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile, refreshAfterControl } from "./stubs.ts"
-import { checkRule, dossierPage, readBlocks, readConversation, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
+import { canIntegrate, checkRule, dossierPage, readBlocks, readConversation, readIntegrate, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
 import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord, splitSections } from "./timeline.ts"
 import { runRunner, runTarget, runnerScript } from "./controls.ts"
@@ -373,7 +373,13 @@ export async function handle(req: Request): Promise<Response> {
     emitChange("runs")
     return json({ ok: true, output: "checking the accounts" })
   }
-  if (req.method === "GET" && path === "/api/stubs") return json(await getStubs(() => readAll(DIR)))
+  if (req.method === "GET" && path === "/api/stubs") {
+    const view = await getStubs(() => readAll(DIR))
+    return json({ ...view, repos: view.repos.map((r) => ({ ...r, stubs: r.stubs.map((s) => {
+      const key = `${r.repo}.${s.branch.replace(/\//g, "-")}`
+      return { ...s, canIntegrate: canIntegrate(s.state, readIntegrate(key), readRunner(key)) }
+    }) })) })
+  }
   const ow = path.match(/^\/open-work\/([\w.-]+)$/)
   if (req.method === "GET" && ow) {
     const html = await openWorkHtml(ow[1], readAll(DIR))
@@ -433,9 +439,7 @@ export async function handle(req: Request): Promise<Response> {
     const activity: unknown[] = []
     const runner = readRunner(key)
     const now = nowPanel(entries, groups, { runner: runner?.state ?? "", waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: "" })
-    let integrate: any = null
-    try { integrate = JSON.parse(readFileSync(join(runsDir(), `${key}.integrate.json`), "utf8")) } catch { /* never integrated */ }
-    if (integrate?.state === "merging" && integrate.pid) { try { process.kill(Number(integrate.pid), 0) } catch { integrate = { ...integrate, state: "failed", error: "the integration stopped before the merges were done; press Integrate again" } } }
+    const integrate = readIntegrate(key)
     return json({ repo, stub, key, entries, groups, activity, now, runner, integrate, record: recordEntries, empty: entries.every((e) => e.type === "boundary"), hasRecord: !!file })
   }
   // Integrate a stub: its finished dossiers through the merge queue (FIFO), then /stub on the runner; and Stop/Resume of

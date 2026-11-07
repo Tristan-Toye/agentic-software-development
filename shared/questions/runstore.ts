@@ -8,6 +8,23 @@ export type RunnerState = { state: "running" | "waiting" | "paused" | "queued" |
 
 export const runsDir = (): string => process.env.ASD_RUNS_DIR || join(homedir(), ".agentic", "runs")
 
+export type IntegrateState = { state: string; pid?: number; error?: string; note?: string; finished?: string[] }
+
+/** The stub's integration file, if it was ever integrated. A merging integration whose process is gone has failed. */
+export function readIntegrate(key: string, dir = runsDir(), alive: (pid: number) => boolean = pidAlive): IntegrateState | null {
+  try {
+    const j = JSON.parse(readFileSync(join(dir, `${key}.integrate.json`), "utf8"))
+    if (j?.state === "merging" && j.pid && !alive(Number(j.pid))) return { ...j, state: "failed", error: "the integration stopped before the merges were done; press Integrate again" }
+    return j
+  } catch { return null }
+}
+
+/** Whether Integrate is offered, on the stub's card and on its page: an open stub, or one whose integration failed and can be retried. Never while its merges or its /stub run are going. */
+export function canIntegrate(stubState: string, integrate: { state: string } | null, runner: { state: string } | null): boolean {
+  if (runner && ["running", "waiting", "paused", "queued"].includes(runner.state)) return false
+  return stubState === "accepting" ? integrate?.state !== "merging" : stubState === "integrating" && integrate?.state === "failed"
+}
+
 /** Updates of `<repo>.<ID>`, newest first, at most `limit`; torn or foreign lines are skipped. */
 export function readUpdates(key: string, dir = runsDir(), limit = 50): Update[] {
   let text = ""

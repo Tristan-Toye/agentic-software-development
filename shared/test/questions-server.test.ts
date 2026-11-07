@@ -9,7 +9,7 @@ import { remindersDue } from "../questions/server.ts"
 import { undecidedDeferred, parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
-import { readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
+import { canIntegrate, readIntegrate, readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
 import { blockedTarget } from "../claude/permission-denied.ts"
 import { mergeSpawns, inTimeline } from "../questions/timeline.ts"
 import { nextMerges, dossierOfPr } from "../questions/merges.ts"
@@ -324,6 +324,11 @@ writeFileSync(join(udir, "repoB.W-7.runner.json"), JSON.stringify({ pid: 4242, s
 check("runstore: a live pid keeps running, a dead pid reads as stopped", readRunner("repoB.W-7", udir, () => true)?.state === "running" && readRunner("repoB.W-7", udir, () => false)?.state === "stopped" && readRunner("none.X", udir) === null)
 writeFileSync(join(udir, "repoB.W-7.runner.json"), JSON.stringify({ pid: 4242, state: "done" }))
 check("runstore: a finished state is kept whatever the pid", readRunner("repoB.W-7", udir, () => false)?.state === "done")
+check("integrate: an open stub offers it, and an integration in progress does not", canIntegrate("accepting", null, null) && !canIntegrate("accepting", { state: "merging" }, null) && !canIntegrate("integrating", { state: "merging" }, null) && !canIntegrate("integrating", { state: "stub" }, null))
+check("integrate: a failed integration offers it again, a merged stub never", canIntegrate("integrating", { state: "failed" }, null) && canIntegrate("integrating", { state: "failed" }, { state: "failed" }) && !canIntegrate("merged", { state: "failed" }, null))
+check("integrate: not while the stub's run is live", !canIntegrate("integrating", { state: "failed" }, { state: "running" }) && !canIntegrate("accepting", null, { state: "waiting" }))
+writeFileSync(join(udir, "repoB.stub-a.integrate.json"), JSON.stringify({ state: "merging", pid: 12345 }))
+check("integrate: a merging integration whose process is gone reads as failed", readIntegrate("repoB.stub-a", udir, () => false)?.state === "failed" && readIntegrate("repoB.stub-a", udir, () => true)?.state === "merging" && readIntegrate("repoB.none", udir) === null)
 check("runstore: summary prefers the Problem section, caps at 300", summaryOf("---\nid: A\n---\n# A\nIntro line.\n\n## Problem\nThe cache\nis stale. More.\n\n## Approach\nx") === "The cache is stale. More." && summaryOf("---\nid: A\n---\n# T\n\nFirst para\nwraps.\n\nSecond.") === "First para wraps." && summaryOf("# T\n" + "z".repeat(400)).length === 300)
 check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n```\n<script>x</script>\n```\n| a | b |").includes("&lt;b&gt;") && !renderMarkdown("<script>alert(1)</script>").includes("<script>") && renderMarkdown("- a\n- b").includes("<li>b</li>"))
 {
@@ -656,6 +661,15 @@ try {
   const owr = await (await fetch(`${base}/open-work/repoC`)).text()
   check("server: the repo page's report is generated with --link-base /repo/<repo>", owr.includes('"link_base": "/repo/repoC"') && owr.includes('data-embed="1"'))
   check("server: /api/stubs carries members per stub", sv.repos.find((x: any) => x.repo === "repoC")?.stubs.every((x: any) => Array.isArray(x.members)) === true)
+  {
+    const stubOf = async () => (await (await fetch(`${base}/api/stubs`)).json()).repos.find((x: any) => x.repo === "repoC").stubs[0]
+    const s0 = await stubOf(), ifile = join(runsDir, `repoC.${s0.branch.replace(/\//g, "-")}.integrate.json`)
+    const offered = s0.canIntegrate
+    writeFileSync(ifile, JSON.stringify({ state: "merging", pid: process.pid }))
+    const during = (await stubOf()).canIntegrate
+    rmSync(ifile)
+    check("server: /api/stubs offers Integrate from the integration file at once, without a rescan", s0.state === "accepting" && offered === true && during === false, JSON.stringify({ state: s0.state, offered, during }))
+  }
   const rpage = await (await fetch(`${base}/repo/repoC`)).text()
   check("server: the repo page is two columns (report left, stub tree right, sticky, stacked under 1000px)", rpage.includes("grid-template-columns:minmax(0,1fr) 360px") && rpage.includes("position:sticky") && rpage.includes("max-width:1000px") && rpage.includes("function sideColumn") && rpage.includes("Merged stubs") && !rpage.includes("function liveCard") && !rpage.includes("function stubCard") && !rpage.includes("'Stubs', stubs.length"))
   const gr = await fetch(`${base}/repo/repoC/graph`, { redirect: "manual" })
