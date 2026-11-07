@@ -1056,7 +1056,7 @@ def integrate(root: str, branch: str) -> int:
     state(state="merging", finished=finished, inflight=inflight, error="", root=root, branch=branch)
     line(("Integrating " + branch + ". Merging the finished dossiers first, in order: " + (", ".join(finished) or "none") + "."
           + (" Still in flight, so they move to the next stub once this one is in development: " + ", ".join(inflight) + "." if inflight else "")
-          + (" Not part of this integration, because no dossier owns them; retarget them to the next stub: " + ", ".join(f"#{p['number']} {p['headRefName']}" for p in others) + "." if others else "")), "update")
+          + (" Not part of this integration, because no dossier owns them: " + ", ".join(f"#{p['number']} {p['headRefName']}" for p in others) + ". A PR that changes only documents can go straight to development; any other goes to the next stub." if others else "")), "update")
     for i in finished:
         with contextlib.redirect_stdout(io.StringIO()):
             enqueue(root, i)

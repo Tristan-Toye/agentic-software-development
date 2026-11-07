@@ -164,7 +164,7 @@ const TONE = { planned: 'neutral', ready: 'info', building: 'info', review: 'war
   accepting: 'info', integrating: 'warn', merged: 'ok', blocked: 'bad', green: 'ok', red: 'bad', pending: 'warn', open: 'warn' };
 function chip(text, kind, extra) { return h('span', { class: 'chip ' + (TONE[kind || text] || '') + (extra ? ' ' + extra : '') }, [text]); }
 /* A stub's PR being open says nothing about whether anything is working on it. */
-function stubChip(s) { return s.stopped ? h('span', { title: s.stoppedWhy || 'Nothing is working on it. Integrate or Resume /stub picks it up again.' }, [chip('integration stopped', 'blocked')]) : chip(s.state); }
+function stubChip(s) { return s.stopped ? h('span', { title: s.stoppedWhy || 'Nothing is working on it. Integrate or Resume /stub picks it up again.' }, [chip('integration stopped', 'blocked')]) : chip(s.phase || s.state, s.state); }
 function prChip(pr) {
   const tone = pr.red ? 'red' : pr.pending ? 'pending' : pr.green ? 'green' : 'neutral';
   const a = h('a', { class: 'chip act ' + (TONE[tone] || ''), href: pr.url, target: '_blank', rel: 'noopener', title: 'checks: ' + pr.green + ' green, ' + pr.red + ' red, ' + pr.pending + ' pending' }, [h('span', { class: 'dot' }), 'PR #' + pr.number + ' · ' + pr.green + '/' + pr.red + '/' + pr.pending]);
@@ -905,7 +905,6 @@ function stubView(repo, branch) {
   // The stub's own run, like a dossier's: Integrate (merge queue, then /stub), its state, Stop and Resume.
   const rn = d && d.runner; const ig = d && d.integrate; const ctl = [];
   if (rn && rn.state !== 'done') cs.push(runChip(rn));
-  if (ig && !s.stopped && s.state === 'integrating') { const IL = { merging: 'merging the finished dossiers', stub: '/stub runs' }; cs.push(h('span', { title: ig.error || ig.note || '' }, [chip(IL[ig.state] || ig.state, 'pending')])); }
   if (ig && ig.state === 'merging') { const hold = holdsChip(repo, ig.finished || []); if (hold) cs.push(hold); }
   const liveRun = rn && ['running', 'waiting', 'paused', 'queued'].includes(rn.state);
   if (s.canIntegrate) ctl.push(integrateBtn(repo, branch));
