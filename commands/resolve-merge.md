@@ -17,7 +17,9 @@ argument-hint: "<dossier ID, e.g. W-128> <PR numbers, bottom to top, e.g. 427,42
 dossier's own pull request first, then the stacked ones on it), or one plan or
 research pull request into development (its dossier's ID, or `PR-<n>` when it
 holds none). The merge queue found at least one of them **conflicting** with
-its base, or with a **check still red** after one re-run of its failed jobs.
+its base, or with a **check still red** after one re-run of its failed jobs;
+when your run ends and the pull requests still fail, the queue starts another
+run, up to three per attempt, so read the failure as it stands now.
 It already renumbered every id the base holds, by script; what reaches you is
 what a script cannot settle. Refuse when a
 listed pull request is not open (`gh pr view <n> --json state,headRefName,baseRefName,mergeable`).

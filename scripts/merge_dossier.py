@@ -408,7 +408,7 @@ def behind(root: str, nums: list[int]) -> list[int]:
 #      so the base is merged into the branch (gh pr update-branch) and its checks run again.
 #   4. Red checks: failed jobs are re-run once (flaky checks), then waited for.
 #   5. What is left (a content conflict, a check still red): the dossier's own agent, a fresh /resolve-merge run under
-#      the dossier's key (a live run of it gets a message instead), then the steps again, once.
+#      the dossier's key (a live run of it gets a message instead), then the steps again, at most AGENT_ROUNDS times.
 
 ID_FILE_RE = re.compile(r"^\.discovery/dossiers/([A-Z][A-Z0-9]*-\d+)-[^/]+\.md$")
 ADR_FILE_RE = re.compile(r"^docs/adr/(\d{4})-[^/]+\.md$")
@@ -569,13 +569,17 @@ def wait_checks(root: str, nums: list[int], timeout_s: float) -> dict[int, str]:
         time.sleep(poll)
 
 
+AGENT_ROUNDS = 3   # /resolve-merge runs one attempt may spend on a stack; its own push can turn up the next failure
+
+
 def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, others: list[str], note, use_agent: bool = True) -> str:
     """Make the PRs mergeable and green, cheapest step first; "" when ready to merge, else why not. Without use_agent
     it stops before waking an agent: a batch that stays red goes back to one PR at a time, where the blame is clear."""
     nums = [p["number"] for p in prs]
     run_timeout = float(os.environ.get("ASD_MERGE_RUN_TIMEOUT") or 4 * 3600)
     check_timeout = float(os.environ.get("ASD_MERGE_CHECK_TIMEOUT") or 3600)
-    agent_used = rerun_used = False
+    agent_rounds = 0
+    rerun_used = False
     updates = 0
     link_conflicts: list[int] = []
 
@@ -682,9 +686,11 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
         # 4. the dossier's agent
         if not use_agent:
             return ("conflicting: " + ", ".join(f"#{n}" for n in bad)) if bad else ("checks red: " + ", ".join(f"#{n}" for n in red))
-        if agent_used:
-            return ("still conflicting: " + ", ".join(f"#{n}" for n in bad)) if bad else ("checks still red: " + ", ".join(f"#{n}" for n in red))
-        agent_used = True
+        if agent_rounds >= AGENT_ROUNDS:
+            rounds = f" after {agent_rounds} agent round{'s' if agent_rounds != 1 else ''}"
+            return ("still conflicting: " + ", ".join(f"#{n}" for n in bad) + rounds) if bad else ("checks still red: " + ", ".join(f"#{n}" for n in red) + rounds)
+        agent_rounds += 1
+        rerun_used = False   # the agent's push is a new head: a flaky job there gets its own re-run before it costs a round
         what = ("conflicts in " + ", ".join(f"#{n}" for n in bad)) if bad else ("red checks on " + ", ".join(f"#{n}" for n in red))
         note("resolving", what + "; the dossier's agent resolves it")
         since = now()
@@ -1230,9 +1236,11 @@ a = sys.argv[1:]; d = os.environ["FAKE_GH_DIR"]; rdir = os.environ["ASD_RUNS_DIR
 dossier, cmd = a[0], a[a.index("--command") + 1]
 open(os.path.join(d, "runs.txt"), "a").write(f"{dossier} {cmd}\n")
 if cmd == "resolve-merge":
-    prs = json.load(open(os.path.join(d, "prs.json")))
-    for p in prs: p["mergeable"] = "MERGEABLE"
-    json.dump(prs, open(os.path.join(d, "prs.json"), "w"))
+    n = open(os.path.join(d, "runs.txt")).read().count("resolve-merge")
+    if n >= int(os.environ.get("FAKE_RESOLVED_AT_ROUND") or 1):
+        prs = json.load(open(os.path.join(d, "prs.json")))
+        for p in prs: p["mergeable"] = "MERGEABLE"; p.pop("bucket", None)
+        json.dump(prs, open(os.path.join(d, "prs.json"), "w"))
 ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 json.dump({"state": "done", "pid": 2 ** 22 + 7, "started": ts, "command": cmd}, open(os.path.join(rdir, "repo." + dossier + ".runner.json"), "w"))
 print("started")
@@ -1265,6 +1273,33 @@ print("started")
         m128 = [i for i, c in enumerate(calls) if c.startswith("stack merge 429")]
         m130 = [i for i, c in enumerate(calls) if c.startswith("pr merge 500")]
         check("queue: the script merges each, W-128 before W-130", bool(m128) and bool(m130) and m128[0] < m130[0], str(calls))
+        # ---- agent rounds: the queue keeps at it, and stops at the limit ----
+        def rounds_scenario(dossier: str, pr: int, resolved_at: int, **fields) -> tuple[list[str], dict]:
+            json.dump([dict(P(pr, f"feat/{dossier}-x", "stub/s"), **(fields or {"mergeable": "CONFLICTING"}))], open(os.path.join(fdir, "prs.json"), "w"))
+            for f in ("runs.txt", "calls.txt"):
+                if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
+            saved = dict(os.environ)
+            os.environ.update(env, ASD_RUNNER_BIN=fr, ASD_MERGE_POLL="0.2", FAKE_RESOLVED_AT_ROUND=str(resolved_at))
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    enqueue(root, dossier)
+                for _ in range(600):
+                    q = read_json(queue_path("repo"), {}) or {}
+                    if not q.get("items") and not (q.get("worker") and alive(q["worker"])):
+                        break
+                    time.sleep(0.1)
+            finally:
+                os.environ.clear(); os.environ.update(saved)
+            made = open(os.path.join(fdir, "runs.txt")).read().split("\n") if os.path.exists(os.path.join(fdir, "runs.txt")) else []
+            return [r for r in made if "resolve-merge" in r], read_json(os.path.join(rdir, f"repo.{dossier}.merge.json"), {}) or {}
+        r3, s3 = rounds_scenario("W-141", 610, 3)
+        check("queue: the third agent round may still resolve it, and the stack merges", len(r3) == 3 and s3.get("state") == "merged", str(r3) + str(s3))
+        r4, s4 = rounds_scenario("W-142", 620, 99)
+        check("queue: three agent rounds is the limit; the stack fails and says so", len(r4) == 3 and s4.get("state") == "failed" and "after 3 agent rounds" in str(s4.get("error")), str(r4) + str(s4))
+        r5, s5 = rounds_scenario("W-143", 630, 2, bucket="fail")
+        check("queue: a check still red after the agent's push gets another round", len(r5) == 2 and s5.get("state") == "merged", str(r5) + str(s5))
+        r6, s6 = rounds_scenario("W-144", 640, 99, bucket="fail")
+        check("queue: red checks stop at the limit too", len(r6) == 3 and s6.get("state") == "failed" and "checks still red: #640 after 3 agent rounds" in str(s6.get("error")), str(r6) + str(s6))
         # ---- integrate: the finished dossiers through the queue, the one in flight left, then /stub ----
         for f in ("runs.txt", "calls.txt"):
             if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
