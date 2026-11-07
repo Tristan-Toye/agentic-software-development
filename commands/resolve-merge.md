@@ -17,7 +17,8 @@ argument-hint: "<dossier ID, e.g. W-128> <PR numbers, bottom to top, e.g. 427,42
 dossier's own pull request first, then the stacked ones on it), or one plan or
 research pull request into development (its dossier's ID, or `PR-<n>` when it
 holds none). The merge queue found at least one of them **conflicting** with
-its base, or with a **check still red** after one re-run of its failed jobs;
+its base, with a **migration number** another migration already has, or with a
+**check still red** after one re-run of its failed jobs;
 when your run ends and the pull requests still fail, the queue starts another
 run, up to three per attempt, so read the failure as it stands now.
 It already renumbered every id the base holds, by script; what reaches you is
@@ -62,6 +63,13 @@ way, after that one is pushed. Then resolve each conflict:
 - When two intents cannot both hold (the same behaviour changed two ways), do
   not choose: ask the owner with both versions and what each one does, and
   wait.
+
+## Step 2a — A migration number already taken
+
+Run `python3 ${PLUGIN_ROOT}/scripts/merge_dossier.py --migration-clashes <top
+head> --base <stub> --root <checkout>`. For each migration it names, this stack
+takes the next number free on the stub: rename the file, update whatever names
+it, and never touch a migration the stub already holds. Then run Step 3.
 
 ## Step 2b — A red check, no conflict
 

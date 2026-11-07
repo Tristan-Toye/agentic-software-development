@@ -275,7 +275,10 @@ restarted server answers at once from them while its first scan runs.
     re-run once; then the dossier's agent (`/resolve-merge`, a fresh run under
     the dossier's key) for a content conflict or a check still red; then the
     script merges. The agent's push can turn up the next failure, so one attempt
-    gets up to three agent rounds. A stack also runs `/after-merge`; a non-code PR does not, and
+    gets up to three agent rounds. A migration whose number the base or the stack
+    already has goes to the agent too, before any check is waited for: a fresh
+    database could not migrate, and CI without a database cannot see it. A stack
+    also runs `/after-merge`; a non-code PR does not, and
     nothing in it touches a stub. An item that still cannot merge is marked
     failed with why, and the queue goes on.
   - **Non-code PRs into development** (repo page, under the stubs): every

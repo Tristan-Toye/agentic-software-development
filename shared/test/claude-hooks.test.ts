@@ -161,12 +161,18 @@ for (const bad of ["", "{", "[]", '{"session_id":"q"}']) {
   check("progress: suite summary", updateFor("Bash", { command: "python3 run_tests.py --log x -- cargo test" }, { stdout: "...\npassed 120  failed 2  ignored 0  (cargo)\n" }) === "suite: passed 120  failed 2  ignored 0  (cargo)")
   check("progress: a detached suite is only started", updateFor("Bash", { command: "python3 run_tests.py --detach --vm v --workdir w -- cargo test" }, { stdout: "pid 1\nlog /x\n" }) === "suite started")
   check("progress: a background suite is only started", updateFor("Bash", { command: "python3 run_tests.py -- cargo test" }, { stdout: "Command running in background with ID: b1" }) === "suite started")
+  for (const c of ["ps aux | grep -E 'run_tests.py|limactl' | head -5", "cat /tmp/x; ls /tmp/run_tests.py.log", "grep -n run_tests.py scripts/a.sh", "pgrep -f run_tests.py"])
+    check(`progress: only naming the script is no suite: ${c}`, updateFor("Bash", { command: c }, { stdout: "x" }) === undefined)
+  for (const c of ["python3 run_tests.py -- cargo test", "cd /r && python3 /p/scripts/run_tests.py --vm v -- x", 'python3 "$P/scripts/run_tests.py" -- x', "ASD=1 timeout 60 python3 -u run_tests.py -- x", "scripts/run_tests.py -- x"])
+    check(`progress: starting the script is a suite: ${c}`, updateFor("Bash", { command: c }, { stdout: "x" }) === "suite run finished")
+  check("progress: a status check beside a real run still counts the run", updateFor("Bash", { command: "ps aux | grep run_gates.py; python3 run_tests.py -- x" }, { stdout: "passed 1  failed 0  ignored 0" }) === "suite: passed 1  failed 0  ignored 0")
   check("progress: run_tests --help is no suite", updateFor("Bash", { command: "python3 run_tests.py --help" }, { stdout: "usage: run_tests.py" }) === undefined)
   {
     const { stepFor } = await import("../claude/progress")
     const t = (p: string) => (p.endsWith("P6.md") ? "Turn waits for the summary" : "")
     const wave = stepFor("Workflow", { name: "agentic-software-development:phase4-wave", args: JSON.stringify([{ agentType: "x:implementer", label: "FIX-P6", payloadPath: "/a/P6.md" }, { agentType: "x:unit-test-author", label: "UT", owned: ["a.rs", "b.rs"] }]) }, t) ?? ""
     check("step: a wave lists its agents as a table", wave.startsWith("Spawning 2 agents (phase4-wave):") && wave.includes("| implementer | FIX-P6 | Turn waits for the summary |") && wave.includes("| unit-test-author | UT | a.rs, b.rs |"), wave)
+    check("step: a status check is not a test run", !String(stepFor("Bash", { command: "ps aux | grep -E 'run_tests.py|x'", description: "Check whether the full stack run is still going" }) ?? "").startsWith("Running tests"))
     check("step: tests, waits, gates, CI", stepFor("Bash", { command: "python3 run_tests.py --vm v -- cargo test -p x", description: "Run the D-1 proving test" }) === "Running tests: Run the D-1 proving test"
       && stepFor("Bash", { command: "python3 run_tests.py --wait /x.log" }) === "Waiting for the test run to finish" && stepFor("Bash", { command: "python3 run_gates.py --list g" }) === "Running the gates"
       && stepFor("Bash", { command: "python3 wait_ci.py 42" }) === "Waiting for CI on the pull request" && stepFor("Bash", { command: "ls" }) === undefined)
