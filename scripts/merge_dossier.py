@@ -506,7 +506,7 @@ def merge_base_in(root: str, head: str, base: str) -> str:
         rc, out = git(wt, "merge", "--no-edit", "--no-ff", f"origin/{base}")
         if rc != 0:
             git(wt, "merge", "--abort")
-            return ""
+            return "conflict"
         rc, out = git(wt, "push", "-q", "origin", f"HEAD:{head}")
         return "" if rc == 0 else "push failed: " + out[-160:]
     finally:
@@ -560,6 +560,28 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
     check_timeout = float(os.environ.get("ASD_MERGE_CHECK_TIMEOUT") or 3600)
     agent_used = rerun_used = False
     updates = 0
+    link_conflicts: list[int] = []
+
+    def link_chain() -> tuple[bool, str]:
+        """Each PR of a stack holds the one below it, or `gh stack merge` refuses the stack: updating the bottom from the
+        stub is not enough. (merged any in, why it could not); a conflict goes to the dossier's agent."""
+        del link_conflicts[:]
+        moved = False
+        for lower, upper in zip(prs, prs[1:]):
+            git(root, "fetch", "-q", "origin", lower["headRefName"], upper["headRefName"])
+            if any(git(root, "rev-parse", "--verify", "-q", f"origin/{x['headRefName']}")[0] != 0 for x in (lower, upper)):
+                continue   # not on origin: nothing to compare, and gh stack merge has the last word
+            if git(root, "merge-base", "--is-ancestor", f"origin/{lower['headRefName']}", f"origin/{upper['headRefName']}")[0] == 0:
+                continue
+            note("fixing", f"updating #{upper['number']} with #{lower['number']}, the pull request below it")
+            why = merge_base_in(root, upper["headRefName"], lower["headRefName"])
+            if why == "conflict":
+                link_conflicts.append(upper["number"])
+            elif why:
+                return False, f"could not update #{upper['number']} with #{lower['number']}: {why}"
+            else:
+                moved = True
+        return moved, ""
 
     def update_behind() -> tuple[bool, str]:
         """(updated any, why it could not). A conflict from the update comes back as CONFLICTING on the next round."""
@@ -577,7 +599,7 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
                 # GitHub can refuse this on a stacked PR: the same merge, by hand.
                 p = next(x for x in prs if x["number"] == n)
                 why = merge_base_in(root, p["headRefName"], p["baseRefName"])
-                if why:
+                if why and why != "conflict":   # a conflict comes back as CONFLICTING on the next round
                     return False, f"could not update #{n}: {out[-120:]}; {why}"
         time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15))   # let GitHub see the push and start the checks
         return True, ""
@@ -597,13 +619,21 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
         bad, err = conflicting(root, nums)
         if err:
             return err
-        # 3. up to date with the base, before spending a wait on checks that would have to run again
+        # 3. up to date with the base, and each PR of a stack holding the one below it, before spending a wait on checks
+        # that would have to run again
         if not bad:
             updated, why = update_behind()
             if why:
                 return why
             if updated:
                 continue
+            linked, why = link_chain()
+            if why:
+                return why
+            if linked:
+                time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15))
+                continue
+            bad = bad + link_conflicts
         # 3. checks (re-run red ones once)
         st = wait_checks(root, nums, check_timeout) if not bad else {}
         red = [n for n, v in st.items() if v == "red"]
@@ -622,7 +652,14 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
                 return why
             if updated:
                 continue
-            return ""
+            linked, why = link_chain()
+            if why:
+                return why
+            if linked:
+                continue
+            if not link_conflicts:
+                return ""
+            bad = list(link_conflicts)
         if pending and not bad and not red:
             return "checks still running after " + str(int(check_timeout / 60)) + " min: " + ", ".join(f"#{n}" for n in pending)
         # 4. the dossier's agent
@@ -674,11 +711,9 @@ def work_one(root: str, dossier: str) -> None:
         return  # merge() recorded "failed" and why
     st = read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}
     nums = st.get("prs") or []
-    since = now()
-    set_state(key, state="cleanup", pid=os.getpid(), note="merged; /after-merge runs")
+    # /after-merge runs beside the queue: it never pushes to the stub, and a question it asks must not hold up the next merge.
     start_run(root, dossier, "after-merge", nums)
-    end = wait_run(key, since, run_timeout)
-    set_state(key, state="merged", pid=None, note=f"merged; cleanup {end}")
+    set_state(key, state="merged", pid=None, note="merged; /after-merge runs")
 
 
 DOC_PATH_RE = re.compile(r"^(\.discovery/|docs/)|\.md$")
@@ -1099,6 +1134,8 @@ sys.exit(3)
 
 
 def selftest() -> int:
+    os.environ.setdefault("ASD_MERGE_NET_TRIES", "2")   # a fixture's unreachable remote must not be waited out for ever
+    os.environ.setdefault("ASD_MERGE_NET_WAIT", "0.01")
     fails: list[str] = []
 
     def check(name: str, ok: bool, why: str = "") -> None:
@@ -1363,6 +1400,20 @@ print("started")
         g("fetch", "-q", "origin", cwd=clone)
         has = subprocess.run(["git", "-C", clone, "ls-tree", "--name-only", "origin/plan/refused"], capture_output=True, text=True).stdout
         check("update: a refused update-branch merges the base in by hand", why2 == "" and "base-moved.md" in has, why2 + has)
+        g("checkout", "-q", "development", cwd=pusher); g("pull", "-q", "origin", "development", cwd=pusher); g("checkout", "-q", "-b", "feat/W-90-low", cwd=pusher)
+        open(os.path.join(pusher, "low.md"), "w").write("low\n"); g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "low", cwd=pusher); g("push", "-q", "origin", "feat/W-90-low", cwd=pusher)
+        g("checkout", "-q", "-b", "fix/W-90-deferred", cwd=pusher); open(os.path.join(pusher, "top.md"), "w").write("top\n"); g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "top", cwd=pusher); g("push", "-q", "origin", "fix/W-90-deferred", cwd=pusher)
+        g("checkout", "-q", "feat/W-90-low", cwd=pusher); open(os.path.join(pusher, "updated.md"), "w").write("from the stub\n"); g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "updated from the stub", cwd=pusher); g("push", "-q", "origin", "feat/W-90-low", cwd=pusher)
+        saved_env = dict(os.environ)
+        os.environ.update(env, ASD_MERGE_POLL="0.1")
+        try:
+            json.dump([P(602, "feat/W-90-low", "development"), P(603, "fix/W-90-deferred", "feat/W-90-low")], open(os.path.join(fdir, "prs.json"), "w"))
+            why3 = settle(clone, "repo.W-90", "W-90", [{"number": 602, "headRefName": "feat/W-90-low", "baseRefName": "development"}, {"number": 603, "headRefName": "fix/W-90-deferred", "baseRefName": "feat/W-90-low"}], "development", [], lambda *a: None)
+        finally:
+            os.environ.clear(); os.environ.update(saved_env)
+        g("fetch", "-q", "origin", cwd=clone)
+        anc = subprocess.run(["git", "-C", clone, "merge-base", "--is-ancestor", "origin/feat/W-90-low", "origin/fix/W-90-deferred"]).returncode
+        check("stack: the PR on top is brought up with the one below it, or the stack merge is refused", why3 == "" and anc == 0, why3)
         g("checkout", "-q", "development", cwd=pusher); g("pull", "-q", "origin", "development", cwd=pusher); g("checkout", "-q", "-b", "plan/stale", cwd=pusher)
         open(os.path.join(pusher, ".discovery", "dossiers", "W-147-stale.md"), "w").write("---\nid: W-147\n---\n# stale\n")
         g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "stale", cwd=pusher); g("push", "-q", "origin", "plan/stale", cwd=pusher)

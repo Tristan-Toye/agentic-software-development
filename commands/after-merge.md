@@ -67,7 +67,11 @@ one):
 - **A stacked pull request on the merged branch**: retarget it to the stub
   (`gh pr edit <n> --base <stub>`), if GitHub has not already.
 - **Mergeable**: nothing to do; it is the owner's to merge.
-- **Conflicting**: ask the owner, one `ask_owner.py ask` per pull request,
+- **Conflicting, and the stub is being integrated** (`gh pr list --head <stub>
+  --base development --state open` lists a pull request): do nothing and ask
+  nothing. The merge queue reaches that pull request itself and resolves it
+  then; a refresh now would go stale at the next merge. Say so in the note.
+- **Conflicting, otherwise**: ask the owner, one `ask_owner.py ask` per pull request,
   naming the files in conflict: `A` refresh it here (a fresh worktree on its
   branch, `git merge origin/<stub>`, resolve keeping both sides' intent,
   the repository's gates on the touched paths, push; Phase 9's refresh ritual
