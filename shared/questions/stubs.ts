@@ -13,6 +13,8 @@ export type StubMember = { id: string; noPr: boolean }
 export type Stub = {
   branch: string; cut: string; state: "accepting" | "integrating" | "merged"; stage: string
   refAge: string; pr: Pr | null; dossiers: StubDossier[]; members: StubMember[]
+  /** Set per request by the server from the integration and run files, which move faster than the scan. */
+  canIntegrate?: boolean
 }
 export type RepoStubs = { repo: string; label: string; main: string; stubs: Stub[]; open: string[] }
 /** The stubs that are not merged (accepting or integrating), newest first. */

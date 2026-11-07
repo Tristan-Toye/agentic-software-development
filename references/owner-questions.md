@@ -263,7 +263,9 @@ restarted server answers at once from them while its first scan runs.
     Before that it waits, so its PR never carries the old batch. The stub page
     shows the run like a dossier's: state, Stop, Resume /stub, the Now panel,
     and its timeline with a "Merge the finished dossiers" section, then the
-    /stub steps. The whole stub card opens that page.
+    /stub steps. The whole stub card opens that page. An integration that
+    failed offers **Integrate** again on the card and the page; nothing offers
+    it while the merges or the /stub run are going.
   - **One merge queue for both kinds of PR** (`merge_dossier.py`): a
     dossier's stack into its stub, and a plan or docs PR into development
     (`--enqueue-pr`). FIFO per repository, one worker. Each item goes through

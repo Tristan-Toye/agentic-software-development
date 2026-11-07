@@ -522,8 +522,8 @@ function stubTree(repo, s) {
   const merged = s.dossiers.map(d => stubRow(repo, d.id, { merged: true, title: d.title }));
   const k = 'sg:' + repo + '/' + s.branch + ':';
   const groups = [stubGroup(k + 'busy', 'Working', busy), stubGroup(k + 'idle', 'Not working', idle), stubGroup(k + 'merged', 'Merged into the stub', merged, true)].filter(Boolean);
-  // The whole card opens the stub's page (its rows stay links to their dossiers); an open stub can be integrated.
-  const integ = s.state === 'accepting' ? integrateBtn(repo, s.branch) : null;
+  // The whole card opens the stub's page (its rows stay links to their dossiers); an open stub or a failed integration offers Integrate.
+  const integ = s.canIntegrate ? integrateBtn(repo, s.branch) : null;
   if (s.state === 'integrating') { const hold = holdsChip(repo, (s.members || []).map(m => m.id)); if (hold) cs.push(hold); }
   return h('div', { class: 'scard clickable', 'data-href': hrefStub(repo, s.branch), title: 'Open ' + s.branch, 'data-k': 'ostub:' + repo + '/' + s.branch }, [
     h('div', { class: 'shead' }, [h('a', { class: 'title mono', href: hrefStub(repo, s.branch) }, [s.branch]), h('span', { class: 'meta' }, ['cut ' + s.cut]), h('span', { class: 'chips' }, cs), h('span', { class: 'grow' }), integ]),
@@ -904,7 +904,7 @@ function stubView(repo, branch) {
   if (ig) { const IL = { merging: 'merging the finished dossiers', stub: '/stub runs', failed: 'integration stopped' }; cs.push(h('span', { title: ig.error || ig.note || '' }, [chip(IL[ig.state] || ig.state, ig.state === 'failed' ? 'blocked' : 'pending')])); }
   if (ig && ig.state === 'merging') { const hold = holdsChip(repo, ig.finished || []); if (hold) cs.push(hold); }
   const liveRun = rn && ['running', 'waiting', 'paused', 'queued'].includes(rn.state);
-  if ((s.state === 'accepting' || (s.state === 'integrating' && ig && ig.state === 'failed')) && !liveRun && !(ig && ig.state === 'merging')) ctl.push(integrateBtn(repo, branch));
+  if (s.canIntegrate) ctl.push(integrateBtn(repo, branch));
   if (liveRun) ctl.push(h('button', { class: 'btn', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'stop', 'data-repo': repo, 'data-branch': branch }, ['Stop']));
   else if (rn && ['stopped', 'failed'].includes(rn.state)) ctl.push(h('button', { class: 'btn', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'resume', 'data-repo': repo, 'data-branch': branch }, ['Resume /stub']));
   const err = (S.ctl[repo + '/' + branch + ':integrate'] || {}).err || (S.ctl[repo + '/' + branch + ':run'] || {}).err;
