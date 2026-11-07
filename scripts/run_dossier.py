@@ -1444,6 +1444,29 @@ def cmd_revive() -> int:
     return 0
 
 
+def already_built(root: str, dossier: str) -> str:
+    """Why /work-on must not start: the dossier is in the merge queue, or has an open pull request and no build of its
+    own to resume. Its status on development can still read `ready`: the record that says done is on its branch, not
+    merged yet. Starting it anyway deadlocks an integration: the run waits for the stub, the stub waits for the merge,
+    and the merge waits for the run. "" when it may start, also when GitHub cannot be asked."""
+    repo = main_repo_name(root)
+    queue = read_json(os.path.join(runs_dir(), f"{repo}.merge-queue.json"), {}) or {}
+    if any(i.get("id") == dossier for i in queue.get("items") or []):
+        return f"{dossier} is in the merge queue; it is built"
+    prev = read_json(os.path.join(runs_dir(), f"{repo}.{dossier}.runner.json"), {}) or {}
+    if prev.get("command") == "work-on" and prev.get("state") in ("running", "waiting", "paused", "queued", "stopped", "failed"):
+        return ""
+    try:
+        p = subprocess.run(shlex.split(os.environ.get("ASD_GH_BIN") or "gh") + ["pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName"],
+                           cwd=root, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        prs = json.loads(p.stdout or "[]") if p.returncode == 0 else []
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return ""
+    pat = re.compile(r"(^|[^A-Za-z0-9])" + re.escape(dossier) + r"(?![0-9])", re.I)
+    mine = [x["number"] for x in prs if pat.search(x.get("headRefName", "")) and not x["headRefName"].startswith(("plan/", "docs/"))]
+    return f"{dossier} is already built: pull request " + ", ".join(f"#{n}" for n in mine) + " is open" if mine else ""
+
+
 def cmd_stop(a: argparse.Namespace) -> int:
     key = key_of(a.root, a.dossier)
     path = os.path.join(runs_dir(), key + ".runner.json")
@@ -1737,6 +1760,15 @@ for raw in sys.stdin:
 '''
 
 
+def already_built_for_test(root: str, dossier: str, env: dict) -> str:
+    saved = dict(os.environ)
+    os.environ.update(env)
+    try:
+        return already_built(root, dossier)
+    finally:
+        os.environ.clear(); os.environ.update(saved)
+
+
 def selftest() -> int:
     me = os.path.abspath(__file__)
     failures: list[str] = []
@@ -2026,6 +2058,19 @@ def selftest() -> int:
         env.pop("ASD_GH_BIN")
         rd = open(os.path.join(fdir, "ready.txt")).read() if os.path.exists(os.path.join(fdir, "ready.txt")) else ""
         check("fix-deferred: a finished run marks its PR ready; no other command does", "pr ready fix/W-75-deferred" in rd and "W-76" not in rd)
+        with open(os.path.join(fdir, "gh_prs.py"), "w") as fh:
+            fh.write("import json\nprint(json.dumps([{'number': 427, 'headRefName': 'feat/W-78-x'}, {'number': 9, 'headRefName': 'plan/W-79-y'}]))\n")
+        env["ASD_GH_BIN"] = f"{sys.executable} {os.path.join(fdir, 'gh_prs.py')}"
+        built = subprocess.run([sys.executable, me, "W-78", "--root", root, "--foreground"], env=env, capture_output=True, text=True, timeout=30)
+        check("work-on: a dossier with an open pull request is refused, naming it", built.returncode == 2 and "#427" in built.stderr)
+        write_json(os.path.join(rdir, "repo.merge-queue.json"), {"items": [{"id": "W-80"}]})
+        queued = subprocess.run([sys.executable, me, "W-80", "--root", root, "--foreground"], env=env, capture_output=True, text=True, timeout=30)
+        os.remove(os.path.join(rdir, "repo.merge-queue.json"))
+        check("work-on: a dossier in the merge queue is refused", queued.returncode == 2 and "merge queue" in queued.stderr)
+        write_json(os.path.join(rdir, "repo.W-78.runner.json"), {"state": "stopped", "command": "work-on", "pid": 0})
+        check("work-on: its own stopped build can still be resumed", already_built_for_test(root, "W-78", env) == "")
+        os.remove(os.path.join(rdir, "repo.W-78.runner.json"))
+        env.pop("ASD_GH_BIN")
         scenario([{"hang": True, "turns": []}])
         p = start("W-71")
         until(lambda: state_of("W-71").get("claude_pid"))
@@ -2353,6 +2398,11 @@ def main() -> int:
               "or one D-id with --command plan", file=sys.stderr)
         return 2
     runner_model(a.model)  # refuses a forbidden model before anything starts
+    if a.command == "work-on":
+        why = already_built(a.root, a.dossier)
+        if why:
+            print(f"run_dossier.py: not starting /work-on: {why}", file=sys.stderr)
+            return 2
     if not a.foreground:
         return detach(argv + ([] if "--root" in argv else ["--root", a.root]), a.root, a.dossier, run_key(a.root, a.dossier, a.command, items))
     return Runner(a.root, a.dossier, a.command, a.model, a.permission_mode, a.max_stages, items).run()

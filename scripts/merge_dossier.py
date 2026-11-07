@@ -674,11 +674,9 @@ def work_one(root: str, dossier: str) -> None:
         return  # merge() recorded "failed" and why
     st = read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}
     nums = st.get("prs") or []
-    since = now()
-    set_state(key, state="cleanup", pid=os.getpid(), note="merged; /after-merge runs")
+    # /after-merge runs beside the queue: it never pushes to the stub, and a question it asks must not hold up the next merge.
     start_run(root, dossier, "after-merge", nums)
-    end = wait_run(key, since, run_timeout)
-    set_state(key, state="merged", pid=None, note=f"merged; cleanup {end}")
+    set_state(key, state="merged", pid=None, note="merged; /after-merge runs")
 
 
 DOC_PATH_RE = re.compile(r"^(\.discovery/|docs/)|\.md$")

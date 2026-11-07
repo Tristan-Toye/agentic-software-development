@@ -483,6 +483,11 @@ function stubGroup(key, label, rows, fold) {
   if (fold) return h('details', { class: 'sgrp', 'data-k': key, open: rows.length <= 6 ? true : null }, [h('summary', { class: 'sgrp-h' }, [head]), body]);
   return h('div', { class: 'sgrp', 'data-k': key }, [h('div', { class: 'sgrp-h' }, [head]), body]);
 }
+/* Questions the integration cannot go on without: a queued dossier's run waiting on the owner holds the queue up. */
+function holdsChip(repo, ids) {
+  const n = S.q.filter(q => q.state === 'open' && qRepo(q) === repo && ids.includes(q.dossier)).length;
+  return n ? h('a', { class: 'chip warn', href: '/questions', title: 'The integration may be waiting for these answers' }, ['? ' + n + (n === 1 ? ' question' : ' questions') + ' waiting for you']) : null;
+}
 /* Integrate: merge every finished dossier on the stub through the merge queue (first in, first out), then run /stub. */
 function integrateBtn(repo, branch) {
   const k = repo + '/' + branch + ':integrate'; const st = S.ctl[k] || {};
@@ -519,6 +524,7 @@ function stubTree(repo, s) {
   const groups = [stubGroup(k + 'busy', 'Working', busy), stubGroup(k + 'idle', 'Not working', idle), stubGroup(k + 'merged', 'Merged into the stub', merged, true)].filter(Boolean);
   // The whole card opens the stub's page (its rows stay links to their dossiers); an open stub can be integrated.
   const integ = s.state === 'accepting' ? integrateBtn(repo, s.branch) : null;
+  if (s.state === 'integrating') { const hold = holdsChip(repo, (s.members || []).map(m => m.id)); if (hold) cs.push(hold); }
   return h('div', { class: 'scard clickable', 'data-href': hrefStub(repo, s.branch), title: 'Open ' + s.branch, 'data-k': 'ostub:' + repo + '/' + s.branch }, [
     h('div', { class: 'shead' }, [h('a', { class: 'title mono', href: hrefStub(repo, s.branch) }, [s.branch]), h('span', { class: 'meta' }, ['cut ' + s.cut]), h('span', { class: 'chips' }, cs), h('span', { class: 'grow' }), integ]),
     groups.length ? h('div', { class: 'sgrps' }, groups) : h('div', { class: 'meta' }, ['Nothing in progress or merged yet.'])]);
@@ -896,6 +902,7 @@ function stubView(repo, branch) {
   const rn = d && d.runner; const ig = d && d.integrate; const ctl = [];
   if (rn && rn.state !== 'done') cs.push(runChip(rn.state));
   if (ig) { const IL = { merging: 'merging the finished dossiers', stub: '/stub runs', failed: 'integration stopped' }; cs.push(h('span', { title: ig.error || ig.note || '' }, [chip(IL[ig.state] || ig.state, ig.state === 'failed' ? 'blocked' : 'pending')])); }
+  if (ig && ig.state === 'merging') { const hold = holdsChip(repo, ig.finished || []); if (hold) cs.push(hold); }
   const liveRun = rn && ['running', 'waiting', 'paused', 'queued'].includes(rn.state);
   if (s.state === 'accepting' && !liveRun && !(ig && ig.state === 'merging')) ctl.push(integrateBtn(repo, branch));
   if (liveRun) ctl.push(h('button', { class: 'btn', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'stop', 'data-repo': repo, 'data-branch': branch }, ['Stop']));
