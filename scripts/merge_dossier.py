@@ -456,6 +456,29 @@ def collisions(root: str, base: str, head: str, others: list[str]) -> tuple[list
     return [(i, f) for i, f in dos if i in taken_d and f not in on_base and f not in theirs], any(a in taken_a for a in adrs)
 
 
+MIGRATION_RE = re.compile(r"^(.*/)?migrations/(\d+)[_-][^/]+\.sql$")
+
+
+def migration_clashes(root: str, base: str, head: str) -> list[str]:
+    """Migrations the head adds under a number another migration in the same folder already has, on the base or in the
+    head. A fresh database cannot migrate then, and CI without a database cannot see it. Numbers the base already
+    repeats on its own are not this head's."""
+    git(root, "fetch", "-q", "origin", base, head)
+    rc, added = git(root, "diff", "--no-renames", "--diff-filter=A", "--name-only", f"origin/{base}...origin/{head}")
+    rc2, tree = git(root, "ls-tree", "-r", "--name-only", f"origin/{base}")
+    if rc != 0 or rc2 != 0:
+        return []   # the branch is not on origin: the merge's own checks have the last word
+    def keyed(paths):
+        return {p: (m.group(1) or "", m.group(2)) for p in paths if (m := MIGRATION_RE.match(p.strip()))}
+    new, old = keyed(added.splitlines()), keyed(tree.splitlines())
+    out = []
+    for path, key in sorted(new.items()):
+        others = sorted(p for p, k in {**old, **new}.items() if k == key and p != path)
+        if others:
+            out.append(f"{path} has the number of {others[0]}")
+    return out
+
+
 def next_free_id(root: str, prefix: str) -> str:
     """The next dossier id no branch on origin holds: base, stubs, plans and every open PR's head."""
     git(root, "fetch", "-q", "origin", "--prune")
@@ -640,9 +663,11 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
         bad, err = conflicting(root, nums)
         if err:
             return err
+        # A clash is the stack's to fix, so no check is worth waiting for until it is gone.
+        clashes = migration_clashes(root, prs[0]["baseRefName"], prs[-1]["headRefName"]) if not bad else []
         # 3. up to date with the base, and each PR of a stack holding the one below it, before spending a wait on checks
         # that would have to run again
-        if not bad:
+        if not bad and not clashes:
             updated, why = update_behind()
             if why:
                 return why
@@ -656,7 +681,7 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
                 continue
             bad = bad + link_conflicts
         # 3. checks (re-run red ones once)
-        st = wait_checks(root, nums, check_timeout) if not bad else {}
+        st = wait_checks(root, nums, check_timeout) if not bad and not clashes else {}
         red = [n for n, v in st.items() if v == "red"]
         if red and not rerun_used:
             rerun_used = True
@@ -667,7 +692,7 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
                 st = wait_checks(root, nums, check_timeout)
                 red = [n for n, v in st.items() if v == "red"]
         pending = [n for n, v in st.items() if v == "pending"]
-        if not bad and not red and not pending:
+        if not bad and not clashes and not red and not pending:
             updated, why = update_behind()   # a merge from outside the queue can land while the checks ran
             if why:
                 return why
@@ -681,17 +706,17 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
             if not link_conflicts:
                 return ""
             bad = list(link_conflicts)
-        if pending and not bad and not red:
+        if pending and not bad and not clashes and not red:
             return "checks still running after " + str(int(check_timeout / 60)) + " min: " + ", ".join(f"#{n}" for n in pending)
         # 4. the dossier's agent
         if not use_agent:
-            return ("conflicting: " + ", ".join(f"#{n}" for n in bad)) if bad else ("checks red: " + ", ".join(f"#{n}" for n in red))
+            return ("conflicting: " + ", ".join(f"#{n}" for n in bad)) if bad else ("migration numbers clash: " + "; ".join(clashes)) if clashes else ("checks red: " + ", ".join(f"#{n}" for n in red))
         if agent_rounds >= AGENT_ROUNDS:
             rounds = f" after {agent_rounds} agent round{'s' if agent_rounds != 1 else ''}"
-            return ("still conflicting: " + ", ".join(f"#{n}" for n in bad) + rounds) if bad else ("checks still red: " + ", ".join(f"#{n}" for n in red) + rounds)
+            return ("still conflicting: " + ", ".join(f"#{n}" for n in bad) + rounds) if bad else ("migration numbers still clash: " + "; ".join(clashes) + rounds) if clashes else ("checks still red: " + ", ".join(f"#{n}" for n in red) + rounds)
         agent_rounds += 1
         rerun_used = False   # the agent's push is a new head: a flaky job there gets its own re-run before it costs a round
-        what = ("conflicts in " + ", ".join(f"#{n}" for n in bad)) if bad else ("red checks on " + ", ".join(f"#{n}" for n in red))
+        what = ("conflicts in " + ", ".join(f"#{n}" for n in bad)) if bad else ("migration numbers clash: " + "; ".join(clashes)) if clashes else ("red checks on " + ", ".join(f"#{n}" for n in red))
         note("resolving", what + "; the dossier's agent resolves it")
         since = now()
         start_run(root, agent_id, "resolve-merge", nums)
@@ -1276,6 +1301,47 @@ print("started")
         m128 = [i for i, c in enumerate(calls) if c.startswith("stack merge 429")]
         m130 = [i for i, c in enumerate(calls) if c.startswith("pr merge 500")]
         check("queue: the script merges each, W-128 before W-130", bool(m128) and bool(m130) and m128[0] < m130[0], str(calls))
+        # ---- migration numbers: a clash goes to the agent before any check is waited for ----
+        mo = os.path.join(tmp, "mig.git"); mw = os.path.join(tmp, "mig")
+        mg = lambda *x, cwd=mw: subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *x], cwd=cwd, capture_output=True, text=True)
+        mg("init", "-q", "--bare", "-b", "main", mo, cwd=tmp); mg("clone", "-q", mo, mw, cwd=tmp)
+        def mfile(path):
+            os.makedirs(os.path.dirname(os.path.join(mw, path)), exist_ok=True); open(os.path.join(mw, path), "w").write(path)
+        mfile("crates/p/migrations/0061_a.sql"); mfile("other/migrations/0062_z.sql"); mg("add", "."); mg("commit", "-q", "-m", "base"); mg("push", "-q", "origin", "HEAD:main")
+        def mbranch(name, *paths, rename=None):
+            mg("checkout", "-q", "-B", name, "origin/main")
+            if rename: mg("mv", *rename)
+            for p in paths: mfile(p)
+            mg("add", "."); mg("commit", "-q", "-m", name); mg("push", "-q", "-f", "origin", f"HEAD:{name}")
+        mbranch("clash", "crates/p/migrations/0061_b.sql")
+        found = migration_clashes(mw, "main", "clash")
+        check("migrations: a second 0061 in the same folder clashes, and names both files", found == ["crates/p/migrations/0061_b.sql has the number of crates/p/migrations/0061_a.sql"], str(found))
+        mbranch("free", "crates/p/migrations/0062_b.sql", "crates/q/migrations/0061_c.sql")
+        check("migrations: a free number, and the same number in another folder, do not clash", migration_clashes(mw, "main", "free") == [], str(migration_clashes(mw, "main", "free")))
+        mbranch("twice", "crates/p/migrations/0070_x.sql", "crates/p/migrations/0070_y.sql")
+        check("migrations: two new files of one stack with one number clash", len(migration_clashes(mw, "main", "twice")) == 2, str(migration_clashes(mw, "main", "twice")))
+        mbranch("moved", rename=("crates/p/migrations/0061_a.sql", "crates/p/migrations/0062_a.sql"))
+        check("migrations: renumbering onto a free number is no clash", migration_clashes(mw, "main", "moved") == [], str(migration_clashes(mw, "main", "moved")))
+        check("migrations: a branch not on origin is left to the merge's checks", migration_clashes(mw, "main", "no-such") == [])
+        saved_fns = {n: globals()[n] for n in ("migration_clashes", "conflicting", "wait_checks", "behind", "collisions", "start_run", "wait_run")}
+        seen_runs: list = []; waited: list = []; notes: list = []; left = [2]
+        def fake_clash(*_a):
+            return ["m/0061_b.sql has the number of m/0061_a.sql"] if left[0] > 0 else []
+        def fake_start(*_a):
+            seen_runs.append(1); left[0] -= 1; return ""
+        globals().update(migration_clashes=fake_clash, conflicting=lambda *_a: ([], ""), wait_checks=lambda r, n, t: waited.append(1) or {x: "green" for x in n},
+                         behind=lambda *_a: [], collisions=lambda *_a: ([], False), start_run=fake_start, wait_run=lambda *_a: "done")
+        one_pr = [P(700, "feat/W-160-x", "stub/s")]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                why = settle(root, "repo.W-160", "W-160", one_pr, "stub/s", [], lambda s, t: notes.append(t))
+            check("queue: a migration clash wakes the agent before any check is waited for, then it merges", why == "" and len(seen_runs) == 2 and len(waited) == 1 and "migration numbers clash" in notes[0], f"{why} {seen_runs} {waited} {notes}")
+            left[0] = 99; seen_runs.clear()
+            with contextlib.redirect_stdout(io.StringIO()):
+                why = settle(root, "repo.W-160", "W-160", one_pr, "stub/s", [], lambda s, t: None)
+            check("queue: a clash that stays stops at the round limit and says so", len(seen_runs) == 3 and "migration numbers still clash" in why and "after 3 agent rounds" in why, why)
+        finally:
+            globals().update(saved_fns)
         # ---- agent rounds: the queue keeps at it, and stops at the limit ----
         def rounds_scenario(dossier: str, pr: int, resolved_at: int, **fields) -> tuple[list[str], dict]:
             json.dump([dict(P(pr, f"feat/{dossier}-x", "stub/s"), **(fields or {"mergeable": "CONFLICTING"}))], open(os.path.join(fdir, "prs.json"), "w"))
@@ -1543,10 +1609,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--revive", action="store_true", help="restart any merge queue with work whose worker is gone")
     ap.add_argument("--enqueue-pr", metavar="N", type=int, help="add a non-code PR into development to the merge queue")
     ap.add_argument("--integrate", metavar="STUB", help="merge every finished dossier on the stub through the queue, then start /stub")
+    ap.add_argument("--migration-clashes", metavar="HEAD", help="print the migrations this branch adds under a number already taken (needs --base)")
+    ap.add_argument("--base", help="the branch --migration-clashes compares with")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if a.selftest:
         return selftest()
+    if a.migration_clashes and a.base and a.root:
+        found = migration_clashes(os.path.abspath(a.root), a.base, a.migration_clashes)
+        print("\n".join(found) if found else "no clash")
+        return 1 if found else 0
     if a.revive:
         return revive()
     if a.worker and a.root:

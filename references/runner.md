@@ -285,7 +285,8 @@ The prompt tells the orchestrator these rules:
   - **The plugin's PostToolUse hook:** a `stage` line for every
     `phase_checkpoint` call when `ASD_RUN_KEY` is set. It writes the stage
     name and the first line of the summary.
-  - **The suite line:** a `run_tests.py` call writes `suite: passed N failed M`
+  - **The suite line:** a `run_tests.py` call (one the command starts, not one
+    it only names, such as a `ps | grep`) writes `suite: passed N failed M`
     from its digest; a `--detach` or background call writes `suite started`,
     and its `--wait` call writes the result.
   - **The same hook, for progress:** an `update` line with `auto: true` for
