@@ -230,6 +230,18 @@ r = interpretEnvelope(ev({ text: "status", thread_ts: "111.222" }), lookup)
 check("slack: status inside a question thread stays a follow-up", r.action.type === "owner")
 r = interpretEnvelope(ev({ text: "what is the status of the build?" }), lookup)
 check("slack: a sentence mentioning status is not the command", r.action.type === "pointer")
+// The DM agent: with it on, every DM outside a question's thread is a question for the agent
+{
+  const on = { dmAgent: true }
+  let a = interpretEnvelope(ev({ text: "status" }), lookup, "", on)
+  check("dm agent: status in the DM goes to the agent", a.action.type === "ask" && (a.action as any).ts === "5.1" && !(a.action as any).threadTs && (a.action as any).text === "status")
+  a = interpretEnvelope(ev({ text: "and W-134?", thread_ts: "4.0" }), lookup, "", on)
+  check("dm agent: a reply in a non-question thread continues that thread", a.action.type === "ask" && (a.action as any).threadTs === "4.0")
+  a = interpretEnvelope(ev({ text: "use B", thread_ts: "111.222" }), lookup, "", on)
+  check("dm agent: a reply in a question's thread still answers the question", a.action.type === "owner")
+  a = interpretEnvelope({ envelope_id: "E9", type: "events_api", payload: { event: { type: "message", channel_type: "group", channel: "G1", ts: "7.1", user: "U1", text: "status" } } }, lookup, "", on)
+  check("dm agent: status in a repo channel stays the status command", a.action.type === "status")
+}
 r = interpretEnvelope({ envelope_id: "E3", type: "interactive", payload: { type: "block_actions", user: { id: "U1" }, channel: { id: "G1" }, container: { message_ts: "8.1" }, message: { ts: "8.1", blocks: [{ type: "section", text: { text: "*Status — config-harness*" } }] }, actions: [{ action_id: "run_status", value: "config-harness|" }] } }, lookup)
 check("slack: Refresh on a status message refreshes it in place, with its scope", r.action.type === "status" && (r.action as any).refresh === true && (r.action as any).repo === "config-harness" && !(r.action as any).id)
 r = interpretEnvelope({ envelope_id: "E4", type: "interactive", payload: { type: "block_actions", user: { id: "U1" }, channel: { id: "G1" }, container: { message_ts: "6.1" }, message: { ts: "6.1", blocks: [{ type: "section", text: { text: "▶ config-harness · W-1" } }] }, actions: [{ action_id: "run_status", value: "config-harness|W-1" }] } }, lookup)

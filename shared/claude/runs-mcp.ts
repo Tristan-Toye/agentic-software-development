@@ -123,7 +123,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "stubs",
-    description: "Each repo's open stubs: the dossiers merged into it, and the ones on it still in progress or with a PR waiting for the owner's merge.",
+    description: "Each repo's open stubs: the dossiers merged into it, and the ones on it still in progress or with a PR waiting for the owner's merge. For an integrating stub's progress, call stub_detail.",
     params: [{ name: "repo", type: "string", description: "only this repo", optional: true }],
     async run(a) {
       const d = (await api("/api/stubs")).body
@@ -155,6 +155,25 @@ const TOOLS: Tool[] = [
       const q = r.body
       return out({ id: q.id, state: q.state, dossier: q.dossier, text: q.text, options: q.options, recommendation: q.recommendation, blocks: q.blocks,
         thread: (q.lines || []).slice(1).map((l: any) => `${l.ts} ${l.from} ${l.kind}${l.option ? " [" + l.option + "]" : ""}: ${clip(l.text, 1200)}`) })
+    },
+  },
+  {
+    name: "stub_detail",
+    description: "One stub's integration (/stub) as its page shows it: the runner state, the step it is on and what it is doing, the merge-queue part of Integrate, open questions, and the newest timeline entries (suite runs, fix rounds, audit). The progress of a stub run lives here, not in run_detail.",
+    params: [P.repo, { name: "branch", type: "string", description: "the stub branch, e.g. stub/2026-11-08" },
+      { name: "entries", type: "string", description: "newest entries, default 20", optional: true }],
+    async run(a) {
+      const r = await api(`/api/stub?repo=${enc(a.repo)}&branch=${enc(a.branch)}`)
+      if (r.status >= 300) return `refused (HTTP ${r.status}): ${out(r.body)}`
+      const d = r.body; const n = Math.max(1, Math.min(80, Number(a.entries) || 20))
+      const rn = d.runner || {}
+      return out({
+        stub: { branch: d.stub?.branch, state: d.stub?.state, stage: d.stub?.stage || undefined, pr: d.stub?.pr ? `#${d.stub.pr.number} ${d.stub.pr.state}` : undefined, stopped: d.stub?.stopped || undefined },
+        run: rn.state ? { state: rn.state, account: rn.account, started: rn.started, questions: rn.questions?.length ? rn.questions : undefined } : "no /stub run yet",
+        now: d.now ? { phase: d.now.phase, doing: d.now.doing?.text ? clip(d.now.doing.text, 300) : undefined } : undefined,
+        integrate: d.integrate || undefined,
+        entries: (d.entries || []).filter((e: any) => e.type !== "boundary").slice(-n).reverse().map((e: any) => `${e.ts ?? ""} ${e.type ?? ""}${e.event ? "/" + e.event : ""}: ${clip(e.text, 260)}`),
+      })
     },
   },
   {

@@ -12,6 +12,7 @@ import { runRunner, runTarget, runnerScript } from "./controls.ts"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
+import { askAgent, type DmDeps } from "./dmagent.ts"
 import { api, apiGet, channelNameFor, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
 import { readAccounts, usageDir } from "./accounts.ts"
@@ -279,10 +280,24 @@ async function postStatus(a: Extract<OwnerAction, { type: "status" }>): Promise<
   await api("chat.postMessage", botToken, { channel: a.channel, thread_ts: a.threadTs ?? a.ts, text, blocks })
 }
 
+// ---- Slack DM agent (dmagent.ts) ----
+const DM_AGENT = process.env.ASD_DM_AGENT !== "0"
+const dmDeps: DmDeps = {
+  post: async (channel, threadTs, text) => (await api("chat.postMessage", botToken, { channel, thread_ts: threadTs, text })).ts,
+  update: async (channel, ts, text) => { await api("chat.update", botToken, { channel, ts, text }) },
+  configDir: () => (readAccounts([]).find((a) => a.next) ?? readAccounts([])[0]).dir,
+  addDirs: async () => [...new Set((await allRuns()).map((r) => r.main).filter(Boolean))],
+  log,
+}
+
 // ---- Slack inbound ----
 async function onSlackAction(a: OwnerAction): Promise<void> {
   if (a.type === "status") {
     await postStatus(a)
+    return
+  }
+  if (a.type === "ask") {
+    void askAgent(a, dmDeps)
     return
   }
   if (a.type === "pointer") {
@@ -839,7 +854,7 @@ async function main(): Promise<void> {
     botToken = keychain("asd-slack-bot")
     const appToken = keychain("asd-slack-app")
     if (botToken && appToken) {
-      void runSocket(appToken, { onAction: onSlackAction, lookup: (c, t) => idForThread(DIR, c, t), ownerUser: owner, log })
+      void runSocket(appToken, { onAction: onSlackAction, lookup: (c, t) => idForThread(DIR, c, t), ownerUser: owner, dmAgent: DM_AGENT, log })
       log("slack enabled")
     } else {
       botToken = ""
