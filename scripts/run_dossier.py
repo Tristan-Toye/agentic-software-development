@@ -392,6 +392,10 @@ def kill_group(proc: subprocess.Popen | None, sig=signal.SIGTERM) -> None:
 # ---- background work in flight, from the session transcript (#239) ----
 BG_LAUNCHED = re.compile(r"running in background|launched in background|moved to the background|launched successfully|running in the background", re.I)
 BG_NOTIFIED = re.compile(r"<task-notification>[\s\S]*?<tool-use-id>([^<\s]+)</tool-use-id>")
+BG_TASK_ID = re.compile(r"\bID:\s*([\w-]+)")
+# A task stopped on purpose (TaskStop, KillShell) never sends a notification: its stop result, or a stop that finds
+# the task already gone, ends it.
+BG_STOPPED = re.compile(r"(?:Successfully (?:stopped|killed) (?:task|shell)|No (?:task|shell) found with ID):?\s*([\w-]+)", re.I)
 
 
 def transcript_path(session: str, config_dir: str | None) -> str | None:
@@ -412,9 +416,11 @@ def transcript_path(session: str, config_dir: str | None) -> str | None:
 
 def background_in_flight(lines: list[str]) -> list[str]:
     """Labels of the background commands, workflows and agents a session launched that have not notified it yet:
-    a tool call whose result says it went to the background, minus every `<task-notification>` naming its id."""
+    a tool call whose result says it went to the background, minus every `<task-notification>` naming its id and
+    every task stopped on purpose (a stop sends no notification)."""
     calls: dict[str, str] = {}
     bg: dict[str, str] = {}
+    task_of: dict[str, str] = {}   # background task id -> the tool_use id that launched it
     for line in lines:
         try:
             o = json.loads(line)
@@ -435,6 +441,13 @@ def background_in_flight(lines: list[str]) -> list[str]:
                     t = b.get("content") if isinstance(b.get("content"), str) else json.dumps(b.get("content") or "")
                     if BG_LAUNCHED.search(t[:400]):
                         bg[b["tool_use_id"]] = calls[b["tool_use_id"]]
+                        m = BG_TASK_ID.search(t[:400])
+                        if m:
+                            task_of[m.group(1)] = b["tool_use_id"]
+                    else:
+                        m = BG_STOPPED.search(t[:400])
+                        if m and m.group(1) in task_of:
+                            bg.pop(task_of[m.group(1)], None)
                 elif b.get("type") == "text" and isinstance(b.get("text"), str):
                     texts.append(b["text"])
             for t in texts:
@@ -2264,6 +2277,14 @@ def selftest() -> int:
                  J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "f1", "name": "Bash", "input": {"description": "fg"}}]}}),
                  J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "f1", "content": "ok"}]}})]
         check("background: launched and not notified is in flight; notified or foreground is not", background_in_flight(lines) == ["Run the VM suite"])
+        stop = [J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "b2", "name": "Bash", "input": {"description": "Run the gates"}}]}}),
+                J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "b2", "content": "Command running in background with ID: bg2. Output is being written to: /x"}]}}),
+                J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "s1", "name": "TaskStop", "input": {"task_id": "bg2"}}]}}),
+                J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "s1", "content": '{"message":"Successfully stopped task: bg2 (cd x; gates)"}'}]}})]
+        gone = stop[:2] + [J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "s2", "name": "TaskStop", "input": {"task_id": "bg2"}}]}}),
+                           J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "s2", "content": "<tool_use_error>No task found with ID: bg2</tool_use_error>"}]}})]
+        check("background: a task stopped on purpose, or already gone when stopped, is no longer in flight",
+              background_in_flight(lines + stop) == ["Run the VM suite"] and background_in_flight(gone) == [] and background_in_flight(stop[:2]) == ["Run the gates"])
         tdir = os.path.join(tmp, "projects", "-repo")
         os.makedirs(tdir, exist_ok=True)
         tr = os.path.join(tdir, "sess-1.jsonl")
