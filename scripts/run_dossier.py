@@ -80,6 +80,7 @@ You run under the dossier runner and nobody reads the terminal.
 - Run every test through scripts/run_tests.py and every gate list through scripts/run_gates.py (`--vm` for the VM, `--detach` then `--wait` for a long run), never through a script or command of your own: their result lines are how the owner's timeline shows a suite going green or red. Run only the tests the command's step names: under /work-on and /fix-deferred with SUITE-MODE `stub`, that is the new and affected tests and the pull request's CI, never the full workspace or `--stack` suite, which only /stub runs.
 - Never end a stage (or the run) while a background command, workflow or agent you started is still running: it dies with this process and no notification reaches the next stage. Wait for its notification and take its result first; the runner holds a stage end that comes too early. If a checkpoint must still name work in flight, say how the next stage tells it finished or died (its report file, its branch or worktree, its output file).
 - Gates already settled for this run: the worktree gate is yes, and {time_logging}
+- The owner's Start is standing authority (references/owner-questions.md, "What is worth asking"): pushing the dossier's own branch and opening or updating its draft PR into the base or the accepting stub is yes; so is a graduation issue in the plugin repository, and committing a repository rule from this build on the dossier's branch (the PR ratifies it). Carry out the readings, defaults and rulings the dossier already records; never ask to confirm them. Ask only technical, architectural or product design questions the dossier leaves open, issues you cannot resolve in scope, and actions outside that authority (a merge, a push to a protected branch, a force-push, Jira writes, deleting what is not the run's own). Do the authorized ones, log them, and name them in your next update.
 - The plugin's references (`references/work-on/phase-*.md`, `formats/*`, `runner.md`) are long and the same in every stage: read only the section your step needs (`ref_section` with the document's short name, `phase-4` or `formats/dossier`, and a heading or `--list`), not whole files; the phase file you start a phase with is the one you read whole, and never the same section twice in one stage.
 - Phase 2 takes its stub from `python3 scripts/stub_target.py --root R` (the plugin's scripts). Exit 3 (`wait <stub>`) means that stub is being integrated and no new one may be cut until it is in development: end the turn with the line `RUNNER: WAITING stub`; the runner waits without tokens and sends `STUB READY: <branch>` once the new stub is cut. Never cut a stub yourself.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
@@ -504,8 +505,13 @@ def max_live() -> int:
         return 4
 
 
-def slot_census(me: str) -> tuple[int, list[tuple[str, str]]]:
-    """(runs holding a slot, [(queued_since, key)] of runs waiting for one), other than `me`, live pids only."""
+def queue_order(st: dict) -> tuple[int, str]:
+    """A queued run's place: runs the owner just answered (`queued_first`) go before the rest, then longest-queued first."""
+    return (0 if st.get("queued_first") else 1, str(st.get("queued_since") or ""))
+
+
+def slot_census(me: str) -> tuple[int, list[tuple[tuple[int, str], str]]]:
+    """(runs holding a slot, [(queue_order, key)] of runs waiting for one), other than `me`, live pids only."""
     held, queued = 0, []
     try:
         names = [n for n in os.listdir(runs_dir()) if n.endswith(".runner.json")]
@@ -521,7 +527,7 @@ def slot_census(me: str) -> tuple[int, list[tuple[str, str]]]:
         if st.get("state") == "running":
             held += 1
         elif st.get("state") == "queued":
-            queued.append((str(st.get("queued_since") or ""), key))
+            queued.append((queue_order(st), key))
     return held, sorted(queued)
 
 
@@ -784,24 +790,27 @@ class Runner:
         except OSError:
             return []
 
-    def take_slot(self) -> bool:
-        """Wait for a run slot (max_live); False when the run was stopped while it waited."""
+    def take_slot(self, first: bool = False) -> bool:
+        """Wait for a run slot (max_live); False when the run was stopped while it waited. `first`: the owner just
+        answered this run, so it queues ahead of every run not answered (it already waited on the owner)."""
         cap = max_live()
         if cap == 0:
             return True
-        since = ""
+        mine: tuple[int, str] | None = None
         while not self.stopping:
             held, queued = slot_census(self.key)
-            ahead = [k for s, k in queued if since and s < since]
-            if held < cap and (not since or not ahead):
-                if since:
+            ahead = [k for o, k in queued if mine and o < mine]
+            if held < cap and (not mine or not ahead):
+                if mine:
                     self.event(f"slot free; {held + 1} of {cap} runs working", "running")
-                self.save(state="running", queued_since=None)
+                self.save(state="running", queued_since=None, queued_first=None)
                 return True
-            if not since:
+            if not mine:
                 since = now()
-                self.save(state="queued", queued_since=since)
-                self.event(f"queued: {held} of {cap} runs are working (ASD_RUNNER_MAX_LIVE); this one starts when a slot frees", "queued")
+                mine = queue_order({"queued_since": since, "queued_first": first})
+                self.save(state="queued", queued_since=since, queued_first=first or None)
+                self.event(f"queued{' first (answered)' if first else ''}: {held} of {cap} runs are working (ASD_RUNNER_MAX_LIVE); "
+                           "this one starts when a slot frees", "queued")
             time.sleep(float(os.environ.get("ASD_RUNNER_SLOT_POLL") or 10))
         return False
 
@@ -1128,12 +1137,24 @@ class Runner:
         quiet = False   # the last turn ended without a RUNNER: line
         nudges = 0
         holds = 0       # stage ends held while background work ran
+        bg_max = float(os.environ.get("ASD_RUNNER_BG_MAX") or 14400)
+        bg_waited = 0.0  # quiet seconds spent waiting on background work the transcript shows in flight
         while True:
             kind, val = self.read_turn(q, extra, idle if quiet else None)
             extra = False
+            if kind != "idle":
+                bg_waited = 0.0
             if kind == "idle":
-                # A turn ended "waiting" on a background command or workflow, and nothing
-                # re-invoked the session within the idle window: nudge it, twice at most.
+                # A turn ended "waiting" on a background command or workflow, and nothing re-invoked the session
+                # within the idle window. While the transcript still shows that work in flight, the quiet is the
+                # work (a fix round of 20 minutes is normal): keep waiting, up to ASD_RUNNER_BG_MAX. Otherwise nudge
+                # it, twice at most.
+                bg = self.background()
+                if bg and bg_waited < bg_max:
+                    if bg_waited == 0:
+                        self.log(f"quiet, but {len(bg)} background task(s) still running: " + "; ".join(bg[:4]) + "; waiting for them")
+                    bg_waited += idle
+                    continue
                 if nudges >= 2:
                     kill_group(self.proc)
                     self.end_process()
@@ -1185,6 +1206,7 @@ class Runner:
                 quiet = True
                 continue
             quiet = False
+            nudges = 0   # it answered with a RUNNER: line; a later quiet spell gets its own two nudges
             verb, rest = mk
             if verb in ("STAGE-DONE", "DONE"):
                 # #239: ending the process kills the background work it started, silently. Hold the end until it is done.
@@ -1246,7 +1268,7 @@ class Runner:
                 self.end_process()
                 return "failed", f"waiting on {qid or ids[0]} failed: {out[:200]}"
             self.save(questions=[i for i in ids if i != qid] if rc == 0 else ids)
-            if not self.take_slot():
+            if not self.take_slot(first=True):
                 return "stopped", ""
             self.event(("answered " if rc == 0 else "follow-up on ") + qid, "running")
             why = self.take_restart() if rc == 0 else None
@@ -2133,6 +2155,11 @@ def selftest() -> int:
         write_json(os.path.join(rdir, "repo.W-90.runner.json"), {**busy, "state": "waiting"})
         check("slots: a run waiting on the owner frees its slot; the queued one starts and finishes", p.wait(timeout=60) == 0 and any(t.startswith("slot free") for t in texts("W-37")))
         os.remove(os.path.join(rdir, "repo.W-90.runner.json"))
+        order = sorted([(queue_order({"queued_since": "2026-11-09T10:00:00Z"}), "old"),
+                        (queue_order({"queued_since": "2026-11-09T11:00:00Z", "queued_first": True}), "answered"),
+                        (queue_order({"queued_since": "2026-11-09T10:30:00Z", "queued_first": True}), "answered-earlier")])
+        check("slots: an answered run queues ahead of runs queued before it, answered runs among themselves by time",
+              [k for _, k in order] == ["answered-earlier", "answered", "old"])
         env.pop("ASD_RUNNER_MAX_LIVE"); env.pop("ASD_RUNNER_SLOT_POLL")
 
         # ---- accounts bound to an email: a dir logged in as someone else, or as a twin, is skipped ----
@@ -2252,6 +2279,28 @@ def selftest() -> int:
         check("dropped notice: sent on as a message, the session wakes and finishes, once",
               rc == 0 and sum(1 for m in msgs(1) if m.startswith("BACKGROUND TASK FINISHED") and "bxdrop1" in m) == 1
               and any(t.startswith("sent on 1 dropped background notice") for t in texts("W-38")))
+
+        # ---- quiet while a workflow runs: no nudge, no failure, until it notifies ----
+        launch = [{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "tu_wf", "name": "Workflow", "input": {"name": "phase4-wave"}}]}},
+                  {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu_wf", "content": "Workflow launched in background with ID: wfx1"}]}}]
+        with open(os.path.join(tdir2, "sess-1.jsonl"), "w") as fh:
+            fh.write("".join(json.dumps(o) + "\n" for o in launch))
+        scenario([{"turns": [[{"final": "waiting for the fix round"}], [{"final": "RUNNER: DONE"}]]}])
+        env.update(ASD_TRANSCRIPTS_DIR=os.path.join(tmp, "projects2"), ASD_RUNNER_IDLE="0.5")
+
+        def finish_wf() -> None:
+            time.sleep(4)
+            with open(os.path.join(tdir2, "sess-1.jsonl"), "a") as fh:
+                fh.write(json.dumps({"type": "queue-operation", "operation": "enqueue", "content":
+                                     "<task-notification>\n<task-id>wfx1</task-id>\n<tool-use-id>tu_wf</tool-use-id>\n<status>completed</status>\n</task-notification>"}) + "\n")
+        threading.Thread(target=finish_wf, daemon=True).start()
+        p = start("W-39")
+        rc = p.wait(timeout=60)
+        env.pop("ASD_TRANSCRIPTS_DIR"); env["ASD_RUNNER_IDLE"] = "1"
+        tw = texts("W-39")
+        check("quiet while a workflow runs: no nudge until it is done, then the run finishes",
+              rc == 0 and any("background task(s) still running" in t for t in tw)
+              and sum(1 for t in tw if "nudge" in t) == 1 and len(msgs(1)) == 2)
 
         # ---- plan: one routed deferred item, under its own key beside the source dossier's run ----
         scenario([{"turns": [[{"final": "planned W-50\nRUNNER: DONE"}]]}])
