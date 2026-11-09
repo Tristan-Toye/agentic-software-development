@@ -89,7 +89,10 @@ the recorded checkpoints.
 - **Run slots:** at most `ASD_RUNNER_MAX_LIVE` runs (default 4; 0 = no limit)
   work at once. A run takes a slot before each stage and after an owner's
   answer; only `running` runs hold one. Without a free slot it records
-  `queued` (`queued_since`) and waits, longest-queued first; the dashboard
+  `queued` (`queued_since`) and waits, longest-queued first. A run the owner
+  just answered queues first (`queued_first`): it already waited on the owner,
+  so it goes ahead of every run not answered and takes the next slot that
+  frees. A run waiting on the owner holds no slot. The dashboard
   shows "queued · waiting for a slot". So a usage-limit reset, or many Start
   presses, no longer sets ten sessions going in the same minute.
 - **Replies on open questions, mid-run:** an agent may ask and keep working
