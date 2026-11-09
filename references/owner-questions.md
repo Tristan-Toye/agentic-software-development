@@ -143,7 +143,7 @@ It prints at most 40 lines.
   plugin's `.mcp.json` as `runs`): the dashboard for agents. It is a thin
   client of this HTTP API (port `ASD_QUESTIONS_PORT`, default 7317), with no
   state or rules of its own, so the page, Slack and agents always agree. Read:
-  `runs_overview`, `run_detail`, `deferred`, `stubs`, `questions`, `question`,
+  `runs_overview`, `run_detail`, `deferred`, `stubs`, `stub_detail`, `questions`, `question`,
   `runner_log`. Act, exactly as the page's buttons: `answer_question`,
   `reply_question`, `message_run`, `run_control` (start, resume, stop,
   fix-deferred), `plan_item`, `merge_preview`, `merge`, `block_ruling`,
@@ -182,10 +182,11 @@ It prints at most 40 lines.
     - a button press is an `answer` with that option;
     - every thread reply is a `followup` (the agent answers it and, when it
       reads as an answer, adds a button for it, as on the page);
-    - a DM outside a thread gets a pointer to reply in a question's thread;
+    - a DM outside a question's thread goes to the **DM agent** (below);
       other messages in a repo channel are left alone;
-    - `status`, `update` or `?` alone (or `status W-128`), outside a
-      question's thread, asks for a run status (below).
+    - `status`, `update` or `?` alone (or `status W-128`) in a repo channel or
+      a run thread asks for a run status (below). With the DM agent off
+      (`ASD_DM_AGENT=0`) it works in the DM too, and other DMs get a pointer.
   - **After an answer:** the question message is updated to show the answer,
     and gets a ✅ reaction.
   - **Connection:** the server reconnects on a `disconnect` envelope or a
@@ -501,6 +502,18 @@ restarted server answers at once from them while its first scan runs.
   questions. A **↻ Refresh** button rewrites the message in place with the
   same scope. No Slack app change is needed: the message and interactivity
   events are the ones questions already use.
+- **The DM agent** (`dmagent.ts`, on unless `ASD_DM_AGENT=0`): a top-level
+  DM starts a `claude -p` session (`ASD_DM_AGENT_MODEL`, default `sonnet`) on
+  the account the next stage would use, with `references/dm-agent.md` as its
+  appended prompt, the plugin root as cwd, the repos' main checkouts and
+  `~/.agentic` as added dirs, and only read tools plus the runs MCP server
+  allowed (`--permission-mode dontAsk`). A reply in that message's thread
+  resumes the same session (`--resume`); turns in one thread run one at a
+  time. A "_Looking into it…_" reply in the thread is replaced by the answer.
+  Sessions per thread: `~/.agentic/dm-agent.json` (`ASD_DM_AGENT_FILE`);
+  timeout `ASD_DM_AGENT_TIMEOUT_MS` (10 min). The prompt references the docs
+  rather than restating them; a stub's progress comes from the MCP tool
+  `stub_detail`.
 - **Other API:** `GET /api/runs`, `/api/stubs`, `/api/questions`,
   `/api/timeline/<repo>/<ID>` (entries, `groups`, `now`, `log`), `/api/dossier/<repo>/<ID>`,
   `/api/stub?repo=&branch=`, and `GET /dossier/<repo>/<ID>` (read-only,
