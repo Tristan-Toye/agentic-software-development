@@ -143,7 +143,12 @@ the recorded checkpoints.
 - **Blocked calls:** the plugin's PermissionDenied hook
   (`shared/claude/permission-denied.ts`) records every call auto mode refuses
   as a `blocked` update (`tool`, `target` — the exact command or path,
-  `reason`, `tool_use_id`). The runner-mode rules tell the agent never to work
+  `reason`, `tool_use_id`), and logs it again, run or no run, to
+  `~/.agentic/blocks.jsonl` (`ASD_BLOCK_LOG`), where the dashboard also logs
+  each ruling (`block-ruling`, with its scope and rule).
+  `scripts/block_report.py [--since D] [--runs]` groups that log by command
+  shape, most frequent first, with how each was ruled: the list to read
+  before widening an allow rule. The runner-mode rules tell the agent never to work
   around a block and to ask the owner, quoting the exact command. The
   dashboard's Blocked card rules on it (owner-questions.md). How a background
   run is allowed what auto mode blocks, since the permissions dialog needs a terminal:

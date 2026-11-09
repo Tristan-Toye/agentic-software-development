@@ -18,6 +18,7 @@ import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runst
 import { readAccounts, usageDir } from "./accounts.ts"
 import { mergeDetectorEnabled, nextMerges, readMergeSeen, writeMergeSeen, type MergedPr } from "./merges.ts"
 import { sh } from "./runs.ts"
+import { logBlock } from "../claude/permission-denied.ts"
 
 const DIR = storeDir()
 const MIN = 60 * 1000
@@ -531,6 +532,7 @@ export async function handle(req: Request): Promise<Response> {
       ? `Denied: do not run ${what}. Carry on without it, and say in the pull request what that leaves unverified.`
       : `Approved${action === "always" ? ", and saved as a standing rule for this repo (" + rule + ")" : ", once"}: you may run ${what}. The safety check blocked it as: ${b.reason || "no reason given"}. I accept that risk for this ${action === "always" ? "command and the ones the rule covers" : "one command"}.`
     if (q) appendOwner(DIR, q.id, { kind: "answer", text, option: "", via: "page" })
+    logBlock({ ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"), event: "block-ruling", run: key, tool: b.tool, target: b.target, tool_use_id: b.id, scope: action, rule: rule || undefined })
     appendFileSync(join(runsDir(), `${key}.jsonl`), JSON.stringify({ ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"), kind: "update", auto: true, event: "block-ruling", tool_use_id: b.id, target: b.target, scope: action, rule, text: `block ruled: ${action}${rule ? " (" + rule + ")" : ""}` }) + "\n")
     emitChange("runs"); emitChange("questions")
     const restarting = action === "always" && runnerActive(run.runner) && body.restart !== false

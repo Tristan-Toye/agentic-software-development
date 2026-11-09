@@ -629,8 +629,9 @@ writeFileSync(join(runsDir, "repoC.W-10.jsonl"), JSON.stringify({ ts: "2026-11-0
 // server over HTTP
 const sdir = mkdtempSync(join(tmpdir(), "asd-oq-srv-"))
 writeFileSync(join(sdir, "demo.W-2.Q1.jsonl"), JSON.stringify(qLine) + "\n")
+const blockLog = join(mkdtempSync(join(tmpdir(), "blocklog-")), "blocks.jsonl")
 const proc = Bun.spawn(["/opt/homebrew/bin/bun", "--no-install", join(import.meta.dir, "..", "questions", "server.ts")], {
-  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: `${repoA}:${repoB}:${repoC}`, ASD_OPEN_WORK_DIR: odir, ASD_RUNS_DIR: runsDir, ASD_CLAUDE_PROJECTS: projects, ASD_RUNS_NO_GH: "1", ASD_RUNNER_BIN: fakeRunner, ASD_FAKE_ARGV: argvLog },
+  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: `${repoA}:${repoB}:${repoC}`, ASD_OPEN_WORK_DIR: odir, ASD_RUNS_DIR: runsDir, ASD_CLAUDE_PROJECTS: projects, ASD_RUNS_NO_GH: "1", ASD_RUNNER_BIN: fakeRunner, ASD_FAKE_ARGV: argvLog, ASD_BLOCK_LOG: blockLog },
   stdout: "pipe", stderr: "pipe",
 })
 const reader = proc.stdout.getReader()
@@ -754,6 +755,8 @@ try {
     const r1 = await rule({ action: "always", rule: "Bash(ssh vm-test *)" })
     const cfg = JSON.parse(readFileSync(join(realpathSync(repoC), ".claude", "settings.local.json"), "utf8"))
     const qa = readFileSync(join(sdir, "repoC.W-9.Q7.jsonl"), "utf8")
+    const bl = readFileSync(blockLog, "utf8").trim().split("\n").map((l) => JSON.parse(l))
+    check("server: a ruling lands in the block log with its scope and rule", bl.some((o: any) => o.event === "block-ruling" && o.run === "repoC.W-9" && o.scope === "always" && o.rule === "Bash(ssh vm-test *)" && o.target === "ssh vm-test rebuild fake-llm"))
     check("server: Always allow saves the narrow rule, answers the open question naming the command, and clears the block",
       r1.status === 200 && cfg.permissions?.allow?.includes("Bash(ssh vm-test *)") && qa.includes("ssh vm-test rebuild fake-llm") && qa.includes('"kind":"answer"') && ((await (await fetch(`${base}/api/timeline/repoC/W-9`)).json()) as any).blocks.length === 0, await r1.text().catch(() => ""))
   }

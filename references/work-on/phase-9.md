@@ -113,8 +113,12 @@
    to the front matter and set `status: done`. Committed mode: commit that
    final state on `X` and push it — the branch is yours, the PR picks the
    commit up, and the record would otherwise die with the worktree. Then
-   `git worktree remove` the base worktree and prune any fan-out branch
-   already merged into it. The branch stays on the remote; the PR is the
+   remove the base worktree, and every fan-out worktree of this run, with
+   `python3 ${PLUGIN_ROOT}/scripts/remove_worktree.py --root <main checkout> <path>...
+   --branch` — never a bare `git worktree remove --force`, which auto mode
+   refuses: the script removes only this repository's `<repo>-…` worktrees,
+   refuses uncommitted work unless `--copy-to` saves it first, and deletes a
+   fan-out branch only once it is merged. The branch stays on the remote; the PR is the
    user's from here.
    **Do not wait for the merge and do not track it.** Review comments on the PR
    are new work, and they get a **fresh worktree** — a new `/work-on` run on this
