@@ -43,6 +43,13 @@ async function act(path: string, body: unknown = {}, method = "POST"): Promise<s
 }
 
 const LIVE = ["running", "waiting", "paused", "queued"]
+/** One run as one line: `repo ID · state · command · account · phase · PR · questions — title — last note`. */
+function line(r: any): string {
+  const b = brief(r)
+  const quiet = r.runner?.state === "queued"
+  return [`${b.repo} ${b.id}`, b.run || b.status, b.phase && `phase ${b.phase}`, b.pr && `PR ${b.pr}`, b.openQuestions && `${b.openQuestions} open question(s)`,
+    b.merge && `merge ${b.merge}`].filter(Boolean).join(" · ") + ` — ${clip(r.title, 70)}` + (!quiet && b.lastNote ? ` — ${clip(b.lastNote, 180)}` : "")
+}
 function brief(r: any): any {
   const rn = r.runner || {}
   const note = (r.updates || []).find((u: any) => !u.auto && u.kind === "update" && u.event !== "owner-message")
@@ -74,19 +81,24 @@ const TOOLS: Tool[] = [
   // ---- read ----
   {
     name: "runs_overview",
-    description: "What is running now, across repos: live runs (running, waiting, paused, queued) with their step, account and last note; /plan runs of deferred items that have no dossier yet; each account's 5-hour and weekly use; how many questions wait for the owner. Add all=\"yes\" to list every dossier, not only live ones.",
+    description: "What is running now, across repos: live runs (running, waiting, paused, queued), one line each with its state, command, account, phase, PR and open questions, and the last note for a run that is not queued; /plan runs of deferred items that have no dossier yet; each account's 5-hour and weekly use; how many questions wait for the owner. Add all=\"yes\" to list every dossier, not only live ones.",
     params: [{ name: "all", type: "string", description: "\"yes\" for every dossier", optional: true }],
     async run(a) {
       const d = (await api("/api/runs")).body
       const runs = (d.runs || []).filter((r: any) => a.all === "yes" || LIVE.includes(r.runner?.state))
       const q = (await api("/api/questions?state=open")).body
-      return out({
+      // One line per run, unindented: a dashboard with a dozen live runs must still fit one tool result whole (the
+      // DM agent's context-mode hook cuts a long result, and a cut overview loses runs).
+      const count: Record<string, number> = {}
+      for (const r of runs) { const s = r.runner?.state || r.status || "?"; count[s] = (count[s] || 0) + 1 }
+      return JSON.stringify({
         scannedAt: d.scannedAt, openQuestions: Array.isArray(q) ? q.length : undefined,
-        runs: runs.map(brief),
+        counts: count,
+        runs: runs.map(line),
         planning: (d.plans || []).map((p: any) => ({ key: p.key, from: `${p.src} ${p.item}`, state: p.state, title: clip(p.title, 80), last: clip(p.last, 200) })),
-        accounts: (d.accounts || []).map((x: any) => ({ name: x.name, email: x.email, next: x.next || undefined, blockedUntil: x.limitedUntil || undefined,
-          fiveHour: x.fiveHour?.usedPct ?? null, week: x.week?.usedPct ?? null, sameLoginAs: x.sameLoginAs, expected: x.expected, runs: x.runs })),
-      })
+        accounts: (d.accounts || []).map((x: any) => ({ name: x.name, next: x.next || undefined, blockedUntil: x.limitedUntil || undefined,
+          fiveHour: x.fiveHour?.usedPct ?? null, week: x.week?.usedPct ?? null, sameLoginAs: x.sameLoginAs, runs: x.runs })),
+      }, null, 0).replace(/,"(runs|planning|accounts)":/g, ',\n"$1":').replace(/","/g, '",\n "')
     },
   },
   {
