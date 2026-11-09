@@ -160,10 +160,18 @@ returns, diff its checklist against yours line by line:
   checklist together, commit on `X`, and only then fan out. Land the revised
   stubs in the dossier with `dossier_edit.py sync-contract <dossier> --root X`
   (exit 0 means every member equals its file's), not by hand-copying blocks.
-- **Its `AMBIGUITY:` lines go to the user as one question.** A docstring
-  with two defensible readings, quoted with both, is the row-3 arbitration
-  you are the wrong party to rule on — you wrote the sentence. Let the user
-  pick, and write the winner into the docstring before the fan-out.
+- **Its `AMBIGUITY:` lines the dossier settles, you settle by citation;
+  the rest go to the user as one question.** The reviewer is blind to the
+  dossier, so many of its ambiguities are already decided there: the
+  approach, a criterion, a recorded ruling. For each, quote the dossier
+  sentence that picks one reading, write that reading into the docstring,
+  and log `AMBIGUITY-SETTLED: <member> — <reading> (dossier § <section>)`.
+  That is not you ruling on your own sentence: the dossier is the referee,
+  and the owner already approved it. Only a reading no dossier sentence
+  picks is the row-3 arbitration you are the wrong party to rule on — you
+  wrote the sentence. Put those to the user as one question, let them pick,
+  and write the winner into the docstring before the fan-out. Never ask the
+  user to approve readings the dossier already settles.
 - **Its `DEFECT:` lines you fix immediately** — unstated visibility,
   unmeasurable words, criteria the contract cannot express.
 

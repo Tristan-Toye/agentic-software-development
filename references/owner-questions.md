@@ -76,6 +76,48 @@ It prints at most 40 lines.
 
 ## Asking, in a run
 
+### What is worth asking
+
+The owner's attention is the scarcest thing in the pipeline: a question
+stops the run and frees its slot until it is answered. Ask only what needs
+the owner's judgement:
+
+- **Technical, architectural or product design:** two defensible designs, a
+  trade-off the dossier does not settle, a scope or behaviour change, a
+  contract ambiguity the plan leaves open (`AMBIGUITY:` with both readings).
+- **Issues:** a blocker you cannot fix inside the dossier's scope, a failure
+  you cannot attribute, evidence that the dossier is wrong or obsolete, a
+  conflict between review lenses.
+- **Actions outside the run's standing authority** (below): merging, a push
+  to a protected branch, a force-push or history rewrite, a Jira create or
+  transition, deleting anything not the run's own, finalizing time logs,
+  anything touching a repository the owner does not own.
+
+Never ask for what the run already has authority for, or what the plan
+already settled. Do it, record it in `## Build log` with the usual line, and
+name it in the run's summary, where the owner sees it without being stopped.
+**A run started by the runner (dashboard Start, `run_dossier.py`) carries
+standing authority for:**
+
+- the worktrees the command creates, and removing them when done;
+- pushing the dossier's own branch, and opening or updating its draft PR
+  into the base or the accepting stub (`SUITE-RUNNER: … push and draft PR:
+  yes`, with the source `runner start`);
+- the readings, defaults and choices the dossier already records (its
+  contract, its criteria, its rulings): carry them out, never re-confirm
+  them. Only a reading the dossier leaves open is a question;
+- a graduation issue in the plugin repository (`agentic-software-development`,
+  the owner's): open it and record its number;
+- a repository rule written from this build (Phase 8b): commit it on the
+  dossier's branch; the owner ratifies it by reviewing and merging the PR.
+
+A batch question ("approve these 6 readings", "may I push and open the
+draft PR", "may I open the issue") is a sign the answer is already given:
+check the dossier and this list before asking. Under a terminal run without
+the runner, the gates of the command still ask, once, at its start.
+
+### Steps
+
 1. Ask as soon as the question is known, with every option's consequence and
    your recommendation, then go on with whatever does not depend on it.
 2. Record `QUESTION: <id> — <question>` in the dossier's build log.

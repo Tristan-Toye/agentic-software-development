@@ -166,8 +166,11 @@ instead. You never write the plugin from inside a build. Record a
   should land in. `## Acceptance` — what must change in the plugin for the
   issue to close.
 
-One issue per lesson, so each closes independently. **Create the issue only
-on the user's explicit yes** — it is an external action like any other.
+One issue per lesson, so each closes independently. **Under the runner,
+create the issue without asking**: the plugin repository is the owner's, and
+the run's Start is the yes for it (`references/owner-questions.md`, "What is
+worth asking"); name it in your next update. In a terminal run without the
+runner, create it only on the user's explicit yes.
 Log lines are not schedulable and nobody closes a log line; the issue is the
 forcing function that makes the graduation loop actually close.
 
