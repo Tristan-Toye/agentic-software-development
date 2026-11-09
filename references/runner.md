@@ -254,6 +254,34 @@ the recorded checkpoints.
 - **Limits:** `--max-stages` caps the number of stages a run starts
   (default 20). A crash of the process counts as `FAILED`.
 
+## Disk space
+
+Every worktree a run makes has its own build output (`target/` for Rust,
+6–21 GB each), and a fan-out makes several (`<repo>-<ID>-P<n>`, `-TE-*`,
+`-MUT`). Concurrent runs fill the disk fast, and a full disk breaks every run
+at once, the VM included. Two guards keep that from happening:
+
+- **The runner's floor.** Before it starts a stage, `take_slot` checks the free
+  space on the runs directory's disk. Below `ASD_DISK_FLOOR_GIB` (default 30)
+  the run goes `queued` with the event "queued: the disk has X GiB free …",
+  starts `scripts/disk_guard.py reclaim` (at most every 5 minutes;
+  `ASD_DISK_NO_RECLAIM` turns that off), and starts once there is room.
+- **The dashboard's watch.** Every `ASD_DISK_EVERY_MS` (default 5 minutes;
+  `ASD_DISK_WATCH=0` turns it off) the server reads
+  `disk_guard.py status --json`. Below `ASD_DISK_RECLAIM_GIB` (default 80) it
+  starts a reclaim; below the floor it notifies the owner once and the home
+  page shows a banner. The reading is `disk` in `GET /api/runs`.
+
+`disk_guard.py reclaim` removes build directories (`ASD_DISK_BUILD_DIRS`,
+default `target`) in this order until free space reaches the reclaim target:
+worktrees with no live run, then a live run's sub-worktrees, then the main
+checkouts. It never touches a live run's own worktree, nor anything written in
+the last `ASD_DISK_IDLE_MIN` minutes (default 60). One reclaim runs at a time
+(a lock in the runs directory). After that it runs
+`<main>/.agentic/reclaim.sh <checkouts…>` when the repo has one, so a repo can
+clean what only it knows, such as build output inside a VM.
+`disk_guard.py status` lists what a reclaim would remove.
+
 ## Runner-mode rules (the appended system prompt)
 
 The prompt tells the orchestrator these rules:

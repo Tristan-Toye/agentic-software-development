@@ -635,7 +635,7 @@ const cdir = mkdtempSync(join(tmpdir(), "chat-"))
 const fakeClaude = join(cdir, "claude.sh")
 writeFileSync(fakeClaude, `#!/bin/sh\necho "$*" >> ${cdir}/argv\nq=$(cat)\nprintf '{"result":"**echo:** %s"}\\n' "$q"\n`, { mode: 0o755 })
 const proc = Bun.spawn(["/opt/homebrew/bin/bun", "--no-install", join(import.meta.dir, "..", "questions", "server.ts")], {
-  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: `${repoA}:${repoB}:${repoC}`, ASD_OPEN_WORK_DIR: odir, ASD_RUNS_DIR: runsDir, ASD_CLAUDE_PROJECTS: projects, ASD_RUNS_NO_GH: "1", ASD_RUNNER_BIN: fakeRunner, ASD_FAKE_ARGV: argvLog, ASD_BLOCK_LOG: blockLog, ASD_CLAUDE_BIN: fakeClaude, ASD_CHAT_DIR: join(cdir, "chats"), ASD_DM_AGENT_FILE: join(cdir, "dm-agent.json") },
+  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_DISK_WATCH: "0", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: `${repoA}:${repoB}:${repoC}`, ASD_OPEN_WORK_DIR: odir, ASD_RUNS_DIR: runsDir, ASD_CLAUDE_PROJECTS: projects, ASD_RUNS_NO_GH: "1", ASD_RUNNER_BIN: fakeRunner, ASD_FAKE_ARGV: argvLog, ASD_BLOCK_LOG: blockLog, ASD_CLAUDE_BIN: fakeClaude, ASD_CHAT_DIR: join(cdir, "chats"), ASD_DM_AGENT_FILE: join(cdir, "dm-agent.json") },
   stdout: "pipe", stderr: "pipe",
 })
 const reader = proc.stdout.getReader()
