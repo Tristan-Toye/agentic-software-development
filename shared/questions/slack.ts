@@ -4,6 +4,7 @@ import type { Question } from "./store.ts"
 export type OwnerAction =
   | { type: "owner"; id: string; kind: "answer" | "followup"; text: string; option?: string; channel?: string; threadTs?: string }
   | { type: "pointer"; channel: string; threadTs?: string }
+  | { type: "ask"; channel: string; ts: string; threadTs?: string; text: string }
   | { type: "status"; channel: string; ts?: string; threadTs?: string; id?: string; repo?: string; refresh?: boolean }
   | { type: "reconnect" }
   | { type: "hello" }
@@ -20,6 +21,7 @@ export function interpretEnvelope(
   env: any,
   lookup: (channel: string, threadTs: string) => string | null,
   ownerUser = "",
+  opts: { dmAgent?: boolean } = {},
 ): Interpreted {
   const ack = typeof env?.envelope_id === "string" ? { envelope_id: env.envelope_id } : null
   const none: Interpreted = { ack, action: { type: "none" } }
@@ -37,6 +39,10 @@ export function interpretEnvelope(
       if (!text) return none
       const threadTs: string | undefined = ev.thread_ts && ev.thread_ts !== ev.ts ? ev.thread_ts : undefined
       const id = threadTs ? lookup(ev.channel, threadTs) : null
+      // In the DM, everything outside a question's thread goes to the DM agent (dmagent.ts): a top-level message
+      // starts a conversation, a reply in its thread continues it. Without the agent (ASD_DM_AGENT=0) the old
+      // status command and pointer apply.
+      if (!id && ev.channel_type === "im" && opts.dmAgent) return { ack, action: { type: "ask", channel: ev.channel, ts: ev.ts, threadTs, text } }
       // "status" (or "status W-128") outside a question's thread asks for a run update.
       const st = !id ? text.match(STATUS_RE) : null
       if (st) return { ack, action: { type: "status", channel: ev.channel, ts: ev.ts, threadTs, id: st[1]?.toUpperCase() } }
@@ -160,6 +166,7 @@ export type Handlers = {
   onAction: (a: OwnerAction) => Promise<void> | void
   lookup: (channel: string, threadTs: string) => string | null
   ownerUser: string
+  dmAgent?: boolean
   log: (m: string) => void
 }
 
@@ -180,7 +187,7 @@ export async function runSocket(appToken: string, h: Handlers): Promise<never> {
           }
           const ev = env?.payload?.event
           h.log(`slack envelope ${env?.type}${ev ? ` event=${ev.type} channel_type=${ev.channel_type} subtype=${ev.subtype ?? "-"} thread=${ev.thread_ts ? "yes" : "no"} bot=${ev.bot_id ? "yes" : "no"}` : ""}`)
-          const { ack, action } = interpretEnvelope(env, h.lookup, h.ownerUser)
+          const { ack, action } = interpretEnvelope(env, h.lookup, h.ownerUser, { dmAgent: h.dmAgent })
           if (action.type !== "none" && action.type !== "hello") h.log(`slack action ${action.type}`)
           if (ack) ws.send(JSON.stringify(ack))
           if (action.type === "hello") delay = 1000
