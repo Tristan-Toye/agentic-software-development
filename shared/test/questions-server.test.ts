@@ -630,8 +630,12 @@ writeFileSync(join(runsDir, "repoC.W-10.jsonl"), JSON.stringify({ ts: "2026-11-0
 const sdir = mkdtempSync(join(tmpdir(), "asd-oq-srv-"))
 writeFileSync(join(sdir, "demo.W-2.Q1.jsonl"), JSON.stringify(qLine) + "\n")
 const blockLog = join(mkdtempSync(join(tmpdir(), "blocklog-")), "blocks.jsonl")
+// A fake `claude -p` for the dashboard chat: it logs its argv and answers with what it was asked.
+const cdir = mkdtempSync(join(tmpdir(), "chat-"))
+const fakeClaude = join(cdir, "claude.sh")
+writeFileSync(fakeClaude, `#!/bin/sh\necho "$*" >> ${cdir}/argv\nq=$(cat)\nprintf '{"result":"**echo:** %s"}\\n' "$q"\n`, { mode: 0o755 })
 const proc = Bun.spawn(["/opt/homebrew/bin/bun", "--no-install", join(import.meta.dir, "..", "questions", "server.ts")], {
-  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: `${repoA}:${repoB}:${repoC}`, ASD_OPEN_WORK_DIR: odir, ASD_RUNS_DIR: runsDir, ASD_CLAUDE_PROJECTS: projects, ASD_RUNS_NO_GH: "1", ASD_RUNNER_BIN: fakeRunner, ASD_FAKE_ARGV: argvLog, ASD_BLOCK_LOG: blockLog },
+  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: `${repoA}:${repoB}:${repoC}`, ASD_OPEN_WORK_DIR: odir, ASD_RUNS_DIR: runsDir, ASD_CLAUDE_PROJECTS: projects, ASD_RUNS_NO_GH: "1", ASD_RUNNER_BIN: fakeRunner, ASD_FAKE_ARGV: argvLog, ASD_BLOCK_LOG: blockLog, ASD_CLAUDE_BIN: fakeClaude, ASD_CHAT_DIR: join(cdir, "chats"), ASD_DM_AGENT_FILE: join(cdir, "dm-agent.json") },
   stdout: "pipe", stderr: "pipe",
 })
 const reader = proc.stdout.getReader()
@@ -785,6 +789,31 @@ try {
   const dp = await fetch(`${base}/dossier/repoC/W-9`)
   const dh = await dp.text()
   check("server: /dossier/<repo>/<id> renders read-only HTML", dp.status === 200 && dh.includes("Nine is broken.") && dh.includes("<h2>Problem</h2>") && (await fetch(`${base}/dossier/repoC/NOPE`)).status === 404 && (await fetch(`${base}/dossier/repoC/W-9`, { headers: { host: "evil.example" } })).status === 403)
+  // ---- the dashboard chat: the DM agent with the page as its channel ----
+  const waitChat = async (id: string, n: number) => {
+    for (let i = 0; i < 100; i++) {
+      const c = await (await fetch(`${base}/api/chat/${id}`)).json() as any
+      if (c.messages?.length >= n && !c.messages.some((m: any) => m.pending)) return c
+      await Bun.sleep(50)
+    }
+    return null
+  }
+  check("server: /chat serves the page", (await fetch(`${base}/chat`)).status === 200 && (await fetch(`${base}/chat/abc123def`)).status === 200)
+  const c1 = await (await fetch(`${base}/api/chat`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "how is W-1?" }) })).json() as any
+  const conv1 = c1.id ? await waitChat(c1.id, 2) : null
+  check("server: chat: a new message starts a conversation and the agent's answer lands in it",
+    !!conv1 && conv1.title === "how is W-1?" && conv1.messages[0].from === "owner" && conv1.messages[1].from === "agent" && conv1.messages[1].text.includes("echo:") && conv1.messages[1].html.includes("<strong>"))
+  await fetch(`${base}/api/chat`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "and W-2?", id: c1.id }) })
+  const conv2 = await waitChat(c1.id, 4)
+  const cargv = readFileSync(join(cdir, "argv"), "utf8").trim().split("\n")
+  check("server: chat: a message in a conversation resumes its session, like a DM thread reply",
+    !!conv2 && conv2.messages.length === 4 && cargv.length === 2 && cargv[0].includes("--session-id") && cargv[1].includes("--resume") && cargv[0].split("--session-id ")[1].split(" ")[0] === cargv[1].split("--resume ")[1].split(" ")[0])
+  const lst = await (await fetch(`${base}/api/chat`)).json() as any
+  check("server: chat: the list shows the conversation with its turns", lst.enabled === true && lst.chats.length === 1 && lst.chats[0].turns === 2)
+  const bad1 = await fetch(`${base}/api/chat`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "x", id: "../etc" }) })
+  const bad2 = await fetch(`${base}/api/chat`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "x", id: "nosuchchat1" }) })
+  const bad3 = await fetch(`${base}/api/chat`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "  " }) })
+  check("server: chat: a bad id, an unknown conversation and an empty message are refused", bad1.status === 400 && bad2.status === 404 && bad3.status === 400)
   const bad = await fetch(`${base}/api/questions`, { headers: { host: "evil.example" } })
   check("server: foreign Host header refused", bad.status === 403)
 } finally {
@@ -795,6 +824,7 @@ try {
   rmSync(odir, { recursive: true, force: true })
   rmSync(runsDir, { recursive: true, force: true })
   rmSync(udir, { recursive: true, force: true })
+  rmSync(cdir, { recursive: true, force: true })
 }
 console.log(failed ? `FAIL (${failed})` : "PASS (all cases)")
 process.exit(failed ? 1 : 0)

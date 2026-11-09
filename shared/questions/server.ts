@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
+import { listChats, readChat, say } from "./pagechat.ts"
 import { api, apiGet, channelNameFor, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
 import { readAccounts, usageDir } from "./accounts.ts"
@@ -286,10 +287,11 @@ const DM_AGENT = process.env.ASD_DM_AGENT !== "0"
 const dmDeps: DmDeps = {
   post: async (channel, threadTs, text) => (await api("chat.postMessage", botToken, { channel, thread_ts: threadTs, text })).ts,
   update: async (channel, ts, text) => { await api("chat.update", botToken, { channel, ts, text }) },
-  configDir: () => (readAccounts([]).find((a) => a.next) ?? readAccounts([])[0]).dir,
+  configDir: () => (readAccounts([]).find((a) => a.next) ?? readAccounts([])[0])?.dir ?? process.env.CLAUDE_CONFIG_DIR ?? join(process.env.HOME || "", ".claude"),
   addDirs: async () => [...new Set((await allRuns()).map((r) => r.main).filter(Boolean))],
   log,
 }
+const { post: _p, update: _u, ...chatBase } = dmDeps
 
 // ---- Slack inbound ----
 async function onSlackAction(a: OwnerAction): Promise<void> {
@@ -366,7 +368,25 @@ export async function handle(req: Request): Promise<Response> {
   const path = url.pathname
   const gr = path.match(/^\/repo\/([\w.-]+)\/graph$/)
   if (req.method === "GET" && gr) return new Response(null, { status: 302, headers: { location: `/repo/${gr[1]}` } })
-  if (req.method === "GET" && (path === "/" || path === "/questions" || /^\/repo\/[\w.-]+(\/.*)?$/.test(path))) return html(PAGE)
+  if (req.method === "GET" && (path === "/" || path === "/questions" || /^\/chat(\/[a-z0-9]+)?$/.test(path) || /^\/repo\/[\w.-]+(\/.*)?$/.test(path))) return html(PAGE)
+  // The dashboard chat (pagechat.ts): the Slack DM agent, with this page as its channel.
+  if (req.method === "GET" && path === "/api/chat") return json({ enabled: DM_AGENT, chats: listChats() })
+  const cg = path.match(/^\/api\/chat\/([a-z0-9]{6,40})$/)
+  if (req.method === "GET" && cg) {
+    const c = readChat(cg[1])
+    return c ? json({ ...c, messages: c.messages.map((m) => ({ ...m, html: renderMarkdown(m.text) })) }) : json({ error: "no such conversation" }, 404)
+  }
+  if (req.method === "POST" && path === "/api/chat") {
+    if (!DM_AGENT) return json({ error: "the agent is off (ASD_DM_AGENT=0)" }, 503)
+    const b = (await req.json().catch(() => ({}))) as { text?: unknown; id?: unknown }
+    const text = typeof b.text === "string" ? b.text.trim() : ""
+    if (!text) return json({ error: "empty message" }, 400)
+    if (b.id !== undefined && (typeof b.id !== "string" || !/^[a-z0-9]{6,40}$/.test(b.id))) return json({ error: "bad conversation id" }, 400)
+    try {
+      const r = await say(text.slice(0, 20_000), b.id as string | undefined, chatBase, () => emitChange("chat"))
+      return json({ ok: true, id: r.id })
+    } catch (e) { return json({ error: (e as Error).message }, 404) }
+  }
   if (req.method === "GET" && path === "/api/events") return events(req)
   if (req.method === "GET" && path === "/api/runs") {
     // Live runs carry their agent counts (this stage); the accounts carry their windows and which runs use them.
