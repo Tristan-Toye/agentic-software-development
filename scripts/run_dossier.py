@@ -57,6 +57,7 @@ import os
 import queue
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -531,6 +532,38 @@ def slot_census(me: str) -> tuple[int, list[tuple[tuple[int, str], str]]]:
     return held, sorted(queued)
 
 
+# ---- the disk floor: no stage starts below ASD_DISK_FLOOR_GIB free (default 30) ----
+# A dozen runs each building a workspace filled a 926 GB disk: builds, commits and the VM all failed at once. A run
+# below the floor queues like a run without a slot, starts scripts/disk_guard.py reclaim (build output nobody uses),
+# and starts its stage once the disk has room again.
+
+
+def disk_floor() -> float:
+    try:
+        return float(os.environ.get("ASD_DISK_FLOOR_GIB") or 30)
+    except ValueError:
+        return 30.0
+
+
+def disk_free_gib(path: str) -> float | None:
+    try:
+        return shutil.disk_usage(path).free / 2**30
+    except OSError:
+        return None
+
+
+def start_reclaim() -> None:
+    """Start disk_guard.py reclaim in the background (it holds a lock, so a second one exits at once)."""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "disk_guard.py")
+    if os.environ.get("ASD_DISK_NO_RECLAIM") or not os.path.exists(script):
+        return
+    try:
+        subprocess.Popen([sys.executable, script, "reclaim"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
 # owner_wait's code for "the owner wrote to the run" (not an answer).
 MESSAGE_RC = 20
 # Commands that take an argument list after the dossier id (`--items`).
@@ -794,15 +827,32 @@ class Runner:
         """Wait for a run slot (max_live); False when the run was stopped while it waited. `first`: the owner just
         answered this run, so it queues ahead of every run not answered (it already waited on the owner)."""
         cap = max_live()
-        if cap == 0:
-            return True
         mine: tuple[int, str] | None = None
+        low_said, reclaimed = False, 0.0
         while not self.stopping:
+            free, floor = disk_free_gib(self.root), disk_floor()
+            low = free is not None and free < floor
+            if low:
+                if time.time() - reclaimed > 300:
+                    start_reclaim(); reclaimed = time.time()
+                if not low_said:
+                    if not mine:
+                        since = now()
+                        mine = queue_order({"queued_since": since, "queued_first": first})
+                        self.save(state="queued", queued_since=since, queued_first=first or None)
+                    self.event(f"queued: the disk has {free:.0f} GiB free, below the {floor:.0f} GiB floor (ASD_DISK_FLOOR_GIB); "
+                               "reclaiming unused build output, and this run starts once the disk has room", "queued")
+                    low_said = True
+                time.sleep(float(os.environ.get("ASD_RUNNER_SLOT_POLL") or 10))
+                continue
+            if cap == 0:
+                self.save(state="running", queued_since=None, queued_first=None)
+                return True
             held, queued = slot_census(self.key)
             ahead = [k for o, k in queued if mine and o < mine]
             if held < cap and (not mine or not ahead):
                 if mine:
-                    self.event(f"slot free; {held + 1} of {cap} runs working", "running")
+                    self.event(f"{'disk has room' if low_said else 'slot free'}; {held + 1} of {cap} runs working", "running")
                 self.save(state="running", queued_since=None, queued_first=None)
                 return True
             if not mine:
@@ -2160,6 +2210,14 @@ def selftest() -> int:
                         (queue_order({"queued_since": "2026-11-09T10:30:00Z", "queued_first": True}), "answered-earlier")])
         check("slots: an answered run queues ahead of runs queued before it, answered runs among themselves by time",
               [k for _, k in order] == ["answered-earlier", "answered", "old"])
+        # ---- the disk floor: below it the run queues (no claude), and starts once the disk has room ----
+        env["ASD_DISK_FLOOR_GIB"] = "1e12"; env["ASD_DISK_NO_RECLAIM"] = "1"
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-38")
+        low = until(lambda: any("below the" in t and "floor" in t for t in texts("W-38")), 20)
+        check("disk: below the floor the run is queued, its claude not started", bool(low) and state_of("W-38").get("state") == "queued" and not os.path.exists(os.path.join(fdir, "pid.1")))
+        p.kill(); p.wait()
+        env.pop("ASD_DISK_FLOOR_GIB"); env.pop("ASD_DISK_NO_RECLAIM")
         env.pop("ASD_RUNNER_MAX_LIVE"); env.pop("ASD_RUNNER_SLOT_POLL")
 
         # ---- accounts bound to an email: a dir logged in as someone else, or as a twin, is skipped ----

@@ -23,6 +23,7 @@ main{max-width:1380px;margin:0 auto;padding:8px 20px 64px}
 h1{font-size:1.45rem;margin:20px 0 4px}h2{font-size:.78rem;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);margin:30px 0 12px;display:flex;align-items:center;gap:8px}
 h2 .n{background:var(--chip);border-radius:10px;padding:0 8px;font-size:12px;letter-spacing:0;color:var(--fg)}
 .lead{color:var(--mut);margin:0 0 6px;max-width:70ch}
+.diskbar{border:1px solid var(--bad,#c0392b);border-left-width:4px;border-radius:10px;padding:10px 14px;margin:10px 0;background:var(--card)}
 .mut{color:var(--mut)}.small{font-size:12px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
 .card{position:relative;display:flex;flex-direction:column;gap:7px;padding:16px 16px 14px;border:1px solid var(--bd);border-radius:12px;background:var(--card);box-shadow:var(--shadow);color:var(--fg);text-decoration:none;min-width:0;transition:box-shadow .15s,transform .15s,border-color .15s}
@@ -315,7 +316,7 @@ function homeView() {
       h('span', { class: 'meta' }, [meta]), h('span', { class: 'chips' }, cs)]));
   });
   return h('div', {}, [h('h1', {}, ['Pipeline']), h('p', { class: 'lead' }, ['Pick a repo to see what is running, what is next and what is done.']),
-    accountsView(), runningView(), h('div', { class: 'grid' }, cards),
+    diskView(), accountsView(), runningView(), h('div', { class: 'grid' }, cards),
     section('Open questions', open.length, queueView(''), 'queue')]);
 }
 /* The Claude logins: which one the next stage starts on, the 5-hour and weekly windows, and the runs on each. */
@@ -327,6 +328,12 @@ function meter(label, w) {
   const tone = pct === null ? '' : pct >= 90 ? 'bad' : pct >= 70 ? 'warn' : 'ok';
   return h('div', { class: 'meter' }, [h('div', { class: 'mhd' }, [h('span', { class: 'ml' }, [label]), h('span', { class: 'mv' }, [pct === null ? (w && w.status === 'reset' ? 'reset — not read since' : '—') : Math.round(pct) + '%'])]),
     h('div', { class: 'mbar' }, [h('span', { class: 'mfill ' + tone, style: 'width:' + (pct || 0) + '%' })]), h('div', { class: 'small mut' }, [w && w.resetsAt ? fmtReset(w.resetsAt) : ''])]);
+}
+function diskView() {
+  const d = S.disk; if (!d || !d.low) return null;
+  return h('div', { class: 'diskbar', 'data-k': 'disk' }, [h('b', {}, ['Disk almost full: ' + Math.round(d.freeGiB) + ' GiB free']),
+    ' — below the ' + Math.round(d.floorGiB) + ' GiB floor, so runs queue instead of starting a stage. ',
+    d.reclaiming ? 'Reclaiming unused build output now…' : (d.reclaimable ? d.reclaimable + ' idle build folder(s) can go; the next check reclaims them.' : 'Nothing idle is left to reclaim: free space by hand (python3 scripts/disk_guard.py status lists what is kept and why).')]);
 }
 function accountsView() {
   const as = S.accounts || []; if (!as.length) return null;
@@ -1051,7 +1058,7 @@ async function loadDetail() {
 async function load(what) {
   const all = !what; const w = new Set(what || []); const jobs = [];
   if (all || w.has('questions')) jobs.push(fetchJ('/api/questions?state=all').then(d => { if (Array.isArray(d)) S.q = d; }));
-  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.accounts = d.accounts || []; S.plans = d.plans || []; S.usageBusy = !!d.usageBusy; } }));
+  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.accounts = d.accounts || []; S.disk = d.disk || null; S.plans = d.plans || []; S.usageBusy = !!d.usageBusy; } }));
   if (all || w.has('stubs') || w.has('scan')) jobs.push(fetchJ('/api/stubs').then(d => { if (d && d.repos) S.stubs = d; }));
   if ((all || w.has('chat')) && R.kind === 'chat') jobs.push(loadChat());
   await Promise.all(jobs);

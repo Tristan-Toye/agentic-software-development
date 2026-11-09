@@ -198,7 +198,8 @@ the runner, the gates of the command still ask, once, at its start.
   - `GET /api/questions?state=open|all`
   - `GET /api/questions/<id>`
   - `GET /api/runs`: all dossiers with stage, session, PR, updates, runner
-    state and answered Q&A as JSON; `GET /api/stubs`: stubs per repo and the
+    state and answered Q&A as JSON, plus `disk` (the last disk reading, see
+    `references/runner.md`, "Disk space"); `GET /api/stubs`: stubs per repo and the
     open-work repos; `GET /open-work/<repo>`; `GET /dossier/<repo>/<ID>`
   - `POST /api/questions/<id>/messages` with `{"kind": "followup"|"answer", "text": "...", "option": "A"}`.
 

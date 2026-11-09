@@ -16,7 +16,7 @@ writeFileSync(join(sdir, "demo.W-2.Q1.jsonl"), JSON.stringify(q) + "\n")
 writeFileSync(join(sdir, "demo.W-2.Q2.jsonl"), JSON.stringify({ ...q, text: "And this?" }) + "\n")
 
 const dash = Bun.spawn(["bun", "--no-install", join(root, "shared", "questions", "server.ts")], {
-  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "",
+  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_DISK_WATCH: "0", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "",
     ASD_RUNS_ROOTS: "", ASD_RUNS_DIR: runsDir, ASD_CLAUDE_PROJECTS: mkdtempSync(join(tmpdir(), "runs-mcp-p-")), ASD_RUNS_NO_GH: "1", ASD_STUBS_NO_GIT: "1",
     ASD_MERGE_DETECTOR: "0", ASD_STUB_FETCH_SECS: "0", ASD_VIEW_CACHE_DIR: mkdtempSync(join(tmpdir(), "runs-mcp-v-")), ASD_OPEN_WORK_DIR: mkdtempSync(join(tmpdir(), "runs-mcp-o-")) },
   stdout: "pipe", stderr: "pipe",
