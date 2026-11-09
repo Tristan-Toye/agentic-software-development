@@ -1,16 +1,17 @@
 // The dashboard's disk watch (shared/questions/disk.ts), with fake readings: no real disk is read or cleaned.
-import { checkDisk, resetDisk, type DiskDeps } from "../questions/disk.ts"
+import { checkDisk, resetDisk, sweepDisk, type DiskDeps } from "../questions/disk.ts"
 
 const fails: string[] = []
 const check = (name: string, ok: boolean, extra = "") => { console.log((ok ? "PASS " : "FAIL ") + "disk: " + name); if (!ok) fails.push(name + (extra ? " — " + extra : "")) }
 
 function deps(readings: any[]) {
-  const log = { reclaims: 0, notes: [] as string[], changes: 0 }
+  const log = { reclaims: 0, sweeps: 0, notes: [] as string[], changes: 0 }
   let i = 0
   let release: () => void = () => {}
   const d: DiskDeps = {
     status: async () => readings[Math.min(i++, readings.length - 1)],
     reclaim: () => { log.reclaims++; return new Promise<void>((r) => { release = r }) },
+    sweep: () => { log.sweeps++; return new Promise<void>((r) => { release = r }) },
     notify: (t) => { log.notes.push(t) },
     changed: () => { log.changes++ },
   }
@@ -51,6 +52,16 @@ resetDisk()
 {
   const { d } = deps([null])
   check("a failed status keeps the last reading (none yet)", (await checkDisk(d)) === null)
+}
+resetDisk()
+{
+  const { d, log, release } = deps([st(200)])
+  await checkDisk(d)
+  const first = sweepDisk(d)
+  check("a sweep runs whatever the free space", log.sweeps === 1)
+  check("a second sweep while one runs starts no other", (await sweepDisk(d)) === false && log.sweeps === 1)
+  release(); await first
+  check("the reading records when the sweep ended", !!(await checkDisk(d))?.lastSweep)
 }
 
 if (fails.length) { console.log("FAIL\n  " + fails.join("\n  ")); process.exit(1) }

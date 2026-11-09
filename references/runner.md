@@ -282,6 +282,19 @@ the last `ASD_DISK_IDLE_MIN` minutes (default 60). One reclaim runs at a time
 clean what only it knows, such as build output inside a VM.
 `disk_guard.py status` lists what a reclaim would remove.
 
+**The sweep.** A repository's own build output can fill while the host still
+has room: a VM's disk holds a build directory per worktree and, as a sparse
+image, gives nothing back to the host until it is trimmed. So the dashboard
+also runs `disk_guard.py sweep` every `ASD_DISK_SWEEP_EVERY_MS` (default one
+hour, first a minute after start; `ASD_DISK_SWEEP=0` turns it off), whatever
+the free space. It runs each repository's `.agentic/reclaim.sh` with the
+dossier worktrees whose run is no longer live and whose host build has been
+idle for `ASD_DISK_IDLE_MIN`. It never names a live run's worktrees, a
+worktree that is no dossier's, or the main checkout. With no such worktree the
+hook still runs, with no arguments, so the repository can clean its orphans
+and trim. A sweep and a reclaim share the lock, and the reading's `lastSweep`
+says when the last sweep ended.
+
 ## Runner-mode rules (the appended system prompt)
 
 The prompt tells the orchestrator these rules:
