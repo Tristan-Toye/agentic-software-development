@@ -84,7 +84,9 @@ so a typo cannot pass as green. Only a `cargo` command takes `--test`.
 after the fix — Phase 7's proof for a `DEFECT` claim, and the same shape as the
 test-strength gate's red run. The names it judges are the `--test` names (cargo) or
 `--proof-name NAME` (any runner whose result lines name the test: libtest `test NAME ...
-ok|FAILED`, pytest `-v` `path::name PASSED|FAILED` or `FAILED path::name`). It appends one
+ok|FAILED`, pytest `-v` `path::name PASSED|FAILED` or `FAILED path::name`, a shell suite's
+`FAIL: <label> ...`, `ok: <label>`, `PASS: <label>` or `<label> FAIL: ...`, where the name must
+stand alone in the label). It appends one
 line and replaces the exit code:
 
     PROOF: red as expected — catalog_empty_is_refused                       exit 0
@@ -268,9 +270,15 @@ def outcomes(log_text: str, names: list[str]) -> dict[str, str | None]:
     lines += [(m[0], "ok" if m[1] == "PASSED" else "FAILED")
               for m in re.findall(r"^(\S+::\S+) (PASSED|FAILED)\b", log_text, re.M)]
     lines += [(m, "FAILED") for m in re.findall(r"^FAILED (\S+::\S+)", log_text, re.M)]
+    # Shell suites: `FAIL: <label> — why`, `ok: <label>`, `PASS: <label>`, or `<label> FAIL: why`. The label is
+    # free text, so a name must stand alone in it (`G1` is not `G10`).
+    shell = []
+    for pre, word, rest in re.findall(r"^(?:(\S+) )?(FAIL|FAILED|ok|PASS|PASSED):[ \t]*(.*)$", log_text, re.M):
+        shell.append((pre or rest, "FAILED" if word.startswith("FAIL") else "ok"))
     out: dict[str, str | None] = {}
     for n in names:
-        seen = {status for test, status in lines if n in test}
+        alone = re.compile(rf"(?<![\w-]){re.escape(n)}(?![\w-])")
+        seen = {status for test, status in lines if n in test} | {status for label, status in shell if alone.search(label)}
         out[n] = "failed" if "FAILED" in seen else "ok" if "ok" in seen else None
     return out
 
@@ -1235,6 +1243,13 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     py_log = "tests/test_a.py::test_empty PASSED\nFAILED tests/test_a.py::test_bad - AssertionError\n"
     check("proof: pytest lines both ways",
           proof(py_log, ["test_empty"], "green")[0] and proof(py_log, ["test_bad"], "red")[0])
+    sh_log = ("ok: G1 — quiet source\nFAIL: G10 — the source must print nothing on either stream: x\n"
+              "PASS: stale binary is rebuilt\ncase_down FAIL: compose down was not called\ntest result: FAILED. 1 passed\n")
+    check("proof: shell suites' FAIL:/ok:/PASS: lines both ways",
+          proof(sh_log, ["G10"], "red")[0] and proof(sh_log, ["G1"], "green")[0]
+          and proof(sh_log, ["stale binary is rebuilt"], "green")[0] and proof(sh_log, ["case_down"], "red")[0])
+    check("proof: a shell label must stand alone (G1 is not G10)", outcomes(sh_log, ["G1"])["G1"] == "ok")
+    check("proof: a name no shell line carries still did not run", proof(sh_log, ["G2"], "red")[1].startswith("PROOF REFUSED"))
     print(f"selftest: {len(failures_list)} failure(s)")
     return 1 if failures_list else 0
 
