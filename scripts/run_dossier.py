@@ -1137,12 +1137,24 @@ class Runner:
         quiet = False   # the last turn ended without a RUNNER: line
         nudges = 0
         holds = 0       # stage ends held while background work ran
+        bg_max = float(os.environ.get("ASD_RUNNER_BG_MAX") or 14400)
+        bg_waited = 0.0  # quiet seconds spent waiting on background work the transcript shows in flight
         while True:
             kind, val = self.read_turn(q, extra, idle if quiet else None)
             extra = False
+            if kind != "idle":
+                bg_waited = 0.0
             if kind == "idle":
-                # A turn ended "waiting" on a background command or workflow, and nothing
-                # re-invoked the session within the idle window: nudge it, twice at most.
+                # A turn ended "waiting" on a background command or workflow, and nothing re-invoked the session
+                # within the idle window. While the transcript still shows that work in flight, the quiet is the
+                # work (a fix round of 20 minutes is normal): keep waiting, up to ASD_RUNNER_BG_MAX. Otherwise nudge
+                # it, twice at most.
+                bg = self.background()
+                if bg and bg_waited < bg_max:
+                    if bg_waited == 0:
+                        self.log(f"quiet, but {len(bg)} background task(s) still running: " + "; ".join(bg[:4]) + "; waiting for them")
+                    bg_waited += idle
+                    continue
                 if nudges >= 2:
                     kill_group(self.proc)
                     self.end_process()
@@ -1194,6 +1206,7 @@ class Runner:
                 quiet = True
                 continue
             quiet = False
+            nudges = 0   # it answered with a RUNNER: line; a later quiet spell gets its own two nudges
             verb, rest = mk
             if verb in ("STAGE-DONE", "DONE"):
                 # #239: ending the process kills the background work it started, silently. Hold the end until it is done.
@@ -2266,6 +2279,28 @@ def selftest() -> int:
         check("dropped notice: sent on as a message, the session wakes and finishes, once",
               rc == 0 and sum(1 for m in msgs(1) if m.startswith("BACKGROUND TASK FINISHED") and "bxdrop1" in m) == 1
               and any(t.startswith("sent on 1 dropped background notice") for t in texts("W-38")))
+
+        # ---- quiet while a workflow runs: no nudge, no failure, until it notifies ----
+        launch = [{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "tu_wf", "name": "Workflow", "input": {"name": "phase4-wave"}}]}},
+                  {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu_wf", "content": "Workflow launched in background with ID: wfx1"}]}}]
+        with open(os.path.join(tdir2, "sess-1.jsonl"), "w") as fh:
+            fh.write("".join(json.dumps(o) + "\n" for o in launch))
+        scenario([{"turns": [[{"final": "waiting for the fix round"}], [{"final": "RUNNER: DONE"}]]}])
+        env.update(ASD_TRANSCRIPTS_DIR=os.path.join(tmp, "projects2"), ASD_RUNNER_IDLE="0.5")
+
+        def finish_wf() -> None:
+            time.sleep(4)
+            with open(os.path.join(tdir2, "sess-1.jsonl"), "a") as fh:
+                fh.write(json.dumps({"type": "queue-operation", "operation": "enqueue", "content":
+                                     "<task-notification>\n<task-id>wfx1</task-id>\n<tool-use-id>tu_wf</tool-use-id>\n<status>completed</status>\n</task-notification>"}) + "\n")
+        threading.Thread(target=finish_wf, daemon=True).start()
+        p = start("W-39")
+        rc = p.wait(timeout=60)
+        env.pop("ASD_TRANSCRIPTS_DIR"); env["ASD_RUNNER_IDLE"] = "1"
+        tw = texts("W-39")
+        check("quiet while a workflow runs: no nudge until it is done, then the run finishes",
+              rc == 0 and any("background task(s) still running" in t for t in tw)
+              and sum(1 for t in tw if "nudge" in t) == 1 and len(msgs(1)) == 2)
 
         # ---- plan: one routed deferred item, under its own key beside the source dossier's run ----
         scenario([{"turns": [[{"final": "planned W-50\nRUNNER: DONE"}]]}])
