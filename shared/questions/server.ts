@@ -14,6 +14,7 @@ import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
+import { checkDisk, diskDeps, diskReading } from "./disk.ts"
 import { api, apiGet, channelNameFor, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
 import { readAccounts, usageDir } from "./accounts.ts"
@@ -397,7 +398,7 @@ export async function handle(req: Request): Promise<Response> {
       .map((r) => ({ ...r, deferredUndecided: undecidedDeferred(r.deferred.items, r.runner?.command === "fix-deferred" && runnerActive(r.runner), openQs) }))
     const plans = planRuns(runs)
     const accounts = readAccounts([...runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: r.runKey || `${r.repo}.${r.id}`, account: r.runner?.account })), ...plans.map((p) => ({ key: p.key, account: p.account }))])
-    return json({ ...v, runs, plans, accounts, usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
+    return json({ ...v, runs, plans, accounts, disk: diskReading(), usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
   }
   if (path === "/api/accounts/refresh") {
     if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
@@ -919,6 +920,12 @@ async function main(): Promise<void> {
   } catch { /* the next tick tries again */ } }
   setTimeout(reviveQueues, 5_000)
   setInterval(reviveQueues, 120_000)
+  // The disk watch: reclaim unused build output before the disk fills, and say so once when it drops below the floor.
+  if (process.env.ASD_DISK_WATCH !== "0") {
+    const dd = diskDeps((t, b) => notify(t, "disk", b), () => emitChange("runs"))
+    setTimeout(() => void checkDisk(dd), 3_000)
+    setInterval(() => void checkDisk(dd), Number(process.env.ASD_DISK_EVERY_MS) || 300_000)
+  }
 }
 
 if (import.meta.main) await main()
