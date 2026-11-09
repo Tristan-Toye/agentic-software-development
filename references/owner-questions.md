@@ -556,6 +556,17 @@ restarted server answers at once from them while its first scan runs.
   timeout `ASD_DM_AGENT_TIMEOUT_MS` (10 min). The prompt references the docs
   rather than restating them; a stub's progress comes from the MCP tool
   `stub_detail`.
+- **The dashboard chat** (`pagechat.ts`, the page `GET /chat`, the header's "Ask the
+  agent"): the same agent as the DM, with the dashboard as its channel. A new
+  conversation is a new session, like a top-level DM; a message in a
+  conversation resumes its session, like a thread reply, and its turns run one
+  at a time. The pending "The agent is answering…" line is replaced by the
+  rendered answer; the page follows over the event stream (`chat`).
+  Cmd/Ctrl+Enter sends. One file per conversation in `~/.agentic/chat/<id>.json`
+  (`ASD_CHAT_DIR`); its session sits in the DM agent's store under
+  `page:<id>`. API: `GET /api/chat` (`{enabled, chats}`), `GET /api/chat/<id>`
+  (messages with rendered `html`), `POST /api/chat {text, id?}` → `{ok, id}`
+  (503 when `ASD_DM_AGENT=0`, 404 for an unknown conversation).
 - **Other API:** `GET /api/runs`, `/api/stubs`, `/api/questions`,
   `/api/timeline/<repo>/<ID>` (entries, `groups`, `now`, `log`), `/api/dossier/<repo>/<ID>`,
   `/api/stub?repo=&branch=`, and `GET /dossier/<repo>/<ID>` (read-only,
