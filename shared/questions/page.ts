@@ -137,9 +137,11 @@ a.sub-item{display:flex;gap:6px;align-items:center;flex-wrap:nowrap;white-space:
 ul.tree.wide{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));column-gap:18px;border-left:0;padding-left:0}ul.tree.wide>li{padding-left:0}ul.tree.wide>li::before{display:none}
 details.mstubs{margin-top:10px}details.mstubs>summary{font-size:.78rem;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}
 @media (max-width:1000px){.cols{grid-template-columns:minmax(0,1fr)}.cols>.scol{position:static;max-height:none;overflow:visible;order:1}.cols>.main-col{order:2}}
+.dmwrap{display:grid;grid-template-columns:260px 1fr;gap:16px;align-items:start}.dmlist{display:flex;flex-direction:column;gap:6px;position:sticky;top:64px;max-height:calc(100vh - 90px);overflow:auto}.dmitem{display:block;padding:8px 10px;border:1px solid var(--bd);border-radius:10px;background:var(--card);color:var(--fg);text-decoration:none}.dmitem:hover{border-color:var(--acc)}.dmitem.cur{border-color:var(--acc);background:var(--accbg)}.dmt{font-weight:600;font-size:13px;display:flex;gap:6px;align-items:center;overflow:hidden;text-overflow:ellipsis}.dmthread{min-width:0}.dmthread .panel{margin-top:0}.chat.wait{color:var(--mut)}.dmhint{margin-left:8px}a.pill.dmlink{color:var(--acc);text-decoration:none;font-weight:600}
+@media (max-width:760px){.dmwrap{grid-template-columns:1fr}.dmlist{position:static;max-height:none}}
 @media (max-width:560px){header{padding:8px 16px}main{padding:4px 16px 56px}.msg{max-width:96%}.grid{grid-template-columns:1fr}}
 </style></head><body>
-<header><a class="brand" href="/">Pipeline</a><nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav><span class="pill" id="slack"></span><span class="pill" id="upd"></span></header>
+<header><a class="brand" href="/">Pipeline</a><nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav><a class="pill dmlink" href="/chat" title="Talk to the agent, as in the Slack DM">Ask the agent</a><span class="pill" id="slack"></span><span class="pill" id="upd"></span></header>
 <main id="view"></main>
 <script>
 const enc = encodeURIComponent;
@@ -172,7 +174,7 @@ function prChip(pr) {
 }
 
 // ---- state ----
-const S = { q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {} };
+const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {} };
 let R = { kind: 'home' };
 let routeSig = '';
 let scrollTarget = '';
@@ -181,6 +183,7 @@ function parseRoute() {
   const seg = location.pathname.split('/').filter(Boolean).map(decodeURIComponent);
   if (!seg.length) return { kind: 'home' };
   if (seg[0] === 'questions') return { kind: 'questions' };
+  if (seg[0] === 'chat') return { kind: 'chat', chat: seg[1] || '' };
   if (seg[0] === 'repo' && seg[1]) {
     const repo = seg[1];
     if (seg.length === 2) return { kind: 'repo', repo };
@@ -923,10 +926,61 @@ function stubView(repo, branch) {
 }
 
 // ---- header, crumbs ----
+/* The dashboard chat: the same agent as the Slack DM (references/dm-agent.md, the runs MCP server). A new
+   conversation is a new session, like a new DM message; a message in a conversation resumes it, like a thread reply. */
+async function loadChat() {
+  const want = R.chat;
+  const [l, c] = await Promise.all([fetchJ('/api/chat'), want ? fetchJ('/api/chat/' + enc(want)) : Promise.resolve(null)]);
+  if (l) { S.dm.list = l.chats || []; S.dm.enabled = l.enabled !== false; }
+  if (R.kind === 'chat' && R.chat === want) { S.dm.conv = want ? c : null; S.dm.loadedFor = want; }
+}
+function chatView() {
+  const D = S.dm; const cur = R.chat;
+  const list = [h('a', { class: 'btn' + (cur ? '' : ' primary'), href: '/chat', 'data-k': 'dm:new' }, ['+ New conversation'])];
+  D.list.forEach(c => list.push(h('a', { class: 'dmitem' + (c.id === cur ? ' cur' : ''), href: '/chat/' + enc(c.id), 'data-k': 'dl:' + c.id }, [
+    h('div', { class: 'dmt' }, [c.pending ? h('span', { class: 'dot info live' }) : null, c.title || '(untitled)']),
+    h('div', { class: 'small mut' }, [c.turns + (c.turns === 1 ? ' message · ' : ' messages · '), when(c.last)])])));
+  if (!D.list.length) list.push(h('p', { class: 'small mut', 'data-k': 'dl:none' }, ['No conversations yet.']));
+  const conv = cur && D.conv && D.conv.id === cur ? D.conv : null;
+  const busy = D.busy || !!(conv && conv.messages.some(m => m.pending));
+  const kids = [];
+  if (!cur) {
+    kids.push(h('h1', { 'data-k': 'dm:h' }, ['Ask the agent']));
+    kids.push(h('p', { class: 'lead', 'data-k': 'dm:lead' }, ['The same agent as the Slack DM: it reads the runs, questions, stubs and dossiers through the runs tools, and can act on them (answer, message a run, start or stop one). Each conversation is its own session; a message in it continues that session.']));
+  } else if (!conv) kids.push(h('div', { class: 'empty', 'data-k': 'dm:load' }, [D.loadedFor === cur ? 'No such conversation.' : 'Loading…']));
+  else {
+    kids.push(h('h2', { 'data-k': 'dm:t' }, [conv.title]));
+    conv.messages.forEach(m => kids.push(h('div', { class: 'chat ' + (m.from === 'owner' ? 'owner' : 'agent') + (m.pending ? ' wait' : ''), 'data-k': 'dm:' + m.id + (m.pending ? ':p' : '') }, [
+      h('div', { class: 'who' }, [(m.from === 'owner' ? 'You' : 'Agent') + ' · ', when(m.ts)]),
+      m.pending ? h('div', {}, [h('span', { class: 'dot info live' }), ' The agent is answering…']) : mdBlock(m.html || '', 'dmm:' + m.id)])));
+  }
+  if (!D.enabled) kids.push(h('div', { class: 'err', 'data-k': 'dm:off' }, ['The agent is off on this server (ASD_DM_AGENT=0).']));
+  else if (!cur || conv) {
+    kids.push(h('textarea', { 'data-dm': '1', 'data-k': 'dm:ta:' + (cur || 'new'), placeholder: cur ? 'Reply in this conversation (Cmd+Enter to send)' : 'Ask about the runs, or tell the agent what to do (Cmd+Enter to send)', disabled: busy ? true : null }));
+    kids.push(h('div', { class: 'ctl', 'data-k': 'dm:ctl' }, [h('button', { class: 'btn primary', type: 'button', 'data-act': 'dm-send', disabled: busy ? true : null }, [D.busy ? 'Sending…' : 'Send']),
+      h('span', { class: 'small mut dmhint' }, [cur ? 'Continues this conversation’s session.' : 'Starts a new session.'])]));
+  }
+  if (D.err) kids.push(h('div', { class: 'err', 'data-k': 'dm:err' }, [D.err]));
+  return h('div', { class: 'dmwrap' }, [h('nav', { class: 'dmlist', 'aria-label': 'Conversations' }, list), h('section', { class: 'dmthread' }, [h('div', { class: 'panel' }, kids)])]);
+}
+async function sendDm() {
+  const D = S.dm; const ta = document.querySelector('textarea[data-dm]'); const text = ta ? ta.value.trim() : '';
+  if (!text || D.busy) return;
+  D.busy = true; D.err = ''; render();
+  try {
+    const body = R.chat ? { text, id: R.chat } : { text };
+    const r = await fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.id) { if (ta) ta.value = ''; D.busy = false; if (j.id !== R.chat) { navigate('/chat/' + enc(j.id)); return; } }
+    else D.err = j.error || ('HTTP ' + r.status);
+  } catch (e) { D.err = 'request failed'; }
+  D.busy = false; await load(['chat']);
+}
 function crumbs() {
   const out = []; const add = (t, href) => { if (out.length) out.push(h('span', {}, ['›'])); out.push(href ? h('a', { href }, [t]) : h('span', { class: 'cur' }, [t])); };
   add('Home', R.kind === 'home' ? null : '/');
   if (R.kind === 'questions') add('Open questions');
+  if (R.kind === 'chat') add('Ask the agent');
   if (R.repo) add(rlabel(R.repo), R.kind === 'repo' ? null : hrefRepo(R.repo));
   if (R.kind === 'item') add(R.id, R.forceDossier ? hrefItem(R.repo, R.id) : null);
   if (R.kind === 'item' && R.forceDossier) add('Dossier');
@@ -941,6 +995,7 @@ function detailUrl() {
 function build() {
   if (!S.loaded) return h('div', { class: 'empty' }, ['Loading…']);
   if (R.kind === 'questions') return questionsView(); if (R.kind === 'repo') return repoView(R.repo);
+  if (R.kind === 'chat') return chatView();
   if (R.kind === 'item') return itemView(R.repo, R.id); if (R.kind === 'stub') return stubView(R.repo, R.branch);
   return homeView();
 }
@@ -975,7 +1030,7 @@ function morph(op, np) {
 }
 
 function render() {
-  const sig = R.kind + '|' + (R.repo || '') + '|' + (R.id || '') + '|' + (R.branch || '') + '|' + (R.forceDossier ? 'd' : '');
+  const sig = R.kind + '|' + (R.chat || '') + '|' + (R.repo || '') + '|' + (R.id || '') + '|' + (R.branch || '') + '|' + (R.forceDossier ? 'd' : '');
   const view = document.getElementById('view'); const fresh = document.createElement('div'); fresh.appendChild(build());
   if (sig !== routeSig) { routeSig = sig; view.replaceChildren(); window.scrollTo(0, 0); }
   morph(view, fresh);
@@ -983,7 +1038,7 @@ function render() {
   const sl = document.createElement('div'); sl.appendChild(h('span', { class: 'dot ' + (S.slack ? 'ok' : '') })); sl.appendChild(h('span', {}, [S.slack ? 'Slack connected' : 'Slack off'])); morph(document.getElementById('slack'), sl);
   const up = document.createElement('div'); up.appendChild(h('span', { class: 'dot ' + (S.live ? 'ok' : 'warn'), title: S.live ? 'live updates' : 'polling every 60 s' }));
   const t = new Date(S.changedAt || Date.now()).toISOString(); up.appendChild(when(t, 'updated ') || h('span')); morph(document.getElementById('upd'), up);
-  document.title = (R.kind === 'item' ? R.id + ' · ' : R.kind === 'repo' ? R.repo + ' · ' : '') + 'Pipeline · Owner questions';
+  document.title = (R.kind === 'chat' ? 'Ask the agent · ' : R.kind === 'item' ? R.id + ' · ' : R.kind === 'repo' ? R.repo + ' · ' : '') + 'Pipeline · Owner questions';
   if (scrollTarget) { const e = document.getElementById('q-' + scrollTarget); if (e) { e.scrollIntoView({ block: 'start' }); scrollTarget = ''; } }
 }
 
@@ -998,6 +1053,7 @@ async function load(what) {
   if (all || w.has('questions')) jobs.push(fetchJ('/api/questions?state=all').then(d => { if (Array.isArray(d)) S.q = d; }));
   if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.accounts = d.accounts || []; S.plans = d.plans || []; S.usageBusy = !!d.usageBusy; } }));
   if (all || w.has('stubs') || w.has('scan')) jobs.push(fetchJ('/api/stubs').then(d => { if (d && d.repos) S.stubs = d; }));
+  if ((all || w.has('chat')) && R.kind === 'chat') jobs.push(loadChat());
   await Promise.all(jobs);
   await loadDetail();
   S.loaded = true; S.changedAt = Date.now(); render();
@@ -1114,6 +1170,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'dsel-all') { const r0 = S.runs.find(x => x.repo + '/' + x.id === t.dataset.key); if (r0) { const pk = r0.deferred.items.filter(dfPickable); const m = S.dsel[t.dataset.key] = S.dsel[t.dataset.key] || {}; const all = pk.every(i => m[i.id]); pk.forEach(i => { if (all) delete m[i.id]; else m[i.id] = true; }); render(); } }
     else if (act === 'fix-sel') fixSelected(t);
     else if (act === 'chat') sendChat(t);
+    else if (act === 'dm-send') sendDm();
     else if (act === 'plan-item') planItem(t);
     else if (act === 'df-keep') { fetch('/api/runs/' + enc(t.dataset.repo) + '/' + enc(t.dataset.id) + '/deferred-keep', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ item: t.dataset.item, keepOpen: t.dataset.keep === '1' }) }).catch(() => {}).finally(() => load(['runs'])); }
     else if (act === 'stub-confirm') { S.ctl[t.dataset.key] = { confirm: true }; render(); }
@@ -1133,9 +1190,9 @@ document.addEventListener('click', (e) => {
   if (card && !e.target.closest('button,textarea,input,details>summary')) { e.preventDefault(); navigate(card.dataset.href); return; }
   if (!a || a.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button) return;
   const h2 = a.getAttribute('href');
-  if (h2 && (h2 === '/' || h2.indexOf('/questions') === 0 || h2.indexOf('/repo/') === 0)) { e.preventDefault(); navigate(h2); }
+  if (h2 && (h2 === '/' || h2.indexOf('/questions') === 0 || h2.indexOf('/chat') === 0 || h2.indexOf('/repo/') === 0)) { e.preventDefault(); navigate(h2); }
 });
-document.addEventListener('keydown', (e) => { if ((e.key === ' ' || e.key === 'Enter') && e.target.classList && e.target.classList.contains('dfc') && e.target.dataset.act === 'dsel') { e.preventDefault(); e.target.click(); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.target.dataset && e.target.dataset.dm) { e.preventDefault(); sendDm(); return; } if ((e.key === ' ' || e.key === 'Enter') && e.target.classList && e.target.classList.contains('dfc') && e.target.dataset.act === 'dsel') { e.preventDefault(); e.target.click(); } });
 window.addEventListener('popstate', onRoute);
 window.addEventListener('hashchange', () => { if (R.kind === 'questions') { scrollTarget = hashQ(); render(); } else onRoute(); });
 setInterval(() => { if (!S.live) load(null); }, 60000);   // fallback while the event stream is down

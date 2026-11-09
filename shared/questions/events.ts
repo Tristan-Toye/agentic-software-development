@@ -1,5 +1,5 @@
 // Change notifications for the dashboard's Server-Sent Events stream. The store files stay the source of truth.
-export type Change = "questions" | "runs" | "stubs" | "scan"
+export type Change = "questions" | "runs" | "stubs" | "scan" | "chat"
 type Sub = (what: Change[]) => void
 const subs = new Set<Sub>()
 let pending = new Set<Change>()
