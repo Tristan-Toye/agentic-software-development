@@ -433,7 +433,8 @@ a change to review, so finish it as one:
    On a host `gh` cannot reach (Bitbucket), push, hand the user the create-PR
    link and the body, and ask for the URL back.
 4. **Remove the plan worktree** once the URL is in hand:
-   `git worktree remove ../<repo>-plan-<KEY>`. The branch stays on the
+   `python3 ${PLUGIN_ROOT}/scripts/remove_worktree.py --root <main checkout> ../<repo>-plan-<KEY>`
+   (never a bare `git worktree remove --force`, which auto mode refuses). The branch stays on the
    remote; the PR is the user's from here. A no at step 3 leaves the worktree
    and the branch in place — name both, so the user can push later.
 
