@@ -18,6 +18,8 @@ fails every command with an Input/output error. This script is the one place tha
 - **The repository's own part.** A repository that keeps build output elsewhere too (a VM's per-checkout target
   directories, a disk image that only shrinks after a trim) ships `.agentic/reclaim.sh`; after a reclaim it runs as
   `bash .agentic/reclaim.sh <checkout> …` in the main checkout, with every checkout whose build output went.
+  `sweep` runs the same hook on a timer whatever the free space (the dashboard, hourly), with the dossier worktrees
+  whose run is no longer live and whose host build is idle: what a VM keeps fills on its own.
 
 The runner refuses to start a stage below `ASD_DISK_FLOOR_GIB` (default 30) GiB free: it queues, starts a reclaim,
 and goes on once the disk has room (run_dossier.py `take_slot`). The dashboard checks every 5 minutes, reclaims
@@ -27,6 +29,7 @@ below the reclaim threshold, and shows a banner below the floor (references/runn
 
     disk_guard.py status [--json]          free space, thresholds, and what a reclaim would remove
     disk_guard.py reclaim [--dry-run]      reclaim until the target is free (one reclaim at a time; a second exits 0)
+    disk_guard.py sweep                    run each repo's .agentic/reclaim.sh with its finished runs' idle worktrees
     disk_guard.py --selftest
 """
 from __future__ import annotations
@@ -172,12 +175,68 @@ def status() -> dict:
             "kept": [r for r in rows if r["rank"] is None], "checked": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
 
-def reclaim(dry: bool = False, log=print) -> int:
+def take_lock(log):
+    """The one reclaim-or-sweep lock; None when another holds it."""
     lock = open(os.path.join(runs_dir() if os.path.isdir(runs_dir()) else tempfile.gettempdir(), "disk-reclaim.lock"), "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock
     except OSError:
-        log("a reclaim is already running")
+        log("a reclaim or sweep is already running")
+        lock.close()
+        return None
+
+
+def run_hook(main: str, checkouts: list[str], log) -> None:
+    hook = os.path.join(main, ".agentic", "reclaim.sh")
+    if os.path.isfile(hook):
+        log(f"running {hook} for {len(checkouts)} checkout(s)")
+        try:
+            subprocess.run(["bash", hook, *checkouts], cwd=main, timeout=1800)
+        except (OSError, subprocess.SubprocessError) as e:
+            log(f"{hook} failed: {e}")
+
+
+def sweep_targets(now: float | None = None) -> dict[str, list[str]]:
+    """Per main checkout with a `.agentic/reclaim.sh`: the dossier worktrees (sub-worktrees included) whose run is
+    not live and whose host build output, if any, is idle. A worktree that is no dossier's and the main checkout are
+    never named: the repository's hook cleans only what a finished run left behind, plus its own orphans."""
+    now = now or time.time()
+    mains, live = mains_and_live()
+    out: dict[str, list[str]] = {}
+    for main in mains:
+        if not os.path.isfile(os.path.join(main, ".agentic", "reclaim.sh")):
+            continue
+        repo, picked = os.path.basename(main), []
+        for wt in worktrees(main):
+            base = os.path.basename(wt)
+            if wt == main or not base.startswith(repo + "-"):
+                continue
+            m = ID.match(base[len(repo) + 1:])
+            if not m or f"{repo}.{m.group(1)}" in live:
+                continue
+            busy = any(os.path.isdir(os.path.join(wt, b)) and (now - last_write(os.path.join(wt, b))) / 60 < idle_min()
+                       for b in build_dirs())
+            if not busy:
+                picked.append(wt)
+        out[main] = picked
+    return out
+
+
+def sweep(log=print) -> int:
+    """The repositories' own part on a timer, whatever the free space: build output a repository keeps elsewhere
+    (a VM's per-checkout target directories, a disk image that only shrinks after a trim) fills on its own."""
+    lock = take_lock(log)
+    if lock is None:
+        return 0
+    for main, checkouts in sweep_targets().items():
+        run_hook(main, checkouts, log)
+    return 0
+
+
+def reclaim(dry: bool = False, log=print) -> int:
+    lock = take_lock(log)
+    if lock is None:
         return 0
     rows = [r for r in candidates() if r["rank"] is not None]
     done: dict[str, list[str]] = {}
@@ -191,13 +250,7 @@ def reclaim(dry: bool = False, log=print) -> int:
             shutil.rmtree(r["dir"], ignore_errors=True)
             done.setdefault(r["main"], []).append(r["checkout"])
     for main, checkouts in done.items():
-        hook = os.path.join(main, ".agentic", "reclaim.sh")
-        if os.path.isfile(hook):
-            log(f"running {hook} for {len(checkouts)} checkout(s)")
-            try:
-                subprocess.run(["bash", hook, *checkouts], cwd=main, timeout=1800)
-            except (OSError, subprocess.SubprocessError) as e:
-                log(f"{hook} failed: {e}")
+        run_hook(main, checkouts, log)
     return 0
 
 
@@ -247,6 +300,16 @@ def selftest() -> int:
         os.makedirs(os.path.join(t, "demo-W-2", "target"))
         reclaim(log=lambda _m: None)
         check("reclaim stops once the target is free", not gone("demo-W-2"))
+        old = time.time() - 7200
+        for p in (os.path.join(t, "demo-W-2", "target"),):
+            os.utime(p, (old, old))
+        tg = {os.path.basename(m): sorted(os.path.basename(c) for c in cs) for m, cs in sweep_targets().items()}
+        check("sweep names the finished run's idle worktree, not live ones, the main, or a non-dossier one", tg == {"demo": ["demo-W-2"]})
+        os.utime(os.path.join(t, "demo-W-2", "target"), None)
+        check("sweep skips a finished run's worktree that is building again", all(cs == [] for cs in sweep_targets().values()))
+        os.remove(mark)
+        sweep(log=lambda _m: None)
+        check("sweep runs the repo's hook even with no checkout (orphans and trim)", os.path.exists(mark))
         st = status()
         check("status reports free space and thresholds", st["freeGiB"] > 0 and st["floorGiB"] == 30 and "reclaimable" in st)
     print("FAIL" if fails else "PASS (all cases)")
@@ -255,13 +318,15 @@ def selftest() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
-    ap.add_argument("cmd", nargs="?", choices=["status", "reclaim"], default="status")
+    ap.add_argument("cmd", nargs="?", choices=["status", "reclaim", "sweep"], default="status")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
         return selftest()
+    if a.cmd == "sweep":
+        return sweep()
     if a.cmd == "reclaim":
         return reclaim(a.dry_run)
     st = status()

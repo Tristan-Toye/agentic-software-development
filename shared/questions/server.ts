@@ -14,7 +14,7 @@ import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
-import { checkDisk, diskDeps, diskReading } from "./disk.ts"
+import { checkDisk, diskDeps, diskReading, sweepDisk } from "./disk.ts"
 import { api, apiGet, channelNameFor, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
 import { readAccounts, usageDir } from "./accounts.ts"
@@ -925,6 +925,12 @@ async function main(): Promise<void> {
     const dd = diskDeps((t, b) => notify(t, "disk", b), () => emitChange("runs"))
     setTimeout(() => void checkDisk(dd), 3_000)
     setInterval(() => void checkDisk(dd), Number(process.env.ASD_DISK_EVERY_MS) || 300_000)
+    // The sweep: each repo's own reclaim hook (a VM's build directories, its disk trim) on a timer, whatever the
+    // host's free space, so a VM disk cannot fill while the Mac still has room.
+    if (process.env.ASD_DISK_SWEEP !== "0") {
+      setTimeout(() => void sweepDisk(dd), 60_000)
+      setInterval(() => void sweepDisk(dd), Number(process.env.ASD_DISK_SWEEP_EVERY_MS) || 3_600_000)
+    }
   }
 }
 
