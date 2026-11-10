@@ -194,18 +194,26 @@ returns, diff its checklist against yours line by line:
   checklist together, commit on `X`, and only then fan out. Land the revised
   stubs in the dossier with `dossier_edit.py sync-contract <dossier> --root X`
   (exit 0 means every member equals its file's), not by hand-copying blocks.
-- **Its `AMBIGUITY:` lines the dossier settles, you settle by citation;
-  the rest go to the user as one question.** The reviewer is blind to the
-  dossier, so many of its ambiguities are already decided there: the
-  approach, a criterion, a recorded ruling. For each, quote the dossier
-  sentence that picks one reading, write that reading into the docstring,
-  and log `AMBIGUITY-SETTLED: <member> — <reading> (dossier § <section>)`.
-  That is not you ruling on your own sentence: the dossier is the referee,
-  and the owner already approved it. Only a reading no dossier sentence
-  picks is the row-3 arbitration you are the wrong party to rule on — you
-  wrote the sentence. Put those to the user as one question, let them pick,
-  and write the winner into the docstring before the fan-out. Never ask the
-  user to approve readings the dossier already settles.
+- **Its `AMBIGUITY:` lines the dossier settles, you settle by citation; a
+  low-impact rest you rule provisionally; only a high-impact rest goes to the
+  owner.** The reviewer is blind to the dossier, so many of its ambiguities
+  are already decided there: the approach, a criterion, a recorded ruling. For
+  each, quote the dossier sentence that picks one reading, write that reading
+  into the docstring, and log `AMBIGUITY-SETTLED: <member> — <reading>
+  (dossier § <section>)`. That is not you ruling on your own sentence: the
+  dossier is the referee, and the owner already approved it. A reading no
+  dossier sentence picks, whose reviewer-marked `IMPACT:` is `low`, is a
+  provisional ruling: take the recommended reading (the simpler one, the
+  repo's convention, or the cheaper to reverse), write it into the docstring,
+  log `PROVISIONAL-RULING: <member>, <reading and why>, <how to reverse>` in
+  `## Build log`, and list it under "Rulings to review" in the PR description
+  (Phase 9). Only a reading no dossier sentence picks and whose impact is
+  `high`, or that decides what the feature does, is the row-3 arbitration you
+  are the wrong party to rule on — you wrote the sentence. Put those to the
+  owner as one question (`--kind design` or `--kind product`), and write the
+  winner into the docstring before the fan-out; keep working on what does not
+  depend on it. Never ask the owner to approve readings the dossier settles
+  or that are low-impact (`references/owner-questions.md`, "The ask policy").
 - **Its `DEFECT:` lines you fix immediately** — unstated visibility,
   unmeasurable words, criteria the contract cannot express.
 

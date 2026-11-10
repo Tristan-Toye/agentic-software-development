@@ -114,7 +114,7 @@ hides the race**: a retry loop in the test, a longer sleep, a bound raised to
 absorb the slowness that was observed (raising a sub-second bound to one second
 is the rule, not a workaround), an ignored or skipped test, or a CI rerun until
 green. When a round ends with no mechanism found, take the case file to the
-user; "flaky" is not a ruling.
+owner as one question (`--kind uncertainty`); "flaky" is not a ruling.
 
 ### Row 4: land your fix first, and the boundary is mechanical
 

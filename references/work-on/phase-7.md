@@ -13,7 +13,7 @@
   request becomes one `## Build log` ledger line; the full document travels
   only in the fix implementer's payload, byte-for-byte.
 
-- **You detect review conflicts; the user decides them.** You are the only party
+- **You detect review conflicts; you rule the low-impact ones, the owner the rest.** You are the only party
   who sees every lens.
 
 **Spawning and workflows.** The rules for spawning an agent and for the two plugin
@@ -193,15 +193,18 @@ and changes only how reliably it observes it.
 - **Demote non-conforming CRs — by the fields, never the merits.** The fields
   are checked by script (`missing`, or `check_crs.py`), `Siblings` included; you
   never overrule a reviewer because you disagree with a CR that carries its
-  evidence — that disagreement goes to the user like any other conflict. The
+  evidence — a disagreement about design or product goes to the owner like any other conflict. The
   fix implementer gets the document without the demoted sections:
   `check_crs.py <document> --drop <ids> --out <fix doc>`, every kept byte as
   the reviewer wrote it.
 - **Detect conflicts first.** You are the only party that sees every lens,
-  so a performance request that undoes a style request is yours to catch. Deciding
-  it is the **user's**, because it is a judgement call: present both sides with
-  your recommendation, get a ruling, and record it in `## Build log` as an
-  arbitration. Pass every accumulated arbitration into later spawns so no
+  so a performance request that undoes a style request is yours to catch. A conflict
+  with a recommended side and a low impact (no behaviour or contract changes)
+  is yours: take the recommendation, record it in `## Build log` as an
+  arbitration, and log `PROVISIONAL-RULING:` for it. A conflict that changes
+  behaviour or a contract is a design question for the owner: present both
+  sides with your recommendation (`--kind design`), keep working on what does
+  not depend on it, and record the ruling as an arbitration. Pass every accumulated arbitration into later spawns so no
   reviewer re-litigates a settled question.
 - Spawn the `implementer` in `MODE: fix` with the merged change requests.
   Under opencode that is **one** implementer, its payload composed and linted
@@ -276,8 +279,9 @@ budget, and which lenses the next round re-spawns. The next round reads the
 CRs from the ledger, not from this round's transcript.
 
 **Exit condition:** every lens at zero open CRs.
-**Budget: 2 fix rounds.** After the second, stop and show the user the round
-history and the unresolved tensions.
+**Budget: 2 fix rounds.** After the second, when one more fix round is your recommendation, take it once
+and log it; if that round fails too, put the round history and the unresolved
+tensions to the owner as one question (`--kind uncertainty`).
 
 **The reviewers know there is one pass** — their prompt says so, and this budget
 is why. A reviewer that expects another sweep holds back marginal findings, and

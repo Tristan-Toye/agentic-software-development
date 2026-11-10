@@ -127,8 +127,8 @@ never waits on a conversation that may never happen.
 
 **Where it goes.** The repo's own rules file, committed with the ADRs. Look
 for one first (`docs/adr/RULES.md`, a rules section in `CLAUDE.md`, an
-existing conventions doc). If the repo has none, **ask the user where it
-should live, suggesting `docs/adr/RULES.md`** — next to the ADRs it is
+existing conventions doc). If the repo has none, **take `docs/adr/RULES.md` without asking and log
+`PROVISIONAL-RULING:` for the location** — next to the ADRs it is
 extracted alongside — and record the answer in the dossier's front matter so
 later runs on this repo do not ask again. Never create the file silently, and
 never write to the plugin's `skills/standards/`.

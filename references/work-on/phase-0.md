@@ -11,7 +11,7 @@ command also **pushes the base branch and opens a draft PR at Phase 6**, so
 that CI is the suite runner and no verdict costs a local run beside it
 (Phase 2 decides it): state that in the same breath and get the yes for it
 here, so no agent is ever spawned into a run that will stall on a question
-with a merged tree waiting. Only you handle these gates, never a sub-agent.
+with a merged tree waiting. Only you handle these gates, never a sub-agent. Under the runner the standing authority (`references/owner-questions.md`) is that yes, so ask nothing.
 
 **Mode — settled once, right after the gates.** Run
 `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --mode` in this checkout
@@ -29,8 +29,7 @@ and an unpushed record dies with the worktree. Add it by name, never with
 
 `$ARGUMENTS` names a dossier ID, or is empty. Empty → read the front matter of
 every `.discovery/dossiers/*.md`, and take the first with `status: ready` whose
-`blocked_by` entries are all `done`. State your pick and continue on
-confirmation or silent assent. In committed mode this checkout's copies show
+`blocked_by` entries are all `done`. State your pick and continue. In committed mode this checkout's copies show
 only what has merged, so list the worktrees first (`git worktree list`): a
 `../<repo>-<ID>` present means that dossier is in flight and its live front
 matter is in that worktree, not here. Route on the live copy. Run

@@ -43,8 +43,8 @@ states are easy to tell apart:
 An empty report **with no file at any of its paths** is a retryable
 infrastructure failure, not a judgement on the contract or the payload — the
 runtime's stream timeout races a long generation and the loss is silent by
-construction. A second empty return goes to the user as an infrastructure
-problem. Never classify an empty-artifact return as a `GAP:`, a vacuous
+construction. A second empty return is escalated through the ladder in
+`phase-4-incidents.md` ("After the second empty return, change something before you spawn again"); only when that ladder fails does it go to the owner, as an infrastructure problem. Never classify an empty-artifact return as a `GAP:`, a vacuous
 test, or a weak oracle, and never let one pass as success.
 
 ### Name the shared idiom when a concept spans packages

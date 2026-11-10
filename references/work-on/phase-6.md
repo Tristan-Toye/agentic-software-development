@@ -174,15 +174,17 @@ spent against the budget, and what the next round runs. The next round reads
 its failures from the runner, not from the last round's transcript.
 
 **Budget: 3 arbitration rounds.**
-After the third, stop and show the user the failures and your rulings;
-continuing past the budget needs the user's explicit sign-off, recorded in
-`## Build log`. Most budget exhaustion is one repeated ambiguity or a
-criterion this machine cannot observe; the user names the substitute.
+After the third, when one more correction round is your recommendation, take
+it once without asking and log `BUDGET-EXTENDED: <why>` in `## Build log`; if
+that round fails too, stop and put the failures and your rulings to the owner
+as one question (`--kind uncertainty`). Most budget exhaustion is one repeated
+ambiguity or a criterion this machine cannot observe; the owner names the
+substitute.
 
 **Repeat-fingerprint — the early stop one round before the budget.** Track
 the site of every arbitration: the contract member and the test file. When
 the same member or the same test file is arbitrated a **second** time — even
-with a different symptom — stop and take it to the user there, one round
+with a different symptom — stop and take it to the owner there as one question (`--kind uncertainty`), one round
 before the budget. Distinct failures across rounds are healthy convergence;
 the same site twice means something is stuck — a promise that cannot be made
 observable, a criterion this machine cannot check — which is a `/plan`

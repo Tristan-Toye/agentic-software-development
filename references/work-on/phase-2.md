@@ -156,15 +156,23 @@ This is the step everything else depends on.
    libraries, bins and examples compile (the tests need not) on every gate
    below. A package that owned only such edits leaves the table, and call-site
    test packages depend on nothing: they fork in the same wave. This is a
-   revision; it goes to the user (below).
+   revision; rule on it as the next paragraph says.
 
    **This is the last cheap moment to change either.** `## Contract` and
    `## Work packages` **freeze** when Phase 4 spawns anything: after that a
    contract change costs a re-spawn of every agent that read it, and a package
    change means a merge already went wrong. A revision the plan reviewer would
    have judged differently — a new type, a changed signature, a repartitioned
-   package table — goes to the user before you spawn: a contract you rewrote
-   here has been reviewed by nobody.
+   package table — is ruled before you spawn: a contract you rewrote
+   here has been reviewed by nobody. Never ask the owner to approve the
+   revisions as a batch. A revision with a recommended reading and a low
+   impact (it changes no behaviour the dossier promises and no public
+   contract another dossier depends on) is taken: write it into the dossier,
+   log `PROVISIONAL-RULING: <what>, <why>, <how to reverse>` in `## Build
+   log`, and list it under "Rulings to review" in the PR description. A
+   high-impact or product-level revision goes to the owner as one question
+   (`--kind design` or `--kind product`), under the ask policy
+   (`references/owner-questions.md`, "The ask policy").
 
 4. **Commit it on `X`.** Prefix with the Jira key. Every fan-out branch forks
    from this commit, so the contract is the one thing all of them share. In

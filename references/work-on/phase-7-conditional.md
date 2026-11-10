@@ -92,7 +92,7 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
     ruling, and the script refuses a row that has no reason.
 
   Record the routing on the CR's ledger line. A conforming CR that no
-  available agent may apply is a routing question for the user, never a
+  available agent may apply is a routing question: take the recommended routing and log it (the owner only if every routing changes a contract), never a
   demotion — demotion is for missing evidence only, never the merits.
 
 ### A fix or check round goes to the agent that holds the context
