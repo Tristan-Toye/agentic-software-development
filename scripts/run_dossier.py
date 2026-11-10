@@ -1257,7 +1257,11 @@ class Runner:
                     return "limit", tail.strip()
                 if network_error(tail):
                     return "network", tail.strip().splitlines()[-1][:300] if tail.strip() else "network error"
-                if val in KILLED_CODES and not self.stopping and not os.path.exists(self.stop_marker):
+                if val in KILLED_CODES and (self.stopping or os.path.exists(self.stop_marker)):
+                    # The owner's stop reached the claude child before the runner's own stop path did: that exit is the stop.
+                    self.log(f"the claude process exited with code {val}: that is the stop, not a failure")
+                    return "stopped", ""
+                if val in KILLED_CODES:
                     return "killed", f"the claude process was killed from outside the runner (exit {val}{self.kill_context()})"
                 return "failed", f"the claude process exited with code {val} before a result"
             text, err = val  # type: ignore[misc]
@@ -2251,6 +2255,23 @@ def selftest() -> int:
         check("max-stages: exit 4, state stopped, one process",
               p.wait(timeout=60) == 4 and state_of("W-4").get("state") == "stopped"
               and open(os.path.join(fdir, "count")).read() == "1" and any("--max-stages 1" in t for t in texts("W-4")))
+
+        # ---- 4b. a stop that reaches the claude child first is "stopped"; the same signal with no stop is an outside kill --
+        scenario([{"hang": True}])
+        p = start("W-93")
+        check("stop race: the process is up", bool(until(lambda: os.path.exists(os.path.join(fdir, "pid.1")) and state_of("W-93").get("claude_pid"))))
+        open(os.path.join(rdir, "repo.W-93.stop-requested"), "w").close()
+        os.kill(int(open(os.path.join(fdir, "pid.1")).read()), signal.SIGTERM)
+        check("stop race: claude exit 143 with the stop marker ends stopped, not failed", p.wait(timeout=30) == 3 and state_of("W-93").get("state") == "stopped")
+        check("stop race: logged as the stop", any("that is the stop, not a failure" in t for t in texts("W-93")) and not any("before a result" in t for t in texts("W-93")))
+        env["ASD_RUNNER_KILL_WAIT"] = "0.1"
+        scenario([{"hang": True}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-94")
+        check("outside SIGTERM: the process is up", bool(until(lambda: os.path.exists(os.path.join(fdir, "pid.1")) and state_of("W-94").get("claude_pid"))))
+        os.kill(int(open(os.path.join(fdir, "pid.1")).read()), signal.SIGTERM)
+        check("outside SIGTERM without a stop is not 'stopped': it is logged as killed and the stage reruns",
+              p.wait(timeout=60) == 0 and state_of("W-94").get("state") == "done"
+              and any("killed from outside the runner" in t for t in texts("W-94")) and not any("that is the stop" in t for t in texts("W-94")))
 
         # ---- 5. status and stop -------------------------------------------------
         scenario([{"hang": True}])
