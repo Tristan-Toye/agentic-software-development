@@ -272,6 +272,19 @@ the recorded checkpoints.
 - **Limits:** `--max-stages` caps the number of stages a run starts
   (default 20). A crash of the process counts as `FAILED`.
 
+## Keeping the Mac awake
+
+While at least one run is `running`, `waiting`, `queued` or `paused` (its runner
+process alive), the dashboard server (`shared/questions/awake.ts`) holds one
+`/usr/bin/caffeinate -s -i` child, and kills it when no run is live. It
+re-checks on the server's 10 s rescan and kills the child when the server
+exits. Darwin only, and only when `/usr/bin/caffeinate` exists;
+`ASD_CAFFEINATE=0` turns it off.
+
+Limit: `-s` only prevents system sleep while the Mac is on AC power. On battery
+with the lid closed, macOS still sleeps and caffeinate does nothing. That needs
+`sudo pmset disablesleep 1` (on the corporate Mac, through Admin By Request).
+
 ## Disk space
 
 Every worktree a run makes has its own build output (`target/` for Rust,
