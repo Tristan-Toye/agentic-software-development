@@ -11,10 +11,11 @@ fails every command with an Input/output error. This script is the one place tha
   checkouts beside each repository's main checkout, and of the main checkout itself. Never a source file, never a
   worktree, never a branch: everything it removes is rebuilt by the next build.
 - **Never a build in use.** A build directory with a write in the last `ASD_DISK_IDLE_MIN` minutes (default 60) is
-  kept, and so is the own worktree of a live run (running, waiting, paused or queued with a live pid): that run is
-  between builds, not done with them. A live run's sub-worktrees (its fan-out) go once idle.
-- **In order, only as much as needed.** Worktrees of no live run first, then live runs' idle sub-worktrees, then the
-  main checkout; it stops as soon as `ASD_DISK_RECLAIM_GIB` (default 80) GiB are free.
+  kept, and so is the own worktree of a running run (state running with a live pid). A live run's sub-worktrees (its
+  fan-out) go once idle, and so does the own worktree of a parked run (queued, waiting or paused with a live pid):
+  no build runs there now, and a cold rebuild beats a full disk.
+- **In order, only as much as needed.** Worktrees of no live run first, then live runs' idle sub-worktrees, then
+  parked runs' own worktrees, then the main checkout; it stops as soon as `ASD_DISK_RECLAIM_GIB` (default 80) GiB are free.
 - **The repository's own part.** A repository that keeps build output elsewhere too (a VM's per-checkout target
   directories, a disk image that only shrinks after a trim) ships `.agentic/reclaim.sh`; after a reclaim it runs as
   `bash .agentic/reclaim.sh <checkout> …` in the main checkout, with every checkout whose build output went.
@@ -102,6 +103,11 @@ def mains_and_live() -> tuple[list[str], set[str]]:
     return sorted(mains), live
 
 
+def parked_runs() -> set[str]:
+    """Live runs with no stage process working: queued for a slot, waiting on the owner, or paused on a limit."""
+    return {key for key, st in records() if st.get("state") in ("queued", "waiting", "paused") and alive(st.get("pid"))}
+
+
 def worktrees(main: str) -> list[str]:
     try:
         out = subprocess.run(["git", "-C", main, "worktree", "list", "--porcelain"], capture_output=True, text=True, timeout=20).stdout
@@ -137,6 +143,7 @@ def candidates(now: float | None = None) -> list[dict]:
     """Every build directory a reclaim may remove, in the order it removes them, plus the kept ones with why."""
     now = now or time.time()
     mains, live = mains_and_live()
+    parked = parked_runs()
     rows = []
     for main in mains:
         repo = os.path.basename(main)
@@ -154,6 +161,10 @@ def candidates(now: float | None = None) -> list[dict]:
                 idle = (now - last_write(d)) / 60
                 if wt == main:
                     rank, why = 3, "the main checkout"
+                elif owner in parked and not sub:
+                    # Queued, waiting or paused: no build runs there now, and one may not for hours. Its next build
+                    # starts cold, which beats a full disk, so it goes after the fan-outs, before the main checkout.
+                    rank, why = 2.5, f"the own worktree of parked run {owner} (queued, waiting or paused)"
                 elif owner in live and not sub:
                     rank, why = None, f"the own worktree of live run {owner}"
                 elif owner in live:
@@ -264,10 +275,10 @@ def selftest() -> int:
         os.makedirs(repo)
         g = lambda *a, cwd=repo: subprocess.run(["git", *a], cwd=cwd, capture_output=True, check=True)
         g("init", "-q"); g("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", "x")
-        for wt in ("W-1", "W-1-P2", "W-2", "plan-x"):
+        for wt in ("W-1", "W-1-P2", "W-2", "W-3", "plan-x"):
             g("worktree", "add", "-q", "-b", wt, os.path.join(t, f"demo-{wt}"))
         old = time.time() - 3 * 3600
-        for wt in ("demo", "demo-W-1", "demo-W-1-P2", "demo-W-2", "demo-plan-x"):
+        for wt in ("demo", "demo-W-1", "demo-W-1-P2", "demo-W-2", "demo-W-3", "demo-plan-x"):
             d = os.path.join(t, wt, "target", "debug", "deps")
             os.makedirs(d)
             open(os.path.join(d, "lib.rlib"), "w").write("x")
@@ -278,6 +289,7 @@ def selftest() -> int:
         rd = os.path.join(t, "runs"); os.makedirs(rd)
         json.dump({"pid": os.getpid(), "root": repo, "state": "running"}, open(os.path.join(rd, "demo.W-1.runner.json"), "w"))
         json.dump({"pid": 999999, "root": repo, "state": "running"}, open(os.path.join(rd, "demo.W-2.runner.json"), "w"))
+        json.dump({"pid": os.getpid(), "root": repo, "state": "queued"}, open(os.path.join(rd, "demo.W-3.runner.json"), "w"))
         os.makedirs(os.path.join(repo, ".agentic"))
         mark = os.path.join(t, "hook.txt")
         open(os.path.join(repo, ".agentic", "reclaim.sh"), "w").write(f'printf "%s\\n" "$@" > {mark}\n')
@@ -286,16 +298,17 @@ def selftest() -> int:
         check("the own worktree of a live run is kept", rows["demo-W-1"]["rank"] is None)
         check("a live run's idle fan-out worktree may go", rows["demo-W-1-P2"]["rank"] == 2)
         check("a dead run's worktree may go first", rows["demo-W-2"]["rank"] == 1)
+        check("a queued run's idle own worktree may go, after the fan-outs", rows["demo-W-3"]["rank"] == 2.5)
         check("a build written minutes ago is kept", rows["demo-plan-x"]["rank"] is None)
         check("the main checkout goes last", rows["demo"]["rank"] == 3)
         os.environ["ASD_DISK_RECLAIM_GIB"] = "1e9"   # never reached: everything reclaimable goes
         reclaim(log=lambda _m: None)
         gone = lambda wt: not os.path.isdir(os.path.join(t, wt, "target"))
-        check("reclaim removes what may go", gone("demo-W-2") and gone("demo-W-1-P2") and gone("demo"))
+        check("reclaim removes what may go", gone("demo-W-2") and gone("demo-W-1-P2") and gone("demo-W-3") and gone("demo"))
         check("reclaim keeps what may not", not gone("demo-W-1") and not gone("demo-plan-x"))
         check("sources and worktrees stay", os.path.isdir(os.path.join(t, "demo-W-2", ".git")) or os.path.isfile(os.path.join(t, "demo-W-2", ".git")))
         hooked = open(mark).read().split() if os.path.exists(mark) else []
-        check("the repo's reclaim hook gets the checkouts", sorted(os.path.basename(h) for h in hooked) == ["demo", "demo-W-1-P2", "demo-W-2"])
+        check("the repo's reclaim hook gets the checkouts", sorted(os.path.basename(h) for h in hooked) == ["demo", "demo-W-1-P2", "demo-W-2", "demo-W-3"])
         os.environ["ASD_DISK_RECLAIM_GIB"] = "0"
         os.makedirs(os.path.join(t, "demo-W-2", "target"))
         reclaim(log=lambda _m: None)

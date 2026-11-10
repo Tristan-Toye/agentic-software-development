@@ -292,8 +292,10 @@ at once, the VM included. Two guards keep that from happening:
 
 `disk_guard.py reclaim` removes build directories (`ASD_DISK_BUILD_DIRS`,
 default `target`) in this order until free space reaches the reclaim target:
-worktrees with no live run, then a live run's sub-worktrees, then the main
-checkouts. It never touches a live run's own worktree, nor anything written in
+worktrees with no live run, then a live run's sub-worktrees, then the own
+worktree of a parked run (queued for a slot, waiting on the owner, or paused:
+no build runs there now, and its next one starts cold), then the main
+checkouts. It never touches a running run's own worktree, nor anything written in
 the last `ASD_DISK_IDLE_MIN` minutes (default 60). One reclaim runs at a time
 (a lock in the runs directory). After that it runs
 `<main>/.agentic/reclaim.sh <checkouts…>` when the repo has one, so a repo can
