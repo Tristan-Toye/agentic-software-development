@@ -33,6 +33,18 @@ export function remindersDue(elapsedMs: number): number {
 let PORT = 0
 const log = (m: string) => console.log(`[asd-questions] ${m}`)
 
+/** Prefix every line the dashboard logs with an ISO UTC time, once, centrally. */
+let stamped = false
+export function stampConsole(): void {
+  if (stamped) return
+  stamped = true
+  for (const k of ["log", "error"] as const) {
+    const orig = console[k].bind(console)
+    console[k] = (...a: unknown[]) => orig(new Date().toISOString(), ...a)
+  }
+}
+let socketStarted = false
+
 /** Show a macOS notification; the text goes through argv so no AppleScript escaping can break out. */
 export function notify(title: string, subtitle: string, body: string): void {
   if (process.env.ASD_QUESTIONS_NO_NOTIFY === "1") return
@@ -867,6 +879,7 @@ async function checkMerges(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  stampConsole()
   const requested = process.env.ASD_QUESTIONS_PORT
   // The first stubs and runs scan runs git and gh per repo and can pass Bun's 10 s idle default.
   const server = Bun.serve({ hostname: "127.0.0.1", port: requested !== undefined && requested !== "" ? Number(requested) : 7317, idleTimeout: 120, fetch: handle })
@@ -877,7 +890,10 @@ async function main(): Promise<void> {
     botToken = keychain("asd-slack-bot")
     const appToken = keychain("asd-slack-app")
     if (botToken && appToken) {
-      void runSocket(appToken, { onAction: onSlackAction, lookup: (c, t) => idForThread(DIR, c, t), ownerUser: owner, dmAgent: DM_AGENT, log })
+      if (!socketStarted) {
+        socketStarted = true
+        void runSocket(appToken, { onAction: onSlackAction, lookup: (c, t) => idForThread(DIR, c, t), ownerUser: owner, dmAgent: DM_AGENT, log })
+      }
       log("slack enabled")
     } else {
       botToken = ""
