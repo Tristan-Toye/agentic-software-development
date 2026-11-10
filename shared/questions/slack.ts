@@ -220,7 +220,8 @@ export type SocketDeps = {
 /**
  * Run the Socket Mode loop forever, reconnecting with backoff (1 s doubling to 60 s). Exactly one socket is live:
  * the old one is closed before a new one opens, and a socket that errors or closes is closed and silenced.
- * A socket that sends no frame for ASD_SLACK_IDLE_MS (60 s) is closed and reconnected. Envelopes seen before
+ * With ASD_SLACK_IDLE_MS set, a socket that sends no frame for that long is closed and reconnected; it is off by
+ * default, since Slack sends no app-level heartbeat and a quiet DM is not a dead socket. Envelopes seen before
  * (Slack redelivers) are acked and dropped.
  */
 export async function runSocket(appToken: string, h: Handlers, deps: SocketDeps = {}): Promise<void> {
@@ -228,7 +229,7 @@ export async function runSocket(appToken: string, h: Handlers, deps: SocketDeps 
   const WS = deps.WebSocket ?? WebSocket
   const sleep = deps.sleep ?? Bun.sleep
   const now = deps.now ?? Date.now
-  const idleMs = deps.idleMs ?? (Number(process.env.ASD_SLACK_IDLE_MS) || 60000)
+  const idleMs = deps.idleMs ?? (Number(process.env.ASD_SLACK_IDLE_MS) || 0)
   const seen = new Map<string, number>()
   let current: WebSocket | null = null
   let delay = 1000
@@ -258,9 +259,10 @@ export async function runSocket(appToken: string, h: Handlers, deps: SocketDeps 
           h.log(`slack socket ${why}`)
           resolve()
         }
-        timer = setInterval(() => {
-          if (now() - last >= idleMs) finish(`idle for ${idleMs} ms`)
-        }, Math.max(10, Math.min(idleMs / 4, 5000)))
+        if (idleMs > 0)
+          timer = setInterval(() => {
+            if (now() - last >= idleMs) finish(`idle for ${idleMs} ms`)
+          }, Math.max(10, Math.min(idleMs / 4, 5000)))
         ws.onmessage = async (e) => {
           last = now()
           let env: any

@@ -233,8 +233,9 @@ the runner, the gates of the command still ask, once, at its start.
   - **After an answer:** the question message is updated to show the answer,
     and gets a ✅ reaction.
   - **Connection:** the server reconnects on a `disconnect` envelope, a
-    closed or errored socket, or a socket silent for `ASD_SLACK_IDLE_MS`
-    (default 60 s), with backoff. Exactly one socket is live: the old one is
+    closed or errored socket, or, when `ASD_SLACK_IDLE_MS` is set, a socket
+    silent that long (off by default: Slack sends no app-level heartbeat),
+    with backoff. Exactly one socket is live: the old one is
     closed before a new one opens. Each envelope is acked first thing.
   - **Duplicates:** Slack redelivers on reconnects. A message
     (`channel:ts`) or button press (`message_ts:action_id:trigger_id`) seen in
