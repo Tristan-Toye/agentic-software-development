@@ -233,14 +233,31 @@ check("slack: a sentence mentioning status is not the command", r.action.type ==
 // The DM agent: with it on, every DM outside a question's thread is a question for the agent
 {
   const on = { dmAgent: true }
-  let a = interpretEnvelope(ev({ text: "status" }), lookup, "", on)
+  let a = interpretEnvelope(ev({ text: "status" }), lookup, "U1", on)
   check("dm agent: status in the DM goes to the agent", a.action.type === "ask" && (a.action as any).ts === "5.1" && !(a.action as any).threadTs && (a.action as any).text === "status")
-  a = interpretEnvelope(ev({ text: "and W-134?", thread_ts: "4.0" }), lookup, "", on)
+  a = interpretEnvelope(ev({ text: "and W-134?", thread_ts: "4.0" }), lookup, "U1", on)
   check("dm agent: a reply in a non-question thread continues that thread", a.action.type === "ask" && (a.action as any).threadTs === "4.0")
   a = interpretEnvelope(ev({ text: "use B", thread_ts: "111.222" }), lookup, "", on)
   check("dm agent: a reply in a question's thread still answers the question", a.action.type === "owner")
   a = interpretEnvelope({ envelope_id: "E9", type: "events_api", payload: { event: { type: "message", channel_type: "group", channel: "G1", ts: "7.1", user: "U1", text: "status" } } }, lookup, "", on)
   check("dm agent: status in a repo channel stays the status command", a.action.type === "status")
+  // Owner gate: the agent edits and pushes, so only the owner's plain new messages reach it.
+  const gate = (e: object, owner = "U1") => interpretEnvelope(ev(e), lookup, owner, on)
+  check("owner gate: the owner's message is an ask carrying the user", (gate({ text: "fix it" }).action as any).user === "U1")
+  let g = gate({ text: "fix it", user: "U2" })
+  check("owner gate: another user is ignored and the reason says so", g.action.type === "none" && /not the owner/.test(g.ignored ?? ""))
+  g = gate({ text: "fix it", user: undefined })
+  check("owner gate: a message with no user is ignored", g.action.type === "none" && !!g.ignored)
+  g = gate({ text: "fix it", bot_id: "B1" })
+  check("owner gate: a bot message is ignored", g.action.type === "none" && g.ignored === "bot message")
+  g = gate({ subtype: "message_changed", text: "edited" })
+  check("owner gate: an edit is ignored", g.action.type === "none" && /message_changed/.test(g.ignored ?? ""))
+  g = gate({ subtype: "bot_message", text: "x" })
+  check("owner gate: any subtype is ignored", g.action.type === "none")
+  g = gate({ text: "fix it" }, "")
+  check("owner gate: with no owner configured nothing starts the agent", g.action.type === "none" && !!g.ignored)
+  g = interpretEnvelope({ envelope_id: "E5", type: "interactive", payload: { type: "block_actions", user: { id: "U2" }, channel: { id: "D1" }, actions: [{ value: "Q9|A" }] } }, lookup, "U1", on)
+  check("owner gate: a button pressed by another user is ignored", g.action.type === "none" && !!g.ignored)
 }
 r = interpretEnvelope({ envelope_id: "E3", type: "interactive", payload: { type: "block_actions", user: { id: "U1" }, channel: { id: "G1" }, container: { message_ts: "8.1" }, message: { ts: "8.1", blocks: [{ type: "section", text: { text: "*Status — config-harness*" } }] }, actions: [{ action_id: "run_status", value: "config-harness|" }] } }, lookup)
 check("slack: Refresh on a status message refreshes it in place, with its scope", r.action.type === "status" && (r.action as any).refresh === true && (r.action as any).repo === "config-harness" && !(r.action as any).id)

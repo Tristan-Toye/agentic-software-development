@@ -15,6 +15,7 @@ import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
 import { awakeDeps, checkAwake, releaseAwake } from "./awake.ts"
+import { slotsReading } from "./slots.ts"
 import { checkDisk, diskDeps, diskReading, sweepDisk } from "./disk.ts"
 import { api, apiGet, channelNameFor, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
@@ -314,6 +315,8 @@ async function onSlackAction(a: OwnerAction): Promise<void> {
     return
   }
   if (a.type === "ask") {
+    // Second owner check (the first is in interpretEnvelope): the agent can edit and push, so only the owner starts it.
+    if (!owner || a.user !== owner) { log(`dm agent: refused a message from ${a.user ?? "-"} (not the owner)`); return }
     void askAgent(a, dmDeps)
     return
   }
@@ -411,7 +414,7 @@ export async function handle(req: Request): Promise<Response> {
       .map((r) => ({ ...r, deferredUndecided: undecidedDeferred(r.deferred.items, r.runner?.command === "fix-deferred" && runnerActive(r.runner), openQs) }))
     const plans = planRuns(runs)
     const accounts = readAccounts([...runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: r.runKey || `${r.repo}.${r.id}`, account: r.runner?.account })), ...plans.map((p) => ({ key: p.key, account: p.account }))])
-    return json({ ...v, runs, plans, accounts, disk: diskReading(), usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
+    return json({ ...v, runs, plans, accounts, disk: diskReading(), slots: slotsReading(), usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
   }
   if (path === "/api/accounts/refresh") {
     if (req.method !== "POST") return json({ error: "method not allowed" }, 405)

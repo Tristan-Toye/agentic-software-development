@@ -87,7 +87,7 @@ the recorded checkpoints.
   Keep runner logins in config dirs of their own (`setup_claude_account.sh`),
   never in the `~/.claude` you log in to interactively.
 - **Run slots:** at most `ASD_RUNNER_MAX_LIVE` runs (default 4; 0 = no limit)
-  work at once. A run takes a slot before each stage and after an owner's
+  work at once (unless the cap is paced, see "Slots that follow the budget"). A run takes a slot before each stage and after an owner's
   answer; only `running` runs hold one. Without a free slot it records
   `queued` (`queued_since`) and waits, longest-queued first. A run the owner
   just answered queues first (`queued_first`): it already waited on the owner,
@@ -272,6 +272,84 @@ the recorded checkpoints.
 - **Limits:** `--max-stages` caps the number of stages a run starts
   (default 20). A crash of the process counts as `FAILED`.
 
+## Slots that follow the budget
+
+Unless `ASD_RUNNER_ADAPTIVE=0` or `ASD_RUNNER_MAX_LIVE` is set (either keeps the
+fixed cap above, exactly), the number of runs that may work at once is paced by
+what the accounts have left.
+
+- **Burn rate.** `r5` is the percentage points of an account's `five_hour`
+  window that one running run uses per hour; `r7` is the same for `seven_day`.
+  Each usage reading (`rate_limit_event`) is compared with the account's
+  previous one: delta used% divided by (runs in state `running` on that account
+  x delta hours). An interval that crosses a reset, runs over 2 h, has no run
+  working, or shows the percentage falling is skipped. An EWMA (alpha 0.2) per
+  window, not per account, lives in `<usage dir>/burn.json`
+  (`{"rates": {...}, "last": {...}}`). The prior, until something is learned:
+  `five_hour` 6.0 and `seven_day` 0.5 points per run-hour. They come from this
+  machine's history: the runs' `.jsonl` `state` events give how many runs were
+  `running` over time (41 runs, 435 run-hours), `~/.claude/usage-log.jsonl`
+  gives the percentages (613 pairs in one window, at most 2 h apart: +1377
+  points over 208 run-hours = 6.6 for the 5-hour window, 0.58 for the weekly
+  one; per-window highs agree, as lower bounds because most hit 100).
+- **Per usable account** (configured in `accounts.json`, not limit-marked,
+  weekly window under 98%): with `h5`/`h7` the hours to the resets and margins
+  `m5 = 10`, `m7 = 5`,
+  `runs5 = (100 - m5 - used5) / (r5 x max(h5, 0.25))`,
+  `runs7 = (100 - m7 - used7) / (r7 x max(h7, 1))`,
+  `runs_a = max(0, min(runs5, runs7))`. A window that reset since the reading
+  counts as empty.
+- **Cap** = `clamp(floor(sum runs_a), ASD_RUNNER_MIN_LIVE (3), ASD_RUNNER_CAP_MAX (6))`.
+  With every account limit-marked the existing pause logic applies and the cap
+  is the minimum.
+- **Stale readings.** A reading older than 30 min, with no running run on the
+  account refreshing it, is refreshed by whichever runner is deciding, through
+  the tiny usage call (`run_dossier.py usage`), at most once per 15 min per
+  account (`<usage dir>/<account>.refresh`, with a lock file so several runners
+  do not all refresh). An account with no reading counts `4 / number of
+  accounts`; with no reading anywhere the cap is 4.
+- **Never preempts.** A lower cap only stops admissions; a run that works
+  keeps working. The cap is cached for ~60 s (`ASD_PACE_TTL`) in
+  `<runs dir>/slots-cap.json` (`{cap, reason, ts, accounts, rates, ...}`), so
+  all runners agree. The dashboard's "Running now" header shows it ("4 working
+  · 5 slots", the reason on hover), and the `queued` event carries it: `queued:
+  3 of 3 runs are working (3 slots: main 5h 85% resets in 2.0h, ...)`.
+
+Knobs: `ASD_RUNNER_ADAPTIVE` (`0` = fixed), `ASD_RUNNER_MAX_LIVE` (fixed cap),
+`ASD_RUNNER_MIN_LIVE` (3), `ASD_RUNNER_CAP_MAX` (6), `ASD_PACE_TTL` (60 s),
+`ASD_PACE_REFRESH_S` (900 s), and for tests `ASD_RUNNER_NOW` (epoch seconds).
+
+## Keep-alive pings
+
+The prompt cache of a runner session lives 1 h. A run that waits on the owner,
+or in the queue for a slot, loses it if the wait is longer, and the next turn
+then pays for the whole context again. So, for a run in state `waiting` or
+`queued` whose session's last API call is `ASD_KEEPALIVE_AFTER` seconds old
+(default 3000), the runner sends a ping:
+
+- the message is `RUNNER KEEPALIVE: reply with exactly OK and do nothing else.`
+  If the claude process is alive, it is written to its stream-json stdin and
+  its result is consumed there, not taken for stage output; the state, the
+  question and the stage are not touched. Otherwise one
+  `claude -p --resume <session>` turn runs with the same argv builder as the
+  stage (flags, model, appended rules, permission mode), the run's account
+  (`CLAUDE_CONFIG_DIR`) and cwd, so the cached prefix is byte-identical.
+- It is sent from the thread that waits for the owner's answer (and from the
+  slot queue loop), so a ping and an answer never overlap on the session: an
+  answer arriving during a ping is delivered right after it.
+- It takes no run slot.
+- The event `keepalive ping: cache read N, written M tokens` is logged from the
+  result's usage. A ping that writes more than it reads found the cache already
+  cold: pinging that session stops (`keepalive stopped: ...`).
+- No ping when the run is paused for usage (its account is limit-marked), when
+  the account's five-hour window is at 80% or more, after the wait has lasted
+  `ASD_KEEPALIVE_MAX_H` hours (default 12), or with `ASD_KEEPALIVE=0`.
+
+Knobs: `ASD_KEEPALIVE` (`0` = off), `ASD_KEEPALIVE_AFTER` (3000 s),
+`ASD_KEEPALIVE_MAX_H` (12), `ASD_KEEPALIVE_POLL` (check interval, 5 s) and
+`ASD_KEEPALIVE_TIMEOUT` (180 s). The agent's side: see `RUNNER KEEPALIVE` in the
+runner-mode rules below.
+
 ## Keeping the Mac awake
 
 While at least one run is `running`, `waiting`, `queued` or `paused` (its runner
@@ -346,6 +424,10 @@ The prompt tells the orchestrator these rules:
 - End each stage with its `phase_checkpoint` call and then the line
   `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a
   new process with your checkpoints as its hand-off.
+- `RUNNER KEEPALIVE: ...` is the runner keeping the prompt cache warm while
+  you wait: reply with exactly `OK` and do nothing else (no tool call, no
+  `RUNNER:` line, no change to your plan). The runner asks nothing else of you
+  with it.
 - End with `RUNNER: DONE` when `/work-on` is finished, and with
   `RUNNER: FAILED <why>` when you cannot go on.
 - Post an update within a long stage, in one line, when something worth
