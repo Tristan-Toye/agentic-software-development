@@ -14,6 +14,7 @@ import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
+import { awakeDeps, checkAwake, releaseAwake } from "./awake.ts"
 import { checkDisk, diskDeps, diskReading, sweepDisk } from "./disk.ts"
 import { api, apiGet, channelNameFor, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
@@ -925,7 +926,12 @@ async function main(): Promise<void> {
     mkdirSync(usageDir(), { recursive: true })
     watch(usageDir(), () => emitChange("runs"))
   } catch { /* the 10 s rescan still picks the readings up */ }
-  setInterval(() => { void scan(); void scanRunThreads() }, 10_000)
+  // Keep the Mac awake while a run is live (caffeinate -s -i), on the same rescan; released on exit.
+  const ad = awakeDeps()
+  checkAwake(ad)
+  setInterval(() => { void scan(); void scanRunThreads(); checkAwake(ad) }, 10_000)
+  for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { releaseAwake(); process.exit(0) })
+  process.on("exit", releaseAwake)
   setTimeout(() => void checkMerges(), 20_000)
   setInterval(() => void checkMerges(), 120_000)
   // A merge queue outlives its worker (a logout, a reboot, a crash): pick it up again where it was.
