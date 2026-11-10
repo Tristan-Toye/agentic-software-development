@@ -1,13 +1,10 @@
 ---
 name: implementer
 description: >-
-  Fills in bodies against a contract the orchestrator already wrote. Give it
-  ONE work package from a ready dossier, in its own isolated worktree. It
-  never sees the tests — they are written concurrently in a different worktree,
-  so its blindness is structural, not a promise. It never changes a signature:
-  a signature the package cannot satisfy comes back as `CONTRACT-CHANGE:` and
-  it stops. It writes source bodies and commits, and nothing else — no
-  metadata, no ADR edits, no branches, no merges, no PR.
+  Fills in bodies against a contract already written. Give it ONE work package
+  from a ready dossier, in its own isolated worktree. Never sees the tests,
+  never changes a signature (returns `CONTRACT-CHANGE:` and stops); writes
+  source bodies and commits, nothing else.
 mode: subagent
 hidden: true
 color: "#059669"

@@ -1,13 +1,9 @@
 ---
 description: >-
   The deferred-issues report for a finished change: every product-code issue
-  the session is already aware of but did not tackle — bugs, latent bugs,
-  architecture, performance, duplication, multiple sources of truth — each
-  with an ID, evidence, a proposed fix, the contract boundary it crosses, and
-  its blast radius. A recall report, not an audit: no new research happens
-  here, so it stays cheap at the end of every run. Recall comes first from
-  working memory, then from the ledger `/work-on` captured at close, then
-  from the build artifacts.
+  the session already knows of but did not tackle (bugs, architecture,
+  performance, duplication), each with ID, evidence, proposed fix, contract
+  boundary and blast radius. A recall report, not an audit: no new research.
 argument-hint: "[optional dossier ID or branch/PR ref; empty = this session's changeset]"
 ---
 

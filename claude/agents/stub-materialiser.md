@@ -4,10 +4,9 @@
 # Narrowing lost — Claude Code cannot scope Bash: `permission.bash` denies git *
 name: stub-materialiser
 description: >-
-  Turns a contract into compiling stub files, verbatim. Signatures and
-  documentation comments are copied byte-identical, bodies are the repo's
-  placeholder, and the package must still build. A member it cannot stub
-  comes back as `GAP:` — never an improvisation.
+  Turns a contract into compiling stub files, verbatim: signatures and
+  documentation comments byte-identical, bodies the repo's placeholder. A
+  member it cannot stub comes back as `GAP:`, never an improvisation.
 tools: Read, Grep, Glob, Bash, Write
 model: haiku
 effort: low

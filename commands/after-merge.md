@@ -1,12 +1,10 @@
 ---
 description: >-
-  The cleanup after the owner merged a dossier's pull request into its stub:
-  settle the dossier's record, clean the local branches and worktrees the
-  merge made stale, and bring the pull requests still open against the stub
-  up to date where that is mechanical. State work, not code work: it never
-  merges, never edits a merged pull request, and asks before resolving a
-  conflict. The dashboard's merge detector starts it under the runner
-  (`run_dossier.py <ID> --command after-merge --items <PR numbers>`).
+  Cleanup after the owner merged a dossier's pull request into its stub:
+  settle the dossier's record, clean the stale local branches and worktrees,
+  update still-open PRs against the stub where mechanical. State work only:
+  never merges, never edits a merged PR, asks before resolving a conflict.
+  Started by the dashboard's merge detector.
 argument-hint: "<dossier ID, e.g. W-128> [PR numbers, e.g. 429,430]"
 ---
 

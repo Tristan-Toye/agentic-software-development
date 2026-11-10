@@ -523,6 +523,7 @@ LEAN_NAME_ONLY = ["deep-research", "design", "design-sync", "dataviz", "update-c
                   "workflow-authoring", "run", "run-skill-generator", "plugin-authoring"]
 LEAN_PLUGINS_OFF = ["context-mode@context-mode"]
 COMPACT_WINDOW_DEFAULT = 250000
+DESC_CAP = 460   # the longest agent, command or skill description the selftest allows (measured prefix cost, runner.md)
 SPLIT_AT_DEFAULT = 135000
 # Models whose context window is 200k: a larger auto-compact window is meaningless there (the CLI caps it at the
 # window), so none is passed. claude-opus-5-5 and claude-sonnet-5-5 report a 1M window (modelUsage.contextWindow).
@@ -3361,6 +3362,17 @@ def selftest() -> int:
         cw = argv_of(ASD_RUNNER_LEAN="0", ASD_RUNNER_COMPACT_WINDOW="300000")
         check("compact window: ASD_RUNNER_COMPACT_WINDOW sets it", cw[cw.index("--autocompact") + 1] == "300000")
         check("compact window: 0 passes none", "--autocompact" not in argv_of(ASD_RUNNER_LEAN="0", ASD_RUNNER_COMPACT_WINDOW="0"))
+        # The plugin's own agent, command and skill descriptions ride in every call's prefix (about 3.1k tokens in all,
+        # measured); a long one is a standing cost, so each stays at or under DESC_CAP characters.
+        plug_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        long_desc = []
+        for pat in ("commands/*.md", "skills/*/SKILL.md", "sub-agents/*.md", "primary-agents/*.md"):
+            for df in sorted(glob.glob(os.path.join(plug_root, pat))):
+                dfm = re.match(r"---\n(.*?)\n---", open(df, encoding="utf-8").read(), re.S)
+                ddm = re.search(r"^description:\s*(.*?)(?=^\S|\Z)", dfm.group(1), re.S | re.M) if dfm else None
+                if ddm and len(" ".join(ddm.group(1).split())) > DESC_CAP:
+                    long_desc.append(os.path.relpath(df, plug_root))
+        check(f"plugin descriptions stay at or under {DESC_CAP} characters (they ride in every call's prefix): {long_desc}", not long_desc)
         check("compact window: none for a 200k-window model, one for the 1M models",
               compact_window("claude-haiku-4-5") == 0 and compact_window("claude-opus-4-1") == 0
               and compact_window("claude-opus-5-5") == 250000 and compact_window("claude-sonnet-5-5") == 250000)

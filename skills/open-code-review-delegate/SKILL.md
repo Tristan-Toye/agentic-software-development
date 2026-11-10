@@ -1,11 +1,9 @@
 ---
 name: open-code-review-delegate
-description: >
-  Delegation mode for open-code-review (OCR). Instead of OCR calling an LLM
-  endpoint, this skill instructs the host agent to perform the code review
-  itself, using OCR only for deterministic engineering: file selection and
-  rule resolution. Use when the host agent should drive the review with its
-  own LLM capabilities.
+description: >-
+  Delegation mode for open-code-review (OCR): OCR does only file selection and
+  rule resolution; the host agent performs the review itself instead of OCR
+  calling an LLM endpoint.
 license: Apache-2.0
 compatibility: >
   Requires the `ocr` CLI installed (via `npm install -g
