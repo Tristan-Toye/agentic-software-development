@@ -85,6 +85,7 @@ You run under the dossier runner and nobody reads the terminal.
 - The plugin's references (`references/work-on/phase-*.md`, `formats/*`, `runner.md`) are long and the same in every stage: read only the section your step needs (`ref_section` with the document's short name, `phase-4` or `formats/dossier`, and a heading or `--list`), not whole files; the phase file you start a phase with is the one you read whole, and never the same section twice in one stage.
 - Phase 2 takes its stub from `python3 scripts/stub_target.py --root R` (the plugin's scripts). Exit 3 (`wait <stub>`) means that stub is being integrated and no new one may be cut until it is in development: end the turn with the line `RUNNER: WAITING stub`; the runner waits without tokens and sends `STUB READY: <branch>` once the new stub is cut. Never cut a stub yourself.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
+- `RUNNER KEEPALIVE: ...` is the runner keeping the prompt cache warm while you wait: reply with exactly `OK` and do nothing else (no tool call, no RUNNER: line, no change to your plan).
 - End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
 - Keep the owner informed: post an update with `ask_owner.py note --root R --dossier ID --text "..."` when a stage starts and ends and whenever something worth knowing happens (a wave returned, the suite went green or red, an arbitration was ruled, a plan changed). Write it for a person reading on a phone: what happened and what it means, in plain sentences; markdown bullets and small tables are welcome. Never paste commands, file paths, SHAs, flags or log output into an update; the build log keeps those.
 """
@@ -270,7 +271,8 @@ def record_usage(account: str, info: dict) -> None:
         os.makedirs(USAGE_DIR(), exist_ok=True)
         write_json(path, {"ts": now(), "status": info.get("status"), "windows": wins})
     except OSError:
-        pass
+        return
+    learn_burn(account, wins, now_s())
 
 
 MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
@@ -300,6 +302,8 @@ def human_reset(text: str, now_s: float) -> float | None:
     return cand.timestamp()
 
 
+# The line a keep-alive ping sends (documented in RUNNER_RULES and references/runner.md): the agent answers OK and stops.
+KEEPALIVE_MSG = "RUNNER KEEPALIVE: reply with exactly OK and do nothing else."
 NUDGE = ("RUNNER: your last turn ended without a RUNNER: line and nothing has happened since. "
          "If you were waiting on a background command or workflow, check its result now and continue. "
          "Every turn must end with a RUNNER: line (STAGE-DONE, WAITING, DONE or FAILED).")
@@ -520,7 +524,7 @@ def model_ok(expected: str, actual: str) -> bool:
     return actual.split("[")[0] == expected.split("[")[0]
 
 
-# ---- run slots: at most ASD_RUNNER_MAX_LIVE runs work at once (default 4) ----
+# ---- run slots: at most ASD_RUNNER_MAX_LIVE runs work at once (default 4; see "slots that follow the budget" below) ----
 # Ten runs resuming at one limit reset spent a whole 5-hour window in 12 minutes. A run takes a slot before each
 # stage and after an owner's answer; only `running` runs hold one (waiting, paused and queued runs spend nothing).
 # Without a free slot it records `queued` and waits its turn: the longest-queued run goes first.
@@ -531,6 +535,258 @@ def max_live() -> int:
         return max(0, int(os.environ.get("ASD_RUNNER_MAX_LIVE") or 4))
     except ValueError:
         return 4
+
+
+# ---- slots that follow the budget (pacing) ----
+# Unless ASD_RUNNER_ADAPTIVE=0 or ASD_RUNNER_MAX_LIVE is set, the number of runs that may work at once follows what the
+# accounts have left: for each usable account, how many runs fit in the rest of its 5-hour and weekly windows at the
+# observed burn rate, summed, clamped to ASD_RUNNER_MIN_LIVE..ASD_RUNNER_CAP_MAX (3..6). A lower cap only stops
+# admissions; a run that works is never preempted. The cap is cached for 60 s in `slots-cap.json` in the runs dir (all
+# runners agree; the dashboard shows it).
+#
+# BURN_PRIOR, percentage points of a window used per hour by ONE running run, calibrated on 2026-11-10 from this
+# machine's history: the 41 runs' `state` events in ~/.agentic/runs/*.jsonl give how many runs were `running` over time
+# (350 running intervals, 435 run-hours); ~/.claude/usage-log.jsonl gives the usage percentages over time.
+#   five_hour: 613 consecutive log pairs in one window, <= 2 h apart, with >= 1 run running: +1377 points over 208
+#     run-hours = 6.6 points per run-hour (it includes the owner's interactive use, so slightly high); per-window
+#     highs give a median of 4.7 points per run-hour, but 9 of 11 windows hit 100 (a lower bound). Prior: 6.0.
+#   seven_day: the same pairs give +121 points over 208 run-hours = 0.58; the week of 11-06 (high 100, 168 run-hours)
+#     gives 0.60. Prior: 0.5.
+# Both are replaced by an EWMA of what the usage readings show (burn.json), so the prior only matters at the start.
+BURN_PRIOR = {"five_hour": 6.0, "seven_day": 0.5}
+BURN_ALPHA = 0.2
+PACE_MARGIN = {"five_hour": 10.0, "seven_day": 5.0}
+WINDOW_HOURS = {"five_hour": 5.0, "seven_day": 168.0}
+BURN_FILE = lambda: os.path.join(USAGE_DIR(), "burn.json")
+
+
+def now_s() -> float:
+    """The clock of pacing and keep-alive; ASD_RUNNER_NOW (epoch seconds) is the tests' knob."""
+    try:
+        return float(os.environ["ASD_RUNNER_NOW"])
+    except (KeyError, ValueError):
+        return time.time()
+
+
+def env_num(name: str, default: float, conv=float):
+    try:
+        return conv(os.environ.get(name) or default)
+    except ValueError:
+        return default
+
+
+def fixed_slots() -> bool:
+    """The old behaviour: ASD_RUNNER_ADAPTIVE=0, or a cap the owner set with ASD_RUNNER_MAX_LIVE."""
+    return (os.environ.get("ASD_RUNNER_ADAPTIVE") or "").strip() == "0" or bool((os.environ.get("ASD_RUNNER_MAX_LIVE") or "").strip())
+
+
+def epoch_of(s) -> float | None:
+    try:
+        return datetime.datetime.strptime(str(s), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def running_by_account() -> dict[str, int]:
+    """Runs in state `running` with a live runner, by the account they use."""
+    n: dict[str, int] = {}
+    try:
+        names = [x for x in os.listdir(runs_dir()) if x.endswith(".runner.json")]
+    except OSError:
+        return n
+    for x in names:
+        st = read_json(os.path.join(runs_dir(), x), {}) or {}
+        if st.get("state") == "running" and alive(st.get("pid")):
+            n[str(st.get("account") or "")] = n.get(str(st.get("account") or ""), 0) + 1
+    return n
+
+
+def burn_rates() -> dict[str, float]:
+    """{window: points per hour of one running run}: the EWMA in burn.json, else the prior."""
+    cur = (read_json(BURN_FILE(), {}) or {}).get("rates") or {}
+    return {w: float(cur[w]) if isinstance(cur.get(w), (int, float)) and cur[w] > 0 else p for w, p in BURN_PRIOR.items()}
+
+
+def learn_burn(account: str, wins: dict, t: float, running: int | None = None) -> None:
+    """From a new reading: delta used% / (running runs on the account x delta hours) feeds the EWMA of each window
+    (burn.json, keyed by window, not by account). An interval that crosses a reset, runs over 2 h, has no run working,
+    or shows the percentage falling is skipped. The baseline stays put until 5 minutes or 1 point have passed."""
+    if not account:
+        return
+    n = running_by_account().get(account, 0) if running is None else running
+    path = BURN_FILE()
+    cur = read_json(path, {}) or {}
+    last, rates = cur.get("last") or {}, dict(cur.get("rates") or {})
+    mine = dict(last.get(account) or {})
+    for w in BURN_PRIOR:
+        win = wins.get(w) or {}
+        used, reset = win.get("used_percentage"), win.get("resets_at")
+        if not isinstance(used, (int, float)) or not isinstance(reset, (int, float)):
+            continue
+        base = mine.get(w)
+        new = {"t": t, "used": used, "reset": reset, "n": n}
+        if base and base.get("reset") == reset and 0 < t - base["t"]:
+            dh, du = (t - base["t"]) / 3600, used - base["used"]
+            if dh > 2 or du < 0:
+                pass
+            elif dh * 60 < 5 and du < 1:
+                new = base   # too little to measure: keep the older baseline
+            else:
+                k = (n + base.get("n", 0)) / 2   # runs working at both ends of the interval, else it was not loaded steadily
+                if n > 0 and base.get("n", 0) > 0:
+                    r = du / (k * dh)
+                    old = rates.get(w) if isinstance(rates.get(w), (int, float)) and rates[w] > 0 else BURN_PRIOR[w]
+                    rates[w] = round(old * (1 - BURN_ALPHA) + r * BURN_ALPHA, 4)
+        mine[w] = new
+    last[account] = mine
+    try:
+        write_json(path, {"rates": rates, "last": last})
+    except OSError:
+        pass
+
+
+def refresh_usage(acc: dict) -> bool:
+    """One tiny haiku call on the account, to read its windows from the `rate_limit_event`: True when a reading came."""
+    env = dict(os.environ, ASD_RUN_UPDATES="0")
+    env.pop("ASD_RUN_KEY", None)
+    if os.path.abspath(acc["dir"]) != os.path.abspath(os.path.expanduser("~/.claude")):
+        env["CLAUDE_CONFIG_DIR"] = acc["dir"]
+    else:
+        env.pop("CLAUDE_CONFIG_DIR", None)
+    cmd = shlex.split(os.environ.get("ASD_CLAUDE_BIN") or "claude") + [
+        "-p", "--output-format", "stream-json", "--verbose", "--model", "haiku", "Reply with the single word ok."]
+    got = False
+    try:
+        out = subprocess.run(cmd, cwd=os.path.expanduser("~"), env=env, capture_output=True, text=True, timeout=120)
+        for line in out.stdout.splitlines():
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("type") == "rate_limit_event":
+                record_usage(acc["name"], ev.get("rate_limit_info") or {})
+                got = True
+        tail = (out.stdout + out.stderr)[-2000:]
+        if not got and usage_limit(tail):
+            record_usage(acc["name"], {"status": "rejected"})
+            got = True
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return got
+
+
+def refresh_gate(acc: dict, t: float) -> bool:
+    """Refresh an account's reading at most once per 15 minutes (ASD_PACE_REFRESH_S), whichever runner asks first: a
+    lock file keeps the others from refreshing at once. True when this call made the refresh."""
+    base = os.path.join(USAGE_DIR(), acc["name"] + ".refresh")
+    try:
+        os.makedirs(USAGE_DIR(), exist_ok=True)
+        if t - os.path.getmtime(base) < env_num("ASD_PACE_REFRESH_S", 900):
+            return False
+    except OSError:
+        pass
+    try:
+        fd = os.open(base + ".lock", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except FileExistsError:
+        try:
+            if time.time() - os.path.getmtime(base + ".lock") > 300:
+                os.remove(base + ".lock")   # a runner died holding it
+        except OSError:
+            pass
+        return False
+    except OSError:
+        return False
+    try:
+        with open(base, "w") as fh:
+            fh.write(str(t))
+        os.utime(base, (t, t))
+        refresh_usage(acc)
+    finally:
+        try:
+            os.remove(base + ".lock")
+        except OSError:
+            pass
+    return True
+
+
+def compute_cap(t: float | None = None) -> dict:
+    """The paced cap and why: {cap, reason, ts, mode, accounts: [...]}; see the comment above for the formula."""
+    t = now_s() if t is None else t
+    lo = max(1, int(env_num("ASD_RUNNER_MIN_LIVE", 3, int)))
+    hi = max(lo, int(env_num("ASD_RUNNER_CAP_MAX", 6, int)))
+    rates = burn_rates()
+    all_accs, st = load_accounts(), account_state()
+    accs = [a for a in all_accs if not account_problem(a, all_accs)] or all_accs
+    running = running_by_account()
+    rows, parts, total, known, limited = [], [], 0.0, 0, 0
+    for a in accs:
+        name = a["name"]
+        path = os.path.join(USAGE_DIR(), name + ".json")
+        mark = st.get(name)
+        use = read_json(path, {}) or {}
+        if mark and float(mark.get("limited_until") or 0) > t and not limit_superseded(mark, use):
+            limited += 1
+            rows.append({"account": name, "limited": True, "runs": 0})
+            parts.append(f"{name} limit-marked → 0")
+            continue
+        ts = epoch_of(use.get("ts"))
+        if (ts is None or t - ts > 1800) and not running.get(name):
+            if refresh_gate(a, t):
+                use = read_json(path, {}) or {}
+                ts = epoch_of(use.get("ts"))
+        w = use.get("windows") or {}
+        w5, w7 = w.get("five_hour") or {}, w.get("seven_day") or {}
+        if ts is None or not isinstance(w5.get("used_percentage"), (int, float)):
+            share = 4.0 / max(1, len(accs))
+            total += share
+            rows.append({"account": name, "unknown": True, "runs": round(share, 2)})
+            parts.append(f"{name} no reading → {share:.1f}")
+            continue
+        known += 1
+
+        def left(win: dict, key: str) -> tuple[float, float]:
+            used, reset = win.get("used_percentage"), win.get("resets_at")
+            if not isinstance(used, (int, float)):
+                return 0.0, WINDOW_HOURS[key]
+            if isinstance(reset, (int, float)) and reset <= t:
+                return 0.0, WINDOW_HOURS[key]    # the window reset after the reading: it is empty again
+            return float(used), (reset - t) / 3600 if isinstance(reset, (int, float)) else WINDOW_HOURS[key]
+
+        u5, h5 = left(w5, "five_hour")
+        u7, h7 = left(w7, "seven_day") if isinstance(w7.get("used_percentage"), (int, float)) else (0.0, WINDOW_HOURS["seven_day"])
+        if u7 >= 98:
+            runs = 0.0
+        else:
+            runs5 = (100 - PACE_MARGIN["five_hour"] - u5) / (rates["five_hour"] * max(h5, 0.25))
+            runs7 = (100 - PACE_MARGIN["seven_day"] - u7) / (rates["seven_day"] * max(h7, 1.0))
+            runs = max(0.0, min(runs5, runs7))
+        total += runs
+        rows.append({"account": name, "five_hour": u5, "h5": round(h5, 2), "seven_day": u7, "h7": round(h7, 1), "runs": round(runs, 2)})
+        parts.append(f"{name} 5h {u5:.0f}% resets in {h5:.1f}h, weekly {u7:.0f}% → {runs:.1f}")
+    if known == 0 and limited < len(accs):
+        cap, parts = 4, ["no usage reading yet"]
+    else:
+        cap = max(lo, min(hi, int(total)))
+    return {"cap": cap, "reason": f"{cap} slots: " + "; ".join(parts), "ts": t, "mode": "adaptive", "accounts": rows,
+            "min": lo, "max": hi, "rates": rates}
+
+
+def slot_cap() -> tuple[int, str]:
+    """(cap, reason) for admissions. Fixed (ASD_RUNNER_ADAPTIVE=0 or ASD_RUNNER_MAX_LIVE) or paced and cached ~60 s."""
+    if fixed_slots():
+        n = max_live()
+        return n, f"fixed at {n}: " + ("ASD_RUNNER_ADAPTIVE=0" if (os.environ.get("ASD_RUNNER_ADAPTIVE") or "").strip() == "0" else "ASD_RUNNER_MAX_LIVE")
+    path, t = os.path.join(runs_dir(), "slots-cap.json"), now_s()
+    c = read_json(path, {}) or {}
+    if c.get("mode") == "adaptive" and isinstance(c.get("ts"), (int, float)) and abs(t - c["ts"]) < env_num("ASD_PACE_TTL", 60):
+        return int(c["cap"]), str(c.get("reason") or "")
+    c = compute_cap(t)
+    try:
+        write_json(path, c)
+    except OSError:
+        pass
+    return c["cap"], c["reason"]
 
 
 def queue_order(st: dict) -> tuple[int, str]:
@@ -629,6 +885,13 @@ class Runner:
         self.children: list[subprocess.Popen] = []
         self.code = script_stamp(__file__)   # a stage boundary re-execs the runner when this changes (a deployed fix)
         self.grace = float(os.environ.get("ASD_RUNNER_GRACE") or 1.5)
+        self.q: queue.Queue | None = None   # the open claude process's event queue (a keep-alive ping reads its result here)
+        self.last_api = 0.0                 # when the session's last API call came back (any assistant or result event)
+        self.ka_since: float | None = None  # when this wait (owner question or queue) began
+        self.ka_checked = 0.0               # monotonic time of the last keep-alive check
+        self.ka_cold: set[str] = set()      # sessions whose cache a ping found cold: not pinged again
+        self.ka_said: set[str] = set()
+        self.stray = 0                      # ping results still to come that read_turn must not take for a turn's
 
     # -- records ----------------------------------------------------------
 
@@ -800,19 +1063,26 @@ class Runner:
         rows.append("Continue from there; do not redo finished stages.")
         return "\n".join(rows)
 
-    def spawn(self) -> tuple[queue.Queue, bool]:
-        self.wrong_model = ""
+    def child_env(self) -> dict:
+        """The environment of a claude child of this run (the stage's and a keep-alive resume's): run key and account."""
         env = dict(os.environ, ASD_RUN_KEY=self.key)
         acct = getattr(self, "account", None)
         if acct and os.path.abspath(acct["dir"]) != os.path.abspath(os.path.expanduser("~/.claude")):
             env["CLAUDE_CONFIG_DIR"] = acct["dir"]
         elif acct:
             env.pop("CLAUDE_CONFIG_DIR", None)
+        return env
+
+    def spawn(self) -> tuple[queue.Queue, bool]:
+        self.wrong_model = ""
+        self.stray = 0
+        self.last_api = now_s()
         self.proc = subprocess.Popen(
-            self.claude_cmd(), cwd=self.root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            self.claude_cmd(), cwd=self.root, env=self.child_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=open(self.err_path, "ab"), start_new_session=True)
         self.save(claude_pid=self.proc.pid)
         q: queue.Queue = queue.Queue()
+        self.q = q
 
         def pump(p=self.proc):
             for raw in p.stdout:
@@ -854,7 +1124,6 @@ class Runner:
     def take_slot(self, first: bool = False) -> bool:
         """Wait for a run slot (max_live); False when the run was stopped while it waited. `first`: the owner just
         answered this run, so it queues ahead of every run not answered (it already waited on the owner)."""
-        cap = max_live()
         mine: tuple[int, str] | None = None
         low_said, reclaimed = False, 0.0
         while not self.stopping:
@@ -871,10 +1140,13 @@ class Runner:
                     self.event(f"queued: the disk has {free:.0f} GiB free, below the {floor:.0f} GiB floor (ASD_DISK_FLOOR_GIB); "
                                "reclaiming unused build output, and this run starts once the disk has room", "queued")
                     low_said = True
+                self.keepalive_tick()
                 time.sleep(float(os.environ.get("ASD_RUNNER_SLOT_POLL") or 10))
                 continue
+            cap, why = slot_cap()   # paced and cached for ~60 s, or fixed; a lower cap only stops admissions
             if cap == 0:
                 self.save(state="running", queued_since=None, queued_first=None)
+                self.ka_since = None
                 return True
             held, queued = slot_census(self.key)
             ahead = [k for o, k in queued if mine and o < mine]
@@ -882,13 +1154,15 @@ class Runner:
                 if mine:
                     self.event(f"{'disk has room' if low_said else 'slot free'}; {held + 1} of {cap} runs working", "running")
                 self.save(state="running", queued_since=None, queued_first=None)
+                self.ka_since = None
                 return True
             if not mine:
                 since = now()
                 mine = queue_order({"queued_since": since, "queued_first": first})
                 self.save(state="queued", queued_since=since, queued_first=first or None)
-                self.event(f"queued{' first (answered)' if first else ''}: {held} of {cap} runs are working (ASD_RUNNER_MAX_LIVE); "
+                self.event(f"queued{' first (answered)' if first else ''}: {held} of {cap} runs are working ({why}); "
                            "this one starts when a slot frees", "queued")
+            self.keepalive_tick()
             time.sleep(float(os.environ.get("ASD_RUNNER_SLOT_POLL") or 10))
         return False
 
@@ -1041,6 +1315,122 @@ class Runner:
         except (BrokenPipeError, OSError, ValueError):
             pass  # the process died; read_turn reports it
 
+    # -- keeping the prompt cache warm ------------------------------------
+
+    def session_last_api(self) -> float:
+        """When the session last called the API: the last event seen, else the transcript's mtime."""
+        if self.last_api:
+            return self.last_api
+        path = transcript_path(str(self.state.get("session") or ""), (self.account or {}).get("dir"))
+        try:
+            return os.path.getmtime(path) if path else 0.0
+        except OSError:
+            return 0.0
+
+    def keepalive_blocked(self, t: float) -> str:
+        """Why no ping now ("" = none): the account is limit-marked (the run would be paused) or its 5-hour window is >= 80%."""
+        name = (self.account or {}).get("name", "")
+        use = read_json(os.path.join(USAGE_DIR(), name + ".json"), {}) or {}
+        mark = account_state().get(name)
+        if mark and float(mark.get("limited_until") or 0) > t and not limit_superseded(mark, use):
+            return "paused for usage"
+        w5 = (use.get("windows") or {}).get("five_hour") or {}
+        if isinstance(w5.get("used_percentage"), (int, float)) and w5["used_percentage"] >= 80 \
+                and not (isinstance(w5.get("resets_at"), (int, float)) and w5["resets_at"] <= t):
+            return f"five-hour window at {w5['used_percentage']:.0f}%"
+        return ""
+
+    def keepalive_tick(self) -> None:
+        """Prompt-cache keep-alive for a run that waits (on the owner or for a slot): the cache lives 1 h, and an
+        owner's answer or a slot can take longer. When the session's last API call is ASD_KEEPALIVE_AFTER seconds old
+        (3000) and the wait is under ASD_KEEPALIVE_MAX_H hours (12), send one tiny ping. No ping while the run is
+        paused for usage, when its account's 5-hour window is at 80% or more, or with ASD_KEEPALIVE=0. A ping takes
+        no run slot and never changes the run's state."""
+        if (os.environ.get("ASD_KEEPALIVE") or "").strip() == "0" or self.stopping:
+            return
+        if self.state.get("state") not in ("waiting", "queued"):
+            self.ka_since = None
+            return
+        if time.monotonic() - self.ka_checked < env_num("ASD_KEEPALIVE_POLL", 5):
+            return
+        self.ka_checked = time.monotonic()
+        t = now_s()
+        if self.ka_since is None:
+            self.ka_since = t
+        sid = str(self.state.get("session") or "")
+        if not sid or sid in self.ka_cold:
+            return
+        if t - self.ka_since >= env_num("ASD_KEEPALIVE_MAX_H", 12) * 3600:
+            if sid + ":max" not in self.ka_said:
+                self.ka_said.add(sid + ":max")
+                self.log("keepalive stopped: waited longer than ASD_KEEPALIVE_MAX_H")
+            return
+        last = self.session_last_api()
+        if last and t - last < env_num("ASD_KEEPALIVE_AFTER", 3000):
+            return
+        if self.keepalive_blocked(t):
+            return
+        self.keepalive_ping(sid)
+
+    def keepalive_ping(self, sid: str) -> None:
+        """One ping, in the calling thread (the one that would deliver an owner's answer, so the two never interleave):
+        into the open process's stdin when it lives, else one `claude -p --resume <sid>` turn built by claude_cmd, with
+        the same flags, model, account, cwd and appended prompt as the stage, so the cached prefix matches."""
+        live = self.proc is not None and self.proc.poll() is None and self.q is not None
+        ev = self.ping_live() if live else self.ping_resume(sid)
+        self.last_api = now_s()   # asked, answered or not: the next ping comes ASD_KEEPALIVE_AFTER later
+        if not ev:
+            self.log("keepalive ping: no answer")
+            return
+        if ev.get("is_error"):
+            self.log("keepalive ping: the turn ended in an error: " + str(ev.get("result") or "")[:160].replace("\n", " "))
+            return
+        u = ev.get("usage") or {}
+        read, wrote = int(u.get("cache_read_input_tokens") or 0), int(u.get("cache_creation_input_tokens") or 0)
+        self.log(f"keepalive ping: cache read {read}, written {wrote} tokens")
+        if wrote > read:
+            self.ka_cold.add(sid)
+            self.log("keepalive stopped: the cache was already cold (the ping wrote more than it read); no more pings for this session")
+
+    def ping_live(self) -> dict | None:
+        """The open process answers the ping on its own stdin; its result is consumed here, not taken for stage output."""
+        self.send(KEEPALIVE_MSG)
+        end = time.monotonic() + env_num("ASD_KEEPALIVE_TIMEOUT", 180)
+        while time.monotonic() < end and not self.stopping:
+            try:
+                ev = self.q.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if ev is None:
+                self.q.put(None)   # the process ended: read_turn reports it
+                return None
+            if not isinstance(ev, dict):
+                continue
+            self.note_event(ev)
+            if ev.get("type") == "result":
+                return ev
+        self.stray += 1   # its result may still come; read_turn skips it
+        return None
+
+    def ping_resume(self, sid: str) -> dict | None:
+        cmd = self.claude_cmd() + ["--resume", sid]
+        try:
+            out = subprocess.run(cmd, cwd=self.root, env=self.child_env(), input=user_message(KEEPALIVE_MSG),
+                                 capture_output=True, timeout=env_num("ASD_KEEPALIVE_TIMEOUT", 180))
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        res = None
+        for line in out.stdout.decode("utf-8", "replace").splitlines():
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("type") == "rate_limit_event":
+                record_usage((self.account or {}).get("name", ""), ev.get("rate_limit_info") or {})
+            elif ev.get("type") == "result":
+                res = ev
+        return res
+
     def end_process(self) -> None:
         p = self.proc
         if p is None:
@@ -1064,6 +1454,8 @@ class Runner:
     # -- reading a turn ---------------------------------------------------
 
     def note_event(self, ev: dict) -> None:
+        if ev.get("type") in ("assistant", "result"):
+            self.last_api = now_s()
         if ev.get("type") == "rate_limit_event":
             record_usage((getattr(self, "account", None) or {}).get("name", ""), ev.get("rate_limit_info") or {})
             return
@@ -1137,6 +1529,9 @@ class Runner:
                     if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
                         last_text = b["text"]
             elif ev.get("type") == "result":
+                if self.stray > 0:
+                    self.stray -= 1   # the late result of a keep-alive ping that timed out: not a turn's end
+                    continue
                 text = ev.get("result") if isinstance(ev.get("result"), str) and ev.get("result") else last_text
                 err = bool(ev.get("is_error")) or str(ev.get("subtype", "success")) != "success"
                 result = (text or "", err)
@@ -1166,8 +1561,10 @@ class Runner:
                     return "", MESSAGE_RC, ""  # the owner wrote to the run: wake the session with it
                 if self.stopping:
                     return "", -1, ""
+                self.keepalive_tick()   # in this thread, so a ping and an answer never overlap on the session
                 time.sleep(0.1)
         finally:
+            self.ka_since = None
             for p in procs.values():
                 if p.poll() is None:
                     p.kill()
@@ -1843,31 +2240,7 @@ def cmd_usage(a: argparse.Namespace) -> int:
         return 2
     bad = 0
     for acc in accs:
-        env = dict(os.environ, ASD_RUN_UPDATES="0")
-        env.pop("ASD_RUN_KEY", None)
-        if os.path.abspath(acc["dir"]) != os.path.abspath(os.path.expanduser("~/.claude")):
-            env["CLAUDE_CONFIG_DIR"] = acc["dir"]
-        else:
-            env.pop("CLAUDE_CONFIG_DIR", None)
-        cmd = shlex.split(os.environ.get("ASD_CLAUDE_BIN") or "claude") + [
-            "-p", "--output-format", "stream-json", "--verbose", "--model", "haiku", "Reply with the single word ok."]
-        got = False
-        try:
-            out = subprocess.run(cmd, cwd=os.path.expanduser("~"), env=env, capture_output=True, text=True, timeout=120)
-            for line in out.stdout.splitlines():
-                try:
-                    ev = json.loads(line)
-                except ValueError:
-                    continue
-                if ev.get("type") == "rate_limit_event":
-                    record_usage(acc["name"], ev.get("rate_limit_info") or {})
-                    got = True
-            tail = (out.stdout + out.stderr)[-2000:]
-            if not got and usage_limit(tail):
-                record_usage(acc["name"], {"status": "rejected"})
-                got = True
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        got = refresh_usage(acc)
         say(f"{acc['name']}: " + ("usage recorded" if got else "no usage reading"))
         bad += 0 if got else 1
     return 0 if not bad else 1
@@ -1912,11 +2285,18 @@ out({"type": "system", "subtype": "init", "session_id": f"sess-{n}", "model": sc
 if script.get("crash") is not None:
     sys.exit(script["crash"])
 turn = 0
+pingn = 0
 for raw in sys.stdin:
     msg = json.loads(raw)
     text = msg["message"]["content"][0]["text"]
     inlog.write(raw); inlog.flush()
     if text.startswith("RUNNER HAND-OFF"):
+        continue
+    if text.startswith("RUNNER KEEPALIVE"):
+        pings = script.get("pings") or [[9000, 100]]
+        pr, pw = pings[min(pingn, len(pings) - 1)]; pingn += 1
+        out({"type": "result", "subtype": "success", "is_error": False, "session_id": f"sess-{n}", "result": "OK",
+             "usage": {"input_tokens": 3, "output_tokens": 2, "cache_read_input_tokens": pr, "cache_creation_input_tokens": pw}})
         continue
     if script.get("hang"):
         out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t0", "name": "mcp__x__phase_checkpoint", "input": {"phase": "P-hang", "summary": "s"}}]}})
@@ -1993,7 +2373,11 @@ def selftest() -> int:
         open(fake, "w").write(FAKE_CLAUDE)
         env = dict(os.environ, ASD_QUESTIONS_DIR=qdir, ASD_RUNS_DIR=rdir, ASD_FAKE_DIR=fdir, ASD_RUNNER_DEFERRED="0", ASD_RUNNER_SUMMARY="0", ASD_RUNNER_IDLE="1",
                    ASD_CLAUDE_BIN=f"{shlex.quote(sys.executable)} {shlex.quote(fake)}",
-                   ASD_ASK_OWNER=ASK_OWNER, ASD_OWNER_POLL="0.1", ASD_RUNNER_GRACE="0.2")
+                   ASD_ASK_OWNER=ASK_OWNER, ASD_OWNER_POLL="0.1", ASD_RUNNER_GRACE="0.2",
+                   # the runners of this test see no accounts file (the one default account), and the paced cap is off: the
+                   # tests of pacing and of the pings set what they need
+                   ASD_RUNNER_ADAPTIVE="0", ASD_ACCOUNTS=os.path.join(tmp, "no-accounts.json"), ASD_ACCOUNT_STATE=os.path.join(tmp, "e2e-state.json"),
+                   ASD_USAGE_DIR=os.path.join(tmp, "usage-e2e"))
 
         def scenario(procs: list[dict]) -> None:
             for f in os.listdir(fdir):
@@ -2577,6 +2961,238 @@ def selftest() -> int:
         owner_line(q30, "answer", "A", "A")
         check("message: the answer still goes through and the run finishes", p.wait(timeout=60) == 0 and state_of("W-30").get("inbox_seen") == 1)
         check("message: the timeline has the owner's message", any(x.get("event") == "owner-message" for x in lines_of(os.path.join(rdir, "repo.W-30.jsonl"))))
+
+        # ---- slots that follow the budget (pacing): the math, in process, with an injected clock and usage files ----
+        pdir = os.path.join(tmp, "pace"); pusage = os.path.join(pdir, "usage"); pruns = os.path.join(pdir, "runs")
+        for d in (pusage, pruns):
+            os.makedirs(d, exist_ok=True)
+        saved = {k: os.environ.get(k) for k in ("ASD_RUNS_DIR", "ASD_USAGE_DIR", "ASD_ACCOUNTS", "ASD_ACCOUNT_STATE", "ASD_RUNNER_NOW", "ASD_CLAUDE_BIN",
+                                                "ASD_RUNNER_ADAPTIVE", "ASD_RUNNER_MAX_LIVE", "ASD_PACE_TTL", "ASD_PACE_REFRESH_S")}
+        T = time.time()
+        iso = lambda e: datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        os.environ.update(ASD_RUNS_DIR=pruns, ASD_USAGE_DIR=pusage, ASD_ACCOUNTS=os.path.join(pdir, "accounts.json"),
+                          ASD_ACCOUNT_STATE=os.path.join(pdir, "state.json"), ASD_RUNNER_NOW=str(T))
+        for k in ("ASD_RUNNER_ADAPTIVE", "ASD_RUNNER_MAX_LIVE", "ASD_PACE_TTL", "ASD_PACE_REFRESH_S"):
+            os.environ.pop(k, None)
+        write_json(os.environ["ASD_ACCOUNTS"], {"accounts": [{"name": "main", "dir": os.path.join(pdir, "cm")}, {"name": "gmail", "dir": os.path.join(pdir, "cg")}]})
+        counter = os.path.join(pdir, "refreshes")
+        refresher = os.path.join(pdir, "refresher.py")
+        open(refresher, "w").write(
+            "import json,sys,time\nopen(%r,'a').write('x')\n"
+            "print(json.dumps({'type':'rate_limit_event','rate_limit_info':{'status':'allowed','unifiedWindows':{"
+            "'five_hour':{'utilization':0.5,'resetsAt':int(time.time())+7200,'status':'allowed'},"
+            "'seven_day':{'utilization':0.1,'resetsAt':int(time.time())+86400*3,'status':'allowed'}}}}))\n" % counter)
+        os.environ["ASD_CLAUDE_BIN"] = f"{shlex.quote(sys.executable)} {shlex.quote(refresher)}"
+
+        def put(name: str, u5, h5, u7, h7, age=60) -> None:
+            write_json(os.path.join(pusage, name + ".json"), {"ts": iso(T - age), "status": "allowed", "windows": {
+                "five_hour": {"used_percentage": u5, "resets_at": int(T + h5 * 3600), "status": "allowed"},
+                "seven_day": {"used_percentage": u7, "resets_at": int(T + h7 * 3600), "status": "allowed"}}})
+
+        def fresh() -> None:
+            for f in os.listdir(pusage):
+                if f.endswith((".refresh", ".lock")) or f in ("burn.json",):
+                    os.remove(os.path.join(pusage, f))
+            for f in (counter, os.path.join(pruns, "slots-cap.json"), os.environ["ASD_ACCOUNT_STATE"]):
+                if os.path.exists(f):
+                    os.remove(f)
+
+        def refreshes() -> int:
+            return len(open(counter).read()) if os.path.exists(counter) else 0
+
+        fresh(); put("main", 5, 3, 0, 30); put("gmail", 5, 3, 0, 30)
+        c = compute_cap()
+        check("pacing: low use gives the maximum, 6 (each account fits 4.7 runs in its 5-hour window)", c["cap"] == 6 and c["reason"].startswith("6 slots: main 5h 5% resets in 3.0h"))
+        put("main", 85, 2, 10, 30); put("gmail", 85, 2, 10, 30)
+        check("pacing: high use gives the minimum, 3", compute_cap()["cap"] == 3)
+        put("main", 40, 2, 10, 30); put("gmail", 90, 2, 10, 30)
+        check("pacing: one account with room (4.2 runs), one without: 4", compute_cap()["cap"] == 4)
+        put("main", 5, 3, 0, 30); put("gmail", 5, 3, 98, 30)
+        c = compute_cap()
+        check("pacing: an account whose weekly window is at 98% contributes nothing", c["cap"] == 4 and c["accounts"][1]["runs"] == 0)
+        put("gmail", 5, 3, 0, 30)
+        write_json(os.environ["ASD_ACCOUNT_STATE"], {"main": {"limited_until": T + 3600, "marked": iso(T)}})
+        c = compute_cap()
+        check("pacing: a limit-marked account is excluded", c["cap"] == 4 and c["accounts"][0].get("limited") and "limit-marked" in c["reason"])
+        write_json(os.environ["ASD_ACCOUNT_STATE"], {"main": {"limited_until": T + 3600, "marked": iso(T)}, "gmail": {"limited_until": T + 3600, "marked": iso(T)}})
+        check("pacing: every account limit-marked leaves the minimum (the pause logic does the rest)", compute_cap()["cap"] == 3)
+        # a reading whose window has reset since counts as an empty window
+        write_json(os.environ["ASD_ACCOUNT_STATE"], {})
+        put("main", 99, -1, 0, 30); put("gmail", 99, -1, 0, 30)
+        check("pacing: a window that reset since the reading is empty again", compute_cap()["cap"] == 6)
+        # stale reading: refreshed through the usage call, once per 15 minutes
+        fresh(); put("main", 5, 3, 0, 30); put("gmail", 99, 3, 0, 30, age=7200)
+        c = compute_cap()
+        check("pacing: a stale reading with no run on the account is refreshed (one call), and the new reading counts",
+              refreshes() == 1 and c["accounts"][1].get("five_hour") == 50.0)
+        put("gmail", 99, 3, 0, 30, age=7200); compute_cap()
+        check("pacing: the refresh happens at most once per 15 minutes per account", refreshes() == 1)
+        os.utime(os.path.join(pusage, "gmail.refresh"), (T - 1000, T - 1000)); put("gmail", 99, 3, 0, 30, age=7200); compute_cap()
+        check("pacing: ... and again after the 15 minutes", refreshes() == 2)
+        write_json(os.path.join(pruns, "repo.W-299.runner.json"), {"pid": os.getpid(), "state": "running", "account": "gmail"})
+        os.utime(os.path.join(pusage, "gmail.refresh"), (T - 1000, T - 1000)); put("gmail", 99, 3, 0, 30, age=7200)
+        c = compute_cap()
+        check("pacing: a run working on the account keeps its reading fresh: no refresh, the old reading is used", refreshes() == 2 and c["accounts"][1].get("five_hour") == 99.0)
+        os.remove(os.path.join(pruns, "repo.W-299.runner.json"))
+        # no reading at all: 4 / number of accounts each, 4 overall
+        fresh(); os.environ["ASD_CLAUDE_BIN"] = f"{shlex.quote(sys.executable)} -c pass"
+        for f in os.listdir(pusage):
+            os.remove(os.path.join(pusage, f))
+        c = compute_cap()
+        check("pacing: with no reading anywhere the cap falls back to 4", c["cap"] == 4 and "no usage reading" in c["reason"])
+        fresh(); put("main", 5, 3, 0, 30)
+        c = compute_cap()
+        check("pacing: an account with no reading counts 4/accounts (2) next to the known one: 4.7 + 2 = 6", c["cap"] == 6 and c["accounts"][1]["runs"] == 2.0)
+        # fixed caps: ADAPTIVE=0, or MAX_LIVE set, keep the old behaviour; the paced cap is cached for a minute
+        put("gmail", 90, 2, 10, 30); put("main", 90, 2, 10, 30)
+        os.environ["ASD_RUNNER_ADAPTIVE"] = "0"
+        check("pacing: ASD_RUNNER_ADAPTIVE=0 keeps the fixed cap, 4", slot_cap()[0] == 4)
+        os.environ.pop("ASD_RUNNER_ADAPTIVE"); os.environ["ASD_RUNNER_MAX_LIVE"] = "2"
+        check("pacing: an explicit ASD_RUNNER_MAX_LIVE keeps the fixed cap", slot_cap()[0] == 2)
+        os.environ["ASD_RUNNER_MAX_LIVE"] = "0"
+        check("pacing: ASD_RUNNER_MAX_LIVE=0 stays 'no limit'", slot_cap()[0] == 0)
+        os.environ.pop("ASD_RUNNER_MAX_LIVE")
+        fresh(); put("gmail", 5, 3, 0, 30); put("main", 5, 3, 0, 30)
+        check("pacing: slot_cap is paced without either knob, and writes the dashboard's record", slot_cap()[0] == 6
+              and read_json(os.path.join(pruns, "slots-cap.json"), {}).get("reason", "").startswith("6 slots: "))
+        put("gmail", 90, 2, 10, 30); put("main", 90, 2, 10, 30)
+        check("pacing: the cap is cached for ~60 s, so runners agree", slot_cap()[0] == 6)
+        os.environ["ASD_RUNNER_NOW"] = str(T + 61)
+        check("pacing: ... and recomputed after it", slot_cap()[0] == 3)
+        os.environ["ASD_RUNNER_NOW"] = str(T)
+        # burn rates: learned from successive readings, keyed by window; reset-crossing and long intervals are skipped
+        fresh()
+        check("burn: the prior is used until something is learned", burn_rates() == BURN_PRIOR)
+        win = lambda u, r: {"five_hour": {"used_percentage": u, "resets_at": r}, "seven_day": {"used_percentage": u / 10, "resets_at": 9_000_000_000}}
+        learn_burn("main", win(10, 5000), 1000.0, running=2)
+        learn_burn("main", win(14, 5000), 1000.0 + 1800, running=2)    # +4 points in 0.5 h with 2 runs: 4 points/run-hour
+        check("burn: delta used% / (runs x hours) feeds an EWMA (0.8 x 6 + 0.2 x 4 = 5.6)", abs(burn_rates()["five_hour"] - 5.6) < 1e-6)
+        learn_burn("main", win(3, 9000), 1000.0 + 3600, running=2)     # a new window: the interval crosses a reset
+        learn_burn("main", win(80, 9000), 1000.0 + 3600 * 5, running=2)  # 4 h gap: longer than 2 h
+        check("burn: an interval that crosses a reset, or is longer than 2 h, is skipped", abs(burn_rates()["five_hour"] - 5.6) < 1e-6)
+        learn_burn("main", win(80, 9000), 1000.0 + 3600 * 5 + 900, running=0)
+        learn_burn("main", win(83, 9000), 1000.0 + 3600 * 5 + 1800, running=0)   # nobody running: nothing to divide by
+        check("burn: an interval with no run working is skipped", abs(burn_rates()["five_hour"] - 5.6) < 1e-6)
+        check("burn: the weekly rate is learned apart from the five-hour one",
+              burn_rates()["seven_day"] != BURN_PRIOR["seven_day"] and abs(burn_rates()["seven_day"] - (0.5 * 0.8 + 0.2 * (0.4 / (2 * 0.5)))) < 1e-6)
+        fresh()
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+        # ---- the queued event names the cap and why (paced), through a real runner ----
+        pe_acc, pe_use = os.path.join(tmp, "pe-accounts.json"), os.path.join(tmp, "pe-usage")
+        os.makedirs(pe_use, exist_ok=True)
+        write_json(pe_acc, {"accounts": [{"name": "k1", "dir": os.path.join(tmp, "k1")}, {"name": "k2", "dir": os.path.join(tmp, "k2")}]})
+        for nm in ("k1", "k2"):
+            write_json(os.path.join(pe_use, nm + ".json"), {"ts": now(), "status": "allowed", "windows": {
+                "five_hour": {"used_percentage": 85, "resets_at": int(time.time() + 7200), "status": "allowed"},
+                "seven_day": {"used_percentage": 10, "resets_at": int(time.time() + 86400 * 3), "status": "allowed"}}})
+        for i in (291, 292, 293):
+            write_json(os.path.join(rdir, f"repo.W-{i}.runner.json"), {"pid": os.getpid(), "state": "running"})
+        env.pop("ASD_RUNNER_ADAPTIVE"); env.update(ASD_ACCOUNTS=pe_acc, ASD_USAGE_DIR=pe_use, ASD_RUNNER_SLOT_POLL="0.2")
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-239")
+        qd = until(lambda: any(t.startswith("queued:") and "3 of 3 runs are working (3 slots: k1 5h 85%" in t for t in texts("W-239")), 20)
+        check("pacing: high use paces the cap to 3; the queued event carries the reason", bool(qd) and state_of("W-239").get("state") == "queued" and not os.path.exists(os.path.join(fdir, "pid.1")))
+        for i in (291, 292, 293):
+            os.remove(os.path.join(rdir, f"repo.W-{i}.runner.json"))
+        check("pacing: the queued run starts when a slot frees (never preempting the others)", p.wait(timeout=60) == 0)
+        env["ASD_RUNNER_ADAPTIVE"] = "0"; env["ASD_ACCOUNTS"] = os.path.join(tmp, "no-accounts.json"); env["ASD_USAGE_DIR"] = os.path.join(tmp, "usage-e2e")
+        env.pop("ASD_RUNNER_SLOT_POLL")
+
+        # ---- keep-alive pings for the prompt cache, through a real runner and a fake claude that answers them ----
+        def ka_run(dossier: str, pings, **knobs) -> tuple:
+            """A run that asks the owner a question and waits; returns (process, question id)."""
+            qk = f"repo.{dossier}.Q1"
+            scenario([{"turns": [[{"ask": 1, "dossier": dossier, "final": "RUNNER: WAITING {id}"}], [{"final": "RUNNER: DONE"}]], "pings": pings}])
+            env.update({k: str(v) for k, v in knobs.items()})
+            p = start(dossier)
+            until(lambda: os.path.exists(qfile(qk)) and state_of(dossier).get("state") == "waiting")
+            return p, qk
+
+        def pinglines(dossier: str) -> list[str]:
+            return [t for t in texts(dossier) if t.startswith("keepalive ping")]
+
+        def ka_end(p, dossier: str, qk: str) -> bool:
+            for k in ("ASD_KEEPALIVE_AFTER", "ASD_KEEPALIVE_MAX_H", "ASD_KEEPALIVE", "ASD_KEEPALIVE_POLL"):
+                env.pop(k, None)
+            owner_line(qk, "answer", "A", "A")
+            try:
+                return p.wait(timeout=30) == 0
+            except subprocess.TimeoutExpired:
+                print(f"  {dossier} did not finish: state {state_of(dossier)}; output tail: " + open(os.path.join(tmp, f"out.{dossier}.txt")).read()[-600:])
+                p.kill(); p.wait()
+                return False
+
+        p, qk = ka_run("W-240", [[9000, 100]], ASD_KEEPALIVE_AFTER=1, ASD_KEEPALIVE_POLL=0.2)
+        got = until(lambda: any("cache read 9000, written 100 tokens" in t for t in pinglines("W-240")), 20)
+        check("keepalive: a waiting run is pinged once the session has been quiet for ASD_KEEPALIVE_AFTER, and the event reports the cache", bool(got))
+        pm = [m for m in msgs(1) if m.startswith("RUNNER KEEPALIVE")]
+        check("keepalive: the ping is the documented line, sent to the open process", bool(pm) and pm[0] == KEEPALIVE_MSG)
+        check("keepalive: the run's state, questions and stage are unchanged", state_of("W-240").get("state") == "waiting" and state_of("W-240").get("questions") == [qk])
+        time.sleep(2.5)
+        check("keepalive: pings repeat every ASD_KEEPALIVE_AFTER while the wait lasts", len(pinglines("W-240")) >= 2)
+        owner_line(qk, "answer", "A", "A")
+        env.pop("ASD_KEEPALIVE_AFTER"); env.pop("ASD_KEEPALIVE_POLL")
+        check("keepalive: the owner's answer after pings is delivered and the run finishes (pings are not turns)",
+              p.wait(timeout=60) == 0 and any(m.startswith("OWNER ") for m in msgs(1)))
+        p, qk = ka_run("W-241", [[9000, 100]], ASD_KEEPALIVE_AFTER=1000, ASD_KEEPALIVE_POLL=0.2)
+        time.sleep(3)
+        check("keepalive: not before the threshold", not pinglines("W-241") and not any(m.startswith("RUNNER KEEPALIVE") for m in msgs(1)))
+        check("keepalive: the run still finishes", ka_end(p, "W-241", qk))
+        p, qk = ka_run("W-242", [[9000, 100]], ASD_KEEPALIVE_AFTER=0.3, ASD_KEEPALIVE_MAX_H=0.0006, ASD_KEEPALIVE_POLL=0.1)
+        stopped = until(lambda: any(t.startswith("keepalive stopped: waited longer") for t in texts("W-242")), 20)
+        n_then = len(pinglines("W-242")); time.sleep(1.5)
+        check("keepalive: pings stop at ASD_KEEPALIVE_MAX_H, with an event", bool(stopped) and n_then >= 1 and len(pinglines("W-242")) == n_then)
+        check("keepalive: the run still finishes", ka_end(p, "W-242", qk))
+        p, qk = ka_run("W-243", [[100, 9000]], ASD_KEEPALIVE_AFTER=0.5, ASD_KEEPALIVE_POLL=0.1)
+        cold = until(lambda: any("already cold" in t for t in texts("W-243")), 20)
+        time.sleep(2)
+        check("keepalive: a ping that writes more than it reads stops the pinging for that session (one ping only)",
+              bool(cold) and len([t for t in pinglines("W-243") if t.startswith("keepalive ping:")]) == 1)
+        check("keepalive: the run still finishes", ka_end(p, "W-243", qk))
+        p, qk = ka_run("W-244", [[9000, 100]], ASD_KEEPALIVE_AFTER=0.3, ASD_KEEPALIVE_POLL=0.1, ASD_KEEPALIVE="0")
+        time.sleep(2.5)
+        check("keepalive: ASD_KEEPALIVE=0 turns it off", not pinglines("W-244"))
+        check("keepalive: the run still finishes", ka_end(p, "W-244", qk))
+        env["ASD_ACCOUNT_STATE"] = os.path.join(tmp, "ka-state.json")
+        write_json(env["ASD_ACCOUNT_STATE"], {"default": {"limited_until": time.time() + 3600, "marked": now()}})
+        p, qk = ka_run("W-245", [[9000, 100]], ASD_KEEPALIVE_AFTER=0.3, ASD_KEEPALIVE_POLL=0.1)
+        time.sleep(2.5)
+        check("keepalive: no ping while the account is limit-marked (the run would be paused)", not pinglines("W-245"))
+        check("keepalive: the run still finishes", ka_end(p, "W-245", qk))
+        write_json(env["ASD_ACCOUNT_STATE"], {})
+        os.makedirs(env["ASD_USAGE_DIR"], exist_ok=True)
+        write_json(os.path.join(env["ASD_USAGE_DIR"], "default.json"), {"ts": now(), "status": "allowed", "windows": {
+            "five_hour": {"used_percentage": 85, "resets_at": int(time.time() + 7200), "status": "allowed"}}})
+        p, qk = ka_run("W-246", [[9000, 100]], ASD_KEEPALIVE_AFTER=0.3, ASD_KEEPALIVE_POLL=0.1)
+        time.sleep(2.5)
+        check("keepalive: no ping while the account's five-hour window is at 80% or more", not pinglines("W-246"))
+        check("keepalive: the run still finishes", ka_end(p, "W-246", qk))
+        env.pop("ASD_ACCOUNT_STATE")
+        env["ASD_ACCOUNT_STATE"] = os.path.join(tmp, "e2e-state.json")
+        # the other path: no process, so one `claude -p --resume <sid>` turn built by the stage's own argv builder
+        sv = {k: os.environ.get(k) for k in ("ASD_RUNS_DIR", "ASD_CLAUDE_BIN", "ASD_FAKE_DIR", "ASD_ASK_OWNER", "ASD_ACCOUNTS", "ASD_USAGE_DIR", "ASD_ACCOUNT_STATE")}
+        os.environ.update(ASD_RUNS_DIR=rdir, ASD_CLAUDE_BIN=env["ASD_CLAUDE_BIN"], ASD_FAKE_DIR=fdir, ASD_ASK_OWNER=ASK_OWNER,
+                          ASD_ACCOUNTS=os.path.join(tmp, "no-accounts.json"), ASD_USAGE_DIR=os.path.join(tmp, "usage-e2e2"), ASD_ACCOUNT_STATE=os.path.join(tmp, "e2e-state2.json"))
+        scenario([{"turns": [], "pings": [[7000, 50]]}])
+        rk = Runner(root, "W-247", "work-on", None, "auto", 1)
+        rk.state["session"] = "sess-resume"; rk.state["state"] = "queued"
+        rk.keepalive_ping("sess-resume")
+        envf = open(os.path.join(fdir, "env.1")).read().split("\n", 1) if os.path.exists(os.path.join(fdir, "env.1")) else ["", ""]
+        want = " ".join(rk.claude_cmd()[2:] + ["--resume", "sess-resume"])
+        check("keepalive: with no live process the ping resumes the session with the stage's own argv (model, rules, permission mode) and run key",
+              envf[1] == want and envf[0] == rk.key and any(m.startswith("RUNNER KEEPALIVE") for m in msgs(1)))
+        check("keepalive: the resumed ping is logged with its cache usage and leaves the run's state alone",
+              "keepalive ping: cache read 7000, written 50 tokens" in texts("W-247") and rk.state["state"] == "queued")
+        for k, v in sv.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
         # Before the temp dir goes: every fake claude process and runner child this test started must be gone.
         for _ in range(100):
