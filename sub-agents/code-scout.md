@@ -1,11 +1,10 @@
 ---
 name: code-scout
 description: >-
-  Answers lookup questions about a codebase — where a symbol is defined, who
-  calls it, which files hold a pattern, what a function's contract says — and
-  returns path:line rows with one-line facts, never file contents and never a
-  verdict. Read-only, on the small model, so a chain of greps and reads stays
-  out of the orchestrator's context.
+  Answers codebase lookup questions (where a symbol is defined, who calls it,
+  which files hold a pattern, what a contract says) with path:line rows and
+  one-line facts. Read-only, small model; never returns file contents or a
+  verdict.
 mode: subagent
 hidden: true
 color: "#4f46e5"

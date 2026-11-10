@@ -1,11 +1,9 @@
 ---
 description: >-
-  The status of every dossier, in chat. Reads the YAML front matter of
-  .discovery/dossiers/*.md and reports what is ready to build, what is in
-  flight, what is blocked, and what is waiting on a merge — plus the pipeline
-  health signals worth acting on. Read-only toward pipeline state: it spawns
-  nothing and never writes a dossier; all it produces is the generated HTML
-  overview, which the pipeline dashboard embeds and keeps current.
+  The status of every dossier, in chat: reads the YAML front matter of
+  .discovery/dossiers/*.md and reports what is ready, in flight, blocked or
+  waiting on a merge, plus pipeline health signals. Read-only toward pipeline
+  state; only produces the generated HTML overview the dashboard embeds.
 argument-hint: "[dossier ID for one-dossier detail, or empty for everything]"
 ---
 

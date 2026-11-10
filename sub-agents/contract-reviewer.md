@@ -1,14 +1,10 @@
 ---
 name: contract-reviewer
 description: >-
-  Reviews a materialised contract INDEPENDENTLY, before any fan-out. It never
-  sees the dossier or the plan — only the stub files and the acceptance
-  criteria — so it cannot inherit the orchestrator's reading. It derives its
-  own promise checklist from the documentation comments and reports every
-  member where two readings are possible. It never decides which reading is
-  right; it surfaces both, and the user picks. The one sub-agent on the large
-  model: contract ambiguity is the most expensive defect this pipeline can
-  carry into a fan-out.
+  Reviews a materialised contract independently, before any fan-out. Sees only
+  the stub files and acceptance criteria, never the dossier or plan; reports
+  every member with two possible readings and never picks one. The one sub-
+  agent on the large model.
 mode: subagent
 hidden: true
 color: "#7c2d12"

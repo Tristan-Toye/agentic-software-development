@@ -1,12 +1,10 @@
 ---
 name: integration-test-author
 description: >-
-  Writes integration tests for the complete flow a dossier describes.
-  Unlike unit-test-author it DOES read the dossier — the problem, the
-  approach, and the acceptance criteria — because a flow test needs to know
-  what the system is for. It still never sees an implementation body: it
-  finds only stubs, branched before any body exists, so its blindness is
-  structural. It writes tests and nothing else.
+  Writes integration tests for the complete flow a dossier describes. Unlike
+  unit-test-author it reads the dossier (problem, approach, acceptance
+  criteria) but never an implementation body, only stubs. Writes tests and
+  nothing else.
 mode: subagent
 hidden: true
 color: "#ea580c"

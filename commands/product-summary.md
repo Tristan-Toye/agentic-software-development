@@ -1,10 +1,9 @@
 ---
 description: >-
   The product summary of a finished dossier: what the change adds or changes,
-  for the product first and the code second, in a short page the owner can
-  read in a minute. Written once the build is done (the runner runs it right
-  after `/work-on` Phase 9 and stores it beside the run); the dashboard shows
-  it above the dossier. A summary of what was built, not a review.
+  product first and code second, in a page readable in a minute. Written by
+  the runner right after `/work-on` Phase 9 and shown above the dossier. A
+  summary, not a review.
 argument-hint: "<dossier ID, e.g. W-128>"
 ---
 
