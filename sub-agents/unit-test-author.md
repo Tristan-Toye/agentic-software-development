@@ -1,19 +1,11 @@
 ---
 name: unit-test-author
 description: >-
-  Writes unit tests from a contract alone — signatures plus documentation
-  comments — with no knowledge of the problem, the dossier, or the
-  implementation.
-  Its blindness is structural on both hosts: under opencode its read and
-  edit maps deny everything outside the staging area and the test families;
-  under Claude Code it has `Write` and a `Read` the plugin's hook confines
-  to the same staging area and test families.
-  Either way it physically cannot read an implementation body, a dossier,
-  or any pipeline document — the tool call is refused, not merely asked not
-  to. Its world is what the orchestrator stages or pastes, plus the shared
-  test idioms it is pointed at, plus (under opencode) its own output
-  family. Spawn one per contract surface. It returns `GAP:` instead of
-  guessing.
+  Writes unit tests from a contract alone (signatures plus documentation
+  comments), with no knowledge of the problem, the dossier or the
+  implementation. Blind by structure: tool calls outside the staging area and
+  test families are refused. Spawn one per contract surface; returns `GAP:`
+  instead of guessing.
 mode: subagent
 hidden: true
 color: "#0891b2"

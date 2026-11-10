@@ -1,16 +1,11 @@
 ---
 name: work-on
 description: >-
-  Build one ready dossier, contract-first. You write the signatures and
-  documentation comments into real files and commit them, then fan out three
-  kinds of agent concurrently and blind — unit tests from the contract alone,
-  integration tests from the dossier, and implementers filling bodies in their
-  own worktrees. Merge, run the tests, and arbitrate every failure with the
-  contract as referee. Then one concurrent review pass (style, architecture,
-  performance, and tests when they carry flake risk) with the green suite as
-  the regression harness. Finally extract
-  the ADRs, open the PR, and remove the worktree once the PR URL is in hand.
-  Jira ticket and Tempo time logging throughout.
+  Build one ready dossier, contract-first: commit the contract, fan out blind
+  concurrent agents (unit tests from the contract, integration tests from the
+  dossier, implementers in their own worktrees), merge, run tests and
+  arbitrate failures with the contract as referee, one concurrent review pass,
+  then ADRs, the PR and worktree removal. Jira and Tempo logging throughout.
 mode: primary
 color: "#2563eb"
 model: zai-coding-plan/glm-5.3

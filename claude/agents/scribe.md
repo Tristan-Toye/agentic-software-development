@@ -6,12 +6,11 @@
 #   Write — opencode allows writes only under .discovery/, docs/ and .agent-staging/. Claude Code cannot scope Write, so the instruction's TARGETS stay the only boundary.
 name: scribe
 description: >-
-  Applies prose edits to a dossier or a repository document from an exact
-  instruction — build-log narrative from given facts, a section rewritten from
-  a ruling, a CENSUS or CHECKLIST line, a PR description assembled from given
-  parts. It never writes tests, docstrings, contracts or code; its edit map
-  refuses every path outside .discovery/, docs/ and .agent-staging/. It
-  decides nothing: the instruction carries every fact and every ruling.
+  Applies prose edits to a dossier or repository document from an exact
+  instruction (build-log narrative, a section rewrite from a ruling, a CENSUS
+  or CHECKLIST line, an assembled PR description). Edits only .discovery/,
+  docs/ and .agent-staging/; never writes tests, docstrings, contracts or
+  code; decides nothing.
 tools: Read, Edit, Write
 model: haiku
 effort: low

@@ -2,9 +2,8 @@
 name: blast-radius-scout
 description: >-
   Produces the review scope as a location list: the files and functions the
-  change touched, plus their direct callers — one hop, no more. It names
-  places; it never pastes a diff, never quotes history, and never suggests
-  what reviewers should look for.
+  change touched plus their direct callers (one hop). Names places only; never
+  pastes a diff or suggests what to look for.
 mode: subagent
 hidden: true
 color: "#2563eb"

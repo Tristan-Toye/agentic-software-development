@@ -5,11 +5,10 @@
 #   Write — opencode allows writes only under docs/adr/, .discovery/ and .agent-staging/. Claude Code cannot scope Write, so TARGET_PATHS in the payload stays the only boundary.
 name: document-drafter
 description: >-
-  Drafts the end-of-run documents — ADR files from decisions the orchestrator
-  selected, or the PR description from dossier excerpts — in the repo's exact
-  format, with scrubbed identifiers. It writes `TARGET_PATHS` itself and
-  self-checks the written bytes; it never commits, never runs the validator,
-  and never edits the index.
+  Drafts the end-of-run documents (ADR files from selected decisions, or the
+  PR description from dossier excerpts) in the repo's exact format with
+  scrubbed identifiers. Writes TARGET_PATHS itself; never commits, validates
+  or edits the index.
 tools: Read, Grep, Glob, Write
 model: sonnet
 effort: high

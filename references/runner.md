@@ -383,6 +383,23 @@ SendMessage, TaskStop, ToolSearch, LSP, WebFetch, WebSearch, Skill, Task, and th
 `--resume`, so it carries the identical flags and the cache prefix still matches. The remaining 26k is the CLI's own
 system prompt and tool schemas, the account's CLAUDE.md files, the plugin's skill listing and the appended runner rules.
 
+**Where the rest of the prefix goes** (1.52.37; one haiku call per row, config-harness, main account, lean flags on,
+Claude Code 2.1.322; the first-call total is 25.25k without the runner rules, 27.28k with them):
+
+| Component | Tokens | Cut per session? |
+|---|---|---|
+| the plugin's agent, command and skill descriptions | 3.1k | shortened in 1.52.37 to 1.9k (-1.24k); `skillOverrides` does not apply to plugin skills (docs, and measured 0) |
+| the plugin's nav tool schemas and the rest of the plugin | 1.0k | no: the pipeline calls them |
+| config-harness `CLAUDE.md` (`AGENTS.md` is not loaded) | 5.2k | `claudeMdExcludes`, but it is the repo's rules router: keep |
+| `~/.claude/CLAUDE.md` + `RTK.md` | 0.7k | `claudeMdExcludes`; its subagent-model rule matters to runner sessions: keep |
+| auto-memory index (`MEMORY.md`) | 0.84k | `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` or `autoMemoryEnabled`; holds owner feedback: left on |
+| context7 plugin's MCP block | 0.2k | `enabledPlugins` false: left on (the global rules say to use it) |
+| built-in git instructions | 0.9k | `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`: left on |
+| org-synced and builtin plugins (ask-product-catalog, cc-plugin-*, design skills) | 1.1k | no: `enabledPlugins` and `skillOverrides` have no effect on them; only `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` drops them (it also stops telemetry), not used |
+| the appended runner rules (`runner_rules()`) | 2.0k | no: they are the contract with the runner |
+| SessionStart hooks | 0 | the plugin's hook injects only after a compaction |
+| everything else: CLI system prompt, built-in tool schemas, deferred-tool names, MCP instructions | about 14k | the floor |
+
 **A fresh stage instead of a compaction.** When a stage's `phase_checkpoint` is taken with the session's context
 (the last assistant usage, `input + cache_read + cache_creation`) at or above `ASD_RUNNER_SPLIT_AT`, the runner waits
 for that checkpoint's tool result, kills the session and ends the stage as if the agent had written
