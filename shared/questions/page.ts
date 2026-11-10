@@ -375,7 +375,7 @@ function runningView() {
   });
   const nAll = live.length + (S.plans || []).length;
   const head = nAll ? nAll + ' run' + (nAll === 1 ? '' : 's') + ' · ' + (working + (S.plans || []).filter(p => p.state === 'running').length) + ' working' + (agents ? ' · ' + agents + ' sub-agent' + (agents === 1 ? '' : 's') : '') : 'Nothing is running';
-  return h('section', { class: 'sec', 'data-k': 'sec:live' }, [h('div', { class: 'sechd' }, [h('h2', {}, ['Running now']), h('span', { class: 'small mut' }, [head])]),
+  return h('section', { class: 'sec', 'data-k': 'sec:live' }, [h('div', { class: 'sechd' }, [h('h2', {}, ['Running now']), h('span', { class: 'small mut', title: S.slots ? S.slots.reason : '' }, [head + (S.slots ? ' · ' + S.slots.cap + ' slots' : '')])]),
     rows.length ? h('div', { class: 'srows' }, rows) : null]);
 }
 function questionsView() {
