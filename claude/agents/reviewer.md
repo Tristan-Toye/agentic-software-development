@@ -3,15 +3,11 @@
 # Source: sub-agents/reviewer.md
 name: reviewer
 description: >-
-  The one reviewer, with five lenses selected by the `LENS` field: `plan`
-  reviews a dossier before any code exists; `style`, `architecture`
-  and `performance` review the merged implementation; `tests` reviews the
-  build's new tests for stability under load. The code lenses run
-  concurrently on the same state and return their change requests together —
-  there is no chain and no restart. It has no write tools at all, so it
-  physically cannot change what it reviews; it returns a change-request
-  document and the orchestrator writes it. It is blind to the diff and to the
-  history: it reviews what IS.
+  The one reviewer, with five lenses chosen by the `LENS` field: `plan` (a
+  dossier before any code), `style`, `architecture`, `performance` (the merged
+  implementation, run concurrently) and `tests` (flake risk of the new tests).
+  Has no write tools; returns a change-request document. Blind to the diff and
+  history.
 tools: Read, Grep, Glob
 model: sonnet
 effort: high

@@ -1,15 +1,11 @@
 ---
 description: >-
-  Fix a finished dossier's deferred issues in one stacked pull request, all of
-  them or the D-items the owner selected. Every item that is small and stays
-  inside one package is implemented directly, test first, through the
-  implementer and reviewer flow, with no new dossier; that default is never
-  asked about. Only an item that deserves its own dossier, no longer applies,
-  or is not worth fixing is put to the owner, with the argument; the owner
-  rules. Each item routed to its own dossier is then planned: one concurrent
-  /plan run per item.
-  Started from the dashboard's Deferred tab ("Fix selected", "Fix all
-  deferred") or `run_dossier.py <ID> --command fix-deferred [--items D-1,D-3]`.
+  Fix a finished dossier's deferred issues (all, or the selected D-items) in
+  one stacked pull request. Small single-package items are implemented
+  directly, test first, through the implementer and reviewer flow with no new
+  dossier; only items that deserve their own dossier, no longer apply or are
+  not worth fixing go to the owner, and dossier items get one concurrent /plan
+  each. Started from the dashboard's Deferred tab or `run_dossier.py`.
 argument-hint: "<dossier ID, e.g. W-117> [D-1,D-3,...]"
 ---
 

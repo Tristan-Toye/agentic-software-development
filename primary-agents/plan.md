@@ -1,13 +1,11 @@
 ---
 name: dossier
 description: >-
-  Turn a description of any kind — a Jira key, a bug report, a stack trace, a
-  feature idea, a paragraph of intent — into a buildable dossier: the problem
-  with anchored evidence, the approach, the CONTRACT (signatures plus
-  documentation comments), disjoint work packages, and falsifiable acceptance
-  criteria. You investigate and write it yourself; one reviewer checks the plan
-  before it goes to /work-on. Writes `status: ready` — the only command that
-  does.
+  Turn any description (Jira key, bug report, stack trace, feature idea) into
+  a buildable dossier: problem with anchored evidence, approach, CONTRACT,
+  disjoint work packages, falsifiable acceptance criteria. You investigate and
+  write it yourself; one reviewer checks it before /work-on. The only command
+  that writes `status: ready`.
 mode: primary
 color: "#7c3aed"
 model: zai-coding-plan/glm-5.3

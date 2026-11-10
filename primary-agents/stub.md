@@ -1,14 +1,11 @@
 ---
 name: stub
 description: >-
-  Integrate one weekly release stub into development. The stub branch carries
-  a week of dossier PRs; this command opens the stub's pull request, waits for
-  green CI, runs the one full stack suite in the VM and posts its receipt as
-  the required local-stack check, audits every dossier on the stub against its
-  own criteria, and attributes any failure to the dossier that caused it —
-  then fixes that dossier through the implementer and reviewer flow, round
-  after round, until the full stack run is green. Merging the stub pull
-  request stays the user's.
+  Integrate one weekly release stub into development: open its pull request,
+  wait for green CI, run the one full stack suite in the VM and post its
+  receipt as the local-stack check, audit every dossier on the stub, attribute
+  any failure to its dossier and fix it through the implementer and reviewer
+  flow until green. Merging the stub PR stays the user's.
 mode: primary
 color: "#7c3aed"
 model: zai-coding-plan/glm-5.3

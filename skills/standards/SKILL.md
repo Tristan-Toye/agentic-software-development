@@ -2,11 +2,8 @@
 name: engineering-standards
 description: >-
   Organizational coding standards. Consult whenever writing, modifying,
-  reviewing, or refactoring code in any language — before implementing a
-  feature, fixing a bug, adding tests, or assessing code quality — in ANY
-  session, whether or not a deep-discovery command is running. Also
-  consult when the user asks what the standards are or whether code
-  conforms.
+  reviewing or refactoring code in any language, in ANY session, and when
+  asked what the standards are or whether code conforms.
 ---
 
 # Engineering standards

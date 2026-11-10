@@ -1,13 +1,10 @@
 ---
 description: >-
-  Bring a dossier's pull requests up to date with the stub they merge into when
-  they conflict, so the merge queue can merge them. The dossier's own agent
-  merges the base into each conflicting branch and resolves every conflict
-  keeping both sides' intent, so no change from either side is lost, proves
-  it with the affected tests and gates, and pushes. It never merges into the
-  stub, never rebases and never force-pushes: the merge queue does the merge
-  itself, by script, once this run is done. The dashboard's merge queue starts
-  it (`run_dossier.py <ID> --command resolve-merge --items <PR numbers>`).
+  Bring a dossier's pull requests up to date with the stub they merge into
+  when they conflict: merge the base into each conflicting branch, resolve
+  every conflict keeping both sides' intent, prove it with the affected tests
+  and gates, push. Never merges into the stub, rebases or force-pushes.
+  Started by the dashboard's merge queue.
 argument-hint: "<dossier ID, e.g. W-128> <PR numbers, bottom to top, e.g. 427,429>"
 ---
 
