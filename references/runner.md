@@ -121,6 +121,24 @@ the recorded checkpoints.
   `ASD_RUNNER_NET_RETRIES` makes it a failure the owner rules on after that many
   in a row ("network errors on 8 retries in a row: …"); the default, 0, never
   does. A stage that ends well resets the count.
+- **A claude process killed from outside:** when the stage's claude process
+  exits on a signal the runner did not send (exit 143, 137 or 129, or a
+  negative return code: a memory or disk squeeze, a host app crash, a
+  logout) and the owner did not ask to stop, the runner posts `the claude
+  process was killed from outside the runner (exit N; <free> GiB free, claude
+  <version>, host woke <time>); stage N again in S s`, the clues to the sender,
+  waits (1 then 5 min; `ASD_RUNNER_KILL_WAIT` overrides) and runs the stage
+  again from its checkpoints through the slot queue, so the disk floor still
+  applies. It asks no question. Only after `ASD_RUNNER_KILL_RETRIES` (2) such
+  kills in a row does it become a failure the owner rules on. A stage that
+  ends well resets the count.
+- **Deployed fixes reach live runners:** a runner keeps the code it started
+  with in memory. At every stage boundary it compares the script a fresh start
+  would use (the same path, or under a plugin cache the highest installed
+  version) with the one it loaded. When that has changed it posts `runner code
+  changed (…); restarting the runner on it, same run` and execs it with the
+  same arguments. The pid stays, and the checkpoints carry the work on.
+  `ASD_RUNNER_REEXEC=0` turns it off.
 - **A run killed rather than stopped:** a SIGTERM nobody asked for (a logout, a
   shutdown) leaves its state as it is, and so does a SIGKILL or a crash; the Stop
   button writes `<key>.stop-requested` first, so only that reads as stopped. The
@@ -274,8 +292,10 @@ at once, the VM included. Two guards keep that from happening:
 
 `disk_guard.py reclaim` removes build directories (`ASD_DISK_BUILD_DIRS`,
 default `target`) in this order until free space reaches the reclaim target:
-worktrees with no live run, then a live run's sub-worktrees, then the main
-checkouts. It never touches a live run's own worktree, nor anything written in
+worktrees with no live run, then a live run's sub-worktrees, then the own
+worktree of a parked run (queued for a slot, waiting on the owner, or paused:
+no build runs there now, and its next one starts cold), then the main
+checkouts. It never touches a running run's own worktree, nor anything written in
 the last `ASD_DISK_IDLE_MIN` minutes (default 60). One reclaim runs at a time
 (a lock in the runs directory). After that it runs
 `<main>/.agentic/reclaim.sh <checkouts…>` when the repo has one, so a repo can

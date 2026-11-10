@@ -107,6 +107,33 @@ NETWORK_RE = re.compile(r"ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|
 # Waits between network retries, seconds; the last one repeats for as long as the outage lasts (ASD_RUNNER_NET_RETRIES
 # sets a limit; the default, 0, is none).
 NETWORK_BACKOFF = (30, 60, 120, 300, 600, 900)
+# The exit codes of a claude process that something outside the runner signalled: SIGTERM/SIGKILL as a negative
+# return code, or as 128+N when claude's own handler exits. The work it held is checkpointed; the stage reruns.
+KILLED_CODES = (-signal.SIGTERM, -signal.SIGKILL, -signal.SIGHUP, 128 + signal.SIGTERM, 128 + signal.SIGKILL, 128 + signal.SIGHUP)
+KILL_BACKOFF = (60, 300)
+
+
+def script_stamp(path: str) -> tuple[str, float]:
+    """(the runner script a fresh start would use, its mtime). Under a plugin cache (.../<version>/scripts/) a plugin
+    update installs a new version directory beside the old one: the highest version with this script wins."""
+    path = os.path.abspath(path)
+    scripts = os.path.dirname(path)
+    ver_dir = os.path.dirname(scripts)
+    parent = os.path.dirname(ver_dir)
+    def vkey(n: str) -> tuple:
+        return tuple(int(x) if x.isdigit() else -1 for x in re.split(r"[.-]", n))
+    if re.fullmatch(r"\d+(?:\.\d+)+", os.path.basename(ver_dir) or ""):
+        try:
+            vers = [n for n in os.listdir(parent) if re.fullmatch(r"\d+(?:\.\d+)+", n)
+                    and os.path.isfile(os.path.join(parent, n, os.path.basename(scripts), os.path.basename(path)))]
+        except OSError:
+            vers = []
+        if vers:
+            path = os.path.join(parent, max(vers, key=vkey), os.path.basename(scripts), os.path.basename(path))
+    try:
+        return path, os.stat(path).st_mtime
+    except OSError:
+        return path, 0.0
 
 
 def network_error(text: str) -> bool:
@@ -600,6 +627,7 @@ class Runner:
         self.stopping = False
         self.proc: subprocess.Popen | None = None
         self.children: list[subprocess.Popen] = []
+        self.code = script_stamp(__file__)   # a stage boundary re-execs the runner when this changes (a deployed fix)
         self.grace = float(os.environ.get("ASD_RUNNER_GRACE") or 1.5)
 
     # -- records ----------------------------------------------------------
@@ -1229,6 +1257,8 @@ class Runner:
                     return "limit", tail.strip()
                 if network_error(tail):
                     return "network", tail.strip().splitlines()[-1][:300] if tail.strip() else "network error"
+                if val in KILLED_CODES and not self.stopping and not os.path.exists(self.stop_marker):
+                    return "killed", f"the claude process was killed from outside the runner (exit {val}{self.kill_context()})"
                 return "failed", f"the claude process exited with code {val} before a result"
             text, err = val  # type: ignore[misc]
             if getattr(self, "wrong_model", ""):
@@ -1331,6 +1361,52 @@ class Runner:
                 return "restart", why
             self.send("OWNER " + out)
 
+    def kill_context(self) -> str:
+        """What the runner can still see after an outside kill, to name the sender next time: free disk, the claude
+        version now installed (an auto-update is a suspect), and the host's last wake."""
+        bits = []
+        free = disk_free_gib(self.root)
+        if free is not None:
+            bits.append(f"{free:.0f} GiB free")
+        if not os.environ.get("ASD_CLAUDE_BIN"):   # a stand-in binary has no version to ask for
+            try:
+                v = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
+                if v.returncode == 0 and v.stdout.strip():
+                    bits.append("claude " + v.stdout.strip().split()[0])
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if sys.platform == "darwin":
+            try:
+                w = subprocess.run(["sysctl", "-n", "kern.waketime"], capture_output=True, text=True, timeout=5)
+                m = re.search(r"sec = (\d+)", w.stdout)
+                if m:
+                    bits.append("host woke " + datetime.datetime.fromtimestamp(int(m.group(1)), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+            except (OSError, subprocess.SubprocessError):
+                pass
+        return ("; " + ", ".join(bits)) if bits else ""
+
+    def reexec_if_changed(self) -> None:
+        """A long-lived runner keeps the code it started with in memory, so a deployed fix never reaches it. At a stage
+        boundary, when the script a fresh start would use differs from the one this process loaded, exec it with the
+        same arguments: the pid stays (so the already-running check passes), the checkpoints carry the work on.
+        ASD_RUNNER_REEXEC=0 turns it off."""
+        if os.environ.get("ASD_RUNNER_REEXEC") == "0" or self.stopping:
+            return
+        path, mtime = script_stamp(__file__)
+        if (path, mtime) == self.code or not mtime:
+            return
+        self.end_process()
+        self.event(f"runner code changed ({path}); restarting the runner on it, same run", "running")
+        self.save(state="running")
+        args = [a for a in sys.argv[1:] if a != "--detach"]
+        if "--foreground" not in args and sys.argv[1:2] != ["chat"]:
+            args.append("--foreground")
+        try:
+            sys.stdout.flush(); sys.stderr.flush()
+        except Exception:
+            pass
+        os.execv(sys.executable, [sys.executable, path, *args])
+
     def on_term(self, *_a) -> None:
         self.stopping = True
         kill_group(self.proc)
@@ -1356,6 +1432,7 @@ class Runner:
         self.event(f"start /{self.command} {self.dossier} in {self.root}", "running")
         started = 0
         net_tries = 0   # network errors in a row; a stage that ends well resets it
+        kill_tries = 0  # outside kills in a row; likewise
         while True:
             if self.stopping:
                 return self.finish("stopped", "stopped", 3)
@@ -1366,12 +1443,36 @@ class Runner:
             if not self.take_slot():
                 return self.finish("stopped", "stopped", 3)
             self.event(f"stage {started} start", "running")
+            free = disk_free_gib(self.root)
+            if free is not None:
+                say(f"{self.key} disk: {free:.0f} GiB free at stage {started} start")
             outcome, detail = self.run_stage()
             if outcome != "network":
                 net_tries = 0
+            if outcome != "killed":
+                kill_tries = 0
             if outcome == "next":
                 self.event(f"stage {started} end" + (f": {detail}" if detail else ""), "running")
+                self.reexec_if_changed()
                 continue
+            if outcome == "killed":
+                # Something outside the runner (a logout, a memory or disk squeeze, a crash of the host app) killed
+                # the claude process mid-stage. Not the owner's call: back off and run the stage again from its
+                # checkpoints, through take_slot (so the disk floor applies), ASD_RUNNER_KILL_RETRIES times in a row.
+                kill_tries += 1
+                limit_k = int(os.environ.get("ASD_RUNNER_KILL_RETRIES") or 2)
+                if kill_tries <= limit_k:
+                    wait = float(os.environ.get("ASD_RUNNER_KILL_WAIT") or KILL_BACKOFF[min(kill_tries, len(KILL_BACKOFF)) - 1])
+                    self.event(f"{detail}; stage {started} again in {int(wait)} s (retry {kill_tries}/{limit_k})", "running")
+                    until = time.time() + wait
+                    while time.time() < until and not self.stopping:
+                        time.sleep(min(5.0, max(0.2, until - time.time())))
+                    if self.stopping:
+                        return self.finish("stopped", "stopped", 3)
+                    self.reexec_if_changed()
+                    started -= 1
+                    continue
+                detail = f"{detail}, {limit_k} retries in a row"
             if outcome == "restart":
                 self.event(f"restarting stage {started} so the new permission rule applies" + (f" ({detail[:160]})" if detail else ""), "running")
                 started -= 1
@@ -2112,6 +2213,37 @@ def selftest() -> int:
         check("crash asks the owner", bool(until(lambda: os.path.exists(qfile(qc)))))
         owner_line(qc, "answer", "B", "B")
         check("crash ends failed, exit 1", p.wait(timeout=60) == 1 and any("exited with code 3" in t for t in texts("W-3")))
+
+        # ---- 3b. a claude process killed from outside reruns the stage, no owner question --
+        env["ASD_RUNNER_KILL_WAIT"] = "0.1"
+        scenario([{"crash": 143}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-90")
+        check("outside kill: the stage reruns and ends DONE", p.wait(timeout=60) == 0 and state_of("W-90").get("state") == "done")
+        check("outside kill: no owner question, the kill is logged",
+              not os.path.exists(qfile("repo.W-90.Q1")) and any("killed from outside the runner (exit 143; " in t and "GiB free" in t for t in texts("W-90")))
+        scenario([{"crash": 143}, {"crash": 137}, {"crash": 143}])
+        p = start("W-91")
+        check("outside kill: past ASD_RUNNER_KILL_RETRIES the owner rules", bool(until(lambda: os.path.exists(qfile("repo.W-91.Q1")))))
+        owner_line("repo.W-91.Q1", "answer", "B", "B")
+        check("outside kill: three in a row end failed", p.wait(timeout=60) == 1 and any("2 retries in a row" in t for t in texts("W-91")))
+
+        # ---- 3c. a changed runner script is exec'd at the next stage boundary, same run --
+        sd = os.path.join(tmp, "reexec", "scripts")
+        shutil.copytree(HERE, sd, ignore=shutil.ignore_patterns("__pycache__"))
+        copy = os.path.join(sd, os.path.basename(me))
+        scenario([{"turns": [[{"append": copy, "line": "# a deployed fix"}, {"final": "RUNNER: STAGE-DONE one"}]]}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        rp = subprocess.Popen([sys.executable, copy, "--root", root, "--dossier", "W-92", "--foreground"], env=env,
+                              stdout=open(os.path.join(tmp, "out.W-92.txt"), "w"), stderr=subprocess.STDOUT)
+        check("re-exec: the run ends DONE in the same process", rp.wait(timeout=60) == 0 and state_of("W-92").get("state") == "done"
+              and state_of("W-92").get("pid") == rp.pid)
+        check("re-exec: the restart is logged", any("runner code changed" in t for t in texts("W-92")))
+        vroot = os.path.join(tmp, "cache", "asd")
+        for v in ("1.9.0", "1.10.0", "1.2.30"):
+            os.makedirs(os.path.join(vroot, v, "scripts"))
+            open(os.path.join(vroot, v, "scripts", "run_dossier.py"), "w").write("#")
+        os.makedirs(os.path.join(vroot, "1.11.0", "scripts"))   # a version without the script does not count
+        check("re-exec: under a plugin cache the highest version wins",
+              script_stamp(os.path.join(vroot, "1.9.0", "scripts", "run_dossier.py"))[0] == os.path.join(vroot, "1.10.0", "scripts", "run_dossier.py"))
 
         # ---- 4. --max-stages ----------------------------------------------------
         scenario([{"turns": [[{"final": "RUNNER: STAGE-DONE one"}]]}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
