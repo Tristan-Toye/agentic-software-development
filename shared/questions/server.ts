@@ -14,6 +14,7 @@ import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
+import { awakeDeps, checkAwake, releaseAwake } from "./awake.ts"
 import { checkDisk, diskDeps, diskReading, sweepDisk } from "./disk.ts"
 import { api, apiGet, channelNameFor, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
@@ -32,6 +33,18 @@ export function remindersDue(elapsedMs: number): number {
 }
 let PORT = 0
 const log = (m: string) => console.log(`[asd-questions] ${m}`)
+
+/** Prefix every line the dashboard logs with an ISO UTC time, once, centrally. */
+let stamped = false
+export function stampConsole(): void {
+  if (stamped) return
+  stamped = true
+  for (const k of ["log", "error"] as const) {
+    const orig = console[k].bind(console)
+    console[k] = (...a: unknown[]) => orig(new Date().toISOString(), ...a)
+  }
+}
+let socketStarted = false
 
 /** Show a macOS notification; the text goes through argv so no AppleScript escaping can break out. */
 export function notify(title: string, subtitle: string, body: string): void {
@@ -869,6 +882,7 @@ async function checkMerges(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  stampConsole()
   const requested = process.env.ASD_QUESTIONS_PORT
   // The first stubs and runs scan runs git and gh per repo and can pass Bun's 10 s idle default.
   const server = Bun.serve({ hostname: "127.0.0.1", port: requested !== undefined && requested !== "" ? Number(requested) : 7317, idleTimeout: 120, fetch: handle })
@@ -879,7 +893,10 @@ async function main(): Promise<void> {
     botToken = keychain("asd-slack-bot")
     const appToken = keychain("asd-slack-app")
     if (botToken && appToken) {
-      void runSocket(appToken, { onAction: onSlackAction, lookup: (c, t) => idForThread(DIR, c, t), ownerUser: owner, dmAgent: DM_AGENT, log })
+      if (!socketStarted) {
+        socketStarted = true
+        void runSocket(appToken, { onAction: onSlackAction, lookup: (c, t) => idForThread(DIR, c, t), ownerUser: owner, dmAgent: DM_AGENT, log })
+      }
       log("slack enabled")
     } else {
       botToken = ""
@@ -911,7 +928,12 @@ async function main(): Promise<void> {
     mkdirSync(usageDir(), { recursive: true })
     watch(usageDir(), () => emitChange("runs"))
   } catch { /* the 10 s rescan still picks the readings up */ }
-  setInterval(() => { void scan(); void scanRunThreads() }, 10_000)
+  // Keep the Mac awake while a run is live (caffeinate -s -i), on the same rescan; released on exit.
+  const ad = awakeDeps()
+  checkAwake(ad)
+  setInterval(() => { void scan(); void scanRunThreads(); checkAwake(ad) }, 10_000)
+  for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { releaseAwake(); process.exit(0) })
+  process.on("exit", releaseAwake)
   setTimeout(() => void checkMerges(), 20_000)
   setInterval(() => void checkMerges(), 120_000)
   // A merge queue outlives its worker (a logout, a reboot, a crash): pick it up again where it was.
