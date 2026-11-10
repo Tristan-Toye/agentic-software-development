@@ -6,12 +6,12 @@
 import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { askAgent, type DmDeps } from "./dmagent.ts"
+import { askAgent, CHAT_CHANNEL, type DmDeps } from "./dmagent.ts"
 
 export type ChatMsg = { id: string; from: "owner" | "agent"; text: string; ts: string; pending?: boolean }
 export type Chat = { id: string; title: string; started: string; last: string; messages: ChatMsg[] }
 
-export const CHANNEL = "page"
+export const CHANNEL = CHAT_CHANNEL
 export const chatDir = (): string => process.env.ASD_CHAT_DIR || join(process.env.HOME || homedir(), ".agentic", "chat")
 const ID = /^[a-z0-9]{6,40}$/
 

@@ -285,6 +285,15 @@ gets the same two stops from this plugin:
   count. `ASD_REPEAT_GUARD_LIMIT` sets the allowed run (default 3; 0 turns it
   off). The hook fails open — bad input or state allows the call.
 
+- **A hard block for the owner's agent.** `hooks/hooks.json` runs
+  `shared/claude/hard-block.ts` before file tools and Bash. It does nothing
+  unless `ASD_AGENT_SURFACE` is `dm` or `chat` (set by the Slack DM agent and
+  the dashboard chat, which also pass the same hook with `--settings`) or
+  `ASD_HARD_BLOCK=1` (any session, e.g. `ASD_HARD_BLOCK=1 claude`). Then it
+  refuses merging a PR, force and protected-branch pushes, and secret paths;
+  see `references/dm-agent.md`. Runner sessions are unaffected. It fails
+  open on input it cannot parse, and logs that.
+
 ### Spawns the auto mode classifier can judge
 
 In auto mode Claude Code classifies the task a spawn delegates from the spawn

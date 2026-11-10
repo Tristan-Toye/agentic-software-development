@@ -4,13 +4,13 @@ import type { Question } from "./store.ts"
 export type OwnerAction =
   | { type: "owner"; id: string; kind: "answer" | "followup"; text: string; option?: string; channel?: string; threadTs?: string }
   | { type: "pointer"; channel: string; threadTs?: string }
-  | { type: "ask"; channel: string; ts: string; threadTs?: string; text: string }
+  | { type: "ask"; channel: string; ts: string; threadTs?: string; text: string; user?: string }
   | { type: "status"; channel: string; ts?: string; threadTs?: string; id?: string; repo?: string; refresh?: boolean }
   | { type: "reconnect" }
   | { type: "hello" }
   | { type: "none" }
 
-export type Interpreted = { ack: { envelope_id: string } | null; action: OwnerAction }
+export type Interpreted = { ack: { envelope_id: string } | null; action: OwnerAction; ignored?: string }
 
 /**
  * Turn one Socket Mode envelope into the ack to send and the action to take.
@@ -33,8 +33,11 @@ export function interpretEnvelope(
     case "events_api": {
       const ev = env.payload?.event
       if (!ev || ev.type !== "message" || !["im", "group", "channel"].includes(ev.channel_type)) return none
-      if (ev.bot_id || ev.subtype) return none
-      if (ownerUser && ev.user && ev.user !== ownerUser) return none
+      // Only the owner's own, plain, new messages act: a bot, an edit or other subtype, and any other member (or a
+      // message with no user) are ignored, and the socket logs why (`ignored`).
+      if (ev.bot_id) return { ...none, ignored: "bot message" }
+      if (ev.subtype) return { ...none, ignored: `message subtype ${ev.subtype}` }
+      if (ownerUser && ev.user !== ownerUser) return { ...none, ignored: `user ${ev.user ?? "-"} is not the owner` }
       const text = String(ev.text ?? "").trim()
       if (!text) return none
       const threadTs: string | undefined = ev.thread_ts && ev.thread_ts !== ev.ts ? ev.thread_ts : undefined
@@ -42,7 +45,11 @@ export function interpretEnvelope(
       // In the DM, everything outside a question's thread goes to the DM agent (dmagent.ts): a top-level message
       // starts a conversation, a reply in its thread continues it. Without the agent (ASD_DM_AGENT=0) the old
       // status command and pointer apply.
-      if (!id && ev.channel_type === "im" && opts.dmAgent) return { ack, action: { type: "ask", channel: ev.channel, ts: ev.ts, threadTs, text } }
+      if (!id && ev.channel_type === "im" && opts.dmAgent) {
+        // The agent can edit and push: with no owner configured nothing may start it.
+        if (!ownerUser) return { ...none, ignored: "no owner configured for the DM agent" }
+        return { ack, action: { type: "ask", channel: ev.channel, ts: ev.ts, threadTs, text, user: ev.user } }
+      }
       // "status" (or "status W-128") outside a question's thread asks for a run update.
       const st = !id ? text.match(STATUS_RE) : null
       if (st) return { ack, action: { type: "status", channel: ev.channel, ts: ev.ts, threadTs, id: st[1]?.toUpperCase() } }
@@ -54,7 +61,7 @@ export function interpretEnvelope(
     case "interactive": {
       const p = env.payload
       if (p?.type !== "block_actions") return none
-      if (ownerUser && p.user?.id && p.user.id !== ownerUser) return none
+      if (ownerUser && p.user?.id !== ownerUser) return { ...none, ignored: `user ${p.user?.id ?? "-"} is not the owner` }
       const value = String(p.actions?.[0]?.value ?? "")
       if (p.actions?.[0]?.action_id === STATUS_ACTION) {
         // value: "<repo>|<ID>" (one run), "<repo>|" (the repo's runs) or "|" (every running dossier).
@@ -271,7 +278,7 @@ export async function runSocket(appToken: string, h: Handlers, deps: SocketDeps 
           } catch {
             return
           }
-          const { ack, action } = interpretEnvelope(env, h.lookup, h.ownerUser, { dmAgent: h.dmAgent })
+          const { ack, action, ignored } = interpretEnvelope(env, h.lookup, h.ownerUser, { dmAgent: h.dmAgent })
           if (ack) ws.send(JSON.stringify(ack))
           const ev = env?.payload?.event
           h.log(
@@ -281,6 +288,7 @@ export async function runSocket(appToken: string, h: Handlers, deps: SocketDeps 
             h.log(`slack duplicate ${dedupeKey(env)}`)
             return
           }
+          if (ignored) h.log(`slack ignored: ${ignored}`)
           if (action.type !== "none" && action.type !== "hello") h.log(`slack action ${action.type}`)
           if (action.type === "hello") delay = 1000
           else if (action.type === "reconnect") finish("asked to reconnect")

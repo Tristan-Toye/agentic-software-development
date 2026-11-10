@@ -314,6 +314,8 @@ async function onSlackAction(a: OwnerAction): Promise<void> {
     return
   }
   if (a.type === "ask") {
+    // Second owner check (the first is in interpretEnvelope): the agent can edit and push, so only the owner starts it.
+    if (!owner || a.user !== owner) { log(`dm agent: refused a message from ${a.user ?? "-"} (not the owner)`); return }
     void askAgent(a, dmDeps)
     return
   }

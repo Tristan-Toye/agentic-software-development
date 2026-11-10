@@ -10,6 +10,9 @@ const tmp = mkdtempSync(join(tmpdir(), "hooks-"))
 // HOME is the temp dir too: the pressure nudge reads ~/.claude/settings.json, which must not be the real one.
 const env = { ...process.env, XDG_DATA_HOME: tmp, HOME: tmp, PHASE_CHECKPOINT_NUDGE_CALLS: "3" }
 delete (env as any).CLAUDE_CONTEXT_GUARD_CONFIG
+// A CLAUDE_PLUGIN_ROOT inherited from the shell (another plugin's, when run from a Claude Code session) wins over the
+// repo root in pipelineRoot() and broke "reason uses the plugin root".
+delete (env as any).CLAUDE_PLUGIN_ROOT
 const fails: string[] = []
 const check = (name: string, ok: boolean) => ok || fails.push(name)
 
