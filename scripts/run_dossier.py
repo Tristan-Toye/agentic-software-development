@@ -503,6 +503,39 @@ HOLD_MAX = 3   # after this many held ends the runner lets the stage end, and lo
 # price, and ran every orchestrator on it for a day. The runner passes an exact id and checks the one the session
 # reports; ASD_RUNNER_MODEL overrides it (an Opus or Sonnet id).
 DEFAULT_MODEL = "claude-opus-5-5"
+
+# ---- a smaller fixed prefix for runner sessions (ASD_RUNNER_LEAN, default on; "0" = the argv of 1.52.35 and before) ----
+# Measured on config-harness with one haiku call each: 30.8k tokens before, 25.3k after (see references/runner.md).
+# Tools the pipeline never calls (grep of commands, skills, agents, references, hooks): their schemas and names ride
+# in every call. The nav and runs MCP servers, Workflow, Monitor, SendMessage, LSP, ToolSearch, Web* all stay.
+LEAN_DISALLOWED = ["CronCreate", "CronDelete", "CronList", "DesignSync", "ListAgents", "PublishPlugin", "PushNotification",
+                   "RemoteTrigger", "ReportFindings", "ScheduleWakeup", "ShareOnboardingGuide", "NotebookEdit",
+                   "EnterWorktree", "ExitWorktree"]
+# Claude Code's bundled skills: listed by name only (skillOverrides "name-only"; "off" would widen the budget of the
+# plugin's own skills and cost more). The plugin's skills are not touched.
+LEAN_NAME_ONLY = ["deep-research", "design", "design-sync", "dataviz", "update-config", "verify", "debug", "code-review",
+                  "simplify", "batch", "fewer-permission-prompts", "doctor", "loop", "schedule", "claude-api",
+                  "workflow-authoring", "run", "run-skill-generator", "plugin-authoring"]
+LEAN_PLUGINS_OFF = ["context-mode@context-mode"]
+COMPACT_WINDOW_DEFAULT = 250000
+SPLIT_AT_DEFAULT = 135000
+# Models whose context window is 200k: a larger auto-compact window is meaningless there (the CLI caps it at the
+# window), so none is passed. claude-opus-5-5 and claude-sonnet-5-5 report a 1M window (modelUsage.contextWindow).
+SMALL_WINDOW = re.compile(r"haiku-[34]|claude-3|opus-4|sonnet-4|\[200k\]", re.I)
+
+
+def lean_settings() -> str:
+    """The --settings JSON of a lean runner session: it merges over the project's and the user's settings."""
+    return json.dumps({"enabledPlugins": {p: False for p in LEAN_PLUGINS_OFF},
+                       "skillOverrides": {k: "name-only" for k in LEAN_NAME_ONLY}}, separators=(",", ":"))
+
+
+def compact_window(model: str) -> int:
+    """The --autocompact window for a runner session on `model`; 0 = pass none."""
+    n = int(env_num("ASD_RUNNER_COMPACT_WINDOW", COMPACT_WINDOW_DEFAULT, int))
+    if n <= 0 or SMALL_WINDOW.search(model or ""):
+        return 0
+    return min(max(n, 100000), 1000000)
 FORBIDDEN_MODEL = re.compile(r"fable", re.I)
 
 
@@ -892,6 +925,8 @@ class Runner:
         self.ka_cold: set[str] = set()      # sessions whose cache a ping found cold: not pinged again
         self.ka_said: set[str] = set()
         self.stray = 0                      # ping results still to come that read_turn must not take for a turn's
+        self.ctx = 0                        # the session's context now: the last assistant usage, input + cache read + cache write
+        self.split: dict | None = None      # a checkpoint taken above ASD_RUNNER_SPLIT_AT: {tid, name, ctx, ready}
 
     # -- records ----------------------------------------------------------
 
@@ -1033,7 +1068,14 @@ class Runner:
         cmd = shlex.split(os.environ.get("ASD_CLAUDE_BIN") or "claude")
         cmd += ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                 "--permission-mode", self.permission_mode, "--append-system-prompt", runner_rules()]
-        cmd += ["--model", self.model or runner_model(None)]
+        model = self.model or runner_model(None)
+        cmd += ["--model", model]
+        # The keep-alive resume ping is claude_cmd() + --resume, so everything that shapes the prefix is built here only.
+        if (os.environ.get("ASD_RUNNER_LEAN") or "1").strip() != "0":
+            cmd += ["--settings", lean_settings(), "--disallowedTools", ",".join(LEAN_DISALLOWED)]
+        win = compact_window(model)
+        if win:
+            cmd += ["--autocompact", str(win)]
         return cmd
 
     def command_line(self) -> str:
@@ -1071,11 +1113,15 @@ class Runner:
             env["CLAUDE_CONFIG_DIR"] = acct["dir"]
         elif acct:
             env.pop("CLAUDE_CONFIG_DIR", None)
+        if compact_window(self.model or runner_model(None)):
+            env.pop("CLAUDE_CODE_AUTO_COMPACT_WINDOW", None)   # the variable would outrank the --autocompact claude_cmd passes
         return env
 
     def spawn(self) -> tuple[queue.Queue, bool]:
         self.wrong_model = ""
         self.stray = 0
+        self.ctx = 0
+        self.split = None
         self.last_api = now_s()
         self.proc = subprocess.Popen(
             self.claude_cmd(), cwd=self.root, env=self.child_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -1469,11 +1515,22 @@ class Runner:
             self.wrong_model = got
             self.log(f"the session runs on {got}, not {self.model or runner_model(None)}: stopping the stage")
             kill_group(self.proc)
+        if ev.get("type") == "user" and self.split and not ev.get("parent_tool_use_id"):
+            c = (ev.get("message") or {}).get("content")
+            if isinstance(c, list) and any(isinstance(b, dict) and b.get("type") == "tool_result"
+                                           and b.get("tool_use_id") == self.split["tid"] for b in c):
+                self.split["ready"] = True   # the checkpoint's result is in: nothing is half done
         if ev.get("type") != "assistant":
             return
-        content = (ev.get("message") or {}).get("content")
+        msg = ev.get("message") or {}
+        u = msg.get("usage")
+        if isinstance(u, dict) and not ev.get("parent_tool_use_id"):
+            self.ctx = sum(int(u.get(k) or 0) for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+        content = msg.get("content")
         if not isinstance(content, list):
             return
+        if self.split and not ev.get("parent_tool_use_id") and msg.get("id") and msg.get("id") != self.split["mid"]:
+            self.split["ready"] = True   # a later API response: the session went on after the checkpoint
         for b in content:
             if not (isinstance(b, dict) and b.get("type") == "tool_use"):
                 continue
@@ -1487,6 +1544,9 @@ class Runner:
             inp = b.get("input") or {}
             self.checkpoints.append({"name": str(inp.get("phase", "")), "summary": str(inp.get("summary", ""))})
             write_json(self.cp_path, self.checkpoints)
+            at = int(env_num("ASD_RUNNER_SPLIT_AT", SPLIT_AT_DEFAULT, int))
+            if at > 0 and self.ctx >= at and not self.split:
+                self.split = {"tid": tid, "mid": msg.get("id") or "", "name": self.checkpoints[-1]["name"], "ctx": self.ctx, "ready": False}
 
     def read_turn(self, q: queue.Queue, extra: bool, idle: float | None = None) -> tuple[str, object]:
         """('result', (text, is_error)) | ('exit', code) | ('stopped', None) | ('idle', None)
@@ -1524,11 +1584,14 @@ class Runner:
                 rc = self.proc.wait() if self.proc else -1
                 return "exit", rc
             self.note_event(ev)
+            if self.split and self.split["ready"] and result is None:
+                return "split", None
             if ev.get("type") == "assistant":
                 for b in (ev.get("message") or {}).get("content") or []:
                     if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
                         last_text = b["text"]
             elif ev.get("type") == "result":
+                self.split = None   # the turn is over: a checkpoint taken in it is not a place to cut the next one
                 if self.stray > 0:
                     self.stray -= 1   # the late result of a keep-alive ping that timed out: not a turn's end
                     continue
@@ -1638,6 +1701,18 @@ class Runner:
                 self.log(f"no RUNNER: line after {int(idle)} s of quiet; nudge {nudges}")
                 self.send(NUDGE)
                 continue
+            if kind == "split":
+                cp, self.split = self.split, None
+                bg = self.background()
+                if bg:
+                    # a command or workflow in flight dies with the process: the split waits for a later checkpoint
+                    self.log(f"split at checkpoint {cp['name']} held: {len(bg)} background task(s) still running: " + "; ".join(bg[:4]))
+                    continue
+                self.event(f"split at checkpoint {cp['name']}: context {cp['ctx'] // 1000}k")
+                self.clear_restart()
+                kill_group(self.proc)   # not a closed stdin: that would let the session finish its turn first
+                self.end_process()
+                return "next", cp["name"]
             if kind == "stopped":
                 return "stopped", ""
             if kind == "exit":
@@ -2305,7 +2380,17 @@ for raw in sys.stdin:
     final = ""
     for a in acts:
         if "checkpoint" in a:
-            out({"type": "assistant", "message": {"content": [{"type": "text", "text": "SECRET-MODEL-TEXT"}, {"type": "tool_use", "id": f"t{n}{turn}", "name": "mcp__plugin_agentic-software-development_nav__phase_checkpoint", "input": {"phase": a["checkpoint"][0], "summary": a["checkpoint"][1]}}]}})
+            msg = {"id": f"m{n}-{turn}", "content": [{"type": "text", "text": "SECRET-MODEL-TEXT"}, {"type": "tool_use", "id": f"t{n}{turn}", "name": "mcp__plugin_agentic-software-development_nav__phase_checkpoint", "input": {"phase": a["checkpoint"][0], "summary": a["checkpoint"][1]}}]}
+            if "ctx" in a:
+                msg["usage"] = {"input_tokens": 3, "cache_read_input_tokens": a["ctx"] - 1003, "cache_creation_input_tokens": 1000, "output_tokens": 5}
+            out({"type": "assistant", "message": msg})
+            if "ctx" in a:
+                out({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{n}{turn}", "content": "ok"}]}})
+                if a.get("go_on"):   # the session works on after the checkpoint: one more API response, then the turn's end
+                    out({"type": "assistant", "message": {"id": f"m{n}-{turn}b", "content": [{"type": "text", "text": "more work"}], "usage": {"input_tokens": 3, "cache_read_input_tokens": a["ctx"], "cache_creation_input_tokens": 0}}})
+                    import time; time.sleep(0.5)
+        elif "usage" in a:   # a plain API response with no checkpoint, carrying a context size
+            out({"type": "assistant", "message": {"id": f"mu{n}-{turn}", "content": [{"type": "text", "text": "work"}], "usage": {"input_tokens": 3, "cache_read_input_tokens": a["usage"], "cache_creation_input_tokens": 0}}})
         elif "ask" in a:
             r = subprocess.run([sys.executable, ask, "ask", "--root", os.getcwd(), "--dossier", a["dossier"], "--question", "Which?", "--option", "A|one|c1", "--option", "B|two|c2", "--blocks", "build"], capture_output=True, text=True)
             final = a["final"].replace("{id}", r.stdout.strip())
@@ -3188,11 +3273,92 @@ def selftest() -> int:
               envf[1] == want and envf[0] == rk.key and any(m.startswith("RUNNER KEEPALIVE") for m in msgs(1)))
         check("keepalive: the resumed ping is logged with its cache usage and leaves the run's state alone",
               "keepalive ping: cache read 7000, written 50 tokens" in texts("W-247") and rk.state["state"] == "queued")
+        # ---- a smaller prefix, the compact window, and a fresh stage instead of a compaction ----
+        def argv_of(**e) -> list[str]:
+            saved = {k: os.environ.get(k) for k in e}
+            for k, v in e.items():
+                if v is None: os.environ.pop(k, None)
+                else: os.environ[k] = v
+            try:
+                return rk.claude_cmd()
+            finally:
+                for k, v in saved.items():
+                    if v is None: os.environ.pop(k, None)
+                    else: os.environ[k] = v
+
+        plain = argv_of(ASD_RUNNER_LEAN="0", ASD_RUNNER_COMPACT_WINDOW="0")
+        check("lean off + no compact window: the argv of before (no --settings, --disallowedTools, --autocompact)",
+              not {"--settings", "--disallowedTools", "--autocompact"} & set(plain) and plain[-2:] == ["--model", DEFAULT_MODEL])
+        lean = argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0")
+        sj = json.loads(lean[lean.index("--settings") + 1])
+        check("lean on (the default): --settings turns context-mode off and lists the bundled skills by name only",
+              sj["enabledPlugins"] == {"context-mode@context-mode": False} and sj["skillOverrides"]["verify"] == "name-only"
+              and not any(v == "off" for v in sj["skillOverrides"].values()))
+        dis = lean[lean.index("--disallowedTools") + 1].split(",")
+        check("lean on: tools the pipeline never calls are disallowed; the ones it uses are not",
+              {"CronCreate", "NotebookEdit", "EnterWorktree"} <= set(dis) and not {"Workflow", "Monitor", "SendMessage", "LSP", "ToolSearch", "Skill", "Task", "WebFetch"} & set(dis)
+              and not any("nav" in d or "runs" in d for d in dis))
+        check("lean on: argv is the lean-off argv plus the three flags, nothing else changed",
+              [x for x in lean if x not in (lean[lean.index("--settings") + 1], lean[lean.index("--disallowedTools") + 1], "--settings", "--disallowedTools")] == plain)
+        check("lean ASD_RUNNER_LEAN=0 is exactly today's argv", argv_of(ASD_RUNNER_LEAN="0", ASD_RUNNER_COMPACT_WINDOW="0") == plain)
+        cw = argv_of(ASD_RUNNER_LEAN="0", ASD_RUNNER_COMPACT_WINDOW=None)
+        check("compact window: default 250000 as --autocompact", cw[cw.index("--autocompact") + 1] == "250000" and cw[:len(plain)] == plain)
+        cw = argv_of(ASD_RUNNER_LEAN="0", ASD_RUNNER_COMPACT_WINDOW="300000")
+        check("compact window: ASD_RUNNER_COMPACT_WINDOW sets it", cw[cw.index("--autocompact") + 1] == "300000")
+        check("compact window: 0 passes none", "--autocompact" not in argv_of(ASD_RUNNER_LEAN="0", ASD_RUNNER_COMPACT_WINDOW="0"))
+        check("compact window: none for a 200k-window model, one for the 1M models",
+              compact_window("claude-haiku-4-5") == 0 and compact_window("claude-opus-4-1") == 0
+              and compact_window("claude-opus-5-5") == 250000 and compact_window("claude-sonnet-5-5") == 250000)
+        saved_win = os.environ.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+        os.environ["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = "100000"
+        check("compact window: the env variable that would outrank the flag is dropped from the child's env",
+              "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in rk.child_env())
+        if saved_win is None: os.environ.pop("CLAUDE_CODE_AUTO_COMPACT_WINDOW")
+        else: os.environ["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = saved_win
+        full = rk.claude_cmd()
+        check("keepalive resume argv with lean and compact window on is still claude_cmd() + --resume",
+              "--settings" in full and "--autocompact" in full)
+
+        # a split: a checkpoint taken with the context above ASD_RUNNER_SPLIT_AT ends the session there
         for k, v in sv.items():
             if v is None:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+        env["ASD_RUNNER_SPLIT_AT"] = "135000"
+        scenario([
+            {"turns": [[{"checkpoint": ["Phase 3", "built\nNEXT: Phase 4"], "ctx": 150000}, {"final": "RUNNER: STAGE-DONE Phase 3"}]]},
+            {"turns": [[{"checkpoint": ["Phase 4", "wave\nNEXT: Phase 6"], "ctx": 120000}, {"final": "RUNNER: STAGE-DONE Phase 4"}]]},
+            {"turns": [[{"final": "RUNNER: DONE"}]]},
+        ])
+        p = start("W-260")
+        check("split: the run finishes with a process per stage", p.wait(timeout=60) == 0 and open(os.path.join(fdir, "count")).read() == "3")
+        t260 = texts("W-260")
+        check("split: a checkpoint at 150k (limit 135k) logs 'split at checkpoint P: context Nk'", "split at checkpoint Phase 3: context 150k" in t260)
+        check("split: a checkpoint at 120k does not split", not any(t.startswith("split at checkpoint Phase 4") for t in t260))
+        m2 = msgs(2)
+        check("split: the next stage starts with the hand-off from that checkpoint",
+              m2[0] == f"/{PLUGIN}:work-on W-260" and m2[1].startswith("RUNNER HAND-OFF") and "1. Phase 3: built" in m2[1] and m2[1].rstrip().endswith("Continue from there; do not redo finished stages.") and "NEXT: Phase 4" in m2[1])
+        check("split: the cut session is gone and the stages end in order",
+              not alive(int(open(os.path.join(fdir, "pid.1")).read())) and [x["text"] for x in lines_of(os.path.join(rdir, "repo.W-260.jsonl")) if x.get("kind") == "runner" and x["text"].startswith("stage 1 end")] == ["stage 1 end: Phase 3"]
+              and [c["name"] for c in read_json(os.path.join(rdir, "repo.W-260.checkpoints.json"), [])] == ["Phase 3", "Phase 4"])
+        scenario([{"turns": [[{"usage": 170000}, {"final": "RUNNER: DONE"}]]}])
+        p = start("W-261")
+        check("split: none without a checkpoint, however large the context (auto-compaction is left to the CLI)",
+              p.wait(timeout=60) == 0 and open(os.path.join(fdir, "count")).read() == "1" and not any(t.startswith("split at") for t in texts("W-261")))
+        scenario([{"turns": [[{"checkpoint": ["Phase 3", "built\nNEXT: Phase 4"], "ctx": 150000, "go_on": True}, {"final": "RUNNER: STAGE-DONE Phase 3"}]]},
+                  {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        env["ASD_RUNNER_SPLIT_AT"] = "0"
+        p = start("W-262")
+        check("split: ASD_RUNNER_SPLIT_AT=0 turns it off (the stage ends by its own STAGE-DONE)",
+              p.wait(timeout=60) == 0 and not any(t.startswith("split at") for t in texts("W-262")) and "stage 1 end: Phase 3" in texts("W-262"))
+        env["ASD_RUNNER_SPLIT_AT"] = "135000"
+        scenario([{"turns": [[{"checkpoint": ["Phase 3", "built\nNEXT: Phase 4"], "ctx": 150000, "go_on": True}, {"final": "RUNNER: STAGE-DONE Phase 3"}]]}])
+        p = start("W-263", "--max-stages", "1")
+        check("split: it counts as a stage for --max-stages (the run stops there, the hand-off kept)",
+              p.wait(timeout=60) == 4 and "split at checkpoint Phase 3: context 150k" in texts("W-263")
+              and [c["name"] for c in read_json(os.path.join(rdir, "repo.W-263.checkpoints.json"), [])] == ["Phase 3"])
+        env.pop("ASD_RUNNER_SPLIT_AT")
 
         # Before the temp dir goes: every fake claude process and runner child this test started must be gone.
         for _ in range(100):
