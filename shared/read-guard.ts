@@ -191,3 +191,43 @@ export function readGuard(call: ReadGuardCall, cwd: string, cfg: Config, pipelin
   }
   return undefined
 }
+
+// ---- the stateful reads: windows and phase files (Claude Code orchestrators) --------------
+//
+// Measured over 412 recorded orchestrator sessions: the same source file read in 3, 4, 5
+// windows (the 4th and later windows were ~3% of all tool-result tokens), windows far past
+// what one item needs, and a phase file whole twice in one context. The caller keeps the
+// counts per session (reset by a compaction) and calls these before readGuard.
+
+/** ASD_READ_GUARD_BIG=0 turns the three refusals below off; any other value, or none, leaves them on. */
+export const bigGuardOn = (env: Record<string, string | undefined> = process.env) => env.ASD_READ_GUARD_BIG !== "0"
+
+export const MAX_WINDOW_LINES = 200
+export const MAX_WINDOWS_PER_FILE = 3
+const PHASE_FILE_RE = /\/references\/work-on\/(phase-\d+)\.md$/
+
+/** The source and markdown files code_outline / code_item / doc_section can parse. */
+export const parseable = (file: string) => NAV_EXT.has(extname(file).toLowerCase())
+
+/** The refusal for a Read window: wider than MAX_WINDOW_LINES on a parseable file, or the
+ *  window after MAX_WINDOWS_PER_FILE earlier ones on the same file; undefined to allow.
+ *  A dossier is not here (readGuard sends it to dossier_edit.py section). */
+export function windowReason(file: string, limit: number | undefined, priorWindows: number): string | undefined {
+  if (!file || limit === undefined || !parseable(file) || DOSSIER_RE.test(file)) return undefined
+  const how =
+    extname(file).toLowerCase() === ".md"
+      ? "doc_section (several headings at once: `heading A | heading B`)"
+      : "code_outline for the map, then one code_item call naming every item (`A | B::c`)"
+  if (limit > MAX_WINDOW_LINES)
+    return `a ${limit}-line window of ${file} is a read of the file by another name: use ${how}, or read at most ${MAX_WINDOW_LINES} lines. Repeat the identical call if the file cannot be parsed.`
+  if (priorWindows >= MAX_WINDOWS_PER_FILE)
+    return `this is the ${priorWindows + 1}th window you read of ${file}, each one a turn that stays in context: use ${how}. Repeat the identical call if the file cannot be parsed.`
+  return undefined
+}
+
+/** The name of a phase file read whole (`phase-4`), else undefined. */
+export const phaseFileOf = (file: string): string | undefined => PHASE_FILE_RE.exec(file)?.[1]
+
+/** The refusal for a second whole read of a phase file in one context (a compaction resets it). */
+export const phaseRereadReason = (name: string) =>
+  `${name}.md is already in your context since the last compaction: read the part you need with ref_section (name \`${name}\`, the heading, or \`--list\` for the headings). Repeat the identical call to read it whole again.`

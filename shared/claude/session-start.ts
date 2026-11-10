@@ -5,7 +5,7 @@
 // Agent/Task spawn and Workflow launch since the last checkpoint with its agent or run ID
 // and whether its result arrived, and the tail of the dossier's `## Build log`. Fails open.
 import { summaryText } from "../checkpoint"
-import { buildLogTail, log, readCheckpoints, readInFlight, readInput, runHook } from "./common"
+import { buildLogTail, loadState, log, readCheckpoints, readInFlight, readInput, runHook, saveState } from "./common"
 import type { InFlight } from "./common"
 
 const MAX_TASK_CHARS = 4000
@@ -40,6 +40,11 @@ await runHook(async () => {
   const input = await readInput()
   if (!input || input.agent_id || !input.transcript_path) return undefined
   if (input.source !== undefined && input.source !== "compact") return undefined
+  if (input.session_id) {
+    // The read guard's memory of what is in context goes with the context.
+    const state = loadState(input.session_id)
+    if (state.windows || state.phaseReads || state.lastRefused) saveState(input.session_id, { ...state, windows: undefined, phaseReads: undefined, lastRefused: undefined })
+  }
   const { task, checkpoints } = await readCheckpoints(input.transcript_path)
   let extra = ""
   let flight: Awaited<ReturnType<typeof readInFlight>> | undefined
