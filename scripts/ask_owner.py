@@ -125,10 +125,53 @@ def parse_option(spec: str) -> dict:
     return {"key": parts[0].strip(), "label": parts[1].strip(), "consequence": parts[2].strip()}
 
 
+# ---------------------------------------------------------------- the approval lint
+# A run started by the runner has standing authority for the steps below (references/owner-questions.md, "What is
+# worth asking"): a question that only asks leave for one of them stops the run for nothing. The lint is narrow on
+# purpose, and applies only to a run the runner started: phrase patterns checked against the question texts of past runs, so a design question that mentions a push
+# in passing goes through. ASD_ASK_LINT=0 turns it off.
+KINDS = ("design", "product", "uncertainty")
+_PR = r"(?:the |a |its |this |my )?(?:draft |plan |pull )?(?:PR|pull request)"
+APPROVAL_PATTERNS = [
+    ("push the branch", re.compile(r"\b(?:may|can|shall|should) I (?:now )?push\b[^?]{0,40}\bbranch\b"
+                                  r"|\bpush (?:the |its |this |my )?(?:\w+ ){0,2}branch\b[^?]{0,60}\bopen (?:a |the )?(?:draft )?(?:PR|pull request)", re.I)),
+    ("open the pull request", re.compile(r"\b(?:may|can|shall|should) I (?:now )?open " + _PR, re.I)),
+    ("mark ready for review", re.compile(r"\b(?:may|can|shall|should) I (?:now )?mark\b[^?]{0,30}\bready\b"
+                                       r"|\bmark (?:the |this |it |that |its )?(?:draft )?(?:PR |pull request )?(?:#?\d+ )?(?:as )?ready(?: for review)?\b[^?]{0,20}\?", re.I)),
+    ("approve the plan or the revisions", re.compile(r"\bapprove (?:the |this |my )?(?:plan|description)\b"
+                                                    r"|\bapprove (?:all )?(?:\d+|these|the) (?:\w+ )?(?:revisions|changes|readings)\b", re.I)),
+    ("retry or stop after a failure", re.compile(r"\bretry\b[^?.]{0,25}\bor (?:stop|give up|abort)\b|\b(?:stop|abort|give up) or retry\b", re.I)),
+    ("end the stage anyway", re.compile(r"\bend (?:the|this) stage anyway\b"
+                                       r"|\brunner\b[^.?]{0,80}\b(?:won't|will not|wouldn't|refus\w+|has refused)\b[^.?]{0,60}\b(?:stage|phase)\b", re.I)),
+]
+
+
+def approval_kind(question: str, options: list[dict]) -> str | None:
+    """The name of the approval pattern the question matches, or None. An option label is checked for the
+    stage-end case only ("End the stage anyway" as a button)."""
+    for name, pat in APPROVAL_PATTERNS:
+        if pat.search(question):
+            return name
+    for o in options:
+        if re.search(r"\bend (?:the|this) stage anyway\b", o.get("label", ""), re.I):
+            return "end the stage anyway"
+    return None
+
+
 def cmd_ask(a: argparse.Namespace) -> int:
     options = [parse_option(o) for o in (a.option or [])]
     if not 2 <= len(options) <= 4:
         raise SystemExit("need 2 to 4 --option values")
+    # Only a run the runner started (ASD_RUN_KEY) has the standing authority; a terminal run's start gate still asks.
+    if os.environ.get("ASD_RUN_KEY") and (os.environ.get("ASD_ASK_LINT") or "1").strip() != "0":
+        hit = approval_kind(a.question, options)
+        if hit:
+            print(f"REFUSED: this asks leave for a step the run already has authority for ({hit}). Do the step, record it in "
+                  "## Build log with the usual line and name it in the run's summary: references/owner-questions.md, "
+                  "\"A run started by the runner carries standing authority for\". Only a decision the owner has to make "
+                  "(a design, a product choice, an uncertainty you cannot settle) is a question. If this really is one, "
+                  "reword it as that decision, or set ASD_ASK_LINT=0.", file=sys.stderr)
+            return 2
     keys = [o["key"] for o in options]
     if len(set(keys)) != len(keys):
         raise SystemExit("option keys must be distinct")
@@ -146,6 +189,7 @@ def cmd_ask(a: argparse.Namespace) -> int:
         "dossier": a.dossier, "repo": repo, "root": root, "options": options,
         **({"run": os.environ["ASD_RUN_KEY"]} if os.environ.get("ASD_RUN_KEY") else {}),
         "recommendation": rec, "blocks": clip(a.blocks),
+        **({"qkind": a.kind} if a.kind else {}),
     }
     while True:
         qid = f"{prefix}{n}"
@@ -340,6 +384,42 @@ def selftest() -> int:
         check("question line fields", first["kind"] == "question" and first["repo"] == "myrepo"
               and len(first["options"]) == 2 and first["recommendation"] == "A")
 
+        # ---- --kind and the approval lint ----
+        kenv = dict(env, ASD_RUN_KEY="myrepo.W-1")
+        def ask_q(text, extra=(), e=kenv, dossier="W-91", opts=("A|yes|do it", "B|no|do not")):
+            args = ["ask", "--root", root, "--dossier", dossier, "--question", text, "--blocks", "x"]
+            for o in opts:
+                args += ["--option", o]
+            return run(*args, *extra, env=e)
+        k = ask_q("Two designs for the cache: keep one map or two?", ["--kind", "design"], dossier="W-91")
+        kq = json.loads(open(os.path.join(env["ASD_QUESTIONS_DIR"], "myrepo.W-91.Q1.jsonl")).readline())
+        check("--kind is stored on the question", k.returncode == 0 and kq.get("qkind") == "design" and kq.get("kind") == "question")
+        check("--kind outside design|product|uncertainty is refused", ask_q("Which?", ["--kind", "other"]).returncode != 0)
+        check("no --kind still works (older prompts)", "qkind" not in json.loads(open(os.path.join(env["ASD_QUESTIONS_DIR"], ask_q("Which cache?", dossier="W-10").stdout.strip() + ".jsonl")).readline()))
+        refused = ["May I push the plan branch and open its pull request into development?",
+                   "The build is done. May I mark the PR ready for review?",
+                   "Do you accept the description, and may I mark the PR ready for review?",
+                   "May I open the draft PR now?",
+                   "Do you approve the plan so I can go on?",
+                   "Please approve all 4 revisions before I continue.",
+                   "The check failed on a network error. Retry or stop?",
+                   "Phase 3 is finished, but the runner won't let the stage end. How should I proceed?",
+                   "The task is gone. Should I end the stage anyway?"]
+        rs = [ask_q(t) for t in refused]
+        check("lint: each approval-type question is refused with exit 2", all(r.returncode == 2 for r in rs))
+        check("lint: the message names the standing authority and says to do the step and log it",
+              "references/owner-questions.md" in rs[0].stderr and "standing authority" in rs[0].stderr and "Build log" in rs[0].stderr
+              and not os.path.exists(os.path.join(env["ASD_QUESTIONS_DIR"], "myrepo.W-91.Q2.jsonl")))
+        check("lint: an option labelled 'End the stage anyway' is refused", ask_q("What now?", opts=("A|End the stage anyway|cuts it off", "B|Wait|waits")).returncode == 2)
+        passing = ["Two defensible designs for the retry policy: a fixed delay or backoff? The dossier does not say.",
+                   "The push hook rejects the commit because of a lint failure in a file outside the scope. Fix it here or defer it?",
+                   "The plan lists two readings of AMBIGUITY 3. Which one do you want?",
+                   "The reviewers disagree on the naming of the ready flag in the contract. Which name stays?",
+                   "How do you want to proceed with the missing test, and may I push?"]
+        check("lint: design and issue questions that mention push, retry or ready in passing go through", all(ask_q(t, dossier="W-11").returncode == 0 for t in passing))
+        check("lint: ASD_ASK_LINT=0 turns it off", ask_q(refused[0], e=dict(kenv, ASD_ASK_LINT="0"), dossier="W-12").returncode == 0)
+        check("lint: a run without ASD_RUN_KEY (a terminal run's start gate) is not linted", ask_q(refused[0], e=env, dossier="W-13").returncode == 0)
+
         bad = run("ask", "--root", root, "--dossier", "W-1", "--question", "x", "--option",
                   "A|a|b", "--blocks", "y", env=env)
         check("one option refused", bad.returncode != 0)
@@ -448,6 +528,7 @@ def main() -> int:
     p.add_argument("--option", action="append")
     p.add_argument("--recommend")
     p.add_argument("--blocks", required=True)
+    p.add_argument("--kind", choices=KINDS, help="design, product or uncertainty: what the owner is asked to decide (optional)")
     p = sub.add_parser("reply")
     p.add_argument("id")
     p.add_argument("--text", required=True)
