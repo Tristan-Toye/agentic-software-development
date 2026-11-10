@@ -554,17 +554,31 @@ restarted server answers at once from them while its first scan runs.
   same scope. No Slack app change is needed: the message and interactivity
   events are the ones questions already use.
 - **The DM agent** (`dmagent.ts`, on unless `ASD_DM_AGENT=0`): a top-level
-  DM starts a `claude -p` session (`ASD_DM_AGENT_MODEL`, default `sonnet`) on
+  DM starts a `claude -p` session (`ASD_DM_AGENT_MODEL`, default `opus`) on
   the account the next stage would use, with `references/dm-agent.md` as its
-  appended prompt, the plugin root as cwd, the repos' main checkouts and
-  `~/.agentic` as added dirs, and only read tools plus the runs MCP server
-  allowed (`--permission-mode dontAsk`). A reply in that message's thread
-  resumes the same session (`--resume`); turns in one thread run one at a
-  time. A "_Looking into it…_" reply in the thread is replaced by the answer.
-  Sessions per thread: `~/.agentic/dm-agent.json` (`ASD_DM_AGENT_FILE`);
-  timeout `ASD_DM_AGENT_TIMEOUT_MS` (10 min). The prompt references the docs
-  rather than restating them; a stub's progress comes from the MCP tool
-  `stub_detail`.
+  appended prompt, as capable as a manual Claude Code session: it can edit,
+  commit, push and open PRs (never merge, force-push or touch secrets, per
+  its prompt). No tool allowlist: it runs in Claude Code's `auto` permission
+  mode (`--permission-mode auto`, override `ASD_DM_AGENT_PERMISSION_MODE`),
+  where a classifier approves or blocks each action. Working directory: the
+  main checkout of the repo the message names (its directory name, the
+  longest match), else the plugin root; stored with the session, because a
+  resume must start from the same cwd. The repos' main checkouts and
+  `~/.agentic` are added dirs. **Owner only:** a message acts only when its
+  Slack user id equals `ASD_SLACK_USER`; bots, other users, messages with no
+  user, edits and every other subtype are ignored and logged
+  (`slack ignored: <why>`), and with no owner configured nothing starts the
+  agent (checked in `interpretEnvelope` and again before `askAgent`). A reply
+  in that message's thread resumes the same session (`--resume`); turns in
+  one thread run one at a time, different threads run concurrently.
+  **Progress:** the run streams (`--output-format stream-json --verbose`);
+  the "_Looking into it…_" reply is updated at most every 20 s with the
+  elapsed time, the turn count and the last tool, then replaced by the final
+  answer. Timeout `ASD_DM_AGENT_TIMEOUT_MS` (60 min): the turn is killed,
+  the reply says so, and the session is kept, so a reply in the thread
+  resumes it. Sessions per thread: `~/.agentic/dm-agent.json`
+  (`ASD_DM_AGENT_FILE`). The prompt references the docs rather than
+  restating them; a stub's progress comes from the MCP tool `stub_detail`.
 - **The dashboard chat** (`pagechat.ts`, the page `GET /chat`, the header's "Ask the
   agent"): the same agent as the DM, with the dashboard as its channel. A new
   conversation is a new session, like a top-level DM; a message in a
