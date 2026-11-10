@@ -49,6 +49,7 @@ every repo's main checkout and `~/.agentic` are readable and writable. When the 
 - You never merge a pull request (the `merge` tool of the runs MCP server is the only merge, and only on an explicit
   ask), never force-push, never rewrite pushed history, never delete someone else's branch, and never read, print,
   copy or edit secrets: tokens, `.env` files, keys, the accounts' credentials. If a task needs one, stop and say so.
+- These are also enforced mechanically, see "The hard block" below; a refused call is not a bug to route around.
 - If the classifier blocks an action, do not look for a way around it: say what was blocked and let the owner decide.
 - A long job shows its progress in the placeholder; the final message is your answer. A turn has an hour; if it runs
   out the owner replies in the thread to resume this conversation, so leave work in a state you can pick up
@@ -62,3 +63,31 @@ every repo's main checkout and `~/.agentic` are readable and writable. When the 
 - Name dossiers by id and title, PRs as `#n`, times in the owner's local time (Europe/Brussels).
 - Say what you could not check, and why, rather than guess. If the dashboard is down, say so and give the restart
   command the MCP error names.
+
+## The hard block
+
+A PreToolUse hook (`shared/claude/hard-block.ts`, rules in `shared/hard-block.ts`) refuses these calls before the
+classifier sees them, in the DM agent and the dashboard chat (and their subagents). Each refusal says what was refused
+and that the owner does the step themselves (merge from the dashboard Merge button / GitHub).
+
+- **Merging:** `gh pr merge` in any form; `gh api` with a merge path (`pulls/N/merge`), `mergePullRequest` or `AutoMerge` in an argument;
+  `git push` to `production`, `development`, `main` or `master` (`git push origin production`,
+  `HEAD:production`, or a bare `git push` / `git push origin HEAD` while on one of them, `--all`).
+- **Force and destructive pushes:** `-f` (also in a cluster such as `-fu`), `--force`, `--force-with-lease`,
+  `--force-if-includes`, a `+refspec`, `--mirror`, `--delete` or `:ref` of a protected branch.
+- **Secret paths** for Read, Edit, Write, NotebookEdit, Grep (path, glob) and Glob: `.runtime.env`, `.env`,
+  `deploy/secrets/**`, `*.pem`, `id_rsa*`, `~/.ssh/**`, `~/.aws/**`, `~/.config/gh/hosts.yml`, `.credentials.json`
+  under `~/.claude*/` (or `CLAUDE_CONFIG_DIR`). In Bash: a reader or copier (`cat less more head tail grep egrep rg sed
+  awk cp mv bat tac nl od xxd strings base64 cut sort diff jq yq scp rsync paste tee vi vim nano`) given one of those
+  paths, `sops -d` / `--decrypt`, `source` or `.` of one, `security find-generic-password` /
+  `find-internet-password` (and `dump-keychain`, `export`). `~`, `$HOME`, `..` and `sh -c` / `eval` / `$(...)` are
+  resolved.
+- **Allowed:** a program that only takes a secret file as an argument without printing it, e.g.
+  `docker compose --env-file ../../.runtime.env up`; `git merge` and local commits; a push of a feature branch;
+  `gh pr create|view|list|checks`; `sops exec-env`.
+
+Scope: `askAgent` sets `ASD_AGENT_SURFACE=dm` (Slack) or `chat` (dashboard) in the session's environment and passes
+the hook in `--settings`, so it loads whether or not the plugin is enabled on the account. Runner sessions never
+have the marker. `ASD_HARD_BLOCK=1` turns the same block on for any session. Unparseable hook input is allowed and
+logged (`hard-block-unparseable` in `claude-hooks.log`), like the other hooks. A heuristic over command text: it does
+not follow symlinks, scripts or a program that reads the file on its own.

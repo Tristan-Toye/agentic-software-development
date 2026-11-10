@@ -560,7 +560,16 @@ restarted server answers at once from them while its first scan runs.
   commit, push and open PRs (never merge, force-push or touch secrets, per
   its prompt). No tool allowlist: it runs in Claude Code's `auto` permission
   mode (`--permission-mode auto`, override `ASD_DM_AGENT_PERMISSION_MODE`),
-  where a classifier approves or blocks each action. Working directory: the
+  where a classifier approves or blocks each action. **Hard block:** both
+  the DM agent and the dashboard chat (one `askAgent`) run with
+  `ASD_AGENT_SURFACE=dm|chat` and a `--settings` PreToolUse hook
+  (`shared/claude/hard-block.ts`) that refuses merging a PR (`gh pr merge`,
+  `gh api` merge calls, a push to production, development, main or master),
+  force and mirror pushes, and secret paths (`.runtime.env`, `.env`,
+  `deploy/secrets`, keys, `~/.ssh`, `~/.aws`, gh and Claude credentials, the
+  keychain); the owner does those steps. `ASD_HARD_BLOCK=1` enables the same
+  for any session; runner sessions are not affected. Details and the exact
+  lists: `references/dm-agent.md` ("The hard block"). Working directory: the
   main checkout of the repo the message names (its directory name, the
   longest match), else the plugin root; stored with the session, because a
   resume must start from the same cwd. The repos' main checkouts and

@@ -30,6 +30,21 @@ export const DEFAULT_PERMISSION_MODE = "auto"
 export const DEFAULT_TIMEOUT_MS = 60 * 60_000
 export const PROGRESS_EVERY_MS = 20_000
 
+/** The channel name the dashboard chat (pagechat.ts) passes to askAgent; every other channel is a Slack DM. */
+export const CHAT_CHANNEL = "page"
+export type Surface = "dm" | "chat"
+export const surfaceFor = (channel: string): Surface => (channel === CHAT_CHANNEL ? "chat" : "dm")
+
+/**
+ * The `--settings` JSON that loads the hard block (shared/claude/hard-block.ts) into the session itself, so it does
+ * not depend on the plugin being enabled in the account's config dir. The hook is a no-op unless ASD_AGENT_SURFACE
+ * is set (see `turn`).
+ */
+export function hardBlockSettings(): string {
+  const command = `"${process.execPath}" "${join(pluginRoot(), "shared", "claude", "hard-block.ts")}"`
+  return JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob|Bash", hooks: [{ type: "command", command, timeout: 10 }] }] } })
+}
+
 /** The `claude` argv for one turn: a new session with its own id, or `--resume` of the thread's session. */
 export function claudeArgs(o: { sessionId: string; resume: boolean; model: string; addDirs: string[]; permissionMode?: string }): string[] {
   const bin = (process.env.ASD_CLAUDE_BIN || "claude").split(/\s+/).filter(Boolean)
@@ -38,6 +53,7 @@ export function claudeArgs(o: { sessionId: string; resume: boolean; model: strin
     ...(o.resume ? ["--resume", o.sessionId] : ["--session-id", o.sessionId]),
     "--append-system-prompt-file", promptFile(),
     "--permission-mode", o.permissionMode || process.env.ASD_DM_AGENT_PERMISSION_MODE || DEFAULT_PERMISSION_MODE,
+    "--settings", hardBlockSettings(),
     ...o.addDirs.flatMap((d) => ["--add-dir", d]),
   ]
 }
@@ -152,7 +168,7 @@ async function turn(key: string, root: string, m: { channel: string; text: strin
   const s: DmSession = had ?? { sessionId: randomUUID(), configDir: deps.configDir(), started: new Date().toISOString(), last: "", turns: 0, cwd: pickCwd(m.text, dirs) }
   const cwd = s.cwd || pluginRoot()
   const placeholder = await deps.post(m.channel, root, had ? "_Looking into it (same conversation)…_" : "_Looking into it…_")
-  const env: Record<string, string> = { ...(process.env as Record<string, string>), CLAUDE_CONFIG_DIR: s.configDir }
+  const env: Record<string, string> = { ...(process.env as Record<string, string>), CLAUDE_CONFIG_DIR: s.configDir, ASD_AGENT_SURFACE: surfaceFor(m.channel) }
   delete env.CLAUDECODE
   const argv = claudeArgs({ sessionId: s.sessionId, resume: !!had, model: process.env.ASD_DM_AGENT_MODEL || DEFAULT_MODEL, addDirs: [join(home(), ".agentic"), ...dirs] })
   const timeout = Number(process.env.ASD_DM_AGENT_TIMEOUT_MS || DEFAULT_TIMEOUT_MS)
