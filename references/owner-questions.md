@@ -6,7 +6,8 @@ a thread in the repo's Slack channel, and can ask follow-ups first.
 
 Only the orchestrator asks. A sub-agent returns `GAP:` or `CONTRACT-CHANGE:`,
 and the orchestrator decides whether that needs the owner. A run never picks
-an option itself, however long it waits.
+an option of a question it has asked itself, however long it waits. What
+it may settle without asking is in "The ask policy" below.
 
 ## Parts
 
@@ -59,6 +60,7 @@ the question's Slack message, the thread every later message goes to.
     ask_owner.py ask --root R --dossier ID --question TEXT
                      --option "A|label|consequence" [--option ...]
                      [--recommend A] --blocks TEXT        # prints the id
+                     [--kind design|product|uncertainty]  # every ask passes one
     ask_owner.py reply ID --text TEXT
     ask_owner.py wait ID [--timeout SECONDS]               # default: no timeout
     ask_owner.py list [--open] [--dossier ID]
@@ -76,11 +78,56 @@ It prints at most 40 lines.
 
 ## Asking, in a run
 
+### The ask policy
+
+This is the single source for every runner-driven command (`/work-on` and
+its phases, `/plan`, `/stub`, `/fix-deferred`, `/resolve-merge`,
+`/after-merge`); each of their files points here and repeats none of it.
+The owner wants runs to work on their own, and most of the hours a run spent
+blocked were the owner's answer time, much of it on questions that did not
+need asking.
+
+**Ask only** (1) a design question, (2) a product question (what the feature
+should do), or (3) a real uncertainty: the dossier, the contract, the repo
+and the rules do not settle it, and a wrong pick is costly to reverse. Every
+`ask_owner.py ask` passes `--kind design`, `--kind product` or `--kind
+uncertainty` to say which; a question that fits none of them is not asked.
+
+**Never ask for approval.** No "approve the plan" or "approve all six
+revisions", no "may I push, open the draft PR or mark it ready" (the standing
+authority below grants them), no "retry or stop" after a transient failure
+(the runner retries), no confirmation of a plan drift that changes nothing
+about what the feature does. Do the step and log it.
+
+**A reversible ruling goes with the recommendation.** A contract-review
+ambiguity or a plan revision for which a recommended reading exists and whose
+impact is low (it changes no behaviour the dossier promises and no public
+contract another dossier depends on): take the recommended reading, write it
+into the docstring or the dossier, log `PROVISIONAL-RULING: <what>, <why>,
+<how to reverse>` in `## Build log`, and list every provisional ruling in a
+"Rulings to review" section of the PR description, so the owner can overrule
+it after the fact. A high-impact or product-level ambiguity still goes to the
+owner.
+
+**Merge conflicts:** resolve them, keeping both sides' intent, and prove the
+result with the tests and gates, as `/resolve-merge` does. Ask only when the
+two intents conflict at product level.
+
+**Bugs found along the way** (deferred items, `/fix-deferred` items, failures
+in arbitration): fix them through the normal flow without asking. Ask only
+when the fix would change product behaviour or a contract.
+
+**Budget exhaustion** where one more correction round is the recommendation:
+take that round once, log it, and ask only if it fails too.
+
+**Timing is unchanged:** ask as early as possible, keep working on what does
+not depend on the answer, and block only when nothing else can proceed.
+
 ### What is worth asking
 
 The owner's attention is the scarcest thing in the pipeline: a question
-stops the run and frees its slot until it is answered. Ask only what needs
-the owner's judgement:
+stops the run and frees its slot until it is answered. Within that policy, ask
+only what needs the owner's judgement:
 
 - **Technical, architectural or product design:** two defensible designs, a
   trade-off the dossier does not settle, a scope or behaviour change, a
@@ -103,6 +150,8 @@ standing authority for:**
 - pushing the dossier's own branch, and opening or updating its draft PR
   into the base or the accepting stub (`SUITE-RUNNER: … push and draft PR:
   yes`, with the source `runner start`);
+- one more correction round when a budget runs out and that round is the
+  recommendation, taken once and logged;
 - the readings, defaults and choices the dossier already records (its
   contract, its criteria, its rulings): carry them out, never re-confirm
   them. Only a reading the dossier leaves open is a question;
@@ -112,7 +161,7 @@ standing authority for:**
   dossier's branch; the owner ratifies it by reviewing and merging the PR.
 
 A batch question ("approve these 6 readings", "may I push and open the
-draft PR", "may I open the issue") is a sign the answer is already given:
+draft PR", "may I open the issue", "retry or stop") is a sign the answer is already given:
 check the dossier and this list before asking. Under a terminal run without
 the runner, the gates of the command still ask, once, at its start.
 

@@ -1,0 +1,8 @@
+# Text deliberately dropped or reworded; one substring per line.
+# opencode-only paragraph, left out of the Claude Code build (<!-- opencode-only -->)
+Old output fades on its own, under opencode
+When you need a masked result again, fetch only the part you need
+Claude Code has no hook that rewrites history
+# the invariants intro, reworded because the lists now sit at the top of each phase file
+The rule is here; the phase that names it carries the why
+A disagreement between this list and a phase is a defect in this list

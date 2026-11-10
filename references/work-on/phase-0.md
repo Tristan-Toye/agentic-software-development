@@ -3,6 +3,30 @@
 
 ## Phase 0 — Select the dossier and route the run
 
+**Gates — before anything else.** Follow
+`${PLUGIN_ROOT}/references/time-logging.md` for the time-logging gate.
+This command creates worktrees by design, so state that plainly and get the
+user's yes before Phase 2. Where the target has CI that covers the required full suite, this
+command also **pushes the base branch and opens a draft PR at Phase 6**, so
+that CI is the suite runner and no verdict costs a local run beside it
+(Phase 2 decides it): state that in the same breath and get the yes for it
+here, so no agent is ever spawned into a run that will stall on a question
+with a merged tree waiting. Only you handle these gates, never a sub-agent.
+
+**Mode — settled once, right after the gates.** Run
+`python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --mode` in this checkout
+(`formats/README.md` § "Two modes for `.discovery/`"). `mode: conflict` (exit 1)
+stops the run — show the user what it printed. `mode: local`: the
+dossier is untracked, lives only in this checkout, and every write below
+goes to it by absolute path. `mode: committed`: the dossier is a
+tracked file, so **the live copy is the one inside `X`** from the moment `X`
+exists; this checkout's copy is never written (it changes only when a PR
+merges), and the build record ships in the PR. Committed mode adds one rule
+to every phase that touches git: **commit the dossier on `X` before `X`
+merges or pushes** — a dirty tracked dossier blocks a merge that touches it,
+and an unpushed record dies with the worktree. Add it by name, never with
+`git add -A`. State the mode in one line.
+
 `$ARGUMENTS` names a dossier ID, or is empty. Empty → read the front matter of
 every `.discovery/dossiers/*.md`, and take the first with `status: ready` whose
 `blocked_by` entries are all `done`. State your pick and continue on

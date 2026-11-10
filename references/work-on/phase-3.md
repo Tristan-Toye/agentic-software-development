@@ -3,6 +3,40 @@
 
 ## Phase 3 — Mechanical check before the fan-out
 
+### The contract-reviewer has no size gate, and its skip must be auditable
+
+**`contract-reviewer` has no size gate, and its skip must still be
+auditable** (the why is in Phase 3). Write exactly one of these into
+`## Build log` before the fan-out, every run:
+
+```
+CONTRACT-REVIEW: spawned <session ref> — <N> checklist lines, <N> DEFECT, <N> AMBIGUITY
+CONTRACT-REVIEW: skipped — <reason>
+```
+
+`scripts/validate_pipeline.py --dossier <ID> --pre-fanout` refuses to pass
+while neither line is present — and likewise without the `HOOKS:` line
+(Phase 2), the `PAYLOAD-LINT:` line and the `ADMISSION:` line (Phase 4), and
+the `CENSUS:` and `CHECKLIST-IDS:` lines (Phase 3). A
+skip stays possible; a *silent* skip does not.
+
+### Rules that hold in this phase
+
+- **Owned paths are disjoint**, checked mechanically before the fan-out. A
+  conflict between two packages is a defect in the package table. Every
+  implementer report ends with `TOUCHED_BEYOND`; a path outside `OWNED_PATHS`
+  it did not list is an implementer defect, and two are never accepted
+  however justified: another package's owned paths, and the contract files.
+  (Phase 3, Phase 5)
+
+- **The checks check the author.** You write the contract, derive the
+  checklist and arbitrate the failures, so each is verified by a pass that did
+  not come from the same place: `contract-reviewer` on the stubs alone before
+  the fan-out, the mutation check on the checklist after green (a survivor is
+  a weak oracle, routed like a `GAP:`). A test author's world is stamped with
+  `CONTRACT_HASH` at spawn, and a contract that changed underneath it is
+  invalidated on the hash, without judgment. (Phase 3, Phase 6)
+
 Run `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --dossier <ID>`.
 It checks the work packages' owned paths are **disjoint**, the `## Contract`
 section carries documentation comments and no bodies, and every criterion names

@@ -3,6 +3,22 @@
 
 ## Phase 8 — Extract two kinds of durable output
 
+### Rules that hold in this phase
+
+- **ADRs are extracted, not generated.** Zero is a valid answer.
+
+- **A contract failure teaches something an ADR cannot hold.** Row-3
+  arbitrations and `GAP:` returns are evidence about how to write contracts, not
+  about this code; a recurring one becomes a user-ratified rule in this repo's
+  rules file (Phase 8b), never an ADR and never an unratified write.
+
+**Spawning and workflows.** The rules for spawning an agent and for the two plugin
+workflows are in `phase-4.md`: `ref_section` with `phase-4` and the headings
+"Spawning under Claude Code" and "Under Claude Code — two workflows".
+
+**Delegation and its size gates** are in `phase-2.md`: `ref_section` with `phase-2`
+and the headings "Delegation — mechanical work only, evidence never verdicts" and "The gate table".
+
 Now, while the evidence is in front of you. A build produces two things worth
 keeping, and they go to different places:
 
