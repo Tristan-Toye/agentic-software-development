@@ -157,6 +157,15 @@ spawned no scout; most of its cost was those results written into its own
 context. Read, grep and run commands yourself only for the one or two
 questions a scout cannot answer (a reproduction, an experiment, history).
 
+**Anchors in one call, never in windows.** The recorded orchestrator sessions
+spent their largest share of context on the same source file read in three,
+four, five `Read` windows, on `grep -n` without `| head`, and on documents read
+twice. Take a file's map with `code_outline`, then every item you will cite in
+one `code_item` call (`A | B::c`) and every heading in one `doc_section` call
+(`a | b`); a dossier only by `dossier_edit.py section`. The read guard refuses a
+4th window on one source file and a window over 200 lines on `.rs`, `.py`,
+`.cs` or `.md` files; repeating the identical call overrides it.
+
 **Keep the findings on disk as you go**, in
 `${RUN_ROOT}/.agent-staging/plan-<key>/findings.md` (`<key>` is the dossier id,
 or the source id and item, `W-128-D-3`): one line per settled finding with its

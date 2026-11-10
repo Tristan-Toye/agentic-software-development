@@ -162,6 +162,22 @@ or more) and names the tool to use; ask for every item you need in one call.
 A plain `grep -n` for usages stays yours, and so does `Read` with offset and
 limit when the nav tools cannot parse a file.
 
+**Reading budget — measured, not guessed.** In 412 recorded orchestrator sessions
+the biggest context growth, after the phase files, came from windowed `Read`s of
+source (the same file read in 3, 4, 5 windows), `grep -n` over source, `Read` of
+documents you had already read, and phase files read twice. So: a file you need
+in several places is one `code_outline`, then one `code_item` call naming every
+item (`A | B::c`), never a second and third `Read` window — the read guard
+refuses the 4th window on one source file and any window over 200 lines on a
+`.rs`/`.py`/`.cs`/`.md` file (repeat the identical call to override, when a file
+cannot be parsed). A usage search is `code_find`, or `grep -n <pat> <path> | head -40`
+(`grep -c` or `-l` first when the count is unknown); never an unbounded
+`grep -rn`. A phase file is read whole once per phase and once more only after a
+compaction; for one rule of it use `ref_section` with the heading. The guard
+refuses a second whole read of a phase file in the same context for that reason.
+Before you read a document or a file a second time, ask what you need from it
+and fetch only that.
+
 **Under Claude Code — two workflows, and resume over re-spawn.** The plugin
 ships two dynamic workflows in `${PLUGIN_ROOT}/workflows/`, run through the
 `Workflow` tool by name — and, when the name is not found, by

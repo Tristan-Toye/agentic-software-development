@@ -102,6 +102,37 @@ check("pre: missing transcript is a no-op", hook("pre-tool-use.ts", pre({ sessio
 const state = JSON.parse(readFileSync(join(tmp, "agentic-software-development", "claude", "s-orch.json"), "utf8"))
 check("pre: orchestrator answer cached", state.orchestrator === true)
 check("pre: cached answer used without the transcript", hook("pre-tool-use.ts", pre({ transcript_path: join(tmp, "gone.jsonl") })).out.includes('"deny"'))
+// The stateful reads: windows and phase files (ASD_READ_GUARD_BIG).
+{
+  const src = join(tmp, "win.rs"); writeFileSync(src, "fn a() {}\n".repeat(500))
+  const phaseDir = join(tmp, "plugin", "references", "work-on"); mkdirSync(phaseDir, { recursive: true })
+  const ph = join(phaseDir, "phase-4.md"); writeFileSync(ph, "# Phase 4\nbody\n")
+  const rd = (session: string, input: object, extra: object = {}) =>
+    hook("pre-tool-use.ts", pre({ session_id: session, tool_input: input, ...extra })).out
+  check("win: a window over 200 lines of source is denied", rd("s-w1", { file_path: src, offset: 1, limit: 300 }).includes("code_item"))
+  check("win: the identical call goes through", rd("s-w1", { file_path: src, offset: 1, limit: 300 }) === "")
+  check("win: a 200-line window is allowed", rd("s-w2", { file_path: src, offset: 1, limit: 200 }) === "")
+  for (const off of [10, 20]) check(`win: window ${off} of the same file allowed`, rd("s-w2", { file_path: src, offset: off, limit: 50 }) === "")
+  const fourth = rd("s-w2", { file_path: src, offset: 30, limit: 50 })
+  check("win: the 4th window of one file is denied (3 allowed)", fourth.includes('"deny"') && fourth.includes("code_outline"))
+  check("win: another file's windows are counted apart", rd("s-w2", { file_path: join(tmp, "big.rs"), offset: 1, limit: 50 }) === "")
+  check("win: a non-source file has no window limit", rd("s-w3", { file_path: join(tmp, "x.txt"), offset: 1, limit: 900 }) === "")
+  check("win: a subagent's windows are not guarded", rd("s-w4", { file_path: src, offset: 1, limit: 900 }, { agent_id: "a1", agent_type: "agentic-software-development:implementer" }) === "")
+  check("phase: first whole read allowed", rd("s-p1", { file_path: ph }) === "")
+  const again = rd("s-p1", { file_path: ph })
+  check("phase: second whole read denied with ref_section", again.includes('"deny"') && again.includes("ref_section") && again.includes("phase-4"))
+  check("phase: the repeated call goes through", rd("s-p1", { file_path: ph }) === "")
+  check("phase: a ranged read is not refused", rd("s-p1", { file_path: ph, offset: 1, limit: 5 }) === "")
+  const sessState = join(tmp, "agentic-software-development", "claude", "s-p1.json")
+  const compact = hook("session-start.ts", JSON.stringify({ hook_event_name: "SessionStart", source: "compact", session_id: "s-p1", transcript_path: workOn, cwd: tmp }))
+  check("phase: a compaction resets the memory", compact.code === 0 && !("phaseReads" in JSON.parse(readFileSync(sessState, "utf8"))))
+  check("phase: read again after the compaction is allowed", rd("s-p1", { file_path: ph }) === "")
+  const off = { ...env, ASD_READ_GUARD_BIG: "0" }
+  const offHook = (input: object) =>
+    Bun.spawnSync(["bun", "--no-install", join(root, "shared", "claude", "pre-tool-use.ts")], { stdin: new TextEncoder().encode(pre({ session_id: "s-off", tool_input: input })), env: off, stdout: "pipe" }).stdout.toString().trim()
+  check("env: ASD_READ_GUARD_BIG=0 allows a wide window", offHook({ file_path: src, offset: 1, limit: 400 }) === "")
+  check("env: ASD_READ_GUARD_BIG=0 allows a phase file twice", offHook({ file_path: ph }) === "" && offHook({ file_path: ph }) === "")
+}
 // Broken input: exit 0, no output.
 for (const bad of ["", "not json", "[]", "null", '{"tool_name":"Read"}', '{"session_id":"x","tool_name":"Read","tool_input":null,"transcript_path":5}']) {
   r = hook("pre-tool-use.ts", bad)
@@ -344,7 +375,7 @@ check("flight: missing dossier fails open", r.code === 0 && !r.out.includes("Bui
 const lines = readFileSync(join(tmp, "agentic-software-development", "claude", "claude-hooks.log"), "utf8").trim().split("\n")
 const count = (e: string) => lines.filter((l) => l.split(" ")[1] === e).length
 check("log: timestamped, one line per event", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z (refused|nudge|recorded|restored) \S+ /.test(l)))
-check("log: refusals (six orchestrator, one a runner-style /plan session; five blind-read)", count("refused") === 11)
+check("log: refusals (six orchestrator, one a runner-style /plan session; five blind-read; three stateful reads)", count("refused") === 14)
 check("log: nudges (two call-count, two pressure, one call-count in the pressure session)", count("nudge") === 5)
 check("log: restores", count("restored") === 2 + restores)
 check("log: checkpoints recorded (the interactive one, and the runner stage's two: a runner stage is an orchestrator now)", count("recorded") === 3)

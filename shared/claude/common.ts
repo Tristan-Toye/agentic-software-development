@@ -91,7 +91,18 @@ export function agentTypeOf(input: HookInput): string | undefined {
 
 // ---- per-session state ----------------------------------------------------------
 
-export type SessionState = { orchestrator?: boolean; pipeline?: boolean; runKey?: string; calls?: number; pressureNudged?: boolean }
+export type SessionState = {
+  orchestrator?: boolean
+  pipeline?: boolean
+  runKey?: string
+  calls?: number
+  pressureNudged?: boolean
+  // The read guard's per-context memory (reset by a compaction): windowed Reads per file, the phase
+  // files read whole, and the last refused call (repeating it verbatim overrides the refusal).
+  windows?: Record<string, number>
+  phaseReads?: string[]
+  lastRefused?: string
+}
 const stateFile = (session: string) => join(dataDir(), `${session.replace(/[^\w.-]/g, "_")}.json`)
 
 export function loadState(session: string): SessionState {
