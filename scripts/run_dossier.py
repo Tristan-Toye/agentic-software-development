@@ -1258,7 +1258,7 @@ class Runner:
                 if network_error(tail):
                     return "network", tail.strip().splitlines()[-1][:300] if tail.strip() else "network error"
                 if val in KILLED_CODES and not self.stopping and not os.path.exists(self.stop_marker):
-                    return "killed", f"the claude process was killed from outside the runner (exit {val})"
+                    return "killed", f"the claude process was killed from outside the runner (exit {val}{self.kill_context()})"
                 return "failed", f"the claude process exited with code {val} before a result"
             text, err = val  # type: ignore[misc]
             if getattr(self, "wrong_model", ""):
@@ -1361,6 +1361,30 @@ class Runner:
                 return "restart", why
             self.send("OWNER " + out)
 
+    def kill_context(self) -> str:
+        """What the runner can still see after an outside kill, to name the sender next time: free disk, the claude
+        version now installed (an auto-update is a suspect), and the host's last wake."""
+        bits = []
+        free = disk_free_gib(self.root)
+        if free is not None:
+            bits.append(f"{free:.0f} GiB free")
+        if not os.environ.get("ASD_CLAUDE_BIN"):   # a stand-in binary has no version to ask for
+            try:
+                v = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
+                if v.returncode == 0 and v.stdout.strip():
+                    bits.append("claude " + v.stdout.strip().split()[0])
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if sys.platform == "darwin":
+            try:
+                w = subprocess.run(["sysctl", "-n", "kern.waketime"], capture_output=True, text=True, timeout=5)
+                m = re.search(r"sec = (\d+)", w.stdout)
+                if m:
+                    bits.append("host woke " + datetime.datetime.fromtimestamp(int(m.group(1)), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+            except (OSError, subprocess.SubprocessError):
+                pass
+        return ("; " + ", ".join(bits)) if bits else ""
+
     def reexec_if_changed(self) -> None:
         """A long-lived runner keeps the code it started with in memory, so a deployed fix never reaches it. At a stage
         boundary, when the script a fresh start would use differs from the one this process loaded, exec it with the
@@ -1419,6 +1443,9 @@ class Runner:
             if not self.take_slot():
                 return self.finish("stopped", "stopped", 3)
             self.event(f"stage {started} start", "running")
+            free = disk_free_gib(self.root)
+            if free is not None:
+                say(f"{self.key} disk: {free:.0f} GiB free at stage {started} start")
             outcome, detail = self.run_stage()
             if outcome != "network":
                 net_tries = 0
@@ -2193,7 +2220,7 @@ def selftest() -> int:
         p = start("W-90")
         check("outside kill: the stage reruns and ends DONE", p.wait(timeout=60) == 0 and state_of("W-90").get("state") == "done")
         check("outside kill: no owner question, the kill is logged",
-              not os.path.exists(qfile("repo.W-90.Q1")) and any("killed from outside the runner (exit 143)" in t for t in texts("W-90")))
+              not os.path.exists(qfile("repo.W-90.Q1")) and any("killed from outside the runner (exit 143; " in t and "GiB free" in t for t in texts("W-90")))
         scenario([{"crash": 143}, {"crash": 137}, {"crash": 143}])
         p = start("W-91")
         check("outside kill: past ASD_RUNNER_KILL_RETRIES the owner rules", bool(until(lambda: os.path.exists(qfile("repo.W-91.Q1")))))

@@ -125,7 +125,8 @@ the recorded checkpoints.
   exits on a signal the runner did not send (exit 143, 137 or 129, or a
   negative return code: a memory or disk squeeze, a host app crash, a
   logout) and the owner did not ask to stop, the runner posts `the claude
-  process was killed from outside the runner (exit N); stage N again in S s`,
+  process was killed from outside the runner (exit N; <free> GiB free, claude
+  <version>, host woke <time>); stage N again in S s`, the clues to the sender,
   waits (1 then 5 min; `ASD_RUNNER_KILL_WAIT` overrides) and runs the stage
   again from its checkpoints through the slot queue, so the disk floor still
   applies. It asks no question. Only after `ASD_RUNNER_KILL_RETRIES` (2) such
