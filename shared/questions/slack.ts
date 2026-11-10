@@ -170,28 +170,118 @@ export type Handlers = {
   log: (m: string) => void
 }
 
-/** Run the Socket Mode loop forever, reconnecting with backoff (1 s doubling to 60 s). */
-export async function runSocket(appToken: string, h: Handlers): Promise<never> {
+/** How long a delivered message stays remembered, and how many are kept at most. */
+export const DEDUPE_TTL_MS = 10 * 60 * 1000
+export const DEDUPE_MAX = 2000
+
+/** The identity of what the owner did, stable across Socket Mode redeliveries (new envelope_id, retry_attempt) or null. */
+export function dedupeKey(env: any): string | null {
+  if (env?.type === "events_api") {
+    const ev = env.payload?.event
+    if (ev?.channel && ev?.ts) return `${ev.channel}:${ev.ts}`
+    return typeof env.payload?.event_id === "string" ? env.payload.event_id : null
+  }
+  if (env?.type === "interactive") {
+    const p = env.payload
+    const a = p?.actions?.[0]?.action_id
+    if (!a || !p?.trigger_id) return null
+    return `${p.container?.message_ts ?? p.message?.ts ?? ""}:${a}:${p.trigger_id}`
+  }
+  return null
+}
+
+/**
+ * True when this envelope's message or button press was already seen in the last 10 minutes; otherwise it is
+ * recorded in `seen` (key -> time first seen, at most 2000 entries, oldest dropped) and false is returned.
+ */
+export function isDuplicate(env: any, seen: Map<string, number>, now: number): boolean {
+  const key = dedupeKey(env)
+  if (key === null) return false
+  for (const [k, t] of seen) {
+    if (now - t < DEDUPE_TTL_MS) break
+    seen.delete(k)
+  }
+  if (seen.has(key)) return true
+  seen.set(key, now)
+  while (seen.size > DEDUPE_MAX) seen.delete(seen.keys().next().value as string)
+  return false
+}
+
+/** Seams for tests: the Slack API call, the WebSocket class, the sleep, the clock, the idle limit and a stop flag. */
+export type SocketDeps = {
+  api?: typeof api
+  WebSocket?: typeof WebSocket
+  sleep?: (ms: number) => Promise<unknown>
+  now?: () => number
+  idleMs?: number
+  stopped?: () => boolean
+}
+
+/**
+ * Run the Socket Mode loop forever, reconnecting with backoff (1 s doubling to 60 s). Exactly one socket is live:
+ * the old one is closed before a new one opens, and a socket that errors or closes is closed and silenced.
+ * A socket that sends no frame for ASD_SLACK_IDLE_MS (60 s) is closed and reconnected. Envelopes seen before
+ * (Slack redelivers) are acked and dropped.
+ */
+export async function runSocket(appToken: string, h: Handlers, deps: SocketDeps = {}): Promise<void> {
+  const callApi = deps.api ?? api
+  const WS = deps.WebSocket ?? WebSocket
+  const sleep = deps.sleep ?? Bun.sleep
+  const now = deps.now ?? Date.now
+  const idleMs = deps.idleMs ?? (Number(process.env.ASD_SLACK_IDLE_MS) || 60000)
+  const seen = new Map<string, number>()
+  let current: WebSocket | null = null
   let delay = 1000
-  for (;;) {
+  const retire = (ws: WebSocket | null) => {
+    if (!ws) return
+    ws.onmessage = null
     try {
-      const open = await api("apps.connections.open", appToken)
+      ws.close()
+    } catch {}
+  }
+  while (!deps.stopped?.()) {
+    try {
+      const open = await callApi("apps.connections.open", appToken)
+      retire(current)
       await new Promise<void>((resolve) => {
-        const ws = new WebSocket(open.url)
+        const ws = new WS(open.url)
+        current = ws
+        let done = false
+        let last = now()
+        let timer: ReturnType<typeof setInterval> | undefined
+        const finish = (why: string) => {
+          if (done) return
+          done = true
+          if (timer) clearInterval(timer)
+          retire(ws)
+          if (current === ws) current = null
+          h.log(`slack socket ${why}`)
+          resolve()
+        }
+        timer = setInterval(() => {
+          if (now() - last >= idleMs) finish(`idle for ${idleMs} ms`)
+        }, Math.max(10, Math.min(idleMs / 4, 5000)))
         ws.onmessage = async (e) => {
+          last = now()
           let env: any
           try {
             env = JSON.parse(String(e.data))
           } catch {
             return
           }
-          const ev = env?.payload?.event
-          h.log(`slack envelope ${env?.type}${ev ? ` event=${ev.type} channel_type=${ev.channel_type} subtype=${ev.subtype ?? "-"} thread=${ev.thread_ts ? "yes" : "no"} bot=${ev.bot_id ? "yes" : "no"}` : ""}`)
           const { ack, action } = interpretEnvelope(env, h.lookup, h.ownerUser, { dmAgent: h.dmAgent })
-          if (action.type !== "none" && action.type !== "hello") h.log(`slack action ${action.type}`)
           if (ack) ws.send(JSON.stringify(ack))
+          const ev = env?.payload?.event
+          h.log(
+            `slack envelope ${env?.type} envelope_id=${env?.envelope_id ?? "-"} event_id=${env?.payload?.event_id ?? "-"} ts=${ev?.ts ?? "-"} retry_attempt=${env?.retry_attempt ?? "-"}${ev ? ` event=${ev.type} channel_type=${ev.channel_type} subtype=${ev.subtype ?? "-"} thread=${ev.thread_ts ? "yes" : "no"} bot=${ev.bot_id ? "yes" : "no"}` : ""}`,
+          )
+          if (isDuplicate(env, seen, now())) {
+            h.log(`slack duplicate ${dedupeKey(env)}`)
+            return
+          }
+          if (action.type !== "none" && action.type !== "hello") h.log(`slack action ${action.type}`)
           if (action.type === "hello") delay = 1000
-          else if (action.type === "reconnect") ws.close()
+          else if (action.type === "reconnect") finish("asked to reconnect")
           else if (action.type !== "none") {
             try {
               await h.onAction(action)
@@ -200,14 +290,16 @@ export async function runSocket(appToken: string, h: Handlers): Promise<never> {
             }
           }
         }
-        ws.onclose = () => resolve()
-        ws.onerror = () => resolve()
+        ws.onclose = () => finish("closed")
+        ws.onerror = () => finish("errored")
       })
       h.log("slack socket closed, reconnecting")
     } catch (err) {
       h.log(`slack connect failed: ${(err as Error).message}`)
     }
-    await Bun.sleep(delay)
+    if (deps.stopped?.()) break
+    await sleep(delay)
     delay = Math.min(delay * 2, 60000)
   }
+  retire(current)
 }

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rm
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
-import { channelNameFor, interpretEnvelope, questionBlocks, replyKind } from "../questions/slack.ts"
+import { channelNameFor, interpretEnvelope, isDuplicate, runSocket, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
 import { undecidedDeferred, parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
@@ -825,6 +825,62 @@ try {
   rmSync(runsDir, { recursive: true, force: true })
   rmSync(udir, { recursive: true, force: true })
   rmSync(cdir, { recursive: true, force: true })
+}
+{
+  const msg = (envelope_id: string, ts: string, retry = 0) => ({ type: "events_api", envelope_id, retry_attempt: retry, payload: { event_id: "Ev" + envelope_id, event: { type: "message", channel_type: "im", channel: "D1", user: "U1", text: "hi", ts } } })
+  const btn = (trigger_id: string, action_id = "a1") => ({ type: "interactive", envelope_id: "x" + trigger_id, payload: { type: "block_actions", trigger_id, container: { message_ts: "9.1" }, actions: [{ action_id, value: "r.W-1.Q1|A" }] } })
+  const seen = new Map<string, number>()
+  check("dedupe: a first sighting is not a duplicate", !isDuplicate(msg("e1", "100.1"), seen, 1000))
+  check("dedupe: the same channel:ts with another envelope_id and retry_attempt is a duplicate", isDuplicate(msg("e2", "100.1", 2), seen, 2000))
+  check("dedupe: a different ts is not", !isDuplicate(msg("e3", "100.2"), seen, 2000))
+  check("dedupe: an entry expires after 10 minutes", !isDuplicate(msg("e4", "100.1"), seen, 1000 + 10 * 60 * 1000) && seen.size === 2)
+  check("dedupe: hello has no key and is never a duplicate", !isDuplicate({ type: "hello" }, seen, 1) && !isDuplicate({ type: "hello" }, seen, 1))
+  const s2 = new Map<string, number>()
+  check("dedupe: a button press repeated with the same trigger_id is a duplicate", !isDuplicate(btn("t1"), s2, 1) && isDuplicate(btn("t1"), s2, 2))
+  check("dedupe: another action_id or trigger_id is not", !isDuplicate(btn("t1", "a2"), s2, 3) && !isDuplicate(btn("t2"), s2, 3))
+  const s3 = new Map<string, number>()
+  for (let i = 0; i < 2100; i++) isDuplicate(msg("m" + i, "1." + i), s3, 5)
+  check("dedupe: at most 2000 entries, oldest dropped", s3.size === 2000 && !s3.has("D1:1.0") && s3.has("D1:1.2099"))
+}
+{
+  class FakeWS {
+    static all: FakeWS[] = []
+    sent: string[] = []
+    closed = 0
+    onmessage: ((e: any) => any) | null = null
+    onclose: (() => void) | null = null
+    onerror: (() => void) | null = null
+    constructor(public url: string) { FakeWS.all.push(this) }
+    send(d: string) { this.sent.push(d) }
+    close() { this.closed++ }
+  }
+  const actions: string[] = []
+  const logs: string[] = []
+  let opens = 0
+  let stop = false
+  const same = (id: string, retry: number) => JSON.stringify({ type: "events_api", envelope_id: id, retry_attempt: retry, payload: { event: { type: "message", channel_type: "im", channel: "D1", user: "U1", text: "hello", ts: "5.5" } } })
+  const done = runSocket("xapp", { onAction: (a) => { actions.push(a.type) }, lookup: () => null, ownerUser: "U1", dmAgent: true, log: (m) => logs.push(m) }, {
+    api: (async () => ({ url: "wss://fake/" + ++opens })) as any,
+    WebSocket: FakeWS as any,
+    sleep: async () => { await Bun.sleep(5) },
+    stopped: () => stop,
+    idleMs: 60000,
+  })
+  await Bun.sleep(30)
+  const oldWs = FakeWS.all[0]
+  await oldWs.onmessage!({ data: same("e1", 0) })
+  oldWs.onerror!()
+  check("socket: the old socket is closed after an error", oldWs.closed >= 1 && oldWs.onmessage === null)
+  await Bun.sleep(60)
+  const newWs = FakeWS.all[1]
+  await newWs.onmessage!({ data: same("e2", 1) })
+  oldWs.onclose?.()
+  stop = true
+  newWs.onclose!()
+  await done
+  check("socket: the same message on an old then a new socket runs onAction once", actions.length === 1 && FakeWS.all.length === 2, JSON.stringify({ actions, n: FakeWS.all.length }))
+  check("socket: both envelopes are acked, one duplicate is logged", oldWs.sent[0] === '{"envelope_id":"e1"}' && newWs.sent[0] === '{"envelope_id":"e2"}' && logs.filter((l) => l.startsWith("slack duplicate")).length === 1)
+  check("socket: the envelope log line carries the ids", logs.some((l) => l.includes("envelope_id=e2") && l.includes("ts=5.5") && l.includes("retry_attempt=1")))
 }
 console.log(failed ? `FAIL (${failed})` : "PASS (all cases)")
 process.exit(failed ? 1 : 0)
