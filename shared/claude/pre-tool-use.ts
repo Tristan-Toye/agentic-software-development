@@ -4,8 +4,8 @@
 // documented PreToolUse JSON. Fails open.
 import { BLIND_AGENT, blindRead } from "../blind-read"
 import { configLoader } from "../config"
-import { readGuard, type ReadGuardCall } from "../read-guard"
-import { agentTypeOf, configPath, isOrchestrator, log, pipelineRoot, readInput, runHook } from "./common"
+import { bigGuardOn, phaseFileOf, phaseRereadReason, readGuard, windowReason, type ReadGuardCall } from "../read-guard"
+import { agentTypeOf, configPath, isOrchestrator, loadState, log, pipelineRoot, readInput, runHook, saveState } from "./common"
 
 const deny = (reason: string) => ({
   hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
@@ -33,8 +33,44 @@ await runHook(async () => {
   } else if (input.tool_name === "Bash") call = { kind: "bash", command: String(toolInput.command ?? "") }
   else return undefined
   if (!isOrchestrator(input)) return undefined
-  const reason = readGuard(call, input.cwd ?? process.cwd(), configLoader(configPath())(), pipelineRoot())
+  const cfg = configLoader(configPath())()
+  const cwd = input.cwd ?? process.cwd()
+  let reason = readGuard(call, cwd, cfg, pipelineRoot())
+  if (!reason && call.kind === "read" && bigGuardOn()) reason = statefulRead(input.session_id, call, cwd)
   if (!reason) return undefined
   log("refused", input.session_id, `work-on ${input.tool_name}: ${reason}`)
   return deny(`context-guard: ${reason}`)
 })
+
+// The refusals that need memory: a 4th window on one file, a second whole read of a phase file.
+// Counts live in the session state and are reset by a compaction (session-start.ts); a refused
+// call repeated verbatim goes through, so a file the nav tools cannot parse is never stuck.
+function statefulRead(session: string, call: Extract<ReadGuardCall, { kind: "read" }>, cwd: string): string | undefined {
+  const file = call.path
+  if (!file) return undefined
+  const state = loadState(session)
+  const key = `${file}:${call.offset ?? ""}:${call.limit ?? ""}`
+  if (state.lastRefused === key) {
+    saveState(session, { ...state, lastRefused: undefined })
+    return undefined
+  }
+  const refuse = (why: string) => {
+    saveState(session, { ...state, lastRefused: key })
+    return why
+  }
+  const windowed = call.limit !== undefined || (call.offset !== undefined && call.offset > 1)
+  if (windowed) {
+    const prior = state.windows?.[file] ?? 0
+    const why = windowReason(file, call.limit, prior)
+    if (why) return refuse(why)
+    saveState(session, { ...state, windows: { ...state.windows, [file]: prior + 1 } })
+    return undefined
+  }
+  const phase = phaseFileOf(file)
+  if (phase) {
+    const read = state.phaseReads ?? []
+    if (read.includes(phase)) return refuse(phaseRereadReason(phase))
+    saveState(session, { ...state, phaseReads: [...read, phase] })
+  }
+  return undefined
+}

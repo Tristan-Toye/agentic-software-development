@@ -350,6 +350,60 @@ Knobs: `ASD_KEEPALIVE` (`0` = off), `ASD_KEEPALIVE_AFTER` (3000 s),
 `ASD_KEEPALIVE_TIMEOUT` (180 s). The agent's side: see `RUNNER KEEPALIVE` in the
 runner-mode rules below.
 
+## Keeping the context small
+
+Over 14 days of runner sessions on config-harness the CLI auto-compacted 83 times in runner sessions (213 in all), each at
+about 168k (the 200k window minus 32k). The call after a compaction is about 80k, 30k of which is the harness
+re-injecting its fixed prefix, each compaction pauses about 56 s, and rewriting the cache cost about $126. Three
+settings keep that down. All three are built in `claude_cmd()` or the stage loop, so only runner-launched sessions see them.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ASD_RUNNER_LEAN` | on | `0` gives the argv of 1.52.35 and before. On adds `--settings` and `--disallowedTools` (below). |
+| `ASD_RUNNER_SPLIT_AT` | 135000 | context at a `phase_checkpoint` above which the stage ends and the next one starts fresh. `0` = off. |
+| `ASD_RUNNER_COMPACT_WINDOW` | 250000 | `--autocompact N`: the auto-compact window. `0` = pass none. |
+
+**A smaller fixed prefix.** Measured with one real haiku call (it resolves to claude-sonnet-5-5) per argv, built by
+`claude_cmd()`, in config-harness on the main account: the first call's input is 31.9k tokens (cache write plus read)
+with `ASD_RUNNER_LEAN=0` and 26.3k with it on, 5.6k (17%) fewer, and 35 tools become 21. What goes:
+
+- tools the commands, skills, agents, references and hooks never name: CronCreate, CronDelete, CronList, DesignSync,
+  ListAgents, PublishPlugin, PushNotification, RemoteTrigger, ReportFindings, ScheduleWakeup, ShareOnboardingGuide,
+  NotebookEdit, EnterWorktree, ExitWorktree (`--disallowedTools`, comma separated). About 3.5k of the 5.6k.
+- Claude Code's bundled skills (deep-research, design, verify, debug, code-review, simplify, loop, ...) listed by name
+  only: `skillOverrides` `name-only` in `--settings`. About 2k. Not `off` and not `disableBundledSkills`: with fewer
+  skills listed the budget widens and the plugin's own skill descriptions print in full, which cost 4k more, measured.
+- the context-mode plugin (`enabledPlugins` false in `--settings`; the owner already turned it off for config-harness,
+  so it measures 0 there and counts where it is still on).
+
+What stays: the nav and runs MCP servers, the plugin's agents, skills, hooks and commands, Workflow, Monitor,
+SendMessage, TaskStop, ToolSearch, LSP, WebFetch, WebSearch, Skill, Task, and the context7 and LSP plugins.
+`--strict-mcp-config` is not used: it drops the plugin's nav and runs servers too (measured, `mcp_servers` 3 to 0).
+`--settings` merges over the project's and the user's settings; the keep-alive resume ping is `claude_cmd()` plus
+`--resume`, so it carries the identical flags and the cache prefix still matches. The remaining 26k is the CLI's own
+system prompt and tool schemas, the account's CLAUDE.md files, the plugin's skill listing and the appended runner rules.
+
+**A fresh stage instead of a compaction.** When a stage's `phase_checkpoint` is taken with the session's context
+(the last assistant usage, `input + cache_read + cache_creation`) at or above `ASD_RUNNER_SPLIT_AT`, the runner waits
+for that checkpoint's tool result, kills the session and ends the stage as if the agent had written
+`RUNNER: STAGE-DONE <phase>`. The runner records `split at checkpoint <phase>: context <N>k`. The next stage is a new session
+that starts with the usual hand-off (`RUNNER HAND-OFF`, with this checkpoint's summary and its `NEXT:` line). Notes:
+
+- It only happens at a checkpoint, never mid-work; a stage with no checkpoint is compacted by the CLI as before.
+- A split stage counts as a stage for `--max-stages`.
+- It is held (logged, tried again at the next checkpoint) while a background command or workflow is in flight, because
+  those die with the process. It cannot happen while the run waits on the owner: no checkpoint is taken then, and a
+  checkpoint's turn that ended first clears it.
+- A keep-alive ping needs a waiting or queued run; the session it pings is the newest one (`state.session`).
+
+**The auto-compact window.** `--autocompact 250000` (Claude Code 2.1.221 or later; 100k to 1M) applies to this
+session only and, unlike `autoCompactWindow` in a settings file, outranks the project's `.claude/settings.json`
+(200000 in config-harness) and a window saved with the CLI's autocompact command; the runner also drops
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` from the child's environment because that variable would outrank the flag. The CLI
+caps the value at the model's window. `claude-opus-5-5` and `claude-sonnet-5-5` both report a 1M window (`modelUsage.contextWindow`),
+so 250k takes effect (compaction near 218k); for a model with a 200k window (haiku-3/4, opus-4, sonnet-4) none is passed.
+With the split at 135k, the compaction at about 218k is the backstop for a stage that never checkpoints.
+
 ## Keeping the Mac awake
 
 While at least one run is `running`, `waiting`, `queued` or `paused` (its runner

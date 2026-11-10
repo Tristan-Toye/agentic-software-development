@@ -144,6 +144,22 @@ or more) and names the tool to use; ask for every item you need in one call.
 A plain `grep -n` for usages stays yours, and so does `Read` with offset and
 limit when the nav tools cannot parse a file.
 
+**Reading budget — measured, not guessed.** In 412 recorded orchestrator sessions
+the biggest context growth, after the phase files, came from windowed `Read`s of
+source (the same file read in 3, 4, 5 windows), `grep -n` over source, `Read` of
+documents you had already read, and phase files read twice. So: a file you need
+in several places is one `code_outline`, then one `code_item` call naming every
+item (`A | B::c`), never a second and third `Read` window — the read guard
+refuses the 4th window on one source file and any window over 200 lines on a
+`.rs`/`.py`/`.cs`/`.md` file (repeat the identical call to override, when a file
+cannot be parsed). A usage search is `code_find`, or `grep -n <pat> <path> | head -40`
+(`grep -c` or `-l` first when the count is unknown); never an unbounded
+`grep -rn`. A phase file is read whole once per phase and once more only after a
+compaction; for one rule of it use `ref_section` with the heading. The guard
+refuses a second whole read of a phase file in the same context for that reason.
+Before you read a document or a file a second time, ask what you need from it
+and fetch only that.
+
 **Under Claude Code — two workflows, and resume over re-spawn.** The plugin
 ships two dynamic workflows in `${PLUGIN_ROOT}/workflows/`, run through the
 `Workflow` tool by name — and, when the name is not found, by
@@ -238,10 +254,6 @@ that CI is the suite runner and no verdict costs a local run beside it
 (Phase 2 decides it): state that in the same breath and get the yes for it
 here, so no agent is ever spawned into a run that will stall on a question
 with a merged tree waiting. Only you handle these gates, never a sub-agent.
-Under the runner these gates are already yes (its preamble says so), and so
-is the push and draft PR under `stub`: never ask them again. What else is
-worth a question, and what a run does without one, is in
-`${PLUGIN_ROOT}/references/owner-questions.md` ("What is worth asking").
 
 **Mode — settled once, right after the gates.** Run
 `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --mode` in this checkout
@@ -412,9 +424,6 @@ between this list and a phase is a defect in this list.
   When nothing else can proceed, run `ask_owner.py wait <id>` as a background
   command under Claude Code and end the turn. Log `QUESTION:` and then
   `OWNER-RULING (<date>):` in `## Build log`. Never pick an option yourself.
-  Ask only what needs the owner's judgement (design, unresolvable issues,
-  actions outside the run's authority), never to confirm what the dossier
-  or the run's standing authority already settles ("What is worth asking").
 - **ADRs are extracted, not generated.** Zero is a valid answer.
 - **A contract failure teaches something an ADR cannot hold.** Row-3
   arbitrations and `GAP:` returns are evidence about how to write contracts, not
@@ -427,8 +436,7 @@ between this list and a phase is a defect in this list.
 - Nothing external happens without an explicit yes: no Jira create, no Jira
   transition, no PR, no push to a protected branch. The `ci` runner's push
   of the base branch and its draft PR are covered by the yes taken at the
-  gates, before Phase 2; under the runner its Start is that yes, and also
-  covers the graduation issue in the plugin repository. No force-push, no history rewrite, no merge of the
+  gates, before Phase 2. No force-push, no history rewrite, no merge of the
   PR — merging is the user's.
 - **Uncommitted agent work has no second copy.** No destructive git command
   over a path an agent may hold uncommitted; copy out before any revert or

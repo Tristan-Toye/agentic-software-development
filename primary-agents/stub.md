@@ -148,6 +148,11 @@ merge in `git log --merges --reverse origin/development..<stub>`:
 - the verdict lines its build recorded — `SUITE:`, `MUTATION:`,
   `STABILITY:` from `## Build log`, read with `dossier_edit.py section`.
 
+Reading budget: a source file you need in several places is one `code_outline`
+and one `code_item` call naming every item (`A | B::c`), a document section is
+`doc_section`, and a search is `code_find` or `grep -n … | head -40` — never a
+third `Read` window on one file. The read guard refuses it.
+
 Write the table to the record file. A merge that maps to no dossier is a
 defect in the batch, not in your method: report it and stop; the user
 decides. Fix merges — `fix/<ID>-stub<date>-<n>`, this command's own — map
