@@ -3,6 +3,68 @@
 
 ## Phase 2 — The base branch, and the contract as real code
 
+### Rules that hold in this phase
+
+- **You own the contract.** You write it, materialise it, and referee with it;
+  no agent changes it. An implementer needing a different signature returns
+  `CONTRACT-CHANGE:` and stops. (Phase 2, Phase 6)
+
+- **You write the docstrings, so you read the docstring rules first** — the
+  observability checklist and this repo's rules file, every run, before the
+  first documentation comment. Phase 8b writes that file and Phase 2 reads
+  it; a loop with no reader is a log line pretending to be a lesson.
+
+- **A workspace-wide hook is decided at the contract commit.** Agents stop
+  and report on a hook refusal; you commit on their branch with the hook
+  skipped and the fixers run by hand; no payload ever names a bypass.
+  (Phase 2)
+
+### Delegation — mechanical work only, evidence never verdicts
+
+**Delegation — mechanical work only, evidence never verdicts.** You run on the
+large model; the fan-out runs on small ones. Two flash support agents carry
+mechanical work off your context — `stub-materialiser` and
+`blast-radius-scout` — and each returns a **guidance doc**: a pointer
+(`path:line`), a verbatim quote, a neutral flag. Never a ruling, a row label,
+or a spawn recommendation; a support agent that starts deciding has stopped
+being auditable. `document-drafter` drafts the end-of-run documents from
+decisions you already made. `scribe` writes the prose of a dossier or document
+edit from the facts and rulings you hand it — never tests, docstrings or code —
+and `code-scout` answers lookup chains with `path:line` rows. Neither takes a
+linted payload: give `scribe` `TARGETS`, `EDITS`, `FACTS` and `STYLE`, and
+`code-scout` `ROOT` and `QUESTIONS`. Three rules govern them all:
+
+1. **Only mechanical work is delegated** — placing stubs, listing the blast
+   radius, drafting documents from decisions you already made. Every
+   judgement — rulings, re-spawn triggers, contract fixes, merges, commits,
+   the PR scrub check — stays with you.
+2. **Investigate a flag before you act on it.** A flag is a place to read,
+   not an instruction. Read windows to rule; read the whole file when in
+   doubt.
+3. **Gate on size, and log the decision either way.** Below a gate you do
+   the work yourself — a small build stays single-model on purpose.
+
+Residue guarantees, so the run's quality never rests on the support agents'
+summaries: the primary surface's test file(s) and implementation you read
+**in full**, never windowed; every support report ends with a `NOTICED:` line
+(`none` allowed) that you harvest into `## Build log`; when `NOTICED` runs
+thin or your sampling stops finding anything, raise the sampling. No agent
+ever talks to another — work moves only as artifacts in `X`, after you commit
+or merge them.
+
+### The gate table
+
+Every gate below is a **size** gate: past it you may delegate, below it you do
+the work yourself, and **either way you write the decision into `## Build
+log`**.
+
+| Work | Agent | Gate — delegate only past it | Below the gate |
+|---|---|---|---|
+| Place the contract as stubs | `stub-materialiser` | `## Contract` carries **more than four members** | type the stubs yourself |
+| List the blast radius | `blast-radius-scout` | `ocr delegate preview` returns **more than five reviewable files** | run `preview` and narrow it from `--stat` yourself |
+| Draft ADRs / the PR description | `document-drafter` | ADRs are due, or the PR description is being written | write them yourself |
+| Review the materialised contract | `contract-reviewer` | **no gate — it runs on every build** (below) | — |
+
 This is the step everything else depends on.
 
 1. **Make the base worktree.** `X` is the shared base that every fan-out branch
@@ -94,15 +156,23 @@ This is the step everything else depends on.
    libraries, bins and examples compile (the tests need not) on every gate
    below. A package that owned only such edits leaves the table, and call-site
    test packages depend on nothing: they fork in the same wave. This is a
-   revision; it goes to the user (below).
+   revision; rule on it as the next paragraph says.
 
    **This is the last cheap moment to change either.** `## Contract` and
    `## Work packages` **freeze** when Phase 4 spawns anything: after that a
    contract change costs a re-spawn of every agent that read it, and a package
    change means a merge already went wrong. A revision the plan reviewer would
    have judged differently — a new type, a changed signature, a repartitioned
-   package table — goes to the user before you spawn: a contract you rewrote
-   here has been reviewed by nobody.
+   package table — is ruled before you spawn: a contract you rewrote
+   here has been reviewed by nobody. Never ask the owner to approve the
+   revisions as a batch. A revision with a recommended reading and a low
+   impact (it changes no behaviour the dossier promises and no public
+   contract another dossier depends on) is taken: write it into the dossier,
+   log `PROVISIONAL-RULING: <what>, <why>, <how to reverse>` in `## Build
+   log`, and list it under "Rulings to review" in the PR description. A
+   high-impact or product-level revision goes to the owner as one question
+   (`--kind design` or `--kind product`), under the ask policy
+   (`references/owner-questions.md`, "The ask policy").
 
 4. **Commit it on `X`.** Prefix with the Jira key. Every fan-out branch forks
    from this commit, so the contract is the one thing all of them share. In

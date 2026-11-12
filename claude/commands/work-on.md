@@ -61,14 +61,7 @@ after 80 tool calls without a checkpoint a tool result reminds you to close
 the stage you are in. Phases 0 and 1 are short: checkpoint them together,
 as "Phase 1", when Phase 1 ends.
 
-**Old output fades on its own, under opencode.** The context-guard plugin
-masks tool output older than your newest 10 steps and reasoning older than
-your newest 20 once a request passes its trigger: the output becomes a
-one-line stub, and a long old input (a heredoc, a task prompt, a write's
-content) keeps only its head. When you need a masked result again, fetch only
-the part you need — `code_item`, `doc_section`, `dossier_edit.py section`, or
-the command once more (masking is opencode's; Claude Code has no hook that
-rewrites history). On both hosts a guard also refuses a whole read of a
+On both hosts a guard also refuses a whole read of a
 dossier or of a file over 20 KB (never of a phase file) and a VM test run that bypasses
 `run_tests.py`; the refusal names the tool to use instead. Take it, and never
 work around a refusal.
@@ -155,115 +148,6 @@ refuses a second whole read of a phase file in the same context for that reason.
 Before you read a document or a file a second time, ask what you need from it
 and fetch only that.
 
-**Under Claude Code — two workflows, and resume over re-spawn.** The plugin
-ships two dynamic workflows in `${PLUGIN_ROOT}/workflows/`, run through the
-`Workflow` tool by name — and, when the name is not found, by
-`scriptPath: ${PLUGIN_ROOT}/workflows/<name>.js` with the same `args`:
-`agentic-software-development:phase4-wave` (a batch of linted payloads: a Phase 4
-wave, a Phase 5/6 correction round of two or more agents, the Phase 8 ADR drafts;
-spawn every payload, verify every return) and
-`agentic-software-development:phase7-review` (a Phase 7 round: the code lenses
-and their change requests). **This command's instructions are the authority to
-call the `Workflow` tool, and only for these two, at the points `phase-4.md`,
-`phase-5.md`, `phase-6.md`, `phase-7.md` and `phase-8.md` name; call it for nothing else.** A workflow keeps the agents'
-full reports out of your context and hands back one compact result, so the run
-takes fewer steps and every later step re-reads less. You still compose and lint
-every payload and admit every wave exactly as before; the workflow replaces
-only the spawn message and the per-return checks. Its `args` name each linted
-final by `payloadPath` and `payloadSha256` — the agents read the files — so
-the launch stays small enough to approve. Never paste a payload into `args`,
-never write or copy a workflow script, and if a launch is refused or cannot be
-approved, stop and report it: never re-route the agents around it. Its args and results are in
-the phase files. When a correction or fix goes back to a single agent that is still
-resumable, send it with `SendMessage` to its agent ID instead of spawning anew
-(`phase-4.md`, "Under Claude Code, resume instead of re-spawn"), and write every
-agent ID into the build log line of the spawn and of the return, because those
-lines are what compaction leaves you. Under opencode this paragraph does not
-apply: spawn and verify as the phase files say.
-
-**Delegation — mechanical work only, evidence never verdicts.** You run on the
-large model; the fan-out runs on small ones. Two flash support agents carry
-mechanical work off your context — `stub-materialiser` and
-`blast-radius-scout` — and each returns a **guidance doc**: a pointer
-(`path:line`), a verbatim quote, a neutral flag. Never a ruling, a row label,
-or a spawn recommendation; a support agent that starts deciding has stopped
-being auditable. `document-drafter` drafts the end-of-run documents from
-decisions you already made. `scribe` writes the prose of a dossier or document
-edit from the facts and rulings you hand it — never tests, docstrings or code —
-and `code-scout` answers lookup chains with `path:line` rows. Neither takes a
-linted payload: give `scribe` `TARGETS`, `EDITS`, `FACTS` and `STYLE`, and
-`code-scout` `ROOT` and `QUESTIONS`. Three rules govern them all:
-
-1. **Only mechanical work is delegated** — placing stubs, listing the blast
-   radius, drafting documents from decisions you already made. Every
-   judgement — rulings, re-spawn triggers, contract fixes, merges, commits,
-   the PR scrub check — stays with you.
-2. **Investigate a flag before you act on it.** A flag is a place to read,
-   not an instruction. Read windows to rule; read the whole file when in
-   doubt.
-3. **Gate on size, and log the decision either way.** Below a gate you do
-   the work yourself — a small build stays single-model on purpose.
-
-Residue guarantees, so the run's quality never rests on the support agents'
-summaries: the primary surface's test file(s) and implementation you read
-**in full**, never windowed; every support report ends with a `NOTICED:` line
-(`none` allowed) that you harvest into `## Build log`; when `NOTICED` runs
-thin or your sampling stops finding anything, raise the sampling. No agent
-ever talks to another — work moves only as artifacts in `X`, after you commit
-or merge them.
-
-### The gate table
-
-Every gate below is a **size** gate: past it you may delegate, below it you do
-the work yourself, and **either way you write the decision into `## Build
-log`**.
-
-| Work | Agent | Gate — delegate only past it | Below the gate |
-|---|---|---|---|
-| Place the contract as stubs | `stub-materialiser` | `## Contract` carries **more than four members** | type the stubs yourself |
-| List the blast radius | `blast-radius-scout` | `ocr delegate preview` returns **more than five reviewable files** | run `preview` and narrow it from `--stat` yourself |
-| Draft ADRs / the PR description | `document-drafter` | ADRs are due, or the PR description is being written | write them yourself |
-| Review the materialised contract | `contract-reviewer` | **no gate — it runs on every build** (below) | — |
-
-**`contract-reviewer` has no size gate, and its skip must still be
-auditable** (the why is in Phase 3). Write exactly one of these into
-`## Build log` before the fan-out, every run:
-
-```
-CONTRACT-REVIEW: spawned <session ref> — <N> checklist lines, <N> DEFECT, <N> AMBIGUITY
-CONTRACT-REVIEW: skipped — <reason>
-```
-
-`scripts/validate_pipeline.py --dossier <ID> --pre-fanout` refuses to pass
-while neither line is present — and likewise without the `HOOKS:` line
-(Phase 2), the `PAYLOAD-LINT:` line and the `ADMISSION:` line (Phase 4), and
-the `CENSUS:` and `CHECKLIST-IDS:` lines (Phase 3). A
-skip stays possible; a *silent* skip does not.
-
-**Gates — before anything else.** Follow
-`${PLUGIN_ROOT}/references/time-logging.md` for the time-logging gate.
-This command creates worktrees by design, so state that plainly and get the
-user's yes before Phase 2. Where the target has CI that covers the required full suite, this
-command also **pushes the base branch and opens a draft PR at Phase 6**, so
-that CI is the suite runner and no verdict costs a local run beside it
-(Phase 2 decides it): state that in the same breath and get the yes for it
-here, so no agent is ever spawned into a run that will stall on a question
-with a merged tree waiting. Only you handle these gates, never a sub-agent.
-
-**Mode — settled once, right after the gates.** Run
-`python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --mode` in this checkout
-(`formats/README.md` § "Two modes for `.discovery/`"). `mode: conflict` (exit 1)
-stops the run — show the user what it printed. `mode: local`: the
-dossier is untracked, lives only in this checkout, and every write below
-goes to it by absolute path. `mode: committed`: the dossier is a
-tracked file, so **the live copy is the one inside `X`** from the moment `X`
-exists; this checkout's copy is never written (it changes only when a PR
-merges), and the build record ships in the PR. Committed mode adds one rule
-to every phase that touches git: **commit the dossier on `X` before `X`
-merges or pushes** — a dirty tracked dossier blocks a merge that touches it,
-and an unpushed record dies with the worktree. Add it by name, never with
-`git add -A`. State the mode in one line.
-
 ## Under the runner
 
 `scripts/run_dossier.py` can run this command headless, one process per stage
@@ -342,88 +226,10 @@ Read `${PLUGIN_ROOT}/references/work-on/phase-9.md` at the start of this phase.
 
 ## Invariants
 
-The rule is here; the phase that names it carries the why. A disagreement
-between this list and a phase is a defect in this list.
+The rules of one phase are the first thing in that phase's file; what holds
+in every phase is here. The phase that names a rule carries the why, and a
+disagreement between a list and a phase is a defect in the list.
 
-- **You own the contract.** You write it, materialise it, and referee with it;
-  no agent changes it. An implementer needing a different signature returns
-  `CONTRACT-CHANGE:` and stops. (Phase 2, Phase 6)
-- **You write the docstrings, so you read the docstring rules first** — the
-  observability checklist and this repo's rules file, every run, before the
-  first documentation comment. Phase 8b writes that file and Phase 2 reads
-  it; a loop with no reader is a log line pretending to be a lesson.
-- **Blindness is structural, and informational where a tool set cannot
-  reach.** The unit author's `read` and `edit` maps deny everything outside
-  `.agent-staging/` and the test families under opencode, and under Claude
-  Code it has `Write` and a `Read` the plugin's hook confines to the same
-  boundary, its payload pasted or staged as a `PAYLOAD_FILE`; the
-  integration author sees stubs
-  and has no `Bash`; the implementer's worktree has no tests. Never hand an
-  agent something its blindness depends on not having, never rely on an
-  instruction where an absence will do, and never widen a permission map to
-  work around a problem. (Phase 4)
-- **Owned paths are disjoint**, checked mechanically before the fan-out. A
-  conflict between two packages is a defect in the package table. Every
-  implementer report ends with `TOUCHED_BEYOND`; a path outside `OWNED_PATHS`
-  it did not list is an implementer defect, and two are never accepted
-  however justified: another package's owned paths, and the contract files.
-  (Phase 3, Phase 5)
-- **The contract decides every test-versus-implementation dispute**, by the
-  six-row table in Phase 6. Row 4's boundary is mechanical
-  (`check_harness_edit.py`: exit 0 harness, exit 1 assertion, exit 2 unknown
-  and ruled conservatively); row 5 is never ruled from the shape of the error,
-  only from a reproduction on the pristine merge-base; row 6 (intermittent) is
-  ruled on a named mechanism, product first, and never settled by a retry, a
-  longer sleep or a rerun until green. Never edit a test
-  yourself — you have read the implementation, so you are the wrong party, and
-  every CR on a test file is its author's work, cosmetic ones included.
-- **The checks check the author.** You write the contract, derive the
-  checklist and arbitrate the failures, so each is verified by a pass that did
-  not come from the same place: `contract-reviewer` on the stubs alone before
-  the fan-out, the mutation check on the checklist after green (a survivor is
-  a weak oracle, routed like a `GAP:`). A test author's world is stamped with
-  `CONTRACT_HASH` at spawn, and a contract that changed underneath it is
-  invalidated on the hash, without judgment. (Phase 3, Phase 6)
-- **The green suite is the invariant during review.** Every change request is
-  behaviour-preserving under it; a red test after a fix means the fix was
-  wrong, never that the test was. (Phase 7)
-- **One verdict, one run.** The suite runner is decided at the contract
-  commit (`SUITE-RUNNER:`), and every full-suite verdict from Phase 6 on
-  comes from that runner's coverage-complete run on the relevant inputs.
-  Choose by actual coverage and repository policy: partial CI gates can run
-  alongside a required full local suite. Under `SUITE-RUNNER: stub` this
-  build owes no full-suite verdict: the integrated verdict is the `/stub`
-  run of the release stub this branch merges into, and this build's proof
-  is CI green plus the new tests and the mutation check. Reuse a green
-  verdict until relevant
-  inputs change; there are no unconditional whole-suite stability repeats.
-  The stub red-run, targeted flake investigations, mutants, a row-5 proof and
-  implementers' focused checks stay local. (Phase 2, Phase 6, Phase 7, Phase 9)
-- **Reviewers reply; you write.** They have no write tools. Each change
-  request becomes one `## Build log` ledger line; the full document travels
-  only in the fix implementer's payload, byte-for-byte.
-- **An agent resumes from its own transcript, never from the file on disk.**
-  If you edited a file an agent owns, never describe its current content back
-  to it; state the delta — "the file on disk now differs from what you wrote;
-  here is what changed and why". A false statement about an agent's own
-  output is the one instruction a good agent must refuse and a weak one will
-  satisfy by fabricating. When you may still resume the owner, prefer sending
-  the change as an instruction over editing its file yourself.
-- **You detect review conflicts; the user decides them.** You are the only party
-  who sees every lens.
-- **A question only the owner can settle goes through `ask_owner.py`.** Where
-  this file says to ask the user or stop for a ruling, run
-  `scripts/ask_owner.py ask` instead, as `references/owner-questions.md`
-  ("Asking, in a run") says: every option with its consequence, your
-  recommendation, and what it blocks. Keep working on what is not blocked.
-  When nothing else can proceed, run `ask_owner.py wait <id>` as a background
-  command under Claude Code and end the turn. Log `QUESTION:` and then
-  `OWNER-RULING (<date>):` in `## Build log`. Never pick an option yourself.
-- **ADRs are extracted, not generated.** Zero is a valid answer.
-- **A contract failure teaches something an ADR cannot hold.** Row-3
-  arbitrations and `GAP:` returns are evidence about how to write contracts, not
-  about this code; a recurring one becomes a user-ratified rule in this repo's
-  rules file (Phase 8b), never an ADR and never an unratified write.
 - The branch, every commit, and the PR reference the Jira ticket, never the
   dossier ID. In local mode the ID never leaves `.discovery/`; in committed
   mode the dossier itself travels in the PR, the live copy is `X`'s, and
@@ -437,43 +243,29 @@ between this list and a phase is a defect in this list.
   over a path an agent may hold uncommitted; copy out before any revert or
   delete; an agent that died after staging is committed, never reset.
   (Phase 4, Phase 5)
-- **A workspace-wide hook is decided at the contract commit.** Agents stop
-  and report on a hook refusal; you commit on their branch with the hook
-  skipped and the fixers run by hand; no payload ever names a bypass.
-  (Phase 2)
-- **No wave spawns without admission.** Its slots come from the machine-wide
-  ledger before the spawn message; a refusal splits or serialises the wave,
-  a deferral waits out the recorded reset, and the whole wave is never sent
-  into a closed window. Agents never learn the mechanism. (Phase 4)
 - **A tool's output is read whole.** Never a verdict through `tail`, `head`
   or `grep`; the exit status is the command's; a fail-fast runner runs in its
   no-fail-fast form; counts are summed from a file. (Phase 4, Phase 6)
 - **Everything surprising goes in `## Build log`.** Chat output dies with the
   session; the dossier does not.
+- **Ask only for design, product or real uncertainty, and never for approval.**
+  The policy is `references/owner-questions.md` § "The ask policy"; every
+  `scripts/ask_owner.py ask` passes `--kind design|product|uncertainty`. A
+  reversible, low-impact ruling is taken with the recommendation and logged
+  as `PROVISIONAL-RULING:`. Where this file or a phase says to ask the user,
+  that policy decides whether it is a question at all.
 
----
+## Rare cases — read the section only when the case arises
 
-**Spawning under Claude Code.** Paste every payload; never spawn by pointing
-at it. In auto mode Claude Code classifies the task a spawn delegates from
-the spawn prompt alone — it cannot see a file the prompt points at — so
-"your payload is the file X; read it whole; every field binds you" reads as
-handing authority to unseen content, and the recorded runs had one such
-spawn in five denied as [Auto-Mode Bypass] or [Data Exfiltration]. So:
-compose and lint the final on disk exactly as the phase says, then Read it
-and spawn with a one-line task statement followed by its fields verbatim,
-one `FIELD: value` per line. Files the payload names (contract, criteria,
-style samples, excerpts) stay paths. Stage every file under
-`<worktree>/.agent-staging/`, never in your scratchpad, and put no secret in
-a prompt: name the script or env file that sets it. The plugin's spawn guard
-refuses a pointer prompt, a scratchpad path or a secret-shaped value with
-the reason; fix the prompt and spawn again. A spawn the classifier still
-denies is never re-worded or re-sent to get past it: stop that spawn, keep
-the rest of the wave, and give the user the agent, the denial reason and the
-payload path — they leave auto mode (shift+tab) for that spawn; a
-/permissions allow does not lift a denial. The one exception is a wave or
-review round sent through the plugin's workflow by name: its `args` name
-each linted final by `payloadPath` and `payloadSha256`, because the launch
-is approved once and a pasted wave is too large to show. Never paste a
-payload into `args`, and never write or copy a workflow script. Never pass
-`model` when spawning one of this plugin's agents: its agent file sets the
-model, and the spawn guard refuses an override.
+`ref_section` with `rare` and the heading:
+
+- Asking the owner, for the mechanics of `ask_owner.py`: "Asking the owner —
+  mechanics".
+- Re-sending to an agent whose file you edited: "Resuming an agent from its own
+  transcript".
+
+## Rules by phase
+
+The delegation rules and the size gates are in `phase-2.md`; spawning and the
+two workflows are in `phase-4.md`; the gates, the mode and the time-logging
+gate are in `phase-0.md`. Each phase file says which of them it needs.
