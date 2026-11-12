@@ -181,6 +181,11 @@ The pipeline runs under opencode and under Claude Code. Every file stays where
 opencode expects it; Claude Code reaches the same files through the path fields
 in `.claude-plugin/plugin.json`.
 
+The manifest sets no `version`. Claude Code then takes the commit SHA as the
+plugin's version, so every merge into `production` is an update for
+`claude plugin update`, and no pull request edits a version line that the next
+one conflicts with. `build_claude_plugin.py --check` fails a manifest that sets one.
+
 | Claude Code loads | From |
 |---|---|
 | commands | `commands/` and the generated `claude/commands/` |
