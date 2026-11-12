@@ -37,8 +37,8 @@ as a **location list, never the diff**, so the reviewers stay blind to the
 history.
 
 **Mark the signals, once per sweep.** Run `python3 ${PLUGIN_ROOT}/scripts/review_signals.py
---root X --base <baseline>` and log its three summary lines (`FAILURE-SIGNALS:`,
-`LOG-SIGNALS:`, `SECURITY-TRIGGERS:`) as they print. Compose the architecture payload
+--root X --base <baseline> --log <live dossier>`, which appends its three summary lines
+(`FAILURE-SIGNALS:`, `LOG-SIGNALS:`, `SECURITY-TRIGGERS:`) to `## Build log` as they print. Compose the architecture payload
 with `--review-base <baseline>`: `SIGNALS` is then filled by the same script, as
 current-state locations, and you never retype it. A check round carries no `SIGNALS`.
 
@@ -75,8 +75,8 @@ Detail: `ref_section` with `phase-7-conditional` and the heading "Resolve RULES 
 
 **Apply the change requests:**
 
-- Collect all three replies. Record each reply in `## Build log` as a
-  **one-line-per-CR ledger** — one line per change request, in this form:
+- Collect all three replies. Record each reply as a
+  **one-line-per-CR ledger**, appended to `## Build log` through the round's checkpoint `log` — one line per change request, in this form:
 
   ```
   - r1 <lens>: CR-<lens>-<n> <one-line requirement> — <path:line> — accepted | demoted (<missing evidence>)
@@ -136,8 +136,9 @@ with `tests` open every round. Re-spawning a satisfied lens buys
 nothing — it has no question left to answer, and its one pass is already spent.
 
 **Checkpoint after each round.** When a round's CRs are ruled, its fixes have
-returned and been verified, and the round's ledger lines are in `## Build log`,
-call `phase_checkpoint` with `Phase 7 — round <n>` and the hand-off: the head
+returned and been verified, and the round's ledger lines are written,
+call `phase_checkpoint` with `Phase 7 — round <n>`, `dossier`, the ledger lines as `log`, the
+round's owner note as `note`, and the hand-off: the head
 SHA, the open CRs per lens with their ledger ids, the rounds spent against the
 budget, and which lenses the next round re-spawns. The next round reads the
 CRs from the ledger, not from this round's transcript.

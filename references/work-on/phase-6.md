@@ -43,13 +43,13 @@ open the draft PR on the first push — `gh pr create --draft --title
 "<JIRA-KEY>: <title>" --body "build in progress; description follows"`, or
 the host's equivalent; on a host with no CLI the push alone triggers a
 pipeline whose branch pattern matches — and wait for the run in one call:
-`python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N>`. It polls silently,
+`python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N> --log <live dossier>`. It polls silently,
 exits with the checks' verdict, and prints each failed job's log as a
 bounded digest parsed from the whole log. The exit status is the runner's
 and the counts are summed from the whole log by the parser, never a verdict
 through `grep` or `tail`; open a failing job's full log only in slices, for
-a line the digest names. Log `SUITE: ci run <url> on <sha> — <N> failed /
-<N> passed`. A run
+a line the digest names. With `--log` it appends `SUITE: ci run <url> on <sha> —
+<N> failed / <N> passed` to `## Build log` itself; never retype it. A run
 that did not start, or that failed before the suite ran — a checkout error,
 a missing secret, a cache step — is not a verdict: exit-2 semantics. Fix the
 CI wiring on your branch, or fall back to `local` for this head and log why.
@@ -89,8 +89,9 @@ change:
 | The failure reproduces on the **target branch at the merge-base**, untouched by this build | nobody — **upstream** | Prove it first (below), then fix it on your branch to keep green, log `UPSTREAM:` with the proof, and say in the PR description that the fix belongs upstream independently of this change. |
 | The failure is **intermittent** — `FLAKY` in a repeat run, or a red that a rerun of the same head turns green | **unknown until the mechanism is found** | Find the race (below), then rule on the mechanism: rows 1–3, or row 5 with a repeated proof. Never "nobody", and never a rerun until green. |
 
-Write every arbitration into `## Build log`: the failure, the ruling, and which
-of the six rows applied.
+Write every arbitration as one `ARBITRATION:` line — the failure, the ruling, and which
+of the six rows applied — and hand the round's lines to its checkpoint as `log`
+(below); if the round runs on past a tool call, put them in the same message as the next call.
 
 Detail: `ref_section` with `phase-6-conditional` and the heading "Investigate flake risk before mutation checks and review". (once the verdict is green; it sets `status: review`.)
 
@@ -106,9 +107,11 @@ Detail: `ref_section` with `phase-6-conditional` and the heading "Investigate fl
 - A ruling of row 3 (ambiguous contract): "Row 3 is a lesson, not just a count".
 
 **Checkpoint after each arbitration round.** A round ends when its rulings are
-logged, its re-spawns have returned and been verified, and the runner's
-verdict on the new head is in `## Build log`. Then call `phase_checkpoint` with
-`Phase 6 — round <n>` and the hand-off: the head SHA, the verdict counts, every
+written, its re-spawns have returned and been verified, and the runner's
+verdict on the new head is in `## Build log` (`wait_ci.py --log` or
+`run_tests.py --build-log` put it there). Then call `phase_checkpoint` with
+`Phase 6 — round <n>`, `dossier`, the round's `ARBITRATION:` lines as `log`, the round's owner
+note as `note`, and the hand-off: the head SHA, the verdict counts, every
 ruling so far with its site (the repeat-fingerprint needs them), the rounds
 spent against the budget, and what the next round runs. The next round reads
 its failures from the runner, not from the last round's transcript.

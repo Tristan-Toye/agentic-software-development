@@ -185,14 +185,15 @@ sharper contract, and `/overview-dossiers` surfaces the count as a health signal
 ### Under local and stub, and the coverage check on every verdict
 
 Under `local`: run the full `SUITE-COMMAND` recorded in Phase 2 in `X`,
-through `python3 ${PLUGIN_ROOT}/scripts/run_tests.py --log <file> --
-<full-suite command>` (add `--vm <name> --workdir <X> --env-script <file>`
+through `python3 ${PLUGIN_ROOT}/scripts/run_tests.py --log <file> --build-log <live dossier>
+--suite-base <baseline sha> -- <full-suite command>` (add `--vm <name> --workdir <X> --env-script <file>`
 when the command itself does not manage its required VM). Under the runner, a VM
 that is down or a compose service that is unhealthy is reported as the single line
 `RUNNER: ENV <vm|stack|disk> <detail>`, not asked about (see runner.md). An implementer's
 focused `TEST_COMMAND` is not a substitute. Keep the complete output and
 record the candidate commit, target baseline, exact command, environment,
-counts and log path as `SUITE: local on <sha>, base <sha> — <counts>; <log>`.
+counts and log path as `SUITE: local on <sha>, base <sha> — <counts>; <log>` —
+`--build-log` appends that line itself; never retype it.
 Verify that the tested tree matches that commit and that relevant inputs did
 not change during the run; otherwise the evidence cannot describe that head.
 Under `stub`: the same mechanics as `ci` — sync, push, draft PR,
@@ -234,8 +235,8 @@ either way — `SYNC: target unmoved at <sha>` or `SYNC: merged
 ### Investigate flake risk before mutation checks and review
 
 **Investigate flake risk before mutation checks and review.** Run
-`python3 ${PLUGIN_ROOT}/scripts/flake_risk.py <every test file this build
-added or changed>`, and log `FLAKE-RISK: <n> markers in <files> | none`.
+`python3 ${PLUGIN_ROOT}/scripts/flake_risk.py --log <live dossier> <every test file this build
+added or changed>`, which appends `FLAKE-RISK: <n> markers in <files> | none` to `## Build log`.
 A marker that the repo's `.flake-risk-exempt.md` covers does not count (the
 summary line ends `(<e> exempt)`): a review has already ruled on it, with the
 mechanism. When the scan warns `stale exempt row`, this build changed the line
