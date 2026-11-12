@@ -142,22 +142,31 @@ RESUME_MSG = ("RUNNER RESUME: your process was interrupted from outside (a kill,
 
 
 def script_stamp(path: str) -> tuple[str, float]:
-    """(the runner script a fresh start would use, its mtime). Under a plugin cache (.../<version>/scripts/) a plugin
-    update installs a new version directory beside the old one: the highest version with this script wins."""
+    """(the runner script a fresh start would use, its mtime). Under a plugin cache (.../<version>/scripts/, where the
+    version directory is a semver such as 1.52.57 or a 12-hex-char commit SHA such as 224e8127ba5d) a plugin update
+    installs a new directory beside the old one: among the sibling directories of either shape that hold this script,
+    the most recently installed wins, by the mtime of the script file. Version ordering plays no part (a SHA has none).
+    A path not under a plugin cache (the main checkout) is used as it is."""
     path = os.path.abspath(path)
     scripts = os.path.dirname(path)
     ver_dir = os.path.dirname(scripts)
     parent = os.path.dirname(ver_dir)
-    def vkey(n: str) -> tuple:
-        return tuple(int(x) if x.isdigit() else -1 for x in re.split(r"[.-]", n))
-    if re.fullmatch(r"\d+(?:\.\d+)+", os.path.basename(ver_dir) or ""):
+    def is_ver(n: str) -> bool:
+        return bool(re.fullmatch(r"\d+(?:\.\d+)+|[0-9a-f]{12}", n or ""))
+    def mtime(p: str) -> float:
         try:
-            vers = [n for n in os.listdir(parent) if re.fullmatch(r"\d+(?:\.\d+)+", n)
-                    and os.path.isfile(os.path.join(parent, n, os.path.basename(scripts), os.path.basename(path)))]
+            return os.stat(p).st_mtime
         except OSError:
-            vers = []
-        if vers:
-            path = os.path.join(parent, max(vers, key=vkey), os.path.basename(scripts), os.path.basename(path))
+            return -1.0
+    if is_ver(os.path.basename(ver_dir)):
+        try:
+            cands = [os.path.join(parent, n, os.path.basename(scripts), os.path.basename(path)) for n in sorted(os.listdir(parent))
+                     if is_ver(n)]
+            cands = [c for c in cands if os.path.isfile(c)]
+        except OSError:
+            cands = []
+        if cands:
+            path = max(cands, key=lambda c: (mtime(c), c == path))
     try:
         return path, os.stat(path).st_mtime
     except OSError:
@@ -3299,12 +3308,33 @@ def selftest() -> int:
               and state_of("W-92").get("pid") == rp.pid)
         check("re-exec: the restart is logged", any("runner code changed" in t for t in texts("W-92")))
         vroot = os.path.join(tmp, "cache", "asd")
-        for v in ("1.9.0", "1.10.0", "1.2.30"):
-            os.makedirs(os.path.join(vroot, v, "scripts"))
-            open(os.path.join(vroot, v, "scripts", "run_dossier.py"), "w").write("#")
-        os.makedirs(os.path.join(vroot, "1.11.0", "scripts"))   # a version without the script does not count
-        check("re-exec: under a plugin cache the highest version wins",
-              script_stamp(os.path.join(vroot, "1.9.0", "scripts", "run_dossier.py"))[0] == os.path.join(vroot, "1.10.0", "scripts", "run_dossier.py"))
+        def cache_dir(name: str, age: int, script: bool = True) -> str:
+            """A plugin-cache version dir whose script was installed `age` seconds ago (the dir stays empty without it)."""
+            os.makedirs(os.path.join(vroot, name, "scripts"))
+            f = os.path.join(vroot, name, "scripts", "run_dossier.py")
+            if script:
+                open(f, "w").write("#")
+                os.utime(f, (time.time() - age, time.time() - age))
+            return f
+        v9 = cache_dir("1.9.0", 400)
+        v10 = cache_dir("1.10.0", 300)
+        cache_dir("1.2.30", 500)
+        cache_dir("1.11.0", 0, script=False)   # a version without the script does not count
+        check("re-exec: under a plugin cache the most recently installed version wins, not the highest number",
+              script_stamp(v9)[0] == v10 and script_stamp(v10)[0] == v10)
+        s1 = cache_dir("224e8127ba5d", 200)
+        check("re-exec: a SHA dir newer than the semver dirs wins, from a semver or a SHA runner",
+              script_stamp(v10)[0] == s1 and script_stamp(s1)[0] == s1)
+        s2 = cache_dir("0123456789ab", 100)
+        cache_dir("fedcba987654", 0, script=False)   # a SHA dir without the script is ignored
+        check("re-exec: the newest of two SHA dirs wins", script_stamp(s1)[0] == s2 and script_stamp(v9)[0] == s2)
+        check("re-exec: a sibling dir without the script is ignored even when it is the newest dir",
+              os.path.join("fedcba987654") not in script_stamp(s2)[0])
+        mdir = os.path.join(tmp, "checkout", "scripts")
+        os.makedirs(mdir)
+        mf = os.path.join(mdir, "run_dossier.py")
+        open(mf, "w").write("#")
+        check("re-exec: a path outside a plugin cache is used as it is", script_stamp(mf)[0] == mf)
 
         # ---- 4. --max-stages ----------------------------------------------------
         scenario([{"turns": [[{"final": "RUNNER: STAGE-DONE one"}]]}, {"turns": [[{"final": "RUNNER: DONE"}]]}])

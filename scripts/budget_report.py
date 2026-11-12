@@ -60,7 +60,17 @@ USAGE_LOG = os.path.expanduser("~/.claude/usage-log.jsonl")
 RUN_TITLE = re.compile(r"^(?:error\s+)?(w-\d+)", re.I)
 WORK_ON = re.compile(r"agentic-software-development:work-on|<command-name>/work-on")
 # The dossier id of a /work-on invocation: its command args, or the echoed `/…:work-on W-<n>`.
-PLUGIN_VERSION = re.compile(r"agentic-software-development/agentic-software-development/(\d+\.\d+\.\d+)/")
+PLUGIN_VERSION = re.compile(r"agentic-software-development/agentic-software-development/(\d+\.\d+\.\d+|[0-9a-f]{12})/")
+
+
+def plugin_order(v: str) -> tuple:
+    """Sort key for a plugin cache directory name: semver versions first in numeric order, then commit SHAs (the
+    manifest has no version, so the cache is named by a 12-hex-char SHA) alphabetically; never raises."""
+    if re.fullmatch(r"\d+\.\d+\.\d+", v):
+        return (0, tuple(int(x) for x in v.split(".")), "")
+    return (1, (), v)
+
+
 CLAUDE_RUN = re.compile(r"work-on</command-name>.{0,200}?<command-args>\s*(W-\d+)|work-on\s+(W-\d+)", re.S)
 MIN_CALIBRATION_PCT = 5
 MIN_RUN_COST = {"opencode": 500.0, "opencode-openai": 50.0, "claude": 2.0}  # below this a session is a probe, not a dossier
@@ -332,7 +342,7 @@ def claude_runs(projects: str, since: int, until: int, prices: dict) -> tuple[li
     runs = [{"host": "claude", "run": rid, "cost": round(a["usd"], 2), "unit": "usd api-equivalent",
              "orchestrator_share_pct": round(100 * a["main_usd"] / a["usd"], 1),
              "dirs": sorted(run_cwds[rid]),
-             "plugin": sorted(run_plugins[rid], key=lambda v: tuple(int(x) for x in v.split("."))), **common(a)}
+             "plugin": sorted(run_plugins[rid], key=plugin_order), **common(a)}
             for rid, a in agg.items() if a["usd"] >= MIN_RUN_COST["claude"]]
     return runs, stream, dict(unpriced)
 
@@ -610,6 +620,8 @@ def selftest() -> int:
             fh.write('{"type":"user","message":{"content":"<command-name>/agentic-software-development:work-on</command-name>'
                      '\\n<command-message>work-on</command-message>\\n<command-args>W-777</command-args>"}}\n')
             fh.write('{"type":"attachment","content":"/cache/agentic-software-development/agentic-software-development/1.10.0/x"}\n')
+            fh.write('{"type":"attachment","content":"/cache/agentic-software-development/agentic-software-development/224e8127ba5d/x"}\n')
+            fh.write('{"type":"attachment","content":"/cache/agentic-software-development/agentic-software-development/1.9.0/x"}\n')
             fh.write(line("2026-10-12T10:00:00Z", "a", "claude-opus-5-5", 100000, 0))  # $2.00
             fh.write(line("2026-10-12T10:00:00Z", "a", "claude-opus-5-5", 100000, 0))  # same response: once
             fh.write(line("2026-10-12T11:00:00Z", "b", "<synthetic>", 1, 0))
@@ -626,7 +638,7 @@ def selftest() -> int:
               [(r["run"], r["cost"]) for r in cc] == [("W-777", 4.0)], cc)
         check("orchestrator share of the claude run", cc and cc[0]["orchestrator_share_pct"] == 50.0, cc)
         check("a nested transcript is never a run of its own", [r["run"] for r in cc] == ["W-777"], cc)
-        check("the plugin version a claude run used is recorded", cc and cc[0]["plugin"] == ["1.10.0"], cc)
+        check("the plugin version a claude run used is recorded", cc and cc[0]["plugin"] == ["1.9.0", "1.10.0", "224e8127ba5d"], cc)
 
         def checkpoint(ts, phase, summary=""):
             return json.dumps({"type": "assistant", "timestamp": ts, "message": {"id": "cp" + ts, "content": [
