@@ -3,7 +3,7 @@ description: >-
   Cleanup after the owner merged a dossier's pull request into its stub:
   settle the dossier's record, clean the stale local branches and worktrees,
   update still-open PRs against the stub where mechanical. State work only:
-  never merges, never edits a merged PR, asks before resolving a conflict.
+  never merges, never edits a merged PR, resolves a conflict itself and asks only on a product-level one.
   Started by the dashboard's merge detector.
 argument-hint: "<dossier ID, e.g. W-128> [PR numbers, e.g. 429,430]"
 ---
@@ -22,7 +22,9 @@ nothing to settle.
 outrank this file's defaults. This is Phase 9's post-merge cleanup
 (`references/work-on/phase-9.md`), run on the merge instead of on request.
 
-Ask the owner only through `scripts/ask_owner.py`. Post one short note per
+Ask the owner only through `scripts/ask_owner.py`, under
+`references/owner-questions.md` "The ask policy": design, product or real
+uncertainty only, each ask passing `--kind`. Post one short note per
 step that changes something, in plain sentences.
 
 ## Step 1 — Fetch and confirm
@@ -69,13 +71,14 @@ one):
   --base development --state open` lists a pull request): do nothing and ask
   nothing. The merge queue reaches that pull request itself and resolves it
   then; a refresh now would go stale at the next merge. Say so in the note.
-- **Conflicting, otherwise**: ask the owner, one `ask_owner.py ask` per pull request,
-  naming the files in conflict: `A` refresh it here (a fresh worktree on its
-  branch, `git merge origin/<stub>`, resolve keeping both sides' intent,
-  the repository's gates on the touched paths, push; Phase 9's refresh ritual
-  with `validate_pipeline.py --finalize-ids` where the repository has ADRs),
-  `B` leave it for its own run. End the turn with `RUNNER: WAITING <ids>`
-  when nothing else is left.
+- **Conflicting, otherwise**: refresh it here without asking (a fresh worktree on
+  its branch, `git merge origin/<stub>`, resolve keeping both sides' intent, the
+  repository's gates on the touched paths, push; Phase 9's refresh ritual with
+  `validate_pipeline.py --finalize-ids` where the repository has ADRs). A merge
+  conflict is resolved, not asked about; only when the two intents conflict at
+  product level, ask the owner, one `ask_owner.py ask --kind product` per pull
+  request, naming the files in conflict, and leave it for its own run. End the
+  turn with `RUNNER: WAITING <ids>` when nothing else is left.
 
 ## Step 5 — Close
 

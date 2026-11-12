@@ -25,7 +25,9 @@ listed pull request is not open (`gh pr view <n> --json state,headRefName,baseRe
 `${PLUGIN_ROOT}` is this plugin's checkout; under Claude Code take it from
 `${CLAUDE_PLUGIN_ROOT}`. The repository's own rules file and `AGENTS.md`
 outrank this file's defaults. Ask the owner only through
-`scripts/ask_owner.py`. Call `phase_checkpoint` at each step, named
+`scripts/ask_owner.py`, under `references/owner-questions.md` "The ask policy":
+resolve conflicts yourself, and ask only for design, product or real
+uncertainty, each ask passing `--kind`. Call `phase_checkpoint` at each step, named
 `Resolve-merge — Step <n> — <title>`.
 
 ## Step 1 — The branches
@@ -58,8 +60,8 @@ way, after that one is pushed. Then resolve each conflict:
   each hunk that did not survive and why in the merge commit body; a hunk
   dropped without a reason is a defect, not a resolution.
 - When two intents cannot both hold (the same behaviour changed two ways), do
-  not choose: ask the owner with both versions and what each one does, and
-  wait.
+  not choose: ask the owner (`--kind product`) with both versions and what each one does, and
+  wait. Every other conflict you resolve yourself.
 
 ## Step 2a — A migration number already taken
 
