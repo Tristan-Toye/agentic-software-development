@@ -203,6 +203,11 @@ for (const bad of ["", "{", "[]", '{"session_id":"q"}']) {
   check("progress: run_tests --help is no suite", updateFor("Bash", { command: "python3 run_tests.py --help" }, { stdout: "usage: run_tests.py" }) === undefined)
   {
     const { stepFor } = await import("../claude/progress")
+    const { payloadSubject } = await import("../claude/progress")
+    const fixP = "# compose_payloads.py: generated payload\nWORKTREE_DIR: /w\nMODE: fix\nFAILURES: |\n  Round 4 follow-up.\n  more\nOWNED_PATHS: |\n  crates/platform/src/repo_registry.rs\n  Never edit any file under tests/.\nTEST_COMMAND: x\n"
+    check("step: a field-only fix payload works on its owned files", payloadSubject(fixP) === "fix: repo_registry.rs", payloadSubject(fixP))
+    check("step: no owned paths falls back to the first FAILURES line", payloadSubject("MODE: fix\nFAILURES: |\n  Round 4 follow-up.\nX: y\n") === "fix: Round 4 follow-up.")
+    check("step: a TITLE still wins", payloadSubject("TITLE: Do it\nOWNED_PATHS: |\n  a.rs\n") === "Do it")
     const t = (p: string) => (p.endsWith("P6.md") ? "Turn waits for the summary" : "")
     const wave = stepFor("Workflow", { name: "agentic-software-development:phase4-wave", args: JSON.stringify([{ agentType: "x:implementer", label: "FIX-P6", payloadPath: "/a/P6.md" }, { agentType: "x:unit-test-author", label: "UT", owned: ["a.rs", "b.rs"] }]) }, t) ?? ""
     check("step: a wave lists its agents as a table", wave.startsWith("Spawning 2 agents (phase4-wave):") && wave.includes("| implementer | FIX-P6 | Turn waits for the summary |") && wave.includes("| unit-test-author | UT | a.rs, b.rs |"), wave)
