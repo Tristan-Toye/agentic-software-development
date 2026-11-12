@@ -293,7 +293,8 @@ build, no size gate.** The owner sees what the change does to the system
 before an implementer starts. It is its own step: the `contract-reviewer`
 payload holds no diagram file and no dossier text from this step.
 
-1. Run `python3 scripts/vr_prepare.py <repo> <ID> --base <baseline_commit> --head X`
+1. Mark the dossier: `dossier_edit.py set <dossier> 'visual_review=required'`
+   (this switches the gate on for this dossier). Then run `python3 scripts/vr_prepare.py <repo> <ID> --base <baseline_commit> --head X`
    (`X` = the contract commit). It writes `.discovery/visual-review/<ID>/work/`
    and prints a compact JSON summary. A non-zero exit stops the step: log
    `VISUAL-REVIEW: skipped-error — <step the JSON names>` as a build-log
@@ -324,8 +325,8 @@ payload holds no diagram file and no dossier text from this step.
 
    The counts are the node counts of the three files; `validate_pipeline.py
    --dossier <ID> --pre-fanout` checks them, the three files and the last
-   line (the gate holds for dossiers created on or after 2026-11-12, or with
-   a `visual_review:` front-matter field; older dossiers are not flagged).
+   line (the gate holds for a dossier with the `visual_review:` field that
+   step 1 sets; a build that never ran this step is not flagged).
    **`changes requested` goes back to the contract revision above, never
    forward:** fix the contract, re-run the contract review, then run this
    step again and record a new line. Fan-out waits for `approved`.

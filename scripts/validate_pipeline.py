@@ -848,10 +848,10 @@ def check_contract_fix_lessons(where: str, fm: dict, contract: str, repo_root: P
 # visual review gate (VR-05)
 # --------------------------------------------------------------------------
 
-# The gate applies to a dossier whose front matter says `created: <date>` on or after this date, or
-# that carries a `visual_review:` field (an explicit opt-in for an older dossier). Dossiers created
-# before the diagram step existed carry neither and are never flagged.
-VISUAL_REVIEW_FROM = "2026-11-12"
+# The gate applies to a dossier whose front matter carries a `visual_review:` field. The Phase 3
+# visual-review step writes it (`dossier_edit.py set <dossier> 'visual_review=required'`) before it
+# runs, so a build that started before this step existed - including one still running when the
+# plugin updates - is never flagged retroactively.
 VISUAL_REVIEW_RE = re.compile(r"^\s*[-*]?\s*VISUAL-REVIEW:\s*(.+?)\s*$", re.M)
 VISUAL_REVIEW_APPROVED_RE = re.compile(
     r"^approved\b.*?\bL0\s+(\d+)\b.*?\bL1\s+(\d+)\b.*?\bL2\s+(\d+)\b", re.I)
@@ -860,10 +860,7 @@ VISUAL_REVIEW_VIEWS = (("l0.json", "L0"), ("l1.json", "L1"), ("l2.json", "L2"))
 
 
 def visual_review_applies(fm: dict) -> bool:
-    if "visual_review" in fm:
-        return True
-    created = str(fm.get("created") or "").strip()
-    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", created)) and created >= VISUAL_REVIEW_FROM
+    return "visual_review" in fm
 
 
 def visual_review_problems(fm: dict, log: str, root: Path, worktree: Path | None = None) -> list[str]:
@@ -3042,7 +3039,7 @@ def selftest_pre_fanout_local() -> bool:
 
 
 def selftest_visual_review() -> bool:
-    """The visual-review gate: gated by `created:` or `visual_review:`, never old dossiers."""
+    """The visual-review gate: gated by the `visual_review:` field the Phase 3 step sets, never otherwise."""
     import copy
 
     def node(i: str, kind: str) -> dict:
@@ -3057,7 +3054,8 @@ def selftest_visual_review() -> bool:
     good = {"l0.json": graph("L0", "feature", 3), "l1.json": graph("L1", "step", 4),
             "l2.json": graph("L2", "module", 5)}
     approved = "- VISUAL-REVIEW: approved — L0 3, L1 4, L2 5 (dashboard link)\n"
-    new_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-11-12\n---\n\n"
+    new_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-11-12\nvisual_review: required\n---\n\n"
+    unmarked_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-11-12\n---\n\n"
     old_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-08-10\n---\n\n"
     optin_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-08-10\nvisual_review: required\n---\n\n"
 
@@ -3089,6 +3087,7 @@ def selftest_visual_review() -> bool:
 
     cases = [
         ("old dossier, no line: not flagged", run(old_fm, "## Build log\n", None), False),
+        ("new dossier the step never marked: not flagged", run(unmarked_fm, "no line\n", None), False),
         ("new dossier, no line: flagged", run(new_fm, "no line\n", good), True),
         ("new dossier, line and files: clean", run(new_fm, approved, good), False),
         ("opt-in field on an old dossier: flagged", run(optin_fm, "no line\n", None), True),
@@ -3117,10 +3116,10 @@ def selftest_visual_review() -> bool:
         d = root / ".discovery" / "dossiers" / "W-9.md"
         d.write_text(new_fm + "## Build log\n- hooks: none\n", encoding="utf-8")
         rep = Report()
-        check_visual_review("W-9", d, {"id": "W-9", "created": "2026-11-12"}, "- x\n", "review", rep)
+        check_visual_review("W-9", d, {"id": "W-9", "created": "2026-11-12", "visual_review": "required"}, "- x\n", "review", rep)
         ok &= bool(rep.defects)
         rep = Report()
-        check_visual_review("W-9", d, {"id": "W-9", "created": "2026-11-12"}, "- x\n", "building", rep)
+        check_visual_review("W-9", d, {"id": "W-9", "created": "2026-11-12", "visual_review": "required"}, "- x\n", "building", rep)
         ok &= not rep.defects  # mid-build: the pre-fan-out check owns that state
         rc = check_pre_fanout(d, root)
         ok &= rc == 1
