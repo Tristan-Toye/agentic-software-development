@@ -243,7 +243,7 @@ function msgBlock(l) {
 function qCard(q, opts) {
   const open = q.state === 'open'; const repo = qRepo(q);
   const kids = [
-    h('div', { class: 'top' }, [chip(rlabel(repo), 'neutral'), h('a', { class: 'chip', href: hrefItem(repo, q.dossier) }, [q.dossier]), h('span', { class: 'grow' }), h('span', { class: 'mono' }, [q.id + ' · ']), opts.queue ? when(q.ts, 'waiting ') : when(q.ts)]),
+    h('div', { class: 'top' }, [chip(rlabel(repo), 'neutral'), h('a', { class: 'chip', href: hrefItem(repo, q.dossier) }, [q.dossier]), h('span', { class: 'grow' }), q.qkind ? chip(q.qkind, 'neutral') : null, h('span', { class: 'mono' }, [q.id + ' · ']), opts.queue ? when(q.ts, 'waiting ') : when(q.ts)]),
     h('div', { class: 'q' }, [q.text]), q.blocks ? h('div', { class: 'blocks' }, ['Blocks: ' + q.blocks]) : null];
   // An open question is a chat until a button closes it: your messages and the agent's replies, in order, then the
   // buttons (the question's own, plus any the agent offered in a reply, such as its reading of your words).
