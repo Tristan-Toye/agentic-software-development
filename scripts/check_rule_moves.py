@@ -120,7 +120,7 @@ def selftest() -> int:
 
 
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--base")
     ap.add_argument("--allow")
     ap.add_argument("--show", action="store_true", help="print the sentences, not just counts")
