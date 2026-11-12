@@ -1,0 +1,32 @@
+window: 2026-11-09T00:00:01.355Z .. 2026-11-12T13:38:28.854Z
+sessions: 189 (opus requests since 2026-11-09)
+phase | reqs | cr(M) | scripted n / cr(M) | mechanical n / cr(M) | spawn n / cr(M) | judgement n / cr(M) | text-only n / cr(M)
+P0 | 102 | 9 | 42 / 3 | 51 / 5 | 1 / 0 | 6 / 1 | 2 / 0
+P1 | 49 | 2 | 25 / 1 | 23 / 1 | 0 / 0 | 1 / 0 | 0 / 0
+P2 | 632 | 65 | 152 / 15 | 454 / 47 | 0 / 0 | 21 / 2 | 5 / 0
+P3 | 627 | 63 | 209 / 21 | 357 / 35 | 8 / 1 | 48 / 6 | 5 / 0
+P4 | 1186 | 123 | 455 / 47 | 628 / 64 | 29 / 3 | 65 / 7 | 9 / 1
+P5 | 665 | 55 | 221 / 17 | 424 / 36 | 1 / 0 | 19 / 2 | 0 / 0
+P6 | 2037 | 209 | 742 / 73 | 1139 / 118 | 31 / 4 | 68 / 8 | 57 / 6
+P7 | 1343 | 133 | 580 / 55 | 586 / 58 | 51 / 5 | 71 / 8 | 55 / 6
+P8 | 729 | 65 | 273 / 24 | 401 / 36 | 16 / 1 | 37 / 4 | 2 / 0
+P9 | 580 | 45 | 276 / 20 | 242 / 19 | 13 / 1 | 38 / 4 | 11 / 1
+PNone | 1 | 0 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 | 1 / 0
+top first-tool heads P2: Read 96x/10M, python3 70x/8M, dossier_edit 63x/6M, grep 54x/6M, cd 58x/6M, proxy 40x/4M, run_gates 30x/3M, phase_checkpoint 16x/2M, ask_owner 17x/2M, code_nav 15x/2M
+top first-tool heads P3: dossier_edit 85x/9M, Read 79x/8M, cd 72x/7M, grep 53x/5M, ask_owner 39x/4M, phase_checkpoint 19x/2M, code_nav 23x/2M, python3 19x/2M, validate_pipeline 14x/2M, run_gates 18x/2M
+top first-tool heads P5: dossier_edit 65x/6M, cd 50x/4M, Read 45x/4M, run_tests 46x/4M, grep 45x/4M, ask_owner 44x/3M, X=/Users/tristan.toye/Documents/personal/repos/config-harness-W-149; 30x/3M, gate_commit 32x/2M, X=/Users/tristan.toye/Documents/personal/repos/config-harness-W-134; 17x/2M, phase_checkpoint 16x/2M
+top first-tool heads P6: dossier_edit 212x/23M, grep 158x/16M, Read 141x/14M, run_tests 131x/12M, cd 73x/8M, ask_owner 83x/7M, run_gates 70x/7M, cat 56x/6M, prepare_wave 53x/6M, phase_checkpoint 39x/5M
+top first-tool heads P8: cd 79x/8M, validate_pipeline 58x/6M, Read 71x/6M, dossier_edit 45x/4M, grep 36x/3M, prepare_wave 39x/3M, ask_owner 38x/3M, gate_commit 19x/2M, phase_checkpoint 16x/2M, P=/Users/tristan.toye/.claude/plugins/cache/agentic-software-development/agentic-software-development/1.52.28; 19x/1M
+top first-tool heads P9: dossier_edit 88x/7M, spawn_admission 35x/3M, grep 30x/3M, ask_owner 36x/2M, cd 29x/2M, Read 31x/2M, phase_checkpoint 19x/2M, remove_worktree 16x/1M, validate_pipeline 22x/1M, wait_ci 14x/1M
+bookkeeping-first requests (dossier_edit/ask_owner/phase_checkpoint) and average context per request:
+P0: 16 of 102 requests, 1M of 9M cr (16%), avg ctx 84k
+P1: 16 of 49 requests, 1M of 2M cr (38%), avg ctx 46k
+P2: 96 of 632 requests, 10M of 65M cr (15%), avg ctx 103k
+P3: 143 of 627 requests, 15M of 63M cr (24%), avg ctx 101k
+P4: 176 of 1186 requests, 19M of 123M cr (16%), avg ctx 104k
+P5: 125 of 665 requests, 10M of 55M cr (19%), avg ctx 82k
+P6: 334 of 2037 requests, 35M of 209M cr (17%), avg ctx 103k
+P7: 214 of 1343 requests, 21M of 133M cr (16%), avg ctx 99k
+P8: 99 of 729 requests, 9M of 65M cr (14%), avg ctx 89k
+P9: 143 of 580 requests, 11M of 45M cr (24%), avg ctx 77k
+PNone: 0 of 1 requests, 0M of 0M cr (0%), avg ctx 12k
