@@ -80,7 +80,7 @@
     bookkeeping-only sync does not invalidate the earlier run: record the
     tested commit and final head with that explanation, run validators, and
     retain the existing suite evidence.
- 3. **Write the PR description** and show it to the user. Delegate the draft to
+ 3. **Write the PR description** and post it as a note (it is not an approval step). Delegate the draft to
     `document-drafter` (`MODE: pr`, dossier excerpts verbatim, `TARGET_PATHS`
     naming a file under `.discovery/` in the main checkout — in committed
     mode under `X`'s `.discovery/`, where nothing is staged by pattern —
@@ -97,15 +97,18 @@
    the **Jira ticket**. **In local mode scrub the dossier ID and every
    `.discovery/` path** — they are local and gitignored. In committed mode
    the dossier is inside this PR, so the description may name it; the
-   worktree names are scrubbed in both modes. Acceptance of the description
-   doubles as the yes for the PR.
+   worktree names are scrubbed in both modes. When `## Build log` holds any
+   `PROVISIONAL-RULING:` line, add a `## Rulings to review` section that lists
+   each one with its what, why and how to reverse, so the owner can overrule
+   after the fact. The PR itself is covered by the standing authority
+   (`references/owner-questions.md`); nobody approves the description first.
 4. **Push the branch and open the PR — or, under `ci`, finish the draft.**
    Under `ci` the branch is already on the remote and the draft PR already
-   open from Phase 6: set the approved description as its body (`gh pr edit
+   open from Phase 6: set the description as its body (`gh pr edit
    --body-file <draft>`) and mark it ready (`gh pr ready`). Under `local`,
    open it programmatically now when the host supports it. **On Bitbucket
    it does not**: push the branch, then hand the user
-   the create-PR link and the approved description as the body, and **ask for the
+   the create-PR link and the description as the body, and **ask for the
    PR URL back**. Set `status: pr` while you wait — a run that ends here is
    resumable from exactly this point. Committed mode: commit the dossier
    before the push, so the PR opens with the build record in it.

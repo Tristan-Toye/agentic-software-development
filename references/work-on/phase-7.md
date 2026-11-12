@@ -3,6 +3,26 @@
 
 ## Phase 7 — The review cycle: the code lenses, concurrently
 
+### Rules that hold in this phase
+
+- **The green suite is the invariant during review.** Every change request is
+  behaviour-preserving under it; a red test after a fix means the fix was
+  wrong, never that the test was. (Phase 7)
+
+- **Reviewers reply; you write.** They have no write tools. Each change
+  request becomes one `## Build log` ledger line; the full document travels
+  only in the fix implementer's payload, byte-for-byte.
+
+- **You detect review conflicts; you rule the low-impact ones, the owner the rest.** You are the only party
+  who sees every lens.
+
+**Spawning and workflows.** The rules for spawning an agent and for the two plugin
+workflows are in `phase-4.md`: `ref_section` with `phase-4` and the headings
+"Spawning under Claude Code" and "Under Claude Code — two workflows".
+
+**Delegation and its size gates** are in `phase-2.md`: `ref_section` with `phase-2`
+and the headings "Delegation — mechanical work only, evidence never verdicts" and "The gate table".
+
 Compute the **blast radius**. The file list comes from
 `ocr delegate preview --format json --repo X --from <baseline> --to HEAD`, not
 from a hand-rolled `git diff --name-only`: it returns `reviewable_files` and,
@@ -15,25 +35,6 @@ validate it against your own `git diff --stat <baseline>..HEAD` and narrow it
 before it becomes `SCOPE`. Log the gate decision either way. Pass `SCOPE`
 as a **location list, never the diff**, so the reviewers stay blind to the
 history.
-
-**Rule on every exclusion before you spawn.** An excluded file is a file no
-lens will ever see, and `ocr`'s defaults were written for a generic
-repository, not this one. `exclude_reason: unsupported_ext` is the one that
-bites: `ocr` carries a fixed language list, so a repository whose product is
-`.md`, `.sql`, `.tf` or `.proto` watches its entire change land in
-`excluded_files` and reviews nothing. Read every reason, and for each one
-either accept it or pull the path back into `SCOPE` by hand — the exclusion
-governs what `ocr` would have reviewed, never what you may. Record the
-verdict in `## Build log`:
-
-```
-- EXCLUDED: <n> files — <path: reason>; ... — accepted | <path> pulled back into SCOPE
-```
-
-`none` is a valid value and so is `unknown — ocr unavailable`; what is not
-valid is an exclusion that reached nobody. When `ocr` is missing, fall back to
-`git diff --name-only`, log `unknown`, and know that nothing was filtered —
-which is the safe direction, not the unsafe one.
 
 **Mark the signals, once per sweep.** Run `python3 ${PLUGIN_ROOT}/scripts/review_signals.py
 --root X --base <baseline>` and log its three summary lines (`FAILURE-SIGNALS:`,
@@ -163,16 +164,17 @@ contract is yours. The `tests` lens is the one lens whose CRs change test
 files, and its bound is the same in kind: each CR keeps what the test asserts
 and changes only how reliably it observes it.
 
-**A lens that died mid-pass has reviewed nothing.** Its partial text reads
-like a verdict — "this looks solid so far" — and is not one: a lens that
-stopped before three of its five locations has reviewed neither. Resume it
-from its transcript; never record a partial return as `PASS`. **A lens that
-ran out of steps says so**: every reply ends with an `UNREACHED:` line
-(`sub-agents/reviewer.md`, Output). Under opencode read it yourself — a `PASS`
-whose line is not `UNREACHED: none`, or a reply with no such line, is
-`incomplete`, and the unreached locations go to that lens again before its
-`PASS` is logged. Log the line either way: `- r1 <lens>: UNREACHED none |
-<locations> — resumed`.
+### Triggered parts — read the section only when its trigger fires
+
+`ref_section` with `phase-7-conditional` and the heading:
+
+- `ocr delegate preview` returns excluded files: "Rule on every exclusion before you spawn".
+- A reviewer lens that died or returned a partial text: "A lens that died mid-pass has reviewed nothing".
+- A change request of kind `DEFECT`: "Prove each DEFECT before anyone fixes it".
+- A change request against a test path: "Check who may apply each CR before you route it".
+- A check round, or a fix that goes back to an agent that holds the context: "A fix or check round goes to the agent that holds the context".
+- A fix implementer returned: "Check the fix footprint against the CR footprints".
+- A check round (round 2 or 3): "On a check round, honour one asymmetry".
 
 **Apply the change requests:**
 
@@ -191,76 +193,19 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
 - **Demote non-conforming CRs — by the fields, never the merits.** The fields
   are checked by script (`missing`, or `check_crs.py`), `Siblings` included; you
   never overrule a reviewer because you disagree with a CR that carries its
-  evidence — that disagreement goes to the user like any other conflict. The
+  evidence — a disagreement about design or product goes to the owner like any other conflict. The
   fix implementer gets the document without the demoted sections:
   `check_crs.py <document> --drop <ids> --out <fix doc>`, every kept byte as
   the reviewer wrote it.
-- **Prove each `DEFECT` before anyone fixes it.** A defect claims the code
-  breaks a `CONTRACT` promise no test pins, so the proof is that test. Per
-  defect (`defects`, or `check_crs.py`'s `prove` lines), re-spawn
-  `unit-test-author` with the contract member, the defect's `Contract`, `Input`
-  and `Expected` lines, and nothing about the implementation; then run
-  `run_tests.py --test <name> --expect red` on the current head. `PROOF: red`
-  → log `- r<n> <lens>: DEFECT-<lens>-<k> proven — <test> red on <sha>`, commit
-  the test, and the fix implementer's `FAILURES` names it; the fix round is
-  done when `--expect green` holds on the fixed head. `PROOF FAILED` (the test
-  passes) → the defect is not real: log `not proven`, drop the section from
-  the fix document, keep the test (it pins a promise). `PROOF REFUSED` (it never
-  ran) is no verdict: fix the test, never the defect. A defect is never fixed
-  unproven, and a reviewer's word is not proof.
-- **Check who may apply each CR before you route it.** A test CR that
-  re-spawns an author after the merge composes its `CONTRACT` from the
-  dossier's `## Contract` (`--dossier` on compose or `--refresh-contract`),
-  never from the contract files, which hold implementation bodies now. The fix
-  implementer owns source and never a test. **You never apply a test CR yourself either**
-  — you referee tests, so you must never author them; a test diff is always
-  a test agent's work. A CR against a test path routes by what it touches:
-
-  - **Every CR on a unit-test file goes back to `unit-test-author`** — the
-    cosmetic ones and the assertion-touching ones alike. Re-spawn it with the
-    CR folded into its payload, by the host's mechanic (Phase 4): under
-    opencode the file sits inside the author's read map, so it reads the
-    current content itself and edits in place with `Edit`, nothing pasted
-    and nothing deleted; under Claude Code it reads the file (its `Read` reaches the
-    test families) and rewrites it whole, with the CR's tests named. Pass the finding and
-    the constraints, and nothing about the implementation. A one-line CR
-    costs a one-line edit; verify it regardless with
-    `check_harness_edit.py --diff ORIGINAL MODIFIED` over what came back —
-    exit 0 proves a non-assertion CR stayed non-assertion.
-  - **CRs on an integration-test file** go back to `integration-test-author`,
-    which can already read the file; no maintainer needed.
-  - **A `tests` CR is proven against the risk it identified.** After the
-    author returns, repeat the affected test or reproducing group under the
-    relevant conditions (Phase 6), recording command and outcomes. For a
-    static finding, verify the mechanism and run the affected tests. Resolve
-    observed flips only after the reproduction passes every run; obtain the
-    integrated verdict when the fix changes its relevant inputs. A
-    `PRODUCT-RACE:` note from the `tests` lens is not a CR: it is a Phase 6 row-6 arbitration, ruled
-    on its mechanism before any CR is routed. A `FLAKE-EXEMPT:` note is neither
-    of these. Add it as a row of the repo's `.flake-risk-exempt.md` (create the
-    file with the table header `flake_risk.py` documents) in the commit that
-    carries the round's fixes. Copy the mechanism verbatim: the row is the
-    ruling, and the script refuses a row that has no reason.
-
-  Record the routing on the CR's ledger line. A conforming CR that no
-  available agent may apply is a routing question for the user, never a
-  demotion — demotion is for missing evidence only, never the merits.
 - **Detect conflicts first.** You are the only party that sees every lens,
-  so a performance request that undoes a style request is yours to catch. Deciding
-  it is the **user's**, because it is a judgement call: present both sides with
-  your recommendation, get a ruling, and record it in `## Build log` as an
-  arbitration. Pass every accumulated arbitration into later spawns so no
+  so a performance request that undoes a style request is yours to catch. A conflict
+  with a recommended side and a low impact (no behaviour or contract changes)
+  is yours: take the recommendation, record it in `## Build log` as an
+  arbitration, and log `PROVISIONAL-RULING:` for it. A conflict that changes
+  behaviour or a contract is a design question for the owner: present both
+  sides with your recommendation (`--kind design`), keep working on what does
+  not depend on it, and record the ruling as an arbitration. Pass every accumulated arbitration into later spawns so no
   reviewer re-litigates a settled question.
-- **Under Claude Code, a fix or check round goes to the agent that holds the
-  context** — the original reviewer for its own check round, the original
-  author for a test CR, a fix implementer you spawned yourself (one the workflow
-  spawned is re-routed, below) —
-  by `SendMessage` to its agent ID with only the new CRs or the `PRIOR_CRS`
-  answers, per `phase-4.md` ("Under Claude Code, resume instead of
-  re-spawn"). Reviewers a workflow spawned have no ID in its result, and an
-  id scavenged from the workflow's transcript directory is refused all the
-  same: a check round re-spawns them with the full payload, by the workflow
-  again. A fix round after a contract change is a full re-spawn.
 - Spawn the `implementer` in `MODE: fix` with the merged change requests.
   Under opencode that is **one** implementer, its payload composed and linted
   as above. Under Claude Code the fix round is mechanical, never composed by
@@ -304,13 +249,6 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
   fix commit and read CI's run; under `local`, run it). Any test that turns
   red means the fix was not behaviour-preserving: return it to the
   implementer, never patch the test.
-- **Check the fix footprint against the CR footprints.** After the fix
-  implementer returns, diff what it touched against the union of the CRs it
-  was given: a path inside `SCOPE` that no CR named is surplus work, and
-  surplus work has had no review. Do not forbid it outright and do not merge
-  it blind — spawn **one scoped lens review**: a single `reviewer` over just
-  the surplus locations, named as locations, one pass, same evidence bar.
-  Log the surplus paths and the scoped review on the ledger.
 - **Check rounds append to the same ledger.** One line per answer:
   `- r<k> <lens>: CR-<lens>-<n> resolved | not resolved (<what is still wrong>)`.
   A structural follow-up CR gets a fresh ledger line, like round 1.
@@ -341,22 +279,9 @@ budget, and which lenses the next round re-spawns. The next round reads the
 CRs from the ledger, not from this round's transcript.
 
 **Exit condition:** every lens at zero open CRs.
-**Budget: 2 fix rounds.** After the second, stop and show the user the round
-history and the unresolved tensions.
-
-**On a check round, honour one asymmetry:**
-
-- `style` and `tests` are pure resolved / not-resolved checks. A rename cannot create new
-  structure, so there is nothing new for it to see.
-- `architecture` and `performance` may **also** review the structure their own
-  accepted request created — a new interface, a new type, a changed algorithm, a
-  moved boundary, a new cache — inside that request's footprint only, **one level
-  deep**. Their requests are structural by nature, so applying one produces code
-  no lens has ever seen. Without this, a fix that trades one problem for another
-  ships unreviewed. Mark which prior CRs were structural in `PRIOR_CRS`, and say
-  what the fix added (`references/payloads/reviewer.md`).
-- Neither may open a subject outside its own requests. That budget went on the
-  one pass.
+**Budget: 2 fix rounds.** After the second, when one more fix round is your recommendation, take it once
+and log it; if that round fails too, put the round history and the unresolved
+tensions to the owner as one question (`--kind uncertainty`).
 
 **The reviewers know there is one pass** — their prompt says so, and this budget
 is why. A reviewer that expects another sweep holds back marginal findings, and
