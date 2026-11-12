@@ -142,6 +142,11 @@ check("deferred: dropped items are deprecated, a dossier link names the new doss
 check("deferred: old dossiers are ignored unless the runner ran them", !deferredSince("2026-10-20", null) && deferredSince("2026-11-03", null) && deferredSince("2026-10-01", { state: "done" }))
 check("deferred: an item marked RESOLVED in place is closed", parseDeferred("- D-1 RESOLVED: renumbered — x").items[0].state === "fixed")
   const c = (status: string, open: number, state?: string) => controlsFor({ status, blockedBy: [], runner: state ? ({ state } as any) : null, deferredOpen: open }, () => "done")["fix-deferred"].show
+  const cr = (status: string, state: string, command: string) => controlsFor({ status, blockedBy: [], runner: { state, command } as any }, () => "done")
+  check("controls: a planned dossier whose /work-on run failed (sent back) offers Start (plan), not Resume",
+    cr("planned", "failed", "work-on").start.show && cr("planned", "failed", "work-on").start.command === "plan" && !cr("planned", "failed", "work-on").resume.show)
+  check("controls: a failed run of the same flow still offers Resume, not Start",
+    !cr("planned", "failed", "plan").start.show && cr("planned", "failed", "plan").resume.show && !cr("ready", "failed", "work-on").start.show && cr("ready", "failed", "work-on").resume.show)
   check("deferred: Fix all shows on pr/done with open items and no live runner", c("done", 2) && c("pr", 1) && !c("done", 0) && !c("building", 2) && !c("done", 2, "running") && c("done", 2, "done"))
   const sm = (t: string) => slackMessageFor({ ts: "t", kind: "runner", text: t } as any, { repo: "r", id: "W-1", title: "x", link: "L" })
   check("deferred: the run thread gets the deferred count, not a zero", (sm("deferred report: 3 issue(s)")?.text ?? "").startsWith("📋 3 deferred issues") && sm("deferred report: 0 issue(s)") === null)

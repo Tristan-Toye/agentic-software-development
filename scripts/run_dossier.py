@@ -19,6 +19,11 @@ the `result` event ends a turn and the turn's RUNNER: line decides:
                                 spent); the owner's line goes into the same
                                 live process as `OWNER ANSWER|FOLLOWUP <id>: ..`
     RUNNER: DONE                state done, exit 0
+    RUNNER: REPLAN <why>        an owner ruling (or the contract) sends the
+                                dossier back to /plan: the run ends done, the
+                                dossier is set to planned, and a /plan run of
+                                the dossier starts (queued for a slot) with no
+                                question to the owner
     RUNNER: FAILED <why>, or no RUNNER: line, or a crashed process
                                 state failed; a question to the owner: retry
                                 the stage, or stop
@@ -86,7 +91,7 @@ You run under the dossier runner and nobody reads the terminal.
 - Phase 2 takes its stub from `python3 scripts/stub_target.py --root R` (the plugin's scripts). Exit 3 (`wait <stub>`) means that stub is being integrated and no new one may be cut until it is in development: end the turn with the line `RUNNER: WAITING stub`; the runner waits without tokens and sends `STUB READY: <branch>` once the new stub is cut. Never cut a stub yourself.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - `RUNNER KEEPALIVE: ...` is the runner keeping the prompt cache warm while you wait: reply with exactly `OK` and do nothing else (no tool call, no RUNNER: line, no change to your plan).
-- End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
+- End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on. When the owner rules the dossier back to /plan (or the build shows it must be re-planned and the owner agreed), record the ruling and the inputs for the re-plan in the dossier, leave nothing half-built behind, and end with `RUNNER: REPLAN <why>`: the runner sets the dossier to planned and starts /plan itself. Never end such a run with FAILED.
 - Keep the owner informed: post an update with `ask_owner.py note --root R --dossier ID --text "..."` when a stage starts and ends and whenever something worth knowing happens (a wave returned, the suite went green or red, an arbitration was ruled, a plan changed). Write it for a person reading on a phone: what happened and what it means, in plain sentences; markdown bullets and small tables are welcome. Never paste commands, file paths, SHAs, flags or log output into an update; the build log keeps those.
 """
 
@@ -312,11 +317,13 @@ def human_reset(text: str, now_s: float) -> float | None:
 KEEPALIVE_MSG = "RUNNER KEEPALIVE: reply with exactly OK and do nothing else."
 NUDGE = ("RUNNER: your last turn ended without a RUNNER: line and nothing has happened since. "
          "If you were waiting on a background command or workflow, check its result now and continue. "
-         "Every turn must end with a RUNNER: line (STAGE-DONE, WAITING, DONE or FAILED).")
+         "Every turn must end with a RUNNER: line (STAGE-DONE, WAITING, DONE, REPLAN or FAILED).")
 
 # A question id from ask_owner.py: `<repo>.<ID>.Qn` (or a bare `Qn`).
 QUESTION_ID = re.compile(r"(?:^|\.)Q\d+$")
-MARKER = re.compile(r"^RUNNER:\s*(STAGE-DONE|WAITING|DONE|FAILED)\b[ \t]*(.*)$")
+MARKER = re.compile(r"^RUNNER:\s*(STAGE-DONE|WAITING|DONE|REPLAN|FAILED)\b[ \t]*(.*)$")
+# A FAILED whose reason says the owner sent the dossier back to /plan is a REPLAN under an older wording.
+REPLAN_WORDS = re.compile(r"\b(sent|send|sending|go(?:es|ing)?)\s+back\s+to\s+/?plan\b|\bre-?plan(?:ned|ning)?\b.*\b(ruling|ruled|owner)\b", re.I)
 
 
 def now() -> str:
@@ -424,6 +431,32 @@ def user_message(text: str) -> bytes:
     msg = {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]},
            "parent_tool_use_id": None}
     return (json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def set_dossier_status(root: str, dossier: str, status: str, log=lambda m: None) -> bool:
+    """Set `status:` in the dossier's front matter (.discovery/dossiers/<ID>-*.md), when it differs. Best effort."""
+    d = os.path.join(root, ".discovery", "dossiers")
+    try:
+        names = sorted(n for n in os.listdir(d) if re.match(re.escape(dossier) + r"(-.*)?\.md$", n))
+    except OSError:
+        return False
+    if not names:
+        return False
+    path = os.path.join(d, names[0])
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        return False
+    m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    if not m:
+        return False
+    fm = m.group(1)
+    new = re.sub(r"(?m)^status:[ \t]*\S.*$", f"status: {status}", fm, count=1)
+    if new == fm:
+        return True
+    open(path, "w", encoding="utf-8").write(f"---\n{new}\n---\n" + text[m.end():])
+    log(f"dossier {dossier}: status set to {status}")
+    return True
 
 
 def parse_marker(text: str) -> tuple[str, str] | None:
@@ -1941,7 +1974,9 @@ class Runner:
             quiet = False
             nudges = 0   # it answered with a RUNNER: line; a later quiet spell gets its own two nudges
             verb, rest = mk
-            if verb in ("STAGE-DONE", "DONE"):
+            if verb == "FAILED" and REPLAN_WORDS.search(rest):
+                verb = "REPLAN"
+            if verb in ("STAGE-DONE", "DONE", "REPLAN"):
                 # #239: ending the process kills the background work it started, silently. Hold the end until it is done.
                 bg = self.background()
                 if bg and holds < HOLD_MAX:
@@ -1962,6 +1997,9 @@ class Runner:
                 self.record_result(text)
                 self.end_process()
                 return "done", ""
+            if verb == "REPLAN":
+                self.end_process()
+                return "replan", rest or "sent back to /plan"
             if verb == "FAILED":
                 kill_group(self.proc)
                 self.end_process()
@@ -2076,7 +2114,9 @@ class Runner:
             os.remove(self.stop_marker)
         except OSError:
             pass
-        if prev.get("state") == "done":
+        if prev.get("state") == "done" or (prev.get("command") and prev.get("command") != self.command):
+            # A finished run, or one of another command (a /plan after a /work-on sent back): its checkpoints are not
+            # this run's hand-off.
             self.checkpoints = []
             write_json(self.cp_path, [])
         signal.signal(signal.SIGTERM, self.on_term)
@@ -2159,6 +2199,8 @@ class Runner:
                 self.product_summary()
                 self.ready_fix_pr()
                 return self.finish("done", "done", 0)
+            if outcome == "replan":
+                return self.replan(detail)
             if outcome == "stopped":
                 self.end_process()
                 return self.finish("stopped", "stopped", 3)
@@ -2234,6 +2276,21 @@ class Runner:
                 self.log(f"marked fix/{self.dossier}-deferred ready for review")
         except (OSError, subprocess.TimeoutExpired) as e:
             self.log(f"could not mark fix/{self.dossier}-deferred ready: {e}")
+
+    def replan(self, why: str) -> int:
+        """`RUNNER: REPLAN`: the dossier goes back to /plan. Not a failure and not a question: the run ends done, the
+        dossier is set to planned, and a /plan run of the same dossier is started detached; it queues for a slot like any
+        run. Its checkpoints start empty: the /work-on ones belong to another command (run() clears them)."""
+        set_dossier_status(self.root, self.dossier, "planned", self.log)
+        rc = self.finish("done", f"sent back to /plan: {why}", 0)
+        if self.command != "work-on" or os.environ.get("ASD_RUNNER_REPLAN", "1") == "0":
+            return rc
+        try:
+            detach([self.dossier, "--root", self.root, "--command", "plan"], self.root, self.dossier, self.key)
+            self.event("re-plan started: /plan " + self.dossier + " (it starts when a slot frees)", "done")
+        except OSError as e:
+            self.event(f"could not start the re-plan: {e}; start /plan from the dashboard", "done")
+        return rc
 
     def finish(self, state: str, text: str, rc: int) -> int:
         self.end_process()
@@ -2887,6 +2944,24 @@ def selftest() -> int:
         check("failure reasons recorded",
               any("tests red" in t for t in texts("W-2")) and any("no RUNNER: line" in t for t in texts("W-2")))
         check("failed process is gone", not alive(int(open(os.path.join(fdir, "pid.2")).read())))
+
+        # ---- 2a. REPLAN (and FAILED worded as a send-back): no question; the dossier is planned and /plan starts ----
+        os.makedirs(os.path.join(root, ".discovery", "dossiers"), exist_ok=True)
+        for did, final in (("W-90", "RUNNER: REPLAN owner ruling Q2=A: contract gaps 1-7"),
+                           ("W-91", "worktree removed\nRUNNER: FAILED sent back to /plan by owner ruling Q2=A")):
+            dpath = os.path.join(root, ".discovery", "dossiers", f"{did}-x.md")
+            open(dpath, "w").write(f"---\nid: {did}\nstatus: ready\nblocked_by: []\n---\n# {did}\n")
+            write_json(os.path.join(rdir, f"repo.{did}.checkpoints.json"), [])
+            scenario([{"turns": [[{"checkpoint": ["Phase 2", "stopped: sent back"]}, {"final": final}]]},
+                      {"turns": [[{"final": "RUNNER: DONE"}]]}])
+            p = start(did)
+            check(f"replan {did}: the /work-on run ends done (exit 0)", p.wait(timeout=60) == 0)
+            check(f"replan {did}: no owner question", not os.path.exists(qfile(f"repo.{did}.Q1")))
+            check(f"replan {did}: the dossier is set to planned", "status: planned" in open(dpath).read())
+            check(f"replan {did}: a /plan run starts and finishes", bool(until(lambda: state_of(did).get("command") == "plan" and state_of(did).get("state") == "done", 60)))
+            check(f"replan {did}: /plan gets the plan command, not the /work-on checkpoints",
+                  msgs(2)[0] == f"/{PLUGIN}:plan {did}" and len(msgs(2)) == 1)
+            check(f"replan {did}: the send-back is in the run's updates", any("sent back to /plan" in t for t in texts(did)))
 
         # ---- 2b. WAITING on background work (no question id) is not a failure --
         scenario([{"turns": [[{"final": "gates running\nRUNNER: WAITING gates,background,task,b1yrknlzz"}],
