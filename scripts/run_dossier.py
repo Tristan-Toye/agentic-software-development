@@ -1380,13 +1380,30 @@ class Runner:
         rows.append("Continue from there; do not redo finished stages.")
         return "\n".join(rows)
 
-    def start_drivers(self) -> None:
-        """Read the drivers file (~/.agentic/drivers.json, $ASD_DRIVERS_FILE) once per runner start: the modes this run's
-        claude children get as ASD_DRIVER_<NAME>, a warning per bad entry, and the effective modes in the runner
-        metadata (`drivers`), so a later report knows which arm the dossier ran in."""
-        effective, self.driver_exports, warnings = driver_modes.resolve(os.environ)
-        for w in warnings:
-            self.event("warning: " + w)
+    def start_drivers(self, prev: dict | None = None) -> None:
+        """Read the drivers file (~/.agentic/drivers.json, $ASD_DRIVERS_FILE) when the run first starts: the modes this
+        run's claude children get as ASD_DRIVER_<NAME>, a warning per bad entry, and the effective modes in the runner
+        metadata (`drivers`), so a later report knows which arm the dossier ran in. A restarted runner of the same,
+        unfinished run keeps the modes it recorded, so editing the file mid-run never moves a dossier to the other arm;
+        only a switch to `off` reaches it (rollback)."""
+        prev = prev or {}
+        pinned = prev.get("drivers")
+        if isinstance(pinned, dict) and prev.get("state") != "done" and prev.get("command") == self.command:
+            # Pinned, except that `off` always wins: a driver the file no longer runs (driver_modes.py off, or set
+            # NAME=off) is off for this run too, so a rollback reaches runs already going.
+            now_modes, warnings = driver_modes.load()
+            for w in warnings:
+                self.event("warning: " + w)
+            effective = {n: (str(pinned.get(n) or "off") if now_modes.get(n, "off") != "off" else "off")
+                         for n in driver_modes.NAMES}
+            self.driver_exports = {
+                driver_modes.env_name(n): m for n, m in effective.items()
+                if m != "off" and driver_modes.env_name(n) not in os.environ
+            }
+        else:
+            effective, self.driver_exports, warnings = driver_modes.resolve(os.environ)
+            for w in warnings:
+                self.event("warning: " + w)
         self.save(drivers=effective)
         if any(m != "off" for m in effective.values()):
             self.event("drivers: " + ", ".join(f"{n}={m}" for n, m in effective.items() if m != "off"))
@@ -2464,7 +2481,7 @@ class Runner:
         signal.signal(signal.SIGINT, self.on_term)
         self.save()
         self.event(f"start /{self.command} {self.dossier} in {self.root}", "running")
-        self.start_drivers()
+        self.start_drivers(prev)
         started = 0
         if prev.get("state") in ("running", "testing", "waiting", "queued", "paused") and prev.get("session") and prev.get("account") == self.account["name"]:
             # The last runner process died (a logout, a reboot) with its session recorded: pick that session up again.
@@ -3619,6 +3636,22 @@ def selftest() -> int:
         check("drivers: an unknown name and an unknown mode are warned about in the runner log",
               any("unknown driver 'bogus'" in t for t in t96) and any("finalize_pr: unknown mode 'maybe'" in t for t in t96))
         del env["ASD_DRIVER_TEST_ROUND"]
+        pinned97 = {n: "off" for n in driver_modes.NAMES}
+        pinned97["test_round"] = "shadow"
+        write_json(os.path.join(rdir, "repo.W-97.runner.json"), {"state": "running", "command": "work-on", "drivers": pinned97})
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-97")
+        done97 = p.wait(timeout=60) == 0
+        check("drivers: a restarted, unfinished run keeps the modes it recorded, not the file's current ones",
+              done97 and drv(1) == {"ASD_DRIVER_TEST_ROUND": "shadow"} and state_of("W-97").get("drivers") == pinned97)
+        pinned98 = dict(pinned97, pre_fanout_check="on")
+        write_json(dfile, {"test_round": "on"})   # pre_fanout_check is now off in the file: the rollback wins over the pin
+        write_json(os.path.join(rdir, "repo.W-98.runner.json"), {"state": "running", "command": "work-on", "drivers": pinned98})
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-98")
+        done98 = p.wait(timeout=60) == 0
+        check("drivers: a driver switched off in the file is off for a restarted run too; the others stay pinned",
+              done98 and drv(1) == {"ASD_DRIVER_TEST_ROUND": "shadow"} and state_of("W-98").get("drivers") == pinned97)
         env["ASD_DRIVERS_FILE"] = os.path.join(tmp, "no-drivers.json")
 
         # ---- the orchestrator's model: pinned to an exact id, never Fable ----

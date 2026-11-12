@@ -18,8 +18,9 @@ Run every command from the main checkout of the repo being measured (`<repo>` be
 2. `python3 $S/driver_modes.py show` prints five drivers, all `off`, and `drivers file: ... (absent: every driver off)`.
    Anything else was set by someone: find out who before going on.
 3. No dossier you want in the baseline is mid-run under a changed mode. A runner reads the drivers file when it
-   starts (and again after a stage-boundary re-exec or a revive), so change the file only at a quiet moment.
-   Runs started before the change keep the modes in their runner metadata until their runner restarts.
+   first starts and records the modes in its runner metadata (`drivers`); a re-exec or revive of the same
+   unfinished run keeps those recorded modes, so a mid-run edit never moves a dossier to the other arm. The one
+   exception is `off`: a driver switched off in the file is off for runs already going too (rollback).
 4. `python3 $S/driver_shadow_report.py` prints NO-DATA for all five (a clean slate), or you know why not.
 
 ## (b) Which drivers go to shadow first
@@ -132,7 +133,8 @@ when two in a row are already worse.
     python3 $S/driver_modes.py off            # every driver off
     python3 $S/driver_modes.py set NAME=off   # one driver
 
-Takes effect for the next run (and the next stage of a run whose runner restarts). The phase docs revert to the
+Takes effect for every new run, and for a run already going at its next runner restart (re-exec or revive):
+`off` overrides the modes a run recorded. The phase docs revert to the
 manual steps by themselves because the paragraphs apply only for `on` or `shadow`. Evidence files stay.
 
 ## (i) Decision log
