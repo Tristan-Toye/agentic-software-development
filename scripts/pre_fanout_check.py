@@ -272,7 +272,7 @@ def selftest() -> int:
         c("off refuses", rc == 3)
         rc, out = dc.run_self("pre_fanout_check.py", *args, env=env)
         c("findings exit 1", rc == 1 and "verdict=findings" in out)
-        ev = os.path.join(main, ".discovery", "driver-evidence", "W-1")
+        ev = os.path.join(main, ".git", "asd-drivers", "driver-evidence", "W-1")
         data = json.load(open(os.path.join(ev, sorted(os.listdir(ev))[0])))
         found = " | ".join(data["findings"])
         c("unknown owner path is flagged", "test_zzz.py" in found)

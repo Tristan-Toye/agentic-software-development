@@ -32,7 +32,7 @@ Usage:
     driver_ab_report.py --baseline W-101,W-102,... \\
         --driver merge_packages=W-110,W-111 --driver finalize_pr=W-112 \\
         [--dossiers .discovery/dossiers] [--questions-dir DIR] [--budget budget.json] \\
-        [--discovery .discovery] [--json out.json]
+        [--discovery .git/asd-drivers] [--json out.json]
     driver_ab_report.py --selftest
 
 Exit 0 report printed, 2 unusable input.
@@ -289,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dossiers", default=os.path.join(".discovery", "dossiers"))
     ap.add_argument("--questions-dir", default=os.environ.get("ASD_QUESTIONS_DIR") or os.path.expanduser("~/.agentic/questions"))
     ap.add_argument("--budget", help="a budget_report.py --json file (requests, cost)")
-    ap.add_argument("--discovery", default=".discovery", help="counts the driver-shadow / driver-evidence files per dossier")
+    ap.add_argument("--discovery", default=os.path.join(".git", "asd-drivers"), help="counts the driver-shadow / driver-evidence files per dossier")
     ap.add_argument("--json", help="write the report here")
     args = ap.parse_args(argv)
     if args.selftest:

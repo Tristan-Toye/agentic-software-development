@@ -288,4 +288,4 @@ as an explicit strength requirement — in `FIXTURES` or `TEST_FRAMEWORK`,
 phrased as a property of the contract surface, never as a criterion number —
 or the contract itself must be fixed to state the scale.
 
-**Driver (only when `ASD_DRIVER_PRE_FANOUT_CHECK=on`).** `python3 scripts/pre_fanout_check.py --dossier ID` runs the pre-fan-out mechanics (validation, receipts, criteria owner/env map, census grep, frozen counts, gates, slices vs checklist) and prints evidence only; you rule on it. Exit 2 means a surprise: do the step by hand. `shadow` writes evidence to `.discovery/driver-shadow/` and changes nothing; unset or `off` means ignore this paragraph.
+**Driver (only when `ASD_DRIVER_PRE_FANOUT_CHECK=on`).** `python3 scripts/pre_fanout_check.py --dossier ID` runs the pre-fan-out mechanics (validation, receipts, criteria owner/env map, census grep, frozen counts, gates, slices vs checklist) and prints evidence only; you rule on it. Exit 2 means a surprise: do the step by hand. `shadow` writes evidence to `.git/asd-drivers/driver-shadow/` and changes nothing; unset or `off` means ignore this paragraph.

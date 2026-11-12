@@ -18,10 +18,11 @@ or `on`; unset or anything else means `off`.
     shadow  the orchestrator does the manual steps AND runs the driver. The driver
             mutates nothing the run depends on: it works in a throwaway worktree
             (or only reads), writes no build-log line, and saves its evidence to
-            .discovery/driver-shadow/<dossier>/<driver>-<timestamp>.json so a
+            <git common dir>/asd-drivers/driver-shadow/<dossier>/<driver>-<timestamp>.json so a
             person can compare it with what the orchestrator did by hand.
     on      the driver does the steps; the orchestrator acts on its output.
-            Evidence goes to .discovery/driver-evidence/<dossier>/.
+            Evidence goes to <git common dir>/asd-drivers/driver-evidence/<dossier>/
+            (inside .git: never tracked, never dirties a tree, survives worktree removal).
 
 # Exit codes (every driver)
 
@@ -152,6 +153,14 @@ def throwaway_worktree(repo: str, ref: str = "HEAD") -> Iterator[str]:
         git(repo, "worktree", "prune")
 
 
+def evidence_root(root: str) -> str:
+    """Where driver evidence lives: `asd-drivers/` in the git common dir, so it is never
+    tracked and never makes a checkout dirty."""
+    rc, out = sh([GIT, "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=root)
+    common = out.strip().splitlines()[-1] if rc == 0 and out.strip() else os.path.join(root, ".git")
+    return os.path.join(common, "asd-drivers")
+
+
 class Driver:
     """One driver run: its steps, facts and findings, and how they are shown."""
 
@@ -259,7 +268,7 @@ def drive(name: str, argv: list[str] | None, build_parser: Callable, run: Callab
         print(f"{env_name(name)} is off (the default): do the phase doc's manual steps. Set it to shadow or on to run this driver.")
         return EXIT_OFF
     root = args.root or main_checkout(getattr(args, "worktree", None) or os.getcwd())
-    d = Driver(name, mode, args.dossier, os.path.join(root, ".discovery"), args.log)
+    d = Driver(name, mode, args.dossier, evidence_root(root), args.log)
     args.root = root
     try:
         rc = run(d, args)

@@ -248,14 +248,14 @@ def selftest() -> int:
         rc, out = dc.run_self("finalize_pr.py", "--worktree", xwt, "--target", "main", "--dossier", "W-1", "--root", main, env=shadow_env)
         c("shadow runs clean on a clean sync", rc == 0 and "verdict=clean" in out)
         c("shadow leaves X untouched", dc.fixture_git(xwt, "rev-parse", "HEAD").strip() == head_x)
-        shadow_dir = os.path.join(main, ".discovery", "driver-shadow", "W-1")
+        shadow_dir = os.path.join(main, ".git", "asd-drivers", "driver-shadow", "W-1")
         c("shadow writes evidence under driver-shadow/<dossier>/", os.path.isdir(shadow_dir) and len(os.listdir(shadow_dir)) == 1)
 
         rc, out = dc.run_self("finalize_pr.py", "--worktree", xwt, "--target", "main", "--dossier", "W-1", "--root", main, env=env)
         c("on merges the target and exits 0", rc == 0 and "verdict=clean" in out)
         c("the merge landed", os.path.isfile(os.path.join(xwt, "src", "other.py")))
         c("bookkeeping_only is false for a code sync", '"bookkeeping_only_sync": false' in open(
-            os.path.join(main, ".discovery", "driver-evidence", "W-1", sorted(os.listdir(os.path.join(main, ".discovery", "driver-evidence", "W-1")))[0])).read())
+            os.path.join(main, ".git", "asd-drivers", "driver-evidence", "W-1", sorted(os.listdir(os.path.join(main, ".git", "asd-drivers", "driver-evidence", "W-1")))[0])).read())
 
         # a conflict
         dc.fixture_commit(xwt, "src/a.py", "a = 2\n", "x edits a")

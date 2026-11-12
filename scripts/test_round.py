@@ -22,7 +22,7 @@ Steps:
             the log is parsed with run_tests.parse_log, never read through grep
     table   failures grouped by package, counts by kind_hint, FLAKY lines when a
             repeat ran, and the sites seen in earlier rounds (kept in
-            `.discovery/driver-state/<ID>/sites.json`, mode on only)
+            `.git/asd-drivers/driver-state/<ID>/sites.json`, mode on only)
 
 A suite that exits non-zero with no parseable failure (an unknown output format,
 a runner crash) is a surprise, never "green" and never "no failures".
@@ -150,7 +150,7 @@ def run(d: dc.Driver, args) -> int:
     else:
         d.step("suite", "finding", f"exit {rc}: {totals.passed} passed, {totals.failed} failed ({len(fails)} parsed); log {logf}")
 
-    sites_path = args.sites_file or os.path.join(args.root, ".discovery", "driver-state", args.dossier, "sites.json")
+    sites_path = args.sites_file or os.path.join(dc.evidence_root(args.root), "driver-state", args.dossier, "sites.json")
     prior: list[str] = []
     prior_rounds: dict = {}
     if os.path.isfile(sites_path):
@@ -196,7 +196,7 @@ def build_parser(ap) -> None:
     ap.add_argument("--round", type=int, default=1, help="the arbitration round number (keys the repeat-site memory)")
     ap.add_argument("--gates", help="gates file for run_gates.py")
     ap.add_argument("--run-tests-arg", action="append", default=[], metavar="ARG", help="a run_tests.py flag, with = for values: --run-tests-arg=--vm=nightwatch (repeatable)")
-    ap.add_argument("--sites-file", help="the repeat-site memory (default .discovery/driver-state/<ID>/sites.json)")
+    ap.add_argument("--sites-file", help="the repeat-site memory (default .git/asd-drivers/driver-state/<ID>/sites.json)")
     ap.add_argument("command", nargs="*", help="the suite command, after --")
 
 
@@ -227,7 +227,7 @@ def selftest() -> int:
         c("off refuses", rc == 3)
         rc, out = dc.run_self("test_round.py", *base, "--round", "1", "--", "sh", "-c", red, env=env)
         c("red suite exits 1 with the failure classified", rc == 1 and "UT [assertion]" in out and "tests/t.rs" in out)
-        sites = os.path.join(main, ".discovery", "driver-state", "W-1", "sites.json")
+        sites = os.path.join(main, ".git", "asd-drivers", "driver-state", "W-1", "sites.json")
         c("the sites file records round 1", os.path.isfile(sites) and json.load(open(sites)) == {"1": ["tests/t.rs"]})
         rc, out = dc.run_self("test_round.py", *base, "--round", "2", "--", "sh", "-c", red, env=env)
         c("the same file in round 2 is a REPEAT SITE", "REPEAT SITE" in out)
@@ -239,7 +239,7 @@ def selftest() -> int:
         dc.fixture_write(shadow_main, ".discovery/dossiers/W-1.md", open(os.path.join(main, ".discovery/dossiers/W-1.md")).read())
         rc, out = dc.run_self("test_round.py", "--dossier", "W-1", "--root", shadow_main, "--worktree", wt, "--round", "1", "--", "sh", "-c", red,
                               env={"ASD_DRIVER_TEST_ROUND": "shadow"})
-        c("shadow runs but keeps no sites memory", rc == 1 and not os.path.exists(os.path.join(shadow_main, ".discovery", "driver-state")))
+        c("shadow runs but keeps no sites memory", rc == 1 and not os.path.exists(os.path.join(shadow_main, ".git", "asd-drivers", "driver-state")))
     return c.report()
 
 

@@ -254,7 +254,7 @@ def selftest() -> int:
         c("vacuous candidate named", "vacuous_one" in out)
         c("uncovered member named", "Flush.drop" in out)
         c("weak flag counted", "weak-pattern flags" in out)
-        ev = os.path.join(main, ".discovery", "driver-evidence", "W-1")
+        ev = os.path.join(main, ".git", "asd-drivers", "driver-evidence", "W-1")
         import json
         data = json.load(open(os.path.join(ev, os.listdir(ev)[0])))
         c("good_one judged red with its first line", data["facts"]["red_run"]["red"] == ["good_one"]
