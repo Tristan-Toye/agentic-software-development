@@ -73,20 +73,27 @@ PLUGIN = "agentic-software-development"
 TIME_LOGGING_OFF = ("time logging is off: do not log time to Tempo, do not ask the owner about it, and do not read "
                     "references/time-logging.md (ASD_RUNNER_TIME_LOGGING=on turns the gate back on).")
 TIME_LOGGING_ON = "time logging is on: follow references/time-logging.md once, in the first stage only."
+# Added to the rules while the target repo's own CLAUDE.md is left out of the session (ASD_RUNNER_LEAN_CLAUDEMD): that
+# file is the repo's router to its rules and its environment notes, so the rules point at it instead of copying it.
+CLAUDE_MD_POINTER = ("- The target repo's own CLAUDE.md is not loaded in this session (it costs ~5k tokens in every session and sub-agent). "
+                     "It routes to the repo's binding rules (a ledger such as docs/learned-rules.md: read its entries whose scope matches, "
+                     "in Phase 2 and again in Phase 8b) and holds its build and test environment notes (PATH, database, VM). Read the "
+                     "section you need with `grep -n '^## ' CLAUDE.md`, then Read that range, when you start a phase that needs the repo's "
+                     "rules, or when a command fails on the environment; never the whole file.\n")
 RUNNER_RULES = """\
 You run under the dossier runner and nobody reads the terminal.
 - Ask the owner only through scripts/ask_owner.py, and never wait in the background: keep working on whatever is not blocked; when nothing can proceed, end the turn with the line `RUNNER: WAITING <id>[,<id>...]` and stop. The ids are question ids from ask_owner.py only; a wait on a background command or workflow is not a WAITING line: just end the turn, and Claude Code re-invokes you when it finishes. The runner waits for you and sends the owner's message into this session as `OWNER ANSWER <id>: ...` or `OWNER FOLLOWUP <id>: ...`. A follow-up is the owner's typed message and the question stays open, as a chat, until the owner presses a button: if it is a question, answer it with `ask_owner.py reply <id> --text "..."`; if it reads as an answer or an instruction, reply with your reading and add it as a button, `ask_owner.py reply <id> --text "<what you take it to mean, and what you will do>" --option "D|Confirm: <your reading in a few words>|<what happens>"` (a key the question does not have yet); if it is unclear, reply with your question. When what you recommend changes (a measurement, the owner's point), say so and move the highlighted button with `--recommend <key>` on that reply. Then end the turn with `RUNNER: WAITING <id>` again. Never close a question yourself: only the owner's button does, and every question ends with one.
 - Never end a turn to wait for a command: run commands in the foreground (raise the Bash timeout up to 10 minutes) or wait for them inside the same turn. A workflow or background task that notifies you later is fine, but say `waiting for <what>` in plain text in that turn (never as a `RUNNER:` line); the runner keeps the session open for its notification.
 - When the auto-mode safety check blocks a call you need, never work around it: ask the owner with `ask_owner.py ask`, quoting the exact command (or path) and what it is for, with options to allow it once, to allow it as a standing rule, or to go without it; carry on with what is not blocked. The dashboard's Blocked card answers that question; an approval names the exact command, so retry it as written.
 - Run every test through scripts/run_tests.py and every gate list through scripts/run_gates.py (`--vm` for the VM, `--detach` then `--wait` for a long run), never through a script or command of your own: their result lines are how the owner's timeline shows a suite going green or red. Run only the tests the command's step names: under /work-on and /fix-deferred with SUITE-MODE `stub`, that is the new and affected tests and the pull request's CI, never the full workspace or `--stack` suite, which only /stub runs.
-- Never end a stage (or the run) while a background command, workflow or agent you started is still running: it dies with this process and no notification reaches the next stage. Wait for its notification and take its result first; the runner holds a stage end that comes too early. If a checkpoint must still name work in flight, say how the next stage tells it finished or died (its report file, its branch or worktree, its output file).
+- Never end a stage (or the run) while a background command, workflow or agent you started is still running: it dies with this process and no notification reaches the next stage. Wait for its notification and take its result first; the runner holds a stage end that comes too early, once. A task you stopped or killed yourself needs no wait: end the stage, and the runner cuts off whatever is left and logs it. Never ask the owner whether to end the stage, restart or stop a background task. If a checkpoint must still name work in flight, say how the next stage tells it finished or died (its report file, its branch or worktree, its output file).
 - Gates already settled for this run: the worktree gate is yes, and {time_logging}
 - The owner's Start is standing authority (references/owner-questions.md, "What is worth asking"): pushing the dossier's own branch and opening or updating its draft PR into the base or the accepting stub is yes; so is a graduation issue in the plugin repository, and committing a repository rule from this build on the dossier's branch (the PR ratifies it). Carry out the readings, defaults and rulings the dossier already records; never ask to confirm them. Ask only technical, architectural or product design questions the dossier leaves open, issues you cannot resolve in scope, and actions outside that authority (a merge, a push to a protected branch, a force-push, Jira writes, deleting what is not the run's own). Do the authorized ones, log them, and name them in your next update.
 - The plugin's references (`references/work-on/phase-*.md`, `formats/*`, `runner.md`) are long and the same in every stage: read only the section your step needs (`ref_section` with the document's short name, `phase-4` or `formats/dossier`, and a heading or `--list`), not whole files; the phase file you start a phase with is the one you read whole, and never the same section twice in one stage.
 - Phase 2 takes its stub from `python3 scripts/stub_target.py --root R` (the plugin's scripts). Exit 3 (`wait <stub>`) means that stub is being integrated and no new one may be cut until it is in development: end the turn with the line `RUNNER: WAITING stub`; the runner waits without tokens and sends `STUB READY: <branch>` once the new stub is cut. Never cut a stub yourself.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - `RUNNER KEEPALIVE: ...` is the runner keeping the prompt cache warm while you wait: reply with exactly `OK` and do nothing else (no tool call, no RUNNER: line, no change to your plan).
-- End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
+{claude_md}- End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
 - Keep the owner informed: post an update with `ask_owner.py note --root R --dossier ID --text "..."` when a stage starts and ends and whenever something worth knowing happens (a wave returned, the suite went green or red, an arbitration was ruled, a plan changed). Write it for a person reading on a phone: what happened and what it means, in plain sentences; markdown bullets and small tables are welcome. Never paste commands, file paths, SHAs, flags or log output into an update; the build log keeps those.
 """
 
@@ -95,7 +102,8 @@ def runner_rules() -> str:
     Every stage is a new session running the command again, so a gate the command opens with ("time logging first")
     would otherwise be read, and asked, at every stage."""
     on = (os.environ.get("ASD_RUNNER_TIME_LOGGING") or "off").strip().lower() in ("on", "1", "true", "yes")
-    return RUNNER_RULES.replace("{time_logging}", TIME_LOGGING_ON if on else TIME_LOGGING_OFF)
+    return (RUNNER_RULES.replace("{time_logging}", TIME_LOGGING_ON if on else TIME_LOGGING_OFF)
+            .replace("{claude_md}", CLAUDE_MD_POINTER if lean_on("CLAUDEMD") else ""))
 
 
 LIMIT_RE = re.compile(r"usage limit|rate.?limit|weekly limit|limit reached|out of (?:extra )?usage|hit your .*limit|\b429\b|overloaded", re.I)
@@ -433,7 +441,10 @@ BG_NOTIFIED = re.compile(r"<task-notification>[\s\S]*?<tool-use-id>([^<\s]+)</to
 BG_TASK_ID = re.compile(r"\bID:\s*([\w-]+)")
 # A task stopped on purpose (TaskStop, KillShell) never sends a notification: its stop result, or a stop that finds
 # the task already gone, ends it.
-BG_STOPPED = re.compile(r"(?:Successfully (?:stopped|killed) (?:task|shell)|No (?:task|shell) found with ID):?\s*([\w-]+)", re.I)
+BG_STOPPED = re.compile(r"(?:Successfully (?:stopped|killed|terminated|cancell?ed) (?:task|shell|background)|(?:task|shell) [\w-]+ (?:was |is )?(?:already )?(?:stopped|killed|terminated|not running|completed|finished)|No (?:task|shell|background \w+) (?:found )?with ID)[^\w-]*([\w-]+)?", re.I)
+# The tools that stop a task by id: the id is in the call's input, whatever shape the result takes.
+BG_STOP_TOOLS = {"TaskStop": "task_id", "KillShell": "shell_id", "KillBash": "shell_id", "TaskKill": "task_id"}
+BG_OUTPUT = re.compile(r"written to:?\s*(\S+?)\.?(?:\s|$)")
 
 
 def transcript_path(session: str, config_dir: str | None) -> str | None:
@@ -452,12 +463,15 @@ def transcript_path(session: str, config_dir: str | None) -> str | None:
     return None
 
 
-def background_in_flight(lines: list[str]) -> list[str]:
-    """Labels of the background commands, workflows and agents a session launched that have not notified it yet:
-    a tool call whose result says it went to the background, minus every `<task-notification>` naming its id and
-    every task stopped on purpose (a stop sends no notification)."""
+def background_tasks(lines: list[str]) -> list[dict]:
+    """The background commands, workflows and agents a session launched that have not notified it yet, each as
+    {"label", "id", "output"}: a tool call whose result says it went to the background, minus every
+    `<task-notification>` naming its id and every task stopped on purpose (a stop sends no notification). A stop is
+    read from the stop call's own input (TaskStop task_id), so any result text that is not an error ends the task, and
+    the "stopped" / "No task found" texts end it too."""
     calls: dict[str, str] = {}
-    bg: dict[str, str] = {}
+    stops: dict[str, str] = {}      # a stop call's tool_use id -> the task id it names
+    bg: dict[str, dict] = {}
     task_of: dict[str, str] = {}   # background task id -> the tool_use id that launched it
     for line in lines:
         try:
@@ -470,6 +484,9 @@ def background_in_flight(lines: list[str]) -> list[str]:
                 if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
                     i = b.get("input") or {}
                     calls[b["id"]] = str(i.get("description") or i.get("name") or i.get("skill") or b.get("name") or "tool")[:100]
+                    key = BG_STOP_TOOLS.get(str(b.get("name") or ""))
+                    if key and i.get(key):
+                        stops[b["id"]] = str(i[key])
         elif o.get("type") == "user":
             texts = [c] if isinstance(c, str) else []
             for b in c if isinstance(c, list) else []:
@@ -477,15 +494,19 @@ def background_in_flight(lines: list[str]) -> list[str]:
                     continue
                 if b.get("type") == "tool_result" and b.get("tool_use_id") in calls:
                     t = b.get("content") if isinstance(b.get("content"), str) else json.dumps(b.get("content") or "")
+                    tid = b["tool_use_id"]
                     if BG_LAUNCHED.search(t[:400]):
-                        bg[b["tool_use_id"]] = calls[b["tool_use_id"]]
                         m = BG_TASK_ID.search(t[:400])
+                        out = BG_OUTPUT.search(t[:600])
+                        bg[tid] = {"label": calls[tid], "id": m.group(1) if m else "", "output": out.group(1) if out else ""}
                         if m:
-                            task_of[m.group(1)] = b["tool_use_id"]
+                            task_of[m.group(1)] = tid
                     else:
                         m = BG_STOPPED.search(t[:400])
-                        if m and m.group(1) in task_of:
-                            bg.pop(task_of[m.group(1)], None)
+                        named = stops.get(tid) or (m.group(1) if m else None)
+                        # a stop call that did not fail ends the task it names; a failed one only when the task was already gone
+                        if named in task_of and (m or (tid in stops and not b.get("is_error"))):
+                            bg.pop(task_of[named], None)
                 elif b.get("type") == "text" and isinstance(b.get("text"), str):
                     texts.append(b["text"])
             for t in texts:
@@ -497,10 +518,30 @@ def background_in_flight(lines: list[str]) -> list[str]:
     return list(bg.values())
 
 
+def background_in_flight(lines: list[str]) -> list[str]:
+    """Labels of `background_tasks`."""
+    return [t["label"] for t in background_tasks(lines)]
+
+
+def output_unheld(path: str) -> bool:
+    """True when a background command's output file is held open by no process: a running command writes into it, so
+    nobody holding it means the command is gone (killed with `kill`, or its stop lost). False when it cannot tell
+    (no lsof, the file is missing, the path is not under a tasks directory): then the task counts as running."""
+    if not path or "/tasks/" not in path or not os.path.isfile(path):
+        return False
+    try:
+        r = subprocess.run(["lsof", "-t", "--", path], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 1 and not r.stdout.strip()
+
+
 HOLD_STAGE = ("RUNNER: the stage cannot end yet. Background work you started is still running and would die with this "
               "process, with no notice to the next stage: {what}. Wait for its notification (end this turn with no RUNNER: "
-              "line; Claude Code re-invokes you when it finishes), take its result, then end the stage again.")
-HOLD_MAX = 3   # after this many held ends the runner lets the stage end, and logs what it cut off
+              "line; Claude Code re-invokes you when it finishes), take its result, then end the stage again. If it will "
+              "not finish, or you already stopped it, just end the stage again: the runner ends it and logs what it cut "
+              "off. This is not a question for the owner: never ask whether to end the stage, restart or stop the task.")
+HOLD_MAX = 1   # after this many held ends (one: a task that never notifies is stale background work, not a reason to ask) the runner lets the stage end, and logs what it cut off
 
 
 # ---- the orchestrator's model: pinned, never an alias, never Fable ----
@@ -522,6 +563,7 @@ LEAN_NAME_ONLY = ["deep-research", "design", "design-sync", "dataviz", "update-c
                   "simplify", "batch", "fewer-permission-prompts", "doctor", "loop", "schedule", "claude-api",
                   "workflow-authoring", "run", "run-skill-generator", "plugin-authoring"]
 LEAN_PLUGINS_OFF = ["context-mode@context-mode"]
+LEAN_PLUGIN_CONTEXT7 = "context7@claude-plugins-official"
 COMPACT_WINDOW_DEFAULT = 250000
 DESC_CAP = 460   # the longest agent, command or skill description the selftest allows (measured prefix cost, runner.md)
 SPLIT_AT_DEFAULT = 135000
@@ -581,10 +623,35 @@ def repo_rulings(repo: str) -> list[str]:
     return out
 
 
-def lean_settings() -> str:
-    """The --settings JSON of a lean runner session: it merges over the project's and the user's settings."""
-    return json.dumps({"enabledPlugins": {p: False for p in LEAN_PLUGINS_OFF},
-                       "skillOverrides": {k: "name-only" for k in LEAN_NAME_ONLY}}, separators=(",", ":"))
+
+def lean_on(name: str) -> bool:
+    """A lean runner session's opt-out `name` (CLAUDEMD, GIT, MEMORY, CONTEXT7) is on unless ASD_RUNNER_LEAN is 0 or
+    ASD_RUNNER_LEAN_<NAME> is 0."""
+    return (os.environ.get("ASD_RUNNER_LEAN") or "1").strip() != "0" and (os.environ.get(f"ASD_RUNNER_LEAN_{name}") or "1").strip() != "0"
+
+
+def lean_settings(root: str | None = None) -> str:
+    """The --settings JSON of a lean runner session: it merges over the project's and the user's settings.
+    `claudeMdExcludes` skips the target repo's own CLAUDE.md (its worktrees too) in the session and in every sub-agent it
+    spawns (measured); the user's and the org's CLAUDE.md stay. The context7 plugin is left out; org-managed plugins are
+    not touched."""
+    plugins = list(LEAN_PLUGINS_OFF) + ([LEAN_PLUGIN_CONTEXT7] if lean_on("CONTEXT7") else [])
+    cfg: dict = {"enabledPlugins": {p: False for p in plugins},
+                 "skillOverrides": {k: "name-only" for k in LEAN_NAME_ONLY}}
+    if root and lean_on("CLAUDEMD"):
+        r = os.path.abspath(root).rstrip("/")
+        cfg["claudeMdExcludes"] = [f"{r}/CLAUDE.md", f"{r}-*/CLAUDE.md"]
+    return json.dumps(cfg, separators=(",", ":"))
+
+
+def lean_env() -> dict:
+    """The environment variables of a lean runner session. Telemetry is left on (no DISABLE_NONESSENTIAL_TRAFFIC)."""
+    env = {}
+    if lean_on("GIT"):
+        env["CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"] = "1"   # the built-in commit and PR instructions and the git status snapshot: the pipeline commits through gate_commit.py
+    if lean_on("MEMORY"):
+        env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+    return env
 
 
 def compact_window(model: str) -> int:
@@ -1135,10 +1202,10 @@ class Runner:
         lean = (os.environ.get("ASD_RUNNER_LEAN") or "1").strip() != "0"
         rules = repo_rulings(main_repo_name(self.root))
         if lean or rules:
-            st = json.loads(lean_settings()) if lean else {}
+            st = json.loads(lean_settings(self.root)) if lean else {}
             if rules:   # the owner's standing rulings for this repo; the deny list is passed with them and outranks them
                 st["permissions"] = {"allow": rules, "deny": RULING_DENY}
-            cmd += ["--settings", lean_settings() if lean and not rules else json.dumps(st, separators=(",", ":"))]
+            cmd += ["--settings", lean_settings(self.root) if lean and not rules else json.dumps(st, separators=(",", ":"))]
         if lean:
             cmd += ["--disallowedTools", ",".join(LEAN_DISALLOWED)]
         win = compact_window(model)
@@ -1183,6 +1250,8 @@ class Runner:
             env.pop("CLAUDE_CONFIG_DIR", None)
         if compact_window(self.model or runner_model(None)):
             env.pop("CLAUDE_CODE_AUTO_COMPACT_WINDOW", None)   # the variable would outrank the --autocompact claude_cmd passes
+        if (os.environ.get("ASD_RUNNER_LEAN") or "1").strip() != "0":
+            env.update(lean_env())
         return env
 
     def spawn(self) -> tuple[queue.Queue, bool]:
@@ -1249,9 +1318,16 @@ class Runner:
             return []
         try:
             with open(path, errors="replace") as fh:
-                return background_in_flight(fh.read().splitlines())
+                tasks = background_tasks(fh.read().splitlines())
         except OSError:
             return []
+        live = []
+        for t in tasks:
+            if output_unheld(t["output"]):
+                self.log(f"background task {t['id']} ({t['label']}) has no process left (nothing holds its output open); not waiting for it")
+                continue
+            live.append(t["label"])
+        return live
 
     def take_slot(self, first: bool = False) -> bool:
         """Wait for a run slot (max_live); False when the run was stopped while it waited. `first`: the owner just
@@ -1872,7 +1948,7 @@ class Runner:
                     quiet = True
                     continue
                 if bg:
-                    self.log(f"stage ended with {len(bg)} background task(s) still running, after {HOLD_MAX} holds; they stop with it: " + "; ".join(bg[:4]))
+                    self.log(f"stage ended with {len(bg)} background task(s) still running, after {HOLD_MAX} hold; the runner ends the stage and cuts them off: " + "; ".join(bg[:4]))
             if verb == "STAGE-DONE":
                 self.clear_restart()  # the next stage is a new process: it loads the new rules anyway
                 self.end_process()
@@ -3148,6 +3224,30 @@ def selftest() -> int:
                            J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "s2", "content": "<tool_use_error>No task found with ID: bg2</tool_use_error>"}]}})]
         check("background: a task stopped on purpose, or already gone when stopped, is no longer in flight",
               background_in_flight(lines + stop) == ["Run the VM suite"] and background_in_flight(gone) == [] and background_in_flight(stop[:2]) == ["Run the gates"])
+        # the real shapes (config-harness transcripts): a stop whose result is JSON, a command moved to the background after
+        # its timeout, a stop by shell_id, a stop that fails with some other text
+        mv = [J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "m1", "name": "Bash", "input": {"description": "Locate state"}}]}}),
+              J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "m1", "content": "Command did not complete within its 120s timeout and was moved to the background (ID: mv1). Output is being written to: /tmp/x/tasks/mv1.output. You will be notified"}]}})]
+        st = lambda tool, key, res, err=False: [J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "k1", "name": tool, "input": {key: "mv1"}}]}}),
+                                                J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "k1", "content": res, "is_error": err}]}})]
+        check("background: a command moved to the background after its timeout is in flight, with its output path", [t["output"] for t in background_tasks(mv)] == ["/tmp/x/tasks/mv1.output"])
+        check("background: a stop is read from the call's task id, whatever the result text says",
+              background_in_flight(mv + st("TaskStop", "task_id", "stopped")) == [] and background_in_flight(mv + st("KillShell", "shell_id", "done")) == []
+              and background_in_flight(mv + st("TaskStop", "task_id", '{"message":"Killed task: mv1"}')) == [])
+        check("background: a stop that failed for another reason, or one naming another task, leaves it in flight",
+              background_in_flight(mv + st("TaskStop", "task_id", "permission denied", True)) == ["Locate state"]
+              and background_in_flight(mv + [st("TaskStop", "task_id", "ok")[0].replace("mv1", "other"), st("TaskStop", "task_id", "ok")[1]]) == ["Locate state"])
+        check("background: the hold is one round and tells the agent not to ask the owner",
+              HOLD_MAX == 1 and "not a question for the owner" in HOLD_STAGE and "never ask" in HOLD_STAGE)
+        tdir0 = os.path.join(tmp, "tasks")
+        os.makedirs(tdir0, exist_ok=True)
+        outf = os.path.join(tdir0, "o1.output")
+        open(outf, "w").write("x")
+        hold = open(outf, "a")
+        held_now = output_unheld(outf)
+        hold.close()
+        check("background: process check: an output file a process holds open is running, one nobody holds is gone, an unknown path is running",
+              held_now is False and output_unheld(outf) is True and output_unheld("/nope/tasks/z.output") is False and output_unheld("") is False)
         tdir = os.path.join(tmp, "projects", "-repo")
         os.makedirs(tdir, exist_ok=True)
         tr = os.path.join(tdir, "sess-1.jsonl")
@@ -3426,14 +3526,17 @@ def selftest() -> int:
         lean = argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0")
         sj = json.loads(lean[lean.index("--settings") + 1])
         check("lean on (the default): --settings turns context-mode off and lists the bundled skills by name only",
-              sj["enabledPlugins"] == {"context-mode@context-mode": False} and sj["skillOverrides"]["verify"] == "name-only"
+              sj["enabledPlugins"] == {"context-mode@context-mode": False, LEAN_PLUGIN_CONTEXT7: False} and sj["skillOverrides"]["verify"] == "name-only"
               and not any(v == "off" for v in sj["skillOverrides"].values()))
         dis = lean[lean.index("--disallowedTools") + 1].split(",")
         check("lean on: tools the pipeline never calls are disallowed; the ones it uses are not",
               {"CronCreate", "NotebookEdit", "EnterWorktree"} <= set(dis) and not {"Workflow", "Monitor", "SendMessage", "LSP", "ToolSearch", "Skill", "Task", "WebFetch"} & set(dis)
               and not any("nav" in d or "runs" in d for d in dis))
-        check("lean on: argv is the lean-off argv plus the three flags, nothing else changed",
-              [x for x in lean if x not in (lean[lean.index("--settings") + 1], lean[lean.index("--disallowedTools") + 1], "--settings", "--disallowedTools")] == plain)
+        rules_of = lambda a: a[a.index("--append-system-prompt") + 1]
+        check("lean on: argv is the lean-off argv plus the three flags, nothing else changed (the rules differ by the CLAUDE.md pointer only)",
+              [x for x in lean if x not in (lean[lean.index("--settings") + 1], lean[lean.index("--disallowedTools") + 1], "--settings", "--disallowedTools", rules_of(lean))]
+              == [x for x in plain if x != rules_of(plain)]
+              and rules_of(lean).replace(CLAUDE_MD_POINTER, "") == rules_of(plain))
         # ---- the owner's standing rulings: stored per repo, applied to every session of that repo, never past the deny list ----
         rrepo = main_repo_name(root)
         write_json(os.path.join(rulings_tmp, f"{rrepo}.json"), {"repo": rrepo, "rules": [
@@ -3444,7 +3547,7 @@ def selftest() -> int:
         rl = argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp)
         rs = json.loads(rl[rl.index("--settings") + 1])
         check("rulings: a stored allow rule reaches the settings of every session of that repo, beside the lean settings",
-              rs["permissions"]["allow"] == ["Bash(limactl shell vm -- docker compose build *)"] and rs["enabledPlugins"] == {"context-mode@context-mode": False})
+              rs["permissions"]["allow"] == ["Bash(limactl shell vm -- docker compose build *)"] and rs["enabledPlugins"].get("context-mode@context-mode") is False)
         check("rulings: a stored rule that covers a refused category (merge, force push, secret path) is never applied, and the deny list rides along",
               "Bash(gh pr *)" not in rs["permissions"]["allow"] and "Bash(gh pr merge:*)" in rs["permissions"]["deny"] and "Bash(git push --force:*)" in rs["permissions"]["deny"])
         rp = argv_of(ASD_RUNNER_LEAN="0", ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp)
@@ -3452,6 +3555,29 @@ def selftest() -> int:
               json.loads(rp[rp.index("--settings") + 1])["permissions"]["allow"] == rs["permissions"]["allow"] and "--disallowedTools" not in rp)
         os.remove(os.path.join(rulings_tmp, f"{rrepo}.json"))
         check("rulings: none stored, none passed", "permissions" not in json.loads(argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp)[argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp).index("--settings") + 1]))
+        # ---- the session-start opt-outs: each on by default under lean, each with its own switch ----
+        env_of = lambda **e: (lambda saved: (os.environ.update({k: v for k, v in e.items() if v is not None}), [os.environ.pop(k, None) for k, v in e.items() if v is None],
+                                             Runner(root, "W-248", "work-on", None, "auto", 1).child_env(), [os.environ.pop(k, None) for k in e],
+                                             [os.environ.__setitem__(k, v) for k, v in saved.items() if v is not None])[2])({k: os.environ.get(k) for k in e})
+        sj_root = json.loads(lean[lean.index("--settings") + 1])
+        check("lean opt-out (a): the target repo's CLAUDE.md and its worktrees' are excluded via claudeMdExcludes; the user's is not",
+              sj_root.get("claudeMdExcludes") == [f"{os.path.abspath(root)}/CLAUDE.md", f"{os.path.abspath(root)}-*/CLAUDE.md"] and "CLAUDE.md" in rules_of(lean) and "grep -n" in rules_of(lean))
+        off = argv_of(ASD_RUNNER_LEAN_CLAUDEMD="0", ASD_RUNNER_COMPACT_WINDOW="0")
+        check("lean opt-out (a): ASD_RUNNER_LEAN_CLAUDEMD=0 leaves it loaded and drops the pointer",
+              "claudeMdExcludes" not in off[off.index("--settings") + 1] and CLAUDE_MD_POINTER not in rules_of(off))
+        off = argv_of(ASD_RUNNER_LEAN_CONTEXT7="0", ASD_RUNNER_COMPACT_WINDOW="0")
+        check("lean opt-out (d): the context7 plugin is off in --settings, no other plugin is named; ASD_RUNNER_LEAN_CONTEXT7=0 keeps it",
+              LEAN_PLUGIN_CONTEXT7 not in json.loads(off[off.index("--settings") + 1])["enabledPlugins"]
+              and set(sj_root["enabledPlugins"]) == {"context-mode@context-mode", LEAN_PLUGIN_CONTEXT7})
+        e_on = env_of(ASD_RUNNER_LEAN=None)
+        check("lean opt-outs (b)(c): git instructions and auto-memory are off in the child's environment; telemetry is not touched",
+              e_on.get("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS") == "1" and e_on.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1"
+              and "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" not in e_on)
+        e_b = env_of(ASD_RUNNER_LEAN_GIT="0"); e_c = env_of(ASD_RUNNER_LEAN_MEMORY="0"); e_0 = env_of(ASD_RUNNER_LEAN="0")
+        check("lean opt-outs: each has its own switch, and ASD_RUNNER_LEAN=0 sets none",
+              "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS" not in e_b and e_b.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY") == "1"
+              and "CLAUDE_CODE_DISABLE_AUTO_MEMORY" not in e_c and e_c.get("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS") == "1"
+              and "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS" not in e_0 and "CLAUDE_CODE_DISABLE_AUTO_MEMORY" not in e_0)
         check("lean ASD_RUNNER_LEAN=0 is exactly today's argv", argv_of(ASD_RUNNER_LEAN="0", ASD_RUNNER_COMPACT_WINDOW="0") == plain)
         cw = argv_of(ASD_RUNNER_LEAN="0", ASD_RUNNER_COMPACT_WINDOW=None)
         check("compact window: default 250000 as --autocompact", cw[cw.index("--autocompact") + 1] == "250000" and cw[:len(plain)] == plain)
