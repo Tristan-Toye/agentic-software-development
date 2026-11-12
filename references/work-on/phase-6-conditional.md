@@ -178,12 +178,13 @@ Lesson: a method with a return type states what the value MEANS, not just that
 one exists.
 ```
 
-`validate_pipeline.py` inspects every commit after the contract commit that
-touches a contract file and refuses one without a `Lesson:` trailer. Write the
-ruling itself as a decision record
+`validate_pipeline.py` counts the row-3 `ARBITRATION` lines in the build log
+and refuses the dossier when fewer commits after the contract commit, touching a
+contract file, carry a `Lesson:` trailer. Implementer bodies and row-1/2 fixes
+need no trailer. Write the ruling itself as a decision record too
 (`build_records.py decision add <ID> --decision ... --alternatives ... --why ...
---evidence ... --phase 6 --log <dossier>`), which also appends the one-line
-`ARBITRATION` summary to the build log.
+--evidence ... --phase 6 --log <dossier>`, which appends a `DECISION` line);
+the `ARBITRATION:` line naming row 3 still goes in the round's checkpoint `log`.
 
 That lesson is **not ADR material** — an ADR records a decision about the code,
 and this is a decision about how we write contracts. Phase 8 routes it to the

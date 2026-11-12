@@ -809,30 +809,39 @@ def check_deferred_record(where: str, path: Path, fm: dict, log: str, status: st
             )
 
 
-def check_contract_fix_lessons(where: str, fm: dict, contract: str, repo_root: Path, status: str, rep: Report) -> None:
-    """A contract fix names its lesson in a `Lesson:` git trailer, not in the log. Every commit on the
-    branch's first-parent line after `contract_commit`, not a merge, that touches a contract file
-    carries it. Silent without git, a worktree, or a recorded contract commit."""
+ROW3_RE = re.compile(r"^\W*ARBITRATION\b[^\n]*?\brows?\s*3\b", re.M)
+
+
+def check_contract_fix_lessons(where: str, fm: dict, contract: str, repo_root: Path, status: str, rep: Report,
+                               log: str = "") -> None:
+    """A row-3 arbitration (the contract was ambiguous) is fixed by a commit that names its lesson in a
+    `Lesson:` git trailer. Each row-3 ARBITRATION line in the build log needs one such commit after
+    `contract_commit` touching a contract file. Implementer bodies and row-1/2 fixes touch the same
+    files and need no trailer, so only the count is checked. Silent without git, a worktree, or a
+    recorded contract commit."""
     if status not in {"building", "review", "pr", "done"}:
         return
+    row3 = len(ROW3_RE.findall(log))
     base = str(fm.get("contract_commit") or "").strip()
     paths = contract_paths(contract)
     wt = str(fm.get("worktree") or "").strip()
     cwd = (repo_root / wt).resolve() if wt else repo_root
-    if not base or not paths or not cwd.is_dir():
+    if not row3 or not base or not paths or not cwd.is_dir():
         return
     try:
-        out = git_out(cwd, "log", "--first-parent", "--no-merges", "--format=%H%x00%B%x01", f"{base}..HEAD", "--", *paths)
+        out = git_out(cwd, "log", "--no-merges", "--format=%H%x00%B%x01", f"{base}..HEAD", "--", *paths)
     except RuntimeError:
         return
-    for chunk in out.split("\x01"):
-        sha, _, body = chunk.strip().partition("\x00")
-        if sha and not re.search(r"^Lesson:\s*\S", body, re.M):
-            rep.defect(
-                where,
-                f"commit {sha[:8]} changes a contract file after the contract commit {base[:8]} "
-                f"and carries no `Lesson:` trailer; a contract fix names the lesson in its commit message",
-            )
+    lessons = sum(
+        1 for chunk in out.split("\x01")
+        if chunk.strip() and re.search(r"^Lesson:\s*\S", chunk.partition("\x00")[2], re.M)
+    )
+    if lessons < row3:
+        rep.defect(
+            where,
+            f"{row3} row-3 arbitration(s) in the build log but {lessons} commit(s) after the contract "
+            f"commit {base[:8]} carry a `Lesson:` trailer; a contract fix names the lesson in its commit message",
+        )
 
 
 def check_build_log(where: str, text: str, status: str, rep: Report, path: Path | None = None,
@@ -909,7 +918,8 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
     if "## Build log" in sec:
         check_build_log(f"{where} ## Build log", sec["## Build log"], str(status), rep,
                         path, fm, sec.get("## Contract", ""))
-    check_contract_fix_lessons(where, fm, sec.get("## Contract", ""), repo_root, str(status), rep)
+    check_contract_fix_lessons(where, fm, sec.get("## Contract", ""), repo_root, str(status), rep,
+                               sec.get("## Build log", ""))
 
     if status == "ready" and not fm.get("baseline_commit"):
         rep.defect(
@@ -2263,11 +2273,13 @@ def selftest_receipts() -> bool:
 
 
 def selftest_contract_lessons() -> bool:
-    """Commits after the contract commit that touch a contract file carry a `Lesson:` trailer."""
+    """Each row-3 arbitration needs one `Lesson:`-trailed commit to a contract file after the contract commit."""
     if not shutil.which("git"):
         print("SKIP  git not found; the contract-fix scenario was not run")
         return True
     contract = "### src/flush.py\n\n```python\ndef flush(): ...\n```\n"
+    one = "ARBITRATION 1 — row 3 (contract ambiguous).\n"
+    two = one + "- ARBITRATION: test_flush red — contract ambiguous, row 3\n"
     fm = {"worktree": "", "contract_commit": ""}
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -2280,33 +2292,28 @@ def selftest_contract_lessons() -> bool:
             git_out(root, "add", "-A")
             git_out(root, "commit", "-q", "-m", "contract")
             fm["contract_commit"] = git_out(root, "rev-parse", "HEAD").strip()
-            (root / "src" / "flush.py").write_text("def flush():  # returns the count\n")
-            git_out(root, "commit", "-q", "-am", "fix the contract")
+            (root / "src" / "flush.py").write_text("def flush():\n    return 0\n")
+            git_out(root, "commit", "-q", "-am", "implement flush")
+            body = Report()
+            check_contract_fix_lessons("w", fm, contract, root, "building", body, "")
             bad = Report()
-            check_contract_fix_lessons("w", fm, contract, root, "building", bad)
-            (root / "src" / "flush.py").write_text("def flush():  # returns the count of items\n")
-            git_out(root, "commit", "-q", "-am", "fix the contract again\n\nLesson: name the return meaning")
-            mixed = Report()
-            check_contract_fix_lessons("w", fm, contract, root, "building", mixed)
-            git_out(root, "reset", "-q", "--hard", "HEAD~1")
-            git_out(root, "commit", "-q", "--amend", "-m", "fix the contract\n\nLesson: name the return meaning")
+            check_contract_fix_lessons("w", fm, contract, root, "building", bad, one)
+            (root / "src" / "flush.py").write_text("def flush():  # returns the count\n    return 0\n")
+            git_out(root, "commit", "-q", "-am", "fix the contract\n\nLesson: name the return meaning")
             good = Report()
-            check_contract_fix_lessons("w", fm, contract, root, "building", good)
-            (root / "other.txt").write_text("x")
-            git_out(root, "add", "-A")
-            git_out(root, "commit", "-q", "-m", "unrelated")
-            unrelated = Report()
-            check_contract_fix_lessons("w", fm, contract, root, "building", unrelated)
+            check_contract_fix_lessons("w", fm, contract, root, "building", good, one)
+            short = Report()
+            check_contract_fix_lessons("w", fm, contract, root, "building", short, two)
             planned = Report()
-            check_contract_fix_lessons("w", fm, contract, root, "ready", planned)
+            check_contract_fix_lessons("w", fm, contract, root, "ready", planned, two)
         except RuntimeError as exc:
             print(f"FAIL  fixture: {exc}")
             return False
     cases = [
-        ("a contract fix with no trailer is refused", len(bad.defects) == 1 and "Lesson" in bad.defects[0]),
-        ("only the commit missing the trailer is named", len(mixed.defects) == 1),
-        ("a trailer passes", not good.defects),
-        ("a commit outside the contract files needs none", not unrelated.defects),
+        ("an implementer body with no row 3 needs no trailer", not body.defects),
+        ("a row 3 with no Lesson commit is refused", len(bad.defects) == 1 and "Lesson" in bad.defects[0]),
+        ("a Lesson commit covers one row 3", not good.defects),
+        ("two row 3s need two Lesson commits", len(short.defects) == 1),
         ("a ready dossier is not checked", not planned.defects),
     ]
     for name, passed in cases:
