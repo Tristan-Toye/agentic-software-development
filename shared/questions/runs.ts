@@ -1,7 +1,7 @@
 // Pipeline discovery: dossiers, stage, session activity, PR/CI. Contract: references/owner-questions.md (Dashboard).
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { basename, join, relative } from "node:path"
+import { basename, dirname, join, relative } from "node:path"
 import type { Question } from "./store.ts"
 import { emitChange } from "./events.ts"
 import { blockedByOf, controlsFor, type Controls } from "./controls.ts"
@@ -56,8 +56,29 @@ export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; bra
  * lines (first one per id wins; the `contract:` and `effort:` parts may sit anywhere after the title), closed by `DEFERRED-FIXED: D-n <sha>` and routed by
  * `DEFERRED-TRIAGE: D-n → dossier — …`; `DEFERRED-FIX: PR <url>` names the stacked PR.
  */
-export function parseDeferred(log: string): { items: DeferredItem[]; pr: string; branch: string } {
-  const items = new Map<string, DeferredItem>()
+/**
+ * The structured record `.discovery/deferred/<ID>.yaml` (JSON in a YAML file, written by `scripts/build_records.py`):
+ * `{items: [{id, evidence, fix, boundary, blast_radius, state, title?, kind?, loc?, note?}], sources: []}`. Null when absent or
+ * unreadable, which sends the caller back to the build-log parse.
+ */
+export function readDeferredRecord(dossierFile: string, id: string): DeferredItem[] | null {
+  let rec: any
+  try { rec = JSON.parse(readFileSync(join(dirname(dossierFile), "..", "deferred", `${id}.yaml`), "utf8")) } catch { return null }
+  if (!rec || !Array.isArray(rec.items)) return null
+  const states: Record<string, DeferredItem["state"]> = { open: "open", fixing: "fixing", fixed: "fixed", dossier: "dossier", wontfix: "deprecated" }
+  return rec.items.filter((i: any) => i && /^D-\d+$/.test(String(i.id))).map((i: any): DeferredItem => {
+    const note = String(i.note ?? ""), effort = note.match(/\beffort:\s*([SML])\b/i)?.[1]?.toUpperCase()
+    const contract = String(i.boundary ?? "").trim().split(/[:\s]/)[0].toLowerCase()
+    return {
+      id: i.id, kind: String(i.kind ?? "deferred"), title: String(i.title ?? i.evidence ?? ""), loc: String(i.loc ?? ""), risk: String(i.blast_radius ?? ""), why: String(i.fix ?? ""),
+      state: states[String(i.state)] ?? "open", note: /^effort:/i.test(note) ? "" : note, dossier: "", ...(contract ? { contract } : {}), ...(effort ? { effort } : {}),
+    }
+  })
+}
+
+export function parseDeferred(log: string, record: DeferredItem[] | null = null): { items: DeferredItem[]; pr: string; branch: string } {
+  // A record, when the run wrote one, is the source of the items; the log still supplies the later events and the PR.
+  const items = new Map<string, DeferredItem>((record ?? []).map((i) => [i.id, i]))
   let pr = "", branch = ""
   const asked = new Map<string, string>() // question id -> D-id
   for (const raw of log.split("\n")) {
@@ -619,7 +640,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       runnerLog: runner ? join(runsDir(), `${runKey}.runner.log`) : "",
       ...(() => {
         for (const x of deferredSources(log)) sources.set(`${repoName}/${x.src}/${x.item}`, f.id!)
-        const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log) : { items: [], pr: "", branch: "" }
+        const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log, readDeferredRecord(d.file, f.id!)) : { items: [], pr: "", branch: "" }
         let report = ""
         try { report = readFileSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`), "utf8") } catch { /* none */ }
         const deferred: Deferred = { items: withReport(pd.items, report), pr: pd.pr, report: report !== "", branch: pd.branch }

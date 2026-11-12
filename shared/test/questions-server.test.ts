@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { channelNameFor, interpretEnvelope, isDuplicate, runSocket, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { undecidedDeferred, parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
+import { undecidedDeferred, parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, readDeferredRecord, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { canIntegrate, integrationPhase, integrationStopped, markIntegrating, readIntegrate, readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule, runnerActive } from "../questions/runstore.ts"
@@ -49,6 +49,23 @@ check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "
   const rep2 = "| ID | Kind | Title | Risk | Origin | Contract | Effort |\n|---|---|---|---|---|---|---|\n| D-1 | bug | a | low | new | none | S |\n"
   const wr2 = withReport(led, rep2)
   check("deferred: the report supersedes the ledger's contract and effort; items it lacks keep theirs", wr2[0].contract === "none" && wr2[0].effort === "S" && wr2[1].contract === "internal" && wr2[1].effort === "S" && wr2[1].inReport === false)
+}
+{
+  // The structured record is the source of the items; the log still layers events; no record falls back to the log.
+  const dir = mkdtempSync(join(tmpdir(), "defrec-"))
+  mkdirSync(join(dir, "dossiers"), { recursive: true }); mkdirSync(join(dir, "deferred"), { recursive: true })
+  const dossier = join(dir, "dossiers", "W-7.md")
+  writeFileSync(join(dir, "deferred", "W-7.yaml"), JSON.stringify({ items: [
+    { id: "D-1", evidence: "a.py:4 ignores 429", fix: "back off", boundary: "none", blast_radius: "one package", state: "open", note: "effort: M" },
+    { id: "D-2", evidence: "b.py:9 dup", fix: "share it", boundary: "internal: seam", blast_radius: "wide", state: "wontfix" }], sources: ["own reads"] }))
+  const rec = readDeferredRecord(dossier, "W-7")
+  check("deferred record: items map evidence, fix, boundary, blast radius, effort and state", rec !== null && rec.length === 2 && rec[0].title === "a.py:4 ignores 429" && rec[0].why === "back off" && rec[0].risk === "one package" && rec[0].contract === "none" && rec[0].effort === "M" && rec[1].state === "deprecated" && rec[1].contract === "internal")
+  const layered = parseDeferred("- D-1 bug stale ledger line — f:1 — low — x\n- DEFERRED-FIXED: D-1 abc1234", rec)
+  check("deferred record: the record wins over a ledger line, and log events still apply", layered.items.length === 2 && layered.items[0].title === "a.py:4 ignores 429" && layered.items[0].state === "fixed" && layered.items[0].note === "abc1234")
+  check("deferred record: no record is null, and the log parse is the fallback", readDeferredRecord(join(dir, "dossiers", "W-8.md"), "W-8") === null && parseDeferred("- D-1 bug a — f:1 — low — x", null).items.length === 1)
+  writeFileSync(join(dir, "deferred", "W-9.yaml"), JSON.stringify({ items: [], sources: ["own reads"] }))
+  check("deferred record: items [] is an empty list, not a fallback", readDeferredRecord(join(dir, "dossiers", "W-9.md"), "W-9")?.length === 0)
+  rmSync(dir, { recursive: true, force: true })
 }
 {
   const ah = mkdtempSync(join(tmpdir(), "acct-"))
