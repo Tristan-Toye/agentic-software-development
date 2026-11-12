@@ -3,6 +3,40 @@
 
 ## Phase 3 — Mechanical check before the fan-out
 
+### The contract-reviewer has no size gate, and its skip must be auditable
+
+**`contract-reviewer` has no size gate, and its skip must still be
+auditable** (the why is in Phase 3). Write exactly one of these into
+`## Build log` before the fan-out, every run:
+
+```
+CONTRACT-REVIEW: spawned <session ref> — <N> checklist lines, <N> DEFECT, <N> AMBIGUITY
+CONTRACT-REVIEW: skipped — <reason>
+```
+
+`scripts/validate_pipeline.py --dossier <ID> --pre-fanout` refuses to pass
+while neither line is present — and likewise without the `HOOKS:` line
+(Phase 2), the `PAYLOAD-LINT:` line and the `ADMISSION:` line (Phase 4), and
+the `CENSUS:` and `CHECKLIST-IDS:` lines (Phase 3). A
+skip stays possible; a *silent* skip does not.
+
+### Rules that hold in this phase
+
+- **Owned paths are disjoint**, checked mechanically before the fan-out. A
+  conflict between two packages is a defect in the package table. Every
+  implementer report ends with `TOUCHED_BEYOND`; a path outside `OWNED_PATHS`
+  it did not list is an implementer defect, and two are never accepted
+  however justified: another package's owned paths, and the contract files.
+  (Phase 3, Phase 5)
+
+- **The checks check the author.** You write the contract, derive the
+  checklist and arbitrate the failures, so each is verified by a pass that did
+  not come from the same place: `contract-reviewer` on the stubs alone before
+  the fan-out, the mutation check on the checklist after green (a survivor is
+  a weak oracle, routed like a `GAP:`). A test author's world is stamped with
+  `CONTRACT_HASH` at spawn, and a contract that changed underneath it is
+  invalidated on the hash, without judgment. (Phase 3, Phase 6)
+
 Run `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --dossier <ID>`.
 It checks the work packages' owned paths are **disjoint**, the `## Contract`
 section carries documentation comments and no bodies, and every criterion names
@@ -160,18 +194,26 @@ returns, diff its checklist against yours line by line:
   checklist together, commit on `X`, and only then fan out. Land the revised
   stubs in the dossier with `dossier_edit.py sync-contract <dossier> --root X`
   (exit 0 means every member equals its file's), not by hand-copying blocks.
-- **Its `AMBIGUITY:` lines the dossier settles, you settle by citation;
-  the rest go to the user as one question.** The reviewer is blind to the
-  dossier, so many of its ambiguities are already decided there: the
-  approach, a criterion, a recorded ruling. For each, quote the dossier
-  sentence that picks one reading, write that reading into the docstring,
-  and log `AMBIGUITY-SETTLED: <member> — <reading> (dossier § <section>)`.
-  That is not you ruling on your own sentence: the dossier is the referee,
-  and the owner already approved it. Only a reading no dossier sentence
-  picks is the row-3 arbitration you are the wrong party to rule on — you
-  wrote the sentence. Put those to the user as one question, let them pick,
-  and write the winner into the docstring before the fan-out. Never ask the
-  user to approve readings the dossier already settles.
+- **Its `AMBIGUITY:` lines the dossier settles, you settle by citation; a
+  low-impact rest you rule provisionally; only a high-impact rest goes to the
+  owner.** The reviewer is blind to the dossier, so many of its ambiguities
+  are already decided there: the approach, a criterion, a recorded ruling. For
+  each, quote the dossier sentence that picks one reading, write that reading
+  into the docstring, and log `AMBIGUITY-SETTLED: <member> — <reading>
+  (dossier § <section>)`. That is not you ruling on your own sentence: the
+  dossier is the referee, and the owner already approved it. A reading no
+  dossier sentence picks, whose reviewer-marked `IMPACT:` is `low`, is a
+  provisional ruling: take the recommended reading (the simpler one, the
+  repo's convention, or the cheaper to reverse), write it into the docstring,
+  log `PROVISIONAL-RULING: <member>, <reading and why>, <how to reverse>` in
+  `## Build log`, and list it under "Rulings to review" in the PR description
+  (Phase 9). Only a reading no dossier sentence picks and whose impact is
+  `high`, or that decides what the feature does, is the row-3 arbitration you
+  are the wrong party to rule on — you wrote the sentence. Put those to the
+  owner as one question (`--kind design` or `--kind product`), and write the
+  winner into the docstring before the fan-out; keep working on what does not
+  depend on it. Never ask the owner to approve readings the dossier settles
+  or that are low-impact (`references/owner-questions.md`, "The ask policy").
 - **Its `DEFECT:` lines you fix immediately** — unstated visibility,
   unmeasurable words, criteria the contract cannot express.
 
