@@ -1,0 +1,10 @@
+{
+  "repos": {
+    "config-harness": {
+      "vm": "nightwatch",
+      "compose_dir": "deploy/compose",
+      "vm_start": ["limactl", "start", "{vm}"],
+      "stack_up": ["limactl", "shell", "{vm}", "--", "bash", "-lc", "cd {root} && bash deploy/scripts/up.sh core"]
+    }
+  }
+}

@@ -43,6 +43,11 @@ the recorded checkpoints.
       message: `OWNER ANSWER <id>: …` or `OWNER FOLLOWUP <id>: …`. On a
       follow-up the agent answers with `ask_owner.py reply` and ends the turn
       with `RUNNER: WAITING <id>` again.
+    - `RUNNER: ENV <vm|stack|disk> <detail>` — a broken environment (the
+      Lima VM down, a compose service unhealthy, the disk low), reported
+      instead of asked about. The session stays open; the runner answers with
+      `RUNNER ENV <kind>: repaired ...` (carry on) or `RUNNER ENV <kind>: not
+      repaired ...` (ask the owner as usual). See "Standing repair" below.
     - `RUNNER: DONE` — the dossier is finished: the runner records `done`
       and exits 0.
     - `RUNNER: REPLAN <why>` — the owner ruled the dossier back to `/plan`
@@ -578,3 +583,25 @@ The prompt tells the orchestrator these rules:
   `stopped`. A pid that is no longer alive reads as `stopped`.
 
 The dashboard shows these lines on each running dossier, newest first.
+
+## Standing repair of the VM and the stack (`scripts/stack_repair.py`)
+
+Off unless `ASD_STACK_REPAIR=1`: a repair restarts resources other runs share,
+so the owner enables it explicitly. When on, the runner checks before every
+stage, and again on a `RUNNER: ENV vm|stack ...` line:
+
+- Detect, read-only: `limactl list --json` (the VM must be Running) and
+  `docker compose ps --format json` over `limactl shell` (every service running,
+  none unhealthy). The disk is detected (the existing floor) but never repaired
+  automatically: no deletion, the owner is asked as before.
+- Repair, with the repo's own commands only, named in the repo's
+  `.agentic/stack-repair.json` (or `ASD_STACK_REPAIR_CONFIG`, or the plugin's
+  `config/stack-repair.json` under `repos.<directory name>`): `vm_start` (VM
+  stopped) and `stack_up` (stack unhealthy; the repo's `up.sh`, which takes the
+  repo's stack lease itself). Placeholders `{vm} {root} {compose_dir}`.
+- One repairer at a time: an flock on `~/.agentic/stack-repair.lock`
+  (`ASD_STACK_REPAIR_DIR` moves it); other runners wait, then look again before
+  they touch anything.
+- At most 2 attempts per hour per resource (`stack-repair-state.json`); after
+  that the session is told `not repaired` and asks the owner.
+- Every action goes to the runner log and the run's events.
