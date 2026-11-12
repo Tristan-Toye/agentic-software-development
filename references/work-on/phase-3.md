@@ -73,7 +73,10 @@ becomes `PROMISE_CHECKLIST`. Write it into
 payload beside `CONTRACT`. A promise missing from a test traces to a thin
 checklist: a Phase 3 defect to fix in the checklist and the contract
 together, never a reason to ask a blind agent to re-read what its payload
-never named.
+never named. A line whose expected outcome is negative (refused, `None`,
+`Ok(None)`, no event) carries an `input:` that passes every other guard the
+contract documents on that path, so a mutant that deletes or weakens the one
+guard under test turns that test red.
 
 **Match the checklist's ids to the repo's own coverage script, before
 deriving it.** When the target repo owns a promise-coverage script, read its
@@ -88,7 +91,13 @@ so re-derive them in it, never fall back to a Phase 5 manual diff.
 migration, a table, a counted file, or moves a file, grep the tree for pins
 that count or list it — a table-name census, a migration count `(1..=N)`, a
 `[&str; N]` array, an inventory row count — and give each one an owner: the
-package that moves it, or a criterion with a test-author owner. Also grep for **exact-output
+package that moves it, or a criterion with a test-author owner. The same census runs when the contract moves code from an existing file into a
+new one: grep the whole
+tree outside the source crates (scripts, `*.tsv` registers, allowlists,
+inventories) for the old file's path: a register that classifies files by path
+(a seam-file TSV, an allowlist keyed by path) gets an owner who adds the new
+file's row, and the suite that pins that register's row count gets an owner
+who re-derives the count — a second pin, owned like the first. Also grep for **exact-output
 assertions over changed members**: a test that compares the whole result of a
 member this contract changes (full-map or collection equality) breaks when the
 result gains a key or an item. Recipe per language: Rust
