@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import os
 import re
 import shutil
@@ -1103,8 +1104,10 @@ def collect_adr_ids(adr_dir: Path) -> dict[str, list[Path]]:
     return by_id
 
 
-# `BLOCKER-REMOVED: W-079 — <reason>`: a blocker taken out of `blocked_by` on
-# purpose. Without this line in `## Build log` a removal is a defect.
+# A blocker taken out of `blocked_by` is justified by a fact: the blocker dossier is `done`, or
+# `.discovery/blocker-removals/<ID>.yaml` holds a `{blocker, reason}` row (written by
+# `dossier_edit.py ... --reason`). The legacy `BLOCKER-REMOVED: W-079 — <reason>` build-log line
+# still justifies a removal in a dossier written before the record existed.
 BLOCKER_REMOVED_RE = re.compile(r"BLOCKER-REMOVED:\s*(W-\d+)\s*[—-]+\s*\S")
 WID_RE = re.compile(r"W-\d+")
 
@@ -1118,6 +1121,27 @@ def default_base(root: Path) -> str | None:
         text=True,
     )
     return "origin/HEAD" if p.returncode == 0 else None
+
+
+def blocker_removal_facts(path: Path, then: set[str]) -> set[str]:
+    """The ids of `then` whose removal from the dossier at `path` is justified by a fact."""
+    ok: set[str] = set()
+    disc = path.parent.parent
+    try:
+        fm, _, _ = split_front_matter(path.read_text())
+        rec = json.loads((disc / "blocker-removals" / f"{fm.get('id')}.yaml").read_text())
+        ok |= {str(r.get("blocker")) for r in rec.get("removals", []) if str(r.get("reason") or "").strip()}
+    except (ValueError, OSError, AttributeError):
+        pass
+    for wid in then - ok:
+        for q in sorted(path.parent.glob(f"{wid}*.md")):
+            try:
+                qfm, _, _ = split_front_matter(q.read_text())
+            except (ValueError, OSError):
+                continue
+            if qfm.get("id") == wid and qfm.get("status") == "done":
+                ok.add(wid)
+    return ok
 
 
 def check_blocker_removals(
@@ -1154,13 +1178,13 @@ def check_blocker_removals(
             continue
         then = set(WID_RE.findall(str(fm_then.get("blocked_by") or "")))
         now = set(WID_RE.findall(str(fm_now.get("blocked_by") or "")))
-        justified = set(BLOCKER_REMOVED_RE.findall(body))
+        justified = blocker_removal_facts(p, then - now) | set(BLOCKER_REMOVED_RE.findall(body))
         for wid in sorted(then - now - justified):
             rep.defect(
                 p.name,
-                f"blocked_by drops {wid}, which it holds at {base}. A done blocker "
-                f"stays: it records what this dossier builds on. To remove a wrong "
-                f"blocker, log `BLOCKER-REMOVED: {wid} — <reason>` in ## Build log.",
+                f"blocked_by drops {wid}, which it holds at {base}, and {wid} is not done. "
+                f"Remove it with `dossier_edit.py remove ... blocked_by={wid} --reason '<why>'`, "
+                f"which records the reason.",
             )
 
 
@@ -2133,16 +2157,25 @@ def selftest_blocker_removal() -> bool:
             ("a kept blocker passes", not defects("[W-0001]")),
             ("an added blocker passes", not defects("[W-0001, W-0003]")),
             (
-                "a justified removal passes",
-                not defects(
-                    "[]", "\n- BLOCKER-REMOVED: W-0001 — the dependency was wrong"
-                ),
+                "a legacy log line still justifies a removal",
+                not defects("[]", "\n- BLOCKER-REMOVED: W-0001 — the dependency was wrong"),
             ),
             (
-                "a justification without a reason is refused",
+                "a legacy log line without a reason is refused",
                 bool(defects("[]", "\n- BLOCKER-REMOVED: W-0001 —")),
             ),
         ]
+        rec_dir = root / ".discovery" / "blocker-removals"
+        rec_dir.mkdir()
+        (rec_dir / "W-0002.yaml").write_text('{"removals": [{"blocker": "W-0001", "reason": "wrong"}]}')
+        cases.append(("a recorded reason justifies a removal", not defects("[]")))
+        (rec_dir / "W-0002.yaml").write_text('{"removals": [{"blocker": "W-0001", "reason": ""}]}')
+        cases.append(("a recorded row without a reason does not", bool(defects("[]"))))
+        (rec_dir / "W-0002.yaml").unlink()
+        (d / "W-0001-a.md").write_text("---\nid: W-0001\nstatus: done\n---\n\n## Build log\n")
+        cases.append(("a done blocker leaves without a reason", not defects("[]")))
+        (d / "W-0001-a.md").write_text("---\nid: W-0001\nstatus: building\n---\n\n## Build log\n")
+        cases.append(("a building blocker does not", bool(defects("[]"))))
         rep = Report()
         check_blocker_removals(root, [path], None, rep)
         cases.append(("no base, no check", not rep.defects))
