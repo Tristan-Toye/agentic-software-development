@@ -35,7 +35,7 @@ All entries are PROPOSED. None is decided. The owner accepts or changes each.
 
 The work is larger than one dossier. The proposal is a spike D0 plus six dossiers, in this build order:
 
-1. **D0 spike.** Run elkjs on the Bun server at 50, 100 and 200 nodes. Run `cargo metadata` and one deeper extractor on config-harness. No product code ships. This answers the open points in [Q3](../visual-review/research/synthesis/q3-extraction-from-rust.md) and [Q5](../visual-review/research/synthesis/q5-rendering-stack.md).
+1. **D0 spike.** Run elkjs on the Bun server at 50, 100 and 200 nodes. Run `cargo metadata` and one deeper extractor on config-harness. No product code ships. This answers the open points in [Q3](../visual-review/research/synthesis/q3-extraction-from-rust.md) and [Q5](../visual-review/research/synthesis/q5-rendering-stack.md). Result: [d0/REPORT.md](d0/REPORT.md).
 2. **D1** [VR-01](../visual-review/features/01-change-graph-model-and-extraction/README.md): graph schema, validator and extraction.
 3. **D2** [VR-02](../visual-review/features/02-diff-view/README.md): diff and modes.
 4. **D3** [VR-03](../visual-review/features/03-dashboard-renderer/README.md): server layout and canvas.

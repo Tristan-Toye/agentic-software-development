@@ -1,0 +1,451 @@
+{
+ "schema_version": "0.1.0",
+ "view": "L2",
+ "title": "W-145 L2: crates and components",
+ "meta": {
+  "change": "W-145",
+  "repo": "config-harness",
+  "commit": "56034559",
+  "branch": "development",
+  "generated_by": "hand",
+  "tools": [],
+  "note": "Hand-built D0 fixture. Source anchors resolve at the commit above (after-state, W-145 merged)."
+ },
+ "groups": [
+  {
+   "id": "g-harness",
+   "label": "harness",
+   "status": "changed",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/Cargo.toml",
+     "line": 1
+    }
+   ]
+  },
+  {
+   "id": "g-protocol",
+   "label": "protocol",
+   "status": "changed",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/Cargo.toml",
+     "line": 1
+    }
+   ]
+  },
+  {
+   "id": "g-testsupport",
+   "label": "test-support",
+   "status": "changed",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/test-support/src/fixture_values.rs",
+     "line": 263,
+     "note": "full_row gets tool_read_concurrency: 4"
+    }
+   ]
+  },
+  {
+   "id": "g-platform",
+   "label": "platform",
+   "status": "context",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/platform/tests/tool_read_concurrency_settings_test.rs",
+     "line": 1,
+     "note": "test only"
+    }
+   ]
+  },
+  {
+   "id": "g-croot",
+   "label": "composition-root",
+   "status": "context",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/composition-root/src/run.rs",
+     "line": 2700,
+     "note": "calls StepPolicy::from_settings, no edit"
+    }
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "id": "c-step",
+   "label": "tools::step (run_group)",
+   "kind": "module",
+   "status": "changed",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1816
+    }
+   ],
+   "group": "g-harness"
+  },
+  {
+   "id": "c-pipe",
+   "label": "tools::pipeline (reads_only)",
+   "kind": "module",
+   "status": "changed",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/pipeline.rs",
+     "line": 638
+    }
+   ],
+   "group": "g-harness"
+  },
+  {
+   "id": "c-git",
+   "label": "tools::git_tools",
+   "kind": "module",
+   "status": "changed",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/git_tools.rs",
+     "line": 273
+    }
+   ],
+   "group": "g-harness"
+  },
+  {
+   "id": "c-set",
+   "label": "schema::settings",
+   "kind": "module",
+   "status": "added",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/src/schema/settings.rs",
+     "line": 222
+    }
+   ],
+   "group": "g-protocol"
+  },
+  {
+   "id": "c-mig",
+   "label": "migration 0063",
+   "kind": "module",
+   "status": "added",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/migrations/0063_tool_read_concurrency.sql",
+     "line": 5
+    }
+   ],
+   "group": "g-protocol"
+  },
+  {
+   "id": "c-fix",
+   "label": "fixture_values::full_row",
+   "kind": "module",
+   "status": "changed",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/test-support/src/fixture_values.rs",
+     "line": 263
+    }
+   ],
+   "group": "g-testsupport"
+  },
+  {
+   "id": "c-plat",
+   "label": "platform (settings IT)",
+   "kind": "crate",
+   "status": "context",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/platform/tests/tool_read_concurrency_settings_test.rs",
+     "line": 1
+    }
+   ],
+   "group": "g-platform"
+  },
+  {
+   "id": "c-run",
+   "label": "run.rs",
+   "kind": "module",
+   "status": "context",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/composition-root/src/run.rs",
+     "line": 2700
+    }
+   ],
+   "group": "g-croot"
+  },
+  {
+   "id": "c-fault",
+   "label": "fault",
+   "kind": "crate",
+   "status": "context",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/fault/Cargo.toml",
+     "line": 1
+    }
+   ]
+  },
+  {
+   "id": "c-timing",
+   "label": "step-timing",
+   "kind": "crate",
+   "status": "context",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/step-timing/Cargo.toml",
+     "line": 1
+    }
+   ]
+  },
+  {
+   "id": "c-sbx",
+   "label": "sandbox-tool",
+   "kind": "crate",
+   "status": "context",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/sandbox-tool/Cargo.toml",
+     "line": 1
+    }
+   ]
+  },
+  {
+   "id": "c-graph",
+   "label": "graph-runtime",
+   "kind": "crate",
+   "status": "context",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/graph-runtime/Cargo.toml",
+     "line": 1
+    }
+   ]
+  }
+ ],
+ "edges": [
+  {
+   "id": "d1",
+   "source": "c-step",
+   "target": "c-pipe",
+   "kind": "calls",
+   "status": "changed",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1803,
+     "note": "is_groupable calls reads_only"
+    }
+   ]
+  },
+  {
+   "id": "d2",
+   "source": "c-step",
+   "target": "c-set",
+   "kind": "uses",
+   "status": "added",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 93,
+     "note": "from_settings reads the row field"
+    }
+   ]
+  },
+  {
+   "id": "d3",
+   "source": "c-set",
+   "target": "c-mig",
+   "kind": "documents",
+   "status": "added",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/src/schema/settings.rs",
+     "line": 220,
+     "note": "doc comment names the column"
+    }
+   ]
+  },
+  {
+   "id": "d4",
+   "source": "c-git",
+   "target": "c-step",
+   "kind": "called_by",
+   "status": "context",
+   "resolution": "dispatch",
+   "evidence": [
+    {
+     "tier": "inferred",
+     "note": "git read tool run is polled by run_slots_concurrently"
+    }
+   ]
+  },
+  {
+   "id": "d5",
+   "source": "c-run",
+   "target": "c-step",
+   "kind": "uses",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/composition-root/src/run.rs",
+     "line": 2700
+    }
+   ]
+  },
+  {
+   "id": "d6",
+   "source": "c-fix",
+   "target": "c-set",
+   "kind": "uses",
+   "status": "changed",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/test-support/src/fixture_values.rs",
+     "line": 263
+    }
+   ]
+  },
+  {
+   "id": "d7",
+   "source": "g-harness",
+   "target": "c-fault",
+   "kind": "depends",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/Cargo.toml",
+     "line": 83,
+     "note": "cargo metadata: workspace dependency in harness -> fault"
+    }
+   ]
+  },
+  {
+   "id": "d8",
+   "source": "g-harness",
+   "target": "c-timing",
+   "kind": "depends",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/Cargo.toml",
+     "line": 86,
+     "note": "cargo metadata: workspace dependency in harness -> step-timing"
+    }
+   ]
+  },
+  {
+   "id": "d9",
+   "source": "g-harness",
+   "target": "c-sbx",
+   "kind": "depends",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/Cargo.toml",
+     "line": 87,
+     "note": "cargo metadata: workspace dependency in harness -> sandbox-tool"
+    }
+   ]
+  },
+  {
+   "id": "d10",
+   "source": "g-harness",
+   "target": "g-protocol",
+   "kind": "depends",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/Cargo.toml",
+     "line": 82,
+     "note": "cargo metadata: workspace dependency in harness -> protocol"
+    }
+   ]
+  },
+  {
+   "id": "d11",
+   "source": "g-croot",
+   "target": "c-graph",
+   "kind": "depends",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/composition-root/Cargo.toml",
+     "line": 45,
+     "note": "cargo metadata: workspace dependency in composition-root -> graph-runtime"
+    }
+   ]
+  },
+  {
+   "id": "d12",
+   "source": "g-platform",
+   "target": "g-protocol",
+   "kind": "depends",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/platform/Cargo.toml",
+     "line": 27,
+     "note": "cargo metadata: workspace dependency in platform -> protocol"
+    }
+   ]
+  },
+  {
+   "id": "d13",
+   "source": "g-croot",
+   "target": "g-harness",
+   "kind": "depends",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/composition-root/Cargo.toml",
+     "line": 39,
+     "note": "cargo metadata: workspace dependency in composition-root -> harness"
+    }
+   ]
+  }
+ ]
+}
