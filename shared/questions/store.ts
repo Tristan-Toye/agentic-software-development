@@ -22,6 +22,8 @@ export type Question = {
   options: Option[]
   recommendation: string
   blocks: string
+  // What the owner is asked to decide, from `ask_owner.py ask --kind`: design, product or uncertainty; "" when not given.
+  qkind: string
   ts: string
   answer: Line | null
   lines: Line[]
@@ -68,6 +70,7 @@ export function parseQuestion(id: string, content: string): Question | null {
     // The latest reply that names a recommendation moves it (ask_owner.py reply --recommend).
     recommendation: str([...lines].reverse().find((l) => l.kind === "reply" && typeof (l as any).recommend === "string")?.["recommend" as keyof Line] ?? q.recommendation),
     blocks: str(q.blocks),
+    qkind: str(q.qkind),
     ts: str(q.ts),
     answer,
     lines,
