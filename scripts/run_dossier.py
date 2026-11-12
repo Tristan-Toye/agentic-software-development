@@ -18,7 +18,17 @@ the `result` event ends a turn and the turn's RUNNER: line decides:
     RUNNER: WAITING <id>[,..]   `ask_owner.py wait` runs here (no tokens
                                 spent); the owner's line goes into the same
                                 live process as `OWNER ANSWER|FOLLOWUP <id>: ..`
+    RUNNER: ENV <vm|stack|disk> <detail>
+                                a broken environment (the Lima VM down, a compose service unhealthy, the disk low),
+                                reported instead of asked about; with ASD_STACK_REPAIR=1 the runner repairs vm and
+                                stack (scripts/stack_repair.py) and answers `RUNNER ENV <kind>: repaired ..` or
+                                `.. not repaired ..`; the turn goes on, no stage ends
     RUNNER: DONE                state done, exit 0
+    RUNNER: REPLAN <why>        an owner ruling (or the contract) sends the
+                                dossier back to /plan: the run ends done, the
+                                dossier is set to planned, and a /plan run of
+                                the dossier starts (queued for a slot) with no
+                                question to the owner
     RUNNER: FAILED <why>, or no RUNNER: line, or a crashed process
                                 state failed; a question to the owner: retry
                                 the stage, or stop
@@ -67,6 +77,8 @@ import time
 
 CUT = 3500
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import stack_repair  # noqa: E402
 ASK_OWNER = os.path.join(HERE, "ask_owner.py")
 PLUGIN = "agentic-software-development"
 
@@ -91,9 +103,10 @@ You run under the dossier runner and nobody reads the terminal.
 - The owner's Start is standing authority (references/owner-questions.md, "What is worth asking"): pushing the dossier's own branch and opening or updating its draft PR into the base or the accepting stub is yes; so is a graduation issue in the plugin repository, and committing a repository rule from this build on the dossier's branch (the PR ratifies it). Carry out the readings, defaults and rulings the dossier already records; never ask to confirm them. Ask only technical, architectural or product design questions the dossier leaves open, issues you cannot resolve in scope, and actions outside that authority (a merge, a push to a protected branch, a force-push, Jira writes, deleting what is not the run's own). Do the authorized ones, log them, and name them in your next update.
 - The plugin's references (`references/work-on/phase-*.md`, `formats/*`, `runner.md`) are long and the same in every stage: read only the section your step needs (`ref_section` with the document's short name, `phase-4` or `formats/dossier`, and a heading or `--list`), not whole files; the phase file you start a phase with is the one you read whole, and never the same section twice in one stage.
 - Phase 2 takes its stub from `python3 scripts/stub_target.py --root R` (the plugin's scripts). Exit 3 (`wait <stub>`) means that stub is being integrated and no new one may be cut until it is in development: end the turn with the line `RUNNER: WAITING stub`; the runner waits without tokens and sends `STUB READY: <branch>` once the new stub is cut. Never cut a stub yourself.
+- A broken environment (the Lima VM stopped or unreachable, a shared docker compose service unhealthy, the disk low) is not an owner question: end the turn with the single line `RUNNER: ENV <vm|stack|disk> <short detail>` and nothing after it. The runner repairs vm and stack when the owner enabled that and answers `RUNNER ENV <kind>: repaired ...` (carry on) or `RUNNER ENV <kind>: not repaired ...` (then ask the owner as usual). A disk is never repaired automatically.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - `RUNNER KEEPALIVE: ...` is the runner keeping the prompt cache warm while you wait: reply with exactly `OK` and do nothing else (no tool call, no RUNNER: line, no change to your plan).
-{claude_md}- End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
+{claude_md}- End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on. When the owner rules the dossier back to /plan (or the build shows it must be re-planned and the owner agreed), record the ruling and the inputs for the re-plan in the dossier, leave nothing half-built behind, and end with `RUNNER: REPLAN <why>`: the runner sets the dossier to planned and starts /plan itself. Never end such a run with FAILED.
 - Keep the owner informed: post an update with `ask_owner.py note --root R --dossier ID --text "..."` when a stage starts and ends and whenever something worth knowing happens (a wave returned, the suite went green or red, an arbitration was ruled, a plan changed). Write it for a person reading on a phone: what happened and what it means, in plain sentences; markdown bullets and small tables are welcome. Never paste commands, file paths, SHAs, flags or log output into an update; the build log keeps those.
 """
 
@@ -115,6 +128,7 @@ NETWORK_RE = re.compile(r"ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|
                         r"|bad gateway|service unavailable|gateway time-?out", re.I)
 # Waits between network retries, seconds; the last one repeats for as long as the outage lasts (ASD_RUNNER_NET_RETRIES
 # sets a limit; the default, 0, is none).
+GIT_SSH_HARDENED = "ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
 NETWORK_BACKOFF = (30, 60, 120, 300, 600, 900)
 # The exit codes of a claude process that something outside the runner signalled: SIGTERM/SIGKILL as a negative
 # return code, or as 128+N when claude's own handler exits. The work it held is checkpointed; the stage reruns.
@@ -319,11 +333,13 @@ def human_reset(text: str, now_s: float) -> float | None:
 KEEPALIVE_MSG = "RUNNER KEEPALIVE: reply with exactly OK and do nothing else."
 NUDGE = ("RUNNER: your last turn ended without a RUNNER: line and nothing has happened since. "
          "If you were waiting on a background command or workflow, check its result now and continue. "
-         "Every turn must end with a RUNNER: line (STAGE-DONE, WAITING, DONE or FAILED).")
+         "Every turn must end with a RUNNER: line (STAGE-DONE, WAITING, DONE, REPLAN or FAILED).")
 
 # A question id from ask_owner.py: `<repo>.<ID>.Qn` (or a bare `Qn`).
 QUESTION_ID = re.compile(r"(?:^|\.)Q\d+$")
-MARKER = re.compile(r"^RUNNER:\s*(STAGE-DONE|WAITING|DONE|FAILED)\b[ \t]*(.*)$")
+MARKER = re.compile(r"^RUNNER:\s*(STAGE-DONE|WAITING|DONE|REPLAN|FAILED|ENV)\b[ \t]*(.*)$")
+# A FAILED whose reason says the owner sent the dossier back to /plan is a REPLAN under an older wording.
+REPLAN_WORDS = re.compile(r"\b(sent|send|sending|go(?:es|ing)?)\s+back\s+to\s+/?plan\b|\bre-?plan(?:ned|ning)?\b.*\b(ruling|ruled|owner)\b", re.I)
 
 
 def now() -> str:
@@ -406,6 +422,23 @@ def alive(pid) -> bool:
     return True
 
 
+def proc_command(pid) -> str:
+    """The command line of a process ("" when it is gone or ps cannot say)."""
+    try:
+        return subprocess.run(["ps", "-p", str(int(pid)), "-o", "command="], capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ""
+
+
+def runner_alive(pid) -> bool:
+    """A runner process is alive: the pid answers AND it is a run_dossier process. After a logout or a reboot the dead
+    runner's pid can belong to an unrelated process; `alive` alone would then keep the run from ever being revived."""
+    if not alive(pid):
+        return False
+    cmd = proc_command(pid)
+    return not cmd or "run_dossier" in cmd   # ps unable to say: believe the pid
+
+
 def say(msg: str) -> None:
     print(f"[run_dossier] {msg}", flush=True)
 
@@ -414,6 +447,32 @@ def user_message(text: str) -> bytes:
     msg = {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]},
            "parent_tool_use_id": None}
     return (json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def set_dossier_status(root: str, dossier: str, status: str, log=lambda m: None) -> bool:
+    """Set `status:` in the dossier's front matter (.discovery/dossiers/<ID>-*.md), when it differs. Best effort."""
+    d = os.path.join(root, ".discovery", "dossiers")
+    try:
+        names = sorted(n for n in os.listdir(d) if re.match(re.escape(dossier) + r"(-.*)?\.md$", n))
+    except OSError:
+        return False
+    if not names:
+        return False
+    path = os.path.join(d, names[0])
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        return False
+    m = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    if not m:
+        return False
+    fm = m.group(1)
+    new = re.sub(r"(?m)^status:[ \t]*\S.*$", f"status: {status}", fm, count=1)
+    if new == fm:
+        return True
+    open(path, "w", encoding="utf-8").write(f"---\n{new}\n---\n" + text[m.end():])
+    log(f"dossier {dossier}: status set to {status}")
+    return True
 
 
 def parse_marker(text: str) -> tuple[str, str] | None:
@@ -1045,6 +1104,11 @@ class Runner:
         self.q: queue.Queue | None = None   # the open claude process's event queue (a keep-alive ping reads its result here)
         self.last_api = 0.0                 # when the session's last API call came back (any assistant or result event)
         self.ka_since: float | None = None  # when this wait (owner question or queue) began
+        self.turn_open = False              # a user message went in and no result event came yet: the session is mid-turn
+        self.last_out = time.monotonic()    # monotonic time of the last stream event (or message sent) of the session
+        self.last_ev = "none"               # the last stream event: its type and tool name, for the stall diagnostic
+        self.tool_names: dict = {}          # tool_use id -> tool name
+        self.stall_bg_at = 0.0              # when the transcript was last checked for background work during a quiet spell
         self.ka_checked = 0.0               # monotonic time of the last keep-alive check
         self.ka_cold: set[str] = set()      # sessions whose cache a ping found cold: not pinged again
         self.ka_said: set[str] = set()
@@ -1250,9 +1314,29 @@ class Runner:
             env.pop("CLAUDE_CONFIG_DIR", None)
         if compact_window(self.model or runner_model(None)):
             env.pop("CLAUDE_CODE_AUTO_COMPACT_WINDOW", None)   # the variable would outrank the --autocompact claude_cmd passes
+        if (os.environ.get("ASD_RUNNER_GIT_HARDEN") or "").strip() != "0":
+            self.git_harden(env)
         if (os.environ.get("ASD_RUNNER_LEAN") or "1").strip() != "0":
             env.update(lean_env())
         return env
+
+    def git_harden(self, env: dict) -> None:
+        """Git never waits on a prompt or a dead connection (a `git pull` hung a session for 40 hours): no terminal
+        prompt, an ssh that fails fast (BatchMode, a connect timeout, keepalives) unless GIT_SSH_COMMAND or GIT_SSH
+        is set or the repo has its own core.sshCommand (GIT_SSH_COMMAND would outrank it), and https transfers that
+        stay below 1 kB/s for 60 s abort. Off with ASD_RUNNER_GIT_HARDEN=0."""
+        env.setdefault("GIT_TERMINAL_PROMPT", "0")
+        env.setdefault("GIT_HTTP_LOW_SPEED_LIMIT", "1000")
+        env.setdefault("GIT_HTTP_LOW_SPEED_TIME", "60")
+        if env.get("GIT_SSH_COMMAND") or env.get("GIT_SSH"):
+            return
+        try:
+            own = subprocess.run(["git", "config", "core.sshCommand"], cwd=self.root, capture_output=True, text=True,
+                                 timeout=10, stdin=subprocess.DEVNULL).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            own = ""
+        if not own:
+            env["GIT_SSH_COMMAND"] = GIT_SSH_HARDENED
 
     def spawn(self) -> tuple[queue.Queue, bool]:
         self.wrong_model = ""
@@ -1263,6 +1347,9 @@ class Runner:
         sid, self.resume_sid = self.resume_sid, ""
         self.resumed = bool(sid) and self.resume_acct == self.account["name"]
         self.got_init = False
+        self.turn_open = False
+        self.last_out = time.monotonic()
+        self.last_ev = "none"
         try:
             self.err_start = os.path.getsize(self.err_path)
         except OSError:
@@ -1517,6 +1604,8 @@ class Runner:
         return True
 
     def send(self, text: str) -> None:
+        self.turn_open = True
+        self.last_out = time.monotonic()
         try:
             self.proc.stdin.write(user_message(text))
             self.proc.stdin.flush()
@@ -1549,14 +1638,14 @@ class Runner:
         return ""
 
     def keepalive_tick(self) -> None:
-        """Prompt-cache keep-alive for a run that waits (on the owner or for a slot): the cache lives 1 h, and an
-        owner's answer or a slot can take longer. When the session's last API call is ASD_KEEPALIVE_AFTER seconds old
+        """Prompt-cache keep-alive for a run that waits on the owner: the cache lives 1 h, and an owner's answer can
+        take longer. A run queued for a slot is never pinged: the slot wait is not worth what a ping costs. When the session's last API call is ASD_KEEPALIVE_AFTER seconds old
         (3000) and the wait is under ASD_KEEPALIVE_MAX_H hours (12), send one tiny ping. No ping while the run is
         paused for usage, when its account's 5-hour window is at 80% or more, or with ASD_KEEPALIVE=0. A ping takes
         no run slot and never changes the run's state."""
         if (os.environ.get("ASD_KEEPALIVE") or "").strip() == "0" or self.stopping:
             return
-        if self.state.get("state") not in ("waiting", "queued"):
+        if self.state.get("state") != "waiting":   # a slot wait ("queued") is not worth a ping: the run starts when a slot frees
             self.ka_since = None
             return
         if time.monotonic() - self.ka_checked < env_num("ASD_KEEPALIVE_POLL", 5):
@@ -1671,6 +1760,8 @@ class Runner:
     # -- reading a turn ---------------------------------------------------
 
     def note_event(self, ev: dict) -> None:
+        self.last_out = time.monotonic()   # any stream-json line is output, a sub-agent's included
+        self.track_event(ev)
         if ev.get("type") in ("assistant", "result"):
             self.last_api = now_s()
         if ev.get("type") == "rate_limit_event":
@@ -1720,6 +1811,87 @@ class Runner:
             if at > 0 and self.ctx >= at and not self.split:
                 self.split = {"tid": tid, "mid": msg.get("id") or "", "name": self.checkpoints[-1]["name"], "ctx": self.ctx, "ready": False}
 
+    def track_event(self, ev: dict) -> None:
+        """Keep what the stall watchdog needs: whether the session is mid-turn, and the last event's type and tool."""
+        t = str(ev.get("type"))
+        if t == "result":
+            self.turn_open = False
+        elif t in ("assistant", "user"):
+            self.turn_open = True
+        tool = ""
+        c = (ev.get("message") or {}).get("content") if t in ("assistant", "user") else None
+        if isinstance(c, list):
+            for b in c:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "tool_use":
+                    self.tool_names[str(b.get("id", ""))] = tool = str(b.get("name", ""))
+                elif b.get("type") == "tool_result":
+                    tool = self.tool_names.get(str(b.get("tool_use_id", "")), "")
+                    t = "tool_result"
+        if t not in ("rate_limit_event",):
+            self.last_ev = t + (f" {tool}" if tool else "") + (" (sub-agent)" if ev.get("parent_tool_use_id") else "")
+
+    def stalled(self) -> bool:
+        """True when the session is wedged: mid-turn, running, and no stream-json output for ASD_STALL_MIN minutes
+        (45; 0 disables). Not mid-turn (the runner's own waits on an owner's answer or a slot, a turn ended while
+        background work runs) is never a stall, nor is a transcript that still shows background work in flight.
+        A Bash call has its own timeout (10 min at most) and a sub-agent's events are output, so neither is quiet this long."""
+        lim = env_num("ASD_STALL_MIN", 45) * 60
+        if lim <= 0 or not self.turn_open or self.stopping or self.state.get("state") != "running":
+            return False
+        if self.proc is None or self.proc.poll() is not None:
+            return False
+        if time.monotonic() - self.last_out < lim:
+            return False
+        if time.monotonic() - self.stall_bg_at >= 60:
+            self.stall_bg_at = time.monotonic()
+            if self.background():
+                return False
+            self.stall_bg_at = 0.0
+            return True
+        return False
+
+    def process_tree(self) -> str:
+        """ps rows (pid, etime, stat, cpu, command[:120]) of the claude process group and its descendants."""
+        try:
+            out = subprocess.run(["ps", "-axo", "pid=,ppid=,pgid=,etime=,stat=,pcpu=,command="], capture_output=True, text=True, timeout=15).stdout
+        except (OSError, subprocess.SubprocessError):
+            return "(ps failed)"
+        rows, kids = {}, {}
+        for ln in out.splitlines():
+            f = ln.split(None, 6)
+            if len(f) < 7 or not f[0].isdigit() or not f[1].isdigit():
+                continue
+            rows[int(f[0])] = f
+            kids.setdefault(int(f[1]), []).append(int(f[0]))
+        root = self.proc.pid if self.proc else -1
+        want, todo = set(), [root]
+        while todo:
+            x = todo.pop()
+            if x in want:
+                continue
+            want.add(x)
+            todo += kids.get(x, [])
+        want |= {pid for pid, f in rows.items() if f[2] == str(root)}
+        return "\n".join(f"  pid {pid} etime {f[3]} stat {f[4]} cpu {f[5]}% {f[6][:120]}" for pid, f in sorted(rows.items()) if pid in want) or "  (no process found)"
+
+    def stall_report(self) -> str:
+        """Log the diagnostic, then kill the process group (SIGKILL when SIGTERM does not end it); returns the detail."""
+        mins = int((time.monotonic() - self.last_out) / 60)
+        last = self.last_ev
+        tool = last.split(" ", 1)[1] if last.count(" ") else last
+        self.log(f"stall diagnostic: last stream event: {last}; process tree of claude pid {self.proc.pid}:\n" + self.process_tree())
+        detail = f"stalled: no output for {mins} min mid-turn (last: {tool})"
+        self.log(detail)
+        kill_group(self.proc)
+        for _ in range(50):
+            if self.proc.poll() is not None:
+                break
+            time.sleep(0.1)
+        kill_group(self.proc, signal.SIGKILL)
+        return detail
+
     def read_turn(self, q: queue.Queue, extra: bool, idle: float | None = None) -> tuple[str, object]:
         """('result', (text, is_error)) | ('exit', code) | ('stopped', None) | ('idle', None)
         when `idle` seconds pass with no event at all."""
@@ -1741,6 +1913,8 @@ class Runner:
                     return "stopped", None
                 if result is not None:
                     return "result", result
+                if self.stalled():
+                    return "stalled", None
                 if idle is not None and time.monotonic() - quiet_since > idle:
                     return "idle", None
                 continue
@@ -1839,6 +2013,51 @@ class Runner:
 
     # -- the run ----------------------------------------------------------
 
+    def repair_env(self, why: str) -> dict:
+        """The standing repair (scripts/stack_repair.py): detect the VM and stack, repair what is down, within its
+        bounds. Off unless ASD_STACK_REPAIR=1. Never raises and never fails the run; returns {resource: outcome}."""
+        if not stack_repair.enabled():
+            return {}
+        out: dict = {}
+        try:
+            cfg = stack_repair.load_config(self.root)
+            if not cfg:
+                return {}
+            for _ in range(2):   # a started VM may show a broken stack that was not probed before
+                found = stack_repair.detect(cfg, self.root)
+                if not found:
+                    break
+                self.event(f"environment ({why}): " + "; ".join(f"{k}: {v}" for k, v in found.items()))
+                res = stack_repair.repair(cfg, self.root, found, lambda t: self.event(t))
+                out.update(res)
+                if not any(v.startswith("repaired") for v in res.values()):
+                    break
+        except Exception as e:  # noqa: BLE001 - a repair must never end a run
+            self.event(f"environment repair crashed: {e!r}")
+        return out
+
+    def handle_env(self, rest: str, n: int) -> str:
+        """The message sent back for a `RUNNER: ENV <kind> <detail>` line."""
+        parts = rest.split(None, 1)
+        kind = parts[0].lower() if parts else ""
+        detail = parts[1] if len(parts) > 1 else ""
+        self.event(f"session reports environment failure: {kind} {detail[:160]}".strip())
+        ask = "Ask the owner about it as usual (ask_owner.py, then RUNNER: WAITING)."
+        if kind not in ("vm", "stack"):
+            return f"RUNNER ENV {kind or '?'}: the runner does not repair this; {ask}"
+        if not stack_repair.enabled():
+            return f"RUNNER ENV {kind}: automatic repair is off (ASD_STACK_REPAIR is not 1); {ask}"
+        if n > 4:
+            return f"RUNNER ENV {kind}: reported {n} times this stage; {ask}"
+        if not stack_repair.load_config(self.root):
+            return f"RUNNER ENV {kind}: no repair is configured for this repo (.agentic/stack-repair.json); {ask}"
+        res = self.repair_env("reported by the session").get(kind)
+        if res is None:   # the checks find it healthy (the stage-start repair or another runner fixed it)
+            return f"RUNNER ENV {kind}: repaired by the runner (healthy now); carry on with the step you stopped at."
+        if res.startswith("repaired"):
+            return f"RUNNER ENV {kind}: repaired by the runner; carry on with the step you stopped at."
+        return f"RUNNER ENV {kind}: not repaired ({res}); {ask}"
+
     def run_stage(self) -> tuple[str, str]:
         """('next'|'done'|'failed'|'stopped', detail)."""
         n0 = len(self.checkpoints)
@@ -1849,6 +2068,7 @@ class Runner:
         holds = 0       # stage ends held while background work ran
         bg_max = float(os.environ.get("ASD_RUNNER_BG_MAX") or 14400)
         bg_waited = 0.0  # quiet seconds spent waiting on background work the transcript shows in flight
+        env_msgs = 0     # RUNNER: ENV lines this stage
         while True:
             kind, val = self.read_turn(q, extra, idle if quiet else None)
             extra = False
@@ -1887,6 +2107,10 @@ class Runner:
                 return "next", cp["name"]
             if kind == "stopped":
                 return "stopped", ""
+            if kind == "stalled":
+                detail = self.stall_report()
+                self.end_process()
+                return "stalled", detail
             if kind == "exit":
                 self.end_process()
                 tail = self.stderr_tail()
@@ -1938,7 +2162,9 @@ class Runner:
             quiet = False
             nudges = 0   # it answered with a RUNNER: line; a later quiet spell gets its own two nudges
             verb, rest = mk
-            if verb in ("STAGE-DONE", "DONE"):
+            if verb == "FAILED" and REPLAN_WORDS.search(rest):
+                verb = "REPLAN"
+            if verb in ("STAGE-DONE", "DONE", "REPLAN"):
                 # #239: ending the process kills the background work it started, silently. Hold the end until it is done.
                 bg = self.background()
                 if bg and holds < HOLD_MAX:
@@ -1949,6 +2175,12 @@ class Runner:
                     continue
                 if bg:
                     self.log(f"stage ended with {len(bg)} background task(s) still running, after {HOLD_MAX} hold; the runner ends the stage and cuts them off: " + "; ".join(bg[:4]))
+            if verb == "ENV":
+                # `RUNNER: ENV <vm|stack|disk> <detail>`: a broken environment, reported instead of asked about.
+                env_msgs += 1
+                self.send(self.handle_env(rest, env_msgs))
+                quiet = True
+                continue
             if verb == "STAGE-DONE":
                 self.clear_restart()  # the next stage is a new process: it loads the new rules anyway
                 self.end_process()
@@ -1959,6 +2191,9 @@ class Runner:
                 self.record_result(text)
                 self.end_process()
                 return "done", ""
+            if verb == "REPLAN":
+                self.end_process()
+                return "replan", rest or "sent back to /plan"
             if verb == "FAILED":
                 kill_group(self.proc)
                 self.end_process()
@@ -2066,14 +2301,16 @@ class Runner:
 
     def run(self) -> int:
         prev = read_json(self.state_path, {})
-        if prev.get("state") in ("running", "waiting", "queued") and alive(prev.get("pid")) and prev.get("pid") != os.getpid():
+        if prev.get("state") in ("running", "waiting", "queued") and runner_alive(prev.get("pid")) and prev.get("pid") != os.getpid():
             say(f"{self.key} is already run by pid {prev['pid']}")
             return 2
         try:
             os.remove(self.stop_marker)
         except OSError:
             pass
-        if prev.get("state") == "done":
+        if prev.get("state") == "done" or (prev.get("command") and prev.get("command") != self.command):
+            # A finished run, or one of another command (a /plan after a /work-on sent back): its checkpoints are not
+            # this run's hand-off.
             self.checkpoints = []
             write_json(self.cp_path, [])
         signal.signal(signal.SIGTERM, self.on_term)
@@ -2088,6 +2325,7 @@ class Runner:
             self.state["session"] = ""
         net_tries = 0   # network errors in a row; a stage that ends well resets it
         kill_tries = 0  # outside kills in a row; likewise
+        stall_tries = 0  # stalls of one stage in a row; the third goes to the owner
         while True:
             if self.stopping:
                 return self.finish("stopped", "stopped", 3)
@@ -2098,6 +2336,7 @@ class Runner:
             if not self.take_slot():
                 return self.finish("stopped", "stopped", 3)
             self.event(f"stage {started} start", "running")
+            self.repair_env(f"stage {started} start")
             free = disk_free_gib(self.root)
             if free is not None:
                 say(f"{self.key} disk: {free:.0f} GiB free at stage {started} start")
@@ -2106,6 +2345,18 @@ class Runner:
                 net_tries = 0
             if outcome != "killed":
                 kill_tries = 0
+            if outcome != "stalled":
+                stall_tries = 0
+            if outcome == "stalled":
+                # The session wedged (no stream output mid-turn): not the owner's call for the first two. Kill (done),
+                # then run the same stage again from its checkpoints; the third in a row takes the failure path.
+                stall_tries += 1
+                if stall_tries < 3:
+                    self.mark_resume()
+                    self.event(f"{detail}; stage {started} again from its checkpoints (stall {stall_tries} of 2)", "running")
+                    self.reexec_if_changed()
+                    started -= 1
+                    continue
             if outcome == "next":
                 self.event(f"stage {started} end" + (f": {detail}" if detail else ""), "running")
                 self.reexec_if_changed()
@@ -2143,6 +2394,8 @@ class Runner:
                 self.product_summary()
                 self.ready_fix_pr()
                 return self.finish("done", "done", 0)
+            if outcome == "replan":
+                return self.replan(detail)
             if outcome == "stopped":
                 self.end_process()
                 return self.finish("stopped", "stopped", 3)
@@ -2219,6 +2472,21 @@ class Runner:
         except (OSError, subprocess.TimeoutExpired) as e:
             self.log(f"could not mark fix/{self.dossier}-deferred ready: {e}")
 
+    def replan(self, why: str) -> int:
+        """`RUNNER: REPLAN`: the dossier goes back to /plan. Not a failure and not a question: the run ends done, the
+        dossier is set to planned, and a /plan run of the same dossier is started detached; it queues for a slot like any
+        run. Its checkpoints start empty: the /work-on ones belong to another command (run() clears them)."""
+        set_dossier_status(self.root, self.dossier, "planned", self.log)
+        rc = self.finish("done", f"sent back to /plan: {why}", 0)
+        if self.command != "work-on" or os.environ.get("ASD_RUNNER_REPLAN", "1") == "0":
+            return rc
+        try:
+            detach([self.dossier, "--root", self.root, "--command", "plan"], self.root, self.dossier, self.key)
+            self.event("re-plan started: /plan " + self.dossier + " (it starts when a slot frees)", "done")
+        except OSError as e:
+            self.event(f"could not start the re-plan: {e}; start /plan from the dashboard", "done")
+        return rc
+
     def finish(self, state: str, text: str, rc: int) -> int:
         self.end_process()
         if state == "stopped" and self.stopping and not os.path.exists(self.stop_marker):
@@ -2267,10 +2535,17 @@ def cmd_revive() -> int:
     for path in glob.glob(os.path.join(runs_dir(), "*.runner.json")):
         st = read_json(path, {}) or {}
         root = st.get("root") or ""
-        if st.get("state") not in ("running", "waiting", "paused", "queued") or alive(st.get("pid")) or not os.path.isdir(root):
+        if st.get("state") not in ("running", "waiting", "paused", "queued") or runner_alive(st.get("pid")) or not os.path.isdir(root):
             continue
         if time.time() - os.path.getmtime(path) > hours * 3600:
             continue
+        cpid = st.get("claude_pid")
+        if alive(cpid) and "claude" in proc_command(cpid):
+            # the runner died but its claude child lives on, orphaned: the restart resumes that session, so end the orphan first
+            try:
+                os.killpg(int(cpid), signal.SIGTERM)
+            except (OSError, ValueError):
+                pass
         key = os.path.basename(path)[:-len(".runner.json")]
         prefix = main_repo_name(root) + "."
         if not key.startswith(prefix):
@@ -2515,7 +2790,7 @@ def cmd_summary(a: argparse.Namespace) -> int:
     key = key_of(a.root, a.dossier)
     path = os.path.join(runs_dir(), key + ".runner.json")
     prev = read_json(path, {}) or {}
-    if prev.get("state") in ("running", "waiting", "paused", "queued") and alive(prev.get("pid")):
+    if prev.get("state") in ("running", "waiting", "paused", "queued") and runner_alive(prev.get("pid")):
         print(f"{key} is still running; the summary follows when it is done", file=sys.stderr)
         return 2
     r = Runner(prev.get("root") or a.root, a.dossier, "work-on", None, prev.get("permission_mode") or "auto", 1)
@@ -2563,6 +2838,9 @@ for raw in sys.stdin:
         out({"type": "result", "subtype": "success", "is_error": False, "session_id": f"sess-{n}", "result": "OK",
              "usage": {"input_tokens": 3, "output_tokens": 2, "cache_read_input_tokens": pr, "cache_creation_input_tokens": pw}})
         continue
+    if script.get("stall"):   # a Bash tool_use, then silence: the 40 hour `git pull`
+        out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "ts", "name": "Bash", "input": {"command": "git pull"}}]}})
+        import time; time.sleep(600)
     if script.get("hang"):
         out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t0", "name": "mcp__x__phase_checkpoint", "input": {"phase": "P-hang", "summary": "s"}}]}})
         import time; time.sleep(600)
@@ -2604,6 +2882,44 @@ for raw in sys.stdin:
     if script.get("exit_after_turn"):
         break
 '''
+
+
+FAKE_LIMACTL = """\
+#!/usr/bin/env python3
+import json, os, sys
+d = os.environ["ASD_FAKE_LIMA"]
+def rd(n, default=""):
+    try:
+        return open(os.path.join(d, n)).read().strip()
+    except OSError:
+        return default
+def log(t):
+    open(os.path.join(d, "calls.log"), "a").write(t + "\\n")
+a = sys.argv[1:]
+if a[:2] == ["list", "--json"]:
+    print(json.dumps({"name": "nightwatch", "status": rd("vm", "Running")}))
+elif a[:1] == ["start"]:
+    log("start " + a[1])
+    if rd("start_fails") != "1":
+        open(os.path.join(d, "vm"), "w").write("Running")
+elif a[:1] == ["shell"]:
+    if rd("vm", "Running") != "Running":
+        sys.exit(1)
+    cmd = a[-1]
+    if "docker compose ps" in cmd:
+        for r in json.loads(rd("stack", "[]")):
+            print(json.dumps(r))
+    elif "up.sh" in cmd:
+        log("up " + cmd)
+        if rd("up_fixes", "1") == "1":
+            open(os.path.join(d, "stack"), "w").write(json.dumps([{"Service": "nats", "State": "running", "Health": "healthy"}]))
+    else:
+        log("UNEXPECTED " + cmd)
+        sys.exit(9)
+else:
+    log("UNEXPECTED " + " ".join(a))
+    sys.exit(9)
+"""
 
 
 def already_built_for_test(root: str, dossier: str, env: dict) -> str:
@@ -2867,6 +3183,24 @@ def selftest() -> int:
         check("failure reasons recorded",
               any("tests red" in t for t in texts("W-2")) and any("no RUNNER: line" in t for t in texts("W-2")))
         check("failed process is gone", not alive(int(open(os.path.join(fdir, "pid.2")).read())))
+
+        # ---- 2a. REPLAN (and FAILED worded as a send-back): no question; the dossier is planned and /plan starts ----
+        os.makedirs(os.path.join(root, ".discovery", "dossiers"), exist_ok=True)
+        for did, final in (("W-90", "RUNNER: REPLAN owner ruling Q2=A: contract gaps 1-7"),
+                           ("W-91", "worktree removed\nRUNNER: FAILED sent back to /plan by owner ruling Q2=A")):
+            dpath = os.path.join(root, ".discovery", "dossiers", f"{did}-x.md")
+            open(dpath, "w").write(f"---\nid: {did}\nstatus: ready\nblocked_by: []\n---\n# {did}\n")
+            write_json(os.path.join(rdir, f"repo.{did}.checkpoints.json"), [])
+            scenario([{"turns": [[{"checkpoint": ["Phase 2", "stopped: sent back"]}, {"final": final}]]},
+                      {"turns": [[{"final": "RUNNER: DONE"}]]}])
+            p = start(did)
+            check(f"replan {did}: the /work-on run ends done (exit 0)", p.wait(timeout=60) == 0)
+            check(f"replan {did}: no owner question", not os.path.exists(qfile(f"repo.{did}.Q1")))
+            check(f"replan {did}: the dossier is set to planned", "status: planned" in open(dpath).read())
+            check(f"replan {did}: a /plan run starts and finishes", bool(until(lambda: state_of(did).get("command") == "plan" and state_of(did).get("state") == "done", 60)))
+            check(f"replan {did}: /plan gets the plan command, not the /work-on checkpoints",
+                  msgs(2)[0] == f"/{PLUGIN}:plan {did}" and len(msgs(2)) == 1)
+            check(f"replan {did}: the send-back is in the run's updates", any("sent back to /plan" in t for t in texts(did)))
 
         # ---- 2b. WAITING on background work (no question id) is not a failure --
         scenario([{"turns": [[{"final": "gates running\nRUNNER: WAITING gates,background,task,b1yrknlzz"}],
@@ -3264,6 +3598,118 @@ def selftest() -> int:
         check("background: the stage end is held while it runs, then the run goes on", rc == 0 and len(held) == 1 and "Run the VM suite" in held[0]
               and any(m.startswith("RUNNER: the stage cannot end yet") for m in msgs(1)))
 
+
+        # ---- the standing VM and stack repair (scripts/stack_repair.py): fake limactl on PATH, opt-in ----
+        fl, bindir, rep = (os.path.join(tmp, x) for x in ("lima", "bin", "repdir"))
+        for d in (fl, bindir, rep, os.path.join(root, ".agentic")):
+            os.makedirs(d, exist_ok=True)
+        open(os.path.join(bindir, "limactl"), "w").write(FAKE_LIMACTL)
+        os.chmod(os.path.join(bindir, "limactl"), 0o755)
+        write_json(os.path.join(root, ".agentic", "stack-repair.json"), {
+            "vm": "nightwatch", "compose_dir": "deploy/compose", "vm_start": ["limactl", "start", "{vm}"],
+            "stack_up": ["limactl", "shell", "{vm}", "--", "bash", "-lc", "cd {root} && bash deploy/scripts/up.sh core"]})
+        env.update(PATH=bindir + os.pathsep + os.environ.get("PATH", ""), ASD_FAKE_LIMA=fl, ASD_STACK_REPAIR_DIR=rep)
+        saved_env = dict(os.environ)
+        os.environ.update(PATH=env["PATH"], ASD_FAKE_LIMA=fl, ASD_STACK_REPAIR_DIR=rep)
+        os.environ.pop("ASD_STACK_REPAIR", None)
+        healthy = [{"Service": "nats", "State": "running", "Health": "healthy"}, {"Service": "postgres", "State": "running", "Health": ""}]
+        sick = [{"Service": "nats", "State": "running", "Health": "unhealthy"}]
+
+        def fake_reset(vm="Running", stack=healthy, **kw):
+            for f in os.listdir(fl):
+                os.remove(os.path.join(fl, f))
+            for f in ("stack-repair-state.json", "stack-repair.lock"):
+                try:
+                    os.remove(os.path.join(rep, f))
+                except OSError:
+                    pass
+            open(os.path.join(fl, "vm"), "w").write(vm)
+            open(os.path.join(fl, "stack"), "w").write(json.dumps(stack))
+            for k, v in kw.items():
+                open(os.path.join(fl, k), "w").write(v)
+
+        def calls() -> list[str]:
+            try:
+                return open(os.path.join(fl, "calls.log")).read().splitlines()
+            except OSError:
+                return []
+
+        rlog: list[str] = []
+        cfg = stack_repair.load_config(root)
+        check("repair: the repo's .agentic/stack-repair.json is read", bool(cfg) and cfg["vm"] == "nightwatch")
+        check("repair: the plugin's config names config-harness", bool(stack_repair.load_config(os.path.join(tmp, "config-harness"))))
+        fake_reset("Stopped")
+        check("repair detect: a stopped VM", list(stack_repair.detect(cfg, root)) == ["vm"])
+        fake_reset(stack=sick)
+        check("repair detect: an unhealthy service", list(stack_repair.detect(cfg, root)) == ["stack"] and "nats unhealthy" in stack_repair.detect(cfg, root)["stack"])
+        fake_reset(stack=healthy)
+        check("repair detect: a healthy VM and stack", stack_repair.detect(cfg, root) == {})
+        fake_reset("Stopped")
+        check("repair gate: off unless ASD_STACK_REPAIR=1, nothing is run",
+              not stack_repair.enabled() and stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append) == {"vm": "off"} and calls() == [])
+        os.environ["ASD_STACK_REPAIR"] = "1"
+        res = stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append)
+        check("repair vm: a stopped VM is started with the configured command", res["vm"] == "repaired" and calls() == ["start nightwatch"]
+              and any("repair vm" in x for x in rlog))
+        fake_reset(stack=sick)
+        res = stack_repair.repair(cfg, root, {"stack": "x"}, rlog.append)
+        check("repair stack: an unhealthy stack runs the repo's up.sh", res["stack"] == "repaired" and len(calls()) == 1
+              and "bash deploy/scripts/up.sh core" in calls()[0] and root in calls()[0])
+        fake_reset(stack=sick, up_fixes="0")
+        r1 = [stack_repair.repair(cfg, root, {"stack": "x"}, rlog.append)["stack"] for _ in range(3)]
+        check("repair bound: two attempts an hour per resource, then it stays for the owner",
+              r1[0].startswith("failed") and r1[1].startswith("failed") and r1[2].startswith("bound") and len(calls()) == 2)
+        fake_reset("Stopped", start_fails="1")
+        stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append)
+        check("repair bound: the VM bound counts its own attempts",
+              stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append)["vm"].startswith("failed")
+              and stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append)["vm"].startswith("bound"))
+        # the lock: a second repairer waits for the first, then finds it already fixed and starts nothing
+        fake_reset("Stopped")
+        lk = stack_repair._Lock(5)
+        lk.__enter__()
+        box: dict = {}
+        th = threading.Thread(target=lambda: box.update(stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append, wait_s=20)))
+        th.start()
+        time.sleep(0.6)
+        waited = th.is_alive() and calls() == []
+        open(os.path.join(fl, "vm"), "w").write("Running")   # the holder fixed it
+        lk.__exit__()
+        th.join(20)
+        check("repair lock: another runner waits for the lock, then sees it fixed and starts nothing",
+              waited and box.get("vm", "").startswith("repaired") and calls() == [])
+        fake_reset("Stopped")
+        lk = stack_repair._Lock(5)
+        lk.__enter__()
+        res = stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append, wait_s=0.3)
+        lk.__exit__()
+        check("repair lock: a lock that stays busy ends in 'failed', so the owner is asked", res["vm"].startswith("failed") and calls() == [])
+        os.environ.pop("ASD_STACK_REPAIR")
+
+        # in a run: the gate off, a session's ENV line is answered "off"; on, the VM is started before the stage and on request
+        fake_reset("Stopped")
+        scenario([{"turns": [[{"final": "RUNNER: ENV vm limactl: instance nightwatch is stopped"}], [{"final": "RUNNER: DONE"}]]}])
+        p = start("W-12")
+        rc = p.wait(timeout=60)
+        check("repair run: gate off, the ENV line is answered 'off' and no command runs",
+              rc == 0 and any(m.startswith("RUNNER ENV vm: automatic repair is off") for m in msgs(1)) and calls() == [])
+        env["ASD_STACK_REPAIR"] = "1"
+        fake_reset("Stopped")
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        rc = start("W-13").wait(timeout=60)
+        tl = [x.get("text", "") for x in lines_of(os.path.join(rdir, "repo.W-13.jsonl"))]
+        check("repair run: gate on, a stopped VM is started before the first stage, logged as run events",
+              rc == 0 and calls() == ["start nightwatch"] and any("repair vm" in t for t in tl) and any("environment (stage 1 start)" in t for t in tl))
+        fake_reset(stack=sick)
+        scenario([{"turns": [[{"final": "RUNNER: ENV stack nats unhealthy"}], [{"final": "RUNNER: ENV disk 1 GiB free"}], [{"final": "RUNNER: DONE"}]]}])
+        # the stack is already repaired by the stage-start check, so the session's report finds it healthy
+        rc = start("W-14").wait(timeout=60)
+        check("repair run: an ENV stack line is answered 'repaired'; an ENV disk line is left to the owner",
+              rc == 0 and len([c for c in calls() if c.startswith("up")]) == 1
+              and any(m.startswith("RUNNER ENV stack: repaired") for m in msgs(1)) and any(m.startswith("RUNNER ENV disk: the runner does not repair") for m in msgs(1)))
+        env.pop("ASD_STACK_REPAIR")
+        os.environ.clear(); os.environ.update(saved_env)
+
         # ---- the owner's message to a live run: wakes a question wait, the question stays open ----
         q30 = "repo.W-30.Q1"
         scenario([{"turns": [[{"ask": 1, "dossier": "W-30", "final": "RUNNER: WAITING {id}"}],
@@ -3507,6 +3953,38 @@ def selftest() -> int:
               envf[1] == want and envf[0] == rk.key and any(m.startswith("RUNNER KEEPALIVE") for m in msgs(1)))
         check("keepalive: the resumed ping is logged with its cache usage and leaves the run's state alone",
               "keepalive ping: cache read 7000, written 50 tokens" in texts("W-247") and rk.state["state"] == "queued")
+        # ---- no keep-alive while queued; the git hardening of child_env ----
+        scenario([{"turns": [], "pings": [[7000, 50]]}])
+        rk.state["state"] = "queued"; rk.last_api = 1.0; rk.ka_checked = 0.0
+        rk.keepalive_tick()
+        check("keepalive: a queued run (a slot wait) is never pinged", not os.path.exists(os.path.join(fdir, "env.1")) and rk.ka_since is None)
+        rk.state["state"] = "waiting"
+        rk.keepalive_tick()
+        check("keepalive: a run waiting on the owner still is (control)", os.path.exists(os.path.join(fdir, "env.1")))
+        rk.state["state"] = "queued"
+        gsave = {k: os.environ.get(k) for k in ("GIT_SSH_COMMAND", "GIT_SSH", "GIT_TERMINAL_PROMPT", "GIT_HTTP_LOW_SPEED_LIMIT", "GIT_HTTP_LOW_SPEED_TIME", "ASD_RUNNER_GIT_HARDEN")}
+        for k in gsave:
+            os.environ.pop(k, None)
+        subprocess.run(["git", "init", "-q", root], capture_output=True)
+        e1 = rk.child_env()
+        check("git harden: no terminal prompt, low-speed abort, and a fail-fast ssh",
+              e1.get("GIT_TERMINAL_PROMPT") == "0" and e1.get("GIT_HTTP_LOW_SPEED_LIMIT") == "1000" and e1.get("GIT_HTTP_LOW_SPEED_TIME") == "60"
+              and e1.get("GIT_SSH_COMMAND") == "ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4")
+        os.environ["GIT_SSH_COMMAND"] = "ssh -i mine"
+        check("git harden: an existing GIT_SSH_COMMAND is kept", rk.child_env().get("GIT_SSH_COMMAND") == "ssh -i mine")
+        os.environ.pop("GIT_SSH_COMMAND"); os.environ["GIT_SSH"] = "/bin/mine"
+        check("git harden: an existing GIT_SSH is kept (no GIT_SSH_COMMAND set over it)", "GIT_SSH_COMMAND" not in rk.child_env())
+        os.environ.pop("GIT_SSH")
+        subprocess.run(["git", "config", "core.sshCommand", "ssh -F repo"], cwd=root, capture_output=True)
+        e3 = rk.child_env()
+        check("git harden: a repo's own core.sshCommand is not overridden, the other variables still set", "GIT_SSH_COMMAND" not in e3 and e3.get("GIT_TERMINAL_PROMPT") == "0")
+        subprocess.run(["git", "config", "--unset", "core.sshCommand"], cwd=root, capture_output=True)
+        os.environ["ASD_RUNNER_GIT_HARDEN"] = "0"
+        e4 = rk.child_env()
+        check("git harden: ASD_RUNNER_GIT_HARDEN=0 turns it all off", not any(k in e4 for k in ("GIT_TERMINAL_PROMPT", "GIT_SSH_COMMAND", "GIT_HTTP_LOW_SPEED_LIMIT")))
+        for k, v in gsave.items():
+            if v is None: os.environ.pop(k, None)
+            else: os.environ[k] = v
         # ---- a smaller prefix, the compact window, and a fresh stage instead of a compaction ----
         def argv_of(**e) -> list[str]:
             saved = {k: os.environ.get(k) for k in e}
@@ -3648,6 +4126,48 @@ def selftest() -> int:
               p.wait(timeout=60) == 4 and "split at checkpoint Phase 3: context 150k" in texts("W-263")
               and [c["name"] for c in read_json(os.path.join(rdir, "repo.W-263.checkpoints.json"), [])] == ["Phase 3"])
         env.pop("ASD_RUNNER_SPLIT_AT")
+
+        # ---- the stall watchdog ----
+        env["ASD_STALL_MIN"] = "0.03"
+        scenario([{"stall": True}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-320")
+        rc = p.wait(timeout=90)
+        t320 = texts("W-320")
+        check("stall: a session silent mid-turn is killed and the stage restarts, with no owner question",
+              rc == 0 and any(t.startswith("stalled: no output for") and "(last: Bash)" in t for t in t320) and not any("asked" in t for t in t320)
+              and any("stage 1 again from its checkpoints (stall 1 of 2)" in t for t in t320))
+        check("stall: the diagnostic names the last event and lists the process tree", any(t.startswith("stall diagnostic: last stream event: assistant Bash") and "pid " in t and "etime" in t for t in t320))
+        check("stall: the restart resumes the same session", msgs(2)[0].startswith("RUNNER RESUME"))
+        scenario([{"stall": True}, {"stall": True}, {"stall": True}])
+        p = start("W-321")
+        asked = until(lambda: any("asked" in t for t in texts("W-321")), 90)
+        t321 = texts("W-321")
+        check("stall: the third stall in a stage asks the owner, the first two did not",
+              bool(asked) and sum(1 for t in t321 if "again from its checkpoints (stall" in t) == 2 and any("stage 1 failed: stalled: no output for" in t for t in t321)
+              and sum(1 for t in t321 if "asked" in t) == 1)
+        q321 = (state_of("W-321").get("questions") or [""])[0]
+        owner_line(q321, "answer", "Stop", "B")
+        p.wait(timeout=30)
+        env["ASD_STALL_MIN"] = "0"
+        scenario([{"turns": [], "hang": True}])
+        p = start("W-322")
+        until(lambda: state_of("W-322").get("claude_pid"))
+        time.sleep(3)
+        check("stall: ASD_STALL_MIN=0 disables the watchdog", p.poll() is None and not any("stalled" in t for t in texts("W-322")))
+        p.terminate(); p.wait(timeout=30)
+        os.remove(os.path.join(rdir, "repo.W-322.runner.json"))
+        env.pop("ASD_STALL_MIN")
+
+        # ---- revive: every working state, a reused runner pid ----
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}] * 4)
+        sleeper = subprocess.Popen(["sleep", "120"])
+        for dos, stt, pid in (("W-310", "queued", 2 ** 22 + 12351), ("W-311", "waiting", 2 ** 22 + 12352), ("W-312", "paused", 2 ** 22 + 12353), ("W-313", "running", sleeper.pid)):
+            write_json(os.path.join(rdir, f"repo.{dos}.runner.json"), {"pid": pid, "state": stt, "root": root, "command": "work-on", "stage": 1})
+        r = subprocess.run([sys.executable, me, "revive"], env=env, capture_output=True, text=True, timeout=90)
+        ok = until(lambda: all(state_of(d).get("state") == "done" for d in ("W-310", "W-311", "W-312", "W-313")), 60)
+        sleeper.kill(); sleeper.wait()
+        check("revive: queued, waiting, paused runs whose runner died are restarted", all(f"restarted repo.{d}" in r.stdout for d in ("W-310", "W-311", "W-312")) and bool(ok))
+        check("revive: a dead runner whose pid now belongs to an unrelated process is restarted too", "restarted repo.W-313" in r.stdout)
 
         # Before the temp dir goes: every fake claude process and runner child this test started must be gone.
         for _ in range(100):
