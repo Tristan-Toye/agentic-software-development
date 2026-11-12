@@ -227,6 +227,8 @@ for those steps. The light J step (PR description) can use `claude -p --model so
 - Success: cache-read in P3/P5/P6/P8/P9 down at least 20%, every quality counter equal or better, zero escalations
   lost (a "needs Opus" case handled silently).
 - Stop rule: one quality counter worse in 2 consecutive dossiers -> driver goes back to shadow mode.
+- Execution: the exact steps for the next stub (modes file, shadow dossiers, `driver_shadow_report.py`, the A/B command,
+  rollback, decision log) are in `driver-rollout-runbook.md`.
 - Note: the measuring script's "judgement" class is a text-length proxy. Add a second measure: share of Opus
   turns that are bookkeeping-first (current 14-36%); target under 8% after step 1.
 
