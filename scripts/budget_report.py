@@ -367,6 +367,8 @@ def calibrate(log: str, stream: list[tuple[int, float]]) -> dict | None:
         if rise < MIN_CALIBRATION_PCT:
             continue
         spent = sum(usd for ms, usd in stream if points[0][0] < ms <= points[-1][0])
+        if spent <= 0:
+            continue  # no local request in this window (its transcripts are elsewhere or pruned): it sizes nothing
         cand = {"week_usd": round(spent / rise * 100, 2), "rise_pct": rise, "spent_usd": round(spent, 2),
                 "from": points[0][0], "to": points[-1][0], "resets_at": resets}
         if best is None or rise > best["rise_pct"]:
@@ -473,7 +475,9 @@ def shares(runs: list[dict], plans: dict, claude_week: float) -> None:
             r["share_pct"] = {name: (round(100 * r["cost"] / p["week_credits"], 1) if p.get("week_credits") else None)
                               for name, p in plans.get("codex", {}).get("plans", {}).items()}
         else:
-            r["share_pct"] = {name: round(100 * r["cost"] / claude_week, 1) for name in plans["claude"]["plans"]}
+            # a week of 0 (no calibration, no plans.json size) gives no share rather than a ZeroDivisionError
+            r["share_pct"] = {name: (round(100 * r["cost"] / claude_week, 1) if claude_week else None)
+                              for name in plans["claude"]["plans"]}
 
 
 def summary(runs: list[dict]) -> dict:
@@ -690,6 +694,13 @@ def selftest() -> int:
         cal = calibrate(log, stream)
         check("calibration: the spend over 40 points sets the week", cal and cal["week_usd"] == round(stream_total / 40 * 100, 2), cal)
 
+        with open(log, "w") as fh:
+            fh.write(json.dumps({"ts": "2026-10-12T09:00:00Z", "week_pct": 0, "week_resets_at": 2}) + "\n")
+            fh.write(json.dumps({"ts": "2026-10-12T13:00:00Z", "week_pct": 60, "week_resets_at": 2}) + "\n")
+        check("a window with no local spend does not calibrate (a week of 0)", calibrate(log, [(1, 0.0)]) is None)
+        zero = [dict(r) for r in cc]
+        shares(zero, plans, 0.0)
+        check("a week of 0 gives no claude share instead of dividing by it", all(v is None for v in zero[0]["share_pct"].values()), zero)
         runs = oc + cc + oa
         shares(runs, plans, 10.0)
         check("an unmeasured codex week gives no share", oa and oa[0]["share_pct"]["Business seat"] is None, oa)
