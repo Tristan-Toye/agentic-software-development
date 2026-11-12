@@ -223,9 +223,12 @@ better than tidiness.
 anything, but it records what this dossier builds on, and the open-work
 report draws its dependency graph from those links: a recorded plan dropped
 a done blocker and left that dossier in a box of its own. Remove a blocker
-only when the dependency itself was wrong, and say so in `## Build log` as
-`BLOCKER-REMOVED: W-NNN — <reason>`; `validate_pipeline.py --dossier` refuses
-a removal without that line.
+only when the dependency itself was wrong. The guard decides from facts: a
+blocker whose dossier is `done` may leave unasked; any other leaves only on
+the same call that carries the reason, `dossier_edit.py remove|set ...
+--reason '<why>'`, which records it (`.discovery/blocker-removals/`) and
+writes the one build-log line itself. `validate_pipeline.py --dossier` reads
+that record, not a log line.
 
 ## Phase 4 — Write the dossier
 
