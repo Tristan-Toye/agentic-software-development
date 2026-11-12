@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import textwrap
 from pathlib import Path
@@ -354,8 +355,20 @@ _SPAWN_RULE = (
 )
 
 
-def _command_footer(body: str) -> str:
-    if "spawn" not in body:
+# /work-on carries the spawn rule at the top of references/work-on/phase-4.md
+# ("Spawning under Claude Code"), read in the phase that spawns, so the command
+# body stays lean: it is sent whole in every stage session of a run.
+_NO_SPAWN_FOOTER = {"work-on"}
+
+# Text between these two lines of a source is for opencode only and is left
+# out of the Claude Code build.
+_OPENCODE_ONLY = re.compile(
+    r"^<!-- opencode-only -->\n.*?^<!-- /opencode-only -->\n\n?", re.S | re.M
+)
+
+
+def _command_footer(body: str, name: str = "") -> str:
+    if "spawn" not in body or name in _NO_SPAWN_FOOTER:
         return ""
     return "\n---\n\n" + "\n".join(textwrap.wrap(_SPAWN_RULE, width=76)) + "\n"
 
@@ -379,7 +392,8 @@ def render_command(path: Path) -> str:
     if isinstance(block, dict) and block.get("argument-hint"):
         out.append(f"argument-hint: {block['argument-hint']}")
     out.append("---")
-    return "\n".join(out) + "\n" + fm.body + _command_footer(fm.body)
+    body = _OPENCODE_ONLY.sub("", fm.body)
+    return "\n".join(out) + "\n" + body + _command_footer(body, path.stem)
 
 
 def render_manifest(agents: list[Path]) -> str:
