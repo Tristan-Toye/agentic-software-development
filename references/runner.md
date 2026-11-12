@@ -201,9 +201,14 @@ the recorded checkpoints.
   with it, without a notification. So on `RUNNER: STAGE-DONE` or `RUNNER:
   DONE` the runner reads the session transcript for background launches with
   no `<task-notification>` yet. While any is in flight it holds the end: it
-  logs `stage end held (n/3): …`, tells the agent to wait for the
-  notification and end the stage again, and keeps the session open. After
-  three holds it lets the stage end and logs what it cut off. The rules tell
+  logs `stage end held (1/1): …`, tells the agent to wait for the
+  notification and end the stage again (and never to ask the owner), and
+  keeps the session open. A task the agent stopped (a `TaskStop` or kill-shell
+  call, whatever its result says, or a result saying no such task) counts as
+  finished, and so does a command whose output file no process holds open
+  (`lsof`). After one hold it ends the stage itself and logs what it cut off:
+  a stale background task is never a question for the owner
+  (`ASD_ASK_LINT` also refuses "end the stage anyway"). The rules tell
   the agent the same, and a checkpoint that still names work in flight says
   how the next stage tells it finished or died.
 - **A stage with no checkpoint:** if a stage ends with `RUNNER: STAGE-DONE`
@@ -367,7 +372,11 @@ settings keep that down. All three are built in `claude_cmd()` or the stage loop
 
 | Variable | Default | Effect |
 |---|---|---|
-| `ASD_RUNNER_LEAN` | on | `0` gives the argv of 1.52.35 and before. On adds `--settings` and `--disallowedTools` (below). |
+| `ASD_RUNNER_LEAN` | on | `0` gives the argv of 1.52.35 and before. On adds `--settings` and `--disallowedTools` (below) and the four opt-outs next. |
+| `ASD_RUNNER_LEAN_CLAUDEMD` | on | `0` loads the target repo's own `CLAUDE.md`. On: `claudeMdExcludes` in `--settings` skips `<root>/CLAUDE.md` and `<root>-*/CLAUDE.md` (its worktrees) in the session and in every sub-agent, and the runner rules carry a pointer instead (below). |
+| `ASD_RUNNER_LEAN_GIT` | on | `0` keeps Claude Code's built-in git instructions. On: `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1` in the child's environment (also drops the git status snapshot). |
+| `ASD_RUNNER_LEAN_MEMORY` | on | `0` keeps auto-memory. On: `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. |
+| `ASD_RUNNER_LEAN_CONTEXT7` | on | `0` keeps the context7 plugin. On: `context7@claude-plugins-official` is false in `enabledPlugins`. |
 | `ASD_RUNNER_SPLIT_AT` | 135000 | context at a `phase_checkpoint` above which the stage ends and the next one starts fresh. `0` = off. |
 | `ASD_RUNNER_COMPACT_WINDOW` | 250000 | `--autocompact N`: the auto-compact window. `0` = pass none. |
 
@@ -398,15 +407,27 @@ Claude Code 2.1.322; the first-call total is 25.25k without the runner rules, 27
 |---|---|---|
 | the plugin's agent, command and skill descriptions | 3.1k | shortened in 1.52.37 to 1.9k (-1.24k); `skillOverrides` does not apply to plugin skills (docs, and measured 0) |
 | the plugin's nav tool schemas and the rest of the plugin | 1.0k | no: the pipeline calls them |
-| config-harness `CLAUDE.md` (`AGENTS.md` is not loaded) | 5.2k | `claudeMdExcludes`, but it is the repo's rules router: keep |
+| config-harness `CLAUDE.md` (`AGENTS.md` is not loaded) | 5.2k | cut in 1.52.42: `claudeMdExcludes` (-5.17k measured; sub-agents too, so each spawn saves it as well); the rules carry a pointer |
 | `~/.claude/CLAUDE.md` + `RTK.md` | 0.7k | `claudeMdExcludes`; its subagent-model rule matters to runner sessions: keep |
-| auto-memory index (`MEMORY.md`) | 0.84k | `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` or `autoMemoryEnabled`; holds owner feedback: left on |
-| context7 plugin's MCP block | 0.2k | `enabledPlugins` false: left on (the global rules say to use it) |
-| built-in git instructions | 0.9k | `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`: left on |
+| auto-memory index (`MEMORY.md`) | 0.84k | cut in 1.52.42: `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` (-0.84k measured) |
+| context7 plugin's MCP block | 0.2k | cut in 1.52.42: `enabledPlugins` false (-0.21k measured) |
+| built-in git instructions | 0.9k | cut in 1.52.42: `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1` (-0.89k measured) |
 | org-synced and builtin plugins (ask-product-catalog, cc-plugin-*, design skills) | 1.1k | no: `enabledPlugins` and `skillOverrides` have no effect on them; only `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` drops them (it also stops telemetry), not used |
 | the appended runner rules (`runner_rules()`) | 2.0k | no: they are the contract with the runner |
 | SessionStart hooks | 0 | the plugin's hook injects only after a compaction |
 | everything else: CLI system prompt, built-in tool schemas, deferred-tool names, MCP instructions | about 14k | the floor |
+
+**The four session-start opt-outs** (1.52.42; one haiku call each on config-harness, main account, lean flags on, no runner
+rules: 24.02k first-call total before): CLAUDE.md excluded 18.85k (-5.17k), git instructions off 23.13k (-0.89k),
+auto-memory off 23.18k (-0.84k), context7 off 23.81k (-0.21k), all four 16.91k (-7.11k, 30%). A sub-agent spawned
+under `claudeMdExcludes` does not see the excluded file either (a haiku sub-agent answered NO with it, YES without),
+so the saving repeats for every sub-agent. The runner rules gain one pointer line (about 0.1k) instead of the 5.2k file:
+the target repo's `CLAUDE.md` routes to its binding rules (config-harness: `docs/learned-rules.md`, read by scope in
+Phase 2 and 8b; the plugin's prompts name `docs/adr/RULES.md` or a section of `CLAUDE.md` as the rules file, so
+they no longer find it alone) and holds its environment notes (config-harness: `cargo` is not on a non-interactive
+PATH, database tests need `DATABASE_URL` and run in the VM through `deploy/host/`). The rest of that file the plugin
+already carries: the ADR index (`adr` scripts), branch and PR targets (`stub_target.py`, the work-on flow), signed
+commits (`gate_commit.py`), VM runs (`run_tests.py --vm`). Org-managed plugins and telemetry are left alone.
 
 **A fresh stage instead of a compaction.** When a stage's `phase_checkpoint` is taken with the session's context
 (the last assistant usage, `input + cache_read + cache_creation`) at or above `ASD_RUNNER_SPLIT_AT`, the runner waits
