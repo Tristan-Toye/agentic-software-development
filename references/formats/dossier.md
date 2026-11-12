@@ -130,6 +130,7 @@ the fan-out:
 | Is the member's **visibility** stated? | `header_of` named as the read seam with no `pub` — the blind author cannot even compile against the contract |
 | Are the words in the docstring measurable? | `"efficiently"`, `"properly"`, `"safely"` are never promises — delete them |
 | Does a new event or typed-payload variant name **every member it carries and every member it leaves empty**? | `EventKind::Resumed` leaning on `track`'s general docstring ("the track, when the event is about one") — the implementer reads it narrow, the test author wide |
+| Does a member that **normalises** a value to find, key or deduplicate it (strip, rstrip, case fold, path cleanup) say, in the same sentence, which form the later comparison or output uses — normalised or as written? | `"the first line equal to it after rstrip"` beside a block compared "line by line" — the blind test pins the normalised reading, the implementation compares the line as written |
 | Are the trait bounds an assertion needs **derived**? | `expect_err` on a type without `Debug`, `assert_eq!` without `PartialEq`, a second move without `Clone` — the stub compiles, the test does not, and a blind author cannot see the derive set |
 
 A promise that survives this list is one a blind test author can turn into an

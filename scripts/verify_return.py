@@ -23,6 +23,8 @@ agent's tool list makes impossible.
         [--release HOLDER --provider P --model M]
         [--log DOSSIER --agent ID] [--print-line --agent ID]
         [--report FILE --kind KIND [--host claude|opencode]] [--uncommitted]
+        [--preexisting FILE] [--orchestrator-paths p1,p2]
+    verify_return.py --root DIR --snapshot FILE
     verify_return.py --selftest
 
 `--root` is the worktree the agent worked in; `--branch` the branch it was told
@@ -33,6 +35,15 @@ to commit on; `--base` the sha that worktree forked from.
 `--owned` are the expected result, so they raise no `dirty` flag and the missing
 commit raises no `no-commits` flag; a path outside `--owned` is still
 `TOUCHED_BEYOND`, and an owned path that is absent is flagged `missing-owned`.
+
+`--snapshot FILE` records the tree's dirty paths with content hashes and exits;
+the orchestrator takes it just before launching the agent and passes it back as
+`--preexisting FILE`: a path dirty at launch whose content is unchanged is not
+the agent's, so it raises neither `touched-beyond` nor `dirty`. A path the
+orchestrator itself keeps writing while the agent runs (the live dossier, an ADR
+being amended) is named in `--orchestrator-paths` and excluded outright. Either
+way a path under `--owned` is always judged, and a path the agent changed again
+after the snapshot (the hash differs) is still the agent's.
 
 What it prints (one line each unless noted) — the `verdict:` line (and
 `RETURNED-LINE:`, when asked for) first, so a reader that loses the tail to
@@ -122,6 +133,7 @@ import argparse
 import fnmatch
 import hashlib
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -215,6 +227,28 @@ def changed_files(root: str, base: str) -> tuple[list[str], list[tuple[str, str,
     dirty = porcelain_paths(root)
     paths = sorted({r[2] for r in rows} | set(dirty))
     return paths, rows, dirty  # type: ignore[return-value]
+
+
+def path_hash(root: str, rel: str) -> str:
+    """sha256 of the file's bytes, or `gone` / `dir` when there is none to hash."""
+    full = os.path.join(root, rel)
+    if os.path.isdir(full):
+        return "dir"
+    try:
+        with open(full, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return "gone"
+
+
+def take_snapshot(root: str, dest: str) -> int:
+    """Write {dirty path: content hash} of `root` to `dest` as JSON."""
+    root = os.path.abspath(root)
+    snap = {p: path_hash(root, p) for p in porcelain_paths(root)}
+    with open(dest, "w", encoding="utf-8") as fh:
+        json.dump(snap, fh, indent=1, sort_keys=True)
+    print(f"snapshot: {len(snap)} dirty path(s) recorded in {dest}")
+    return 0
 
 
 def porcelain_paths(root: str) -> list[str]:
@@ -372,6 +406,28 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
     commits = log.splitlines() if rc == 0 else []
     _, sha = git(root, "rev-parse", "--short", "HEAD")
     paths, rows, dirty = changed_files(root, args.base)
+    owned = relative_owned(root, args.owned) if args.owned else []
+    baseline: dict[str, str] = {}
+    if args.preexisting:
+        try:
+            with open(args.preexisting, encoding="utf-8") as fh:
+                baseline = json.load(fh)
+        except (OSError, ValueError) as exc:
+            out.append(f"preexisting: unreadable baseline ({exc}); nothing excluded")
+            flags.append("baseline")
+    orch = relative_owned(root, args.orchestrator_paths) if args.orchestrator_paths else []
+
+    def orchestrators(path: str) -> bool:
+        if is_owned(path, owned):
+            return False
+        return is_owned(path, orch) or (path in baseline and baseline[path] == path_hash(root, path))
+
+    excluded = [p for p in paths if orchestrators(p)]
+    if excluded:
+        paths = [p for p in paths if p not in excluded]
+        dirty = [p for p in dirty if p not in excluded]
+        out.append(f"orchestrator-owned: {len(excluded)} path(s) not judged "
+                   f"(dirty before launch or named by the orchestrator): {', '.join(excluded[:3])}")
     if not commits and args.uncommitted:
         out.append("no commits expected: the agent writes files and never commits")
     elif not commits:
@@ -393,7 +449,6 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
         else:
             parts.append(f"{len(rows)} files +{added}/-{deleted}")
 
-    owned = relative_owned(root, args.owned) if args.owned else []
     shared = relative_owned(root, args.shared_tree) if args.shared_tree else []
 
     def is_shared(path: str) -> bool:
@@ -588,6 +643,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--gates", metavar="FILE", help="the run's gates file: report whether run_gates.py left a green receipt for this tree")
     ap.add_argument("--uncommitted", action="store_true",
                     help="the agent writes files and never commits (document-drafter): owned files are expected dirty, no commit is expected")
+    ap.add_argument("--preexisting", metavar="FILE",
+                    help="a --snapshot taken before the launch: paths dirty then and unchanged in content are not the agent's")
+    ap.add_argument("--orchestrator-paths", default="",
+                    help="comma list of paths the orchestrator itself writes during the run (dossier, ADRs it amends): not judged")
+    ap.add_argument("--snapshot", metavar="FILE", help="with --root: write the tree's dirty paths and content hashes to FILE and exit")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     if args.selftest:
@@ -599,6 +659,10 @@ def main(argv: list[str] | None = None) -> int:
         ok = bool(last) and args.payload_last.strip() == last and not args.payload_last.strip().upper().startswith("UNREAD")
         print("payload read: whole" if ok else f"payload read: UNREAD — named {args.payload_last.strip()[:80]!r}, the payload ends {last[:80]!r}")
         return 0 if ok else 1
+    if args.snapshot:
+        if not args.root:
+            ap.error("--snapshot needs --root")
+        return take_snapshot(args.root, args.snapshot)
     if not (args.root and args.branch and args.base):
         ap.error("--root, --branch and --base are required unless --selftest")
     if args.contract_hash and not (args.contract_files or args.payload):
@@ -933,6 +997,41 @@ def selftest() -> int:
             check("--uncommitted: a path outside TARGET_PATHS is still flagged", rc == 1 and "touched-beyond" in out.splitlines()[0])
             os.remove(os.path.join(root, "docs/other.md"))
             os.remove(os.path.join(root, "docs/adr/0001-x.md"))
+
+            # --- #293: paths the orchestrator dirtied are not the drafter's ---
+            put(root, ".discovery/dossier.md", "# dossier\n")
+            put(root, "docs/adr/0009-amend.md", "adr\n")
+            git(root, "add", ".discovery/dossier.md", "docs/adr/0009-amend.md")
+            git(root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "tracked")
+            base2 = git(root, "rev-parse", "HEAD")[1]
+            put(root, ".discovery/dossier.md", "# dossier\n## Build log\nWORKFLOW: x\n")
+            put(root, "docs/adr/0009-amend.md", "adr amended\n")
+            snap = os.path.join(tmp, "baseline.json")
+            rc, out = call(["--root", root, "--snapshot", snap])
+            check("#293: --snapshot records the dirty paths", rc == 0 and "2 dirty path(s)" in out)
+            ud = ["--root", root, "--branch", "feat/empty", "--base", base2, "--uncommitted", "--owned", "docs/adr/0010-new.md"]
+            put(root, "docs/adr/0010-new.md", "new adr\n")
+            rc, out = call(ud + ["--preexisting", snap])
+            check("#293: dirty-at-launch paths the drafter never touched are clean",
+                  rc == 0 and "verdict: clean" in out and "TOUCHED_BEYOND: none" in out)
+            rc, out = call(ud)
+            check("#293: without a baseline the orchestrator's paths still flag", rc == 1 and "touched-beyond" in out.splitlines()[0])
+            put(root, "docs/adr/0009-amend.md", "adr amended\ndrafter scribble\n")
+            rc, out = call(ud + ["--preexisting", snap])
+            check("#293: a dirty-at-launch path the drafter changed is still flagged",
+                  rc == 1 and "touched-beyond" in out.splitlines()[0] and "0009-amend" in out)
+            put(root, "docs/adr/0009-amend.md", "adr amended\n")
+            put(root, "src/stray.rs", "x\n")
+            rc, out = call(ud + ["--preexisting", snap])
+            check("#293: a stray drafter write outside TARGET_PATHS is still flagged",
+                  rc == 1 and "touched-beyond" in out.splitlines()[0] and "src/stray.rs" in out)
+            os.remove(os.path.join(root, "src/stray.rs"))
+            put(root, ".discovery/dossier.md", "# dossier\n## Build log\nWORKFLOW: x\nmore\n")
+            rc, out = call(ud + ["--preexisting", snap, "--orchestrator-paths", ".discovery/dossier.md"])
+            check("#293: --orchestrator-paths excludes a path the orchestrator wrote during the run",
+                  rc == 0 and "verdict: clean" in out)
+            git(root, "reset", "-q", "--hard", "HEAD~1")
+            git(root, "clean", "-qfd", "docs", ".discovery")
 
             # --- #230: the first porcelain entry keeps its leading status space ---
             git(root, "checkout", "-q", "-b", "feat/first-entry", base)

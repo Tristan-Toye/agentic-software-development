@@ -99,6 +99,11 @@ integration-test-author --live-dossier <live copy>` compares the three
 sections byte for byte and refuses any difference; linted without the flag,
 the payload warns that the excerpt was not compared.
 
+**A negative step's input passes every other documented guard.** A flow step
+whose outcome is refused, `None`, `Ok(None)` or no event uses an input that
+every other guard on that path admits (the `input:` of its checklist line), so
+deleting or weakening that guard alone turns the test red.
+
 **A corrective round on a pre-existing test** carries `FAILURES` and
 `CORRECTION` instead of folding the fix into `DELIVERY_CHANGE`, which is
 written for a delivery-shape change, not a correction:

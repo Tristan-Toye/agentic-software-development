@@ -203,6 +203,10 @@ staged contract can never leak into a commit.
 
 ## Field rules that matter
 
+- **A negative test's input passes every other documented guard.** A line
+  whose outcome is refused, `None`, `Ok(None)` or no event is tested with its
+  `input:` — one that every other guard on that path admits — so the test
+  fails when that guard alone is deleted or weakened.
 - **`CITATION` names its exact shape, and one vocabulary serves the whole
   build.** A test's citation comment is the evidence Phase 5 diffs against
   `PROMISE_CHECKLIST`; authors left to invent the shape invent a different one
