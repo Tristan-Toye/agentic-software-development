@@ -592,7 +592,26 @@ def wait_checks(root: str, nums: list[int], timeout_s: float) -> dict[int, str]:
         time.sleep(poll)
 
 
-AGENT_ROUNDS = 3   # /resolve-merge runs one attempt may spend on a stack; its own push can turn up the next failure
+AGENT_ATTEMPTS = 2   # /resolve-merge runs one PR may spend in one settle: once per PR head, two at most; then the owner is asked
+
+
+def head_of(root: str, n: int) -> str:
+    """The PR's current head commit ("" when unknown): a resolve run that pushed changed it."""
+    rc, out = gh(root, "pr", "view", str(n), "--json", "headRefOid", "-q", ".headRefOid")
+    return out.strip() if rc == 0 else ""
+
+
+def ask_resolve_failed(root: str, dossier: str, why: str) -> None:
+    """The one place the queue asks the owner about a conflict: /resolve-merge itself failed twice. Best effort."""
+    ask = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ask_owner.py")
+    try:
+        subprocess.run([sys.executable, ask, "ask", "--root", root, "--dossier", dossier, "--question",
+                        f"The merge queue could not bring the pull requests of {dossier} up to date: {why}. The dossier's agent tried twice. How should it go on?",
+                        "--option", "A|Resolve by hand|You resolve the conflict on the branch; the queue merges it on the next press of Merge",
+                        "--option", "B|Leave it|The pull requests stay open and conflicting", "--recommend", "A",
+                        "--blocks", "the merge of " + dossier], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, others: list[str], note, use_agent: bool = True) -> str:
@@ -601,7 +620,8 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
     nums = [p["number"] for p in prs]
     run_timeout = float(os.environ.get("ASD_MERGE_RUN_TIMEOUT") or 4 * 3600)
     check_timeout = float(os.environ.get("ASD_MERGE_CHECK_TIMEOUT") or 3600)
-    agent_rounds = 0
+    attempts: dict[int, int] = {}   # per PR: resolve-merge runs started in this settle
+    tried: dict[int, set] = {}      # per PR: the heads a run was started on and ended done
     rerun_used = False
     updates = 0
     link_conflicts: list[int] = []
@@ -711,18 +731,30 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
         # 4. the dossier's agent
         if not use_agent:
             return ("conflicting: " + ", ".join(f"#{n}" for n in bad)) if bad else ("migration numbers clash: " + "; ".join(clashes)) if clashes else ("checks red: " + ", ".join(f"#{n}" for n in red))
-        if agent_rounds >= AGENT_ROUNDS:
-            rounds = f" after {agent_rounds} agent round{'s' if agent_rounds != 1 else ''}"
-            return ("still conflicting: " + ", ".join(f"#{n}" for n in bad) + rounds) if bad else ("migration numbers still clash: " + "; ".join(clashes) + rounds) if clashes else ("checks still red: " + ", ".join(f"#{n}" for n in red) + rounds)
-        agent_rounds += 1
-        rerun_used = False   # the agent's push is a new head: a flaky job there gets its own re-run before it costs a round
+        targets = bad or ([n for n in red] if red else list(nums))
+        heads = {n: head_of(root, n) for n in targets}
+        spent = [n for n in targets if attempts.get(n, 0) >= AGENT_ATTEMPTS]
+        unchanged = all(heads[n] and heads[n] in tried.get(n, set()) for n in targets)
+        if spent or unchanged:
+            rounds = f" after {max(attempts.get(n, 0) for n in targets)} resolve-merge attempt{'s' if max(attempts.get(n, 0) for n in targets) != 1 else ''}" + ("" if spent else "; its head did not change")
+            why = ("still conflicting: " + ", ".join(f"#{n}" for n in bad) + rounds) if bad else ("migration numbers still clash: " + "; ".join(clashes) + rounds) if clashes else ("checks still red: " + ", ".join(f"#{n}" for n in red) + rounds)
+            ask_resolve_failed(root, agent_id, why)
+            return why
+        for n in targets:
+            attempts[n] = attempts.get(n, 0) + 1
+        rerun_used = False   # the agent's push is a new head: a flaky job there gets its own re-run before it costs an attempt
         what = ("conflicts in " + ", ".join(f"#{n}" for n in bad)) if bad else ("migration numbers clash: " + "; ".join(clashes)) if clashes else ("red checks on " + ", ".join(f"#{n}" for n in red))
-        note("resolving", what + "; the dossier's agent resolves it")
+        note("resolving", what + "; the dossier's agent resolves it (resolve-merge, attempt " + str(max(attempts[n] for n in targets)) + f" of {AGENT_ATTEMPTS})")
         since = now()
         start_run(root, agent_id, "resolve-merge", nums)
         end = wait_run(f"{repo_name(root)}.{agent_id}", since, run_timeout)
-        if end != "done":
-            return f"the resolution run ended {end}"
+        if end == "done":
+            for n in targets:
+                tried.setdefault(n, set()).add(heads[n])
+        elif all(attempts[n] >= AGENT_ATTEMPTS for n in targets):
+            why = f"resolve-merge ended {end} twice"
+            ask_resolve_failed(root, agent_id, why)
+            return why
 
 
 def work_one(root: str, dossier: str) -> None:
@@ -1173,7 +1205,8 @@ if a[:2] == ["pr", "view"] and "mergeStateStatus" in a:
 if a[:2] == ["pr", "view"] and "number,state,baseRefName,headRefName,isDraft,files" in a:
     p = next(p for p in prs if str(p["number"]) == a[2]); print(json.dumps(dict(p, state=p.get("state", "OPEN")))); sys.exit(0)
 if a[:2] == ["pr", "view"] and "headRefOid" in a:
-    print(os.environ.get("FAKE_HEAD", "")); sys.exit(0)
+    hf = os.path.join(d, "head.txt")
+    print(open(hf).read().strip() if os.path.exists(hf) else os.environ.get("FAKE_HEAD", "")); sys.exit(0)
 if a[:2] == ["pr", "view"]:
     p = next(p for p in prs if str(p["number"]) == a[2])
     print(p.get("mergeable", "MERGEABLE") if "mergeable" in a else p.get("state", "OPEN")); sys.exit(0)
@@ -1185,6 +1218,10 @@ def selftest() -> int:
     os.environ.setdefault("ASD_MERGE_NET_TRIES", "2")   # a fixture's unreachable remote must not be waited out for ever
     os.environ.setdefault("ASD_MERGE_NET_WAIT", "0.01")
     fails: list[str] = []
+    # Leak guard: the questions and runs the owner really sees must not gain a fixture's (repo.*, clone.*) file during this run.
+    real_dirs = [os.environ.get("ASD_QUESTIONS_DIR") or os.path.expanduser("~/.agentic/questions"), runs_dir()]
+    listing = lambda: {d: {f for f in os.listdir(d) if f.startswith(("repo.", "clone."))} if os.path.isdir(d) else set() for d in real_dirs}
+    before_real = listing()
 
     def check(name: str, ok: bool, why: str = "") -> None:
         print(("ok   " if ok else "FAIL ") + name + ("" if ok or not why else "  — " + why[:400]))
@@ -1208,7 +1245,8 @@ def selftest() -> int:
         open(os.path.join(fdir, "gh.py"), "w").write(FAKE_GH)
         fake_runner = os.path.join(tmp, "runner.py")
         open(fake_runner, "w").write("import sys\nopen(sys.argv[0] + '.args', 'w').write(' '.join(sys.argv[1:]))\nprint('started')\n")
-        env = dict(os.environ, ASD_GH_BIN=f"{sys.executable} {os.path.join(fdir, 'gh.py')}", FAKE_GH_DIR=fdir, ASD_RUNS_DIR=rdir)
+        env = dict(os.environ, ASD_GH_BIN=f"{sys.executable} {os.path.join(fdir, 'gh.py')}", FAKE_GH_DIR=fdir, ASD_RUNS_DIR=rdir, ASD_QUESTIONS_DIR=os.path.join(tmp, "questions"))
+        os.environ["ASD_QUESTIONS_DIR"] = os.path.join(tmp, "questions")   # the owner questions the queue asks stay in the fixture
         global RUNNER
         saved = RUNNER
         RUNNER = fake_runner
@@ -1262,12 +1300,13 @@ dossier, cmd = a[0], a[a.index("--command") + 1]
 open(os.path.join(d, "runs.txt"), "a").write(f"{dossier} {cmd}\n")
 if cmd == "resolve-merge":
     n = open(os.path.join(d, "runs.txt")).read().count("resolve-merge")
+    if not os.environ.get("FAKE_NO_PUSH"): open(os.path.join(d, "head.txt"), "w").write(f"sha{n}")
     if n >= int(os.environ.get("FAKE_RESOLVED_AT_ROUND") or 1):
         prs = json.load(open(os.path.join(d, "prs.json")))
         for p in prs: p["mergeable"] = "MERGEABLE"; p.pop("bucket", None)
         json.dump(prs, open(os.path.join(d, "prs.json"), "w"))
 ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-json.dump({"state": "done", "pid": 2 ** 22 + 7, "started": ts, "command": cmd}, open(os.path.join(rdir, "repo." + dossier + ".runner.json"), "w"))
+json.dump({"state": "failed" if cmd == "resolve-merge" and os.environ.get("FAKE_RUN_FAILS") else "done", "pid": 2 ** 22 + 7, "started": ts, "command": cmd}, open(os.path.join(rdir, "repo." + dossier + ".runner.json"), "w"))
 print("started")
 """
         fr = os.path.join(tmp, "fakerun.py"); open(fr, "w").write(FAKE_RUN)
@@ -1336,16 +1375,17 @@ print("started")
             left[0] = 99; seen_runs.clear()
             with contextlib.redirect_stdout(io.StringIO()):
                 why = settle(root, "repo.W-160", "W-160", one_pr, "stub/s", [], lambda s, t: None)
-            check("queue: a clash that stays stops at the round limit and says so", len(seen_runs) == 3 and "migration numbers still clash" in why and "after 3 agent rounds" in why, why)
+            check("queue: a clash that stays stops at the round limit and says so", len(seen_runs) == 2 and "migration numbers still clash" in why and "after 2 resolve-merge attempts" in why, why)
         finally:
             globals().update(saved_fns)
         # ---- agent rounds: the queue keeps at it, and stops at the limit ----
-        def rounds_scenario(dossier: str, pr: int, resolved_at: int, **fields) -> tuple[list[str], dict]:
+        def rounds_scenario(dossier: str, pr: int, resolved_at: int, extra_env: dict | None = None, **fields) -> tuple[list[str], dict]:
             json.dump([dict(P(pr, f"feat/{dossier}-x", "stub/s"), **(fields or {"mergeable": "CONFLICTING"}))], open(os.path.join(fdir, "prs.json"), "w"))
             for f in ("runs.txt", "calls.txt"):
                 if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
+            open(os.path.join(fdir, "head.txt"), "w").write("sha0")
             saved = dict(os.environ)
-            os.environ.update(env, ASD_RUNNER_BIN=fr, ASD_MERGE_POLL="0.2", FAKE_RESOLVED_AT_ROUND=str(resolved_at))
+            os.environ.update(env, ASD_RUNNER_BIN=fr, ASD_MERGE_POLL="0.2", FAKE_RESOLVED_AT_ROUND=str(resolved_at), **(extra_env or {}))
             try:
                 with contextlib.redirect_stdout(io.StringIO()):
                     enqueue(root, dossier)
@@ -1358,14 +1398,23 @@ print("started")
                 os.environ.clear(); os.environ.update(saved)
             made = open(os.path.join(fdir, "runs.txt")).read().split("\n") if os.path.exists(os.path.join(fdir, "runs.txt")) else []
             return [r for r in made if "resolve-merge" in r], read_json(os.path.join(rdir, f"repo.{dossier}.merge.json"), {}) or {}
-        r3, s3 = rounds_scenario("W-141", 610, 3)
-        check("queue: the third agent round may still resolve it, and the stack merges", len(r3) == 3 and s3.get("state") == "merged", str(r3) + str(s3))
+        r3, s3 = rounds_scenario("W-141", 610, 2)
+        check("queue: a conflict starts resolve-merge by itself; the second attempt may resolve it, and the stack merges", len(r3) == 2 and s3.get("state") == "merged", str(r3) + str(s3))
         r4, s4 = rounds_scenario("W-142", 620, 99)
-        check("queue: three agent rounds is the limit; the stack fails and says so", len(r4) == 3 and s4.get("state") == "failed" and "after 3 agent rounds" in str(s4.get("error")), str(r4) + str(s4))
+        check("queue: two resolve-merge attempts per PR is the cap; the stack fails and says so", len(r4) == 2 and s4.get("state") == "failed" and "after 2 resolve-merge attempts" in str(s4.get("error")), str(r4) + str(s4))
+        qdir = os.path.join(tmp, "questions")
+        asked = [f for f in os.listdir(qdir) if f.endswith(".jsonl")] if os.path.isdir(qdir) else []
+        check("queue: the owner is asked once the attempts are spent", any("W-142" in f for f in asked), str(asked))
+        check("queue: ... and not before (W-141 resolved on the second attempt, no question)", not any("W-141" in f for f in asked), str(asked))
+        r7, s7 = rounds_scenario("W-145", 650, 99, extra_env={"FAKE_NO_PUSH": "1"})
+        check("queue: once per PR head: a run that pushed nothing is not repeated on the same head", len(r7) == 1 and s7.get("state") == "failed" and "head did not change" in str(s7.get("error")), str(r7) + str(s7))
+        r8, s8 = rounds_scenario("W-146", 660, 99, extra_env={"FAKE_RUN_FAILS": "1"})
+        check("queue: resolve-merge failing twice stops after two runs and fails the stack", len(r8) == 2 and s8.get("state") == "failed" and "ended failed twice" in str(s8.get("error")), str(r8) + str(s8))
         r5, s5 = rounds_scenario("W-143", 630, 2, bucket="fail")
         check("queue: a check still red after the agent's push gets another round", len(r5) == 2 and s5.get("state") == "merged", str(r5) + str(s5))
         r6, s6 = rounds_scenario("W-144", 640, 99, bucket="fail")
-        check("queue: red checks stop at the limit too", len(r6) == 3 and s6.get("state") == "failed" and "checks still red: #640 after 3 agent rounds" in str(s6.get("error")), str(r6) + str(s6))
+        check("queue: red checks stop at the cap too", len(r6) == 2 and s6.get("state") == "failed" and "checks still red: #640 after 2 resolve-merge attempts" in str(s6.get("error")), str(r6) + str(s6))
+        os.remove(os.path.join(fdir, "head.txt"))
         # ---- integrate: the finished dossiers through the queue, the one in flight left, then /stub ----
         for f in ("runs.txt", "calls.txt"):
             if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
@@ -1590,6 +1639,8 @@ print("started")
         check("batch: a member pushed to during the batch is left open and says so, never closed", "pr close 530" not in cc and sa.get("state") == "failed" and "changed" in sa.get("error", ""), cc + str(sa))
         check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged")
         RUNNER = saved
+    leaked = {d: sorted(now_ - before_real[d]) for d, now_ in listing().items() if now_ - before_real[d]}
+    check("no file was created in the real questions or runs dir during the selftest", not leaked, str(leaked))
     print("FAILED: " + ", ".join(fails) if fails else "all ok")
     return 1 if fails else 0
 

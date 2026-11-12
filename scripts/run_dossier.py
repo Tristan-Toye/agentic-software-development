@@ -631,6 +631,58 @@ SPLIT_AT_DEFAULT = 135000
 SMALL_WINDOW = re.compile(r"haiku-[34]|claude-3|opus-4|sonnet-4|\[200k\]", re.I)
 
 
+# ---- the owner's standing "Always allow" rulings, kept per repo --------------------------------------------------
+# The dashboard writes `<repo>.json` in $ASD_RULINGS_DIR (default ~/.agentic/rulings): {"repo", "rules": [{"rule",
+# "kind": "allow", "by", "ts", "question", "run", "tool", "target"}]}. Every claude session of the runner for that repo
+# gets them as `permissions.allow` in --settings (claude_cmd), together with `permissions.deny` for the categories the
+# owner's agents never do (merging a PR, a force or protected-branch push, a secret path); a deny rule outranks an allow
+# rule in Claude Code, and a stored rule that could cover such a call is dropped here too, whoever wrote it.
+RULING_DENY = ["Bash(gh pr merge:*)", "Bash(gh api:* /merge*)", "Bash(git push --force:*)", "Bash(git push -f:*)",
+               "Bash(git push --force-with-lease:*)", "Bash(git push --mirror:*)", "Bash(git push * production:*)",
+               "Bash(git push * main:*)", "Bash(git push * master:*)", "Bash(git push * development:*)",
+               "Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.gnupg/**)"]
+RULING_PROBES = ["gh pr merge 1", "gh pr merge 1 --squash --auto", "gh api -X PUT repos/o/r/pulls/1/merge",
+                 "gh api graphql -f query=mutation{mergePullRequest}", "git push --force", "git push -f origin x",
+                 "git push --force-with-lease origin x", "git push --mirror", "git push origin production",
+                 "git push origin main", "git push origin master", "git push origin development",
+                 "git push origin --delete production", "cat ~/.ssh/id_rsa", "cat ~/.aws/credentials", "sops -d secrets.yaml"]
+SECRET_RULE_RE = re.compile(r"\.ssh|\.aws|\.gnupg|id_rsa|id_ed25519|\.env\b|secrets?\.|credentials|keychain", re.I)
+
+
+def rulings_dir() -> str:
+    return os.environ.get("ASD_RULINGS_DIR") or os.path.expanduser("~/.agentic/rulings")
+
+
+def ruling_refused(rule: str) -> str:
+    """Why a stored rule must never apply ("" when it may): it would allow, or could cover, a call in the refused categories."""
+    m = re.match(r"^([A-Z][A-Za-z]+)\((.+)\)$", (rule or "").strip(), re.S)
+    if not m:
+        return "not a permission rule"
+    tool, inner = m.group(1), m.group(2).strip()
+    if not inner or re.fullmatch(r"\*+", inner) or inner.startswith("* "):
+        return "allows everything"
+    if tool != "Bash":
+        return "names a secret path" if SECRET_RULE_RE.search(inner) else ""
+    pat = re.escape(inner.replace(":*", " *")).replace(r"\*", ".*")
+    rx = re.compile(pat, re.S)
+    for probe in RULING_PROBES:
+        if rx.fullmatch(probe) or rx.fullmatch(probe + " origin x") or rx.match(probe):
+            return "covers a call the runner refuses: " + probe
+    return ""
+
+
+def repo_rulings(repo: str) -> list[str]:
+    """The allow rules the owner saved with "Always allow" for `repo`, minus any that fail ruling_refused."""
+    doc = read_json(os.path.join(rulings_dir(), f"{repo}.json"), {}) or {}
+    out: list[str] = []
+    for r in doc.get("rules") or []:
+        rule = str(r.get("rule", "") if isinstance(r, dict) else r).strip()
+        if rule and rule not in out and not ruling_refused(rule):
+            out.append(rule)
+    return out
+
+
+
 def lean_on(name: str) -> bool:
     """A lean runner session's opt-out `name` (CLAUDEMD, GIT, MEMORY, CONTEXT7) is on unless ASD_RUNNER_LEAN is 0 or
     ASD_RUNNER_LEAN_<NAME> is 0."""
@@ -1211,8 +1263,15 @@ class Runner:
         model = self.model or runner_model(None)
         cmd += ["--model", model]
         # The keep-alive resume ping is claude_cmd() + --resume, so everything that shapes the prefix is built here only.
-        if (os.environ.get("ASD_RUNNER_LEAN") or "1").strip() != "0":
-            cmd += ["--settings", lean_settings(self.root), "--disallowedTools", ",".join(LEAN_DISALLOWED)]
+        lean = (os.environ.get("ASD_RUNNER_LEAN") or "1").strip() != "0"
+        rules = repo_rulings(main_repo_name(self.root))
+        if lean or rules:
+            st = json.loads(lean_settings(self.root)) if lean else {}
+            if rules:   # the owner's standing rulings for this repo; the deny list is passed with them and outranks them
+                st["permissions"] = {"allow": rules, "deny": RULING_DENY}
+            cmd += ["--settings", lean_settings(self.root) if lean and not rules else json.dumps(st, separators=(",", ":"))]
+        if lean:
+            cmd += ["--disallowedTools", ",".join(LEAN_DISALLOWED)]
         win = compact_window(model)
         if win:
             cmd += ["--autocompact", str(win)]
@@ -2875,6 +2934,12 @@ def already_built_for_test(root: str, dossier: str, env: dict) -> str:
 def selftest() -> int:
     me = os.path.abspath(__file__)
     failures: list[str] = []
+    # Leak guard: nothing a fixture asks or runs may reach the owner's real stores; no ruling of the owner's may shape an argv here.
+    real_dirs = [os.environ.get("ASD_QUESTIONS_DIR") or os.path.expanduser("~/.agentic/questions"), runs_dir()]
+    listing = lambda: {d: {f for f in os.listdir(d) if f.startswith(("repo.", "clone.", "W-"))} if os.path.isdir(d) else set() for d in real_dirs}
+    before_real = listing()
+    rulings_tmp = tempfile.mkdtemp(prefix="asd-rulings-")
+    os.environ["ASD_RULINGS_DIR"] = rulings_tmp
 
     def check(name: str, ok: bool) -> None:
         print(("ok   " if ok else "FAIL ") + name, flush=True)
@@ -3950,6 +4015,24 @@ def selftest() -> int:
               [x for x in lean if x not in (lean[lean.index("--settings") + 1], lean[lean.index("--disallowedTools") + 1], "--settings", "--disallowedTools", rules_of(lean))]
               == [x for x in plain if x != rules_of(plain)]
               and rules_of(lean).replace(CLAUDE_MD_POINTER, "") == rules_of(plain))
+        # ---- the owner's standing rulings: stored per repo, applied to every session of that repo, never past the deny list ----
+        rrepo = main_repo_name(root)
+        write_json(os.path.join(rulings_tmp, f"{rrepo}.json"), {"repo": rrepo, "rules": [
+            {"rule": "Bash(limactl shell vm -- docker compose build *)", "kind": "allow", "by": "owner", "ts": now(), "question": "Q1"},
+            {"rule": "Bash(gh pr *)", "kind": "allow", "by": "x", "ts": now(), "question": "Q2"},
+            {"rule": "Bash(git push --force *)", "kind": "allow", "by": "x", "ts": now(), "question": "Q3"},
+            {"rule": "Read(~/.ssh/id_rsa)", "kind": "allow", "by": "x", "ts": now(), "question": "Q4"}]})
+        rl = argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp)
+        rs = json.loads(rl[rl.index("--settings") + 1])
+        check("rulings: a stored allow rule reaches the settings of every session of that repo, beside the lean settings",
+              rs["permissions"]["allow"] == ["Bash(limactl shell vm -- docker compose build *)"] and rs["enabledPlugins"].get("context-mode@context-mode") is False)
+        check("rulings: a stored rule that covers a refused category (merge, force push, secret path) is never applied, and the deny list rides along",
+              "Bash(gh pr *)" not in rs["permissions"]["allow"] and "Bash(gh pr merge:*)" in rs["permissions"]["deny"] and "Bash(git push --force:*)" in rs["permissions"]["deny"])
+        rp = argv_of(ASD_RUNNER_LEAN="0", ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp)
+        check("rulings: they apply with lean off too, and without a lean flag the rest of the argv is unchanged",
+              json.loads(rp[rp.index("--settings") + 1])["permissions"]["allow"] == rs["permissions"]["allow"] and "--disallowedTools" not in rp)
+        os.remove(os.path.join(rulings_tmp, f"{rrepo}.json"))
+        check("rulings: none stored, none passed", "permissions" not in json.loads(argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp)[argv_of(ASD_RUNNER_LEAN=None, ASD_RUNNER_COMPACT_WINDOW="0", ASD_RULINGS_DIR=rulings_tmp).index("--settings") + 1]))
         # ---- the session-start opt-outs: each on by default under lean, each with its own switch ----
         env_of = lambda **e: (lambda saved: (os.environ.update({k: v for k, v in e.items() if v is not None}), [os.environ.pop(k, None) for k, v in e.items() if v is None],
                                              Runner(root, "W-248", "work-on", None, "auto", 1).child_env(), [os.environ.pop(k, None) for k in e],
@@ -4094,6 +4177,8 @@ def selftest() -> int:
             time.sleep(0.1)
         time.sleep(0.3)
 
+    leaked = {d: sorted(n - before_real[d]) for d, n in listing().items() if n - before_real[d]}
+    check("no fixture file was created in the real questions or runs dir during the selftest", not leaked)
     print("FAILED: " + ", ".join(failures) if failures else "all ok")
     return 1 if failures else 0
 
