@@ -12,3 +12,11 @@ __pycache__/
 
 # plugin eval runs
 evals/results/
+
+# inspiration repos: clones stay local; analysis and routing are tracked
+inspiration-repos/*
+!inspiration-repos/analysis/
+!inspiration-repos/CLAUDE.md
+
+# research PDFs stay local: every plugin update copies the repo into a per-commit cache dir; the paper docs keep each source URL
+visual-review/sources/*.pdf
