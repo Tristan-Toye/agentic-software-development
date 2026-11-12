@@ -61,6 +61,15 @@ after 80 tool calls without a checkpoint a tool result reminds you to close
 the stage you are in. Phases 0 and 1 are short: checkpoint them together,
 as "Phase 1", when Phase 1 ends.
 
+**Learned rules arrive with the checkpoint.** Name the next phase in the `NEXT:`
+line as `Phase <N>`. The checkpoint's result then ends with "Learned rules for
+Phase <N>": the ids and one-line titles of the rules this repository's
+`docs/learned-rules.md` tags for that phase (its `<!-- phases: -->` lines). Open
+the ones that bear on your step with `doc_section docs/learned-rules.md <id>`
+(several with `LRN-0073 | LRN-0081`); do not read the ledger whole. No list means
+no rule is tagged for that phase. The ledger stays the source of truth: the rule
+text there binds, and a list line is only a pointer to it.
+
 **Old output fades on its own, under opencode.** The context-guard plugin
 masks tool output older than your newest 10 steps and reasoning older than
 your newest 20 once a request passes its trigger: the output becomes a
