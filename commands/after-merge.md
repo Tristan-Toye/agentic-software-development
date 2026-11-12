@@ -74,22 +74,23 @@ one):
 - **Conflicting, otherwise**: refresh it here without asking (a fresh worktree on
   its branch, `git merge origin/<stub>`, resolve keeping both sides' intent, the
   repository's gates on the touched paths, push; Phase 9's refresh ritual with
-  `validate_pipeline.py --finalize-ids` where the repository has ADRs). A merge
-  conflict is resolved, not asked about; only when the two intents conflict at
-  product level, ask the owner, one `ask_owner.py ask --kind product` per pull
-  request, naming the files in conflict, and leave it for its own run. End the
-  turn with `RUNNER: WAITING <ids>` when nothing else is left.
+  `validate_pipeline.py --finalize-ids` where the repository has ADRs). Never
+  rebase, never force-push. A merge conflict is resolved, not asked about; only
+  when the two intents conflict at product level, ask the owner, one
+  `ask_owner.py ask --kind product` per pull request, naming the files in
+  conflict, and leave it for its own run. When the gates stay red after one
+  honest attempt, abort the merge, leave the branch as it was and name it in
+  the note: the merge queue's `/resolve-merge` reaches it when its dossier is
+  merged. End the turn with `RUNNER: WAITING <ids>` when nothing else is left.
 
 ## Step 5 — Close
 
-One note: what merged, what was cleaned, which pull requests changed or are
-waiting on the owner. The dashboard regenerates the open-work report itself
+One note: what merged, what was cleaned, which pull requests changed or were left. The dashboard regenerates the open-work report itself
 once the refs move. Under the runner, end with `RUNNER: DONE`.
 
 ## Rules
 
 - Never merge, close or approve a pull request, and never push to the stub.
-- Never change code except in an `A`-ruled refresh, and then only to resolve
-  the conflict.
+- Never change code except in a refresh, and then only to resolve the conflict.
 - Never delete a branch that is not merged, a dirty worktree, or anything on
   the remote.

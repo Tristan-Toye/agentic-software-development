@@ -61,6 +61,15 @@ after 80 tool calls without a checkpoint a tool result reminds you to close
 the stage you are in. Phases 0 and 1 are short: checkpoint them together,
 as "Phase 1", when Phase 1 ends.
 
+**Learned rules arrive with the checkpoint.** Name the next phase in the `NEXT:`
+line as `Phase <N>`. The checkpoint's result then ends with "Learned rules for
+Phase <N>": the ids and one-line titles of the rules this repository's
+`docs/learned-rules.md` tags for that phase (its `<!-- phases: -->` lines). Open
+the ones that bear on your step with `doc_section docs/learned-rules.md <id>`
+(several with `LRN-0073 | LRN-0081`); do not read the ledger whole. No list means
+no rule is tagged for that phase. The ledger stays the source of truth: the rule
+text there binds, and a list line is only a pointer to it.
+
 On both hosts a guard also refuses a whole read of a
 dossier or of a file over 20 KB (never of a phase file) and a VM test run that bypasses
 `run_tests.py`; the refusal names the tool to use instead. Take it, and never
@@ -155,6 +164,11 @@ and fetch only that.
 the appended system prompt and take precedence: ask only through
 `ask_owner.py`, end a stage with its `phase_checkpoint` and the `RUNNER:` line
 it names, and post `ask_owner.py note` for what is worth knowing mid-stage.
+A broken environment (the Lima VM down or unreachable, a shared compose service
+unhealthy, the disk low) is not a question: end the turn with one line
+`RUNNER: ENV <vm|stack|disk> <detail>`; the runner repairs vm and stack when the
+owner enabled it and answers `RUNNER ENV <kind>: repaired ..` (carry on) or
+`not repaired ..` (then ask as usual). A disk is never repaired automatically.
 
 **Deferred issues, as you go.** Whenever you notice a product-code issue you
 will not fix in this run — in a file you read, an arbitration's evidence, a

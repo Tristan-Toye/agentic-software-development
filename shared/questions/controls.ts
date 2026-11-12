@@ -26,9 +26,13 @@ export function controlsFor(d: { status: string; blockedBy: string[]; runner: Ru
   const stopped = d.runner?.state === "stopped" || d.runner?.state === "failed"
   // Start runs the dossier's next flow: a planned dossier is planned (/plan), a ready one built (/work-on).
   const startable = d.status === "ready" || d.status === "planned"
-  const start: Ctl = { show: startable && !active(d.runner) && !stopped, ok: d.status === "planned" || open.length === 0, reason: d.status === "ready" && open.length ? `blocked by ${open.join(", ")}` : "", command: d.status === "planned" ? "plan" : "work-on" }
+  const next = d.status === "planned" ? "plan" : "work-on"
+  // A stopped run of another flow (a /work-on sent back to /plan, the dossier planned again) is not this flow's to resume:
+  // Start offers the next flow, and Resume stays hidden.
+  const stale = stopped && startable && (d.runner?.command || "work-on") !== next
+  const start: Ctl = { show: startable && !active(d.runner) && (!stopped || stale), ok: d.status === "planned" || open.length === 0, reason: d.status === "ready" && open.length ? `blocked by ${open.join(", ")}` : "", command: next }
   // Resume picks up the flow that stopped, whichever it was.
-  const resume: Ctl = { show: d.status !== "done" && d.status !== "dropped" && stopped, ok: !!d.runner?.root, reason: d.runner?.root ? "" : "no root recorded in the runner state", command: d.runner?.command || "work-on" }
+  const resume: Ctl = { show: d.status !== "done" && d.status !== "dropped" && stopped && !stale, ok: !!d.runner?.root, reason: d.runner?.root ? "" : "no root recorded in the runner state", command: d.runner?.command || "work-on" }
   const stop: Ctl = { show: active(d.runner), ok: true, reason: "" }
   /* Fix all deferred: a finished build (pr or done) with open ledger items and no live runner. */
   const fix: Ctl = { show: (d.status === "pr" || d.status === "done") && (d.deferredOpen ?? 0) > 0 && !active(d.runner), ok: true, reason: "" }

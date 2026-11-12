@@ -582,7 +582,7 @@ function docPrsView(repo) {
   if (!st) { S.docPrs[repo] = { loading: true }; fetch('/api/repo/' + enc(repo) + '/doc-prs').then(r => r.json()).then(j => { S.docPrs[repo] = j; render(); }).catch(() => { S.docPrs[repo] = { error: 'request failed' }; render(); }); return null; }
   if (st.loading) return null;
   const prs = st.prs || []; if (!prs.length && !st.merging && !st.error) return null;
-  const ready = prs.filter(p => p.ready).length; const queueable = prs.filter(p => !p.draft && !(p.queue && ['queued', 'waiting', 'fixing', 'batching', 'rerunning', 'resolving', 'merging'].includes(p.queue.state))).length;
+  const ready = prs.filter(p => p.ready).length; const queueable = prs.filter(p => (!p.draft || p.draftReady) && !(p.queue && ['queued', 'waiting', 'fixing', 'batching', 'rerunning', 'resolving', 'merging'].includes(p.queue.state))).length;
   const rows = prs.map(p => h('a', { class: 'srow', href: p.url, target: '_blank', rel: 'noopener', 'data-k': 'dp:' + p.number }, [h('span', { class: 'sid mono' }, ['#' + p.number]),
     h('span', { class: 'sname' }, [h('span', {}, [(p.dossier ? p.dossier + ' · ' : '') + p.title]), h('span', { class: 'small mut rsub' }, [p.kind + ' · ' + p.head])]),
     h('span', { class: 'sright' }, [docPrState(p)])]));
@@ -599,8 +599,8 @@ function docPrState(p) {
   const QL = { queued: 'in the merge queue' + (q && q.position ? ' · #' + q.position : ''), waiting: 'waits for its run', fixing: q && /^updating/.test(q.note || '') ? 'updating · then its checks' : 'renumbering', batching: 'in batch' + (q && q.batch ? ' #' + q.batch : '') + ' · waiting for its checks', rerunning: 're-running red checks', resolving: 'its agent is resolving', merging: 'merging…', merged: 'merged' };
   if (q && QL[q.state]) return h('span', { title: q.note || '' }, [h('span', { class: 'chip ' + (q.state === 'merged' ? 'done' : 'fixing') }, [q.state === 'merged' ? null : h('span', { class: 'dot info live' }), QL[q.state]])]);
   if (q && q.state === 'failed') return h('span', { title: q.error || '' }, [chip('could not merge: ' + (q.error || '').slice(0, 60), 'blocked')]);
-  if (p.ready) return chip('ready to merge', 'done');
-  return h('span', { title: p.blocked + ' — Merge all lets the queue fix this' }, [chip(p.blocked.replace(/; renumber it.*$/, '').slice(0, 60), !p.docsOnly || p.draft ? 'blocked' : 'neutral')]);
+  if (p.ready) return h('span', { title: p.note || '' }, [chip(p.draftReady ? 'ready to merge · draft marked ready first' : 'ready to merge', 'done')]);
+  return h('span', { title: p.blocked + ' — Merge all lets the queue fix this' }, [chip(p.blocked.replace(/^dossier id taken: (\S+) .*; will renumber.*$/, '$1 taken · will renumber').slice(0, 60), !p.docsOnly || p.draft ? 'blocked' : 'neutral')]);
 }
 async function docPrsAct(btn, act) {
   const repo = btn.dataset.repo;
@@ -711,6 +711,7 @@ function itemView(repo, id) {
   const mode = itemMode(r); const d = S.detail && S.detail.url === detailUrl() ? S.detail.data : null;
   const kids = [header(r, mode)];
   const bv = blockedView(r, d); if (bv) kids.push(bv);
+  const rv = rulingsView(r, d); if (rv) kids.push(rv);
   const res = resultView(r, d); if (res) kids.push(res);
   const lm = liveMessageView(r); if (lm) kids.push(lm);
   const dp = deferredProgress(r, d); if (dp) kids.push(dp);
@@ -814,11 +815,23 @@ function blockedView(r, d) {
         h('button', { class: 'btn', type: 'button', 'data-act': 'blk', 'data-do': 'deny', 'data-repo': r.repo, 'data-id': r.id, 'data-b': b.id, disabled: busy || !d.blockQuestion ? true : null }, ['Deny'])]),
       h('div', { class: 'blk-rule' }, [h('input', { type: 'text', class: 'mono', 'data-rule': b.id, value: st[rk], 'aria-label': 'Permission rule' }),
         h('button', { class: 'btn', type: 'button', 'data-act': 'blk', 'data-do': 'always', 'data-repo': r.repo, 'data-id': r.id, 'data-b': b.id, disabled: busy ? true : null }, ['Always allow in this repo'])]),
-      h('div', { class: 'small mut' }, ['Always allow saves the rule to ' + r.repo + '\'s .claude/settings.local.json (permissions.allow) and restarts the stage when the agent gets your answer, so the rule applies at once (it redoes the work since the stage\'s last checkpoint). Widen it to a prefix, e.g. Bash(ssh vm-test *), to cover similar commands.'])]);
+      h('div', { class: 'small mut' }, ['Always allow saves the rule for every later session of ' + r.repo + ' (~/.agentic/rulings, and its .claude/settings.local.json) and restarts the stage when the agent gets your answer, so the rule applies at once (it redoes the work since the stage\'s last checkpoint). Widen it to a prefix, e.g. Bash(ssh vm-test *), to cover similar commands.'])]);
   });
   const kids = [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Blocked by the safety check · ' + bs.length]), d.blockQuestion ? h('span', { class: 'small mut' }, ['ruling goes to ' + d.blockQuestion]) : h('span', { class: 'small mut' }, ['the agent has not asked yet'])])].concat(cards);
   if (st.msg) kids.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad') }, [st.msg]));
   return h('section', { class: 'panel blocked', 'data-k': 'blocked' }, kids);
+}
+/* The standing "Always allow" rulings of this repo (~/.agentic/rulings): who saved each, when, for which question; Remove drops it. */
+function rulingsView(r, d) {
+  const rs = d && d.rulings; if (!rs || !rs.length) return null;
+  const st = S.chat['rul:' + r.repo] = S.chat['rul:' + r.repo] || {};
+  const rows = rs.map(x => h('div', { class: 'blk', 'data-k': 'rul:' + x.rule }, [
+    h('pre', { class: 'blk-cmd' }, [x.rule]),
+    h('div', { class: 'small mut' }, ['saved by ' + (x.by || 'owner') + (x.question ? ' · answering ' + x.question : '') + ' · ', when(x.ts)]),
+    h('div', { class: 'ctl' }, [h('button', { class: 'btn', type: 'button', 'data-act': 'rmrule', 'data-repo': r.repo, 'data-rule': x.rule, disabled: st.busy ? true : null }, ['Remove'])])]));
+  const kids = [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Standing rulings for ' + r.repo + ' · ' + rs.length]), h('span', { class: 'small mut' }, ['applied to every later session of this repo'])])].concat(rows);
+  if (st.msg) kids.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad') }, [st.msg]));
+  return h('section', { class: 'panel rulings', 'data-k': 'rulings' }, kids);
 }
 /* What the dossier changed, in product terms (/product-summary, written after Phase 9), above the dossier itself. */
 function summaryView(r, d) {
@@ -1137,6 +1150,16 @@ async function ruleBlock(btn) {
   } catch (e) { st.ok = false; st.msg = 'request failed'; }
   st.busy = null; await load(['runs', 'questions']);
 }
+async function removeRule(btn) {
+  const repo = btn.dataset.repo, rule = btn.dataset.rule, st = S.chat['rul:' + repo] = S.chat['rul:' + repo] || {};
+  if (st.confirm !== rule) { st.confirm = rule; btn.textContent = 'Confirm: Remove'; setTimeout(() => { if (st.confirm === rule) { st.confirm = null; render(); } }, 8000); return; }
+  st.confirm = null; st.busy = true; st.msg = ''; render();
+  try {
+    const r = await fetch('/api/rulings/' + enc(repo), { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rule }) });
+    const j = await r.json().catch(() => ({})); st.ok = r.ok && j.ok !== false; st.msg = j.output || j.error || ('HTTP ' + r.status);
+  } catch (e) { st.ok = false; st.msg = 'request failed'; }
+  st.busy = false; await load(['runs']);
+}
 async function writeSummary(btn) {
   const repo = btn.dataset.repo, id = btn.dataset.id, st = S.chat['sum:' + repo + '/' + id] = S.chat['sum:' + repo + '/' + id] || {};
   st.busy = true; st.err = ''; render();
@@ -1196,6 +1219,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'merge-plan' || act === 'merge-go' || act === 'merge-cancel' || act === 'merge-unqueue') mergeAct(t, act);
     else if (act === 'summary') writeSummary(t);
     else if (act === 'blk') ruleBlock(t);
+    else if (act === 'rmrule') removeRule(t);
     else if (act === 'usage-refresh') { S.usageBusy = true; render(); fetch('/api/accounts/refresh', { method: 'POST' }).catch(() => {}).finally(() => load(['runs'])); }
     else if (act === 'toggle-done') { S.showAll[t.dataset.repo] = !S.showAll[t.dataset.repo]; render(); }
     return;

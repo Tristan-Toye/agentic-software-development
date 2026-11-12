@@ -3,6 +3,7 @@
 import { appendFileSync, mkdirSync, openSync, readdirSync, statSync, watch, writeFileSync } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
+import { addRuling, readRulings, removeRuling } from "./rulings.ts"
 import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, undecidedDeferred, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile, refreshAfterControl } from "./stubs.ts"
 import { canIntegrate, checkRule, dossierPage, integrationPhase, integrationStopped, markIntegrating, readBlocks, readConversation, readIntegrate, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
@@ -12,7 +13,8 @@ import { runRunner, runTarget, runnerScript } from "./controls.ts"
 import { failPending, markPending, PENDING_TTL_MS, stubResumePending } from "./pending.ts"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
+import { pendingSlack, readRunThread, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
+import { startLagWatch } from "./lagwatch.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
 import { awakeDeps, checkAwake, releaseAwake } from "./awake.ts"
@@ -244,7 +246,7 @@ export async function scanRunThreads(): Promise<void> {
         } catch (e) { log(`slack run thread: ${(e as Error).message}`) }
       }
       runSeen.set(key, upto)
-      if (thread) writeRunThread(runsDir(), key, { ...thread, seen: upto })
+      if (thread && threadChanged(side, thread, upto)) writeRunThread(runsDir(), key, { ...thread, seen: upto })
     }
   } finally { scanningRuns = false }
 }
@@ -472,7 +474,7 @@ export async function handle(req: Request): Promise<Response> {
     const conv = { ...c, result: c.result ? { ...c.result, html: renderMarkdown(c.result.text) } : null, chat: c.chat.map((l) => ({ ...l, html: renderMarkdown(l.text) })), canChat: !!c.result && !runnerActive(run.runner) }
     const blocks = readBlocks(`${run.repo}.${run.id}`)
     const openQ = questions.filter((q) => q.state === "open").sort((a, b) => b.ts.localeCompare(a.ts))[0]?.id ?? ""
-    return json({ run, html, entries, groups, sections, activeSection: latest.cmd, activity, now, log, conv, summary, blocks, blockQuestion: openQ, summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
+    return json({ run, html, entries, groups, sections, activeSection: latest.cmd, activity, now, log, conv, summary, blocks, rulings: readRulings(run.repo), blockQuestion: openQ, summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
   }
   const dd = path.match(/^\/api\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && dd) {
@@ -558,6 +560,9 @@ export async function handle(req: Request): Promise<Response> {
       rule = typeof body.rule === "string" && body.rule.trim() ? body.rule.trim() : `${b.tool}(${b.target})`
       const bad = checkRule(rule)
       if (bad) return json({ error: bad }, 400)
+      // The ruling is the owner's, standing for the repo: kept in ~/.agentic/rulings so every later session of the repo gets it.
+      const kept = addRuling(run.repo, { rule, by: typeof (body as any).by === "string" && (body as any).by ? (body as any).by : "owner (dashboard)", question: q?.id ?? "", run: key, tool: b.tool, target: b.target })
+      if (kept) return json({ error: kept }, 400)
       const f = join(run.main, ".claude", "settings.local.json")
       let cfg: any = {}
       try { cfg = JSON.parse(readFileSync(f, "utf8")) } catch { cfg = {} }
@@ -580,6 +585,24 @@ export async function handle(req: Request): Promise<Response> {
     emitChange("runs"); emitChange("questions")
     const restarting = action === "always" && runnerActive(run.runner) && body.restart !== false
     return json({ ok: true, output: (action === "always" ? `saved ${rule} to ${run.repo}'s .claude/settings.local.json; ${restarting ? (q ? "the stage restarts now with your answer, so the rule applies" : "the stage restarts with the rule once the agent asks and you answer") : "it applies from the next stage"}` : `sent to the agent`) + (q ? ` · answered ${q.id}` : " · no open question to answer") })
+  }
+  const rg = path.match(/^\/api\/rulings\/([\w.-]+)$/)
+  if (rg && req.method === "GET") return json({ repo: rg[1], rules: readRulings(rg[1]) })
+  if (rg && req.method === "DELETE") {
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const body = await req.json().catch(() => ({})) as { rule?: unknown }
+    const rule = typeof body.rule === "string" ? body.rule : ""
+    if (!rule || !removeRuling(rg[1], rule)) return json({ error: "no such ruling" }, 404)
+    // The repo's own settings.local.json got the rule at the time it was saved: take it out there too.
+    for (const r of await allRuns()) {
+      if (r.repo !== rg[1]) continue
+      const f = join(r.main, ".claude", "settings.local.json")
+      try { const cfg = JSON.parse(readFileSync(f, "utf8")); if (Array.isArray(cfg.permissions?.allow)) { cfg.permissions.allow = cfg.permissions.allow.filter((x: string) => x !== rule); writeFileSync(f, JSON.stringify(cfg, null, 2) + "\n") } } catch { /* none */ }
+      break
+    }
+    emitChange("runs")
+    return json({ ok: true, output: `removed ${rule}; sessions started from now on no longer get it` })
   }
   const sm = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/summary$/)
   if (sm) {
@@ -918,6 +941,7 @@ async function main(): Promise<void> {
     log("slack disabled: no ASD_SLACK_USER (or ASD_QUESTIONS_NO_SLACK=1)")
   }
 
+  startLagWatch(log)
   await scan()
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -932,7 +956,7 @@ async function main(): Promise<void> {
   try {
     mkdirSync(runsDir(), { recursive: true })
     let rt: ReturnType<typeof setTimeout> | undefined
-    watch(runsDir(), (_e, name) => { emitChange("runs"); if (/\.(integrate|land|runner)\.json$/.test(String(name ?? "")) && /\.(stub|release)-/.test(String(name ?? ""))) emitChange("stubs"); clearTimeout(rt); rt = setTimeout(() => void scanRunThreads(), 300) })
+    watch(runsDir(), (_e, name) => { if (runsWatchIgnored(String(name ?? ""))) return; emitChange("runs"); if (/\.(integrate|land|runner)\.json$/.test(String(name ?? "")) && /\.(stub|release)-/.test(String(name ?? ""))) emitChange("stubs"); clearTimeout(rt); rt = setTimeout(() => void scanRunThreads(), 300) })
   } catch (e) {
     log(`runs dir not watched: ${(e as Error).message}`)
   }

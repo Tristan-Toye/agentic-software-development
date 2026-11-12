@@ -149,7 +149,11 @@ GAP: return — enough to reconstruct it.>
 
 Nothing else. No priority table, no scope field, no supersedes bookkeeping —
 the repo's file is read by whoever is about to write code in it, not
-audited.
+audited. One exception: where the repo's ledger tags its entries with a
+`<!-- phases: ... -->` line right under each heading (the `/work-on` phases
+`0`-`9`, `plan`, or `all` the rule bears on), the new entry carries one too —
+`phase_checkpoint` lists rules by that tag, and the repo's own check may
+refuse an entry without it.
 
 **The bar is high, and it is what keeps the file worth reading**: a rule
 earns its place only by being non-obvious *for this repo*, or by having a
