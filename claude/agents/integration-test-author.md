@@ -46,6 +46,15 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
 - `BOUNDARIES` — the external systems you may substitute (a payment API, a
   clock, an SMTP host) and how. Everything not listed is **in scope and must be
   real** in the test.
+- `CI_ENVIRONMENT` — what the target repository's CI runner has: `services:`
+  (the live services it provides, or `none`), `skip:` (the opt-out / skip
+  tokens it sets) and `guard:` (the line a stack-backed test opens with).
+  Open every test that needs a service CI lacks with that guard, exactly as
+  given; never read the environment directly. Present whenever the tests reach
+  a live service.
+- `TEST_FORM_RULES` — the repository's refused test-code forms, one
+  `refused form -> use instead` line each, or `none declared`. Never write a
+  refused form; use the helper named after the arrow.
 - `STYLE_SAMPLE` — one existing integration test, verbatim.
 - `PROMISE_CHECKLIST` — present only when the orchestrator routes you a
   **unit surface** in place of the `Write`-only unit author (under Claude
