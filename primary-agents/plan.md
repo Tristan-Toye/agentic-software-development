@@ -461,6 +461,9 @@ a change to review, so finish it as one:
      --title "<KEY>: plan — <title>" --body-file <scratch>/plan-pr.md
    ```
 
+   Not a draft: the plan is reviewed and final; a draft is skipped by the
+   dashboard's Merge all.
+
    You write the body yourself — no drafter spawn; this command spawns one
    agent, the reviewer. Four parts: `## Problem` and `## Approach` verbatim,
    the acceptance criteria as a list, the review rounds it took, and the
