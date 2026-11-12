@@ -791,6 +791,7 @@ BURN_ALPHA = 0.2
 PACE_MARGIN = {"five_hour": 10.0, "seven_day": 5.0}
 WINDOW_HOURS = {"five_hour": 5.0, "seven_day": 168.0}
 BURN_FILE = lambda: os.path.join(USAGE_DIR(), "burn.json")
+BURN_MIN_SAMPLES = 3   # an account's own rate replaces the pooled one once it has this many samples (ASD_BURN_MIN_SAMPLES)
 
 
 def now_s() -> float:
@@ -835,14 +836,34 @@ def running_by_account() -> dict[str, int]:
 
 
 def burn_rates() -> dict[str, float]:
-    """{window: points per hour of one running run}: the EWMA in burn.json, else the prior."""
+    """{window: points per hour of one running run}: the pooled EWMA in burn.json, else the prior."""
     cur = (read_json(BURN_FILE(), {}) or {}).get("rates") or {}
     return {w: float(cur[w]) if isinstance(cur.get(w), (int, float)) and cur[w] > 0 else p for w, p in BURN_PRIOR.items()}
 
 
+def burn_for(account: str) -> tuple[dict[str, float], dict[str, str]]:
+    """({window: points per hour}, {window: "account"|"pooled"|"prior"}) for one account. Accounts are different plans,
+    so an account's own EWMA is used once it has ASD_BURN_MIN_SAMPLES samples in that window, else the pooled one, else
+    the prior. burn.json written before the per-account rates (no `by_account`) still loads: everything is pooled."""
+    data = read_json(BURN_FILE(), {}) or {}
+    pooled, mine = data.get("rates") or {}, (data.get("by_account") or {}).get(account) or {}
+    need = max(1, int(env_num("ASD_BURN_MIN_SAMPLES", BURN_MIN_SAMPLES, int)))
+    rates, src = {}, {}
+    for w, prior in BURN_PRIOR.items():
+        own = mine.get(w) if isinstance(mine, dict) else None
+        ok = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+        if isinstance(own, dict) and ok(own.get("rate")) and isinstance(own.get("n"), (int, float)) and own["n"] >= need:
+            rates[w], src[w] = float(own["rate"]), "account"
+        elif ok(pooled.get(w)):
+            rates[w], src[w] = float(pooled[w]), "pooled"
+        else:
+            rates[w], src[w] = prior, "prior"
+    return rates, src
+
+
 def learn_burn(account: str, wins: dict, t: float, running: int | None = None) -> None:
     """From a new reading: delta used% / (running runs on the account x delta hours) feeds the EWMA of each window
-    (burn.json, keyed by window, not by account). An interval that crosses a reset, runs over 2 h, has no run working,
+    (burn.json: the pooled rate per window, and each account's own rate and sample count in `by_account`). An interval that crosses a reset, runs over 2 h, has no run working,
     or shows the percentage falling is skipped. The baseline stays put until 5 minutes or 1 point have passed."""
     if not account:
         return
@@ -850,6 +871,8 @@ def learn_burn(account: str, wins: dict, t: float, running: int | None = None) -
     path = BURN_FILE()
     cur = read_json(path, {}) or {}
     last, rates = cur.get("last") or {}, dict(cur.get("rates") or {})
+    by_acct = {k: dict(v) for k, v in (cur.get("by_account") or {}).items() if isinstance(v, dict)}
+    own = {w: dict(v) for w, v in (by_acct.get(account) or {}).items() if isinstance(v, dict)}
     mine = dict(last.get(account) or {})
     for w in BURN_PRIOR:
         win = wins.get(w) or {}
@@ -870,10 +893,18 @@ def learn_burn(account: str, wins: dict, t: float, running: int | None = None) -
                     r = du / (k * dh)
                     old = rates.get(w) if isinstance(rates.get(w), (int, float)) and rates[w] > 0 else BURN_PRIOR[w]
                     rates[w] = round(old * (1 - BURN_ALPHA) + r * BURN_ALPHA, 4)
+                    # the account's own EWMA starts from the first sample (the pooled rate is another plan's), and counts them
+                    o = own.get(w) or {}
+                    if isinstance(o.get("rate"), (int, float)) and o["rate"] > 0:
+                        o = {"rate": round(o["rate"] * (1 - BURN_ALPHA) + r * BURN_ALPHA, 4), "n": int(o.get("n") or 0) + 1}
+                    else:
+                        o = {"rate": round(r, 4), "n": 1}
+                    own[w] = o
         mine[w] = new
     last[account] = mine
+    by_acct[account] = own
     try:
-        write_json(path, {"rates": rates, "last": last})
+        write_json(path, {"rates": rates, "by_account": by_acct, "last": last})
     except OSError:
         pass
 
@@ -948,7 +979,7 @@ def compute_cap(t: float | None = None) -> dict:
     t = now_s() if t is None else t
     lo = max(1, int(env_num("ASD_RUNNER_MIN_LIVE", 3, int)))
     hi = max(lo, int(env_num("ASD_RUNNER_CAP_MAX", 6, int)))
-    rates = burn_rates()
+    rates = burn_rates()   # pooled; each account row uses burn_for(name)
     all_accs, st = load_accounts(), account_state()
     accs = [a for a in all_accs if not account_problem(a, all_accs)] or all_accs
     running = running_by_account()
@@ -988,14 +1019,16 @@ def compute_cap(t: float | None = None) -> dict:
 
         u5, h5 = left(w5, "five_hour")
         u7, h7 = left(w7, "seven_day") if isinstance(w7.get("used_percentage"), (int, float)) else (0.0, WINDOW_HOURS["seven_day"])
+        ar, src = burn_for(name)
         if u7 >= 98:
             runs = 0.0
         else:
-            runs5 = (100 - PACE_MARGIN["five_hour"] - u5) / (rates["five_hour"] * max(h5, 0.25))
-            runs7 = (100 - PACE_MARGIN["seven_day"] - u7) / (rates["seven_day"] * max(h7, 1.0))
+            runs5 = (100 - PACE_MARGIN["five_hour"] - u5) / (ar["five_hour"] * max(h5, 0.25))
+            runs7 = (100 - PACE_MARGIN["seven_day"] - u7) / (ar["seven_day"] * max(h7, 1.0))
             runs = max(0.0, min(runs5, runs7))
         total += runs
-        rows.append({"account": name, "five_hour": u5, "h5": round(h5, 2), "seven_day": u7, "h7": round(h7, 1), "runs": round(runs, 2)})
+        rows.append({"account": name, "five_hour": u5, "h5": round(h5, 2), "seven_day": u7, "h7": round(h7, 1), "runs": round(runs, 2),
+                     "burn": ar, "burn_from": src})
         parts.append(f"{name} 5h {u5:.0f}% resets in {h5:.1f}h, weekly {u7:.0f}% → {runs:.1f}")
     if known == 0 and limited < len(accs):
         cap, parts = 4, ["no usage reading yet"]
@@ -1010,16 +1043,39 @@ def slot_cap() -> tuple[int, str]:
     if fixed_slots():
         n = max_live()
         return n, f"fixed at {n}: " + ("ASD_RUNNER_ADAPTIVE=0" if (os.environ.get("ASD_RUNNER_ADAPTIVE") or "").strip() == "0" else "ASD_RUNNER_MAX_LIVE")
+    c = paced_cap()
+    return c["cap"], c["reason"]
+
+
+def paced_cap() -> dict:
+    """compute_cap(), cached ~60 s in slots-cap.json (ASD_PACE_TTL)."""
     path, t = os.path.join(runs_dir(), "slots-cap.json"), now_s()
     c = read_json(path, {}) or {}
     if c.get("mode") == "adaptive" and isinstance(c.get("ts"), (int, float)) and abs(t - c["ts"]) < env_num("ASD_PACE_TTL", 60):
-        return int(c["cap"]), str(c.get("reason") or "")
+        return c
     c = compute_cap(t)
     try:
         write_json(path, c)
     except OSError:
         pass
-    return c["cap"], c["reason"]
+    return c
+
+
+def headroom_pick(rows: list, running: dict, current: str) -> tuple[str, str]:
+    """(account, why) for a run with no session to resume: the account with the most paced headroom, i.e. the largest
+    `runs` of compute_cap's rows minus the runs already working on it. Limited accounts and accounts with no reading are
+    never chosen; a tie, or no reading on the current account, keeps `current`; a limited current account moves to the best."""
+    score = {r["account"]: float(r.get("runs") or 0) - running.get(r["account"], 0) for r in rows or []
+             if isinstance(r, dict) and r.get("account") and not r.get("limited") and not r.get("unknown")}
+    if not score:
+        return current, ""
+    cur_row = next((r for r in rows if isinstance(r, dict) and r.get("account") == current), None)
+    if cur_row is not None and cur_row.get("unknown"):
+        return current, ""
+    best = max(score, key=lambda k: (score[k], k == current))
+    if best == current or (current in score and score[best] <= score[current]):
+        return current, ""
+    return best, ", ".join(f"{k} {v:.1f}" for k, v in sorted(score.items()))
 
 
 def queue_order(st: dict) -> tuple[int, str]:
@@ -1434,9 +1490,11 @@ class Runner:
             live.append(t["label"])
         return live
 
-    def take_slot(self, first: bool = False) -> bool:
+    def take_slot(self, first: bool = False, rehome: bool = False) -> bool:
         """Wait for a run slot (max_live); False when the run was stopped while it waited. `first`: the owner just
-        answered this run, so it queues ahead of every run not answered (it already waited on the owner)."""
+        answered this run, so it queues ahead of every run not answered (it already waited on the owner). `rehome`: the
+        run is about to start a stage in a fresh session (nothing to resume), so the slot goes with the account that has the
+        most paced headroom, not the one it used last; a run with a session to resume keeps its account."""
         mine: tuple[int, str] | None = None
         low_said, reclaimed = False, 0.0
         while not self.stopping:
@@ -1466,6 +1524,8 @@ class Runner:
             if held < cap and (not mine or not ahead):
                 if mine:
                     self.event(f"{'disk has room' if low_said else 'slot free'}; {held + 1} of {cap} runs working", "running")
+                if rehome:
+                    self.rehome_account()
                 self.save(state="running", queued_since=None, queued_first=None)
                 self.ka_since = None
                 return True
@@ -1478,6 +1538,28 @@ class Runner:
             self.keepalive_tick()
             time.sleep(float(os.environ.get("ASD_RUNNER_SLOT_POLL") or 10))
         return False
+
+    def rehome_account(self) -> None:
+        """A slot was just granted to a run that starts a fresh session: move it to the account with the most paced
+        headroom (see headroom_pick). Not for a run that resumes a session (its transcript lives in its account's dir)."""
+        if fixed_slots() or (self.resume_sid and self.resume_acct == self.account["name"]):
+            return
+        try:
+            running = running_by_account()
+            if self.state.get("state") in ("running", "testing"):
+                cur = self.account["name"]
+                running[cur] = max(0, running.get(cur, 0) - 1)   # this run is counted on its old account; it is the one moving
+            nxt, why = headroom_pick(paced_cap().get("accounts") or [], running, self.account["name"])
+            if nxt == self.account["name"]:
+                return
+            acc = next((a for a in load_accounts() if a["name"] == nxt), None)
+            if acc is None:
+                return
+            old, self.account = self.account["name"], acc
+            self.save(account=nxt)
+            self.event(f"slot free on account {nxt} (most headroom: {why}); was on {old}", "running")
+        except Exception as e:   # the account choice is an optimisation: never fail a slot over it
+            self.log(f"headroom pick failed: {e}")
 
     def wait_for_stub(self) -> str | None:
         """Poll scripts/stub_target.py until a stub can be built on (the integrated one merged, the next one cut)."""
@@ -2384,7 +2466,7 @@ class Runner:
                 return self.finish("stopped", f"--max-stages {self.max_stages} reached", 4)
             started += 1
             self.save(stage=started, questions=[])
-            if not self.take_slot():
+            if not self.take_slot(rehome=True):
                 return self.finish("stopped", "stopped", 3)
             self.event(f"stage {started} start", "running")
             self.repair_env(f"stage {started} start")
@@ -3944,6 +4026,65 @@ def selftest() -> int:
         check("burn: an interval with no run working is skipped", abs(burn_rates()["five_hour"] - 5.6) < 1e-6)
         check("burn: the weekly rate is learned apart from the five-hour one",
               burn_rates()["seven_day"] != BURN_PRIOR["seven_day"] and abs(burn_rates()["seven_day"] - (0.5 * 0.8 + 0.2 * (0.4 / (2 * 0.5)))) < 1e-6)
+        # per-account burn: an account's own rate counts once it has BURN_MIN_SAMPLES samples; before that the pooled rate
+        fresh()
+        write_json(BURN_FILE(), {"rates": {"five_hour": 3.0}, "last": {}})   # the shape before per-account rates
+        r_old, s_old = burn_for("main")
+        check("burn: an old burn.json (pooled rates only) still loads: pooled where it has a rate, the prior elsewhere",
+              r_old == {"five_hour": 3.0, "seven_day": BURN_PRIOR["seven_day"]} and s_old == {"five_hour": "pooled", "seven_day": "prior"})
+        fresh()
+        learn_burn("main", win(10, 5000), 1000.0, running=2)
+        for i in (1, 2):
+            learn_burn("main", win(10 + 4 * i, 5000), 1000.0 + 1800 * i, running=2)    # 4 points/run-hour each
+        check("burn: two samples on an account are not enough: its rate is still the pooled one",
+              burn_for("main")[1]["five_hour"] == "pooled" and abs(burn_for("main")[0]["five_hour"] - burn_rates()["five_hour"]) < 1e-9)
+        learn_burn("main", win(22, 5000), 1000.0 + 1800 * 3, running=2)
+        rm, sm = burn_for("main")
+        check("burn: the third sample switches the account to its own rate (4.0, not the pooled EWMA)",
+              sm["five_hour"] == "account" and abs(rm["five_hour"] - 4.0) < 1e-6 and abs(burn_rates()["five_hour"] - 4.0) > 0.1)
+        check("burn: another account with no samples still uses the pooled rate", burn_for("gmail")[1]["five_hour"] == "pooled")
+        check("burn: the account's sample count is stored", read_json(BURN_FILE(), {})["by_account"]["main"]["five_hour"]["n"] == 3)
+        put("main", 20, 3, 0, 30); put("gmail", 20, 3, 0, 30)
+        rows = {r["account"]: r for r in compute_cap()["accounts"]}
+        check("burn: compute_cap uses the account's own rate and says so in its row",
+              rows["main"]["burn_from"]["five_hour"] == "account" and abs(rows["main"]["burn"]["five_hour"] - 4.0) < 1e-6
+              and rows["gmail"]["burn_from"]["five_hour"] == "pooled" and rows["main"]["runs"] > rows["gmail"]["runs"])
+        os.environ["ASD_BURN_MIN_SAMPLES"] = "4"
+        check("burn: ASD_BURN_MIN_SAMPLES raises the bar", burn_for("main")[1]["five_hour"] == "pooled")
+        os.environ.pop("ASD_BURN_MIN_SAMPLES")
+
+        # account at slot grant: a run with nothing to resume goes to the account with the most paced headroom
+        fresh()
+        put("main", 92, 3, 61, 30); put("gmail", 8, 3, 1, 30)
+        for i in range(3):   # three runs already working on main (this process stands for their live runners)
+            write_json(os.path.join(pruns, f"busy{i}.runner.json"), {"pid": os.getpid(), "state": "running", "account": "main"})
+        ha = Runner(pdir, "W-H1", "work-on", None, "auto", 1)
+        ha.state["state"] = "queued"
+        check("headroom: a fresh run starts on the first account (the setup)", ha.account["name"] == "main")
+        ha.rehome_account()
+        st_h = read_json(ha.state_path, {})
+        check("headroom: a fresh run moves to the account with the most headroom (gmail), saved and logged",
+              ha.account["name"] == "gmail" and st_h.get("account") == "gmail"
+              and any("slot free on account gmail (most headroom" in str(x.get("detail") or x.get("text") or x) for x in lines_of(ha.updates)))
+        hb = Runner(pdir, "W-H2", "work-on", None, "auto", 1)
+        hb.state["state"] = "queued"
+        hb.resume_sid, hb.resume_acct = "sess-x", "main"
+        hb.rehome_account()
+        check("headroom: a run with a session to resume stays on its account", hb.account["name"] == "main" and hb.resume_sid == "sess-x")
+        mark_limited("gmail", T + 3600)
+        os.remove(os.path.join(pruns, "slots-cap.json"))
+        hc = Runner(pdir, "W-H3", "work-on", None, "auto", 1)
+        hc.state["state"] = "queued"
+        hc.rehome_account()
+        check("headroom: a limited account is skipped (the fresh run stays on main)", hc.account["name"] == "main")
+        check("headroom: headroom_pick keeps the current account on a tie", headroom_pick([{"account": "a", "runs": 2.0}, {"account": "b", "runs": 2.0}], {}, "b") == ("b", ""))
+        check("headroom: ... and subtracts the runs already working on an account",
+              headroom_pick([{"account": "a", "runs": 4.0}, {"account": "b", "runs": 3.0}], {"a": 2}, "a")[0] == "b")
+        check("headroom: ... keeps the current account when it has no reading, and leaves a limited one",
+              headroom_pick([{"account": "a", "unknown": True, "runs": 2.0}, {"account": "b", "runs": 3.0}], {}, "a")[0] == "a"
+              and headroom_pick([{"account": "a", "limited": True, "runs": 0}, {"account": "b", "runs": 0.5}], {}, "a")[0] == "b")
+        for i in range(3):
+            os.remove(os.path.join(pruns, f"busy{i}.runner.json"))
         fresh()
         for k, v in saved.items():
             if v is None:

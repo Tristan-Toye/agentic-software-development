@@ -314,8 +314,13 @@ what the accounts have left.
   previous one: delta used% divided by (runs in state `running` on that account
   x delta hours). An interval that crosses a reset, runs over 2 h, has no run
   working, or shows the percentage falling is skipped. An EWMA (alpha 0.2) per
-  window, not per account, lives in `<usage dir>/burn.json`
-  (`{"rates": {...}, "last": {...}}`). The prior, until something is learned:
+  window lives in `<usage dir>/burn.json` as the pooled rate, and each account
+  has its own EWMA and sample count (`{"rates": {...}, "by_account": {name:
+  {window: {"rate", "n"}}}, "last": {...}}`; a file without `by_account` still
+  loads). Accounts are different plans, so an account's own rate is used once
+  it has `ASD_BURN_MIN_SAMPLES` (3) samples in that window, else the pooled
+  rate, else the prior; the `accounts` rows of `slots-cap.json` say which
+  (`burn`, `burn_from`). The prior, until something is learned:
   `five_hour` 6.0 and `seven_day` 0.5 points per run-hour. They come from this
   machine's history: the runs' `.jsonl` `state` events give how many runs were
   `running` over time (41 runs, 435 run-hours), `~/.claude/usage-log.jsonl`
@@ -338,6 +343,14 @@ what the accounts have left.
   account (`<usage dir>/<account>.refresh`, with a lock file so several runners
   do not all refresh). An account with no reading counts `4 / number of
   accounts`; with no reading anywhere the cap is 4.
+- **Account at slot grant.** A run that starts a stage with no session to
+  resume (no `--resume`: a fresh session) is placed, when it is granted its
+  slot, on the account with the most paced headroom: the largest `runs_a` minus
+  the runs already working on that account. Limited accounts and accounts with
+  no reading are not chosen; a tie keeps the account it had. A run that resumes
+  a session keeps its account (the transcript lives in that account's config
+  dir) unless it is limited, as before. The event is `slot free on account
+  NAME (most headroom: ...)`. Not with a fixed cap.
 - **Never preempts.** A lower cap only stops admissions; a run that works
   keeps working. The cap is cached for ~60 s (`ASD_PACE_TTL`) in
   `<runs dir>/slots-cap.json` (`{cap, reason, ts, accounts, rates, ...}`), so
@@ -347,7 +360,7 @@ what the accounts have left.
 
 Knobs: `ASD_RUNNER_ADAPTIVE` (`0` = fixed), `ASD_RUNNER_MAX_LIVE` (fixed cap),
 `ASD_RUNNER_MIN_LIVE` (3), `ASD_RUNNER_CAP_MAX` (6), `ASD_PACE_TTL` (60 s),
-`ASD_PACE_REFRESH_S` (900 s), and for tests `ASD_RUNNER_NOW` (epoch seconds).
+`ASD_PACE_REFRESH_S` (900 s), `ASD_BURN_MIN_SAMPLES` (3), and for tests `ASD_RUNNER_NOW` (epoch seconds).
 
 ## Keep-alive pings
 
