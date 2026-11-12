@@ -107,6 +107,7 @@ NETWORK_RE = re.compile(r"ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|
                         r"|bad gateway|service unavailable|gateway time-?out", re.I)
 # Waits between network retries, seconds; the last one repeats for as long as the outage lasts (ASD_RUNNER_NET_RETRIES
 # sets a limit; the default, 0, is none).
+GIT_SSH_HARDENED = "ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
 NETWORK_BACKOFF = (30, 60, 120, 300, 600, 900)
 # The exit codes of a claude process that something outside the runner signalled: SIGTERM/SIGKILL as a negative
 # return code, or as 128+N when claude's own handler exits. The work it held is checkpointed; the stage reruns.
@@ -396,6 +397,23 @@ def alive(pid) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def proc_command(pid) -> str:
+    """The command line of a process ("" when it is gone or ps cannot say)."""
+    try:
+        return subprocess.run(["ps", "-p", str(int(pid)), "-o", "command="], capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ""
+
+
+def runner_alive(pid) -> bool:
+    """A runner process is alive: the pid answers AND it is a run_dossier process. After a logout or a reboot the dead
+    runner's pid can belong to an unrelated process; `alive` alone would then keep the run from ever being revived."""
+    if not alive(pid):
+        return False
+    cmd = proc_command(pid)
+    return not cmd or "run_dossier" in cmd   # ps unable to say: believe the pid
 
 
 def say(msg: str) -> None:
@@ -927,6 +945,11 @@ class Runner:
         self.q: queue.Queue | None = None   # the open claude process's event queue (a keep-alive ping reads its result here)
         self.last_api = 0.0                 # when the session's last API call came back (any assistant or result event)
         self.ka_since: float | None = None  # when this wait (owner question or queue) began
+        self.turn_open = False              # a user message went in and no result event came yet: the session is mid-turn
+        self.last_out = time.monotonic()    # monotonic time of the last stream event (or message sent) of the session
+        self.last_ev = "none"               # the last stream event: its type and tool name, for the stall diagnostic
+        self.tool_names: dict = {}          # tool_use id -> tool name
+        self.stall_bg_at = 0.0              # when the transcript was last checked for background work during a quiet spell
         self.ka_checked = 0.0               # monotonic time of the last keep-alive check
         self.ka_cold: set[str] = set()      # sessions whose cache a ping found cold: not pinged again
         self.ka_said: set[str] = set()
@@ -1125,7 +1148,27 @@ class Runner:
             env.pop("CLAUDE_CONFIG_DIR", None)
         if compact_window(self.model or runner_model(None)):
             env.pop("CLAUDE_CODE_AUTO_COMPACT_WINDOW", None)   # the variable would outrank the --autocompact claude_cmd passes
+        if (os.environ.get("ASD_RUNNER_GIT_HARDEN") or "").strip() != "0":
+            self.git_harden(env)
         return env
+
+    def git_harden(self, env: dict) -> None:
+        """Git never waits on a prompt or a dead connection (a `git pull` hung a session for 40 hours): no terminal
+        prompt, an ssh that fails fast (BatchMode, a connect timeout, keepalives) unless GIT_SSH_COMMAND or GIT_SSH
+        is set or the repo has its own core.sshCommand (GIT_SSH_COMMAND would outrank it), and https transfers that
+        stay below 1 kB/s for 60 s abort. Off with ASD_RUNNER_GIT_HARDEN=0."""
+        env.setdefault("GIT_TERMINAL_PROMPT", "0")
+        env.setdefault("GIT_HTTP_LOW_SPEED_LIMIT", "1000")
+        env.setdefault("GIT_HTTP_LOW_SPEED_TIME", "60")
+        if env.get("GIT_SSH_COMMAND") or env.get("GIT_SSH"):
+            return
+        try:
+            own = subprocess.run(["git", "config", "core.sshCommand"], cwd=self.root, capture_output=True, text=True,
+                                 timeout=10, stdin=subprocess.DEVNULL).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            own = ""
+        if not own:
+            env["GIT_SSH_COMMAND"] = GIT_SSH_HARDENED
 
     def spawn(self) -> tuple[queue.Queue, bool]:
         self.wrong_model = ""
@@ -1136,6 +1179,9 @@ class Runner:
         sid, self.resume_sid = self.resume_sid, ""
         self.resumed = bool(sid) and self.resume_acct == self.account["name"]
         self.got_init = False
+        self.turn_open = False
+        self.last_out = time.monotonic()
+        self.last_ev = "none"
         try:
             self.err_start = os.path.getsize(self.err_path)
         except OSError:
@@ -1383,6 +1429,8 @@ class Runner:
         return True
 
     def send(self, text: str) -> None:
+        self.turn_open = True
+        self.last_out = time.monotonic()
         try:
             self.proc.stdin.write(user_message(text))
             self.proc.stdin.flush()
@@ -1415,14 +1463,14 @@ class Runner:
         return ""
 
     def keepalive_tick(self) -> None:
-        """Prompt-cache keep-alive for a run that waits (on the owner or for a slot): the cache lives 1 h, and an
-        owner's answer or a slot can take longer. When the session's last API call is ASD_KEEPALIVE_AFTER seconds old
+        """Prompt-cache keep-alive for a run that waits on the owner: the cache lives 1 h, and an owner's answer can
+        take longer. A run queued for a slot is never pinged: the slot wait is not worth what a ping costs. When the session's last API call is ASD_KEEPALIVE_AFTER seconds old
         (3000) and the wait is under ASD_KEEPALIVE_MAX_H hours (12), send one tiny ping. No ping while the run is
         paused for usage, when its account's 5-hour window is at 80% or more, or with ASD_KEEPALIVE=0. A ping takes
         no run slot and never changes the run's state."""
         if (os.environ.get("ASD_KEEPALIVE") or "").strip() == "0" or self.stopping:
             return
-        if self.state.get("state") not in ("waiting", "queued"):
+        if self.state.get("state") != "waiting":   # a slot wait ("queued") is not worth a ping: the run starts when a slot frees
             self.ka_since = None
             return
         if time.monotonic() - self.ka_checked < env_num("ASD_KEEPALIVE_POLL", 5):
@@ -1537,6 +1585,8 @@ class Runner:
     # -- reading a turn ---------------------------------------------------
 
     def note_event(self, ev: dict) -> None:
+        self.last_out = time.monotonic()   # any stream-json line is output, a sub-agent's included
+        self.track_event(ev)
         if ev.get("type") in ("assistant", "result"):
             self.last_api = now_s()
         if ev.get("type") == "rate_limit_event":
@@ -1586,6 +1636,87 @@ class Runner:
             if at > 0 and self.ctx >= at and not self.split:
                 self.split = {"tid": tid, "mid": msg.get("id") or "", "name": self.checkpoints[-1]["name"], "ctx": self.ctx, "ready": False}
 
+    def track_event(self, ev: dict) -> None:
+        """Keep what the stall watchdog needs: whether the session is mid-turn, and the last event's type and tool."""
+        t = str(ev.get("type"))
+        if t == "result":
+            self.turn_open = False
+        elif t in ("assistant", "user"):
+            self.turn_open = True
+        tool = ""
+        c = (ev.get("message") or {}).get("content") if t in ("assistant", "user") else None
+        if isinstance(c, list):
+            for b in c:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "tool_use":
+                    self.tool_names[str(b.get("id", ""))] = tool = str(b.get("name", ""))
+                elif b.get("type") == "tool_result":
+                    tool = self.tool_names.get(str(b.get("tool_use_id", "")), "")
+                    t = "tool_result"
+        if t not in ("rate_limit_event",):
+            self.last_ev = t + (f" {tool}" if tool else "") + (" (sub-agent)" if ev.get("parent_tool_use_id") else "")
+
+    def stalled(self) -> bool:
+        """True when the session is wedged: mid-turn, running, and no stream-json output for ASD_STALL_MIN minutes
+        (45; 0 disables). Not mid-turn (the runner's own waits on an owner's answer or a slot, a turn ended while
+        background work runs) is never a stall, nor is a transcript that still shows background work in flight.
+        A Bash call has its own timeout (10 min at most) and a sub-agent's events are output, so neither is quiet this long."""
+        lim = env_num("ASD_STALL_MIN", 45) * 60
+        if lim <= 0 or not self.turn_open or self.stopping or self.state.get("state") != "running":
+            return False
+        if self.proc is None or self.proc.poll() is not None:
+            return False
+        if time.monotonic() - self.last_out < lim:
+            return False
+        if time.monotonic() - self.stall_bg_at >= 60:
+            self.stall_bg_at = time.monotonic()
+            if self.background():
+                return False
+            self.stall_bg_at = 0.0
+            return True
+        return False
+
+    def process_tree(self) -> str:
+        """ps rows (pid, etime, stat, cpu, command[:120]) of the claude process group and its descendants."""
+        try:
+            out = subprocess.run(["ps", "-axo", "pid=,ppid=,pgid=,etime=,stat=,pcpu=,command="], capture_output=True, text=True, timeout=15).stdout
+        except (OSError, subprocess.SubprocessError):
+            return "(ps failed)"
+        rows, kids = {}, {}
+        for ln in out.splitlines():
+            f = ln.split(None, 6)
+            if len(f) < 7 or not f[0].isdigit() or not f[1].isdigit():
+                continue
+            rows[int(f[0])] = f
+            kids.setdefault(int(f[1]), []).append(int(f[0]))
+        root = self.proc.pid if self.proc else -1
+        want, todo = set(), [root]
+        while todo:
+            x = todo.pop()
+            if x in want:
+                continue
+            want.add(x)
+            todo += kids.get(x, [])
+        want |= {pid for pid, f in rows.items() if f[2] == str(root)}
+        return "\n".join(f"  pid {pid} etime {f[3]} stat {f[4]} cpu {f[5]}% {f[6][:120]}" for pid, f in sorted(rows.items()) if pid in want) or "  (no process found)"
+
+    def stall_report(self) -> str:
+        """Log the diagnostic, then kill the process group (SIGKILL when SIGTERM does not end it); returns the detail."""
+        mins = int((time.monotonic() - self.last_out) / 60)
+        last = self.last_ev
+        tool = last.split(" ", 1)[1] if last.count(" ") else last
+        self.log(f"stall diagnostic: last stream event: {last}; process tree of claude pid {self.proc.pid}:\n" + self.process_tree())
+        detail = f"stalled: no output for {mins} min mid-turn (last: {tool})"
+        self.log(detail)
+        kill_group(self.proc)
+        for _ in range(50):
+            if self.proc.poll() is not None:
+                break
+            time.sleep(0.1)
+        kill_group(self.proc, signal.SIGKILL)
+        return detail
+
     def read_turn(self, q: queue.Queue, extra: bool, idle: float | None = None) -> tuple[str, object]:
         """('result', (text, is_error)) | ('exit', code) | ('stopped', None) | ('idle', None)
         when `idle` seconds pass with no event at all."""
@@ -1607,6 +1738,8 @@ class Runner:
                     return "stopped", None
                 if result is not None:
                     return "result", result
+                if self.stalled():
+                    return "stalled", None
                 if idle is not None and time.monotonic() - quiet_since > idle:
                     return "idle", None
                 continue
@@ -1753,6 +1886,10 @@ class Runner:
                 return "next", cp["name"]
             if kind == "stopped":
                 return "stopped", ""
+            if kind == "stalled":
+                detail = self.stall_report()
+                self.end_process()
+                return "stalled", detail
             if kind == "exit":
                 self.end_process()
                 tail = self.stderr_tail()
@@ -1932,7 +2069,7 @@ class Runner:
 
     def run(self) -> int:
         prev = read_json(self.state_path, {})
-        if prev.get("state") in ("running", "waiting", "queued") and alive(prev.get("pid")) and prev.get("pid") != os.getpid():
+        if prev.get("state") in ("running", "waiting", "queued") and runner_alive(prev.get("pid")) and prev.get("pid") != os.getpid():
             say(f"{self.key} is already run by pid {prev['pid']}")
             return 2
         try:
@@ -1954,6 +2091,7 @@ class Runner:
             self.state["session"] = ""
         net_tries = 0   # network errors in a row; a stage that ends well resets it
         kill_tries = 0  # outside kills in a row; likewise
+        stall_tries = 0  # stalls of one stage in a row; the third goes to the owner
         while True:
             if self.stopping:
                 return self.finish("stopped", "stopped", 3)
@@ -1972,6 +2110,18 @@ class Runner:
                 net_tries = 0
             if outcome != "killed":
                 kill_tries = 0
+            if outcome != "stalled":
+                stall_tries = 0
+            if outcome == "stalled":
+                # The session wedged (no stream output mid-turn): not the owner's call for the first two. Kill (done),
+                # then run the same stage again from its checkpoints; the third in a row takes the failure path.
+                stall_tries += 1
+                if stall_tries < 3:
+                    self.mark_resume()
+                    self.event(f"{detail}; stage {started} again from its checkpoints (stall {stall_tries} of 2)", "running")
+                    self.reexec_if_changed()
+                    started -= 1
+                    continue
             if outcome == "next":
                 self.event(f"stage {started} end" + (f": {detail}" if detail else ""), "running")
                 self.reexec_if_changed()
@@ -2133,10 +2283,17 @@ def cmd_revive() -> int:
     for path in glob.glob(os.path.join(runs_dir(), "*.runner.json")):
         st = read_json(path, {}) or {}
         root = st.get("root") or ""
-        if st.get("state") not in ("running", "waiting", "paused", "queued") or alive(st.get("pid")) or not os.path.isdir(root):
+        if st.get("state") not in ("running", "waiting", "paused", "queued") or runner_alive(st.get("pid")) or not os.path.isdir(root):
             continue
         if time.time() - os.path.getmtime(path) > hours * 3600:
             continue
+        cpid = st.get("claude_pid")
+        if alive(cpid) and "claude" in proc_command(cpid):
+            # the runner died but its claude child lives on, orphaned: the restart resumes that session, so end the orphan first
+            try:
+                os.killpg(int(cpid), signal.SIGTERM)
+            except (OSError, ValueError):
+                pass
         key = os.path.basename(path)[:-len(".runner.json")]
         prefix = main_repo_name(root) + "."
         if not key.startswith(prefix):
@@ -2381,7 +2538,7 @@ def cmd_summary(a: argparse.Namespace) -> int:
     key = key_of(a.root, a.dossier)
     path = os.path.join(runs_dir(), key + ".runner.json")
     prev = read_json(path, {}) or {}
-    if prev.get("state") in ("running", "waiting", "paused", "queued") and alive(prev.get("pid")):
+    if prev.get("state") in ("running", "waiting", "paused", "queued") and runner_alive(prev.get("pid")):
         print(f"{key} is still running; the summary follows when it is done", file=sys.stderr)
         return 2
     r = Runner(prev.get("root") or a.root, a.dossier, "work-on", None, prev.get("permission_mode") or "auto", 1)
@@ -2429,6 +2586,9 @@ for raw in sys.stdin:
         out({"type": "result", "subtype": "success", "is_error": False, "session_id": f"sess-{n}", "result": "OK",
              "usage": {"input_tokens": 3, "output_tokens": 2, "cache_read_input_tokens": pr, "cache_creation_input_tokens": pw}})
         continue
+    if script.get("stall"):   # a Bash tool_use, then silence: the 40 hour `git pull`
+        out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "ts", "name": "Bash", "input": {"command": "git pull"}}]}})
+        import time; time.sleep(600)
     if script.get("hang"):
         out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t0", "name": "mcp__x__phase_checkpoint", "input": {"phase": "P-hang", "summary": "s"}}]}})
         import time; time.sleep(600)
@@ -3343,6 +3503,38 @@ def selftest() -> int:
               envf[1] == want and envf[0] == rk.key and any(m.startswith("RUNNER KEEPALIVE") for m in msgs(1)))
         check("keepalive: the resumed ping is logged with its cache usage and leaves the run's state alone",
               "keepalive ping: cache read 7000, written 50 tokens" in texts("W-247") and rk.state["state"] == "queued")
+        # ---- no keep-alive while queued; the git hardening of child_env ----
+        scenario([{"turns": [], "pings": [[7000, 50]]}])
+        rk.state["state"] = "queued"; rk.last_api = 1.0; rk.ka_checked = 0.0
+        rk.keepalive_tick()
+        check("keepalive: a queued run (a slot wait) is never pinged", not os.path.exists(os.path.join(fdir, "env.1")) and rk.ka_since is None)
+        rk.state["state"] = "waiting"
+        rk.keepalive_tick()
+        check("keepalive: a run waiting on the owner still is (control)", os.path.exists(os.path.join(fdir, "env.1")))
+        rk.state["state"] = "queued"
+        gsave = {k: os.environ.get(k) for k in ("GIT_SSH_COMMAND", "GIT_SSH", "GIT_TERMINAL_PROMPT", "GIT_HTTP_LOW_SPEED_LIMIT", "GIT_HTTP_LOW_SPEED_TIME", "ASD_RUNNER_GIT_HARDEN")}
+        for k in gsave:
+            os.environ.pop(k, None)
+        subprocess.run(["git", "init", "-q", root], capture_output=True)
+        e1 = rk.child_env()
+        check("git harden: no terminal prompt, low-speed abort, and a fail-fast ssh",
+              e1.get("GIT_TERMINAL_PROMPT") == "0" and e1.get("GIT_HTTP_LOW_SPEED_LIMIT") == "1000" and e1.get("GIT_HTTP_LOW_SPEED_TIME") == "60"
+              and e1.get("GIT_SSH_COMMAND") == "ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4")
+        os.environ["GIT_SSH_COMMAND"] = "ssh -i mine"
+        check("git harden: an existing GIT_SSH_COMMAND is kept", rk.child_env().get("GIT_SSH_COMMAND") == "ssh -i mine")
+        os.environ.pop("GIT_SSH_COMMAND"); os.environ["GIT_SSH"] = "/bin/mine"
+        check("git harden: an existing GIT_SSH is kept (no GIT_SSH_COMMAND set over it)", "GIT_SSH_COMMAND" not in rk.child_env())
+        os.environ.pop("GIT_SSH")
+        subprocess.run(["git", "config", "core.sshCommand", "ssh -F repo"], cwd=root, capture_output=True)
+        e3 = rk.child_env()
+        check("git harden: a repo's own core.sshCommand is not overridden, the other variables still set", "GIT_SSH_COMMAND" not in e3 and e3.get("GIT_TERMINAL_PROMPT") == "0")
+        subprocess.run(["git", "config", "--unset", "core.sshCommand"], cwd=root, capture_output=True)
+        os.environ["ASD_RUNNER_GIT_HARDEN"] = "0"
+        e4 = rk.child_env()
+        check("git harden: ASD_RUNNER_GIT_HARDEN=0 turns it all off", not any(k in e4 for k in ("GIT_TERMINAL_PROMPT", "GIT_SSH_COMMAND", "GIT_HTTP_LOW_SPEED_LIMIT")))
+        for k, v in gsave.items():
+            if v is None: os.environ.pop(k, None)
+            else: os.environ[k] = v
         # ---- a smaller prefix, the compact window, and a fresh stage instead of a compaction ----
         def argv_of(**e) -> list[str]:
             saved = {k: os.environ.get(k) for k in e}
@@ -3440,6 +3632,48 @@ def selftest() -> int:
               p.wait(timeout=60) == 4 and "split at checkpoint Phase 3: context 150k" in texts("W-263")
               and [c["name"] for c in read_json(os.path.join(rdir, "repo.W-263.checkpoints.json"), [])] == ["Phase 3"])
         env.pop("ASD_RUNNER_SPLIT_AT")
+
+        # ---- the stall watchdog ----
+        env["ASD_STALL_MIN"] = "0.03"
+        scenario([{"stall": True}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-320")
+        rc = p.wait(timeout=90)
+        t320 = texts("W-320")
+        check("stall: a session silent mid-turn is killed and the stage restarts, with no owner question",
+              rc == 0 and any(t.startswith("stalled: no output for") and "(last: Bash)" in t for t in t320) and not any("asked" in t for t in t320)
+              and any("stage 1 again from its checkpoints (stall 1 of 2)" in t for t in t320))
+        check("stall: the diagnostic names the last event and lists the process tree", any(t.startswith("stall diagnostic: last stream event: assistant Bash") and "pid " in t and "etime" in t for t in t320))
+        check("stall: the restart resumes the same session", msgs(2)[0].startswith("RUNNER RESUME"))
+        scenario([{"stall": True}, {"stall": True}, {"stall": True}])
+        p = start("W-321")
+        asked = until(lambda: any("asked" in t for t in texts("W-321")), 90)
+        t321 = texts("W-321")
+        check("stall: the third stall in a stage asks the owner, the first two did not",
+              bool(asked) and sum(1 for t in t321 if "again from its checkpoints (stall" in t) == 2 and any("stage 1 failed: stalled: no output for" in t for t in t321)
+              and sum(1 for t in t321 if "asked" in t) == 1)
+        q321 = (state_of("W-321").get("questions") or [""])[0]
+        owner_line(q321, "answer", "Stop", "B")
+        p.wait(timeout=30)
+        env["ASD_STALL_MIN"] = "0"
+        scenario([{"turns": [], "hang": True}])
+        p = start("W-322")
+        until(lambda: state_of("W-322").get("claude_pid"))
+        time.sleep(3)
+        check("stall: ASD_STALL_MIN=0 disables the watchdog", p.poll() is None and not any("stalled" in t for t in texts("W-322")))
+        p.terminate(); p.wait(timeout=30)
+        os.remove(os.path.join(rdir, "repo.W-322.runner.json"))
+        env.pop("ASD_STALL_MIN")
+
+        # ---- revive: every working state, a reused runner pid ----
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}] * 4)
+        sleeper = subprocess.Popen(["sleep", "120"])
+        for dos, stt, pid in (("W-310", "queued", 2 ** 22 + 12351), ("W-311", "waiting", 2 ** 22 + 12352), ("W-312", "paused", 2 ** 22 + 12353), ("W-313", "running", sleeper.pid)):
+            write_json(os.path.join(rdir, f"repo.{dos}.runner.json"), {"pid": pid, "state": stt, "root": root, "command": "work-on", "stage": 1})
+        r = subprocess.run([sys.executable, me, "revive"], env=env, capture_output=True, text=True, timeout=90)
+        ok = until(lambda: all(state_of(d).get("state") == "done" for d in ("W-310", "W-311", "W-312", "W-313")), 60)
+        sleeper.kill(); sleeper.wait()
+        check("revive: queued, waiting, paused runs whose runner died are restarted", all(f"restarted repo.{d}" in r.stdout for d in ("W-310", "W-311", "W-312")) and bool(ok))
+        check("revive: a dead runner whose pid now belongs to an unrelated process is restarted too", "restarted repo.W-313" in r.stdout)
 
         # Before the temp dir goes: every fake claude process and runner child this test started must be gone.
         for _ in range(100):
