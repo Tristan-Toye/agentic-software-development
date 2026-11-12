@@ -5,6 +5,7 @@ import { basename, join, relative } from "node:path"
 import type { Question } from "./store.ts"
 import { emitChange } from "./events.ts"
 import { blockedByOf, controlsFor, type Controls } from "./controls.ts"
+import { applyPending } from "./pending.ts"
 import { readRunner, readUpdates, readViewCache, runnerActive, runsDir, summaryOf, writeViewCache, type RunnerState, type Update } from "./runstore.ts"
 
 export const STATUSES = ["planned", "ready", "building", "review", "pr", "done", "dropped"] as const
@@ -31,6 +32,8 @@ export type Run = {
   deferred: Deferred; deferredOpen: number; runnerLog: string
   /** The key of the run shown for this dossier: `<repo>.<ID>`, or the /plan run of the deferred item it comes from. */
   runKey?: string
+  /** Actions pressed whose run has not shown up yet (their buttons are hidden), and the note of one that failed or timed out. */
+  pending?: string[]; pendingNotes?: Record<string, string>
 }
 
 /**
@@ -768,5 +771,7 @@ export async function getRuns(questions: () => Question[]): Promise<RunsView> {
     return { ...r, ...l, questions: qa?.open ?? [], answered: qa?.answered ?? [], view: viewFor(r.status, l.running, l.updates.length) }
   })
   const statusOf = (repo: string) => (id: string) => live.find((x) => x.repo === repo && x.id === id)?.status
-  return { ...cached, runs: live.map((r) => ({ ...r, controls: controlsFor(r, statusOf(r.repo)) })) }
+  // A pressed run button stays hidden while its run starts (pending.ts): the server-side marker outlives re-renders and tabs.
+  const now = Date.now()
+  return { ...cached, runs: live.map((r) => applyPending({ ...r, controls: controlsFor(r, statusOf(r.repo)) }, now)) }
 }
