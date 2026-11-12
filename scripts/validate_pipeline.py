@@ -2280,32 +2280,57 @@ def check_definitions(
     return rc
 
 
-PROSE_ENV_RE = re.compile(r"\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b")
+PROSE_ENV_RE = re.compile(r"\b[A-Z][A-Z0-9]*_[A-Z0-9_]*[A-Z0-9]\b")
+PROSE_ENV_CUE_RE = re.compile(
+    r"\b(env|environment|variables?|vars?|secrets?|reads?|set)\b", re.I
+)
 PROSE_ROUTE_RE = re.compile(
-    r"`(/[\w.{}:/-]*)`|\b(?:GET|POST|PUT|PATCH|DELETE|mounts?|mounted at)\s+(/[\w.{}:/-]+)"
+    r"\b(?:GET|POST|PUT|PATCH|DELETE|mounts?|mounted at|routes?|endpoints?)\s+`?(/[\w.{}:/-]*\w)"
 )
 PROSE_BIN_RE = re.compile(r"\bbin/([\w.-]+)|`([\w.-]+)`\s+binary\b")
 
 
+def _command_names() -> set[str]:
+    """Slash-command names of this plugin (commands/*.md stems), never routes."""
+    base = Path(__file__).resolve().parent.parent
+    return {
+        f.stem
+        for d in ("commands", "claude/commands")
+        for f in (base / d).glob("*.md")
+    }
+
+
 def prose_promises(contract: str) -> list[tuple[str, str]]:
     """The (token, sentence) promises in `## Contract` prose, outside fenced
-    code blocks: an ALL_CAPS env var (with an underscore), a route (`/path` in
-    backticks or after GET/POST/mount), or a binary (`bin/x`, "the `x` binary").
-    Deterministic and conservative: only these three shapes count."""
+    code blocks and table rows: an ALL_CAPS_UNDERSCORE env var (the sentence
+    also has a cue word: env, variable, secret, reads, set), a route after
+    GET/POST/PUT/PATCH/DELETE/mount/route/endpoint, or a binary (`bin/x`,
+    "the `x` binary"). Plugin command names (/work-on) are never routes."""
     prose = re.sub(r"^```.*?^```[ \t]*$", "", contract, flags=re.M | re.S)
+    commands = _command_names()
     found: list[tuple[str, str]] = []
-    for sentence in re.split(r"(?<=[.!?])\s+|\n+", prose):
-        tokens = PROSE_ENV_RE.findall(sentence)
-        tokens += [a or b for a, b in PROSE_ROUTE_RE.findall(sentence) if a or b]
-        tokens += [a or b for a, b in PROSE_BIN_RE.findall(sentence)]
-        found += [(t, sentence.strip()) for t in tokens if t != "/"]
+    for line in prose.splitlines():
+        if line.lstrip().startswith("|"):
+            continue
+        for sentence in re.split(r"(?<=[.!?])\s+", line):
+            tokens = []
+            if PROSE_ENV_CUE_RE.search(sentence):
+                tokens += PROSE_ENV_RE.findall(sentence)
+            tokens += [
+                r for r in PROSE_ROUTE_RE.findall(sentence) if r.lstrip("/") not in commands
+            ]
+            tokens += [
+                re.sub(r"\.\w+$", "", a or b)
+                for a, b in PROSE_BIN_RE.findall(sentence)
+            ]
+            found += [(t, sentence.strip()) for t in tokens]
     return found
 
 
 def check_prose_promises(path: Path, text: str) -> int:
     """Every prose promise in `## Contract` names a token that some
     `## Acceptance criteria` item also contains; one with none is a
-    pre-fan-out DEFECT (#337). Prints `PROSE-PROMISES: N, M without a criterion`."""
+    pre-fan-out WARNING (#337), never blocking. Prints `PROSE-PROMISES: N, M without a criterion`."""
     secs = sections(text)
     promises = prose_promises(secs.get("## Contract", ""))
     if not promises:
@@ -2322,11 +2347,11 @@ def check_prose_promises(path: Path, text: str) -> int:
     print(f"PROSE-PROMISES: {len(seen)}, {len(missing)} without a criterion")
     for token, sentence in missing:
         print(
-            f"DEFECT  {path.name}: ## Contract prose promises {token!r} "
+            f"WARNING {path.name}: ## Contract prose promises {token!r} "
             f"({sentence[:80]!r}) but no acceptance criterion names it. "
-            f"Add a criterion that names {token!r}, or move the promise out of the contract."
+            f"Add a criterion that names {token!r}, or state why none is needed."
         )
-    return 1 if missing else 0
+    return 0
 
 
 PRE_FANOUT_LINES = (
@@ -2456,7 +2481,7 @@ def check_pre_fanout(
       grammar; a ``parsed 0/`` line is refused, not recorded.
 
     Also refuses a ``## Contract`` prose promise (env var, route, binary) that
-    no ``## Acceptance criteria`` item names (``PROSE-PROMISES:``), and a ``### Definitions`` term (under ``## Contract``) found in no
+    no ``## Acceptance criteria`` item names (a WARNING, ``PROSE-PROMISES:``), and a ``### Definitions`` term (under ``## Contract``) found in no
     owned stub file and not listed in ``DOSSIER-ONLY-TERMS:``.
 
     Returns 0 when every obligation is recorded, 1 otherwise.
@@ -2733,8 +2758,9 @@ def selftest_pre_fanout() -> bool:
             pp_rc = check_pre_fanout(root / "pp-none.md")
         out = pbuf.getvalue()
         ok &= (
-            pp_rc == 1
+            pp_rc == 0
             and "PROSE-PROMISES: 2, 2 without" in out
+            and "WARNING" in out
             and "'ASD_RUNNER_MAX_LIVE'" in out
             and "HIDDEN_CODE_VAR" not in out
         )
@@ -2746,11 +2772,18 @@ def selftest_pre_fanout() -> bool:
         ok &= check_pre_fanout(root / "pp-ok.md") == 0
         # A GET/POST route without backticks is a promise too.
         (root / "pp-route.md").write_text(
-            "## Contract\n\nThe server answers GET /health.\n\n"
+            "## Contract\n\nThe server answers GET /health. Run /work-on next. "
+            "See TIMED_OUT.\n\n| `/patches` | SOME_KEY reads |\n\n"
             "## Acceptance criteria\n\n1. It starts.\n\n" + full,
             encoding="utf-8",
         )
-        ok &= check_pre_fanout(root / "pp-route.md") == 1
+        with contextlib.redirect_stdout(io.StringIO()) as rbuf:
+            route_rc = check_pre_fanout(root / "pp-route.md")
+        ok &= (
+            route_rc == 0
+            and "PROSE-PROMISES: 1, 1 without" in rbuf.getvalue()
+            and "/health" in rbuf.getvalue()
+        )
         # A malformed GATES line (no gate count) is refused like a missing one.
         bad = full.replace("— 3 gates; axes: default, fault-inject", "— several")
         (root / "gates-bad.md").write_text(bad, encoding="utf-8")
