@@ -1,7 +1,7 @@
 # Feature 03: Dashboard renderer
 
 - **Case ID**: VR-03
-- **Status**: PROPOSED
+- **Status**: BUILT (server layout, canvas with L0-L2 tabs, Before/After/Diff, pan and zoom, evidence, mermaid export; group open/close, mini-map and walkthrough not yet)
 - **Dossier**: D3
 - **Depends on**: VR-01, VR-02 (or fixtures of their output).
 - **Needed by**: VR-04, VR-06.

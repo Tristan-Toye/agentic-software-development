@@ -11,6 +11,8 @@ The model behind the visual review of a change (feature VR-01). Language-neutral
 | `../../scripts/vr_diff.py` | Diff: merges a before and an after graph on the stable id (status added, changed, removed, context), filters it by mode, builds the plan-time after graph from two commits. |
 | `../../scripts/vr_ra.py` | rust-analyzer call hierarchy client, used by the extractor's `--calls`. |
 
+VR-03 renderer: `../../shared/questions/vrlayout.ts` lays a graph out with ELK on the dashboard server (vendored elkjs 0.12.1 in `shared/questions/vendor/elk/`); `GET /api/visual-review?dossier=ID[&repo=R]` reads `.discovery/visual-review/<ID>/l0|l1|l2.json` and returns graph, boxes and edge points per view; the run page draws them above the questions.
+
 ## Stable id rule
 
 An id is derived from the kind plus the qualified name, never from a counter or an array position, so the same element has the same id before and after a change and VR-02 can join on it.

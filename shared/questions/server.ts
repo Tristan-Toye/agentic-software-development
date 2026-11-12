@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
 import { startLagWatch } from "./lagwatch.ts"
+import { hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
 import { awakeDeps, checkAwake, releaseAwake } from "./awake.ts"
@@ -420,6 +421,22 @@ export async function handle(req: Request): Promise<Response> {
     const plans = planRuns(runs)
     const accounts = readAccounts([...runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: r.runKey || `${r.repo}.${r.id}`, account: r.runner?.account })), ...plans.map((p) => ({ key: p.key, account: p.account }))])
     return json({ ...v, runs, plans, accounts, disk: diskReading(), slots: slotsReading(), usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
+  }
+  // Visual review (VR-03): the change graph l0/l1/l2.json of a dossier, laid out by ELK on the server. The dossier's repo
+  // roots are those of its runs (worktree, runner root, main checkout), the way the dossier routes find it.
+  if (req.method === "GET" && path === "/api/visual-review") {
+    const dossier = url.searchParams.get("dossier") ?? "", repo = url.searchParams.get("repo") ?? ""
+    if (!/^[\w.-]+$/.test(dossier) || (repo && !/^[\w.-]+$/.test(repo))) return json({ error: "dossier (and repo) must be plain names" }, 400)
+    const runs = (await allRuns()).filter((r) => r.id === dossier && (!repo || r.repo === repo))
+    if (!runs.length) return json({ error: "no such dossier" + (repo ? " in " + repo : "") }, 404)
+    const roots = [...new Set(runs.flatMap((r) => [r.worktree, r.runner?.root, r.main]).filter((x): x is string => !!x))]
+    const root = roots.find((r) => hasVisualReview(r, dossier))
+    if (!root) return json({ error: "no visual review for " + dossier + ": none of l0/l1/l2.json exists under .discovery/visual-review/" + dossier + " in " + roots.join(", ") }, 404)
+    try { return json(await visualReview(vrDir(root, dossier), dossier)) } catch (e) { return json({ error: "visual review failed: " + (e as Error).message }, 500) }
+  }
+  // The vendored ELK worker, from the dashboard's own origin (nothing is fetched from a CDN).
+  if (req.method === "GET" && path === "/vendor/elk/elk-worker.min.js") {
+    return new Response(Bun.file(new URL("./vendor/elk/elk-worker.min.js", import.meta.url)), { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" } })
   }
   if (path === "/api/accounts/refresh") {
     if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
