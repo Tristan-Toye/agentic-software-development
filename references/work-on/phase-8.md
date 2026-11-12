@@ -33,7 +33,7 @@ to it: a lesson this build paid for belongs to the repo that taught it.
 
 ### 8a — the ADRs
 
-Read `## Build log` and the review replies and ask: **what did this build decide
+Read the whole `## Build log` (`dossier_edit.py section <dossier> 'Build log' --all`; the default shows only the last 120 lines) and the review replies and ask: **what did this build decide
 that would change how a future agent writes code here?**
 
 The material is already there: the contract choices and the alternatives

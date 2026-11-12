@@ -51,7 +51,7 @@ Merge these into the recalled list, then deduplicate:
 
 1. **The captured ledger.** If a dossier covers the run — the run's own
    dossier ID, or the `.discovery/dossiers/*.md` whose `branch` matches the
-   changeset — read the `DEFERRED:` lines in its `## Build log`. `/work-on`
+   changeset — read the `DEFERRED:` lines in its `## Build log` (`dossier_edit.py section <dossier> 'Build log' --all`). `/work-on`
    Phase 9 captured them at the moment the run's awareness was highest, so
    they outrank your current memory: a ledger item your recall dropped goes
    back in; a recalled item the ledger never caught stays in, and once
