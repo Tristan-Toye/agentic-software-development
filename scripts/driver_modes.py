@@ -170,11 +170,20 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def selftest() -> int:
+    failures = _selftest()
+    if failures:
+        print("driver_modes selftest FAILED: " + "; ".join(failures))
+        return 1
+    print("driver_modes selftest OK")
+    return 0
+
+
+def _selftest() -> list[str]:
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        return _selftest()
+        return _run_selftest()
 
 
-def _selftest() -> int:
+def _run_selftest() -> list[str]:
     failures: list[str] = []
 
     def check(name: str, ok: bool) -> None:
@@ -215,11 +224,7 @@ def _selftest() -> int:
             check("show lists all five", all(n in show(f) for n in NAMES))
     finally:
         os.environ.update(saved)
-    if failures:
-        print("driver_modes selftest FAILED: " + "; ".join(failures))
-        return 1
-    print("driver_modes selftest OK")
-    return 0
+    return failures
 
 
 if __name__ == "__main__":
