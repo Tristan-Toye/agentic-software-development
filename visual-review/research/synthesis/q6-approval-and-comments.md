@@ -25,6 +25,8 @@ Options. The owner chooses. See [../../../research/OPEN-QUESTIONS.md](../../../r
 | B. Frame as a product question | The question asks "Is this what the feature should do?" with options that choose scope. It never says "approve". | No policy text change. Risk: the wording hides what is an approval gate. |
 | C. No gate | Show the diagrams on the dashboard. Do not block the run. The owner comments if wanted. | No block. Loses the point of reviewing before the fan-out. |
 
+Audit addition: the policy is also enforced by code. `scripts/ask_owner.py` (`APPROVAL_PATTERNS`, `approval_kind`, lines 135-168) refuses a question under the runner when it matches an approval pattern such as "approve the plan", "approve these changes" or "retry or stop". `ASD_ASK_LINT=0` turns the check off. Option B must therefore avoid those phrases. Option A needs a lint change too.
+
 Proposed resolution (for the owner to accept or reject): B for the question wording, and add one sentence to the policy that names the visual-review question as a product question. This keeps the rule and makes the case explicit. This is a proposal, not a decision.
 
 ## Facts: review UX ideas

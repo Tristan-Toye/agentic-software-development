@@ -5,6 +5,7 @@ Each question has options and a proposal. The proposal is not a decision. Status
 ## OQ-01. The "Never ask for approval" conflict
 
 - Context: the ask policy says "Never ask for approval" (`references/owner-questions.md:96`). Product questions are allowed. A visual review is an approval gate ([Q6](../visual-review/research/synthesis/q6-approval-and-comments.md)).
+- Audit note: code enforces the policy. `scripts/ask_owner.py` refuses approval-shaped questions under the runner (`APPROVAL_PATTERNS`, lines 135-168; off with `ASD_ASK_LINT=0`). Option B must pass that check. Option A needs a lint change.
 - Options: A, a named exception. B, frame it as a product question. C, no gate.
 - Proposal: B, plus one sentence in the policy that names the visual-review question as a product question.
 - Blocks: [VR-04](../visual-review/features/04-approval-and-element-comments/README.md).

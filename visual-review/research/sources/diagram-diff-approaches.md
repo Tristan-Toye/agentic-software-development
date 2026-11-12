@@ -13,6 +13,14 @@
 - **CALM / declared-versus-derived drift** (architecture-check): compare a declared model to one derived from code ([architecture-rule-checkers.md](architecture-rule-checkers.md)).
 - **Layout stability**: a diff needs the same node in the same place in both states. ELK with fixed positions for unchanged nodes is the open question; no tool surveyed solves it.
 
+## Development resources
+- [change-diagram-skills.md](change-diagram-skills.md) : OpenArc and mermaidiff, the two diff tools in this corpus.
+- [likec4.md](likec4.md) : the compare view and the diff validation rules.
+- [../../../inspiration-repos/analysis/openarc.md](../../../inspiration-repos/analysis/openarc.md) : the change graph schema, with file paths.
+
+## Alternatives
+- No other diff tool was found by search. See [../../../research/gaps.md](../../../research/gaps.md): "Diagram diffing".
+
 ## Comparison
 | Approach | Stable layout | Sequence | Machine-checkable | Effort |
 |---|---|---|---|---|

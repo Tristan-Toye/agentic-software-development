@@ -11,6 +11,11 @@
 - **crabmap, CogniCode**: Rust-oriented code-graph tools found by search; not examined beyond their READMEs.
 - All serve an agent with queries, not a human with a picture. None has diff or sequence views.
 
+## Development resources
+- https://github.com/DeusData/codebase-memory-mcp : the repo and README of codebase-memory-mcp.
+- https://github.com/CodeGraphContext/CodeGraphContext : the repo and README of CodeGraphContext.
+- [rust-extraction.md](rust-extraction.md) : the extraction options this corpus compares them against.
+
 ## Alternatives
 - Build the extraction ourselves: [rust-extraction.md](rust-extraction.md). The plugin already has `nav` MCP tools (code_find, code_outline, code_item).
 

@@ -13,6 +13,11 @@
 - **Diver, tlsd**: small generators found by search; not examined.
 - **Static route for Rust**: rust-analyzer call hierarchy gives caller and callee edges; order comes from source order inside a function body ([rust-extraction.md](rust-extraction.md)). Diff of two sequences: `inspiration-repos/analysis/mermaidiff.md`.
 
+## Development resources
+- https://opentelemetry.io : documentation for traces and spans.
+- https://github.com/jaegertracing/jaeger : the trace backend and its UI.
+- [../../../inspiration-repos/analysis/mermaidiff.md](../../../inspiration-repos/analysis/mermaidiff.md) : the sequence diff format.
+
 ## Alternatives
 - Mermaid sequence rendering: [mermaid.md](mermaid.md).
 

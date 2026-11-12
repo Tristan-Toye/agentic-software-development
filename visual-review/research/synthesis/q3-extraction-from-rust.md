@@ -27,7 +27,7 @@ More facts:
 - SCIP output from rust-analyzer may replace a `ra_ap_*` helper for the reference layer. It is untested ([semantic-code-graph-engines](../sources/semantic-code-graph-engines.md)). That source recommends skipping tree-sitter-graph, stack-graphs and CodeQL for the core.
 - CodeBoarding and Understand-Anything show the same order of work: deterministic facts first, LLM naming second ([codeboarding analysis](../../../inspiration-repos/analysis/codeboarding.md), [understand-anything analysis](../../../inspiration-repos/analysis/understand-anything.md)).
 - A static call graph from rust-analyzer gives caller and callee edges. Order comes from source order inside a function body. Runtime traces (OpenTelemetry) cover only exercised paths ([trace-to-sequence-and-sequence-generators](../sources/trace-to-sequence-and-sequence-generators.md)). This source is thin: see [gaps.md](../../../research/gaps.md).
-- Crate boundaries are strong cues for components. Folders are weak cues ([asner-architecture-recovery](../papers/asner-architecture-recovery.md)).
+- Folders are weak cues for components: ASNER adds only "weak directory cues" to its dependency graph ([asner-architecture-recovery](../papers/asner-architecture-recovery.md), p1). That crate boundaries are strong cues is an inference for Rust. ASNER does not test it. (Corrected in the audit of 2026-11-12.)
 
 ## Proposed layers
 

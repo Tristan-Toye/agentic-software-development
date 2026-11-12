@@ -18,7 +18,7 @@ All diagrams live in `CH:docs/architecture/`. There are 32 diagram files and one
 | c2 | `c2-containers.md` | Mermaid `flowchart LR` | C4 container | The Cargo workspace crates and their dependency edges, each edge labelled with a `Cargo.toml:<line>` anchor. |
 | c3 (6 files) | `c3-components-{protocol,harness,graph-runtime,platform,test-support,composition-root}.md` | Mermaid `graph LR` | C4 component | One crate's module graph, derived from `use` lines, plus a fan table. |
 | c4 (8 files) | `c4-classes-{ports,transport,track-runner,tools,sandbox,secrets,composition-root,ops}.md` | Mermaid class diagrams | C4 code (UML-like) | Public traits, structs and enums of one area, each with one line anchor. |
-| seq (17 files) | `seq-turn.md`, `seq-tool-call.md`, `seq-risk-gate.md`, `seq-write-tool.md`, `seq-human-input.md`, `seq-nats-auth.md`, `seq-startup.md`, `seq-boot.md`, and nine more | Mermaid `sequenceDiagram` | Runtime flow | One call flow each, with `Note` anchors to code lines. |
+| seq (16 files, 22 `sequenceDiagram` blocks) | `seq-turn.md`, `seq-tool-call.md`, `seq-risk-gate.md`, `seq-write-tool.md`, `seq-human-input.md`, `seq-nats-auth.md`, `seq-startup.md`, `seq-boot.md`, and eight more | Mermaid `sequenceDiagram` | Runtime flow | One call flow each, with `Note` anchors to code lines. |
 | threat model | `threat-model-risk-gate.md` | Prose and tables | Security view | Assets, evasion classes, ownership boundary. |
 
 The README says the folder answers "what the tree, as it stands, actually shapes into" and that it does not hold the why (ADRs) or what a feature is for (feature book) (`CH:docs/architecture/README.md:3-8`).
