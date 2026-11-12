@@ -11,7 +11,8 @@ import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord, splitSe
 import { runRunner, runTarget, runnerScript } from "./controls.ts"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
+import { pendingSlack, readRunThread, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
+import { startLagWatch } from "./lagwatch.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
 import { awakeDeps, checkAwake, releaseAwake } from "./awake.ts"
@@ -243,7 +244,7 @@ export async function scanRunThreads(): Promise<void> {
         } catch (e) { log(`slack run thread: ${(e as Error).message}`) }
       }
       runSeen.set(key, upto)
-      if (thread) writeRunThread(runsDir(), key, { ...thread, seen: upto })
+      if (thread && threadChanged(side, thread, upto)) writeRunThread(runsDir(), key, { ...thread, seen: upto })
     }
   } finally { scanningRuns = false }
 }
@@ -907,6 +908,7 @@ async function main(): Promise<void> {
     log("slack disabled: no ASD_SLACK_USER (or ASD_QUESTIONS_NO_SLACK=1)")
   }
 
+  startLagWatch(log)
   await scan()
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -921,7 +923,7 @@ async function main(): Promise<void> {
   try {
     mkdirSync(runsDir(), { recursive: true })
     let rt: ReturnType<typeof setTimeout> | undefined
-    watch(runsDir(), (_e, name) => { emitChange("runs"); if (/\.(integrate|land|runner)\.json$/.test(String(name ?? "")) && /\.(stub|release)-/.test(String(name ?? ""))) emitChange("stubs"); clearTimeout(rt); rt = setTimeout(() => void scanRunThreads(), 300) })
+    watch(runsDir(), (_e, name) => { if (runsWatchIgnored(String(name ?? ""))) return; emitChange("runs"); if (/\.(integrate|land|runner)\.json$/.test(String(name ?? "")) && /\.(stub|release)-/.test(String(name ?? ""))) emitChange("stubs"); clearTimeout(rt); rt = setTimeout(() => void scanRunThreads(), 300) })
   } catch (e) {
     log(`runs dir not watched: ${(e as Error).message}`)
   }
