@@ -18,6 +18,11 @@ the `result` event ends a turn and the turn's RUNNER: line decides:
     RUNNER: WAITING <id>[,..]   `ask_owner.py wait` runs here (no tokens
                                 spent); the owner's line goes into the same
                                 live process as `OWNER ANSWER|FOLLOWUP <id>: ..`
+    RUNNER: ENV <vm|stack|disk> <detail>
+                                a broken environment (the Lima VM down, a compose service unhealthy, the disk low),
+                                reported instead of asked about; with ASD_STACK_REPAIR=1 the runner repairs vm and
+                                stack (scripts/stack_repair.py) and answers `RUNNER ENV <kind>: repaired ..` or
+                                `.. not repaired ..`; the turn goes on, no stage ends
     RUNNER: DONE                state done, exit 0
     RUNNER: FAILED <why>, or no RUNNER: line, or a crashed process
                                 state failed; a question to the owner: retry
@@ -67,6 +72,8 @@ import time
 
 CUT = 3500
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import stack_repair  # noqa: E402
 ASK_OWNER = os.path.join(HERE, "ask_owner.py")
 PLUGIN = "agentic-software-development"
 
@@ -91,6 +98,7 @@ You run under the dossier runner and nobody reads the terminal.
 - The owner's Start is standing authority (references/owner-questions.md, "What is worth asking"): pushing the dossier's own branch and opening or updating its draft PR into the base or the accepting stub is yes; so is a graduation issue in the plugin repository, and committing a repository rule from this build on the dossier's branch (the PR ratifies it). Carry out the readings, defaults and rulings the dossier already records; never ask to confirm them. Ask only technical, architectural or product design questions the dossier leaves open, issues you cannot resolve in scope, and actions outside that authority (a merge, a push to a protected branch, a force-push, Jira writes, deleting what is not the run's own). Do the authorized ones, log them, and name them in your next update.
 - The plugin's references (`references/work-on/phase-*.md`, `formats/*`, `runner.md`) are long and the same in every stage: read only the section your step needs (`ref_section` with the document's short name, `phase-4` or `formats/dossier`, and a heading or `--list`), not whole files; the phase file you start a phase with is the one you read whole, and never the same section twice in one stage.
 - Phase 2 takes its stub from `python3 scripts/stub_target.py --root R` (the plugin's scripts). Exit 3 (`wait <stub>`) means that stub is being integrated and no new one may be cut until it is in development: end the turn with the line `RUNNER: WAITING stub`; the runner waits without tokens and sends `STUB READY: <branch>` once the new stub is cut. Never cut a stub yourself.
+- A broken environment (the Lima VM stopped or unreachable, a shared docker compose service unhealthy, the disk low) is not an owner question: end the turn with the single line `RUNNER: ENV <vm|stack|disk> <short detail>` and nothing after it. The runner repairs vm and stack when the owner enabled that and answers `RUNNER ENV <kind>: repaired ...` (carry on) or `RUNNER ENV <kind>: not repaired ...` (then ask the owner as usual). A disk is never repaired automatically.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - `RUNNER KEEPALIVE: ...` is the runner keeping the prompt cache warm while you wait: reply with exactly `OK` and do nothing else (no tool call, no RUNNER: line, no change to your plan).
 {claude_md}- End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on.
@@ -323,7 +331,7 @@ NUDGE = ("RUNNER: your last turn ended without a RUNNER: line and nothing has ha
 
 # A question id from ask_owner.py: `<repo>.<ID>.Qn` (or a bare `Qn`).
 QUESTION_ID = re.compile(r"(?:^|\.)Q\d+$")
-MARKER = re.compile(r"^RUNNER:\s*(STAGE-DONE|WAITING|DONE|FAILED)\b[ \t]*(.*)$")
+MARKER = re.compile(r"^RUNNER:\s*(STAGE-DONE|WAITING|DONE|FAILED|ENV)\b[ \t]*(.*)$")
 
 
 def now() -> str:
@@ -1780,6 +1788,51 @@ class Runner:
 
     # -- the run ----------------------------------------------------------
 
+    def repair_env(self, why: str) -> dict:
+        """The standing repair (scripts/stack_repair.py): detect the VM and stack, repair what is down, within its
+        bounds. Off unless ASD_STACK_REPAIR=1. Never raises and never fails the run; returns {resource: outcome}."""
+        if not stack_repair.enabled():
+            return {}
+        out: dict = {}
+        try:
+            cfg = stack_repair.load_config(self.root)
+            if not cfg:
+                return {}
+            for _ in range(2):   # a started VM may show a broken stack that was not probed before
+                found = stack_repair.detect(cfg, self.root)
+                if not found:
+                    break
+                self.event(f"environment ({why}): " + "; ".join(f"{k}: {v}" for k, v in found.items()))
+                res = stack_repair.repair(cfg, self.root, found, lambda t: self.event(t))
+                out.update(res)
+                if not any(v.startswith("repaired") for v in res.values()):
+                    break
+        except Exception as e:  # noqa: BLE001 - a repair must never end a run
+            self.event(f"environment repair crashed: {e!r}")
+        return out
+
+    def handle_env(self, rest: str, n: int) -> str:
+        """The message sent back for a `RUNNER: ENV <kind> <detail>` line."""
+        parts = rest.split(None, 1)
+        kind = parts[0].lower() if parts else ""
+        detail = parts[1] if len(parts) > 1 else ""
+        self.event(f"session reports environment failure: {kind} {detail[:160]}".strip())
+        ask = "Ask the owner about it as usual (ask_owner.py, then RUNNER: WAITING)."
+        if kind not in ("vm", "stack"):
+            return f"RUNNER ENV {kind or '?'}: the runner does not repair this; {ask}"
+        if not stack_repair.enabled():
+            return f"RUNNER ENV {kind}: automatic repair is off (ASD_STACK_REPAIR is not 1); {ask}"
+        if n > 4:
+            return f"RUNNER ENV {kind}: reported {n} times this stage; {ask}"
+        if not stack_repair.load_config(self.root):
+            return f"RUNNER ENV {kind}: no repair is configured for this repo (.agentic/stack-repair.json); {ask}"
+        res = self.repair_env("reported by the session").get(kind)
+        if res is None:   # the checks find it healthy (the stage-start repair or another runner fixed it)
+            return f"RUNNER ENV {kind}: repaired by the runner (healthy now); carry on with the step you stopped at."
+        if res.startswith("repaired"):
+            return f"RUNNER ENV {kind}: repaired by the runner; carry on with the step you stopped at."
+        return f"RUNNER ENV {kind}: not repaired ({res}); {ask}"
+
     def run_stage(self) -> tuple[str, str]:
         """('next'|'done'|'failed'|'stopped', detail)."""
         n0 = len(self.checkpoints)
@@ -1790,6 +1843,7 @@ class Runner:
         holds = 0       # stage ends held while background work ran
         bg_max = float(os.environ.get("ASD_RUNNER_BG_MAX") or 14400)
         bg_waited = 0.0  # quiet seconds spent waiting on background work the transcript shows in flight
+        env_msgs = 0     # RUNNER: ENV lines this stage
         while True:
             kind, val = self.read_turn(q, extra, idle if quiet else None)
             extra = False
@@ -1890,6 +1944,12 @@ class Runner:
                     continue
                 if bg:
                     self.log(f"stage ended with {len(bg)} background task(s) still running, after {HOLD_MAX} hold; the runner ends the stage and cuts them off: " + "; ".join(bg[:4]))
+            if verb == "ENV":
+                # `RUNNER: ENV <vm|stack|disk> <detail>`: a broken environment, reported instead of asked about.
+                env_msgs += 1
+                self.send(self.handle_env(rest, env_msgs))
+                quiet = True
+                continue
             if verb == "STAGE-DONE":
                 self.clear_restart()  # the next stage is a new process: it loads the new rules anyway
                 self.end_process()
@@ -2039,6 +2099,7 @@ class Runner:
             if not self.take_slot():
                 return self.finish("stopped", "stopped", 3)
             self.event(f"stage {started} start", "running")
+            self.repair_env(f"stage {started} start")
             free = disk_free_gib(self.root)
             if free is not None:
                 say(f"{self.key} disk: {free:.0f} GiB free at stage {started} start")
@@ -2545,6 +2606,44 @@ for raw in sys.stdin:
     if script.get("exit_after_turn"):
         break
 '''
+
+
+FAKE_LIMACTL = """\
+#!/usr/bin/env python3
+import json, os, sys
+d = os.environ["ASD_FAKE_LIMA"]
+def rd(n, default=""):
+    try:
+        return open(os.path.join(d, n)).read().strip()
+    except OSError:
+        return default
+def log(t):
+    open(os.path.join(d, "calls.log"), "a").write(t + "\\n")
+a = sys.argv[1:]
+if a[:2] == ["list", "--json"]:
+    print(json.dumps({"name": "nightwatch", "status": rd("vm", "Running")}))
+elif a[:1] == ["start"]:
+    log("start " + a[1])
+    if rd("start_fails") != "1":
+        open(os.path.join(d, "vm"), "w").write("Running")
+elif a[:1] == ["shell"]:
+    if rd("vm", "Running") != "Running":
+        sys.exit(1)
+    cmd = a[-1]
+    if "docker compose ps" in cmd:
+        for r in json.loads(rd("stack", "[]")):
+            print(json.dumps(r))
+    elif "up.sh" in cmd:
+        log("up " + cmd)
+        if rd("up_fixes", "1") == "1":
+            open(os.path.join(d, "stack"), "w").write(json.dumps([{"Service": "nats", "State": "running", "Health": "healthy"}]))
+    else:
+        log("UNEXPECTED " + cmd)
+        sys.exit(9)
+else:
+    log("UNEXPECTED " + " ".join(a))
+    sys.exit(9)
+"""
 
 
 def already_built_for_test(root: str, dossier: str, env: dict) -> str:
@@ -3198,6 +3297,118 @@ def selftest() -> int:
         held = [t for t in texts("W-31") if t.startswith("stage end held")]
         check("background: the stage end is held while it runs, then the run goes on", rc == 0 and len(held) == 1 and "Run the VM suite" in held[0]
               and any(m.startswith("RUNNER: the stage cannot end yet") for m in msgs(1)))
+
+
+        # ---- the standing VM and stack repair (scripts/stack_repair.py): fake limactl on PATH, opt-in ----
+        fl, bindir, rep = (os.path.join(tmp, x) for x in ("lima", "bin", "repdir"))
+        for d in (fl, bindir, rep, os.path.join(root, ".agentic")):
+            os.makedirs(d, exist_ok=True)
+        open(os.path.join(bindir, "limactl"), "w").write(FAKE_LIMACTL)
+        os.chmod(os.path.join(bindir, "limactl"), 0o755)
+        write_json(os.path.join(root, ".agentic", "stack-repair.json"), {
+            "vm": "nightwatch", "compose_dir": "deploy/compose", "vm_start": ["limactl", "start", "{vm}"],
+            "stack_up": ["limactl", "shell", "{vm}", "--", "bash", "-lc", "cd {root} && bash deploy/scripts/up.sh core"]})
+        env.update(PATH=bindir + os.pathsep + os.environ.get("PATH", ""), ASD_FAKE_LIMA=fl, ASD_STACK_REPAIR_DIR=rep)
+        saved_env = dict(os.environ)
+        os.environ.update(PATH=env["PATH"], ASD_FAKE_LIMA=fl, ASD_STACK_REPAIR_DIR=rep)
+        os.environ.pop("ASD_STACK_REPAIR", None)
+        healthy = [{"Service": "nats", "State": "running", "Health": "healthy"}, {"Service": "postgres", "State": "running", "Health": ""}]
+        sick = [{"Service": "nats", "State": "running", "Health": "unhealthy"}]
+
+        def fake_reset(vm="Running", stack=healthy, **kw):
+            for f in os.listdir(fl):
+                os.remove(os.path.join(fl, f))
+            for f in ("stack-repair-state.json", "stack-repair.lock"):
+                try:
+                    os.remove(os.path.join(rep, f))
+                except OSError:
+                    pass
+            open(os.path.join(fl, "vm"), "w").write(vm)
+            open(os.path.join(fl, "stack"), "w").write(json.dumps(stack))
+            for k, v in kw.items():
+                open(os.path.join(fl, k), "w").write(v)
+
+        def calls() -> list[str]:
+            try:
+                return open(os.path.join(fl, "calls.log")).read().splitlines()
+            except OSError:
+                return []
+
+        rlog: list[str] = []
+        cfg = stack_repair.load_config(root)
+        check("repair: the repo's .agentic/stack-repair.json is read", bool(cfg) and cfg["vm"] == "nightwatch")
+        check("repair: the plugin's config names config-harness", bool(stack_repair.load_config(os.path.join(tmp, "config-harness"))))
+        fake_reset("Stopped")
+        check("repair detect: a stopped VM", list(stack_repair.detect(cfg, root)) == ["vm"])
+        fake_reset(stack=sick)
+        check("repair detect: an unhealthy service", list(stack_repair.detect(cfg, root)) == ["stack"] and "nats unhealthy" in stack_repair.detect(cfg, root)["stack"])
+        fake_reset(stack=healthy)
+        check("repair detect: a healthy VM and stack", stack_repair.detect(cfg, root) == {})
+        fake_reset("Stopped")
+        check("repair gate: off unless ASD_STACK_REPAIR=1, nothing is run",
+              not stack_repair.enabled() and stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append) == {"vm": "off"} and calls() == [])
+        os.environ["ASD_STACK_REPAIR"] = "1"
+        res = stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append)
+        check("repair vm: a stopped VM is started with the configured command", res["vm"] == "repaired" and calls() == ["start nightwatch"]
+              and any("repair vm" in x for x in rlog))
+        fake_reset(stack=sick)
+        res = stack_repair.repair(cfg, root, {"stack": "x"}, rlog.append)
+        check("repair stack: an unhealthy stack runs the repo's up.sh", res["stack"] == "repaired" and len(calls()) == 1
+              and "bash deploy/scripts/up.sh core" in calls()[0] and root in calls()[0])
+        fake_reset(stack=sick, up_fixes="0")
+        r1 = [stack_repair.repair(cfg, root, {"stack": "x"}, rlog.append)["stack"] for _ in range(3)]
+        check("repair bound: two attempts an hour per resource, then it stays for the owner",
+              r1[0].startswith("failed") and r1[1].startswith("failed") and r1[2].startswith("bound") and len(calls()) == 2)
+        fake_reset("Stopped", start_fails="1")
+        stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append)
+        check("repair bound: the VM bound counts its own attempts",
+              stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append)["vm"].startswith("failed")
+              and stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append)["vm"].startswith("bound"))
+        # the lock: a second repairer waits for the first, then finds it already fixed and starts nothing
+        fake_reset("Stopped")
+        lk = stack_repair._Lock(5)
+        lk.__enter__()
+        box: dict = {}
+        th = threading.Thread(target=lambda: box.update(stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append, wait_s=20)))
+        th.start()
+        time.sleep(0.6)
+        waited = th.is_alive() and calls() == []
+        open(os.path.join(fl, "vm"), "w").write("Running")   # the holder fixed it
+        lk.__exit__()
+        th.join(20)
+        check("repair lock: another runner waits for the lock, then sees it fixed and starts nothing",
+              waited and box.get("vm", "").startswith("repaired") and calls() == [])
+        fake_reset("Stopped")
+        lk = stack_repair._Lock(5)
+        lk.__enter__()
+        res = stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append, wait_s=0.3)
+        lk.__exit__()
+        check("repair lock: a lock that stays busy ends in 'failed', so the owner is asked", res["vm"].startswith("failed") and calls() == [])
+        os.environ.pop("ASD_STACK_REPAIR")
+
+        # in a run: the gate off, a session's ENV line is answered "off"; on, the VM is started before the stage and on request
+        fake_reset("Stopped")
+        scenario([{"turns": [[{"final": "RUNNER: ENV vm limactl: instance nightwatch is stopped"}], [{"final": "RUNNER: DONE"}]]}])
+        p = start("W-12")
+        rc = p.wait(timeout=60)
+        check("repair run: gate off, the ENV line is answered 'off' and no command runs",
+              rc == 0 and any(m.startswith("RUNNER ENV vm: automatic repair is off") for m in msgs(1)) and calls() == [])
+        env["ASD_STACK_REPAIR"] = "1"
+        fake_reset("Stopped")
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        rc = start("W-13").wait(timeout=60)
+        tl = [x.get("text", "") for x in lines_of(os.path.join(rdir, "repo.W-13.jsonl"))]
+        check("repair run: gate on, a stopped VM is started before the first stage, logged as run events",
+              rc == 0 and calls() == ["start nightwatch"] and any("repair vm" in t for t in tl) and any("environment (stage 1 start)" in t for t in tl))
+        fake_reset(stack=sick)
+        scenario([{"turns": [[{"final": "RUNNER: ENV stack nats unhealthy"}], [{"final": "RUNNER: ENV disk 1 GiB free"}], [{"final": "RUNNER: DONE"}]]}])
+        # the stack is already repaired by the stage-start check, so the session's report finds it healthy
+        rc = start("W-14").wait(timeout=60)
+        check("repair run: an ENV stack line is answered 'repaired'; an ENV disk line is left to the owner",
+              rc == 0 and len([c for c in calls() if c.startswith("up")]) == 1
+              and any(m.startswith("RUNNER ENV stack: repaired") for m in msgs(1)) and any(m.startswith("RUNNER ENV disk: the runner does not repair") for m in msgs(1)))
+        env.pop("ASD_STACK_REPAIR")
+        os.environ.clear(); os.environ.update(saved_env)
 
         # ---- the owner's message to a live run: wakes a question wait, the question stays open ----
         q30 = "repo.W-30.Q1"
