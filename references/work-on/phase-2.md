@@ -280,6 +280,17 @@ This is the step everything else depends on.
    excluded); the next call on the same tree reuses it (`REUSED`) instead of
    running the list twice.
 
+   Put the repository's PATH needs on the run, never inside each line: when
+   its toolchain is not on a non-interactive shell's PATH (cargo under
+   `~/.cargo/bin`), pass `--path-prepend "$HOME/.cargo/bin"` (repeatable) and,
+   for anything more, `--env-script <file>` on every `run_gates.py` call, the
+   flags `run_tests.py` has. A gate that exits 127 is reported as "command not
+   found — environment, not a gate failure": fix the flags, do not read it as
+   red. A list too long for one tool call (the Bash cap is 10 minutes) runs
+   with `--detach` (prints a run id, returns at once) and then
+   `--wait <id>` (prints the foreground summary; exit 6 means still running,
+   call it again).
+
 You write this yourself. Do not delegate it: the contract is what you will
 referee with in Phase 6, and a contract you did not write is one you cannot
 referee with.

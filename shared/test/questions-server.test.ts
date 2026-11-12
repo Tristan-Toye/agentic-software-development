@@ -556,6 +556,13 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
     check("stubMembers: plan merges never count and ready/planned never appear", !JSON.stringify(m).includes("W-4") && !JSON.stringify(m).includes("W-5") && !m["stub/2026-10-24"].some((x) => x.id === "W-6") && !m["stub/2026-09-01"])
     const m2 = stubMembers([{ branch: "stub/a", cut: "2026-01-01", state: "integrating", pr: {} }], [{ id: "W-9", status: "ready", live: true }], {})
     check("stubMembers: with no accepting stub the newest open stub takes it; a live runner counts", m2["stub/a"]?.[0]?.id === "W-9" && m2["stub/a"][0].noPr)
+    {
+      const sx = [{ branch: "stub/x", cut: "2026-11-07", state: "accepting" as const, pr: null }]
+      const mx = stubMembers(sx, [{ id: "W-130", status: "done", pr: "#426", live: true }, { id: "W-131", status: "done", pr: "#427" }, { id: "W-132", status: "done", pr: "#430", live: true }], { "stub/x": [{ number: 430, headRefName: "fix/deferred-x" }] })
+      check("stubMembers: a done dossier with a live follow-up run and a merged old pr goes under the accepting stub with noPr", mx["stub/x"]?.some((x) => x.id === "W-130" && x.noPr === true))
+      check("stubMembers: a done dossier with no live runner stays off the stub", !JSON.stringify(mx).includes("W-131"))
+      check("stubMembers: a live done dossier whose pr is an open PR into the stub is placed once, noPr false", mx["stub/x"]?.filter((x) => x.id === "W-132").length === 1 && mx["stub/x"].find((x) => x.id === "W-132")?.noPr === false)
+    }
     check("stubMembers: no open stub, no members", Object.keys(stubMembers([{ branch: "stub/z", cut: "2026-01-01", state: "merged", pr: {} }], [{ id: "W-3", status: "building" }], {})).length === 0)
   }
   const os = openStubs([mkStub("stub/2026-10-24", "merged", "2026-10-24"), mkStub("stub/2026-10-31", "accepting", "2026-10-31"), mkStub("release/W-115", "integrating", "2026-10-29")])

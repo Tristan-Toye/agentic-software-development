@@ -26,9 +26,13 @@ export type BasePr = { number: number; headRefName: string }
 /**
  * Which in-progress dossiers belong under which open stub. A dossier belongs to a stub when an open PR into
  * that stub is its own (the `pr:` number, or its id in the head branch); `plan/...` heads never count. A dossier
- * in building/review (or with a live runner) that has no `pr:` and no PR into any stub goes under the accepting
- * stub (the newest open stub with no PR into development; else the newest open stub) with `noPr`. A done
- * dossier appears only through its open PR into the stub; ready, planned and dropped dossiers never appear. Returns branch -> members; stubs with none are omitted.
+ * in building/review, or with a live runner (queued, running, waiting or paused: a follow-up `/fix-deferred` or
+ * `/plan` on a done dossier counts), and no open PR into any open stub yet goes under the accepting stub (the
+ * newest open stub with no PR into development; else the newest open stub) with `noPr`, until its new PR into the
+ * stub exists. A `pr:` field does not keep it off: a done dossier's `pr:` is its old, merged build PR; only an open
+ * PR into an open stub places it, and the loop above has then already placed it. A halted runner (stopped or
+ * failed) takes a PR-less dossier off; a done dossier with no live runner appears only through its open PR into
+ * the stub; ready, planned and dropped dossiers never appear (unless live). Returns branch -> members; stubs with none are omitted.
  */
 export function stubMembers(
   stubs: { branch: string; cut: string; refAge?: string; state: Stub["state"]; pr: unknown | null }[],
@@ -52,7 +56,7 @@ export function stubMembers(
   }
   const accepting = open.find((s) => s.pr === null) ?? open[0]
   if (accepting) for (const d of eligible) {
-    if (placed.has(d.id) || prFieldNumber(d.pr) !== null) continue
+    if (placed.has(d.id)) continue
     // Without a PR a dossier belongs to the stub only while work on it is under way:
     // a runner that was stopped or failed takes it off until it resumes.
     if (d.live || (!d.halted && (d.status === "building" || d.status === "review"))) add(accepting.branch, { id: d.id, noPr: true })

@@ -533,8 +533,9 @@ The prompt tells the orchestrator these rules:
   - when nothing can proceed, end the turn with
     `RUNNER: WAITING <id>[,<id>...]`.
 - Run every test through `run_tests.py` and every gate list through
-  `run_gates.py`, never an ad-hoc script, so the timeline gets the suite and
-  gate lines; and only the tests the step names (under SUITE-MODE `stub`, the
+  `run_gates.py` (`--path-prepend`/`--env-script` for a toolchain off the
+  shell PATH, `--detach` then `--wait ID` for a long run), never an ad-hoc
+  script, so the timeline gets the suite and gate lines; and only the tests the step names (under SUITE-MODE `stub`, the
   new and affected tests plus CI: the full suite belongs to `/stub`).
 - Never end a stage while background work it started is still running;
   wait for its notification first (the runner holds an early end).
