@@ -121,7 +121,7 @@ def compare(derived: dict, declared: dict, root: str, ignore=DEFAULT_IGNORE) -> 
     members = {k for k in derived["members"] if k not in ign}
     labels = declared["containers"]
     cont = {v for v in labels.values() if v not in ign}
-    r = {"members": sorted(members), "containers": sorted(cont),
+    r: dict = {"members": sorted(members), "containers": sorted(cont),
          "missing_members": sorted(members - cont), "extra_containers": sorted(cont - members)}
     word = next((w for w in re.findall(r"[a-z]+", declared["title"].lower()) if w in WORDS), None)
     r["title_count"] = WORDS[word] if word else None
@@ -233,7 +233,7 @@ def fixed_c2(root: str, runner) -> str:
 def _selftest() -> int:
     fails = []
 
-    def ok(name, cond, detail=""):
+    def ok(name, cond, detail: object = ""):
         if not cond:
             fails.append("%s %s" % (name, detail))
 
@@ -321,7 +321,7 @@ def _selftest() -> int:
 
 
 def main(argv=None, runner=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("repo", nargs="?")
     ap.add_argument("--c2", help="c2 file (default: found under REPO/docs)")
     ap.add_argument("--ignore", nargs="*", default=[], help="more crate names to skip (workspace-hack is always skipped)")

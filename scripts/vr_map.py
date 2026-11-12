@@ -240,7 +240,7 @@ def _priority(path: str) -> int:
     return 2 if path.startswith("docs/architecture/") else 3
 
 
-def scan_ids(repo: str, ids, files: list, extra_exclude: list = ()) -> dict:
+def scan_ids(repo: str, ids, files: list, extra_exclude=()) -> dict:
     """{ID: [(path, line)]} for every file that is not an excluded spec or generated file."""
     if not ids:
         return {}
@@ -292,7 +292,7 @@ def build(repo: str, features=None, touched=None, all_features=False, existing: 
     repo = os.path.abspath(repo)
     book = find_feature_book(repo)
     lines = read_lines(repo, book)
-    defs = parse_feature_book("\n".join(lines))
+    defs = parse_feature_book("\n".join(lines or []))
     if not defs:
         raise MapError("%s defines no feature (`- ID: text` list lines)" % book)
     files = repo_files(repo)
@@ -638,7 +638,7 @@ def _cmd_list(a) -> int:
 def _selftest() -> int:
     fails = []
 
-    def ok(name, cond, detail=""):
+    def ok(name, cond, detail: object = ""):
         if not cond:
             fails.append("%s %s" % (name, detail))
 
@@ -854,7 +854,7 @@ def _selftest() -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--selftest", action="store_true")
     sub = ap.add_subparsers(dest="cmd")
 

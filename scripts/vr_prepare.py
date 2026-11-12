@@ -140,6 +140,7 @@ def prepare(repo: str, dossier_id: str, base: str, head: str, scripts: str,
     tree = tempfile.mkdtemp(prefix="vr-before-", dir=work)
     try:
         arc = subprocess.Popen(["git", "archive", base], cwd=repo, stdout=subprocess.PIPE)
+        assert arc.stdout is not None
         tar = subprocess.run(["tar", "-x", "-C", tree], stdin=arc.stdout, capture_output=True)
         arc.stdout.close()
         if arc.wait() != 0 or tar.returncode != 0:
@@ -288,7 +289,7 @@ def selftest() -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("repo", nargs="?")
     ap.add_argument("dossier", nargs="?", help="dossier id, e.g. W-145")

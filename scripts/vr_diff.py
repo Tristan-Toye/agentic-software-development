@@ -672,12 +672,12 @@ def _mk(nodes=(), edges=(), groups=(), flows=(), view_="L2", commit="c0"):
     g = {"schema_version": "1.0.0", "view": view_, "title": "t", "meta": {"repo": "r", "commit": commit, "generated_by": "hand"},
          "nodes": [], "edges": []}
     for n in nodes:
-        d = {"label": n["id"], "kind": "module", "status": "context"}
+        d: dict = {"label": n["id"], "kind": "module", "status": "context"}
         d.update(n)
         d["evidence"] = ev(d)
         g["nodes"].append(d)
     for e in edges:
-        d = {"kind": "calls", "status": "context"}
+        d: dict = {"kind": "calls", "status": "context"}
         d.update(e)
         d["id"] = d.get("id") or "e:%s:%s" % (e["source"], e["target"])
         d["evidence"] = ev(d)
@@ -988,7 +988,7 @@ def _selftest() -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--selftest", action="store_true")
     sub = ap.add_subparsers(dest="cmd")
     m = sub.add_parser("merge", help="merge a before and an after graph")

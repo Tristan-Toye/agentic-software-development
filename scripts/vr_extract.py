@@ -235,7 +235,7 @@ def modules_from_structure(entries, root_id: str, qual_prefix: str, root_file: s
 
 
 def cargo_modules_version(runner, root):
-    rc, out, err = runner(["cargo", "modules", "--version"], root)
+    rc, out, _ = runner(["cargo", "modules", "--version"], root)
     if rc != 0:
         return None, "cargo-modules is not installed (pinned version %s)" % CARGO_MODULES_PIN
     m = re.search(r"(\d+\.\d+\.\d+)", out)
@@ -376,7 +376,7 @@ def layer_calls(specs, pkgs, root: str, ws_root: str, files: _Files, timeout: fl
     try:
         with factory(ws_root, timeout) as ra:
             version = ra.version
-            for spec, rel, line, col in hits:
+            for _, rel, line, col in hits:
                 res = ra.call_hierarchy(rel, line, col)
                 focus = _fn_node(res["item"], pkgs, ws_root, nodes, ids)
                 for side in ("outgoing", "incoming"):
@@ -546,7 +546,7 @@ FAKE_TREES = {
 }
 
 
-def make_runner(meta, log, cm_version="0.27.0", trees=FAKE_TREES, fail_cm=False):
+def make_runner(meta, log, cm_version: str | None = "0.27.0", trees=FAKE_TREES, fail_cm=False):
     def runner(cmd, cwd, timeout=None):
         log.append(list(cmd))
         if cmd[:2] == ["cargo", "metadata"]:
@@ -710,7 +710,7 @@ def _live(root: str) -> int:
     out = dumps(g)
     g2 = extract("rust", root, layers=(1, 2))
     same = out == dumps(g2)
-    rc, mj, _ = default_runner(["cargo", "metadata", "--format-version", "1"], root)
+    _, mj, _ = default_runner(["cargo", "metadata", "--format-version", "1"], root)
     full = json.loads(mj)
     wm = set(full["workspace_members"])
     names = {p["name"] for p in full["packages"] if p["id"] in wm}
@@ -751,7 +751,7 @@ def _live(root: str) -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--live", metavar="REPO_ROOT", help="opt-in: run the real tools on REPO_ROOT and check VC-01/02/04/05/08/09")
     sub = ap.add_subparsers(dest="lang")
