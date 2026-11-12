@@ -99,6 +99,18 @@
               },
               "reason": {
                 "type": "string"
+              },
+              "limited_to": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "skipped_crates": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             }
           }

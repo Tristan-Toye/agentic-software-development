@@ -1,0 +1,465 @@
+{
+ "schema_version": "1.0.0",
+ "view": "L2",
+ "title": "W-145: the parts that change",
+ "meta": {
+  "change": "W-145",
+  "repo": "config-harness",
+  "commit": "30e77c94",
+  "generated_by": "agent",
+  "tools": [
+   {
+    "name": "cargo",
+    "version": "1.97.1"
+   },
+   {
+    "name": "cargo-modules",
+    "version": "0.27.0"
+   },
+   {
+    "name": "vr_extract",
+    "version": "1.0.0"
+   }
+  ],
+  "layers": {
+   "crates": {
+    "status": "ran"
+   },
+   "modules": {
+    "status": "ran",
+    "limited_to": [
+     "harness",
+     "protocol",
+     "test-support"
+    ],
+    "skipped_crates": [
+     "composition-root",
+     "fault",
+     "graph-runtime",
+     "platform",
+     "sandbox-tool",
+     "step-timing",
+     "workspace-hack"
+    ]
+   },
+   "calls": {
+    "status": "skipped",
+    "reason": "not requested"
+   }
+  }
+ },
+ "groups": [
+  {
+   "id": "group:harness",
+   "label": "harness crate",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/Cargo.toml",
+     "line": 2,
+     "note": "package name"
+    }
+   ]
+  },
+  {
+   "id": "group:protocol",
+   "label": "protocol crate",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/Cargo.toml",
+     "line": 2,
+     "note": "package name"
+    }
+   ]
+  },
+  {
+   "id": "group:test-support",
+   "label": "test-support crate",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/test-support/Cargo.toml",
+     "line": 2,
+     "note": "package name"
+    }
+   ]
+  }
+ ],
+ "nodes": [
+  {
+   "id": "crate:harness",
+   "label": "Harness: runs a model's tool calls",
+   "kind": "crate",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/Cargo.toml",
+     "line": 2,
+     "note": "package name"
+    }
+   ],
+   "group": "group:harness"
+  },
+  {
+   "id": "crate:protocol",
+   "label": "Protocol: shared types and the settings row",
+   "kind": "crate",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/Cargo.toml",
+     "line": 2,
+     "note": "package name"
+    }
+   ],
+   "group": "group:protocol"
+  },
+  {
+   "id": "crate:test-support",
+   "label": "Test support: fixture values",
+   "kind": "crate",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/test-support/Cargo.toml",
+     "line": 2,
+     "note": "package name"
+    }
+   ],
+   "group": "group:test-support"
+  },
+  {
+   "id": "module:harness::tools",
+   "label": "Tool code of the harness",
+   "kind": "module",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/lib.rs",
+     "line": 81,
+     "note": "module declaration"
+    }
+   ],
+   "group": "group:harness"
+  },
+  {
+   "id": "module:harness::tools::git_tools",
+   "label": "Git tools (status, diff, log)",
+   "kind": "module",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/mod.rs",
+     "line": 17,
+     "note": "module declaration"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/git_tools.rs",
+     "line": 151,
+     "note": "changed in ef71aa3c..30e77c94"
+    }
+   ],
+   "group": "group:harness"
+  },
+  {
+   "id": "module:harness::tools::pipeline",
+   "label": "Per-call checks, now says which tools only read",
+   "kind": "module",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/mod.rs",
+     "line": 24,
+     "note": "module declaration"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/pipeline.rs",
+     "line": 507,
+     "note": "stub signature: pub fn reads_only(&self, tool: &str) -> bool {"
+    }
+   ],
+   "group": "group:harness"
+  },
+  {
+   "id": "module:harness::tools::step",
+   "label": "Turn step: runs the calls of one answer, now in groups",
+   "kind": "module",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/mod.rs",
+     "line": 33,
+     "note": "module declaration"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 10,
+     "note": "stub signature: fn is_groupable(&self, call: &ToolCall) -> bool {; async fn run_group(; async fn run_slots_concurrently(&self, slots: &[GroupSlot<'_>]) -> Vec<Option<RuledCall>> {; async fn settle_slots(; async fn decide_call<'a>(; async fn rule_stage_of("
+    }
+   ],
+   "group": "group:harness"
+  },
+  {
+   "id": "module:harness::tools::registry",
+   "label": "Tool registry (knows each tool's changes_files)",
+   "kind": "module",
+   "status": "context",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/mod.rs",
+     "line": 29,
+     "note": "module declaration"
+    }
+   ],
+   "group": "group:harness"
+  },
+  {
+   "id": "module:protocol::schema",
+   "label": "Database row types",
+   "kind": "module",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/src/lib.rs",
+     "line": 14,
+     "note": "module declaration"
+    }
+   ],
+   "group": "group:protocol"
+  },
+  {
+   "id": "module:protocol::schema::settings",
+   "label": "Runtime settings row, gets the concurrency setting",
+   "kind": "module",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/src/schema/mod.rs",
+     "line": 120,
+     "note": "module declaration"
+    },
+    {
+     "tier": "source",
+     "path": "crates/protocol/src/schema/settings.rs",
+     "line": 218,
+     "note": "changed in ef71aa3c..30e77c94"
+    }
+   ],
+   "group": "group:protocol"
+  },
+  {
+   "id": "module:test_support::fixture_values",
+   "label": "Settings values used by tests",
+   "kind": "module",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/test-support/src/lib.rs",
+     "line": 11,
+     "note": "module declaration"
+    },
+    {
+     "tier": "source",
+     "path": "crates/test-support/src/fixture_values.rs",
+     "line": 263,
+     "note": "changed in ef71aa3c..30e77c94"
+    }
+   ],
+   "group": "group:test-support"
+  }
+ ],
+ "edges": [
+  {
+   "id": "edge:contains:crate:harness:module:harness::tools",
+   "source": "crate:harness",
+   "target": "module:harness::tools",
+   "kind": "contains",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/lib.rs",
+     "line": 81,
+     "note": "module declaration"
+    }
+   ]
+  },
+  {
+   "id": "edge:contains:crate:protocol:module:protocol::schema",
+   "source": "crate:protocol",
+   "target": "module:protocol::schema",
+   "kind": "contains",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/src/lib.rs",
+     "line": 14,
+     "note": "module declaration"
+    }
+   ]
+  },
+  {
+   "id": "edge:contains:crate:test-support:module:test_support::fixture_values",
+   "source": "crate:test-support",
+   "target": "module:test_support::fixture_values",
+   "kind": "contains",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/test-support/src/lib.rs",
+     "line": 11,
+     "note": "module declaration"
+    }
+   ]
+  },
+  {
+   "id": "edge:contains:module:harness::tools:module:harness::tools::git_tools",
+   "source": "module:harness::tools",
+   "target": "module:harness::tools::git_tools",
+   "kind": "contains",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/mod.rs",
+     "line": 17,
+     "note": "module declaration"
+    }
+   ]
+  },
+  {
+   "id": "edge:contains:module:harness::tools:module:harness::tools::pipeline",
+   "source": "module:harness::tools",
+   "target": "module:harness::tools::pipeline",
+   "kind": "contains",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/mod.rs",
+     "line": 24,
+     "note": "module declaration"
+    }
+   ]
+  },
+  {
+   "id": "edge:contains:module:harness::tools:module:harness::tools::registry",
+   "source": "module:harness::tools",
+   "target": "module:harness::tools::registry",
+   "kind": "contains",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/mod.rs",
+     "line": 29,
+     "note": "module declaration"
+    }
+   ]
+  },
+  {
+   "id": "edge:contains:module:harness::tools:module:harness::tools::step",
+   "source": "module:harness::tools",
+   "target": "module:harness::tools::step",
+   "kind": "contains",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/mod.rs",
+     "line": 33,
+     "note": "module declaration"
+    }
+   ]
+  },
+  {
+   "id": "edge:contains:module:protocol::schema:module:protocol::schema::settings",
+   "source": "module:protocol::schema",
+   "target": "module:protocol::schema::settings",
+   "kind": "contains",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/src/schema/mod.rs",
+     "line": 120,
+     "note": "module declaration"
+    }
+   ]
+  },
+  {
+   "id": "edge:depends:crate:harness:crate:protocol",
+   "source": "crate:harness",
+   "target": "crate:protocol",
+   "kind": "depends",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/Cargo.toml",
+     "line": 78,
+     "note": "dependency"
+    }
+   ]
+  },
+  {
+   "id": "edge:depends:crate:test-support:crate:protocol",
+   "source": "crate:test-support",
+   "target": "crate:protocol",
+   "kind": "depends",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/test-support/Cargo.toml",
+     "line": 27,
+     "note": "dependency"
+    }
+   ]
+  }
+ ]
+}

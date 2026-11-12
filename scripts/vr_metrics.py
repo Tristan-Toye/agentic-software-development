@@ -52,6 +52,7 @@ def _selftest() -> int:
         p = log(d, "vr_map", "check", {"stale": 2, "seconds": 0.1})
         assert p == os.path.join(d, ".discovery", "visual-review", "metrics.jsonl"), p
         log(d, "vr_map", "recall", {"recall": 0.5})
+        assert p is not None
         rows = read(p)
         assert [r["event"] for r in rows] == ["check", "recall"] and rows[0]["stale"] == 2 and "ts" in rows[0]
         assert log(d, "t", "e", {}, path=os.path.join(d, "o", "m.jsonl")) is not None
@@ -63,7 +64,7 @@ def _selftest() -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:

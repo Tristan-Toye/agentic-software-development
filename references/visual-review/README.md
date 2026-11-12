@@ -37,13 +37,16 @@ An id is derived from the kind plus the qualified name, never from a counter or 
 ```
 scripts/vr_graph.py validate GRAPH.json [--root REPO] [--no-budget]   # issues as JSON, exit 1 on any
 scripts/vr_graph.py budget GRAPH.json
-scripts/vr_extract.py rust REPO [--layers 1,2] [--calls fn1,fn2] [--timeout 120] [--cfg-test] -o out.json
+scripts/vr_extract.py rust REPO [--layers 1,2] [--crates a,b] [--calls fn1,fn2] [--timeout 120] [--cfg-test] -o out.json
 scripts/vr_diff.py merge --before B.json --after A.json [-o merged.json]   # issues as JSON on stderr, exit 1
 scripts/vr_diff.py view merged.json --mode before|after|diff [-o out.json]
-scripts/vr_diff.py after-from-git REPO --base REV --head REV [--layers 1,2] -o after.json
+scripts/vr_diff.py after-from-git REPO --base REV --head REV [--layers 1,2] [--crates a,b] -o after.json
+scripts/vr_prepare.py REPO ID --base REV --head REV [--crates a,b|all]   # default: crates derived from the changed files
 scripts/vr_diff.py --selftest
 scripts/vr_extract.py --selftest | --live REPO     # also vr_graph.py --selftest, vr_ra.py --selftest
 ```
+
+`--crates a,b` runs layer 2 only for those crates; layer 1 stays the whole workspace, every other crate keeps its crate node, and `meta.layers.modules` gets `limited_to` and `skipped_crates`. `vr_prepare.py` derives the set from `git diff --name-only BASE HEAD` (a changed `Cargo.toml` or a file under `src/` maps to the package of the nearest manifest above it) and uses it for the before and the after side; `--crates all` turns the limit off. Merged graphs then hold module nodes only for the touched crates.
 
 Layer 2 needs `cargo-modules` 0.27.0; without it the layer is recorded as `skipped` in `meta.layers`. Python: `import vr_graph; vr_graph.load()`, `.validate(graph, root=None)`, `.budget(graph)`. `import vr_diff; vr_diff.merge(before, after)`, `.view(merged, mode)`, `.after_from_git(repo, base, head, layers)`; they raise `DiffError` (`.issues`) on `removed_element_missing`, `added_element_exists`, `over_budget` (a flow of more than 12 steps) and any validator issue.
 

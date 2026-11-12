@@ -218,11 +218,7 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
         if shape_broken:
             return issues
 
-    nodes = [n for n in graph.get("nodes", []) if isinstance(n, dict)]
-    edges = [e for e in graph.get("edges", []) if isinstance(e, dict)]
-    groups = [g for g in graph.get("groups", []) if isinstance(g, dict)]
     lanes = [x for x in graph.get("lanes", []) if isinstance(x, dict)]
-    flows = [f for f in graph.get("flows", []) if isinstance(f, dict)]
 
     seen: dict = {}
     for i, n in enumerate(graph.get("nodes", [])):
@@ -393,7 +389,7 @@ def _selftest() -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--selftest", action="store_true")
     sub = ap.add_subparsers(dest="cmd")
     v = sub.add_parser("validate", help="typed issues as JSON; exit 1 on any")

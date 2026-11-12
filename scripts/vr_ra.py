@@ -58,14 +58,20 @@ class RaClient:
     # -- transport
     def _send(self, msg: dict) -> None:
         body = json.dumps(msg).encode()
+        stdin = self._proc.stdin if self._proc else None
+        if stdin is None:
+            raise RaError("language server is not running")
         try:
-            self._proc.stdin.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
-            self._proc.stdin.flush()
+            stdin.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+            stdin.flush()
         except (BrokenPipeError, OSError) as exc:
             raise RaError("language server closed its input: %s" % exc)
 
     def _reader(self) -> None:
-        out = self._proc.stdout
+        out = self._proc.stdout if self._proc else None
+        if out is None:
+            self._q.put(None)
+            return
         while True:
             headers = {}
             while True:
