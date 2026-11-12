@@ -121,6 +121,16 @@ checkout while the stubs live in the package worktree X — pass
 the check resolves itself); a package that owns a directory is walked whole,
 every file under it.
 
+**Every prose promise in `## Contract` maps to a criterion.** Each sentence of
+the contract's prose (outside code blocks) that promises observable behaviour
+of a binary, a wiring step, an environment variable, a router mount or a
+deployment input names a token: an ALL_CAPS env var, a `/route`, a `bin/x` or
+"the `x` binary". Some acceptance criterion must contain that same token; a
+promise with none is a pre-fan-out defect — add the criterion before you
+spawn. Log `PROSE-PROMISES: <N>, <M> without a criterion` into `## Build
+log`; `validate_pipeline.py --pre-fanout` runs the same check on the dossier
+and reports each uncovered token as a DEFECT.
+
 **A frozen count or oracle carries its derivation command beside the
 number.** Write `12 tables (grep -c 'CREATE TABLE' migrations/*.sql)`, never a
 bare `12`. Where the command and the frozen number disagree, the mechanism
