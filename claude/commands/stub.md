@@ -39,7 +39,9 @@ your questions and the agents you spawn, grouped by step. Post
 `ask_owner.py note --root R --dossier <branch with / as -> --text "..."` at
 the start and end of every step and for every fix round ruled, suite verdict
 or wait. Write each note for a person reading on a phone: plain sentences, markdown bullets or a small table where they help, and never commands, paths, SHAs or log output. Owner decisions go through
-`ask_owner.py` as `references/owner-questions.md` says.
+`ask_owner.py` as `references/owner-questions.md` says: only design, product or
+real-uncertainty questions, each passing `--kind`, and never an approval
+("The ask policy").
 
 ## The stub lifecycle — the rules this command serves
 
@@ -99,7 +101,7 @@ Then fetch `origin development` and the stub, and report four facts: the
 cut date and the commit it cut from; the merges ahead of
 `origin/development`, oldest first; the dossiers still open against the stub
 (`gh pr list --base <stub> --state open`) — they will miss this
-integration, so proceeding past them needs the user's yes naming each one,
+integration, so proceeding past them is your call, logged naming each one (never an approval ask),
 except when the dashboard's **Integrate** started this run: it opened the
 stub's pull request first (titled `Stub <date>: integrating`; Step 3 edits it,
 never opens a second), and its merge queue
