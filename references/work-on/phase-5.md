@@ -3,6 +3,10 @@
 
 ## Phase 5 — Test strength gate, then merge into the base branch
 
+**Spawning and workflows.** The rules for spawning an agent and for the two plugin
+workflows are in `phase-4.md`: `ref_section` with `phase-4` and the headings
+"Spawning under Claude Code" and "Under Claude Code — two workflows".
+
 **Before any merge, prove the new tests can fail.** Blindness guarantees the
 tests are independent; this gate is what checks they are strong. Both checks
 are cheap, and both run while the bodies in `X` are still stubs:
