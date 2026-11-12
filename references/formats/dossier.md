@@ -22,7 +22,7 @@ branch: fix/PROJ-142-flush-coalescing
 worktree: ../repo-W-014
 pr: null
 blocked_by: []         # dossier IDs that must reach `done` first; a done
-                       # blocker stays (removal needs BLOCKER-REMOVED: in the log)
+                       # blocker stays (removal: blocker done, or `--reason`)
 adrs: []               # ADR IDs this build produced; /work-on fills it
 ---
 ```
