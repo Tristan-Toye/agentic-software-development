@@ -3,7 +3,7 @@ description: >-
   Cleanup after the owner merged a dossier's pull request into its stub:
   settle the dossier's record, clean the stale local branches and worktrees,
   update still-open PRs against the stub where mechanical. State work only:
-  never merges, never edits a merged PR, asks before resolving a conflict.
+  never merges, never edits a merged PR; resolves a conflict itself, never asks.
   Started by the dashboard's merge detector.
 argument-hint: "<dossier ID, e.g. W-128> [PR numbers, e.g. 429,430]"
 ---
@@ -69,24 +69,23 @@ one):
   --base development --state open` lists a pull request): do nothing and ask
   nothing. The merge queue reaches that pull request itself and resolves it
   then; a refresh now would go stale at the next merge. Say so in the note.
-- **Conflicting, otherwise**: ask the owner, one `ask_owner.py ask` per pull request,
-  naming the files in conflict: `A` refresh it here (a fresh worktree on its
-  branch, `git merge origin/<stub>`, resolve keeping both sides' intent,
-  the repository's gates on the touched paths, push; Phase 9's refresh ritual
-  with `validate_pipeline.py --finalize-ids` where the repository has ADRs),
-  `B` leave it for its own run. End the turn with `RUNNER: WAITING <ids>`
-  when nothing else is left.
+- **Conflicting, otherwise**: refresh it here, without asking: a fresh worktree on
+  its branch, `git merge origin/<stub>`, resolve keeping both sides' intent,
+  the repository's gates on the touched paths, push (Phase 9's refresh ritual
+  with `validate_pipeline.py --finalize-ids` where the repository has ADRs).
+  Never rebase, never force-push. When the gates stay red after one honest
+  attempt, abort the merge, leave the branch as it was and name it in the
+  note: the merge queue's `/resolve-merge` reaches it when its dossier is
+  merged.
 
 ## Step 5 — Close
 
-One note: what merged, what was cleaned, which pull requests changed or are
-waiting on the owner. The dashboard regenerates the open-work report itself
+One note: what merged, what was cleaned, which pull requests changed or were left. The dashboard regenerates the open-work report itself
 once the refs move. Under the runner, end with `RUNNER: DONE`.
 
 ## Rules
 
 - Never merge, close or approve a pull request, and never push to the stub.
-- Never change code except in an `A`-ruled refresh, and then only to resolve
-  the conflict.
+- Never change code except in a refresh, and then only to resolve the conflict.
 - Never delete a branch that is not merged, a dirty worktree, or anything on
   the remote.
