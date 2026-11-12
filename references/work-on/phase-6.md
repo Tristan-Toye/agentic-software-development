@@ -138,3 +138,5 @@ observable, a criterion this machine cannot check — which is a `/plan`
 question wearing an arbitration costume.
 
 Detail: `ref_section` with `phase-6-conditional` and the heading "Mutation check: default on, scale it honestly". (the moment the suite first goes green.)
+
+**Driver (only when `ASD_DRIVER_TEST_ROUND=on`).** `python3 scripts/test_round.py --dossier ID --round N -- SUITE_CMD` runs gates and the suite once and prints per-failure evidence (file, package, kind hint, first line, repeat-site flag); arbitrating each failure stays yours. A non-zero suite with no parseable failure exits 2. `shadow` records evidence only; `off` or unset: ignore this paragraph.
