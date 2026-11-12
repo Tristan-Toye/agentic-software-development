@@ -9,6 +9,7 @@ import { canIntegrate, checkRule, dossierPage, integrationPhase, integrationStop
 import { emitChange, subscribe } from "./events.ts"
 import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord, splitSections } from "./timeline.ts"
 import { runRunner, runTarget, runnerScript } from "./controls.ts"
+import { failPending, markPending, PENDING_TTL_MS, stubResumePending } from "./pending.ts"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
@@ -373,6 +374,8 @@ function runnerLog(repo: string, id: string): string | null {
   try { return readFileSync(join(runsDir(), `${repo}.${id}.runner.log`), "utf8").split("\n").slice(-201).join("\n") } catch { return null }
 }
 const inflightControl = new Set<string>()
+// After a pressed button's window closes the page must hear about it: one change event when the marker times out.
+const expireWatch = (): void => { setTimeout(() => emitChange("runs"), PENDING_TTL_MS + 500).unref?.() }
 /** The page's version: an open tab reloads when the server it talks to serves a different page. */
 const PAGE_ID = String(Bun.hash(PAGE))
 const summaryInflight = new Set<string>()
@@ -494,9 +497,10 @@ export async function handle(req: Request): Promise<Response> {
     const groups = groupByPhase(entries, "Before the first step", false)
     const activity: unknown[] = []
     const runner = readRunner(key)
+    const pending = stubResumePending(repo, slug, runner)
     const now = nowPanel(entries, groups, { runner: runner?.state ?? "", waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: "" })
     const integrate = readIntegrate(key)
-    return json({ repo, stub, key, entries, groups, activity, now, runner, integrate, record: recordEntries, empty: entries.every((e) => e.type === "boundary"), hasRecord: !!file })
+    return json({ repo, stub, key, entries, groups, activity, now, runner, integrate, pending, record: recordEntries, empty: entries.every((e) => e.type === "boundary"), hasRecord: !!file })
   }
   // Integrate a stub: its finished dossiers through the merge queue (FIFO), then /stub on the runner; and Stop/Resume of
   // that /stub run. POST {repo, branch, action: integrate|stop|resume}.
@@ -517,7 +521,9 @@ export async function handle(req: Request): Promise<Response> {
       return json({ ok: true })
     }
     if (b.action === "stop" || b.action === "resume") {
+      if (b.action === "resume") { markPending(rs.repo, slug, "resume"); expireWatch() }
       const r = await runRunner(b.action === "stop" ? ["stop", slug, "--root", rs.main] : [slug, "--root", rs.main, "--command", "stub", "--items", stub.branch])
+      if (!r.ok && b.action === "resume") failPending(rs.repo, slug, "resume", r.output)
       emitChange("stubs")
       return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)
     }
@@ -701,7 +707,9 @@ export async function handle(req: Request): Promise<Response> {
     const it = run.deferred.items.find((i) => i.id === item)
     if (!it || it.state !== "dossier" || it.dossier) return json({ error: "only an item ruled to its own dossier, not planned yet" }, 409)
     if (it.planning && ["running", "waiting", "paused", "queued"].includes(it.planning)) return json({ error: "it is being planned" }, 409)
+    markPending(run.repo, run.id, `plan:${item}`); expireWatch()
     const r = await runRunner([run.id, "--root", run.main, "--command", "plan", "--items", item])
+    if (!r.ok) failPending(run.repo, run.id, `plan:${item}`, r.output)
     emitChange("runs")
     return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)
   }
@@ -740,7 +748,10 @@ export async function handle(req: Request): Promise<Response> {
       const flow = action === "start" ? [`--command`, ctl.command || "work-on"]
         : action === "resume" ? ["--command", ctl.command || "work-on", ...(run.runner?.items ? ["--items", run.runner.items] : [])] : []
       const target = runTarget(repo, id, run.runKey, action)
+      // The marker goes down before the spawn: from here the button is hidden for every tab until the run shows up.
+      if (action !== "stop") { markPending(repo, id, action); expireWatch() }
       const r = await runRunner(action === "stop" ? ["stop", target.stop, "--root", root] : action === "fix-deferred" ? [id, "--root", root, "--command", "fix-deferred", ...(items.length ? ["--items", items.join(",")] : [])] : [target.dossier, "--root", root, ...flow])
+      if (!r.ok && action !== "stop") failPending(repo, id, action, r.output)
       if (r.ok) { refreshAfterControl(repo); void getStubs(() => readAll(DIR)) }
       emitChange("runs")
       return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 500)
