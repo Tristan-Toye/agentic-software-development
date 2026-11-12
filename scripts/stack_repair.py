@@ -177,7 +177,7 @@ class _Lock:
                     return False
                 time.sleep(min(1.0, max(0.05, end - time.time())))
 
-    def __exit__(self, *a):
+    def __exit__(self, *_exc):
         if self.f:
             try:
                 fcntl.flock(self.f, fcntl.LOCK_UN)
