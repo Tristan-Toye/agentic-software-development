@@ -1636,6 +1636,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--no-stub-hints", action="store_true", help="leave the `# stub locations` aid out of OWNED_PATHS")
     parser.add_argument("--emit-prompt", metavar="PAYLOAD",
                         help="print PAYLOAD's bytes and its PAYLOAD_SHA256 line: the Claude Code spawn prompt")
+    parser.add_argument("--verbose", action="store_true", help="print every filled field name and the manifest line (default: one summary line)")
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args(argv)
 
@@ -1680,13 +1681,18 @@ def main(argv: list[str]) -> int:
 
     filled = [f.name for f in fields if not is_placeholder(f.value)]
     left = [f.name for f in fields if is_placeholder(f.value)]
-    print("wrote %s" % os.path.abspath(args.out))
-    print("filled: %s" % (", ".join(filled) or "none"))
-    print("left as @@FILL: %s" % (", ".join(left) or "none"))
+    # Compact by default (one line a spawn): the filled names and the manifest
+    # line echo are 200 calls' worth of context; --verbose prints them.
+    if args.verbose:
+        print("wrote %s" % os.path.abspath(args.out))
+        print("filled: %s" % (", ".join(filled) or "none"))
+        print("left as @@FILL: %s" % (", ".join(left) or "none"))
+    else:
+        print("wrote %s; filled %d; left as @@FILL: %s" % (os.path.abspath(args.out), len(filled), ", ".join(left) or "none"))
     if args.manifest:
         line = manifest_line(args, args.out, fields)
         append_manifest(args.manifest, line)
-        print("manifest: %s" % line)
+        print("manifest: %s" % (line if args.verbose else "appended to " + args.manifest))
     return 0
 
 

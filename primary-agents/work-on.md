@@ -133,7 +133,7 @@ not a chain you type. Before you compose a shell command, take the tool:
 
 | Work | One call |
 |---|---|
-| The state of a worktree after a change — branch, HEAD, ahead/behind, status, diff stat, in-progress merge | `python3 ${PLUGIN_ROOT}/scripts/git_state.py <X> --base <target> [--diff] [--worktrees]` |
+| The state of a worktree after a change — branch, HEAD, ahead/behind, status, diff stat, in-progress merge | `python3 ${PLUGIN_ROOT}/scripts/git_state.py <X> --base <target> [--full] [--diff] [--worktrees]` (compact by default; `--full` adds the diff-stat files) |
 | Run a suite or a subset, locally or in a Linux VM | `python3 ${PLUGIN_ROOT}/scripts/run_tests.py --log <file> [--vm <name> --workdir <X> --env-script <file>] -- <command>` |
 | Wait for CI and read its failures | `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N>` |
 | Several of the target's gate scripts | write them once to `.agent-staging/gates.txt` (`name: command` per line), then `python3 ${PLUGIN_ROOT}/scripts/run_gates.py .agent-staging/gates.txt --root <X>` |
@@ -310,5 +310,5 @@ disagreement between a list and a phase is a defect in the list.
 ## Rules by phase
 
 The delegation rules and the size gates are in `phase-2.md`; spawning and the
-two workflows are in `phase-4.md`; the gates, the mode and the time-logging
+two workflows are in `phase-4-conditional.md`; the gates, the mode and the time-logging
 gate are in `phase-0.md`. Each phase file says which of them it needs.

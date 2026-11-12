@@ -26,7 +26,7 @@
    what the union left duplicated.
 
    **Review every `updated dossier` line the finalizer prints before you
-   commit** — read the diff (`git diff --stat`, or `git_state.py`) for each
+   commit** — read the diff (`git diff --stat`, or `git_state.py --full`) for each
    one it names. It rewrites only dossiers this branch added or modified; a
    `NOTICE` line about a dossier it left alone is informational, never a
    rewrite to chase.

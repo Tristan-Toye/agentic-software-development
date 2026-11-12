@@ -1810,6 +1810,9 @@ def selftest() -> int:
     fix = impl.replace("MODE: build", "MODE: fix").replace("PACKAGE: P1 thing\n", "").replace("CRITERIA: |\n  1. x\n", "")
     case("implementer fix needs crs or failures", fix, "implementer", True, "CRS / FAILURES")
     case("implementer fix with failures", fix + "FAILURES: |\n  assert x\nBASELINE_COUNTS_FROM: pre-change tree re-run\n", "implementer", False)
+    case("implementer fix: several failing tests of one package travel in one FAILURES block",
+         fix + "FAILURES: |\n  test_flush_retry\n    expected 3, got 2\n  test_reload_empty\n    KeyError: 'x'\n"
+         "  test_flush_order\n    assert a == b\nBASELINE_COUNTS_FROM: pre-change tree re-run\n", "implementer", False)
     case("a diff hunk header is not a template token",
          fix + "FAILURES: |\n  @@ -1,4 +1,5 @@\n  -assert x\n  +assert y\nBASELINE_COUNTS_FROM: pre-change tree re-run\n", "implementer", False)
     case("implementer bad mode", impl.replace("MODE: build", "MODE: repair"), "implementer", True, "takes one of")

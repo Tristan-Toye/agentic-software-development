@@ -36,7 +36,7 @@ dashboard's Fix deferred issues tab groups the run by these numbers.
 ## Step 1 — The items
 
 Read the ledger: the `DEFERRED:` block and every later `D-` line in
-`## Build log` (`dossier_edit.py section <dossier> 'Build log'`), plus the
+`## Build log` (`dossier_edit.py section <dossier> 'Build log' --all`), plus the
 `/deferred` report when the runner stored one at
 `~/.agentic/runs/<repo>.<ID>.deferred.md`. The report's fields (contract
 boundary, blast radius, confidence, effort) are what the triage rules by;

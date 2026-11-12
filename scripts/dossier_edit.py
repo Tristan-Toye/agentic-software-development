@@ -33,7 +33,10 @@ keys that already exist (`status`, `updated`, `branch`, `worktree`, `pr`,
 goes through `add`, `remove`, or `set KEY=[a, b]` (the whole list, written in
 the inline form), in either the inline `[a, b]` or the block `- a` form.
 `section` prints the heading line through the line before the next heading of
-the same or a higher level, fences respected, with 1-based line numbers.
+the same or a higher level, fences respected, with 1-based line numbers. The
+default output is capped at 120 lines (the head; for `## Build log` the last
+120) with a last line naming how many were left out: `--all` prints the whole
+section, `--lines N` sets the cap.
 
 `blocked_by` is guarded the way validate_pipeline.py guards it: `remove` and a
 `set` that drops an id are refused unless `## Build log` already holds
@@ -295,7 +298,23 @@ def replace_section(text: str, heading: str, new_body: str) -> tuple[str, str]:
     raise Refused(f"no heading `{heading}` outside a code fence")
 
 
-def section(text: str, heading: str) -> str:
+SECTION_CAP = 120
+
+
+def section(text: str, heading: str, cap: int | None = None) -> str:
+    """One section with line numbers. `cap` bounds the lines printed (None: all): the
+    head of the section, except `## Build log`, which keeps its tail (newest lines);
+    a last line says how many were left out and how to get them."""
+    out = _section_all(text, heading)
+    rows = out.split("\n")
+    if cap is None or len(rows) <= cap:
+        return out
+    if heading.lstrip("#").strip().strip("`").lower() == "build log":
+        return "\n".join([rows[0], f"... ({len(rows) - cap} earlier line(s) omitted; --all prints the whole section)"] + rows[-(cap - 1):])
+    return "\n".join(rows[:cap] + [f"... ({len(rows) - cap} more line(s); --all prints the whole section, --lines N a longer head)"])
+
+
+def _section_all(text: str, heading: str) -> str:
     lines = text.split("\n")
     want = heading.lstrip("#").strip().strip("`").lower()
     hs = headings(lines)
@@ -688,6 +707,8 @@ def run(argv: list[str]) -> int:
     p_sec = sub.add_parser("section", help="print one section with line numbers")
     p_sec.add_argument("dossier")
     p_sec.add_argument("heading")
+    p_sec.add_argument("--all", action="store_true", help="print the whole section (default: the first %d lines; `Build log`: the last)" % SECTION_CAP)
+    p_sec.add_argument("--lines", type=int, metavar="N", help="cap at N lines instead of %d" % SECTION_CAP)
     p_rep = sub.add_parser("replace-section", help="replace one section's body from a file")
     p_rep.add_argument("dossier")
     p_rep.add_argument("heading")
@@ -745,7 +766,7 @@ def run(argv: list[str]) -> int:
                 return 1
             print(f"dossier_edit: {len(notes)} contract block(s) equal their files, member by member")
         else:
-            print(section(text, args.heading))
+            print(section(text, args.heading, None if args.all else (args.lines or SECTION_CAP)))
     except Refused as err:
         print(f"dossier_edit: REFUSED — {err}", file=sys.stderr)
         return 1
@@ -823,6 +844,11 @@ def selftest() -> int:
     check("section stops at the next level-2 heading", out.splitlines()[-1].endswith("text") and "## Build log" not in out)
     check("section ignores a fenced ##", "## not a heading" in out)
     check("section numbers lines", out.startswith("13\t## Contract"))
+    big = SAMPLE + "\n".join(f"- line {k}" for k in range(300)) + "\n"
+    capped = section(big, "Build log", 20).split("\n")
+    check("section caps a long Build log to its tail and says so", len(capped) == 21 and "earlier line(s) omitted" in capped[1] and capped[-1].endswith("line 299"))
+    check("section with no cap prints everything", len(section(big, "Build log").split("\n")) > 300)
+    check("section caps a long other section to its head", "more line(s)" in section(big.replace("## Build log", "## Long"), "Long", 5).split("\n")[-1])
 
     # --- lists: remove, whole-list set, and the blocked_by guard ---
     blk = SAMPLE.replace("pr: null\n---", "pr: null\nblocked_by: [W-0001, W-0002]  # why\nrelated:\n  - a\n  - b\n---")

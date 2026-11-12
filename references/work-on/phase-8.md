@@ -13,7 +13,7 @@
   rules file (Phase 8b), never an ADR and never an unratified write.
 
 **Spawning and workflows.** The rules for spawning an agent and for the two plugin
-workflows are in `phase-4.md`: `ref_section` with `phase-4` and the headings
+workflows are in `phase-4-conditional.md`: `ref_section` with `phase-4-conditional` and the headings
 "Spawning under Claude Code" and "Under Claude Code — two workflows".
 
 **Delegation and its size gates** are in `phase-2.md`: `ref_section` with `phase-2`
