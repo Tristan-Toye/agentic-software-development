@@ -48,7 +48,7 @@ export function deferredSince(updated: string, runner: unknown): boolean {
 /** One deferred issue from a dossier's ledger (`/work-on` Phase 9, `/deferred`, `/fix-deferred`). */
 export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixing" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string;
   /** The item a dossier is planned from: itself, or another dossier's same issue (`seed: /plan W-128 D-3`, `DEFERRED-SAME`). */
-  seed?: { src: string; item: string }; planBranch?: string; ownerKept?: boolean; planning?: "running" | "waiting" | "paused" | "done" | "failed" | "stopped"; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string; keptOpen?: boolean }
+  seed?: { src: string; item: string }; planBranch?: string; ownerKept?: boolean; planning?: "running" | "testing" | "waiting" | "paused" | "done" | "failed" | "stopped"; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string; keptOpen?: boolean }
 export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; branch?: string }
 
 /**

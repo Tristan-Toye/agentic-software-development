@@ -42,7 +42,7 @@ async function act(path: string, body: unknown = {}, method = "POST"): Promise<s
   return (ok ? "ok" : `refused (HTTP ${r.status})`) + ": " + clip(typeof r.body === "string" ? r.body : out(r.body), 4000)
 }
 
-const LIVE = ["running", "waiting", "paused", "queued"]
+const LIVE = ["running", "testing", "waiting", "paused", "queued"]
 /** One run as one line: `repo ID · state · command · account · phase · PR · questions — title — last note`. */
 function line(r: any): string {
   const b = brief(r)

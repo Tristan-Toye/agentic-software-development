@@ -58,7 +58,7 @@ type RunLike = {
   controls: Record<string, Ctl>
   deferred?: { items: { id: string; planning?: string }[] }
 }
-const LIVE = ["running", "waiting", "paused", "queued"]
+const LIVE = ["running", "testing", "waiting", "paused", "queued"]
 const CONTROL_ACTIONS = ["start", "resume", "fix-deferred"]
 
 /**

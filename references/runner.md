@@ -108,6 +108,18 @@ the recorded checkpoints.
   frees. A run waiting on the owner holds no slot. The dashboard
   shows "queued · waiting for a slot". So a usage-limit reset, or many Start
   presses, no longer sets ten sessions going in the same minute.
+  **`testing` releases the slot:** while the session is blocked on a long wait
+  the runner records `testing` and `slot_census` does not count it, so queued
+  runs may start (podcast W-007 once sat 35 min in the foreground on
+  `run_tests.py` holding a slot the whole time). The session is blocked when its
+  in-flight foreground Bash call runs `run_tests.py` or `run_gates.py` (`--wait`
+  included), or has produced no output for more than `TESTING_QUIET_SECS` (300;
+  `ASD_TESTING_QUIET_SECS` overrides). When the call's result arrives the state
+  goes back to `running` at once, without queueing. Trade-off, accepted: the
+  live count may briefly exceed the cap until another run finishes or waits.
+  `testing` counts as live everywhere else (stale-pid checks, dashboard,
+  awake, merge guards); a `testing` run is never nudged or pinged. The
+  dashboard shows "testing · slot released".
 - **Replies on open questions, mid-run:** an agent may ask and keep working
   on what is not blocked. Each question records the run that asked it
   (`run`, the run key). While the run works, the runner checks that run's
