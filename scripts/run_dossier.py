@@ -3447,8 +3447,7 @@ def selftest() -> int:
         p = start("W-93")
         check("testing: any Bash call quiet past the threshold flips to testing", bool(until(lambda: state_of("W-93").get("state") == "testing", 20)))
         p.wait(timeout=60)
-        env.pop("ASD_TESTING_QUIET_SECS")
-        env.pop("ASD_RUNNER_MAX_LIVE")
+        env.pop("ASD_TESTING_QUIET_SECS")  # ASD_RUNNER_MAX_LIVE stays set: the disk-floor cases below pop it
         # ---- the disk floor: below it the run queues (no claude), and starts once the disk has room ----
         env["ASD_DISK_FLOOR_GIB"] = "1e12"; env["ASD_DISK_NO_RECLAIM"] = "1"
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
