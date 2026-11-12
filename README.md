@@ -87,6 +87,7 @@ every flag and keeps every judgement:
 | `stub-materialiser` | Read, Grep, Glob, Bash, Write | The contract verbatim into compiling stubs, past four members. |
 | `blast-radius-scout` | Read, Grep, Glob, Bash | The review scope as a location list, past five changed files. File selection comes from `ocr delegate preview`, so every dropped path arrives with the reason it was dropped. |
 | `document-drafter` | Read, Grep, Glob, Write | ADR and PR drafts from decisions already made, self-scrubbed. |
+| `diagram-author` | Read, Grep, Glob, Bash (vr scripts), Write — scoped to `.discovery/visual-review/` | Names and groups the facts of a change into the three review views (L0, L1, L2) at the end of Phase 3; marks what no stub proves `inferred`. |
 | `scribe` | Read, Edit, Write — scoped to `.discovery/`, `docs/`, `.agent-staging/` | Prose edits to a dossier or a document from the facts and rulings it is handed. Never tests, docstrings or code. |
 | `code-scout` | Read, Grep, Glob, the code-navigation tools | Lookup chains — where a symbol is, what calls it — answered as `path:line` rows, never file contents. |
 

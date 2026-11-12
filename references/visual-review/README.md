@@ -8,6 +8,7 @@ The model behind the visual review of a change (feature VR-01). Language-neutral
 | `fixtures/` | `w145-l0|l1|l2.json` (the W-145 change, migrated), `removed.json` (removed elements), `minimal.json`, `invalid/<issue code>.json` (one per validator issue), `repo/` (the tiny tree the invalid fixtures cite). |
 | `../../scripts/vr_graph.py` | Validator and budget check. |
 | `../../scripts/vr_extract.py` | Extractor: the "before" graph of a Cargo workspace. |
+| `../../scripts/vr_prepare.py` | The mechanical half of the Phase 3 diagram step (VR-05): extract before and after, merge, call-hierarchy candidates, into `.discovery/visual-review/<ID>/work/` (git-ignored by its own `.gitignore`). `sub-agents/diagram-author.md` then writes `l0.json`, `l1.json`, `l2.json` one level up; `validate_pipeline.py --pre-fanout` gates on them and on the `VISUAL-REVIEW:` build-log line (dossiers created on or after 2026-11-12, or with a `visual_review:` field). |
 | `../../scripts/vr_ra.py` | rust-analyzer call hierarchy client, used by the extractor's `--calls`. |
 
 ## Stable id rule
