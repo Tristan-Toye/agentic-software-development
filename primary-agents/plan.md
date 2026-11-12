@@ -196,11 +196,18 @@ one line in the report, never a reason to read the older tree.
    answers it. Never launder an unknown into an inference.
 
 **Checkpoint each phase.** Call `phase_checkpoint` at the end of every
-phase below, named `Phase <n> — <title>`, and in Phase 2 after every few
+phase below, named `Phase <n> — plan: <title>`, and in Phase 2 after every few
 settled findings: the summary names the findings file, what is settled, what
 is open, and a `NEXT:` line. Under the runner each restart starts from these
 checkpoints; a plan with none redoes its whole investigation (one recorded
 plan restarted seven times with no checkpoint and was still at intake).
+
+**Learned rules arrive with the checkpoint.** The result of a `plan:` checkpoint
+ends with "Learned rules for plan": the ids and one-line titles of the rules in
+`docs/learned-rules.md` tagged `plan` or `all`. Make the first checkpoint right
+after Phase 0 (`Phase 0 — plan: mode`) so the list reaches you before intake, and
+open the rules that bear on the dossier with `doc_section docs/learned-rules.md
+<id>` instead of reading the ledger whole. The ledger stays the source of truth.
 
 ## Phase 3 — Scope: one dossier by default
 
