@@ -175,7 +175,7 @@ function prChip(pr) {
 }
 
 // ---- state ----
-const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {} };
+const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {} };
 let R = { kind: 'home' };
 let routeSig = '';
 let scrollTarget = '';
@@ -265,12 +265,18 @@ function qCard(q, opts) {
 }
 
 // ---- controls ----
+/* A pressed run button is hidden the moment it is pressed (S.pend, client) and stays hidden while the server holds its marker
+   (r.pending: the run is starting). It returns only when the press failed or the run never showed up (the note is in r.pendingNotes). */
+const pkey = (r, a) => r.repo + '/' + r.id + ':' + a;
+const isPend = (r, a) => !!S.pend[pkey(r, a)] || !!(r.pending && r.pending.indexOf(a) >= 0);
+const pressed = (repo, id, a) => { S.pend[repo + '/' + id + ':' + a] = true; };
+const settle = (repo, id, a) => { delete S.pend[repo + '/' + id + ':' + a]; };
 function controls(r, big) {
   const key = r.repo + '/' + r.id; const st = S.ctl[key] || {}; const kids = [];
   // Start runs the dossier's next flow: Plan for a planned dossier, Start (build) for a ready one.
   const NAME = { start: r.controls && r.controls.start && r.controls.start.command === 'plan' ? 'Plan' : 'Start', resume: 'Resume', stop: 'Stop', 'fix-deferred': 'Fix all deferred' };
   ['start', 'resume', 'stop', 'fix-deferred'].forEach(a => {
-    const c = r.controls && r.controls[a]; if (!c || !c.show) return;
+    const c = r.controls && r.controls[a]; if (!c || !c.show || (a !== 'stop' && isPend(r, a))) return;
     const confirming = st.confirm === a; const busy = st.busy === a;
     const label = busy ? { start: NAME.start === 'Plan' ? 'Starting the plan…' : 'Starting…', resume: 'Resuming…', stop: 'Stopping…', 'fix-deferred': 'Starting the fix…' }[a] : confirming ? 'Confirm: ' + NAME[a].toLowerCase() : NAME[a];
     kids.push(h('button', { class: 'btn act' + (big ? ' lg' : '') + (big && a !== 'stop' && !confirming ? ' go' : '') + (confirming ? ' confirm ' + a : ''), type: 'button', 'data-act': 'ctl', 'data-ctl': a, 'data-repo': r.repo, 'data-id': r.id, disabled: !c.ok || !!st.busy }, [label]));
@@ -280,7 +286,9 @@ function controls(r, big) {
   if (r.runner && r.runnerLog) kids.push(h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'copy', 'data-text': r.runnerLog, 'data-label': 'Copy log path', title: r.runnerLog }, ['Copy log path']));
   const out = [];
   if (kids.length) out.push(h('div', { class: 'ctl' }, kids));
-  if (st.msg) out.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad') }, [st.msg]));
+  const pn = r.pendingNotes && (r.pendingNotes.start || r.pendingNotes.resume || r.pendingNotes['fix-deferred']);
+  if (pn) out.push(h('div', { class: 'ctl-msg bad' }, [pn]));
+  else if (st.msg) out.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad') }, [st.msg]));
   return out;
 }
 
@@ -445,6 +453,7 @@ function mergeCtl(r) {
   if (live || !(r.status === 'done' || r.status === 'pr')) return null;
   const kids = [];
   if (m && m.state === 'failed' && !st.plan) kids.push(h('span', { class: 'chip blocked', title: m.error }, ['merge failed']));
+  if (S.pend[k]) return null;
   if (st.plan && st.ok) kids.push(h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'merge-go', 'data-repo': r.repo, 'data-id': r.id, disabled: st.busy ? true : null, title: 'Merges with a merge commit, all or nothing' }, [st.busy ? 'Queueing…' : 'Confirm: queue to ' + st.plan.replace(/^would /, '')]),
     h('button', { class: 'btn sm', type: 'button', 'data-act': 'merge-cancel', 'data-repo': r.repo, 'data-id': r.id }, ['Cancel']));
   else if (st.plan) kids.push(h('span', { class: 'chip blocked', title: st.plan }, ['cannot merge: ' + st.plan.replace(/^refused — /, '').slice(0, 90)]));
@@ -455,7 +464,7 @@ function mergeCtl(r) {
 async function mergeAct(btn, act) {
   const repo = btn.dataset.repo, id = btn.dataset.id, k = repo + '/' + id + ':merge'; const st = S.ctl[k] = S.ctl[k] || {};
   if (act === 'merge-cancel') { S.ctl[k] = {}; render(); return; }
-  if (st.busy) return; st.busy = true; st.err = ''; render();
+  if (st.busy) return; st.busy = true; st.err = ''; if (act === 'merge-go') pressed(repo, id, 'merge'); render();
   try {
     const url = '/api/runs/' + enc(repo) + '/' + enc(id) + '/merge';
     const r = await fetch(url, act === 'merge-go' || act === 'merge-unqueue' ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: act === 'merge-unqueue' ? '{"cancel":true}' : '{}' } : {});
@@ -463,7 +472,7 @@ async function mergeAct(btn, act) {
     if (act === 'merge-plan') { if (r.ok) { st.plan = j.text || ''; st.ok = !!j.ok; } else st.err = j.error || ('HTTP ' + r.status); }
     else if (r.ok && j.ok) S.ctl[k] = {}; else st.err = j.error || ('HTTP ' + r.status);
   } catch (e) { st.err = 'request failed'; }
-  if (S.ctl[k]) S.ctl[k].busy = false; await load(['runs']);
+  if (S.ctl[k]) S.ctl[k].busy = false; await load(['runs']); if (act === 'merge-go') { settle(repo, id, 'merge'); render(); }
 }
 function stubRow(repo, id, o) {
   const r = S.runs.find(x => x.repo === repo && x.id === id); const nq = r ? openQs(r) : [];
@@ -515,12 +524,12 @@ function integrateBtn(repo, branch) {
 }
 async function stubCtl(btn) {
   const repo = btn.dataset.repo, branch = btn.dataset.branch, op = btn.dataset.op, k = repo + '/' + branch + ':' + (op === 'integrate' ? 'integrate' : 'run');
-  const st = S.ctl[k] = S.ctl[k] || {}; if (st.busy) return; st.busy = true; st.err = ''; render();
+  const st = S.ctl[k] = S.ctl[k] || {}; if (st.busy) return; st.busy = true; st.err = ''; if (op === 'resume') S.pend[k + ':resume'] = true; render();
   try {
     const r = await fetch('/api/stub/control', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repo, branch, action: op }) });
     const j = await r.json().catch(() => ({})); if (!(r.ok && j.ok !== false)) st.err = j.error || j.output || ('HTTP ' + r.status);
   } catch (e) { st.err = 'request failed'; }
-  S.ctl[k] = st.err ? { err: st.err } : {}; await load(['stubs', 'runs']); if (R.kind === 'stub') loadDetail();
+  S.ctl[k] = st.err ? { err: st.err } : {}; await load(['stubs', 'runs']); if (R.kind === 'stub') await loadDetail(); delete S.pend[k + ':resume']; render();
 }
 function stubTree(repo, s) {
   const cs = [stubChip(s)]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
@@ -751,10 +760,10 @@ function dfState(r, i) {
     if (i.dossier) return h('a', { href: hrefItem(r.repo, i.dossier) }, [chip('→ dossier ' + i.dossier, 'planned')]);
     const cmd = '/plan ' + r.id + ' ' + i.id;
     if (i.planning && ['running', 'waiting', 'paused', 'queued'].includes(i.planning)) return h('span', { title: 'A /plan run is writing this dossier' + (i.planning === 'waiting' ? '; it waits for your answer' : '') }, [chip(i.planning === 'waiting' ? 'being planned · ? waiting for you' : 'being planned', i.planning === 'waiting' ? 'warn' : 'pending')]);
-    const st = S.ctl[r.repo + '/' + r.id + ':plan:' + i.id] || {};
+    const st = S.ctl[r.repo + '/' + r.id + ':plan:' + i.id] || {}; const pnote = r.pendingNotes && r.pendingNotes['plan:' + i.id];
     return h('span', { class: 'dfplan', title: 'You ruled this item to its own dossier. No dossier is written yet' + (i.planning === 'failed' || i.planning === 'stopped' ? ' (its /plan run ' + i.planning + ')' : '') + '. Plan it starts ' + cmd + ' in the background; its questions come to you here.' }, [chip('own dossier · not planned yet', 'planned'),
-      h('button', { class: 'btn sm', type: 'button', 'data-act': 'plan-item', 'data-repo': r.repo, 'data-id': r.id, 'data-item': i.id, disabled: st.busy ? true : null }, [st.busy ? 'Starting…' : 'Plan it']),
-      h('button', { class: 'btn sm', type: 'button', 'data-act': 'copy', 'data-text': cmd }, ['Copy ' + cmd]), st.err ? h('span', { class: 'err' }, [st.err]) : null]);
+      isPend(r, 'plan:' + i.id) ? null : h('button', { class: 'btn sm', type: 'button', 'data-act': 'plan-item', 'data-repo': r.repo, 'data-id': r.id, 'data-item': i.id }, ['Plan it']),
+      h('button', { class: 'btn sm', type: 'button', 'data-act': 'copy', 'data-text': cmd }, ['Copy ' + cmd]), (pnote || st.err) ? h('span', { class: 'err' }, [pnote || st.err]) : null]);
   }
   if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('dropped', 'neutral')]);
   if (i.state === 'open' && i.keptOpen) return h('span', { title: i.ruling || '' }, [chip('left open · your ruling', 'neutral')]);
@@ -893,7 +902,7 @@ function deferredView(r) {
     bar.push(h('span', { class: 'grow' }));
     if (why) bar.push(chip(why, 'blocked'));
     if (confirming) bar.push(h('button', { class: 'btn act', type: 'button', 'data-act': 'ctl-cancel', 'data-repo': r.repo, 'data-id': r.id }, ['Cancel']));
-    bar.push(h('button', { class: 'btn act' + (confirming ? ' confirm' : ' go'), type: 'button', 'data-act': 'fix-sel', 'data-repo': r.repo, 'data-id': r.id, disabled: !n || !!why || !!st.busy ? true : null },
+    if (!isPend(r, 'fix-deferred')) bar.push(h('button', { class: 'btn act' + (confirming ? ' confirm' : ' go'), type: 'button', 'data-act': 'fix-sel', 'data-repo': r.repo, 'data-id': r.id, disabled: !n || !!why || !!st.busy ? true : null },
       [busy ? 'Starting the fix…' : confirming ? 'Confirm: fix ' + n + ' item' + (n === 1 ? '' : 's') : 'Fix selected (' + n + ')']));
   }
   const kids = [];
@@ -923,8 +932,8 @@ function stubView(repo, branch) {
   const liveRun = rn && ['running', 'waiting', 'paused', 'queued'].includes(rn.state);
   if (s.canIntegrate) ctl.push(integrateBtn(repo, branch));
   if (liveRun) ctl.push(h('button', { class: 'btn', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'stop', 'data-repo': repo, 'data-branch': branch }, ['Stop']));
-  else if (rn && ['stopped', 'failed'].includes(rn.state)) ctl.push(h('button', { class: 'btn', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'resume', 'data-repo': repo, 'data-branch': branch }, ['Resume /stub']));
-  const err = (S.ctl[repo + '/' + branch + ':integrate'] || {}).err || (S.ctl[repo + '/' + branch + ':run'] || {}).err;
+  else if (rn && ['stopped', 'failed'].includes(rn.state) && !S.pend[repo + '/' + branch + ':run:resume'] && !(d.pending && d.pending.hidden)) ctl.push(h('button', { class: 'btn', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'resume', 'data-repo': repo, 'data-branch': branch }, ['Resume /stub']));
+  const err = (d && d.pending && d.pending.note) || (S.ctl[repo + '/' + branch + ':integrate'] || {}).err || (S.ctl[repo + '/' + branch + ':run'] || {}).err;
   if (ig && ig.inflight && ig.inflight.length) ctl.push(h('span', { class: 'small mut' }, ['In flight, moving to the next stub: ' + ig.inflight.join(', ')]));
   return h('div', {}, [h('div', { class: 'panel' }, [h('h1', { class: 'mono', style: 'margin-top:0' }, [branch]), h('div', { class: 'chips' }, cs), h('div', { class: 'row small mut' }, [s.refAge ? when(s.refAge, 'ref updated ') : null]),
     ctl.length ? h('div', { class: 'row' }, ctl) : null, err ? h('div', { class: 'err' }, [err]) : null,
@@ -1096,24 +1105,24 @@ async function post(id, body) {
 async function control(btn) {
   const a = btn.dataset.ctl, repo = btn.dataset.repo, id = btn.dataset.id, key = repo + '/' + id; const st = S.ctl[key] = S.ctl[key] || {};
   if (st.confirm !== a) { st.confirm = a; clearTimeout(st.t); st.t = setTimeout(() => { if (st.confirm === a) { st.confirm = null; render(); } }, 8000); render(); return; }
-  clearTimeout(st.t); st.confirm = null; st.busy = a; st.msg = ''; render();
+  clearTimeout(st.t); st.confirm = null; st.busy = a; st.msg = ''; if (a !== 'stop') pressed(repo, id, a); render();
   try {
     const r = await fetch('/api/runs/' + enc(repo) + '/' + enc(id) + '/' + a, { method: 'POST' });
     const j = await r.json().catch(() => ({})); st.msg = j.output || j.error || ('HTTP ' + r.status); st.ok = r.ok && j.ok !== false;
   } catch (e) { st.msg = 'request failed'; st.ok = false; }
-  st.busy = null; await load(['runs']);
+  st.busy = null; await load(['runs']); if (a !== 'stop') { settle(repo, id, a); render(); }
 }
 async function fixSelected(btn) {
   const repo = btn.dataset.repo, id = btn.dataset.id, key = repo + '/' + id; const st = S.ctl[key] = S.ctl[key] || {};
   if (st.confirm !== 'fix-sel') { st.confirm = 'fix-sel'; clearTimeout(st.t); st.t = setTimeout(() => { if (st.confirm === 'fix-sel') { st.confirm = null; render(); } }, 8000); render(); return; }
-  clearTimeout(st.t); st.confirm = null; st.busy = 'fix-sel'; st.msg = ''; st.last = 'fix-sel'; render();
+  clearTimeout(st.t); st.confirm = null; st.busy = 'fix-sel'; st.msg = ''; st.last = 'fix-sel'; pressed(repo, id, 'fix-deferred'); render();
   const items = Object.keys(S.dsel[key] || {});
   try {
     const r = await fetch('/api/runs/' + enc(repo) + '/' + enc(id) + '/fix-deferred', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ items }) });
     const j = await r.json().catch(() => ({})); st.msg = j.output || j.error || ('HTTP ' + r.status); st.ok = r.ok && j.ok !== false;
     if (st.ok) S.dsel[key] = {};
   } catch (e) { st.msg = 'request failed'; st.ok = false; }
-  st.busy = null; await load(['runs']);
+  st.busy = null; await load(['runs']); settle(repo, id, 'fix-deferred'); render();
 }
 async function ruleBlock(btn) {
   const repo = btn.dataset.repo, id = btn.dataset.id, bid = btn.dataset.b, act = btn.dataset.do, key = repo + '/' + id;
@@ -1138,12 +1147,12 @@ async function writeSummary(btn) {
 }
 async function planItem(btn) {
   const repo = btn.dataset.repo, id = btn.dataset.id, item = btn.dataset.item, k = repo + '/' + id + ':plan:' + item;
-  const st = S.ctl[k] = S.ctl[k] || {}; if (st.busy) return; st.busy = true; st.err = ''; render();
+  const st = S.ctl[k] = S.ctl[k] || {}; if (st.busy) return; st.busy = true; st.err = ''; pressed(repo, id, 'plan:' + item); render();
   try {
     const r = await fetch('/api/runs/' + enc(repo) + '/' + enc(id) + '/plan-item', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ item }) });
     const j = await r.json().catch(() => ({})); if (!(r.ok && j.ok !== false)) st.err = j.error || j.output || ('HTTP ' + r.status);
   } catch (e) { st.err = 'request failed'; }
-  st.busy = false; await load(['runs']);
+  st.busy = false; await load(['runs']); settle(repo, id, 'plan:' + item); render();
 }
 async function sendChat(btn) {
   const repo = btn.dataset.repo, id = btn.dataset.id, key = repo + '/' + id; const st = S.chat[key] = S.chat[key] || {};
