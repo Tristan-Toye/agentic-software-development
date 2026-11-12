@@ -226,7 +226,8 @@ function newestStub(repo) { const r = S.stubs.repos.find(x => x.repo === repo); 
 const doneKey = (r) => (r.updated || '') + r.id;
 
 // ---- questions ----
-function qRepo(q) { const c = S.runs.filter(x => x.id === q.dossier); const r = c.find(x => x.repo === q.repo) || c.find(x => q.root && (q.root === x.worktree || q.root.indexOf(x.worktree + '/') === 0 || q.root === x.main || q.root.indexOf(x.main + '/') === 0)) || (c.length === 1 ? c[0] : null); return r ? r.repo : q.repo; }
+/* Dossier ids repeat across repos: a question's own repo wins whenever the page knows it, even before that repo's run of the dossier shows up. */
+function qRepo(q) { const c = S.runs.filter(x => x.id === q.dossier); const r = c.find(x => x.repo === q.repo) || c.find(x => q.root && (q.root === x.worktree || q.root.indexOf(x.worktree + '/') === 0 || q.root === x.main || q.root.indexOf(x.main + '/') === 0)) ; if (r) return r.repo; if (q.repo && repoNames().includes(q.repo)) return q.repo; return c.length === 1 ? c[0].repo : q.repo; }
 function optButtons(q) {
   const open = q.state === 'open';
   return h('div', { class: 'opts' }, q.options.map(o => {
