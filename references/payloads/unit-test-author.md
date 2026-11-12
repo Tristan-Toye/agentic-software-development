@@ -54,6 +54,13 @@ SUPPORT_PATHS: /abs/path/repo-W-014/.agent-staging/contract-support/repo_grant.r
 NAMING: Subject_StateUnderTest_ExpectedBehavior — Subject is the public member
         under test, e.g. Flush_EmptyQueue_ReturnsZero
 VOCABULARY: "drain", "coalesce", "batch" — the project's terms for these ideas
+TEST_FORM_RULES: |
+  env!("CARGO_MANIFEST_DIR") -> testsupport::repo_root()
+          # the repository's refused test-code forms, `refused form -> use
+          # instead` per line, from `.agent-pipeline/test-forms.txt`; the
+          # sentence `none declared (...)` when the repository has no such
+          # file. The composer fills it; check_payload.py refuses a payload
+          # that omits it for a repository that declares forms.
 FIXTURES: |
   FlushQueue(store=FakeStore(), clock=FakeClock())
   FakeStore exposes .written -> list[Item] and .write_count -> int

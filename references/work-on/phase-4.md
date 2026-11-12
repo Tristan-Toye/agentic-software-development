@@ -245,6 +245,22 @@ package with a `# import:` line. The manifest line it appends
 is the `prepare_wave.py` input. A composed payload is a final: the lint and
 the same-turn re-read below apply to it unchanged.
 
+**The target repository declares its CI environment and refused test forms in
+two optional files under its own `.agent-pipeline/`; the composer reads them,
+so no orchestrator hand edit carries them.**
+`.agent-pipeline/test-forms.txt` — one `refused form -> use instead` per line
+(`#` comments allowed): a test-code form the repository's gates refuse after
+the fact, and the helper to use. It becomes `TEST_FORM_RULES` on the unit and
+integration authors' payloads; with no file the field reads `none declared`.
+`.agent-pipeline/ci-environment.txt` — three lines, `services:` (live services
+the CI runner has, `none` if none), `skip:` (opt-out / skip tokens CI sets) and
+`guard:` (the line a stack-backed test opens with). It becomes the integration
+author's `CI_ENVIRONMENT`; with no file the composer leaves
+`@@FILL_CI_ENVIRONMENT@@`, which you fill (`none` when the tests reach no live
+service). `check_payload.py` refuses an integration payload whose tests reach a
+live service without `CI_ENVIRONMENT`, and a test-author payload that omits
+`TEST_FORM_RULES` for a repository that declares forms.
+
 **Re-verify every setup claim in the same turn as the fan-out message, then
 lint every payload before it ships.** "The worktree exists", "the branch was
 created", "the file was written", "the command was verified": each is proven
