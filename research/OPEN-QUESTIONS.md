@@ -22,6 +22,7 @@ Each question has options and a proposal. The proposal is not a decision. Status
 - Context: layers run from `cargo metadata` to `ra_ap_*` ([Q3](../visual-review/research/synthesis/q3-extraction-from-rust.md)).
 - Options: crate and module level only; add call edges with a language-server call hierarchy.
 - Proposal: crate and module level, plus stub signatures from the diff. Add calls after the spike.
+- **Taken by recommendation (owner's autonomy instruction, 2026-11-12):** crate and module level, plus calls on request (cargo metadata plus cargo-modules 0.27.0 by default; a rust-analyzer call hierarchy only for functions named with `--calls`).
 
 ## OQ-04. Also run a light version in `/plan`
 
@@ -65,3 +66,4 @@ Each question has options and a proposal. The proposal is not a decision. Status
 - Context: the extractor is language-specific ([Q7](../visual-review/research/synthesis/q7-pipeline-placement.md)).
 - Options: Rust only; a plug-in interface from day one.
 - Proposal: Rust only. Define the graph schema language-neutral so a later plug-in fits.
+- **Taken by recommendation (owner's autonomy instruction, 2026-11-12):** Rust only, with the graph schema language-neutral so a later plug-in fits (`extract(lang, ...)` dispatch with `rust` as the only entry).

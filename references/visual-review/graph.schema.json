@@ -1,0 +1,418 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/visual-review/graph.schema.json",
+  "title": "Change graph (version 1.0.0)",
+  "description": "One graph for one view. Language-neutral: no field names a Rust concept (OQ-10); the language lives in the values of kind, in the evidence path and in meta.tools. STABLE ID RULE: an id is derived from the kind plus the qualified name of the thing it names (crate:harness, module:harness::tools::step, fn:harness::tools::step::run_group); an edge id is derived from its kind and its two end ids (edge:depends:crate:a:crate:b). An id is never derived from a counter or an array position, so the same element has the same id in the before graph and the after graph and VR-02 can join on it. Hand-made ids (fixtures) may be short, but must stay unique. A view is L0 (features), L1 (steps), L2 (components), or full (an unbudgeted extractor graph from which VR-05 picks the views a reviewer sees).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "view",
+    "title",
+    "meta",
+    "nodes",
+    "edges"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of this schema. A reader rejects a different major version."
+    },
+    "view": {
+      "enum": [
+        "L0",
+        "L1",
+        "L2",
+        "full"
+      ],
+      "description": "L0, L1, L2 are budgeted (15 features, 12 steps, 12 nodes; groups not counted). full is not budgeted."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "meta": {
+      "type": "object",
+      "required": [
+        "repo",
+        "commit",
+        "generated_by"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "change": {
+          "type": "string",
+          "description": "Change id, for example a dossier id."
+        },
+        "repo": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string",
+          "description": "Commit the evidence paths resolve at."
+        },
+        "branch": {
+          "type": "string"
+        },
+        "generated_by": {
+          "enum": [
+            "hand",
+            "extractor",
+            "agent"
+          ]
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "version"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Every tool used, pinned (VC-09)."
+        },
+        "layers": {
+          "type": "object",
+          "description": "Per extractor layer: whether it ran. Keys are layer names (crates, modules, calls).",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "enum": [
+                  "ran",
+                  "skipped"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "lanes": {
+      "type": "array",
+      "description": "L1 only. Swim lanes in display order.",
+      "items": {
+        "$ref": "#/$defs/lane"
+      }
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/group"
+      },
+      "default": []
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      }
+    },
+    "flows": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/flow"
+      },
+      "description": "Flows: ordered steps before and after the change. Steps are nodes (kind step)."
+    }
+  },
+  "$defs": {
+    "status": {
+      "enum": [
+        "added",
+        "changed",
+        "removed",
+        "context"
+      ]
+    },
+    "resolution": {
+      "enum": [
+        "static",
+        "dispatch",
+        "inferred"
+      ],
+      "description": "How the link was resolved. dispatch = trait object or dynamic call. inferred = no tool proved it."
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "tier"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "tier": {
+                "const": "source"
+              },
+              "path": {
+                "type": "string",
+                "description": "Repository-relative, forward slashes."
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "end_line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "note": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "tier",
+              "note"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "tier": {
+                "const": "inferred"
+              },
+              "note": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Why the element is believed. An inferred element has no anchor."
+              }
+            }
+          }
+        ]
+      },
+      "description": "Where the element is proved: tier source (path, optional line and end_line; read as path:line) or tier inferred (note says why). Paths are repository-relative. The validator (not this schema) requires every element to carry at least one evidence entry and every source entry a path: codes missing_evidence_path, missing_repository_path, line_range_outside_file."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "Stable id: kind plus qualified name, never a counter (see the schema description)."
+    },
+    "lane": {
+      "type": "object",
+      "required": [
+        "id",
+        "label"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string"
+        }
+      }
+    },
+    "group": {
+      "type": "object",
+      "required": [
+        "id",
+        "label",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string"
+        },
+        "parent": {
+          "$ref": "#/$defs/id"
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "label_source": {
+          "$ref": "#/$defs/label_source"
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "description": "Display name. Extractor: last segment of the qualified name. VR-05 may replace it (label_source llm)."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Open vocabulary. Used so far: feature, step, crate, module, bin, fn, component."
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "group": {
+          "$ref": "#/$defs/id",
+          "description": "Id of a group. Left empty by the extractor; VR-05 fills it."
+        },
+        "lane": {
+          "$ref": "#/$defs/id",
+          "description": "L1: id of a lane."
+        },
+        "order": {
+          "type": "integer",
+          "description": "L1: step number, also the ELK model order."
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "before": {
+              "type": "string"
+            },
+            "after": {
+              "type": "string"
+            }
+          },
+          "description": "Before and after text of a changed element."
+        },
+        "resolution": {
+          "$ref": "#/$defs/resolution"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "label_source": {
+          "$ref": "#/$defs/label_source"
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": [
+        "id",
+        "source",
+        "target",
+        "kind",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "source": {
+          "$ref": "#/$defs/id",
+          "description": "Id of a node or a group."
+        },
+        "target": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "type": "string",
+          "description": "Open vocabulary: depends, contains, uses, calls, flow, documents."
+        },
+        "label": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "resolution": {
+          "$ref": "#/$defs/resolution"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "flow": {
+      "type": "object",
+      "required": [
+        "id",
+        "label",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string"
+        },
+        "label_source": {
+          "$ref": "#/$defs/label_source"
+        },
+        "lanes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "description": "Ids of lanes, in display order."
+        },
+        "before": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "description": "Node ids of the steps before the change, in order."
+        },
+        "after": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "description": "Node ids of the steps after the change, in order."
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "label_source": {
+      "enum": [
+        "extractor",
+        "llm",
+        "hand"
+      ],
+      "description": "Who wrote label (and group): VR-05's LLM fills label and group, so a reader can tell."
+    }
+  }
+}

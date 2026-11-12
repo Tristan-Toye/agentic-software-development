@@ -1,0 +1,123 @@
+{
+  "schema_version": "1.0.0",
+  "view": "L2",
+  "title": "Removed elements: queue retired, cache added, router changed",
+  "meta": {
+    "repo": "fixture",
+    "commit": "0000000",
+    "generated_by": "hand",
+    "tools": [],
+    "note": "Small fixture with every status. The removed node and edge cite the before commit."
+  },
+  "nodes": [
+    {
+      "id": "module:demo::queue",
+      "label": "queue",
+      "kind": "module",
+      "status": "removed",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1,
+          "note": "retired in this change"
+        }
+      ],
+      "detail": {
+        "before": "in-memory queue between router and worker"
+      }
+    },
+    {
+      "id": "module:demo::cache",
+      "label": "cache",
+      "kind": "module",
+      "status": "added",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 2
+        }
+      ],
+      "detail": {
+        "after": "worker reads from a cache"
+      }
+    },
+    {
+      "id": "module:demo::router",
+      "label": "router",
+      "kind": "module",
+      "status": "changed",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 3
+        }
+      ],
+      "detail": {
+        "before": "pushes to the queue",
+        "after": "calls the worker directly"
+      }
+    },
+    {
+      "id": "module:demo::worker",
+      "label": "worker",
+      "kind": "module",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 3
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:calls:module:demo::router:module:demo::queue",
+      "source": "module:demo::router",
+      "target": "module:demo::queue",
+      "kind": "calls",
+      "status": "removed",
+      "resolution": "static",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 3
+        }
+      ]
+    },
+    {
+      "id": "edge:calls:module:demo::router:module:demo::worker",
+      "source": "module:demo::router",
+      "target": "module:demo::worker",
+      "kind": "calls",
+      "status": "added",
+      "resolution": "static",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 3
+        }
+      ]
+    },
+    {
+      "id": "edge:uses:module:demo::worker:module:demo::cache",
+      "source": "module:demo::worker",
+      "target": "module:demo::cache",
+      "kind": "uses",
+      "status": "added",
+      "resolution": "dispatch",
+      "evidence": [
+        {
+          "tier": "inferred",
+          "note": "read through a trait object"
+        }
+      ]
+    }
+  ]
+}
