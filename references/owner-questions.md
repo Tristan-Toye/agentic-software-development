@@ -367,6 +367,14 @@ restarted server answers at once from them while its first scan runs.
     /stub steps. The whole stub card opens that page. An integration that
     failed offers **Integrate** again on the card and the page; nothing offers
     it while the merges or the /stub run are going.
+  - **Scripted merge of the stub** (off until `land_stub.py --enable --root R`,
+    per repository): `merge_dossier.py --revive` looks at a stub whose integration
+    reached /stub, and `land_stub.py` merges its PR into development when the run
+    ended done and every check holds on the current head: GitHub's merge state
+    `CLEAN`, all checks and the `local-stack` receipt green, the result block
+    `/stub` writes with no gap, unresolved item or `ATTENTION:` line, no open
+    question, no open PR of this integration into the stub, no change to a guarded
+    path. Otherwise the PR stays the owner's, and the stub page and timeline say why.
   - **One merge queue for both kinds of PR** (`merge_dossier.py`): a
     dossier's stack into its stub, and a plan or docs PR into development
     (`--enqueue-pr`). FIFO per repository, one worker. Each item goes through

@@ -920,6 +920,7 @@ function stubView(repo, branch) {
   const rn = d && d.runner; const ig = d && d.integrate; const ctl = [];
   if (rn && rn.state !== 'done') cs.push(runChip(rn));
   if (ig && ig.state === 'merging') { const hold = holdsChip(repo, ig.finished || []); if (hold) cs.push(hold); }
+  if (d && d.land && d.land.state === 'waiting') cs.push(h('span', { title: (d.land.reasons || []).join('\n') }, [chip('auto-merge is holding it', 'pending')]));
   const liveRun = rn && ['running', 'waiting', 'paused', 'queued'].includes(rn.state);
   if (s.canIntegrate) ctl.push(integrateBtn(repo, branch));
   if (liveRun) ctl.push(h('button', { class: 'btn', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'stop', 'data-repo': repo, 'data-branch': branch }, ['Stop']));
