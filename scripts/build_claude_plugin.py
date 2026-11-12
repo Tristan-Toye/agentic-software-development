@@ -405,6 +405,10 @@ def render_manifest(agents: list[Path]) -> str:
     """
     path = REPO / ".claude-plugin" / "plugin.json"
     manifest = json.loads(path.read_text())
+    # No `version`: Claude Code then versions the plugin by commit SHA, so every
+    # merge is an update and no PR edits a shared version line (each one used to
+    # conflict with the next). `--check` fails a manifest that sets one again.
+    manifest.pop("version", None)
     manifest["agents"] = [f"./{a.relative_to(REPO).as_posix()}" for a in sorted(agents)]
     return json.dumps(manifest, indent=2) + "\n"
 
