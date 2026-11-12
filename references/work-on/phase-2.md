@@ -206,9 +206,11 @@ This is the step everything else depends on.
    — every payload inherits them as `EXPECTED_HOOK_OUTPUTS` (pass
    `--hook-outputs STEP:GLOB` to `compose_payloads.py`), and an implementer
    whose hook rewrote only those paths commits through. A glob must not touch
-   any package's `OWNED_PATHS`. Log `HOOKS: none`
-   or `HOOKS: <hook> — <policy>` before the fan-out;
-   `validate_pipeline.py --pre-fanout` refuses without it.
+   any package's `OWNED_PATHS`. Record the policy as front matter before the
+   fan-out: `dossier_edit.py set <dossier> 'hooks=none'` or
+   `'hooks=<hook> — <policy>'`; `validate_pipeline.py --pre-fanout` refuses
+   without it. Right after the contract commit, record
+   `contract_commit=$(git rev-parse HEAD)` the same way.
 
    **Decide the suite runner by coverage, beside the hook policy.** Inspect
    the target's repository instructions, full-suite entry point and CI

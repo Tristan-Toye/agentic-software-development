@@ -36,7 +36,12 @@ to it: a lesson this build paid for belongs to the repo that taught it.
 Read the whole `## Build log` (`dossier_edit.py section <dossier> 'Build log' --all`; the default shows only the last 120 lines) and the review replies and ask: **what did this build decide
 that would change how a future agent writes code here?**
 
-The material is already there: the contract choices and the alternatives
+Start from the decision records, `.discovery/decisions/<ID>.yaml`
+(`python3 scripts/build_records.py decision show <ID>`): each entry is a
+`decision`, its `alternatives`, `why`, `evidence` and the `phase` that ruled
+it, written at ruling or checkpoint time. Select from them and give the chosen
+entries to `document-drafter` as `DECISIONS`; scrape `## Build log` only for a
+run that predates the records. The material is already there: the contract choices and the alternatives
 `/plan` rejected, every `CONTRACT-CHANGE:` ruling, every ambiguous-contract
 arbitration, and the trade-offs the architecture and performance lenses
 surfaced.

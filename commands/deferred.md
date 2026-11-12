@@ -51,14 +51,17 @@ Merge these into the recalled list, then deduplicate:
 
 1. **The captured ledger.** If a dossier covers the run — the run's own
    dossier ID, or the `.discovery/dossiers/*.md` whose `branch` matches the
-   changeset — read the `DEFERRED:` lines in its `## Build log` (`dossier_edit.py section <dossier> 'Build log' --all`). `/work-on`
+   changeset — read its deferred record (`python3 scripts/build_records.py
+   deferred show <ID>`, i.e. `.discovery/deferred/<ID>.yaml`); a run that
+   predates the record has `DEFERRED:` lines in its `## Build log` instead
+   (`dossier_edit.py section <dossier> 'Build log' --all`). `/work-on`
    Phase 9 captured them at the moment the run's awareness was highest, so
    they outrank your current memory: a ledger item your recall dropped goes
    back in; a recalled item the ledger never caught stays in, and once
-   verified you append it to the ledger as its next `D-` line, ending with
-   its `— contract: <none|internal|external> — effort: <S|M|L>` like every
-   ledger line (`references/work-on/phase-9.md`), so the dossier keeps the
-   complete set. A ledger line's contract and effort are its author's first
+   verified you add it with `build_records.py deferred add <ID> ... --log
+   <dossier>` (boundary `none|internal|external`, `--note 'effort: <S|M|L>'`,
+   like every item: `references/work-on/phase-9.md`), so the dossier keeps the
+   complete set. A record item's boundary and effort are its author's first
    judgement; your report's values, re-checked against the code, supersede
    them.
 2. The dossier's `## Build log` beyond the ledger: every `NOTICED:` line,
@@ -153,8 +156,8 @@ one anyway, it goes in the footer — one line, no ID.
 - Zero issues is a real result: state the sources harvested, print `**None.**`,
   and do not pad or invent.
 - You change no code and no tracked file. The only writes you perform are
-  ledger appends: to the dossier's `## Build log` when a dossier covers the
-  run, and otherwise to `.discovery/deferred-ledger.md` — one block per
+  record appends: to the dossier's deferred record
+  (`build_records.py deferred add`) when a dossier covers the run, and otherwise to `.discovery/deferred-ledger.md` — one block per
   changeset (`## <ref> — <date>`, then the `DEFERRED:` lines), created on
   first use, so a dossier-less report persists beyond the session. Report
   only. When the repository commits `.discovery/` — `validate_pipeline.py

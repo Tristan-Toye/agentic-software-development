@@ -50,3 +50,20 @@ Record each reply in `## Build log` as a **one-line-per-CR ledger**
 When nothing else can proceed, run `ask_owner.py wait <id>` as a background command
 Log `QUESTION:` and then `OWNER-RULING (<date>):` in `## Build log`.
 The dashboard's timeline shows only what a person wants to read, so post
+
+# Structured build records: the receipts, lesson, checklist and deferred ledger moved out of build-log lines.
+Log `HOOKS: none`
+Write exactly one of these into `## Build log` before the fan-out
+CONTRACT-REVIEW: spawned <session ref>
+refuses to pass while neither line is present
+Write it into `## Build log` before you spawn
+as for `CONTRACT-REVIEW:`, `HOOKS:` and `ADMISSION:`
+**Row 3 is a lesson, not just a count.** When the contract was ambiguous
+ARBITRATION 3 — row 3 (contract ambiguous).
+Fix: docstring now reads "Returns the count of items written."
+*what product-code issues are you aware of that this run did not tackle?*
+DEFERRED: <N> — sources: <own reads, NOTICED harvest, review replies>
+D-1 <kind> <title> — <path:line> — <risk>
+Every line ends with `contract:` and `effort:`
+`contract` is the boundary a fix crosses
+`DEFERRED: none — sources: …` is a real answer

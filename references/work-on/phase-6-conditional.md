@@ -166,16 +166,24 @@ edit an assertion.
 
 **Row 3 is a lesson, not just a count.** When the contract was ambiguous, record
 *what kind* of ambiguity it was — the promise you failed to make observable, and
-the sentence that would have prevented the failure:
+the sentence that would have prevented the failure. The lesson is a git
+trailer on the commit that fixes the contract, not a build-log line:
 
 ```
-ARBITRATION 3 — row 3 (contract ambiguous).
-  Failure: test asserted flush() returns the count; implementation returned None.
-  Ambiguity: the docstring said "drains the queue" and never named a return value.
-  Lesson: a method with a return type states what the value MEANS, not just that
-          one exists.
-  Fix: docstring now reads "Returns the count of items written."
+Fix flush() contract: name the return value
+
+Failure: test asserted flush() returns the count; implementation returned None.
+Ambiguity: the docstring said "drains the queue" and never named a return value.
+Lesson: a method with a return type states what the value MEANS, not just that
+one exists.
 ```
+
+`validate_pipeline.py` inspects every commit after the contract commit that
+touches a contract file and refuses one without a `Lesson:` trailer. Write the
+ruling itself as a decision record
+(`build_records.py decision add <ID> --decision ... --alternatives ... --why ...
+--evidence ... --phase 6 --log <dossier>`), which also appends the one-line
+`ARBITRATION` summary to the build log.
 
 That lesson is **not ADR material** — an ADR records a decision about the code,
 and this is a decision about how we write contracts. Phase 8 routes it to the

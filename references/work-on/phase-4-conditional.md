@@ -227,8 +227,8 @@ line with no assertion-form tag. Record it before the fan-out message:
 PAYLOAD-LINT: <N> payloads, <N> defects fixed — <agent ids>
 ```
 
-`validate_pipeline.py --pre-fanout` refuses without it, as for
-`CONTRACT-REVIEW:`, `HOOKS:` and `ADMISSION:`. A payload that was never a
+`validate_pipeline.py --pre-fanout` refuses without it, as for the
+`contract_review` and `hooks` front matter fields and `ADMISSION:`. A payload that was never a
 file was never linted.
 
 **When payloads are assembled from templates, the template is the source and

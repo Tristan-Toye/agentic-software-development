@@ -197,23 +197,28 @@
     arbitration's evidence, every review reply, the `NOTICED:` harvest, every
     change request demoted for missing evidence, every `TOUCHED_BEYOND` path
     you accepted — write every item down before judging any, verify each
-    `path:line`, and append the ledger to `## Build log`:
+    `path:line`, and record each one in the structured record
+    `.discovery/deferred/<ID>.yaml`:
 
     ```
-    DEFERRED: <N> — sources: <own reads, NOTICED harvest, review replies>
-    - D-1 <kind> <title> — <path:line> — <risk> — <why deferred> — contract: <none|internal|external> — effort: <S|M|L>
+    python3 scripts/build_records.py deferred add <ID> --kind <kind> --title '<title>' \
+        --loc <path:line> --evidence '<path:line — what you saw>' --fix '<proposed fix>' \
+        --boundary '<none|internal|external>' --blast-radius '<risk>' \
+        --note 'effort: <S|M|L>' --source '<own reads|NOTICED harvest|review replies>' --log <dossier>
     ```
 
-    Every line ends with `contract:` and `effort:`, test tooling and other
+    Every item carries `boundary` and `effort`, test tooling and other
     non-product items included: you judge them best now, and the dashboard
-    and `/fix-deferred` triage on them when no report row exists. `contract`
-    is the boundary a fix crosses (`none`; `internal` — a signature or module
-    seam; `external` — a route, schema, event, config key or CLI with
-    consumers); `effort` is `S` (under an hour), `M` (hours) or `L` (days),
-    as `/deferred` defines them.
+    and `/fix-deferred` triage on them. `boundary` is what a fix crosses
+    (`none`; `internal` — a signature or module seam; `external` — a route,
+    schema, event, config key or CLI with consumers); `effort` is `S` (under
+    an hour), `M` (hours) or `L` (days), as `/deferred` defines them. `--log`
+    appends one summary line to the build log for a human reader; nothing
+    reads it.
 
-    `DEFERRED: none — sources: …` is a real answer; defend it or do not
-    write it. The D-IDs are minted here, once; the `/deferred` run that
+    No issue is a real answer: `build_records.py deferred none <ID>
+    --source 'own reads' --log <dossier>` writes `items: []` plus the
+    sources. Defend it or do not write it. The D-IDs are minted here, once; the `/deferred` run that
     follows — normally the very next command — reuses them and appends what
     its own recall adds. Capture only; `/deferred` renders the report.
  9. **Report**: the ticket, the branch, the PR URL, the suite runner and

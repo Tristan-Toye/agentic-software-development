@@ -92,6 +92,10 @@ change:
 Write every arbitration as one `ARBITRATION:` line — the failure, the ruling, and which
 of the six rows applied — and hand the round's lines to its checkpoint as `log`
 (below); if the round runs on past a tool call, put them in the same message as the next call.
+A ruling that decides something a future agent must know (a contract choice, a
+trade-off accepted) is also written as a decision record, the source Phase 8
+reads for ADRs: `python3 scripts/build_records.py decision add <ID> --decision
+'...' --alternatives '...' --why '...' --evidence '...' --phase 6`.
 
 Detail: `ref_section` with `phase-6-conditional` and the heading "Investigate flake risk before mutation checks and review". (once the verdict is green; it sets `status: review`.)
 
