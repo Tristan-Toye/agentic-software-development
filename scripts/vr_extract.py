@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Visual review: extract the "before" change graph from a Cargo workspace.
 
-    vr_extract.py rust REPO_ROOT [--layers 1,2] [--calls fn1,fn2] [--timeout 120]
+    vr_extract.py rust REPO_ROOT [--layers 1,2] [--crates a,b] [--calls fn1,fn2] [--timeout 120]
                        [--cfg-test] [-o out.json] [--timings]
     vr_extract.py --selftest
     vr_extract.py --live REPO_ROOT       (opt-in: the real tools, needs cargo)
@@ -15,6 +15,9 @@ hierarchy only on request):
      crates/platform/src/bin/llm_gateway.rs). If cargo-modules is missing or is
      another version, the layer is recorded as `skipped` in meta.layers with a
      reason naming the tool and the pin; the run does not fail.
+     With --crates a,b the layer runs only for those crates (layer 1 stays the
+     whole workspace): the other crates keep their crate node, and
+     meta.layers.modules lists `limited_to` and `skipped_crates`.
   4  (only with --calls) callers and callees of the named functions through a
      rust-analyzer call hierarchy (vr_ra.py), bounded by --timeout seconds.
 
@@ -244,7 +247,7 @@ def cargo_modules_version(runner, root):
     return m.group(1), None
 
 
-def layer_modules(pkgs, root: str, ws_root: str, files: _Files, runner, cfg_test: bool, jobs: int = 4):
+def layer_modules(pkgs, root: str, ws_root: str, files: _Files, runner, cfg_test: bool, jobs: int = 4) -> tuple[list, list, dict, list]:
     """Returns (nodes, edges, layer_meta, tools). Never raises for a missing tool.
 
     One `cargo modules` process per lib and bin target; `jobs` run at once (D0: 6 to
@@ -283,7 +286,7 @@ def layer_modules(pkgs, root: str, ws_root: str, files: _Files, runner, cfg_test
         n, e = modules_from_structure(parse_structure(out), parent_id, qual, root_file, files)
         nodes += n
         edges += e
-    meta = {"status": "ran"}
+    meta: dict = {"status": "ran"}
     if failed:
         meta["reason"] = "cargo modules failed for: " + ", ".join(failed)
     return nodes, edges, meta, [{"name": "cargo-modules", "version": ver}]
@@ -428,7 +431,9 @@ def _fn_node(item: dict, pkgs, ws_root: str, nodes: dict, ids: dict) -> str:
 # -------------------------------------------------------------------- rust
 
 def extract_rust(root: str, layers=(1, 2), calls=(), timeout: float = 120.0, cfg_test: bool = False, jobs: int = 4,
-                 runner=None, ra_factory=None, timings: dict | None = None) -> dict:
+                 runner=None, ra_factory=None, timings: dict | None = None, crates=None) -> dict:
+    """`crates`: names of the workspace crates layer 2 runs for (None: all). The other crates keep
+    their crate node; meta.layers.modules records `limited_to` and `skipped_crates`."""
     runner = runner or default_runner
     timings = timings if timings is not None else {}
     root = os.path.abspath(root)
@@ -451,7 +456,14 @@ def extract_rust(root: str, layers=(1, 2), calls=(), timeout: float = 120.0, cfg
 
     if 2 in layers:
         t = time.time()
-        n, e, lm, tl = layer_modules(pkgs, root, ws_root, files, runner, cfg_test, jobs)
+        mod_pkgs = pkgs
+        if crates is not None:
+            want = set(crates)
+            mod_pkgs = [p for p in pkgs if p["name"] in want]
+        n, e, lm, tl = layer_modules(mod_pkgs, root, ws_root, files, runner, cfg_test, jobs)
+        if crates is not None:
+            lm["limited_to"] = [p["name"] for p in mod_pkgs]
+            lm["skipped_crates"] = [p["name"] for p in pkgs if p not in mod_pkgs]
         nodes += n
         edges += e
         layers_meta["modules"] = lm
@@ -631,6 +643,17 @@ def _selftest() -> int:
         # Layers selection.
         g = extract("rust", d, layers=(1,), runner=make_runner(meta, []))
         check("layers:1-only", g["meta"]["layers"]["modules"]["reason"] == "not requested" and all(n["kind"] == "crate" for n in g["nodes"]))
+        # --crates: layer 2 only for the listed crates; every crate node stays.
+        logc: list = []
+        gc = extract("rust", d, crates=["app"], runner=make_runner(meta, logc))
+        mods = [c for c in logc if "structure" in c]
+        check("crates:only-listed-run", mods and all("app" in c for c in mods), str(mods))
+        check("crates:all-crate-nodes-kept", sorted(n["id"][6:] for n in gc["nodes"] if n["kind"] == "crate") == crates, str(crates))
+        lmc = gc["meta"]["layers"]["modules"]
+        check("crates:meta-limited", lmc["limited_to"] == ["app"] and "sys" in lmc["skipped_crates"] and "app" not in lmc["skipped_crates"], str(lmc))
+        check("crates:graph-valid", vr_graph.validate(gc, check_budget=False) == [], str(vr_graph.validate(gc, check_budget=False)))
+        check("crates:no-foreign-modules", not any(n["id"].startswith("module:sys") for n in gc["nodes"]))
+        check("crates:all-is-default", "limited_to" not in g1["meta"]["layers"]["modules"])
         # Over-budget L2 is still written in full: 'full' view has no budget.
         check("budget:full-writes-all", vr_graph.budget(g1)["over"] is False and len(g1["nodes"]) > 0)
         # Dispatch seam.
@@ -760,6 +783,7 @@ def main(argv=None) -> int:
     r.add_argument("--layers", default="1,2", help="comma list of 1 (crates), 2 (modules); default 1,2")
     r.add_argument("--calls", default="", help="comma list of functions (name or relpath:name) for the call hierarchy layer")
     r.add_argument("--timeout", type=float, default=120.0, help="seconds for the whole rust-analyzer session (default 120)")
+    r.add_argument("--crates", default=None, help="comma list of crate names: layer 2 runs only for these (layer 1 stays the whole workspace)")
     r.add_argument("--jobs", type=int, default=4, help="parallel cargo-modules processes (default 4)")
     r.add_argument("--cfg-test", action="store_true", help="include #[cfg(test)] modules (default: excluded)")
     r.add_argument("--timings", action="store_true", help="print per-layer seconds to stderr")
@@ -783,7 +807,8 @@ def main(argv=None) -> int:
     timings: dict = {}
     try:
         g = extract("rust", args.root, layers=layers, calls=[c for c in args.calls.split(",") if c.strip()],
-                    timeout=args.timeout, cfg_test=args.cfg_test, jobs=args.jobs, timings=timings)
+                    timeout=args.timeout, cfg_test=args.cfg_test, jobs=args.jobs, timings=timings,
+                    crates=None if args.crates is None else [c.strip() for c in args.crates.split(",") if c.strip()])
     except ExtractError as exc:
         print("vr_extract: %s" % exc, file=sys.stderr)
         return 1

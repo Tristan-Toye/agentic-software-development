@@ -3,7 +3,7 @@
 
     vr_diff.py merge --before B.json --after A.json [-o merged.json]
     vr_diff.py view MERGED.json --mode before|after|diff [-o out.json]
-    vr_diff.py after-from-git REPO --base REV --head REV [--layers 1,2] -o after.json
+    vr_diff.py after-from-git REPO --base REV --head REV [--layers 1,2] [--crates a,b] -o after.json
     vr_diff.py --selftest
 
 `merge` joins the two graphs on the stable id (schema 1.0.0) and gives every node,
@@ -524,10 +524,11 @@ def _mark_changed(graph: dict, files: dict, base: str, head: str, ws_root: str) 
     return unmapped
 
 
-def after_from_git(repo: str, base: str, head: str, layers=(1, 2), extractor=None) -> dict:
+def after_from_git(repo: str, base: str, head: str, layers=(1, 2), extractor=None, crates=None) -> dict:
     """The plan-time "after" graph: the extractor at `head` in a temporary worktree, changed files marked.
 
-    `extractor(root, layers)` defaults to vr_extract.extract("rust", ...). The worktree is
+    `extractor(root, layers)` defaults to vr_extract.extract("rust", ...); with `crates` (names) it is
+    called as `extractor(root, layers, crates)` and layer 2 runs only for them. The worktree is
     created under $TMPDIR and removed again, also when the extraction fails.
     """
     repo = os.path.realpath(repo)
@@ -542,9 +543,9 @@ def after_from_git(repo: str, base: str, head: str, layers=(1, 2), extractor=Non
     try:
         _git(repo, "worktree", "add", "--detach", "--quiet", wt, head_sha)
         added = True
-        extract = extractor or (lambda root, lay: vr_extract.extract("rust", root, layers=lay))
+        extract = extractor or (lambda root, lay, crs=None: vr_extract.extract("rust", root, layers=lay, crates=crs))
         try:
-            g = extract(wt, tuple(layers))
+            g = extract(wt, tuple(layers)) if crates is None else extract(wt, tuple(layers), list(crates))
         except vr_extract.ExtractError as exc:
             raise DiffError([_issue("schema_error", "extract", str(exc))])
         diff = _git(repo, "diff", "--no-renames", "-U0", "%s..%s" % (base_sha, head_sha))
@@ -618,7 +619,8 @@ def _cmd_after(args) -> int:
         print("--layers takes numbers, e.g. 1,2", file=sys.stderr)
         return 2
     try:
-        g = after_from_git(args.repo, args.base, args.head, layers)
+        crates = None if args.crates is None else [c.strip() for c in args.crates.split(",") if c.strip()]
+        g = after_from_git(args.repo, args.base, args.head, layers, crates=crates)
     except DiffError as exc:
         return _fail(exc)
     _write(g, args.output)
@@ -907,8 +909,8 @@ def _selftest() -> int:
         git("commit", "-qm", "contract")
         seen = {}
 
-        def fake(root, layers):
-            seen["root"], seen["layers"] = root, layers
+        def fake(root, layers, crates=None):
+            seen["root"], seen["layers"], seen["crates"] = root, layers, crates
             seen["has_z"] = os.path.exists(os.path.join(root, "crates/a/src/z.rs"))
             ev = lambda p, l: {"tier": "source", "path": p, "line": l}
             nd = lambda i, k, e: {"id": i, "label": i.split(":")[-1], "kind": k, "status": "context", "label_source": "extractor", "evidence": [e]}
@@ -925,6 +927,9 @@ def _selftest() -> int:
         if g:
             sts = stat(g)
             check("git:ran-at-head", seen["has_z"] and seen["layers"] == (1, 2))
+            check("git:crates-default-none", seen["crates"] is None)
+            after_from_git(repo, "HEAD~1", "HEAD", (1, 2), extractor=fake, crates=["a"])
+            check("git:crates-passed-through", seen["crates"] == ["a"], str(seen["crates"]))
             check("git:under-tmpdir", not os.path.realpath(seen["root"]).startswith(os.path.realpath(repo) + os.sep)
                   and os.path.realpath(seen["root"]).startswith(os.path.realpath(tempfile.gettempdir())), seen["root"])
             check("git:worktree-removed", not os.path.exists(seen["root"]) and len(git("worktree", "list").strip().splitlines()) == 1)
@@ -1006,6 +1011,7 @@ def main(argv=None) -> int:
     g.add_argument("--base", required=True)
     g.add_argument("--head", required=True)
     g.add_argument("--layers", default="1,2")
+    g.add_argument("--crates", default=None, help="comma list: layer 2 only for these crates (as vr_extract.py --crates)")
     g.add_argument("-o", "--output", required=True)
     g.set_defaults(fn=_cmd_after)
     args = ap.parse_args(argv)
