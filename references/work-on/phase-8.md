@@ -3,6 +3,22 @@
 
 ## Phase 8 — Extract two kinds of durable output
 
+### Rules that hold in this phase
+
+- **ADRs are extracted, not generated.** Zero is a valid answer.
+
+- **A contract failure teaches something an ADR cannot hold.** Row-3
+  arbitrations and `GAP:` returns are evidence about how to write contracts, not
+  about this code; a recurring one becomes a user-ratified rule in this repo's
+  rules file (Phase 8b), never an ADR and never an unratified write.
+
+**Spawning and workflows.** The rules for spawning an agent and for the two plugin
+workflows are in `phase-4.md`: `ref_section` with `phase-4` and the headings
+"Spawning under Claude Code" and "Under Claude Code — two workflows".
+
+**Delegation and its size gates** are in `phase-2.md`: `ref_section` with `phase-2`
+and the headings "Delegation — mechanical work only, evidence never verdicts" and "The gate table".
+
 Now, while the evidence is in front of you. A build produces two things worth
 keeping, and they go to different places:
 
@@ -111,8 +127,8 @@ never waits on a conversation that may never happen.
 
 **Where it goes.** The repo's own rules file, committed with the ADRs. Look
 for one first (`docs/adr/RULES.md`, a rules section in `CLAUDE.md`, an
-existing conventions doc). If the repo has none, **ask the user where it
-should live, suggesting `docs/adr/RULES.md`** — next to the ADRs it is
+existing conventions doc). If the repo has none, **take `docs/adr/RULES.md` without asking and log
+`PROVISIONAL-RULING:` for the location** — next to the ADRs it is
 extracted alongside — and record the answer in the dossier's front matter so
 later runs on this repo do not ask again. Never create the file silently, and
 never write to the plugin's `skills/standards/`.

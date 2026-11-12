@@ -1,0 +1,34 @@
+# Text deliberately dropped or reworded; one substring per line.
+# opencode-only paragraph, left out of the Claude Code build (<!-- opencode-only -->)
+Old output fades on its own, under opencode
+When you need a masked result again, fetch only the part you need
+Claude Code has no hook that rewrites history
+# the invariants intro, reworded because the lists now sit at the top of each phase file
+The rule is here; the phase that names it carries the why
+A disagreement between this list and a phase is a defect in this list
+
+# Part A: sentences rewritten by the ask policy (owner questions only for design, product or uncertainty)
+State your pick and continue on confirmation or silent assent.
+This is a revision; it goes to the user (below).
+A revision the plan reviewer would have judged differently — a new typ
+**Its `AMBIGUITY:` lines the dossier settles, you settle by citation;
+Only a reading no dossier sentence picks is the row-3 arbitration you
+Put those to the user as one question, let them pick, and write the wi
+Never ask the user to approve readings the dossier already settles.
+A second empty return goes to the user as an infrastructure problem.
+When a round ends with no mechanism found, take the case file to the u
+**Budget: 3 arbitration rounds.** After the third, stop and show the u
+Most budget exhaustion is one repeated ambiguity or a criterion this m
+When the same member or the same test file is arbitrated a **second**
+**Demote non-conforming CRs — by the fields, never the merits.** The f
+A conforming CR that no available agent may apply is a routing questio
+Deciding it is the **user's**, because it is a judgement call: present
+**Budget: 2 fix rounds.** After the second, stop and show the user the
+If the repo has none, **ask the user where it should live, suggesting
+**Write the PR description** and show it to the user.
+Acceptance of the description doubles as the yes for the PR.
+**Push the branch and open the PR — or, under `ci`, finish the draft.*
+**On Bitbucket it does not**: push the branch, then hand the user the
+**You detect review conflicts; the user decides them.** You are the on
+**A question only the owner can settle goes through `ask_owner.py`.**
+Never pick an option yourself.
