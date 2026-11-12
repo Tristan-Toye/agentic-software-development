@@ -102,7 +102,7 @@ LIMIT_RE = re.compile(r"usage limit|rate.?limit|weekly limit|limit reached|out o
 
 
 NETWORK_RE = re.compile(r"ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EPIPE"
-                        r"|can'?t reach the API|unable to connect|fetch failed|socket hang ?up|network (?:error|is unreachable)"
+                        r"|can'?t reach the API|couldn'?t reach Anthropic|unable to connect|could not connect|fetch failed|socket hang ?up|network (?:error|is unreachable)"
                         r"|connection (?:error|reset|refused|closed)|timed? ?out|API Error: 5\d\d|\b50[0234]\b|internal server error"
                         r"|bad gateway|service unavailable|gateway time-?out", re.I)
 # Waits between network retries, seconds; the last one repeats for as long as the outage lasts (ASD_RUNNER_NET_RETRIES
@@ -1136,6 +1136,10 @@ class Runner:
         sid, self.resume_sid = self.resume_sid, ""
         self.resumed = bool(sid) and self.resume_acct == self.account["name"]
         self.got_init = False
+        try:
+            self.err_start = os.path.getsize(self.err_path)
+        except OSError:
+            self.err_start = 0
         self.proc = subprocess.Popen(
             self.claude_cmd() + (["--resume", sid] if self.resumed else []), cwd=self.root, env=self.child_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=open(self.err_path, "ab"), start_new_session=True)
@@ -1501,6 +1505,15 @@ class Runner:
                 res = ev
         return res
 
+    def stderr_tail(self) -> str:
+        """The last 4 KiB this session's claude wrote to stderr (the log is appended across sessions)."""
+        try:
+            with open(self.err_path, "rb") as fh:
+                fh.seek(0, 2); fh.seek(max(getattr(self, "err_start", 0), fh.tell() - 4096))
+                return fh.read().decode("utf-8", "replace")
+        except OSError:
+            return ""
+
     def end_process(self) -> None:
         p = self.proc
         if p is None:
@@ -1742,12 +1755,7 @@ class Runner:
                 return "stopped", ""
             if kind == "exit":
                 self.end_process()
-                try:
-                    with open(self.err_path, "rb") as fh:
-                        fh.seek(0, 2); fh.seek(max(0, fh.tell() - 4096))
-                        tail = fh.read().decode("utf-8", "replace")
-                except OSError:
-                    tail = ""
+                tail = self.stderr_tail()
                 if getattr(self, "wrong_model", ""):
                     return "failed", f"the session ran on {self.wrong_model}, not {self.model or runner_model(None)}; the runner refuses any other model (set the account's model, or ASD_RUNNER_MODEL)"
                 if self.resumed and not self.got_init and not (self.stopping or os.path.exists(self.stop_marker)):
@@ -1773,6 +1781,10 @@ class Runner:
                 kill_group(self.proc)
                 self.end_process()
                 return "limit", text.strip()
+            if err and not text.strip():
+                # an empty error result: the reason is on stderr (claude could not load the organisation's settings
+                # at start, for one, which happens right after the Mac wakes with no network yet)
+                text = self.stderr_tail()
             if err and network_error(text):
                 kill_group(self.proc)
                 self.end_process()
@@ -2935,6 +2947,8 @@ def selftest() -> int:
         # ---- a network error pauses and retries the stage by itself; only after the retries does it ask ----
         net = "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"
         check("network: ENOTFOUND and 5xx are network errors; a usage limit is not", network_error(net) and network_error("API Error: 503 Service Unavailable") and not network_error("usage limit reached") and not network_error("the contract is wrong"))
+        check("network: claude unable to load the organisation's settings at start is a network error",
+              network_error("Claude Code couldn't reach Anthropic to load your organization's settings (could not connect). Check your network connection and retry"))
         scenario([{"turns": [[{"error": net}]]}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
         env["ASD_RUNNER_NET_WAIT"] = "0.2"
         p = start("W-32")
