@@ -844,6 +844,96 @@ def check_contract_fix_lessons(where: str, fm: dict, contract: str, repo_root: P
         )
 
 
+# --------------------------------------------------------------------------
+# visual review gate (VR-05)
+# --------------------------------------------------------------------------
+
+# The gate applies to a dossier whose front matter says `created: <date>` on or after this date, or
+# that carries a `visual_review:` field (an explicit opt-in for an older dossier). Dossiers created
+# before the diagram step existed carry neither and are never flagged.
+VISUAL_REVIEW_FROM = "2026-11-12"
+VISUAL_REVIEW_RE = re.compile(r"^\s*[-*]?\s*VISUAL-REVIEW:\s*(.+?)\s*$", re.M)
+VISUAL_REVIEW_APPROVED_RE = re.compile(
+    r"^approved\b.*?\bL0\s+(\d+)\b.*?\bL1\s+(\d+)\b.*?\bL2\s+(\d+)\b", re.I)
+VISUAL_REVIEW_CHANGES_RE = re.compile(r"^changes requested\b.*\S", re.I)
+VISUAL_REVIEW_VIEWS = (("l0.json", "L0"), ("l1.json", "L1"), ("l2.json", "L2"))
+
+
+def visual_review_applies(fm: dict) -> bool:
+    if "visual_review" in fm:
+        return True
+    created = str(fm.get("created") or "").strip()
+    return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", created)) and created >= VISUAL_REVIEW_FROM
+
+
+def visual_review_problems(fm: dict, log: str, root: Path, worktree: Path | None = None) -> list[str]:
+    """What is wrong with a dossier's visual review, [] when it is fine or does not apply.
+
+    Needs, for a dossier the gate applies to (``visual_review_applies``): a ``VISUAL-REVIEW:`` line
+    in the build log, the last one being ``approved — L0 <n>, L1 <n>, L2 <n>`` (a ``changes
+    requested — <ids>`` line sends Phase 3 back to the contract; it is history, not a pass), and
+    ``.discovery/visual-review/<ID>/l0.json``, ``l1.json`` and ``l2.json``, each valid under
+    ``vr_graph.py validate`` with the view its name says, whose node counts equal the line's."""
+    if not visual_review_applies(fm):
+        return []
+    lines = VISUAL_REVIEW_RE.findall(log)
+    if not lines:
+        return ["no VISUAL-REVIEW: line in ## Build log. Phase 3 runs the diagram step on every build: "
+                "`VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n> (<dashboard link>)`"]
+    last = lines[-1]
+    approved = VISUAL_REVIEW_APPROVED_RE.match(last)
+    if not approved:
+        if VISUAL_REVIEW_CHANGES_RE.match(last):
+            return ["the last VISUAL-REVIEW: line is 'changes requested': revise the contract in Phase 3, "
+                    "run the diagram step again and record 'approved'"]
+        return [f"the last VISUAL-REVIEW: line is not well formed: {last[:80]!r}. Use "
+                "`approved — L0 <n>, L1 <n>, L2 <n>` or `changes requested — <element ids>`"]
+    dossier_id = str(fm.get("id") or "").strip()
+    base = None
+    for cand in (worktree, root):
+        if cand and (cand / ".discovery" / "visual-review" / dossier_id).is_dir():
+            base = cand
+            break
+    if base is None:
+        return [f".discovery/visual-review/{dossier_id}/ is missing: the diagram step wrote no l0.json, l1.json, l2.json"]
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import vr_graph
+    except ImportError:
+        return ["vr_graph.py is not beside this script; the visual-review files cannot be validated"]
+    problems: list[str] = []
+    for (name, view), claimed in zip(VISUAL_REVIEW_VIEWS, approved.groups()):
+        f = base / ".discovery" / "visual-review" / dossier_id / name
+        if not f.is_file():
+            problems.append(f"{f.relative_to(base)} is missing")
+            continue
+        try:
+            graph = vr_graph.load(str(f))
+        except (OSError, ValueError) as exc:
+            problems.append(f"{name} is not readable: {exc}")
+            continue
+        for issue in vr_graph.validate(graph, root=str(base)):
+            problems.append(f"{name}: {issue.get('code')} {issue.get('path')}: {issue.get('message')}")
+        if isinstance(graph, dict) and graph.get("view") != view:
+            problems.append(f"{name}: view is {graph.get('view')!r}, expected {view!r}")
+        used = vr_graph.budget(graph).get("used") if isinstance(graph, dict) else None
+        if used is not None and used != int(claimed):
+            problems.append(f"{name}: the VISUAL-REVIEW: line says {view} {claimed}, the file holds {used}")
+    return problems
+
+
+def check_visual_review(where: str, path: Path, fm: dict, log: str, status: str, rep: Report) -> None:
+    """Past the review (status review, pr, done) a dossier the gate applies to carries its record.
+    The same check runs before the fan-out in ``check_pre_fanout``."""
+    if status not in {"review", "pr", "done"}:
+        return
+    root = path.resolve().parents[2]
+    wt = str(fm.get("worktree") or "").strip()
+    worktree = (root / wt).resolve() if wt and (root / wt).is_dir() else None
+    for problem in visual_review_problems(fm, log, root, worktree):
+        rep.defect(where, problem)
+
+
 def check_build_log(where: str, text: str, status: str, rep: Report, path: Path | None = None,
                     fm: dict | None = None, contract: str = "") -> None:
     """The gates read facts: the checklist artefact, the deferred record, the `Lesson:` trailers.
@@ -852,6 +942,7 @@ def check_build_log(where: str, text: str, status: str, rep: Report, path: Path 
         return
     check_checklist(where, path, fm, contract, text, status, rep)
     check_deferred_record(where, path, fm, text, status, rep)
+    check_visual_review(where, path, fm, text, status, rep)
 
 
 def check_contract_id(where: str, dossier_id: str, contract: str, rep: Report) -> None:
@@ -2200,6 +2291,7 @@ def selftest() -> int:
         finalize_ok = selftest_finalize()
         pre_fanout_ok = selftest_pre_fanout()
         pre_fanout_local_ok = selftest_pre_fanout_local()
+        visual_ok = selftest_visual_review()
         mode_ok = selftest_mode()
         blockers_ok = selftest_blocker_removal()
         return (
@@ -2217,6 +2309,7 @@ def selftest() -> int:
                 and finalize_ok
                 and pre_fanout_ok
                 and pre_fanout_local_ok
+                and visual_ok
                 and mode_ok
                 and blockers_ok
             )
@@ -2828,6 +2921,14 @@ def check_pre_fanout(
             f"re-derive the ids in it, never a Phase 5 manual-diff fallback."
         )
         rc = 1
+
+    try:
+        fm_vr, _, _ = split_front_matter(text)
+    except ValueError:
+        fm_vr = {}
+    for problem in visual_review_problems(fm_vr, body[1], root, worktree):
+        print(f"DEFECT  {path.name}: {problem}")
+        rc = 1
     return rc
 
 
@@ -2938,6 +3039,97 @@ def selftest_pre_fanout_local() -> bool:
             f"{'PASS' if ok else 'FAIL'} — directory owned paths walked, local-mode stubs resolved in the live worktree, the em-dash reason, RULES.md skipped"
         )
         return bool(ok)
+
+
+def selftest_visual_review() -> bool:
+    """The visual-review gate: gated by `created:` or `visual_review:`, never old dossiers."""
+    import copy
+
+    def node(i: str, kind: str) -> dict:
+        return {"id": i, "label": i, "kind": kind, "status": "added",
+                "evidence": [{"tier": "inferred", "note": "selftest"}], "label_source": "llm"}
+
+    def graph(view: str, kind: str, n: int) -> dict:
+        return {"schema_version": "1.0.0", "view": view, "title": f"{view} selftest",
+                "meta": {"repo": "t", "commit": "0", "generated_by": "agent", "tools": []},
+                "nodes": [node(f"n{i}", kind) for i in range(n)], "edges": []}
+
+    good = {"l0.json": graph("L0", "feature", 3), "l1.json": graph("L1", "step", 4),
+            "l2.json": graph("L2", "module", 5)}
+    approved = "- VISUAL-REVIEW: approved — L0 3, L1 4, L2 5 (dashboard link)\n"
+    new_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-11-12\n---\n\n"
+    old_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-08-10\n---\n\n"
+    optin_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-08-10\nvisual_review: required\n---\n\n"
+
+    def run(fm: str, log: str, files: dict | None, mutate=None) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".discovery" / "dossiers").mkdir(parents=True)
+            if files is not None:
+                out = root / ".discovery" / "visual-review" / "W-9"
+                out.mkdir(parents=True)
+                for name, g in copy.deepcopy(files).items():
+                    if mutate:
+                        mutate(name, g)
+                    (out / name).write_text(json.dumps(g), encoding="utf-8")
+            fmd, _, _ = split_front_matter(fm + "## Build log\n")
+            return visual_review_problems(fmd, log, root)
+
+    def dup(name: str, g: dict) -> None:
+        if name == "l1.json":
+            g["nodes"][1]["id"] = g["nodes"][0]["id"]
+
+    def no_evidence(name: str, g: dict) -> None:
+        if name == "l0.json":
+            g["nodes"][0]["evidence"] = []
+
+    def wrong_view(name: str, g: dict) -> None:
+        if name == "l2.json":
+            g["view"] = "L1"
+
+    cases = [
+        ("old dossier, no line: not flagged", run(old_fm, "## Build log\n", None), False),
+        ("new dossier, no line: flagged", run(new_fm, "no line\n", good), True),
+        ("new dossier, line and files: clean", run(new_fm, approved, good), False),
+        ("opt-in field on an old dossier: flagged", run(optin_fm, "no line\n", None), True),
+        ("changes requested last: flagged", run(new_fm, "- VISUAL-REVIEW: changes requested — n1 n2\n", good), True),
+        ("changes requested, then approved: clean",
+         run(new_fm, "- VISUAL-REVIEW: changes requested — n1\n" + approved, good), False),
+        ("malformed line: flagged", run(new_fm, "- VISUAL-REVIEW: fine\n", good), True),
+        ("folder missing: flagged", run(new_fm, approved, None), True),
+        ("l2.json missing: flagged", run(new_fm, approved, {k: v for k, v in good.items() if k != "l2.json"}), True),
+        ("counts differ from the line: flagged",
+         run(new_fm, "- VISUAL-REVIEW: approved — L0 3, L1 4, L2 6\n", good), True),
+        ("duplicate id in a file: flagged", run(new_fm, approved, good, dup), True),
+        ("element without evidence: flagged", run(new_fm, approved, good, no_evidence), True),
+        ("file with the wrong view: flagged", run(new_fm, approved, good, wrong_view), True),
+    ]
+    ok = True
+    for name, problems, expect in cases:
+        passed = bool(problems) == expect
+        ok &= passed
+        print(f"{'ok  ' if passed else 'FAIL'}    visual review: {name}" + (f" ({problems[0][:70]})" if problems else ""))
+
+    # the same gate through the two entry points
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".discovery" / "dossiers").mkdir(parents=True)
+        d = root / ".discovery" / "dossiers" / "W-9.md"
+        d.write_text(new_fm + "## Build log\n- hooks: none\n", encoding="utf-8")
+        rep = Report()
+        check_visual_review("W-9", d, {"id": "W-9", "created": "2026-11-12"}, "- x\n", "review", rep)
+        ok &= bool(rep.defects)
+        rep = Report()
+        check_visual_review("W-9", d, {"id": "W-9", "created": "2026-11-12"}, "- x\n", "building", rep)
+        ok &= not rep.defects  # mid-build: the pre-fan-out check owns that state
+        rc = check_pre_fanout(d, root)
+        ok &= rc == 1
+        out = root / ".discovery" / "visual-review" / "W-9"
+        out.mkdir(parents=True)
+        for name, g in good.items():
+            (out / name).write_text(json.dumps(g), encoding="utf-8")
+    print(f"{'PASS' if ok else 'FAIL'} — visual-review gate")
+    return ok
 
 
 def selftest_pre_fanout() -> bool:

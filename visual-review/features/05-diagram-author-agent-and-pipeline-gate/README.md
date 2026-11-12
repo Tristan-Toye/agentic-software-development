@@ -1,7 +1,7 @@
 # Feature 05: Diagram-author agent and pipeline gate
 
 - **Case ID**: VR-05
-- **Status**: PROPOSED
+- **Status**: BUILT
 - **Dossier**: D5
 - **Depends on**: VR-01, VR-02. VR-03 and VR-04 for the owner-facing part.
 - **Design basis**: [Q7](../../research/synthesis/q7-pipeline-placement.md), [Q4](../../research/synthesis/q4-abstraction-and-clutter.md), [Q9](../../research/synthesis/q9-measuring-value.md).
