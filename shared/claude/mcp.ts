@@ -9,6 +9,7 @@
 // is the tool call itself in the session transcript, which the SessionStart(compact) hook
 // reads back after a compaction.
 import { MAX_SUMMARY_CHARS, TOOL, validateCheckpoint } from "../checkpoint"
+import { learnedRulesFor } from "../ledger"
 import { TOOLS, describeTool, inputSchema, toolByName, type ToolDef } from "../tools"
 
 const SERVER = { name: "agentic-software-development-nav", version: "1.8.0" }
@@ -45,7 +46,8 @@ async function callTool(name: string, args: unknown) {
     return text(
       `${TOOL}: recorded after ${a.phase} (summary ${a.summary.length} of ${MAX_SUMMARY_CHARS} characters). ` +
         "Claude Code compacts on its own and cannot be cut from here; after the next compaction this checkpoint " +
-        "and every earlier one are restored into your context with the original task.",
+        "and every earlier one are restored into your context with the original task." +
+        learnedRulesFor(process.env.CLAUDE_PROJECT_DIR || process.cwd(), a.phase, a.summary),
     )
   }
   const out = await def.execute!(a, { directory: process.env.CLAUDE_PROJECT_DIR || process.cwd() })
