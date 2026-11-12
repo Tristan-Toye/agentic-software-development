@@ -43,6 +43,13 @@ const modelFor = (agentType) => AGENT_MODELS[agentType] || { model: 'sonnet', ef
 //                 OWNED_PATHS / TEST_PATHS (comma list or array). Items sharing a root
 //                 automatically pass each other's owned paths as --shared-tree: a sibling's
 //                 files are judged by the sibling's own verification, never this one's.
+//   preexisting, orchestratorPaths   optional, for an item whose root is the orchestrator's own
+//                 tree (a document-drafter in X): preexisting is the file written by
+//                 `verify_return.py --root X --snapshot FILE` just before the launch (paths dirty
+//                 then, with content hashes; unchanged ones are not the agent's);
+//                 orchestratorPaths (comma list or array) names paths the orchestrator keeps
+//                 writing during the run (live dossier, an ADR it amends). Neither hides a path
+//                 under owned or a path the agent changed.
 //   kind          the agent kind, for verify_return.py --report
 //   contractHash, contractFiles   both together or neither, for the contract-hash check;
 //                 contractHash is the full 64-hex CONTRACT_HASH (a prefix is refused at
@@ -159,6 +166,9 @@ function verifyPrompt(item, reportPath, report, pluginRoot) {
   if (owned) cmd.push('--owned', sq(owned))
   const shared = siblingsOwned(item)
   if (shared.length) cmd.push('--shared-tree', sq(shared.join(',')))
+  if (item.preexisting) cmd.push('--preexisting', sq(item.preexisting))
+  const orchestratorPaths = csv(item.orchestratorPaths)
+  if (orchestratorPaths) cmd.push('--orchestrator-paths', sq(orchestratorPaths))
   if (item.contractHash) cmd.push('--contract-hash', sq(item.contractHash), '--contract-files', sq(csv(item.contractFiles)))
   // Writers without Bash never commit: a drafter, and both test-author kinds (the orchestrator commits their files).
   if (WRITE_ONLY_KINDS.has(item.kind)) cmd.push('--uncommitted')

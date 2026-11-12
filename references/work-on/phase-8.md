@@ -60,7 +60,13 @@ surfaced.
   `owned` = its `TARGET_PATHS`, `root` = `X`, its branch, and `base` = `X`'s HEAD
   at the spawn. The drafter never commits, so the wave verifies it with
   `--uncommitted`: written files raise no flag, a path outside `TARGET_PATHS` or a
-  target never written does. The PR description is drafted in Phase 9
+  target never written does. `X` is your own tree and you dirty it too (the
+  `WORKFLOW:` build-log line, an ADR you amend), so before the launch run
+  `python3 ${PLUGIN_ROOT}/scripts/verify_return.py --root X --snapshot
+  .agent-staging/pre-drafters.json` and set `preexisting` to that file on every
+  item (a path dirty then and unchanged is not the drafter's); list in
+  `orchestratorPaths` what you keep writing while it runs (the live dossier, an
+  ADR you amend). A real stray write still flags. The PR description is drafted in Phase 9
   (`phase-9.md`), outside this call.
 - A decision an existing ADR already covers is an **amendment**: add the
   constraint to that ADR's `## Consequences` and bump its `date`. Do not mint a
