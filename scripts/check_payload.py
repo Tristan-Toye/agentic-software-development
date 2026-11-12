@@ -108,6 +108,13 @@ Twelve failure modes this catches, each of which cost a real build:
     survivors from three authors in one recorded build, every one on such a
     line.
 
+12b. **A negative checklist line with no isolating input** (WARNING). A
+    `PROMISE_CHECKLIST` line whose expected outcome is negative — refused,
+    rejected, skipped, `None`, `Ok(None)`, no event — carries an `input:`
+    that every other guard on that path admits. Without one the author picks
+    an input a different guard also rejects: a green test that leaves the
+    guard under test a mutation survivor.
+
 13. **A relative path in a path-valued field.** `CONTRACT` (when it names a
     path, never when it pastes text), `TEST_PATHS`, `STYLE_PATHS`,
     `SUPPORT_PATHS`, `WORKTREE_DIR`, `DOSSIER`, `STANDARDS`, `CONTEXT_DOCS`
@@ -331,6 +338,9 @@ EXCERPT_SECTIONS = ("## Problem", "## Approach", "## Acceptance criteria")
 # assertion form.
 WHOLE_VALUE_HINT = re.compile(r"\bexactly\b|\b(gives|returns|yields)\s+`")
 ASSERTION_TAG = re.compile(r"\[(whole-value|member)\]")
+NEGATIVE_HINT = re.compile(
+    r"\b(refus\w*|reject\w*|skipp?\w*)\b|`(Ok\()?None\)?`|\bno event\b", re.I)
+ISOLATING_INPUT = re.compile(r"\binput:")
 
 # (kind, discriminator field, value) -> (fields that become required,
 #                                        groups where at least one is required)
@@ -1051,6 +1061,23 @@ def assertion_form_findings(lines: list[str], kind: str | None) -> list[str]:
     return out
 
 
+def negative_input_findings(lines: list[str], kind: str | None) -> list[str]:
+    """A negative checklist line names the isolating input every other guard admits."""
+    if kind not in ("unit-test-author", "integration-test-author"):
+        return []
+    out: list[str] = []
+    for number in sorted(field_line_numbers(lines, "PROMISE_CHECKLIST")):
+        line = lines[number - 1]
+        if NEGATIVE_HINT.search(line) and not ISOLATING_INPUT.search(line):
+            out.append(
+                "checklist line %d has a negative outcome with no isolating input: "
+                "%r. Add `input: <value>` that every other guard on that path admits, "
+                "so only the guard under test refuses it (work-on phase 3, promise "
+                "checklist derivation)." % (number, line.strip()[:80])
+            )
+    return out
+
+
 def lint(lines: list[str], kind: str | None, worktree: str | None,
          allow_paths: list[str], host: str | None = None,
          tools: list[str] | None = None,
@@ -1263,6 +1290,7 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
 
     # 12. a whole-value checklist line with no assertion form
     warnings.extend(assertion_form_findings(lines, kind))
+    warnings.extend(negative_input_findings(lines, kind))
 
     # 6. a dossier path that is not the run's live copy
     dossier, worktree_dir = field_value(lines, "DOSSIER"), field_value(lines, "WORKTREE_DIR")
@@ -1490,6 +1518,14 @@ def selftest() -> int:
     case("assertion form: a tagged whole-value line is quiet",
          pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
                         "PROMISE_CHECKLIST: |\n  flush — order: gives exactly `[A, B]` [whole-value]\n"),
+         "unit-test-author", False, must_warn="", host="claude", tools=write_only)
+    case("negative line: a refusal with no input: warns",
+         pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
+                        "PROMISE_CHECKLIST: |\n  flush — invalid case: refused with `Err(Empty)`\n"),
+         "unit-test-author", False, must_warn="isolating input", host="claude", tools=write_only)
+    case("negative line: a refusal with input: is quiet",
+         pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
+                        "PROMISE_CHECKLIST: |\n  flush — invalid case: refused with `Err(Empty)` → input: [\"a\"], passes every other guard\n"),
          "unit-test-author", False, must_warn="", host="claude", tools=write_only)
     case("unit author missing checklist",
          unit_ok.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n", ""),
