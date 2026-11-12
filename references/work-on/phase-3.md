@@ -76,7 +76,8 @@ together, never a reason to ask a blind agent to re-read what its payload
 never named. A line whose expected outcome is negative (refused, `None`,
 `Ok(None)`, no event) carries an `input:` that passes every other guard the
 contract documents on that path, so a mutant that deletes or weakens the one
-guard under test turns that test red.
+guard under test turns that test red. `check_payload.py` warns on a negative
+line with no `input:` before the fan-out.
 
 **Match the checklist's ids to the repo's own coverage script, before
 deriving it.** When the target repo owns a promise-coverage script, read its
