@@ -39,10 +39,22 @@ def gh(root: str, *args: str) -> tuple[int, str]:
 
 
 def stubs(root: str) -> list[str]:
-    rc, out = sh(["git", "-C", root, "ls-remote", "--heads", "origin", "stub/*"])
-    if rc != 0:
-        raise RuntimeError("git ls-remote failed: " + out[:200])
-    return sorted((l.split("\t")[1].removeprefix("refs/heads/") for l in out.splitlines() if "\t" in l), reverse=True)
+    """The stub branches on origin. `git ls-remote` over ssh needs a user lookup (getpwuid), which a long-lived process
+    loses after the nightly logout ("No user exists for uid"); so it is tried ASD_STUB_TRIES times (default 3, backing off
+    ASD_STUB_RETRY_WAIT seconds, default 5, doubling), then the same list is read through gh's HTTPS API."""
+    tries = max(1, int(os.environ.get("ASD_STUB_TRIES") or 3))
+    wait = float(os.environ.get("ASD_STUB_RETRY_WAIT") or 5)
+    out = ""
+    for i in range(tries):
+        rc, out = sh(["git", "-C", root, "ls-remote", "--heads", "origin", "stub/*"])
+        if rc == 0:
+            return sorted((l.split("\t")[1].removeprefix("refs/heads/") for l in out.splitlines() if "\t" in l), reverse=True)
+        if i + 1 < tries:
+            time.sleep(wait * 2 ** i)
+    grc, gout = gh(root, "api", "repos/{owner}/{repo}/git/matching-refs/heads/stub/", "--jq", ".[].ref")
+    if grc == 0:
+        return sorted((l.strip().removeprefix("refs/heads/") for l in gout.splitlines() if l.strip()), reverse=True)
+    raise RuntimeError("git ls-remote failed: " + out[:200] + " (gh api: " + gout[:100] + ")")
 
 
 def into_dev(root: str, branch: str) -> str:
@@ -100,6 +112,9 @@ import json, os, sys
 a = sys.argv[1:]; d = os.environ["FAKE_DIR"]
 st = json.load(open(os.path.join(d, "states.json")))
 if a[:2] == ["pr", "list"]: print(st.get(a[a.index("--head") + 1], "")); sys.exit(0)
+if a[:1] == ["api"]:
+    if st.get("_api_down"): sys.stderr.write("gh down\n"); sys.exit(1)
+    print("\n".join("refs/heads/" + k for k in st if k.startswith("stub/"))); sys.exit(0)
 sys.exit(3)
 '''
 
@@ -125,6 +140,20 @@ def selftest() -> int:
         heads = subprocess.run(["git", "-C", w, "ls-remote", "--heads", "origin", "stub/*"], capture_output=True, text=True).stdout
         check("once merged, a new stub is cut from development", rc == 0 and b == "stub/" + datetime.date.today().isoformat() and b in heads, b + heads)
         check("the new stub is then the accepting one", target(w, False) == (0, b))
+        # ls-remote fails (a lost user lookup): retried, then read through gh's HTTPS API; both failing is an error
+        os.environ.update(ASD_STUB_RETRY_WAIT="0")
+        put({})
+        check("ls-remote healthy: no fallback", stubs(w) == [b, "stub/2026-11-03"] or stubs(w) == ["stub/2026-11-03", b] or len(stubs(w)) == 2)
+        put({"stub/2026-11-09": ""})
+        broken = os.path.join(tmp, "nope")
+        g("remote", "set-url", "origin", broken, cwd=w)
+        check("ls-remote failing: the stub list comes from gh api, and the target still resolves", stubs(w) == ["stub/2026-11-09"] and target(w, True) == (0, "stub/2026-11-09"))
+        put({"_api_down": True})
+        try:
+            stubs(w); ok = False
+        except RuntimeError as e:
+            ok = "git ls-remote failed" in str(e) and "gh api" in str(e)
+        check("both failing: an error (the runner's wait retries it), never a guess", ok)
     print("FAILED: " + ", ".join(fails) if fails else "all ok")
     return 1 if fails else 0
 

@@ -102,7 +102,7 @@ LIMIT_RE = re.compile(r"usage limit|rate.?limit|weekly limit|limit reached|out o
 
 
 NETWORK_RE = re.compile(r"ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EPIPE"
-                        r"|can'?t reach the API|unable to connect|fetch failed|socket hang ?up|network (?:error|is unreachable)"
+                        r"|can'?t reach the API|couldn'?t reach Anthropic|unable to connect|could not connect|fetch failed|socket hang ?up|network (?:error|is unreachable)"
                         r"|connection (?:error|reset|refused|closed)|timed? ?out|API Error: 5\d\d|\b50[0234]\b|internal server error"
                         r"|bad gateway|service unavailable|gateway time-?out", re.I)
 # Waits between network retries, seconds; the last one repeats for as long as the outage lasts (ASD_RUNNER_NET_RETRIES
@@ -112,6 +112,11 @@ NETWORK_BACKOFF = (30, 60, 120, 300, 600, 900)
 # return code, or as 128+N when claude's own handler exits. The work it held is checkpointed; the stage reruns.
 KILLED_CODES = (-signal.SIGTERM, -signal.SIGKILL, -signal.SIGHUP, 128 + signal.SIGTERM, 128 + signal.SIGKILL, 128 + signal.SIGHUP)
 KILL_BACKOFF = (60, 300)
+# What a resumed session is told: it is the same session, so no hand-off, only the fact of the interruption.
+RESUME_MSG = ("RUNNER RESUME: your process was interrupted from outside (a kill, a network error or a usage limit), not by "
+              "anything you did. This is the same session: carry on from the exact point you stopped at, run again the tool "
+              "call that was cut off if it did not finish, and do not redo finished work. Task: {task}. The same RUNNER: "
+              "rules apply.")
 
 
 def script_stamp(path: str) -> tuple[str, float]:
@@ -928,6 +933,10 @@ class Runner:
         self.stray = 0                      # ping results still to come that read_turn must not take for a turn's
         self.ctx = 0                        # the session's context now: the last assistant usage, input + cache read + cache write
         self.split: dict | None = None      # a checkpoint taken above ASD_RUNNER_SPLIT_AT: {tid, name, ctx, ready}
+        self.resume_sid = ""                # the session the next stage resumes (--resume) after a failure from outside the model
+        self.resume_acct = ""               # the account that session belongs to: another account cannot resume it
+        self.resumed = False                # the open process is a resume
+        self.got_init = False               # the open process has started its session
 
     # -- records ----------------------------------------------------------
 
@@ -1124,8 +1133,15 @@ class Runner:
         self.ctx = 0
         self.split = None
         self.last_api = now_s()
+        sid, self.resume_sid = self.resume_sid, ""
+        self.resumed = bool(sid) and self.resume_acct == self.account["name"]
+        self.got_init = False
+        try:
+            self.err_start = os.path.getsize(self.err_path)
+        except OSError:
+            self.err_start = 0
         self.proc = subprocess.Popen(
-            self.claude_cmd(), cwd=self.root, env=self.child_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            self.claude_cmd() + (["--resume", sid] if self.resumed else []), cwd=self.root, env=self.child_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=open(self.err_path, "ab"), start_new_session=True)
         self.save(claude_pid=self.proc.pid)
         q: queue.Queue = queue.Queue()
@@ -1140,6 +1156,10 @@ class Runner:
             q.put(None)
 
         threading.Thread(target=pump, daemon=True).start()
+        if self.resumed:
+            # Same session, same cache and work: the failure was outside the model (a kill, a network error, a limit).
+            self.send(RESUME_MSG.format(task=self.command_line()))
+            return q, True
         self.send(self.command_line())
         extra = False
         hand = self.handoff()
@@ -1156,6 +1176,13 @@ class Runner:
             self.send(hand)
             extra = True
         return q, extra
+
+    def mark_resume(self) -> None:
+        """The next stage resumes this session (claude --resume) instead of starting a fresh one with a hand-off: for a
+        failure outside the model, where the transcript still holds all the work and the prompt cache may still be warm."""
+        sid = str(self.state.get("session") or "")
+        if sid and os.environ.get("ASD_RUNNER_RESUME", "1") != "0":
+            self.resume_sid, self.resume_acct = sid, self.account["name"]
 
     def background(self) -> list[str]:
         """The session's background work still in flight (#239), from its transcript; [] when it cannot be read."""
@@ -1478,6 +1505,15 @@ class Runner:
                 res = ev
         return res
 
+    def stderr_tail(self) -> str:
+        """The last 4 KiB this session's claude wrote to stderr (the log is appended across sessions)."""
+        try:
+            with open(self.err_path, "rb") as fh:
+                fh.seek(0, 2); fh.seek(max(getattr(self, "err_start", 0), fh.tell() - 4096))
+                return fh.read().decode("utf-8", "replace")
+        except OSError:
+            return ""
+
     def end_process(self) -> None:
         p = self.proc
         if p is None:
@@ -1508,6 +1544,7 @@ class Runner:
             return
         if ev.get("type") == "system" and ev.get("subtype") == "init" and ev.get("session_id"):
             self.save(session=ev["session_id"])
+            self.got_init = True
         # The model the session really runs on: anything but the pinned one (Fable above all) ends the stage at once.
         # A sub-agent's message (parent_tool_use_id set) has its own model, Sonnet by design: only Fable is refused there.
         got = ev.get("model") if ev.get("type") == "system" and ev.get("subtype") == "init" else (ev.get("message") or {}).get("model") if ev.get("type") == "assistant" else None
@@ -1718,14 +1755,12 @@ class Runner:
                 return "stopped", ""
             if kind == "exit":
                 self.end_process()
-                try:
-                    with open(self.err_path, "rb") as fh:
-                        fh.seek(0, 2); fh.seek(max(0, fh.tell() - 4096))
-                        tail = fh.read().decode("utf-8", "replace")
-                except OSError:
-                    tail = ""
+                tail = self.stderr_tail()
                 if getattr(self, "wrong_model", ""):
                     return "failed", f"the session ran on {self.wrong_model}, not {self.model or runner_model(None)}; the runner refuses any other model (set the account's model, or ASD_RUNNER_MODEL)"
+                if self.resumed and not self.got_init and not (self.stopping or os.path.exists(self.stop_marker)):
+                    # claude could not resume the session (its transcript is gone): start the stage fresh instead
+                    return "fresh", (tail.strip().splitlines()[-1][:200] if tail.strip() else f"exit {val}")
                 if usage_limit(tail):
                     return "limit", tail.strip()
                 if network_error(tail):
@@ -1746,6 +1781,10 @@ class Runner:
                 kill_group(self.proc)
                 self.end_process()
                 return "limit", text.strip()
+            if err and not text.strip():
+                # an empty error result: the reason is on stderr (claude could not load the organisation's settings
+                # at start, for one, which happens right after the Mac wakes with no network yet)
+                text = self.stderr_tail()
             if err and network_error(text):
                 kill_group(self.proc)
                 self.end_process()
@@ -1908,6 +1947,11 @@ class Runner:
         self.save()
         self.event(f"start /{self.command} {self.dossier} in {self.root}", "running")
         started = 0
+        if prev.get("state") in ("running", "waiting", "queued", "paused") and prev.get("session") and prev.get("account") == self.account["name"]:
+            # The last runner process died (a logout, a reboot) with its session recorded: pick that session up again.
+            self.state["session"] = str(prev["session"])
+            self.mark_resume()
+            self.state["session"] = ""
         net_tries = 0   # network errors in a row; a stage that ends well resets it
         kill_tries = 0  # outside kills in a row; likewise
         while True:
@@ -1937,6 +1981,7 @@ class Runner:
                 # the claude process mid-stage. Not the owner's call: back off and run the stage again from its
                 # checkpoints, through take_slot (so the disk floor applies), ASD_RUNNER_KILL_RETRIES times in a row.
                 kill_tries += 1
+                self.mark_resume()
                 limit_k = int(os.environ.get("ASD_RUNNER_KILL_RETRIES") or 2)
                 if kill_tries <= limit_k:
                     wait = float(os.environ.get("ASD_RUNNER_KILL_WAIT") or KILL_BACKOFF[min(kill_tries, len(KILL_BACKOFF)) - 1])
@@ -1950,6 +1995,10 @@ class Runner:
                     started -= 1
                     continue
                 detail = f"{detail}, {limit_k} retries in a row"
+            if outcome == "fresh":
+                self.event(f"the session could not be resumed ({detail}); stage {started} again from the checkpoints", "running")
+                started -= 1
+                continue
             if outcome == "restart":
                 self.event(f"restarting stage {started} so the new permission rule applies" + (f" ({detail[:160]})" if detail else ""), "running")
                 started -= 1
@@ -1968,6 +2017,7 @@ class Runner:
                 # backing off, however long it lasts: an outage says nothing about the work. Only with
                 # ASD_RUNNER_NET_RETRIES set does it become a failure the owner rules on.
                 net_tries += 1
+                self.mark_resume()
                 limit_n = int(os.environ.get("ASD_RUNNER_NET_RETRIES") or 0)
                 if not limit_n or net_tries <= limit_n:
                     wait = float(os.environ.get("ASD_RUNNER_NET_WAIT") or NETWORK_BACKOFF[min(net_tries, len(NETWORK_BACKOFF)) - 1])
@@ -1998,6 +2048,7 @@ class Runner:
                     self.event(f"switched to account {nxt['name']}: account {cur} hit its usage limit until {fmt(until)}; stage {started} again", "running")
                     started -= 1
                     continue
+                self.mark_resume()   # only used while the account stays the same
                 self.account, until = nxt, max(usable, time.time() + 60)
                 at = fmt(until)
                 self.save(state="paused", resumes_at=at, account=nxt["name"])
@@ -2013,6 +2064,8 @@ class Runner:
             self.save(state="failed")
             self.event(f"stage {started} failed: {detail}", "failed")
             if self.ask_failure(detail) == "retry":
+                if detail.startswith("the claude process exited with code"):
+                    self.mark_resume()   # a crash of the process, not a verdict of the model: keep its session
                 self.event(f"retrying stage {started}", "running")
                 continue
             if self.stopping:
@@ -2357,6 +2410,8 @@ ask = os.path.join(os.environ["ASD_ASK_OWNER"])
 def out(o):
     sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
 argm = sys.argv[sys.argv.index("--model") + 1] if "--model" in sys.argv else ""
+if "--resume" in sys.argv and script.get("no_resume"):   # claude finds no such session: it exits before any event
+    sys.stderr.write("No conversation found with session ID: " + sys.argv[sys.argv.index("--resume") + 1] + "\n"); sys.exit(1)
 out({"type": "system", "subtype": "init", "session_id": f"sess-{n}", "model": script.get("init_model", argm)})
 if script.get("crash") is not None:
     sys.exit(script["crash"])
@@ -2695,6 +2750,16 @@ def selftest() -> int:
         check("outside kill: the stage reruns and ends DONE", p.wait(timeout=60) == 0 and state_of("W-90").get("state") == "done")
         check("outside kill: no owner question, the kill is logged",
               not os.path.exists(qfile("repo.W-90.Q1")) and any("killed from outside the runner (exit 143; " in t and "GiB free" in t for t in texts("W-90")))
+        argv2 = open(os.path.join(fdir, "env.2")).read()
+        check("outside kill: the rerun resumes the same session (--resume) with a short resume message, no hand-off",
+              "--resume sess-1" in argv2 and msgs(2)[0].startswith("RUNNER RESUME") and not any(m.startswith("RUNNER HAND-OFF") for m in msgs(2))
+              and "--resume" not in open(os.path.join(fdir, "env.1")).read())
+        scenario([{"crash": 143}, {"no_resume": True}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-92")
+        check("outside kill: a session claude cannot resume falls back to a fresh stage, no owner question, no retry used up",
+              p.wait(timeout=60) == 0 and not os.path.exists(qfile("repo.W-92.Q1"))
+              and any("could not be resumed (No conversation found" in t for t in texts("W-92"))
+              and "--resume" not in open(os.path.join(fdir, "env.3")).read() and msgs(3)[0] == f"/{PLUGIN}:work-on W-92")
         scenario([{"crash": 143}, {"crash": 137}, {"crash": 143}])
         p = start("W-91")
         check("outside kill: past ASD_RUNNER_KILL_RETRIES the owner rules", bool(until(lambda: os.path.exists(qfile("repo.W-91.Q1")))))
@@ -2782,7 +2847,7 @@ def selftest() -> int:
         env.pop("ASD_GH_BIN")
         scenario([{"hang": True, "turns": []}])
         p = start("W-71")
-        until(lambda: state_of("W-71").get("claude_pid"))
+        until(lambda: state_of("W-71").get("claude_pid") and state_of("W-71").get("session"))
         p.terminate(); p.wait(timeout=30)
         st71 = state_of("W-71")
         check("revive: a SIGTERM nobody asked for keeps the run's state, so it can restart", st71.get("state") == "running" and any("interrupted" in t for t in texts("W-71")))
@@ -2790,6 +2855,8 @@ def selftest() -> int:
         r = subprocess.run([sys.executable, me, "revive"], env=env, capture_output=True, text=True, timeout=60)
         done71 = until(lambda: state_of("W-71").get("state") == "done", 30)
         check("revive: the killed run restarts and finishes", "restarted repo.W-71" in r.stdout and bool(done71))
+        check("revive: the restart resumes the session its dead runner recorded",
+              "--resume sess-1" in open(os.path.join(fdir, "env.1")).read() and msgs(1)[0].startswith("RUNNER RESUME"))
         write_json(os.path.join(rdir, "repo.W-72.runner.json"), {"pid": 2 ** 22 + 12346, "state": "stopped", "root": root, "command": "work-on"})
         write_json(os.path.join(rdir, "repo.W-73.runner.json"), {"pid": 2 ** 22 + 12347, "state": "running", "root": root, "command": "work-on"})
         write_json(os.path.join(rdir, "repo.W-73.revive.json"), [time.time()] * 3)
@@ -2880,6 +2947,8 @@ def selftest() -> int:
         # ---- a network error pauses and retries the stage by itself; only after the retries does it ask ----
         net = "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"
         check("network: ENOTFOUND and 5xx are network errors; a usage limit is not", network_error(net) and network_error("API Error: 503 Service Unavailable") and not network_error("usage limit reached") and not network_error("the contract is wrong"))
+        check("network: claude unable to load the organisation's settings at start is a network error",
+              network_error("Claude Code couldn't reach Anthropic to load your organization's settings (could not connect). Check your network connection and retry"))
         scenario([{"turns": [[{"error": net}]]}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
         env["ASD_RUNNER_NET_WAIT"] = "0.2"
         p = start("W-32")
