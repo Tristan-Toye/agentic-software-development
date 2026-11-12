@@ -25,7 +25,9 @@ export type MapStatus = {
 }
 
 async function py(args: string[], timeoutMs: number): Promise<{ code: number; out: string; err: string; timedOut: boolean }> {
-  const p = Bun.spawn(["python3", vrMapScript(), ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore" })
+  let p: ReturnType<typeof Bun.spawn>
+  // Bun.spawn throws at once when python3 is missing: report it like a failed run instead of a 500.
+  try { p = Bun.spawn(["python3", vrMapScript(), ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore" }) } catch (e) { return { code: 127, out: "", err: (e as Error).message, timedOut: false } }
   let timedOut = false
   const t = setTimeout(() => { timedOut = true; p.kill() }, timeoutMs)
   try {
@@ -39,7 +41,16 @@ const cache = new Map<string, { mtime: number; at: number; status: MapStatus }>(
 export const clearMapCache = (): void => cache.clear()
 
 /** The committed diagrams of the repo (`vr_map.py list --json`) and, when the map exists, its staleness (`check --json`). */
+const inflight = new Map<string, Promise<MapStatus>>()
 export async function mapStatus(repo: string, root: string, timeoutMs = MAP_TIMEOUT_MS): Promise<MapStatus> {
+  // Concurrent calls for one repo share one check instead of each spawning vr_map.py.
+  const running = inflight.get(root)
+  if (running) return running
+  const p = checkMap(repo, root, timeoutMs).finally(() => inflight.delete(root))
+  inflight.set(root, p)
+  return p
+}
+async function checkMap(repo: string, root: string, timeoutMs: number): Promise<MapStatus> {
   const map = join(root, MAP_REL)
   const has = existsSync(map)
   const mtime = has ? statSync(map).mtimeMs : 0

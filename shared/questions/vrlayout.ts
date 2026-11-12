@@ -87,14 +87,21 @@ export function checkGraph(g: any, expectView?: string): Issue[] {
 // ---- the worker ----
 let elk: any = null
 let idleTimer: ReturnType<typeof setTimeout> | null = null
+/** Layouts running in the worker now: the idle timer only closes a worker nobody is waiting on. */
+let inflight = 0
 function client(): any {
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null }
   if (!elk) {
     elk = new ElkClass({ workerFactory: () => { const w: any = new Worker(WORKER_FILE.href); w.unref?.(); return w } })
   }
+  return elk
+}
+function armIdle(): void {
   if (idleTimer) clearTimeout(idleTimer)
+  idleTimer = null
+  if (inflight > 0 || !elk) return
   idleTimer = setTimeout(closeLayout, IDLE_MS)
   idleTimer.unref?.()
-  return elk
 }
 /** Terminate the worker. The process can exit afterwards; the next layout starts a new one. */
 export function closeLayout(): void {
@@ -148,18 +155,30 @@ export const layoutCacheSize = (): number => cache.size
  * Lay out one valid graph through ELK in the worker. Deterministic: the same graph gives the same boxes and points.
  * Cached on graphHash. Rejects after `timeoutMs` (the worker is then replaced).
  */
+/** Layouts in progress by graphHash: a second request for the same graph waits on the first instead of running it again. */
+const pending = new Map<string, Promise<Layout>>()
 export async function layoutGraph(graph: any, timeoutMs = LAYOUT_TIMEOUT_MS): Promise<Layout> {
   const g = stripDollar(graph)
-  const mode: "thorough" | "fast" = g.nodes.length > FAST_ABOVE ? "fast" : "thorough"
   const key = graphHash(g)
   const hit = cache.get(key)
   if (hit) return hit
+  const running = pending.get(key)
+  if (running) return running
+  const p = runLayout(g, key, timeoutMs).finally(() => pending.delete(key))
+  pending.set(key, p)
+  return p
+}
+async function runLayout(g: any, key: string, timeoutMs: number): Promise<Layout> {
+  const mode: "thorough" | "fast" = g.nodes.length > FAST_ABOVE ? "fast" : "thorough"
   const { root, direction } = elkInput(g, mode)
   let timer: ReturnType<typeof setTimeout> | undefined
+  const worker = client()
+  inflight++
+  // A timeout replaces the worker only if it is still the one this layout ran in (a hung worker is hung for every layout in it).
   const out: any = await Promise.race([
-    client().layout(root),
-    new Promise((_, rej) => { timer = setTimeout(() => { closeLayout(); rej(new Error("layout timed out after " + timeoutMs + " ms")) }, timeoutMs) }),
-  ]).finally(() => clearTimeout(timer))
+    worker.layout(root),
+    new Promise((_, rej) => { timer = setTimeout(() => { if (elk === worker) closeLayout(); rej(new Error("layout timed out after " + timeoutMs + " ms")) }, timeoutMs) }),
+  ]).finally(() => { clearTimeout(timer); inflight--; armIdle() })
   const L: Layout = { view: g.view, mode, direction, width: Math.ceil(out.width), height: Math.ceil(out.height), boxes: {}, edges: {} }
   const walk = (n: any) => { for (const c of n.children ?? []) { L.boxes[c.id] = { x: Math.round(c.x), y: Math.round(c.y), w: Math.round(c.width), h: Math.round(c.height) }; walk(c) } }
   walk(out)

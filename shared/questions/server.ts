@@ -374,7 +374,9 @@ async function vrFind(dossier: string, repo: string): Promise<{ ok: true; root: 
   const roots = [...new Set(runs.flatMap((r) => [r.worktree, r.runner?.root, r.main]).filter((x): x is string => !!x))]
   const root = roots.find((r) => hasVisualReview(r, dossier))
   if (!root) return { ok: false, status: 404, error: "no visual review for " + dossier + ": none of l0/l1/l2.json exists under .discovery/visual-review/" + dossier + " in " + roots.join(", ") }
-  return { ok: true, root, dossier, repo: repo || runs[0].repo, runs }
+  // Without a repo, the repo is the one of the run whose root holds the review (not just the first run found).
+  const own = runs.find((r) => [r.worktree, r.runner?.root, r.main].includes(root)) ?? runs[0]
+  return { ok: true, root, dossier, repo: repo || own.repo, runs }
 }
 /** The `diagrams` field of a run's detail: the paths of l0/l1/l2 and the review counts; null with no visual review. */
 function vrDiagrams(run: Run) {
@@ -906,7 +908,7 @@ export async function handle(req: Request): Promise<Response> {
     }
     const kind = b?.kind
     if (kind !== "followup" && kind !== "answer") return json({ error: "kind must be followup or answer" }, 400)
-    const option = typeof b.option === "string" ? b.option : ""
+    let option = typeof b.option === "string" ? b.option : ""
     if (option && !q.options.some((o) => o.key === option)) return json({ error: "unknown option" }, 400)
     if (kind === "followup" && option) return json({ error: "a follow-up has no option" }, 400)
     let text = typeof b.text === "string" ? b.text.trim() : ""
@@ -920,8 +922,23 @@ export async function handle(req: Request): Promise<Response> {
       if (!ok || kind !== "followup") return json({ error: "anchor must be {diagram: L0|L1|L2, element, graph_hash?} on a follow-up" }, 400)
       anchor = { diagram: a.diagram, element: a.element, ...(a.graph_hash ? { graph_hash: a.graph_hash } : {}) }
     }
+    // A visual-review answer is only accepted on the dossier's visual-review question, and its option and text are rebuilt
+    // here from review.json, so the client cannot send an answer the verdicts do not support.
+    const review = kind === "answer" && b.review === true
+    if (review) {
+      const keys = reviewOptions(q.options)
+      if (!keys || q.qkind !== "product" || !q.dossier) return json({ error: "not a visual-review question" }, 400)
+      const runs = (await allRuns()).filter((r) => r.id === q.dossier)
+      const f = await vrFind(q.dossier, questionRepo(q, runs) ?? "")
+      if (!f.ok) return json({ error: f.error }, f.status)
+      const st = reviewState(vrDir(f.root, f.dossier), f.dossier)
+      if (st.summary.checked === 0) return json({ error: "no verdicts yet" }, 409)
+      const a = buildAnswer(st, f.dossier)
+      option = keys[a.option]
+      text = a.text
+    }
     try {
-      const after = appendOwner(DIR, q.id, { kind, text, option, via: "page", anchor, review: kind === "answer" && b.review === true })
+      const after = appendOwner(DIR, q.id, { kind, text, option, via: "page", anchor, review })
       void scan()
       return json(after, 201)
     } catch (e) {

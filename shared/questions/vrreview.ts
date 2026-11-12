@@ -15,13 +15,15 @@ export type Review = { schema_version: "1.0.0"; dossier: string; updated: string
 export type LineState = "current" | "outdated" | "gone"
 export type StateLine = ReviewLine & { state: LineState }
 export type Summary = { total: number; checked: number; ok: number; question: number; change: number; remove: number; outdated: number; gone: number; unchecked: number; text: string }
-export type ReviewState = { exists: boolean; hashes: Partial<Record<Diagram, string>>; lines: StateLine[]; summary: Summary; unchecked: { diagram: Diagram; element: string }[] }
+export type ReviewState = { exists: boolean; broken: Diagram[]; hashes: Partial<Record<Diagram, string>>; lines: StateLine[]; summary: Summary; unchecked: { diagram: Diagram; element: string }[] }
 
 export const MAX_COMMENT = 1000
 export const MAX_ID = 200
 export const MAX_BODY = 8 * 1024
 export const MAX_LINES = 600
 export const MAX_FILE = 512 * 1024
+/** A diagram file larger than this is not parsed: it counts as unreadable. */
+export const MAX_GRAPH_FILE = 4 * 1024 * 1024
 /** The store cuts a line at 3500 characters; an answer stays well under it. */
 export const MAX_ANSWER = 3300
 
@@ -32,22 +34,30 @@ export class ReviewError extends Error {
 export const reviewFile = (dir: string): string => join(dir, "review.json")
 
 type Graphs = Partial<Record<Diagram, { hash: string; nodes: Set<string>; labels: Map<string, string> }>>
-/** The nodes (the elements a verdict can be about) and the hash of each diagram file that exists and parses. */
-export function readGraphs(dir: string): Graphs {
-  const out: Graphs = {}
+/**
+ * The nodes (the elements a verdict can be about) and the hash of each diagram file that exists and parses. `broken`
+ * names each file that exists but is too large, does not parse or has no nodes array (e.g. caught mid-write): the review
+ * cannot be Approved while one is broken.
+ */
+export function readGraphsFull(dir: string): { graphs: Graphs; broken: Diagram[] } {
+  const graphs: Graphs = {}
+  const broken: Diagram[] = []
   for (const v of VR_VIEWS) {
     const file = join(dir, v.toLowerCase() + ".json")
     try {
-      if (!existsSync(file) || !statSync(file).isFile()) continue
+      if (!existsSync(file)) continue
+      const st = statSync(file)
+      if (!st.isFile() || st.size > MAX_GRAPH_FILE) { broken.push(v); continue }
       const g = JSON.parse(readFileSync(file, "utf8"))
-      if (!g || !Array.isArray(g.nodes)) continue
+      if (!g || !Array.isArray(g.nodes)) { broken.push(v); continue }
       const labels = new Map<string, string>()
       for (const n of g.nodes) if (n && typeof n.id === "string") labels.set(n.id, typeof n.label === "string" ? n.label : n.id)
-      out[v] = { hash: graphHash(g), nodes: new Set(labels.keys()), labels }
-    } catch { /* an unreadable diagram has no elements */ }
+      graphs[v] = { hash: graphHash(g), nodes: new Set(labels.keys()), labels }
+    } catch { broken.push(v) }
   }
-  return out
+  return { graphs, broken }
 }
+export const readGraphs = (dir: string): Graphs => readGraphsFull(dir).graphs
 
 /** The lines of review.json that have the right shape; anything else in the file is ignored (and rewritten away on the next save). */
 export function readReview(dir: string, dossier: string): Review | null {
@@ -68,7 +78,7 @@ export function readReview(dir: string, dossier: string): Review | null {
 
 /** The verdicts against the diagrams as they are now, and the count line ("12 of 14 elements checked"). Outdated and gone lines are kept, not counted. */
 export function reviewState(dir: string, dossier: string): ReviewState {
-  const graphs = readGraphs(dir)
+  const { graphs, broken } = readGraphsFull(dir)
   const review = readReview(dir, dossier)
   const lines: StateLine[] = (review?.lines ?? []).map((l) => {
     const g = graphs[l.anchor.diagram]
@@ -82,8 +92,9 @@ export function reviewState(dir: string, dossier: string): ReviewState {
   const n = (k: Verdict) => [...cur.values()].filter((l) => l.verdict === k).length
   const s = { total, checked: cur.size, ok: n("ok"), question: n("question"), change: n("change"), remove: n("remove"), outdated: lines.filter((l) => l.state === "outdated").length, gone: lines.filter((l) => l.state === "gone").length, unchecked: unchecked.length }
   const bits = [s.question && s.question + " question" + (s.question > 1 ? "s" : ""), s.change && s.change + " change" + (s.change > 1 ? "s" : ""), s.remove && s.remove + " to remove", s.outdated && s.outdated + " outdated"].filter(Boolean)
+  if (broken.length) bits.push("unreadable: " + broken.join(", "))
   const text = s.checked + " of " + s.total + " elements checked" + (bits.length ? ", " + bits.join(", ") : "")
-  return { exists: review !== null, hashes: Object.fromEntries(VR_VIEWS.filter((v) => graphs[v]).map((v) => [v, graphs[v]!.hash])), lines, summary: { ...s, text }, unchecked }
+  return { exists: review !== null, broken, hashes: Object.fromEntries(VR_VIEWS.filter((v) => graphs[v]).map((v) => [v, graphs[v]!.hash])), lines, summary: { ...s, text }, unchecked }
 }
 
 export type VerdictInput = { diagram: unknown; element: unknown; verdict: unknown; comment?: unknown }
@@ -102,8 +113,9 @@ export function setVerdict(dir: string, dossier: string, b: VerdictInput): { sta
   if (typeof comment !== "string") throw new ReviewError(400, "comment must be text")
   if (comment.length > MAX_COMMENT) throw new ReviewError(413, "comment is longer than " + MAX_COMMENT + " characters")
   const g = readGraphs(dir)[diagram]
-  if (!g) throw new ReviewError(404, "no " + diagram + " diagram for " + dossier)
-  if (!g.nodes.has(b.element)) throw new ReviewError(400, "unknown element " + b.element + " in " + diagram)
+  // Clearing ("unset") also works for a line whose element or diagram is gone, so stale lines can be removed.
+  if (!unset && !g) throw new ReviewError(404, "no " + diagram + " diagram for " + dossier)
+  if (!unset && !g!.nodes.has(b.element)) throw new ReviewError(400, "unknown element " + b.element + " in " + diagram)
   const prev = readReview(dir, dossier) ?? { schema_version: "1.0.0" as const, dossier, updated: "", lines: [] }
   const same = (l: ReviewLine) => l.anchor.diagram === diagram && l.anchor.element === b.element
   const old = prev.lines.find(same)
@@ -111,9 +123,9 @@ export function setVerdict(dir: string, dossier: string, b: VerdictInput): { sta
   const ts = new Date().toISOString()
   let followup: { anchor: Anchor; text: string } | null = null
   if (!unset) {
-    const anchor: Anchor = { diagram, element: b.element, graph_hash: g.hash }
+    const anchor: Anchor = { diagram, element: b.element, graph_hash: g!.hash }
     lines.push({ anchor, verdict: b.verdict as Verdict, comment: comment.trim(), ts })
-    if (b.verdict === "question" && comment.trim() && !(old && old.verdict === "question" && old.comment === comment.trim() && old.anchor.graph_hash === g.hash)) followup = { anchor, text: comment.trim() }
+    if (b.verdict === "question" && comment.trim() && !(old && old.verdict === "question" && old.comment === comment.trim() && old.anchor.graph_hash === g!.hash)) followup = { anchor, text: comment.trim() }
   }
   if (lines.length > MAX_LINES) throw new ReviewError(413, "review.json would hold more than " + MAX_LINES + " verdicts")
   const body = JSON.stringify({ schema_version: "1.0.0", dossier, updated: ts, lines }, null, 1) + "\n"
@@ -134,13 +146,14 @@ const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…"
 export function buildAnswer(state: ReviewState, dossier: string): { option: "A" | "B"; text: string } {
   const s = state.summary
   const head = (dossier ? dossier + " " : "") + "visual review: "
-  if (s.total > 0 && s.ok === s.total) return { option: "A", text: head + "approved, all " + s.total + " elements OK." }
+  if (s.total > 0 && s.ok === s.total && !state.broken.length) return { option: "A", text: head + "approved, all " + s.total + " elements OK." }
   const label: Record<Verdict, string> = { ok: "ok", question: "question", change: "change", remove: "remove from scope" }
   const flagged = state.lines.filter((l) => l.state === "current" && l.verdict !== "ok")
   const out = [head + "changes requested. " + s.text + ". Full verdicts: .discovery/visual-review/" + dossier + "/review.json"]
   for (const l of flagged) out.push("- " + label[l.verdict] + " " + l.anchor.diagram + " " + l.anchor.element + (l.comment ? ": " + clip(l.comment.replace(/\s+/g, " "), 240) : ""))
   const old = state.lines.filter((l) => l.state === "outdated")
   if (old.length) out.push("- outdated (made on an older graph): " + old.map((l) => l.anchor.diagram + " " + l.anchor.element).join(", "))
+  if (state.broken.length) out.push("- unreadable diagram file (not reviewed): " + state.broken.join(", "))
   if (state.unchecked.length) out.push("- not yet looked at: " + state.unchecked.map((u) => u.diagram + " " + u.element).join(", "))
   let text = out.join("\n")
   if (text.length > MAX_ANSWER) {

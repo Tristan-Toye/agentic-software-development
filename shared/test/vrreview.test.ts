@@ -99,6 +99,16 @@ describe("outdated and gone anchors", () => {
     expect(st.summary.gone).toBe(1)
     expect(readReview(d, "W-145")!.lines).toHaveLength(1)
   })
+  test("a gone line can be cleared with unset; a new verdict on a gone element is still refused", () => {
+    const d = dirWith(), id = nodes("l1")[1]
+    setVerdict(d, "W-145", { diagram: "L1", element: id, verdict: "change", comment: "old" })
+    const g = load("w145-l1.json"); g.nodes = g.nodes.filter((n: any) => n.id !== id); g.edges = g.edges.filter((e: any) => e.source !== id && e.target !== id)
+    writeFileSync(join(d, "l1.json"), JSON.stringify(g))
+    expect(fails(() => setVerdict(d, "W-145", { diagram: "L1", element: id, verdict: "ok" })).status).toBe(400)
+    const r = setVerdict(d, "W-145", { diagram: "L1", element: id, verdict: "unset" })
+    expect(r.state.lines).toHaveLength(0)
+    expect(r.state.summary.gone).toBe(0)
+  })
   test("element ids stay the same across a regeneration, so the comment stays attached (S6, VC-05)", () => {
     const d = dirWith(), id = nodes("l2")[0]
     setVerdict(d, "W-145", { diagram: "L2", element: id, verdict: "change", comment: "c" })
@@ -118,6 +128,15 @@ describe("answer text", () => {
     expect(a.option).toBe("A")
     expect(a.text).toMatch(/approved/)
     expect(a.text).not.toMatch(/changes requested/)
+  })
+  test("all OK but one diagram file unreadable (mid-write) is B, never approved, and names the file", () => {
+    const d = dirWith(); okAll(d)
+    writeFileSync(join(d, "l2.json"), "{\"nodes\": [")
+    const st = reviewState(d, "W-145")
+    expect(st.broken).toEqual(["L2"])
+    const a = buildAnswer(st, "W-145")
+    expect(a.option).toBe("B")
+    expect(a.text).toMatch(/unreadable diagram file \(not reviewed\): L2/)
   })
   test("anything else gives B, changes requested, with element ids, comments, and what is unchecked", () => {
     const d = dirWith(); okAll(d)
@@ -233,6 +252,8 @@ else:
     const J = (o: any) => JSON.stringify(o)
     writeFileSync(join(qdir, "repoV.W-145.Q1.jsonl"), J({ ts: "2026-11-12T10:00:00Z", from: "agent", kind: "question", repo: "repoV", dossier: "W-145", root: repo, qkind: "product", text: "Does this picture match what the feature should do?", recommendation: "A", blocks: "Phase 4 fan-out",
       options: [{ key: "A", label: "Approved", consequence: "fan-out starts" }, { key: "B", label: "Changes requested", consequence: "back to the contract" }] }) + "\n")
+    writeFileSync(join(qdir, "repoV.W-145.Q2.jsonl"), J({ ts: "2026-11-12T10:01:00Z", from: "agent", kind: "question", repo: "repoV", dossier: "W-145", root: repo, qkind: "product", text: "Which name?", recommendation: "A", blocks: "naming",
+      options: [{ key: "A", label: "Keep", consequence: "none" }, { key: "B", label: "Rename", consequence: "rename" }] }) + "\n")
     proc = Bun.spawn([process.execPath, "--no-install", join(import.meta.dir, "..", "questions", "server.ts")], {
       env: { ...process.env, ASD_QUESTIONS_DIR: qdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_DISK_WATCH: "0", ASD_LAG_WATCH: "0", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: repo + ":" + bare, ASD_OPEN_WORK_DIR: join(cdir, "ow"), ASD_RUNS_DIR: join(cdir, "runs"), ASD_CLAUDE_PROJECTS: join(cdir, "projects"), ASD_RUNS_NO_GH: "1", ASD_BLOCK_LOG: join(cdir, "blocks.jsonl"), ASD_CHAT_DIR: join(cdir, "chats"), ASD_DM_AGENT_FILE: join(cdir, "dm.json"), ASD_VR_MAP_BIN: fake },
       stdout: "pipe", stderr: "ignore",
@@ -324,12 +345,21 @@ else:
     const none: any = await (await fetch(`${base}/api/timeline/repoV/W-146`)).json()
     expect(none.diagrams).toBeNull()
   })
+  test("review: true on a question that is not the visual-review one is refused", async () => {
+    await start()
+    const r = await fetch(`${base}/api/questions/repoV.W-145.Q1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "followup", text: "x", review: true }) })
+    expect(r.status).toBe(201) // a follow-up ignores the flag
+    const r2 = await fetch(`${base}/api/questions/repoV.W-145.Q2/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "answer", option: "A", text: "y", review: true }) })
+    expect(r2.status).toBe(400)
+  })
   test("the batch answer goes through the question card's path; the first answer is final (S4, S5, VC-03)", async () => {
     await start()
     const a: any = await (await fetch(`${base}/api/visual-review/answer?dossier=W-145&repo=repoV`)).json()
-    const send = () => fetch(`${base}/api/questions/${a.question}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "answer", option: a.option, text: a.text, review: true }) })
+    const send = () => fetch(`${base}/api/questions/${a.question}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "answer", option: "A", text: "forged: approved", review: true }) })
     expect((await send()).status).toBe(201)
     const q = await question()
+    // the server rebuilds option and text from review.json: a forged "approved" is stored as the verdicts' answer
+    expect(q.answer.text).not.toContain("forged")
     expect(q.state).toBe("answered")
     expect(q.answer.option).toBe("B")
     expect(q.answer.review).toBe(true)
