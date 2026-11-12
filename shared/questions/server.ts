@@ -16,6 +16,8 @@ import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
 import { startLagWatch } from "./lagwatch.ts"
 import { hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
+import { buildAnswer, diagramsOf, MAX_BODY, ReviewError, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
+import { mapStatus, openDiagram } from "./vrmap.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
 import { awakeDeps, checkAwake, releaseAwake } from "./awake.ts"
@@ -178,7 +180,8 @@ export async function scan(): Promise<void> {
       s.n = q.lines.length
       for (const l of fresh) {
         if (l.from === "agent" && l.kind === "reply" && slackOn()) await safe(slackThread(q.id, l.text), "slack reply")
-        else if (l.from === "owner" && l.via !== "slack" && slackOn()) {
+        // A line about one diagram element, and the batch answer of a visual review, stay on the page (VR-04): Slack gets the question text only.
+        else if (l.from === "owner" && l.via !== "slack" && !l.anchor && l.review !== true && slackOn()) {
           await safe(slackThread(q.id, `*Owner (${l.via ?? "cli"}) ${l.kind}${l.option ? ` ${l.option}` : ""}:* ${l.text}`), "slack mirror")
         }
       }
@@ -354,6 +357,35 @@ const html = (body: string) => new Response(body, { headers: { "content-type": "
 const allRuns = async (): Promise<Run[]> => (await getRuns(() => readAll(DIR))).runs
 const findRun = async (repo: string, id: string): Promise<Run | undefined> => (await allRuns()).find((r) => r.repo === repo && r.id === id)
 
+/** The repo roots of a repo's runs (runner root, worktree, main checkout), main first. */
+async function repoRoots(repo: string): Promise<string[]> {
+  const runs = (await allRuns()).filter((r) => r.repo === repo)
+  return [...new Set(runs.flatMap((r) => [r.main, r.runner?.root, r.worktree]).filter((x): x is string => !!x))]
+}
+/**
+ * The dossier's repo root that holds its visual-review folder, the way the dossier routes find it. The name check lives
+ * here for every visual-review route: a plain name, no leading dot, and a real run with that id (so no path is built from
+ * anything else).
+ */
+async function vrFind(dossier: string, repo: string): Promise<{ ok: true; root: string; dossier: string; repo: string; runs: Run[] } | { ok: false; status: number; error: string }> {
+  if (!/^[\w.-]+$/.test(dossier) || dossier.startsWith(".") || (repo && !/^[\w.-]+$/.test(repo))) return { ok: false, status: 400, error: "dossier (and repo) must be plain names" }
+  const runs = (await allRuns()).filter((r) => r.id === dossier && (!repo || r.repo === repo))
+  if (!runs.length) return { ok: false, status: 404, error: "no such dossier" + (repo ? " in " + repo : "") }
+  const roots = [...new Set(runs.flatMap((r) => [r.worktree, r.runner?.root, r.main]).filter((x): x is string => !!x))]
+  const root = roots.find((r) => hasVisualReview(r, dossier))
+  if (!root) return { ok: false, status: 404, error: "no visual review for " + dossier + ": none of l0/l1/l2.json exists under .discovery/visual-review/" + dossier + " in " + roots.join(", ") }
+  return { ok: true, root, dossier, repo: repo || runs[0].repo, runs }
+}
+/** The `diagrams` field of a run's detail: the paths of l0/l1/l2 and the review counts; null with no visual review. */
+function vrDiagrams(run: Run) {
+  for (const root of [run.worktree, run.runner?.root, run.main]) { const d = root ? diagramsOf(root, run.id) : null; if (d) return d }
+  return null
+}
+/** The open product question of the visual review for this dossier (its options are Approved and Changes requested), or undefined. */
+function vrQuestion(dossier: string, repo: string, runs: Run[]): Question | undefined {
+  return readAll(DIR).find((q) => q.state === "open" && q.dossier === dossier && q.qkind === "product" && questionRepo(q, runs) === repo && !!reviewOptions(q.options))
+}
+
 /** Server-Sent Events: a `changed` event with the kinds that changed; a comment heartbeat keeps the stream open. */
 function events(req: Request): Response {
   let un = () => {}
@@ -425,14 +457,60 @@ export async function handle(req: Request): Promise<Response> {
   // Visual review (VR-03): the change graph l0/l1/l2.json of a dossier, laid out by ELK on the server. The dossier's repo
   // roots are those of its runs (worktree, runner root, main checkout), the way the dossier routes find it.
   if (req.method === "GET" && path === "/api/visual-review") {
-    const dossier = url.searchParams.get("dossier") ?? "", repo = url.searchParams.get("repo") ?? ""
-    if (!/^[\w.-]+$/.test(dossier) || (repo && !/^[\w.-]+$/.test(repo))) return json({ error: "dossier (and repo) must be plain names" }, 400)
-    const runs = (await allRuns()).filter((r) => r.id === dossier && (!repo || r.repo === repo))
-    if (!runs.length) return json({ error: "no such dossier" + (repo ? " in " + repo : "") }, 404)
-    const roots = [...new Set(runs.flatMap((r) => [r.worktree, r.runner?.root, r.main]).filter((x): x is string => !!x))]
-    const root = roots.find((r) => hasVisualReview(r, dossier))
-    if (!root) return json({ error: "no visual review for " + dossier + ": none of l0/l1/l2.json exists under .discovery/visual-review/" + dossier + " in " + roots.join(", ") }, 404)
-    try { return json(await visualReview(vrDir(root, dossier), dossier)) } catch (e) { return json({ error: "visual review failed: " + (e as Error).message }, 500) }
+    const f = await vrFind(url.searchParams.get("dossier") ?? "", url.searchParams.get("repo") ?? "")
+    if (!f.ok) return json({ error: f.error }, f.status)
+    try { return json({ ...(await visualReview(vrDir(f.root, f.dossier), f.dossier)), review: reviewState(vrDir(f.root, f.dossier), f.dossier) }) } catch (e) { return json({ error: "visual review failed: " + (e as Error).message }, 500) }
+  }
+  // VR-04: one verdict on one element (saved to review.json), the answer text built from all of them, and the question it answers.
+  if (path === "/api/visual-review/review") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const raw = await req.text()
+    if (raw.length > MAX_BODY) return json({ error: "body is larger than " + MAX_BODY + " bytes" }, 413)
+    let b: any
+    try { b = JSON.parse(raw) } catch { return json({ error: "body must be JSON" }, 400) }
+    if (!b || typeof b !== "object" || Array.isArray(b)) return json({ error: "body must be a JSON object" }, 400)
+    const f = await vrFind(typeof b.dossier === "string" ? b.dossier : "", typeof b.repo === "string" ? b.repo : "")
+    if (!f.ok) return json({ error: f.error }, f.status)
+    const dir = vrDir(f.root, f.dossier)
+    try {
+      const r = setVerdict(dir, f.dossier, b)
+      // A Question with a comment goes to the agent as a follow-up that carries the anchor; the question stays open.
+      let followup = false
+      const q = r.followup ? vrQuestion(f.dossier, f.repo, f.runs) : undefined
+      if (r.followup && q) {
+        try { appendOwner(DIR, q.id, { kind: "followup", text: "Element " + r.followup.anchor.element + " (" + r.followup.anchor.diagram + "): " + r.followup.text, via: "page", anchor: r.followup.anchor }); followup = true; void scan() } catch { /* the question was answered meanwhile: the verdict is still saved */ }
+      }
+      return json({ ok: true, review: r.state, followup })
+    } catch (e) {
+      if (e instanceof ReviewError) return json({ error: e.message }, e.status)
+      return json({ error: (e as Error).message }, 500)
+    }
+  }
+  if (req.method === "GET" && path === "/api/visual-review/answer") {
+    const f = await vrFind(url.searchParams.get("dossier") ?? "", url.searchParams.get("repo") ?? "")
+    if (!f.ok) return json({ error: f.error }, f.status)
+    const q = vrQuestion(f.dossier, f.repo, f.runs)
+    const st = reviewState(vrDir(f.root, f.dossier), f.dossier)
+    const a = buildAnswer(st, f.dossier)
+    const keys = q ? reviewOptions(q.options) : null
+    return json({ question: q?.id ?? "", option: keys ? keys[a.option] : "", choice: a.option, text: a.text, summary: st.summary, canSend: !!q && !!keys && st.summary.checked > 0 })
+  }
+  // VR-06: the committed product map of a repo, whether it is stale (vr_map.py check, cached on the map's mtime), and its committed diagrams.
+  if (req.method === "GET" && path === "/api/visual-review/map") {
+    const repo = url.searchParams.get("repo") ?? ""
+    if (!/^[\w.-]+$/.test(repo)) return json({ error: "repo must be a plain name" }, 400)
+    const root = (await repoRoots(repo))[0]
+    if (!root) return json({ error: "no such repo" }, 404)
+    return json(await mapStatus(repo, root))
+  }
+  if (req.method === "GET" && path === "/api/visual-review/diagram") {
+    const repo = url.searchParams.get("repo") ?? "", rel = url.searchParams.get("path") ?? ""
+    if (!/^[\w.-]+$/.test(repo)) return json({ error: "repo must be a plain name" }, 400)
+    const root = (await repoRoots(repo))[0]
+    if (!root) return json({ error: "no such repo" }, 404)
+    try { return json(await openDiagram(root, rel, (await mapStatus(repo, root)).diagrams)) } catch (e) { return json({ error: (e as Error).message }, 404) }
   }
   // The vendored ELK worker, from the dashboard's own origin (nothing is fetched from a CDN).
   if (req.method === "GET" && path === "/vendor/elk/elk-worker.min.js") {
@@ -491,7 +569,7 @@ export async function handle(req: Request): Promise<Response> {
     const conv = { ...c, result: c.result ? { ...c.result, html: renderMarkdown(c.result.text) } : null, chat: c.chat.map((l) => ({ ...l, html: renderMarkdown(l.text) })), canChat: !!c.result && !runnerActive(run.runner) }
     const blocks = readBlocks(`${run.repo}.${run.id}`)
     const openQ = questions.filter((q) => q.state === "open").sort((a, b) => b.ts.localeCompare(a.ts))[0]?.id ?? ""
-    return json({ run, html, entries, groups, sections, activeSection: latest.cmd, activity, now, log, conv, summary, blocks, rulings: readRulings(run.repo), blockQuestion: openQ, summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
+    return json({ run, html, entries, groups, sections, activeSection: latest.cmd, activity, now, log, conv, summary, blocks, rulings: readRulings(run.repo), blockQuestion: openQ, diagrams: vrDiagrams(run), summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
   }
   const dd = path.match(/^\/api\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && dd) {
@@ -834,8 +912,16 @@ export async function handle(req: Request): Promise<Response> {
     let text = typeof b.text === "string" ? b.text.trim() : ""
     if (!text && option) text = q.options.find((o) => o.key === option)!.label
     if (!text) return json({ error: "text is required" }, 400)
+    // VR-04: a follow-up may be about one diagram element; the answer of a visual review is marked `review`.
+    let anchor: { diagram: string; element: string; graph_hash?: string } | undefined
+    if (b.anchor !== undefined) {
+      const a = b.anchor
+      const ok = a && typeof a === "object" && ["L0", "L1", "L2"].includes(a.diagram) && typeof a.element === "string" && a.element.length > 0 && a.element.length <= 200 && (a.graph_hash === undefined || (typeof a.graph_hash === "string" && a.graph_hash.length <= 64))
+      if (!ok || kind !== "followup") return json({ error: "anchor must be {diagram: L0|L1|L2, element, graph_hash?} on a follow-up" }, 400)
+      anchor = { diagram: a.diagram, element: a.element, ...(a.graph_hash ? { graph_hash: a.graph_hash } : {}) }
+    }
     try {
-      const after = appendOwner(DIR, q.id, { kind, text, option, via: "page" })
+      const after = appendOwner(DIR, q.id, { kind, text, option, via: "page", anchor, review: kind === "answer" && b.review === true })
       void scan()
       return json(after, 201)
     } catch (e) {

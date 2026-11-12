@@ -103,7 +103,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "run_detail",
-    description: "One dossier: its state, the timeline per run (Implement dossier, Fix deferred issues, …) with each phase or step and its newest entries, the final reply and chat, blocked calls, and the product summary's first lines.",
+    description: "One dossier: its state, the visual review's diagram files and verdict counts (`diagrams`, when the dossier has one), the timeline per run (Implement dossier, Fix deferred issues, …) with each phase or step and its newest entries, the final reply and chat, blocked calls, and the product summary's first lines.",
     params: [P.repo, P.id, { name: "entries", type: "string", description: "newest entries per section, default 12", optional: true }],
     async run(a) {
       const t = (await api(`/api/timeline/${enc(a.repo)}/${enc(a.id)}`))
@@ -113,6 +113,7 @@ const TOOLS: Tool[] = [
         .map((e: any) => `${e.ts} ${e.type}${e.event ? "/" + e.event : ""}: ${clip(e.text, 240)}`)
       return out({
         run: brief(d.run),
+        diagrams: d.diagrams ? { l0: d.diagrams.l0, l1: d.diagrams.l1, l2: d.diagrams.l2, review: d.diagrams.review } : undefined,
         now: d.now ? { phase: d.now.phase, doing: d.now.doing?.text ? clip(d.now.doing.text, 200) : undefined } : undefined,
         sections: (d.sections || []).map((s: any) => ({ section: s.label, groups: s.groups.slice(0, 4).map((g: any) => ({ group: g.label, entries: items(g) })) })),
         result: d.conv?.result ? clip(d.conv.result.text, 1500) : undefined,
