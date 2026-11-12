@@ -204,7 +204,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         "optional": {
             "SHARED_IDIOM", "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS",
             "SUPPORT", "DELIVERY_CHANGE", "FAILURES", "CORRECTION",
-            "BASELINE_COUNTS_FROM",
+            "BASELINE_COUNTS_FROM", "TEST_FORM_RULES",
         },
     },
     "integration-test-author": {
@@ -221,7 +221,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         "optional": {
             "SHARED_IDIOM", "DELIVERY_CHANGE", "PROMISE_CHECKLIST",
             "SUPPORT_PATHS", "SUPPORT", "FAILURES", "CORRECTION",
-            "BASELINE_COUNTS_FROM", "CITATION",
+            "BASELINE_COUNTS_FROM", "CITATION", "CI_ENVIRONMENT", "TEST_FORM_RULES",
         },
     },
     "implementer": {
@@ -267,6 +267,73 @@ GROUPS: dict[str, list[set[str]]] = {
 # The pasted CONTRACT names each file: compose_payloads.py puts a `# path:` line
 # before every pasted file (#184).
 CONTRACT_PATH_LINE = re.compile(r"^\s*# path: \S", re.M)
+
+
+# A live service a stack-backed test reaches (#313): what the integration
+# author's HARNESS / TEST_FRAMEWORK / BOUNDARIES text names when the tests need one.
+LIVE_SERVICE = re.compile(
+    r"\b(postgres(?:ql)?|mysql|mariadb|mongo(?:db)?|redis|kafka|rabbitmq|nats|"
+    r"elasticsearch|opensearch|clickhouse|sqlite server|testcontainers?|"
+    r"docker[- ]compose|compose stack|compose file|database|broker|"
+    r"message queue|live stack|full stack|local stack)\b", re.IGNORECASE)
+CI_ENV_LINES = ("services", "skip", "guard")
+REPO_CONFIG_DIR = ".agent-pipeline"
+
+
+def repo_test_forms(root: str | None) -> list[str]:
+    """The `refused -> use instead` lines of the target repo's
+    `.agent-pipeline/test-forms.txt` (#301); [] when there is no root or file."""
+    if not root:
+        return []
+    path = os.path.join(root, REPO_CONFIG_DIR, "test-forms.txt")
+    if not os.path.isfile(path):
+        return []
+    with open(path, encoding="utf-8") as fh:
+        return [ln.strip() for ln in fh if "->" in ln and not ln.lstrip().startswith("#")]
+
+
+def environment_findings(lines: list[str], kind: str | None, root: str | None) -> list[str]:
+    """Two declarations a blind test author cannot discover, refused when absent:
+    CI_ENVIRONMENT on an integration payload whose tests reach a live service
+    (#313), and TEST_FORM_RULES on either test author's payload when the target
+    repository declares refused forms (#301)."""
+    if kind not in ("unit-test-author", "integration-test-author"):
+        return []
+    defects: list[str] = []
+    names = {name for _, name, _ in field_lines(lines)}
+    if kind == "integration-test-author":
+        text = "\n".join(field_body(lines, f) or field_value(lines, f)
+                         for f in ("HARNESS", "TEST_FRAMEWORK", "BOUNDARIES"))
+        hit = LIVE_SERVICE.search(text)
+        if hit and "CI_ENVIRONMENT" not in names:
+            defects.append(
+                "the tests reach a live service (%r in HARNESS/TEST_FRAMEWORK/BOUNDARIES) but "
+                "the payload has no CI_ENVIRONMENT: name the services the target repository's CI "
+                "runner has, the skip/opt-out tokens it sets and the guard line a stack-backed "
+                "test opens with (compose_payloads.py fills it from "
+                "%s/ci-environment.txt). Without it the tests pass on the local stack and fail on "
+                "CI's first environment read." % (hit.group(0), REPO_CONFIG_DIR))
+        elif "CI_ENVIRONMENT" in names:
+            body = (field_body(lines, "CI_ENVIRONMENT") or field_value(lines, "CI_ENVIRONMENT")).lower()
+            if not body.strip().startswith("none") and not all(
+                    re.search(r"^\s*%s\s*:" % k, body, re.M) for k in CI_ENV_LINES):
+                defects.append(
+                    "CI_ENVIRONMENT must carry `services:`, `skip:` and `guard:` lines (write "
+                    "`none` for a line with nothing, or the whole field as `none` when the tests "
+                    "reach no live service).")
+    forms = repo_test_forms(root)
+    if forms:
+        if "TEST_FORM_RULES" not in names:
+            defects.append(
+                "the target repository declares %d refused test form(s) in %s/test-forms.txt "
+                "but the payload has no TEST_FORM_RULES: its gate would refuse the test only "
+                "after the suite is green. Compose it with compose_payloads.py."
+                % (len(forms), REPO_CONFIG_DIR))
+        elif "none declared" in (field_body(lines, "TEST_FORM_RULES")
+                                 or field_value(lines, "TEST_FORM_RULES")).lower():
+            defects.append("TEST_FORM_RULES says `none declared` but the target repository "
+                           "declares forms in %s/test-forms.txt." % REPO_CONFIG_DIR)
+    return defects
 
 
 def skeleton_findings(lines: list[str], kind: str | None) -> tuple[list[str], list[str]]:
@@ -1248,6 +1315,9 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     defects.extend(dead)
     warnings.extend(dead_warnings)
 
+    # 17. the target repository's CI environment and refused test forms
+    defects.extend(environment_findings(lines, kind, worktree or field_value(lines, "WORKTREE_DIR")))
+
     # 16. skeleton fields: contract path lines, citation, correction rounds
     skel_defects, skel_warnings = skeleton_findings(lines, kind)
     defects.extend(skel_defects)
@@ -1304,7 +1374,8 @@ def selftest() -> int:
              host: str | None = None, tools: list[str] | None = None,
              live: str | None = None, worktree: bool = False,
              allow_tokens: list[str] | None = None,
-             allow_paths: list[str] | None = None) -> None:
+             allow_paths: list[str] | None = None,
+             repo_files: dict[str, str] | None = None) -> None:
         nonlocal groups
         groups += 1
         with tempfile.TemporaryDirectory() as tmp:
@@ -1334,6 +1405,10 @@ def selftest() -> int:
             with open(os.path.join(real, ".agent-staging", "W-014.stale.md"), "w") as fh:
                 fh.write("## Problem\nqueues drop\n\n## Approach\nflush\n\n"
                          "## Acceptance criteria\n1. five shapes\n")
+            for rel, content in (repo_files or {}).items():
+                os.makedirs(os.path.dirname(os.path.join(real, rel)), exist_ok=True)
+                with open(os.path.join(real, rel), "w") as fh:
+                    fh.write(content)
             body = text.replace("{REAL}", real)
             live_path = live.replace("{REAL}", real) if live else None
             wt = real if worktree else None
@@ -1615,6 +1690,38 @@ def selftest() -> int:
 
     # --- issue #78: a routed checklist is checked the same way as the unit
     # author's, SUPPORT_PATHS included ---
+    # --- #313: CI_ENVIRONMENT for tests that reach a live service ---
+    stack = integ.replace("HARNESS: |\n  app_client\n",
+                          "HARNESS: |\n  app_client against a throwaway Postgres from testcontainers\n")
+    ci_env = ("CI_ENVIRONMENT: |\n  services: none (CI has no postgres)\n"
+              "  skip: SKIP_STACK_TESTS=1\n  guard: require_stack!();\n")
+    case("integration author: a service-backed test with no CI_ENVIRONMENT is refused",
+         stack, "integration-test-author", True, "no CI_ENVIRONMENT", host="claude", tools=rw)
+    case("integration author: a service-backed test with CI_ENVIRONMENT passes",
+         stack + ci_env, "integration-test-author", False, host="claude", tools=rw, live="{REAL}/.discovery/dossiers/W-014-x.md", must_warn="")
+    case("integration author: a CI_ENVIRONMENT without a guard line is refused",
+         stack + "CI_ENVIRONMENT: |\n  services: none\n  skip: none\n", "integration-test-author",
+         True, "`guard:`", host="claude", tools=rw)
+    case("integration author: no live service and no CI_ENVIRONMENT passes",
+         integ, "integration-test-author", False, host="claude", tools=rw, live="{REAL}/.discovery/dossiers/W-014-x.md", must_warn="")
+    # --- #301: TEST_FORM_RULES when the repository declares refused forms ---
+    forms = {".agent-pipeline/test-forms.txt": "# refused\nenv!(\"CARGO_MANIFEST_DIR\") -> testsupport::root()\n"}
+    case("integration author: a repo that declares refused forms, payload without the field, is refused",
+         integ, "integration-test-author", True, "no TEST_FORM_RULES", host="claude", tools=rw,
+         worktree=True, repo_files=forms)
+    case("integration author: TEST_FORM_RULES present passes",
+         integ + "TEST_FORM_RULES: |\n  env!(\"CARGO_MANIFEST_DIR\") -> testsupport::root()\n",
+         "integration-test-author", False, host="claude", tools=rw, worktree=True, repo_files=forms,
+         live="{REAL}/.discovery/dossiers/W-014-x.md", must_warn="")
+    case("integration author: `none declared` against a repo that declares forms is refused",
+         integ + "TEST_FORM_RULES: none declared\n", "integration-test-author", True,
+         "none declared", host="claude", tools=rw, worktree=True, repo_files=forms)
+    case("integration author: a repo with no test-forms file needs no TEST_FORM_RULES",
+         integ, "integration-test-author", False, host="claude", tools=rw, worktree=True, live="{REAL}/.discovery/dossiers/W-014-x.md", must_warn="")
+    case("unit author: a repo that declares refused forms, payload without the field, is refused",
+         unit_ok, "unit-test-author", True, "no TEST_FORM_RULES", host="opencode", worktree=True,
+         repo_files=forms)
+
     integ_grant = integ + "PROMISE_CHECKLIST: |\n  flush — invalid case: RepoGrant::mint(bad) raises\n"
     case("integration author with a routed checklist: an unstaged surface is a defect",
          integ_grant, "integration-test-author", True, "RepoGrant", host="claude", tools=rw,

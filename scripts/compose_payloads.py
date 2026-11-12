@@ -149,6 +149,7 @@ import re
 import shlex
 import subprocess
 import sys
+import shutil
 import tempfile
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -631,6 +632,56 @@ def logged_test_command(cmd: str, dossier_id: str, tag: str) -> str:
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_tests.py"), log, shlex.quote(cmd))
 
 
+REPO_CONFIG_DIR = ".agent-pipeline"
+TEST_FORMS_FILE = "test-forms.txt"
+CI_ENV_FILE = "ci-environment.txt"
+CI_ENV_KEYS = ("services", "skip", "guard")
+
+
+def repo_config_lines(root: str, name: str) -> list[str] | None:
+    """The target repository's own `.agent-pipeline/<name>`: its non-blank,
+    non-`#` lines, stripped; None when the file is not there."""
+    path = os.path.join(root, REPO_CONFIG_DIR, name)
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8") as fh:
+        return [ln.strip() for ln in fh if ln.strip() and not ln.strip().startswith("#")]
+
+
+def test_form_rules(root: str) -> str:
+    """TEST_FORM_RULES (#301): the repository's refused test-code forms, one
+    `refused form -> use instead` line each, read from
+    `.agent-pipeline/test-forms.txt` and pasted as written. A repository with no
+    such file (or an empty one) gets the explicit `none declared` sentence, never
+    an omitted field, so the author can tell "no rule" from "nobody looked"."""
+    lines = repo_config_lines(root, TEST_FORMS_FILE)
+    if not lines:
+        return ("none declared (no %s/%s in the repository)" % (REPO_CONFIG_DIR, TEST_FORMS_FILE))
+    for ln in lines:
+        if "->" not in ln or not ln.split("->", 1)[0].strip() or not ln.split("->", 1)[1].strip():
+            raise Refusal("%s/%s: line %r is not `refused form -> use instead`"
+                          % (REPO_CONFIG_DIR, TEST_FORMS_FILE, ln))
+    return "\n".join(lines)
+
+
+def ci_environment(root: str) -> str | None:
+    """CI_ENVIRONMENT (#313): what the target repository's CI runner has, read
+    from `.agent-pipeline/ci-environment.txt` — three `key: value` lines,
+    `services:` (the live services CI provides, `none` when it has none),
+    `skip:` (the opt-out / skip tokens CI sets, `none` when it sets none) and
+    `guard:` (the line a stack-backed test opens with). None when the file is
+    not there: the caller leaves the `@@FILL_CI_ENVIRONMENT@@` marker."""
+    lines = repo_config_lines(root, CI_ENV_FILE)
+    if lines is None:
+        return None
+    seen = {ln.split(":", 1)[0].strip().lower(): ln for ln in lines if ":" in ln}
+    missing = [k for k in CI_ENV_KEYS if k not in seen or not seen[k].split(":", 1)[1].strip()]
+    if missing:
+        raise Refusal("%s/%s lacks a value for: %s (write `none` when there is nothing)"
+                      % (REPO_CONFIG_DIR, CI_ENV_FILE, ", ".join(missing)))
+    return "\n".join(seen[k] for k in CI_ENV_KEYS)
+
+
 def compose_implementer(ctx: dict) -> list[Field]:
     """WORKTREE_DIR/BRANCH: mechanical — build mode forks a per-package
     worktree and branch suffix (`references/payloads/implementer.md`,
@@ -795,6 +846,7 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
             "add, spelling-checker tokens, id shapes — each verified against the "
             "repo itself"), block=True),
         "NAMING": Field("NAMING", NAMING_DEFAULT),
+        "TEST_FORM_RULES": Field("TEST_FORM_RULES", test_form_rules(ctx["root"]), block=True),
         "VOCABULARY": Field("VOCABULARY", placeholder(
             "VOCABULARY", "the project's own terms for the ideas under test")),
         "FIXTURES": Field("FIXTURES", placeholder(
@@ -812,6 +864,7 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
     apply_overrides(fields, sets, blocks={
         "CONTRACT", "PROMISE_CHECKLIST", "CONVENTIONS", "FIXTURES", "STYLE_SAMPLE",
         "SUPPORT", "SHARED_IDIOM", "DELIVERY_CHANGE", "CITATION", "FAILURES", "CORRECTION",
+        "TEST_FORM_RULES",
     })
     if "FAILURES" in fields and not is_placeholder(fields["FAILURES"].value) \
             and "BASELINE_COUNTS_FROM" not in fields:
@@ -821,7 +874,7 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
     order = ["CONTRACT", "PROMISE_CHECKLIST", "TEST_PATHS", "TEST_FRAMEWORK",
              "MAX_SINGLE_EDIT", "CITATION", "CONVENTIONS",
              "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
-             "NAMING", "VOCABULARY", "FIXTURES", "SHARED_IDIOM",
+             "NAMING", "TEST_FORM_RULES", "VOCABULARY", "FIXTURES", "SHARED_IDIOM",
              "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "BASELINE_COUNTS_FROM",
              "CONTRACT_HASH"]
     return ordered(fields, order)
@@ -877,6 +930,13 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
         "CITATION": Field("CITATION", CITATION_DEFAULT + "\n" + (
             "Where a file names its ticket, cite the Jira key `%s`; never a planning id." % jira
             if jira else "Never cite a planning id (a dossier id) in a test file."), block=True),
+        "TEST_FORM_RULES": Field("TEST_FORM_RULES", test_form_rules(root), block=True),
+        "CI_ENVIRONMENT": Field("CI_ENVIRONMENT", ci_environment(root) or placeholder(
+            "CI_ENVIRONMENT", "the services this repo's CI runner has, the skip/opt-out "
+            "tokens it sets, and the guard line a stack-backed test opens with — "
+            "`services:`/`skip:`/`guard:` lines, or write the repo's "
+            ".agent-pipeline/ci-environment.txt; `none` when the tests reach no live "
+            "service"), block=True),
         "BOUNDARIES": Field("BOUNDARIES", placeholder(
             "BOUNDARIES", "which two or three seams are substituted (e.g. IClock, an "
             "external API) — everything else runs for real")),
@@ -885,6 +945,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     apply_overrides(fields, sets, blocks={
         "CONTRACT", "HARNESS", "STYLE_SAMPLE", "PROMISE_CHECKLIST", "SHARED_IDIOM",
         "DELIVERY_CHANGE", "SUPPORT", "FAILURES", "CORRECTION", "CITATION",
+        "CI_ENVIRONMENT", "TEST_FORM_RULES",
     })
     if "FAILURES" in fields and not is_placeholder(fields["FAILURES"].value) \
             and "BASELINE_COUNTS_FROM" not in fields:
@@ -892,7 +953,8 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
             "BASELINE_COUNTS_FROM", "the sha the FAILURES counts were taken at, or "
             "`pre-change tree re-run` — never an earlier phase's numbers"))
     order = ["WORKTREE_DIR", "DOSSIER", "CONTRACT", "PROMISE_CHECKLIST", "TEST_PATHS",
-             "TEST_FRAMEWORK", "CITATION", "HARNESS", "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
+             "TEST_FRAMEWORK", "CITATION", "HARNESS", "CI_ENVIRONMENT", "TEST_FORM_RULES",
+             "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
              "BOUNDARIES", "SHARED_IDIOM", "DELIVERY_CHANGE", "FAILURES", "CORRECTION",
              "CONTRACT_HASH"]
     return ordered(fields, order)
@@ -1702,6 +1764,7 @@ PLACEHOLDER_FILL = {
     # else gets descriptive text.
     "TEST_COMMAND": "pytest -q",
     "HOOKS": "none",
+    "CI_ENVIRONMENT": "none",
     "OWNED_PATHS": "src/flush.py",
     "JIRA_KEY": "PROJ-142",
     "PROMISE_CHECKLIST": "flush — return meaning: with 3 items queued, assert the "
@@ -1908,6 +1971,56 @@ def selftest() -> int:
                           filled_it_path, "--kind", "integration-test-author", "--host", "claude",
                           "--worktree", root, "--live-dossier", dossier_path])
         check("integration-test-author filled payload lints clean", rc2 == 0, out2)
+
+        # --- #313 / #301: CI_ENVIRONMENT and TEST_FORM_RULES come from the target repo ---
+        check("no ci-environment file: the integration payload leaves @@FILL_CI_ENVIRONMENT@@",
+              "@@FILL_CI_ENVIRONMENT@@" in it_text)
+        check("no test-forms file: both authors say `none declared`, never omit the field",
+              "none declared (no .agent-pipeline/test-forms.txt" in it_text
+              and "none declared (no .agent-pipeline/test-forms.txt" in read_text(ut_cl_path))
+        cfg = os.path.join(root, REPO_CONFIG_DIR)
+        os.makedirs(cfg, exist_ok=True)
+        with open(os.path.join(cfg, TEST_FORMS_FILE), "w", encoding="utf-8") as fh:
+            fh.write("# refused forms\nenv!(\"CARGO_BIN_EXE_x\") -> testsupport::bin_path(\"x\")\n")
+        with open(os.path.join(cfg, CI_ENV_FILE), "w", encoding="utf-8") as fh:
+            fh.write("services: none (no postgres on the runner)\nskip: SKIP_STACK_TESTS=1\n"
+                     "guard: require_stack!();\n")
+        rc, it2_path, out = run_compose("IT2.md", [
+            "integration-test-author", "--host", "claude", "--contract-paths", "src/flush.py"])
+        it2 = read_text(it2_path) if rc == 0 else out
+        check("integration payload carries CI_ENVIRONMENT from the repo file",
+              "services: none (no postgres on the runner)" in it2
+              and "skip: SKIP_STACK_TESTS=1" in it2 and "guard: require_stack!();" in it2
+              and "@@FILL_CI_ENVIRONMENT@@" not in it2, it2[:200])
+        check("integration payload carries the refused form with its replacement",
+              'env!("CARGO_BIN_EXE_x") -> testsupport::bin_path("x")' in it2)
+        rc, ut2_path, out = run_compose("UT2.md", [
+            "unit-test-author", "--host", "claude", "--contract-paths", "src/flush.py"])
+        check("unit payload carries the refused form with its replacement",
+              rc == 0 and 'env!("CARGO_BIN_EXE_x") -> testsupport::bin_path("x")' in read_text(ut2_path))
+        with open(os.path.join(cfg, TEST_FORMS_FILE), "w", encoding="utf-8") as fh:
+            fh.write("a bare line with no arrow\n")
+        rc, _p, out = run_compose("UT3.md", [
+            "unit-test-author", "--host", "claude", "--contract-paths", "src/flush.py"])
+        check("a malformed test-forms line is refused", rc != 0 and "refused form -> use instead" in out, out)
+        with open(os.path.join(cfg, TEST_FORMS_FILE), "w", encoding="utf-8") as fh:
+            fh.write("env!(\"CARGO_BIN_EXE_x\") -> testsupport::bin_path(\"x\")\n")
+        with open(os.path.join(cfg, CI_ENV_FILE), "w", encoding="utf-8") as fh:
+            fh.write("services: none\n")
+        rc, _p, out = run_compose("IT3.md", [
+            "integration-test-author", "--host", "claude", "--contract-paths", "src/flush.py"])
+        check("an incomplete ci-environment file is refused", rc != 0 and "skip, guard" in out, out)
+        # the lint refuses the omission against the real repo files
+        stripped = "\n".join(ln for ln in it2.splitlines() if not ln.startswith(("TEST_FORM_RULES", "env!")))
+        lint_path = it2_path + ".stripped.md"
+        with open(lint_path, "w", encoding="utf-8") as fh:
+            fh.write(stripped + "\n")
+        rc2, out2 = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"),
+                          lint_path, "--kind", "integration-test-author", "--host", "claude",
+                          "--worktree", root, "--live-dossier", dossier_path])
+        check("the lint refuses a payload missing TEST_FORM_RULES the repo declares",
+              rc2 != 0 and "no TEST_FORM_RULES" in out2, out2)
+        shutil.rmtree(cfg)
 
         # --- reviewer, LENS: plan ---
         rc, rev_path, out = run_compose("R1.md", [
