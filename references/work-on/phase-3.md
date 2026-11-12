@@ -315,12 +315,27 @@ payload holds no diagram file and no dossier text from this step.
    feature should do?", options `A|Approved|fan-out starts` and
    `B|Changes requested|back to the contract`, the dashboard view of the
    three files linked in the question text, `--blocks` the Phase 4 fan-out.
-   Then `ask_owner.py wait`; the run waits for the answer.
+   Then `ask_owner.py wait`; the run waits for the answer, with no time-boxed
+   default (OQ-08 = A). The owner gives a verdict per element on the
+   dashboard canvas (OK, Question, Change, Remove from scope) and sends the
+   review in one action: the answer is `A` when every element is OK, else `B`
+   with one line per flagged element (verdict, diagram, element id, comment)
+   and the elements not yet looked at. A Question verdict reaches you as a
+   follow-up (`FOLLOWUP`, the question stays open; answer it with
+   `ask_owner.py reply`).
+   When the answer is `B`, read
+   `.discovery/visual-review/<ID>/review.json` (schema
+   `references/visual-review/review.schema.json`) for the element ids and
+   comments: each line's `anchor.diagram` and `anchor.element` name the
+   element, `verdict` is `change`, `remove` (out of scope) or `question`,
+   and a line with a different `anchor.graph_hash` than the file now has was
+   made on an older version of the picture. These ids and comments are the
+   input of the contract revision below.
 5. Record the outcome as a `## Build log` line, exactly one of:
 
    ```
    VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n> (<dashboard link>)
-   VISUAL-REVIEW: changes requested — <element ids the owner named>
+   VISUAL-REVIEW: changes requested — <element ids of the review.json lines with verdict change or remove>
    ```
 
    The counts are the node counts of the three files; `validate_pipeline.py

@@ -1,0 +1,95 @@
+// Visual review (VR-06 wiring): the dashboard side of the living product map. It runs scripts/vr_map.py (check, list)
+// on a repo root, with a timeout, and caches the staleness result on the map file's mtime.
+import { existsSync, readFileSync, statSync } from "node:fs"
+import { join, resolve, sep } from "node:path"
+import { checkGraph, layoutGraph, stripDollar, type ViewResult } from "./vrlayout.ts"
+
+export const MAP_REL = "docs/architecture/product-map.json"
+export const MAP_TIMEOUT_MS = 20_000
+/** A cached check is reused while the map's mtime is the same and it is younger than this (the code under the map can move on). */
+export const MAP_TTL_MS = 60_000
+export const vrMapScript = (): string => process.env.ASD_VR_MAP_BIN || join(import.meta.dir, "..", "..", "scripts", "vr_map.py")
+
+export type Diagram = { path: string; kind: string; title: string; view?: string }
+export type MapStatus = {
+  repo: string
+  hasMap: boolean
+  /** The count and the ids of stale elements; 0 and [] with no map or no check result. */
+  stale: number
+  ids: string[]
+  banner: string
+  /** Why there is no banner when it is not because the map is fresh: no map, check timed out, check failed. */
+  message: string
+  diagrams: Diagram[]
+  checkedAt: string
+}
+
+async function py(args: string[], timeoutMs: number): Promise<{ code: number; out: string; err: string; timedOut: boolean }> {
+  const p = Bun.spawn(["python3", vrMapScript(), ...args], { stdout: "pipe", stderr: "pipe", stdin: "ignore" })
+  let timedOut = false
+  const t = setTimeout(() => { timedOut = true; p.kill() }, timeoutMs)
+  try {
+    const [out, err] = await Promise.all([new Response(p.stdout as ReadableStream).text(), new Response(p.stderr as ReadableStream).text()])
+    const code = await p.exited
+    return { code, out, err, timedOut }
+  } finally { clearTimeout(t) }
+}
+
+const cache = new Map<string, { mtime: number; at: number; status: MapStatus }>()
+export const clearMapCache = (): void => cache.clear()
+
+/** The committed diagrams of the repo (`vr_map.py list --json`) and, when the map exists, its staleness (`check --json`). */
+export async function mapStatus(repo: string, root: string, timeoutMs = MAP_TIMEOUT_MS): Promise<MapStatus> {
+  const map = join(root, MAP_REL)
+  const has = existsSync(map)
+  const mtime = has ? statSync(map).mtimeMs : 0
+  const key = root
+  const hit = cache.get(key)
+  if (hit && hit.mtime === mtime && Date.now() - hit.at < MAP_TTL_MS) return hit.status
+  const st: MapStatus = { repo, hasMap: has, stale: 0, ids: [], banner: "", message: "", diagrams: [], checkedAt: new Date().toISOString() }
+  const ls = await py(["list", root, "--json"], timeoutMs)
+  if (ls.code === 0) {
+    try {
+      const j = JSON.parse(ls.out)
+      st.diagrams = Array.isArray(j.diagrams) ? j.diagrams.filter((d: any) => d && typeof d.path === "string").map((d: any) => ({ path: d.path, kind: String(d.kind ?? "diagram"), title: String(d.title ?? d.path), view: typeof d.view === "string" ? d.view : undefined })) : []
+      if (!j.has_map && typeof j.message === "string") st.message = j.message
+    } catch { st.message = "vr_map list printed no JSON" }
+  } else st.message = ls.timedOut ? "vr_map list timed out" : "vr_map list failed: " + ls.err.trim().split("\n").pop()
+  if (!has) st.message = "no committed product map yet (" + MAP_REL + ")"
+  else {
+    const ck = await py(["check", root, map, "--json", "--no-metrics"], timeoutMs)
+    // exit 0 fresh, 1 stale (the JSON is on stdout either way), 2 unreadable
+    try {
+      if (ck.timedOut || ck.code > 1) throw new Error(ck.timedOut ? "timed out after " + timeoutMs / 1000 + " s" : ck.err.trim().split("\n").pop() || "exit " + ck.code)
+      const j = JSON.parse(ck.out)
+      const stale: any[] = Array.isArray(j.stale) ? j.stale : []
+      st.stale = stale.length
+      st.ids = stale.map((s) => String(s.id))
+      st.banner = typeof j.banner === "string" ? j.banner : ""
+    } catch (e) { st.message = "the map could not be checked: " + (e as Error).message }
+  }
+  cache.set(key, { mtime, at: Date.now(), status: st })
+  return st
+}
+
+/** One committed diagram as the canvas takes it: a product-map or other graph file, laid out like a dossier view. Only paths `list` named are opened. */
+export async function openDiagram(root: string, rel: string, listed: Diagram[]): Promise<{ kind: "graph"; title: string; views: Record<string, ViewResult> } | { kind: "mermaid"; title: string; text: string }> {
+  const d = listed.find((x) => x.path === rel)
+  if (!d) throw new Error("not a listed diagram")
+  const abs = resolve(root, rel)
+  if (!abs.startsWith(resolve(root) + sep)) throw new Error("path leaves the repo")
+  const text = readFileSync(abs, "utf8")
+  if (!rel.endsWith(".json")) {
+    const m = text.match(/```mermaid\n([\s\S]*?)```/)
+    return { kind: "mermaid", title: d.title, text: (m ? m[1] : text).trim() }
+  }
+  const g = JSON.parse(text)
+  const out: ViewResult = { file: rel, graph: null, layout: null, issues: checkGraph(g) }
+  if (typeof g?.title === "string") out.title = g.title
+  if (!out.issues.length) {
+    out.graph = stripDollar(g)
+    out.view = g.view
+    try { out.layout = await layoutGraph(out.graph) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
+  }
+  return { kind: "graph", title: d.title, views: { [g.view]: out } }
+}

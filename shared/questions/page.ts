@@ -151,6 +151,11 @@ details.mstubs{margin-top:10px}details.mstubs>summary{font-size:.78rem;letter-sp
 .vrsvg .vroff{display:none}.vrsvg g.vrn,.vrsvg g.vre,.vrsvg g.vrg{cursor:pointer;outline:none}.vrsvg g.sel>rect:not([stroke=transparent]){stroke-width:4}.vrsvg g:focus-visible>rect{stroke-width:4}.vrsvg g.vre.sel .vrline{stroke-width:4}
 .vrinsp{border:1px solid var(--bd);border-radius:10px;padding:10px 12px;overflow:auto;max-height:560px;background:var(--card)}.vrinsp h3{margin:0 0 6px;font-size:.95rem}.vrinsp p{margin:5px 0}.vrev{word-break:break-all;font-size:12px}
 .vrnote{margin-top:6px}.vrmm{margin-top:8px;display:flex;gap:8px;align-items:flex-start}.vrta{flex:1;font:12px/1.4 ui-monospace,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
+.vrban{margin:8px 0;padding:8px 10px;border:1px solid var(--warn);background:var(--warnbg);color:var(--fg);border-radius:8px;font-size:.88rem}
+.vrrev{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;margin-top:8px}.vrsum{font-weight:650}.vrprev{margin-top:8px}.vrprev textarea{width:100%;min-height:120px;font:12px/1.4 ui-monospace,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
+.vrvd{margin-top:10px;padding-top:8px;border-top:1px solid var(--bd)}.vrvd .vrgrp{flex-wrap:wrap;margin:6px 0}.vrvd textarea{width:100%;min-height:60px;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
+.vrvd .btn[aria-pressed=true]{border-color:var(--acc);background:var(--accbg);font-weight:650}.vrcode{font-size:11px;font-weight:700}
+.vrmaplist{margin:6px 0;padding:0;list-style:none}.vrmaplist li{display:flex;gap:8px;align-items:center;padding:4px 0;border-top:1px solid var(--bd)}.vrmaplist .grow{flex:1}.vrpre{white-space:pre-wrap;font:12px/1.4 ui-monospace,monospace;background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:8px;max-height:360px;overflow:auto}
 </style></head><body>
 <header><a class="brand" href="/">Pipeline</a><nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav><a class="pill dmlink" href="/chat" title="Talk to the agent, as in the Slack DM">Ask the agent</a><span class="pill" id="slack"></span><span class="pill" id="upd"></span></header>
 <main id="view"></main>
@@ -197,7 +202,44 @@ async function vrLoad(repo, id) {
   try { const r = await fetch('/api/visual-review?dossier=' + enc(id) + '&repo=' + enc(repo)); d = r.ok ? await r.json() : null; } catch (e) { d = null; }
   const had = VR[key] && VR[key].data ? VR[key].data.rev : null;
   VR[key] = { data: d };
+  if (d && d.review) { const st = VRS[key] = VRS[key] || {}; st.review = d.review; if (st.paint) st.paint(); }
+  vrMapLoad(repo);
   if ((d ? d.rev : null) !== had) render();
+}
+/* VR-06: the committed product map of a repo (stale banner, the diagram list), from the server's cached vr_map check. */
+const VRM = {};
+async function vrMapLoad(repo) {
+  let d = null; try { const r = await fetch('/api/visual-review/map?repo=' + enc(repo)); d = r.ok ? await r.json() : null; } catch (e) { d = null; }
+  const had = JSON.stringify(VRM[repo] && VRM[repo].status || null); const cur = VRM[repo] = VRM[repo] || {}; cur.status = d;
+  if (JSON.stringify(d) !== had) { render(); const st = VRS[repo + '/~map']; if (st && st.paint) st.paint(); }
+}
+async function vrOpenDiagram(repo, path) {
+  const cur = VRM[repo] = VRM[repo] || {}; cur.open = path; cur.text = ''; cur.err = '';
+  let d = null; try { const r = await fetch('/api/visual-review/diagram?repo=' + enc(repo) + '&path=' + enc(path)); d = await r.json(); if (!r.ok) { cur.err = d.error || ('HTTP ' + r.status); d = null; } } catch (e) { cur.err = 'request failed'; }
+  const key = repo + '/~map';
+  if (d && d.kind === 'mermaid') { cur.text = d.text; VR[key] = { data: null }; }
+  else if (d) { VR[key] = { data: { dossier: '', rev: path + ':' + Date.now(), views: { L0: d.views.L0 || null, L1: d.views.L1 || null, L2: d.views.L2 || null }, issues: [], mapRepo: repo } }; if (!d.views.L0 && !d.views.L1 && !d.views.L2) { cur.err = 'This diagram has a view the canvas does not draw.'; VR[key] = { data: null }; } }
+  render();
+}
+function vrOpenQ(dossier, repo) {
+  return S.q.find(q => q.state === 'open' && q.dossier === dossier && qRepo(q) === repo && q.qkind === 'product' && q.options.some(o => /^changes requested/i.test(o.label)) && q.options.some(o => /^approved/i.test(o.label)));
+}
+/* The repo page: the committed product map (stale banner) and the committed diagrams, each openable on the canvas. */
+function vrRepoPanel(repo) {
+  const m = VRM[repo] || {}; const st = m.status; if (!st) return null;
+  const kids = [h('h2', {}, ['Product map and diagrams'])];
+  if (!st.hasMap) kids.push(h('p', { class: 'small mut' }, [st.message || 'No committed product map yet.']));
+  else if (st.stale) kids.push(h('div', { class: 'vrban' }, ['The product map is stale: ' + st.stale + ' element' + (st.stale === 1 ? '' : 's') + ' (' + st.ids.join(', ') + ').']));
+  else if (st.message) kids.push(h('p', { class: 'small mut' }, [st.message]));
+  else kids.push(h('p', { class: 'small mut' }, ['The product map is up to date.']));
+  if (st.diagrams.length) kids.push(h('ul', { class: 'vrmaplist' }, st.diagrams.map(d => h('li', {}, [h('span', { class: 'chip neutral' }, [d.kind]), h('span', { class: 'grow' }, [d.title + ' · ' + d.path]),
+    h('button', { class: 'btn sm', type: 'button', 'data-act': 'vr-open', 'data-repo': repo, 'data-path': d.path }, [m.open === d.path ? 'Open (shown)' : 'Open on canvas'])]))));
+  else kids.push(h('p', { class: 'small mut' }, ['No committed diagrams in docs/architecture.']));
+  if (m.err) kids.push(h('div', { class: 'ctl-msg bad' }, [m.err]));
+  if (m.text) kids.push(h('pre', { class: 'vrpre' }, [m.text]));
+  const v = VR[repo + '/~map']; const d = v && v.data;
+  if (d) kids.push(h('section', { class: 'vr', 'data-k': 'vr', 'data-raw': '1', 'data-html': '', 'data-vrkey': repo + '/~map@' + d.rev }, []));
+  return h('section', { class: 'panel', 'data-k': 'vrmap' }, kids);
 }
 /* The panel above the dossier's questions: a host the morph leaves alone (data-raw, constant data-html); vrMount fills it. */
 function vrPanel(r) {
@@ -207,7 +249,7 @@ function vrPanel(r) {
 }
 function vrMount() {
   const host = document.querySelector('.vr[data-vrkey]'); if (!host) return;
-  const tag = host.getAttribute('data-vrkey'); if (host.__vr === tag) return;
+  const tag = host.getAttribute('data-vrkey'); if (host.__vr === tag) { const k0 = tag.split('@')[0]; if (VRS[k0] && VRS[k0].paintBar) VRS[k0].paintBar(); return; }
   host.__vr = tag; const key = tag.split('@')[0]; const v = VR[key];
   host.replaceChildren(); if (v && v.data) vrBuild(host, key, v.data);
 }
@@ -233,6 +275,13 @@ function vrBuild(host, key, data) {
   const body = vrDom('div', 'vrbody', null, host), svg = vrEl('svg', { class: 'vrsvg', role: 'img', 'aria-label': 'Change diagram' }); body.appendChild(svg);
   const insp = vrDom('aside', 'vrinsp', null, body);
   const note = vrDom('div', 'small mut vrnote', null, host);
+  const slash = key.indexOf('/'), vrRepo = key.slice(0, slash), vrDossier = data.dossier || '';
+  const reviewing = !!data.review;
+  const ban = vrDom('div', 'vrban', null, host); ban.hidden = true;
+  const rbar = vrDom('div', 'vrrev', null, host); rbar.hidden = !reviewing;
+  const sumEl = vrDom('span', 'vrsum', '', rbar), sendB = vrDom('button', 'btn primary sm', 'Send review', rbar), sendNote = vrDom('span', 'small mut', '', rbar); sendB.type = 'button';
+  const prev = vrDom('div', 'vrprev', null, host); prev.hidden = true;
+  const gone = vrDom('div', 'small mut', null, host);
   const mm = vrDom('div', 'vrmm', null, host); mm.hidden = true;
   const mmText = vrDom('textarea', 'vrta', null, mm); mmText.readOnly = true; mmText.rows = 8; mmText.setAttribute('aria-label', 'Mermaid text');
   const mmCopy = vrDom('button', 'btn sm', 'Copy', mm); mmCopy.type = 'button';
@@ -252,7 +301,62 @@ function vrBuild(host, key, data) {
     vrDom('p', 'small mut', 'Evidence' + (tiers ? ' (' + tiers + ')' : '') + (ev.length ? '' : ': none'), insp);
     ev.forEach(x => vrDom('code', 'vrev', vrEv(x), vrDom('p', 'small', null, insp)));
     Object.keys(els).forEach(k => els[k].g.classList.toggle('sel', k === id));
+    st.sel = id; if (reviewing && cur.graph.nodes.some(n => n.id === id)) verdictBox(id);
   }
+  /* VR-04: the verdict of the owner on one element. Saved to review.json by the server; a Question with a comment also goes to the agent. */
+  const VD = [['ok', 'OK'], ['question', 'Question'], ['change', 'Change'], ['remove', 'Remove from scope']];
+  const VD_CODE = { ok: 'OK', question: '?', change: 'Δ', remove: '✕' };
+  const lineFor = (view, id) => ((st.review && st.review.lines) || []).find(l => l.anchor.diagram === view && l.anchor.element === id);
+  function verdictBox(id) {
+    const old = lineFor(st.view, id), box = vrDom('div', 'vrvd', null, insp); box.setAttribute('data-vd', id);
+    let pick = old ? old.verdict : '';
+    const state = vrDom('p', 'small', old ? (old.state === 'outdated' ? 'Outdated: this verdict was made on an earlier version of the diagram (' + old.verdict + '). Save it again to confirm.' : 'Your verdict: ' + old.verdict) : 'Not yet looked at.', box);
+    const grp = vrDom('div', 'vrgrp', null, box), btns = {};
+    VD.forEach(v => { const b = vrDom('button', 'btn sm', v[1], grp); b.type = 'button'; b.setAttribute('data-vd-pick', v[0]); btns[v[0]] = b; b.setAttribute('aria-pressed', String(pick === v[0])); b.onclick = () => { pick = v[0]; Object.keys(btns).forEach(k => btns[k].setAttribute('aria-pressed', String(k === pick))); save.disabled = false; }; });
+    const ta = vrDom('textarea', '', null, box); ta.maxLength = 1000; ta.value = old ? old.comment : ''; ta.placeholder = 'Optional comment'; ta.setAttribute('aria-label', 'Comment on this element');
+    const row = vrDom('div', 'vrgrp', null, box), save = vrDom('button', 'btn primary sm', 'Save verdict', row), clr = vrDom('button', 'btn sm', 'Clear', row), msg = vrDom('span', 'small mut', '', row);
+    save.type = clr.type = 'button'; save.disabled = !pick; clr.disabled = !old;
+    const go = async (verdict) => {
+      save.disabled = clr.disabled = true; msg.textContent = 'Saving…';
+      try {
+        const r = await fetch('/api/visual-review/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dossier: vrDossier, repo: vrRepo, diagram: st.view, element: id, verdict: verdict, comment: ta.value }) });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { msg.textContent = j.error || ('HTTP ' + r.status); save.disabled = !pick; clr.disabled = !old; return; }
+        st.review = j.review; paintAll(); if (j.followup) load(['questions']);
+      } catch (e) { msg.textContent = 'request failed'; save.disabled = !pick; clr.disabled = !old; }
+    };
+    save.onclick = () => go(pick); clr.onclick = () => go('unset');
+  }
+  function paintBadges() {
+    if (!cur || !cur.layout) return; svg.querySelectorAll('.vr-vd').forEach(e => e.remove());
+    cur.graph.nodes.forEach(n => { const l = lineFor(st.view, n.id), e = els[n.id], b = cur.layout.boxes[n.id]; if (!l || !e || !b) return;
+      const t = vrEl('text', { class: 'vr-vd vrcode', x: b.x + 8, y: b.y + b.h - 7, fill: 'var(--' + (l.state === 'current' ? ({ ok: 'ok', question: 'que', change: 'warn', remove: 'bad' })[l.verdict] : 'mut') + ')' }, e.g);
+      t.textContent = VD_CODE[l.verdict] + (l.state === 'outdated' ? ' (old)' : ''); });
+  }
+  /* The summary, the Send button and the stale banner: cheap, runs on every page render. */
+  function paintBar() {
+    const m = VRM[vrRepo] && VRM[vrRepo].status;
+    if (m && m.hasMap && m.stale) { ban.hidden = false; ban.textContent = 'The committed product map is stale: ' + m.stale + ' element' + (m.stale === 1 ? '' : 's') + ' (' + m.ids.join(', ') + ').'; } else { ban.hidden = true; ban.textContent = ''; }
+    if (!reviewing || !st.review) return;
+    const s = st.review.summary; sumEl.textContent = s.text;
+    const q = vrOpenQ(vrDossier, vrRepo);
+    sendB.disabled = !q || !s.checked;
+    sendNote.textContent = !q ? 'No open visual-review question for this dossier.' : !s.checked ? 'Check at least one element first.' : '';
+    const g = st.review.lines.filter(l => l.state === 'gone');
+    gone.textContent = g.length ? 'Element gone from the diagram (the comment is kept in review.json): ' + g.map(l => l.anchor.diagram + ' ' + l.anchor.element + (l.comment ? ' — ' + l.comment : '')).join('; ') : '';
+  }
+  function paintAll() { paintBar(); paintBadges(); if (st.sel && cur && cur.graph && cur.graph.nodes.some(n => n.id === st.sel)) inspect(st.sel); }
+  st.paint = paintAll; st.paintBar = paintBar;
+  sendB.onclick = async () => {
+    prev.hidden = false; prev.replaceChildren(); vrDom('p', 'small mut', 'Preview of the answer to the question:', prev);
+    let a = null; try { const r = await fetch('/api/visual-review/answer?dossier=' + enc(vrDossier) + '&repo=' + enc(vrRepo)); a = r.ok ? await r.json() : null; } catch (e) { a = null; }
+    if (!a || !a.canSend) { vrDom('p', 'small', a ? 'There is no open question to answer.' : 'Could not build the answer.', prev); return; }
+    vrDom('p', 'small', 'This sends option ' + a.option + ' (' + (a.choice === 'A' ? 'Approved' : 'Changes requested') + ') and closes the question. The first answer is final.', prev);
+    const ta = vrDom('textarea', '', null, prev); ta.readOnly = true; ta.value = a.text; ta.setAttribute('aria-label', 'Answer text');
+    const row = vrDom('div', 'vrgrp', null, prev), ok = vrDom('button', 'btn primary sm', 'Confirm and send', row), no = vrDom('button', 'btn sm', 'Cancel', row), msg = vrDom('span', 'small mut', '', row); ok.type = no.type = 'button';
+    no.onclick = () => { prev.hidden = true; };
+    ok.onclick = async () => { ok.disabled = true; msg.textContent = 'Sending…'; await post(a.question, { kind: 'answer', option: a.option, text: a.text, review: true }); if (S.qerr[a.question]) { msg.textContent = S.qerr[a.question]; ok.disabled = false; } else { prev.hidden = true; } };
+  };
   function visible(status) { return VR_PASS[st.mode](status); }
   function applyMode() {
     Object.keys(mb).forEach(k => mb[k].setAttribute('aria-pressed', String(k === st.mode)));
@@ -267,7 +371,7 @@ function vrBuild(host, key, data) {
   function vrNote(v, mode) { const c = { added: 0, changed: 0, removed: 0 }; v.graph.nodes.forEach(n => { if (c[n.status] !== undefined && visible(n.status)) c[n.status]++; }); const is = v.issues.length ? ' · ' + v.issues.length + ' validation issue' + (v.issues.length > 1 ? 's' : '') + ': ' + v.issues.slice(0, 3).map(i => i.message).join('; ') : ''; return v.graph.title + ' · ' + c.added + ' added, ' + c.changed + ' changed, ' + c.removed + ' removed shown' + is; }
   function draw() {
     cur = data.views[st.view]; Object.keys(tb).forEach(k => tb[k].setAttribute('aria-pressed', String(k === st.view)));
-    svg.replaceChildren(); els = {}; root = null; insp.replaceChildren(); vrDom('p', 'small mut', 'Click an element for its description and evidence. Drag to pan; Ctrl or Cmd + wheel to zoom.', insp);
+    svg.replaceChildren(); els = {}; root = null; st.sel = ''; insp.replaceChildren(); vrDom('p', 'small mut', 'Click an element for its description and evidence. Drag to pan; Ctrl or Cmd + wheel to zoom.', insp);
     if (!cur.layout || !cur.graph) { note.textContent = cur.issues.map(i => i.message).join('; ') || 'This view could not be laid out.'; return; }
     const g = cur.graph, L = cur.layout, defs = vrEl('defs', {}, svg), mk = vrEl('marker', { id: 'vr-ar', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, defs);
     vrEl('path', { d: 'M0 0L10 5L0 10z', fill: 'var(--mut)' }, mk); root = vrEl('g', {}, svg);
@@ -288,7 +392,7 @@ function vrBuild(host, key, data) {
       vrMark(gg, n.status, b.x + b.w - 12, b.y + 12);
       if ((n.evidence || []).some(x => x.tier === 'inferred')) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = '? inferred'; }
       tip(gg, n); });
-    applyMode(); fit();
+    applyMode(); fit(); paintBadges();
   }
   function vrBg(s) { return s === 'context' ? 'chip' : vrTone(s) + 'bg'; }
   function vrTone(s) { return s === 'added' ? 'ok' : s === 'changed' ? 'warn' : s === 'removed' ? 'bad' : 'mut'; }
@@ -318,7 +422,8 @@ function vrBuild(host, key, data) {
   svg.addEventListener('wheel', e => { if (!(e.ctrlKey || e.metaKey)) return; e.preventDefault(); const r = svg.getBoundingClientRect(); zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
   svg.addEventListener('click', e => { const t = e.target.closest('[data-id]'); if (t) inspect(t.getAttribute('data-id')); });
   svg.addEventListener('keydown', e => { if (e.key !== 'Enter' && e.key !== ' ') return; const t = e.target.closest && e.target.closest('[data-id]'); if (t) { e.preventDefault(); inspect(t.getAttribute('data-id')); } });
-  draw();
+  if (reviewing && !st.review) st.review = data.review;
+  draw(); paintBar();
 }
 
 // ---- state ----
@@ -765,6 +870,7 @@ function repoView(repo) {
   // The stubs (the current one and the next) first, then Open work, each full width, one under the other.
   kids.push(sideColumn(repo));
   const dp = docPrsView(repo); if (dp) kids.push(dp);
+  const vm = vrRepoPanel(repo); if (vm) kids.push(vm);
   kids.push(h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]));
   return h('div', {}, kids);
 }
@@ -1235,6 +1341,7 @@ async function load(what) {
   await Promise.all(jobs);
   await loadDetail();
   if (R.kind === 'item') await vrLoad(R.repo, R.id);
+  if (R.kind === 'repo') await vrMapLoad(R.repo);
   S.loaded = true; S.changedAt = Date.now(); render();
 }
 let sse = null;
@@ -1353,6 +1460,7 @@ document.addEventListener('click', (e) => {
       if (v) { ta.value = ''; post(t.dataset.qid, { kind: 'followup', text: v }); }
     } else if (act === 'ctl') control(t);
     else if (act === 'copy') { const lab = t.dataset.label || t.textContent; t.dataset.label = lab; try { navigator.clipboard.writeText(t.dataset.text); t.textContent = 'Copied'; setTimeout(() => { t.textContent = lab; }, 1500); } catch (_) {} }
+    else if (act === 'vr-open') vrOpenDiagram(t.dataset.repo, t.dataset.path);
     else if (act === 'ctl-cancel') { const s = S.ctl[t.dataset.repo + '/' + t.dataset.id]; if (s) s.confirm = null; render(); }
     else if (act === 'tab') { S.tab[t.dataset.key] = t.dataset.tab; render(); }
     else if (act === 'dsel') { const m = S.dsel[t.dataset.key] = S.dsel[t.dataset.key] || {}; if (m[t.dataset.id]) delete m[t.dataset.id]; else m[t.dataset.id] = true; render(); }

@@ -109,13 +109,16 @@ export class AnsweredError extends Error {}
 export function appendOwner(
   dir: string,
   id: string,
-  m: { kind: "followup" | "answer"; text: string; option?: string; via: "page" | "slack" | "cli" },
+  m: { kind: "followup" | "answer"; text: string; option?: string; via: "page" | "slack" | "cli"; anchor?: { diagram: string; element: string; graph_hash?: string }; review?: boolean },
 ): Question {
   const q = readQuestion(dir, id)
   if (!q) throw new Error(`no such question: ${id}`)
   if (q.state === "answered") throw new AnsweredError(`${id} is already answered`)
   const line: Line = { ts: new Date().toISOString(), from: "owner", kind: m.kind, text: cut(m.text), via: m.via }
   if (m.kind === "answer") line.option = m.option ?? ""
+  // VR-04: a line about one diagram element carries its anchor; the batch answer of a visual review is marked so Slack does not repeat it.
+  if (m.anchor) line.anchor = m.anchor
+  if (m.review) line.review = true
   const fd = openSync(join(dir, `${id}.jsonl`), "a")
   try {
     writeSync(fd, JSON.stringify(line) + "\n")
