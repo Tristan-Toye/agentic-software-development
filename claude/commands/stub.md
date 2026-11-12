@@ -125,7 +125,7 @@ merge in `git log --merges --reverse origin/development..<stub>`:
 - the paths the merge touched — `git diff --name-only <merge>^ <merge>`,
   collapsed to crates and top-level dirs;
 - the verdict lines its build recorded — `SUITE:`, `MUTATION:`,
-  `STABILITY:` from `## Build log`, read with `dossier_edit.py section`.
+  `STABILITY:` from `## Build log`, read with `dossier_edit.py section <dossier> 'Build log' --all`.
 
 Reading budget: a source file you need in several places is one `code_outline`
 and one `code_item` call naming every item (`A | B::c`), a document section is

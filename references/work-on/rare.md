@@ -8,12 +8,13 @@
 - **A question only the owner can settle goes through `ask_owner.py`.** Where
   this file says to ask the user or stop for a ruling, first apply the ask
   policy (`references/owner-questions.md`, "The ask policy"); when it is a
-  question, run `scripts/ask_owner.py ask --kind design|product|uncertainty`, as `references/owner-questions.md`
+  question, run `scripts/ask_owner.py ask --kind design|product|uncertainty --build-log <live dossier>`, as `references/owner-questions.md`
   ("Asking, in a run") says: every option with its consequence, your
   recommendation, and what it blocks. Keep working on what is not blocked.
   When nothing else can proceed, run `ask_owner.py wait <id>` as a background
-  command under Claude Code and end the turn. Log `QUESTION:` and then
-  `OWNER-RULING (<date>):` in `## Build log`. Never pick an option of a question you asked.
+  command under Claude Code and end the turn (`wait <id> --build-log <live dossier>`).
+  `ask --build-log` logs `QUESTION:` and `wait --build-log` logs `OWNER-RULING (<date>):` in `## Build log`; a follow-up you accept as the ruling
+  goes in with `accept --build-log`. Never pick an option of a question you asked.
 
 ### Resuming an agent from its own transcript
 

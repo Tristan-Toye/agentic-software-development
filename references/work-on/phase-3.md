@@ -6,17 +6,19 @@
 ### The contract-reviewer has no size gate, and its skip must be auditable
 
 **`contract-reviewer` has no size gate, and its skip must still be
-auditable** (the why is in Phase 3). Write exactly one of these into
-`## Build log` before the fan-out, every run:
+auditable** (the why is in Phase 3). Record exactly one of these in the
+dossier front matter before the fan-out, every run:
 
 ```
-CONTRACT-REVIEW: spawned <session ref> — <N> checklist lines, <N> DEFECT, <N> AMBIGUITY
-CONTRACT-REVIEW: skipped — <reason>
+dossier_edit.py set <dossier> 'contract_review=<contract commit SHA the review read>'
+dossier_edit.py set <dossier> 'contract_review=skipped — <reason>'
 ```
 
-`scripts/validate_pipeline.py --dossier <ID> --pre-fanout` refuses to pass
-while neither line is present — and likewise without the `HOOKS:` line
-(Phase 2), the `PAYLOAD-LINT:` line and the `ADMISSION:` line (Phase 4), and
+The SHA is the contract commit the reviewer's stubs came from. If the contract
+changes afterwards the SHA is stale, and `scripts/validate_pipeline.py
+--dossier <ID> --pre-fanout` refuses until the review runs again and the new
+SHA is recorded. It also refuses without the `hooks:` field (Phase 2), the
+`PAYLOAD-LINT:` line and the `ADMISSION:` line (Phase 4), and
 the `CENSUS:` and `CHECKLIST-IDS:` lines (Phase 3). A
 skip stays possible; a *silent* skip does not.
 
@@ -68,8 +70,12 @@ member (`references/formats/dossier.md` § "The observability checklist") is the
 derivation: keep its output. One line per member per category the docstring
 actually states — return meaning, named error, order, empty case, invalid
 case, concurrency semantics, and the derive-set each assertion shape needs —
-becomes `PROMISE_CHECKLIST`. Write it into
-`## Build log` before you spawn and pass it verbatim in the unit author's
+becomes `PROMISE_CHECKLIST`. Write it as the artefact
+`python3 scripts/build_records.py checklist write <dossier>` (one
+`member — category: promise` line per promise, from stdin; it lands in
+`.discovery/checklists/<ID>.md`) before you spawn; the gate checks that the
+file exists and covers the contract's members, and its failure names the
+missing IDs. Pass it verbatim in the unit author's
 payload beside `CONTRACT`. A promise missing from a test traces to a thin
 checklist: a Phase 3 defect to fix in the checklist and the contract
 together, never a reason to ask a blind agent to re-read what its payload
@@ -281,3 +287,5 @@ are its whole world. So a criterion that states a scale the contract does not
 as an explicit strength requirement — in `FIXTURES` or `TEST_FRAMEWORK`,
 phrased as a property of the contract surface, never as a criterion number —
 or the contract itself must be fixed to state the scale.
+
+**Driver (only when `ASD_DRIVER_PRE_FANOUT_CHECK=on`).** `python3 scripts/pre_fanout_check.py --dossier ID` runs the pre-fan-out mechanics (validation, receipts, criteria owner/env map, census grep, frozen counts, gates, slices vs checklist) and prints evidence only; you rule on it. Exit 2 means a surprise: do the step by hand. `shadow` writes evidence to `.git/asd-drivers/driver-shadow/` and changes nothing; unset or `off` means ignore this paragraph.

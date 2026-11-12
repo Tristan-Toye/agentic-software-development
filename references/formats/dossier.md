@@ -22,7 +22,7 @@ branch: fix/PROJ-142-flush-coalescing
 worktree: ../repo-W-014
 pr: null
 blocked_by: []         # dossier IDs that must reach `done` first; a done
-                       # blocker stays (removal needs BLOCKER-REMOVED: in the log)
+                       # blocker stays (removal: blocker done, or `--reason`)
 adrs: []               # ADR IDs this build produced; /work-on fills it
 ---
 ```
@@ -258,18 +258,38 @@ without a substitute.
 Append-only. One line per event, newest last. Record: each spawn and its
 outcome, each worktree merge, each test-versus-implementation arbitration and
 its ruling, each `CONTRACT-CHANGE:` decision, each review round and its change
-requests, the deferred-issues ledger `/work-on` Phase 9 captures at close
-(one `DEFERRED:` header plus one line per untackled issue, each ending with
-its `contract:` and `effort:`; `DEFERRED: none` allowed), and anything that surprised the orchestrator. This section replaces
-the changelog, the review files, and the anomaly log.
+requests, the one-line summary of each structured record below, and anything
+that surprised the orchestrator. This section replaces the changelog, the
+review files, and the anomaly log. It is a human view: no gate or tool depends
+on a line in it that a record below also holds.
 
-`scripts/validate_pipeline.py --pre-fanout` requires seven lines before the
-fan-out: `CONTRACT-REVIEW:`, `HOOKS:`, `PAYLOAD-LINT:`, `ADMISSION:`,
-`SUITE-RUNNER:`, `CENSUS:` (a pin the contract shifts, with its owner, or
-`CENSUS: none — <what was grepped>`), and `CHECKLIST-IDS:` (the repo's
-promise-coverage script's parse count against the draft `PROMISE_CHECKLIST`,
-or `CHECKLIST-IDS: none — no coverage script`; a `parsed 0/` line is
-refused).
+`scripts/validate_pipeline.py --pre-fanout` reads the pre-fan-out facts from
+front matter and the log: the `hooks:` and `contract_review:` front matter
+fields (the contract commit SHA the review read, or `skipped — <reason>`; a SHA
+that is no longer the current contract commit is refused as stale), and the
+log lines `PAYLOAD-LINT:`, `ADMISSION:`, `SUITE-RUNNER:`, `CENSUS:` (a pin the
+contract shifts, with its owner, or `CENSUS: none — <what was grepped>`), and
+`CHECKLIST-IDS:` (the repo's promise-coverage script's parse count against the
+draft `PROMISE_CHECKLIST`, or `CHECKLIST-IDS: none — no coverage script`; a
+`parsed 0/` line is refused).
+
+**Structured build records.** Facts a gate or a tool reads live in files next
+to the dossier, written by `scripts/build_records.py` and
+`scripts/dossier_edit.py`, never scraped from the log (the `.yaml` files hold
+JSON, a YAML subset):
+
+- `.discovery/checklists/<ID>.md` — the `PROMISE_CHECKLIST`, one
+  `member — category: promise` line each; the gate checks it exists and names
+  the contract's members.
+- `.discovery/deferred/<ID>.yaml` — `items` (`id` D-n, `evidence`, `fix`,
+  `boundary`, `blast_radius`, `state` open|fixing|fixed|wontfix|dossier) and
+  `sources`; "nothing deferred" is `items: []` plus sources.
+- `.discovery/decisions/<ID>.yaml` — `decision`, `alternatives`, `why`,
+  `evidence`, `phase`, the source of the Phase 8 ADRs.
+- `.discovery/blocker-removals/<ID>.yaml` — a blocker removed while its
+  dossier was not done, with the `--reason` given.
+- A row-3 lesson is a `Lesson:` git trailer on the commit that fixes the
+  contract, not a log line.
 
 **One line per event means no embedded documents.** A reviewer reply lands as
 a ledger — one line per change request:

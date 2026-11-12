@@ -7,6 +7,7 @@ import { describeTool, type ToolDef } from "./tools"
 export function opencodeTool(tool: any, def: ToolDef, execute: (args: any, ctx: any) => any) {
   const args: Record<string, unknown> = {}
   for (const p of def.params) {
+    if (p.hosts && !p.hosts.includes("opencode")) continue
     let schema = p.enum ? tool.schema.enum(p.enum) : tool.schema[p.type]()
     if (p.optional) schema = schema.optional()
     args[p.name] = schema.describe(p.description)

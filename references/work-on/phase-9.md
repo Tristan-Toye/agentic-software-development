@@ -26,7 +26,7 @@
    what the union left duplicated.
 
    **Review every `updated dossier` line the finalizer prints before you
-   commit** — read the diff (`git diff --stat`, or `git_state.py`) for each
+   commit** — read the diff (`git diff --stat`, or `git_state.py --full`) for each
    one it names. It rewrites only dossiers this branch added or modified; a
    `NOTICE` line about a dossier it left alone is informational, never a
    rewrite to chase.
@@ -190,30 +190,35 @@
  8. **Capture the deferred issues.** Your awareness of the code is at its
     highest now, and chat dies with the session; a later `/deferred` cannot
     reconstruct what you read here. Start from the `NOTICED:` lines in
-    `## Build log` (every stage logged them as it went, so a run whose stages
+    `## Build log` (`dossier_edit.py section <dossier> 'Build log' --all`; every stage logged them as it went, so a run whose stages
     were separate processes keeps them), then ask working memory: *what
     product-code issues are you aware of that this run did not tackle?* Sweep everything
     the run laid eyes on — the primary-surface files you read in full, every
     arbitration's evidence, every review reply, the `NOTICED:` harvest, every
     change request demoted for missing evidence, every `TOUCHED_BEYOND` path
     you accepted — write every item down before judging any, verify each
-    `path:line`, and append the ledger to `## Build log`:
+    `path:line`, and record each one in the structured record
+    `.discovery/deferred/<ID>.yaml`:
 
     ```
-    DEFERRED: <N> — sources: <own reads, NOTICED harvest, review replies>
-    - D-1 <kind> <title> — <path:line> — <risk> — <why deferred> — contract: <none|internal|external> — effort: <S|M|L>
+    python3 scripts/build_records.py deferred add <ID> --kind <kind> --title '<title>' \
+        --loc <path:line> --evidence '<path:line — what you saw>' --fix '<proposed fix>' \
+        --boundary '<none|internal|external>' --blast-radius '<risk>' \
+        --note 'effort: <S|M|L>' --source '<own reads|NOTICED harvest|review replies>' --log <dossier>
     ```
 
-    Every line ends with `contract:` and `effort:`, test tooling and other
+    Every item carries `boundary` and `effort`, test tooling and other
     non-product items included: you judge them best now, and the dashboard
-    and `/fix-deferred` triage on them when no report row exists. `contract`
-    is the boundary a fix crosses (`none`; `internal` — a signature or module
-    seam; `external` — a route, schema, event, config key or CLI with
-    consumers); `effort` is `S` (under an hour), `M` (hours) or `L` (days),
-    as `/deferred` defines them.
+    and `/fix-deferred` triage on them. `boundary` is what a fix crosses
+    (`none`; `internal` — a signature or module seam; `external` — a route,
+    schema, event, config key or CLI with consumers); `effort` is `S` (under
+    an hour), `M` (hours) or `L` (days), as `/deferred` defines them. `--log`
+    appends one summary line to the build log for a human reader; nothing
+    reads it.
 
-    `DEFERRED: none — sources: …` is a real answer; defend it or do not
-    write it. The D-IDs are minted here, once; the `/deferred` run that
+    No issue is a real answer: `build_records.py deferred none <ID>
+    --source 'own reads' --log <dossier>` writes `items: []` plus the
+    sources. Defend it or do not write it. The D-IDs are minted here, once; the `/deferred` run that
     follows — normally the very next command — reuses them and appends what
     its own recall adds. Capture only; `/deferred` renders the report.
  9. **Report**: the ticket, the branch, the PR URL, the suite runner and
@@ -226,3 +231,5 @@
     unblocks, and the deferred
     count from step 8 — `N deferred issues captured; /deferred renders them`
     — with the worst risk named in one clause when N is not zero.
+
+**Driver (only when `ASD_DRIVER_FINALIZE_PR=on`).** `python3 scripts/finalize_pr.py --dossier ID --worktree PATH --target BRANCH` does the merge of the target, finalize-ids, validation, conflict-marker and duplicate-ADR checks and prints evidence; a merge conflict aborts and exits 2 for you to resolve. `shadow` runs in a throwaway worktree and changes nothing; `off` or unset: ignore this paragraph.

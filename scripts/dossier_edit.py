@@ -16,7 +16,7 @@ fixed order").
 
     dossier_edit.py log DOSSIER 'LINE' ['LINE' ...]    append to ## Build log
     dossier_edit.py log DOSSIER -  < lines.txt          append stdin's lines
-    dossier_edit.py set DOSSIER KEY=VALUE [...]          set front matter scalars
+    dossier_edit.py set DOSSIER KEY=VALUE [...] [--reason TEXT]   set front matter scalars
     dossier_edit.py set DOSSIER 'KEY=[a, b]' [...]       set a whole list field
     dossier_edit.py add DOSSIER KEY=ITEM [...]           append to a list field
     dossier_edit.py remove DOSSIER KEY=ITEM [...]        remove an item from a list field
@@ -33,13 +33,19 @@ keys that already exist (`status`, `updated`, `branch`, `worktree`, `pr`,
 goes through `add`, `remove`, or `set KEY=[a, b]` (the whole list, written in
 the inline form), in either the inline `[a, b]` or the block `- a` form.
 `section` prints the heading line through the line before the next heading of
-the same or a higher level, fences respected, with 1-based line numbers.
+the same or a higher level, fences respected, with 1-based line numbers. The
+default output is capped at 120 lines (the head; for `## Build log` the last
+120) with a last line naming how many were left out: `--all` prints the whole
+section, `--lines N` sets the cap.
 
-`blocked_by` is guarded the way validate_pipeline.py guards it: `remove` and a
-`set` that drops an id are refused unless `## Build log` already holds
-`BLOCKER-REMOVED: <id> — <reason>` for that id (log it first with `log`). A
-done blocker records what the dossier builds on, so it leaves on purpose or not
-at all. `replace-section` swaps one section's body — everything under its
+`blocked_by` is guarded from facts, the way validate_pipeline.py guards it:
+`remove` and a `set` that drops an id are allowed when the blocker dossier's
+own front matter says `status: done`; otherwise the same call must carry
+`--reason TEXT`, which is recorded in `.discovery/blocker-removals/<ID>.yaml`
+(the fact the validator reads) and as one `BLOCKER-REMOVED:` build-log line
+(the human view). No separate pre-written log line is needed. `set` also
+creates three build-record keys on first use: `hooks`, `contract_commit`,
+`contract_review`. `replace-section` swaps one section's body — everything under its
 heading up to the next heading of the same or a higher level, sub-sections
 included — for the file's text, keeping the heading line. It refuses `## Build
 log` (append-only, `log` only) and any section that contains it, and a new body
@@ -65,11 +71,18 @@ No third-party imports: this runs wherever python3 does.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+
+try:
+    import fcntl
+except ImportError:  # not POSIX: no lock, the atomic rename still holds
+    fcntl = None  # type: ignore
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 KEY_RE = re.compile(r"^(?P<key>[A-Za-z_][\w-]*):(?P<rest>.*)$")
@@ -154,7 +167,81 @@ def append_log(text: str, entries: list[str]) -> tuple[str, int]:
     return body + "\n" + "\n".join(entries) + "\n", len(entries)
 
 
+def normalise_entry(entry: str) -> str:
+    entry = entry.rstrip()
+    return entry if entry.startswith("- ") else f"- {entry}"
+
+
+@contextlib.contextmanager
+def locked(path: str):
+    """An exclusive flock on the dossier file, held across a read-modify-write.
+    write() replaces the file by rename, so the lock is on an inode that may
+    stop being the dossier: after taking it, check the path still names the
+    inode and, when it does not, lock the new one. The one lock every Build log
+    writer (the log subcommand, the scripts' --log, the checkpoint tool) shares."""
+    if fcntl is None:
+        yield
+        return
+    while True:
+        fh = open(path, "r", encoding="utf-8")
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                same = os.fstat(fh.fileno()).st_ino == os.stat(path).st_ino
+            except OSError:
+                same = False
+            if same:
+                yield
+                return
+        finally:
+            fh.close()
+
+
+def log_lines(path: str, entries: list[str]) -> tuple[int, int]:
+    """Append lines to `## Build log` of the dossier at `path` under the lock,
+    skipping a line already present verbatim in that section (an idempotent
+    re-run adds nothing). Returns (appended, skipped). Raises Refused like
+    append_log, OSError when the file cannot be read or written."""
+    with locked(path):
+        text = read(path)
+        lines = text.split("\n")
+        level2 = [h for h in headings(lines) if h[1] == 2]
+        have = set(x.rstrip() for x in lines[level2[-1][0] + 1 :]) if level2 and level2[-1][2].startswith("Build log") else set()
+        fresh: list[str] = []
+        for e in entries:
+            if not e.strip():
+                continue
+            n = normalise_entry(e)
+            if n not in have:
+                have.add(n)
+                fresh.append(n)
+        wanted = len([e for e in entries if e.strip()])
+        if not fresh:
+            # Still refuse a dossier whose last section is not the log.
+            append_log(text, entries)
+            return 0, wanted
+        new, n = append_log(text, fresh)
+        write_verified(path, new, f"appending {n} line(s) to ## Build log")
+        return n, wanted - n
+
+
+def log_or_say(path: str, entries: list[str]) -> str:
+    """The scripts' `--log DOSSIER`: write through log_lines and return one short
+    status line for the script to print. Never raises: a script's own verdict
+    does not depend on whether its build-log line landed."""
+    try:
+        n, skipped = log_lines(path, entries)
+    except Refused as err:
+        return f"build log: not written — {err}"
+    except OSError as err:
+        return f"build log: not written — {err}"
+    return f"build log: {n} line(s) written" + (f", {skipped} already there" if skipped else "")
+
+
 BLOCKER_KEY = "blocked_by"
+# Facts the build records in front matter, created on first `set`: the hook policy decided at the contract
+# commit (`none` or `<hook> — <policy>`), the contract commit's SHA, and the SHA the contract review read.
+CREATABLE_KEYS = {"hooks", "contract_commit", "contract_review"}
 
 
 def key_index(fm: list[str], key: str) -> int | None:
@@ -185,27 +272,81 @@ def build_log_text(body: list[str]) -> str:
     return "\n".join(body[level2[0][0] :]) if level2 else ""
 
 
-def check_blockers_removed(key: str, removed: list[str], body: list[str]) -> None:
-    """validate_pipeline.py's rule: an id leaving `blocked_by` needs a
-    `BLOCKER-REMOVED: <id> — <reason>` line in ## Build log first."""
+def blocker_is_settled(directory: str | None, wid: str) -> bool:
+    """True when the blocker dossier's own front matter says it is finished:
+    `status: done` (its PR is recorded; the merge detector writes `done`)."""
+    if not directory:
+        return False
+    try:
+        names = sorted(n for n in os.listdir(directory) if n.startswith(wid) and n.endswith(".md"))
+    except OSError:
+        return False
+    for name in names:
+        try:
+            fm, _ = split_front_matter(read(os.path.join(directory, name)))
+        except (OSError, ValueError):
+            continue
+        facts = {m.group("key"): m.group("rest").partition(" #")[0].strip().strip("'\"")
+                 for l in fm if (m := KEY_RE.match(l))}
+        if facts.get("id") == wid and facts.get("status") == "done":
+            return True
+    return False
+
+
+def check_blockers_removed(key: str, removed: list[str], ctx: dict | None) -> None:
+    """An id leaving `blocked_by` is decided from facts: free when the blocker
+    dossier is `done`; otherwise the same call must carry `--reason TEXT`
+    (ctx["reason"]). Reasoned removals are queued in ctx["reasoned"] for the
+    caller to record. A blocker never leaves silently."""
     if key != BLOCKER_KEY or not removed:
         return
-    log = build_log_text(body)
+    ctx = ctx if ctx is not None else {}
     for wid in removed:
-        if not re.search(r"BLOCKER-REMOVED:\s*" + re.escape(wid) + r"\s*[—-]+\s*\S", log):
+        if blocker_is_settled(ctx.get("dir"), wid):
+            continue
+        reason = (ctx.get("reason") or "").strip()
+        if not reason:
             raise Refused(
-                f"`blocked_by` would drop {wid}. A blocker stays unless ## Build log first holds "
-                f"`BLOCKER-REMOVED: {wid} — <reason>` (log it with `dossier_edit.py log`, then retry)"
+                f"`blocked_by` would drop {wid}, which is not done. A blocker stays unless it is done "
+                f"or the same call carries `--reason TEXT` (retry with `--reason '<why>'`)"
             )
+        ctx.setdefault("reasoned", []).append((wid, reason))
 
 
-def set_fields(text: str, pairs: list[tuple[str, str]]) -> tuple[str, list[str]]:
+def record_blocker_removal(path: str, text: str, wid: str, reason: str) -> str:
+    """Record a reasoned blocker removal: the fact in `.discovery/blocker-removals/<ID>.yaml` (what
+    validate_pipeline.py reads), and the one-line human summary in ## Build log."""
+    fm, _ = split_front_matter(text)
+    did = next((m.group("rest").strip() for l in fm if (m := KEY_RE.match(l)) and m.group("key") == "id"), "")
+    out = []
+    if did:
+        rec = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(path))), "blocker-removals", did + ".yaml")
+        os.makedirs(os.path.dirname(rec), exist_ok=True)
+        try:
+            with open(rec, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            data = {"removals": []}
+        data.setdefault("removals", []).append({"blocker": wid, "reason": reason})
+        with open(rec, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        out.append(f"recorded in {rec}")
+    out.append(log_or_say(path, [f"BLOCKER-REMOVED: {wid} — {reason}"]))
+    return "; ".join(out)
+
+
+def set_fields(text: str, pairs: list[tuple[str, str]], ctx: dict | None = None) -> tuple[str, list[str]]:
     fm, body = split_front_matter(text)
     changes: list[str] = []
     for key, value in pairs:
         index = key_index(fm, key)
+        if index is None and key in CREATABLE_KEYS and not value.startswith("["):
+            fm.append(f"{key}: {value}")
+            changes.append(f"{key}: (new) -> {value}")
+            continue
         if index is None:
-            raise Refused(f"front matter has no `{key}:`; set changes an existing key, it never invents one")
+            raise Refused(f"front matter has no `{key}:`; set changes an existing key, it never invents one "
+                          f"(except {', '.join(sorted(CREATABLE_KEYS))})")
         rest = KEY_RE.match(fm[index]).group("rest")  # type: ignore[union-attr]
         old, _, comment = rest.partition(" #")
         old = old.strip()
@@ -216,7 +357,7 @@ def set_fields(text: str, pairs: list[tuple[str, str]]) -> tuple[str, list[str]]
             if not value.endswith("]"):
                 raise Refused(f"a list value looks like [a, b], got {value!r}")
             new_items = [x.strip() for x in value[1:-1].split(",") if x.strip()]
-            check_blockers_removed(key, [i for i in old_items if i not in new_items], body)
+            check_blockers_removed(key, [i for i in old_items if i not in new_items], ctx)
             fm[index:end] = [f"{key}: [{', '.join(new_items)}]{tail}"]
             changes.append(f"{key}: [{', '.join(old_items)}] -> [{', '.join(new_items)}]")
             continue
@@ -248,7 +389,7 @@ def add_items(text: str, pairs: list[tuple[str, str]]) -> tuple[str, list[str]]:
     return join_front_matter(fm, body), changes
 
 
-def remove_items(text: str, pairs: list[tuple[str, str]]) -> tuple[str, list[str]]:
+def remove_items(text: str, pairs: list[tuple[str, str]], ctx: dict | None = None) -> tuple[str, list[str]]:
     """Take items out of list fields. `blocked_by` is guarded: see check_blockers_removed."""
     fm, body = split_front_matter(text)
     changes: list[str] = []
@@ -262,7 +403,7 @@ def remove_items(text: str, pairs: list[tuple[str, str]]) -> tuple[str, list[str
         if item not in items:
             changes.append(f"{key}: does not hold {item}")
             continue
-        check_blockers_removed(key, [item], body)
+        check_blockers_removed(key, [item], ctx)
         if kind == "inline":
             fm[index] = f"{key}: [{', '.join(i for i in items if i != item)}]{tail}"
         else:
@@ -295,7 +436,23 @@ def replace_section(text: str, heading: str, new_body: str) -> tuple[str, str]:
     raise Refused(f"no heading `{heading}` outside a code fence")
 
 
-def section(text: str, heading: str) -> str:
+SECTION_CAP = 120
+
+
+def section(text: str, heading: str, cap: int | None = None) -> str:
+    """One section with line numbers. `cap` bounds the lines printed (None: all): the
+    head of the section, except `## Build log`, which keeps its tail (newest lines);
+    a last line says how many were left out and how to get them."""
+    out = _section_all(text, heading)
+    rows = out.split("\n")
+    if cap is None or len(rows) <= cap:
+        return out
+    if heading.lstrip("#").strip().strip("`").lower() == "build log":
+        return "\n".join([rows[0], f"... ({len(rows) - cap} earlier line(s) omitted; --all prints the whole section)"] + rows[-(cap - 1):])
+    return "\n".join(rows[:cap] + [f"... ({len(rows) - cap} more line(s); --all prints the whole section, --lines N a longer head)"])
+
+
+def _section_all(text: str, heading: str) -> str:
     lines = text.split("\n")
     want = heading.lstrip("#").strip().strip("`").lower()
     hs = headings(lines)
@@ -685,9 +842,13 @@ def run(argv: list[str]) -> int:
         p = sub.add_parser(name)
         p.add_argument("dossier")
         p.add_argument("pairs", nargs="+", help="KEY=VALUE")
+        if name != "add":
+            p.add_argument("--reason", metavar="TEXT", help="why a blocker that is not done leaves `blocked_by`; recorded, and enough on its own")
     p_sec = sub.add_parser("section", help="print one section with line numbers")
     p_sec.add_argument("dossier")
     p_sec.add_argument("heading")
+    p_sec.add_argument("--all", action="store_true", help="print the whole section (default: the first %d lines; `Build log`: the last)" % SECTION_CAP)
+    p_sec.add_argument("--lines", type=int, metavar="N", help="cap at N lines instead of %d" % SECTION_CAP)
     p_rep = sub.add_parser("replace-section", help="replace one section's body from a file")
     p_rep.add_argument("dossier")
     p_rep.add_argument("heading")
@@ -701,26 +862,33 @@ def run(argv: list[str]) -> int:
     if not args.cmd:
         ap.error("a subcommand is required unless --selftest")
     try:
-        text = read(args.dossier)
-    except OSError as err:
-        print(f"dossier_edit: {err}", file=sys.stderr)
-        return 2
-    try:
         if args.cmd == "log":
             entries = sys.stdin.read().splitlines() if args.lines == ["-"] else args.lines
-            new, n = append_log(text, entries)
-            write_verified(args.dossier, new, f"appending {n} line(s) to ## Build log")
+            n, skipped = log_lines(args.dossier, entries)
             tail = read(args.dossier).rsplit("## Build log", 1)[1]
-            lost = [e for e in entries if e and e not in tail]
+            lost = [e for e in entries if e.strip() and normalise_entry(e) not in tail.split("\n")]
             if lost:
                 print(f"dossier_edit: appended, but the re-read Build log is missing "
                       f"{len(lost)} of the line(s) handed in: {lost[0][:80]}", file=sys.stderr)
                 return 1
-            print(f"dossier_edit: appended {n} line(s) to ## Build log")
-        elif args.cmd in ("set", "add", "remove"):
+            print(f"dossier_edit: appended {n} line(s) to ## Build log"
+                  + (f" ({skipped} already there, skipped)" if skipped else ""))
+            return 0
+        text = read(args.dossier)
+    except OSError as err:
+        print(f"dossier_edit: {err}", file=sys.stderr)
+        return 2
+    except Refused as err:
+        print(f"dossier_edit: REFUSED — {err}", file=sys.stderr)
+        return 1
+    try:
+        if args.cmd in ("set", "add", "remove"):
             fn = {"set": set_fields, "add": add_items, "remove": remove_items}[args.cmd]
-            new, changes = fn(text, pairs_of(args.pairs))
+            ctx = {"dir": os.path.dirname(os.path.abspath(args.dossier)), "reason": getattr(args, "reason", None)}
+            new, changes = (fn(text, pairs_of(args.pairs), ctx) if args.cmd != "add" else fn(text, pairs_of(args.pairs)))
             write_verified(args.dossier, new, f"{args.cmd} {args.pairs}")
+            for wid, why in ctx.get("reasoned", []):
+                print(f"dossier_edit: {record_blocker_removal(args.dossier, text, wid, why)}")
             for change in changes:
                 print(f"dossier_edit: {change}")
         elif args.cmd == "replace-section":
@@ -745,7 +913,7 @@ def run(argv: list[str]) -> int:
                 return 1
             print(f"dossier_edit: {len(notes)} contract block(s) equal their files, member by member")
         else:
-            print(section(text, args.heading))
+            print(section(text, args.heading, None if args.all else (args.lines or SECTION_CAP)))
     except Refused as err:
         print(f"dossier_edit: REFUSED — {err}", file=sys.stderr)
         return 1
@@ -802,6 +970,21 @@ def selftest() -> int:
     except Refused:
         pass
 
+    # One lock, one dedupe: log_lines under parallel writers loses nothing and doubles nothing.
+    with tempfile.TemporaryDirectory() as ltd:
+        lp = os.path.join(ltd, "W-001.md")
+        open(lp, "w", encoding="utf-8").write(SAMPLE)
+        check("log_lines appends and reports", log_lines(lp, ["alpha", "- beta"]) == (2, 0) and read(lp).endswith("- first\n- alpha\n- beta\n"))
+        check("log_lines skips a line already present, so a re-run adds nothing", log_lines(lp, ["alpha", "- beta"]) == (0, 2) and read(lp).count("- alpha") == 1)
+        check("log_lines keeps the new lines of a half-present batch", log_lines(lp, ["alpha", "gamma", "gamma"]) == (1, 2) and read(lp).endswith("- beta\n- gamma\n"))
+        check("log_lines does not dedupe against text outside the build log", log_lines(lp, ["Title"]) == (1, 0))
+        procs = [subprocess.Popen([sys.executable, os.path.abspath(__file__), "log", lp, f"par {i}", "par shared"]) for i in range(12)]
+        check("parallel writers all exit 0", all(p.wait() == 0 for p in procs))
+        got = read(lp)
+        check("parallel writers lose no line", all(f"- par {i}\n" in got for i in range(12)))
+        check("parallel writers write a shared line once", got.count("- par shared\n") == 1)
+        check("the dossier is still whole after the race", got.startswith("---\n") and got.count("## Build log") == 1)
+
     new, changes = set_fields(SAMPLE, [("status", "building"), ("pr", "https://x/1")])
     check("set keeps the comment", "status: building  # planned | ready" in new)
     check("set reports old and new", changes[0] == "status: ready -> building")
@@ -823,35 +1006,66 @@ def selftest() -> int:
     check("section stops at the next level-2 heading", out.splitlines()[-1].endswith("text") and "## Build log" not in out)
     check("section ignores a fenced ##", "## not a heading" in out)
     check("section numbers lines", out.startswith("13\t## Contract"))
+    big = SAMPLE + "\n".join(f"- line {k}" for k in range(300)) + "\n"
+    capped = section(big, "Build log", 20).split("\n")
+    check("section caps a long Build log to its tail and says so", len(capped) == 21 and "earlier line(s) omitted" in capped[1] and capped[-1].endswith("line 299"))
+    check("section with no cap prints everything", len(section(big, "Build log").split("\n")) > 300)
+    check("section caps a long other section to its head", "more line(s)" in section(big.replace("## Build log", "## Long"), "Long", 5).split("\n")[-1])
 
     # --- lists: remove, whole-list set, and the blocked_by guard ---
     blk = SAMPLE.replace("pr: null\n---", "pr: null\nblocked_by: [W-0001, W-0002]  # why\nrelated:\n  - a\n  - b\n---")
-    logged = blk + "- BLOCKER-REMOVED: W-0001 — the dependency was wrong\n"
+    bdir = tempfile.mkdtemp()
+    with open(os.path.join(bdir, "W-0001.md"), "w") as fh:
+        fh.write("---\nid: W-0001\nstatus: done\n---\n")
+    with open(os.path.join(bdir, "W-0002.md"), "w") as fh:
+        fh.write("---\nid: W-0002\nstatus: building\n---\n")
 
-    def refused(fn, text, pairs) -> bool:
+    def refused(fn, text, pairs, ctx=None) -> bool:
         try:
-            fn(text, pairs)
+            fn(text, pairs, ctx) if ctx is not None else fn(text, pairs)
             return False
         except Refused:
             return True
 
-    check("remove refuses a blocker with no BLOCKER-REMOVED line", refused(remove_items, blk, [("blocked_by", "W-0001")]))
-    check("remove refuses a reasonless BLOCKER-REMOVED", refused(remove_items, blk + "- BLOCKER-REMOVED: W-0001 —\n", [("blocked_by", "W-0001")]))
-    check("remove refuses when the line names another id", refused(remove_items, blk + "- BLOCKER-REMOVED: W-0002 — x\n", [("blocked_by", "W-0001")]))
-    new, changes = remove_items(logged, [("blocked_by", "W-0001")])
-    check("remove takes a justified blocker out of an inline list", "blocked_by: [W-0002]  # why" in new and changes == ["blocked_by: - W-0001"])
+    check("remove refuses a not-done blocker with no reason", refused(remove_items, blk, [("blocked_by", "W-0002")], {"dir": bdir}))
+    check("remove refuses a blank reason", refused(remove_items, blk, [("blocked_by", "W-0002")], {"dir": bdir, "reason": "  "}))
+    check("a pre-written log line no longer counts", refused(remove_items, blk + "- BLOCKER-REMOVED: W-0002 — x\n", [("blocked_by", "W-0002")], {"dir": bdir}))
+    new, changes = remove_items(blk, [("blocked_by", "W-0001")], {"dir": bdir})
+    check("remove takes a done blocker out with no reason", "blocked_by: [W-0002]  # why" in new and changes == ["blocked_by: - W-0001"])
+    ctx = {"dir": bdir, "reason": "the dependency was wrong"}
+    new, _ = remove_items(blk, [("blocked_by", "W-0002")], ctx)
+    check("a reason alone justifies a not-done blocker and is queued for the record", "blocked_by: [W-0001]" in new and ctx["reasoned"] == [("W-0002", "the dependency was wrong")])
     new, changes = remove_items(blk, [("related", "a")])
     check("remove takes an item out of a block list", "related:\n  - b\n---" in new and "  - a" not in new)
     _, changes = remove_items(blk, [("blocked_by", "W-0099")])
     check("remove of an item not held changes nothing", changes == ["blocked_by: does not hold W-0099"])
     check("remove refuses a scalar", refused(remove_items, blk, [("pr", "x")]))
 
-    check("set list refuses to drop a blocker unjustified", refused(set_fields, blk, [("blocked_by", "[W-0001]")]))
-    check("set list refuses an emptied blocker list", refused(set_fields, blk, [("blocked_by", "[]")]))
-    new, changes = set_fields(blk, [("blocked_by", "[W-0001, W-0002, W-0003]")])
+    check("set list refuses to drop a not-done blocker with no reason", refused(set_fields, blk, [("blocked_by", "[W-0001]")], {"dir": bdir}))
+    check("set list refuses an emptied list while one blocker is not done", refused(set_fields, blk, [("blocked_by", "[]")], {"dir": bdir}))
+    new, _ = set_fields(blk, [("blocked_by", "[]")], {"dir": bdir, "reason": "both obsolete"})
+    check("set list empties the blockers with a reason", "blocked_by: []  # why" in new)
+    new, _ = set_fields(blk, [("blocked_by", "[W-0002]")], {"dir": bdir})
+    check("set list may drop a done blocker unasked", "blocked_by: [W-0002]  # why" in new)
+    new, changes = set_fields(blk, [("hooks", "none"), ("contract_commit", "abc1234")])
+    check("set creates the build-record keys", "hooks: none" in new and "contract_commit: abc1234" in new)
+    check("set still never invents other keys", refused(set_fields, blk, [("invented", "x")]))
+    with tempfile.TemporaryDirectory() as td:
+        os.makedirs(os.path.join(td, "dossiers"))
+        dp = os.path.join(td, "dossiers", "W-0002.md")
+        with open(dp, "w") as fh:
+            fh.write(SAMPLE.replace("id: W-001", "id: W-0002").replace("pr: null\n---", "pr: null\nblocked_by: [W-0009]\n---") + "\n## Build log\n")
+        rc = run(["remove", dp, "blocked_by=W-0009"])
+        rc2 = run(["remove", dp, "blocked_by=W-0009", "--reason", "obsolete"])
+        with open(os.path.join(td, "blocker-removals", "W-0002.yaml")) as fh:
+            rec = json.load(fh)
+        with open(dp) as fh:
+            written = fh.read()
+        check("the CLI refuses without a reason and records one given on the same call",
+              rc == 1 and rc2 == 0 and rec["removals"] == [{"blocker": "W-0009", "reason": "obsolete"}]
+              and "- BLOCKER-REMOVED: W-0009 — obsolete" in written and "blocked_by: []" in written)
+    new, _ = set_fields(blk, [("blocked_by", "[W-0001, W-0002, W-0003]")])
     check("set list may add a blocker", "blocked_by: [W-0001, W-0002, W-0003]  # why" in new)
-    new, _ = set_fields(logged, [("blocked_by", "[W-0002]")])
-    check("set list may drop a justified blocker", "blocked_by: [W-0002]  # why" in new)
     new, changes = set_fields(blk, [("related", "[x, y]")])
     check("set list turns a block list into the inline form", "related: [x, y]\n---" in new and "  - a" not in new and changes == ["related: [a, b] -> [x, y]"])
     check("set list refuses a scalar key", refused(set_fields, blk, [("pr", "[a]")]))

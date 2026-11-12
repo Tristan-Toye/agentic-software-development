@@ -4,7 +4,7 @@
 ## Phase 5 — Test strength gate, then merge into the base branch
 
 **Spawning and workflows.** The rules for spawning an agent and for the two plugin
-workflows are in `phase-4.md`: `ref_section` with `phase-4` and the headings
+workflows are in `phase-4-conditional.md`: `ref_section` with `phase-4-conditional` and the headings
 "Spawning under Claude Code" and "Under Claude Code — two workflows".
 
 **Before any merge, prove the new tests can fail.** Blindness guarantees the
@@ -125,3 +125,5 @@ therefore a signal, not a chore**: it proves the package table was wrong. Log
 it, resolve it, and fix `## Work packages` so the next run does not repeat it.
 
 Remove each implementer worktree once its branch has merged.
+
+**Driver (only when `ASD_DRIVER_MERGE_PACKAGES=on`).** `python3 scripts/merge_packages.py --dossier ID --branch PKG=BRANCH ...` merges packages in dependency order, checking each branch's diff against its owned paths first; a path outside them or a conflict stops with exit 2 and you take over. Accepted hook outputs are listed, not judged. `ASD_DRIVER_STRENGTH_GATE_PREP=on` likewise gives `python3 scripts/strength_gate_prep.py` (coverage, weak-pattern flags, per-test stub red-run) as evidence for the strength gate; the ruling stays yours. `shadow` records evidence only; `off` or unset: ignore this paragraph.

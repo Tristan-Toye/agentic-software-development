@@ -1,6 +1,6 @@
 // Run: bun --no-install shared/test/mcp.test.ts
 // Spawns the MCP server as Claude Code does (stdio, newline-delimited JSON-RPC) and drives it.
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -15,7 +15,7 @@ const proc = Bun.spawn(["bun", "--no-install", join(root, "shared", "claude", "m
   stdin: "pipe",
   stdout: "pipe",
   stderr: "pipe",
-  env: { ...process.env, CLAUDE_PROJECT_DIR: dir },
+  env: { ...process.env, CLAUDE_PROJECT_DIR: dir, ASD_RUNS_DIR: join(dir, "runs") },
 })
 const reader = proc.stdout.getReader()
 const decoder = new TextDecoder()
@@ -57,7 +57,7 @@ check(
       t.description.length > 50 &&
       Array.isArray(t.inputSchema.required) &&
       t.inputSchema.required.every((r: string) => r in t.inputSchema.properties) &&
-      Object.values(t.inputSchema.properties).every((p: any) => ["string", "number", "boolean"].includes(p.type) && typeof p.description === "string"),
+      Object.values(t.inputSchema.properties).every((p: any) => ["string", "number", "boolean", "array"].includes(Array.isArray(p.type) ? p.type[0] : p.type) && typeof p.description === "string"),
   ),
 )
 check("tools/list: claude host sentence", list.find((t: any) => t.name === "phase_checkpoint").description.includes("does not cut"))
@@ -78,6 +78,32 @@ const noNext = (await rpc("tools/call", { name: "phase_checkpoint", arguments: {
 check("phase_checkpoint: a summary without a NEXT: line -> isError naming it", noNext.isError === true && noNext.content[0].text.includes("NEXT:"))
 const ok = (await rpc("tools/call", { name: "phase_checkpoint", arguments: { phase: "Phase 4 — wave 1", summary: "wave 1 returned\nNEXT: rule the returns" } })).result
 check("phase_checkpoint: confirmed as recorded and restored after compaction", ok.isError === undefined && ok.content[0].text.includes("recorded") && ok.content[0].text.includes("restored"))
+
+// phase_checkpoint `dossier`, `log`, `note`: the build-log lines and the owner note ride on the call.
+const cpTool = list.find((t: any) => t.name === "phase_checkpoint")
+check("phase_checkpoint: schema offers dossier, log (array of strings) and note (string or boolean)",
+  cpTool.inputSchema.properties.log.type === "array" && cpTool.inputSchema.properties.log.items.type === "string" &&
+  cpTool.inputSchema.properties.dossier.type === "string" && cpTool.inputSchema.properties.note.type.includes("boolean") &&
+  cpTool.inputSchema.required.join() === "phase,summary")
+mkdirSync(join(dir, ".discovery", "dossiers"), { recursive: true })
+const dos = join(dir, ".discovery", "dossiers", "W-9.md")
+writeFileSync(dos, "---\nid: W-9\nstatus: building\n---\n\n# T\n\n## Build log\n\n- first\n")
+const cpArgs = { phase: "Phase 6 — round 1", summary: "round 1 ruled\nNEXT: phase 7", dossier: dos }
+const withLog = (await rpc("tools/call", { name: "phase_checkpoint", arguments: { ...cpArgs, log: ["ARBITRATION: F1 — test wins. Lesson: none", "RULING: R1 — keep"], note: "round 1 ruled; starting review" } })).result
+check("phase_checkpoint log: recorded, and says what it wrote", withLog.isError === undefined && withLog.content[0].text.includes("recorded") && withLog.content[0].text.includes("appended 2 line(s)") && withLog.content[0].text.includes("owner note: posted"))
+const body = readFileSync(dos, "utf8")
+check("phase_checkpoint log: both lines are in ## Build log, bulleted", body.endsWith("- first\n- ARBITRATION: F1 — test wins. Lesson: none\n- RULING: R1 — keep\n"))
+const upd = JSON.parse(readFileSync(join(dir, "runs", `${dir.split("/").pop()}.W-9.jsonl`), "utf8").trim().split("\n").pop()!)
+check("phase_checkpoint note: an update line, stage = the phase, text = the note", upd.kind === "update" && upd.stage === "Phase 6 — round 1" && upd.text === "round 1 ruled; starting review")
+await rpc("tools/call", { name: "phase_checkpoint", arguments: { ...cpArgs, log: ["ARBITRATION: F1 — test wins. Lesson: none"], note: true } })
+check("phase_checkpoint log: a re-run adds no second copy", readFileSync(dos, "utf8").split("ARBITRATION: F1").length === 2)
+const upd2 = JSON.parse(readFileSync(join(dir, "runs", `${dir.split("/").pop()}.W-9.jsonl`), "utf8").trim().split("\n").pop()!)
+check("phase_checkpoint note: true posts the summary", upd2.text === cpArgs.summary)
+const noDos = (await rpc("tools/call", { name: "phase_checkpoint", arguments: { phase: "Phase 6", summary: "x\nNEXT: y", log: ["RULING: x"] } })).result
+check("phase_checkpoint log without dossier: still recorded, and says nothing was written", noDos.isError === undefined && noDos.content[0].text.includes("NOT written"))
+check("phase_checkpoint: a log that is not an array of strings -> isError", (await rpc("tools/call", { name: "phase_checkpoint", arguments: { ...cpArgs, log: "RULING: x" } })).result.isError === true)
+const plain = (await rpc("tools/call", { name: "phase_checkpoint", arguments: cpArgs })).result
+check("phase_checkpoint without log or note writes nothing", !plain.content[0].text.includes("build log") && readFileSync(dos, "utf8") === readFileSync(dos, "utf8"))
 
 // protocol errors
 const unknown = await rpc("tools/call", { name: "nope", arguments: {} })

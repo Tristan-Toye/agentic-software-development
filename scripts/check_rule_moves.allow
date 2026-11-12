@@ -32,3 +32,38 @@ Acceptance of the description doubles as the yes for the PR.
 **You detect review conflicts; the user decides them.** You are the on
 **A question only the owner can settle goes through `ask_owner.py`.**
 Never pick an option yourself.
+
+# Build log written by tools and checkpoints (stage A): the line is passed to --log / checkpoint log / note instead of typed in a turn of its own
+| `building` | Resume: read `## Build log`, find which packages have merged
+Under `local`: run the full `SUITE-COMMAND` recorded in Phase 2 in `X`, through
+Keep the complete output and record the candidate commit, target baseline, exact command
+**Investigate flake risk before mutation checks and review.** Run
+`python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N>`.
+Log `SUITE: ci run <url> on <sha> — <N> failed / <N> passed`.
+Write every arbitration into `## Build log`: the failure, the ruling
+**Checkpoint after each arbitration round.** A round ends when its rulings are logged
+Then call `phase_checkpoint` with `Phase 6 — round <n>` and the hand-off: the head SHA
+**Mark the signals, once per sweep.** Run
+Record each reply in `## Build log` as a **one-line-per-CR ledger**
+**Checkpoint after each round.** When a round's CRs are ruled
+**A question only the owner can settle goes through `ask_owner.py`.** Where this file says
+When nothing else can proceed, run `ask_owner.py wait <id>` as a background command
+Log `QUESTION:` and then `OWNER-RULING (<date>):` in `## Build log`.
+The dashboard's timeline shows only what a person wants to read, so post
+
+# Structured build records: the receipts, lesson, checklist and deferred ledger moved out of build-log lines.
+Log `HOOKS: none`
+Write exactly one of these into `## Build log` before the fan-out
+CONTRACT-REVIEW: spawned <session ref>
+refuses to pass while neither line is present
+Write it into `## Build log` before you spawn
+as for `CONTRACT-REVIEW:`, `HOOKS:` and `ADMISSION:`
+**Row 3 is a lesson, not just a count.** When the contract was ambiguous
+ARBITRATION 3 — row 3 (contract ambiguous).
+Fix: docstring now reads "Returns the count of items written."
+*what product-code issues are you aware of that this run did not tackle?*
+DEFERRED: <N> — sources: <own reads, NOTICED harvest, review replies>
+D-1 <kind> <title> — <path:line> — <risk>
+Every line ends with `contract:` and `effort:`
+`contract` is the boundary a fix crosses
+`DEFERRED: none — sources: …` is a real answer

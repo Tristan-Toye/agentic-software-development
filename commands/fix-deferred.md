@@ -14,8 +14,9 @@ argument-hint: "<dossier ID, e.g. W-117> [D-1,D-3,...]"
 `$ARGUMENTS` is the dossier ID, optionally followed by a comma-separated list
 of D-ids: the items the owner selected. With a list, only those items are in
 scope; every other item stays as it is. Refuse when it names no dossier, when
-the dossier's `## Build log` holds no `DEFERRED:` ledger, or when a listed
-D-id is not in the ledger: there is nothing to fix.
+the dossier has no deferred record (`.discovery/deferred/<ID>.yaml`) and its
+`## Build log` holds no `DEFERRED:` ledger either (an older run), or when a
+listed D-id is not in the record: there is nothing to fix.
 
 The dossier's own copy is on its build branch once `/work-on` removed the
 worktree (`git show <branch>:.discovery/dossiers/<file>`); the checked-out
@@ -35,8 +36,11 @@ dashboard's Fix deferred issues tab groups the run by these numbers.
 
 ## Step 1 — The items
 
-Read the ledger: the `DEFERRED:` block and every later `D-` line in
-`## Build log` (`dossier_edit.py section <dossier> 'Build log'`), plus the
+Read the record: `python3 scripts/build_records.py deferred show <ID>` prints
+`.discovery/deferred/<ID>.yaml`, one item per D-id with `evidence`, `fix`,
+`boundary`, `blast_radius` and `state`. Only a run that predates the record has
+its ledger in `## Build log` instead (the `DEFERRED:` block and every later
+`D-` line: `dossier_edit.py section <dossier> 'Build log' --all`). Also read the
 `/deferred` report when the runner stored one at
 `~/.agentic/runs/<repo>.<ID>.deferred.md`. The report's fields (contract
 boundary, blast radius, confidence, effort) are what the triage rules by;
@@ -156,9 +160,11 @@ so a code PR would skip the stub. Then set its title and body with
 - each fixed item's proving test;
 - the gates and suite summary.
 
-Log `DEFERRED-FIX: PR <url> — fixed <n>, to dossier <m>`, and append
-`DEFERRED-FIXED: D-n <sha>` for each fixed item, so the dossier records
-which items are closed. Remove the worktree once the pull request URL is in
+Log `DEFERRED-FIX: PR <url> — fixed <n>, to dossier <m>`, and close each
+fixed item in the record with `build_records.py deferred set <ID> D-n --state
+fixed --note <sha> --log <dossier>`, so the dossier records which items are
+closed. An item ruled to its own dossier is `--state dossier`, a dropped one
+`--state wontfix`, one being fixed `--state fixing`. Remove the worktree once the pull request URL is in
 hand.
 
 ## Step 7 — Plan the items routed to their own dossier

@@ -9,6 +9,7 @@
 // is the tool call itself in the session transcript, which the SessionStart(compact) hook
 // reads back after a compaction.
 import { MAX_SUMMARY_CHARS, TOOL, validateCheckpoint } from "../checkpoint"
+import { applyCheckpointWrites } from "./checkpoint-writes"
 import { learnedRulesFor } from "../ledger"
 import { TOOLS, describeTool, inputSchema, toolByName, type ToolDef } from "../tools"
 
@@ -28,6 +29,14 @@ function checkArgs(def: ToolDef, args: unknown): string | undefined {
       if (!p.optional) return `missing required argument "${p.name}"`
       continue
     }
+    if (p.type === "array") {
+      if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) return `argument "${p.name}" must be an array of strings`
+      continue
+    }
+    if (p.type === "string|boolean") {
+      if (typeof v !== "string" && typeof v !== "boolean") return `argument "${p.name}" must be a string or a boolean`
+      continue
+    }
     if (typeof v !== p.type) return `argument "${p.name}" must be a ${p.type}`
     if (p.enum && !p.enum.includes(v as string)) return `argument "${p.name}" must be one of ${p.enum.join(", ")}`
   }
@@ -43,11 +52,14 @@ async function callTool(name: string, args: unknown) {
   if (name === TOOL) {
     const why = validateCheckpoint(a.phase, a.summary)
     if (why) return text(`${TOOL}: refused — ${why}`, true)
+    const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd()
+    const wrote = applyCheckpointWrites(a, a.phase, a.summary, dir)
     return text(
       `${TOOL}: recorded after ${a.phase} (summary ${a.summary.length} of ${MAX_SUMMARY_CHARS} characters). ` +
         "Claude Code compacts on its own and cannot be cut from here; after the next compaction this checkpoint " +
         "and every earlier one are restored into your context with the original task." +
-        learnedRulesFor(process.env.CLAUDE_PROJECT_DIR || process.cwd(), a.phase, a.summary),
+        wrote +
+        learnedRulesFor(dir, a.phase, a.summary),
     )
   }
   const out = await def.execute!(a, { directory: process.env.CLAUDE_PROJECT_DIR || process.cwd() })

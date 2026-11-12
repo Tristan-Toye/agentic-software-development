@@ -42,7 +42,7 @@ later one renumbers in its own PR with `--finalize-ids`.
 | `status` | What this run does |
 |---|---|
 | `ready` | The full build, from Phase 1. |
-| `building` | Resume: read `## Build log`, find which packages have merged into the base branch, and continue the fan-out from the rest. |
+| `building` | Resume: find which packages have merged from git, not from the log — `git -C <X> branch --merged HEAD` lists the package branches already merged into `X`, `git -C <X> branch --no-merged HEAD` with `git worktree list` the rest — and continue the fan-out from the rest. The log still holds the rulings and agent IDs. |
 | `review` | Resume at Phase 6 — get the suite's verdict on the current head first, from the runner `SUITE-RUNNER:` names (CI's run on the pushed head, or a local run), and never trust a log line over the actual run. |
 | `pr` | Ask the user for the PR URL, then finish Phase 9: record it and remove the worktree. |
 | `done` | Ask what the user wants. A follow-up on finished work — PR review comments, a second pass — starts a **fresh worktree**, either as a new run on this dossier or as a new dossier. Never reopen the worktree that produced the PR. |
