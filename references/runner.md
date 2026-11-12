@@ -50,6 +50,14 @@ the recorded checkpoints.
       repaired ...` (ask the owner as usual). See "Standing repair" below.
     - `RUNNER: DONE` — the dossier is finished: the runner records `done`
       and exits 0.
+    - `RUNNER: REPLAN <why>` — the owner ruled the dossier back to `/plan`
+      (or the build showed it must be re-planned and the owner agreed). Not
+      a failure and not a question: the runner sets the dossier's `status:`
+      to `planned`, records the run `done` with the reason, and starts a
+      `/plan` run of the dossier, which queues for a slot like any run and
+      starts with empty checkpoints. A `FAILED` whose reason says "sent back
+      to /plan" is read as `REPLAN`. `ASD_RUNNER_REPLAN=0` keeps the status
+      change and skips the automatic `/plan`.
     - `RUNNER: FAILED <why>`, or a turn with no `RUNNER:` line — the runner
       records `failed` with the reason, notifies the owner (a question
       through `ask_owner.py`: retry the stage, or stop), and acts on the
@@ -526,7 +534,10 @@ The prompt tells the orchestrator these rules:
   `RUNNER:` line, no change to your plan). The runner asks nothing else of you
   with it.
 - End with `RUNNER: DONE` when `/work-on` is finished, and with
-  `RUNNER: FAILED <why>` when you cannot go on.
+  `RUNNER: FAILED <why>` when you cannot go on. When the owner rules the
+  dossier back to `/plan`, record the ruling and the re-plan's inputs in the
+  dossier, leave nothing half-built behind, and end with
+  `RUNNER: REPLAN <why>`, never `FAILED`: the runner starts `/plan` itself.
 - Post an update within a long stage, in one line, when something worth
   knowing happens:
   `ask_owner.py note --root R --dossier ID --text "..."`.
