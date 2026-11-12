@@ -537,6 +537,9 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
   const runsX = [{ repo: "alpha", id: "W-001", main: "/a", worktree: "/a" }, { repo: "beta", id: "W-001", main: "/b", worktree: "/b-W-001" }, { repo: "beta", id: "W-002", main: "/b", worktree: "/b" }]
   const qq = (repo: string, root: string, dossier = "W-001") => ({ repo, root, dossier })
   check("repos: a question belongs to the repo that named it or whose checkout holds its root", questionRepo(qq("alpha", ""), runsX) === "alpha" && questionRepo(qq("zzz", "/b-W-001/src"), runsX) === "beta" && questionRepo(qq("zzz", ""), runsX) === undefined && questionRepo(qq("zzz", "", "W-002"), runsX) === "beta")
+  // W-021: podcast's question arrived before its run of W-021 did; only the other repo had a W-021 then.
+  const runsY = [{ repo: "alpha", id: "W-021", main: "/a", worktree: "/a" }, { repo: "beta", id: "W-002", main: "/b", worktree: "/b" }]
+  check("repos: a question's own known repo wins over another repo's only run of the same dossier id", questionRepo(qq("beta", "/b", "W-021"), runsY) === "beta" && questionRepo(qq("zzz", "", "W-021"), runsY) === "alpha")
   rmSync(t, { recursive: true, force: true })
   check("view: done shows the dossier, running or with updates the run, otherwise the dossier", viewFor("done", false, 5) === "dossier" && viewFor("building", false, 0) === "run" && viewFor("ready", true, 0) === "run" && viewFor("ready", false, 2) === "run" && viewFor("ready", false, 0) === "dossier" && viewFor("planned", false, 1) === "run")
   const mkStub = (branch: string, state: string, cut: string) => ({ branch, cut, state, stage: "", refAge: cut, pr: null, dossiers: [] }) as any

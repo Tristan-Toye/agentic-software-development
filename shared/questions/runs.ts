@@ -323,12 +323,18 @@ export async function pickDossiersByRepo(roots: string[], mainFor: (wt: string) 
   return out
 }
 
-/** The repo a question belongs to: among the runs with its dossier id, the one named by `q.repo` or whose checkouts contain `q.root`; the only candidate otherwise. */
+/**
+ * The repo a question belongs to: among the runs with its dossier id, the one named by `q.repo` or whose checkouts
+ * contain `q.root`. When `q.repo` names a repo the runs know, it is the answer even with no run of that dossier yet:
+ * dossier ids repeat across repos, and a question asked moments after its dossier was written must not be filed under
+ * another repo's dossier of the same id. The only candidate is the answer only when `q.repo` is not a known repo.
+ */
 export function questionRepo(q: { repo: string; dossier: string; root?: string }, runs: { repo: string; id: string; main: string; worktree: string }[]): string | undefined {
   const c = runs.filter((r) => r.id === q.dossier)
   const inside = (p: string, d: string) => !!p && !!d && (p === d || p.startsWith(d + "/"))
   const hit = c.find((r) => r.repo === q.repo) ?? c.find((r) => inside(q.root ?? "", r.worktree) || inside(q.root ?? "", r.main))
   if (hit) return hit.repo
+  if (q.repo && runs.some((r) => r.repo === q.repo)) return q.repo
   return c.length === 1 ? c[0].repo : undefined
 }
 
