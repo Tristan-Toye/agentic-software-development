@@ -120,7 +120,11 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
    lines is itself a finding.
 2. **`AMBIGUITY:` lines** — one per member where two readings are possible,
    each naming the member, the two readings, and the docstring sentence both
-   readings come from, quoted verbatim. You never pick a side.
+   readings come from, quoted verbatim, and an `IMPACT:` mark: `high` when the
+   readings differ in what a caller observes (a return value, an error, an
+   order, persisted state, a signature or a type another package or dossier
+   uses), `low` when they differ only in wording or in an internal detail no
+   caller observes. You never pick a side.
 3. **`DEFECT:` lines** — unstated visibility, unmeasurable words, criteria
    the contract cannot reach, members with no observable promise.
 4. Counts: members reviewed, checklist lines, ambiguities, defects.
@@ -132,7 +136,8 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
 - Quote docstrings verbatim with `path:line`. A paraphrased promise is a new
   promise.
 - Never recommend which reading of an ambiguity is right, and never suggest
-  a fix's wording. You surface; the user decides.
+  a fix's wording. You surface and mark each reading's impact; the
+  orchestrator rules the low-impact ones itself and the owner decides the rest.
 - Read no file outside `WORKTREE_DIR`, and none inside it except
   `CONTRACT_PATHS` and the type imports they need.
 - Write nothing. Change nothing. Your report is your whole output.

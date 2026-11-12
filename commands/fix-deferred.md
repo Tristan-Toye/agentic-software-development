@@ -25,8 +25,11 @@ branch has the pre-build copy until the pull request merges.
 outrank this file's defaults.
 
 Progress posts itself (the plugin's hook). Ask the owner only through
-`scripts/ask_owner.py`, as `references/owner-questions.md` says, and never
-pick an option yourself. Call `phase_checkpoint` at each step below, named
+`scripts/ask_owner.py`, as `references/owner-questions.md` says ("The ask policy": design, product or
+real uncertainty only, each ask passing `--kind`, never an approval), and never
+pick an option of a question you asked. A bug or deferred item is fixed through
+the normal flow without asking, unless the fix would change product behaviour
+or a contract. Call `phase_checkpoint` at each step below, named
 `Fix-deferred — Step <n> — <title>` (`Fix-deferred — Step 2 — Triage`): the
 dashboard's Fix deferred issues tab groups the run by these numbers.
 

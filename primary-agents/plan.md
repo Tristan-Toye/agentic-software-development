@@ -79,7 +79,7 @@ Its first line is the answer — `mode: local`, `mode: committed` or
 - **`conflict`** (exit 1) — tracked files under `.discovery/` while
   `.gitignore` also ignores a new dossier: a repository in two minds, where
   the dossier would vanish from its PR. Stop and show the user the
-  conflicting `.gitignore` line; never pick a side yourself.
+  conflicting `.gitignore` line; never pick a side yourself (a real uncertainty, `--kind uncertainty`).
 
 State the mode in one line before Phase 1. Every later phase names
 `${RUN_ROOT}`: **the checkout `/plan` was started from in local mode, the plan
@@ -382,13 +382,18 @@ so the anchors it spot-checks are the tree the dossier was written against.
   its own prior verdict and your rulings; the recorded case voided two rounds.
   An instruction not to read a section of a file the agent can open is not
   blindness.
-- A change request you disagree with is a decision for the user, not for you.
-  Present the reviewer's position and yours, get a ruling, and record it in
-  `## Build log`.
-- **A question only the owner can settle goes through `ask_owner.py`.** Where
+- A change request you disagree with is not yours to overrule. When a
+  recommended reading exists and the impact is low (no behaviour the dossier
+  promises, no public contract another dossier depends on), take it and log
+  `PROVISIONAL-RULING: <what>, <why>, <how to reverse>` in `## Build log`; the
+  dossier lists it for the owner's review. A design or product disagreement
+  goes to the owner: present both positions, then record the ruling.
+- **A question only the owner can settle goes through `ask_owner.py`.** Ask only
+  for design, product or real uncertainty, never for approval
+  (`references/owner-questions.md`, "The ask policy"). Where
   this file says to ask the user or stop for a ruling, run
-  `scripts/ask_owner.py ask` instead, as `references/owner-questions.md`
-  ("Asking, in a run") says: every option with its consequence, your
+  `scripts/ask_owner.py ask --kind design|product|uncertainty` instead, as
+  `references/owner-questions.md` ("Asking, in a run") says: every option with its consequence, your
   recommendation, and what it blocks. Keep working on what is not blocked.
   When nothing else can proceed, run `ask_owner.py wait <id>` as a background
   command under Claude Code and end the turn. Log `QUESTION:` and then
@@ -398,8 +403,9 @@ so the anchors it spot-checks are the tree the dossier was written against.
   `ask_owner.py note --root R --dossier ID --text "..."` at each milestone:
   the investigation concluded, the approach chosen, the contract drafted, the
   review verdict. Write each note for a person reading on a phone: plain sentences, markdown bullets or a small table where they help, and never commands, paths, SHAs or log output.
-- **Budget: 2 review rounds.** After the second, stop and show the user the
-  unresolved change requests. Never mark a plan ready by exhaustion. In
+- **Budget: 2 review rounds.** After the second, take one more round once when it is your recommendation
+  and log it; if that fails too, put the unresolved change requests to the
+  owner as one question. Never mark a plan ready by exhaustion. In
   committed mode the dossier stays `planned` and uncommitted in the plan
   worktree — name its path; `/plan W-NNN` resumes there.
 
