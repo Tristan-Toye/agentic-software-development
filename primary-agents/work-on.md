@@ -289,6 +289,11 @@ and an unpushed record dies with the worktree. Add it by name, never with
 the appended system prompt and take precedence: ask only through
 `ask_owner.py`, end a stage with its `phase_checkpoint` and the `RUNNER:` line
 it names, and post `ask_owner.py note` for what is worth knowing mid-stage.
+A broken environment (the Lima VM down or unreachable, a shared compose service
+unhealthy, the disk low) is not a question: end the turn with one line
+`RUNNER: ENV <vm|stack|disk> <detail>`; the runner repairs vm and stack when the
+owner enabled it and answers `RUNNER ENV <kind>: repaired ..` (carry on) or
+`not repaired ..` (then ask as usual). A disk is never repaired automatically.
 
 **Deferred issues, as you go.** Whenever you notice a product-code issue you
 will not fix in this run — in a file you read, an arbitration's evidence, a

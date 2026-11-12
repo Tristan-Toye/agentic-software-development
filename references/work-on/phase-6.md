@@ -27,7 +27,9 @@ CI wiring on your branch, or fall back to `local` for this head and log why.
 Under `local`: run the full `SUITE-COMMAND` recorded in Phase 2 in `X`,
 through `python3 ${PLUGIN_ROOT}/scripts/run_tests.py --log <file> --
 <full-suite command>` (add `--vm <name> --workdir <X> --env-script <file>`
-when the command itself does not manage its required VM). An implementer's
+when the command itself does not manage its required VM). Under the runner, a VM
+that is down or a compose service that is unhealthy is reported as the single line
+`RUNNER: ENV <vm|stack|disk> <detail>`, not asked about (see runner.md). An implementer's
 focused `TEST_COMMAND` is not a substitute. Keep the complete output and
 record the candidate commit, target baseline, exact command, environment,
 counts and log path as `SUITE: local on <sha>, base <sha> — <counts>; <log>`.
