@@ -68,11 +68,17 @@ No third-party imports: this runs wherever python3 does.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import re
 import subprocess
 import sys
 import tempfile
+
+try:
+    import fcntl
+except ImportError:  # not POSIX: no lock, the atomic rename still holds
+    fcntl = None  # type: ignore
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 KEY_RE = re.compile(r"^(?P<key>[A-Za-z_][\w-]*):(?P<rest>.*)$")
@@ -155,6 +161,77 @@ def append_log(text: str, entries: list[str]) -> tuple[str, int]:
         raise Refused("nothing to append")
     body = text.rstrip("\n")
     return body + "\n" + "\n".join(entries) + "\n", len(entries)
+
+
+def normalise_entry(entry: str) -> str:
+    entry = entry.rstrip()
+    return entry if entry.startswith("- ") else f"- {entry}"
+
+
+@contextlib.contextmanager
+def locked(path: str):
+    """An exclusive flock on the dossier file, held across a read-modify-write.
+    write() replaces the file by rename, so the lock is on an inode that may
+    stop being the dossier: after taking it, check the path still names the
+    inode and, when it does not, lock the new one. The one lock every Build log
+    writer (the log subcommand, the scripts' --log, the checkpoint tool) shares."""
+    if fcntl is None:
+        yield
+        return
+    while True:
+        fh = open(path, "r", encoding="utf-8")
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                same = os.fstat(fh.fileno()).st_ino == os.stat(path).st_ino
+            except OSError:
+                same = False
+            if same:
+                yield
+                return
+        finally:
+            fh.close()
+
+
+def log_lines(path: str, entries: list[str]) -> tuple[int, int]:
+    """Append lines to `## Build log` of the dossier at `path` under the lock,
+    skipping a line already present verbatim in that section (an idempotent
+    re-run adds nothing). Returns (appended, skipped). Raises Refused like
+    append_log, OSError when the file cannot be read or written."""
+    with locked(path):
+        text = read(path)
+        lines = text.split("\n")
+        level2 = [h for h in headings(lines) if h[1] == 2]
+        have = set(x.rstrip() for x in lines[level2[-1][0] + 1 :]) if level2 and level2[-1][2].startswith("Build log") else set()
+        fresh: list[str] = []
+        for e in entries:
+            if not e.strip():
+                continue
+            n = normalise_entry(e)
+            if n not in have:
+                have.add(n)
+                fresh.append(n)
+        wanted = len([e for e in entries if e.strip()])
+        if not fresh:
+            # Still refuse a dossier whose last section is not the log.
+            append_log(text, entries)
+            return 0, wanted
+        new, n = append_log(text, fresh)
+        write_verified(path, new, f"appending {n} line(s) to ## Build log")
+        return n, wanted - n
+
+
+def log_or_say(path: str, entries: list[str]) -> str:
+    """The scripts' `--log DOSSIER`: write through log_lines and return one short
+    status line for the script to print. Never raises: a script's own verdict
+    does not depend on whether its build-log line landed."""
+    try:
+        n, skipped = log_lines(path, entries)
+    except Refused as err:
+        return f"build log: not written — {err}"
+    except OSError as err:
+        return f"build log: not written — {err}"
+    return f"build log: {n} line(s) written" + (f", {skipped} already there" if skipped else "")
 
 
 BLOCKER_KEY = "blocked_by"
@@ -722,23 +799,27 @@ def run(argv: list[str]) -> int:
     if not args.cmd:
         ap.error("a subcommand is required unless --selftest")
     try:
-        text = read(args.dossier)
-    except OSError as err:
-        print(f"dossier_edit: {err}", file=sys.stderr)
-        return 2
-    try:
         if args.cmd == "log":
             entries = sys.stdin.read().splitlines() if args.lines == ["-"] else args.lines
-            new, n = append_log(text, entries)
-            write_verified(args.dossier, new, f"appending {n} line(s) to ## Build log")
+            n, skipped = log_lines(args.dossier, entries)
             tail = read(args.dossier).rsplit("## Build log", 1)[1]
-            lost = [e for e in entries if e and e not in tail]
+            lost = [e for e in entries if e.strip() and normalise_entry(e) not in tail.split("\n")]
             if lost:
                 print(f"dossier_edit: appended, but the re-read Build log is missing "
                       f"{len(lost)} of the line(s) handed in: {lost[0][:80]}", file=sys.stderr)
                 return 1
-            print(f"dossier_edit: appended {n} line(s) to ## Build log")
-        elif args.cmd in ("set", "add", "remove"):
+            print(f"dossier_edit: appended {n} line(s) to ## Build log"
+                  + (f" ({skipped} already there, skipped)" if skipped else ""))
+            return 0
+        text = read(args.dossier)
+    except OSError as err:
+        print(f"dossier_edit: {err}", file=sys.stderr)
+        return 2
+    except Refused as err:
+        print(f"dossier_edit: REFUSED — {err}", file=sys.stderr)
+        return 1
+    try:
+        if args.cmd in ("set", "add", "remove"):
             fn = {"set": set_fields, "add": add_items, "remove": remove_items}[args.cmd]
             new, changes = fn(text, pairs_of(args.pairs))
             write_verified(args.dossier, new, f"{args.cmd} {args.pairs}")
@@ -822,6 +903,21 @@ def selftest() -> int:
         check("log refuses when Build log is not last", False)
     except Refused:
         pass
+
+    # One lock, one dedupe: log_lines under parallel writers loses nothing and doubles nothing.
+    with tempfile.TemporaryDirectory() as ltd:
+        lp = os.path.join(ltd, "W-001.md")
+        open(lp, "w", encoding="utf-8").write(SAMPLE)
+        check("log_lines appends and reports", log_lines(lp, ["alpha", "- beta"]) == (2, 0) and read(lp).endswith("- first\n- alpha\n- beta\n"))
+        check("log_lines skips a line already present, so a re-run adds nothing", log_lines(lp, ["alpha", "- beta"]) == (0, 2) and read(lp).count("- alpha") == 1)
+        check("log_lines keeps the new lines of a half-present batch", log_lines(lp, ["alpha", "gamma", "gamma"]) == (1, 2) and read(lp).endswith("- beta\n- gamma\n"))
+        check("log_lines does not dedupe against text outside the build log", log_lines(lp, ["Title"]) == (1, 0))
+        procs = [subprocess.Popen([sys.executable, os.path.abspath(__file__), "log", lp, f"par {i}", "par shared"]) for i in range(12)]
+        check("parallel writers all exit 0", all(p.wait() == 0 for p in procs))
+        got = read(lp)
+        check("parallel writers lose no line", all(f"- par {i}\n" in got for i in range(12)))
+        check("parallel writers write a shared line once", got.count("- par shared\n") == 1)
+        check("the dossier is still whole after the race", got.startswith("---\n") and got.count("## Build log") == 1)
 
     new, changes = set_fields(SAMPLE, [("status", "building"), ("pr", "https://x/1")])
     check("set keeps the comment", "status: building  # planned | ready" in new)
