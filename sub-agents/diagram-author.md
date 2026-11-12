@@ -91,15 +91,38 @@ Three files, each a graph of schema 1.0.0 (see
 | `OUT_DIR/l1.json` | `L1` | 12 nodes of kind `step` | the flow, in order, with `lane`, `order` and `detail.before` / `detail.after` |
 | `OUT_DIR/l2.json` | `L2` | 12 nodes | the parts that change, grouped; groups are free |
 
-Every graph has a `title` and, in `meta`, `generated_by: "agent"`.
-Every node you write has `label_source: "llm"`. Keep each element's `status`
-(`added`, `removed`, `changed`, `context`) exactly as `merged.json` has it.
+Every graph has a `title` and, in `meta`, `generated_by: "agent"`; copy the
+other `meta` fields (`change`, `repo`, `commit`, `tools`, `layers`) from
+`merged.json`. Every node, group and flow you write has `label_source: "llm"`.
+
+`status` (`added`, `removed`, `changed`, `context`): an element that exists in
+`merged.json` keeps its status exactly. An L0 feature or an L1 step has no
+node there; give it `added` when the change creates the behaviour, `changed`
+when it alters an existing one, and say which in its evidence `note`. A group
+takes `changed` when any member changed.
+
+Shapes the schema requires, which the fixtures also show:
+
+- L1 node: `kind: "step"`, `lane` (an id from the graph's `lanes` list of
+  `{id, label}`), `order` (1, 2, 3, unique), `detail: {before, after}`.
+- L1 `flows`: one entry `{id, label, label_source, lanes: [lane ids], status,
+  before: [step ids], after: [step ids], evidence}`. Steps are ordered by
+  `order`; `edges` may stay `[]`, the flow carries the sequence.
+- L2: `groups` is a list of `{id, label, status, label_source, evidence}`; a
+  node names its group with `group`. Copy `edges` from `merged.json` between
+  the nodes you keep.
+- Ids follow the stable id rule in `references/visual-review/README.md`
+  (`feature:…`, `step:…`, `lane:…`, `group:…`; a node you copy from
+  `merged.json` keeps its id).
 
 ## Method
 
 1. Read `summary.json` and `candidates.json` first, then the parts of
    `merged.json` they point to. Never read the whole of a large `merged.json`:
-   search it.
+   search it. `summary.json` says which extractor layers ran. When the call
+   layer timed out (`candidates.json` holds no `fn:` nodes), the flow comes
+   from `CONTRACT` and from the changed files in `REPO`, read in the ranges
+   the contract names; every line you cite you must have seen.
 2. **L2.** Take the changed nodes and their direct neighbours from
    `merged.json`. Group them by crate or module with `groups`. Label each node
    in product words (what it does), not the identifier. When more than 12
@@ -107,7 +130,8 @@ Every node you write has `label_source: "llm"`. Keep each element's `status`
    changed one.
 3. **L1.** Choose at most 12 steps from the call-hierarchy candidates: the
    path one request takes through the changed code, in order. A step cites
-   the `fn:` node it names. Give each step a `lane` (its crate or module), an
+   the `fn:` node it names, or, when there is none, the `source` line of the
+   function in `REPO`. Give each step a `lane` (its crate or module), an
    `order`, and a one-line `detail.before` and `detail.after`.
 4. **L0.** One feature per owner-visible capability the dossier's `PROBLEM`
    and `APPROACH` name, each cited by the L2 node or L1 step that implements
@@ -118,7 +142,8 @@ Every node you write has `label_source: "llm"`. Keep each element's `status`
    python3 SCRIPTS_DIR/vr_graph.py validate OUT_DIR/l1.json --root REPO
    ```
 
-   Over budget, a dangling id or a missing path: fix and run again. Retry
+   The budget counts nodes, not groups: on L2 a crate node and a module node
+   each count. Over budget, a dangling id or a missing path: fix and run again. Retry
    until it passes, at most 3 times; then stop and report the remaining
    issues.
 
@@ -148,5 +173,5 @@ At most 12 lines, guidance not verdicts:
 
 - `WROTE:` the three paths, one per line, each with its node count against its budget.
 - `VALIDATE:` `pass` or `fail`, with the issue codes and element ids when it failed.
-- `INFERRED:` ids of every element marked `inferred` (explicit `none` allowed).
+- `INFERRED:` how many elements and which ids of every element marked `inferred` (explicit `none` allowed).
 - `NOTICED:` anything in `PROBLEM`, `APPROACH` or `CONTRACT` that contradicts the facts (explicit `none` allowed). Always last.
