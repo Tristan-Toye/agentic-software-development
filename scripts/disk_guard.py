@@ -46,7 +46,7 @@ import sys
 import tempfile
 import time
 
-LIVE = ("running", "waiting", "paused", "queued")
+LIVE = ("running", "testing", "waiting", "paused", "queued")
 ID = re.compile(r"^([A-Za-z]+-\d+)(?:-(.+))?$")
 
 

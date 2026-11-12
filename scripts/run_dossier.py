@@ -744,6 +744,14 @@ def model_ok(expected: str, actual: str) -> bool:
 # Ten runs resuming at one limit reset spent a whole 5-hour window in 12 minutes. A run takes a slot before each
 # stage and after an owner's answer; only `running` runs hold one (waiting, paused and queued runs spend nothing).
 # Without a free slot it records `queued` and waits its turn: the longest-queued run goes first.
+# A `running` run whose session is blocked on a long test or gate wait records `testing` and releases its slot: the
+# session spends nothing while it waits (podcast W-007 sat 35 min in the foreground on run_tests.py holding a slot
+# while queued runs idled). Trade-off, accepted by the owner: when the wait ends the run goes straight back to
+# `running` WITHOUT queueing, so the live count may briefly exceed the cap until another run finishes or waits.
+
+TESTING_QUIET_SECS = 300    # an in-flight Bash call with no output for longer than this counts as a long wait
+TESTING_CMD = re.compile(r"\brun_(?:tests|gates)\.py\b")   # the long waits we know by name (any flags, `--wait` included)
+LIVE_STATES = ("running", "testing", "waiting", "queued")   # a runner in one of these is alive (paused ones are checked separately)
 
 
 def max_live() -> int:
@@ -812,7 +820,7 @@ def running_by_account() -> dict[str, int]:
         return n
     for x in names:
         st = read_json(os.path.join(runs_dir(), x), {}) or {}
-        if st.get("state") == "running" and alive(st.get("pid")):
+        if st.get("state") in ("running", "testing") and alive(st.get("pid")):
             n[str(st.get("account") or "")] = n.get(str(st.get("account") or ""), 0) + 1
     return n
 
@@ -1024,7 +1032,7 @@ def slot_census(me: str) -> tuple[int, list[tuple[tuple[int, str], str]]]:
         st = read_json(os.path.join(runs_dir(), n), {}) or {}
         if not alive(st.get("pid")):
             continue
-        if st.get("state") == "running":
+        if st.get("state") == "running":   # `testing` is alive but holds no slot
             held += 1
         elif st.get("state") == "queued":
             queued.append((queue_order(st), key))
@@ -1108,6 +1116,7 @@ class Runner:
         self.last_out = time.monotonic()    # monotonic time of the last stream event (or message sent) of the session
         self.last_ev = "none"               # the last stream event: its type and tool name, for the stall diagnostic
         self.tool_names: dict = {}          # tool_use id -> tool name
+        self.inflight_bash: dict = {}       # Bash tool_use id -> (command, monotonic start): calls with no result yet
         self.stall_bg_at = 0.0              # when the transcript was last checked for background work during a quiet spell
         self.ka_checked = 0.0               # monotonic time of the last keep-alive check
         self.ka_cold: set[str] = set()      # sessions whose cache a ping found cold: not pinged again
@@ -1816,6 +1825,7 @@ class Runner:
         t = str(ev.get("type"))
         if t == "result":
             self.turn_open = False
+            self.inflight_bash.clear()
         elif t in ("assistant", "user"):
             self.turn_open = True
         tool = ""
@@ -1826,11 +1836,42 @@ class Runner:
                     continue
                 if b.get("type") == "tool_use":
                     self.tool_names[str(b.get("id", ""))] = tool = str(b.get("name", ""))
+                    inp = b.get("input") or {}
+                    if tool == "Bash" and isinstance(inp, dict) and not inp.get("run_in_background"):
+                        self.inflight_bash[str(b.get("id", ""))] = (str(inp.get("command", "")), time.monotonic())
                 elif b.get("type") == "tool_result":
                     tool = self.tool_names.get(str(b.get("tool_use_id", "")), "")
                     t = "tool_result"
+                    self.inflight_bash.pop(str(b.get("tool_use_id", "")), None)
+        self.refresh_testing()
         if t not in ("rate_limit_event",):
             self.last_ev = t + (f" {tool}" if tool else "") + (" (sub-agent)" if ev.get("parent_tool_use_id") else "")
+
+    def blocked_on(self) -> str:
+        """The in-flight foreground Bash call the session is blocked on for a long wait, or "". A call counts when it
+        runs run_tests.py or run_gates.py (--wait included), or when it has produced no output (no stream event of any
+        kind) for more than TESTING_QUIET_SECS (ASD_TESTING_QUIET_SECS overrides)."""
+        if not self.turn_open or not self.inflight_bash:
+            return ""
+        quiet = time.monotonic() - self.last_out > env_num("ASD_TESTING_QUIET_SECS", TESTING_QUIET_SECS)
+        for cmd, _ in self.inflight_bash.values():
+            if TESTING_CMD.search(cmd) or quiet:
+                return cmd.strip().splitlines()[0][:80] if cmd.strip() else "a Bash call"
+        return ""
+
+    def refresh_testing(self) -> None:
+        """running -> testing while blocked_on() says the session waits on a test or gate; back to running the moment
+        that call's result arrives. Only these two states are touched; going back never queues (see the slot notes)."""
+        cur = self.state.get("state")
+        if cur not in ("running", "testing") or self.stopping:
+            return
+        why = self.blocked_on()
+        if why and cur == "running":
+            self.save(state="testing")
+            self.event(f"session waits on `{why}`; slot released while it tests", "testing")
+        elif not why and cur == "testing":
+            self.save(state="running")
+            self.event("the wait ended; the run works again (no queue; the cap may be briefly exceeded)", "running")
 
     def stalled(self) -> bool:
         """True when the session is wedged: mid-turn, running, and no stream-json output for ASD_STALL_MIN minutes
@@ -1838,7 +1879,7 @@ class Runner:
         background work runs) is never a stall, nor is a transcript that still shows background work in flight.
         A Bash call has its own timeout (10 min at most) and a sub-agent's events are output, so neither is quiet this long."""
         lim = env_num("ASD_STALL_MIN", 45) * 60
-        if lim <= 0 or not self.turn_open or self.stopping or self.state.get("state") != "running":
+        if lim <= 0 or not self.turn_open or self.stopping or self.state.get("state") not in ("running", "testing"):
             return False
         if self.proc is None or self.proc.poll() is not None:
             return False
@@ -1913,6 +1954,7 @@ class Runner:
                     return "stopped", None
                 if result is not None:
                     return "result", result
+                self.refresh_testing()   # a Bash call quiet for TESTING_QUIET_SECS has no event to trigger it
                 if self.stalled():
                     return "stalled", None
                 if idle is not None and time.monotonic() - quiet_since > idle:
@@ -2301,7 +2343,7 @@ class Runner:
 
     def run(self) -> int:
         prev = read_json(self.state_path, {})
-        if prev.get("state") in ("running", "waiting", "queued") and runner_alive(prev.get("pid")) and prev.get("pid") != os.getpid():
+        if prev.get("state") in LIVE_STATES and runner_alive(prev.get("pid")) and prev.get("pid") != os.getpid():
             say(f"{self.key} is already run by pid {prev['pid']}")
             return 2
         try:
@@ -2318,7 +2360,7 @@ class Runner:
         self.save()
         self.event(f"start /{self.command} {self.dossier} in {self.root}", "running")
         started = 0
-        if prev.get("state") in ("running", "waiting", "queued", "paused") and prev.get("session") and prev.get("account") == self.account["name"]:
+        if prev.get("state") in ("running", "testing", "waiting", "queued", "paused") and prev.get("session") and prev.get("account") == self.account["name"]:
             # The last runner process died (a logout, a reboot) with its session recorded: pick that session up again.
             self.state["session"] = str(prev["session"])
             self.mark_resume()
@@ -2518,7 +2560,7 @@ def cmd_status(a: argparse.Namespace) -> int:
             continue
         st = read_json(os.path.join(d, f), {})
         state = st.get("state", "?")
-        if state in ("running", "waiting", "queued") and not alive(st.get("pid")):
+        if state in LIVE_STATES and not alive(st.get("pid")):
             state = "stopped"
         q = ",".join(st.get("questions") or [])
         rows.append(f"{key}\t{state}\tstage {st.get('stage', 0)}\tsession {st.get('session') or '-'}"
@@ -2535,7 +2577,7 @@ def cmd_revive() -> int:
     for path in glob.glob(os.path.join(runs_dir(), "*.runner.json")):
         st = read_json(path, {}) or {}
         root = st.get("root") or ""
-        if st.get("state") not in ("running", "waiting", "paused", "queued") or runner_alive(st.get("pid")) or not os.path.isdir(root):
+        if st.get("state") not in ("running", "testing", "waiting", "paused", "queued") or runner_alive(st.get("pid")) or not os.path.isdir(root):
             continue
         if time.time() - os.path.getmtime(path) > hours * 3600:
             continue
@@ -2580,7 +2622,7 @@ def already_built(root: str, dossier: str) -> str:
     if any(i.get("id") == dossier for i in queue.get("items") or []):
         return f"{dossier} is in the merge queue; it is built"
     prev = read_json(os.path.join(runs_dir(), f"{repo}.{dossier}.runner.json"), {}) or {}
-    if prev.get("command") == "work-on" and prev.get("state") in ("running", "waiting", "paused", "queued", "stopped", "failed"):
+    if prev.get("command") == "work-on" and prev.get("state") in ("running", "testing", "waiting", "paused", "queued", "stopped", "failed"):
         return ""
     try:
         p = subprocess.run(shlex.split(os.environ.get("ASD_GH_BIN") or "gh") + ["pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName"],
@@ -2601,7 +2643,7 @@ def cmd_stop(a: argparse.Namespace) -> int:
         print(f"no run for {key}")
         return 1
     pid, cpid = st.get("pid"), st.get("claude_pid")
-    if st.get("state") in ("running", "waiting", "queued") or alive(cpid):
+    if st.get("state") in LIVE_STATES or alive(cpid):
         if alive(pid):
             open(os.path.join(runs_dir(), key + ".stop-requested"), "w").close()   # the owner's stop, not a logout
             os.kill(pid, signal.SIGTERM)  # the runner's handler kills the claude group and records stopped
@@ -2614,7 +2656,7 @@ def cmd_stop(a: argparse.Namespace) -> int:
             except (ProcessLookupError, PermissionError):
                 pass
         st = read_json(path, st)
-        if st.get("state") in ("running", "waiting", "queued"):
+        if st.get("state") in LIVE_STATES:
             st.update(state="stopped", claude_pid=None, questions=[])
             write_json(path, st)
             try:
@@ -2705,7 +2747,7 @@ def cmd_chat(a: argparse.Namespace) -> int:
         print("run_dossier.py chat: --text is empty", file=sys.stderr)
         return 2
     st = read_json(os.path.join(d, key + ".runner.json"), {}) or {}
-    if st.get("state") in ("running", "waiting", "paused", "queued") and alive(st.get("pid")):
+    if st.get("state") in ("running", "testing", "waiting", "paused", "queued") and alive(st.get("pid")):
         # A live run: the runner delivers it into the running session (mid-turn, or by waking a question wait).
         append_line(inbox_path(key), {"ts": now(), "text": text[:20000]})
         append_line(os.path.join(d, key + ".jsonl"), {"ts": now(), "kind": "update", "event": "owner-message", "from": "owner", "text": text[:20000]})
@@ -2790,7 +2832,7 @@ def cmd_summary(a: argparse.Namespace) -> int:
     key = key_of(a.root, a.dossier)
     path = os.path.join(runs_dir(), key + ".runner.json")
     prev = read_json(path, {}) or {}
-    if prev.get("state") in ("running", "waiting", "paused", "queued") and runner_alive(prev.get("pid")):
+    if prev.get("state") in ("running", "testing", "waiting", "paused", "queued") and runner_alive(prev.get("pid")):
         print(f"{key} is still running; the summary follows when it is done", file=sys.stderr)
         return 2
     r = Runner(prev.get("root") or a.root, a.dossier, "work-on", None, prev.get("permission_mode") or "auto", 1)
@@ -2859,6 +2901,12 @@ for raw in sys.stdin:
                     import time; time.sleep(0.5)
         elif "usage" in a:   # a plain API response with no checkpoint, carrying a context size
             out({"type": "assistant", "message": {"id": f"mu{n}-{turn}", "content": [{"type": "text", "text": "work"}], "usage": {"input_tokens": 3, "cache_read_input_tokens": a["usage"], "cache_creation_input_tokens": 0}}})
+        elif "bash" in a:   # a foreground Bash call that blocks `hold` seconds, then its result, then `after` s of work
+            import time
+            out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": f"bx{n}{turn}", "name": "Bash", "input": {"command": a["bash"]}}]}})
+            time.sleep(a["hold"])
+            out({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": f"bx{n}{turn}", "content": "ok"}]}})
+            time.sleep(a.get("after", 0))
         elif "ask" in a:
             r = subprocess.run([sys.executable, ask, "ask", "--root", os.getcwd(), "--dossier", a["dossier"], "--question", "Which?", "--option", "A|one|c1", "--option", "B|two|c2", "--blocks", "build"], capture_output=True, text=True)
             final = a["final"].replace("{id}", r.stdout.strip())
@@ -3374,6 +3422,33 @@ def selftest() -> int:
                         (queue_order({"queued_since": "2026-11-09T10:30:00Z", "queued_first": True}), "answered-earlier")])
         check("slots: an answered run queues ahead of runs queued before it, answered runs among themselves by time",
               [k for _, k in order] == ["answered-earlier", "answered", "old"])
+        # ---- a long test wait releases the slot: `testing` is live but holds none ----
+        bsy = {"pid": os.getpid(), "state": "testing"}
+        before = slot_census("x")[0]
+        write_json(os.path.join(rdir, "repo.W-91.runner.json"), bsy)
+        check("slots: slot_census ignores a testing run (alive, no slot)", slot_census("x")[0] == before)
+        write_json(os.path.join(rdir, "repo.W-91.runner.json"), {**bsy, "state": "running"})
+        check("slots: ...while a running run counts", slot_census("x")[0] == before + 1)
+        write_json(os.path.join(rdir, "repo.W-91.runner.json"), {**bsy, "state": "queued", "queued_since": "2026-11-09T10:00:00Z"})
+        check("slots: a queued run is still counted as queued", len(slot_census("x")[1]) >= 1)
+        os.remove(os.path.join(rdir, "repo.W-91.runner.json"))
+        env["ASD_RUNNER_MAX_LIVE"] = "1"
+        scenario([{"turns": [[{"bash": "python3 scripts/run_tests.py --wait", "hold": 4, "after": 4}, {"final": "RUNNER: DONE"}]]}])
+        p = start("W-92")
+        went = until(lambda: state_of("W-92").get("state") == "testing", 20)
+        check("testing: the state flips to testing while run_tests.py is in flight", bool(went))
+        held_now = slot_census("other")[0] if went else -1
+        check("testing: slot_census does not count the testing run", held_now == 0)
+        back = until(lambda: state_of("W-92").get("state") == "running", 20)
+        check("testing: the state goes back to running when the result arrives, with no queue", bool(back))
+        p.wait(timeout=60)
+        env["ASD_TESTING_QUIET_SECS"] = "1"
+        scenario([{"turns": [[{"bash": "sleep 99", "hold": 5, "after": 3}, {"final": "RUNNER: DONE"}]]}])
+        p = start("W-93")
+        check("testing: any Bash call quiet past the threshold flips to testing", bool(until(lambda: state_of("W-93").get("state") == "testing", 20)))
+        p.wait(timeout=60)
+        env.pop("ASD_TESTING_QUIET_SECS")
+        env.pop("ASD_RUNNER_MAX_LIVE")
         # ---- the disk floor: below it the run queues (no claude), and starts once the disk has room ----
         env["ASD_DISK_FLOOR_GIB"] = "1e12"; env["ASD_DISK_NO_RECLAIM"] = "1"
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])

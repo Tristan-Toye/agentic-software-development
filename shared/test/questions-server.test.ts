@@ -9,7 +9,7 @@ import { remindersDue } from "../questions/server.ts"
 import { undecidedDeferred, parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
 import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
-import { canIntegrate, integrationPhase, integrationStopped, markIntegrating, readIntegrate, readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
+import { canIntegrate, integrationPhase, integrationStopped, markIntegrating, readIntegrate, readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule, runnerActive } from "../questions/runstore.ts"
 import { blockedTarget } from "../claude/permission-denied.ts"
 import { mergeSpawns, inTimeline } from "../questions/timeline.ts"
 import { nextMerges, dossierOfPr } from "../questions/merges.ts"
@@ -287,6 +287,7 @@ check("slack: Status on a thread opener answers in a new message for that run", 
   const run = { repo: "config-harness", id: "W-1", title: "A <title>", state: "running", phase: "4", phaseName: "Fan-out", account: "b", started: T(0), context: 63000, questions: [{ id: "Q1", text: "Pick one" }], updates: ups, link: "http://x/r" }
   const t = runStatusText(run, Date.parse(T(30)))
   check("status: one run's text", t.includes("in progress · Phase 4 · Fan-out · account b") && t.includes("1 running, 2 finished (1 with a gap") && t.includes("Wave one is out.") && !t.includes("More detail") && t.includes("context 63k") && t.includes("❓ *Q1* Pick one") && t.includes("A &lt;title&gt;") && t.includes("⚠ quiet"), t)
+  check("status: a testing run reads as testing with its slot released", /testing/.test(runStatusText({ ...run, state: "testing" }, Date.parse(T(30)))))
   check("status: a run held for the stub reads queued, not waiting for you", runStatusText({ ...run, state: "waiting", waitingFor: "stub" }, Date.parse(T(30))).includes("queued · waiting for the stub") && runStatusText({ ...run, state: "waiting" }, Date.parse(T(30))).includes("waiting for you"))
   const sb = statusBlocks([run], { repo: "config-harness" }, Date.parse(T(30)))
   check("status: blocks carry a heading, the run and a Refresh button with the scope", sb.blocks[0].text.text.startsWith("*Status — config-harness*") && sb.blocks.at(-1).elements[0].value === "config-harness|" && sb.text.includes("W-1 running"))
@@ -357,6 +358,9 @@ check("runstore: updates newest first, torn and unknown kinds skipped", ups.map(
 check("runstore: no file means no updates", readUpdates("nope.X-1", udir).length === 0)
 writeFileSync(join(udir, "repoB.W-7.runner.json"), JSON.stringify({ pid: 4242, started: "s", state: "running", stage: "4" }))
 check("runstore: a live pid keeps running, a dead pid reads as stopped", readRunner("repoB.W-7", udir, () => true)?.state === "running" && readRunner("repoB.W-7", udir, () => false)?.state === "stopped" && readRunner("none.X", udir) === null)
+writeFileSync(join(udir, "repoB.W-7.runner.json"), JSON.stringify({ pid: 4242, started: "s", state: "testing", stage: "4" }))
+check("runstore: testing (slot released) is live: a live pid keeps it, a dead pid reads as stopped, and the run is active",
+  readRunner("repoB.W-7", udir, () => true)?.state === "testing" && readRunner("repoB.W-7", udir, () => false)?.state === "stopped" && runnerActive(readRunner("repoB.W-7", udir, () => true)))
 writeFileSync(join(udir, "repoB.W-7.runner.json"), JSON.stringify({ pid: 4242, state: "done" }))
 check("runstore: a finished state is kept whatever the pid", readRunner("repoB.W-7", udir, () => false)?.state === "done")
 check("integrate: an open stub offers it, and an integration in progress does not", canIntegrate("accepting", null, null) && !canIntegrate("accepting", { state: "merging" }, null) && !canIntegrate("integrating", { state: "merging" }, null) && !canIntegrate("integrating", { state: "stub" }, null))

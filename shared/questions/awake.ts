@@ -6,7 +6,7 @@ import { existsSync, readdirSync } from "node:fs"
 import { readRunner, runsDir } from "./runstore.ts"
 
 export const CAFFEINATE_BIN = "/usr/bin/caffeinate"
-export const LIVE_STATES = ["running", "waiting", "queued", "paused"]
+export const LIVE_STATES = ["running", "testing", "waiting", "queued", "paused"]
 
 export type AwakeChild = { kill: () => void; exited?: Promise<unknown> }
 export type AwakeDeps = {

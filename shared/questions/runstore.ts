@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { rulingRefused } from "./rulings.ts"
 
 export type Update = { ts: string; kind: "runner" | "stage" | "update"; text: string; stage?: string; state?: string; auto?: boolean; event?: string; status?: string; agent_id?: string }
-export type RunnerState = { state: "running" | "waiting" | "paused" | "queued" | "done" | "failed" | "stopped"; waitingFor?: "stub"; stage: string; pid: number; started: string; root: string; account?: string; resumesAt?: string; command?: string; session?: string; items?: string }
+export type RunnerState = { state: "running" | "testing" | "waiting" | "paused" | "queued" | "done" | "failed" | "stopped"; waitingFor?: "stub"; stage: string; pid: number; started: string; root: string; account?: string; resumesAt?: string; command?: string; session?: string; items?: string }
 
 export const runsDir = (): string => process.env.ASD_RUNS_DIR || join(homedir(), ".agentic", "runs")
 
@@ -39,7 +39,7 @@ export function integrationStopped(integrate: { state: string } | null, runner: 
 export function integrationPhase(integrate: { state: string } | null, runner: { state: string } | null): string {
   if (integrationStopped(integrate, runner)) return "integration stopped"
   if (integrate?.state === "merging") return "merging dossiers into stub"
-  if (runner && ["running", "waiting", "paused", "queued"].includes(runner.state)) return "validating stub"
+  if (runner && ["running", "testing", "waiting", "paused", "queued"].includes(runner.state)) return "validating stub"
   if (integrate?.state === "merged") return "merged into development"
   if (runner?.state === "done") return "validation finished · your merge"
   return "integrating"
@@ -47,7 +47,7 @@ export function integrationPhase(integrate: { state: string } | null, runner: { 
 
 /** Whether Integrate is offered, on the stub's card and on its page: an open stub, or one whose integration failed and can be retried. Never while its merges or its /stub run are going. */
 export function canIntegrate(stubState: string, integrate: { state: string } | null, runner: { state: string } | null): boolean {
-  if (runner && ["running", "waiting", "paused", "queued"].includes(runner.state)) return false
+  if (runner && ["running", "testing", "waiting", "paused", "queued"].includes(runner.state)) return false
   return stubState === "accepting" ? integrate?.state !== "merging" : stubState === "integrating" && integrate?.state === "failed"
 }
 
@@ -76,8 +76,8 @@ export function pidAlive(pid: number): boolean {
 export function readRunner(key: string, dir = runsDir(), alive: (pid: number) => boolean = pidAlive): RunnerState | null {
   try {
     const j = JSON.parse(readFileSync(join(dir, `${key}.runner.json`), "utf8"))
-    let state = ["running", "waiting", "paused", "queued", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
-    if ((state === "running" || state === "waiting" || state === "paused" || state === "queued") && !alive(Number(j.pid))) state = "stopped"
+    let state = ["running", "testing", "waiting", "paused", "queued", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
+    if ((state === "running" || state === "testing" || state === "waiting" || state === "paused" || state === "queued") && !alive(Number(j.pid))) state = "stopped"
     // A run that waits with no question is waiting for the stub being integrated (`wait_for_stub`), not for the owner.
     const waitingFor = state === "waiting" && Array.isArray(j.questions) && j.questions.length === 0 ? { waitingFor: "stub" as const } : {}
     return { ...waitingFor, state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "", ...(typeof j.account === "string" ? { account: j.account } : {}), ...(typeof j.resumes_at === "string" ? { resumesAt: j.resumes_at } : {}), ...(typeof j.command === "string" ? { command: j.command } : {}), ...(typeof j.session === "string" && j.session ? { session: j.session } : {}), ...(typeof j.items === "string" && j.items ? { items: j.items } : {}) }
@@ -149,7 +149,7 @@ export function checkRule(rule: string): string {
   if (m[1] === "Bash" && /^(bash|sh|zsh|python3?|node|bun|npx|npm|uv|pip3?|perl|ruby)\b(\s+\*|\*|$)/.test(inner)) return "a rule for a whole interpreter is dropped in auto mode; name the command"
   return rulingRefused(rule)
 }
-export const runnerActive = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "waiting" || r?.state === "paused" || r?.state === "queued"
+export const runnerActive = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "testing" || r?.state === "waiting" || r?.state === "paused" || r?.state === "queued"
 
 /** First paragraph of the `## Problem` section, else of the body after the front matter and title; <= 300 chars. */
 export function summaryOf(text: string): string {
