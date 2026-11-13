@@ -13,7 +13,8 @@ Exits 3 and prints `wait <stub>` when the newest stub is **being integrated** (i
 open): a new stub is cut only after that one has merged, so it starts with the whole integrated batch. With `--wait`
 it polls (`ASD_STUB_POLL` seconds, default 300) until the stub merges, then cuts and prints the new one. Under the
 runner the build ends its turn with `RUNNER: WAITING stub` instead, and the runner waits without spending tokens.
-`--dry-run` cuts nothing (prints `cut stub/<today>`). Exit 2 on a git or gh failure. `ASD_GH_BIN` replaces gh.
+After a new cut, `map_refresh_pr.py` runs detached to refresh the committed architecture map as a pull request into the
+new stub (opt-in: only when the repo already commits one; ASD_MAP_REFRESH=0 disables). `--dry-run` cuts nothing (prints `cut stub/<today>`). Exit 2 on a git or gh failure. `ASD_GH_BIN` replaces gh.
 """
 from __future__ import annotations
 
@@ -83,7 +84,24 @@ def target(root: str, dry: bool) -> tuple[int, str]:
     rc, out = sh(["git", "-C", root, "push", "origin", f"origin/development:refs/heads/{new}"])
     if rc != 0 and "already exists" not in out and "rejected" not in out:
         raise RuntimeError(f"could not cut {new}: {out[:200]}")
+    if rc == 0:
+        spawn_map_refresh(root, new)
     return 0, new
+
+
+def spawn_map_refresh(root: str, stub: str) -> None:
+    """After a genuine cut: refresh the committed architecture map in the background (map_refresh_pr.py, opt-in).
+
+    The cut is the one moment where the integrated stub has merged and the new stub exists; the refresh reaches the new
+    stub as a pull request, never a push to development. Detached and best effort: a failure never blocks the cut."""
+    if os.environ.get("ASD_MAP_REFRESH") == "0":
+        return
+    try:
+        log = open(os.path.join(root, ".git", "map-refresh.log"), "ab") if os.path.isdir(os.path.join(root, ".git")) else subprocess.DEVNULL
+        subprocess.Popen([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "map_refresh_pr.py"),
+                          "--root", root, "--stub", stub], stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    except OSError:
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:

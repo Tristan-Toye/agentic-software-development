@@ -13,6 +13,7 @@
     "./claude/agents/blast-radius-scout.md",
     "./claude/agents/code-scout.md",
     "./claude/agents/contract-reviewer.md",
+    "./claude/agents/diagram-author.md",
     "./claude/agents/document-drafter.md",
     "./claude/agents/implementer.md",
     "./claude/agents/integration-test-author.md",

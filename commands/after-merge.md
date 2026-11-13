@@ -72,7 +72,8 @@ one):
   nothing. The merge queue reaches that pull request itself and resolves it
   then; a refresh now would go stale at the next merge. Say so in the note.
 - **Conflicting, otherwise**: refresh it here without asking (a fresh worktree on
-  its branch, `git merge origin/<stub>`, resolve keeping both sides' intent, the
+  its branch, `git merge origin/<stub>`, resolve keeping both sides' intent,
+  `python3 ${PLUGIN_ROOT}/scripts/merge_guard.py` exiting 0 before the commit (`/resolve-merge` Step 2), the
   repository's gates on the touched paths, push; Phase 9's refresh ritual with
   `validate_pipeline.py --finalize-ids` where the repository has ADRs). Never
   rebase, never force-push. A merge conflict is resolved, not asked about; only

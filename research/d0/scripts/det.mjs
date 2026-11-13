@@ -1,0 +1,12 @@
+import ELK from 'elkjs/lib/elk.bundled.js';
+import {makeSpec,toElk} from './gen.mjs';
+const elk=new ELK();const spec=makeSpec(50);
+const mk=async o=>{const g=toElk(spec,{strategy:'NODES_AND_EDGES'});Object.assign(g.layoutOptions,o);return await elk.layout(g);};
+const runs=[];for(let i=0;i<4;i++)runs.push(await mk({}));
+const nodePos=l=>JSON.stringify((function w(n){return (n.children||[]).map(c=>[c.id,c.x,c.y,w(c)]);})(l));
+const edgeSec=l=>JSON.stringify(l.edges.map(e=>e.sections));
+console.log('node positions identical across 4 runs:',runs.every(r=>nodePos(r)===nodePos(runs[0])));
+console.log('edge sections identical across 4 runs:',runs.every(r=>edgeSec(r)===edgeSec(runs[0])));
+console.log('full json identical:',runs.every(r=>JSON.stringify(r)===JSON.stringify(runs[0])));
+const a=JSON.stringify(runs[0]),b=JSON.stringify(runs.find(r=>JSON.stringify(r)!==a)||runs[0]);let i=0;while(a[i]===b[i])i++;console.log('first diff at',i,a.slice(i-60,i+40));
+process.exit(0);
