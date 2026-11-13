@@ -210,6 +210,7 @@ async function vrLoad(repo, id) {
   const key = vrKey(repo, id); let d = null;
   try { const r = await fetch('/api/visual-review?dossier=' + enc(id) + '&repo=' + enc(repo)); d = r.ok ? await r.json() : null; } catch (e) { d = null; }
   const had = VR[key] && VR[key].data ? VR[key].data.rev : null;
+  if (d && d.review) d.shownHashes = Object.assign({}, d.review.hashes || {}); /* the hashes of the graphs this load displays: a verdict says which one the owner saw */
   VR[key] = { data: d };
   if (d && d.review) { const st = VRS[key] = VRS[key] || {}; st.review = d.review; if (st.paint) st.paint(); }
   vrMapLoad(repo);
@@ -222,9 +223,12 @@ async function vrMapLoad(repo) {
   const had = JSON.stringify(VRM[repo] && VRM[repo].status || null); const cur = VRM[repo] = VRM[repo] || {}; cur.status = d;
   if (JSON.stringify(d) !== had) { render(); const st = VRS[repo + '/~map']; if (st && st.paint) st.paint(); }
 }
+let vrOpenSeq = 0;
 async function vrOpenDiagram(repo, path) {
+  const seq = ++vrOpenSeq; /* a slow earlier answer must not overwrite a later click */
   const cur = VRM[repo] = VRM[repo] || {}; cur.open = path; cur.text = ''; cur.err = '';
   let d = null; try { const r = await fetch('/api/visual-review/diagram?repo=' + enc(repo) + '&path=' + enc(path)); d = await r.json(); if (!r.ok) { cur.err = d.error || ('HTTP ' + r.status); d = null; } } catch (e) { cur.err = 'request failed'; }
+  if (seq !== vrOpenSeq) return;
   const key = repo + '/~map';
   if (d && d.kind === 'mermaid') { cur.text = d.text; VR[key] = { data: null }; }
   else if (d) { VR[key] = { data: { dossier: '', rev: path + ':' + Date.now(), views: { L0: d.views.L0 || null, L1: d.views.L1 || null, L2: d.views.L2 || null }, issues: [], mapRepo: repo, mapPath: path } }; if (!d.views.L0 && !d.views.L1 && !d.views.L2) { cur.err = 'The server sent no view for this diagram.'; VR[key] = { data: null }; } }
@@ -334,9 +338,9 @@ function vrBuild(host, key, data) {
     const go = async (verdict) => {
       save.disabled = clr.disabled = true; msg.textContent = 'Saving…';
       try {
-        const r = await fetch('/api/visual-review/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dossier: vrDossier, repo: vrRepo, diagram: st.view, element: id, verdict: verdict, comment: ta.value }) });
+        const r = await fetch('/api/visual-review/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dossier: vrDossier, repo: vrRepo, diagram: st.view, element: id, verdict: verdict, comment: ta.value, graph_hash: (data.shownHashes || {})[st.view] }) });
         const j = await r.json().catch(() => ({}));
-        if (!r.ok) { msg.textContent = j.error || ('HTTP ' + r.status); save.disabled = !pick; clr.disabled = !old; return; }
+        if (!r.ok) { msg.textContent = j.error || ('HTTP ' + r.status); save.disabled = !pick; clr.disabled = !old; if (r.status === 409) vrLoad(vrRepo, vrDossier); return; }
         st.review = j.review; paintAll(); if (j.followup) load(['questions']);
       } catch (e) { msg.textContent = 'request failed'; save.disabled = !pick; clr.disabled = !old; }
     };
@@ -356,7 +360,7 @@ function vrBuild(host, key, data) {
     const s = st.review.summary; sumEl.textContent = s.text;
     const q = vrOpenQ(vrDossier, vrRepo);
     sendB.disabled = !q || !s.checked;
-    sendNote.textContent = !q ? 'No open visual-review question for this dossier.' : !s.checked ? 'Check at least one element first.' : '';
+    sendNote.textContent = !q ? 'No open visual-review question for this dossier; Send review is enabled when the run asks for the visual review.' : !s.checked ? 'Check at least one element first.' : '';
     const g = st.review.lines.filter(l => l.state === 'gone');
     gone.textContent = g.length ? 'Element gone from the diagram (the comment is kept in review.json): ' + g.map(l => l.anchor.diagram + ' ' + l.anchor.element + (l.comment ? ' — ' + l.comment : '')).join('; ') : '';
   }
@@ -385,13 +389,13 @@ function vrBuild(host, key, data) {
     if (wk.on) wkSync();
     if (!mm.hidden) showMm();
   }
-  function vrNote(v, mode) { const c = { added: 0, changed: 0, removed: 0 }; v.graph.nodes.forEach(n => { if (c[n.status] !== undefined && visible(n.status)) c[n.status]++; }); const is = v.issues.length ? ' · ' + v.issues.length + ' validation issue' + (v.issues.length > 1 ? 's' : '') + ': ' + v.issues.slice(0, 3).map(i => i.message).join('; ') : ''; return v.graph.title + ' · ' + c.added + ' added, ' + c.changed + ' changed, ' + c.removed + ' removed shown' + is; }
+  function vrNote(v, mode) { const c = { added: 0, changed: 0, removed: 0 }; v.graph.nodes.forEach(n => { if (c[n.status] !== undefined && visible(n.status)) c[n.status]++; }); const is = v.issues.length ? ' · ' + v.issues.length + ' validation issue' + (v.issues.length > 1 ? 's' : '') + ': ' + v.issues.slice(0, 3).map(i => i.message).join('; ') : ''; return (v.graph.title ? v.graph.title + ' · ' : '') +  + c.added + ' added, ' + c.changed + ' changed, ' + c.removed + ' removed shown' + is; }
   const colOf = v => st.col[v] || [];
   const canCol = id => !(st.view === 'L1' && (data.views.L1.graph.lanes || []).length) && (data.views[st.view].graph.groups || []).some(x => x.id === id);
   /* A collapse state is laid out by the server (the collapsed graph, edges aggregated); the answer is kept per state, so closing again is instant. */
   function draw(anchor, selId) {
     const base = data.views[st.view], ids = colOf(st.view);
-    if (!ids.length || !base.layout || !base.graph) { paint(base, anchor, selId); return; }
+    if (!ids.length || !base.graph || (!base.layout && !data.mapPath)) { paint(base, anchor, selId); return; }
     const ck = st.view + '|' + ids.join(','), hit = st.lc[ck];
     if (hit) { paint(Object.assign({}, base, hit), anchor, selId); return; }
     busy = true; note.textContent = 'Laying out the collapsed groups…';
@@ -408,7 +412,7 @@ function vrBuild(host, key, data) {
   }
   function paint(v, anchor, selId) {
     cur = v; Object.keys(tb).forEach(k => tb[k].setAttribute('aria-pressed', String(k === st.view)));
-    svg.replaceChildren(); els = {}; root = null; ovSvg = null; ovVp = null; ovRects = {}; ov.replaceChildren(); ov.hidden = true; st.sel = ''; insp.replaceChildren(); vrDom('p', 'small mut', 'Click an element for its description and evidence. Drag to pan; Ctrl or Cmd + wheel to zoom; click a group header to fold it.', insp);
+    svg.replaceChildren(); els = {}; root = null; ovSvg = null; ovVp = null; ovRects = {}; ov.replaceChildren(); ov.hidden = true; st.sel = ''; insp.replaceChildren(); vrDom('p', 'small mut', 'Click an element for its description and evidence. Drag to pan; Ctrl or Cmd + wheel to zoom; click a group header to fold it; in a folded view, click a folded box to open it.', insp);
     if (!cur.layout || !cur.graph) { note.textContent = cur.issues.map(i => i.message).join('; ') || 'This view could not be laid out.'; return; }
     const g = cur.graph, L = cur.layout, defs = vrEl('defs', {}, svg), mk = vrEl('marker', { id: 'vr-ar', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, defs);
     vrEl('path', { d: 'M0 0L10 5L0 10z', fill: 'var(--mut)' }, mk); root = vrEl('g', {}, svg);
@@ -459,11 +463,12 @@ function vrBuild(host, key, data) {
   mmB.onclick = () => { mm.hidden = !mm.hidden; if (!mm.hidden) showMm(); };
   mmCopy.onclick = () => { showMm(); mmText.select(); let p; try { p = navigator.clipboard.writeText(mmText.value); } catch (e) { p = null; } if (!p) { try { document.execCommand('copy'); } catch (e) {} } mmCopy.textContent = 'Copied'; setTimeout(() => { mmCopy.textContent = 'Copy'; }, 1500); };
   fitB.onclick = fit; zin.onclick = () => { const r = svg.getBoundingClientRect(); zoomAt(1.25, r.width / 2, r.height / 2); }; zout.onclick = () => { const r = svg.getBoundingClientRect(); zoomAt(0.8, r.width / 2, r.height / 2); };
-  svg.addEventListener('pointerdown', e => { if (e.target.closest('[data-id]')) return; drag = { x: e.clientX - vp.x, y: e.clientY - vp.y }; svg.setPointerCapture(e.pointerId); svg.classList.add('drag'); });
-  svg.addEventListener('pointermove', e => { if (!drag) return; vp.x = e.clientX - drag.x; vp.y = e.clientY - drag.y; apply(); });
+  let panMoved = false;
+  svg.addEventListener('pointerdown', e => { panMoved = false; const own = e.target.closest('[data-id]'); /* a group box pans; a node, a group header and a folded box act on click */ if (own && (!own.classList.contains('vrg') || e.target.closest('[data-tog]') || (els[own.getAttribute('data-id')] && els[own.getAttribute('data-id')].col))) return; panMoved = false; drag = { x: e.clientX - vp.x, y: e.clientY - vp.y, sx: e.clientX, sy: e.clientY, id: e.pointerId }; if (!own) { svg.setPointerCapture(e.pointerId); svg.classList.add('drag'); } });
+  svg.addEventListener('pointermove', e => { if (!drag) return; if (!panMoved && Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) { panMoved = true; if (!svg.hasPointerCapture(drag.id)) { svg.setPointerCapture(drag.id); svg.classList.add('drag'); } } if (!panMoved) return; vp.x = e.clientX - drag.x; vp.y = e.clientY - drag.y; apply(); });
   svg.addEventListener('pointerup', () => { drag = null; svg.classList.remove('drag'); });
   svg.addEventListener('wheel', e => { if (!(e.ctrlKey || e.metaKey)) return; e.preventDefault(); const r = svg.getBoundingClientRect(); zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
-  svg.addEventListener('click', e => { const tg = e.target.closest('[data-tog]'); if (tg) { toggle(tg.getAttribute('data-tog')); return; } const t = e.target.closest('[data-id]'); if (!t) return; const id = t.getAttribute('data-id'); if (els[id] && els[id].col) toggle(id); else inspect(id); });
+  svg.addEventListener('click', e => { if (panMoved) { panMoved = false; return; } const tg = e.target.closest('[data-tog]'); if (tg) { toggle(tg.getAttribute('data-tog')); return; } const t = e.target.closest('[data-id]'); if (!t) return; const id = t.getAttribute('data-id'); if (els[id] && els[id].col) toggle(id); else inspect(id); });
   svg.addEventListener('keydown', e => { if (e.key !== 'Enter' && e.key !== ' ') return; const t = e.target.closest && e.target.closest('[data-id]'); if (t) { e.preventDefault(); const id = t.getAttribute('data-id'); if (els[id] && els[id].col || canCol(id)) toggle(id); else inspect(id); } });
   /* Mini-map: boxes at 170x110 at most, a rectangle for what the canvas shows; click or drag moves the view. Only when the graph is larger than the canvas. */
   function mapBuild() {

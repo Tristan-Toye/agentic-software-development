@@ -62,6 +62,7 @@ export function checkGraph(g: any, expectView?: string): Issue[] {
   else if (g.schema_version.split(".")[0] !== "1") bad("schema_version", "schema_version", "unsupported major version " + g.schema_version + " (this reader handles 1.x)")
   if (!VIEWS.has(g.view)) bad("view", "view", "view must be L0, L1, L2, map or full")
   else if (expectView && g.view !== expectView) bad("view_mismatch", "view", "the file holds view " + g.view + ", expected " + expectView)
+  if (typeof g.title !== "string") bad("missing_field", "title", "title is required")
   for (const k of ["nodes", "edges"]) if (!Array.isArray(g[k])) bad("missing_field", k, k + " must be an array")
   if (out.length) return out
   const ids = new Set<string>()
@@ -364,7 +365,9 @@ export async function visualReview(dir: string, dossier: string): Promise<Visual
     if (typeof g?.title === "string") out.title = g.title
     if (fatal) continue
     const clean = stripDollar(g)
-    clean.edges = clean.edges.filter((e: any) => !out.issues.some((i) => i.code === "dangling_edge" && i.message.startsWith("edge " + e.id + " ")))
+    // The dangling edges are found from the id sets, not by parsing the issue messages (an id may hold spaces).
+    const known = new Set<string>([...(clean.groups ?? []), ...(clean.lanes ?? []), ...clean.nodes].map((x: any) => x.id))
+    clean.edges = clean.edges.filter((e: any) => known.has(e.source) && known.has(e.target))
     out.view = clean.view
     out.graph = clean
     try { out.layout = await layoutGraph(clean) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }

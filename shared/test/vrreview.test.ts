@@ -1,7 +1,7 @@
 // VR-04: verdicts per element (review.json), the batch answer, the run-detail `diagrams` field, and the VR-06 banner and
 // repo view on the dashboard. Run: bun test shared/test/vrreview.test.ts
 import { afterAll, describe, expect, test } from "bun:test"
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { buildAnswer, diagramsOf, isReviewQuestion, MAX_ANSWER, MAX_COMMENT, readReview, reviewOptions, reviewState, setVerdict, ReviewError } from "../questions/vrreview.ts"
@@ -69,7 +69,34 @@ describe("setVerdict and review.json", () => {
     const d = dirWith()
     writeFileSync(join(d, "review.json"), JSON.stringify({ anything: ["goes"] }))
     expect(reviewState(d, "W-145").summary.checked).toBe(0)
+    // The file exists but is unusable: a write would lose it, so it is refused (409) and the file stays as it was.
+    expect(() => setVerdict(d, "W-145", { diagram: "L0", element: nodes("l0")[0], verdict: "ok" })).toThrow(/not overwritten/)
+    try { setVerdict(d, "W-145", { diagram: "L0", element: nodes("l0")[0], verdict: "ok" }) } catch (e) { expect((e as ReviewError).status).toBe(409) }
+    expect(readFileSync(join(d, "review.json"), "utf8")).toBe(JSON.stringify({ anything: ["goes"] }))
+  })
+  test("an unparseable or oversize review.json is refused, a missing one is created", () => {
+    const d = dirWith()
+    writeFileSync(join(d, "review.json"), "{not json")
+    expect(() => setVerdict(d, "W-145", { diagram: "L0", element: nodes("l0")[0], verdict: "ok" })).toThrow(ReviewError)
+    expect(readFileSync(join(d, "review.json"), "utf8")).toBe("{not json")
+    writeFileSync(join(d, "review.json"), " ".repeat(600 * 1024))
+    expect(() => setVerdict(d, "W-145", { diagram: "L0", element: nodes("l0")[0], verdict: "ok" })).toThrow(/larger than/)
+    rmSync(join(d, "review.json"))
     expect(setVerdict(d, "W-145", { diagram: "L0", element: nodes("l0")[0], verdict: "ok" }).state.summary.checked).toBe(1)
+  })
+  test("a verdict carries the hash the owner saw: a different hash is refused with 409, the right one is stamped", () => {
+    const d = dirWith(), id = nodes("l0")[0]
+    const seen = reviewState(d, "W-145").hashes.L0!
+    let err: any
+    try { setVerdict(d, "W-145", { diagram: "L0", element: id, verdict: "ok", graph_hash: "0".repeat(64) }) } catch (e) { err = e }
+    expect(err).toBeInstanceOf(ReviewError)
+    expect(err.status).toBe(409)
+    expect(err.message).toMatch(/changed since you opened it/)
+    expect(reviewState(d, "W-145").summary.checked).toBe(0)
+    const st = setVerdict(d, "W-145", { diagram: "L0", element: id, verdict: "ok", graph_hash: seen }).state
+    expect(st.lines[0].anchor.graph_hash).toBe(seen)
+    // clearing never needs the hash to match
+    expect(setVerdict(d, "W-145", { diagram: "L0", element: id, verdict: "unset", graph_hash: "x" }).state.summary.checked).toBe(0)
   })
 })
 

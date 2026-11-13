@@ -1,7 +1,7 @@
 // Visual review (VR-06 wiring): the dashboard side of the living product map. It runs scripts/vr_map.py (check, list)
 // on a repo root, with a timeout, and caches the staleness result on the map file's mtime.
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
-import { join, resolve, sep } from "node:path"
+import { dirname, join, resolve, sep } from "node:path"
 import { checkGraph, collapseLoaded, layoutGraph, stripDollar, type ViewResult } from "./vrlayout.ts"
 
 export const MAP_REL = "docs/architecture/product-map.json"
@@ -53,7 +53,9 @@ export async function mapStatus(repo: string, root: string, timeoutMs = MAP_TIME
 async function checkMap(repo: string, root: string, timeoutMs: number): Promise<MapStatus> {
   const map = join(root, MAP_REL)
   const has = existsSync(map)
-  const mtime = has ? statSync(map).mtimeMs : 0
+  // The key also holds the mtimes of docs/architecture and the manifest, so a new diagram file is seen at once.
+  const mt = (f: string): number => { try { return statSync(f).mtimeMs } catch { return 0 } }
+  const mtime = (has ? mt(map) : 0) + mt(dirname(map)) * 1e-3 + mt(join(dirname(map), "manifest.json")) * 1e-6
   const key = root
   const hit = cache.get(key)
   if (hit && hit.mtime === mtime && Date.now() - hit.at < MAP_TTL_MS) return hit.status
@@ -66,7 +68,7 @@ async function checkMap(repo: string, root: string, timeoutMs: number): Promise<
       if (!j.has_map && typeof j.message === "string") st.message = j.message
     } catch { st.message = "vr_map list printed no JSON" }
   } else st.message = ls.timedOut ? "vr_map list timed out" : "vr_map list failed: " + ls.err.trim().split("\n").pop()
-  if (!has) st.message = "no committed product map yet (" + MAP_REL + ")"
+  if (!has) st.message = (st.message ? st.message + "; " : "") + "no committed product map yet (" + MAP_REL + ")"
   else {
     const ck = await py(["check", root, map, "--json", "--no-metrics"], timeoutMs)
     // exit 0 fresh, 1 stale (the JSON is on stdout either way), 2 unreadable
@@ -86,13 +88,13 @@ async function checkMap(repo: string, root: string, timeoutMs: number): Promise<
 /** The text of a listed diagram: only a path `list` named, inside the repo (symlinks compared by real path). */
 function readListed(root: string, rel: string, listed: Diagram[]): { d: Diagram; text: string } {
   const d = listed.find((x) => x.path === rel)
-  if (!d) throw new Error("not a listed diagram")
+  if (!d) throw new DiagramError(404, "not a listed diagram")
   const abs = resolve(root, rel)
-  if (!abs.startsWith(resolve(root) + sep)) throw new Error("path leaves the repo")
+  if (!abs.startsWith(resolve(root) + sep)) throw new DiagramError(404, "path leaves the repo")
   // The lexical check passes a symlink inside the repo that points outside it: compare the real paths.
   let real: string
-  try { real = realpathSync(abs) } catch { throw new Error("diagram not found") }
-  if (!real.startsWith(realpathSync(root) + sep)) throw new Error("path leaves the repo")
+  try { real = realpathSync(abs) } catch { throw new DiagramError(404, "diagram not found") }
+  if (!real.startsWith(realpathSync(root) + sep)) throw new DiagramError(404, "path leaves the repo")
   return { d, text: readFileSync(real, "utf8") }
 }
 
@@ -133,13 +135,18 @@ export function openFolds(g: any, budget = OPEN_BUDGET): string[] {
  * the structure layout draws with their groups. `tab` names the view kind for the tab. A view with more nodes than OPEN_BUDGET comes with
  * `collapsed` = the groups to fold on open; the canvas asks `collapsedDiagram` for that layout.
  */
+/** A failure of openDiagram with the HTTP status the route sends: 404 for a diagram that is not listed or not there, 400 for a file that is not a usable graph. */
+export class DiagramError extends Error {
+  constructor(public status: number, message: string) { super(message) }
+}
 export async function openDiagram(root: string, rel: string, listed: Diagram[]): Promise<{ kind: "graph"; title: string; views: Record<string, ViewResult & { collapsed?: string[]; tab?: string }> } | { kind: "mermaid"; title: string; text: string }> {
   const { d, text } = readListed(root, rel, listed)
   if (!rel.endsWith(".json")) {
     const m = text.match(/```mermaid\n([\s\S]*?)```/)
     return { kind: "mermaid", title: d.title, text: (m ? m[1] : text).trim() }
   }
-  const g = JSON.parse(text)
+  let g: any
+  try { g = JSON.parse(text) } catch (e) { throw new DiagramError(400, "the diagram is not valid JSON: " + (e as Error).message) }
   const out: ViewResult & { collapsed?: string[]; tab?: string } = { file: rel, graph: null, layout: null, issues: checkGraph(g) }
   if (typeof g?.title === "string") out.title = g.title
   out.tab = kindTab(d, g)
@@ -148,14 +155,16 @@ export async function openDiagram(root: string, rel: string, listed: Diagram[]):
     out.view = g.view
     const fold = openFolds(out.graph)
     if (fold.length) out.collapsed = fold
-    try { out.layout = await layoutGraph(out.graph) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
+    // A view that opens folded may be too big to lay out unfolded: then the failure is not reported (layout stays null) and the canvas asks for the folded layout.
+    try { out.layout = await layoutGraph(out.graph) } catch (e) { if (!fold.length) out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
   }
   return { kind: "graph", title: d.title, views: { [g.view === "map" ? "L0" : g.view === "full" ? "L2" : g.view]: out } }
 }
 
 /** A committed diagram with some groups folded to one box each (edges aggregated with counts), and its layout. */
 export async function collapsedDiagram(root: string, rel: string, listed: Diagram[], collapsed: string[]): Promise<{ graph: any; layout: any; collapsed: string[] }> {
-  if (!rel.endsWith(".json")) throw new Error("not a graph diagram")
-  const g = JSON.parse(readListed(root, rel, listed).text)
+  if (!rel.endsWith(".json")) throw new DiagramError(400, "not a graph diagram")
+  let g: any
+  try { g = JSON.parse(readListed(root, rel, listed).text) } catch (e) { if (e instanceof DiagramError) throw e; throw new DiagramError(400, "the diagram is not valid JSON: " + (e as Error).message) }
   return collapseLoaded(g, g.view, collapsed)
 }

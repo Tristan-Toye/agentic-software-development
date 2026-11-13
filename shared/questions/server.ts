@@ -17,7 +17,7 @@ import { pendingSlack, readRunThread, runSlackEnabled, runsWatchIgnored, threadC
 import { startLagWatch } from "./lagwatch.ts"
 import { collapsedView, hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
 import { buildAnswer, diagramsOf, MAX_BODY, ReviewError, isReviewQuestion, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
-import { collapsedDiagram, mapStatus, openDiagram } from "./vrmap.ts"
+import { collapsedDiagram, DiagramError, mapStatus, openDiagram } from "./vrmap.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
 import { awakeDeps, checkAwake, releaseAwake } from "./awake.ts"
@@ -530,7 +530,7 @@ export async function handle(req: Request): Promise<Response> {
     if (!/^[\w.-]+$/.test(repo)) return json({ error: "repo must be a plain name" }, 400)
     const root = (await repoRoots(repo))[0]
     if (!root) return json({ error: "no such repo" }, 404)
-    try { return json(await openDiagram(root, rel, (await mapStatus(repo, root)).diagrams)) } catch (e) { return json({ error: (e as Error).message }, 404) }
+    try { return json(await openDiagram(root, rel, (await mapStatus(repo, root)).diagrams)) } catch (e) { return json({ error: (e as Error).message }, e instanceof DiagramError ? e.status : 404) }
   }
   // The vendored ELK worker, from the dashboard's own origin (nothing is fetched from a CDN).
   if (req.method === "GET" && path === "/vendor/elk/elk-worker.min.js") {

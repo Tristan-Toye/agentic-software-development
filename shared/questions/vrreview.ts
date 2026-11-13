@@ -61,19 +61,24 @@ export const readGraphs = (dir: string): Graphs => readGraphsFull(dir).graphs
 
 /** The lines of review.json that have the right shape; anything else in the file is ignored (and rewritten away on the next save). */
 export function readReview(dir: string, dossier: string): Review | null {
+  return readReviewChecked(dir, dossier).review
+}
+/** Like readReview, but says why there is none: `unreadable` is set when review.json exists and cannot be used (oversize, not JSON, no lines array); a missing file is just `review: null`. */
+export function readReviewChecked(dir: string, dossier: string): { review: Review | null; unreadable?: string } {
   const file = reviewFile(dir)
   try {
-    if (!existsSync(file) || statSync(file).size > MAX_FILE) return null
+    if (!existsSync(file)) return { review: null }
+    if (statSync(file).size > MAX_FILE) return { review: null, unreadable: "review.json is larger than " + MAX_FILE + " bytes" }
     const o = JSON.parse(readFileSync(file, "utf8"))
-    if (!o || typeof o !== "object" || !Array.isArray(o.lines)) return null
+    if (!o || typeof o !== "object" || !Array.isArray(o.lines)) return { review: null, unreadable: "review.json has no lines list" }
     const lines: ReviewLine[] = []
     for (const l of o.lines) {
       const a = l?.anchor
       if (a && VR_VIEWS.includes(a.diagram) && typeof a.element === "string" && typeof a.graph_hash === "string" && (VERDICTS as readonly string[]).includes(l.verdict))
         lines.push({ anchor: { diagram: a.diagram, element: a.element, graph_hash: a.graph_hash }, verdict: l.verdict, comment: typeof l.comment === "string" ? l.comment : "", ts: typeof l.ts === "string" ? l.ts : "" })
     }
-    return { schema_version: "1.0.0", dossier: typeof o.dossier === "string" ? o.dossier : dossier, updated: typeof o.updated === "string" ? o.updated : "", lines }
-  } catch { return null }
+    return { review: { schema_version: "1.0.0", dossier: typeof o.dossier === "string" ? o.dossier : dossier, updated: typeof o.updated === "string" ? o.updated : "", lines } }
+  } catch (e) { return { review: null, unreadable: "review.json cannot be read: " + (e as Error).message } }
 }
 
 /** The verdicts against the diagrams as they are now, and the count line ("12 of 14 elements checked"). Outdated and gone lines are kept, not counted. */
@@ -97,7 +102,8 @@ export function reviewState(dir: string, dossier: string): ReviewState {
   return { exists: review !== null, broken, hashes: Object.fromEntries(VR_VIEWS.filter((v) => graphs[v]).map((v) => [v, graphs[v]!.hash])), lines, summary: { ...s, text }, unchecked }
 }
 
-export type VerdictInput = { diagram: unknown; element: unknown; verdict: unknown; comment?: unknown }
+/** `graph_hash` is the hash of the graph the owner saw (from the review state's `hashes`); when given it must match the file on disk. */
+export type VerdictInput = { diagram: unknown; element: unknown; verdict: unknown; comment?: unknown; graph_hash?: unknown }
 /**
  * Upsert (or clear, with verdict "unset") one verdict. Refuses an unknown diagram, an element that is not a node of the
  * current graph, an unknown verdict and an oversize comment. `followup` is set when the line is a Question with a comment:
@@ -116,7 +122,11 @@ export function setVerdict(dir: string, dossier: string, b: VerdictInput): { sta
   // Clearing ("unset") also works for a line whose element or diagram is gone, so stale lines can be removed.
   if (!unset && !g) throw new ReviewError(404, "no " + diagram + " diagram for " + dossier)
   if (!unset && !g!.nodes.has(b.element)) throw new ReviewError(400, "unknown element " + b.element + " in " + diagram)
-  const prev = readReview(dir, dossier) ?? { schema_version: "1.0.0" as const, dossier, updated: "", lines: [] }
+  if (!unset && b.graph_hash !== undefined && b.graph_hash !== null && (typeof b.graph_hash !== "string" || (g && b.graph_hash !== g.hash)))
+    throw new ReviewError(409, "the diagram changed since you opened it; reload")
+  const cur = readReviewChecked(dir, dossier)
+  if (cur.unreadable) throw new ReviewError(409, cur.unreadable + "; verdicts were not saved so the file is not overwritten. Fix or remove " + reviewFile(dir) + " and reload")
+  const prev = cur.review ?? { schema_version: "1.0.0" as const, dossier, updated: "", lines: [] }
   const same = (l: ReviewLine) => l.anchor.diagram === diagram && l.anchor.element === b.element
   const old = prev.lines.find(same)
   const lines = prev.lines.filter((l) => !same(l))
