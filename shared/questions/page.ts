@@ -314,6 +314,7 @@ function vrBuild(host, key, data) {
     vrDom('h3', '', it.label || (it.source + ' → ' + it.target), insp);
     const meta = vrDom('p', 'small', null, insp); const b = vrDom('span', 'vrbadge ' + it.status, VR_MARK[it.status] + ' ' + it.status, meta);
     meta.appendChild(document.createTextNode(' ' + (it.kind || '') + (it.resolution ? ' · ' + it.resolution : '') + (it.label_source ? ' · label by ' + it.label_source : '')));
+    if (it.members && it.members.length) { vrDom('p', 'small mut', 'Members', insp); const pre = vrDom('pre', 'small', null, insp); pre.textContent = it.members.join('\n'); }
     if (it.detail) { if (it.detail.before) vrDom('p', '', 'Before: ' + it.detail.before, insp); if (it.detail.after) vrDom('p', '', 'After: ' + it.detail.after, insp); }
     const ev = it.evidence || [];
     const tiers = ev.map(x => x.tier).filter((t, i, a) => a.indexOf(t) === i).join(' + ');
@@ -380,7 +381,7 @@ function vrBuild(host, key, data) {
   function applyMode() {
     Object.keys(mb).forEach(k => mb[k].setAttribute('aria-pressed', String(k === st.mode)));
     const g = cur.graph, ok = {}; g.nodes.forEach(n => ok[n.id] = visible(n.status));
-    const up = {}; g.nodes.forEach(n => { const p = (g.view === 'L1' && (g.lanes || []).length ? n.lane : n.group); if (p) up[n.id] = p; }); (g.groups || []).forEach(x => { if (x.parent) up[x.id] = x.parent; });
+    const up = {}; g.nodes.forEach(n => { const p = (vrLane(g.view) && (g.lanes || []).length ? n.lane : n.group); if (p) up[n.id] = p; }); (g.groups || []).forEach(x => { if (x.parent) up[x.id] = x.parent; });
     (g.groups || []).forEach(x => ok[x.id] = visible(x.status)); (g.lanes || []).forEach(x => ok[x.id] = true);
     g.nodes.forEach(n => { if (!ok[n.id]) return; let p = up[n.id], n2 = 0; while (p && n2++ < 50) { ok[p] = true; p = up[p]; } });
     Object.keys(els).forEach(id => { const e = els[id]; let on; if (e.edge) on = visible(e.status) && ok[e.edge[0]] !== false && ok[e.edge[1]] !== false; else on = ok[id] !== false; e.g.classList.toggle('vroff', !on); if (e.lab) e.lab.classList.toggle('vroff', !on); });
@@ -416,12 +417,18 @@ function vrBuild(host, key, data) {
     if (!cur.layout || !cur.graph) { note.textContent = cur.issues.map(i => i.message).join('; ') || 'This view could not be laid out.'; return; }
     const g = cur.graph, L = cur.layout, defs = vrEl('defs', {}, svg), mk = vrEl('marker', { id: 'vr-ar', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, markerUnits: 'userSpaceOnUse', orient: 'auto-start-reverse' }, defs);
     vrEl('path', { d: 'M0 0L10 5L0 10z', fill: 'var(--mut)' }, mk); root = vrEl('g', {}, svg);
-    const tip = (g0, it) => { const t = vrEl('title', {}, g0); t.textContent = (it.label || (it.source + ' -> ' + it.target)) + ' [' + it.status + ']' + (it.evidence || []).map(x => '\n' + vrEv(x)).join(''); };
+    const tip = (g0, it) => { const t = vrEl('title', {}, g0); t.textContent = (it.label || (it.source + ' -> ' + it.target)) + ' [' + it.status + ']' + (it.stereotype ? '\n<<' + it.stereotype + '>>' : '') + (it.members && it.members.length ? '\n' + it.members.join('\n') : '') + (it.evidence || []).map(x => '\n' + vrEv(x)).join(''); };
     const cont = [].concat(g.groups || [], (g.lanes || []).map(l => ({ id: l.id, label: l.label, status: 'context', evidence: [] })));
     cont.forEach(c => { const b = L.boxes[c.id]; if (!b) return; const gg = vrEl('g', { 'data-id': c.id, 'data-status': c.status, class: 'vrg', tabindex: 0 }, root); els[c.id] = { g: gg, status: c.status };
       vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 8, fill: 'var(--bg)', stroke: 'var(--' + vrTone(c.status) + ')', 'stroke-width': c.status === 'context' ? 1 : 2, 'stroke-dasharray': c.status === 'context' ? '4 3' : '0' }, gg);
       const tx = vrEl('text', { x: b.x + 10, y: b.y + 19, fill: 'var(--fg)', 'font-weight': 600, 'font-size': 13 }, gg); tx.textContent = (canCol(c.id) ? '▾ ' : '') + VR_MARK[c.status] + ' ' + c.label; vrMark(gg, c.status, b.x + b.w - 14, b.y + 14); tip(gg, c);
       if (canCol(c.id)) vrEl('rect', { class: 'vrhd', x: b.x, y: b.y, width: b.w, height: 30, fill: 'transparent', stroke: 'transparent', 'data-tog': c.id }, gg); });
+    /* seq frames (alt, opt, loop, par ...): a labelled box behind the steps it spans, a dashed rule where a branch (else, and) starts. */
+    (g.frames || []).forEach(f => { const b = L.frames && L.frames[f.id]; if (!b) return; const fg = vrEl('g', { class: 'vrfr', 'data-frame': f.id, 'pointer-events': 'none' }, root);
+      vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 4, fill: 'none', stroke: 'var(--mut)', 'stroke-width': 1.2 }, fg);
+      const lab = f.kind + (f.label ? ' [' + f.label + ']' : ''); const tw = Math.min(b.w - 8, Math.ceil(lab.length * 6.2) + 10); vrEl('rect', { x: b.x, y: b.y, width: tw, height: 15, fill: 'var(--card)', stroke: 'var(--mut)', 'stroke-width': 1 }, fg);
+      const ft = vrEl('text', { x: b.x + 5, y: b.y + 11, 'font-size': 10.5, fill: 'var(--mut)' }, fg); ft.textContent = lab.length * 6.2 + 10 > tw ? lab.slice(0, Math.max(1, Math.floor((tw - 10) / 6.2) - 1)) + '…' : lab;
+      (f.branches || []).forEach(br => { const sb = L.boxes[br.first]; if (!sb) return; const y = Math.max(b.y + 16, sb.y - 8); vrEl('line', { x1: b.x, x2: b.x + b.w, y1: y, y2: y, stroke: 'var(--mut)', 'stroke-width': 1, 'stroke-dasharray': '5 4' }, fg); const bt = vrEl('text', { x: b.x + 5, y: y + 11, 'font-size': 10.5, fill: 'var(--mut)' }, fg); bt.textContent = '[' + (br.label || br.kind) + ']'; }); });
     g.edges.forEach(e => { const pts = L.edges[e.id]; if (!pts) return; const gg = vrEl('g', { 'data-id': e.id, 'data-status': e.status, 'data-resolution': e.resolution || '', class: 'vre', tabindex: 0 }, root); els[e.id] = { g: gg, status: e.status, edge: [e.source, e.target] };
       const ps = pts.map(p => p.join(',')).join(' '), inf = vrInferred(e);
       vrEl('polyline', { points: ps, fill: 'none', stroke: 'transparent', 'stroke-width': 12 }, gg);
@@ -432,9 +439,11 @@ function vrBuild(host, key, data) {
       if (n.collapsed) { gg.setAttribute('data-collapsed', '1'); vrEl('rect', { x: b.x + 5, y: b.y + 5, width: b.w, height: b.h, rx: 6, fill: 'var(--card)', stroke: 'var(--mut)', 'stroke-width': 1.5 }, gg); }
       vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 6, fill: 'var(--' + vrBg(n.status) + ')', stroke: 'var(--' + vrTone(n.status) + ')', 'stroke-width': n.status === 'context' ? 1 : 2.5, 'stroke-dasharray': n.status === 'removed' ? '3 3' : '0' }, gg);
       const wl = vrWrap(n.label, Math.floor((b.w - 24) / 6.4)); const lines = wl.slice(0, 3); if (wl.length > 3) lines[2] = lines[2].replace(/.?$/, '…');
+      if (n.stereotype) lines.unshift('<<' + n.stereotype + '>>'); if (lines.length > 3) lines.length = 3;
       lines.forEach((t, i) => { const x = vrEl('text', { x: b.x + 12, y: b.y + 19 + i * 15, 'font-size': 12, fill: 'var(--fg)', 'text-decoration': n.status === 'removed' ? 'line-through' : 'none' }, gg); x.textContent = (n.collapsed && i === 0 ? '▸ ' : '') + t; });
       vrMark(gg, n.status, b.x + b.w - 12, b.y + 12);
       if (n.collapsed) { const kinds = {}; (n.member_kinds || []).forEach(k => kinds[k] = (kinds[k] || 0) + 1); const ks = Object.keys(kinds).sort((a, c) => kinds[c] - kinds[a]); const word = ks.length === 1 ? ks[0] + (n.members === 1 ? '' : 's') : (n.members === 1 ? 'item' : 'items'); const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = (n.members || 0) + ' ' + word; }
+      else if (n.members && n.members.length) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = n.members.length + ' member' + (n.members.length === 1 ? '' : 's') + ' (hover)'; }
       else if ((n.evidence || []).some(x => x.tier === 'inferred')) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = '? inferred'; }
       tip(gg, n); });
     /* Edge labels sit where the layout kept room for them (L.labels); without that, on the segment where they cross no node box. On top, with a --bg backing. */
@@ -448,16 +457,17 @@ function vrBuild(host, key, data) {
     if (anchor && L.boxes[anchor.id]) { const b = L.boxes[anchor.id]; vp.x = anchor.sx - b.x * vp.k; vp.y = anchor.sy - b.y * vp.k; apply(); } else fit();
     paintBadges(); if (selId && els[selId]) inspect(selId);
   }
+  function vrLane(v) { return v === 'L1' || v === 'seq'; }
   function vrBg(s) { return s === 'context' ? 'chip' : vrTone(s) + 'bg'; }
   function vrTone(s) { return s === 'added' ? 'ok' : s === 'changed' ? 'warn' : s === 'removed' ? 'bad' : 'mut'; }
   function vrMark(p, s, cx, cy) { const m = vrEl('g', { class: 'vr-mark', 'data-mark': s }, p); vrEl('circle', { cx: cx, cy: cy, r: 9, fill: 'var(--card)', stroke: 'var(--' + vrTone(s) + ')', 'stroke-width': 1.5 }, m); const t = vrEl('text', { x: cx, y: cy + 4, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': 700, fill: 'var(--' + vrTone(s) + ')' }, m); t.textContent = VR_MARK[s]; }
   function toMermaid() {
     const g = cur.graph, esc = s => String(s).replace(/#/g, '#35;').replace(/"/g, '#quot;').replace(/</g, '#lt;').replace(/>/g, '#gt;').replace(/[\r\n]+/g, ' ');
     const vis = id => els[id] && !els[id].g.classList.contains('vroff'); const idOf = {}; let n = 0; const mid = id => idOf[id] = idOf[id] || ('n' + (n++));
-    const lanes = g.view === 'L1' && (g.lanes || []).length; const cont = [].concat(g.groups || [], lanes ? g.lanes : []).filter(c => vis(c.id));
+    const lanes = vrLane(g.view) && (g.lanes || []).length; const cont = [].concat(g.groups || [], lanes ? g.lanes : []).filter(c => vis(c.id));
     const kids = {}, top = []; const put = (id, p) => { (p && cont.some(c => c.id === p) ? (kids[p] = kids[p] || []) : top).push(id); };
     cont.forEach(c => put(c.id, lanes && g.lanes.some(l => l.id === c.id) ? '' : c.parent)); g.nodes.filter(x => vis(x.id)).forEach(x => put(x.id, lanes ? x.lane : x.group));
-    const out = ['flowchart ' + (g.view === 'L1' ? 'TD' : 'LR')], isC = id => cont.some(c => c.id === id), lab = {}; cont.forEach(c => lab[c.id] = c.label); g.nodes.forEach(x => lab[x.id] = x.label);
+    const out = ['flowchart ' + (vrLane(g.view) ? 'TD' : 'LR')], isC = id => cont.some(c => c.id === id), lab = {}; cont.forEach(c => lab[c.id] = c.label); g.nodes.forEach(x => lab[x.id] = x.label);
     const emit = (id, ind) => { if (isC(id)) { out.push(ind + 'subgraph ' + mid(id) + '["' + esc(lab[id]) + '"]'); (kids[id] || []).forEach(k => emit(k, ind + '  ')); out.push(ind + 'end'); } else out.push(ind + mid(id) + '["' + esc(MARK(id) + ' ' + lab[id]) + '"]'); };
     const MARK = id => { const x = g.nodes.find(y => y.id === id); return x ? VR_MARK[x.status] : ''; };
     top.forEach(id => emit(id, '  '));

@@ -1,6 +1,6 @@
 // Visual review (VR-06 wiring): the dashboard side of the living product map. It runs scripts/vr_map.py (check, list)
 // on a repo root, with a timeout, and caches the staleness result on the map file's mtime.
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { dirname, join, resolve, sep } from "node:path"
 import { checkGraph, collapseLoaded, layoutGraph, stripDollar, type ViewResult } from "./vrlayout.ts"
 
@@ -89,14 +89,33 @@ async function checkMap(repo: string, root: string, timeoutMs: number): Promise<
 function readListed(root: string, rel: string, listed: Diagram[]): { d: Diagram; text: string } {
   const d = listed.find((x) => x.path === rel)
   if (!d) throw new DiagramError(404, "not a listed diagram")
+  return { d, text: readInRepo(root, rel) }
+}
+/** The text of a file inside the repo (symlinks compared by real path). */
+function readInRepo(root: string, rel: string): string {
   const abs = resolve(root, rel)
   if (!abs.startsWith(resolve(root) + sep)) throw new DiagramError(404, "path leaves the repo")
   // The lexical check passes a symlink inside the repo that points outside it: compare the real paths.
   let real: string
   try { real = realpathSync(abs) } catch { throw new DiagramError(404, "diagram not found") }
   if (!real.startsWith(realpathSync(root) + sep)) throw new DiagramError(404, "path leaves the repo")
-  return { d, text: readFileSync(real, "utf8") }
+  return readFileSync(real, "utf8")
 }
+/**
+ * The change-graph JSON beside a Markdown diagram (scripts/vr_mermaid.py writes `<stem>.json`, or `<stem>.<n>.json` for a file with
+ * several blocks): its path, or undefined. With several the first block's. The .md stays the listed diagram, so it appears once.
+ */
+export function siblingJson(root: string, rel: string): string | undefined {
+  if (!rel.endsWith(".md")) return undefined
+  const stem = rel.slice(0, -3), dir = dirname(resolve(root, rel)), base = stem.slice(stem.lastIndexOf("/") + 1)
+  let names: string[]
+  try { names = readdirSync(dir) } catch { return undefined }
+  const mine = (f: string): number => f === base + ".json" ? 0 : (f.startsWith(base + ".") && /^\d+\.json$/.test(f.slice(base.length + 1))) ? Number(f.slice(base.length + 1, -5)) : -1
+  const hit = names.filter((f) => mine(f) >= 0).sort((a, b) => mine(a) - mine(b))[0]
+  return hit ? stem.slice(0, stem.length - base.length) + hit : undefined
+}
+/** The slot of the canvas a view goes in: `map` is L0, the flow and sequence views L1, everything else (full, c1-c4) L2. */
+const slotOf = (view: string): string => view === "map" ? "L0" : view === "L0" || view === "L1" || view === "L2" ? view : view === "seq" ? "L1" : "L2"
 
 /** The ids of the top-level groups of a graph (the groups that sit in no other group). */
 export const topGroups = (g: any): string[] => {
@@ -123,7 +142,7 @@ export function nextFold(g: any, folded: string[]): string | undefined {
   return open[0]?.[0]
 }
 /** What the view-kind tab says, from the kind `vr_map list` gives. */
-const KIND_TAB: Record<string, string> = { "product-map": "Product map", "crate-map": "Crate map", "crate-calls": "Crate calls", modules: "Modules", calls: "Calls" }
+const KIND_TAB: Record<string, string> = { "product-map": "Product map", "crate-map": "Crate map", "crate-calls": "Crate calls", modules: "Modules", calls: "Calls", c1: "Context", c2: "Containers", c3: "Components", c4: "Classes", seq: "Sequence" }
 export const kindTab = (d: Diagram, g: any): string => KIND_TAB[d.kind] ?? (g?.view === "map" ? "Product map" : d.kind.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase()))
 
 /**
@@ -156,14 +175,18 @@ export class DiagramError extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
 export async function openDiagram(root: string, rel: string, listed: Diagram[]): Promise<{ kind: "graph"; title: string; views: Record<string, ViewResult & { collapsed?: string[]; tab?: string }> } | { kind: "mermaid"; title: string; text: string }> {
-  const { d, text } = readListed(root, rel, listed)
-  if (!rel.endsWith(".json")) {
+  const { d, text: raw } = readListed(root, rel, listed)
+  let text = raw
+  let file = rel
+  const sib = siblingJson(root, rel)
+  if (sib) { try { text = readInRepo(root, sib); file = sib } catch { /* fall back to the Mermaid text */ } }
+  if (!file.endsWith(".json")) {
     const m = text.match(/```mermaid\n([\s\S]*?)```/)
     return { kind: "mermaid", title: d.title, text: (m ? m[1] : text).trim() }
   }
   let g: any
   try { g = JSON.parse(text) } catch (e) { throw new DiagramError(400, "the diagram is not valid JSON: " + (e as Error).message) }
-  const out: ViewResult & { collapsed?: string[]; tab?: string } = { file: rel, graph: null, layout: null, issues: checkGraph(g) }
+  const out: ViewResult & { collapsed?: string[]; tab?: string } = { file, graph: null, layout: null, issues: checkGraph(g) }
   if (typeof g?.title === "string") out.title = g.title
   out.tab = kindTab(d, g)
   if (!out.issues.length) {
@@ -186,13 +209,14 @@ export async function openDiagram(root: string, rel: string, listed: Diagram[]):
     }
     if (fold.length) out.collapsed = fold
   }
-  return { kind: "graph", title: d.title, views: { [g.view === "map" ? "L0" : g.view === "full" ? "L2" : g.view]: out } }
+  return { kind: "graph", title: d.title, views: { [slotOf(g.view)]: out } }
 }
 
 /** A committed diagram with some groups folded to one box each (edges aggregated with counts), and its layout. */
 export async function collapsedDiagram(root: string, rel: string, listed: Diagram[], collapsed: string[]): Promise<{ graph: any; layout: any; collapsed: string[] }> {
-  if (!rel.endsWith(".json")) throw new DiagramError(400, "not a graph diagram")
+  const sib = siblingJson(root, rel)
+  if (!rel.endsWith(".json") && !sib) throw new DiagramError(400, "not a graph diagram")
   let g: any
-  try { g = JSON.parse(readListed(root, rel, listed).text) } catch (e) { if (e instanceof DiagramError) throw e; throw new DiagramError(400, "the diagram is not valid JSON: " + (e as Error).message) }
+  try { const l = readListed(root, rel, listed); g = JSON.parse(sib ? readInRepo(root, sib) : l.text) } catch (e) { if (e instanceof DiagramError) throw e; throw new DiagramError(400, "the diagram is not valid JSON: " + (e as Error).message) }
   return collapseLoaded(g, g.view, collapsed)
 }
