@@ -93,7 +93,7 @@ and the rules do not settle it, and a wrong pick is costly to reverse. Every
 `ask_owner.py ask` passes `--kind design`, `--kind product` or `--kind
 uncertainty` to say which; a question that fits none of them is not asked.
 
-The visual review of a change (`/work-on` Phase 3, the diagram step) is one product question, `--kind product`: does this picture of the change match what the feature should do? The run waits for the answer.
+The visual review of a change (`/work-on` Phase 3, the diagram step) is one product question, `--kind product --topic visual-review` (the marker the dashboard canvas requires): does this picture of the change match what the feature should do? The run waits for the answer.
 
 **Never ask for approval.** No "approve the plan" or "approve all six
 revisions", no "may I push, open the draft PR or mark it ready" (the standing

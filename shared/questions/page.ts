@@ -222,7 +222,7 @@ async function vrOpenDiagram(repo, path) {
   render();
 }
 function vrOpenQ(dossier, repo) {
-  return S.q.find(q => q.state === 'open' && q.dossier === dossier && qRepo(q) === repo && q.qkind === 'product' && q.options.some(o => /^changes requested/i.test(o.label)) && q.options.some(o => /^approved/i.test(o.label)));
+  return S.q.find(q => q.state === 'open' && q.dossier === dossier && qRepo(q) === repo && q.topic === 'visual-review' && q.qkind === 'product' && q.options.some(o => /^changes requested/i.test(o.label)) && q.options.some(o => /^approved/i.test(o.label)));
 }
 /* The repo page: the committed product map (stale banner) and the committed diagrams, each openable on the canvas. */
 function vrRepoPanel(repo) {

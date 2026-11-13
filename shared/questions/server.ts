@@ -16,7 +16,7 @@ import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
 import { startLagWatch } from "./lagwatch.ts"
 import { hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
-import { buildAnswer, diagramsOf, MAX_BODY, ReviewError, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
+import { buildAnswer, diagramsOf, MAX_BODY, ReviewError, isReviewQuestion, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
 import { mapStatus, openDiagram } from "./vrmap.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
@@ -385,7 +385,7 @@ function vrDiagrams(run: Run) {
 }
 /** The open product question of the visual review for this dossier (its options are Approved and Changes requested), or undefined. */
 function vrQuestion(dossier: string, repo: string, runs: Run[]): Question | undefined {
-  return readAll(DIR).find((q) => q.state === "open" && q.dossier === dossier && q.qkind === "product" && questionRepo(q, runs) === repo && !!reviewOptions(q.options))
+  return readAll(DIR).find((q) => q.state === "open" && q.dossier === dossier && isReviewQuestion(q) && questionRepo(q, runs) === repo)
 }
 
 /** Server-Sent Events: a `changed` event with the kinds that changed; a comment heartbeat keeps the stream open. */
@@ -927,7 +927,7 @@ export async function handle(req: Request): Promise<Response> {
     const review = kind === "answer" && b.review === true
     if (review) {
       const keys = reviewOptions(q.options)
-      if (!keys || q.qkind !== "product" || !q.dossier) return json({ error: "not a visual-review question" }, 400)
+      if (!keys || !isReviewQuestion(q) || !q.dossier) return json({ error: "not a visual-review question" }, 400)
       const runs = (await allRuns()).filter((r) => r.id === q.dossier)
       const f = await vrFind(q.dossier, questionRepo(q, runs) ?? "")
       if (!f.ok) return json({ error: f.error }, f.status)
