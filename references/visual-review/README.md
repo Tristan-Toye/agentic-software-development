@@ -80,3 +80,7 @@ scripts/vr_c2_drift.py --selftest | vr_map.py --selftest | vr_metrics.py --selft
 | `vr_map` `recall` | changes, touched_source_files, file_recall, unit_recall, threshold (always null), seconds |
 
 Each line also has `ts` (UTC) and `tool`, `event`.
+
+## Follow-ups
+
+Work decided but not done yet is in [FOLLOW-UPS.md](FOLLOW-UPS.md) (FU-01: move the cargo-modules pin past 0.27.0 after the first demo).
