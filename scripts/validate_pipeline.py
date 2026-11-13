@@ -16,6 +16,8 @@ Usage:
     validate_pipeline.py --all
     validate_pipeline.py --write-index
     validate_pipeline.py --finalize-ids --base origin/development
+    validate_pipeline.py --c3-gate --base origin/development
+    validate_pipeline.py --diagram-gate --base origin/development [--dossier W-014] [--pr-body FILE]
     validate_pipeline.py --mode
     validate_pipeline.py --selftest
 
@@ -844,6 +846,93 @@ def check_contract_fix_lessons(where: str, fm: dict, contract: str, repo_root: P
         )
 
 
+# --------------------------------------------------------------------------
+# visual review gate (VR-05)
+# --------------------------------------------------------------------------
+
+# The gate applies to a dossier whose front matter carries a `visual_review:` field. The Phase 3
+# visual-review step writes it (`dossier_edit.py set <dossier> 'visual_review=required'`) before it
+# runs, so a build that started before this step existed - including one still running when the
+# plugin updates - is never flagged retroactively.
+VISUAL_REVIEW_RE = re.compile(r"^\s*[-*]?\s*VISUAL-REVIEW:\s*(.+?)\s*$", re.M)
+VISUAL_REVIEW_APPROVED_RE = re.compile(
+    r"^approved\b.*?\bL0\s+(\d+)\b.*?\bL1\s+(\d+)\b.*?\bL2\s+(\d+)\b", re.I)
+VISUAL_REVIEW_CHANGES_RE = re.compile(r"^changes requested\b.*\S", re.I)
+VISUAL_REVIEW_VIEWS = (("l0.json", "L0"), ("l1.json", "L1"), ("l2.json", "L2"))
+
+
+def visual_review_applies(fm: dict) -> bool:
+    return "visual_review" in fm
+
+
+def visual_review_problems(fm: dict, log: str, root: Path, worktree: Path | None = None) -> list[str]:
+    """What is wrong with a dossier's visual review, [] when it is fine or does not apply.
+
+    Needs, for a dossier the gate applies to (``visual_review_applies``): a ``VISUAL-REVIEW:`` line
+    in the build log, the last one being ``approved — L0 <n>, L1 <n>, L2 <n>`` (a ``changes
+    requested — <ids>`` line sends Phase 3 back to the contract; it is history, not a pass), and
+    ``.discovery/visual-review/<ID>/l0.json``, ``l1.json`` and ``l2.json``, each valid under
+    ``vr_graph.py validate`` with the view its name says, whose node counts equal the line's."""
+    if not visual_review_applies(fm):
+        return []
+    lines = VISUAL_REVIEW_RE.findall(log)
+    if not lines:
+        return ["no VISUAL-REVIEW: line in ## Build log. Phase 3 runs the diagram step on every build: "
+                "`VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n> (<dashboard link>)`"]
+    last = lines[-1]
+    approved = VISUAL_REVIEW_APPROVED_RE.match(last)
+    if not approved:
+        if VISUAL_REVIEW_CHANGES_RE.match(last):
+            return ["the last VISUAL-REVIEW: line is 'changes requested': revise the contract in Phase 3, "
+                    "run the diagram step again and record 'approved'"]
+        return [f"the last VISUAL-REVIEW: line is not well formed: {last[:80]!r}. Use "
+                "`approved — L0 <n>, L1 <n>, L2 <n>` or `changes requested — <element ids>`"]
+    dossier_id = str(fm.get("id") or "").strip()
+    base = None
+    for cand in (worktree, root):
+        if cand and (cand / ".discovery" / "visual-review" / dossier_id).is_dir():
+            base = cand
+            break
+    if base is None:
+        return [f".discovery/visual-review/{dossier_id}/ is missing: the diagram step wrote no l0.json, l1.json, l2.json"]
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import vr_graph
+    except ImportError:
+        return ["vr_graph.py is not beside this script; the visual-review files cannot be validated"]
+    problems: list[str] = []
+    for (name, view), claimed in zip(VISUAL_REVIEW_VIEWS, approved.groups()):
+        f = base / ".discovery" / "visual-review" / dossier_id / name
+        if not f.is_file():
+            problems.append(f"{f.relative_to(base)} is missing")
+            continue
+        try:
+            graph = vr_graph.load(str(f))
+        except (OSError, ValueError) as exc:
+            problems.append(f"{name} is not readable: {exc}")
+            continue
+        for issue in vr_graph.validate(graph, root=str(base)):
+            problems.append(f"{name}: {issue.get('code')} {issue.get('path')}: {issue.get('message')}")
+        if isinstance(graph, dict) and graph.get("view") != view:
+            problems.append(f"{name}: view is {graph.get('view')!r}, expected {view!r}")
+        used = vr_graph.budget(graph).get("used") if isinstance(graph, dict) else None
+        if used is not None and used != int(claimed):
+            problems.append(f"{name}: the VISUAL-REVIEW: line says {view} {claimed}, the file holds {used}")
+    return problems
+
+
+def check_visual_review(where: str, path: Path, fm: dict, log: str, status: str, rep: Report) -> None:
+    """Past the review (status review, pr, done) a dossier the gate applies to carries its record.
+    The same check runs before the fan-out in ``check_pre_fanout``."""
+    if status not in {"review", "pr", "done"}:
+        return
+    root = path.resolve().parents[2]
+    wt = str(fm.get("worktree") or "").strip()
+    worktree = (root / wt).resolve() if wt and (root / wt).is_dir() else None
+    for problem in visual_review_problems(fm, log, root, worktree):
+        rep.defect(where, problem)
+
+
 def check_build_log(where: str, text: str, status: str, rep: Report, path: Path | None = None,
                     fm: dict | None = None, contract: str = "") -> None:
     """The gates read facts: the checklist artefact, the deferred record, the `Lesson:` trailers.
@@ -852,6 +941,7 @@ def check_build_log(where: str, text: str, status: str, rep: Report, path: Path 
         return
     check_checklist(where, path, fm, contract, text, status, rep)
     check_deferred_record(where, path, fm, text, status, rep)
+    check_visual_review(where, path, fm, text, status, rep)
 
 
 def check_contract_id(where: str, dossier_id: str, contract: str, rep: Report) -> None:
@@ -2200,6 +2290,9 @@ def selftest() -> int:
         finalize_ok = selftest_finalize()
         pre_fanout_ok = selftest_pre_fanout()
         pre_fanout_local_ok = selftest_pre_fanout_local()
+        visual_ok = selftest_visual_review()
+        c3_ok = selftest_c3_gate()
+        diagram_ok = selftest_diagram_gate()
         mode_ok = selftest_mode()
         blockers_ok = selftest_blocker_removal()
         return (
@@ -2217,6 +2310,9 @@ def selftest() -> int:
                 and finalize_ok
                 and pre_fanout_ok
                 and pre_fanout_local_ok
+                and visual_ok
+                and c3_ok
+                and diagram_ok
                 and mode_ok
                 and blockers_ok
             )
@@ -2828,6 +2924,14 @@ def check_pre_fanout(
             f"re-derive the ids in it, never a Phase 5 manual-diff fallback."
         )
         rc = 1
+
+    try:
+        fm_vr, _, _ = split_front_matter(text)
+    except ValueError:
+        fm_vr = {}
+    for problem in visual_review_problems(fm_vr, body[1], root, worktree):
+        print(f"DEFECT  {path.name}: {problem}")
+        rc = 1
     return rc
 
 
@@ -2938,6 +3042,99 @@ def selftest_pre_fanout_local() -> bool:
             f"{'PASS' if ok else 'FAIL'} — directory owned paths walked, local-mode stubs resolved in the live worktree, the em-dash reason, RULES.md skipped"
         )
         return bool(ok)
+
+
+def selftest_visual_review() -> bool:
+    """The visual-review gate: gated by the `visual_review:` field the Phase 3 step sets, never otherwise."""
+    import copy
+
+    def node(i: str, kind: str) -> dict:
+        return {"id": i, "label": i, "kind": kind, "status": "added",
+                "evidence": [{"tier": "inferred", "note": "selftest"}], "label_source": "llm"}
+
+    def graph(view: str, kind: str, n: int) -> dict:
+        return {"schema_version": "1.0.0", "view": view, "title": f"{view} selftest",
+                "meta": {"repo": "t", "commit": "0", "generated_by": "agent", "tools": []},
+                "nodes": [node(f"n{i}", kind) for i in range(n)], "edges": []}
+
+    good = {"l0.json": graph("L0", "feature", 3), "l1.json": graph("L1", "step", 4),
+            "l2.json": graph("L2", "module", 5)}
+    approved = "- VISUAL-REVIEW: approved — L0 3, L1 4, L2 5 (dashboard link)\n"
+    new_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-11-12\nvisual_review: required\n---\n\n"
+    unmarked_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-11-12\n---\n\n"
+    old_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-08-10\n---\n\n"
+    optin_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-08-10\nvisual_review: required\n---\n\n"
+
+    def run(fm: str, log: str, files: dict | None, mutate=None) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".discovery" / "dossiers").mkdir(parents=True)
+            if files is not None:
+                out = root / ".discovery" / "visual-review" / "W-9"
+                out.mkdir(parents=True)
+                for name, g in copy.deepcopy(files).items():
+                    if mutate:
+                        mutate(name, g)
+                    (out / name).write_text(json.dumps(g), encoding="utf-8")
+            fmd, _, _ = split_front_matter(fm + "## Build log\n")
+            return visual_review_problems(fmd, log, root)
+
+    def dup(name: str, g: dict) -> None:
+        if name == "l1.json":
+            g["nodes"][1]["id"] = g["nodes"][0]["id"]
+
+    def no_evidence(name: str, g: dict) -> None:
+        if name == "l0.json":
+            g["nodes"][0]["evidence"] = []
+
+    def wrong_view(name: str, g: dict) -> None:
+        if name == "l2.json":
+            g["view"] = "L1"
+
+    cases = [
+        ("old dossier, no line: not flagged", run(old_fm, "## Build log\n", None), False),
+        ("new dossier the step never marked: not flagged", run(unmarked_fm, "no line\n", None), False),
+        ("new dossier, no line: flagged", run(new_fm, "no line\n", good), True),
+        ("new dossier, line and files: clean", run(new_fm, approved, good), False),
+        ("opt-in field on an old dossier: flagged", run(optin_fm, "no line\n", None), True),
+        ("changes requested last: flagged", run(new_fm, "- VISUAL-REVIEW: changes requested — n1 n2\n", good), True),
+        ("changes requested, then approved: clean",
+         run(new_fm, "- VISUAL-REVIEW: changes requested — n1\n" + approved, good), False),
+        ("malformed line: flagged", run(new_fm, "- VISUAL-REVIEW: fine\n", good), True),
+        ("folder missing: flagged", run(new_fm, approved, None), True),
+        ("l2.json missing: flagged", run(new_fm, approved, {k: v for k, v in good.items() if k != "l2.json"}), True),
+        ("counts differ from the line: flagged",
+         run(new_fm, "- VISUAL-REVIEW: approved — L0 3, L1 4, L2 6\n", good), True),
+        ("duplicate id in a file: flagged", run(new_fm, approved, good, dup), True),
+        ("element without evidence: flagged", run(new_fm, approved, good, no_evidence), True),
+        ("file with the wrong view: flagged", run(new_fm, approved, good, wrong_view), True),
+    ]
+    ok = True
+    for name, problems, expect in cases:
+        passed = bool(problems) == expect
+        ok &= passed
+        print(f"{'ok  ' if passed else 'FAIL'}    visual review: {name}" + (f" ({problems[0][:70]})" if problems else ""))
+
+    # the same gate through the two entry points
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".discovery" / "dossiers").mkdir(parents=True)
+        d = root / ".discovery" / "dossiers" / "W-9.md"
+        d.write_text(new_fm + "## Build log\n- hooks: none\n", encoding="utf-8")
+        rep = Report()
+        check_visual_review("W-9", d, {"id": "W-9", "created": "2026-11-12", "visual_review": "required"}, "- x\n", "review", rep)
+        ok &= bool(rep.defects)
+        rep = Report()
+        check_visual_review("W-9", d, {"id": "W-9", "created": "2026-11-12", "visual_review": "required"}, "- x\n", "building", rep)
+        ok &= not rep.defects  # mid-build: the pre-fan-out check owns that state
+        rc = check_pre_fanout(d, root)
+        ok &= rc == 1
+        out = root / ".discovery" / "visual-review" / "W-9"
+        out.mkdir(parents=True)
+        for name, g in good.items():
+            (out / name).write_text(json.dumps(g), encoding="utf-8")
+    print(f"{'PASS' if ok else 'FAIL'} — visual-review gate")
+    return ok
 
 
 def selftest_pre_fanout() -> bool:
@@ -3250,6 +3447,412 @@ def selftest_mode() -> bool:
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# c3 gate (--c3-gate): a Rust repo's architecture diagrams must match the code
+# --------------------------------------------------------------------------
+
+C3_FILE_RE = re.compile(r"^docs/architecture/c3-components-(.+)\.md$")
+C3_CRATE_PATH_RE = re.compile(r"^crates/([^/]+)/")
+
+
+def c3_gate_run(root: Path, base: str, have_cargo_modules=None, agree=None, fresh=None) -> tuple[list[str], list[str]]:
+    """(problems, notes) for the c3 gate. A problem fails Phase 9; a note says what was skipped and why.
+
+    The gate applies to a repository that holds ``docs/architecture/c3-components-<crate>.md`` files.
+    It checks ONLY the crates this branch's diff against ``base`` touched (a path under
+    ``crates/<crate>/``) that have such a file: for each, the module graph ``cargo modules`` derives
+    must agree with the c3 diagram at 95 percent or better (``vr_c3_agree.py``), and the diagram must
+    equal what the repository's own generator prints (``scripts/module_graph.py check``).
+    A crate below threshold is repaired, never excused: regenerate the file with
+    ``module_graph.py regen``, or fix the generator. The threshold is not an argument.
+
+    Skips are visible, never silent: no c3 files, no ``cargo-modules``, no touched crate with a file,
+    no generator in the repository. ``have_cargo_modules``, ``agree`` and ``fresh`` are the test seams."""
+    problems: list[str] = []
+    notes: list[str] = []
+    c3 = sorted(p.name for p in (root / "docs" / "architecture").glob("c3-components-*.md")) \
+        if (root / "docs" / "architecture").is_dir() else []
+    if not c3:
+        return problems, ["SKIP c3 gate: no docs/architecture/c3-components-*.md in this repository"]
+    have = have_cargo_modules() if have_cargo_modules else shutil.which("cargo-modules") is not None
+    if not have:
+        return problems, ["SKIP c3 gate: cargo-modules is not installed (cargo install cargo-modules --version 0.27.0); "
+                          "the c3 diagrams were NOT compared with the code"]
+    try:
+        merge_base = git_out(root, "merge-base", base, "HEAD").strip()
+        changed = git_out(root, "diff", "--name-only", f"{merge_base}..HEAD").splitlines()
+    except RuntimeError as exc:
+        return [f"c3 gate: cannot list the branch diff against {base}: {exc}"], notes
+    touched = sorted({m.group(1) for m in map(C3_CRATE_PATH_RE.match, changed) if m})
+    have_c3 = {C3_FILE_RE.match("docs/architecture/" + n).group(1) for n in c3}  # type: ignore[union-attr]
+    skipped = [t for t in touched if t not in have_c3]
+    if skipped:
+        notes.append("SKIP c3 gate for crates with no c3 file: " + ", ".join(skipped))
+    todo = [t for t in touched if t in have_c3]
+    if not todo:
+        notes.append("c3 gate: this diff touches no crate that has a c3 file; nothing to check")
+        return problems, notes
+    if agree is None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import vr_c3_agree
+
+        def agree(repo: str, crate: str) -> dict:
+            return vr_c3_agree.check(repo, crate)
+
+        agree_error: tuple = (vr_c3_agree.AgreeError,)
+    else:
+        agree_error = (RuntimeError,)
+    generator = root / "scripts" / "module_graph.py"
+    if fresh is None:
+        def fresh(repo: Path, c3_file: Path) -> tuple[int, str]:
+            p = subprocess.run([sys.executable, str(generator), "check", "--root", str(repo), "--against", str(c3_file)],
+                               capture_output=True, text=True)
+            return p.returncode, (p.stdout + p.stderr).strip()
+    if not generator.is_file():
+        notes.append("SKIP c3 freshness check: scripts/module_graph.py is not in this repository")
+    for crate in todo:
+        c3_file = root / "docs" / "architecture" / f"c3-components-{crate}.md"
+        fix = f"regenerate it with `python3 scripts/module_graph.py regen docs/architecture/c3-components-{crate}.md`, or repair scripts/module_graph.py"
+        try:
+            r = agree(str(root), crate)
+        except agree_error as exc:
+            problems.append(f"c3 gate, crate {crate}: {exc}")
+            continue
+        if not r["ok"]:
+            problems.append(
+                f"c3 gate, crate {crate}: the diagram agrees with cargo-modules at {r['agreement']:.2f}%, "
+                f"threshold {r['threshold']:.0f}%. Missing from the diagram: {', '.join(r['missing_edges'][:5]) or 'none'}. "
+                f"Not in the code: {', '.join(r['extra_edges'][:5]) or 'none'}. Fix: {fix}. Never lower the threshold.")
+        else:
+            notes.append(f"c3 gate, crate {crate}: {r['agreement']:.2f}% agreement")
+        if generator.is_file():
+            rc, out = fresh(root, c3_file)
+            if rc != 0:
+                problems.append(f"c3 gate, crate {crate}: the diagram is not what scripts/module_graph.py prints "
+                                f"for the current sources ({out.splitlines()[0] if out else 'exit ' + str(rc)}). Fix: {fix}.")
+    return problems, notes
+
+
+def run_c3_gate(root: Path, base: str) -> int:
+    problems, notes = c3_gate_run(root, base)
+    for n in notes:
+        print(n)
+    for p in problems:
+        print(f"DEFECT  {p}")
+    return 1 if problems else 0
+
+
+def selftest_c3_gate() -> bool:
+    print("\n--- selftest: the c3 gate (touched crates only, visible skips, no threshold escape) ---")
+    fails: list[str] = []
+
+    def ok(name: str, cond: bool, detail: object = "") -> None:
+        if not cond:
+            fails.append(f"{name} {detail}")
+
+    def git(d: Path, *a: str) -> None:
+        subprocess.run(["git", "-C", str(d), "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                       check=True, capture_output=True)
+
+    def agree_with(table: dict):
+        def agree(repo: str, crate: str) -> dict:
+            if crate not in table:
+                raise RuntimeError("no stub answer for " + crate)
+            return table[crate]
+        return agree
+
+    good = {"ok": True, "agreement": 100.0, "threshold": 95.0, "missing_edges": [], "extra_edges": []}
+    bad = {"ok": False, "agreement": 80.0, "threshold": 95.0, "missing_edges": ["a::x -> a::y"], "extra_edges": ["a::x -> a::z"]}
+    fresh_ok = lambda repo, f: (0, "")  # noqa: E731
+    fresh_stale = lambda repo, f: (1, "--- stale\n+++ fresh")  # noqa: E731
+    yes = lambda: True  # noqa: E731
+    no = lambda: False  # noqa: E731
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        git(d, "init", "-q", "-b", "main")
+        (d / "docs").mkdir()
+        (d / "crates" / "alpha" / "src").mkdir(parents=True)
+        (d / "crates" / "beta" / "src").mkdir(parents=True)
+        (d / "crates" / "gamma" / "src").mkdir(parents=True)
+        (d / "scripts").mkdir()
+        (d / "scripts" / "module_graph.py").write_text("")
+        for c in ("alpha", "beta", "gamma"):
+            (d / "crates" / c / "src" / "lib.rs").write_text("")
+        git(d, "add", "-A")
+        git(d, "commit", "-q", "-m", "base")
+        git(d, "branch", "-q", "base")
+        git(d, "checkout", "-q", "-b", "work")
+
+        # no c3 files: a visible skip, exit clean
+        p, n = c3_gate_run(d, "base", yes, agree_with({}), fresh_ok)
+        ok("no c3 files skips visibly", not p and any(x.startswith("SKIP") and "no docs/architecture" in x for x in n), (p, n))
+
+        arch = d / "docs" / "architecture"
+        arch.mkdir()
+        for c in ("alpha", "beta"):
+            (arch / f"c3-components-{c}.md").write_text("x")
+        git(d, "add", "-A")
+        git(d, "commit", "-q", "-m", "c3")
+        git(d, "branch", "-q", "-f", "base")
+
+        # cargo-modules missing: visible skip
+        (d / "crates" / "alpha" / "src" / "lib.rs").write_text("pub fn a() {}\n")
+        git(d, "commit", "-qam", "touch alpha")
+        p, n = c3_gate_run(d, "base", no, agree_with({"alpha": bad}), fresh_stale)
+        ok("missing cargo-modules skips visibly", not p and any("cargo-modules is not installed" in x for x in n), (p, n))
+
+        # touched crate at threshold and fresh: passes; the untouched crate is never looked at
+        p, n = c3_gate_run(d, "base", yes, agree_with({"alpha": good}), fresh_ok)
+        ok("touched crate that agrees passes", not p and any("crate alpha: 100.00%" in x for x in n), (p, n))
+        ok("an untouched crate is not checked", not any("beta" in x for x in n + p), (p, n))
+
+        # below threshold: a defect that names the repair, and no way to lower it
+        p, n = c3_gate_run(d, "base", yes, agree_with({"alpha": bad}), fresh_ok)
+        ok("below threshold fails", len(p) == 1 and "80.00%" in p[0] and "regen" in p[0] and "Never lower the threshold" in p[0], p)
+
+        # stale diagram with full agreement: the freshness check fails it on its own
+        p, n = c3_gate_run(d, "base", yes, agree_with({"alpha": good}), fresh_stale)
+        ok("stale diagram fails the freshness check", len(p) == 1 and "not what scripts/module_graph.py prints" in p[0], p)
+
+        # a touched crate with no c3 file is named in a skip, not ignored
+        (d / "crates" / "gamma" / "src" / "lib.rs").write_text("pub fn g() {}\n")
+        git(d, "commit", "-qam", "touch gamma")
+        p, n = c3_gate_run(d, "base", yes, agree_with({"alpha": good}), fresh_ok)
+        ok("crate without c3 file skips visibly", not p and any("no c3 file: gamma" in x for x in n), (p, n))
+
+        # only a crate with no file is touched: nothing to check, said out loud
+        git(d, "checkout", "-q", "-B", "work2", "base")
+        (d / "crates" / "gamma" / "src" / "lib.rs").write_text("pub fn g2() {}\n")
+        git(d, "commit", "-qam", "gamma only")
+        p, n = c3_gate_run(d, "base", yes, agree_with({}), fresh_ok)
+        ok("no touched crate with a c3 file", not p and any("nothing to check" in x for x in n), (p, n))
+
+        # an unreadable base fails closed
+        p, n = c3_gate_run(d, "no-such-ref", yes, agree_with({}), fresh_ok)
+        ok("unknown base fails", len(p) == 1 and "cannot list the branch diff" in p[0], p)
+
+        # exit codes through the public entry
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc_bad = run_c3_gate(d, "no-such-ref")
+        ok("run_c3_gate exits 1 on a defect", rc_bad == 1 and "DEFECT" in buf.getvalue(), buf.getvalue())
+
+    for f in fails:
+        print("FAIL  " + f)
+    print(f"{'PASS' if not fails else 'FAIL'} — c3 gate {'behaves' if not fails else 'misbehaves'}")
+    return not fails
+
+
+# --------------------------------------------------------------------------
+# diagram gate (--diagram-gate): architecture diagrams follow the branch's code changes
+# --------------------------------------------------------------------------
+
+DIAGRAMS_AFFECTED_RE = re.compile(r"^\s*Diagrams affected:\s*(.*?)\s*$", re.M | re.I)
+
+
+def diagram_anchor_index(arch: Path) -> dict[str, set[str]]:
+    """{diagram stem: repo paths its evidence anchors (tier source) point at}; non-graph JSON is skipped."""
+    out: dict[str, set[str]] = {}
+    for f in sorted(arch.glob("*.json")):
+        try:
+            g = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(g, dict) or not isinstance(g.get("nodes"), list):
+            continue
+        paths: set[str] = set()
+        for part in list(g["nodes"]) + list(g.get("edges") or []):
+            if not isinstance(part, dict):
+                continue
+            for ev in part.get("evidence") or []:
+                if isinstance(ev, dict) and ev.get("tier") == "source" and isinstance(ev.get("path"), str):
+                    paths.add(ev["path"])
+        out[f.stem] = paths
+    return out
+
+
+def diagram_base(stem: str) -> str:
+    """`seq-x.2` is block 2 of diagram `seq-x`."""
+    return re.sub(r"\.\d+$", "", stem)
+
+
+def dossier_diagrams(root: Path, dossier_id: str | None) -> tuple[list[str] | None, str]:
+    """(stems the dossier's `Diagrams affected:` line lists, note). None = no dossier or no line; [] = `none`."""
+    if not dossier_id:
+        return None, ""
+    files = sorted((root / ".discovery" / "dossiers").glob(f"{dossier_id}-*.md")) if (root / ".discovery" / "dossiers").is_dir() else []
+    if not files:
+        return None, f"diagram gate: dossier {dossier_id} not found under .discovery/dossiers; its `Diagrams affected:` line was not read"
+    m = DIAGRAMS_AFFECTED_RE.search(files[0].read_text())
+    if not m:
+        return None, f"diagram gate: {files[0].name} has no `Diagrams affected:` line"
+    stems = [re.sub(r"\.(json|md)$", "", s.strip().strip("`")) for s in m.group(1).split(",")]
+    stems = [s for s in stems if s and s.lower() != "none"]
+    return stems, ""
+
+
+def diagram_gate_run(root: Path, base: str, dossier_id: str | None = None, pr_text: str | None = None,
+                     check=None) -> tuple[list[str], list[str]]:
+    """(problems, notes) for the diagram gate. A problem (DEFECT) fails Phase 9; a note is printed as is
+    (``REVIEW:`` lines are notes that ask for an action).
+
+    (a) ``vr_mermaid.py check docs/architecture`` must pass (a block that differs from its JSON, or an
+    unmarked Mermaid block, is a DEFECT); the repository with no docs/architecture JSON gets a SKIP line.
+    (b) Every diagram whose source evidence anchors point into a file this branch changed
+    (``git diff --name-only base...HEAD``), and whose own JSON the branch did not touch, is listed as
+    ``REVIEW: <diagram> anchors <path>``: update the JSON and sync, or say in the PR description why it holds.
+    (c) A diagram the dossier's ``Diagrams affected:`` line lists and the branch did not touch is a DEFECT
+    when ``pr_text`` is given and does not mention it, else a REVIEW line. ``check`` is the test seam."""
+    problems: list[str] = []
+    notes: list[str] = []
+    arch = root / "docs" / "architecture"
+    index = diagram_anchor_index(arch) if arch.is_dir() else {}
+    if not index:
+        return problems, ["SKIP diagram gate: no docs/architecture/*.json in this repository"]
+    if check is None:
+        def check(repo: Path) -> tuple[int, str]:
+            script = Path(__file__).resolve().parent / "vr_mermaid.py"
+            p = subprocess.run([sys.executable, str(script), "check", "docs/architecture"], cwd=str(repo),
+                               capture_output=True, text=True)
+            return p.returncode, (p.stdout + p.stderr).strip()
+    rc, out = check(root)
+    if rc != 0:
+        first = "; ".join(out.splitlines()[:3]) if out else f"exit {rc}"
+        problems.append(f"diagram gate: vr_mermaid.py check docs/architecture failed ({first}). "
+                        "Fix: edit the diagram's JSON, run `vr_mermaid.py sync docs/architecture`, commit")
+    try:
+        changed = set(git_out(root, "diff", "--name-only", f"{base}...HEAD").splitlines())
+    except RuntimeError as exc:
+        problems.append(f"diagram gate: cannot list the branch diff against {base}: {exc}")
+        return problems, notes
+    touched_bases = {diagram_base(Path(p).stem) for p in changed
+                     if p.startswith("docs/architecture/") and p.endswith((".json", ".md"))}
+    code_changed = {p for p in changed if not p.startswith("docs/architecture/")}
+    for stem, paths in sorted(index.items()):
+        if diagram_base(stem) in touched_bases:
+            continue
+        for path in sorted(paths & code_changed):
+            notes.append(f"REVIEW: {stem} anchors {path}")
+    stale = []
+    listed, note = dossier_diagrams(root, dossier_id)
+    if note:
+        notes.append(note)
+    for stem in listed or []:
+        if stem not in index and not any(diagram_base(k) == stem for k in index):
+            notes.append(f"REVIEW: dossier lists diagram {stem}, which is not in docs/architecture")
+        elif diagram_base(stem) not in touched_bases:
+            stale.append(stem)
+    for stem in stale:
+        if pr_text is not None and stem not in pr_text:
+            problems.append(f"diagram gate: the dossier lists diagram {stem} as affected, the branch did not modify it "
+                            "and the PR description does not say why it still holds")
+        else:
+            notes.append(f"REVIEW: dossier lists diagram {stem} as affected and the branch did not modify it")
+    if not any(n.startswith("REVIEW") for n in notes) and not problems:
+        notes.append("diagram gate: vr_mermaid.py check passes; no diagram anchors a changed file without being updated")
+    return problems, notes
+
+
+def run_diagram_gate(root: Path, base: str, dossier_id: str | None = None, pr_body: str | None = None) -> int:
+    pr_text = None
+    if pr_body:
+        try:
+            pr_text = Path(pr_body).read_text()
+        except OSError as exc:
+            print(f"DEFECT  --pr-body {pr_body}: {exc}")
+            return 1
+    problems, notes = diagram_gate_run(root, base, dossier_id, pr_text)
+    for n in notes:
+        print(n)
+    for p in problems:
+        print(f"DEFECT  {p}")
+    return 1 if problems else 0
+
+
+def selftest_diagram_gate() -> bool:
+    print("\n--- selftest: the diagram gate (check, anchors into changed files, dossier line) ---")
+    fails: list[str] = []
+
+    def ok(name: str, cond: bool, detail: object = "") -> None:
+        if not cond:
+            fails.append(f"{name} {detail}")
+
+    def git(d: Path, *a: str) -> None:
+        subprocess.run(["git", "-C", str(d), "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                       check=True, capture_output=True)
+
+    def graph(path: str) -> str:
+        return json.dumps({"nodes": [{"id": "n", "label": "N", "kind": "class",
+                                      "evidence": [{"tier": "source", "path": path, "line": 1}, {"tier": "inferred", "note": "x"}]}],
+                           "edges": []})
+
+    passes = lambda repo: (0, "")  # noqa: E731
+    fails_check = lambda repo: (1, "c4-a.md: block differs from c4-a.json")  # noqa: E731
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        git(d, "init", "-q", "-b", "main")
+        (d / "src").mkdir()
+        (d / "src" / "a.rs").write_text("")
+        (d / "src" / "b.rs").write_text("")
+        p, n = diagram_gate_run(d, "main", None, None, passes)
+        ok("no docs/architecture: visible skip", not p and n and n[0].startswith("SKIP diagram gate"), (p, n))
+        arch = d / "docs" / "architecture"
+        arch.mkdir(parents=True)
+        (arch / "c4-a.json").write_text(graph("src/a.rs"))
+        (arch / "seq-b.1.json").write_text(graph("src/b.rs"))
+        (arch / "seq-b.2.json").write_text(graph("src/other.rs"))
+        (arch / "seq-c.json").write_text(graph("src/c.rs"))
+        (arch / "manifest.json").write_text('{"schema": "x"}')
+        (arch / "broken.json").write_text("{nope")
+        (d / ".discovery" / "dossiers").mkdir(parents=True)
+        git(d, "add", "-A")
+        git(d, "commit", "-q", "-m", "base")
+        git(d, "branch", "-q", "base")
+        git(d, "checkout", "-q", "-b", "work")
+
+        p, n = diagram_gate_run(d, "base", None, None, passes)
+        ok("an unchanged branch is clean", not p and not any(x.startswith("REVIEW") for x in n), (p, n))
+        (d / "src" / "a.rs").write_text("fn a() {}\n")
+        (d / "src" / "b.rs").write_text("fn b() {}\n")
+        git(d, "commit", "-qam", "code")
+        p, n = diagram_gate_run(d, "base", None, None, passes)
+        ok("anchored changed files give REVIEW lines", not p and "REVIEW: c4-a anchors src/a.rs" in n and "REVIEW: seq-b.1 anchors src/b.rs" in n, (p, n))
+        p, n = diagram_gate_run(d, "base", None, None, fails_check)
+        ok("a failing check is a DEFECT", len(p) == 1 and "vr_mermaid.py check" in p[0], p)
+
+        # editing a block's JSON clears the REVIEW for the diagram and its sibling blocks
+        (arch / "seq-b.2.json").write_text(graph("src/other.rs") + "\n")
+        (arch / "c4-a.json").write_text(graph("src/a.rs") + "\n")
+        git(d, "commit", "-qam", "diagrams")
+        p, n = diagram_gate_run(d, "base", None, None, passes)
+        ok("a modified diagram needs no REVIEW", not p and not any(x.startswith("REVIEW") for x in n), (p, n))
+
+        # the dossier line
+        (d / ".discovery" / "dossiers" / "W-001-x.md").write_text("# T\n\n## Approach\n\nx\nDiagrams affected: c4-a, seq-c\n")
+        p, n = diagram_gate_run(d, "base", "W-001", None, passes)
+        ok("a listed untouched diagram is REVIEW without PR text", not p and "REVIEW: dossier lists diagram seq-c as affected and the branch did not modify it" in n, (p, n))
+        p, n = diagram_gate_run(d, "base", "W-001", "Nothing else changed.", passes)
+        ok("with PR text that is silent, a DEFECT", len(p) == 1 and "seq-c" in p[0], (p, n))
+        p, n = diagram_gate_run(d, "base", "W-001", "seq-c still holds: only a comment moved.", passes)
+        ok("PR text that explains the diagram clears it", not p, (p, n))
+        (d / ".discovery" / "dossiers" / "W-001-x.md").write_text("Diagrams affected: none\n")
+        p, n = diagram_gate_run(d, "base", "W-001", None, passes)
+        ok("`none` lists nothing", not p, (p, n))
+        p, n = diagram_gate_run(d, "no-such-ref", None, None, passes)
+        ok("unknown base fails", len(p) == 1 and "cannot list the branch diff" in p[0], p)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run_diagram_gate(d, "no-such-ref")
+        ok("run_diagram_gate exits 1 on a defect", rc == 1 and "DEFECT" in buf.getvalue(), buf.getvalue())
+
+    for f in fails:
+        print("FAIL  " + f)
+    print(f"{'PASS' if not fails else 'FAIL'} — diagram gate {'behaves' if not fails else 'misbehaves'}")
+    return not fails
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -3293,6 +3896,27 @@ def main() -> int:
         "matter field is used when the flag is not given)",
     )
     ap.add_argument(
+        "--c3-gate",
+        action="store_true",
+        help="the Phase 9 close gate for a Rust repo with docs/architecture/c3-components-*.md: every "
+        "touched crate's c3 diagram must agree with cargo-modules (95 percent) and be fresh; "
+        "requires --base",
+    )
+    ap.add_argument(
+        "--diagram-gate",
+        action="store_true",
+        help="the Phase 9 close gate for architecture diagrams: vr_mermaid.py check must pass, and every "
+        "diagram anchored in a file the branch changed (and not itself modified) is listed as REVIEW; "
+        "--dossier W-NNN adds the dossier's `Diagrams affected:` stems, --pr-body FILE the PR text; "
+        "requires --base",
+    )
+    ap.add_argument(
+        "--pr-body",
+        metavar="FILE",
+        help="with --diagram-gate: the PR description; a diagram the dossier lists but the branch left alone "
+        "is a DEFECT when this text does not mention it",
+    )
+    ap.add_argument(
         "--mode",
         action="store_true",
         help="print which mode .discovery/ is in for --root — local, committed "
@@ -3320,6 +3944,18 @@ def main() -> int:
         (adr_dir / "index.md").write_text(render_index(adr_rows(adr_dir)))
         print(f"wrote {adr_dir / 'index.md'}")
         return 0
+
+    if args.c3_gate:
+        if not args.base:
+            print("DEFECT  --c3-gate requires --base <ref>")
+            return 1
+        return run_c3_gate(root, args.base)
+
+    if args.diagram_gate:
+        if not args.base:
+            print("DEFECT  --diagram-gate requires --base <ref>")
+            return 1
+        return run_diagram_gate(root, args.base, args.dossier, args.pr_body)
 
     if args.finalize_ids:
         if not args.base:

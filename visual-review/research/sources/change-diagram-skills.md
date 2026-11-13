@@ -1,8 +1,8 @@
 # Change-diagram tools: OpenArc, mermaidiff, diff-glance, ArchiLens, LikeC4 diff action, Visual-Explainer
 
 - **Type**: tool (group; diagrams of a code change)
-- **Repo / site**: https://github.com/hvess/openarc (see `inspiration-repos/openarc`), https://github.com/osmangoninahid/mermaidiff (see `inspiration-repos/mermaidiff`), diff-glance, https://github.com/saurabh-oss/archilens , likec4-architecture-diff-action, Visual-Explainer
-- **License / cost**: see each analysis doc; diff-glance, the LikeC4 action and Visual-Explainer licences were not re-verified in this pass. Free to run besides LLM cost.
+- **Repo / site**: https://github.com/hvess/openarc (see `inspiration-repos/openarc`), https://github.com/osmangoninahid/mermaidiff (see `inspiration-repos/mermaidiff`), diff-glance, https://github.com/saurabh-oss/archilens , likec4-architecture-diff-action, https://github.com/nicobailon/visual-explainer (see `inspiration-repos/visual-explainer`)
+- **License / cost**: see each analysis doc; diff-glance and the LikeC4 action licences were not re-verified in this pass; Visual-Explainer is MIT (verified from its LICENSE, 2026-11-13). Free to run besides LLM cost.
 - **Self-host**: yes (CLI, Action or skill).
 
 ## Capabilities
@@ -11,7 +11,7 @@
 - **diff-glance**: turns a PR diff into a quick visual summary (README fetched earlier; details not re-read).
 - **ArchiLens**: architecture diff on PRs, layers L0 to L3 ([architecture-rule-checkers.md](architecture-rule-checkers.md)).
 - **LikeC4 diff action**: GitHub Action that draws LikeC4 views with changes between two revisions ([likec4.md](likec4.md)).
-- **Visual-Explainer**: an agent skill that produces HTML explainers; not evaluated in depth.
+- **Visual-Explainer** (MIT, v0.15.0): a general agent skill that writes hand-drawn SVG explainer pages (diff review, plan review, state machines, slides) and checks them in a headless browser. No change graph, ids or layout engine. Little to reuse; three small ideas recorded as FU-02 to FU-04 in `references/visual-review/FOLLOW-UPS.md`. Analysis: [`../../../inspiration-repos/analysis/visual-explainer.md`](../../../inspiration-repos/analysis/visual-explainer.md).
 
 ## Development resources
 - [diagram-diff-approaches.md](diagram-diff-approaches.md) : how each draws the diff.

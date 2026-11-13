@@ -53,12 +53,15 @@ way, after that one is pushed. Then resolve each conflict:
   hand-merged: `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py
   --finalize-ids --base origin/<base>` renumbers ids that collide with ones the
   base took first.
-- **Check that nothing was lost**, mechanically, before committing: every
-  hunk the branch added over the merge base, and every hunk the base added,
-  still appears in the result (`git diff <merge-base> origin/<base>` and
-  `git diff <merge-base> <head before merge>` against the merged tree). Name
-  each hunk that did not survive and why in the merge commit body; a hunk
-  dropped without a reason is a defect, not a resolution.
+- **Check that nothing was lost**, mechanically, before committing: run
+  `python3 ${PLUGIN_ROOT}/scripts/merge_guard.py` in the worktree while the merge is still
+  pending. It compares every changed file's lines across base, both sides and
+  your result. `lost` (a line both sides kept) is always a defect: restore
+  it. `gone` (a line only one side had, no version of it left) needs a
+  `Dropped: <path> — <why>` line in the merge message (`.git/MERGE_MSG`);
+  `replaced` (another version kept, e.g. renumbered) needs nothing. Do not
+  commit until it exits 0; a line dropped without a reason is a defect, not
+  a resolution.
 - When two intents cannot both hold (the same behaviour changed two ways), do
   not choose: ask the owner (`--kind product`) with both versions and what each one does, and
   wait. Every other conflict you resolve yourself.
@@ -87,8 +90,7 @@ in this merge, inside the conflicted code only, or put to the owner.
 
 ## Step 4 — Push
 
-Commit the merge (`git commit --no-edit`, the hunks note in the body when
-needed) and `git push` (never `--force`). Check each pull request reads
+Commit the merge (`git commit --no-edit`, keeping the `Dropped:` lines in the body; `merge_guard.py` exits 0) and `git push` (never `--force`). Check each pull request reads
 `MERGEABLE` (`gh pr view <n> --json mergeable`; GitHub may need a minute).
 Remove the worktrees. Post one note: which pull requests conflicted, in which
 files, how each was resolved, and the test and gate results. Under the runner,

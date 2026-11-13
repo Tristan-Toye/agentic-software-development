@@ -1,9 +1,10 @@
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
+import { archFind } from "./arch"
 import { MAX_SUMMARY_CHARS, TOOL as CHECKPOINT } from "./checkpoint"
 
-// Host-neutral definitions of the six tools. opencode's plugins build `tool({...})` from
+// Host-neutral definitions of the seven tools. opencode's plugins build `tool({...})` from
 // them with tool.schema; the Claude Code MCP server (shared/claude/mcp.ts) builds JSON
 // Schema from the same list. Description, parameters and (for the code_* tools) execute
 // live here once. phase_checkpoint has no execute: what it does differs per host.
@@ -156,6 +157,24 @@ export const TOOLS: ToolDef[] = [
       }
       return run(String(heading).trim() === "--list" ? ["section", r.file, "--list"] : ["section", r.file, heading], ctx.directory)
     },
+  },
+  {
+    name: "arch_find",
+    description:
+      "Use instead of reading a target repo's docs/architecture/*.md or *.json whole: finds the diagram elements " +
+      "that bear on a symbol (`TrackStore`), a label substring or a repo path (`crates/harness/src/track.rs`) and " +
+      "returns compact text per match: `diagram · element id · kind · label`, its source anchors (path:line), " +
+      "stereotype, up to 12 members and its one-hop neighbours (edge label and the other end). Learn the shape " +
+      "(containers, classes, call order) before reading code. Matches label, id, members and evidence paths; at " +
+      "most 40 matches, with the count dropped. `diagram` restricts to one file stem (`seq-boot`, " +
+      "`c4-classes-ports`; a multi-block diagram's blocks `x.1`, `x.2` come with `x`). An empty `query` with a " +
+      "`diagram` returns that diagram's outline (title, lanes or groups, node labels); with neither, the list of diagrams.",
+    params: [
+      { name: "query", type: "string", description: "symbol, label substring or repo-relative source path; empty with `diagram` for the outline" },
+      { name: "diagram", type: "string", optional: true, description: "restrict to one diagram file stem, e.g. `seq-conversation-compaction`" },
+      { name: "repo_root", type: "string", optional: true, description: "the target repo (the directory holding docs/architecture); default the working directory" },
+    ],
+    execute: ({ query, diagram, repo_root }, ctx) => archFind(String(query ?? ""), diagram, repo_root ? abs(repo_root, ctx) : ctx.directory),
   },
   {
     name: "code_replace",

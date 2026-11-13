@@ -1,0 +1,661 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/visual-review/graph.schema.json",
+  "title": "Change graph (version 1.0.0)",
+  "description": "One graph for one view. Language-neutral: no field names a Rust concept (OQ-10); the language lives in the values of kind, in the evidence path and in meta.tools. STABLE ID RULE: an id is derived from the kind plus the qualified name of the thing it names (crate:harness, module:harness::tools::step, fn:harness::tools::step::run_group); an edge id is derived from its kind and its two end ids (edge:depends:crate:a:crate:b). An id is never derived from a counter or an array position, so the same element has the same id in the before graph and the after graph and VR-02 can join on it. Hand-made ids (fixtures) may be short, but must stay unique. A view is L0 (features), L1 (steps), L2 (components), or full (an unbudgeted extractor graph from which VR-05 picks the views a reviewer sees). Mermaid ids (vr_mermaid.py): message ids are msg:<from>:<to>:<slug>-<h6> and note ids note:<position>:<anchors>:<slug>-<h6> (h6 = 6 hex of sha1 over the content); the same content sent twice gets the suffix .2, .3 by order of occurrence.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "view",
+    "title",
+    "meta",
+    "nodes",
+    "edges"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of this schema. A reader rejects a different major version."
+    },
+    "view": {
+      "enum": [
+        "L0",
+        "L1",
+        "L2",
+        "map",
+        "full",
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "seq"
+      ],
+      "description": "L0, L1, L2 are budgeted (15 features, 12 steps, 12 nodes; groups not counted). map is the whole-repo product map: at most 7 top-level groups (the folded first view) and at most 15 nodes in any group. full is not budgeted. c1, c2, c3, c4 (context, containers, components, classes) and seq (a sequence diagram) are the architecture-doc views, imported from and rendered to Mermaid by vr_mermaid.py (JSON is the source, the Mermaid block is generated); they are not budgeted. c1, c2, c3 and c4 lay out like map (groups for subgraphs and namespaces); seq lays out like L1 (participants are lanes, each message or note is a step node on its sender's lane, the order is flows[0].after)."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "meta": {
+      "type": "object",
+      "required": [
+        "repo",
+        "commit",
+        "generated_by"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "change": {
+          "type": "string",
+          "description": "Change id, for example a dossier id."
+        },
+        "repo": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string",
+          "description": "Commit the evidence paths resolve at."
+        },
+        "branch": {
+          "type": "string"
+        },
+        "generated_by": {
+          "enum": [
+            "hand",
+            "extractor",
+            "agent"
+          ]
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "version"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "Every tool used, pinned (VC-09)."
+        },
+        "layers": {
+          "type": "object",
+          "description": "Per extractor layer: whether it ran. Keys are layer names (crates, modules, calls).",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "enum": [
+                  "ran",
+                  "skipped"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "limited_to": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "skipped_crates": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "mermaid": {
+          "type": "object",
+          "description": "Mermaid round-trip data (vr_mermaid.py). type: flowchart, classDiagram or sequenceDiagram. header: the exact first diagram line, for example `flowchart LR`. preamble: `%%` lines before it. order: tokens (node, edge and group ids, `end:<group id>`) in source order, present only when it differs from the canonical order (nodes of a container, then its subgroups, then all edges). blanks: element ids (also `end:<frame or group id>`, `else:<frame id>:<n>`) that a blank line precedes.",
+          "properties": {
+            "type": {
+              "enum": [
+                "flowchart",
+                "classDiagram",
+                "sequenceDiagram"
+              ]
+            },
+            "header": {
+              "type": "string"
+            },
+            "preamble": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "order": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "blanks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "lanes": {
+      "type": "array",
+      "description": "L1 only. Swim lanes in display order.",
+      "items": {
+        "$ref": "#/$defs/lane"
+      }
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/group"
+      },
+      "default": []
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      }
+    },
+    "flows": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/flow"
+      },
+      "description": "Flows: ordered steps before and after the change. Steps are nodes (kind step)."
+    },
+    "frames": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/frame"
+      },
+      "description": "seq: the alt, opt, loop, par, critical, break and rect blocks, outer before inner (pre-order). Nesting is the inclusion of the first..last ranges."
+    }
+  },
+  "$defs": {
+    "status": {
+      "enum": [
+        "added",
+        "changed",
+        "removed",
+        "context"
+      ]
+    },
+    "resolution": {
+      "enum": [
+        "static",
+        "dispatch",
+        "inferred"
+      ],
+      "description": "How the link was resolved. dispatch = trait object or dynamic call. inferred = no tool proved it."
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "tier"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "tier": {
+                "const": "source"
+              },
+              "path": {
+                "type": "string",
+                "description": "Repository-relative, forward slashes."
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "end_line": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "note": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "tier",
+              "note"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "tier": {
+                "const": "inferred"
+              },
+              "note": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Why the element is believed. An inferred element has no anchor."
+              }
+            }
+          }
+        ]
+      },
+      "description": "Where the element is proved: tier source (path, optional line and end_line; read as path:line) or tier inferred (note says why). Paths are repository-relative. The validator (not this schema) requires every element to carry at least one evidence entry and every source entry a path: codes missing_evidence_path, missing_repository_path, line_range_outside_file."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "Stable id: kind plus qualified name, never a counter (see the schema description)."
+    },
+    "lane": {
+      "type": "object",
+      "required": [
+        "id",
+        "label"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "text": {
+          "type": "string",
+          "description": "Exact Mermaid text when it differs from label (label is the display form: a literal \\n becomes a space and it is cut to the length limit). Render uses text when present."
+        },
+        "declare": {
+          "enum": [
+            "participant",
+            "actor"
+          ],
+          "description": "Mermaid keyword of the declaration (default participant)."
+        },
+        "bare": {
+          "type": "boolean",
+          "description": "The participant has no `as` alias: label is its Mermaid id."
+        },
+        "implicit": {
+          "type": "boolean",
+          "description": "Used by a message but never declared: render writes no participant line."
+        }
+      }
+    },
+    "group": {
+      "type": "object",
+      "required": [
+        "id",
+        "label",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "parent": {
+          "$ref": "#/$defs/id"
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "label_source": {
+          "$ref": "#/$defs/label_source"
+        },
+        "text": {
+          "type": "string",
+          "description": "Exact Mermaid text when it differs from label (label is the display form: a literal \\n becomes a space and it is cut to the length limit). Render uses text when present."
+        },
+        "direction": {
+          "enum": [
+            "TB",
+            "TD",
+            "LR",
+            "RL",
+            "BT"
+          ],
+          "description": "Mermaid `direction` line inside the subgraph."
+        },
+        "kind": {
+          "enum": [
+            "subgraph",
+            "namespace"
+          ],
+          "description": "Mermaid construct (default subgraph; namespace in a class diagram)."
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "Display name. Extractor: last segment of the qualified name. VR-05 may replace it (label_source llm)."
+        },
+        "kind": {
+          "type": "string",
+          "description": "Open vocabulary. Used so far: feature, step, crate, module, bin, fn, component."
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "group": {
+          "$ref": "#/$defs/id",
+          "description": "Id of a group. Left empty by the extractor; VR-05 fills it."
+        },
+        "lane": {
+          "$ref": "#/$defs/id",
+          "description": "L1: id of a lane."
+        },
+        "order": {
+          "type": "integer",
+          "description": "L1: step number, also the ELK model order."
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "before": {
+              "type": "string"
+            },
+            "after": {
+              "type": "string"
+            }
+          },
+          "description": "Before and after text of a changed element."
+        },
+        "resolution": {
+          "$ref": "#/$defs/resolution"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "label_source": {
+          "$ref": "#/$defs/label_source"
+        },
+        "text": {
+          "type": "string",
+          "description": "Exact Mermaid text when it differs from label (label is the display form: a literal \\n becomes a space and it is cut to the length limit). Render uses text when present."
+        },
+        "shape": {
+          "type": "string",
+          "description": "Flowchart node shape: rect (default), round, stadium, cylinder, circle, diamond, subroutine, asymmetric, bare (an id alone) or implicit (only used in an edge: nothing is written for it)."
+        },
+        "stereotype": {
+          "type": "string",
+          "description": "Class diagram: the text of the <<stereotype>> line, without the angle brackets."
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Class diagram: the body lines of the class, exactly as written (+method(args), -field: Type, enum variants), in order."
+        },
+        "seq": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Sequence diagram step: a message (kind message; sender is node.lane) has to, arrow and optionally activate; a note (kind note; first anchor is node.lane) has position and, for two anchors, over.",
+          "properties": {
+            "to": {
+              "$ref": "#/$defs/id",
+              "description": "Lane id of the receiver."
+            },
+            "arrow": {
+              "enum": [
+                "->>",
+                "-->>",
+                "->",
+                "-->",
+                "-x",
+                "--x",
+                "-)",
+                "--)"
+              ]
+            },
+            "activate": {
+              "enum": [
+                "+",
+                "-"
+              ]
+            },
+            "position": {
+              "enum": [
+                "right of",
+                "left of",
+                "over"
+              ]
+            },
+            "over": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              },
+              "description": "Lane ids of all anchors of a note, in written order."
+            }
+          }
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": [
+        "id",
+        "source",
+        "target",
+        "kind",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "source": {
+          "$ref": "#/$defs/id",
+          "description": "Id of a node or a group."
+        },
+        "target": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "type": "string",
+          "description": "Open vocabulary: depends, contains, uses, calls, flow, documents."
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many links this edge stands for (e.g. call sites); the label stays words (\"calls ×3\"), never a bare number."
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "resolution": {
+          "$ref": "#/$defs/resolution"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "text": {
+          "type": "string",
+          "description": "Exact Mermaid text when it differs from label (label is the display form: a literal \\n becomes a space and it is cut to the length limit). Render uses text when present."
+        },
+        "arrow": {
+          "type": "string",
+          "description": "The Mermaid operator exactly as written (-->, -.->, ==>, ..|>, ..>, <|--, ...), so render restores it; kind is the readable name of it."
+        }
+      }
+    },
+    "flow": {
+      "type": "object",
+      "required": [
+        "id",
+        "label",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "label_source": {
+          "$ref": "#/$defs/label_source"
+        },
+        "lanes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "description": "Ids of lanes, in display order."
+        },
+        "before": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "description": "Node ids of the steps before the change, in order."
+        },
+        "after": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "description": "Node ids of the steps after the change, in order."
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        }
+      }
+    },
+    "label_source": {
+      "enum": [
+        "extractor",
+        "llm",
+        "hand"
+      ],
+      "description": "Who wrote label (and group): VR-05's LLM fills label and group, so a reader can tell."
+    },
+    "frame": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "first",
+        "last"
+      ],
+      "additionalProperties": false,
+      "description": "A sequence-diagram block. first and last are step node ids (the steps in flows[0].after it spans); branches are its else / and / option parts, each starting at a step.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "alt",
+            "opt",
+            "loop",
+            "par",
+            "critical",
+            "break",
+            "rect"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "first": {
+          "$ref": "#/$defs/id"
+        },
+        "last": {
+          "$ref": "#/$defs/id"
+        },
+        "branches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "kind",
+              "first"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "else",
+                  "and",
+                  "option"
+                ]
+              },
+              "label": {
+                "type": "string"
+              },
+              "first": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

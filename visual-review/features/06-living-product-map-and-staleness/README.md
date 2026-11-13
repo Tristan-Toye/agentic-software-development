@@ -1,7 +1,7 @@
 # Feature 06: Living product map and staleness
 
 - **Case ID**: VR-06
-- **Status**: PROPOSED
+- **Status**: BUILT (scripts `vr_c2_drift.py`, `vr_map.py`, `vr_metrics.py`; the dashboard repo view and banner are still to be wired in VR-04/VR-05; see `references/visual-review/README.md`)
 - **Dossier**: D6
 - **Depends on**: VR-01, VR-03.
 - **Design basis**: [Q8](../../research/synthesis/q8-staleness-and-living-map.md), [Q1](../../research/synthesis/q1-representations.md).
@@ -12,7 +12,7 @@ A committed product map in the target repo (feature map, flows, containers) with
 
 ## In scope
 
-- Committed copy under `docs/architecture/` (OQ-05 may change the path).
+- Committed copy under `docs/architecture/` (OQ-05 = A, taken by recommendation): `docs/architecture/product-map.json`.
 - Staleness record: content hashes, signature hashes, tool versions, extraction commit.
 - Stale test, plan-stale rule, banner with a count.
 - Drift report: `converge | diverge | absent`.

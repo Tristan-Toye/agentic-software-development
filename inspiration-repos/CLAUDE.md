@@ -26,6 +26,7 @@ Q7 living sync; Q8 LLM accuracy; Q9 review and approval UX.
 | `elkjs/` (kieler/elkjs, EPL-2.0) | Eclipse Layout Kernel for JavaScript | The layout engine for nested, directed diagrams; runs in Bun or the browser | You choose or tune layout (Q1, Q6) | [`analysis/elkjs.md`](analysis/elkjs.md) |
 | `xyflow/` (xyflow/xyflow, MIT) | Node-based UI library; `@xyflow/system` is framework-free | Pan, zoom, drag, minimap code that a hand-written DOM UI can reuse or copy | You build the interactive canvas (Q6) | [`analysis/xyflow.md`](analysis/xyflow.md) |
 | `structurizr/` (structurizr/structurizr, Apache-2.0) | C4 reference implementation: DSL, JSON model, exporters, MCP | Vocabulary of C4 levels, dynamic views, workspace JSON, inspections | You name abstraction levels or pick a model format (Q1, Q5) | [`analysis/structurizr.md`](analysis/structurizr.md) |
+| `visual-explainer/` (nicobailon/visual-explainer, MIT) | Agent skill: hand-drawn SVG explainer pages with a browser lint | Rendered-page checks, writing rules for diagram text; little else to reuse | You add a render check or edit the author prompt (Q4, Q8) | [`analysis/visual-explainer.md`](analysis/visual-explainer.md) |
 
 ## Related research
 

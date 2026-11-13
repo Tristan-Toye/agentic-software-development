@@ -146,6 +146,7 @@ def parse_option(spec: str) -> dict:
 # purpose, and applies only to a run the runner started: phrase patterns checked against the question texts of past runs, so a design question that mentions a push
 # in passing goes through. ASD_ASK_LINT=0 turns it off.
 KINDS = ("design", "product", "uncertainty")
+TOPICS = ("visual-review",)
 _PR = r"(?:the |a |its |this |my )?(?:draft |plan |pull )?(?:PR|pull request)"
 APPROVAL_PATTERNS = [
     ("push the branch", re.compile(r"\b(?:may|can|shall|should) I (?:now )?push\b[^?]{0,40}\bbranch\b"
@@ -177,6 +178,11 @@ def cmd_ask(a: argparse.Namespace) -> int:
     options = [parse_option(o) for o in (a.option or [])]
     if not 2 <= len(options) <= 4:
         raise SystemExit("need 2 to 4 --option values")
+    if a.topic == "visual-review":
+        # The dashboard canvas answers only this question: a product question whose labels are the review's two.
+        labels = [o["label"].lower() for o in options]
+        if a.kind != "product" or len(options) != 2 or labels != ["approved", "changes requested"]:
+            raise SystemExit("--topic visual-review needs --kind product and exactly the options A|Approved|... and B|Changes requested|...")
     # Only a run the runner started (ASD_RUN_KEY) has the standing authority; a terminal run's start gate still asks.
     if os.environ.get("ASD_RUN_KEY") and (os.environ.get("ASD_ASK_LINT") or "1").strip() != "0":
         hit = approval_kind(a.question, options)
@@ -205,6 +211,7 @@ def cmd_ask(a: argparse.Namespace) -> int:
         **({"run": os.environ["ASD_RUN_KEY"]} if os.environ.get("ASD_RUN_KEY") else {}),
         "recommendation": rec, "blocks": clip(a.blocks),
         **({"qkind": a.kind} if a.kind else {}),
+        **({"topic": a.topic} if a.topic else {}),
     }
     while True:
         qid = f"{prefix}{n}"
@@ -412,6 +419,14 @@ def selftest() -> int:
         k = ask_q("Two designs for the cache: keep one map or two?", ["--kind", "design"], dossier="W-91")
         kq = json.loads(open(os.path.join(env["ASD_QUESTIONS_DIR"], "myrepo.W-91.Q1.jsonl")).readline())
         check("--kind is stored on the question", k.returncode == 0 and kq.get("qkind") == "design" and kq.get("kind") == "question")
+        vr_opts = ("A|Approved|fan-out starts", "B|Changes requested|back to the contract")
+        v = ask_q("Does this picture match what the feature should do?", ["--kind", "product", "--topic", "visual-review"], dossier="W-92", opts=vr_opts)
+        vq = json.loads(open(os.path.join(env["ASD_QUESTIONS_DIR"], "myrepo.W-92.Q1.jsonl")).readline())
+        check("--topic visual-review is stored and passes the approval lint", v.returncode == 0 and vq.get("topic") == "visual-review" and vq.get("qkind") == "product")
+        check("--topic visual-review needs --kind product", ask_q("Does this match?", ["--topic", "visual-review"], dossier="W-93", opts=vr_opts).returncode != 0)
+        check("--topic visual-review needs the two review labels", ask_q("Does this match?", ["--kind", "product", "--topic", "visual-review"], dossier="W-93").returncode != 0)
+        check("--topic outside visual-review is refused", ask_q("Which?", ["--topic", "other"]).returncode != 0)
+        check("no --topic stores none", "topic" not in kq)
         check("--kind outside design|product|uncertainty is refused", ask_q("Which?", ["--kind", "other"]).returncode != 0)
         check("no --kind still works (older prompts)", "qkind" not in json.loads(open(os.path.join(env["ASD_QUESTIONS_DIR"], ask_q("Which cache?", dossier="W-10").stdout.strip() + ".jsonl")).readline()))
         refused = ["May I push the plan branch and open its pull request into development?",
@@ -562,6 +577,7 @@ def main() -> int:
     p.add_argument("--recommend")
     p.add_argument("--blocks", required=True)
     p.add_argument("--kind", choices=KINDS, help="design, product or uncertainty: what the owner is asked to decide (optional)")
+    p.add_argument("--topic", choices=TOPICS, help="visual-review: marks the Phase 3 visual-review question the dashboard canvas answers (needs --kind product)")
     p.add_argument("--build-log", metavar="DOSSIER", help="also append `QUESTION: <id> — <question>` to this dossier's Build log")
     p = sub.add_parser("reply")
     p.add_argument("id")

@@ -1,0 +1,43 @@
+digraph {
+
+    graph [
+        label="composition_root",
+        labelloc=t,
+
+        pad=0.4,
+
+        // Consider rendering the graph using a different layout algorithm, such as:
+        // [dot, neato, twopi, circo, fdp, sfdp]
+        layout=neato,
+        overlap=false,
+        splines="line",
+        rankdir=LR,
+
+        fontname="Helvetica", 
+        fontsize="36",
+    ];
+
+    node [
+        fontname="monospace",
+        fontsize="10",
+        shape="record",
+        style="filled",
+    ];
+
+    edge [
+        fontname="monospace",
+        fontsize="10",
+    ];
+
+    "composition_root" [label="crate|composition_root", fillcolor="#5397c8"]; // "crate" node
+    "composition_root::account_directory" [label="pub mod|account_directory", fillcolor="#81c169"]; // "mod" node
+    "composition_root::mesh_provisioner" [label="pub mod|mesh_provisioner", fillcolor="#81c169"]; // "mod" node
+    "composition_root::run" [label="pub mod|run", fillcolor="#81c169"]; // "mod" node
+    "composition_root::sandbox_mint" [label="pub mod|sandbox_mint", fillcolor="#81c169"]; // "mod" node
+    "composition_root::startup" [label="pub mod|startup", fillcolor="#81c169"]; // "mod" node
+
+    "composition_root::account_directory" -> "composition_root::mesh_provisioner" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "composition_root::run" -> "composition_root::startup" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "composition_root::startup" -> "composition_root::sandbox_mint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+
+}

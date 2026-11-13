@@ -12,6 +12,7 @@ const AGENT_MODELS = {
   'agentic-software-development:blast-radius-scout': { model: 'haiku', effort: 'low' },
   'agentic-software-development:code-scout': { model: 'haiku', effort: 'low' },
   'agentic-software-development:contract-reviewer': { model: 'sonnet', effort: 'high' },
+  'agentic-software-development:diagram-author': { model: 'sonnet', effort: 'high' },
   'agentic-software-development:document-drafter': { model: 'sonnet', effort: 'high' },
   'agentic-software-development:implementer': { model: 'sonnet', effort: 'high' },
   'agentic-software-development:integration-test-author': { model: 'sonnet', effort: 'high' },

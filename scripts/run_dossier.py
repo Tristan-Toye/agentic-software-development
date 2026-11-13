@@ -761,7 +761,15 @@ def model_ok(expected: str, actual: str) -> bool:
 # `running` WITHOUT queueing, so the live count may briefly exceed the cap until another run finishes or waits.
 
 TESTING_QUIET_SECS = 300    # an in-flight Bash call with no output for longer than this counts as a long wait
-TESTING_CMD = re.compile(r"\brun_(?:tests|gates)\.py\b")   # the long waits we know by name (any flags, `--wait` included)
+# the long waits we know by name (any flags, `--wait` included): tests, gates, a hand-written poll on a detached run's
+# state directory, and CI (wait_ci.py, `gh pr checks --watch`, `gh run watch`; a fix-deferred session held its slot for
+# the whole of a Rust CI job in wait_ci.py)
+TESTING_CMD = re.compile(r"\brun_(?:tests|gates)(?:\.py\b|-detach/)|\bwait_ci\.py\b|\bgh\s+(?:pr\s+checks\b[^\n]*--watch|run\s+watch)\b")
+# Stream lines the CLI emits while a foreground tool call is still running (a Bash call turns into a task after a few
+# seconds and reports progress). They say the call is alive, not that the session works: they keep a call from looking
+# stalled, but never from looking like a long wait.
+PROGRESS_EVENTS = ("tool_progress",)
+PROGRESS_SUBTYPES = ("task_started", "task_progress")
 LIVE_STATES = ("running", "testing", "waiting", "queued")   # a runner in one of these is alive (paused ones are checked separately)
 
 
@@ -1183,6 +1191,7 @@ class Runner:
         self.bg_cmds_only = False           # background() saw only Bash tasks in flight
         self.bg_wait = ""                   # turn ended and only background shell commands run (a CI wait): what it waits on
         self.last_out = time.monotonic()    # monotonic time of the last stream event (or message sent) of the session
+        self.last_work = self.last_out      # the same, without the progress lines of a tool call still in flight
         self.last_ev = "none"               # the last stream event: its type and tool name, for the stall diagnostic
         self.tool_names: dict = {}          # tool_use id -> tool name
         self.inflight_bash: dict = {}       # Bash tool_use id -> (command, monotonic start): calls with no result yet
@@ -1869,6 +1878,8 @@ class Runner:
 
     def note_event(self, ev: dict) -> None:
         self.last_out = time.monotonic()   # any stream-json line is output, a sub-agent's included
+        if not (ev.get("type") in PROGRESS_EVENTS or (ev.get("type") == "system" and ev.get("subtype") in PROGRESS_SUBTYPES)):
+            self.last_work = self.last_out
         self.track_event(ev)
         if ev.get("type") in ("assistant", "result"):
             self.last_api = now_s()
@@ -1955,7 +1966,7 @@ class Runner:
             return self.bg_wait
         if not self.inflight_bash:
             return ""
-        quiet = time.monotonic() - self.last_out > env_num("ASD_TESTING_QUIET_SECS", TESTING_QUIET_SECS)
+        quiet = time.monotonic() - self.last_work > env_num("ASD_TESTING_QUIET_SECS", TESTING_QUIET_SECS)
         for cmd, _ in self.inflight_bash.values():
             if TESTING_CMD.search(cmd) or quiet:
                 return cmd.strip().splitlines()[0][:80] if cmd.strip() else "a Bash call"
@@ -3011,7 +3022,14 @@ for raw in sys.stdin:
         elif "bash" in a:   # a foreground Bash call that blocks `hold` seconds, then its result, then `after` s of work
             import time
             out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": f"bx{n}{turn}", "name": "Bash", "input": {"command": a["bash"]}}]}})
-            time.sleep(a["hold"])
+            if a.get("progress"):   # the CLI's own progress lines while the call runs, as a real Bash call sends them
+                out({"type": "system", "subtype": "task_started"})
+                end = time.monotonic() + a["hold"]
+                while time.monotonic() < end:
+                    time.sleep(min(a["progress"], max(0.0, end - time.monotonic())))
+                    out({"type": "tool_progress"})
+            else:
+                time.sleep(a["hold"])
             out({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": f"bx{n}{turn}", "content": "ok"}]}})
             time.sleep(a.get("after", 0))
         elif "ask" in a:
@@ -3562,9 +3580,14 @@ def selftest() -> int:
         os.remove(os.path.join(rdir, "repo.W-91.runner.json"))
         env["ASD_RUNNER_MAX_LIVE"] = "1"
         scenario([{"turns": [[{"bash": "python3 scripts/run_tests.py --wait", "hold": 4, "after": 4}, {"final": "RUNNER: DONE"}]]}])
+        check("testing: a poll on a detached run's state directory is a known wait", bool(TESTING_CMD.search("S=/var/folders/x/T/run_gates-detach/2026-ab; [ -f $S/exit ]")) and not TESTING_CMD.search("ls scripts"))
         p = start("W-92")
         went = until(lambda: state_of("W-92").get("state") == "testing", 20)
         check("testing: the state flips to testing while run_tests.py is in flight", bool(went))
+        check("testing: CI waits are long waits by name",
+              all(TESTING_CMD.search(c) for c in ("python3 scripts/wait_ci.py --pr 501 --timeout 570 2>&1 | tail -15",
+                                                   "gh pr checks 501 --watch", "gh run watch 123"))
+              and not any(TESTING_CMD.search(c) for c in ("gh pr checks 501", "gh run view 123", "cat wait_ci.pyc")))
         held_now = slot_census("other")[0] if went else -1
         check("testing: slot_census does not count the testing run", held_now == 0)
         back = until(lambda: state_of("W-92").get("state") == "running", 20)
@@ -3574,6 +3597,11 @@ def selftest() -> int:
         scenario([{"turns": [[{"bash": "sleep 99", "hold": 5, "after": 3}, {"final": "RUNNER: DONE"}]]}])
         p = start("W-93")
         check("testing: any Bash call quiet past the threshold flips to testing", bool(until(lambda: state_of("W-93").get("state") == "testing", 20)))
+        p.wait(timeout=60)
+        # the CLI's progress lines during a long call are not work: a quiet poll loop still flips (W-018, 2026-11-13)
+        scenario([{"turns": [[{"bash": "for i in $(seq 1 58); do sleep 10; done", "hold": 6, "progress": 0.3, "after": 3}, {"final": "RUNNER: DONE"}]]}])
+        p = start("W-94")
+        check("testing: progress lines of the call in flight do not hide a quiet wait", bool(until(lambda: state_of("W-94").get("state") == "testing", 20)))
         p.wait(timeout=60)
         env.pop("ASD_TESTING_QUIET_SECS")  # ASD_RUNNER_MAX_LIVE stays set: the disk-floor cases below pop it
         # ---- the disk floor: below it the run queues (no claude), and starts once the disk has room ----

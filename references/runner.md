@@ -113,14 +113,21 @@ the recorded checkpoints.
   runs may start (podcast W-007 once sat 35 min in the foreground on
   `run_tests.py` holding a slot the whole time). The session is blocked when its
   in-flight foreground Bash call runs `run_tests.py` or `run_gates.py` (`--wait`
-  included), or has produced no output for more than `TESTING_QUIET_SECS` (300;
-  `ASD_TESTING_QUIET_SECS` overrides). It is also blocked when its turn ended
-  and the only work still in flight is background Bash commands (a CI wait
-  launched with `run_in_background`, config-harness W-132 and W-156 each held a
-  slot ~45 min that way): once the idle window passes with those in the
-  transcript, the slot is released; a background agent or workflow keeps it,
-  because a model works there. The session's next event ends that wait. When
-  the call's result arrives the state
+  included), polls a detached run's state directory (`run_gates-detach/`,
+  `run_tests-detach/`), or waits on CI (`wait_ci.py`, `gh pr checks --watch`,
+  `gh run watch`), or has produced no output for more than
+  `TESTING_QUIET_SECS` (300; `ASD_TESTING_QUIET_SECS` overrides). The CLI's own
+  progress lines for the call in flight (`tool_progress`, the `task_started` and
+  `task_progress` system lines) are not output here: they arrive every few
+  seconds during any long Bash call, and counting them kept a 10-minute poll
+  loop from ever looking quiet (podcast W-018, 2026-11-13). They still count
+  against a stall. It is also blocked when its turn ended and the only work
+  still in flight is background Bash commands (a CI wait launched with
+  `run_in_background`; config-harness W-132 and W-156 each held a slot ~45 min
+  that way): once the idle window passes with those in the transcript, the
+  slot is released; a background agent or workflow keeps it, because a model
+  works there. The session's next event ends that wait. When the call's result
+  arrives the state
   goes back to `running` at once, without queueing. Trade-off, accepted: the
   live count may briefly exceed the cap until another run finishes or waits.
   `testing` counts as live everywhere else (stale-pid checks, dashboard,
