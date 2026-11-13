@@ -114,7 +114,13 @@ the recorded checkpoints.
   `run_tests.py` holding a slot the whole time). The session is blocked when its
   in-flight foreground Bash call runs `run_tests.py` or `run_gates.py` (`--wait`
   included), or has produced no output for more than `TESTING_QUIET_SECS` (300;
-  `ASD_TESTING_QUIET_SECS` overrides). When the call's result arrives the state
+  `ASD_TESTING_QUIET_SECS` overrides). It is also blocked when its turn ended
+  and the only work still in flight is background Bash commands (a CI wait
+  launched with `run_in_background`, config-harness W-132 and W-156 each held a
+  slot ~45 min that way): once the idle window passes with those in the
+  transcript, the slot is released; a background agent or workflow keeps it,
+  because a model works there. The session's next event ends that wait. When
+  the call's result arrives the state
   goes back to `running` at once, without queueing. Trade-off, accepted: the
   live count may briefly exceed the cap until another run finishes or waits.
   `testing` counts as live everywhere else (stale-pid checks, dashboard,

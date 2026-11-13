@@ -533,11 +533,12 @@ def transcript_path(session: str, config_dir: str | None) -> str | None:
 
 def background_tasks(lines: list[str]) -> list[dict]:
     """The background commands, workflows and agents a session launched that have not notified it yet, each as
-    {"label", "id", "output"}: a tool call whose result says it went to the background, minus every
+    {"label", "id", "output", "tool"}: a tool call whose result says it went to the background, minus every
     `<task-notification>` naming its id and every task stopped on purpose (a stop sends no notification). A stop is
     read from the stop call's own input (TaskStop task_id), so any result text that is not an error ends the task, and
     the "stopped" / "No task found" texts end it too."""
     calls: dict[str, str] = {}
+    tools: dict[str, str] = {}      # tool_use id -> the tool's name (Bash, Agent, Workflow, ...)
     stops: dict[str, str] = {}      # a stop call's tool_use id -> the task id it names
     bg: dict[str, dict] = {}
     task_of: dict[str, str] = {}   # background task id -> the tool_use id that launched it
@@ -552,6 +553,7 @@ def background_tasks(lines: list[str]) -> list[dict]:
                 if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
                     i = b.get("input") or {}
                     calls[b["id"]] = str(i.get("description") or i.get("name") or i.get("skill") or b.get("name") or "tool")[:100]
+                    tools[b["id"]] = str(b.get("name") or "")
                     key = BG_STOP_TOOLS.get(str(b.get("name") or ""))
                     if key and i.get(key):
                         stops[b["id"]] = str(i[key])
@@ -566,7 +568,7 @@ def background_tasks(lines: list[str]) -> list[dict]:
                     if BG_LAUNCHED.search(t[:400]):
                         m = BG_TASK_ID.search(t[:400])
                         out = BG_OUTPUT.search(t[:600])
-                        bg[tid] = {"label": calls[tid], "id": m.group(1) if m else "", "output": out.group(1) if out else ""}
+                        bg[tid] = {"label": calls[tid], "id": m.group(1) if m else "", "output": out.group(1) if out else "", "tool": tools.get(tid, "")}
                         if m:
                             task_of[m.group(1)] = tid
                     else:
@@ -1178,6 +1180,8 @@ class Runner:
         self.last_api = 0.0                 # when the session's last API call came back (any assistant or result event)
         self.ka_since: float | None = None  # when this wait (owner question or queue) began
         self.turn_open = False              # a user message went in and no result event came yet: the session is mid-turn
+        self.bg_cmds_only = False           # background() saw only Bash tasks in flight
+        self.bg_wait = ""                   # turn ended and only background shell commands run (a CI wait): what it waits on
         self.last_out = time.monotonic()    # monotonic time of the last stream event (or message sent) of the session
         self.last_ev = "none"               # the last stream event: its type and tool name, for the stall diagnostic
         self.tool_names: dict = {}          # tool_use id -> tool name
@@ -1482,12 +1486,15 @@ class Runner:
                 tasks = background_tasks(fh.read().splitlines())
         except OSError:
             return []
-        live = []
+        live: list[str] = []
+        tools: list[str] = []
         for t in tasks:
             if output_unheld(t["output"]):
                 self.log(f"background task {t['id']} ({t['label']}) has no process left (nothing holds its output open); not waiting for it")
                 continue
             live.append(t["label"])
+            tools.append(t.get("tool") or "")
+        self.bg_cmds_only = bool(live) and all(x == "Bash" for x in tools)
         return live
 
     def take_slot(self, first: bool = False, rehome: bool = False) -> bool:
@@ -1705,6 +1712,7 @@ class Runner:
 
     def send(self, text: str) -> None:
         self.turn_open = True
+        self.bg_wait = ""
         self.last_out = time.monotonic()
         try:
             self.proc.stdin.write(user_message(text))
@@ -1919,6 +1927,7 @@ class Runner:
             self.inflight_bash.clear()
         elif t in ("assistant", "user"):
             self.turn_open = True
+            self.bg_wait = ""
         tool = ""
         c = (ev.get("message") or {}).get("content") if t in ("assistant", "user") else None
         if isinstance(c, list):
@@ -1942,7 +1951,9 @@ class Runner:
         """The in-flight foreground Bash call the session is blocked on for a long wait, or "". A call counts when it
         runs run_tests.py or run_gates.py (--wait included), or when it has produced no output (no stream event of any
         kind) for more than TESTING_QUIET_SECS (ASD_TESTING_QUIET_SECS overrides)."""
-        if not self.turn_open or not self.inflight_bash:
+        if not self.turn_open:
+            return self.bg_wait
+        if not self.inflight_bash:
             return ""
         quiet = time.monotonic() - self.last_out > env_num("ASD_TESTING_QUIET_SECS", TESTING_QUIET_SECS)
         for cmd, _ in self.inflight_bash.values():
@@ -2216,6 +2227,11 @@ class Runner:
                 if bg and bg_waited < bg_max:
                     if bg_waited == 0:
                         self.log(f"quiet, but {len(bg)} background task(s) still running: " + "; ".join(bg[:4]) + "; waiting for them")
+                    if self.bg_cmds_only:
+                        # Only shell commands run (a CI wait, a detached test run): no model works, so the slot goes
+                        # back until the session is re-invoked. A background agent or workflow keeps it.
+                        self.bg_wait = "background: " + bg[0][:68]
+                        self.refresh_testing()
                     bg_waited += idle
                     continue
                 if nudges >= 2:
@@ -3751,6 +3767,15 @@ def selftest() -> int:
         st = lambda tool, key, res, err=False: [J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "k1", "name": tool, "input": {key: "mv1"}}]}}),
                                                 J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "k1", "content": res, "is_error": err}]}})]
         check("background: a command moved to the background after its timeout is in flight, with its output path", [t["output"] for t in background_tasks(mv)] == ["/tmp/x/tasks/mv1.output"])
+        check("background: each task carries the tool that launched it", [t["tool"] for t in background_tasks(mv)] == ["Bash"])
+        rb = object.__new__(Runner)
+        rb.turn_open, rb.inflight_bash, rb.bg_wait = False, {}, "background: Wait for PR 518 CI"
+        check("background wait: a closed turn waiting only on background commands is blocked (slot released)", rb.blocked_on() == "background: Wait for PR 518 CI")
+        rb.bg_wait = ""
+        check("background wait: a closed turn with no background command wait is not blocked", rb.blocked_on() == "")
+        rb.turn_open, rb.bg_wait, rb.last_out, rb.state, rb.stopping = False, "x", 0.0, {}, False
+        rb.track_event({"type": "assistant", "message": {"content": []}})
+        check("background wait: the session's next event ends the background wait", rb.turn_open and rb.bg_wait == "")
         check("background: a stop is read from the call's task id, whatever the result text says",
               background_in_flight(mv + st("TaskStop", "task_id", "stopped")) == [] and background_in_flight(mv + st("KillShell", "shell_id", "done")) == []
               and background_in_flight(mv + st("TaskStop", "task_id", '{"message":"Killed task: mv1"}')) == [])
