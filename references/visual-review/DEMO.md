@@ -61,3 +61,14 @@ The panel sits above the dossier's questions.
 - Rust only. The labels are written by a model: a label can be wrong, the evidence line is the check. A node marked `inferred` has no source line.
 - L0 and L1 elements have no node in `merged.json`, so their status is the author's judgement.
 - The demo set was authored once, by an agent run, on one change; it is a demonstration, not a measured quality.
+
+## 7. Open a whole-repo map (config-harness) on a spare-port dashboard
+
+```
+python3 scripts/vr_map.py refresh /path/to/config-harness --no-metrics      # first run is slow, later runs are incremental
+ASD_QUESTIONS_PORT=7399 ASD_RUNS_ROOTS=/path/to/config-harness ASD_QUESTIONS_NO_SLACK=1 ASD_QUESTIONS_NO_NOTIFY=1 ASD_RUNS_NO_GH=1 \
+  bun run shared/questions/server.ts
+```
+
+Open `http://127.0.0.1:7399`, pick the repo and its architecture tab: `vr_map.py list REPO` shows the views the dashboard finds (`crate-map`, `modules-<crate>`, `calls-<crate>`, `crate-calls`, `product-map`). Start at `crate-map`, then open a crate's modules or calls view. The views are plain files in `docs/architecture/` of the repo, uncommitted until you commit them (or the stub-cut hook opens the PR). Stop the server with Ctrl-C.
+

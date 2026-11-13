@@ -4,7 +4,10 @@
 Adapted from the D0 spike (research/d0/scripts/ra_calls.py), now with a hard
 deadline: a reader thread feeds a queue, every wait is bounded by `timeout`
 seconds for the WHOLE session, and on expiry the server is killed and RaError
-is raised. Stdlib only. D0 measured 16 s to the first answer and 3 GB RSS on
+is raised. Stdlib only. For whole-repo builds `outgoing_for_file(rel)` batches one file (documentSymbol, then the
+outgoing calls of each fn), `set_deadline(s)` resets the clock per file, requests retry on "content modified"
+(-32801/-32802), and `options=FAST_OPTIONS` (build scripts, proc macros, check-on-save and cache priming off, verified in the
+rust-analyzer manual) keeps indexing to seconds; calls visible only in macro-expanded code are then missed. D0 measured 16 s to the first answer and 3 GB RSS on
 config-harness, so this runs on request only.
 
     from vr_ra import RaClient
@@ -25,11 +28,42 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
 from urllib.parse import quote, unquote, urlparse
+
+
+# Initialization options for a whole-repo batch run (vr_refresh.py). Names are the rust-analyzer settings without
+# the `rust-analyzer.` prefix (documented: cargo.buildScripts.enable, procMacro.enable, checkOnSave, cachePriming.enable,
+# diagnostics.enable). Build scripts and proc macros off means no `cargo check` of the dependency tree and no
+# proc-macro server; calls made only inside macro-expanded code are not resolved. `cargo.noDeps` was tried and rejected:
+# it drops the dependency edges between workspace crates, so no cross-crate call resolves (measured on config-harness).
+# Instead the server runs with a private CARGO_HOME (see `_private_cargo_home`).
+FAST_OPTIONS = {"cargo": {"buildScripts": {"enable": False}}, "procMacro": {"enable": False}, "checkOnSave": False,
+                "cachePriming": {"enable": False}, "diagnostics": {"enable": False}}
+
+
+def _private_cargo_home():
+    """(env, tmpdir): an environment whose CARGO_HOME is a scratch directory that links the real registry and git caches.
+
+    Every `cargo metadata` call of rust-analyzer takes cargo's package-cache lock in CARGO_HOME. Another cargo build on
+    the machine holds that lock for tens of seconds ("Blocking waiting for file lock on package cache": measured 36 s per
+    call on config-harness under load), which is the usual reason a whole session ran out of its clock. The lock file of the
+    private directory is ours alone; the caches are read through links."""
+    import tempfile
+    real = os.environ.get("CARGO_HOME") or os.path.join(os.path.expanduser("~"), ".cargo")
+    tmp = tempfile.mkdtemp(prefix="asd-cargo-home-")
+    for name in ("registry", "git", "config.toml", "config"):
+        src = os.path.join(real, name)
+        if os.path.exists(src):
+            os.symlink(src, os.path.join(tmp, name))
+    env = dict(os.environ, CARGO_HOME=tmp)
+    env.setdefault("RUSTUP_HOME", os.path.join(os.path.expanduser("~"), ".rustup"))
+    return env, tmp
 
 
 class RaError(Exception):
@@ -45,7 +79,9 @@ def _path(uri: str) -> str:
 
 
 class RaClient:
-    def __init__(self, root: str, cmd=("rust-analyzer",), timeout: float = 120.0):
+    def __init__(self, root: str, cmd=("rust-analyzer",), timeout: float = 120.0, options: dict | None = None):
+        self.options = options
+        self.quiescent = False
         self.root = os.path.abspath(root)
         self.cmd = list(cmd)
         self.timeout = timeout
@@ -101,18 +137,29 @@ class RaClient:
             raise RaError("rust-analyzer timed out after %.0f s" % self.timeout)
         if msg is None:
             raise RaError("rust-analyzer exited")
+        if msg.get("method") == "experimental/serverStatus" and "id" not in msg:
+            self.quiescent = bool((msg.get("params") or {}).get("quiescent"))
         return msg
 
     def _request(self, method: str, params: dict) -> dict:
         self._next_id += 1
         rid = self._next_id
         self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+        retries = 0
         while True:
             m = self._recv()
             if "method" in m and "id" in m:  # server -> client request: acknowledge
                 self._send({"jsonrpc": "2.0", "id": m["id"], "result": None})
                 continue
             if m.get("id") == rid:
+                if "error" in m and m["error"].get("code") in (-32801, -32802) and retries < 20:
+                    # ContentModified / ServerCancelled: the server reloaded the workspace under the request. Ask again.
+                    retries += 1
+                    time.sleep(1)
+                    self._next_id += 1
+                    rid = self._next_id
+                    self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+                    continue
                 if "error" in m:
                     raise RaError("%s: %s" % (method, m["error"].get("message", m["error"])))
                 return m
@@ -120,18 +167,22 @@ class RaClient:
     # -- lifecycle
     def start(self) -> "RaClient":
         self._deadline = time.time() + self.timeout
+        env = None
+        if self.options and self.cmd and self.cmd[0] == "rust-analyzer":
+            env, self._home = _private_cargo_home()
         try:
             self._proc = subprocess.Popen(self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                          stderr=subprocess.DEVNULL, cwd=self.root)
+                                          stderr=subprocess.DEVNULL, cwd=self.root, env=env)
         except OSError as exc:
             raise RaError("cannot start %s: %s" % (self.cmd[0], exc))
         threading.Thread(target=self._reader, daemon=True).start()
         uri = _uri(self.root)
         r = self._request("initialize", {
-            "processId": os.getpid(), "rootUri": uri,
+            "processId": os.getpid(), "rootUri": uri, "initializationOptions": self.options or {},
             "capabilities": {"experimental": {"serverStatusNotification": True},
                              "window": {"workDoneProgress": True},
-                             "textDocument": {"callHierarchy": {}}},
+                             "textDocument": {"callHierarchy": {},
+                                              "documentSymbol": {"hierarchicalDocumentSymbolSupport": True}}},
             "workspaceFolders": [{"uri": uri, "name": "ws"}]})
         self.version = (r.get("result", {}).get("serverInfo") or {}).get("version")
         self._send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
@@ -142,6 +193,15 @@ class RaClient:
             self._proc.kill()
 
     def close(self) -> None:
+        try:
+            self._close()
+        finally:
+            home = getattr(self, "_home", None)
+            if home:
+                shutil.rmtree(home, ignore_errors=True)
+                self._home = None
+
+    def _close(self) -> None:
         if not self._proc or self._proc.poll() is not None:
             return
         try:
@@ -196,6 +256,76 @@ class RaClient:
                 "incoming": [{"item": self._item(c["from"]), "ranges": ranges(c)} for c in inc]}
 
 
+    def set_deadline(self, seconds: float) -> None:
+        """Restart the clock: the next waits are bounded by `seconds` from now (a batch run gives each file its own)."""
+        self.timeout = seconds
+        self._deadline = time.time() + seconds
+
+    def outgoing_for_file(self, rel_path: str, tries: int = 30) -> list:
+        """Every function of one file with its outgoing calls: [{"name","line","col","out":[{"name","path","line","ranges"}]}].
+
+        One documentSymbol request lists the file's functions (kinds Function and Method, nested too);
+        each gets a prepareCallHierarchy and an outgoingCalls request. Incoming calls are not asked: they
+        are the inverse of the outgoing calls of every other file. A function whose item stays empty after
+        `tries` polls (a macro-generated or cfg'd-out symbol) is listed with `"out": None`. Bounded by the
+        deadline of `set_deadline`.
+        """
+        full = os.path.join(self.root, rel_path)
+        with open(full, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        uri = _uri(full)
+        patient = tries
+        if getattr(self, "_proven", False):
+            tries = min(tries, 2)   # the server has answered before: an empty answer is a real one (no 15-30 s stall)
+        self._send({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": {"uri": uri, "languageId": "rust", "version": 1, "text": text}}})
+        try:
+            syms = None
+            for _ in range(tries):
+                try:
+                    syms = self._request("textDocument/documentSymbol", {"textDocument": {"uri": uri}}).get("result")
+                except RaError as exc:
+                    if "timed out" in str(exc) or "exited" in str(exc):
+                        raise
+                if syms:
+                    self._proven = True
+                    break
+                time.sleep(1 if tries == patient else 0.3)
+            fns = []
+
+            def walk(items):
+                for it in items or []:
+                    if it.get("kind") in (6, 12) and it.get("selectionRange"):
+                        fns.append(it)
+                    walk(it.get("children"))
+            walk(syms if syms and "selectionRange" in (syms[0] or {}) else [])
+            res = []
+            for it in sorted(fns, key=lambda i: (i["selectionRange"]["start"]["line"], i["selectionRange"]["start"]["character"])):
+                st = it["selectionRange"]["start"]
+                rec = {"name": it["name"], "line": st["line"] + 1, "col": st["character"] + 1, "out": None}
+                pos = {"textDocument": {"uri": uri}, "position": st}
+                found = None
+                for _ in range(tries):
+                    found = self._request("textDocument/prepareCallHierarchy", pos).get("result") or []
+                    if found:
+                        break
+                    time.sleep(0.5)
+                if found:
+                    out = self._request("callHierarchy/outgoingCalls", {"item": found[0]}).get("result") or []
+                    rec["out"] = []
+                    for c in out:
+                        t = self._item(c["to"])
+                        rec["out"].append({"name": t["name"], "path": t["path"], "line": t["line"],
+                                           "ranges": [(r["start"]["line"] + 1) for r in c.get("fromRanges", [])]})
+                res.append(rec)
+            return res
+        finally:
+            try:
+                self._send({"jsonrpc": "2.0", "method": "textDocument/didClose", "params": {"textDocument": {"uri": uri}}})
+            except RaError:
+                pass
+
+
 # ------------------------------------------------------------ fake server
 
 def fake_server(mode: str = "") -> None:
@@ -246,7 +376,22 @@ def fake_server(mode: str = "") -> None:
             else:
                 p = urlparse(m["params"]["textDocument"]["uri"]).path
                 send({"jsonrpc": "2.0", "id": rid, "result": [item("target_fn", p, m["params"]["position"]["line"] + 1)]})
+        elif meth == "textDocument/didOpen":
+            state["text"] = m["params"]["textDocument"]["text"]
+        elif meth == "textDocument/documentSymbol":
+            syms = []
+            for i, ln in enumerate(state.get("text", "").split("\n")):
+                mm = re.search(r"fn (\w+)", ln)
+                if mm:
+                    r = {"start": {"line": i, "character": mm.start(1)}, "end": {"line": i, "character": mm.end(1)}}
+                    syms.append({"name": mm.group(1), "kind": 12, "range": r, "selectionRange": r})
+            send({"jsonrpc": "2.0", "id": rid, "result": [{"name": "impl S", "kind": 19, "range": {"start": {"line": 0, "character": 0}, "end": {"line": 99, "character": 0}},
+                                                          "selectionRange": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}}, "children": syms}]})
         elif meth == "callHierarchy/outgoingCalls":
+            if mode == "modified" and not state.get("modified"):
+                state["modified"] = True
+                send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32801, "message": "content modified"}})
+                continue
             root = state["root"]
             lib = root + "/crates/a/src/lib.rs"
             rng = [{"start": {"line": 4, "character": 4}, "end": {"line": 4, "character": 9}}]
@@ -287,6 +432,15 @@ def _selftest() -> int:
             fails.append("incoming")
         if r["outgoing"][0]["ranges"] != [5]:
             fails.append("call-site range: %r" % r["outgoing"][0]["ranges"])
+        with open(os.path.join(d, "crates/a/src/lib.rs"), "w") as fh:
+            fh.write("pub fn one() {}\nimpl S {\n    fn two(&self) {}\n}\n")
+        with RaClient(d, cmd=[sys.executable, me, "--fake-server", "modified"], timeout=30) as ra:
+            ra.set_deadline(20)
+            fl = ra.outgoing_for_file("crates/a/src/lib.rs")
+        if [(f["name"], f["line"], f["col"]) for f in fl] != [("one", 1, 8), ("two", 3, 8)]:
+            fails.append("file functions: %r" % [(f["name"], f["line"], f["col"]) for f in fl])
+        elif sorted(o["name"] for o in fl[0]["out"]) != ["area", "inner", "push"]:
+            fails.append("file outgoing: %r" % fl[0]["out"])
         t0 = time.time()
         try:
             with RaClient(d, cmd=[sys.executable, me, "--fake-server", "hang"], timeout=2) as ra:
@@ -309,7 +463,7 @@ def _selftest() -> int:
 
 if __name__ == "__main__":
     if "--fake-server" in sys.argv:
-        fake_server("hang" if "hang" in sys.argv else "")
+        fake_server("hang" if "hang" in sys.argv else "modified" if "modified" in sys.argv else "")
     elif "--selftest" in sys.argv:
         sys.exit(_selftest())
     else:
