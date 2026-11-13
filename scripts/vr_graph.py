@@ -20,7 +20,8 @@ Issue codes: schema_error, unsupported_version, bad_id, duplicate_node_id,
 duplicate_edge_id, duplicate_group_id, unknown_group_id, unknown_lane_id,
 unknown_flow_step, unknown_edge_source, unknown_edge_target,
 missing_evidence_path, bad_evidence, missing_repository_path,
-line_range_outside_file, over_budget, label_too_long.
+line_range_outside_file, over_budget, label_too_long, unknown_frame_step.
+unknown_frame_step: a frame (view seq) whose first, last or a branch's first is not a node id.
 
 label_too_long: a node label over 80 characters (the canvas shows 3 lines of at
 most 35 characters in the widest node, 250 px at 6.4 px per character, and
@@ -294,6 +295,10 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
                 if nid not in seen:
                     issues.append(_issue("unknown_flow_step", "flows[%d].%s" % (i, side), "step %r is not a node" % nid))
 
+    for i, f in enumerate(graph.get("frames", [])):
+        for key, nid in [("first", f.get("first")), ("last", f.get("last"))] + [("branches.first", b.get("first")) for b in f.get("branches", [])]:
+            if nid not in seen:
+                issues.append(_issue("unknown_frame_step", "frames[%d].%s" % (i, key), "step %r is not a node" % nid))
     cache: dict = {}
     for coll, items in (("nodes", graph.get("nodes", [])), ("edges", graph.get("edges", [])),
                         ("groups", graph.get("groups", [])), ("flows", graph.get("flows", []))):
