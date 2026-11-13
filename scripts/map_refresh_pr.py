@@ -75,15 +75,28 @@ def run(root: str, stub: str, dry: bool = False, log=lambda m: print("map_refres
         if rc != 0:
             log("worktree failed: " + out[:200])
             return 1
-        cmd = shlex.split(os.environ.get("ASD_MAP_REFRESH_BIN") or "") or [sys.executable, os.path.join(HERE, "vr_refresh.py")]
-        rc, out = sh(cmd + [wt, "--no-metrics"])
+        try:
+            tmo = float(os.environ.get("ASD_MAP_REFRESH_TIMEOUT") or 3600)
+        except ValueError:
+            tmo = 3600.0
+        custom = shlex.split(os.environ.get("ASD_MAP_REFRESH_BIN") or "")
+        # a bounded call layer inside a bounded run: a stuck rust-analyzer must not hold the cut forever (the cache keeps
+        # what was done, the next refresh continues)
+        cmd = custom or [sys.executable, os.path.join(HERE, "vr_refresh.py")]
+        extra = [] if custom else ["--calls-limit", str(int(tmo * 0.6))]
+        rc, out = sh(cmd + [wt, "--no-metrics"] + extra, timeout=tmo)
         log(out[-1500:] if out else "refresh produced no output")
         if rc != 0:
-            log("refresh failed (exit %d)" % rc)
+            log("refresh failed (exit %d)%s" % (rc, "" if out else " or timed out after %.0f s" % tmo))
             return 1
-        if not sh(["git", "-C", wt, "status", "--porcelain", "--", DIR])[1]:
+        changes = [x for x in sh(["git", "-C", wt, "status", "--porcelain", "--", DIR])[1].splitlines() if x.strip()]
+        if not changes:
             log("nothing changed: no pull request")
             return 0
+        if all("D" in x[:2] for x in changes):
+            # views vanished and nothing was written: a layer that did not run, not a change of the repository
+            log("refusing: the refresh only deleted %d file(s) under %s; no pull request" % (len(changes), DIR))
+            return 1
         if dry:
             log("dry run: would open a pull request from %s into %s" % (branch, stub))
             return 0
@@ -158,6 +171,14 @@ def selftest() -> int:
         n = open(d + "/gh.log").read().count("pr create")
         run(w, "stub/2026-12-04", log=q)
         check("nothing-changed:no-pr", open(d + "/gh.log").read().count("pr create") == n)
+        # a refresh whose only effect is deleting views is refused, not committed
+        g("-C", w, "push", "-q", "origin", "HEAD~1:refs/heads/stub/2027-01-01"); g("-C", w, "fetch", "-q", "origin")
+        dele = os.path.join(d, "delete.sh")
+        open(dele, "w").write('#!/bin/sh\nrm -f "$1/%s/map-manifest.json"\n' % DIR)
+        os.chmod(dele, 0o755)
+        os.environ["ASD_MAP_REFRESH_BIN"] = dele
+        n = open(d + "/gh.log").read().count("pr create")
+        check("deletions-only:refused", run(w, "stub/2027-01-01", log=q) == 1 and open(d + "/gh.log").read().count("pr create") == n)
     print("all map_refresh_pr selftests passed" if not bad else "FAILED: " + ", ".join(bad))
     return 1 if bad else 0
 

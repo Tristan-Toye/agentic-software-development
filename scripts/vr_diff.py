@@ -313,7 +313,11 @@ def merge(before: dict, after: dict) -> dict:
             for r in rl:
                 for sid in r["steps"]:
                     if sid in nodes and not re.search(r" x\d+$", nodes[sid]["label"]):
-                        nodes[sid]["label"] += " x%d" % r["count"]
+                        suffix = " x%d" % r["count"]
+                        lab = nodes[sid]["label"]
+                        if len(lab) + len(suffix) > vr_graph.NODE_LABEL_MAX:  # trim the label, never the count
+                            lab = lab[:vr_graph.NODE_LABEL_MAX - len(suffix) - 1].rstrip() + "\u2026"
+                        nodes[sid]["label"] = lab + suffix
     # drop edges whose end was removed by the collapse alone
     flows: dict = {}
     for fid in order(af, bf):
@@ -859,6 +863,22 @@ def _selftest() -> int:
     check("VC-08:count", m["meta"]["collapsed_runs"]["f"] == [{"side": "after", "steps": ["s0a", "s0b", "s0c"], "count": 5}]
           and all(n["label"].endswith(" x5") for n in m["nodes"]))
     check("VC-08:edges-valid", vr_graph.validate(m, check_budget=False) == [] and len(m["edges"]) == 3, str(len(m["edges"])))
+    # a collapsed label at the 80-character limit is trimmed to take its " xN" suffix, not rejected
+    long_label = "q" * vr_graph.NODE_LABEL_MAX
+    lids, lnodes = [], []
+    for r in range(5):
+        for k in "abc":
+            lids.append("s%d%s" % (r, k))
+            lnodes.append({"id": "s%d%s" % (r, k), "kind": "step", "label": long_label if k == "a" else "do " + k, "lane": "L"})
+    ag = _mk(lnodes, [{"source": x, "target": y, "kind": "flow"} for x, y in zip(lids, lids[1:])], view_="L1")
+    ag["lanes"] = bg["lanes"]
+    ag["flows"] = [{"id": "f", "label": "f", "status": "changed", "after": lids, "evidence": [{"tier": "inferred", "note": "plan"}]}]
+    try:
+        m = merge(bg, ag)
+        la = next(n["label"] for n in m["nodes"] if n["id"] == "s0a")
+        check("VC-08:long-label-trimmed", len(la) <= vr_graph.NODE_LABEL_MAX and la.endswith("\u2026 x5") and vr_graph.validate(m, check_budget=False) == [], la)
+    except DiffError as exc:
+        check("VC-08:long-label-trimmed", False, str(exc))
     # same node ids repeated, 15 steps over the cap before collapse, 3 after
     ag = _mk([{"id": k, "kind": "step", "label": "do " + k, "lane": "L"} for k in "abc"], view_="L1")
     ag["lanes"] = bg["lanes"]
