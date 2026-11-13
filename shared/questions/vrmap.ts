@@ -106,6 +106,22 @@ export const topGroups = (g: any): string[] => {
 
 /** The canvas opens a view with more visible nodes than this with groups folded (about 15 to 20 read at once). */
 export const OPEN_BUDGET = 18
+/** The layout size the canvas opens a committed diagram with: 12 px text stays at or above ~11 px on screen at a 980 px canvas (zoom >= 0.92). */
+export const FIT_WIDTH = 1020
+export const FIT_HEIGHT = 760
+/** Layouts tried at most while folding more to fit. */
+const FIT_TRIES = 14
+/** The ids of the groups with nodes in them, biggest (by nodes at any depth) first, that are not inside a folded group nor folded themselves. Pure. */
+export function nextFold(g: any, folded: string[]): string | undefined {
+  const gmap = new Map<string, any>((g.groups ?? []).map((x: any) => [x.id, x]))
+  const chain = (id: string | undefined): string[] => { const c: string[] = []; for (let n = 0; id && gmap.has(id) && n < 100; n++) { c.push(id); id = gmap.get(id).parent } return c }
+  const f = new Set(folded)
+  const size = new Map<string, number>()
+  for (const n of g.nodes ?? []) for (const id of chain(n.group)) size.set(id, (size.get(id) ?? 0) + 1)
+  const open = [...size.entries()].filter(([id]) => !f.has(id) && !chain(gmap.get(id)?.parent).some((a) => f.has(a)) && size.get(id)! > 1)
+  open.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+  return open[0]?.[0]
+}
 /** What the view-kind tab says, from the kind `vr_map list` gives. */
 const KIND_TAB: Record<string, string> = { "product-map": "Product map", "crate-map": "Crate map", "crate-calls": "Crate calls", modules: "Modules", calls: "Calls" }
 export const kindTab = (d: Diagram, g: any): string => KIND_TAB[d.kind] ?? (g?.view === "map" ? "Product map" : d.kind.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase()))
@@ -153,10 +169,22 @@ export async function openDiagram(root: string, rel: string, listed: Diagram[]):
   if (!out.issues.length) {
     out.graph = stripDollar(g)
     out.view = g.view
-    const fold = openFolds(out.graph)
-    if (fold.length) out.collapsed = fold
+    let fold = openFolds(out.graph)
     // A view that opens folded may be too big to lay out unfolded: then the failure is not reported (layout stays null) and the canvas asks for the folded layout.
     try { out.layout = await layoutGraph(out.graph) } catch (e) { if (!fold.length) out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
+    // Fold more (the biggest open group, nested ones too) until the opening layout fits the readable size, instead of letting Fit shrink the text.
+    if (g.view !== "map" && (out.graph.groups ?? []).length) {
+      try {
+        for (let i = 0; i < FIT_TRIES; i++) {
+          const L = fold.length ? (await collapseLoaded(out.graph, g.view, fold)).layout : out.layout
+          if (L && L.width <= FIT_WIDTH && L.height <= FIT_HEIGHT) break
+          const next = nextFold(out.graph, fold)
+          if (!next) break
+          fold = [...fold, next].sort()
+        }
+      } catch { /* keep the folds found so far */ }
+    }
+    if (fold.length) out.collapsed = fold
   }
   return { kind: "graph", title: d.title, views: { [g.view === "map" ? "L0" : g.view === "full" ? "L2" : g.view]: out } }
 }

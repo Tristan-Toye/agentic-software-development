@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { aggLabel, closeLayout, collapseGraph, EDGE_LABEL_MAX } from "../questions/vrlayout.ts"
-import { collapsedDiagram, openDiagram, openFolds, OPEN_BUDGET } from "../questions/vrmap.ts"
+import { collapsedDiagram, openDiagram, openFolds, OPEN_BUDGET, FIT_WIDTH, FIT_HEIGHT, nextFold } from "../questions/vrmap.ts"
 import { PAGE } from "../questions/page.ts"
 
 afterAll(() => closeLayout())
@@ -100,6 +100,47 @@ describe("large views open folded", () => {
   })
 })
 
+/** The shape of calls-platform.json: 6 top groups (58 nodes, ~107 edges), the biggest ones nested one level deep. */
+function callsShaped() {
+  const groups: any[] = [], nodes: any[] = [], edges: any[] = []
+  const sizes: [string, number][] = [["bins", 7], ["crates", 3], ["cloud", 6], ["llm", 7], ["stubs", 12], ["other", 23]]
+  for (const [n, c] of sizes) {
+    groups.push({ id: "group:" + n, label: n, status: "context" })
+    for (let i = 0; i < c; i++) nodes.push(node("fn:" + n + "::f" + i, "group:" + n, "function"))
+  }
+  groups.push({ id: "group:cloud::inner", label: "inner", status: "context", parent: "group:cloud" })
+  nodes.push(node("fn:cloud::i0", "group:cloud::inner", "function"), node("fn:cloud::i1", "group:cloud::inner", "function"))
+  for (let i = 0; i < nodes.length; i++) for (const k of [1, 5]) { const j = (i + k) % nodes.length; if (j !== i) edges.push(edge(nodes[i].id, nodes[j].id, "calls", "calls")) }
+  return base("full", "Calls of platform", nodes, edges.filter((e, i, a) => a.findIndex((x) => x.id === e.id) === i), groups)
+}
+describe("a call graph shaped like calls-platform opens readable", () => {
+  test("openFolds names the biggest groups first", () => {
+    const f = openFolds(callsShaped())
+    expect(f).toContain("group:other")
+    expect(f).toContain("group:stubs")
+  })
+  test("openDiagram folds until the opening layout is at least 11 px text at 980 px", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "vrcalls-"))
+    mkdirSync(join(repo, "docs/architecture"), { recursive: true })
+    const g = callsShaped()
+    writeFileSync(join(repo, "docs/architecture/calls-p.json"), JSON.stringify(g))
+    const listed = [{ path: "docs/architecture/calls-p.json", kind: "calls", title: g.title, view: "full" }]
+    const d: any = await openDiagram(repo, listed[0].path, listed)
+    const f = await collapsedDiagram(repo, listed[0].path, listed, d.views.L2.collapsed)
+    // either the folded layout fits the readable size, or nothing is left to fold (then the canvas keeps 12 px text and pans)
+    const allFolded = nextFold(g, d.views.L2.collapsed) === undefined
+    expect(f.layout.width <= FIT_WIDTH || allFolded).toBe(true)
+    expect(f.layout.height <= FIT_HEIGHT || allFolded).toBe(true)
+    expect(f.graph.nodes.length).toBeLessThan(g.nodes.length)
+  })
+  test("nextFold takes the biggest open group and skips folded ones and their children", () => {
+    const g = callsShaped()
+    expect(nextFold(g, [])).toBe("group:other")
+    expect(nextFold(g, ["group:other"])).toBe("group:stubs")
+    expect(nextFold(g, ["group:other", "group:stubs", "group:cloud"])).toBe("group:bins")
+  })
+})
+
 describe("aggregated edge labels", () => {
   const E = (kind: string, label?: string) => ({ kind, ...(label ? { label } : {}) })
   test("the common label wins", () => expect(aggLabel([E("depends", "builds on"), E("depends", "builds on"), E("depends", "builds on")])).toBe("builds on ×3"))
@@ -107,7 +148,12 @@ describe("aggregated edge labels", () => {
     expect(aggLabel([E("depends"), E("depends")])).toBe("builds on ×2")
     expect(aggLabel([E("calls", "6"), E("calls", "2")])).toBe("calls ×2")
   })
-  test("mixed kinds and labels: N links", () => expect(aggLabel([E("depends", "a"), E("calls", "b"), E("x")])).toBe("3 links"))
+  test("mixed labels: the most common one and how many others", () => {
+    expect(aggLabel([E("depends", "a"), E("calls", "b"), E("x")])).toBe("a +2 more")
+    expect(aggLabel([E("calls", "calls"), E("calls", "calls"), E("calls", "uses")])).toBe("calls +1 more")
+  })
+  test("no label and no shared kind: N links", () => expect(aggLabel([E("depends"), E("calls"), E("x")])).toBe("3 links"))
+  test("aggregates merge by their counts, one phrase", () => expect(aggLabel([{ kind: "aggregate", label: "builds on ×1", count: 1 }, { kind: "aggregate", label: "builds on ×4", count: 4 }])).toBe("builds on ×5"))
   test("never longer than the limit", () => {
     const long = "x".repeat(70)
     expect(aggLabel([E("k", long), E("k", long)]).length).toBeLessThanOrEqual(EDGE_LABEL_MAX)
@@ -136,7 +182,7 @@ describe("the dense folded product map", () => {
     for (const e of c.edges) {
       expect(e).toMatchObject({ bidirectional: true, kind: "aggregate" })
       expect(e.counts).toHaveLength(2)
-      expect(e.label).toMatch(/^builds on ×\d+ \| ×\d+$/)
+      expect(e.label).toMatch(/^builds on ×\d+$/)
       expect(e.count).toBe(e.counts[0] + e.counts[1])
       expect(e.evidence.length).toBe(Math.min(50, e.count))
     }

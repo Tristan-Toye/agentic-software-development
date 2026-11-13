@@ -218,18 +218,18 @@ export function collapseGraph(graph: any, ids: string[]): any {
   const nodeRep = new Map<string, string>()
   for (const n of graph.nodes) nodeRep.set(n.id, repOf(n.id, true, n.group))
   const rep = (id: string): string => nodeRep.get(id) ?? (gmap.has(id) ? repOf(id, false) : id)
-  const stats = new Map<string, { n: number; added: number; changed: number; removed: number }>()
-  for (const w of want) stats.set(w, { n: 0, added: 0, changed: 0, removed: 0 })
+  const stats = new Map<string, { n: number; added: number; changed: number; removed: number; kinds: string[] }>()
+  for (const w of want) stats.set(w, { n: 0, added: 0, changed: 0, removed: 0, kinds: [] })
   for (const n of graph.nodes) {
     const r = nodeRep.get(n.id)!
     const s = r !== n.id ? stats.get(r) : undefined
-    if (s) { s.n++; if (n.status in s) (s as any)[n.status]++ }
+    if (s) { s.n++; s.kinds.push(String(n.kind ?? "item")); if (n.status in s) (s as any)[n.status]++ }
   }
   const boxNode = (w: string): any => {
     const g = gmap.get(w), s = stats.get(w)!
     const status = g.status === "context" && s.added + s.changed + s.removed > 0 ? "changed" : g.status
     const parts = (["added", "changed", "removed"] as const).filter((k) => s[k]).map((k) => s[k] + " " + k)
-    const out: any = { id: w, label: g.label + " (" + s.n + ")", kind: "group", status, evidence: g.evidence ?? [], collapsed: true, members: s.n,
+    const out: any = { id: w, label: g.label + " (" + s.n + ")", kind: "group", status, evidence: g.evidence ?? [], collapsed: true, members: s.n, member_kinds: s.kinds,
       detail: { after: "Collapsed group of " + s.n + " element" + (s.n === 1 ? "" : "s") + (parts.length ? ": " + parts.join(", ") : "") + ". Click to open it." } }
     if (g.parent && gmap.has(g.parent)) out.group = g.parent
     if (g.label_source) out.label_source = g.label_source
@@ -269,26 +269,33 @@ export const EDGE_LABEL_MAX = 40
 export const MERGE_ABOVE = 8
 const KIND_VERB: Record<string, string> = { depends: "builds on", calls: "calls", contains: "contains" }
 const clip = (s: string): string => (s.length > EDGE_LABEL_MAX ? s.slice(0, EDGE_LABEL_MAX - 1) + "…" : s)
-/** What an aggregate says: the label all merged edges share ("builds on ×3"), else their shared kind's verb, else "N links". */
+/**
+ * What an aggregate says, as one phrase: the base label once and the total count ("builds on ×5"). Merged edges that carry different labels
+ * read "<most common label> +N more" (N = the merged edges with another label). With no usable label, the shared kind's verb, else "N links".
+ * Edges that are aggregates already count for their `count`.
+ */
 export function aggLabel(list: any[]): string {
-  const n = list.length
-  const labels = new Set(list.map((x) => (typeof x.label === "string" ? x.label.trim() : "")))
-  const one = labels.size === 1 ? [...labels][0] : ""
-  if (one && !/^\d+$/.test(one)) return clip(one + " ×" + n)
+  const total = list.reduce((a, x) => a + (x.count ?? 1), 0)
+  const tally = new Map<string, number>()
+  for (const x of list) { const v = verbOf(x, false); if (v) tally.set(v, (tally.get(v) ?? 0) + (x.count ?? 1)) }
+  if (tally.size) {
+    const [top, n] = [...tally.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0]
+    return clip(tally.size === 1 && n === total ? top + " ×" + total : top + " +" + (total - n) + " more")
+  }
   const kinds = new Set(list.map((x) => x.kind))
   const verb = kinds.size === 1 ? KIND_VERB[[...kinds][0]] : ""
-  return verb ? clip(verb + " ×" + n) : n + " links"
+  return verb ? clip(verb + " ×" + total) : total + " links"
 }
 
-/** The words of an edge without its count: "builds on" for "builds on ×3"; "" for "N links" or a bare number. */
-const verbOf = (e: any): string => {
+/** The words of an edge without its count: "builds on" for "builds on ×3"; "" for "N links" or a bare number (or, with `byKind`, the kind's verb). */
+const verbOf = (e: any, byKind = true): string => {
   const l = typeof e.label === "string" ? e.label.replace(/ ×\d+$/, "").trim() : ""
-  return l && !/^\d+( links)?$/.test(l) && !l.startsWith("×") ? l : KIND_VERB[e.kind] ?? ""
+  return l && !/^\d+( links)?$/.test(l) && !l.startsWith("×") && !/ \+\d+ more$/.test(l) ? l : byKind ? KIND_VERB[e.kind] ?? "" : ""
 }
 
 /**
  * Fold the two directions of one pair of boxes into a single edge `agg:a<>b` (source = the end listed first in the graph), drawn with an arrow at
- * both ends. `counts` = [a to b, b to a] keeps both numbers, the label shows both ("builds on ×3 | ×2"), the evidence of both sides stays.
+ * both ends. `counts` = [a to b, b to a] keeps both numbers, the label shows the total ("builds on ×5"), the evidence of both sides stays.
  */
 function mergeDirections(edges: any[], nodes: any[]): any[] {
   const order = new Map<string, number>(nodes.map((n, i) => [n.id, i]))
@@ -303,9 +310,8 @@ function mergeDirections(edges: any[], nodes: any[]): any[] {
     const [f, b] = (order.get(e.source) ?? 0) <= (order.get(e.target) ?? 0) ? [e, back] : [back, e]
     const cf = f.count ?? 1, cb = b.count ?? 1
     const sts = new Set([f.status, b.status])
-    const vf = verbOf(f), verb = vf && vf === verbOf(b) ? vf : ""
     res.push({ id: "agg:" + f.source + "<>" + f.target, source: f.source, target: f.target, kind: "aggregate", bidirectional: true, counts: [cf, cb],
-      label: clip((verb ? verb + " " : "") + "×" + cf + " | ×" + cb), status: sts.size === 1 ? [...sts][0] : "changed",
+      label: aggLabel([f, b]), status: sts.size === 1 ? [...sts][0] : "changed",
       resolution: f.resolution === "inferred" && b.resolution === "inferred" ? "inferred" : "static", count: cf + cb,
       evidence: [...(f.evidence ?? []), ...(b.evidence ?? [])].slice(0, 50) })
   }

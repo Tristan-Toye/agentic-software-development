@@ -277,7 +277,7 @@ function vrBuild(host, key, data) {
   if (st.rev !== data.rev) { st.rev = data.rev; st.col = {}; st.lc = {}; /* a committed diagram opens with the groups the server named folded (the areas of the product map, the big groups of a large view) */ if (data.mapPath) have.forEach(k => { const c = data.views[k].collapsed; if (c && c.length) st.col[k] = c.slice().sort(); }); }
   const bar = vrDom('div', 'vrbar', null, host); vrDom('h2', 'vrh', (data.mapPath && data.views[have[0]] && data.views[have[0]].title) || 'Change diagram', bar);
   const tabs = vrDom('span', 'vrgrp', null, bar), modes = vrDom('span', 'vrgrp', null, bar);
-  const tb = {}, mb = {};
+  const tb = {}, mb = {}; modes.hidden = !!data.mapPath;
   ['L0', 'L1', 'L2'].forEach(k => { const b = vrDom('button', 'btn sm', data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); b.type = 'button'; b.disabled = !data.views[k]; b.hidden = !!data.mapPath && !data.views[k]; tb[k] = b; b.onclick = () => { st.view = k; wkOff(); draw(); }; });
   VR_MODES.forEach(m => { const b = vrDom('button', 'btn sm', m[1], modes); b.type = 'button'; mb[m[0]] = b; b.onclick = () => { st.mode = m[0]; applyMode(); }; });
   const fitB = vrDom('button', 'btn sm', 'Fit', bar); fitB.type = 'button';
@@ -307,7 +307,7 @@ function vrBuild(host, key, data) {
   const ov = vrDom('div', 'vrov', null, cv); ov.hidden = true; ov.title = 'Overview: click or drag to move the view';
   const items = () => { const g = cur.graph, m = {}; (g.groups || []).forEach(x => m[x.id] = x); (g.lanes || []).forEach(x => m[x.id] = { id: x.id, label: x.label, status: 'context', evidence: [], kind: 'lane' }); g.nodes.forEach(x => m[x.id] = x); g.edges.forEach(x => m[x.id] = x); return m; };
   const apply = () => { if (root) root.setAttribute('transform', 'translate(' + vp.x + ' ' + vp.y + ') scale(' + vp.k + ')'); mapUpd(); };
-  function fit() { if (!cur || !cur.layout) return; const r = svg.getBoundingClientRect(), W = cur.layout.width, H = cur.layout.height; const k = Math.max(0.1, Math.min((r.width || 600) / (W + 40), (r.height || 400) / (H + 40), 1.6)); vp = { k: k, x: ((r.width || 600) - W * k) / 2, y: ((r.height || 400) - H * k) / 2 }; apply(); }
+  function fit() { if (!cur || !cur.layout) return; const r = svg.getBoundingClientRect(), W = cur.layout.width, H = cur.layout.height; let k = Math.max(0.1, Math.min((r.width || 600) / (W + 40), (r.height || 400) / (H + 40), 1.6)); if (data.mapPath && k < 0.92) { k = 0.92; vp = { k: k, x: Math.max(20, ((r.width || 600) - W * k) / 2), y: 20 }; apply(); return; } vp = { k: k, x: ((r.width || 600) - W * k) / 2, y: ((r.height || 400) - H * k) / 2 }; apply(); }
   function zoomAt(f, mx, my) { const k = Math.max(0.15, Math.min(4, vp.k * f)); vp.x = mx - (mx - vp.x) * (k / vp.k); vp.y = my - (my - vp.y) * (k / vp.k); vp.k = k; apply(); }
   function inspect(id) {
     const it = items()[id]; insp.replaceChildren(); if (!it) return;
@@ -383,13 +383,13 @@ function vrBuild(host, key, data) {
     const up = {}; g.nodes.forEach(n => { const p = (g.view === 'L1' && (g.lanes || []).length ? n.lane : n.group); if (p) up[n.id] = p; }); (g.groups || []).forEach(x => { if (x.parent) up[x.id] = x.parent; });
     (g.groups || []).forEach(x => ok[x.id] = visible(x.status)); (g.lanes || []).forEach(x => ok[x.id] = true);
     g.nodes.forEach(n => { if (!ok[n.id]) return; let p = up[n.id], n2 = 0; while (p && n2++ < 50) { ok[p] = true; p = up[p]; } });
-    Object.keys(els).forEach(id => { const e = els[id]; let on; if (e.edge) on = visible(e.status) && ok[e.edge[0]] !== false && ok[e.edge[1]] !== false; else on = ok[id] !== false; e.g.classList.toggle('vroff', !on); });
+    Object.keys(els).forEach(id => { const e = els[id]; let on; if (e.edge) on = visible(e.status) && ok[e.edge[0]] !== false && ok[e.edge[1]] !== false; else on = ok[id] !== false; e.g.classList.toggle('vroff', !on); if (e.lab) e.lab.classList.toggle('vroff', !on); });
     note.textContent = vrNote(cur, st.mode);
     Object.keys(ovRects).forEach(id => ovRects[id].classList.toggle('vroff', !!els[id] && els[id].g.classList.contains('vroff')));
     if (wk.on) wkSync();
     if (!mm.hidden) showMm();
   }
-  function vrNote(v, mode) { const c = { added: 0, changed: 0, removed: 0 }; v.graph.nodes.forEach(n => { if (c[n.status] !== undefined && visible(n.status)) c[n.status]++; }); const is = v.issues.length ? ' · ' + v.issues.length + ' validation issue' + (v.issues.length > 1 ? 's' : '') + ': ' + v.issues.slice(0, 3).map(i => i.message).join('; ') : ''; return (v.graph.title ? v.graph.title + ' · ' : '') +  + c.added + ' added, ' + c.changed + ' changed, ' + c.removed + ' removed shown' + is; }
+  function vrNote(v, mode) { const c = { added: 0, changed: 0, removed: 0 }; v.graph.nodes.forEach(n => { if (c[n.status] !== undefined && visible(n.status)) c[n.status]++; }); const is = v.issues.length ? ' · ' + v.issues.length + ' validation issue' + (v.issues.length > 1 ? 's' : '') + ': ' + v.issues.slice(0, 3).map(i => i.message).join('; ') : ''; const ti = v.graph.title ? v.graph.title + ' · ' : ''; if (data.mapPath) return ti.replace(/ · $/, '') + (is ? is : ''); return ti + c.added + ' added, ' + c.changed + ' changed, ' + c.removed + ' removed shown' + is; }
   const colOf = v => st.col[v] || [];
   const canCol = id => !(st.view === 'L1' && (data.views.L1.graph.lanes || []).length) && (data.views[st.view].graph.groups || []).some(x => x.id === id);
   /* A collapse state is laid out by the server (the collapsed graph, edges aggregated); the answer is kept per state, so closing again is instant. */
@@ -414,7 +414,7 @@ function vrBuild(host, key, data) {
     cur = v; Object.keys(tb).forEach(k => tb[k].setAttribute('aria-pressed', String(k === st.view)));
     svg.replaceChildren(); els = {}; root = null; ovSvg = null; ovVp = null; ovRects = {}; ov.replaceChildren(); ov.hidden = true; st.sel = ''; insp.replaceChildren(); vrDom('p', 'small mut', 'Click an element for its description and evidence. Drag to pan; Ctrl or Cmd + wheel to zoom; click a group header to fold it; in a folded view, click a folded box to open it.', insp);
     if (!cur.layout || !cur.graph) { note.textContent = cur.issues.map(i => i.message).join('; ') || 'This view could not be laid out.'; return; }
-    const g = cur.graph, L = cur.layout, defs = vrEl('defs', {}, svg), mk = vrEl('marker', { id: 'vr-ar', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, defs);
+    const g = cur.graph, L = cur.layout, defs = vrEl('defs', {}, svg), mk = vrEl('marker', { id: 'vr-ar', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, markerUnits: 'userSpaceOnUse', orient: 'auto-start-reverse' }, defs);
     vrEl('path', { d: 'M0 0L10 5L0 10z', fill: 'var(--mut)' }, mk); root = vrEl('g', {}, svg);
     const tip = (g0, it) => { const t = vrEl('title', {}, g0); t.textContent = (it.label || (it.source + ' -> ' + it.target)) + ' [' + it.status + ']' + (it.evidence || []).map(x => '\n' + vrEv(x)).join(''); };
     const cont = [].concat(g.groups || [], (g.lanes || []).map(l => ({ id: l.id, label: l.label, status: 'context', evidence: [] })));
@@ -425,9 +425,8 @@ function vrBuild(host, key, data) {
     g.edges.forEach(e => { const pts = L.edges[e.id]; if (!pts) return; const gg = vrEl('g', { 'data-id': e.id, 'data-status': e.status, 'data-resolution': e.resolution || '', class: 'vre', tabindex: 0 }, root); els[e.id] = { g: gg, status: e.status, edge: [e.source, e.target] };
       const ps = pts.map(p => p.join(',')).join(' '), inf = vrInferred(e);
       vrEl('polyline', { points: ps, fill: 'none', stroke: 'transparent', 'stroke-width': 12 }, gg);
-      vrEl('polyline', { class: 'vrline', points: ps, fill: 'none', stroke: e.status === 'context' ? 'var(--mut)' : 'var(--' + vrTone(e.status) + ')', 'stroke-width': (e.status === 'context' ? 1.2 : 2.2) + (e.count > 1 ? Math.min(3.5, Math.log2(e.count)) : 0), 'stroke-dasharray': inf ? '6 4' : '0', 'marker-end': 'url(#vr-ar)' }, gg);
+      vrEl('polyline', { class: 'vrline', points: ps, fill: 'none', stroke: e.status === 'context' ? 'var(--mut)' : 'var(--' + vrTone(e.status) + ')', 'stroke-width': (e.status === 'context' ? 1.2 : 2.2) + (e.count > 1 ? Math.min(0.8, Math.log2(e.count) * 0.3) : 0), 'stroke-dasharray': inf ? '6 4' : '0', 'marker-end': 'url(#vr-ar)' }, gg);
       if (e.bidirectional) gg.querySelector('.vrline').setAttribute('marker-start', 'url(#vr-ar)');
-      if (e.label) { const m = pts[Math.floor(pts.length / 2)]; const t = vrEl('text', { x: m[0] + 4, y: m[1] - 4, 'font-size': 11, fill: 'var(--mut)' }, gg); t.textContent = e.label; }
       tip(gg, e); });
     g.nodes.forEach(n => { const b = L.boxes[n.id]; if (!b) return; const gg = vrEl('g', { 'data-id': n.id, 'data-status': n.status, class: 'vrn', tabindex: 0, role: 'button' }, root); els[n.id] = { g: gg, status: n.status, col: !!n.collapsed };
       if (n.collapsed) { gg.setAttribute('data-collapsed', '1'); vrEl('rect', { x: b.x + 5, y: b.y + 5, width: b.w, height: b.h, rx: 6, fill: 'var(--card)', stroke: 'var(--mut)', 'stroke-width': 1.5 }, gg); }
@@ -435,8 +434,16 @@ function vrBuild(host, key, data) {
       const wl = vrWrap(n.label, Math.floor((b.w - 24) / 6.4)); const lines = wl.slice(0, 3); if (wl.length > 3) lines[2] = lines[2].replace(/.?$/, '…');
       lines.forEach((t, i) => { const x = vrEl('text', { x: b.x + 12, y: b.y + 19 + i * 15, 'font-size': 12, fill: 'var(--fg)', 'text-decoration': n.status === 'removed' ? 'line-through' : 'none' }, gg); x.textContent = (n.collapsed && i === 0 ? '▸ ' : '') + t; });
       vrMark(gg, n.status, b.x + b.w - 12, b.y + 12);
-      if ((n.evidence || []).some(x => x.tier === 'inferred')) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = '? inferred'; }
+      if (n.collapsed) { const kinds = {}; (n.member_kinds || []).forEach(k => kinds[k] = (kinds[k] || 0) + 1); const ks = Object.keys(kinds).sort((a, c) => kinds[c] - kinds[a]); const word = ks.length === 1 ? ks[0] + (n.members === 1 ? '' : 's') : (n.members === 1 ? 'item' : 'items'); const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = (n.members || 0) + ' ' + word; }
+      else if ((n.evidence || []).some(x => x.tier === 'inferred')) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = '? inferred'; }
       tip(gg, n); });
+    /* Edge labels sit on top of the boxes, on the segment where they cross no node box, with a --bg backing so they stay readable. */
+    const nbx = g.nodes.map(n => L.boxes[n.id]).filter(Boolean), hit = (x, y, w, h) => nbx.some(b => x < b.x + b.w && x + w > b.x && y < b.y + b.h && y + h > b.y);
+    g.edges.forEach(e => { const pts = L.edges[e.id]; if (!pts || !e.label || !els[e.id]) return; const w = Math.ceil(e.label.length * 6.1) + 8, h = 15, cs = [];
+      for (let i = 0; i + 1 < pts.length; i++) { const a = pts[i], c = pts[i + 1], len = Math.abs(a[0] - c[0]) + Math.abs(a[1] - c[1]); for (const f of [0.5, 0.3, 0.7, 0.15, 0.85]) cs.push({ x: a[0] + (c[0] - a[0]) * f - w / 2, y: a[1] + (c[1] - a[1]) * f - h / 2 - 1, len: len - Math.abs(f - 0.5) * 8 }); }
+      cs.sort((p, q) => q.len - p.len); const pick = cs.find(c => !hit(c.x, c.y, w, h)) || cs[0]; if (!pick) return;
+      const lg = vrEl('g', { class: 'vrel', 'pointer-events': 'none' }, root); els[e.id].lab = lg; vrEl('rect', { x: pick.x, y: pick.y, width: w, height: h, rx: 3, fill: 'var(--bg)', 'fill-opacity': 0.88 }, lg);
+      const t = vrEl('text', { x: pick.x + w / 2, y: pick.y + h - 4, 'font-size': 11, 'text-anchor': 'middle', fill: 'var(--mut)' }, lg); t.textContent = e.label; });
     mapBuild(); applyMode();
     if (anchor && L.boxes[anchor.id]) { const b = L.boxes[anchor.id]; vp.x = anchor.sx - b.x * vp.k; vp.y = anchor.sy - b.y * vp.k; apply(); } else fit();
     paintBadges(); if (selId && els[selId]) inspect(selId);
