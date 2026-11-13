@@ -269,8 +269,10 @@ function vrMount() {
 }
 function vrEl(n, a, p) { const e = document.createElementNS(VR_NS, n); for (const k in a || {}) e.setAttribute(k, a[k]); if (p) p.appendChild(e); return e; }
 function vrDom(tag, cls, text, p) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined && text !== null) e.textContent = text; if (p) p.appendChild(e); return e; }
-function vrEv(ev) { return ev.tier === 'source' ? (ev.path || '?') + (ev.line ? ':' + ev.line + (ev.end_line && ev.end_line !== ev.line ? '-' + ev.end_line : '') : '') + (ev.note ? ' — ' + ev.note : '') : 'inferred: ' + (ev.note || ''); }
-function vrInferred(e) { return e.resolution ? e.resolution === 'inferred' : (e.evidence || []).length > 0 && e.evidence.every(x => x.tier === 'inferred'); }
+function vrEv(ev, hand) { return ev.tier === 'source' ? (ev.path || '?') + (ev.line ? ':' + ev.line + (ev.end_line && ev.end_line !== ev.line ? '-' + ev.end_line : '') : '') + (ev.note ? ' — ' + ev.note : '') : (hand ? 'authored: ' : 'inferred: ') + (ev.note || ''); }
+/* A hand-authored graph (meta.generated_by "hand", e.g. imported from Mermaid) carries tier "inferred" evidence only because no tool proved it; there the dashed style follows the authored arrow instead, and no "? inferred" badge is drawn. */
+function vrHand(g) { return !!(g && g.meta && g.meta.generated_by === 'hand'); }
+function vrInferred(e, g) { if (vrHand(g)) return /\./.test(e.arrow || ''); return e.resolution ? e.resolution === 'inferred' : (e.evidence || []).length > 0 && e.evidence.every(x => x.tier === 'inferred'); }
 function vrWrap(s, w) { const out = []; let l = ''; String(s).split(' ').forEach(t => { if ((l + ' ' + t).trim().length > w && l) { out.push(l); l = t; } else l = (l + ' ' + t).trim(); }); if (l) out.push(l); return out; }
 function vrBuild(host, key, data) {
   const st = VRS[key] = VRS[key] || {}; const have = ['L0', 'L1', 'L2'].filter(k => data.views[k]);
@@ -302,7 +304,7 @@ function vrBuild(host, key, data) {
       if (it.stereotype) vrDom('div', 'mut', '«' + it.stereotype + '»', hc);
       if (Array.isArray(it.members) && it.members.length) { const ul = vrDom('ul', 'vrhcm', null, hc); it.members.slice(0, 24).forEach(m => vrDom('li', '', typeof m === 'string' ? m : (m.text || m.name || JSON.stringify(m)), ul)); if (it.members.length > 24) vrDom('li', 'mut', '+' + (it.members.length - 24) + ' more (inspector)', ul); }
       if (it.detail && it.detail.before) vrDom('p', '', 'Before: ' + it.detail.before, hc); if (it.detail && it.detail.after) vrDom('p', '', 'After: ' + it.detail.after, hc);
-      const ev = it.evidence || []; if (ev.length) vrDom('p', 'mut', vrEv(ev[0]) + (ev.length > 1 ? ' (+' + (ev.length - 1) + ' more)' : ''), hc); }
+      const ev = it.evidence || []; if (ev.length) vrDom('p', 'mut', vrEv(ev[0], vrHand(cur.graph)) + (ev.length > 1 ? ' (+' + (ev.length - 1) + ' more)' : ''), hc); }
     hc.hidden = false; const r = cv.getBoundingClientRect(), w = hc.offsetWidth, h = hc.offsetHeight; let x = e.clientX - r.left + 14, y = e.clientY - r.top + 16;
     if (x + w > r.width - 4) x = Math.max(4, e.clientX - r.left - w - 10); if (y + h > r.height - 4) y = Math.max(4, e.clientY - r.top - h - 10);
     hc.style.left = x + 'px'; hc.style.top = y + 'px'; };
@@ -336,7 +338,7 @@ function vrBuild(host, key, data) {
     const ev = it.evidence || [];
     const tiers = ev.map(x => x.tier).filter((t, i, a) => a.indexOf(t) === i).join(' + ');
     vrDom('p', 'small mut', 'Evidence' + (tiers ? ' (' + tiers + ')' : '') + (ev.length ? '' : ': none'), insp);
-    ev.forEach(x => vrDom('code', 'vrev', vrEv(x), vrDom('p', 'small', null, insp)));
+    ev.forEach(x => vrDom('code', 'vrev', vrEv(x, vrHand(cur.graph)), vrDom('p', 'small', null, insp)));
     Object.keys(els).forEach(k => els[k].g.classList.toggle('sel', k === id));
     st.sel = id; if (reviewing && cur.graph.nodes.some(n => n.id === id && !n.collapsed)) verdictBox(id);
   }
@@ -447,7 +449,7 @@ function vrBuild(host, key, data) {
       const ft = vrEl('text', { x: b.x + 5, y: b.y + 11, 'font-size': 10.5, fill: 'var(--mut)' }, fg); ft.textContent = lab.length * 6.2 + 10 > tw ? lab.slice(0, Math.max(1, Math.floor((tw - 10) / 6.2) - 1)) + '…' : lab;
       (f.branches || []).forEach(br => { const sb = L.boxes[br.first]; if (!sb) return; const y = Math.max(b.y + 16, sb.y - 8); vrEl('line', { x1: b.x, x2: b.x + b.w, y1: y, y2: y, stroke: 'var(--mut)', 'stroke-width': 1, 'stroke-dasharray': '5 4' }, fg); const bt = vrEl('text', { x: b.x + 5, y: y + 11, 'font-size': 10.5, fill: 'var(--mut)' }, fg); bt.textContent = '[' + (br.label || br.kind) + ']'; }); });
     g.edges.forEach(e => { const pts = L.edges[e.id]; if (!pts) return; const gg = vrEl('g', { 'data-id': e.id, 'data-status': e.status, 'data-resolution': e.resolution || '', class: 'vre', tabindex: 0 }, root); els[e.id] = { g: gg, status: e.status, edge: [e.source, e.target] };
-      const ps = pts.map(p => p.join(',')).join(' '), inf = vrInferred(e);
+      const ps = pts.map(p => p.join(',')).join(' '), inf = vrInferred(e, g);
       vrEl('polyline', { points: ps, fill: 'none', stroke: 'transparent', 'stroke-width': 12 }, gg);
       vrEl('polyline', { class: 'vrline', points: ps, fill: 'none', stroke: e.status === 'context' ? 'var(--mut)' : 'var(--' + vrTone(e.status) + ')', 'stroke-width': (e.status === 'context' ? 1.2 : 2.2) + (e.count > 1 ? Math.min(0.8, Math.log2(e.count) * 0.3) : 0), 'stroke-dasharray': inf ? '6 4' : '0', 'marker-end': 'url(#vr-ar)' }, gg);
       if (e.bidirectional) gg.querySelector('.vrline').setAttribute('marker-start', 'url(#vr-ar)');
@@ -461,7 +463,7 @@ function vrBuild(host, key, data) {
       vrMark(gg, n.status, b.x + b.w - 12, b.y + 12);
       if (n.collapsed) { const kinds = {}; (n.member_kinds || []).forEach(k => kinds[k] = (kinds[k] || 0) + 1); const ks = Object.keys(kinds).sort((a, c) => kinds[c] - kinds[a]); const word = ks.length === 1 ? ks[0] + (n.members === 1 ? '' : 's') : (n.members === 1 ? 'item' : 'items'); const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = (n.members || 0) + ' ' + word; }
       else if (n.members && n.members.length) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = n.members.length + ' member' + (n.members.length === 1 ? '' : 's') + ' (hover)'; }
-      else if ((n.evidence || []).some(x => x.tier === 'inferred')) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = '? inferred'; }
+      else if (!vrHand(g) && (n.evidence || []).some(x => x.tier === 'inferred')) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = '? inferred'; }
       tip(gg, n); });
     /* Edge labels sit where the layout kept room for them (L.labels); without that, on the segment where they cross no node box. On top, with a --bg backing. */
     const nbx = g.nodes.map(n => L.boxes[n.id]).filter(Boolean), hit = (x, y, w, h) => nbx.some(b => x < b.x + b.w && x + w > b.x && y < b.y + b.h && y + h > b.y);
@@ -488,7 +490,7 @@ function vrBuild(host, key, data) {
     const emit = (id, ind) => { if (isC(id)) { out.push(ind + 'subgraph ' + mid(id) + '["' + esc(lab[id]) + '"]'); (kids[id] || []).forEach(k => emit(k, ind + '  ')); out.push(ind + 'end'); } else out.push(ind + mid(id) + '["' + esc(MARK(id) + ' ' + lab[id]) + '"]'); };
     const MARK = id => { const x = g.nodes.find(y => y.id === id); return x ? VR_MARK[x.status] : ''; };
     top.forEach(id => emit(id, '  '));
-    g.edges.filter(e => vis(e.id)).forEach(e => { const d = vrInferred(e), l = e.label ? '"' + esc(e.label) + '"' : '', b = e.bidirectional ? '<' : ''; out.push('  ' + mid(e.source) + (l ? (d ? ' ' + b + '-. ' + l + ' .-> ' : ' ' + b + '-- ' + l + ' --> ') : (d ? ' ' + b + '-.-> ' : ' ' + b + '--> ')) + mid(e.target)); });
+    g.edges.filter(e => vis(e.id)).forEach(e => { const d = vrInferred(e, g), l = e.label ? '"' + esc(e.label) + '"' : '', b = e.bidirectional ? '<' : ''; out.push('  ' + mid(e.source) + (l ? (d ? ' ' + b + '-. ' + l + ' .-> ' : ' ' + b + '-- ' + l + ' --> ') : (d ? ' ' + b + '-.-> ' : ' ' + b + '--> ')) + mid(e.target)); });
     out.push('  classDef added fill:#cfeccf,stroke:#2d7a2d', '  classDef changed fill:#fde9b8,stroke:#b07a00', '  classDef removed fill:#f6d0d0,stroke:#a33,stroke-dasharray:3 3', '  classDef context fill:#eeeeea,stroke:#999');
     ['added', 'changed', 'removed', 'context'].forEach(s => { const ids = g.nodes.filter(x => x.status === s && vis(x.id)).map(x => mid(x.id)); if (ids.length) out.push('  class ' + ids.join(',') + ' ' + s); });
     return out.join('\n');
