@@ -19,7 +19,8 @@ choice. A dropped line that only one side had is therefore classed by whether
 any version of it survives, comparing lines with every digit run masked (so a
 renumbered anchor, id or count matches its other version):
 
-- `replaced`: a version survives (a renumbering, a combined line). Listed, passes.
+- `replaced`: a version survives (a renumbering, a combined line, the same
+  line extended at its end). Listed, passes.
 - `gone`: no version survives (e.g. anchor lines one side renumbered and the
   resolution deleted outright). Passes only when the merge message names the
   file (or a directory prefix ending in `/`) on a line
@@ -85,7 +86,7 @@ def analyse(base: str | None, ours: str | None, theirs: str | None, result: str 
             continue
         if o[l] >= b[l] and t[l] >= b[l] and b[l] > 0:
             lost.append((l, miss))
-        elif DIGITS.sub("#", l) in masked:
+        elif DIGITS.sub("#", l) in masked or any(r.startswith(l) for r in m if len(r) > len(l)):
             replaced.append((l, miss))
         else:
             gone.append((l, miss))
@@ -202,6 +203,10 @@ def selftest() -> int:
         put(d, "a.md", "head\nkeep1\nkeep3\nmain-z\ntail\nside-add\n")
         rc, out = check(d, None)
         rc == 1 or fails.append("explained file still loses kept line, should fail:\n" + out)
+        # 5b. a line extended at its end counts as replaced, not gone
+        put(d, "a.md", "head\nkeep1\nkeep2\nkeep3\nmain-z\nside-z and more\ntail\nside-add\n")
+        rc, out = check(d, None)
+        (rc == 0 and "replaced" in out) or fails.append("extended line should pass as replaced:\n" + out)
         # 5. a renumbered line whose other version survives passes unexplained
         open(gd, "w").write("Merge branch 'side'\n")
         put(d, "b.md", "x\n")
