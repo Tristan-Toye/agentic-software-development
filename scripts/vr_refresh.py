@@ -489,7 +489,7 @@ def aggregate_calls(g: dict, parts: dict, pkgs: list, entries: dict, ws_root: st
 
 
 def _edge(src: str, dst: str, rec: list) -> dict:
-    return {"id": "edge:calls:%s:%s" % (src, dst), "source": src, "target": dst, "kind": "calls", "label": str(rec[0]),
+    return {"id": "edge:calls:%s:%s" % (src, dst), "source": src, "target": dst, "kind": "calls", "label": "calls" if rec[0] == 1 else "calls ×%d" % rec[0], "count": rec[0],
             "status": "context", "resolution": "dispatch" if rec[3] else "static",
             "evidence": [{"tier": "source", "path": rec[1], "line": rec[2], "note": "first of %d call sites" % rec[0]}]}
 
@@ -1202,6 +1202,8 @@ def _selftest() -> int:
     check("groups:per-top-module-and-pool", {"group:c::a", "group:c::b", "group:other-modules", "group:bins"} <= gids, str(gids))
     check("groups:own-crate-stays-loose", "group" not in next(n for n in gg["nodes"] if n["id"] == "crate:c"))
     check("groups:every-group-cites-evidence", all(x.get("evidence") for x in gg["groups"]))
+    e1, e3 = _edge("a", "b", [1, "x.rs", 1, False]), _edge("a", "c", [3, "x.rs", 1, True])
+    check("calls-edge:label-is-words", (e1["label"], e1["count"], e3["label"], e3["count"]) == ("calls", 1, "calls ×3", 3), str((e1, e3)))
     check("groups:small-view-untouched", add_groups({"view": "full", "nodes": mods[:5], "edges": []}) .get("groups") is None)
     for sub, hit in (("cache-in-git-common-dir", True),):
         with tempfile.TemporaryDirectory() as d1:

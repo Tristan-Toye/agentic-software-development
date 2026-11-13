@@ -366,6 +366,11 @@
           "type": "string",
           "maxLength": 40
         },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many links this edge stands for (e.g. call sites); the label stays words (\"calls ×3\"), never a bare number."
+        },
         "status": {
           "$ref": "#/$defs/status"
         },
