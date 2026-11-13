@@ -79,7 +79,18 @@ def default_runner(cmd: list, cwd: str, timeout: float | None = None):
     return p.returncode, p.stdout, p.stderr
 
 
+def _shorten(label: str) -> tuple:
+    """(label, full): a label over vr_graph.NODE_LABEL_MAX ends with an ellipsis; `full` is the
+    original, kept in the evidence note so the inspector still shows it."""
+    if len(label) <= vr_graph.NODE_LABEL_MAX:
+        return label, None
+    return label[:vr_graph.NODE_LABEL_MAX - 1] + "\u2026", label
+
+
 def _node(nid, label, kind, ev, status="context", **extra):
+    label, full = _shorten(label)
+    if full:
+        ev = dict(ev, note=(ev["note"] + "; " if ev.get("note") else "") + "full name: " + full)
     n = {"id": nid, "label": label, "kind": kind, "status": status, "label_source": "extractor", "evidence": [ev]}
     n.update(extra)
     return n
@@ -711,6 +722,11 @@ def _selftest() -> int:
     # The CLI writes a file and refuses bad input.
     r = subprocess.run([sys.executable, os.path.join(me, "vr_extract.py"), "rust", "/nonexistent-root-xyz"], capture_output=True, text=True)
     check("cli:bad-root-exit-1", r.returncode == 1, r.stderr[:200])
+    long_name = "very_long_module_name_" * 6
+    nn = _node("module:x", long_name, "module", _src("a.rs", 1, "definition"))
+    check("fu02:shorten", len(nn["label"]) == vr_graph.NODE_LABEL_MAX and nn["label"].endswith("\u2026")
+          and long_name in nn["evidence"][0]["note"] and "definition" in nn["evidence"][0]["note"], str(nn))
+    check("fu02:short-untouched", _node("m", "abc", "module", _src("a.rs", 1))["label"] == "abc")
     rr = subprocess.run([sys.executable, os.path.join(me, "vr_ra.py"), "--selftest"], capture_output=True, text=True)
     check("vr_ra:selftest", rr.returncode == 0, rr.stderr[:300])
     if fails:

@@ -30,7 +30,8 @@
     },
     "title": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "maxLength": 100
     },
     "meta": {
       "type": "object",
@@ -239,7 +240,8 @@
           "$ref": "#/$defs/id"
         },
         "label": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 40
         }
       }
     },
@@ -256,7 +258,8 @@
           "$ref": "#/$defs/id"
         },
         "label": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 60
         },
         "parent": {
           "$ref": "#/$defs/id"
@@ -287,6 +290,7 @@
         },
         "label": {
           "type": "string",
+          "maxLength": 80,
           "description": "Display name. Extractor: last segment of the qualified name. VR-05 may replace it (label_source llm)."
         },
         "kind": {
@@ -358,7 +362,8 @@
           "description": "Open vocabulary: depends, contains, uses, calls, flow, documents."
         },
         "label": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 40
         },
         "status": {
           "$ref": "#/$defs/status"
@@ -384,7 +389,8 @@
           "$ref": "#/$defs/id"
         },
         "label": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 60
         },
         "label_source": {
           "$ref": "#/$defs/label_source"

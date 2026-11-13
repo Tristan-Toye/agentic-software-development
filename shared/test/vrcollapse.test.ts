@@ -169,6 +169,14 @@ describe("page code of the canvas", () => {
     expect(vr).not.toMatch(/https?:\/\/(?!www\.w3\.org)/)
     expect(vr).toContain("/api/visual-review/layout?")
   })
+  test("a clipped node label ends with an ellipsis; the inspector and the node title carry the full label (FU-02)", () => {
+    const vr = PAGE.slice(PAGE.indexOf("function vrBuild"), PAGE.indexOf("// ---- questions ----"))
+    expect(vr).toMatch(/wl\.length > 3\) lines\[2\] = lines\[2\]\.replace\([^)]*'(…|\\u2026)'\)/) // the page is served ASCII-escaped
+    expect(vr).toMatch(/vrDom\('h3', '', it\.label \|\|/) // inspector: the whole label, unwrapped
+    expect(vr).toMatch(/const tip = [^\n]*it\.label/) // accessible title on the node
+    // The wrapped text is not the only place the label goes: a clip never replaces the data.
+    expect(vr).not.toMatch(/n\.label\s*=\s*/)
+  })
   test("every colour of the canvas CSS comes from the theme variables", () => {
     const css = PAGE.split("\n").filter((l) => /^\.vr|^\.vr[a-z]/.test(l)).join("\n")
     const noVars = css.replace(/var\(--[\w-]+\)/g, "")

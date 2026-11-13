@@ -20,7 +20,13 @@ Issue codes: schema_error, unsupported_version, bad_id, duplicate_node_id,
 duplicate_edge_id, duplicate_group_id, unknown_group_id, unknown_lane_id,
 unknown_flow_step, unknown_edge_source, unknown_edge_target,
 missing_evidence_path, bad_evidence, missing_repository_path,
-line_range_outside_file, over_budget.
+line_range_outside_file, over_budget, label_too_long.
+
+label_too_long: a node label over 80 characters (the canvas shows 3 lines of at
+most 35 characters in the widest node, 250 px at 6.4 px per character, and
+wraps on spaces, so 80 is what fits without a clip), an edge or lane label over
+40, a group or flow label over 60, a title over 100. The limits live in
+graph.schema.json as maxLength; this reader maps that error to its own code.
 """
 
 from __future__ import annotations
@@ -44,6 +50,8 @@ SUPPORTED_MAJOR = 1
 # D0 count was 12 nodes, 17 with the 5 crate groups, and the owner-facing limit
 # is the 12 nodes a reviewer reads. L0 counts nodes of kind "feature", L1 nodes
 # of kind "step", L2 every node. The "full" view (an extractor graph) has none.
+# Node label limit, mirrored by maxLength in graph.schema.json (selftest checks they agree).
+NODE_LABEL_MAX = 80
 BUDGETS = {"L0": ("feature", 15), "L1": ("step", 12), "L2": (None, 12)}
 
 
@@ -89,7 +97,7 @@ def _resolve(root: dict, ref: str) -> dict:
 
 def _schema_errors(value, schema: dict, root: dict, path: str, out: list) -> None:
     """Supported keywords: $ref type enum const pattern minLength minItems
-    minimum required properties additionalProperties(false) items oneOf."""
+    minimum maxLength required properties additionalProperties(false) items oneOf."""
     if "$ref" in schema:
         _schema_errors(value, _resolve(root, schema["$ref"]), root, path, out)
         return
@@ -105,6 +113,8 @@ def _schema_errors(value, schema: dict, root: dict, path: str, out: list) -> Non
             out.append((path, "%r does not match %s" % (value, schema["pattern"])))
         if len(value) < schema.get("minLength", 0):
             out.append((path, "shorter than %d" % schema["minLength"]))
+        if len(value) > schema.get("maxLength", len(value)):
+            out.append((path, "longer than %d characters (%d)" % (schema["maxLength"], len(value))))
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if "minimum" in schema and value < schema["minimum"]:
             out.append((path, "%r is below %r" % (value, schema["minimum"])))
@@ -211,6 +221,8 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
     _schema_errors(graph, schema, schema, "", errs)
     for path, msg in errs:
         code = "bad_id" if "does not match ^[A-Za-z0-9_.:-]+$" in msg else "schema_error"
+        if msg.startswith("longer than ") and path.rsplit(".", 1)[-1] in ("label", "title"):
+            code = "label_too_long"
         issues.append(_issue(code, path, msg))
     if errs:
         # Structure is unreliable: the cross-reference checks below assume it.
@@ -318,7 +330,7 @@ def _selftest() -> int:
 
     repo = os.path.join(FIXTURES, "repo")
     # Valid fixtures, including the three W-145 ones and the removed-elements one.
-    for name in ("w145-l0", "w145-l1", "w145-l2", "removed", "minimal"):
+    for name in ("w145-l0", "w145-l1", "w145-l2", "removed", "minimal", "label-at-limit"):
         g = load(os.path.join(FIXTURES, name + ".json"))
         check("valid:" + name, validate(g) == [], json.dumps(validate(g))[:300])
     check("valid:minimal-with-root", validate(load(os.path.join(FIXTURES, "minimal.json")), root=repo) == [])
@@ -329,7 +341,7 @@ def _selftest() -> int:
     wanted = ["duplicate_node_id", "unknown_group_id", "missing_repository_path", "missing_evidence_path",
               "unknown_edge_source", "unknown_edge_target", "line_range_outside_file", "over_budget",
               "schema_error", "unsupported_version", "bad_id", "duplicate_edge_id", "unknown_lane_id",
-              "unknown_flow_step", "bad_evidence"]
+              "unknown_flow_step", "bad_evidence", "label_too_long"]
     for code in wanted:
         p = os.path.join(FIXTURES, "invalid", code + ".json")
         check("vc03:exists:" + code, os.path.isfile(p))
@@ -337,6 +349,19 @@ def _selftest() -> int:
             got = codes(validate(load(p), root=repo))
             check("vc03:" + code, code in got, "got %s" % got)
             check("vc03:only:" + code, got == [code], "got %s" % got)
+    # FU-02: 80 passes, 81 fails, a 200-character label fails, the message names the length.
+    g = load(os.path.join(FIXTURES, "label-at-limit.json"))
+    check("fu02:80-ok", len(g["nodes"][1]["label"]) == 80 and validate(g) == [])
+    g["nodes"][1]["label"] += "y"
+    check("fu02:81-fails", codes(validate(g)) == ["label_too_long"], str(validate(g)))
+    g = load(os.path.join(FIXTURES, "invalid", "label_too_long.json"))
+    check("fu02:200", len(g["nodes"][1]["label"]) == 200 and "200" in validate(g)[0]["message"])
+    g = load(os.path.join(FIXTURES, "label-at-limit.json"))
+    g["edges"][0]["label"] = "z" * 41
+    g["title"] = "t" * 101
+    check("fu02:edge-and-title", [i["path"] for i in validate(g)] == ["title", "edges[0].label"], str(validate(g)))
+    sch = load_schema()
+    check("fu02:schema-node-max", sch["$defs"]["node"]["properties"]["label"]["maxLength"] == NODE_LABEL_MAX)
     # S4 / S5 / S6 content: the message carries the edge id, the line, the view.
     g = load(os.path.join(FIXTURES, "invalid", "unknown_edge_target.json"))
     msg = [i for i in validate(g) if i["code"] == "unknown_edge_target"][0]

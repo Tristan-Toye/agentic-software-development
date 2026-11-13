@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0.0",
   "view": "L1",
-  "title": "W-145 L1: one response, before and after (merged flow)",
+  "title": "One response now runs its read-only calls together",
   "meta": {
     "change": "W-145",
     "repo": "config-harness",
@@ -299,7 +299,7 @@
           "line": 1745
         }
       ],
-      "label": "single call"
+      "label": "sends a single call to"
     },
     {
       "id": "f3",
@@ -316,7 +316,7 @@
           "note": "run_group called for run_len >= 2"
         }
       ],
-      "label": "group"
+      "label": "sends a group to"
     },
     {
       "id": "f4",
@@ -392,7 +392,7 @@
           "line": 81
         }
       ],
-      "label": "policy"
+      "label": "caps the group size of"
     },
     {
       "id": "f9",
