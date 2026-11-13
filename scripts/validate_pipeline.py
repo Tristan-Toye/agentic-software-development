@@ -16,6 +16,7 @@ Usage:
     validate_pipeline.py --all
     validate_pipeline.py --write-index
     validate_pipeline.py --finalize-ids --base origin/development
+    validate_pipeline.py --c3-gate --base origin/development
     validate_pipeline.py --mode
     validate_pipeline.py --selftest
 
@@ -2289,6 +2290,7 @@ def selftest() -> int:
         pre_fanout_ok = selftest_pre_fanout()
         pre_fanout_local_ok = selftest_pre_fanout_local()
         visual_ok = selftest_visual_review()
+        c3_ok = selftest_c3_gate()
         mode_ok = selftest_mode()
         blockers_ok = selftest_blocker_removal()
         return (
@@ -2307,6 +2309,7 @@ def selftest() -> int:
                 and pre_fanout_ok
                 and pre_fanout_local_ok
                 and visual_ok
+                and c3_ok
                 and mode_ok
                 and blockers_ok
             )
@@ -3441,6 +3444,203 @@ def selftest_mode() -> bool:
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# c3 gate (--c3-gate): a Rust repo's architecture diagrams must match the code
+# --------------------------------------------------------------------------
+
+C3_FILE_RE = re.compile(r"^docs/architecture/c3-components-(.+)\.md$")
+C3_CRATE_PATH_RE = re.compile(r"^crates/([^/]+)/")
+
+
+def c3_gate_run(root: Path, base: str, have_cargo_modules=None, agree=None, fresh=None) -> tuple[list[str], list[str]]:
+    """(problems, notes) for the c3 gate. A problem fails Phase 9; a note says what was skipped and why.
+
+    The gate applies to a repository that holds ``docs/architecture/c3-components-<crate>.md`` files.
+    It checks ONLY the crates this branch's diff against ``base`` touched (a path under
+    ``crates/<crate>/``) that have such a file: for each, the module graph ``cargo modules`` derives
+    must agree with the c3 diagram at 95 percent or better (``vr_c3_agree.py``), and the diagram must
+    equal what the repository's own generator prints (``scripts/module_graph.py check``).
+    A crate below threshold is repaired, never excused: regenerate the file with
+    ``module_graph.py regen``, or fix the generator. The threshold is not an argument.
+
+    Skips are visible, never silent: no c3 files, no ``cargo-modules``, no touched crate with a file,
+    no generator in the repository. ``have_cargo_modules``, ``agree`` and ``fresh`` are the test seams."""
+    problems: list[str] = []
+    notes: list[str] = []
+    c3 = sorted(p.name for p in (root / "docs" / "architecture").glob("c3-components-*.md")) \
+        if (root / "docs" / "architecture").is_dir() else []
+    if not c3:
+        return problems, ["SKIP c3 gate: no docs/architecture/c3-components-*.md in this repository"]
+    have = have_cargo_modules() if have_cargo_modules else shutil.which("cargo-modules") is not None
+    if not have:
+        return problems, ["SKIP c3 gate: cargo-modules is not installed (cargo install cargo-modules --version 0.27.0); "
+                          "the c3 diagrams were NOT compared with the code"]
+    try:
+        merge_base = git_out(root, "merge-base", base, "HEAD").strip()
+        changed = git_out(root, "diff", "--name-only", f"{merge_base}..HEAD").splitlines()
+    except RuntimeError as exc:
+        return [f"c3 gate: cannot list the branch diff against {base}: {exc}"], notes
+    touched = sorted({m.group(1) for m in map(C3_CRATE_PATH_RE.match, changed) if m})
+    have_c3 = {C3_FILE_RE.match("docs/architecture/" + n).group(1) for n in c3}  # type: ignore[union-attr]
+    skipped = [t for t in touched if t not in have_c3]
+    if skipped:
+        notes.append("SKIP c3 gate for crates with no c3 file: " + ", ".join(skipped))
+    todo = [t for t in touched if t in have_c3]
+    if not todo:
+        notes.append("c3 gate: this diff touches no crate that has a c3 file; nothing to check")
+        return problems, notes
+    if agree is None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import vr_c3_agree
+
+        def agree(repo: str, crate: str) -> dict:
+            return vr_c3_agree.check(repo, crate)
+
+        agree_error: tuple = (vr_c3_agree.AgreeError,)
+    else:
+        agree_error = (RuntimeError,)
+    generator = root / "scripts" / "module_graph.py"
+    if fresh is None:
+        def fresh(repo: Path, c3_file: Path) -> tuple[int, str]:
+            p = subprocess.run([sys.executable, str(generator), "check", "--root", str(repo), "--against", str(c3_file)],
+                               capture_output=True, text=True)
+            return p.returncode, (p.stdout + p.stderr).strip()
+    if not generator.is_file():
+        notes.append("SKIP c3 freshness check: scripts/module_graph.py is not in this repository")
+    for crate in todo:
+        c3_file = root / "docs" / "architecture" / f"c3-components-{crate}.md"
+        fix = f"regenerate it with `python3 scripts/module_graph.py regen docs/architecture/c3-components-{crate}.md`, or repair scripts/module_graph.py"
+        try:
+            r = agree(str(root), crate)
+        except agree_error as exc:
+            problems.append(f"c3 gate, crate {crate}: {exc}")
+            continue
+        if not r["ok"]:
+            problems.append(
+                f"c3 gate, crate {crate}: the diagram agrees with cargo-modules at {r['agreement']:.2f}%, "
+                f"threshold {r['threshold']:.0f}%. Missing from the diagram: {', '.join(r['missing_edges'][:5]) or 'none'}. "
+                f"Not in the code: {', '.join(r['extra_edges'][:5]) or 'none'}. Fix: {fix}. Never lower the threshold.")
+        else:
+            notes.append(f"c3 gate, crate {crate}: {r['agreement']:.2f}% agreement")
+        if generator.is_file():
+            rc, out = fresh(root, c3_file)
+            if rc != 0:
+                problems.append(f"c3 gate, crate {crate}: the diagram is not what scripts/module_graph.py prints "
+                                f"for the current sources ({out.splitlines()[0] if out else 'exit ' + str(rc)}). Fix: {fix}.")
+    return problems, notes
+
+
+def run_c3_gate(root: Path, base: str) -> int:
+    problems, notes = c3_gate_run(root, base)
+    for n in notes:
+        print(n)
+    for p in problems:
+        print(f"DEFECT  {p}")
+    return 1 if problems else 0
+
+
+def selftest_c3_gate() -> bool:
+    print("\n--- selftest: the c3 gate (touched crates only, visible skips, no threshold escape) ---")
+    fails: list[str] = []
+
+    def ok(name: str, cond: bool, detail: object = "") -> None:
+        if not cond:
+            fails.append(f"{name} {detail}")
+
+    def git(d: Path, *a: str) -> None:
+        subprocess.run(["git", "-C", str(d), "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                       check=True, capture_output=True)
+
+    def agree_with(table: dict):
+        def agree(repo: str, crate: str) -> dict:
+            if crate not in table:
+                raise RuntimeError("no stub answer for " + crate)
+            return table[crate]
+        return agree
+
+    good = {"ok": True, "agreement": 100.0, "threshold": 95.0, "missing_edges": [], "extra_edges": []}
+    bad = {"ok": False, "agreement": 80.0, "threshold": 95.0, "missing_edges": ["a::x -> a::y"], "extra_edges": ["a::x -> a::z"]}
+    fresh_ok = lambda repo, f: (0, "")  # noqa: E731
+    fresh_stale = lambda repo, f: (1, "--- stale\n+++ fresh")  # noqa: E731
+    yes = lambda: True  # noqa: E731
+    no = lambda: False  # noqa: E731
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        git(d, "init", "-q", "-b", "main")
+        (d / "docs").mkdir()
+        (d / "crates" / "alpha" / "src").mkdir(parents=True)
+        (d / "crates" / "beta" / "src").mkdir(parents=True)
+        (d / "crates" / "gamma" / "src").mkdir(parents=True)
+        (d / "scripts").mkdir()
+        (d / "scripts" / "module_graph.py").write_text("")
+        for c in ("alpha", "beta", "gamma"):
+            (d / "crates" / c / "src" / "lib.rs").write_text("")
+        git(d, "add", "-A")
+        git(d, "commit", "-q", "-m", "base")
+        git(d, "branch", "-q", "base")
+        git(d, "checkout", "-q", "-b", "work")
+
+        # no c3 files: a visible skip, exit clean
+        p, n = c3_gate_run(d, "base", yes, agree_with({}), fresh_ok)
+        ok("no c3 files skips visibly", not p and any(x.startswith("SKIP") and "no docs/architecture" in x for x in n), (p, n))
+
+        arch = d / "docs" / "architecture"
+        arch.mkdir()
+        for c in ("alpha", "beta"):
+            (arch / f"c3-components-{c}.md").write_text("x")
+        git(d, "add", "-A")
+        git(d, "commit", "-q", "-m", "c3")
+        git(d, "branch", "-q", "-f", "base")
+
+        # cargo-modules missing: visible skip
+        (d / "crates" / "alpha" / "src" / "lib.rs").write_text("pub fn a() {}\n")
+        git(d, "commit", "-qam", "touch alpha")
+        p, n = c3_gate_run(d, "base", no, agree_with({"alpha": bad}), fresh_stale)
+        ok("missing cargo-modules skips visibly", not p and any("cargo-modules is not installed" in x for x in n), (p, n))
+
+        # touched crate at threshold and fresh: passes; the untouched crate is never looked at
+        p, n = c3_gate_run(d, "base", yes, agree_with({"alpha": good}), fresh_ok)
+        ok("touched crate that agrees passes", not p and any("crate alpha: 100.00%" in x for x in n), (p, n))
+        ok("an untouched crate is not checked", not any("beta" in x for x in n + p), (p, n))
+
+        # below threshold: a defect that names the repair, and no way to lower it
+        p, n = c3_gate_run(d, "base", yes, agree_with({"alpha": bad}), fresh_ok)
+        ok("below threshold fails", len(p) == 1 and "80.00%" in p[0] and "regen" in p[0] and "Never lower the threshold" in p[0], p)
+
+        # stale diagram with full agreement: the freshness check fails it on its own
+        p, n = c3_gate_run(d, "base", yes, agree_with({"alpha": good}), fresh_stale)
+        ok("stale diagram fails the freshness check", len(p) == 1 and "not what scripts/module_graph.py prints" in p[0], p)
+
+        # a touched crate with no c3 file is named in a skip, not ignored
+        (d / "crates" / "gamma" / "src" / "lib.rs").write_text("pub fn g() {}\n")
+        git(d, "commit", "-qam", "touch gamma")
+        p, n = c3_gate_run(d, "base", yes, agree_with({"alpha": good}), fresh_ok)
+        ok("crate without c3 file skips visibly", not p and any("no c3 file: gamma" in x for x in n), (p, n))
+
+        # only a crate with no file is touched: nothing to check, said out loud
+        git(d, "checkout", "-q", "-B", "work2", "base")
+        (d / "crates" / "gamma" / "src" / "lib.rs").write_text("pub fn g2() {}\n")
+        git(d, "commit", "-qam", "gamma only")
+        p, n = c3_gate_run(d, "base", yes, agree_with({}), fresh_ok)
+        ok("no touched crate with a c3 file", not p and any("nothing to check" in x for x in n), (p, n))
+
+        # an unreadable base fails closed
+        p, n = c3_gate_run(d, "no-such-ref", yes, agree_with({}), fresh_ok)
+        ok("unknown base fails", len(p) == 1 and "cannot list the branch diff" in p[0], p)
+
+        # exit codes through the public entry
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc_bad = run_c3_gate(d, "no-such-ref")
+        ok("run_c3_gate exits 1 on a defect", rc_bad == 1 and "DEFECT" in buf.getvalue(), buf.getvalue())
+
+    for f in fails:
+        print("FAIL  " + f)
+    print(f"{'PASS' if not fails else 'FAIL'} — c3 gate {'behaves' if not fails else 'misbehaves'}")
+    return not fails
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -3484,6 +3684,13 @@ def main() -> int:
         "matter field is used when the flag is not given)",
     )
     ap.add_argument(
+        "--c3-gate",
+        action="store_true",
+        help="the Phase 9 close gate for a Rust repo with docs/architecture/c3-components-*.md: every "
+        "touched crate's c3 diagram must agree with cargo-modules (95 percent) and be fresh; "
+        "requires --base",
+    )
+    ap.add_argument(
         "--mode",
         action="store_true",
         help="print which mode .discovery/ is in for --root — local, committed "
@@ -3511,6 +3718,12 @@ def main() -> int:
         (adr_dir / "index.md").write_text(render_index(adr_rows(adr_dir)))
         print(f"wrote {adr_dir / 'index.md'}")
         return 0
+
+    if args.c3_gate:
+        if not args.base:
+            print("DEFECT  --c3-gate requires --base <ref>")
+            return 1
+        return run_c3_gate(root, args.base)
 
     if args.finalize_ids:
         if not args.base:

@@ -1,0 +1,149 @@
+digraph {
+
+    graph [
+        label="protocol",
+        labelloc=t,
+
+        pad=0.4,
+
+        // Consider rendering the graph using a different layout algorithm, such as:
+        // [dot, neato, twopi, circo, fdp, sfdp]
+        layout=neato,
+        overlap=false,
+        splines="line",
+        rankdir=LR,
+
+        fontname="Helvetica", 
+        fontsize="36",
+    ];
+
+    node [
+        fontname="monospace",
+        fontsize="10",
+        shape="record",
+        style="filled",
+    ];
+
+    edge [
+        fontname="monospace",
+        fontsize="10",
+    ];
+
+    "protocol" [label="crate|protocol", fillcolor="#5397c8"]; // "crate" node
+    "protocol::envelope" [label="pub mod|envelope", fillcolor="#81c169"]; // "mod" node
+    "protocol::identity" [label="pub mod|identity", fillcolor="#81c169"]; // "mod" node
+    "protocol::ops" [label="pub mod|ops", fillcolor="#81c169"]; // "mod" node
+    "protocol::ports::artifact_store" [label="pub mod|ports::artifact_store", fillcolor="#81c169"]; // "mod" node
+    "protocol::ports::client_secrets" [label="pub mod|ports::client_secrets", fillcolor="#81c169"]; // "mod" node
+    "protocol::ports::cloud" [label="pub mod|ports::cloud", fillcolor="#81c169"]; // "mod" node
+    "protocol::ports::git_host" [label="pub mod|ports::git_host", fillcolor="#81c169"]; // "mod" node
+    "protocol::ports::llm" [label="pub mod|ports::llm", fillcolor="#81c169"]; // "mod" node
+    "protocol::ports::parameters" [label="pub mod|ports::parameters", fillcolor="#81c169"]; // "mod" node
+    "protocol::ports::secrets" [label="pub mod|ports::secrets", fillcolor="#81c169"]; // "mod" node
+    "protocol::provision" [label="pub mod|provision", fillcolor="#81c169"]; // "mod" node
+    "protocol::repo_grant" [label="pub mod|repo_grant", fillcolor="#81c169"]; // "mod" node
+    "protocol::sandbox_tool" [label="pub mod|sandbox_tool", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema" [label="pub mod|schema", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::annotation" [label="pub mod|schema::annotation", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::artifact" [label="pub mod|schema::artifact", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::effects" [label="pub mod|schema::effects", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::enums" [label="pub mod|schema::enums", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::fingerprint" [label="pub mod|schema::fingerprint", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::ids" [label="pub mod|schema::ids", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::insights" [label="pub mod|schema::insights", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::invariants" [label="pub mod|schema::invariants", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::ledger" [label="pub mod|schema::ledger", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::mirror_maintenance" [label="pub mod|schema::mirror_maintenance", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::node" [label="pub mod|schema::node", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::provenance" [label="pub mod|schema::provenance", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::secrets" [label="pub mod|schema::secrets", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::settings" [label="pub mod|schema::settings", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::tool_policy" [label="pub mod|schema::tool_policy", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::track" [label="pub mod|schema::track", fillcolor="#81c169"]; // "mod" node
+    "protocol::schema::trigger" [label="pub mod|schema::trigger", fillcolor="#81c169"]; // "mod" node
+    "protocol::subjects" [label="pub mod|subjects", fillcolor="#81c169"]; // "mod" node
+    "protocol::telemetry" [label="pub mod|telemetry", fillcolor="#81c169"]; // "mod" node
+    "protocol::topology" [label="pub mod|topology", fillcolor="#81c169"]; // "mod" node
+    "protocol::transport" [label="pub mod|transport", fillcolor="#81c169"]; // "mod" node
+
+    "protocol::envelope" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::ops" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::ops" -> "protocol::schema::ids" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::ops" -> "protocol::transport" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::ports::artifact_store" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::ports::client_secrets" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::ports::client_secrets" -> "protocol::ports::secrets" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::ports::client_secrets" -> "protocol::schema::enums" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::ports::client_secrets" -> "protocol::schema::ids" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::ports::cloud" -> "protocol::ports::parameters" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::ports::cloud" -> "protocol::ports::secrets" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::ports::llm" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::ports::llm" -> "protocol::schema::node" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::ports::llm" -> "protocol::schema::tool_policy" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::provision" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::provision" -> "protocol::schema::enums" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::provision" -> "protocol::schema::node" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::provision" -> "protocol::topology" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::repo_grant" -> "protocol::ports::git_host" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::repo_grant" -> "protocol::schema::ids" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::sandbox_tool" -> "protocol::schema::ids" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::annotation" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::artifact" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::effects" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::enums" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::fingerprint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::ids" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::invariants" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::ledger" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::node" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::provenance" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::secrets" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::settings" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::tool_policy" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::track" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema" -> "protocol::schema::trigger" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::annotation" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::artifact" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::artifact" -> "protocol::schema::enums" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::artifact" -> "protocol::schema::ids" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::ids" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::insights" -> "protocol::schema::enums" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::insights" -> "protocol::schema::ids" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::ledger" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::ledger" -> "protocol::ports::llm" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::ledger" -> "protocol::schema::enums" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::ledger" -> "protocol::schema::ids" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::mirror_maintenance" -> "protocol::schema::enums" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::node" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::node" -> "protocol::schema::enums" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::provenance" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::provenance" -> "protocol::schema::enums" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::provenance" -> "protocol::schema::ids" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::secrets" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::secrets" -> "protocol::ports::client_secrets" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::secrets" -> "protocol::schema::enums" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::secrets" -> "protocol::schema::node" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::settings" -> "protocol::schema::insights" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::settings" -> "protocol::schema::mirror_maintenance" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::tool_policy" -> "protocol::ports::git_host" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::tool_policy" -> "protocol::repo_grant" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::tool_policy" -> "protocol::schema::effects" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::tool_policy" -> "protocol::schema::ids" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::track" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::track" -> "protocol::schema::enums" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::track" -> "protocol::schema::ids" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::trigger" -> "protocol::envelope" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::trigger" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::trigger" -> "protocol::ports::secrets" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::schema::trigger" -> "protocol::schema::enums" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::subjects" -> "protocol::envelope" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::subjects" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::subjects" -> "protocol::ops" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::subjects" -> "protocol::transport" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::telemetry" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::topology" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::topology" -> "protocol::schema::node" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::transport" -> "protocol::envelope" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "protocol::transport" -> "protocol::identity" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+
+}

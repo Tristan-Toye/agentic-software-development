@@ -81,6 +81,27 @@ scripts/vr_c2_drift.py --selftest | vr_map.py --selftest | vr_metrics.py --selft
 
 Each line also has `ts` (UTC) and `tool`, `event`.
 
+## c3 agreement (VC-06) and its parsing requirements
+
+`scripts/vr_c3_agree.py REPO --crate NAME` compares one crate's module edges from `cargo modules dependencies` with the c3 file `module_graph.py` writes. Agreement is `agreed / (declared or derived)`; the threshold is 95 percent and a run never passes on two empty sides. The two sides are made to describe the same thing by six rules, each documented in the script's docstring and covered by its selftest (fixtures in `fixtures/c3-agree/`). None hides a real difference; `--raw` switches all of them off.
+
+| Rule | What it aligns | Why it is not hiding a difference |
+|---|---|---|
+| R1 target | cargo-modules runs for `x86_64-unknown-linux-gnu` | c3 reads every file, so a `target_os = "linux"` module must be analysed in; Linux is where the product runs |
+| R2 features | `--all-features` | same: c3 reads feature-gated files |
+| R3 tests | no `--cfg-test`, as `module_graph.py` drops `#[cfg(test)]` | both sides leave tests out |
+| R4 cfg-gated nodes | a second `--cfg-test` run, used only for a declared module with no node (cargo-modules 0.27.0 drops `cfg(any(test, feature))` modules) | only edges touching such a module are taken; test-only edges are dropped |
+| R5 granularity | a derived inline `mod x {}` rolls up to its deepest declared file module | c3 draws one node per file; a self-edge vanishes, a cross-file edge stays |
+| R6 lib only | `::bin::` edges are dropped from c3 | the derived side is the lib target |
+
+Edges to a `const`, `static` or macro are invisible to cargo-modules; `module_graph.py` draws them `-.->` and the check reports them under `unmodelled_edges` without counting them.
+
+The c3 side follows the same reference (`scripts/module_graph.py`, config-harness): a `use` is read in every form (nested and multi-line trees, `self`, `super::`, renames, globs) and followed to the module that defines the item; a type named directly in a signature or field is an edge, a generic argument or a fn body is not; `#[cfg(test)]`, `#[cfg(doc)]` and `#[test]` code is skipped. `module_graph.py regen FILE...` rewrites the diagram and fan table.
+
+### Close gate for /work-on
+
+`validate_pipeline.py --c3-gate --base origin/<target>` runs in Phase 9, after the sync. For a repository with `docs/architecture/c3-components-*.md` it runs `vr_c3_agree.py` on every crate the branch's diff touched (a path under `crates/<crate>/`) and the generator freshness check (`scripts/module_graph.py check --against <file>`); a crate below 95 percent or with a stale file is a DEFECT and the session does not close. The repair is `module_graph.py regen` or a parser fix, never a lower threshold. It prints a `SKIP` line, and exits 0, when there are no c3 files, `cargo-modules` is missing, the generator is absent, or the touched crates have no c3 file. Untouched crates are not checked.
+
 ## Follow-ups
 
 Work decided but not done yet is in [FOLLOW-UPS.md](FOLLOW-UPS.md) (FU-01: move the cargo-modules pin past 0.27.0 after the first demo).
