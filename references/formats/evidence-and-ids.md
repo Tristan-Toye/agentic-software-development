@@ -17,7 +17,27 @@ Promote it to `FACT`, or move it to a stated risk.
 # 4. ID minting
 
 Dossier IDs (`W-NNN`) and ADR IDs (`ADR-NNNN`) are sequential within their own
-kind. Mint one atomically so two sessions never collide: open the new file with
+kind. **When the repository has a remote, claim the number from the central
+ledger first:**
+
+```
+python3 ${PLUGIN_ROOT}/scripts/claim_id.py --kind W --for plan/<KEY>     # prints W-NNN
+python3 ${PLUGIN_ROOT}/scripts/claim_id.py --kind ADR --for <dossier ID>  # prints ADR-NNNN
+```
+
+The ledger is the branch `asd/ids` on the remote (`--remote`, default
+`origin`): one line per claimed number, appended by a push without force, so
+two sessions on any machine never get the same number — the later push is
+rejected and that claim takes the next one. The number is above the ledger
+and above every number in any remote branch's tree, so an open sibling plan
+PR is seen too (it was not: on 2026-11-13 ten open config-harness plan PRs
+held W-161 to W-170 twice). A claimed number is final; a dossier or ADR that
+is then dropped leaves a gap, which is fine. The script exits 1 when the
+remote cannot be reached or pushed to; then mint provisionally as below.
+`--finalize-ids` claims from the same ledger when it renumbers.
+
+Without a remote (or when the claim fails), mint one atomically so two
+sessions in one working copy never collide: open the new file with
 exclusive-create semantics — `set -o noclobber` on the redirect, or
 `python3 -c "open(p,'x')"` — and on a collision take the next number and retry.
 Never scan for the highest number and then write.

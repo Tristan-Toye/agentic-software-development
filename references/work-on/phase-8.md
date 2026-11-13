@@ -78,9 +78,10 @@ surfaced.
   near-duplicate.
 - Write `## Consequences` for the agent who will read it: state the constraint a
   future change must respect, not a summary of the work.
-- Mint IDs atomically and set `jira` to the ticket (never the dossier ID — an
+- Claim each ADR number with `claim_id.py --kind ADR --for <dossier ID>`
+  (`formats/evidence-and-ids.md` §4; mint atomically only when it exits 1) and set `jira` to the ticket (never the dossier ID — an
   ADR is read by people who never open a dossier, and in local mode the
-  dossier is not even in the repository). A number minted here is provisional
+  dossier is not even in the repository). A claimed number is final; a number minted here is provisional
   until the Phase 9 sync, where `--finalize-ids` settles a collision with a
   concurrent branch. Then run
   `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py` with no arguments, in

@@ -1412,7 +1412,7 @@ def check_dossier_ids(dossier_dir: Path, rep: Report) -> None:
 
 
 def plan_renumber(
-    by_id: dict[str, list[str]], own: set[str], taken: list[int], fmt: str
+    by_id: dict[str, list[str]], own: set[str], taken: list[int], fmt: str, mint=None
 ) -> tuple[dict[str, str], list[str]]:
     """Plan fresh ids for the branch's own files inside duplicate-id groups.
 
@@ -1422,6 +1422,9 @@ def plan_renumber(
     `W-{:03d}`). A group with no own claimant means the base itself is
     broken; a group with two own claimants means this branch minted one id
     twice. Both are DEFECTs: this tool renumbers merge collisions only.
+    `mint`, when given, returns a fresh id claimed from the repository's
+    central ledger (claim_id.py), or None to fall back to the next number
+    above `taken`.
     """
     nxt = max(taken) + 1 if taken else 1
     renames: dict[str, str] = {}
@@ -1436,9 +1439,40 @@ def plan_renumber(
         if len(own_files) > 1:
             defects.append(f"{aid}: this branch minted the id twice")
             continue
+        claimed = mint() if mint else None
+        if claimed:
+            renames[own_files[0]] = claimed
+            continue
         renames[own_files[0]] = fmt.format(nxt)
         nxt += 1
     return renames, defects
+
+
+def ledger_minter(root: Path, kind: str, label: str):
+    """A `mint` for plan_renumber that claims from the central ID ledger
+    (scripts/claim_id.py, branch asd/ids on ASD_ID_REMOTE, default origin),
+    or None when the remote has no ledger or ASD_ID_LEDGER=0: a repository
+    that never claimed keeps the next-number rule."""
+    if os.environ.get("ASD_ID_LEDGER", "1") == "0":
+        return None
+    remote = os.environ.get("ASD_ID_REMOTE", "origin")
+    p = subprocess.run(
+        ["git", "-C", str(root), "ls-remote", "--heads", remote, "asd/ids"],
+        capture_output=True, text=True,
+    )
+    if p.returncode != 0 or not p.stdout.strip():
+        return None
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import claim_id  # noqa: E402
+
+    def mint():
+        try:
+            return claim_id.claim(str(root), remote, kind, label)
+        except RuntimeError as exc:
+            print(f"NOTICE  ID ledger claim failed ({exc}); next free number used")
+            return None
+
+    return mint
 
 
 def plan_adr_renumber(
@@ -1601,7 +1635,10 @@ def run_finalize(root: Path, base: str) -> int:
             for aid in by_id
             if re.fullmatch(r"ADR-\d{4}", aid)
         ]
-        renames, defects = plan_adr_renumber(rel_by_id, own, taken)
+        renames, defects = plan_renumber(
+            rel_by_id, own, taken, "ADR-{:04d}",
+            ledger_minter(root, "ADR", "finalize " + tip[:12]),
+        )
         for rel, new_id in renames.items():
             old_id = f"ADR-{rel.split('/')[-1][:4]}"
             id_map[old_id] = new_id
@@ -1665,7 +1702,8 @@ def run_finalize(root: Path, base: str) -> int:
         taken_d = [int(did[2:]) for did in numbered]
         width = max((len(did[2:]) for did in numbered), default=3)
         renames_d, defects_d = plan_renumber(
-            rel_by_did, own_d, taken_d, "W-{:0" + str(width) + "d}"
+            rel_by_did, own_d, taken_d, "W-{:0" + str(width) + "d}",
+            ledger_minter(root, "W", "finalize " + tip[:12]),
         )
         defects += defects_d
         for rel, new_id in sorted(renames_d.items()):
@@ -1862,6 +1900,17 @@ def selftest_finalize() -> bool:
     case = no_chain == "x ADR-0101 y ADR-0102"
     ok &= case
     print(f"{'PASS' if case else 'FAIL'} — rewrite is single-pass: {no_chain}")
+
+    minted = plan_renumber(
+        {"W-015": ["a/W-015-own.md", "a/W-015-sib.md"], "W-016": ["a/W-016-own.md", "a/W-016-sib.md"]},
+        {"a/W-015-own.md", "a/W-016-own.md"},
+        [15, 16],
+        "W-{:03d}",
+        iter(["W-171", None]).__next__,
+    )[0]
+    case = minted == {"a/W-015-own.md": "W-171", "a/W-016-own.md": "W-017"}
+    ok &= case
+    print(f"{'PASS' if case else 'FAIL'} — renumber takes a ledger claim, else the next free number: {minted}")
 
     renames_d, defects_d = plan_renumber(
         {"W-014": ["a/W-014-one.md"], "W-015": ["a/W-015-own.md", "a/W-015-sib.md"]},

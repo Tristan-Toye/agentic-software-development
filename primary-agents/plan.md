@@ -269,11 +269,13 @@ that record, not a log line.
 
 ## Phase 4 — Write the dossier
 
-Mint the ID atomically (`formats/evidence-and-ids.md` §4) and write
+Claim the ID from the central ledger, `python3 ${PLUGIN_ROOT}/scripts/claim_id.py
+--repo <repo> --kind W --for plan/<KEY>` (`formats/evidence-and-ids.md` §4):
+it is final, and no open sibling plan PR holds it. Only when the claim exits 1
+(no remote, no push access) mint provisionally as §4 says. Then write
 `${RUN_ROOT}/.discovery/dossiers/W-NNN-<slug>.md` with the front matter and
-the six sections in order. In committed mode the number is provisional until
-the plan PR merges — Phase 7 re-checks it against the base tip before the
-push.
+the six sections in order. A provisional number is settled at Phase 7, which
+re-checks it against the base tip before the push.
 
 End `## Approach` with one line, `Diagrams affected: <file stems>` (the
 `docs/architecture/` files, stem without extension, that this change makes
@@ -479,7 +481,8 @@ a change to review, so finish it as one:
    `--finalize-ids` renumbers the dossiers this branch added whose `id:` a
    file on the base already carries — the file name, `id:`, and every
    mention inside this branch's own dossiers — and leaves the sibling alone.
-   Re-run the validator on the renamed file. A collision with a plan PR
+   Re-run the validator on the renamed file. With a claimed ID (Phase 4)
+   nothing renumbers here. A provisional ID colliding with a plan PR
    still open cannot be seen from here: once both land,
    `validate_pipeline.py --all` names the two files, `/work-on` Phase 0
    stops on them, and the later one renumbers in its own PR the same way.
