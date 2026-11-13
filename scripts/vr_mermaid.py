@@ -847,6 +847,27 @@ def generated_lines(json_name: str, text: str) -> list:
     return ["<!-- generated from %s by vr_mermaid.py render; edit the JSON, not this block -->" % json_name, "```mermaid"] + text.split("\n") + ["```", END_MARK]
 
 
+def md_text_from_json(path: str) -> str:
+    """The text of the .md at `path` with the Mermaid body of every marked block replaced by the render of its JSON (the source),
+    so a reader that parses Mermaid reads the JSON's diagram; the line count of the file is unchanged when the block is in sync.
+    A file with no marked block whose JSON exists is returned as it is (the Mermaid in the file is then the source)."""
+    text = read(path)
+    lines = text.split("\n")
+    d = os.path.dirname(os.path.abspath(path))
+    done = False
+    for b in sorted(scan_md(lines), key=lambda x: -x["start"]):
+        jp = os.path.join(d, b["json"]) if b["marked"] and b["json"] else ""
+        if not jp or not os.path.isfile(jp):
+            continue
+        try:
+            want = render(json.loads(read(jp)))
+        except (ValueError, KeyError, MermaidError):
+            continue
+        lines[b["start"]:b["end"]] = generated_lines(b["json"], want)
+        done = True
+    return "\n".join(lines) if done else text
+
+
 def read(path: str) -> str:
     with open(path, encoding="utf-8") as fh:
         return fh.read()
