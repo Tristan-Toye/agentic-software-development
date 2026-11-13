@@ -113,8 +113,9 @@ the recorded checkpoints.
   runs may start (podcast W-007 once sat 35 min in the foreground on
   `run_tests.py` holding a slot the whole time). The session is blocked when its
   in-flight foreground Bash call runs `run_tests.py` or `run_gates.py` (`--wait`
-  included) or polls a detached run's state directory (`run_gates-detach/`,
-  `run_tests-detach/`), or has produced no output for more than
+  included), polls a detached run's state directory (`run_gates-detach/`,
+  `run_tests-detach/`), or waits on CI (`wait_ci.py`, `gh pr checks --watch`,
+  `gh run watch`), or has produced no output for more than
   `TESTING_QUIET_SECS` (300; `ASD_TESTING_QUIET_SECS` overrides). The CLI's own
   progress lines for the call in flight (`tool_progress`, the `task_started` and
   `task_progress` system lines) are not output here: they arrive every few

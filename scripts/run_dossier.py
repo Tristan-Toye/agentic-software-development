@@ -759,7 +759,10 @@ def model_ok(expected: str, actual: str) -> bool:
 # `running` WITHOUT queueing, so the live count may briefly exceed the cap until another run finishes or waits.
 
 TESTING_QUIET_SECS = 300    # an in-flight Bash call with no output for longer than this counts as a long wait
-TESTING_CMD = re.compile(r"\brun_(?:tests|gates)(?:\.py\b|-detach/)")   # the long waits we know by name (any flags, `--wait` included), and a hand-written poll on a detached run's state directory
+# the long waits we know by name (any flags, `--wait` included): tests, gates, a hand-written poll on a detached run's
+# state directory, and CI (wait_ci.py, `gh pr checks --watch`, `gh run watch`; a fix-deferred session held its slot for
+# the whole of a Rust CI job in wait_ci.py)
+TESTING_CMD = re.compile(r"\brun_(?:tests|gates)(?:\.py\b|-detach/)|\bwait_ci\.py\b|\bgh\s+(?:pr\s+checks\b[^\n]*--watch|run\s+watch)\b")
 # Stream lines the CLI emits while a foreground tool call is still running (a Bash call turns into a task after a few
 # seconds and reports progress). They say the call is alive, not that the session works: they keep a call from looking
 # stalled, but never from looking like a long wait.
@@ -3565,6 +3568,10 @@ def selftest() -> int:
         p = start("W-92")
         went = until(lambda: state_of("W-92").get("state") == "testing", 20)
         check("testing: the state flips to testing while run_tests.py is in flight", bool(went))
+        check("testing: CI waits are long waits by name",
+              all(TESTING_CMD.search(c) for c in ("python3 scripts/wait_ci.py --pr 501 --timeout 570 2>&1 | tail -15",
+                                                   "gh pr checks 501 --watch", "gh run watch 123"))
+              and not any(TESTING_CMD.search(c) for c in ("gh pr checks 501", "gh run view 123", "cat wait_ci.pyc")))
         held_now = slot_census("other")[0] if went else -1
         check("testing: slot_census does not count the testing run", held_now == 0)
         back = until(lambda: state_of("W-92").get("state") == "running", 20)
