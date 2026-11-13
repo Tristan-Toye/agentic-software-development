@@ -29,6 +29,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -39,10 +40,30 @@ from urllib.parse import quote, unquote, urlparse
 # Initialization options for a whole-repo batch run (vr_refresh.py). Names are the rust-analyzer settings without
 # the `rust-analyzer.` prefix (documented: cargo.buildScripts.enable, procMacro.enable, checkOnSave, cachePriming.enable,
 # diagnostics.enable). Build scripts and proc macros off means no `cargo check` of the dependency tree and no
-# proc-macro server; `cargo.noDeps` runs `cargo metadata --no-deps`, which does not take cargo's package-cache lock (another
-# cargo build on the machine held it for 30+ s per metadata call and stalled every start); calls into dependencies are not resolved; calls made only inside macro-expanded code are not resolved.
-FAST_OPTIONS = {"cargo": {"buildScripts": {"enable": False}, "noDeps": True}, "procMacro": {"enable": False}, "checkOnSave": False,
+# proc-macro server; calls made only inside macro-expanded code are not resolved. `cargo.noDeps` was tried and rejected:
+# it drops the dependency edges between workspace crates, so no cross-crate call resolves (measured on config-harness).
+# Instead the server runs with a private CARGO_HOME (see `_private_cargo_home`).
+FAST_OPTIONS = {"cargo": {"buildScripts": {"enable": False}}, "procMacro": {"enable": False}, "checkOnSave": False,
                 "cachePriming": {"enable": False}, "diagnostics": {"enable": False}}
+
+
+def _private_cargo_home():
+    """(env, tmpdir): an environment whose CARGO_HOME is a scratch directory that links the real registry and git caches.
+
+    Every `cargo metadata` call of rust-analyzer takes cargo's package-cache lock in CARGO_HOME. Another cargo build on
+    the machine holds that lock for tens of seconds ("Blocking waiting for file lock on package cache": measured 36 s per
+    call on config-harness under load), which is the usual reason a whole session ran out of its clock. The lock file of the
+    private directory is ours alone; the caches are read through links."""
+    import tempfile
+    real = os.environ.get("CARGO_HOME") or os.path.join(os.path.expanduser("~"), ".cargo")
+    tmp = tempfile.mkdtemp(prefix="asd-cargo-home-")
+    for name in ("registry", "git", "config.toml", "config"):
+        src = os.path.join(real, name)
+        if os.path.exists(src):
+            os.symlink(src, os.path.join(tmp, name))
+    env = dict(os.environ, CARGO_HOME=tmp)
+    env.setdefault("RUSTUP_HOME", os.path.join(os.path.expanduser("~"), ".rustup"))
+    return env, tmp
 
 
 class RaError(Exception):
@@ -146,9 +167,12 @@ class RaClient:
     # -- lifecycle
     def start(self) -> "RaClient":
         self._deadline = time.time() + self.timeout
+        env = None
+        if self.options and self.cmd and self.cmd[0] == "rust-analyzer":
+            env, self._home = _private_cargo_home()
         try:
             self._proc = subprocess.Popen(self.cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                          stderr=subprocess.DEVNULL, cwd=self.root)
+                                          stderr=subprocess.DEVNULL, cwd=self.root, env=env)
         except OSError as exc:
             raise RaError("cannot start %s: %s" % (self.cmd[0], exc))
         threading.Thread(target=self._reader, daemon=True).start()
@@ -169,6 +193,15 @@ class RaClient:
             self._proc.kill()
 
     def close(self) -> None:
+        try:
+            self._close()
+        finally:
+            home = getattr(self, "_home", None)
+            if home:
+                shutil.rmtree(home, ignore_errors=True)
+                self._home = None
+
+    def _close(self) -> None:
         if not self._proc or self._proc.poll() is not None:
             return
         try:

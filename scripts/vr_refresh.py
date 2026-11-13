@@ -483,7 +483,7 @@ def _strip_commit(g: dict) -> dict:
     return h
 
 
-def write_views(repo: str, out_dir: str, views: dict, log=lambda m: None) -> dict:
+def write_views(repo: str, out_dir: str, views: dict, log=lambda m: None, keep=lambda name: False) -> dict:
     """Write the views whose content changed; returns {name: "written" | "unchanged" | "removed"}."""
     d = os.path.join(repo, out_dir)
     os.makedirs(d, exist_ok=True)
@@ -513,7 +513,7 @@ def write_views(repo: str, out_dir: str, views: dict, log=lambda m: None) -> dic
     except (OSError, ValueError):
         pass
     for v in (prev or {}).get("views", []):
-        if v["file"] not in views and v["file"] != "product-map.json" and os.path.isfile(os.path.join(d, v["file"])):
+        if v["file"] not in views and v["file"] != "product-map.json" and not keep(v["file"]) and os.path.isfile(os.path.join(d, v["file"])):
             os.remove(os.path.join(d, v["file"]))
             res[v["file"]] = "removed"
     return res
@@ -651,7 +651,10 @@ def refresh(repo: str, out_dir: str = DEFAULT_DIR, cache: str | None = None, sin
         layers["calls"]["reason"] = ("partial: " if cstats["status"] == "partial" else "") + cstats["reason"]
     meta = _meta(g["meta"]["repo"], short, tools, layers)
     views = build_views(g, parts, pkgs, entries, ws_root, meta, bool(calls and entries))
-    written = write_views(repo, out_dir, views, log)
+    # a call layer that did not run (not requested, or no rust-analyzer) leaves the committed call views as they are
+    is_calls = lambda n: n.startswith("calls-") or n == "crate-calls.json"
+    keep_calls = cstats["status"] == "skipped"
+    written = write_views(repo, out_dir, views, log, keep=is_calls if keep_calls else (lambda n: False))
     pstats = {"status": "skipped", "reason": "not requested"}
     if product:
         pstats = refresh_product_map(repo, out_dir, prev_full or None, head, full)
@@ -674,9 +677,11 @@ def refresh(repo: str, out_dir: str = DEFAULT_DIR, cache: str | None = None, sin
             old = json.load(fh)
     except (OSError, ValueError):
         old = None
-    # a partial call layer is not a verified map: the manifest keeps the previous commit so the next run starts there
-    if cstats.get("status") == "partial" and old and old.get("extraction_commit"):
-        pass
+    if keep_calls and old:
+        have = {v["file"] for v in mf["views"]}
+        mf["views"] += [v for v in old.get("views", []) if is_calls(v["file"]) and v["file"] not in have
+                        and os.path.isfile(os.path.join(repo, out_dir, v["file"]))]
+        mf["views"].sort(key=lambda v: v["file"])
     if old is None or old.get("extraction_commit") != head or {k: v for k, v in old.items() if k not in ("layers",)} != \
             {k: v for k, v in mf.items() if k not in ("layers",)} or old.get("layers", {}).get("calls", {}).get("status") != cstats.get("status"):
         with open(mp, "w", encoding="utf-8") as fh:
@@ -885,6 +890,8 @@ def _selftest() -> int:
         check("deleted-file:dropped-from-cache", r8["calls"]["deleted"] == 1 and r8["modules"]["recomputed"] == ["app"], str((r8["calls"], r8["modules"])))
         r9 = run(calls=False)
         check("no-calls:modules-reused-and-layer-skipped", r9["calls"]["status"] == "skipped" and not r9["modules"]["recomputed"], str(r9["calls"]))
+        check("no-calls:committed-call-views-kept", os.path.isfile(os.path.join(d, "docs/architecture/calls-app.json")) and
+              "removed" not in r9["views"].values(), str(r9["views"]))
 
         def failing_ra(root, t):
             raise RaError("cannot start rust-analyzer: nope")
