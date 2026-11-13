@@ -143,9 +143,12 @@ Shapes the schema requires, which the fixtures also show:
    ```
 
    The budget counts nodes, not groups: on L2 a crate node and a module node
-   each count. Over budget, a dangling id or a missing path: fix and run again. Retry
-   until it passes, at most 3 times; then stop and report the remaining
-   issues.
+   each count. Over budget, a dangling id, a missing path or `label_too_long`
+   (a node label over 80 characters, an edge or lane label over 40, a group or
+   flow label over 60, a title over 100): fix and run again. For
+   `label_too_long`, shorten the words; never cut a label mid-word and never
+   move the meaning into an id. Retry until it passes, at most 3 times; then
+   stop and report the remaining issues.
 
 ## Rules
 
@@ -164,7 +167,18 @@ Shapes the schema requires, which the fixtures also show:
 4. **Product words.** A label is what the owner says ("Run read-only calls
    together"), not a type or function name. The function name goes into the
    evidence `note`.
-5. **Three strikes, then stop**, as every agent here: the same validation
+5. **Edge labels are verb phrases.** An edge label says what the source does
+   to the target ("validates the token", "queues the retry"), never a bare
+   noun or the kind word ("uses", "flow"). Without a verb to give it, leave
+   the label out.
+6. **The title is the takeaway.** A graph title states what the change does
+   in one sentence ("Retries now stop after three failures"), not the topic
+   ("Retry handling"). Up to 100 characters.
+7. **One term per concept.** Across `l0.json`, `l1.json` and `l2.json` a
+   concept keeps one name: if L0 says "retry budget", no node, edge or group
+   says "attempt limit" for it. These rules shape wording only (rule 2 holds):
+   a label never adds an edge.
+8. **Three strikes, then stop**, as every agent here: the same validation
    failing three times ends the run with what failed and what you tried.
 
 ## Report

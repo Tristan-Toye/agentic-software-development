@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0.0",
   "view": "L0",
-  "title": "W-145 L0: features",
+  "title": "Settings, git tools and gate share one concurrent tool layer",
   "meta": {
     "change": "W-145",
     "repo": "config-harness",

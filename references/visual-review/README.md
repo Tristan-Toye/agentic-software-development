@@ -5,7 +5,7 @@ The model behind the visual review of a change (feature VR-01). Language-neutral
 | File | What it is |
 |---|---|
 | `graph.schema.json` | The change graph schema, version 1.0.0: nodes, edges, groups, flows (before/after steps, lanes), status, evidence, resolution, view, tool versions in `meta`. |
-| `fixtures/` | `w145-l0|l1|l2.json` (the W-145 change, migrated), `removed.json` (removed elements), `minimal.json`, `invalid/<issue code>.json` (one per validator issue), `repo/` (the tiny tree the invalid fixtures cite). |
+| `fixtures/` | `w145-l0|l1|l2.json` (the W-145 change, migrated), `removed.json` (removed elements), `minimal.json`, `label-at-limit.json` (an 80-character node label, the limit; longer fails with `label_too_long`: node 80, group and flow 60, edge and lane 40, title 100), `invalid/<issue code>.json` (one per validator issue), `repo/` (the tiny tree the invalid fixtures cite). |
 | `../../scripts/vr_graph.py` | Validator and budget check. |
 | `../../scripts/vr_extract.py` | Extractor: the "before" graph of a Cargo workspace. |
 | `../../scripts/vr_diff.py` | Diff: merges a before and an after graph on the stable id (status added, changed, removed, context), filters it by mode, builds the plan-time after graph from two commits. |
