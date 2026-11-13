@@ -113,7 +113,7 @@ the recorded checkpoints.
   runs may start (podcast W-007 once sat 35 min in the foreground on
   `run_tests.py` holding a slot the whole time). The session is blocked when its
   in-flight foreground Bash call runs `run_tests.py` or `run_gates.py` (`--wait`
-  included), or has produced no output for more than `TESTING_QUIET_SECS` (300;
+  included), waits on CI (`wait_ci.py`, `gh pr checks --watch`, `gh run watch`), or has produced no output for more than `TESTING_QUIET_SECS` (300;
   `ASD_TESTING_QUIET_SECS` overrides). When the call's result arrives the state
   goes back to `running` at once, without queueing. Trade-off, accepted: the
   live count may briefly exceed the cap until another run finishes or waits.
