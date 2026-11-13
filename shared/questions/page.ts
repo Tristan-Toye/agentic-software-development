@@ -164,6 +164,7 @@ details.mstubs{margin-top:10px}details.mstubs>summary{font-size:.78rem;letter-sp
 .vrov .vrovvp{fill:var(--accbg);fill-opacity:.35;stroke:var(--acc);stroke-width:2;stroke-dasharray:none}
 .vrwalk{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin:8px 0;padding:6px 10px;border:1px solid var(--acc);background:var(--accbg);border-radius:8px}.vrwl{font-weight:600;overflow-wrap:anywhere}
 .vrhalo{pointer-events:none}.vrsvg.vrwk g.vrn:not(.walk),.vrsvg.vrwk g.vre:not(.walk),.vrsvg.vrwk g.vrg:not(.walk){opacity:.4}.vrsvg g.vre.walk .vrline{stroke-width:5;stroke:var(--acc)}.vrsvg .vrhd{cursor:pointer}
+body.vrfs-on{overflow:hidden}body.vrfs-on .vr[data-vrkey]{position:fixed;inset:0;z-index:50;margin:0;border:0;border-radius:0;background:var(--bg);padding:10px 16px;display:flex;flex-direction:column;overflow:hidden}body.vrfs-on .vr[data-vrkey] .vrbody{flex:1;min-height:0;grid-template-rows:minmax(0,1fr)}body.vrfs-on .vr[data-vrkey] .vrcv{height:100%}body.vrfs-on .vr[data-vrkey] .vrsvg{height:100%}body.vrfs-on .vr[data-vrkey] .vrinsp{max-height:none}
 .vrmaplist{margin:6px 0;padding:0;list-style:none}.vrmaplist li{display:flex;gap:8px;align-items:center;padding:4px 0;border-top:1px solid var(--bd)}.vrmaplist .grow{flex:1}.vrpre{white-space:pre-wrap;font:12px/1.4 ui-monospace,monospace;background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:8px;max-height:360px;overflow:auto}
 </style></head><body>
 <header><a class="brand" href="/">Pipeline</a><nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav><a class="pill dmlink" href="/chat" title="Talk to the agent, as in the Slack DM">Ask the agent</a><span class="pill" id="slack"></span><span class="pill" id="upd"></span></header>
@@ -228,6 +229,7 @@ let vrOpenSeq = 0;
 async function vrOpenDiagram(repo, path) {
   const seq = ++vrOpenSeq; /* a slow earlier answer must not overwrite a later click */
   const cur = VRM[repo] = VRM[repo] || {}; cur.open = path; cur.text = ''; cur.err = '';
+  if (R.kind === 'arch' && R.repo === repo && new URLSearchParams(location.search).get('d') !== path) history.replaceState(null, '', hrefArch(repo, path));
   let d = null; try { const r = await fetch('/api/visual-review/diagram?repo=' + enc(repo) + '&path=' + enc(path)); d = await r.json(); if (!r.ok) { cur.err = d.error || ('HTTP ' + r.status); d = null; } } catch (e) { cur.err = 'request failed'; }
   if (seq !== vrOpenSeq) return;
   const key = repo + '/~map';
@@ -238,7 +240,18 @@ async function vrOpenDiagram(repo, path) {
 function vrOpenQ(dossier, repo) {
   return S.q.find(q => q.state === 'open' && q.dossier === dossier && qRepo(q) === repo && q.topic === 'visual-review' && q.qkind === 'product' && q.options.some(o => /^changes requested/i.test(o.label)) && q.options.some(o => /^approved/i.test(o.label)));
 }
-/* The repo page: the committed product map (stale banner) and the committed diagrams, each openable on the canvas. */
+/* The repo page links to the architecture page (the product map and the diagrams live there, not among the dossiers). */
+function vrRepoLink(repo) {
+  const st = (VRM[repo] || {}).status; if (!st) return null;
+  const n = st.diagrams.length, what = (st.hasMap ? 'Product map' + (st.stale ? ' (stale: ' + st.stale + ')' : '') + ' · ' : '') + n + ' diagram' + (n === 1 ? '' : 's');
+  return h('section', { class: 'panel', 'data-k': 'vrlink' }, [h('h2', {}, ['Architecture']), h('p', { class: 'small' }, [h('a', { href: hrefArch(repo) }, ['Open the architecture page']), ' · ' + what])]);
+}
+function archView(repo) {
+  const kids = [h('h1', {}, [rlabel(repo) + ' · Architecture']), h('p', { class: 'lead' }, ['The committed product map and the diagrams in docs/architecture. Open one on the canvas; Full screen (or f) gives it the whole window.'])];
+  const p = vrRepoPanel(repo); kids.push(p || h('div', { class: 'empty' }, ['Loading…']));
+  return h('div', {}, kids);
+}
+/* The architecture page: the committed product map (stale banner) and the committed diagrams, each openable on the canvas. */
 function vrRepoPanel(repo) {
   const m = VRM[repo] || {}; const st = m.status; if (!st) return null;
   const kids = [h('h2', {}, ['Product map and diagrams'])];
@@ -261,8 +274,16 @@ function vrPanel(r) {
   if (!d || !['L0', 'L1', 'L2'].some(k => d.views[k])) return null;
   return h('section', { class: 'panel vr', 'data-k': 'vr', 'data-raw': '1', 'data-html': '', 'data-vrkey': vrKey(r.repo, r.id) + '@' + d.rev }, []);
 }
+const VR_FS = { off: null, toggle: null, fit: null };
+document.addEventListener('keydown', (e) => {
+  if (!document.querySelector('.vr[data-vrkey]')) return;
+  const tg = e.target && e.target.tagName; if (tg === 'INPUT' || tg === 'TEXTAREA' || tg === 'SELECT' || (e.target && e.target.isContentEditable)) return;
+  if (e.key === 'Escape' && document.body.classList.contains('vrfs-on') && !document.querySelector('.vrwalk:not([hidden])') && VR_FS.off) { VR_FS.off(); e.preventDefault(); }
+  else if (e.key === 'f' && !e.metaKey && !e.ctrlKey && !e.altKey && VR_FS.toggle) { VR_FS.toggle(); e.preventDefault(); }
+});
+window.addEventListener('resize', () => { if (document.body.classList.contains('vrfs-on') && VR_FS.fit) VR_FS.fit(); });
 function vrMount() {
-  const host = document.querySelector('.vr[data-vrkey]'); if (!host) return;
+  const host = document.querySelector('.vr[data-vrkey]'); if (!host) { document.body.classList.remove('vrfs-on'); VR_FS.off = VR_FS.toggle = VR_FS.fit = null; return; }
   const tag = host.getAttribute('data-vrkey'); if (host.__vr === tag) { const k0 = tag.split('@')[0]; if (VRS[k0] && VRS[k0].paintBar) VRS[k0].paintBar(); return; }
   host.__vr = tag; const key = tag.split('@')[0]; const v = VR[key];
   host.replaceChildren(); if (v && v.data) vrBuild(host, key, v.data);
@@ -285,9 +306,13 @@ function vrBuild(host, key, data) {
   VR_MODES.forEach(m => { const b = vrDom('button', 'btn sm', m[1], modes); b.type = 'button'; mb[m[0]] = b; b.onclick = () => { st.mode = m[0]; applyMode(); }; });
   const fitB = vrDom('button', 'btn sm', 'Fit', bar); fitB.type = 'button';
   const zin = vrDom('button', 'btn sm', '+', bar), zout = vrDom('button', 'btn sm', '−', bar); zin.type = zout.type = 'button'; zin.title = 'Zoom in'; zout.title = 'Zoom out';
-  const wkB = vrDom('button', 'btn sm', 'Walkthrough', bar); wkB.type = 'button'; wkB.title = 'Step through the added, changed and removed elements in reading order'; wkB.setAttribute('aria-pressed', 'false');
+  const wkB = vrDom('button', 'btn sm', 'Walkthrough', bar); wkB.type = 'button'; wkB.title = 'Step through the added, changed and removed elements in reading order'; wkB.setAttribute('aria-pressed', 'false'); wkB.hidden = !!data.mapPath; /* a committed diagram has no added, changed or removed elements to step through */
   const mmB = vrDom('button', 'btn sm', 'Mermaid', bar); mmB.type = 'button'; mmB.title = 'Export this view as mermaid flowchart text';
-  const leg = vrDom('div', 'vrleg small mut', null, host);
+  /* Full screen: the canvas takes the whole window (a body class, since the morph owns the host's own attributes); Esc or the button closes it. */
+  const fsB = vrDom('button', 'btn sm', '', bar); fsB.type = 'button'; fsB.title = 'Give the canvas the whole window (f; Esc closes)';
+  const setFs = (on) => { st.fs = on; document.body.classList.toggle('vrfs-on', on); fsB.textContent = on ? '✕ Close full screen' : '⤢ Full screen'; fsB.setAttribute('aria-pressed', String(on)); requestAnimationFrame(() => fit()); };
+  fsB.onclick = () => setFs(!st.fs); VR_FS.off = () => setFs(false); VR_FS.toggle = () => setFs(!st.fs); VR_FS.fit = () => fit();
+  const leg = vrDom('div', 'vrleg small mut', null, host); leg.hidden = !!data.mapPath; /* the change legend: a committed diagram shows no change marks */
   ['added', 'changed', 'removed', 'context'].forEach(s => { const i = vrDom('span', 'vrlg', null, leg); const sw = vrDom('i', 'vrsw ' + s, VR_MARK[s], i); sw.setAttribute('aria-hidden', 'true'); i.appendChild(document.createTextNode(' ' + s)); });
   vrDom('span', 'vrlg', '- - - dashed edge = inferred', leg);
   const wbar = vrDom('div', 'vrwalk', null, host); wbar.hidden = true; wbar.setAttribute('role', 'group'); wbar.setAttribute('aria-label', 'Walkthrough');
@@ -556,7 +581,7 @@ function vrBuild(host, key, data) {
   cv.addEventListener('keydown', wkKey); wbar.addEventListener('keydown', wkKey);
   wkB.onclick = () => { if (wk.on) wkOff(); else wkOn(); }; wkPrev.onclick = () => wkStep(-1); wkNext.onclick = () => wkStep(1); wkExit.onclick = wkOff;
   if (reviewing && !st.review) st.review = data.review;
-  draw(); paintBar();
+  draw(); paintBar(); setFs(!!st.fs);
 }
 
 // ---- state ----
@@ -575,6 +600,7 @@ function parseRoute() {
     if (seg.length === 2) return { kind: 'repo', repo };
     if (seg[2] === 'stub' && seg[3]) return { kind: 'stub', repo, branch: seg.slice(3).join('/') };
     if (seg[2] === 'graph') return { kind: 'repo', repo };
+    if (seg[2] === 'architecture' && seg.length === 3) return { kind: 'arch', repo };
     return { kind: 'item', repo, id: seg[2], forceDossier: seg[3] === 'dossier' };
   }
   return { kind: 'home' };
@@ -582,6 +608,7 @@ function parseRoute() {
 function hashQ() { const m = location.hash.match(/^#(?:q=)?(.+)$/); return m ? decodeURIComponent(m[1]) : ''; }
 const hrefRepo = (repo) => '/repo/' + enc(repo);
 const hrefItem = (repo, id) => '/repo/' + enc(repo) + '/' + enc(id);
+const hrefArch = (repo, path) => '/repo/' + enc(repo) + '/architecture' + (path ? '?d=' + enc(path) : '');
 const hrefStub = (repo, b) => '/repo/' + enc(repo) + '/stub/' + b.split('/').map(enc).join('/');
 
 // ---- classification ----
@@ -1003,7 +1030,7 @@ function repoView(repo) {
   // The stubs (the current one and the next) first, then Open work, each full width, one under the other.
   kids.push(sideColumn(repo));
   const dp = docPrsView(repo); if (dp) kids.push(dp);
-  const vm = vrRepoPanel(repo); if (vm) kids.push(vm);
+  const vm = vrRepoLink(repo); if (vm) kids.push(vm);
   kids.push(h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]));
   return h('div', {}, kids);
 }
@@ -1401,6 +1428,7 @@ function crumbs() {
   if (R.kind === 'item') add(R.id, R.forceDossier ? hrefItem(R.repo, R.id) : null);
   if (R.kind === 'item' && R.forceDossier) add('Dossier');
   if (R.kind === 'stub') add(R.branch);
+  if (R.kind === 'arch') add('Architecture');
   return out;
 }
 function detailUrl() {
@@ -1412,6 +1440,7 @@ function build() {
   if (!S.loaded) return h('div', { class: 'empty' }, ['Loading…']);
   if (R.kind === 'questions') return questionsView(); if (R.kind === 'repo') return repoView(R.repo);
   if (R.kind === 'chat') return chatView();
+  if (R.kind === 'arch') return archView(R.repo);
   if (R.kind === 'item') return itemView(R.repo, R.id); if (R.kind === 'stub') return stubView(R.repo, R.branch);
   return homeView();
 }
@@ -1454,7 +1483,7 @@ function render() {
   const sl = document.createElement('div'); sl.appendChild(h('span', { class: 'dot ' + (S.slack ? 'ok' : '') })); sl.appendChild(h('span', {}, [S.slack ? 'Slack connected' : 'Slack off'])); morph(document.getElementById('slack'), sl);
   const up = document.createElement('div'); up.appendChild(h('span', { class: 'dot ' + (S.live ? 'ok' : 'warn'), title: S.live ? 'live updates' : 'polling every 60 s' }));
   const t = new Date(S.changedAt || Date.now()).toISOString(); up.appendChild(when(t, 'updated ') || h('span')); morph(document.getElementById('upd'), up);
-  document.title = (R.kind === 'chat' ? 'Ask the agent · ' : R.kind === 'item' ? R.id + ' · ' : R.kind === 'repo' ? R.repo + ' · ' : '') + 'Pipeline · Owner questions';
+  document.title = (R.kind === 'chat' ? 'Ask the agent · ' : R.kind === 'item' ? R.id + ' · ' : R.kind === 'repo' ? R.repo + ' · ' : R.kind === 'arch' ? 'Architecture · ' + R.repo + ' · ' : '') + 'Pipeline · Owner questions';
   vrMount();
   if (scrollTarget) { const e = document.getElementById('q-' + scrollTarget); if (e) { e.scrollIntoView({ block: 'start' }); scrollTarget = ''; } }
 }
@@ -1474,7 +1503,8 @@ async function load(what) {
   await Promise.all(jobs);
   await loadDetail();
   if (R.kind === 'item') await vrLoad(R.repo, R.id);
-  if (R.kind === 'repo') await vrMapLoad(R.repo);
+  if (R.kind === 'repo' || R.kind === 'arch') await vrMapLoad(R.repo);
+  if (R.kind === 'arch') { const want = new URLSearchParams(location.search).get('d'); const m = VRM[R.repo]; if (want && (!m || m.open !== want)) vrOpenDiagram(R.repo, want); }
   S.loaded = true; S.changedAt = Date.now(); render();
 }
 let sse = null;
