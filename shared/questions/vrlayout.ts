@@ -191,6 +191,94 @@ async function runLayout(g: any, key: string, timeoutMs: number): Promise<Layout
   return L
 }
 
+// ---- collapsed groups (VR-03) ----
+/** Most collapsed ids one request may carry. */
+export const COLLAPSE_MAX = 200
+/**
+ * The graph with the given groups drawn as one box each. Pure; unknown ids are ignored; an empty set returns `graph` itself.
+ * A collapsed group becomes a node under its own id (`collapsed: true`, `members` = member nodes at any depth, label
+ * "Name (n)", status = the group's, or `changed` for a context group that holds changes). Its members and subgroups go away.
+ * Every edge that touched a hidden element is re-routed to the outermost collapsed box and aggregated per (source, target):
+ * one edge keeps its id and data (its own, even an edge already between those two ends), several become `agg:source>target` labelled "×n" (status = the common one, else
+ * `changed`; `inferred` only when all are). An edge that ends inside one box on both sides is dropped.
+ */
+export function collapseGraph(graph: any, ids: string[]): any {
+  const groups: any[] = graph.groups ?? []
+  const gmap = new Map<string, any>(groups.map((x) => [x.id, x]))
+  const want = new Set<string>(ids.filter((i) => gmap.has(i)))
+  if (!want.size) return graph
+  const top = (start: string | undefined): string | undefined => {
+    let t: string | undefined
+    let p = start
+    for (let n = 0; p && n < 100; n++) { if (want.has(p)) t = p; p = gmap.get(p)?.parent }
+    return t
+  }
+  const repOf = (id: string, isNode: boolean, g?: string): string => (isNode ? top(g) : top(id)) ?? id
+  const nodeRep = new Map<string, string>()
+  for (const n of graph.nodes) nodeRep.set(n.id, repOf(n.id, true, n.group))
+  const rep = (id: string): string => nodeRep.get(id) ?? (gmap.has(id) ? repOf(id, false) : id)
+  const stats = new Map<string, { n: number; added: number; changed: number; removed: number }>()
+  for (const w of want) stats.set(w, { n: 0, added: 0, changed: 0, removed: 0 })
+  for (const n of graph.nodes) {
+    const r = nodeRep.get(n.id)!
+    const s = r !== n.id ? stats.get(r) : undefined
+    if (s) { s.n++; if (n.status in s) (s as any)[n.status]++ }
+  }
+  const boxNode = (w: string): any => {
+    const g = gmap.get(w), s = stats.get(w)!
+    const status = g.status === "context" && s.added + s.changed + s.removed > 0 ? "changed" : g.status
+    const parts = (["added", "changed", "removed"] as const).filter((k) => s[k]).map((k) => s[k] + " " + k)
+    const out: any = { id: w, label: g.label + " (" + s.n + ")", kind: "group", status, evidence: g.evidence ?? [], collapsed: true, members: s.n,
+      detail: { after: "Collapsed group of " + s.n + " element" + (s.n === 1 ? "" : "s") + (parts.length ? ": " + parts.join(", ") : "") + ". Click to open it." } }
+    if (g.parent && gmap.has(g.parent)) out.group = g.parent
+    if (g.label_source) out.label_source = g.label_source
+    return out
+  }
+  const nodes: any[] = []
+  const placed = new Set<string>()
+  for (const n of graph.nodes) {
+    const r = nodeRep.get(n.id)!
+    if (r === n.id) nodes.push(n)
+    else if (!placed.has(r)) { placed.add(r); nodes.push(boxNode(r)) }
+  }
+  for (const w of want) if (!placed.has(w) && rep(w) === w) nodes.push(boxNode(w))
+  const keptGroups = groups.filter((x) => !want.has(x.id) && rep(x.id) === x.id)
+  const bucket = new Map<string, any[]>()
+  for (const e of graph.edges) {
+    const s = rep(e.source), t = rep(e.target)
+    if (s === t && (s !== e.source || t !== e.target)) continue
+    const k = s + "\u0000" + t
+    if (!bucket.has(k)) bucket.set(k, [])
+    bucket.get(k)!.push(e)
+  }
+  const out = [...bucket.entries()].map(([k, list]) => {
+    const [s, t] = k.split("\u0000")
+    if (list.length === 1) return list[0].source === s && list[0].target === t ? list[0] : { ...list[0], source: s, target: t }
+    const sts = new Set(list.map((x) => x.status))
+    return { id: "agg:" + s + ">" + t, source: s, target: t, kind: "aggregate", label: "×" + list.length, status: sts.size === 1 ? [...sts][0] : "changed",
+      resolution: list.every((x) => (x.resolution ?? "static") === "inferred") ? "inferred" : "static", count: list.length,
+      evidence: list.flatMap((x) => x.evidence ?? []).slice(0, 50) }
+  })
+  return { ...graph, groups: keptGroups, nodes, edges: out }
+}
+
+/** One view of a dossier directory with `collapsed` groups drawn as boxes, and its layout (cached on the collapsed graph's hash). */
+export async function collapsedView(dir: string, view: string, collapsed: string[]): Promise<{ graph: any; layout: Layout; collapsed: string[] }> {
+  if (!(VR_VIEWS as readonly string[]).includes(view)) throw new Error("view must be L0, L1 or L2")
+  const file = join(dir, view.toLowerCase() + ".json")
+  if (!existsSync(file) || !statSync(file).isFile()) throw new Error("no " + view.toLowerCase() + ".json")
+  const g = JSON.parse(readFileSync(file, "utf8"))
+  if (checkGraph(g, view).some((i) => i.code !== "dangling_edge")) throw new Error(view + " is not a valid graph")
+  const ids = [...new Set(collapsed)].slice(0, COLLAPSE_MAX)
+  const clean = stripDollar(g)
+  const known = new Set<string>([...(clean.groups ?? []).map((x: any) => x.id), ...clean.nodes.map((x: any) => x.id), ...(clean.lanes ?? []).map((x: any) => x.id)])
+  clean.edges = clean.edges.filter((e: any) => known.has(e.source) && known.has(e.target))
+  const lanes = view === "L1" && (clean.lanes ?? []).length > 0
+  const use = lanes ? [] : ids.filter((i) => (clean.groups ?? []).some((x: any) => x.id === i))
+  const graph = collapseGraph(clean, use)
+  return { graph, layout: await layoutGraph(graph), collapsed: use }
+}
+
 // ---- the three files of a dossier ----
 export const VR_VIEWS = ["L0", "L1", "L2"] as const
 export const vrDir = (root: string, dossier: string): string => join(root, ".discovery", "visual-review", dossier)

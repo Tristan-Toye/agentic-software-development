@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
 import { startLagWatch } from "./lagwatch.ts"
-import { hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
+import { collapsedView, hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
 import { buildAnswer, diagramsOf, MAX_BODY, ReviewError, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
 import { mapStatus, openDiagram } from "./vrmap.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
@@ -462,6 +462,14 @@ export async function handle(req: Request): Promise<Response> {
     const f = await vrFind(url.searchParams.get("dossier") ?? "", url.searchParams.get("repo") ?? "")
     if (!f.ok) return json({ error: f.error }, f.status)
     try { return json({ ...(await visualReview(vrDir(f.root, f.dossier), f.dossier)), review: reviewState(vrDir(f.root, f.dossier), f.dossier) }) } catch (e) { return json({ error: "visual review failed: " + (e as Error).message }, 500) }
+  }
+  // The same view with some groups collapsed to one box: the collapsed graph and its layout (the page only draws it).
+  if (req.method === "GET" && path === "/api/visual-review/layout") {
+    const f = await vrFind(url.searchParams.get("dossier") ?? "", url.searchParams.get("repo") ?? "")
+    if (!f.ok) return json({ error: f.error }, f.status)
+    const ids = (url.searchParams.get("collapsed") ?? "").split(",").filter(Boolean)
+    if (ids.some((i) => i.length > 200)) return json({ error: "collapsed ids are too long" }, 400)
+    try { return json(await collapsedView(vrDir(f.root, f.dossier), url.searchParams.get("view") ?? "", ids)) } catch (e) { return json({ error: "collapsed layout failed: " + (e as Error).message }, 400) }
   }
   // VR-04: one verdict on one element (saved to review.json), the answer text built from all of them, and the question it answers.
   if (path === "/api/visual-review/review") {

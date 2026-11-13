@@ -272,6 +272,19 @@ else:
   const ok = { dossier: "W-145", repo: "repoV", diagram: "L1", element: nodes("l1")[0], verdict: "ok" }
   const question = async () => (await (await fetch(`${base}/api/questions/repoV.W-145.Q1`)).json()) as any
 
+  test("GET layout: the collapsed graph and its layout; bad names and views are refused", async () => {
+    await start()
+    const r = await fetch(`${base}/api/visual-review/layout?dossier=W-145&repo=repoV&view=L2&collapsed=g-protocol,nope`)
+    expect(r.status).toBe(200)
+    const j: any = await r.json()
+    expect(j.collapsed).toEqual(["g-protocol"])
+    expect(j.graph.nodes.find((n: any) => n.id === "g-protocol")).toMatchObject({ collapsed: true, members: 2 })
+    expect(j.layout.boxes["g-protocol"]).toBeDefined()
+    expect(j.layout.boxes["c-set"]).toBeUndefined()
+    expect((await fetch(`${base}/api/visual-review/layout?dossier=W-145&repo=repoV&view=L9`)).status).toBe(400)
+    expect((await fetch(`${base}/api/visual-review/layout?dossier=..%2Fx&view=L2`)).status).toBe(400)
+    expect((await fetch(`${base}/api/visual-review/layout?dossier=NOPE&view=L2`)).status).toBe(404)
+  })
   test("POST review: a valid verdict is saved under the run's repo root and the response counts it", async () => {
     await start()
     const r = await post(ok)
