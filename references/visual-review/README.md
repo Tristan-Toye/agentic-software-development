@@ -62,7 +62,10 @@ scripts/vr_map.py list REPO [--dir docs/architecture]
 scripts/vr_map.py refresh REPO [--since REV] [--full] [--no-calls] [--no-product-map] [--calls-limit S] [--json]
 scripts/vr_refresh.py --selftest | map_refresh_pr.py --selftest
 scripts/vr_c2_drift.py --selftest | vr_map.py --selftest | vr_metrics.py --selftest
+scripts/vr_mermaid.py import FILE.md [--write] | render FILE.json | sync DIR | check DIR | --selftest   # exit 1 on a problem
 ```
+
+Architecture diagrams (c1 to c4, sequence) are change-graph JSON beside their `.md`; the `.md`'s Mermaid block is generated from it (`vr_mermaid.py`). To change one: edit the JSON, run `vr_mermaid.py sync docs/architecture`, commit both; the prose stays hand-written. `vr_mermaid.py check docs/architecture` belongs in CI and in the close gate. `vr_c2_drift.py` and `vr_c3_agree.py` read the JSON when it exists and parse the Mermaid otherwise; the dashboard opens a `.md` as a graph when its JSON exists, as raw Mermaid otherwise.
 
 - **Where**: the committed map is `docs/architecture/product-map.json` of the target repo (OQ-05 = A: the folder the anchor checker already covers). `build --table` also writes the feature-to-code table as Markdown, one anchor per row, which that checker reads.
 - **Scope** (OQ-09 = B): the map grows per feature. `build` needs `--features`, `--touched` or `--all`, and merges into an existing output (`--fresh` replaces it).

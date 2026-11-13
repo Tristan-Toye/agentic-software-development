@@ -35,6 +35,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vr_extract  # noqa: E402
 import vr_graph  # noqa: E402,F401
+import vr_mermaid  # noqa: E402
 import vr_metrics  # noqa: E402
 
 DEFAULT_IGNORE = ("workspace-hack",)
@@ -170,7 +171,7 @@ def check(root: str, c2: str | None = None, ignore=DEFAULT_IGNORE, runner=None) 
     c2 = c2 or find_c2(root)
     try:
         with open(c2, encoding="utf-8") as fh:
-            declared = parse_c2(fh.read())
+            declared = parse_c2(vr_mermaid.md_text_from_json(c2))
         derived = derive(root, runner)
     except OSError as exc:
         raise DriftError(str(exc))
@@ -281,6 +282,19 @@ def _selftest() -> int:
             fh.write(fixed)
         r2 = check(repo, runner=runner)
         ok("VC-02 clean", not r2["drift"], render(r2))
+        # JSON path: the c2 JSON (source) beats the Mermaid block of the .md, which is only the generated copy
+        jtxt = fixed.split("```mermaid\n", 1)[1].split("```", 1)[0].rstrip("\n")
+        g = vr_mermaid.import_block(jtxt, "c2-containers", "c2")
+        g["nodes"].append({"id": "node:zz", "label": "zz", "kind": "node", "status": "context", "evidence": vr_mermaid.evidence()})
+        with open(os.path.join(repo, "docs", "architecture", "c2-containers.json"), "w") as fh:
+            fh.write(vr_mermaid.dump_json(g))
+        with open(c2f, "w") as fh:  # the .md block is the old clean one, marked as generated from the JSON
+            fh.write("\n".join(["# c2 - Containers: the six crates", ""] + vr_mermaid.generated_lines("c2-containers.json", jtxt) + [""]))
+        rj = check(repo, runner=runner)
+        ok("JSON read, not the stale block", rj["extra_containers"] == ["zz"] and rj["drift"], rj["extra_containers"])
+        os.remove(os.path.join(repo, "docs", "architecture", "c2-containers.json"))
+        with open(c2f, "w") as fh:
+            fh.write(fixed)
         # a comment-line anchor and an extra container are caught
         with open(c2f, "w") as fh:
             fh.write(fixed.replace("```mermaid\nflowchart LR\n", '```mermaid\nflowchart LR\n    zz["zz"]\n'))

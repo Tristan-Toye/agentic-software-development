@@ -88,6 +88,16 @@
    `cargo-modules`, no touched crate with a file) is a stated skip, not a
    pass: copy it into the PR description.
 
+   Architecture diagrams (c1 to c4, sequence) are JSON files beside their
+   `.md` (`docs/architecture/<name>.json`): the JSON is the source and the
+   Mermaid block in the `.md` is generated. Edit the JSON, never the block,
+   then run `python3 "${PLUGIN_ROOT}/scripts/vr_mermaid.py" sync docs/architecture`;
+   the prose around the block stays hand-written. Before the session closes,
+   `python3 "${PLUGIN_ROOT}/scripts/vr_mermaid.py" check docs/architecture`
+   must exit 0 (a block that differs from its JSON, or an unmarked Mermaid
+   block, is a DEFECT). A diagram still only in Mermaid is converted once with
+   `vr_mermaid.py import <file>.md --write`.
+
 2. **Get the final verdict on the head the PR will carry** and keep the
     evidence — it goes in the PR description and in the Jira comment. Under
     `ci` the run is CI's on the pushed final head: push, wait, and keep the

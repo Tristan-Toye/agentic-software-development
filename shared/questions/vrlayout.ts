@@ -23,6 +23,8 @@ export type Layout = {
   edges: Record<string, [number, number][]>
   /** Where ELK put each labelled edge's label (the box it kept free for it). */
   labels?: Record<string, Box>
+  /** seq: the box around each frame's first..last steps (see frameBoxes), by frame id. */
+  frames?: Record<string, Box>
 }
 export type Issue = { code: string; where: string; message: string }
 /** One view as the page gets it. `layout` is null when the graph could not be laid out (see `issues`). */
@@ -54,7 +56,11 @@ function canon(v: any): any {
 export const graphHash = (g: unknown): string => createHash("sha256").update(JSON.stringify(canon(stripDollar(g)))).digest("hex")
 
 const STATUS = new Set(["added", "changed", "removed", "context"])
-const VIEWS = new Set(["L0", "L1", "L2", "map", "full"])
+const VIEWS = new Set(["L0", "L1", "L2", "map", "full", "c1", "c2", "c3", "c4", "seq"])
+/** Views drawn as lanes top to bottom (steps in order) instead of groups left to right: the L1 flow and a sequence diagram. */
+export const isLaneView = (view: unknown): boolean => view === "L1" || view === "seq"
+/** The views of the architecture diagrams kept as JSON beside their Markdown (scripts/vr_mermaid.py). */
+export const isDiagramView = (view: unknown): boolean => typeof view === "string" && /^(c[1-4]|seq)$/.test(view)
 /** Structural checks the page and the layout rely on. The full rules (budgets, evidence paths) stay in scripts/vr_graph.py. */
 export function checkGraph(g: any, expectView?: string): Issue[] {
   const out: Issue[] = []
@@ -62,7 +68,7 @@ export function checkGraph(g: any, expectView?: string): Issue[] {
   if (!g || typeof g !== "object" || Array.isArray(g)) { bad("not_object", "", "the file is not a JSON object"); return out }
   if (typeof g.schema_version !== "string" || !/^\d+\.\d+\.\d+$/.test(g.schema_version)) bad("schema_version", "schema_version", "missing or malformed schema_version")
   else if (g.schema_version.split(".")[0] !== "1") bad("schema_version", "schema_version", "unsupported major version " + g.schema_version + " (this reader handles 1.x)")
-  if (!VIEWS.has(g.view)) bad("view", "view", "view must be L0, L1, L2, map or full")
+  if (!VIEWS.has(g.view)) bad("view", "view", "view must be L0, L1, L2, map, full, c1, c2, c3, c4 or seq")
   else if (expectView && g.view !== expectView) bad("view_mismatch", "view", "the file holds view " + g.view + ", expected " + expectView)
   if (typeof g.title !== "string") bad("missing_field", "title", "title is required")
   for (const k of ["nodes", "edges"]) if (!Array.isArray(g[k])) bad("missing_field", k, k + " must be an array")
@@ -118,7 +124,7 @@ export function closeLayout(): void {
 const FOLDED_EXTRA = 36
 const size = (g: any, label: string, folded = false): { width: number; height: number } => {
   const t = String(label ?? "").length
-  return { width: Math.max(130, Math.min(250 + (folded ? FOLDED_EXTRA : 0), Math.round(t * 6.6 + 28 + (folded ? FOLDED_EXTRA : 0)))), height: g.view === "L1" ? 62 : 50 }
+  return { width: Math.max(130, Math.min(250 + (folded ? FOLDED_EXTRA : 0), Math.round(t * 6.6 + 28 + (folded ? FOLDED_EXTRA : 0)))), height: isLaneView(g.view) ? 62 : 50 }
 }
 
 /** The size of an edge label as the page draws it (11 px text on a backing rect). */
@@ -132,7 +138,7 @@ export const WRAP_FLAT = 3
 
 /** The ELK input for a graph: groups (or L1 lanes) as compound nodes, model order on. Pure. */
 export function elkInput(g: any, mode: "thorough" | "fast", wrap = false): { root: any; direction: "RIGHT" | "DOWN" } {
-  const direction = g.view === "L1" ? "DOWN" : "RIGHT"
+  const direction = isLaneView(g.view) ? "DOWN" : "RIGHT"
   const opts: Record<string, string> = {
     "elk.algorithm": "layered", "elk.direction": direction, "elk.hierarchyHandling": "INCLUDE_CHILDREN",
     "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES", "elk.spacing.nodeNode": "28",
@@ -141,13 +147,13 @@ export function elkInput(g: any, mode: "thorough" | "fast", wrap = false): { roo
   // A long left-to-right chain wraps onto more rows near the canvas shape, instead of one strip the canvas must shrink to fit.
   if (direction === "RIGHT" && wrap) Object.assign(opts, { "elk.layered.wrapping.strategy": "MULTI_EDGE", "elk.aspectRatio": String(WRAP_ASPECT) })
   if (mode === "fast") Object.assign(opts, { "elk.layered.thoroughness": "1", "elk.layered.nodePlacement.strategy": "SIMPLE", "elk.edgeRouting": "POLYLINE" })
-  const lanes: any[] = g.view === "L1" ? g.lanes ?? [] : []
+  const lanes: any[] = isLaneView(g.view) ? g.lanes ?? [] : []
   const containers: any[] = [...(g.groups ?? []), ...lanes]
   const known = new Set<string>(containers.map((c) => c.id))
   const nodeIds = new Set<string>(g.nodes.map((n: any) => n.id))
   const all = new Set<string>([...known, ...nodeIds])
   const parentOf = (n: any, isGroup: boolean): string | undefined => {
-    const p = isGroup ? n.parent : (g.view === "L1" && lanes.length ? n.lane : n.group)
+    const p = isGroup ? n.parent : (isLaneView(g.view) && lanes.length ? n.lane : n.group)
     return p && known.has(p) && p !== n.id ? p : undefined
   }
   const mk = new Map<string, any>()
@@ -156,7 +162,7 @@ export function elkInput(g: any, mode: "thorough" | "fast", wrap = false): { roo
   const root: any = { id: "root", layoutOptions: opts, children: [], edges: [] }
   // A parent cycle (a -> b -> a) would drop both groups out of the tree: break it by hanging the group on the root.
   const cyc = (id: string): boolean => { const seen = new Set<string>([id]); let p = parentOf(containers.find((c) => c.id === id) ?? {}, true); while (p) { if (seen.has(p)) return true; seen.add(p); p = parentOf(containers.find((c) => c.id === p) ?? {}, true) } return false }
-  for (const c of containers) { const p = g.view === "L1" && lanes.some((l) => l.id === c.id) ? undefined : parentOf(c, true); (p && !cyc(c.id) ? mk.get(p).children : root.children).push(mk.get(c.id)) }
+  for (const c of containers) { const p = isLaneView(g.view) && lanes.some((l) => l.id === c.id) ? undefined : parentOf(c, true); (p && !cyc(c.id) ? mk.get(p).children : root.children).push(mk.get(c.id)) }
   for (const n of g.nodes) { const p = parentOf(n, false); (p ? mk.get(p).children : root.children).push(mk.get(n.id)) }
   // A labelled edge carries its label at the size the page draws it, so ELK keeps room for it instead of the page squeezing it in later.
   for (const e of g.edges) if (all.has(e.source) && all.has(e.target)) {
@@ -165,6 +171,83 @@ export function elkInput(g: any, mode: "thorough" | "fast", wrap = false): { roo
     root.edges.push(ed)
   }
   return { root, direction }
+}
+
+/**
+ * seq: the box of each frame, from the laid-out boxes of the steps it spans (flows[0].after from `first` to `last`; a step the
+ * layout has no box for is skipped). A frame that holds other frames is padded wider, so nested boxes do not share an edge; the
+ * top keeps room for the label. Pure. Undefined when the graph has no frame with a box.
+ */
+export function frameBoxes(g: any, boxes: Record<string, Box>): Record<string, Box> | undefined {
+  if (!Array.isArray(g.frames) || !g.frames.length) return undefined
+  const order: string[] = Array.isArray(g.flows?.[0]?.after) ? g.flows[0].after : g.nodes.filter((n: any) => n.order !== undefined).sort((a: any, b: any) => a.order - b.order).map((n: any) => n.id)
+  const at = new Map<string, number>(order.map((id, i) => [id, i]))
+  const rng = new Map<string, [number, number]>()
+  for (const f of g.frames) { const a = at.get(f.first), b = at.get(f.last); if (a !== undefined && b !== undefined && a <= b) rng.set(f.id, [a, b]) }
+  // frame o sits inside frame f: its range is within f's, and when the ranges are equal it comes later in the array (outer before inner)
+  const idx = new Map<string, number>(g.frames.map((f: any, i: number) => [f.id, i]))
+  const inside = (o: any, f: any): boolean => { const q = rng.get(o.id), r = rng.get(f.id); return !!q && !!r && o.id !== f.id && q[0] >= r[0] && q[1] <= r[1] && (q[0] !== r[0] || q[1] !== r[1] || idx.get(o.id)! > idx.get(f.id)!) }
+  const memo = new Map<string, number>()
+  const depth = (f: any): number => { let d = memo.get(f.id); if (d === undefined) { d = 0; for (const o of g.frames) if (inside(o, f)) d = Math.max(d, 1 + depth(o)); memo.set(f.id, d) } return d }
+  const res: Record<string, Box> = {}
+  for (const f of g.frames) {
+    const r = rng.get(f.id)
+    if (!r) continue
+    const below = depth(f)
+    const bs = order.slice(r[0], r[1] + 1).map((id) => boxes[id]).filter(Boolean)
+    if (!bs.length) continue
+    const pad = 8 + 5 * Math.min(below, 4)
+    const x0 = Math.min(...bs.map((b) => b.x)) - pad, y0 = Math.min(...bs.map((b) => b.y)) - pad - 14
+    const x1 = Math.max(...bs.map((b) => b.x + b.w)) + pad, y1 = Math.max(...bs.map((b) => b.y + b.h)) + pad
+    const x = Math.max(0, Math.round(x0)), y = Math.max(0, Math.round(y0))
+    res[f.id] = { x, y, w: Math.round(x1) - x, h: Math.round(y1) - y }
+  }
+  return Object.keys(res).length ? res : undefined
+}
+
+/**
+ * seq: the layout of a sequence diagram, computed here and not by ELK: ELK lays the lane boxes out one by one and loses the order of
+ * steps that sit in different lanes. Lanes are columns in file order, each step is a box centred in its lane, one row per step in
+ * flows[0].after order, joined to the next by the edge of `flow` kind (down, across, down). A frame that opens or closes at a step
+ * adds room above or below it, so the frame boxes (frameBoxes) do not touch the neighbouring steps. Pure and deterministic.
+ */
+export function seqLayout(g: any): Layout {
+  const lanes: any[] = g.lanes ?? []
+  const ids = new Set<string>(g.nodes.map((n: any) => n.id))
+  const order: string[] = [...(Array.isArray(g.flows?.[0]?.after) ? g.flows[0].after.filter((id: string) => ids.has(id)) : [])]
+  const seen = new Set<string>(order)
+  for (const n of [...g.nodes].sort((a: any, b: any) => (a.order ?? 1e9) - (b.order ?? 1e9))) if (!seen.has(n.id)) { seen.add(n.id); order.push(n.id) }
+  const node = new Map<string, any>(g.nodes.map((n: any) => [n.id, n]))
+  const laneOf = (n: any): number => Math.max(0, lanes.findIndex((l) => l.id === n.lane))
+  const sz = new Map<string, { width: number; height: number }>(order.map((id) => [id, size(g, node.get(id).label)]))
+  const colW = lanes.map((_, i) => Math.max(160, ...order.filter((id) => laneOf(node.get(id)) === i).map((id) => sz.get(id)!.width)) + 2 * 20)
+  const colX: number[] = []
+  colW.reduce((x, w, i) => (colX[i] = x, x + w + 14), 0)
+  const at = new Map<string, number>(order.map((id, i) => [id, i]))
+  const starts = order.map(() => 0), ends = order.map(() => 0)
+  for (const f of g.frames ?? []) { const a = at.get(f.first), b = at.get(f.last); if (a !== undefined && b !== undefined && a <= b) { starts[a]++; ends[b]++ } }
+  const boxes: Record<string, Box> = {}
+  let y = 44
+  order.forEach((id, i) => {
+    if (i) y += 28 + 18 * Math.min(starts[i], 4) + 8 * Math.min(ends[i - 1], 4)
+    const n = node.get(id), l = laneOf(n), s = sz.get(id)!
+    boxes[id] = { x: Math.round(colX[l] + (colW[l] - s.width) / 2), y, w: s.width, h: s.height }
+    y += s.height
+  })
+  const bottom = y + 20
+  const last = lanes.length - 1
+  const L: Layout = { view: g.view, mode: "thorough", direction: "DOWN", width: last < 0 ? 0 : colX[last] + colW[last], height: bottom, boxes, edges: {} }
+  lanes.forEach((l, i) => { L.boxes[l.id] = { x: colX[i], y: 0, w: colW[i], h: bottom } })
+  for (const e of g.edges ?? []) {
+    const a = boxes[e.source], b = boxes[e.target]
+    if (!a || !b) continue
+    const ax = a.x + a.w / 2, bx = b.x + b.w / 2, ya = a.y + a.h, yb = b.y
+    const mid = Math.round((ya + yb) / 2)
+    L.edges[e.id] = (ax === bx || yb <= ya ? [[Math.round(ax), ya], [Math.round(bx), yb]] : [[Math.round(ax), ya], [Math.round(ax), mid], [Math.round(bx), mid], [Math.round(bx), yb]]) as [number, number][]
+  }
+  const fr = frameBoxes(g, boxes)
+  if (fr) { L.frames = fr; for (const b of Object.values(fr)) { L.width = Math.max(L.width, b.x + b.w); L.height = Math.max(L.height, b.y + b.h) } }
+  return L
 }
 
 const cache = new Map<string, Layout>()
@@ -192,6 +275,7 @@ export async function layoutGraph(graph: any, timeoutMs = LAYOUT_TIMEOUT_MS): Pr
 async function runLayout(g: any, key: string, timeoutMs: number): Promise<Layout> {
   // A long flat strip (one chain of layers) is laid out again wrapped onto rows near the canvas shape. A small graph is never wrapped: its
   // edges would loop around the rows. Wrapping is an ELK extra that can throw on some graphs: then the unwrapped layout stays.
+  if (g.view === "seq" && (g.lanes ?? []).length) { const L = seqLayout(g); cache.set(key, L); return L }
   const flat = await runLayoutOnce(g, key, timeoutMs, false)
   if (flat.direction !== "RIGHT" || flat.mode !== "thorough" || flat.width <= WRAP_WIDTH || flat.width / Math.max(flat.height, 1) <= WRAP_FLAT) return flat
   let wrapped: Layout
@@ -226,6 +310,8 @@ async function runLayoutOnce(g: any, key: string, timeoutMs: number, wrap: boole
   const L: Layout = { view: g.view, mode, direction, width: Math.ceil(out.width), height: Math.ceil(out.height), boxes: {}, edges: {} }
   const walk = (n: any) => { for (const c of n.children ?? []) { L.boxes[c.id] = { x: Math.round(c.x), y: Math.round(c.y), w: Math.round(c.width), h: Math.round(c.height) }; walk(c) } }
   walk(out)
+  const fr = frameBoxes(g, L.boxes)
+  if (fr) { L.frames = fr; for (const b of Object.values(fr)) { L.width = Math.max(L.width, b.x + b.w); L.height = Math.max(L.height, b.y + b.h) } }
   for (const e of out.edges ?? []) {
     // A wrapped edge comes in several sections, one per row it crosses: the drawn line is all of them in order.
     const pts = chainSections(e.sections ?? []).flatMap((s: any) => [s.startPoint, ...(s.bendPoints ?? []), s.endPoint])
@@ -365,12 +451,12 @@ function mergeDirections(edges: any[], nodes: any[]): any[] {
 }
 
 /**
- * L1 gives the order of its steps in `flows` (before and after lists), not as edges. Each step after the next in a flow gets
+ * L1 and seq give the order of its steps in `flows` (before and after lists), not as edges. Each step after the next in a flow gets
  * an edge, so the layout runs the flow top to bottom and the page draws the arrows: `context` when the pair is in both lists,
  * `added` when only in the after list, `removed` when only in the before list. A pair an edge of the file already joins is left alone.
  */
 export function withFlowEdges(g: any): any {
-  if (g.view !== "L1" || !Array.isArray(g.flows) || !g.flows.length) return g
+  if (!isLaneView(g.view) || !Array.isArray(g.flows) || !g.flows.length) return g
   const nodes = new Set<string>(g.nodes.map((n: any) => n.id))
   const have = new Set<string>(g.edges.map((e: any) => e.source + "\u0000" + e.target))
   const added: any[] = []
@@ -396,7 +482,7 @@ export async function collapseLoaded(g: any, view: string, collapsed: string[]):
   const known = new Set<string>([...(clean.groups ?? []).map((x: any) => x.id), ...clean.nodes.map((x: any) => x.id), ...(clean.lanes ?? []).map((x: any) => x.id)])
   clean.edges = clean.edges.filter((e: any) => known.has(e.source) && known.has(e.target))
   const flowed = withFlowEdges(clean)
-  const lanes = view === "L1" && (clean.lanes ?? []).length > 0
+  const lanes = isLaneView(view) && (clean.lanes ?? []).length > 0
   const use = lanes ? [] : ids.filter((i) => (clean.groups ?? []).some((x: any) => x.id === i))
   const graph = collapseGraph(flowed, use)
   return { graph, layout: await layoutGraph(graph), collapsed: use }

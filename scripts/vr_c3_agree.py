@@ -59,6 +59,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vr_extract  # noqa: E402
 import vr_graph  # noqa: E402
+import vr_mermaid  # noqa: E402
 
 THRESHOLD = 95.0
 TARGET = vr_extract.CM_TARGET  # one source of truth with the module layer (vr_extract.CM_FLAGS)
@@ -205,7 +206,7 @@ def check(repo: str, crate: str, c3: str | None = None, threshold: float = THRES
     c3 = c3 or find_c3(repo, crate)
     try:
         with open(c3, encoding="utf-8") as fh:
-            declared = parse_c3(fh.read())
+            declared = parse_c3(vr_mermaid.md_text_from_json(c3))
     except OSError as exc:
         raise AgreeError(str(exc))
     if declared["crate"] != crate_ident(crate):
@@ -356,6 +357,16 @@ def _selftest() -> int:
         r4 = check(tmp, "protocol", runner=run)
         ok("extra edge reported", r4["extra_edges"] == ["protocol::a -> protocol::b"], r4)
         path = os.path.join(arch, "c3-components-protocol.md")
+        # JSON path: the JSON (source) is read, not the stale Mermaid block of the .md generated from it
+        jtxt = c3_of(edges).split("```mermaid\n", 1)[1].split("```", 1)[0].rstrip("\n")
+        jg = vr_mermaid.import_block(jtxt, "c3-components-protocol", "c3")
+        jg["edges"].pop(0)
+        with open(os.path.join(arch, "c3-components-protocol.json"), "w") as fh:
+            fh.write(vr_mermaid.dump_json(jg))
+        put("protocol", "\n".join(["# c3", ""] + vr_mermaid.generated_lines("c3-components-protocol.json", jtxt) + [""]))
+        rj = check(tmp, "protocol", runner=run)
+        ok("JSON read, not the stale block", len(rj["missing_edges"]) == 1, rj)
+        os.remove(os.path.join(arch, "c3-components-protocol.json"))
         put("protocol", c3_of(edges))
         lines = c3_of(edges).split("\n")
         # errors: wrong crate, no marker, empty edges, wrong tool version
