@@ -59,6 +59,8 @@ scripts/vr_map.py check REPO MAP.json [--json]                            # exit
 scripts/vr_map.py recall REPO MAP.json --changes REV1,REV2 [--expected FILE.json] [--include-tests]
 scripts/vr_map.py plan-check BASE.json PLAN.json                          # exit 1 when the plan is stale
 scripts/vr_map.py list REPO [--dir docs/architecture]
+scripts/vr_map.py refresh REPO [--since REV] [--full] [--no-calls] [--no-product-map] [--calls-limit S] [--json]
+scripts/vr_refresh.py --selftest | map_refresh_pr.py --selftest
 scripts/vr_c2_drift.py --selftest | vr_map.py --selftest | vr_metrics.py --selftest
 ```
 
@@ -80,3 +82,15 @@ scripts/vr_c2_drift.py --selftest | vr_map.py --selftest | vr_metrics.py --selft
 | `vr_map` `recall` | changes, touched_source_files, file_recall, unit_recall, threshold (always null), seconds |
 
 Each line also has `ts` (UTC) and `tool`, `event`.
+
+### Whole-repo map: cache and incremental refresh
+
+`vr_map.py refresh REPO` (implemented in `vr_refresh.py`) writes the committed whole-repo views into `docs/architecture/`: `crate-map.json` (crates and their dependencies), `modules-<crate>.json` (module tree per crate), `calls-<crate>.json` (module-to-module calls, other crates collapsed to crate nodes), `crate-calls.json` and the product map `product-map.json`, plus `map-manifest.json` (extraction commit, previous commit, node counts, what was reused). Every view is validated before it is written, and a view whose content did not change is not rewritten.
+
+- **Structure is cached, not re-extracted each run** (this supersedes the Q8 "fresh each run" for the whole-repo map; per-dossier before-graphs still extract fresh within VC-08). The cache lives in `<git common dir>/asd-visual-review/cache/`, not in `.discovery/`: that folder is tracked in some repos and would be swept into commits (same reasoning as `asd-drivers/`).
+- **Module layer**: one entry per crate, keyed by the sha256 of the git blob ids of its `Cargo.toml`, `build.rs` and `src/` files plus the cargo-modules and extractor versions. A crate that did not change is reused.
+- **Call layer**: one entry per source file, keyed by its blob id. Only changed files go to rust-analyzer (and it is not started when nothing changed). Each file is stored as soon as it finishes, so a run that hits its limit resumes. Unchanged files whose cached callee moved or vanished in a changed file are recomputed too (reported as dependents). Incoming calls are the inverse of the outgoing calls of all files, so only outgoing calls are requested.
+- **Product map**: first run `build --all`; later runs `build --touched` over the first-parent commits from the previous extraction commit to HEAD, plus new FEATURE-BOOK features; removed features are dropped. It exceeds the L0 budget of 15 on a repo with many features, so it is checked with the budget off and the dashboard lists it anyway.
+- **Limits**: whole-repo builds allow up to 8 h (`--calls-limit`), 300 s per file (`--file-limit`) and 1800 s for indexing (`--index-limit`); the 120 s VC-08 limit stays for per-dossier runs. rust-analyzer runs with build scripts, proc macros, check-on-save and cache priming off (`vr_ra.FAST_OPTIONS`), so calls that exist only in macro-expanded code are not seen.
+- **Stub hook**: `stub_target.py` starts `map_refresh_pr.py` detached after cutting a new stub. It runs the refresh from the previous map's extraction commit in a temporary worktree of the new stub and opens a pull request `chore/map-refresh-<date>` into it (opt-in: only when the repo already commits `map-manifest.json` or `crate-map.json`; `ASD_MAP_REFRESH=0` disables, `=1` forces). Never a push to development.
+- **Exit and output**: prints `modules: N reused, M recomputed`, `calls: ...`, `product map: ...`; `--json` gives the same as data.

@@ -4,7 +4,10 @@
 Adapted from the D0 spike (research/d0/scripts/ra_calls.py), now with a hard
 deadline: a reader thread feeds a queue, every wait is bounded by `timeout`
 seconds for the WHOLE session, and on expiry the server is killed and RaError
-is raised. Stdlib only. D0 measured 16 s to the first answer and 3 GB RSS on
+is raised. Stdlib only. For whole-repo builds `outgoing_for_file(rel)` batches one file (documentSymbol, then the
+outgoing calls of each fn), `set_deadline(s)` resets the clock per file, requests retry on "content modified"
+(-32801/-32802), and `options=FAST_OPTIONS` (build scripts, proc macros, check-on-save and cache priming off, verified in the
+rust-analyzer manual) keeps indexing to seconds; calls visible only in macro-expanded code are then missed. D0 measured 16 s to the first answer and 3 GB RSS on
 config-harness, so this runs on request only.
 
     from vr_ra import RaClient
