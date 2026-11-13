@@ -1,6 +1,6 @@
 # Open questions for the owner
 
-Each question has options and a proposal. The proposal is not a decision. Status: all OPEN.
+Each question has options and a proposal. The proposal is not a decision. Status: OQ-01 and OQ-06 DECIDED (2026-11-12); the rest OPEN.
 
 ## OQ-01. The "Never ask for approval" conflict
 
@@ -8,6 +8,7 @@ Each question has options and a proposal. The proposal is not a decision. Status
 - Audit note: code enforces the policy. `scripts/ask_owner.py` refuses approval-shaped questions under the runner (`APPROVAL_PATTERNS`, lines 135-168; off with `ASD_ASK_LINT=0`). Option B must pass that check. Option A needs a lint change.
 - Options: A, a named exception. B, frame it as a product question. C, no gate.
 - Proposal: B, plus one sentence in the policy that names the visual-review question as a product question.
+- **Decision (owner, 2026-11-12): B.** The visual review is the product question "Is this what the feature should do?"; `references/owner-questions.md` gets one sentence naming it a product question, and the question must pass `ask_owner.py`'s approval lint unchanged. The run waits for the answer.
 - Blocks: [VR-04](../visual-review/features/04-approval-and-element-comments/README.md).
 
 ## OQ-02. React island or hand-written canvas
@@ -39,6 +40,7 @@ Each question has options and a proposal. The proposal is not a decision. Status
 - Context: contract review has no size gate ([Q7](../visual-review/research/synthesis/q7-pipeline-placement.md)).
 - Options: every build; builds above a size; owner switch per dossier.
 - Proposal: every build at first, so the measures in [Q9](../visual-review/research/synthesis/q9-measuring-value.md) have data. Add a gate later.
+- **Decision (owner, 2026-11-12): every build** at first; revisit a size gate once the Q9 measures have data.
 
 ## OQ-07. Recall threshold for the L0 map
 
