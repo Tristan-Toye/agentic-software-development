@@ -1,6 +1,6 @@
 // Visual review (VR-06 wiring): the dashboard side of the living product map. It runs scripts/vr_map.py (check, list)
 // on a repo root, with a timeout, and caches the staleness result on the map file's mtime.
-import { existsSync, readFileSync, statSync } from "node:fs"
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { join, resolve, sep } from "node:path"
 import { checkGraph, layoutGraph, stripDollar, type ViewResult } from "./vrlayout.ts"
 
@@ -89,7 +89,11 @@ export async function openDiagram(root: string, rel: string, listed: Diagram[]):
   if (!d) throw new Error("not a listed diagram")
   const abs = resolve(root, rel)
   if (!abs.startsWith(resolve(root) + sep)) throw new Error("path leaves the repo")
-  const text = readFileSync(abs, "utf8")
+  // The lexical check passes a symlink inside the repo that points outside it: compare the real paths.
+  let real: string
+  try { real = realpathSync(abs) } catch { throw new Error("diagram not found") }
+  if (!real.startsWith(realpathSync(root) + sep)) throw new Error("path leaves the repo")
+  const text = readFileSync(real, "utf8")
   if (!rel.endsWith(".json")) {
     const m = text.match(/```mermaid\n([\s\S]*?)```/)
     return { kind: "mermaid", title: d.title, text: (m ? m[1] : text).trim() }

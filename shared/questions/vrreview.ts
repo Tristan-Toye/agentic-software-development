@@ -165,6 +165,14 @@ export function buildAnswer(state: ReviewState, dossier: string): { option: "A" 
   return { option: "B", text }
 }
 
+/** The `topic` marker `ask_owner.py ask --topic visual-review` writes on the visual-review question. */
+export const VR_TOPIC = "visual-review"
+
+/** True for the dossier's visual-review question: the explicit marker, a product question, and (a secondary guard) the Approved / Changes requested labels. */
+export function isReviewQuestion(q: { topic?: string; qkind: string; options: { key: string; label: string }[] }): boolean {
+  return q.topic === VR_TOPIC && q.qkind === "product" && !!reviewOptions(q.options)
+}
+
 /** The option keys of the question for "Approved" and "Changes requested"; null when the question is not the visual-review one. */
 export function reviewOptions(options: { key: string; label: string }[]): { A: string; B: string } | null {
   const a = options.find((o) => /^approved\b/i.test(o.label)), b = options.find((o) => /^changes requested\b/i.test(o.label))

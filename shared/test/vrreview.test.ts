@@ -4,7 +4,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { buildAnswer, diagramsOf, MAX_ANSWER, MAX_COMMENT, readReview, reviewOptions, reviewState, setVerdict, ReviewError } from "../questions/vrreview.ts"
+import { buildAnswer, diagramsOf, isReviewQuestion, MAX_ANSWER, MAX_COMMENT, readReview, reviewOptions, reviewState, setVerdict, ReviewError } from "../questions/vrreview.ts"
 import { questionBlocks } from "../questions/slack.ts"
 import { parseQuestion } from "../questions/store.ts"
 import { PAGE } from "../questions/page.ts"
@@ -171,6 +171,18 @@ describe("answer text", () => {
     expect(ph).toContain("`A|Approved|fan-out starts`")
     expect(ph).toContain("`B|Changes requested|back to the contract`")
     expect(ph).toContain("review.json")
+    expect(ph).toContain("--topic visual-review")
+  })
+  test("the marker is required: labels alone are not the visual-review question; the labels stay a secondary guard", () => {
+    const opts = [{ key: "A", label: "Approved" }, { key: "B", label: "Changes requested" }]
+    expect(isReviewQuestion({ topic: "visual-review", qkind: "product", options: opts })).toBe(true)
+    expect(isReviewQuestion({ qkind: "product", options: opts })).toBe(false)
+    expect(isReviewQuestion({ topic: "", qkind: "product", options: opts })).toBe(false)
+    expect(isReviewQuestion({ topic: "visual-review", qkind: "product", options: [{ key: "A", label: "Keep" }, { key: "B", label: "Rename" }] })).toBe(false)
+    expect(isReviewQuestion({ topic: "visual-review", qkind: "design", options: opts })).toBe(false)
+    const line = (extra: object) => JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "t", qkind: "product", repo: "r", dossier: "W-1", options: opts, ...extra })
+    expect(parseQuestion("r.W-1.Q1", line({ topic: "visual-review" }))!.topic).toBe("visual-review")
+    expect(parseQuestion("r.W-1.Q1", line({}))!.topic).toBe("")
   })
 })
 
@@ -192,11 +204,11 @@ describe("diagramsOf (run detail)", () => {
 
 describe("Slack gets the question text only", () => {
   const q = (answer: any) => parseQuestion("r.W-145.Q1", [
-    JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Does this picture match what the feature should do?", qkind: "product", repo: "r", dossier: "W-145", options: [{ key: "A", label: "Approved", consequence: "fan-out starts" }, { key: "B", label: "Changes requested", consequence: "back to the contract" }] }),
+    JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Does this picture match what the feature should do?", qkind: "product", topic: "visual-review", repo: "r", dossier: "W-145", options: [{ key: "A", label: "Approved", consequence: "fan-out starts" }, { key: "B", label: "Changes requested", consequence: "back to the contract" }] }),
     JSON.stringify({ ts: "2", from: "owner", kind: "followup", text: "Element s1 (L1): why?", anchor: { diagram: "L1", element: "s1" } }),
     JSON.stringify(answer)].join("\n"))!
   test("the question blocks have no verdicts, and an answered review shows the option only", () => {
-    const open = parseQuestion("r.W-145.Q1", JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Does this picture match what the feature should do?", qkind: "product", repo: "r", dossier: "W-145", options: [{ key: "A", label: "Approved" }, { key: "B", label: "Changes requested" }] }))!
+    const open = parseQuestion("r.W-145.Q1", JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Does this picture match what the feature should do?", qkind: "product", topic: "visual-review", repo: "r", dossier: "W-145", options: [{ key: "A", label: "Approved" }, { key: "B", label: "Changes requested" }] }))!
     expect(JSON.stringify(questionBlocks(open, 7317))).toContain("Does this picture match")
     const ans = q({ ts: "3", from: "owner", kind: "answer", option: "B", text: "changes requested\n- change L1 s2: secret comment", review: true })
     expect(ans.state).toBe("answered")
@@ -250,10 +262,12 @@ else:
     if (base) return
     mkdirSync(qdir, { recursive: true })
     const J = (o: any) => JSON.stringify(o)
-    writeFileSync(join(qdir, "repoV.W-145.Q1.jsonl"), J({ ts: "2026-11-12T10:00:00Z", from: "agent", kind: "question", repo: "repoV", dossier: "W-145", root: repo, qkind: "product", text: "Does this picture match what the feature should do?", recommendation: "A", blocks: "Phase 4 fan-out",
+    writeFileSync(join(qdir, "repoV.W-145.Q1.jsonl"), J({ ts: "2026-11-12T10:00:00Z", from: "agent", kind: "question", repo: "repoV", dossier: "W-145", root: repo, qkind: "product", topic: "visual-review", text: "Does this picture match what the feature should do?", recommendation: "A", blocks: "Phase 4 fan-out",
       options: [{ key: "A", label: "Approved", consequence: "fan-out starts" }, { key: "B", label: "Changes requested", consequence: "back to the contract" }] }) + "\n")
     writeFileSync(join(qdir, "repoV.W-145.Q2.jsonl"), J({ ts: "2026-11-12T10:01:00Z", from: "agent", kind: "question", repo: "repoV", dossier: "W-145", root: repo, qkind: "product", text: "Which name?", recommendation: "A", blocks: "naming",
       options: [{ key: "A", label: "Keep", consequence: "none" }, { key: "B", label: "Rename", consequence: "rename" }] }) + "\n")
+    writeFileSync(join(qdir, "repoV.W-145.Q3.jsonl"), J({ ts: "2026-11-12T10:02:00Z", from: "agent", kind: "question", repo: "repoV", dossier: "W-145", root: repo, qkind: "product", text: "Labels but no marker", recommendation: "A", blocks: "x",
+      options: [{ key: "A", label: "Approved", consequence: "x" }, { key: "B", label: "Changes requested", consequence: "y" }] }) + "\n")
     proc = Bun.spawn([process.execPath, "--no-install", join(import.meta.dir, "..", "questions", "server.ts")], {
       env: { ...process.env, ASD_QUESTIONS_DIR: qdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_DISK_WATCH: "0", ASD_LAG_WATCH: "0", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: repo + ":" + bare, ASD_OPEN_WORK_DIR: join(cdir, "ow"), ASD_RUNS_DIR: join(cdir, "runs"), ASD_CLAUDE_PROJECTS: join(cdir, "projects"), ASD_RUNS_NO_GH: "1", ASD_BLOCK_LOG: join(cdir, "blocks.jsonl"), ASD_CHAT_DIR: join(cdir, "chats"), ASD_DM_AGENT_FILE: join(cdir, "dm.json"), ASD_VR_MAP_BIN: fake },
       stdout: "pipe", stderr: "ignore",
@@ -351,6 +365,9 @@ else:
     expect(r.status).toBe(201) // a follow-up ignores the flag
     const r2 = await fetch(`${base}/api/questions/repoV.W-145.Q2/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "answer", option: "A", text: "y", review: true }) })
     expect(r2.status).toBe(400)
+    // the Approved / Changes requested labels without the topic marker are not the visual-review question
+    const r3 = await fetch(`${base}/api/questions/repoV.W-145.Q3/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "answer", option: "A", text: "y", review: true }) })
+    expect(r3.status).toBe(400)
   })
   test("the batch answer goes through the question card's path; the first answer is final (S4, S5, VC-03)", async () => {
     await start()
@@ -422,5 +439,28 @@ else:
   })
   test("the page code: verdict controls, Send review, banner and repo view exist and keep the no-markup rule", () => {
     for (const w of ["Send review", "Save verdict", "Remove from scope", "Not yet looked at", "/api/visual-review/review", "/api/visual-review/answer", "Product map and diagrams", "vr-open", "review: true"]) expect(PAGE, w).toContain(w)
+  })
+})
+
+describe("openDiagram keeps to the repo", () => {
+  test("a listed diagram that is a symlink pointing outside the repo is refused; an inner one opens", async () => {
+    const { openDiagram } = await import("../questions/vrmap.ts")
+    const { symlinkSync } = await import("node:fs")
+    const base = mkdtempSync(join(tmpdir(), "vr-link-"))
+    const repo = join(base, "repo"), outside = join(base, "outside")
+    mkdirSync(join(repo, "docs"), { recursive: true })
+    mkdirSync(outside)
+    writeFileSync(join(outside, "secret.md"), "```mermaid\ngraph LR\n  a --> b\n```\n")
+    writeFileSync(join(repo, "docs", "real.md"), "```mermaid\ngraph LR\n  c --> d\n```\n")
+    symlinkSync(join(outside, "secret.md"), join(repo, "docs", "escape.md"))
+    symlinkSync(join(repo, "docs", "real.md"), join(repo, "docs", "inner.md"))
+    symlinkSync(outside, join(repo, "docs", "dir"))
+    const listed = ["docs/escape.md", "docs/inner.md", "docs/dir/secret.md", "docs/missing.md"].map((p) => ({ path: p, kind: "other", title: p }))
+    await expect(openDiagram(repo, "docs/escape.md", listed)).rejects.toThrow("path leaves the repo")
+    await expect(openDiagram(repo, "docs/dir/secret.md", listed)).rejects.toThrow("path leaves the repo")
+    await expect(openDiagram(repo, "docs/missing.md", listed)).rejects.toThrow("diagram not found")
+    const ok: any = await openDiagram(repo, "docs/inner.md", listed)
+    expect(ok.kind).toBe("mermaid")
+    expect(ok.text).toContain("c --> d")
   })
 })

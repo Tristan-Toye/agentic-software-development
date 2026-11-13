@@ -310,8 +310,12 @@ payload holds no diagram file and no dossier text from this step.
    issue list in `ERRORS`; **at most 2 repair attempts**, then stop, log the
    open issues in `## Build log` and report. A graph that fails validation
    creates **no** owner question.
-4. Ask the owner ONE product question with `ask_owner.py ask --kind product`
-   (`references/owner-questions.md`): "Does this picture match what the
+4. Ask the owner ONE product question with
+   `ask_owner.py ask --kind product --topic visual-review`
+   (`references/owner-questions.md`). The `--topic` marker is what makes it
+   the visual-review question: the dashboard canvas and the answer path
+   accept only a question that carries it (the two option labels below are a
+   secondary guard), so a question without it gets the ordinary buttons: "Does this picture match what the
    feature should do?", options `A|Approved|fan-out starts` and
    `B|Changes requested|back to the contract`, the dashboard view of the
    three files linked in the question text, `--blocks` the Phase 4 fan-out.

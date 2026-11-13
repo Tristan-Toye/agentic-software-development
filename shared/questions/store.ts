@@ -24,6 +24,8 @@ export type Question = {
   blocks: string
   // What the owner is asked to decide, from `ask_owner.py ask --kind`: design, product or uncertainty; "" when not given.
   qkind: string
+  // Set by `ask_owner.py ask --topic visual-review`: the one question the dashboard review canvas answers; "" otherwise.
+  topic: string
   ts: string
   answer: Line | null
   lines: Line[]
@@ -71,6 +73,7 @@ export function parseQuestion(id: string, content: string): Question | null {
     recommendation: str([...lines].reverse().find((l) => l.kind === "reply" && typeof (l as any).recommend === "string")?.["recommend" as keyof Line] ?? q.recommendation),
     blocks: str(q.blocks),
     qkind: str(q.qkind),
+    topic: str(q.topic),
     ts: str(q.ts),
     answer,
     lines,
