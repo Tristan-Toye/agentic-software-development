@@ -292,6 +292,50 @@ def layer_modules(pkgs, root: str, ws_root: str, files: _Files, runner, cfg_test
     return nodes, edges, meta, [{"name": "cargo-modules", "version": ver}]
 
 
+def _modules_cached(pkgs, root, ws_root, files, runner, cfg_test, jobs, cache, parts):
+    """Layer 2 per crate through `cache`: only the crates with no stored result run cargo-modules."""
+    nodes, edges, tools = [], [], []
+    reused, todo = [], []
+    keyed = {}
+    for p in pkgs:
+        k = cache.key(p)
+        keyed[p["name"]] = k
+        hit = cache.load(p["name"], k) if k else None
+        if hit is not None:
+            reused.append(p["name"])
+            nodes += hit[0]
+            edges += hit[1]
+            if parts is not None:
+                parts[p["name"]] = (hit[0], hit[1])
+        else:
+            todo.append(p)
+    meta: dict = {"status": "ran"}
+    failed_names, ran = [], []
+    if todo:
+        with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            results = list(pool.map(lambda p: layer_modules([p], root, ws_root, files, runner, cfg_test, 1), todo))
+        for p, (n, e, lm, tl) in zip(todo, results):
+            if lm.get("status") == "skipped":
+                return [], [], lm, []
+            if lm.get("reason"):  # some target failed: keep what came back, store nothing
+                failed_names.append(p["name"])
+                meta["reason"] = "cargo modules failed for: " + ", ".join(failed_names)
+            elif keyed[p["name"]]:
+                cache.store(p["name"], keyed[p["name"]], n, e)
+            ran.append(p["name"])
+            nodes += n
+            edges += e
+            tools = tl
+            if parts is not None:
+                parts[p["name"]] = (n, e)
+    if not tools:
+        ver, _ = cargo_modules_version(runner, root)
+        tools = [{"name": "cargo-modules", "version": ver}]
+    meta["reused"] = sorted(reused)
+    meta["recomputed"] = sorted(ran)
+    return nodes, edges, meta, tools
+
+
 # ------------------------------------------------------------------ layer 4
 
 def _qual_for(rel: str, pkgs, ws_root: str) -> str:
@@ -431,9 +475,16 @@ def _fn_node(item: dict, pkgs, ws_root: str, nodes: dict, ids: dict) -> str:
 # -------------------------------------------------------------------- rust
 
 def extract_rust(root: str, layers=(1, 2), calls=(), timeout: float = 120.0, cfg_test: bool = False, jobs: int = 4,
-                 runner=None, ra_factory=None, timings: dict | None = None, crates=None) -> dict:
+                 runner=None, ra_factory=None, timings: dict | None = None, crates=None, module_cache=None,
+                 parts: dict | None = None) -> dict:
     """`crates`: names of the workspace crates layer 2 runs for (None: all). The other crates keep
-    their crate node; meta.layers.modules records `limited_to` and `skipped_crates`."""
+    their crate node; meta.layers.modules records `limited_to` and `skipped_crates`.
+
+    `module_cache` (whole-repo map, vr_refresh.py) makes layer 2 incremental per crate: an object with
+    `key(pkg) -> str`, `load(name, key) -> (nodes, edges) | None` and `store(name, key, nodes, edges)`.
+    A crate with a stored result is not run again (meta.layers.modules lists `reused` and `recomputed`);
+    a crate whose run failed is never stored. `parts`, when given, is filled with
+    {crate name: (module nodes, module edges)} for every crate of layer 2, reused or not."""
     runner = runner or default_runner
     timings = timings if timings is not None else {}
     root = os.path.abspath(root)
@@ -460,7 +511,10 @@ def extract_rust(root: str, layers=(1, 2), calls=(), timeout: float = 120.0, cfg
         if crates is not None:
             want = set(crates)
             mod_pkgs = [p for p in pkgs if p["name"] in want]
-        n, e, lm, tl = layer_modules(mod_pkgs, root, ws_root, files, runner, cfg_test, jobs)
+        if module_cache is None:
+            n, e, lm, tl = layer_modules(mod_pkgs, root, ws_root, files, runner, cfg_test, jobs)
+        else:
+            n, e, lm, tl = _modules_cached(mod_pkgs, root, ws_root, files, runner, cfg_test, jobs, module_cache, parts)
         if crates is not None:
             lm["limited_to"] = [p["name"] for p in mod_pkgs]
             lm["skipped_crates"] = [p["name"] for p in pkgs if p not in mod_pkgs]

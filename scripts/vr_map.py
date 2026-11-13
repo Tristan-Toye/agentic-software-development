@@ -7,6 +7,7 @@
     vr_map.py recall REPO MAP.json --changes REV1,REV2 [--expected FILE.json] [--include-tests] [--json]
     vr_map.py plan-check BASE.json PLAN.json [--json]
     vr_map.py list REPO [--dir docs/architecture] [--json]
+    vr_map.py refresh REPO [--since REV] [--dir docs/architecture] [--full] [--no-calls] ...   (see vr_refresh.py)
     vr_map.py --selftest
     (every command takes --metrics PATH | --no-metrics; default REPO/.discovery/visual-review/metrics.jsonl)
 
@@ -15,7 +16,11 @@ node of kind `feature` per feature of the repo's FEATURE-BOOK.md. A feature is l
 where its ID is found in the repo files (signal `text`: the ID in a comment, a doc or a
 diagram). Each link is a source evidence entry `path:line` and is a span. The committed
 location is `docs/architecture/product-map.json` (OQ-05 = A: the folder the anchor checker
-covers). Structure is not stored here: it is re-extracted fresh each run (Q8).
+covers). Structure is not stored in this file. Q8 said it is re-extracted fresh each run; for the
+whole-repo map that is superseded (owner, 2026-11-13): `refresh` (vr_refresh.py) keeps a content-keyed
+cache of the structure (modules per crate, calls per file) under the git common dir and recomputes only
+what changed since the previous extraction commit; it also grows this file with `build --touched` from
+that commit to HEAD. The per-dossier before-graph (vr_prepare.py) still extracts fresh, within VC-08.
 
 First-run scope (OQ-09 = B): `build` needs a scope. `--features` and `--touched` (the features
 whose ID appears in the files those changes touched, plus the features already on the map that
@@ -854,6 +859,10 @@ def _selftest() -> int:
 
 
 def main(argv=None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] == ["refresh"]:
+        import vr_refresh
+        return vr_refresh.main(args[1:])
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--selftest", action="store_true")
     sub = ap.add_subparsers(dest="cmd")
