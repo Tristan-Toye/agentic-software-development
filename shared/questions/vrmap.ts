@@ -102,27 +102,55 @@ export const topGroups = (g: any): string[] => {
   return (g.groups ?? []).filter((x: any) => !x.parent || !ids.has(x.parent)).map((x: any) => x.id)
 }
 
+/** The canvas opens a view with more visible nodes than this with groups folded (about 15 to 20 read at once). */
+export const OPEN_BUDGET = 18
+/** What the view-kind tab says, from the kind `vr_map list` gives. */
+const KIND_TAB: Record<string, string> = { "product-map": "Product map", "crate-map": "Crate map", "crate-calls": "Crate calls", modules: "Modules", calls: "Calls" }
+export const kindTab = (d: Diagram, g: any): string => KIND_TAB[d.kind] ?? (g?.view === "map" ? "Product map" : d.kind.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase()))
+
 /**
- * One committed diagram as the canvas takes it: a product-map or other graph file, laid out like a dossier view. A `map` view (the
- * whole-repo product map) is returned in the L0 slot, with `collapsed` = its top-level groups: the canvas opens it folded, and asks
- * `collapsedDiagram` for that layout, so the first screen is the few areas, not every feature.
+ * The top-level groups to fold on open. A `map` folds every top-level group (the areas). Any other view with more than `budget` nodes
+ * folds its biggest top-level groups first until the visible nodes (loose nodes plus one box per folded group) fit, or none is left.
  */
-export async function openDiagram(root: string, rel: string, listed: Diagram[]): Promise<{ kind: "graph"; title: string; views: Record<string, ViewResult & { collapsed?: string[] }> } | { kind: "mermaid"; title: string; text: string }> {
+export function openFolds(g: any, budget = OPEN_BUDGET): string[] {
+  const tops = topGroups(g)
+  if (g.view === "map") return tops
+  if (!tops.length || (g.nodes ?? []).length <= budget) return []
+  const gmap = new Map<string, any>((g.groups ?? []).map((x: any) => [x.id, x]))
+  const topOf = (id: string | undefined): string | undefined => { let t: string | undefined; for (let n = 0; id && gmap.has(id) && n < 100; n++) { t = id; id = gmap.get(id).parent } return t }
+  const size = new Map<string, number>(tops.map((t) => [t, 0]))
+  for (const n of g.nodes) { const t = topOf(n.group); if (t && size.has(t)) size.set(t, size.get(t)! + 1);  }
+  const order = [...size.entries()].filter(([, c]) => c > 0).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+  let visible = g.nodes.length
+  const fold: string[] = []
+  for (const [id, c] of order) { if (visible <= budget) break; fold.push(id); visible -= c - 1 }
+  return fold.sort()
+}
+
+/**
+ * One committed diagram as the canvas takes it: a product-map or other graph file, laid out like a dossier view. The canvas has three
+ * slots: a `map` (the whole-repo product map) goes in the L0 slot, `full` views (crate and module maps, call graphs) in the L2 slot, which
+ * the structure layout draws with their groups. `tab` names the view kind for the tab. A view with more nodes than OPEN_BUDGET comes with
+ * `collapsed` = the groups to fold on open; the canvas asks `collapsedDiagram` for that layout.
+ */
+export async function openDiagram(root: string, rel: string, listed: Diagram[]): Promise<{ kind: "graph"; title: string; views: Record<string, ViewResult & { collapsed?: string[]; tab?: string }> } | { kind: "mermaid"; title: string; text: string }> {
   const { d, text } = readListed(root, rel, listed)
   if (!rel.endsWith(".json")) {
     const m = text.match(/```mermaid\n([\s\S]*?)```/)
     return { kind: "mermaid", title: d.title, text: (m ? m[1] : text).trim() }
   }
   const g = JSON.parse(text)
-  const out: ViewResult & { collapsed?: string[] } = { file: rel, graph: null, layout: null, issues: checkGraph(g) }
+  const out: ViewResult & { collapsed?: string[]; tab?: string } = { file: rel, graph: null, layout: null, issues: checkGraph(g) }
   if (typeof g?.title === "string") out.title = g.title
+  out.tab = kindTab(d, g)
   if (!out.issues.length) {
     out.graph = stripDollar(g)
     out.view = g.view
-    if (g.view === "map") out.collapsed = topGroups(out.graph)
+    const fold = openFolds(out.graph)
+    if (fold.length) out.collapsed = fold
     try { out.layout = await layoutGraph(out.graph) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
   }
-  return { kind: "graph", title: d.title, views: { [g.view === "map" ? "L0" : g.view]: out } }
+  return { kind: "graph", title: d.title, views: { [g.view === "map" ? "L0" : g.view === "full" ? "L2" : g.view]: out } }
 }
 
 /** A committed diagram with some groups folded to one box each (edges aggregated with counts), and its layout. */

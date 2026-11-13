@@ -227,7 +227,7 @@ async function vrOpenDiagram(repo, path) {
   let d = null; try { const r = await fetch('/api/visual-review/diagram?repo=' + enc(repo) + '&path=' + enc(path)); d = await r.json(); if (!r.ok) { cur.err = d.error || ('HTTP ' + r.status); d = null; } } catch (e) { cur.err = 'request failed'; }
   const key = repo + '/~map';
   if (d && d.kind === 'mermaid') { cur.text = d.text; VR[key] = { data: null }; }
-  else if (d) { VR[key] = { data: { dossier: '', rev: path + ':' + Date.now(), views: { L0: d.views.L0 || null, L1: d.views.L1 || null, L2: d.views.L2 || null }, issues: [], mapRepo: repo, mapPath: path } }; if (!d.views.L0 && !d.views.L1 && !d.views.L2) { cur.err = 'This diagram has a view the canvas does not draw.'; VR[key] = { data: null }; } }
+  else if (d) { VR[key] = { data: { dossier: '', rev: path + ':' + Date.now(), views: { L0: d.views.L0 || null, L1: d.views.L1 || null, L2: d.views.L2 || null }, issues: [], mapRepo: repo, mapPath: path } }; if (!d.views.L0 && !d.views.L1 && !d.views.L2) { cur.err = 'The server sent no view for this diagram.'; VR[key] = { data: null }; } }
   render();
 }
 function vrOpenQ(dossier, repo) {
@@ -270,11 +270,11 @@ function vrWrap(s, w) { const out = []; let l = ''; String(s).split(' ').forEach
 function vrBuild(host, key, data) {
   const st = VRS[key] = VRS[key] || {}; const have = ['L0', 'L1', 'L2'].filter(k => data.views[k]);
   if (!st.view || !data.views[st.view]) st.view = have[0]; st.mode = st.mode || 'diff';
-  if (st.rev !== data.rev) { st.rev = data.rev; st.col = {}; st.lc = {}; /* a committed map opens with its areas folded */ if (data.mapPath && data.views.L0 && data.views.L0.collapsed) st.col.L0 = data.views.L0.collapsed.slice().sort(); }
-  const bar = vrDom('div', 'vrbar', null, host); vrDom('h2', 'vrh', (data.mapPath && data.views.L0 && data.views.L0.title) || 'Change diagram', bar);
+  if (st.rev !== data.rev) { st.rev = data.rev; st.col = {}; st.lc = {}; /* a committed diagram opens with the groups the server named folded (the areas of the product map, the big groups of a large view) */ if (data.mapPath) have.forEach(k => { const c = data.views[k].collapsed; if (c && c.length) st.col[k] = c.slice().sort(); }); }
+  const bar = vrDom('div', 'vrbar', null, host); vrDom('h2', 'vrh', (data.mapPath && data.views[have[0]] && data.views[have[0]].title) || 'Change diagram', bar);
   const tabs = vrDom('span', 'vrgrp', null, bar), modes = vrDom('span', 'vrgrp', null, bar);
   const tb = {}, mb = {};
-  ['L0', 'L1', 'L2'].forEach(k => { const b = vrDom('button', 'btn sm', k + ' ' + (data.mapPath && k === 'L0' ? 'Product map' : VR_TABS[k]), tabs); b.type = 'button'; b.disabled = !data.views[k]; tb[k] = b; b.onclick = () => { st.view = k; wkOff(); draw(); }; });
+  ['L0', 'L1', 'L2'].forEach(k => { const b = vrDom('button', 'btn sm', data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); b.type = 'button'; b.disabled = !data.views[k]; b.hidden = !!data.mapPath && !data.views[k]; tb[k] = b; b.onclick = () => { st.view = k; wkOff(); draw(); }; });
   VR_MODES.forEach(m => { const b = vrDom('button', 'btn sm', m[1], modes); b.type = 'button'; mb[m[0]] = b; b.onclick = () => { st.mode = m[0]; applyMode(); }; });
   const fitB = vrDom('button', 'btn sm', 'Fit', bar); fitB.type = 'button';
   const zin = vrDom('button', 'btn sm', '+', bar), zout = vrDom('button', 'btn sm', '−', bar); zin.type = zout.type = 'button'; zin.title = 'Zoom in'; zout.title = 'Zoom out';
@@ -421,7 +421,8 @@ function vrBuild(host, key, data) {
     g.edges.forEach(e => { const pts = L.edges[e.id]; if (!pts) return; const gg = vrEl('g', { 'data-id': e.id, 'data-status': e.status, 'data-resolution': e.resolution || '', class: 'vre', tabindex: 0 }, root); els[e.id] = { g: gg, status: e.status, edge: [e.source, e.target] };
       const ps = pts.map(p => p.join(',')).join(' '), inf = vrInferred(e);
       vrEl('polyline', { points: ps, fill: 'none', stroke: 'transparent', 'stroke-width': 12 }, gg);
-      vrEl('polyline', { class: 'vrline', points: ps, fill: 'none', stroke: e.status === 'context' ? 'var(--mut)' : 'var(--' + vrTone(e.status) + ')', 'stroke-width': e.status === 'context' ? 1.2 : 2.2, 'stroke-dasharray': inf ? '6 4' : '0', 'marker-end': 'url(#vr-ar)' }, gg);
+      vrEl('polyline', { class: 'vrline', points: ps, fill: 'none', stroke: e.status === 'context' ? 'var(--mut)' : 'var(--' + vrTone(e.status) + ')', 'stroke-width': (e.status === 'context' ? 1.2 : 2.2) + (e.count > 1 ? Math.min(3.5, Math.log2(e.count)) : 0), 'stroke-dasharray': inf ? '6 4' : '0', 'marker-end': 'url(#vr-ar)' }, gg);
+      if (e.bidirectional) gg.querySelector('.vrline').setAttribute('marker-start', 'url(#vr-ar)');
       if (e.label) { const m = pts[Math.floor(pts.length / 2)]; const t = vrEl('text', { x: m[0] + 4, y: m[1] - 4, 'font-size': 11, fill: 'var(--mut)' }, gg); t.textContent = e.label; }
       tip(gg, e); });
     g.nodes.forEach(n => { const b = L.boxes[n.id]; if (!b) return; const gg = vrEl('g', { 'data-id': n.id, 'data-status': n.status, class: 'vrn', tabindex: 0, role: 'button' }, root); els[n.id] = { g: gg, status: n.status, col: !!n.collapsed };
@@ -449,7 +450,7 @@ function vrBuild(host, key, data) {
     const emit = (id, ind) => { if (isC(id)) { out.push(ind + 'subgraph ' + mid(id) + '["' + esc(lab[id]) + '"]'); (kids[id] || []).forEach(k => emit(k, ind + '  ')); out.push(ind + 'end'); } else out.push(ind + mid(id) + '["' + esc(MARK(id) + ' ' + lab[id]) + '"]'); };
     const MARK = id => { const x = g.nodes.find(y => y.id === id); return x ? VR_MARK[x.status] : ''; };
     top.forEach(id => emit(id, '  '));
-    g.edges.filter(e => vis(e.id)).forEach(e => { const d = vrInferred(e), l = e.label ? '"' + esc(e.label) + '"' : ''; out.push('  ' + mid(e.source) + (l ? (d ? ' -. ' + l + ' .-> ' : ' -- ' + l + ' --> ') : (d ? ' -.-> ' : ' --> ')) + mid(e.target)); });
+    g.edges.filter(e => vis(e.id)).forEach(e => { const d = vrInferred(e), l = e.label ? '"' + esc(e.label) + '"' : '', b = e.bidirectional ? '<' : ''; out.push('  ' + mid(e.source) + (l ? (d ? ' ' + b + '-. ' + l + ' .-> ' : ' ' + b + '-- ' + l + ' --> ') : (d ? ' ' + b + '-.-> ' : ' ' + b + '--> ')) + mid(e.target)); });
     out.push('  classDef added fill:#cfeccf,stroke:#2d7a2d', '  classDef changed fill:#fde9b8,stroke:#b07a00', '  classDef removed fill:#f6d0d0,stroke:#a33,stroke-dasharray:3 3', '  classDef context fill:#eeeeea,stroke:#999');
     ['added', 'changed', 'removed', 'context'].forEach(s => { const ids = g.nodes.filter(x => x.status === s && vis(x.id)).map(x => mid(x.id)); if (ids.length) out.push('  class ' + ids.join(',') + ' ' + s); });
     return out.join('\n');

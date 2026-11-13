@@ -428,6 +428,52 @@ def _edge(src: str, dst: str, rec: list) -> dict:
             "evidence": [{"tier": "source", "path": rec[1], "line": rec[2], "note": "first of %d call sites" % rec[0]}]}
 
 
+_GROUP_EV = {"tier": "inferred", "note": "grouped by top-level module for folding"}
+GROUP_ABOVE = 15  # a module or calls view with more nodes than this carries groups the canvas can fold
+
+
+def add_groups(graph: dict) -> dict:
+    """Give a big modules/calls view groups to fold: one per top-level module that holds several nodes, one for the binaries,
+    one for the crates the view only reaches, one pooling the single leftover modules. A pool of one stays loose; ids are
+    group:<qualified name>, so they are stable across runs. A view of at most GROUP_ABOVE nodes is returned as it is."""
+    nodes = graph["nodes"]
+    if len(nodes) <= GROUP_ABOVE:
+        return graph
+    own = next((n["id"] for n in nodes if n["kind"] == "crate" and n["id"].startswith("crate:") and
+                any(m["id"].startswith("module:" + n["label"].replace("-", "_") + "::") for m in nodes)), None)
+    buckets: dict = {}
+    for n in nodes:
+        nid = n["id"]
+        if n["kind"] == "crate":
+            key = None if nid == own else "crates"
+        elif n["kind"] == "bin":
+            key = "bins"
+        elif nid.startswith("module:") and nid.count("::") >= 1:
+            key = "::".join(nid[7:].split("::")[:2])
+        else:
+            key = None
+        buckets.setdefault(key, []).append(nid)
+    labels = {"crates": "Other crates", "bins": "Binaries"}
+    member: dict = {}
+    pool: list = []
+    groups = []
+    for key in sorted(k for k in buckets if k):
+        ids = buckets[key]
+        if key in labels or len(ids) > 1:
+            groups.append({"id": "group:" + key, "label": labels.get(key, key.split("::")[-1]), "status": "context", "label_source": "extractor", "evidence": [_GROUP_EV]})
+            member.update({i: "group:" + key for i in ids})
+        else:
+            pool.extend(ids)
+    if len(pool) > 1:
+        groups.append({"id": "group:other-modules", "label": "Other modules", "status": "context", "label_source": "extractor", "evidence": [_GROUP_EV]})
+        member.update({i: "group:other-modules" for i in pool})
+    if not groups:
+        return graph
+    out = dict(graph, groups=groups)
+    out["nodes"] = [dict(n, group=member[n["id"]]) if n["id"] in member else n for n in nodes]
+    return out
+
+
 def build_views(g: dict, parts: dict, pkgs: list, entries: dict, ws_root: str, meta: dict, has_calls: bool) -> dict:
     """{file name: graph} for every view of the map except the product map."""
     views = {}
@@ -446,6 +492,7 @@ def build_views(g: dict, parts: dict, pkgs: list, entries: dict, ws_root: str, m
         views["modules-%s.json" % name] = {
             "schema_version": "1.0.0", "view": "full", "title": "Modules of %s" % name, "meta": meta,
             "nodes": [c] + sorted(nodes, key=lambda n: n["id"]), "edges": sorted(edges, key=lambda e: e["id"])}
+        views["modules-%s.json" % name] = add_groups(views["modules-%s.json" % name])
     if has_calls and entries:
         mod_edges, crate_edges = aggregate_calls(g, parts, pkgs, entries, ws_root)
         node_of = {n["id"]: n for nodes, _ in parts.values() for n in nodes}
@@ -467,6 +514,7 @@ def build_views(g: dict, parts: dict, pkgs: list, entries: dict, ws_root: str, m
             views["calls-%s.json" % label] = {
                 "schema_version": "1.0.0", "view": "full", "title": "Calls between modules of %s" % label, "meta": meta,
                 "nodes": [node_of[i] for i in sorted(ids)], "edges": es}
+            views["calls-%s.json" % label] = add_groups(views["calls-%s.json" % label])
         if crate_edges:
             ids = {x for k in crate_edges for x in k}
             views["crate-calls.json"] = {
@@ -917,6 +965,17 @@ def _selftest() -> int:
         r10 = refresh(d, cache=cache, runner=base, ra_factory=failing_ra)
         check("ra-missing:skipped-with-reason-modules-kept", r10["calls"]["status"] == "skipped" and "nope" in r10["calls"]["reason"]
               and r10["modules"]["status"] == "ran", str(r10["calls"]))
+    # add_groups: big modules/calls views carry groups to fold, small ones are untouched
+    def _n(i, kind="module"):
+        return {"id": i, "label": i.split(":")[-1].split("::")[-1], "kind": kind, "status": "context", "evidence": []}
+    mods = [_n("crate:c", "crate")] + [_n("module:c::a::m%d" % i) for i in range(9)] + [_n("module:c::b::m%d" % i) for i in range(4)] \
+        + [_n("module:c::x"), _n("module:c::y"), _n("bin:c::bin::t", "bin")]
+    gg = add_groups({"view": "full", "nodes": mods, "edges": []})
+    gids = {x["id"] for x in gg["groups"]}
+    check("groups:per-top-module-and-pool", {"group:c::a", "group:c::b", "group:other-modules", "group:bins"} <= gids, str(gids))
+    check("groups:own-crate-stays-loose", "group" not in next(n for n in gg["nodes"] if n["id"] == "crate:c"))
+    check("groups:every-group-cites-evidence", all(x.get("evidence") for x in gg["groups"]))
+    check("groups:small-view-untouched", add_groups({"view": "full", "nodes": mods[:5], "edges": []}) .get("groups") is None)
     for sub, hit in (("cache-in-git-common-dir", True),):
         with tempfile.TemporaryDirectory() as d1:
             subprocess.run(["git", "init", "-q", d1], check=True)

@@ -199,7 +199,7 @@ export const COLLAPSE_MAX = 200
  * A collapsed group becomes a node under its own id (`collapsed: true`, `members` = member nodes at any depth, label
  * "Name (n)", status = the group's, or `changed` for a context group that holds changes). Its members and subgroups go away.
  * Every edge that touched a hidden element is re-routed to the outermost collapsed box and aggregated per (source, target):
- * one edge keeps its id and data (its own, even an edge already between those two ends), several become `agg:source>target` labelled "×n" (status = the common one, else
+ * one edge keeps its id and data (its own, even an edge already between those two ends), several become `agg:source>target` labelled by aggLabel ("builds on ×n", "N links") (status = the common one, else
  * `changed`; `inferred` only when all are). An edge that ends inside one box on both sides is dropped.
  */
 export function collapseGraph(graph: any, ids: string[]): any {
@@ -251,15 +251,64 @@ export function collapseGraph(graph: any, ids: string[]): any {
     if (!bucket.has(k)) bucket.set(k, [])
     bucket.get(k)!.push(e)
   }
-  const out = [...bucket.entries()].map(([k, list]) => {
+  const out: any[] = [...bucket.entries()].map(([k, list]) => {
     const [s, t] = k.split("\u0000")
     if (list.length === 1) return list[0].source === s && list[0].target === t ? list[0] : { ...list[0], source: s, target: t }
     const sts = new Set(list.map((x) => x.status))
-    return { id: "agg:" + s + ">" + t, source: s, target: t, kind: "aggregate", label: "×" + list.length, status: sts.size === 1 ? [...sts][0] : "changed",
+    return { id: "agg:" + s + ">" + t, source: s, target: t, kind: "aggregate", label: aggLabel(list), status: sts.size === 1 ? [...sts][0] : "changed",
       resolution: list.every((x) => (x.resolution ?? "static") === "inferred") ? "inferred" : "static", count: list.length,
       evidence: list.flatMap((x) => x.evidence ?? []).slice(0, 50) }
   })
-  return { ...graph, groups: keptGroups, nodes, edges: out }
+  return { ...graph, groups: keptGroups, nodes, edges: out.length > MERGE_ABOVE ? mergeDirections(out, nodes) : out }
+}
+
+/** Longest edge label the page draws (graph.schema.json). */
+export const EDGE_LABEL_MAX = 40
+/** A collapsed graph with more edges than this folds both directions of a pair into one edge (a dense folded map, scenario VR-10). */
+export const MERGE_ABOVE = 8
+const KIND_VERB: Record<string, string> = { depends: "builds on", calls: "calls", contains: "contains" }
+const clip = (s: string): string => (s.length > EDGE_LABEL_MAX ? s.slice(0, EDGE_LABEL_MAX - 1) + "…" : s)
+/** What an aggregate says: the label all merged edges share ("builds on ×3"), else their shared kind's verb, else "N links". */
+export function aggLabel(list: any[]): string {
+  const n = list.length
+  const labels = new Set(list.map((x) => (typeof x.label === "string" ? x.label.trim() : "")))
+  const one = labels.size === 1 ? [...labels][0] : ""
+  if (one && !/^\d+$/.test(one)) return clip(one + " ×" + n)
+  const kinds = new Set(list.map((x) => x.kind))
+  const verb = kinds.size === 1 ? KIND_VERB[[...kinds][0]] : ""
+  return verb ? clip(verb + " ×" + n) : n + " links"
+}
+
+/** The words of an edge without its count: "builds on" for "builds on ×3"; "" for "N links" or a bare number. */
+const verbOf = (e: any): string => {
+  const l = typeof e.label === "string" ? e.label.replace(/ ×\d+$/, "").trim() : ""
+  return l && !/^\d+( links)?$/.test(l) && !l.startsWith("×") ? l : KIND_VERB[e.kind] ?? ""
+}
+
+/**
+ * Fold the two directions of one pair of boxes into a single edge `agg:a<>b` (source = the end listed first in the graph), drawn with an arrow at
+ * both ends. `counts` = [a to b, b to a] keeps both numbers, the label shows both ("builds on ×3 | ×2"), the evidence of both sides stays.
+ */
+function mergeDirections(edges: any[], nodes: any[]): any[] {
+  const order = new Map<string, number>(nodes.map((n, i) => [n.id, i]))
+  const by = new Map<string, any>(edges.map((e) => [e.source + "\u0000" + e.target, e]))
+  const done = new Set<any>()
+  const res: any[] = []
+  for (const e of edges) {
+    if (done.has(e)) continue
+    const back = by.get(e.target + "\u0000" + e.source)
+    if (!back || back === e) { res.push(e); continue }
+    done.add(e); done.add(back)
+    const [f, b] = (order.get(e.source) ?? 0) <= (order.get(e.target) ?? 0) ? [e, back] : [back, e]
+    const cf = f.count ?? 1, cb = b.count ?? 1
+    const sts = new Set([f.status, b.status])
+    const vf = verbOf(f), verb = vf && vf === verbOf(b) ? vf : ""
+    res.push({ id: "agg:" + f.source + "<>" + f.target, source: f.source, target: f.target, kind: "aggregate", bidirectional: true, counts: [cf, cb],
+      label: clip((verb ? verb + " " : "") + "×" + cf + " | ×" + cb), status: sts.size === 1 ? [...sts][0] : "changed",
+      resolution: f.resolution === "inferred" && b.resolution === "inferred" ? "inferred" : "static", count: cf + cb,
+      evidence: [...(f.evidence ?? []), ...(b.evidence ?? [])].slice(0, 50) })
+  }
+  return res
 }
 
 /** A parsed graph file with `collapsed` groups drawn as boxes, and its layout. Shared by the dossier views and the committed maps. */

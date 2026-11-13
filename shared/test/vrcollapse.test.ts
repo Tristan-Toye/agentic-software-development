@@ -47,7 +47,7 @@ describe("collapseGraph", () => {
     // d2 (c-step -> c-set) and d10 (g-harness -> g-protocol) both become g-harness -> g-protocol
     const agg = c.edges.filter((e: any) => e.source === "g-harness" && e.target === "g-protocol")
     expect(agg).toHaveLength(1)
-    expect(agg[0]).toMatchObject({ id: "agg:g-harness>g-protocol", label: "×2", count: 2, resolution: "static" })
+    expect(agg[0]).toMatchObject({ id: "agg:g-harness>g-protocol", label: "2 links", count: 2, resolution: "static" })
     expect(agg[0].status).toBe("changed") // added + context mixed
     expect(c.edges.filter((e: any) => e.id === "d1" || e.id === "d4")).toHaveLength(0) // inside g-harness
   })
@@ -209,7 +209,7 @@ describe("the whole-repo product map opens folded", () => {
     const f = await collapsedDiagram(root, listed[0].path, listed, d.views.L0.collapsed)
     expect(f.graph.nodes.map((n: any) => n.id).sort()).toEqual(["area:a", "area:b"])
     const agg = f.graph.edges.find((e: any) => e.source === "area:a" && e.target === "area:b")
-    expect(agg.label).toBe("×3")
+    expect(agg.label).toBe("builds on ×3")
     expect(f.graph.edges.length).toBe(1) // the edge inside B is dropped
     expect(Object.keys(f.layout.boxes).sort()).toEqual(["area:a", "area:b"])
     closeLayout()
