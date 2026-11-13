@@ -121,7 +121,13 @@ the recorded checkpoints.
   `task_progress` system lines) are not output here: they arrive every few
   seconds during any long Bash call, and counting them kept a 10-minute poll
   loop from ever looking quiet (podcast W-018, 2026-11-13). They still count
-  against a stall. When the call's result arrives the state
+  against a stall. It is also blocked when its turn ended and the only work
+  still in flight is background Bash commands (a CI wait launched with
+  `run_in_background`; config-harness W-132 and W-156 each held a slot ~45 min
+  that way): once the idle window passes with those in the transcript, the
+  slot is released; a background agent or workflow keeps it, because a model
+  works there. The session's next event ends that wait. When the call's result
+  arrives the state
   goes back to `running` at once, without queueing. Trade-off, accepted: the
   live count may briefly exceed the cap until another run finishes or waits.
   `testing` counts as live everywhere else (stale-pid checks, dashboard,
