@@ -122,17 +122,30 @@ def dec(idv: str) -> str:
 
 
 def slug(text: str, n: int = 32) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:n].strip("-") or "x"
+    """The text as lowercase words joined by '-', at most n characters, cut at a word boundary: a word cut in half
+    ('messag', 'boun') reads as a misspelling to a repository's spell checker (config-harness #520 failed typos on
+    it). A first word longer than n is still cut, since there is nothing shorter to keep."""
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    if len(s) > n:
+        s = s[: n + 1].rsplit("-", 1)[0] if "-" in s[: n + 1] else s[:n]
+    return s.strip("-") or "x"
 
 
 def h6(*parts: str) -> str:
-    return hashlib.sha1("\0".join(parts).encode("utf-8")).hexdigest()[:6]
+    """Six decimal digits from sha1 over the parts. Digits, not hex: a hex suffix spells letters ('8469ba' holds
+    'ba'), which a spell checker splits off and flags."""
+    return "%06d" % (int(hashlib.sha1("\0".join(parts).encode("utf-8")).hexdigest()[:8], 16) % 1000000)
 
 
 def display(text: str, limit: int) -> str:
     s = re.sub(r"\\n|<br\s*/?>", " ", text)
     s = re.sub(r" {2,}", " ", s).strip() or text
-    return s if len(s) <= limit else s[: limit - 1] + "\u2026"
+    if len(s) <= limit:
+        return s
+    # cut at a word boundary when one is near: a word cut in half ('regist…') reads as a misspelling to a spell checker
+    cut = s[: limit - 1]
+    sp = cut.rfind(" ")
+    return (cut[:sp] if sp >= limit // 2 else cut).rstrip() + "\u2026"
 
 
 def put_label(obj: dict, text: str, kind: str) -> None:
@@ -1234,7 +1247,7 @@ def _selftest(corpus: str | None) -> int:
         notes = [n for n in s["nodes"] if n["kind"] == "note"]
         same = [n["id"] for n in msgs if n["label"] == "select 1"]
         check("seq:repeat-suffix", len(same) == 4 and same[1].endswith(".2") and same[3].endswith(".4") and not same[0].endswith(".2"), str(same))
-        check("seq:id-shape", all(re.match(r"^msg:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[a-z0-9-]+-[0-9a-f]{6}(\.\d+)?$", n["id"]) for n in msgs), msgs[0]["id"])
+        check("seq:id-shape", all(re.match(r"^msg:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[a-z0-9-]+-[0-9]{6}(\.\d+)?$", n["id"]) for n in msgs), msgs[0]["id"])
         check("seq:note-over", any(n["seq"].get("over") == ["lane:Caller", "lane:Db"] for n in notes))
         check("seq:lane-of-message", msgs[0]["lane"] == "lane:Caller" and msgs[0]["seq"]["to"] == "lane:Db")
         check("seq:arrows", {n["seq"]["arrow"] for n in msgs} == {"->>", "-->>", "-)", "--x", "-->", "->"})
@@ -1242,7 +1255,7 @@ def _selftest(corpus: str | None) -> int:
         check("seq:flow-order", s["flows"][0]["after"] == [n["id"] for n in s["nodes"]])
         check("seq:frames", [x["kind"] for x in s["frames"]] == ["alt", "opt", "loop", "par"] and s["frames"][0]["branches"][0]["kind"] == "else")
         check("seq:long-lane", any(l.get("text", "").endswith("characters") and len(l["label"]) <= 40 for l in s["lanes"]))
-        check("seq:long-message", any(len(n["label"]) == 80 and n["label"].endswith("\u2026") and "text" in n for n in msgs))
+        check("seq:long-message", any(len(n["label"]) <= 80 and n["label"].endswith("\u2026") and "text" in n for n in msgs))
         check("seq:actor", any(l.get("declare") == "actor" for l in s["lanes"]))
         bad = json.loads(json.dumps(s))
         bad["frames"][0]["last"] = "msg:nope"
