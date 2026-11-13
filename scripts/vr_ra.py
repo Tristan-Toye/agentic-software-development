@@ -268,12 +268,14 @@ class RaClient:
         each gets a prepareCallHierarchy and an outgoingCalls request. Incoming calls are not asked: they
         are the inverse of the outgoing calls of every other file. A function whose item stays empty after
         `tries` polls (a macro-generated or cfg'd-out symbol) is listed with `"out": None`. Bounded by the
-        deadline of `set_deadline`.
+        deadline of `set_deadline`. `last_provisional` is True after a call whose answer looks like a server still
+        indexing (no function listed for a file with `fn` items, or none resolved).
         """
         full = os.path.join(self.root, rel_path)
         with open(full, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
         uri = _uri(full)
+        self.last_provisional = False
         patient = tries
         if getattr(self, "_proven", False):
             tries = min(tries, 2)   # the server has answered before: an empty answer is a real one (no 15-30 s stall)
@@ -318,6 +320,10 @@ class RaClient:
                         rec["out"].append({"name": t["name"], "path": t["path"], "line": t["line"],
                                            "ranges": [(r["start"]["line"] + 1) for r in c.get("fromRanges", [])]})
                 res.append(rec)
+            # An empty answer for a file that has `fn` items, or no function resolved at all, may be a server that was still
+            # indexing: flag it, so the caller does not pin it in a cache (`last_provisional`).
+            has_fn = re.search(r"^\s*(pub(\([^)]*\))?\s+)?(const\s+|async\s+|unsafe\s+)*fn\s+\w", text, re.M) is not None
+            self.last_provisional = (not res and has_fn) or (bool(res) and all(r["out"] is None for r in res))
             return res
         finally:
             try:
@@ -441,6 +447,8 @@ def _selftest() -> int:
             fails.append("file functions: %r" % [(f["name"], f["line"], f["col"]) for f in fl])
         elif sorted(o["name"] for o in fl[0]["out"]) != ["area", "inner", "push"]:
             fails.append("file outgoing: %r" % fl[0]["out"])
+        if ra.last_provisional:
+            fails.append("a complete answer was flagged provisional")
         t0 = time.time()
         try:
             with RaClient(d, cmd=[sys.executable, me, "--fake-server", "hang"], timeout=2) as ra:

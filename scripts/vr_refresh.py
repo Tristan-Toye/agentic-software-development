@@ -53,10 +53,13 @@ failed; 2 bad arguments.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -88,6 +91,14 @@ def _git(cwd: str, *args: str) -> str | None:
     except FileNotFoundError:
         return None
     return p.stdout if p.returncode == 0 else None
+
+
+def _ra_version() -> str:
+    try:
+        p = subprocess.run(["rust-analyzer", "--version"], capture_output=True, text=True, timeout=30)
+        return p.stdout.strip() if p.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def _sha(*parts: str) -> str:
@@ -132,10 +143,15 @@ class Store:
     def write(self, obj, *parts: str) -> None:
         p = self._p(*parts)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        tmp = p + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(obj, fh)
-        os.replace(tmp, p)
+        # a unique temp name in the same directory: worktrees share this cache, so two writers never meet on one temp file
+        tmp = "%s.%d.%s.tmp" % (p, os.getpid(), os.urandom(4).hex())
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(obj, fh)
+            os.replace(tmp, p)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
 
     def drop(self, *parts: str) -> None:
         try:
@@ -167,6 +183,18 @@ def blob_index(repo: str) -> dict:
                 idx[path] = (h or "").strip() or "dirty"
             else:
                 del idx[path]
+    # untracked but not ignored: a new .rs file (or Cargo.toml / Cargo.lock) is an input of the keys too
+    new = [x for x in (_git(repo, "ls-files", "-o", "--exclude-standard", "-z") or "").split("\0")
+           if x and (x.endswith(".rs") or os.path.basename(x) in ("Cargo.toml", "Cargo.lock")) and os.path.isfile(os.path.join(repo, x))]
+    if new:
+        try:
+            p = subprocess.run(["git", "hash-object", "--stdin-paths"], cwd=repo, input="\n".join(new) + "\n",
+                               capture_output=True, text=True)
+            ids = p.stdout.split() if p.returncode == 0 else []
+        except OSError:
+            ids = []
+        for i, path in enumerate(new):
+            idx[path] = ids[i] if len(ids) == len(new) else "untracked"
     return idx
 
 
@@ -179,7 +207,11 @@ class ModuleCache:
     def key(self, pkg: dict) -> str:
         d = os.path.relpath(os.path.dirname(pkg["manifest_path"]), self.ws_root)
         pre = "" if d == "." else d + "/"
-        own = sorted(p for p in self.blobs if p in (pre + "Cargo.toml", pre + "build.rs") or p.startswith(pre + "src/"))
+        extra = {os.path.relpath(t["src_path"], self.ws_root) for t in pkg.get("targets", []) if t.get("src_path")}
+        # the workspace manifest and lockfile, and any target root outside src/ (a [lib] or [[bin]] `path`), are inputs too;
+        # a `#[path]` module outside src/ is not tracked
+        own = sorted(p for p in self.blobs if p in (pre + "Cargo.toml", pre + "build.rs", "Cargo.toml", "Cargo.lock") or p in extra
+                     or p.startswith(pre + "src/"))
         return _sha(self.salt, *["%s %s" % (p, self.blobs[p]) for p in own])
 
     def load(self, name: str, key: str):
@@ -212,16 +244,17 @@ def _file_name(rel: str) -> str:
 
 def calls_layer(ws_root: str, pkgs: list, blobs: dict, store: Store, limit: float = CALLS_LIMIT,
                 file_limit: float = FILE_LIMIT, index_limit: float = INDEX_LIMIT, ra_factory=None, force: bool = False,
-                log=lambda m: None) -> dict:
+                log=lambda m: None, ra_version: str = "") -> dict:
     """Bring the per-file call cache up to date. Returns the stats dict (also the view meta of the layer):
     status ran | partial | skipped, files, reused, recomputed (changed), dependents, deleted, pending, seconds."""
     t0 = time.time()
     files = _crate_src_files(pkgs, ws_root, blobs)
-    salt = _sha(CALLS_SALT, json.dumps(FAST_OPTIONS, sort_keys=True))
+    # an entry keeps only the calls into workspace files ("known"), so the crate set and the server version are inputs
+    salt = _sha(CALLS_SALT, json.dumps(FAST_OPTIONS, sort_keys=True), ra_version or "", *sorted(p["name"] for p in pkgs))
     entries, changed = {}, []
     for rel in files:
         e = None if force else store.read("calls", _file_name(rel))
-        if e and e.get("blob") == blobs[rel] and e.get("salt") == salt and e.get("rel") == rel:
+        if e and e.get("blob") == blobs[rel] and e.get("salt") == salt and e.get("rel") == rel and not e.get("provisional"):
             entries[rel] = e
         else:
             changed.append(rel)
@@ -264,6 +297,8 @@ def calls_layer(ws_root: str, pkgs: list, blobs: dict, store: Store, limit: floa
                         out.append({"name": o["name"], "path": p, "line": o["line"], "ranges": o["ranges"]})
             norm.append({"name": f["name"], "line": f["line"], "col": f["col"], "out": out})
         rec = {"rel": rel, "blob": blobs[rel], "salt": salt, "fns": norm}
+        if getattr(ra, "last_provisional", False):
+            rec["provisional"] = True  # the server may have answered empty while indexing: recomputed by the next run
         store.write(rec, "calls", _file_name(rel))
         entries[rel] = rec
         done_now[rel] = rec
@@ -286,17 +321,33 @@ def calls_layer(ws_root: str, pkgs: list, blobs: dict, store: Store, limit: floa
                 break
         return sorted(res)
 
+    # Dependents are found only after the changed files are computed, and a changed file is stored as soon as it is done:
+    # a run that stops in between would never find them again. So the set of files still owed a recheck is persisted
+    # (`pending-dependents`) before the first file is computed, kept up to date at every stop and cleared at the end.
+    pend = set() if force else {r for r in (store.read("pending-dependents.json") or []) if r in known}
     todo = list(changed)
     if todo or deleted:
         # the files a deleted file's callers pointed into must be rechecked too
         gone = {r for _, r in deleted if r}
         for rel, e in entries.items():
             if any(o["path"] in gone for f in e["fns"] for o in (f["out"] or [])):
-                todo.append(rel)
-                stats["dependents"] += 1
+                pend.add(rel)
+    pend &= set(entries)
+    todo += sorted(pend)
     todo = sorted(set(todo))
+    chg = set(changed)
+    changed_set = set(changed)
+
+    def save_pending(extra=()):
+        owed = sorted((set(todo) | set(extra)) - chg) if (todo or extra) else []
+        if owed:
+            store.write(owed, "pending-dependents.json")
+        else:
+            store.drop("pending-dependents.json")
     if not todo:
+        save_pending()
         return finish()
+    save_pending()
     factory = ra_factory or (lambda root, t: RaClient(root, timeout=t, options=FAST_OPTIONS))
     try:
         ra_cm = factory(ws_root, index_limit)
@@ -314,16 +365,18 @@ def calls_layer(ws_root: str, pkgs: list, blobs: dict, store: Store, limit: floa
             for rel in list(todo):
                 if time.time() - t0 > limit:
                     stats["pending"] = len(todo)
+                    save_pending(dependents() if phase == 0 else ())
                     return finish("partial", "stopped at the %.0f s limit; the next refresh continues" % limit)
                 try:
                     compute(rel, first)
                 except RaError as exc:
                     stats["pending"] = len(todo)
+                    save_pending(dependents() if phase == 0 else ())
                     return finish("partial", "%s; the next refresh continues" % exc)
                 first = False
                 todo.remove(rel)
                 n += 1
-                if phase == 0:
+                if phase == 0 and rel in changed_set:
                     stats["recomputed"] += 1
                 else:
                     stats["dependents"] += 1
@@ -332,11 +385,14 @@ def calls_layer(ws_root: str, pkgs: list, blobs: dict, store: Store, limit: floa
             if phase == 0:
                 todo = dependents()
                 phase = 1
+                chg = set()
+                save_pending()
     finally:
         try:
             ra_cm.__exit__(None, None, None)
         except Exception:  # noqa: BLE001  (a dying server is not a failure of the layer)
             pass
+    save_pending()
     stats["reused"] = len(files) - stats["recomputed"] - stats["dependents"] - stats["pending"]
     return finish()
 
@@ -531,6 +587,14 @@ def _strip_commit(g: dict) -> dict:
     return h
 
 
+VIEW_FILE_RE = re.compile(r"^(crate-map|crate-calls|product-map|(modules|calls)-[A-Za-z0-9_.-]+)\.json$")
+
+
+def safe_view_name(name) -> bool:
+    """A file name this tool writes: a plain basename (no slash, no `..`), one of its own view names."""
+    return isinstance(name, str) and name == os.path.basename(name) and ".." not in name and bool(VIEW_FILE_RE.match(name))
+
+
 def write_views(repo: str, out_dir: str, views: dict, log=lambda m: None, keep=lambda name: False) -> dict:
     """Write the views whose content changed; returns {name: "written" | "unchanged" | "removed"}."""
     d = os.path.join(repo, out_dir)
@@ -560,18 +624,30 @@ def write_views(repo: str, out_dir: str, views: dict, log=lambda m: None, keep=l
             prev = json.load(fh)
     except (OSError, ValueError):
         pass
+    droot = os.path.realpath(d)
     for v in (prev or {}).get("views", []):
-        if v["file"] not in views and v["file"] != "product-map.json" and not keep(v["file"]) and os.path.isfile(os.path.join(d, v["file"])):
-            os.remove(os.path.join(d, v["file"]))
-            res[v["file"]] = "removed"
+        f = v.get("file") if isinstance(v, dict) else None
+        if not safe_view_name(f):
+            print("vr_refresh: ignoring manifest entry with an unsafe file name: %r" % (f,), file=sys.stderr)
+            continue
+        target = os.path.realpath(os.path.join(d, f))
+        if os.path.dirname(target) != droot:
+            print("vr_refresh: ignoring manifest entry outside %s: %r" % (out_dir, f), file=sys.stderr)
+            continue
+        if f not in views and f != "product-map.json" and not keep(f) and os.path.isfile(target):
+            os.remove(target)
+            res[f] = "removed"
     return res
 
 
 # ------------------------------------------------------------------ product map
 
 def _first_parent_revs(repo: str, prev: str, head: str) -> list | None:
-    if _git(repo, "merge-base", "--is-ancestor", prev, head) is None and \
-            subprocess.run(["git", "merge-base", "--is-ancestor", prev, head], cwd=repo, capture_output=True).returncode != 0:
+    try:
+        rc = subprocess.run(["git", "merge-base", "--is-ancestor", prev, head], cwd=repo, capture_output=True).returncode
+    except OSError as exc:
+        raise RefreshError("git cannot be run: %s" % exc)
+    if rc != 0:
         return None
     out = _git(repo, "rev-list", "--first-parent", "--no-merges", "%s..%s" % (prev, head))
     merges = _git(repo, "rev-list", "--first-parent", "--merges", "%s..%s" % (prev, head))
@@ -642,9 +718,12 @@ def refresh_product_map(repo: str, out_dir: str, prev: str | None, head: str, fu
 # ------------------------------------------------------------------ refresh
 
 def previous_commit(repo: str, out_dir: str, store: Store) -> str | None:
-    """The extraction commit of the map on disk: the committed manifest, else the product map, else the cache state."""
-    for rel, getter in ((MANIFEST, lambda g: g.get("extraction_commit")),
-                        ("product-map.json", lambda g: (g.get("meta") or {}).get("commit"))):
+    """The commit the product map on disk was last refreshed at: the manifest's own `product_map_commit` (advanced only
+    when the product map was refreshed), else the product map's meta.commit, else the manifest's extraction commit
+    (manifests written before the field existed), else the cache state."""
+    for rel, getter in ((MANIFEST, lambda g: g.get("product_map_commit")),
+                        ("product-map.json", lambda g: (g.get("meta") or {}).get("commit")),
+                        (MANIFEST, lambda g: g.get("extraction_commit"))):
         try:
             with open(os.path.join(repo, out_dir, rel), encoding="utf-8") as fh:
                 c = getter(json.load(fh))
@@ -660,6 +739,8 @@ def refresh(repo: str, out_dir: str = DEFAULT_DIR, cache: str | None = None, sin
             full: bool = False, product: bool = True, calls_limit: float = CALLS_LIMIT, file_limit: float = FILE_LIMIT,
             index_limit: float = INDEX_LIMIT, jobs: int = 4, runner=None, ra_factory=None, log=lambda m: None) -> dict:
     t0 = time.time()
+    if shutil.which("git") is None:
+        raise RefreshError("git is not installed or not on PATH")
     repo = os.path.realpath(repo)
     head = (_git(repo, "rev-parse", "HEAD") or "").strip()
     if not head:
@@ -684,7 +765,8 @@ def refresh(repo: str, out_dir: str = DEFAULT_DIR, cache: str | None = None, sin
     cstats = {"status": "skipped", "reason": "not requested"}
     entries: dict = {}
     if calls:
-        cstats = calls_layer(ws_root, pkgs, blobs, store, calls_limit, file_limit, index_limit, ra_factory, force=full, log=log)
+        cstats = calls_layer(ws_root, pkgs, blobs, store, calls_limit, file_limit, index_limit, ra_factory, force=full, log=log,
+                             ra_version=_ra_version() if ra_factory is None else "")
         for rel in _crate_src_files(pkgs, ws_root, blobs):
             e = store.read("calls", _file_name(rel))
             if e and e.get("rel") == rel and e.get("blob") == blobs[rel]:
@@ -699,46 +781,78 @@ def refresh(repo: str, out_dir: str = DEFAULT_DIR, cache: str | None = None, sin
     if cstats.get("reason"):
         layers["calls"]["reason"] = ("partial: " if cstats["status"] == "partial" else "") + cstats["reason"]
     meta = _meta(g["meta"]["repo"], short, tools, layers)
+    # A layer that did not run (cargo-modules missing or the wrong version, a crate whose target failed) leaves the
+    # previous view of what it covers on disk and in the manifest: a skipped layer is not a deleted crate.
+    mod_skipped = lm.get("status") == "skipped"
+    affected = sorted(p["name"] for p in pkgs) if mod_skipped else sorted(lm.get("failed", []))
+    if mod_skipped:
+        parts.clear()
+    for c in affected:
+        parts.pop(c, None)
     views = build_views(g, parts, pkgs, entries, ws_root, meta, bool(calls and entries))
+    for c in affected:
+        views.pop("modules-%s.json" % c, None)
+        views.pop("calls-%s.json" % c, None)
+    if affected:
+        views.pop("crate-calls.json", None)
     # a call layer that did not run (not requested, or no rust-analyzer) leaves the committed call views as they are
     is_calls = lambda n: n.startswith("calls-") or n == "crate-calls.json"
     keep_calls = cstats["status"] == "skipped"
-    written = write_views(repo, out_dir, views, log, keep=is_calls if keep_calls else (lambda n: False))
+    kept_mod = {"modules-%s.json" % c for c in affected} | {"calls-%s.json" % c for c in affected} | ({"crate-calls.json"} if affected else set())
+    keep = lambda n: (keep_calls and is_calls(n)) or n in kept_mod
+    written = write_views(repo, out_dir, views, log, keep=keep)
     pstats = {"status": "skipped", "reason": "not requested"}
     if product:
         pstats = refresh_product_map(repo, out_dir, prev_full or None, head, full)
-    mf = {"schema": "map-manifest/1", "repo": g["meta"]["repo"], "extraction_commit": head, "previous_commit": prev_full or None,
-          "views": [{"file": n, "title": v["title"], "nodes": len(v["nodes"]), "edges": len(v["edges"])}
-                    for n, v in sorted(views.items())],
-          "layers": {"modules": {"reused": lm.get("reused", []), "recomputed": lm.get("recomputed", []),
-                                 "status": lm.get("status")},
-                     "calls": cstats, "product_map": pstats}}
-    if product and pstats.get("status") == "ran":
-        try:
-            pm = vr_graph.load(os.path.join(repo, out_dir, "product-map.json"))
-            mf["views"].append({"file": "product-map.json", "title": pm["title"], "nodes": len(pm["nodes"]), "edges": len(pm["edges"])})
-        except (OSError, ValueError):
-            pass
-    mf["views"].sort(key=lambda v: v["file"])
     mp = os.path.join(repo, out_dir, MANIFEST)
     try:
         with open(mp, encoding="utf-8") as fh:
             old = json.load(fh)
     except (OSError, ValueError):
         old = None
-    if keep_calls and old:
+    # the product map has its own base commit: it advances only when the product map was refreshed
+    pm_commit = head if pstats.get("status") == "ran" else ((old or {}).get("product_map_commit") or prev_full or None)
+    mlayer = {"reused": lm.get("reused", []), "recomputed": lm.get("recomputed", []), "status": lm.get("status")}
+    if affected:
+        mlayer["kept"] = affected
+        if lm.get("reason"):
+            mlayer["reason"] = lm["reason"]
+    mf = {"schema": "map-manifest/1", "repo": g["meta"]["repo"], "extraction_commit": head, "previous_commit": prev_full or None,
+          "product_map_commit": pm_commit,
+          "views": [{"file": n, "title": v["title"], "nodes": len(v["nodes"]), "edges": len(v["edges"])}
+                    for n, v in sorted(views.items())],
+          # no timings here: the manifest is committed and must not change when nothing else did
+          "layers": {"modules": mlayer, "calls": {k: v for k, v in cstats.items() if k != "seconds"}, "product_map": pstats}}
+    if product and pstats.get("status") == "ran":
+        try:
+            pm = vr_graph.load(os.path.join(repo, out_dir, "product-map.json"))
+            mf["views"].append({"file": "product-map.json", "title": pm["title"], "nodes": len(pm["nodes"]), "edges": len(pm["edges"])})
+        except (OSError, ValueError):
+            pass
+    kept = []
+    if old:
         have = {v["file"] for v in mf["views"]}
-        mf["views"] += [v for v in old.get("views", []) if is_calls(v["file"]) and v["file"] not in have
-                        and os.path.isfile(os.path.join(repo, out_dir, v["file"]))]
-        mf["views"].sort(key=lambda v: v["file"])
-    if old is None or old.get("extraction_commit") != head or {k: v for k, v in old.items() if k not in ("layers",)} != \
-            {k: v for k, v in mf.items() if k not in ("layers",)} or old.get("layers", {}).get("calls", {}).get("status") != cstats.get("status"):
+        for v in old.get("views", []):
+            f = v.get("file")
+            if f in have or not isinstance(f, str) or not os.path.isfile(os.path.join(repo, out_dir, f)):
+                continue
+            if f == "product-map.json":  # the product map was not refreshed this run: its row stays
+                mf["views"].append(v)
+            elif safe_view_name(f) and keep(f):
+                mf["views"].append(v)
+                kept.append(f)
+    mf["views"].sort(key=lambda v: v["file"])
+    # Rewrite the manifest only when a view moved or the list of views did: the extraction commit alone is not a change,
+    # so a stub cut with no map change leaves a clean tree and opens no pull request.
+    moved = any(x in ("written", "removed") for x in written.values()) or pstats.get("file") == "written"
+    if old is None or moved or old.get("views") != mf["views"] or old.get("repo") != mf["repo"]:
         with open(mp, "w", encoding="utf-8") as fh:
             fh.write(_dump(mf))
         written[MANIFEST] = "written"
     store.write({"extraction_commit": head, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, "state.json")
-    return {"commit": head, "previous": prev_full or None, "dir": out_dir, "cache": store.root, "views": written,
+    return {"commit": head, "previous": prev_full or None, "dir": out_dir, "cache": store.root, "views": written, "kept": sorted(kept),
             "modules": {"reused": lm.get("reused", []), "recomputed": lm.get("recomputed", []), "status": lm.get("status"),
+                        **({"failed": affected} if affected and not mod_skipped else {}),
                         **({"reason": lm["reason"]} if lm.get("reason") else {})},
             "calls": cstats, "product_map": pstats, "seconds": round(time.time() - t0, 1),
             "seconds_extract": round(t_extract, 1)}
@@ -750,6 +864,11 @@ def render(r: dict) -> str:
              "  crates:   recomputed (cargo metadata, always)",
              "  modules:  %d crates reused, %d recomputed%s" % (len(m["reused"]), len(m["recomputed"]),
                                                               (" [" + ", ".join(m["recomputed"]) + "]") if m["recomputed"] else "")]
+    if m.get("reason"):
+        lines.append("            " + m["reason"])
+    if r.get("kept"):
+        lines.append("  kept:     %d previous view(s) left as they were (their layer did not run): %s" % (
+            len(r["kept"]), ", ".join(r["kept"][:6]) + (", ..." if len(r["kept"]) > 6 else "")))
     if c["status"] == "skipped":
         lines.append("  calls:    skipped (%s)" % c.get("reason", ""))
     else:
@@ -816,9 +935,12 @@ class _FakeRa:
     """In-process stand-in for RaClient: every function of the `app` crate calls `f` in crates/sys/src/lib.rs."""
     started = 0
     seen: list = []
+    fail_prefix = None  # files under this prefix raise RaError
+    prov: set = set()   # files whose answer is flagged provisional
 
     def __init__(self, root, timeout=0):
         self.root, self.version = root, "fake-ra"
+        self.last_provisional = False
 
     def __enter__(self):
         _FakeRa.started += 1
@@ -831,7 +953,10 @@ class _FakeRa:
         pass
 
     def outgoing_for_file(self, rel):
+        if _FakeRa.fail_prefix and rel.startswith(_FakeRa.fail_prefix):
+            raise RaError("boom on %s" % rel)
         _FakeRa.seen.append(rel)
+        self.last_provisional = rel in _FakeRa.prov
         with open(os.path.join(self.root, rel), encoding="utf-8") as fh:
             text = fh.read()
         res = []
@@ -925,7 +1050,8 @@ def _selftest() -> int:
               and len(r3["modules"]["reused"]) == 4, str((mod_runs(), r3["modules"])))
         check("one-crate-change:calls-only-that-file", _FakeRa.seen == ["crates/core-lib/src/lib.rs"] and r3["calls"]["recomputed"] == 1
               and r3["calls"]["dependents"] == 0, str((_FakeRa.seen, r3["calls"])))
-        check("one-crate-change:previous-commit-read-from-manifest", r3["previous"] == r2["commit"], str(r3["previous"]))
+        check("second-run:manifest-not-rewritten", MANIFEST not in r2["views"], str(r2["views"]))
+        check("one-crate-change:previous-is-the-product-map-base", r3["previous"] == r1["commit"], str(r3["previous"]))
         check("one-crate-change:product-map-touched", r3["product_map"]["mode"] == "touched" and r3["product_map"]["revs"] >= 1, str(r3["product_map"]))
         with open(os.path.join(d, "crates/sys/src/lib.rs"), "w") as fh:
             fh.write("pub fn added() {}\npub fn f() {}\n")
@@ -965,6 +1091,82 @@ def _selftest() -> int:
         r10 = refresh(d, cache=cache, runner=base, ra_factory=failing_ra)
         check("ra-missing:skipped-with-reason-modules-kept", r10["calls"]["status"] == "skipped" and "nope" in r10["calls"]["reason"]
               and r10["modules"]["status"] == "ran", str(r10["calls"]))
+        # a layer that did not run keeps the previous views and their manifest rows: cargo-modules missing, or a crate failing
+        def no_cm(cmd, root):
+            if cmd[:3] == ["cargo", "modules", "--version"]:
+                return 1, "", "no such command"
+            return base(cmd, root)
+        before = {n: open(os.path.join(d, DEFAULT_DIR, n)).read() for n in os.listdir(os.path.join(d, DEFAULT_DIR)) if n.startswith(("modules-", "calls-"))}
+        r11 = refresh(d, cache=cache, runner=no_cm, ra_factory=lambda r, t: _FakeRa(r))
+        after = {n: open(os.path.join(d, DEFAULT_DIR, n)).read() for n in os.listdir(os.path.join(d, DEFAULT_DIR)) if n.startswith(("modules-", "calls-"))}
+        man = json.load(open(os.path.join(d, DEFAULT_DIR, MANIFEST)))
+        check("module-layer-skipped:no-view-removed", r11["modules"]["status"] == "skipped" and "removed" not in r11["views"].values()
+              and before == after, str((r11["modules"], r11["views"])))
+        check("module-layer-skipped:manifest-keeps-rows", {"modules-app.json", "calls-app.json"} <= {v["file"] for v in man["views"]}
+              and "modules-app.json" in r11["kept"], str(r11["kept"]))
+        check("module-layer-skipped:says-so", "kept" in render(r11) and "not installed" in render(r11), render(r11))
+
+        def fail_app(cmd, root):
+            if cmd[:3] == ["cargo", "modules", "structure"] and "app" in cmd:
+                return 1, "", "boom"
+            return base(cmd, root)
+        with open(os.path.join(d, "crates/app/src/lib.rs"), "a") as fh:
+            fh.write("pub fn touched() {}\n")
+        r12 = refresh(d, cache=cache, runner=fail_app, ra_factory=lambda r, t: _FakeRa(r))
+        check("crate-failed:old-views-kept", "modules-app.json" in r12["kept"] and "removed" not in r12["views"].values()
+              and os.path.isfile(os.path.join(d, DEFAULT_DIR, "modules-app.json")) and r12["modules"].get("failed") == ["app"],
+              str((r12["kept"], r12["modules"])))
+        # a manifest from a commit is not trusted for file names: traversal and absolute names are ignored
+        with tempfile.TemporaryDirectory() as td0:
+            td = os.path.realpath(td0)
+            os.makedirs(os.path.join(td, "docs/architecture"))
+            for rel in ("victim.txt", "docs/architecture/modules-gone.json", "docs/victim.json"):
+                with open(os.path.join(td, rel), "w") as fh:
+                    fh.write("x")
+            with open(os.path.join(td, "docs/architecture", MANIFEST), "w") as fh:
+                json.dump({"views": [{"file": "../../victim.txt"}, {"file": "../victim.json"}, {"file": "/etc/hosts"},
+                                     {"file": "modules-gone.json"}, {"file": None}]}, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                res = write_views(td, DEFAULT_DIR, {})
+            check("traversal:outside-files-survive", os.path.isfile(os.path.join(td, "victim.txt")) and os.path.isfile(os.path.join(td, "docs/victim.json"))
+                  and err.getvalue().count("ignoring") == 4, err.getvalue())
+            check("traversal:genuine-view-removed", res == {"modules-gone.json": "removed"}, str(res))
+        # call layer: a stop between the changed files and their dependents does not lose the dependents
+        c2 = cache + "-pending"
+        run(c2)
+        with open(os.path.join(d, "crates/sys/src/lib.rs"), "w") as fh:
+            fh.write("pub fn added2() {}\npub fn added() {}\npub fn f() {}\n")
+        _FakeRa.fail_prefix = "crates/app/"
+        try:
+            r13 = run(c2)
+        finally:
+            _FakeRa.fail_prefix = None
+        check("pending-dependents:partial-run-stops", r13["calls"]["status"] == "partial" and r13["calls"]["pending"] >= 1, str(r13["calls"]))
+        check("pending-dependents:persisted", bool(Store(c2).read("pending-dependents.json")))
+        r14 = run(c2)
+        check("pending-dependents:next-run-recomputes-them", r14["calls"]["status"] == "ran" and any(x.startswith("crates/app/") for x in _FakeRa.seen)
+              and Store(c2).read("pending-dependents.json") is None, str((r14["calls"], _FakeRa.seen)))
+        # a provisional answer (a server that was still indexing) is not pinned: the next run asks again
+        c3 = cache + "-prov"
+        _FakeRa.prov = {"crates/sys/src/lib.rs"}
+        try:
+            run(c3)
+        finally:
+            _FakeRa.prov = set()
+        run(c3)
+        check("provisional:recomputed-next-run", _FakeRa.seen == ["crates/sys/src/lib.rs"], str(_FakeRa.seen))
+        # the module cache key covers the workspace manifest, the lockfile and target roots outside src/
+        pk = {"manifest_path": "/w/crates/x/Cargo.toml", "targets": [{"src_path": "/w/crates/x/lib/main.rs"}]}
+        bl = {"Cargo.toml": "a", "Cargo.lock": "b", "crates/x/Cargo.toml": "c", "crates/x/src/lib.rs": "d", "crates/x/lib/main.rs": "e"}
+        k0 = ModuleCache(None, bl, "/w", "s").key(pk)
+        check("module-key:covers-root-manifest-lock-and-targets",
+              all(ModuleCache(None, dict(bl, **{f: "z"}), "/w", "s").key(pk) != k0 for f in ("Cargo.toml", "Cargo.lock", "crates/x/lib/main.rs")))
+        # concurrent writers: unique temp names, nothing left behind
+        st = Store(os.path.join(d0 + "-store"))
+        st.write({"a": 1}, "x", "y.json")
+        st.write({"a": 2}, "x", "y.json")
+        check("store:atomic-write-leaves-no-temp", st.read("x", "y.json") == {"a": 2} and st.listdir("x") == ["y.json"], str(st.listdir("x")))
     # add_groups: big modules/calls views carry groups to fold, small ones are untouched
     def _n(i, kind="module"):
         return {"id": i, "label": i.split(":")[-1].split("::")[-1], "kind": kind, "status": "context", "evidence": []}

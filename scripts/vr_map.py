@@ -287,7 +287,7 @@ def pick_links(hits: list, max_links: int) -> list:
 
 
 def touched_files(repo: str, rev: str) -> list:
-    out = git(repo, "diff", "--name-only", "%s^1" % rev, rev)
+    out = git(repo, "diff", "--name-only", "--no-renames", "%s^1" % rev, rev)
     if out is None:
         raise MapError("cannot diff %s^1..%s in %s" % (rev, rev, repo))
     return [x for x in out.split("\n") if x]
@@ -1091,6 +1091,16 @@ def _selftest() -> int:
             ("calls", "calls-a.json"), ("c1", "c1-context.md")], lst)
         ok("list: the map's title is its takeaway", lst[0]["title"] == json.load(open(mp2))["title"], lst[0])
 
+    # a rename lists both paths: a feature linked to the old one is re-linked
+    with tempfile.TemporaryDirectory() as d2:
+        g(d2, "init", "-q")
+        w(d2, "old/name.rs", "pub fn a() {}\npub fn b() {}\npub fn c() {}\n")
+        g(d2, "add", "-A")
+        g(d2, "commit", "-q", "-m", "one")
+        os.makedirs(os.path.join(d2, "new"))
+        g(d2, "mv", "old/name.rs", "new/name.rs")
+        g(d2, "commit", "-q", "-m", "rename")
+        ok("touched-files:rename-lists-both-paths", sorted(touched_files(d2, "HEAD")) == ["new/name.rs", "old/name.rs"], str(touched_files(d2, "HEAD")))
     if fails:
         print("vr_map selftest FAILED:\n  " + "\n  ".join(fails))
         return 1

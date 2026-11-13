@@ -52,7 +52,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_REL = os.path.join(".discovery", "visual-review")
 FN_RE = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
 HUNK_RE = re.compile(r"^@@ [^@]*@@\s*(.*)$")
-ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+ID_RE = re.compile(r"^[A-Za-z0-9]+([._-][A-Za-z0-9]+)*$")  # a dossier id: no slash, no ".." or dots-only
 
 
 class Failed(Exception):
@@ -396,6 +396,8 @@ def selftest() -> int:
             check("failing extractor is refused", False)
         except Failed as exc:
             check("failing extractor is refused", exc.step == "extract-before")
+    check("dossier id: plain ids pass", all(ID_RE.match(x) for x in ("W-145", "D_1", "w1.2")))
+    check("dossier id: dots-only and slashes are refused", not any(ID_RE.match(x) for x in ("..", ".", "a/b", "../x", "a..b", ".a", "a.")))
 
     print("selftest:", "PASS" if ok else "FAIL")
     return 0 if ok else 1

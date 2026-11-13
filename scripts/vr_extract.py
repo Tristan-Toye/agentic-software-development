@@ -333,10 +333,15 @@ def _modules_cached(pkgs, root, ws_root, files, runner, cfg_test, jobs, cache, p
         for p, (n, e, lm, tl) in zip(todo, results):
             if lm.get("status") == "skipped":
                 return [], [], lm, []
-            if lm.get("reason"):  # some target failed: keep what came back, store nothing
+            if lm.get("reason"):  # some target failed: store nothing, and give no part: the layer did not run for this crate
                 failed_names.append(p["name"])
                 meta["reason"] = "cargo modules failed for: " + ", ".join(failed_names)
-            elif keyed[p["name"]]:
+                meta["failed"] = sorted(failed_names)
+                nodes += n
+                edges += e
+                tools = tl
+                continue
+            if keyed[p["name"]]:
                 cache.store(p["name"], keyed[p["name"]], n, e)
             ran.append(p["name"])
             nodes += n
@@ -500,7 +505,8 @@ def extract_rust(root: str, layers=(1, 2), calls=(), timeout: float = 120.0, cfg
     `key(pkg) -> str`, `load(name, key) -> (nodes, edges) | None` and `store(name, key, nodes, edges)`.
     A crate with a stored result is not run again (meta.layers.modules lists `reused` and `recomputed`);
     a crate whose run failed is never stored. `parts`, when given, is filled with
-    {crate name: (module nodes, module edges)} for every crate of layer 2, reused or not."""
+    {crate name: (module nodes, module edges)} for every crate of layer 2, reused or not, except a crate whose
+    run failed (listed in meta.layers.modules `failed`): it has no entry."""
     runner = runner or default_runner
     timings = timings if timings is not None else {}
     root = os.path.abspath(root)
