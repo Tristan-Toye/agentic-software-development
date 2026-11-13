@@ -119,7 +119,9 @@ and you name them in the report instead of asking;
 and whether `origin/development` moved past the cut point. It may have —
 development merges the ADR index and other stubs. When it did, state the
 divergence and merge `origin/development` into the stub **as a pull request
-into the stub**, never a direct push, before anything else runs.
+into the stub**, never a direct push, before anything else runs. A conflicted
+sync is resolved as `/resolve-merge` Step 2 says, and `python3 ${PLUGIN_ROOT}/scripts/merge_guard.py`
+must exit 0 before the merge is committed.
 
 ## Step 2 — The dossier census
 

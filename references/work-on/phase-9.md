@@ -32,7 +32,9 @@
    rewrite to chase.
 
    **Conflicts on code** → show the user the conflicted files, resolve them
-   (through `implementer` for code, with the user for a judgement call), and
+   (through `implementer` for code, with the user for a judgement call),
+   run `python3 ${PLUGIN_ROOT}/scripts/merge_guard.py` before committing the merge (it must
+   exit 0; `/resolve-merge` Step 2 says how to read it), and
    if the resolution touched the blast radius, **get the runner's verdict on
    the merged head and re-run the three review lenses** before you go on.
    **Bookkeeping-only merges re-run nothing**: when the sync (merge plus finalize) touched only `docs/adr/**`
