@@ -47,6 +47,9 @@ The corpus has no effort figures. "Cost" below is the cost the research names, i
 
 ### 3. OQ-01. The "Never ask for approval" conflict
 
+**DECIDED 2026-11-12: B, a product question** (see OPEN-QUESTIONS.md).
+
+
 - **Question.** The ask policy forbids approval questions. A visual review is an approval gate.
 - **Options.** (A) A named exception. (B) Frame it as a product question ("Is this what the feature should do?"). (C) No gate: show the diagrams, do not block.
 - **Recommendation.** B, plus one sentence in `references/owner-questions.md` that names the visual-review question as a product question.
@@ -54,6 +57,9 @@ The corpus has no effort figures. "Cost" below is the cost the research names, i
 - **Blocks.** D4 (verdicts) and OQ-08 (a default for an unanswered question).
 
 ### 4. OQ-06. Size gate
+
+**DECIDED 2026-11-12: every build** at first (see OPEN-QUESTIONS.md).
+
 
 - **Question.** Does every build get a visual review?
 - **Options.** (A) Every build. (B) Builds above a size. (C) An owner switch per dossier.

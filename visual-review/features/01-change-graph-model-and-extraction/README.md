@@ -1,7 +1,7 @@
 # Feature 01: Change graph model and extraction
 
 - **Case ID**: VR-01
-- **Status**: PROPOSED (not built)
+- **Status**: BUILT. Schema `references/visual-review/graph.schema.json` (1.0.0), validator `scripts/vr_graph.py`, extractor `scripts/vr_extract.py` (+ `scripts/vr_ra.py`), fixtures in `references/visual-review/fixtures/`. See `references/visual-review/README.md`.
 - **Dossier**: D1 (after the spike D0). See [../../../research/OVERVIEW.md](../../../research/OVERVIEW.md), "Sizing".
 - **Depends on**: nothing.
 - **Needed by**: VR-02, VR-03, VR-05, VR-06.

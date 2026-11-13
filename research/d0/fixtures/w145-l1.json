@@ -1,0 +1,419 @@
+{
+ "schema_version": "0.1.0",
+ "view": "L1",
+ "title": "W-145 L1: one response, before and after (merged flow)",
+ "meta": {
+  "change": "W-145",
+  "repo": "config-harness",
+  "commit": "56034559",
+  "branch": "development",
+  "generated_by": "hand",
+  "tools": [],
+  "note": "Hand-built D0 fixture. Source anchors resolve at the commit above (after-state, W-145 merged)."
+ },
+ "lanes": [
+  {
+   "id": "lane-step",
+   "label": "Step (harness)"
+  },
+  {
+   "id": "lane-git",
+   "label": "Git tools (harness)"
+  },
+  {
+   "id": "lane-set",
+   "label": "Settings (protocol)"
+  }
+ ],
+ "nodes": [
+  {
+   "id": "s1",
+   "label": "Loop over the calls of one response",
+   "kind": "step",
+   "status": "context",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1732,
+     "note": "run_calls"
+    }
+   ],
+   "lane": "lane-step",
+   "order": 1,
+   "detail": {
+    "before": "for loop, awaits each run_one_call",
+    "after": "while loop over call_index, splits runs of groupable calls"
+   }
+  },
+  {
+   "id": "s2",
+   "label": "Mark groupable calls from the registry",
+   "kind": "step",
+   "status": "added",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1803,
+     "note": "is_groupable"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/pipeline.rs",
+     "line": 638,
+     "note": "Pipeline::reads_only"
+    }
+   ],
+   "lane": "lane-step",
+   "order": 2,
+   "detail": {
+    "after": "a group is 2 or more consecutive read-only calls; none when read_concurrency is 1"
+   }
+  },
+  {
+   "id": "s3",
+   "label": "Call outside a group: run_one_call",
+   "kind": "step",
+   "status": "context",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2067,
+     "note": "run_one_call, same code path as before"
+    }
+   ],
+   "lane": "lane-step",
+   "order": 3,
+   "detail": {
+    "before": "decide, run, settle back to back",
+    "after": "unchanged"
+   }
+  },
+  {
+   "id": "s4",
+   "label": "run_group: decide each call, in call order",
+   "kind": "step",
+   "status": "added",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1816,
+     "note": "run_group"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2112,
+     "note": "decide_call"
+    }
+   ],
+   "lane": "lane-step",
+   "order": 4,
+   "detail": {
+    "after": "rules, call cap, Pipeline::decide per call; sequential"
+   }
+  },
+  {
+   "id": "s5",
+   "label": "Run phases: Tool::run",
+   "kind": "step",
+   "status": "changed",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1864,
+     "note": "run_slots_concurrently"
+    }
+   ],
+   "lane": "lane-step",
+   "order": 5,
+   "detail": {
+    "before": "one at a time",
+    "after": "up to read_concurrency at once on the step task, no tokio::spawn"
+   }
+  },
+  {
+   "id": "s6",
+   "label": "Settle phase, in call order",
+   "kind": "step",
+   "status": "changed",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1899,
+     "note": "settle_slots"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2352,
+     "note": "settle_call"
+    }
+   ],
+   "lane": "lane-step",
+   "order": 6,
+   "detail": {
+    "before": "per call, right after its run",
+    "after": "after the whole group ran, call order; duration_ms = ended - started"
+   }
+  },
+  {
+   "id": "s7",
+   "label": "Boundary reminder from the kept tally value",
+   "kind": "step",
+   "status": "changed",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2918,
+     "note": "count_call"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2941,
+     "note": "append_boundary_reminder"
+    }
+   ],
+   "lane": "lane-step",
+   "order": 7,
+   "detail": {
+    "after": "decide phase keeps calls_since_boundary; settle phase gives it to the reminder"
+   }
+  },
+  {
+   "id": "s8",
+   "label": "Git read tools set GIT_OPTIONAL_LOCKS=0",
+   "kind": "step",
+   "status": "added",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/git_tools.rs",
+     "line": 273,
+     "note": "OPTIONAL_LOCKS_KEY"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/git_tools.rs",
+     "line": 983,
+     "note": "added to env"
+    }
+   ],
+   "lane": "lane-git",
+   "order": 8,
+   "detail": {
+    "after": "no optional index lock for concurrent git reads"
+   }
+  },
+  {
+   "id": "s9",
+   "label": "Setting tool_read_concurrency (1 to 64, default 4)",
+   "kind": "step",
+   "status": "added",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/src/schema/settings.rs",
+     "line": 222,
+     "note": "field"
+    },
+    {
+     "tier": "source",
+     "path": "crates/protocol/migrations/0063_tool_read_concurrency.sql",
+     "line": 5,
+     "end_line": 6,
+     "note": "column and CHECK"
+    }
+   ],
+   "lane": "lane-set",
+   "order": 9
+  },
+  {
+   "id": "s10",
+   "label": "StepPolicy.read_concurrency from the setting",
+   "kind": "step",
+   "status": "added",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 72,
+     "note": "field"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 93,
+     "note": "from_settings, floor 1"
+    }
+   ],
+   "lane": "lane-set",
+   "order": 10
+  }
+ ],
+ "edges": [
+  {
+   "id": "f1",
+   "source": "s1",
+   "target": "s2",
+   "kind": "flow",
+   "status": "added",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1745,
+     "note": "groupable computed before any decide phase"
+    }
+   ]
+  },
+  {
+   "id": "f2",
+   "source": "s2",
+   "target": "s3",
+   "kind": "flow",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1745
+    }
+   ],
+   "label": "single call"
+  },
+  {
+   "id": "f3",
+   "source": "s2",
+   "target": "s4",
+   "kind": "flow",
+   "status": "added",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1756,
+     "note": "run_group called for run_len >= 2"
+    }
+   ],
+   "label": "group"
+  },
+  {
+   "id": "f4",
+   "source": "s4",
+   "target": "s5",
+   "kind": "flow",
+   "status": "added",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "inferred",
+     "note": "run phase follows the last decide of the group"
+    }
+   ]
+  },
+  {
+   "id": "f5",
+   "source": "s5",
+   "target": "s6",
+   "kind": "flow",
+   "status": "changed",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1816,
+     "note": "run_group runs run_slots_concurrently then settle_slots"
+    }
+   ]
+  },
+  {
+   "id": "f6",
+   "source": "s6",
+   "target": "s7",
+   "kind": "flow",
+   "status": "changed",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2941
+    }
+   ]
+  },
+  {
+   "id": "f7",
+   "source": "s3",
+   "target": "s7",
+   "kind": "flow",
+   "status": "context",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2067
+    }
+   ]
+  },
+  {
+   "id": "f8",
+   "source": "s10",
+   "target": "s2",
+   "kind": "flow",
+   "status": "added",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 81
+    }
+   ],
+   "label": "policy"
+  },
+  {
+   "id": "f9",
+   "source": "s9",
+   "target": "s10",
+   "kind": "flow",
+   "status": "added",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/src/schema/settings.rs",
+     "line": 1496,
+     "note": "in the settings select list"
+    }
+   ]
+  },
+  {
+   "id": "f10",
+   "source": "s8",
+   "target": "s5",
+   "kind": "flow",
+   "status": "added",
+   "resolution": "static",
+   "evidence": [
+    {
+     "tier": "inferred",
+     "note": "env applies to every git read run inside the group"
+    }
+   ]
+  }
+ ],
+ "groups": []
+}

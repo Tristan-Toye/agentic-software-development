@@ -1,0 +1,294 @@
+{
+ "packages": [
+  {
+   "name": "protocol",
+   "id": "path+file://@ROOT@/crates/protocol#0.1.0",
+   "manifest_path": "@ROOT@/crates/protocol/Cargo.toml",
+   "targets": [],
+   "dependencies": [
+    {
+     "name": "test-support",
+     "kind": "dev",
+     "source": null,
+     "rename": null
+    }
+   ]
+  },
+  {
+   "name": "test-support",
+   "id": "path+file://@ROOT@/crates/test-support#0.1.0",
+   "manifest_path": "@ROOT@/crates/test-support/Cargo.toml",
+   "targets": [],
+   "dependencies": [
+    {
+     "name": "protocol",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "sandbox-tool",
+     "kind": null,
+     "source": null,
+     "rename": null
+    }
+   ]
+  },
+  {
+   "name": "sandbox-tool",
+   "id": "path+file://@ROOT@/crates/sandbox-tool#0.1.0",
+   "manifest_path": "@ROOT@/crates/sandbox-tool/Cargo.toml",
+   "targets": [],
+   "dependencies": [
+    {
+     "name": "protocol",
+     "kind": null,
+     "source": null,
+     "rename": null
+    }
+   ]
+  },
+  {
+   "name": "fault",
+   "id": "path+file://@ROOT@/crates/fault#0.1.0",
+   "manifest_path": "@ROOT@/crates/fault/Cargo.toml",
+   "targets": [],
+   "dependencies": [
+    {
+     "name": "workspace-hack",
+     "kind": null,
+     "source": null,
+     "rename": null
+    }
+   ]
+  },
+  {
+   "name": "workspace-hack",
+   "id": "path+file://@ROOT@/crates/workspace-hack#0.1.0",
+   "manifest_path": "@ROOT@/crates/workspace-hack/Cargo.toml",
+   "targets": [],
+   "dependencies": []
+  },
+  {
+   "name": "step-timing",
+   "id": "path+file://@ROOT@/crates/step-timing#0.1.0",
+   "manifest_path": "@ROOT@/crates/step-timing/Cargo.toml",
+   "targets": [],
+   "dependencies": [
+    {
+     "name": "workspace-hack",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "test-support",
+     "kind": "dev",
+     "source": null,
+     "rename": null
+    }
+   ]
+  },
+  {
+   "name": "harness",
+   "id": "path+file://@ROOT@/crates/harness#0.1.0",
+   "manifest_path": "@ROOT@/crates/harness/Cargo.toml",
+   "targets": [],
+   "dependencies": [
+    {
+     "name": "fault",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "protocol",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "sandbox-tool",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "step-timing",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "workspace-hack",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "platform",
+     "kind": "dev",
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "test-support",
+     "kind": "dev",
+     "source": null,
+     "rename": null
+    }
+   ]
+  },
+  {
+   "name": "platform",
+   "id": "path+file://@ROOT@/crates/platform#0.1.0",
+   "manifest_path": "@ROOT@/crates/platform/Cargo.toml",
+   "targets": [],
+   "dependencies": [
+    {
+     "name": "fault",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "protocol",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "step-timing",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "workspace-hack",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "platform",
+     "kind": "dev",
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "test-support",
+     "kind": "dev",
+     "source": null,
+     "rename": null
+    }
+   ]
+  },
+  {
+   "name": "graph-runtime",
+   "id": "path+file://@ROOT@/crates/graph-runtime#0.1.0",
+   "manifest_path": "@ROOT@/crates/graph-runtime/Cargo.toml",
+   "targets": [],
+   "dependencies": [
+    {
+     "name": "protocol",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "workspace-hack",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "platform",
+     "kind": "dev",
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "test-support",
+     "kind": "dev",
+     "source": null,
+     "rename": null
+    }
+   ]
+  },
+  {
+   "name": "composition-root",
+   "id": "path+file://@ROOT@/crates/composition-root#0.1.0",
+   "manifest_path": "@ROOT@/crates/composition-root/Cargo.toml",
+   "targets": [],
+   "dependencies": [
+    {
+     "name": "graph-runtime",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "harness",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "platform",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "protocol",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "step-timing",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "workspace-hack",
+     "kind": null,
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "graph-runtime",
+     "kind": "dev",
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "platform",
+     "kind": "dev",
+     "source": null,
+     "rename": null
+    },
+    {
+     "name": "test-support",
+     "kind": "dev",
+     "source": null,
+     "rename": null
+    }
+   ]
+  }
+ ],
+ "workspace_members": [
+  "path+file://@ROOT@/crates/protocol#0.1.0",
+  "path+file://@ROOT@/crates/test-support#0.1.0",
+  "path+file://@ROOT@/crates/sandbox-tool#0.1.0",
+  "path+file://@ROOT@/crates/fault#0.1.0",
+  "path+file://@ROOT@/crates/workspace-hack#0.1.0",
+  "path+file://@ROOT@/crates/step-timing#0.1.0",
+  "path+file://@ROOT@/crates/harness#0.1.0",
+  "path+file://@ROOT@/crates/platform#0.1.0",
+  "path+file://@ROOT@/crates/graph-runtime#0.1.0",
+  "path+file://@ROOT@/crates/composition-root#0.1.0"
+ ],
+ "workspace_root": "@ROOT@"
+}

@@ -127,6 +127,13 @@ NETWORK_RE = re.compile(r"ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|
                         r"|can'?t reach the API|couldn'?t reach Anthropic|unable to connect|could not connect|fetch failed|socket hang ?up|network (?:error|is unreachable)"
                         r"|connection (?:error|reset|refused|closed)|timed? ?out|API Error: 5\d\d|\b50[0234]\b|internal server error"
                         r"|bad gateway|service unavailable|gateway time-?out", re.I)
+# A sign-in the API refused for a reason outside the account: Cloudflare's bot page in front of the API ("403 Attention
+# Required! | Cloudflare", shown by the CLI as "Failed to authenticate") blocks the current network address for a while,
+# then lets it through again. Retried like a network error, but only ASD_RUNNER_AUTH_RETRIES times in a row (default 16,
+# about 3.5 hours at the network backoff): a sign-in that stays refused that long needs the owner.
+AUTH_OUTAGE_RE = re.compile(r"Attention Required|cloudflare|Failed to authenticate|API Error: 40[13]\b|authentication_error"
+                            r"|OAuth token has expired|invalid x-api-key", re.I)
+AUTH_RETRIES = 16
 # Waits between network retries, seconds; the last one repeats for as long as the outage lasts (ASD_RUNNER_NET_RETRIES
 # sets a limit; the default, 0, is none).
 GIT_SSH_HARDENED = "ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
@@ -176,7 +183,13 @@ def script_stamp(path: str) -> tuple[str, float]:
 
 def network_error(text: str) -> bool:
     """Whether a failed turn is a transient network or server error (wait and retry the stage), not a real failure."""
-    return bool(NETWORK_RE.search(text or "")) and not usage_limit(text)
+    return bool(NETWORK_RE.search(text or "") or AUTH_OUTAGE_RE.search(text or "")) and not usage_limit(text)
+
+
+def auth_outage(text: str) -> bool:
+    """Whether a failed turn is a refused sign-in (a Cloudflare block of this network, an expired token): retried a
+    bounded number of times, then asked."""
+    return bool(AUTH_OUTAGE_RE.search(text or "")) and not usage_limit(text)
 
 
 def usage_limit(text: str) -> bool:
@@ -534,11 +547,12 @@ def transcript_path(session: str, config_dir: str | None) -> str | None:
 
 def background_tasks(lines: list[str]) -> list[dict]:
     """The background commands, workflows and agents a session launched that have not notified it yet, each as
-    {"label", "id", "output"}: a tool call whose result says it went to the background, minus every
+    {"label", "id", "output", "tool"}: a tool call whose result says it went to the background, minus every
     `<task-notification>` naming its id and every task stopped on purpose (a stop sends no notification). A stop is
     read from the stop call's own input (TaskStop task_id), so any result text that is not an error ends the task, and
     the "stopped" / "No task found" texts end it too."""
     calls: dict[str, str] = {}
+    tools: dict[str, str] = {}      # tool_use id -> the tool's name (Bash, Agent, Workflow, ...)
     stops: dict[str, str] = {}      # a stop call's tool_use id -> the task id it names
     bg: dict[str, dict] = {}
     task_of: dict[str, str] = {}   # background task id -> the tool_use id that launched it
@@ -553,6 +567,7 @@ def background_tasks(lines: list[str]) -> list[dict]:
                 if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
                     i = b.get("input") or {}
                     calls[b["id"]] = str(i.get("description") or i.get("name") or i.get("skill") or b.get("name") or "tool")[:100]
+                    tools[b["id"]] = str(b.get("name") or "")
                     key = BG_STOP_TOOLS.get(str(b.get("name") or ""))
                     if key and i.get(key):
                         stops[b["id"]] = str(i[key])
@@ -567,7 +582,7 @@ def background_tasks(lines: list[str]) -> list[dict]:
                     if BG_LAUNCHED.search(t[:400]):
                         m = BG_TASK_ID.search(t[:400])
                         out = BG_OUTPUT.search(t[:600])
-                        bg[tid] = {"label": calls[tid], "id": m.group(1) if m else "", "output": out.group(1) if out else ""}
+                        bg[tid] = {"label": calls[tid], "id": m.group(1) if m else "", "output": out.group(1) if out else "", "tool": tools.get(tid, "")}
                         if m:
                             task_of[m.group(1)] = tid
                     else:
@@ -760,7 +775,15 @@ def model_ok(expected: str, actual: str) -> bool:
 # `running` WITHOUT queueing, so the live count may briefly exceed the cap until another run finishes or waits.
 
 TESTING_QUIET_SECS = 300    # an in-flight Bash call with no output for longer than this counts as a long wait
-TESTING_CMD = re.compile(r"\brun_(?:tests|gates)\.py\b")   # the long waits we know by name (any flags, `--wait` included)
+# the long waits we know by name (any flags, `--wait` included): tests, gates, a hand-written poll on a detached run's
+# state directory, and CI (wait_ci.py, `gh pr checks --watch`, `gh run watch`; a fix-deferred session held its slot for
+# the whole of a Rust CI job in wait_ci.py)
+TESTING_CMD = re.compile(r"\brun_(?:tests|gates)(?:\.py\b|-detach/)|\bwait_ci\.py\b|\bgh\s+(?:pr\s+checks\b[^\n]*--watch|run\s+watch)\b")
+# Stream lines the CLI emits while a foreground tool call is still running (a Bash call turns into a task after a few
+# seconds and reports progress). They say the call is alive, not that the session works: they keep a call from looking
+# stalled, but never from looking like a long wait.
+PROGRESS_EVENTS = ("tool_progress",)
+PROGRESS_SUBTYPES = ("task_started", "task_progress")
 LIVE_STATES = ("running", "testing", "waiting", "queued")   # a runner in one of these is alive (paused ones are checked separately)
 
 
@@ -1180,7 +1203,10 @@ class Runner:
         self.last_api = 0.0                 # when the session's last API call came back (any assistant or result event)
         self.ka_since: float | None = None  # when this wait (owner question or queue) began
         self.turn_open = False              # a user message went in and no result event came yet: the session is mid-turn
+        self.bg_cmds_only = False           # background() saw only Bash tasks in flight
+        self.bg_wait = ""                   # turn ended and only background shell commands run (a CI wait): what it waits on
         self.last_out = time.monotonic()    # monotonic time of the last stream event (or message sent) of the session
+        self.last_work = self.last_out      # the same, without the progress lines of a tool call still in flight
         self.last_ev = "none"               # the last stream event: its type and tool name, for the stall diagnostic
         self.tool_names: dict = {}          # tool_use id -> tool name
         self.inflight_bash: dict = {}       # Bash tool_use id -> (command, monotonic start): calls with no result yet
@@ -1513,12 +1539,15 @@ class Runner:
                 tasks = background_tasks(fh.read().splitlines())
         except OSError:
             return []
-        live = []
+        live: list[str] = []
+        tools: list[str] = []
         for t in tasks:
             if output_unheld(t["output"]):
                 self.log(f"background task {t['id']} ({t['label']}) has no process left (nothing holds its output open); not waiting for it")
                 continue
             live.append(t["label"])
+            tools.append(t.get("tool") or "")
+        self.bg_cmds_only = bool(live) and all(x == "Bash" for x in tools)
         return live
 
     def take_slot(self, first: bool = False, rehome: bool = False) -> bool:
@@ -1736,6 +1765,7 @@ class Runner:
 
     def send(self, text: str) -> None:
         self.turn_open = True
+        self.bg_wait = ""
         self.last_out = time.monotonic()
         try:
             self.proc.stdin.write(user_message(text))
@@ -1892,6 +1922,8 @@ class Runner:
 
     def note_event(self, ev: dict) -> None:
         self.last_out = time.monotonic()   # any stream-json line is output, a sub-agent's included
+        if not (ev.get("type") in PROGRESS_EVENTS or (ev.get("type") == "system" and ev.get("subtype") in PROGRESS_SUBTYPES)):
+            self.last_work = self.last_out
         self.track_event(ev)
         if ev.get("type") in ("assistant", "result"):
             self.last_api = now_s()
@@ -1950,6 +1982,7 @@ class Runner:
             self.inflight_bash.clear()
         elif t in ("assistant", "user"):
             self.turn_open = True
+            self.bg_wait = ""
         tool = ""
         c = (ev.get("message") or {}).get("content") if t in ("assistant", "user") else None
         if isinstance(c, list):
@@ -1973,9 +2006,11 @@ class Runner:
         """The in-flight foreground Bash call the session is blocked on for a long wait, or "". A call counts when it
         runs run_tests.py or run_gates.py (--wait included), or when it has produced no output (no stream event of any
         kind) for more than TESTING_QUIET_SECS (ASD_TESTING_QUIET_SECS overrides)."""
-        if not self.turn_open or not self.inflight_bash:
+        if not self.turn_open:
+            return self.bg_wait
+        if not self.inflight_bash:
             return ""
-        quiet = time.monotonic() - self.last_out > env_num("ASD_TESTING_QUIET_SECS", TESTING_QUIET_SECS)
+        quiet = time.monotonic() - self.last_work > env_num("ASD_TESTING_QUIET_SECS", TESTING_QUIET_SECS)
         for cmd, _ in self.inflight_bash.values():
             if TESTING_CMD.search(cmd) or quiet:
                 return cmd.strip().splitlines()[0][:80] if cmd.strip() else "a Bash call"
@@ -2247,6 +2282,11 @@ class Runner:
                 if bg and bg_waited < bg_max:
                     if bg_waited == 0:
                         self.log(f"quiet, but {len(bg)} background task(s) still running: " + "; ".join(bg[:4]) + "; waiting for them")
+                    if self.bg_cmds_only:
+                        # Only shell commands run (a CI wait, a detached test run): no model works, so the slot goes
+                        # back until the session is re-invoked. A background agent or workflow keeps it.
+                        self.bg_wait = "background: " + bg[0][:68]
+                        self.refresh_testing()
                     bg_waited += idle
                     continue
                 if nudges >= 2:
@@ -2571,12 +2611,15 @@ class Runner:
                 net_tries += 1
                 self.mark_resume()
                 limit_n = int(os.environ.get("ASD_RUNNER_NET_RETRIES") or 0)
+                if auth_outage(detail):
+                    limit_n = int(os.environ.get("ASD_RUNNER_AUTH_RETRIES") or AUTH_RETRIES)
                 if not limit_n or net_tries <= limit_n:
                     wait = float(os.environ.get("ASD_RUNNER_NET_WAIT") or NETWORK_BACKOFF[min(net_tries, len(NETWORK_BACKOFF)) - 1])
                     until = time.time() + wait
                     at = datetime.datetime.fromtimestamp(until, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     self.save(state="paused", resumes_at=at)
-                    self.event(f"paused: network error ({detail[:160]}); retry {net_tries}{'/' + str(limit_n) if limit_n else ''} of stage {started} at {at}", "paused")
+                    what = "sign-in refused" if auth_outage(detail) else "network error"
+                    self.event(f"paused: {what} ({detail[:160]}); retry {net_tries}{'/' + str(limit_n) if limit_n else ''} of stage {started} at {at}", "paused")
                     while time.time() < until and not self.stopping:
                         time.sleep(min(5.0, max(0.2, until - time.time())))
                     if self.stopping:
@@ -2585,7 +2628,7 @@ class Runner:
                     self.event(f"resumed after the network error; stage {started} again", "running")
                     started -= 1
                     continue
-                detail = f"network errors on {limit_n} retries in a row: {detail}"
+                detail = f"{'sign-in refused' if auth_outage(detail) else 'network errors'} on {limit_n} retries in a row: {detail}"
             if outcome == "limit":
                 # Out of tokens: pause until the limit resets, then run the same stage
                 # again (its checkpoints are the hand-off; /work-on resumes from the dossier).
@@ -3028,7 +3071,14 @@ for raw in sys.stdin:
         elif "bash" in a:   # a foreground Bash call that blocks `hold` seconds, then its result, then `after` s of work
             import time
             out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": f"bx{n}{turn}", "name": "Bash", "input": {"command": a["bash"]}}]}})
-            time.sleep(a["hold"])
+            if a.get("progress"):   # the CLI's own progress lines while the call runs, as a real Bash call sends them
+                out({"type": "system", "subtype": "task_started"})
+                end = time.monotonic() + a["hold"]
+                while time.monotonic() < end:
+                    time.sleep(min(a["progress"], max(0.0, end - time.monotonic())))
+                    out({"type": "tool_progress"})
+            else:
+                time.sleep(a["hold"])
             out({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": f"bx{n}{turn}", "content": "ok"}]}})
             time.sleep(a.get("after", 0))
         elif "ask" in a:
@@ -3582,9 +3632,14 @@ def selftest() -> int:
         os.remove(os.path.join(rdir, "repo.W-91.runner.json"))
         env["ASD_RUNNER_MAX_LIVE"] = "1"
         scenario([{"turns": [[{"bash": "python3 scripts/run_tests.py --wait", "hold": 4, "after": 4}, {"final": "RUNNER: DONE"}]]}])
+        check("testing: a poll on a detached run's state directory is a known wait", bool(TESTING_CMD.search("S=/var/folders/x/T/run_gates-detach/2026-ab; [ -f $S/exit ]")) and not TESTING_CMD.search("ls scripts"))
         p = start("W-92")
         went = until(lambda: state_of("W-92").get("state") == "testing", 20)
         check("testing: the state flips to testing while run_tests.py is in flight", bool(went))
+        check("testing: CI waits are long waits by name",
+              all(TESTING_CMD.search(c) for c in ("python3 scripts/wait_ci.py --pr 501 --timeout 570 2>&1 | tail -15",
+                                                   "gh pr checks 501 --watch", "gh run watch 123"))
+              and not any(TESTING_CMD.search(c) for c in ("gh pr checks 501", "gh run view 123", "cat wait_ci.pyc")))
         held_now = slot_census("other")[0] if went else -1
         check("testing: slot_census does not count the testing run", held_now == 0)
         back = until(lambda: state_of("W-92").get("state") == "running", 20)
@@ -3594,6 +3649,11 @@ def selftest() -> int:
         scenario([{"turns": [[{"bash": "sleep 99", "hold": 5, "after": 3}, {"final": "RUNNER: DONE"}]]}])
         p = start("W-93")
         check("testing: any Bash call quiet past the threshold flips to testing", bool(until(lambda: state_of("W-93").get("state") == "testing", 20)))
+        p.wait(timeout=60)
+        # the CLI's progress lines during a long call are not work: a quiet poll loop still flips (W-018, 2026-11-13)
+        scenario([{"turns": [[{"bash": "for i in $(seq 1 58); do sleep 10; done", "hold": 6, "progress": 0.3, "after": 3}, {"final": "RUNNER: DONE"}]]}])
+        p = start("W-94")
+        check("testing: progress lines of the call in flight do not hide a quiet wait", bool(until(lambda: state_of("W-94").get("state") == "testing", 20)))
         p.wait(timeout=60)
         env.pop("ASD_TESTING_QUIET_SECS")  # ASD_RUNNER_MAX_LIVE stays set: the disk-floor cases below pop it
         # ---- the disk floor: below it the run queues (no claude), and starts once the disk has room ----
@@ -3685,6 +3745,10 @@ def selftest() -> int:
         check("network: ENOTFOUND and 5xx are network errors; a usage limit is not", network_error(net) and network_error("API Error: 503 Service Unavailable") and not network_error("usage limit reached") and not network_error("the contract is wrong"))
         check("network: claude unable to load the organisation's settings at start is a network error",
               network_error("Claude Code couldn't reach Anthropic to load your organization's settings (could not connect). Check your network connection and retry"))
+        cf = "Failed to authenticate. API Error: 403 <!DOCTYPE html> Attention Required! | Cloudflare"
+        check("auth outage: a Cloudflare 403 sign-in block retries like a network error, bounded; a usage limit and a plain 5xx are not auth",
+              network_error(cf) and auth_outage(cf) and auth_outage("API Error: 401 authentication_error")
+              and not auth_outage("API Error: 503 Service Unavailable") and not auth_outage("usage limit reached") and not network_error("TypeError: x is undefined"))
         scenario([{"turns": [[{"error": net}]]}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
         env["ASD_RUNNER_NET_WAIT"] = "0.2"
         p = start("W-32")
@@ -3827,6 +3891,15 @@ def selftest() -> int:
         st = lambda tool, key, res, err=False: [J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "k1", "name": tool, "input": {key: "mv1"}}]}}),
                                                 J({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "k1", "content": res, "is_error": err}]}})]
         check("background: a command moved to the background after its timeout is in flight, with its output path", [t["output"] for t in background_tasks(mv)] == ["/tmp/x/tasks/mv1.output"])
+        check("background: each task carries the tool that launched it", [t["tool"] for t in background_tasks(mv)] == ["Bash"])
+        rb = object.__new__(Runner)
+        rb.turn_open, rb.inflight_bash, rb.bg_wait = False, {}, "background: Wait for PR 518 CI"
+        check("background wait: a closed turn waiting only on background commands is blocked (slot released)", rb.blocked_on() == "background: Wait for PR 518 CI")
+        rb.bg_wait = ""
+        check("background wait: a closed turn with no background command wait is not blocked", rb.blocked_on() == "")
+        rb.turn_open, rb.bg_wait, rb.last_out, rb.state, rb.stopping = False, "x", 0.0, {}, False
+        rb.track_event({"type": "assistant", "message": {"content": []}})
+        check("background wait: the session's next event ends the background wait", rb.turn_open and rb.bg_wait == "")
         check("background: a stop is read from the call's task id, whatever the result text says",
               background_in_flight(mv + st("TaskStop", "task_id", "stopped")) == [] and background_in_flight(mv + st("KillShell", "shell_id", "done")) == []
               and background_in_flight(mv + st("TaskStop", "task_id", '{"message":"Killed task: mv1"}')) == [])

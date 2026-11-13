@@ -1,0 +1,214 @@
+{
+  "schema_version": "1.0.0",
+  "view": "L0",
+  "title": "Settings, git tools and gate share one concurrent tool layer",
+  "meta": {
+    "change": "W-145",
+    "repo": "config-harness",
+    "commit": "56034559",
+    "branch": "development",
+    "generated_by": "hand",
+    "tools": [],
+    "note": "Hand-built D0 fixture. Source anchors resolve at the commit above (after-state, W-145 merged)."
+  },
+  "nodes": [
+    {
+      "id": "H-01",
+      "label": "H-01 Tool layer core",
+      "kind": "feature",
+      "status": "changed",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "crates/harness/src/tools/step.rs",
+          "line": 1732,
+          "note": "run_calls groups consecutive read-only calls"
+        },
+        {
+          "tier": "inferred",
+          "note": "feature id from FEATURE-BOOK.md:58; feature-to-code map does not exist, so the link is by hand"
+        }
+      ],
+      "label_source": "hand"
+    },
+    {
+      "id": "H-05",
+      "label": "H-05 Gated git tools",
+      "kind": "feature",
+      "status": "changed",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "crates/harness/src/tools/git_tools.rs",
+          "line": 273,
+          "note": "GIT_OPTIONAL_LOCKS=0 for Reading git tools"
+        },
+        {
+          "tier": "inferred",
+          "note": "feature id from FEATURE-BOOK.md:59"
+        }
+      ],
+      "label_source": "hand"
+    },
+    {
+      "id": "H-04",
+      "label": "H-04 Risk gate and IAM",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "inferred",
+          "note": "Pipeline::decide still runs per call, in call order"
+        }
+      ],
+      "label_source": "hand"
+    },
+    {
+      "id": "H-09",
+      "label": "H-09 Inbox and relay",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "inferred",
+          "note": "relay and ask_human calls end the loop and are never grouped"
+        }
+      ],
+      "label_source": "hand"
+    },
+    {
+      "id": "H-06",
+      "label": "H-06 Checkpoint schema",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "inferred",
+          "note": "journal Result entry written per settled call; a dropped group re-runs unsettled calls"
+        }
+      ],
+      "label_source": "hand"
+    },
+    {
+      "id": "PF-01",
+      "label": "PF-01 Telemetry",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "inferred",
+          "note": "tool.call span now also covers the wait for other runs of the group"
+        }
+      ],
+      "label_source": "hand"
+    },
+    {
+      "id": "SET",
+      "label": "Runtime settings",
+      "kind": "feature",
+      "status": "added",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "crates/protocol/src/schema/settings.rs",
+          "line": 222,
+          "note": "new field tool_read_concurrency"
+        },
+        {
+          "tier": "inferred",
+          "note": "no feature id owns runtime settings in FEATURE-BOOK; placeholder name"
+        }
+      ],
+      "label_source": "hand"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "H-01",
+      "target": "H-04",
+      "kind": "depends",
+      "status": "context",
+      "resolution": "static",
+      "evidence": [
+        {
+          "tier": "inferred",
+          "note": "decide phase calls Pipeline::decide"
+        }
+      ]
+    },
+    {
+      "id": "e2",
+      "source": "H-01",
+      "target": "H-09",
+      "kind": "depends",
+      "status": "context",
+      "resolution": "static",
+      "evidence": [
+        {
+          "tier": "inferred",
+          "note": "relay ends the loop"
+        }
+      ]
+    },
+    {
+      "id": "e3",
+      "source": "H-01",
+      "target": "H-06",
+      "kind": "depends",
+      "status": "context",
+      "resolution": "static",
+      "evidence": [
+        {
+          "tier": "inferred",
+          "note": "journal write in the settle phase"
+        }
+      ]
+    },
+    {
+      "id": "e4",
+      "source": "H-01",
+      "target": "PF-01",
+      "kind": "depends",
+      "status": "context",
+      "resolution": "static",
+      "evidence": [
+        {
+          "tier": "inferred",
+          "note": "tool.call span"
+        }
+      ]
+    },
+    {
+      "id": "e5",
+      "source": "H-01",
+      "target": "H-05",
+      "kind": "depends",
+      "status": "changed",
+      "resolution": "static",
+      "evidence": [
+        {
+          "tier": "inferred",
+          "note": "git read tools run inside a group"
+        }
+      ]
+    },
+    {
+      "id": "e6",
+      "source": "H-01",
+      "target": "SET",
+      "kind": "depends",
+      "status": "added",
+      "resolution": "static",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "crates/harness/src/tools/step.rs",
+          "line": 81,
+          "note": "StepPolicy::from_settings reads tool_read_concurrency"
+        }
+      ]
+    }
+  ],
+  "groups": []
+}
