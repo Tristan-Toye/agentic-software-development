@@ -73,6 +73,14 @@ real-uncertainty questions, each passing `--kind`, and never an approval
   integrated: never while a stub's pull request into development is open,
   so the new stub starts with the whole integrated batch. A build that needs
   a stub meanwhile waits at that breakpoint (`RUNNER: WAITING stub`).
+- **The architecture map follows the cut.** When `stub_target.py` cuts a new
+  stub, it starts `scripts/map_refresh_pr.py` detached: an incremental
+  `vr_map.py refresh` from the previous map's extraction commit, committed to
+  `chore/map-refresh-<date>` and opened as a pull request into the new stub.
+  It acts only in a repo that already commits `docs/architecture/` maps
+  (`ASD_MAP_REFRESH=0` turns it off), never blocks the cut and never pushes to
+  `development`; the map reaches `development` with the next stub like any
+  other change.
 - The moment this command opens a stub's pull request, that stub is
   **closed** to new dossiers. A dossier started later targets a new stub cut
   the same way, dated that later day. Never retarget a dossier pull request
