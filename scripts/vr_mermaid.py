@@ -23,6 +23,8 @@ import   parse every ```mermaid block of FILE.md into one graph JSON, written ne
          A block is only replaced when render(import(block)) equals the block (see
          NORMALISATION); otherwise nothing of that file is written and the exit code is 1.
 render   print the Mermaid text of a graph JSON.
+import --adopt  also re-import each marked block whose text was edited in the .md (an
+         anchor --fix, a hand edit), so `sync` does not revert it; the JSON follows the .md.
 sync     rewrite every marked block of the .md files of DIR (not recursive) from its JSON.
 check    exit 1 listing each marked block that differs from its JSON's render, each marker
          naming a missing JSON, each marker without its fence or end marker, and each unmarked
@@ -910,8 +912,17 @@ def cmd_import(args) -> int:
     lines = text.split("\n")
     blocks = scan_md(lines)
     todo = [(k, b) for k, b in enumerate(blocks, 1) if not b["marked"]]
+    d0 = os.path.dirname(os.path.abspath(path))
+    if getattr(args, "adopt", False):
+        # a marked block someone edited in the .md (e.g. check_diagram_anchors.py --fix):
+        # take the block back into its JSON instead of letting `sync` revert the edit
+        for k, b in enumerate(blocks, 1):
+            jp = os.path.join(d0, b["json"]) if b["marked"] and b["json"] and not b["problem"] else None
+            if jp and os.path.exists(jp) and render(json.loads(read(jp))) != normalise("\n".join(b["body"])):
+                todo.append((k, b))
+        todo.sort(key=lambda kb: kb[0])
     if not todo:
-        print("%s: no unmarked mermaid block" % path)
+        print("%s: no %s mermaid block" % (path, "unmarked or edited" if getattr(args, "adopt", False) else "unmarked"))
         return 0
     stem = os.path.splitext(os.path.basename(path))[0]
     d = os.path.dirname(os.path.abspath(path))
@@ -924,7 +935,7 @@ def cmd_import(args) -> int:
     failed = 0
     plan = []
     for k, b in todo:
-        name = "%s.json" % stem if len(blocks) == 1 else "%s.%d.json" % (stem, k)
+        name = b["json"] if b["marked"] else ("%s.json" % stem if len(blocks) == 1 else "%s.%d.json" % (stem, k))
         block = "\n".join(b["body"])
         try:
             g = import_block(block, stem, title if len(blocks) == 1 else "%s (%d)" % (title, k), meta, args.view)
@@ -940,7 +951,7 @@ def cmd_import(args) -> int:
             failed += 1
             continue
         target = os.path.join(d, name)
-        if os.path.exists(target) and not args.force:
+        if os.path.exists(target) and not args.force and not b["marked"]:
             print("%s block %d: %s exists (use --force to replace it)" % (path, k, name), file=sys.stderr)
             failed += 1
             continue
@@ -1278,6 +1289,10 @@ def _selftest(corpus: str | None) -> int:
         p = process_dir(d, fix=False)
         check("check:drift", len(p) == 1 and "seq-demo.2.json" in p[0], str(p))
         check("sync:fixes", process_dir(d, fix=True) == [] and process_dir(d, fix=False) == [] and 'b["B2"]' in read(md))
+        write(md, read(md).replace('b["B2"]', 'b["B3"]', 1))
+        check("adopt:edited-block-drifts", len(process_dir(d, fix=False)) == 1)
+        nsa = argparse.Namespace(file=md, write=True, repo="r", commit="c", view=None, force=False, adopt=True)
+        check("adopt:takes-the-md-edit", cmd_import(nsa) == 0 and process_dir(d, fix=False) == [] and "B3" in read(jp) and 'b["B3"]' in read(md))
         write(md, read(md).replace("```mermaid\nflowchart", "```mermaid\nflowchart", 1) + "\n```mermaid\nflowchart LR\n    x --> y\n```\n")
         p = process_dir(d, fix=False)
         check("check:unmarked", any("unmarked" in x for x in p), str(p))
@@ -1313,6 +1328,7 @@ def main(argv: list | None = None) -> int:
     ap.add_argument("--corpus", help="with --selftest: round-trip every mermaid block of the .md files in DIR")
     sub = ap.add_subparsers(dest="cmd")
     p = sub.add_parser("import")
+    p.add_argument("--adopt", action="store_true", help="also take back marked blocks edited in the .md (they replace their JSON)")
     p.add_argument("file")
     p.add_argument("--write", action="store_true")
     p.add_argument("--repo")
