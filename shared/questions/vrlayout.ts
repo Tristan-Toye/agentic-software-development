@@ -364,6 +364,30 @@ function mergeDirections(edges: any[], nodes: any[]): any[] {
   return res
 }
 
+/**
+ * L1 gives the order of its steps in `flows` (before and after lists), not as edges. Each step after the next in a flow gets
+ * an edge, so the layout runs the flow top to bottom and the page draws the arrows: `context` when the pair is in both lists,
+ * `added` when only in the after list, `removed` when only in the before list. A pair an edge of the file already joins is left alone.
+ */
+export function withFlowEdges(g: any): any {
+  if (g.view !== "L1" || !Array.isArray(g.flows) || !g.flows.length) return g
+  const nodes = new Set<string>(g.nodes.map((n: any) => n.id))
+  const have = new Set<string>(g.edges.map((e: any) => e.source + "\u0000" + e.target))
+  const added: any[] = []
+  for (const f of g.flows) {
+    const pairs = (l: unknown) => { const a = Array.isArray(l) ? l.filter((x) => nodes.has(x)) : []; return a.slice(1).map((t, i) => a[i] + "\u0000" + t) }
+    const before = new Set(pairs(f.before)), after = pairs(f.after)
+    const seq = [...after, ...[...before].filter((k) => !after.includes(k))]
+    for (const k of seq) {
+      if (have.has(k)) continue
+      have.add(k)
+      const [source, target] = k.split("\u0000")
+      added.push({ id: "flow:" + (f.id ?? "") + ":" + source + "->" + target, source, target, kind: "flow", status: !after.includes(k) ? "removed" : before.has(k) ? "context" : "added", evidence: Array.isArray(f.evidence) ? f.evidence : [], derived: true })
+    }
+  }
+  return added.length ? { ...g, edges: [...g.edges, ...added] } : g
+}
+
 /** A parsed graph file with `collapsed` groups drawn as boxes, and its layout. Shared by the dossier views and the committed maps. */
 export async function collapseLoaded(g: any, view: string, collapsed: string[]): Promise<{ graph: any; layout: Layout; collapsed: string[] }> {
   if (checkGraph(g, view).some((i) => i.code !== "dangling_edge")) throw new Error(view + " is not a valid graph")
@@ -371,9 +395,10 @@ export async function collapseLoaded(g: any, view: string, collapsed: string[]):
   const clean = stripDollar(g)
   const known = new Set<string>([...(clean.groups ?? []).map((x: any) => x.id), ...clean.nodes.map((x: any) => x.id), ...(clean.lanes ?? []).map((x: any) => x.id)])
   clean.edges = clean.edges.filter((e: any) => known.has(e.source) && known.has(e.target))
+  const flowed = withFlowEdges(clean)
   const lanes = view === "L1" && (clean.lanes ?? []).length > 0
   const use = lanes ? [] : ids.filter((i) => (clean.groups ?? []).some((x: any) => x.id === i))
-  const graph = collapseGraph(clean, use)
+  const graph = collapseGraph(flowed, use)
   return { graph, layout: await layoutGraph(graph), collapsed: use }
 }
 
@@ -421,8 +446,8 @@ export async function visualReview(dir: string, dossier: string): Promise<Visual
     const known = new Set<string>([...(clean.groups ?? []), ...(clean.lanes ?? []), ...clean.nodes].map((x: any) => x.id))
     clean.edges = clean.edges.filter((e: any) => known.has(e.source) && known.has(e.target))
     out.view = clean.view
-    out.graph = clean
-    try { out.layout = await layoutGraph(clean) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
+    out.graph = withFlowEdges(clean)
+    try { out.layout = await layoutGraph(out.graph) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
   }
   res.rev = h.digest("hex").slice(0, 16)
   res.issues = VR_VIEWS.flatMap((v) => (res.views[v]?.issues ?? []).map((i) => ({ ...i, where: v + (i.where ? "." + i.where : "") })))
