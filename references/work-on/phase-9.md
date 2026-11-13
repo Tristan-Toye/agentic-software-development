@@ -69,6 +69,25 @@
    where every concurrent branch pays this, and that is `GRADUATION:`
    material for the target repo's own rules file (content-addressed ids do
    not move).
+   **Architecture diagrams must match the code (close gate).** For a Rust
+   repository with `docs/architecture/c3-components-*.md`, run, after the
+   sync and still inside `X`:
+
+   ```bash
+   python3 "${PLUGIN_ROOT}/scripts/validate_pipeline.py" \
+     --c3-gate --base origin/<target>
+   ```
+
+   It runs `vr_c3_agree.py` on every crate this branch's diff touched, plus
+   the generator freshness check (`scripts/module_graph.py check`). A DEFECT
+   means a touched crate is below 95 percent agreement or its c3 file is
+   stale: **the session does not close.** Regenerate with
+   `python3 scripts/module_graph.py regen docs/architecture/c3-components-<crate>.md`,
+   or repair the parser when the diagram is still wrong, commit, and run the
+   gate again. Never lower the threshold. A `SKIP` line (no c3 files, no
+   `cargo-modules`, no touched crate with a file) is a stated skip, not a
+   pass: copy it into the PR description.
+
 2. **Get the final verdict on the head the PR will carry** and keep the
     evidence — it goes in the PR description and in the Jira comment. Under
     `ci` the run is CI's on the pushed final head: push, wait, and keep the
