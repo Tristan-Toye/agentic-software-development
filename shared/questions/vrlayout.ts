@@ -52,7 +52,7 @@ function canon(v: any): any {
 export const graphHash = (g: unknown): string => createHash("sha256").update(JSON.stringify(canon(stripDollar(g)))).digest("hex")
 
 const STATUS = new Set(["added", "changed", "removed", "context"])
-const VIEWS = new Set(["L0", "L1", "L2", "full"])
+const VIEWS = new Set(["L0", "L1", "L2", "map", "full"])
 /** Structural checks the page and the layout rely on. The full rules (budgets, evidence paths) stay in scripts/vr_graph.py. */
 export function checkGraph(g: any, expectView?: string): Issue[] {
   const out: Issue[] = []
@@ -60,7 +60,7 @@ export function checkGraph(g: any, expectView?: string): Issue[] {
   if (!g || typeof g !== "object" || Array.isArray(g)) { bad("not_object", "", "the file is not a JSON object"); return out }
   if (typeof g.schema_version !== "string" || !/^\d+\.\d+\.\d+$/.test(g.schema_version)) bad("schema_version", "schema_version", "missing or malformed schema_version")
   else if (g.schema_version.split(".")[0] !== "1") bad("schema_version", "schema_version", "unsupported major version " + g.schema_version + " (this reader handles 1.x)")
-  if (!VIEWS.has(g.view)) bad("view", "view", "view must be L0, L1, L2 or full")
+  if (!VIEWS.has(g.view)) bad("view", "view", "view must be L0, L1, L2, map or full")
   else if (expectView && g.view !== expectView) bad("view_mismatch", "view", "the file holds view " + g.view + ", expected " + expectView)
   for (const k of ["nodes", "edges"]) if (!Array.isArray(g[k])) bad("missing_field", k, k + " must be an array")
   if (out.length) return out
@@ -262,12 +262,8 @@ export function collapseGraph(graph: any, ids: string[]): any {
   return { ...graph, groups: keptGroups, nodes, edges: out }
 }
 
-/** One view of a dossier directory with `collapsed` groups drawn as boxes, and its layout (cached on the collapsed graph's hash). */
-export async function collapsedView(dir: string, view: string, collapsed: string[]): Promise<{ graph: any; layout: Layout; collapsed: string[] }> {
-  if (!(VR_VIEWS as readonly string[]).includes(view)) throw new Error("view must be L0, L1 or L2")
-  const file = join(dir, view.toLowerCase() + ".json")
-  if (!existsSync(file) || !statSync(file).isFile()) throw new Error("no " + view.toLowerCase() + ".json")
-  const g = JSON.parse(readFileSync(file, "utf8"))
+/** A parsed graph file with `collapsed` groups drawn as boxes, and its layout. Shared by the dossier views and the committed maps. */
+export async function collapseLoaded(g: any, view: string, collapsed: string[]): Promise<{ graph: any; layout: Layout; collapsed: string[] }> {
   if (checkGraph(g, view).some((i) => i.code !== "dangling_edge")) throw new Error(view + " is not a valid graph")
   const ids = [...new Set(collapsed)].slice(0, COLLAPSE_MAX)
   const clean = stripDollar(g)
@@ -277,6 +273,14 @@ export async function collapsedView(dir: string, view: string, collapsed: string
   const use = lanes ? [] : ids.filter((i) => (clean.groups ?? []).some((x: any) => x.id === i))
   const graph = collapseGraph(clean, use)
   return { graph, layout: await layoutGraph(graph), collapsed: use }
+}
+
+/** One view of a dossier directory with `collapsed` groups drawn as boxes, and its layout (cached on the collapsed graph's hash). */
+export async function collapsedView(dir: string, view: string, collapsed: string[]): Promise<{ graph: any; layout: Layout; collapsed: string[] }> {
+  if (!(VR_VIEWS as readonly string[]).includes(view)) throw new Error("view must be L0, L1 or L2")
+  const file = join(dir, view.toLowerCase() + ".json")
+  if (!existsSync(file) || !statSync(file).isFile()) throw new Error("no " + view.toLowerCase() + ".json")
+  return collapseLoaded(JSON.parse(readFileSync(file, "utf8")), view, collapsed)
 }
 
 // ---- the three files of a dossier ----

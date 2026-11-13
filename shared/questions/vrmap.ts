@@ -2,7 +2,7 @@
 // on a repo root, with a timeout, and caches the staleness result on the map file's mtime.
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { join, resolve, sep } from "node:path"
-import { checkGraph, layoutGraph, stripDollar, type ViewResult } from "./vrlayout.ts"
+import { checkGraph, collapseLoaded, layoutGraph, stripDollar, type ViewResult } from "./vrlayout.ts"
 
 export const MAP_REL = "docs/architecture/product-map.json"
 export const MAP_TIMEOUT_MS = 20_000
@@ -83,8 +83,8 @@ async function checkMap(repo: string, root: string, timeoutMs: number): Promise<
   return st
 }
 
-/** One committed diagram as the canvas takes it: a product-map or other graph file, laid out like a dossier view. Only paths `list` named are opened. */
-export async function openDiagram(root: string, rel: string, listed: Diagram[]): Promise<{ kind: "graph"; title: string; views: Record<string, ViewResult> } | { kind: "mermaid"; title: string; text: string }> {
+/** The text of a listed diagram: only a path `list` named, inside the repo (symlinks compared by real path). */
+function readListed(root: string, rel: string, listed: Diagram[]): { d: Diagram; text: string } {
   const d = listed.find((x) => x.path === rel)
   if (!d) throw new Error("not a listed diagram")
   const abs = resolve(root, rel)
@@ -93,18 +93,41 @@ export async function openDiagram(root: string, rel: string, listed: Diagram[]):
   let real: string
   try { real = realpathSync(abs) } catch { throw new Error("diagram not found") }
   if (!real.startsWith(realpathSync(root) + sep)) throw new Error("path leaves the repo")
-  const text = readFileSync(real, "utf8")
+  return { d, text: readFileSync(real, "utf8") }
+}
+
+/** The ids of the top-level groups of a graph (the groups that sit in no other group). */
+export const topGroups = (g: any): string[] => {
+  const ids = new Set<string>((g.groups ?? []).map((x: any) => x.id))
+  return (g.groups ?? []).filter((x: any) => !x.parent || !ids.has(x.parent)).map((x: any) => x.id)
+}
+
+/**
+ * One committed diagram as the canvas takes it: a product-map or other graph file, laid out like a dossier view. A `map` view (the
+ * whole-repo product map) is returned in the L0 slot, with `collapsed` = its top-level groups: the canvas opens it folded, and asks
+ * `collapsedDiagram` for that layout, so the first screen is the few areas, not every feature.
+ */
+export async function openDiagram(root: string, rel: string, listed: Diagram[]): Promise<{ kind: "graph"; title: string; views: Record<string, ViewResult & { collapsed?: string[] }> } | { kind: "mermaid"; title: string; text: string }> {
+  const { d, text } = readListed(root, rel, listed)
   if (!rel.endsWith(".json")) {
     const m = text.match(/```mermaid\n([\s\S]*?)```/)
     return { kind: "mermaid", title: d.title, text: (m ? m[1] : text).trim() }
   }
   const g = JSON.parse(text)
-  const out: ViewResult = { file: rel, graph: null, layout: null, issues: checkGraph(g) }
+  const out: ViewResult & { collapsed?: string[] } = { file: rel, graph: null, layout: null, issues: checkGraph(g) }
   if (typeof g?.title === "string") out.title = g.title
   if (!out.issues.length) {
     out.graph = stripDollar(g)
     out.view = g.view
+    if (g.view === "map") out.collapsed = topGroups(out.graph)
     try { out.layout = await layoutGraph(out.graph) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
   }
-  return { kind: "graph", title: d.title, views: { [g.view]: out } }
+  return { kind: "graph", title: d.title, views: { [g.view === "map" ? "L0" : g.view]: out } }
+}
+
+/** A committed diagram with some groups folded to one box each (edges aggregated with counts), and its layout. */
+export async function collapsedDiagram(root: string, rel: string, listed: Diagram[], collapsed: string[]): Promise<{ graph: any; layout: any; collapsed: string[] }> {
+  if (!rel.endsWith(".json")) throw new Error("not a graph diagram")
+  const g = JSON.parse(readListed(root, rel, listed).text)
+  return collapseLoaded(g, g.view, collapsed)
 }

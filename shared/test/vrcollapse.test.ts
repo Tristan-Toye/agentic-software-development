@@ -183,3 +183,35 @@ describe("page code of the canvas", () => {
     expect(noVars).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(/)
   })
 })
+
+describe("the whole-repo product map opens folded", () => {
+  const ev = [{ tier: "source", path: "a.md", line: 1 }]
+  const mk = (id: string, group: string) => ({ id, label: id, kind: "feature", status: "context", group, evidence: ev })
+  const map = {
+    schema_version: "1.0.0", view: "map", title: "4 features in 2 product areas", meta: { repo: "r", commit: "c", generated_by: "extractor" },
+    groups: [{ id: "area:a", label: "A", status: "context" }, { id: "area:b", label: "B", status: "context" }],
+    nodes: [mk("feature:A-01", "area:a"), mk("feature:A-02", "area:a"), mk("feature:B-01", "area:b"), mk("feature:B-02", "area:b")],
+    edges: ["A-01:B-01", "A-02:B-01", "A-02:B-02", "B-02:B-01"].map((p) => {
+      const [s, t] = p.split(":")
+      return { id: "edge:builds-on:feature:" + s + ":feature:" + t, source: "feature:" + s, target: "feature:" + t, kind: "depends", label: "builds on", status: "context", evidence: ev }
+    }),
+  }
+  test("openDiagram returns it in the L0 slot with every area to fold; the folded layout aggregates edges with counts", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs")
+    const { openDiagram, collapsedDiagram } = await import("../questions/vrmap.ts")
+    const root = mkdtempSync(join(tmpdir(), "vrmap-"))
+    mkdirSync(join(root, "docs/architecture"), { recursive: true })
+    writeFileSync(join(root, "docs/architecture/product-map.json"), JSON.stringify(map))
+    const listed = [{ path: "docs/architecture/product-map.json", kind: "product-map", title: map.title }]
+    const d: any = await openDiagram(root, listed[0].path, listed)
+    expect(Object.keys(d.views)).toEqual(["L0"])
+    expect(d.views.L0.collapsed).toEqual(["area:a", "area:b"])
+    const f = await collapsedDiagram(root, listed[0].path, listed, d.views.L0.collapsed)
+    expect(f.graph.nodes.map((n: any) => n.id).sort()).toEqual(["area:a", "area:b"])
+    const agg = f.graph.edges.find((e: any) => e.source === "area:a" && e.target === "area:b")
+    expect(agg.label).toBe("×3")
+    expect(f.graph.edges.length).toBe(1) // the edge inside B is dropped
+    expect(Object.keys(f.layout.boxes).sort()).toEqual(["area:a", "area:b"])
+    closeLayout()
+  })
+})

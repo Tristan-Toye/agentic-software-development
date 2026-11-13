@@ -11,7 +11,7 @@
     vr_map.py --selftest
     (every command takes --metrics PATH | --no-metrics; default REPO/.discovery/visual-review/metrics.jsonl)
 
-The map is a change graph (references/visual-review/graph.schema.json 1.0.0), view L0: one
+The map is a change graph (references/visual-review/graph.schema.json 1.0.0): one
 node of kind `feature` per feature of the repo's FEATURE-BOOK.md. A feature is linked to code
 where its ID is found in the repo files (signal `text`: the ID in a comment, a doc or a
 diagram). Each link is a source evidence entry `path:line` and is a span. The committed
@@ -25,8 +25,9 @@ that commit to HEAD. The per-dossier before-graph (vr_prepare.py) still extracts
 First-run scope (OQ-09 = B): `build` needs a scope. `--features` and `--touched` (the features
 whose ID appears in the files those changes touched, plus the features already on the map that
 cite those files) grow the map per feature; an existing MAP.json is merged into, `--fresh`
-replaces it. `--all` maps the whole book (more than the 15 features of the L0 budget on a
-big book: the build warns, VR-05 picks the view).
+replaces it. `--all` maps the whole book and organises it (`organise`): view `map`, one group per product area (an OVERVIEW.md),
+`builds on` edges from the dependency-map tables, the build stage in each node's detail. The `map` budget counts the folded
+first screen (areas), not the features (vr_graph.py).
 
 Staleness record (`meta.staleness`): per element, per span: sha256 of the span's lines; for a
 Rust file also the sha256 of the span with comments and spacing removed and the sha256 of the
@@ -353,6 +354,157 @@ def build(repo: str, features=None, touched=None, all_features=False, existing: 
                   "staleness": {"algorithm": "sha256 of the span lines; rust: also comment-free span and public-signature hashes",
                                 "extraction_commit": head_commit(repo), "tools": tools, "elements": staleness}},
          "nodes": ordered, "edges": []}
+    if all_features or (existing and existing.get("view") == "map"):
+        organise(repo, g)
+    return g
+
+
+# ----------------------------------------------------- areas, dependencies, stages
+
+_ID = re.compile(r"\b([A-Z]{1,3}-\d{2,3})\b")
+_AREA_HEAD = re.compile(r"^##\s+([A-Z]{1,3})-\d{2,3}\b")
+_STAGE = re.compile(r"^###\s+Stage\s+(\d+)\s*[—–:-]+\s*(.+?)\s*$")
+EDGE_LABEL = "builds on"
+OTHER_AREA = "area:other"
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "area"
+
+
+def parse_overview(text: str) -> dict:
+    """One OVERVIEW.md: {"label", "label_line", "prefixes", "deps"}. `label` is the first heading up to its first dash
+    ("# Mesh - sub-feature overview" is "Mesh"); `prefixes` are the ID prefixes of its "## ID - title" sections; `deps` are the rows
+    of its "## Dependency map" table as (subject ID, [IDs the Needs cell names, in order], line). Text in a Needs cell that is not a
+    feature ID (a service, a pillar number) is not an edge and is dropped."""
+    label, label_line, prefixes, deps, in_dep = "", 0, [], [], False
+    for i, raw in enumerate(text.split("\n"), 1):
+        line = raw.rstrip()
+        if line.startswith("# ") and not label:
+            label, label_line = re.split(r"\s+[—–-]+\s+", line[2:].strip(), maxsplit=1)[0].strip(), i
+            continue
+        m = _AREA_HEAD.match(line)
+        if m and m.group(1) not in prefixes:
+            prefixes.append(m.group(1))
+        if line.startswith("## "):
+            in_dep = line[3:].strip().lower().startswith("dependency map")
+            continue
+        if in_dep and line.startswith("|"):
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            first = _ID.search(cells[0]) if cells else None
+            if len(cells) < 2 or not first:
+                continue  # the header row, the --- row, a row with no subject ID
+            needs = []
+            for x in _ID.findall(cells[1]):
+                if x != first.group(1) and x not in needs:
+                    needs.append(x)
+            deps.append((first.group(1), needs, i))
+    return {"label": label, "label_line": label_line, "prefixes": prefixes, "deps": deps}
+
+
+def parse_stages(text: str) -> dict:
+    """{ID: {"stage": N, "name", "line"}} from the "### Stage N - name" sections of a FEATURE-BOOK: the IDs a section's list
+    lines open with (`- H-01: ...`). The first stage that lists an ID wins."""
+    out, cur = {}, None
+    for i, raw in enumerate(text.split("\n"), 1):
+        line = raw.strip()
+        m = _STAGE.match(line)
+        if m:
+            cur = {"stage": int(m.group(1)), "name": m.group(2)}
+            continue
+        if line.startswith("#"):
+            cur = None
+        elif cur and line[:1] in "-*":
+            for x in _ID.findall(re.split(r"[:—]", line.lstrip("-* ").replace("**", ""), maxsplit=1)[0]):
+                out.setdefault(x, dict(cur, line=i))
+    return out
+
+
+def organise(repo: str, g: dict) -> dict:
+    """Make the flat feature map of `build` a readable whole-repo map (view "map"), in place, and return it.
+    Areas: each OVERVIEW.md that lists "## ID - title" sections is one product area, labelled by its title; a feature whose ID
+    prefix no OVERVIEW claims goes in "Other". Edges: one "builds on" edge per feature ID in a Needs cell of a dependency-map row,
+    with the row (path:line) as evidence. Stage: the FEATURE-BOOK's "### Stage N" section of each feature, in its detail.
+    Idempotent: groups, edges and details are rebuilt from the repo's files on every call."""
+    repo = os.path.abspath(repo)
+    files = repo_files(repo)
+    nodes = {n["id"].split(":", 1)[1]: n for n in g["nodes"] if n.get("kind") == "feature"}
+    areas, owner = [], {}
+    for rel in files:
+        if os.path.basename(rel) != "OVERVIEW.md":
+            continue
+        ov = parse_overview("\n".join(read_lines(repo, rel) or []))
+        mine = [p for p in ov["prefixes"] if p not in owner]
+        if not mine:
+            continue
+        label = ov["label"] or os.path.basename(os.path.dirname(rel)).replace("-", " ").title()
+        a = {"id": "area:" + _slug(label), "label": label, "path": rel, "line": ov["label_line"] or 1, "deps": ov["deps"]}
+        areas.append(a)
+        for pre in mine:
+            owner[pre] = a
+    try:
+        book = find_feature_book(repo)
+    except MapError:
+        book = None
+    stages = parse_stages("\n".join(read_lines(repo, book) or [])) if book else {}
+    used = {}
+    for fid in sorted(nodes):
+        a = owner.get(fid.split("-", 1)[0])
+        if a is None:
+            a = used.setdefault(OTHER_AREA, {"id": OTHER_AREA, "label": "Other", "path": book or "", "line": 1, "deps": []})
+        else:
+            used[a["id"]] = a
+        nodes[fid]["group"] = a["id"]
+    edges, seen = [], set()
+    for a in areas:
+        for subj, needs, line in a["deps"]:
+            for need in needs:
+                if subj in nodes and need in nodes and (subj, need) not in seen:
+                    seen.add((subj, need))
+                    edges.append({"id": "edge:builds-on:feature:%s:feature:%s" % (subj, need), "source": "feature:" + subj,
+                                  "target": "feature:" + need, "kind": "depends", "label": EDGE_LABEL, "status": "context",
+                                  "resolution": "static", "evidence": [{"tier": "source", "path": a["path"], "line": line,
+                                                                       "note": "dependency map row of %s" % subj}]})
+    needs_of = {}
+    for e in edges:
+        needs_of.setdefault(e["source"], []).append(e["target"].split(":", 1)[1])
+    for fid, n in nodes.items():
+        st = stages.get(fid)
+        parts = []
+        if st:
+            parts.append("Build stage %d: %s." % (st["stage"], st["name"]))
+        parts.append("Area: %s." % used[n["group"]]["label"])
+        parts.append("Builds on: %s." % (", ".join(needs_of[n["id"]]) if n["id"] in needs_of else "nothing else in the map"))
+        n["detail"] = {"after": " ".join(parts)}
+    groups = []
+    for gid in sorted(used):
+        a = used[gid]
+        gr = {"id": gid, "label": a["label"], "status": "context", "label_source": "extractor"}
+        if a["path"]:
+            gr["evidence"] = [{"tier": "source", "path": a["path"], "line": a["line"], "note": "area overview"}]
+        groups.append(gr)
+    # staleness: the area headings and the dependency rows are spans too (a moved or edited row makes the map stale)
+    els = {k: v for k, v in g["meta"]["staleness"]["elements"].items() if not k.startswith(("edge:", "area:"))}
+    cache = {}
+    for el in groups + edges:
+        spans = [r for r in (span_record(repo, ev["path"], ev["line"], ev["line"], cache) for ev in el.get("evidence", [])) if r]
+        els[el["id"]] = {"spans": spans}
+    g["meta"]["staleness"]["elements"] = els
+    inbound = {}
+    for e in edges:
+        sa, ta = nodes[e["source"].split(":", 1)[1]]["group"], nodes[e["target"].split(":", 1)[1]]["group"]
+        if sa != ta:
+            inbound[ta] = inbound.get(ta, 0) + 1
+    label_of = {x["id"]: x["label"] for x in groups}
+    foundation = max(sorted(inbound), key=lambda k: inbound[k]) if inbound else None
+    stage_n = len({stages[f]["stage"] for f in nodes if f in stages})
+    title = "%d features in %d product areas" % (len(nodes), len(groups))
+    if stage_n:
+        title += ", built in %d stages" % stage_n
+    if foundation:
+        title += "; the other areas build mostly on %s" % label_of[foundation]
+    g["view"], g["title"], g["groups"], g["edges"] = "map", title[:100], groups, edges
+    g["meta"]["scope"] = "all"
     return g
 
 
@@ -513,6 +665,18 @@ def plan_check(base: dict, plan: dict) -> dict:
 
 # -------------------------------------------------------------------- list
 
+GRAPH_KIND_ORDER = ("product-map", "crate-map", "crate-calls", "modules", "calls")
+
+
+def graph_kind(fname: str, g: dict) -> str:
+    """The kind of a committed graph view: product-map, crate-map, crate-calls, modules, calls (by the file name vr_refresh gives
+    it); the whole-repo `map` view is the product map; any other graph keeps its view name."""
+    stem = fname[:-5] if fname.endswith(".json") else fname
+    if stem in ("product-map", "crate-map", "crate-calls") or stem.startswith(("modules-", "calls-")):
+        return stem.split("-", 1)[0] if stem.startswith(("modules-", "calls-")) else stem
+    return "product-map" if g.get("view") == "map" else "graph"
+
+
 def list_diagrams(repo: str, rel_dir: str = "docs/architecture") -> dict:
     d = os.path.join(repo, rel_dir)
     entries = []
@@ -528,8 +692,8 @@ def list_diagrams(repo: str, rel_dir: str = "docs/architecture") -> dict:
                         g = json.load(fh)
                 except (OSError, ValueError):
                     continue
-                if isinstance(g, dict) and g.get("view") in ("L0", "L1", "L2", "full") and "nodes" in g:
-                    entries.append({"path": rel, "kind": "product-map", "view": g["view"], "title": g.get("title", f)})
+                if isinstance(g, dict) and g.get("view") in ("L0", "L1", "L2", "map", "full") and "nodes" in g:
+                    entries.append({"path": rel, "kind": graph_kind(f, g), "view": g["view"], "title": g.get("title", f)})
             elif f.endswith(".md"):
                 with open(p, encoding="utf-8", errors="replace") as fh:
                     text = fh.read()
@@ -537,6 +701,8 @@ def list_diagrams(repo: str, rel_dir: str = "docs/architecture") -> dict:
                     m = re.match(r"^(c[1-4]|seq|threat-model)", f)
                     title = next((x[2:].strip() for x in text.split("\n") if x.startswith("# ")), f)
                     entries.append({"path": rel, "kind": m.group(1) if m else "diagram", "title": title})
+    # the product map first, then the other committed views by kind, then the mermaid diagrams (each group in file order)
+    entries.sort(key=lambda e: GRAPH_KIND_ORDER.index(e["kind"]) if e["kind"] in GRAPH_KIND_ORDER else len(GRAPH_KIND_ORDER))
     has_map = any(e["kind"] == "product-map" for e in entries)
     return {"dir": rel_dir, "diagrams": entries, "has_map": has_map,
             "message": "" if has_map else "no committed product map yet in %s" % rel_dir}
@@ -850,6 +1016,80 @@ def _selftest() -> int:
         ok("metrics rows", [x["event"] for x in rows] == ["check", "recall"] and rows[1]["threshold"] is None and "stale" in rows[0], rows)
         run("build", repo, "-o", mp, "--features", "H-01", "--fresh")
         ok("default metrics path", os.path.isfile(vr_metrics.default_path(repo)))
+
+    # ---- the whole-repo map: areas from the OVERVIEW files, "builds on" edges from the dependency maps, stages, list kinds
+    book2 = ("# Book\n\n## Features\n\n- M-01: topology model.\n- M-02: channels.\n- H-01: tool layer.\n- H-02: reader.\n- X-01: stray.\n\n"
+             "## Suggested build order\n\n### Stage 0 — Foundations (all depend on it)\n\n- H-01: tool layer core.\n\n"
+             "### Stage 1 — One agent works\n\n- M-01, M-02: graph and channels.\n- H-02: reader (needs H-01).\n")
+    mesh = ("# Mesh — sub-feature overview\n\n## M-01 — Topology model\n\ntext\n\n## M-02 — Channels\n\ntext\n\n## Dependency map\n\n"
+            "| Sub-feature | Needs | Feeds |\n|---|---|---|\n| M-01 topology model | H-01 (tools), Postgres config (P8) | M-02 |\n"
+            "| M-02 channels | NATS, P2 trait, M-01, M-01 again | all traffic |\n")
+    harness = ("# Harness — sub-feature overview\n\n## H-01 — Tool layer\n\ntext\n\n## H-02 — Reader\n\ntext\n\n## Dependency map\n\n"
+               "| Sub-feature | Needs | Feeds |\n|---|---|---|\n| H-01 tool layer | nothing yet | H-02 |\n| H-02 reader | H-01, Z-99 (unknown), H-02 (self) | M-01 |\n")
+    ov = parse_overview(mesh)
+    ok("overview: label, prefixes", ov["label"] == "Mesh" and ov["prefixes"] == ["M"], ov)
+    ok("overview: needs keep IDs only, once, in order", [(a, b) for a, b, _ in ov["deps"]] == [("M-01", ["H-01"]), ("M-02", ["M-01"])], ov["deps"])
+    st = parse_stages(book2)
+    ok("stages: first stage wins, lists with several IDs", {k: v["stage"] for k, v in st.items()} == {"H-01": 0, "M-01": 1, "M-02": 1, "H-02": 1}, st)
+    with tempfile.TemporaryDirectory() as d2:
+        repo2 = os.path.join(d2, "shop")
+        os.makedirs(repo2)
+        g(repo2, "init", "-q")
+        w(repo2, "FEATURE-BOOK.md", book2)
+        w(repo2, "vol/features/mesh/OVERVIEW.md", mesh)
+        w(repo2, "vol/features/harness/OVERVIEW.md", harness)
+        w(repo2, "research/OVERVIEW.md", "# Research overview\n\nno feature sections\n")
+        w(repo2, "crates/a/src/lib.rs", "// M-01 here\n")
+        g(repo2, "add", "-A")
+        g(repo2, "commit", "-q", "-m", "c")
+        mp2 = os.path.join(repo2, DEFAULT_MAP)
+        os.makedirs(os.path.dirname(mp2), exist_ok=True)
+        rc, out, err = run("build", repo2, "-o", mp2, "--all", "--no-metrics")
+        m2 = json.load(open(mp2))
+        ok("map: built", rc == 0 and m2["view"] == "map", err)
+        ok("map: areas derived from the OVERVIEW files, stray feature in Other",
+           {x["id"]: x["label"] for x in m2["groups"]} == {"area:mesh": "Mesh", "area:harness": "Harness", OTHER_AREA: "Other"}
+           and {n["id"]: n["group"] for n in m2["nodes"]} == {"feature:H-01": "area:harness", "feature:H-02": "area:harness", "feature:M-01": "area:mesh",
+                                                              "feature:M-02": "area:mesh", "feature:X-01": OTHER_AREA}, m2["groups"])
+        eds = {(e["source"], e["target"]): e for e in m2["edges"]}
+        ok("map: edges from Needs, non-ID text, unknown IDs and self refs ignored",
+           sorted(eds) == [("feature:H-02", "feature:H-01"), ("feature:M-01", "feature:H-01"), ("feature:M-02", "feature:M-01")], sorted(eds))
+        e0 = eds[("feature:M-02", "feature:M-01")]
+        ok("map: edge label and evidence (the table row)", e0["label"] == EDGE_LABEL and len(e0["label"]) <= 40 and e0["evidence"][0]["path"] == "vol/features/mesh/OVERVIEW.md"
+           and e0["evidence"][0]["line"] == 16 and "| M-02 channels" in read_lines(repo2, e0["evidence"][0]["path"])[15], e0["evidence"])
+        det = {n["id"]: n["detail"]["after"] for n in m2["nodes"]}
+        ok("map: stage in the detail", det["feature:H-01"].startswith("Build stage 0: Foundations") and "Build stage 1: One agent works." in det["feature:M-02"]
+           and "Build stage" not in det["feature:X-01"] and "Builds on: M-01." in det["feature:M-02"], det)
+        ok("map: takeaway title", m2["title"].startswith("5 features in 3 product areas") and "Product map" not in m2["title"], m2["title"])
+        iss = vr_graph.validate(m2, root=repo2)
+        ok("map: valid with the budget on", not iss and not vr_graph.budget(m2)["over"] and vr_graph.budget(m2)["used"] == 3, iss)
+        ok("map: check is fresh", run("check", repo2, mp2, "--json")[0] == 0)
+        # an edited dependency row makes the map stale (the edge cites it)
+        w(repo2, "vol/features/mesh/OVERVIEW.md", mesh.replace("| M-02 channels | NATS", "| M-02 channels | NATS and TLS"))
+        ok("map: edited dependency row is stale", run("check", repo2, mp2, "--json")[0] == 1)
+        # a flat map of a map is organised again (incremental build keeps the view)
+        run("build", repo2, "-o", mp2, "--features", "M-01", "--no-metrics")
+        ok("map: incremental build keeps the grouping", json.load(open(mp2))["view"] == "map" and len(json.load(open(mp2))["groups"]) == 3)
+        # the area groups fold under the budget; one more area is not enough to break it, eight are
+        big = json.loads(json.dumps(m2))
+        big["groups"] += [{"id": "area:x%d" % i, "label": "X%d" % i, "status": "context"} for i in range(5)]
+        ok("map budget: 8 areas is over", vr_graph.budget(big)["over"] and any(i["code"] == "over_budget" for i in vr_graph.validate(big, root=repo2)))
+        wide = json.loads(json.dumps(m2))
+        for i in range(16):
+            n = dict(wide["nodes"][0], id="feature:Q-%02d" % i, label="Q", group="area:mesh")
+            wide["nodes"].append(n)
+        ok("map budget: 16 features in one area is over", vr_graph.budget(wide)["over"] and vr_graph.budget(wide)["widest_group"] == 18)
+        # the dashboard list: the real kind of each committed view, the product map first
+        ad = os.path.join(repo2, "docs/architecture")
+        for fn, view, title in (("modules-a.json", "full", "Modules of a"), ("crate-map.json", "full", "Crate map of shop"), ("calls-a.json", "full", "Calls of a"),
+                                ("crate-calls.json", "full", "Calls between crates of shop")):
+            json.dump({"schema_version": "1.0.0", "view": view, "title": title, "nodes": [], "edges": []}, open(os.path.join(ad, fn), "w"))
+        w(repo2, "docs/architecture/c1-context.md", "# Context\n\n```mermaid\nflowchart LR\n```\n")
+        lst = json.loads(run("list", repo2, "--json")[1])["diagrams"]
+        ok("list: kinds and order", [(e["kind"], os.path.basename(e["path"])) for e in lst] == [
+            ("product-map", "product-map.json"), ("crate-map", "crate-map.json"), ("crate-calls", "crate-calls.json"), ("modules", "modules-a.json"),
+            ("calls", "calls-a.json"), ("c1", "c1-context.md")], lst)
+        ok("list: the map's title is its takeaway", lst[0]["title"] == json.load(open(mp2))["title"], lst[0])
 
     if fails:
         print("vr_map selftest FAILED:\n  " + "\n  ".join(fails))

@@ -17,7 +17,7 @@ import { pendingSlack, readRunThread, runSlackEnabled, runsWatchIgnored, threadC
 import { startLagWatch } from "./lagwatch.ts"
 import { collapsedView, hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
 import { buildAnswer, diagramsOf, MAX_BODY, ReviewError, isReviewQuestion, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
-import { mapStatus, openDiagram } from "./vrmap.ts"
+import { collapsedDiagram, mapStatus, openDiagram } from "./vrmap.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
 import { awakeDeps, checkAwake, releaseAwake } from "./awake.ts"
@@ -464,6 +464,16 @@ export async function handle(req: Request): Promise<Response> {
     try { return json({ ...(await visualReview(vrDir(f.root, f.dossier), f.dossier)), review: reviewState(vrDir(f.root, f.dossier), f.dossier) }) } catch (e) { return json({ error: "visual review failed: " + (e as Error).message }, 500) }
   }
   // The same view with some groups collapsed to one box: the collapsed graph and its layout (the page only draws it).
+  if (req.method === "GET" && path === "/api/visual-review/layout" && url.searchParams.has("path")) {
+    // A committed diagram of a repo (the product map), folded the same way: `repo` + `path` instead of `dossier` + `view`.
+    const repo = url.searchParams.get("repo") ?? ""
+    if (!/^[\w.-]+$/.test(repo)) return json({ error: "repo must be a plain name" }, 400)
+    const root = (await repoRoots(repo))[0]
+    if (!root) return json({ error: "no such repo" }, 404)
+    const ids = (url.searchParams.get("collapsed") ?? "").split(",").filter(Boolean)
+    if (ids.some((i) => i.length > 200)) return json({ error: "collapsed ids are too long" }, 400)
+    try { return json(await collapsedDiagram(root, url.searchParams.get("path") ?? "", (await mapStatus(repo, root)).diagrams, ids)) } catch (e) { return json({ error: "collapsed layout failed: " + (e as Error).message }, 400) }
+  }
   if (req.method === "GET" && path === "/api/visual-review/layout") {
     const f = await vrFind(url.searchParams.get("dossier") ?? "", url.searchParams.get("repo") ?? "")
     if (!f.ok) return json({ error: f.error }, f.status)

@@ -14,7 +14,7 @@ accepts (view `full`, so no L0/L1/L2 budget), and one manifest:
     modules-<crate>.json    one per crate: its binaries and module tree (layer 2)
     calls-<crate>.json      one per crate: which modules call which modules (layer 4, aggregated)
     crate-calls.json        which crates call which crates (layer 4, aggregated)
-    product-map.json        the L0 feature map (vr_map.py), grown by `build --touched` from the previous
+    product-map.json        the whole-repo feature map, view "map": areas, "builds on" edges, build stages (vr_map.py), grown by `build --touched` from the previous
                             extraction commit instead of re-read whole
     map-manifest.json       the extraction commit, every view with its node and edge counts, and what the
                             run reused and recomputed
@@ -489,7 +489,7 @@ def write_views(repo: str, out_dir: str, views: dict, log=lambda m: None, keep=l
     os.makedirs(d, exist_ok=True)
     res = {}
     for name, g in sorted(views.items()):
-        issues = vr_graph.validate(g, root=repo, check_budget=False)
+        issues = vr_graph.validate(g, root=repo)
         if issues:
             raise RefreshError("view %s is invalid: %s" % (name, json.dumps(issues[:3])))
         p = os.path.join(d, name)
@@ -567,11 +567,12 @@ def refresh_product_map(repo: str, out_dir: str, prev: str | None, head: str, fu
         except vr_map.MapError:
             g = dict(existing)
             g["meta"] = dict(existing["meta"], commit=vr_map.head_commit(repo))
+        vr_map.organise(repo, g)
         before = {n["id"]: json.dumps(n, sort_keys=True) for n in existing["nodes"]}
         relinked = sum(1 for n in g["nodes"] if before.get(n["id"]) != json.dumps(n, sort_keys=True))
         stats = {"status": "ran", "mode": "touched", "revs": len(revs), "features": len(g["nodes"]),
                  "relinked": relinked, "reused": len(g["nodes"]) - relinked, "removed": len(gone)}
-    issues = vr_graph.validate(g, root=repo, check_budget=False)
+    issues = vr_graph.validate(g, root=repo)  # the budget is on: the map view counts its folded first screen
     if issues:
         raise RefreshError("the product map is invalid: %s" % json.dumps(issues[:3]))
     old = None
@@ -622,7 +623,7 @@ def refresh(repo: str, out_dir: str = DEFAULT_DIR, cache: str | None = None, sin
     blobs = blob_index(repo)
     runner = runner or vr_extract.default_runner
     ver, _ = vr_extract.cargo_modules_version(runner, repo)
-    salt = _sha("modules-1", vr_extract.VERSION, ver or "none")
+    salt = _sha("modules-2", vr_extract.VERSION, ver or "none", *vr_extract.CM_FLAGS)
     mc = ModuleCache(store, blobs, repo, salt, force=full)
     parts: dict = {}
     t = time.time()
@@ -833,6 +834,8 @@ def _selftest() -> int:
         def mod_runs():
             return sorted({c[c.index("-p") + 1] for c in log if c[:3] == ["cargo", "modules", "structure"]})
         r1 = run()
+        check("first-run:module-flags-shared", all(all(f in c for f in vr_extract.CM_FLAGS) and "--all-features" in c and "x86_64-unknown-linux-gnu" in c
+                                                   for c in log if c[:3] == ["cargo", "modules", "structure"]) and vr_extract.CM_TARGET in vr_extract.CM_FLAGS, str(log[:3]))
         crates = ["app", "core-lib", "sys", "test-kit", "workspace-hack"]
         check("first-run:modules-all", mod_runs() == crates and r1["modules"]["recomputed"] == crates and not r1["modules"]["reused"], str(r1["modules"]))
         nfiles = r1["calls"]["files"]
@@ -843,7 +846,7 @@ def _selftest() -> int:
         bad = []
         for n in sorted(names):
             if n.endswith(".json") and n != MANIFEST:
-                bad += vr_graph.validate(vr_graph.load(os.path.join(d, DEFAULT_DIR, n)), root=d, check_budget=False)
+                bad += vr_graph.validate(vr_graph.load(os.path.join(d, DEFAULT_DIR, n)), root=d)
         check("first-run:views-validate", not bad, str(bad[:2]))
         sh("add", "-A")
         sh("commit", "-q", "-m", "views")
@@ -852,6 +855,19 @@ def _selftest() -> int:
               and r2["calls"]["recomputed"] == 0 and r2["calls"]["reused"] == nfiles and _FakeRa.started == 0, str((mod_runs(), r2["modules"], r2["calls"])))
         check("second-run:rust-analyzer-not-started", not r2["calls"]["ra_started"])
         check("second-run:no-view-rewritten", not any(v == "written" for k, v in r2["views"].items() if k != MANIFEST), str(r2["views"]))
+        # the cargo-modules flags are part of the module-cache key: a cache from before them (or with other flags) is recomputed
+        import shutil
+        alt = cache + "-flags"
+        shutil.copytree(cache, alt)
+        run(cache_=alt)
+        check("flags:same-flags-reuse", not mod_runs(), str(mod_runs()))
+        saved = vr_extract.CM_FLAGS
+        vr_extract.CM_FLAGS = saved + ("--features", "extra")
+        try:
+            r2b = run(cache_=alt)
+        finally:
+            vr_extract.CM_FLAGS = saved
+        check("flags:changed-flags-recompute", mod_runs() == crates and len(r2b["modules"]["recomputed"]) == 5, str((mod_runs(), r2b["modules"])))
         with open(os.path.join(d, "crates/core-lib/src/lib.rs"), "a") as fh:
             fh.write("pub fn g() {}\n")
         sh("add", "-A")

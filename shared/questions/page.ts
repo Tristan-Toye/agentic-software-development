@@ -227,7 +227,7 @@ async function vrOpenDiagram(repo, path) {
   let d = null; try { const r = await fetch('/api/visual-review/diagram?repo=' + enc(repo) + '&path=' + enc(path)); d = await r.json(); if (!r.ok) { cur.err = d.error || ('HTTP ' + r.status); d = null; } } catch (e) { cur.err = 'request failed'; }
   const key = repo + '/~map';
   if (d && d.kind === 'mermaid') { cur.text = d.text; VR[key] = { data: null }; }
-  else if (d) { VR[key] = { data: { dossier: '', rev: path + ':' + Date.now(), views: { L0: d.views.L0 || null, L1: d.views.L1 || null, L2: d.views.L2 || null }, issues: [], mapRepo: repo } }; if (!d.views.L0 && !d.views.L1 && !d.views.L2) { cur.err = 'This diagram has a view the canvas does not draw.'; VR[key] = { data: null }; } }
+  else if (d) { VR[key] = { data: { dossier: '', rev: path + ':' + Date.now(), views: { L0: d.views.L0 || null, L1: d.views.L1 || null, L2: d.views.L2 || null }, issues: [], mapRepo: repo, mapPath: path } }; if (!d.views.L0 && !d.views.L1 && !d.views.L2) { cur.err = 'This diagram has a view the canvas does not draw.'; VR[key] = { data: null }; } }
   render();
 }
 function vrOpenQ(dossier, repo) {
@@ -270,11 +270,11 @@ function vrWrap(s, w) { const out = []; let l = ''; String(s).split(' ').forEach
 function vrBuild(host, key, data) {
   const st = VRS[key] = VRS[key] || {}; const have = ['L0', 'L1', 'L2'].filter(k => data.views[k]);
   if (!st.view || !data.views[st.view]) st.view = have[0]; st.mode = st.mode || 'diff';
-  if (st.rev !== data.rev) { st.rev = data.rev; st.col = {}; st.lc = {}; }
-  const bar = vrDom('div', 'vrbar', null, host); vrDom('h2', 'vrh', 'Change diagram', bar);
+  if (st.rev !== data.rev) { st.rev = data.rev; st.col = {}; st.lc = {}; /* a committed map opens with its areas folded */ if (data.mapPath && data.views.L0 && data.views.L0.collapsed) st.col.L0 = data.views.L0.collapsed.slice().sort(); }
+  const bar = vrDom('div', 'vrbar', null, host); vrDom('h2', 'vrh', (data.mapPath && data.views.L0 && data.views.L0.title) || 'Change diagram', bar);
   const tabs = vrDom('span', 'vrgrp', null, bar), modes = vrDom('span', 'vrgrp', null, bar);
   const tb = {}, mb = {};
-  ['L0', 'L1', 'L2'].forEach(k => { const b = vrDom('button', 'btn sm', k + ' ' + VR_TABS[k], tabs); b.type = 'button'; b.disabled = !data.views[k]; tb[k] = b; b.onclick = () => { st.view = k; wkOff(); draw(); }; });
+  ['L0', 'L1', 'L2'].forEach(k => { const b = vrDom('button', 'btn sm', k + ' ' + (data.mapPath && k === 'L0' ? 'Product map' : VR_TABS[k]), tabs); b.type = 'button'; b.disabled = !data.views[k]; tb[k] = b; b.onclick = () => { st.view = k; wkOff(); draw(); }; });
   VR_MODES.forEach(m => { const b = vrDom('button', 'btn sm', m[1], modes); b.type = 'button'; mb[m[0]] = b; b.onclick = () => { st.mode = m[0]; applyMode(); }; });
   const fitB = vrDom('button', 'btn sm', 'Fit', bar); fitB.type = 'button';
   const zin = vrDom('button', 'btn sm', '+', bar), zout = vrDom('button', 'btn sm', '−', bar); zin.type = zout.type = 'button'; zin.title = 'Zoom in'; zout.title = 'Zoom out';
@@ -395,7 +395,7 @@ function vrBuild(host, key, data) {
     const ck = st.view + '|' + ids.join(','), hit = st.lc[ck];
     if (hit) { paint(Object.assign({}, base, hit), anchor, selId); return; }
     busy = true; note.textContent = 'Laying out the collapsed groups…';
-    fetch('/api/visual-review/layout?dossier=' + enc(vrDossier) + '&repo=' + enc(vrRepo) + '&view=' + enc(st.view) + '&collapsed=' + enc(ids.join(',')))
+    fetch('/api/visual-review/layout?' + (data.mapPath ? 'repo=' + enc(vrRepo) + '&path=' + enc(data.mapPath) : 'dossier=' + enc(vrDossier) + '&repo=' + enc(vrRepo) + '&view=' + enc(st.view)) + '&collapsed=' + enc(ids.join(',')))
       .then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }))
       .then(j => { busy = false; st.lc[ck] = { graph: j.graph, layout: j.layout }; if (st.view + '|' + colOf(st.view).join(',') === ck) paint(Object.assign({}, base, st.lc[ck]), anchor, selId); })
       .catch(e => { busy = false; st.col[st.view] = st.prevCol || []; note.textContent = 'Could not lay out the collapsed view: ' + e.message; });

@@ -53,6 +53,11 @@ SUPPORTED_MAJOR = 1
 # Node label limit, mirrored by maxLength in graph.schema.json (selftest checks they agree).
 NODE_LABEL_MAX = 80
 BUDGETS = {"L0": ("feature", 15), "L1": ("step", 12), "L2": (None, 12)}
+# View "map" (the whole-repo product map): the first screen is the map with every top-level group folded, so what is counted is
+# the top-level units (groups, plus nodes outside any group): at most MAP_AREAS. Opening a group shows its members: at most MAP_GROUP
+# of them (the L0 limit), counted per group. Groups are counted here, unlike in L0..L2, because the folded view is the budgeted one.
+MAP_AREAS = 7
+MAP_GROUP = 15
 
 
 # ---------------------------------------------------------------- loading
@@ -196,10 +201,23 @@ def _evidence_issues(ev, path: str, root, line_cache: dict, out: list) -> None:
 def budget(graph: dict) -> dict:
     """Budget use of the view. {"view","counted","used","limit","over"}; groups are not counted."""
     view = graph.get("view")
+    nodes = graph.get("nodes") or []
+    if view == "map":
+        groups = [g for g in (graph.get("groups") or []) if isinstance(g, dict)]
+        gids = {g.get("id") for g in groups}
+        top = {g["id"] for g in groups if g.get("parent") not in gids}
+        loose = sum(1 for n in nodes if isinstance(n, dict) and n.get("group") not in gids)
+        per = {}
+        for n in nodes:
+            if isinstance(n, dict) and n.get("group") in gids:
+                per[n["group"]] = per.get(n["group"], 0) + 1
+        widest = max(per.values(), default=0)
+        used = len(top) + loose
+        return {"view": view, "counted": "area", "used": used, "limit": MAP_AREAS, "widest_group": widest, "group_limit": MAP_GROUP,
+                "over": used > MAP_AREAS or widest > MAP_GROUP}
     if view not in BUDGETS:
         return {"view": view, "counted": None, "used": None, "limit": None, "over": False}
     kind, limit = BUDGETS[view]
-    nodes = graph.get("nodes") or []
     used = sum(1 for n in nodes if isinstance(n, dict) and (kind is None or n.get("kind") == kind))
     return {"view": view, "counted": kind or "node", "used": used, "limit": limit, "over": used > limit}
 
@@ -286,6 +304,8 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
         b = budget(graph)
         if b["over"]:
             issues.append(_issue("over_budget", "view",
+                                 ("map view has %d area(s) (budget %d) and a group of %d (budget %d)" % (b["used"], b["limit"], b["widest_group"], b["group_limit"]))
+                                 if b["view"] == "map" else
                                  "view %s has %d %s(s), budget is %d (groups not counted)" % (b["view"], b["used"], b["counted"], b["limit"])))
     return issues
 
@@ -379,6 +399,13 @@ def _selftest() -> int:
     check("budget:l0", budget(load(os.path.join(FIXTURES, "w145-l0.json")))["used"] == 7)
     full = dict(l2, view="full", nodes=l2["nodes"] * 3)
     check("budget:full-unbudgeted", not budget(full)["over"])
+    # View "map": the folded first screen (top-level groups) and the widest group are budgeted; features are not counted at the top.
+    nd = lambda i, gr: {"id": "n%d" % i, "label": "n", "kind": "feature", "status": "context", "group": gr}
+    mp = {"view": "map", "groups": [{"id": "g%d" % i} for i in range(4)], "nodes": [nd(i, "g%d" % (i % 4)) for i in range(40)], "edges": []}
+    check("budget:map-folded-ok", budget(mp)["used"] == 4 and budget(mp)["widest_group"] == 10 and not budget(mp)["over"], str(budget(mp)))
+    check("budget:map-too-many-areas", budget(dict(mp, groups=[{"id": "g%d" % i} for i in range(8)]))["over"])
+    check("budget:map-nested-groups-fold-into-top", not budget(dict(mp, groups=mp["groups"] + [{"id": "s", "parent": "g0"}] * 3))["over"])
+    check("budget:map-wide-group", budget(dict(mp, nodes=[nd(i, "g0") for i in range(16)]))["over"])
     # Evidence sentences: inferred ok, end before start, absolute path refused.
     base = load(os.path.join(FIXTURES, "minimal.json"))
     for label, ev, want in (

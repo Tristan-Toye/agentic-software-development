@@ -61,7 +61,7 @@ import vr_extract  # noqa: E402
 import vr_graph  # noqa: E402
 
 THRESHOLD = 95.0
-TARGET = "x86_64-unknown-linux-gnu"
+TARGET = vr_extract.CM_TARGET  # one source of truth with the module layer (vr_extract.CM_FLAGS)
 FIXTURE = os.path.join(vr_graph.FIXTURES, "c3-agree")
 _NODE = re.compile(r'^\s*([A-Za-z_][\w]*)\["([^"]+)"\]\s*$')
 _EDGE = re.compile(r"^\s*([A-Za-z_][\w]*)\s*(-->|-\.->)\s*([A-Za-z_][\w]*)\s*$")
@@ -69,7 +69,7 @@ _MARKER = re.compile(r"^%%\s*module_graph:\s*(\S+)\s*$", re.M)
 _DOT_USES = re.compile(r'^\s*"([^"]+)"\s*->\s*"([^"]+)"\s*\[label="uses"')
 _DOT_MOD = re.compile(r'^\s*"([^"]+)"\s*\[label="[^"]*\bmod\|')
 BASE_CMD = ["cargo", "modules", "dependencies", "--lib", "-p", None, "--no-owns", "--no-externs", "--no-sysroot",
-            "--no-fns", "--no-traits", "--no-types", "--all-features"]
+            "--no-fns", "--no-traits", "--no-types", vr_extract.CM_ALL_FEATURES]
 
 
 class AgreeError(Exception):
@@ -295,6 +295,7 @@ def _selftest() -> int:
             dep = [c for c in log if c[:3] == ["cargo", "modules", "dependencies"]][0]
             ok("%s R1/R2 flags" % crate, "--all-features" in dep and dep[dep.index("--target") + 1] == TARGET
                and "--cfg-test" not in dep and "--lib" in dep, dep)
+            ok("%s flags come from vr_extract.CM_FLAGS" % crate, all(f in dep for f in vr_extract.CM_FLAGS) and TARGET == vr_extract.CM_TARGET, dep)
         r = results["harness"]
         ok("harness: unmodelled edges are reported, not counted", len(r["unmodelled_edges"]) >= 10, r["unmodelled_edges"])
         ok("harness: R4 cfg-test run for red_corpus", r["cfg_test_modules"] == ["harness::tools::red_corpus"], r["cfg_test_modules"])

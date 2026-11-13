@@ -53,6 +53,11 @@ import vr_graph  # noqa: E402
 from vr_ra import RaClient, RaError  # noqa: E402
 
 VERSION = "1.0.0"
+# The one source of truth for how cargo-modules is told what to read (VC-06, rules R1/R2 of vr_c3_agree.py: c3 reads every file, so
+# the module layer must see the feature-gated and linux-only modules too). vr_c3_agree.py imports these; vr_refresh keys its module cache on them.
+CM_TARGET = "x86_64-unknown-linux-gnu"
+CM_ALL_FEATURES = "--all-features"
+CM_FLAGS = (CM_ALL_FEATURES, "--target", CM_TARGET)
 CARGO_MODULES_PIN = "0.27.0"
 # VC-08 limit for layers 1 and 2 with --jobs 4. D0 proposed 60 s from lib-only runs (7 s warm);
 # with the --bin targets added (24 processes on config-harness) the live run took 93.5 s (serial: 189 s).
@@ -270,7 +275,7 @@ def layer_modules(pkgs, root: str, ws_root: str, files: _Files, runner, cfg_test
         print("vr_extract: module layer skipped: %s" % why, file=sys.stderr)
         return [], [], {"status": "skipped", "reason": why}, []
     nodes, edges, failed = [], [], []
-    base = ["cargo", "modules", "structure", "--no-fns", "--no-traits", "--no-types"] + (["--cfg-test"] if cfg_test else [])
+    base = ["cargo", "modules", "structure", "--no-fns", "--no-traits", "--no-types", *CM_FLAGS] + (["--cfg-test"] if cfg_test else [])
     work = []
     for p in pkgs:
         crate_id = "crate:" + p["name"]
@@ -688,6 +693,8 @@ def _selftest() -> int:
         log2: list = []
         extract("rust", d, runner=make_runner(meta, log2), cfg_test=True)
         check("vc07:cfg-test-on-request", any("--cfg-test" in c for c in log2 if "structure" in c))
+        check("vc06:module-layer-reads-every-file", all(all(f in c for f in CM_FLAGS) for c in log2 if c[:3] == ["cargo", "modules", "structure"])
+              and any(c[:3] == ["cargo", "modules", "structure"] for c in log2) and CM_FLAGS == ("--all-features", "--target", "x86_64-unknown-linux-gnu"))
         # VC-09: every tool and the commit are in meta; pinned version.
         tools = {t["name"]: t["version"] for t in g1["meta"]["tools"]}
         check("vc09:tools", tools.get("cargo") == "1.97.1" and tools.get("cargo-modules") == "0.27.0" and "vr_extract" in tools, str(tools))

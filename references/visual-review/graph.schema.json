@@ -24,9 +24,10 @@
         "L0",
         "L1",
         "L2",
+        "map",
         "full"
       ],
-      "description": "L0, L1, L2 are budgeted (15 features, 12 steps, 12 nodes; groups not counted). full is not budgeted."
+      "description": "L0, L1, L2 are budgeted (15 features, 12 steps, 12 nodes; groups not counted). map is the whole-repo product map: at most 7 top-level groups (the folded first view) and at most 15 nodes in any group. full is not budgeted."
     },
     "title": {
       "type": "string",
