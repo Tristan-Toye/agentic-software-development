@@ -20,6 +20,7 @@ Work decided but not done yet. Each item says what to do, when, and how to know 
 
 ## FU-02. Bound label length and stop silent truncation
 
+- **Status:** done in 2b5bd76 (limits node 80, group and flow 60, edge and lane 40, title 100; code `label_too_long`).
 - **What:** the canvas wraps a node label to 3 lines and drops the rest without a mark (`shared/questions/page.ts`, `vrWrap(...).slice(0, 3)`),
   and neither `graph.schema.json` nor `vr_graph.py` limits a label. Found in the Visual-Explainer review
   (`inspiration-repos/analysis/visual-explainer.md`).
@@ -31,6 +32,7 @@ Work decided but not done yet. Each item says what to do, when, and how to know 
 
 ## FU-03. Writing rules in the diagram-author prompt
 
+- **Status:** done in 2b5bd76 (rules 5 to 7 of the agent; W-145 titles and edge labels reworded).
 - **What:** the agent has one wording rule (product words for node labels). Visual-Explainer adds three that a reader notices:
   every edge label is a verb phrase, the graph title states the takeaway rather than the topic, one term per concept.
 - **When:** the next time `sub-agents/diagram-author.md` is edited, or when the first demo shows vague edge or title text.
