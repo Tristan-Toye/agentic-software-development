@@ -158,6 +158,7 @@ details.mstubs{margin-top:10px}details.mstubs>summary{font-size:.78rem;letter-sp
 .vrvd{margin-top:10px;padding-top:8px;border-top:1px solid var(--bd)}.vrvd .vrgrp{flex-wrap:wrap;margin:6px 0}.vrvd textarea{width:100%;min-height:60px;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
 .vrvd .btn[aria-pressed=true]{border-color:var(--acc);background:var(--accbg);font-weight:650}.vrcode{font-size:11px;font-weight:700}
 .vr [hidden]{display:none!important}.vrcv{position:relative;min-width:0;outline:none}
+.vrhc{position:absolute;z-index:5;max-width:340px;padding:8px 10px;background:var(--card);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--shadow);font-size:12px;line-height:1.4;pointer-events:none;overflow-wrap:anywhere}.vrhc b{display:block;font-size:13px;margin-bottom:2px}.vrhc .mut{color:var(--mut)}.vrhc p{margin:3px 0 0}
 .vrov{position:absolute;right:8px;bottom:8px;padding:3px;background:var(--card);border:1px solid var(--bd);border-radius:6px;opacity:.94;cursor:crosshair;touch-action:none;box-shadow:var(--shadow)}.vrov svg{display:block}
 .vrov rect{vector-effect:non-scaling-stroke;fill:none;stroke:var(--mut);stroke-width:1}.vrov .vrovn{fill:var(--chip)}.vrov .vrovn.added{stroke:var(--ok);fill:var(--okbg);stroke-width:2}.vrov .vrovn.changed{stroke:var(--warn);fill:var(--warnbg);stroke-dasharray:1.5 1.5;stroke-width:2}.vrov .vrovn.removed{stroke:var(--bad);fill:var(--badbg);stroke-dasharray:4 2;stroke-width:2}.vrov .vroff{display:none}
 .vrov .vrovvp{fill:var(--accbg);fill-opacity:.35;stroke:var(--acc);stroke-width:2;stroke-dasharray:none}
@@ -291,6 +292,20 @@ function vrBuild(host, key, data) {
   const wkPrev = vrDom('button', 'btn sm', '◀ Previous', wbar), wkInd = vrDom('strong', 'vrwi', '', wbar), wkNext = vrDom('button', 'btn sm', 'Next ▶', wbar), wkExit = vrDom('button', 'btn sm', 'Exit', wbar), wkLab = vrDom('span', 'vrwl', '', wbar); vrDom('span', 'small mut', 'Arrow keys or n / p to move, Esc to leave', wbar);
   wkPrev.type = wkNext.type = wkExit.type = 'button'; wkInd.setAttribute('aria-live', 'polite');
   const body = vrDom('div', 'vrbody', null, host), svg = vrEl('svg', { class: 'vrsvg', role: 'img', 'aria-label': 'Change diagram' }); const cv = vrDom('div', 'vrcv', null, body); cv.tabIndex = -1; cv.appendChild(svg);
+  /* The hover card: the full text of whatever element the pointer is on (box, group, edge), at every zoom, since box text is cut and gets small. */
+  const hovIt = new WeakMap(), hc = vrDom('div', 'vrhc', null, cv); hc.hidden = true; hc.setAttribute('role', 'tooltip'); let hovOn = null;
+  const hovHide = () => { hc.hidden = true; hovOn = null; };
+  const hovShow = (g0, e) => { const it = hovIt.get(g0); if (!it) return hovHide();
+    if (hovOn !== g0) { hovOn = g0; hc.replaceChildren(); vrDom('b', '', it.label || (it.source + ' → ' + it.target), hc);
+      vrDom('div', 'mut', [it.kind, it.status, it.resolution === 'inferred' ? 'inferred' : ''].filter(Boolean).join(' · ') + (it.count > 1 && !it.collapsed ? ' · ' + it.count + ' links' : ''), hc);
+      if (it.collapsed && it.members) vrDom('p', 'mut', it.members + ' inside; click to open', hc);
+      if (it.detail && it.detail.before) vrDom('p', '', 'Before: ' + it.detail.before, hc); if (it.detail && it.detail.after) vrDom('p', '', 'After: ' + it.detail.after, hc);
+      const ev = it.evidence || []; if (ev.length) vrDom('p', 'mut', vrEv(ev[0]) + (ev.length > 1 ? ' (+' + (ev.length - 1) + ' more)' : ''), hc); }
+    hc.hidden = false; const r = cv.getBoundingClientRect(), w = hc.offsetWidth, h = hc.offsetHeight; let x = e.clientX - r.left + 14, y = e.clientY - r.top + 16;
+    if (x + w > r.width - 4) x = Math.max(4, e.clientX - r.left - w - 10); if (y + h > r.height - 4) y = Math.max(4, e.clientY - r.top - h - 10);
+    hc.style.left = x + 'px'; hc.style.top = y + 'px'; };
+  svg.addEventListener('pointermove', e => { if (e.buttons) return hovHide(); const g0 = e.target.closest && e.target.closest('[data-id]'); g0 ? hovShow(g0, e) : hovHide(); });
+  svg.addEventListener('pointerleave', hovHide); svg.addEventListener('pointerdown', hovHide); svg.addEventListener('wheel', hovHide, { passive: true });
   const insp = vrDom('aside', 'vrinsp', null, body);
   const note = vrDom('div', 'small mut vrnote', null, host);
   const slash = key.indexOf('/'), vrRepo = key.slice(0, slash), vrDossier = data.dossier || '';
@@ -411,12 +426,12 @@ function vrBuild(host, key, data) {
     draw(b ? { id: id, sx: vp.x + b.x * vp.k, sy: vp.y + b.y * vp.k } : null, id);
   }
   function paint(v, anchor, selId) {
-    cur = v; Object.keys(tb).forEach(k => tb[k].setAttribute('aria-pressed', String(k === st.view)));
+    hovHide(); cur = v; Object.keys(tb).forEach(k => tb[k].setAttribute('aria-pressed', String(k === st.view)));
     svg.replaceChildren(); els = {}; root = null; ovSvg = null; ovVp = null; ovRects = {}; ov.replaceChildren(); ov.hidden = true; st.sel = ''; insp.replaceChildren(); vrDom('p', 'small mut', 'Click an element for its description and evidence. Drag to pan; Ctrl or Cmd + wheel to zoom; click a group header to fold it; in a folded view, click a folded box to open it.', insp);
     if (!cur.layout || !cur.graph) { note.textContent = cur.issues.map(i => i.message).join('; ') || 'This view could not be laid out.'; return; }
     const g = cur.graph, L = cur.layout, defs = vrEl('defs', {}, svg), mk = vrEl('marker', { id: 'vr-ar', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, markerUnits: 'userSpaceOnUse', orient: 'auto-start-reverse' }, defs);
     vrEl('path', { d: 'M0 0L10 5L0 10z', fill: 'var(--mut)' }, mk); root = vrEl('g', {}, svg);
-    const tip = (g0, it) => { const t = vrEl('title', {}, g0); t.textContent = (it.label || (it.source + ' -> ' + it.target)) + ' [' + it.status + ']' + (it.evidence || []).map(x => '\n' + vrEv(x)).join(''); };
+    const tip = (g0, it) => { hovIt.set(g0, it); g0.setAttribute('aria-label', (it.label || (it.source + ' to ' + it.target)) + ', ' + it.status); }; /* the hover card shows the rest */
     const cont = [].concat(g.groups || [], (g.lanes || []).map(l => ({ id: l.id, label: l.label, status: 'context', evidence: [] })));
     cont.forEach(c => { const b = L.boxes[c.id]; if (!b) return; const gg = vrEl('g', { 'data-id': c.id, 'data-status': c.status, class: 'vrg', tabindex: 0 }, root); els[c.id] = { g: gg, status: c.status };
       vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 8, fill: 'var(--bg)', stroke: 'var(--' + vrTone(c.status) + ')', 'stroke-width': c.status === 'context' ? 1 : 2, 'stroke-dasharray': c.status === 'context' ? '4 3' : '0' }, gg);

@@ -174,6 +174,7 @@ describe("page code of the canvas", () => {
     expect(vr).toMatch(/wl\.length > 3\) lines\[2\] = lines\[2\]\.replace\([^)]*'(…|\\u2026)'\)/) // the page is served ASCII-escaped
     expect(vr).toMatch(/vrDom\('h3', '', it\.label \|\|/) // inspector: the whole label, unwrapped
     expect(vr).toMatch(/const tip = [^\n]*it\.label/) // accessible title on the node
+    expect(vr).toMatch(/vrDom\('b', '', it\.label \|\|/) // hover card: the whole label, at every zoom
     // The wrapped text is not the only place the label goes: a clip never replaces the data.
     expect(vr).not.toMatch(/n\.label\s*=\s*/)
   })
