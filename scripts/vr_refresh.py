@@ -282,7 +282,7 @@ def calls_layer(ws_root: str, pkgs: list, blobs: dict, store: Store, limit: floa
     ra = None
     version = None
 
-    def compute(rel: str, first: bool) -> bool:
+    def compute(rel: str, first: bool, retry: bool = False) -> bool:
         ra.set_deadline(index_limit if first else file_limit)
         fns = ra.outgoing_for_file(rel)
         norm = []
@@ -297,7 +297,8 @@ def calls_layer(ws_root: str, pkgs: list, blobs: dict, store: Store, limit: floa
                         out.append({"name": o["name"], "path": p, "line": o["line"], "ranges": o["ranges"]})
             norm.append({"name": f["name"], "line": f["line"], "col": f["col"], "out": out})
         rec = {"rel": rel, "blob": blobs[rel], "salt": salt, "fns": norm}
-        if getattr(ra, "last_provisional", False):
+        # a retry (second ask, server warm) is final: an answer still empty then is the real one
+        if getattr(ra, "last_provisional", False) and not retry:
             rec["provisional"] = True  # the server may have answered empty while indexing: recomputed by the next run
         store.write(rec, "calls", _file_name(rel))
         entries[rel] = rec
@@ -361,14 +362,14 @@ def calls_layer(ws_root: str, pkgs: list, blobs: dict, store: Store, limit: floa
         first = True
         n = 0
         phase = 0
-        while todo:
+        while todo or phase < 2:
             for rel in list(todo):
                 if time.time() - t0 > limit:
                     stats["pending"] = len(todo)
                     save_pending(dependents() if phase == 0 else ())
                     return finish("partial", "stopped at the %.0f s limit; the next refresh continues" % limit)
                 try:
-                    compute(rel, first)
+                    compute(rel, first, retry=phase == 2)
                 except RaError as exc:
                     stats["pending"] = len(todo)
                     save_pending(dependents() if phase == 0 else ())
@@ -376,6 +377,8 @@ def calls_layer(ws_root: str, pkgs: list, blobs: dict, store: Store, limit: floa
                 first = False
                 todo.remove(rel)
                 n += 1
+                if phase == 2:
+                    continue
                 if phase == 0 and rel in changed_set:
                     stats["recomputed"] += 1
                 else:
@@ -387,6 +390,13 @@ def calls_layer(ws_root: str, pkgs: list, blobs: dict, store: Store, limit: floa
                 phase = 1
                 chg = set()
                 save_pending()
+            elif phase == 1:
+                # A file answered while the index was still cold is asked once more now that the server has resolved
+                # something; otherwise it would stay provisional, and every later refresh would recompute it cold again.
+                todo = sorted(r for r, e in done_now.items() if e.get("provisional")) if getattr(ra, "_resolved", True) else []
+                phase = 2
+                if todo:
+                    stats["retried"] = len(todo)
     finally:
         try:
             ra_cm.__exit__(None, None, None)
@@ -1147,15 +1157,30 @@ def _selftest() -> int:
         r14 = run(c2)
         check("pending-dependents:next-run-recomputes-them", r14["calls"]["status"] == "ran" and any(x.startswith("crates/app/") for x in _FakeRa.seen)
               and Store(c2).read("pending-dependents.json") is None, str((r14["calls"], _FakeRa.seen)))
-        # a provisional answer (a server that was still indexing) is not pinned: the next run asks again
+        # a provisional answer (a server that was still indexing) is asked again in the same run once the server has
+        # resolved something; the second answer is final, so the next run reuses it instead of recomputing it cold forever
         c3 = cache + "-prov"
         _FakeRa.prov = {"crates/sys/src/lib.rs"}
         try:
+            r15 = run(c3)
+            seen15 = list(_FakeRa.seen)
             run(c3)
+            check("provisional:retried-once-in-run", seen15.count("crates/sys/src/lib.rs") == 2 and r15["calls"].get("retried") == 1, str((seen15, r15["calls"])))
+            check("provisional:retry-is-final", _FakeRa.seen == [], str(_FakeRa.seen))
         finally:
             _FakeRa.prov = set()
-        run(c3)
-        check("provisional:recomputed-next-run", _FakeRa.seen == ["crates/sys/src/lib.rs"], str(_FakeRa.seen))
+        # a server that never resolved anything: no retry, the answer stays provisional and the next run asks again
+        c4 = cache + "-prov-cold"
+        _FakeRa.prov = {"crates/sys/src/lib.rs"}
+        _FakeRa._resolved = False
+        try:
+            run(c4)
+        finally:
+            _FakeRa.prov = set()
+            del _FakeRa._resolved
+        run(c4)
+        check("provisional:cold-server-recomputed-next-run", _FakeRa.seen == ["crates/sys/src/lib.rs"], str(_FakeRa.seen))
+        check("calls:ra-target-matches-module-layer", FAST_OPTIONS["cargo"]["target"] == vr_extract.CM_TARGET and FAST_OPTIONS["cargo"]["features"] == "all")
         # the module cache key covers the workspace manifest, the lockfile and target roots outside src/
         pk = {"manifest_path": "/w/crates/x/Cargo.toml", "targets": [{"src_path": "/w/crates/x/lib/main.rs"}]}
         bl = {"Cargo.toml": "a", "Cargo.lock": "b", "crates/x/Cargo.toml": "c", "crates/x/src/lib.rs": "d", "crates/x/lib/main.rs": "e"}

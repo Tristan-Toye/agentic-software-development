@@ -43,7 +43,12 @@ from urllib.parse import quote, unquote, urlparse
 # proc-macro server; calls made only inside macro-expanded code are not resolved. `cargo.noDeps` was tried and rejected:
 # it drops the dependency edges between workspace crates, so no cross-crate call resolves (measured on config-harness).
 # Instead the server runs with a private CARGO_HOME (see `_private_cargo_home`).
-FAST_OPTIONS = {"cargo": {"buildScripts": {"enable": False}}, "procMacro": {"enable": False}, "checkOnSave": False,
+# The target and the features are the ones of the module layer (vr_extract.CM_TARGET, --all-features): on another host,
+# code under `#[cfg(target_os = "linux")]` would be cfg'd out, so its calls would never resolve (and every function of
+# such a file was polled until its timeout).
+RA_TARGET = "x86_64-unknown-linux-gnu"
+FAST_OPTIONS = {"cargo": {"buildScripts": {"enable": False}, "target": RA_TARGET, "features": "all"},
+                "procMacro": {"enable": False}, "checkOnSave": False,
                 "cachePriming": {"enable": False}, "diagnostics": {"enable": False}}
 
 
@@ -277,7 +282,8 @@ class RaClient:
         uri = _uri(full)
         self.last_provisional = False
         patient = tries
-        was_proven = getattr(self, "_proven", False)
+        # `_resolved`: the server has resolved a call hierarchy item before (its semantic index answers), not only symbols
+        was_resolved = getattr(self, "_resolved", False)
         if getattr(self, "_proven", False):
             tries = min(tries, 2)   # the server has answered before: an empty answer is a real one (no 15-30 s stall)
         self._send({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
@@ -303,17 +309,22 @@ class RaClient:
                     walk(it.get("children"))
             walk(syms if syms and "selectionRange" in (syms[0] or {}) else [])
             res = []
+            # Only the first function polled in a file waits patiently for an index that is not proven yet: when it stays
+            # unresolved the others would too (a cfg'd-out file), so they get two polls instead of `tries` each.
+            patient_left = not was_resolved
             for it in sorted(fns, key=lambda i: (i["selectionRange"]["start"]["line"], i["selectionRange"]["start"]["character"])):
                 st = it["selectionRange"]["start"]
                 rec = {"name": it["name"], "line": st["line"] + 1, "col": st["character"] + 1, "out": None}
                 pos = {"textDocument": {"uri": uri}, "position": st}
                 found = None
-                for _ in range(tries):
+                for _ in range(tries if patient_left else min(tries, 2)):
                     found = self._request("textDocument/prepareCallHierarchy", pos).get("result") or []
                     if found:
                         break
                     time.sleep(0.5)
+                patient_left = False
                 if found:
+                    self._resolved = True
                     out = self._request("callHierarchy/outgoingCalls", {"item": found[0]}).get("result") or []
                     rec["out"] = []
                     for c in out:
@@ -326,7 +337,7 @@ class RaClient:
             has_fn = re.search(r"^\s*(pub(\([^)]*\))?\s+)?(const\s+|async\s+|unsafe\s+)*fn\s+\w", text, re.M) is not None
             # nothing resolved is only suspicious while the server has not answered anything yet: afterwards a file whose
             # functions stay unresolved is cfg'd out or macro-generated, which is a real answer
-            self.last_provisional = (not res and has_fn) or (bool(res) and not was_proven and all(r["out"] is None for r in res))
+            self.last_provisional = (not res and has_fn) or (bool(res) and not was_resolved and all(r["out"] is None for r in res))
             return res
         finally:
             try:
