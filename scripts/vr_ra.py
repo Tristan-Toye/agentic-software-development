@@ -269,7 +269,7 @@ class RaClient:
         are the inverse of the outgoing calls of every other file. A function whose item stays empty after
         `tries` polls (a macro-generated or cfg'd-out symbol) is listed with `"out": None`. Bounded by the
         deadline of `set_deadline`. `last_provisional` is True after a call whose answer looks like a server still
-        indexing (no function listed for a file with `fn` items, or none resolved).
+        indexing (no function listed for a file with `fn` items, or none resolved before the server had answered anything).
         """
         full = os.path.join(self.root, rel_path)
         with open(full, encoding="utf-8", errors="replace") as fh:
@@ -277,6 +277,7 @@ class RaClient:
         uri = _uri(full)
         self.last_provisional = False
         patient = tries
+        was_proven = getattr(self, "_proven", False)
         if getattr(self, "_proven", False):
             tries = min(tries, 2)   # the server has answered before: an empty answer is a real one (no 15-30 s stall)
         self._send({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
@@ -323,7 +324,9 @@ class RaClient:
             # An empty answer for a file that has `fn` items, or no function resolved at all, may be a server that was still
             # indexing: flag it, so the caller does not pin it in a cache (`last_provisional`).
             has_fn = re.search(r"^\s*(pub(\([^)]*\))?\s+)?(const\s+|async\s+|unsafe\s+)*fn\s+\w", text, re.M) is not None
-            self.last_provisional = (not res and has_fn) or (bool(res) and all(r["out"] is None for r in res))
+            # nothing resolved is only suspicious while the server has not answered anything yet: afterwards a file whose
+            # functions stay unresolved is cfg'd out or macro-generated, which is a real answer
+            self.last_provisional = (not res and has_fn) or (bool(res) and not was_proven and all(r["out"] is None for r in res))
             return res
         finally:
             try:
