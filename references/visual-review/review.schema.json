@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/visual-review/review.schema.json",
+  "title": "Visual review verdicts (version 1.0.0)",
+  "description": "The owner's verdict per diagram element, kept in .discovery/visual-review/<ID>/review.json of the run's repo root (VR-04). One line per (diagram, element): a new verdict on the same element replaces the old line. A line whose anchor.graph_hash differs from the hash of the diagram file as it is now is outdated (made on an older graph) and is not counted as checked; a line whose element is no longer a node of the diagram is gone (kept, shown as 'element gone'). graph_hash is the sha256 (hex) of the canonical JSON of the diagram file: keys sorted at every depth, every $-prefixed key dropped (shared/questions/vrlayout.ts graphHash). An element is a node of l0, l1 or l2.json.",
+  "type": "object",
+  "required": ["schema_version", "dossier", "updated", "lines"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "dossier": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+    "updated": { "type": "string", "format": "date-time" },
+    "lines": {
+      "type": "array",
+      "maxItems": 600,
+      "items": {
+        "type": "object",
+        "required": ["anchor", "verdict", "comment", "ts"],
+        "additionalProperties": false,
+        "properties": {
+          "anchor": {
+            "type": "object",
+            "required": ["diagram", "element", "graph_hash"],
+            "additionalProperties": false,
+            "properties": {
+              "diagram": { "enum": ["L0", "L1", "L2"] },
+              "element": { "type": "string", "minLength": 1, "maxLength": 200, "description": "The node id, the stable id of graph.schema.json." },
+              "graph_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          },
+          "verdict": { "enum": ["ok", "question", "change", "remove"], "description": "remove = remove from scope. An element with no line is 'not yet looked at'." },
+          "comment": { "type": "string", "maxLength": 1000, "description": "Optional; empty string when none." },
+          "ts": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  }
+}

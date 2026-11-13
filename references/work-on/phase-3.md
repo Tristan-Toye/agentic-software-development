@@ -288,4 +288,66 @@ as an explicit strength requirement — in `FIXTURES` or `TEST_FRAMEWORK`,
 phrased as a property of the contract surface, never as a criterion number —
 or the contract itself must be fixed to state the scale.
 
+**The visual review — the last step of Phase 3, before any Phase 4 spawn; every
+build, no size gate.** The owner sees what the change does to the system
+before an implementer starts. It is its own step: the `contract-reviewer`
+payload holds no diagram file and no dossier text from this step.
+
+1. Mark the dossier: `dossier_edit.py set <dossier> 'visual_review=required'`
+   (this switches the gate on for this dossier). Then run `python3 scripts/vr_prepare.py <repo> <ID> --base <baseline_commit> --head X`
+   (`X` = the contract commit). It writes `.discovery/visual-review/<ID>/work/`
+   and prints a compact JSON summary. A non-zero exit stops the step: log
+   `VISUAL-REVIEW: skipped-error — <step the JSON names>` as a build-log
+   line, report it, and stop; never invent the facts by hand.
+2. Spawn `diagram-author` (payload file, linted like every payload): `DOSSIER_ID`,
+   the dossier's `## Problem` and `## Approach`, the contract, `WORK_DIR`,
+   `OUT_DIR`, `SCRIPTS_DIR`, `REPO`. It writes `l0.json`, `l1.json` and `l2.json`
+   in `OUT_DIR`; it only names and groups, and marks what no stub proves
+   `inferred`.
+3. Validate each file yourself:
+   `python3 scripts/vr_graph.py validate <OUT_DIR>/l<N>.json --root <repo>`
+   (budgets L0 15, L1 12, L2 12). On a defect re-spawn the agent with the
+   issue list in `ERRORS`; **at most 2 repair attempts**, then stop, log the
+   open issues in `## Build log` and report. A graph that fails validation
+   creates **no** owner question.
+4. Ask the owner ONE product question with
+   `ask_owner.py ask --kind product --topic visual-review`
+   (`references/owner-questions.md`). The `--topic` marker is what makes it
+   the visual-review question: the dashboard canvas and the answer path
+   accept only a question that carries it (the two option labels below are a
+   secondary guard), so a question without it gets the ordinary buttons: "Does this picture match what the
+   feature should do?", options `A|Approved|fan-out starts` and
+   `B|Changes requested|back to the contract`, the dashboard view of the
+   three files linked in the question text, `--blocks` the Phase 4 fan-out.
+   Then `ask_owner.py wait`; the run waits for the answer, with no time-boxed
+   default (OQ-08 = A). The owner gives a verdict per element on the
+   dashboard canvas (OK, Question, Change, Remove from scope) and sends the
+   review in one action: the answer is `A` when every element is OK, else `B`
+   with one line per flagged element (verdict, diagram, element id, comment)
+   and the elements not yet looked at. A Question verdict reaches you as a
+   follow-up (`FOLLOWUP`, the question stays open; answer it with
+   `ask_owner.py reply`).
+   When the answer is `B`, read
+   `.discovery/visual-review/<ID>/review.json` (schema
+   `references/visual-review/review.schema.json`) for the element ids and
+   comments: each line's `anchor.diagram` and `anchor.element` name the
+   element, `verdict` is `change`, `remove` (out of scope) or `question`,
+   and a line with a different `anchor.graph_hash` than the file now has was
+   made on an older version of the picture. These ids and comments are the
+   input of the contract revision below.
+5. Record the outcome as a `## Build log` line, exactly one of:
+
+   ```
+   VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n> (<dashboard link>)
+   VISUAL-REVIEW: changes requested — <element ids of the review.json lines with verdict change or remove>
+   ```
+
+   The counts are the node counts of the three files; `validate_pipeline.py
+   --dossier <ID> --pre-fanout` checks them, the three files and the last
+   line (the gate holds for a dossier with the `visual_review:` field that
+   step 1 sets; a build that never ran this step is not flagged).
+   **`changes requested` goes back to the contract revision above, never
+   forward:** fix the contract, re-run the contract review, then run this
+   step again and record a new line. Fan-out waits for `approved`.
+
 **Driver (only when `ASD_DRIVER_PRE_FANOUT_CHECK=on`).** `python3 scripts/pre_fanout_check.py --dossier ID` runs the pre-fan-out mechanics (validation, receipts, criteria owner/env map, census grep, frozen counts, gates, slices vs checklist) and prints evidence only; you rule on it. Exit 2 means a surprise: do the step by hand. `shadow` writes evidence to `.git/asd-drivers/driver-shadow/` and changes nothing; unset or `off` means ignore this paragraph.

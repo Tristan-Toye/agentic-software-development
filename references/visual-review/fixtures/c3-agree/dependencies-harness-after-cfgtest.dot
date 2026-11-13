@@ -1,0 +1,339 @@
+digraph {
+
+    graph [
+        label="harness",
+        labelloc=t,
+
+        pad=0.4,
+
+        // Consider rendering the graph using a different layout algorithm, such as:
+        // [dot, neato, twopi, circo, fdp, sfdp]
+        layout=neato,
+        overlap=false,
+        splines="line",
+        rankdir=LR,
+
+        fontname="Helvetica", 
+        fontsize="36",
+    ];
+
+    node [
+        fontname="monospace",
+        fontsize="10",
+        shape="record",
+        style="filled",
+    ];
+
+    edge [
+        fontname="monospace",
+        fontsize="10",
+    ];
+
+    "harness" [label="crate|harness", fillcolor="#5397c8"]; // "crate" node
+    "harness::archive" [label="pub mod|archive", fillcolor="#81c169"]; // "mod" node
+    "harness::boot" [label="pub mod|boot", fillcolor="#81c169"]; // "mod" node
+    "harness::build" [label="pub mod|build", fillcolor="#81c169"]; // "mod" node
+    "harness::build::tests" [label="pub(self) mod|build::tests", fillcolor="#db5367"]; // "mod" node
+    "harness::cancel_sweep" [label="pub mod|cancel_sweep", fillcolor="#81c169"]; // "mod" node
+    "harness::checkpoint_delta" [label="pub mod|checkpoint_delta", fillcolor="#81c169"]; // "mod" node
+    "harness::compaction" [label="pub mod|compaction", fillcolor="#81c169"]; // "mod" node
+    "harness::context_ledger" [label="pub mod|context_ledger", fillcolor="#81c169"]; // "mod" node
+    "harness::human_input" [label="pub mod|human_input", fillcolor="#81c169"]; // "mod" node
+    "harness::inbox" [label="pub mod|inbox", fillcolor="#81c169"]; // "mod" node
+    "harness::ledger" [label="pub mod|ledger", fillcolor="#81c169"]; // "mod" node
+    "harness::llm_step" [label="pub mod|llm_step", fillcolor="#81c169"]; // "mod" node
+    "harness::ops" [label="pub mod|ops", fillcolor="#81c169"]; // "mod" node
+    "harness::provenance" [label="pub mod|provenance", fillcolor="#81c169"]; // "mod" node
+    "harness::ready_signal" [label="pub mod|ready_signal", fillcolor="#81c169"]; // "mod" node
+    "harness::runtime" [label="pub mod|runtime", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox" [label="pub mod|sandbox", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox::checkpoint" [label="pub mod|sandbox::checkpoint", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox::checkpointer" [label="pub mod|sandbox::checkpointer", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox::child" [label="pub mod|sandbox::child", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox::common" [label="pub(crate) mod|sandbox::common", fillcolor="#f8c04c"]; // "mod" node
+    "harness::sandbox::exec" [label="pub mod|sandbox::exec", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox::file_backend" [label="pub mod|sandbox::file_backend", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox::frame" [label="pub(crate) mod|sandbox::frame", fillcolor="#f8c04c"]; // "mod" node
+    "harness::sandbox::gvisor_backend" [label="pub mod|sandbox::gvisor_backend", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox::rootfs" [label="pub mod|sandbox::rootfs", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox::tool_sandbox" [label="pub mod|sandbox::tool_sandbox", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox::workspace_events" [label="pub mod|sandbox::workspace_events", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox::workspace_lock" [label="pub mod|sandbox::workspace_lock", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox::workspace_seed" [label="pub mod|sandbox::workspace_seed", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox::zfs_backend" [label="pub mod|sandbox::zfs_backend", fillcolor="#81c169"]; // "mod" node
+    "harness::sandbox::zfs_common" [label="pub(crate) mod|sandbox::zfs_common", fillcolor="#f8c04c"]; // "mod" node
+    "harness::summariser" [label="pub mod|summariser", fillcolor="#81c169"]; // "mod" node
+    "harness::supervisor" [label="pub mod|supervisor", fillcolor="#81c169"]; // "mod" node
+    "harness::tool_ledger" [label="pub mod|tool_ledger", fillcolor="#81c169"]; // "mod" node
+    "harness::tools" [label="pub mod|tools", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::annotations" [label="pub mod|tools::annotations", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::ask_human" [label="pub mod|tools::ask_human", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::audit" [label="pub mod|tools::audit", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::blast_radius" [label="pub mod|tools::blast_radius", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::boundary" [label="pub mod|tools::boundary", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::catalogue" [label="pub mod|tools::catalogue", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::commands" [label="pub mod|tools::commands", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::effects" [label="pub mod|tools::effects", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::gate" [label="pub mod|tools::gate", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::git_mirror" [label="pub mod|tools::git_mirror", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::git_tools" [label="pub mod|tools::git_tools", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::grants" [label="pub mod|tools::grants", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::handle" [label="pub mod|tools::handle", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::journal" [label="pub mod|tools::journal", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::journal::tier_text" [label="pub(self) mod|tools::journal::tier_text", fillcolor="#db5367"]; // "mod" node
+    "harness::tools::mirror_maintenance" [label="pub mod|tools::mirror_maintenance", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::outcome" [label="pub mod|tools::outcome", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::pipeline" [label="pub mod|tools::pipeline", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::red_corpus" [label="pub mod|tools::red_corpus", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::red_oracle" [label="pub mod|tools::red_oracle", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::registry" [label="pub mod|tools::registry", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::relay" [label="pub mod|tools::relay", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::rules" [label="pub mod|tools::rules", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::spec" [label="pub mod|tools::spec", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::step" [label="pub mod|tools::step", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::stops" [label="pub mod|tools::stops", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::util" [label="pub(crate) mod|tools::util", fillcolor="#f8c04c"]; // "mod" node
+    "harness::tools::workspace" [label="pub mod|tools::workspace", fillcolor="#81c169"]; // "mod" node
+    "harness::tools::write_tools" [label="pub mod|tools::write_tools", fillcolor="#81c169"]; // "mod" node
+    "harness::track" [label="pub mod|track", fillcolor="#81c169"]; // "mod" node
+    "harness::usage_scope" [label="pub mod|usage_scope", fillcolor="#81c169"]; // "mod" node
+    "harness::vocab" [label="pub mod|vocab", fillcolor="#81c169"]; // "mod" node
+    "harness::watchdog" [label="pub mod|watchdog", fillcolor="#81c169"]; // "mod" node
+    "harness::working_memory" [label="pub mod|working_memory", fillcolor="#81c169"]; // "mod" node
+
+    "harness" -> "harness::archive" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::boot" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::checkpoint_delta" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::compaction" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::ledger" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::llm_step" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::provenance" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::ready_signal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::runtime" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::sandbox::checkpointer" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::sandbox::file_backend" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::sandbox::gvisor_backend" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::sandbox::rootfs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::sandbox::workspace_events" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::sandbox::workspace_lock" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::sandbox::zfs_backend" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::track" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness" -> "harness::working_memory" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::boot" -> "harness::ledger" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::build::tests" -> "harness::build" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::cancel_sweep" -> "harness::track" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::compaction" -> "harness::llm_step" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::compaction" -> "harness::tools::step" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::compaction" -> "harness::working_memory" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::context_ledger" -> "harness::tool_ledger" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::human_input" -> "harness::ops" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::human_input" -> "harness::track" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::inbox" -> "harness::llm_step" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::inbox" -> "harness::ops" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::inbox" -> "harness::track" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::ledger" -> "harness::track" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::ledger" -> "harness::usage_scope" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::llm_step" -> "harness::runtime" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::llm_step" -> "harness::track" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::ops" -> "harness::runtime" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::provenance" -> "harness::vocab" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::runtime" -> "harness::human_input" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::runtime" -> "harness::inbox" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::runtime" -> "harness::llm_step" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::runtime" -> "harness::ops" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::runtime" -> "harness::ready_signal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::runtime" -> "harness::summariser" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::runtime" -> "harness::supervisor" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::runtime" -> "harness::track" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::runtime" -> "harness::usage_scope" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::runtime" -> "harness::working_memory" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox" -> "harness::sandbox::checkpointer" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox" -> "harness::sandbox::common" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox" -> "harness::sandbox::file_backend" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox" -> "harness::sandbox::gvisor_backend" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox" -> "harness::sandbox::rootfs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox" -> "harness::sandbox::workspace_events" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox" -> "harness::sandbox::workspace_lock" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox" -> "harness::sandbox::workspace_seed" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox" -> "harness::sandbox::zfs_backend" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::checkpointer" -> "harness::build" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::checkpointer" -> "harness::sandbox" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::checkpointer" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::checkpointer" -> "harness::sandbox::workspace_events" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::checkpointer" -> "harness::sandbox::workspace_lock" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::checkpointer" -> "harness::tools::journal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::common" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::exec" -> "harness::sandbox" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::exec" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::exec" -> "harness::sandbox::child" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::exec" -> "harness::sandbox::common" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::file_backend" -> "harness::sandbox" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::file_backend" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::file_backend" -> "harness::sandbox::common" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::file_backend" -> "harness::sandbox::frame" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::frame" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::frame" -> "harness::sandbox::common" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::gvisor_backend" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::gvisor_backend" -> "harness::sandbox::common" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::gvisor_backend" -> "harness::sandbox::exec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::gvisor_backend" -> "harness::sandbox::rootfs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::gvisor_backend" -> "harness::tools::commands" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::gvisor_backend" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::rootfs" -> "harness::sandbox" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::rootfs" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::rootfs" -> "harness::sandbox::common" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::rootfs" -> "harness::sandbox::exec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::rootfs" -> "harness::sandbox::zfs_common" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::tool_sandbox" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::tool_sandbox" -> "harness::sandbox::child" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::tool_sandbox" -> "harness::sandbox::common" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::tool_sandbox" -> "harness::sandbox::exec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::workspace_seed" -> "harness::sandbox" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::workspace_seed" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::workspace_seed" -> "harness::sandbox::common" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::workspace_seed" -> "harness::sandbox::exec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::workspace_seed" -> "harness::sandbox::workspace_lock" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::workspace_seed" -> "harness::sandbox::zfs_backend" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::workspace_seed" -> "harness::sandbox::zfs_common" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::zfs_backend" -> "harness::sandbox" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::zfs_backend" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::zfs_backend" -> "harness::sandbox::common" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::zfs_backend" -> "harness::sandbox::exec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::zfs_backend" -> "harness::sandbox::frame" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::zfs_common" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::sandbox::zfs_common" -> "harness::sandbox::exec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::summariser" -> "harness::llm_step" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::summariser" -> "harness::track" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::summariser" -> "harness::working_memory" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::supervisor" -> "harness::inbox" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::supervisor" -> "harness::track" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tool_ledger" -> "harness::tools::gate" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tool_ledger" -> "harness::vocab" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::annotations" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::audit" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::blast_radius" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::catalogue" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::commands" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::effects" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::gate" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::git_tools" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::grants" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::handle" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::journal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::pipeline" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::red_corpus" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::rules" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::step" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::workspace" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::tools::write_tools" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools" -> "harness::vocab" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::ask_human" -> "harness::tools::registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::ask_human" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::audit" -> "harness::tools::pipeline" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::blast_radius" -> "harness::tools::effects" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::blast_radius" -> "harness::tools::gate" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::blast_radius" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::blast_radius" -> "harness::tools::util" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::boundary" -> "harness::tools::registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::boundary" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::catalogue" -> "harness::tools::annotations" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::catalogue" -> "harness::tools::handle" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::catalogue" -> "harness::tools::registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::catalogue" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::catalogue" -> "harness::tools::util" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::commands" -> "harness::tools::registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::commands" -> "harness::tools::rules" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::commands" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::effects" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::effects" -> "harness::tools::util" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::gate" -> "harness::tools::effects" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::gate" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::git_mirror" -> "harness::sandbox::common" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::git_mirror" -> "harness::sandbox::workspace_lock" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::git_mirror" -> "harness::tools::workspace" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::git_tools" -> "harness::tools::audit" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::git_tools" -> "harness::tools::catalogue" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::git_tools" -> "harness::tools::git_mirror" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::git_tools" -> "harness::tools::handle" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::git_tools" -> "harness::tools::registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::git_tools" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::git_tools" -> "harness::tools::util" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::git_tools" -> "harness::tools::workspace" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::grants" -> "harness::tools::effects" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::handle" -> "harness::tools::rules" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::journal" -> "harness::tools::gate" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::journal" -> "harness::tools::pipeline" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::journal" -> "harness::vocab" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::journal::tier_text" -> "harness::tools::gate" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::mirror_maintenance" -> "harness::tools::git_mirror" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::outcome" -> "harness::vocab" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::pipeline" -> "harness::ops" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::pipeline" -> "harness::tools::audit" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::pipeline" -> "harness::tools::effects" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::pipeline" -> "harness::tools::gate" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::pipeline" -> "harness::tools::grants" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::pipeline" -> "harness::tools::handle" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::pipeline" -> "harness::tools::registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::pipeline" -> "harness::tools::rules" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::pipeline" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::pipeline" -> "harness::tools::util" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::red_corpus" -> "harness::tools::effects" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::red_corpus" -> "harness::tools::gate" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::red_corpus" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::red_oracle" -> "harness::tools::blast_radius" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::red_oracle" -> "harness::tools::effects" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::red_oracle" -> "harness::tools::gate" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::red_oracle" -> "harness::tools::red_corpus" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::red_oracle" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::registry" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::relay" -> "harness::tools::registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::relay" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::rules" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::archive" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::compaction" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::context_ledger" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::llm_step" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::provenance" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::runtime" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::tool_ledger" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::tools::audit" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::tools::gate" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::tools::journal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::tools::pipeline" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::tools::registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::tools::stops" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::track" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::usage_scope" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::vocab" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::step" -> "harness::working_memory" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::stops" -> "harness::runtime" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::stops" -> "harness::track" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::util" -> "harness::tools::registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::workspace" -> "harness::sandbox::checkpoint" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::workspace" -> "harness::sandbox::child" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::workspace" -> "harness::sandbox::workspace_lock" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::workspace" -> "harness::sandbox::workspace_seed" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::workspace" -> "harness::sandbox::zfs_backend" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::workspace" -> "harness::tools::audit" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::workspace" -> "harness::tools::registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::workspace" -> "harness::tools::step" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::workspace" -> "harness::tools::util" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::write_tools" -> "harness::tools::audit" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::write_tools" -> "harness::tools::catalogue" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::write_tools" -> "harness::tools::handle" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::write_tools" -> "harness::tools::registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::write_tools" -> "harness::tools::spec" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::write_tools" -> "harness::tools::util" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::tools::write_tools" -> "harness::tools::workspace" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::track" -> "harness::ready_signal" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::track" -> "harness::working_memory" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::watchdog" -> "harness::inbox" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::watchdog" -> "harness::ops" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "harness::watchdog" -> "harness::track" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+
+}

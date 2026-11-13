@@ -1,6 +1,8 @@
 // The owner dashboard: one inline HTML + JS + CSS page, no external resources. All dynamic text goes in via textContent
 // or createTextNode; the only innerHTML is the server's escaped markdown render of a dossier. Contract: references/owner-questions.md (Dashboard).
 // The script avoids backticks and dollar-brace so it can live in this raw template.
+import { vrWalkOrder } from "./vrwalk.ts"
+
 export const PAGE = String.raw`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pipeline · Owner questions</title>
@@ -141,6 +143,29 @@ details.mstubs{margin-top:10px}details.mstubs>summary{font-size:.78rem;letter-sp
 .dmwrap{display:grid;grid-template-columns:260px 1fr;gap:16px;align-items:start}.dmlist{display:flex;flex-direction:column;gap:6px;position:sticky;top:64px;max-height:calc(100vh - 90px);overflow:auto}.dmitem{display:block;padding:8px 10px;border:1px solid var(--bd);border-radius:10px;background:var(--card);color:var(--fg);text-decoration:none}.dmitem:hover{border-color:var(--acc)}.dmitem.cur{border-color:var(--acc);background:var(--accbg)}.dmt{font-weight:600;font-size:13px;display:flex;gap:6px;align-items:center;overflow:hidden;text-overflow:ellipsis}.dmthread{min-width:0}.dmthread .panel{margin-top:0}.chat.wait{color:var(--mut)}.dmhint{margin-left:8px}a.pill.dmlink{color:var(--acc);text-decoration:none;font-weight:600}
 @media (max-width:760px){.dmwrap{grid-template-columns:1fr}.dmlist{position:static;max-height:none}}
 @media (max-width:560px){header{padding:8px 16px}main{padding:4px 16px 56px}.msg{max-width:96%}.grid{grid-template-columns:1fr}}
+.vr{padding:12px 14px}.vrbar{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}.vrh{font-size:1rem;margin:0 8px 0 0}.vrgrp{display:inline-flex;gap:4px}
+.vrbar .btn[aria-pressed=true]{border-color:var(--acc);background:var(--accbg);font-weight:650}.vrbar .btn:disabled{opacity:.45;cursor:default}
+.vrleg{display:flex;flex-wrap:wrap;gap:4px 14px;margin:8px 0}.vrlg{display:inline-flex;align-items:center;gap:4px}
+.vrsw,.vrbadge{display:inline-block;min-width:16px;padding:0 4px;text-align:center;font-style:normal;font-weight:700;border-radius:4px;border:2px solid var(--mut);color:var(--mut);background:var(--chip);line-height:1.2}
+.vrsw.added,.vrbadge.added{border-color:var(--ok);color:var(--ok);background:var(--okbg)}.vrsw.changed,.vrbadge.changed{border-color:var(--warn);color:var(--warn);background:var(--warnbg)}.vrsw.removed,.vrbadge.removed{border-color:var(--bad);color:var(--bad);background:var(--badbg);border-style:dashed}
+.vrbody{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:12px;align-items:stretch}@media (max-width:760px){.vrbody{grid-template-columns:1fr}}
+.vrsvg{width:100%;height:clamp(300px,58vh,560px);background:var(--bg);border:1px solid var(--bd);border-radius:10px;touch-action:none;cursor:grab;display:block}.vrsvg.drag{cursor:grabbing}
+.vrsvg .vroff{display:none}.vrsvg g.vrn,.vrsvg g.vre,.vrsvg g.vrg{cursor:pointer;outline:none}.vrsvg g.sel>rect:not([stroke=transparent]){stroke-width:4}.vrsvg g:focus-visible>rect{stroke-width:4}.vrsvg g.vre.sel .vrline{stroke-width:4}
+.vrinsp{border:1px solid var(--bd);border-radius:10px;padding:10px 12px;overflow:auto;max-height:560px;background:var(--card)}.vrinsp h3{margin:0 0 6px;font-size:.95rem}.vrinsp p{margin:5px 0}.vrev{word-break:break-all;font-size:12px}
+.vrnote{margin-top:6px}.vrmm{margin-top:8px;display:flex;gap:8px;align-items:flex-start}.vrta{flex:1;font:12px/1.4 ui-monospace,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
+.vrban{margin:8px 0;padding:8px 10px;border:1px solid var(--warn);background:var(--warnbg);color:var(--fg);border-radius:8px;font-size:.88rem}
+.vrrev{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;margin-top:8px}.vrsum{font-weight:650}.vrprev{margin-top:8px}.vrprev textarea{width:100%;min-height:120px;font:12px/1.4 ui-monospace,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
+.vrvd{margin-top:10px;padding-top:8px;border-top:1px solid var(--bd)}.vrvd .vrgrp{flex-wrap:wrap;margin:6px 0}.vrvd textarea{width:100%;min-height:60px;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
+.vrvd .btn[aria-pressed=true]{border-color:var(--acc);background:var(--accbg);font-weight:650}.vrcode{font-size:11px;font-weight:700}
+.vr [hidden]{display:none!important}.vrcv{position:relative;min-width:0;outline:none}
+.vrhc{position:absolute;z-index:5;max-width:340px;padding:8px 10px;background:var(--card);border:1px solid var(--bd);border-radius:8px;box-shadow:var(--shadow);font-size:12px;line-height:1.4;pointer-events:none;overflow-wrap:anywhere}.vrhcm{margin:4px 0 0;padding-left:16px;font-family:var(--mono,monospace);font-size:11px}.vrhc b{display:block;font-size:13px;margin-bottom:2px}.vrhc .mut{color:var(--mut)}.vrhc p{margin:3px 0 0}
+.vrov{position:absolute;right:8px;bottom:8px;padding:3px;background:var(--card);border:1px solid var(--bd);border-radius:6px;opacity:.94;cursor:crosshair;touch-action:none;box-shadow:var(--shadow)}.vrov svg{display:block}
+.vrov rect{vector-effect:non-scaling-stroke;fill:none;stroke:var(--mut);stroke-width:1}.vrov .vrovn{fill:var(--chip)}.vrov .vrovn.added{stroke:var(--ok);fill:var(--okbg);stroke-width:2}.vrov .vrovn.changed{stroke:var(--warn);fill:var(--warnbg);stroke-dasharray:1.5 1.5;stroke-width:2}.vrov .vrovn.removed{stroke:var(--bad);fill:var(--badbg);stroke-dasharray:4 2;stroke-width:2}.vrov .vroff{display:none}
+.vrov .vrovvp{fill:var(--accbg);fill-opacity:.35;stroke:var(--acc);stroke-width:2;stroke-dasharray:none}
+.vrwalk{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin:8px 0;padding:6px 10px;border:1px solid var(--acc);background:var(--accbg);border-radius:8px}.vrwl{font-weight:600;overflow-wrap:anywhere}
+.vrhalo{pointer-events:none}.vrsvg.vrwk g.vrn:not(.walk),.vrsvg.vrwk g.vre:not(.walk),.vrsvg.vrwk g.vrg:not(.walk){opacity:.4}.vrsvg g.vre.walk .vrline{stroke-width:5;stroke:var(--acc)}.vrsvg .vrhd{cursor:pointer}
+body.vrfs-on{overflow:hidden}body.vrfs-on .vr[data-vrkey]{position:fixed;inset:0;z-index:50;margin:0;border:0;border-radius:0;background:var(--bg);padding:10px 16px;display:flex;flex-direction:column;overflow:hidden}body.vrfs-on .vr[data-vrkey] .vrbody{flex:1;min-height:0;grid-template-rows:minmax(0,1fr)}body.vrfs-on .vr[data-vrkey] .vrcv{height:100%}body.vrfs-on .vr[data-vrkey] .vrsvg{height:100%}body.vrfs-on .vr[data-vrkey] .vrinsp{max-height:none}
+.vrmaplist{margin:6px 0;padding:0;list-style:none}.vrmaplist li{display:flex;gap:8px;align-items:center;padding:4px 0;border-top:1px solid var(--bd)}.vrmaplist .grow{flex:1}.vrpre{white-space:pre-wrap;font:12px/1.4 ui-monospace,monospace;background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:8px;max-height:360px;overflow:auto}
 </style></head><body>
 <header><a class="brand" href="/">Pipeline</a><nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav><a class="pill dmlink" href="/chat" title="Talk to the agent, as in the Slack DM">Ask the agent</a><span class="pill" id="slack"></span><span class="pill" id="upd"></span></header>
 <main id="view"></main>
@@ -174,6 +199,391 @@ function prChip(pr) {
   return a;
 }
 
+// ---- visual review (VR-03): the change graph of a dossier. The server lays it out (ELK); this only draws boxes and points.
+// Hand-written SVG, every text is set as text content, no markup parsing on this path, no outside request.
+const VR = {}, VRS = {};
+const VR_NS = 'ht' + 'tp://www.w3.org/2000/svg', VR_MARK = { added: '+', changed: '~', removed: '−', context: '=' };
+const VR_PASS = { diff: () => true, before: (s) => s !== 'added', after: (s) => s !== 'removed' };
+const VR_MODES = [['before', 'Before'], ['after', 'After'], ['diff', 'Diff']];
+const VR_TABS = { L0: 'Features', L1: 'Flow', L2: 'Components' };
+${vrWalkOrder.toString()}
+function vrKey(repo, id) { return repo + '/' + id; }
+async function vrLoad(repo, id) {
+  const key = vrKey(repo, id); let d = null;
+  try { const r = await fetch('/api/visual-review?dossier=' + enc(id) + '&repo=' + enc(repo)); d = r.ok ? await r.json() : null; } catch (e) { d = null; }
+  const had = VR[key] && VR[key].data ? VR[key].data.rev : null;
+  if (d && d.review) d.shownHashes = Object.assign({}, d.review.hashes || {}); /* the hashes of the graphs this load displays: a verdict says which one the owner saw */
+  VR[key] = { data: d };
+  if (d && d.review) { const st = VRS[key] = VRS[key] || {}; st.review = d.review; if (st.paint) st.paint(); }
+  vrMapLoad(repo);
+  if ((d ? d.rev : null) !== had) render();
+}
+/* VR-06: the committed product map of a repo (stale banner, the diagram list), from the server's cached vr_map check. */
+const VRM = {};
+async function vrMapLoad(repo) {
+  let d = null; try { const r = await fetch('/api/visual-review/map?repo=' + enc(repo)); d = r.ok ? await r.json() : null; } catch (e) { d = null; }
+  const had = JSON.stringify(VRM[repo] && VRM[repo].status || null); const cur = VRM[repo] = VRM[repo] || {}; cur.status = d;
+  if (JSON.stringify(d) !== had) { render(); const st = VRS[repo + '/~map']; if (st && st.paint) st.paint(); }
+}
+let vrOpenSeq = 0;
+async function vrOpenDiagram(repo, path) {
+  const seq = ++vrOpenSeq; /* a slow earlier answer must not overwrite a later click */
+  const cur = VRM[repo] = VRM[repo] || {}; cur.open = path; cur.text = ''; cur.err = '';
+  if (R.kind === 'arch' && R.repo === repo && new URLSearchParams(location.search).get('d') !== path) history.replaceState(null, '', hrefArch(repo, path));
+  let d = null; try { const r = await fetch('/api/visual-review/diagram?repo=' + enc(repo) + '&path=' + enc(path)); d = await r.json(); if (!r.ok) { cur.err = d.error || ('HTTP ' + r.status); d = null; } } catch (e) { cur.err = 'request failed'; }
+  if (seq !== vrOpenSeq) return;
+  const key = repo + '/~map';
+  if (d && d.kind === 'mermaid') { cur.text = d.text; VR[key] = { data: null }; }
+  else if (d) { VR[key] = { data: { dossier: '', rev: path + ':' + Date.now(), views: { L0: d.views.L0 || null, L1: d.views.L1 || null, L2: d.views.L2 || null }, issues: [], mapRepo: repo, mapPath: path } }; if (!d.views.L0 && !d.views.L1 && !d.views.L2) { cur.err = 'The server sent no view for this diagram.'; VR[key] = { data: null }; } }
+  render();
+}
+function vrOpenQ(dossier, repo) {
+  return S.q.find(q => q.state === 'open' && q.dossier === dossier && qRepo(q) === repo && q.topic === 'visual-review' && q.qkind === 'product' && q.options.some(o => /^changes requested/i.test(o.label)) && q.options.some(o => /^approved/i.test(o.label)));
+}
+/* The repo page links to the architecture page (the product map and the diagrams live there, not among the dossiers). */
+function vrRepoLink(repo) {
+  const st = (VRM[repo] || {}).status; if (!st) return null;
+  const n = st.diagrams.length, what = (st.hasMap ? 'Product map' + (st.stale ? ' (stale: ' + st.stale + ')' : '') + ' · ' : '') + n + ' diagram' + (n === 1 ? '' : 's');
+  return h('section', { class: 'panel', 'data-k': 'vrlink' }, [h('h2', {}, ['Architecture']), h('p', { class: 'small' }, [h('a', { href: hrefArch(repo) }, ['Open the architecture page']), ' · ' + what])]);
+}
+function archView(repo) {
+  const kids = [h('h1', {}, [rlabel(repo) + ' · Architecture']), h('p', { class: 'lead' }, ['The committed product map and the diagrams in docs/architecture. Open one on the canvas; Full screen (or f) gives it the whole window.'])];
+  const p = vrRepoPanel(repo); kids.push(p || h('div', { class: 'empty' }, ['Loading…']));
+  return h('div', {}, kids);
+}
+/* The architecture page: the committed product map (stale banner) and the committed diagrams, each openable on the canvas. */
+function vrRepoPanel(repo) {
+  const m = VRM[repo] || {}; const st = m.status; if (!st) return null;
+  const kids = [h('h2', {}, ['Product map and diagrams'])];
+  if (!st.hasMap) kids.push(h('p', { class: 'small mut' }, [st.message || 'No committed product map yet.']));
+  else if (st.stale) kids.push(h('div', { class: 'vrban' }, ['The product map is stale: ' + st.stale + ' element' + (st.stale === 1 ? '' : 's') + ' (' + st.ids.join(', ') + ').']));
+  else if (st.message) kids.push(h('p', { class: 'small mut' }, [st.message]));
+  else kids.push(h('p', { class: 'small mut' }, ['The product map is up to date.']));
+  if (st.diagrams.length) kids.push(h('ul', { class: 'vrmaplist' }, st.diagrams.map(d => h('li', {}, [h('span', { class: 'chip neutral' }, [d.kind]), h('span', { class: 'grow' }, [d.title + ' · ' + d.path]),
+    h('button', { class: 'btn sm', type: 'button', 'data-act': 'vr-open', 'data-repo': repo, 'data-path': d.path }, [m.open === d.path ? 'Open (shown)' : 'Open on canvas'])]))));
+  else kids.push(h('p', { class: 'small mut' }, ['No committed diagrams in docs/architecture.']));
+  if (m.err) kids.push(h('div', { class: 'ctl-msg bad' }, [m.err]));
+  if (m.text) kids.push(h('pre', { class: 'vrpre' }, [m.text]));
+  const v = VR[repo + '/~map']; const d = v && v.data;
+  if (d) kids.push(h('section', { class: 'vr', 'data-k': 'vr', 'data-raw': '1', 'data-html': '', 'data-vrkey': repo + '/~map@' + d.rev }, []));
+  return h('section', { class: 'panel', 'data-k': 'vrmap' }, kids);
+}
+/* The panel above the dossier's questions: a host the morph leaves alone (data-raw, constant data-html); vrMount fills it. */
+function vrPanel(r) {
+  const v = VR[vrKey(r.repo, r.id)]; const d = v && v.data;
+  if (!d || !['L0', 'L1', 'L2'].some(k => d.views[k])) return null;
+  return h('section', { class: 'panel vr', 'data-k': 'vr', 'data-raw': '1', 'data-html': '', 'data-vrkey': vrKey(r.repo, r.id) + '@' + d.rev }, []);
+}
+const VR_FS = { off: null, toggle: null, fit: null };
+document.addEventListener('keydown', (e) => {
+  if (!document.querySelector('.vr[data-vrkey]')) return;
+  const tg = e.target && e.target.tagName; if (tg === 'INPUT' || tg === 'TEXTAREA' || tg === 'SELECT' || (e.target && e.target.isContentEditable)) return;
+  if (e.key === 'Escape' && document.body.classList.contains('vrfs-on') && !document.querySelector('.vrwalk:not([hidden])') && VR_FS.off) { VR_FS.off(); e.preventDefault(); }
+  else if (e.key === 'f' && !e.metaKey && !e.ctrlKey && !e.altKey && VR_FS.toggle) { VR_FS.toggle(); e.preventDefault(); }
+});
+window.addEventListener('resize', () => { if (document.body.classList.contains('vrfs-on') && VR_FS.fit) VR_FS.fit(); });
+function vrMount() {
+  const host = document.querySelector('.vr[data-vrkey]'); if (!host) { document.body.classList.remove('vrfs-on'); VR_FS.off = VR_FS.toggle = VR_FS.fit = null; return; }
+  const tag = host.getAttribute('data-vrkey'); if (host.__vr === tag) { const k0 = tag.split('@')[0]; if (VRS[k0] && VRS[k0].paintBar) VRS[k0].paintBar(); return; }
+  host.__vr = tag; const key = tag.split('@')[0]; const v = VR[key];
+  host.replaceChildren(); if (v && v.data) vrBuild(host, key, v.data);
+}
+function vrEl(n, a, p) { const e = document.createElementNS(VR_NS, n); for (const k in a || {}) e.setAttribute(k, a[k]); if (p) p.appendChild(e); return e; }
+function vrDom(tag, cls, text, p) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined && text !== null) e.textContent = text; if (p) p.appendChild(e); return e; }
+function vrEv(ev, hand) { return ev.tier === 'source' ? (ev.path || '?') + (ev.line ? ':' + ev.line + (ev.end_line && ev.end_line !== ev.line ? '-' + ev.end_line : '') : '') + (ev.note ? ' — ' + ev.note : '') : (hand ? 'authored: ' : 'inferred: ') + (ev.note || ''); }
+/* A hand-authored graph (meta.generated_by "hand", e.g. imported from Mermaid) carries tier "inferred" evidence only because no tool proved it; there the dashed style follows the authored arrow instead, and no "? inferred" badge is drawn. */
+function vrHand(g) { return !!(g && g.meta && g.meta.generated_by === 'hand'); }
+function vrInferred(e, g) { if (vrHand(g)) return /\./.test(e.arrow || ''); return e.resolution ? e.resolution === 'inferred' : (e.evidence || []).length > 0 && e.evidence.every(x => x.tier === 'inferred'); }
+function vrWrap(s, w) { const out = []; let l = ''; String(s).split(' ').forEach(t => { if ((l + ' ' + t).trim().length > w && l) { out.push(l); l = t; } else l = (l + ' ' + t).trim(); }); if (l) out.push(l); return out; }
+function vrBuild(host, key, data) {
+  const st = VRS[key] = VRS[key] || {}; const have = ['L0', 'L1', 'L2'].filter(k => data.views[k]);
+  if (!st.view || !data.views[st.view]) st.view = have[0]; st.mode = st.mode || 'diff';
+  if (st.rev !== data.rev) { st.rev = data.rev; st.col = {}; st.lc = {}; /* a committed diagram opens with the groups the server named folded (the areas of the product map, the big groups of a large view) */ if (data.mapPath) have.forEach(k => { const c = data.views[k].collapsed; if (c && c.length) st.col[k] = c.slice().sort(); }); }
+  const bar = vrDom('div', 'vrbar', null, host); vrDom('h2', 'vrh', (data.mapPath && data.views[have[0]] && data.views[have[0]].title) || 'Change diagram', bar);
+  const tabs = vrDom('span', 'vrgrp', null, bar), modes = vrDom('span', 'vrgrp', null, bar);
+  const tb = {}, mb = {}; modes.hidden = !!data.mapPath;
+  ['L0', 'L1', 'L2'].forEach(k => { const b = vrDom('button', 'btn sm', data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); b.type = 'button'; b.disabled = !data.views[k]; b.hidden = !!data.mapPath && !data.views[k]; tb[k] = b; b.onclick = () => { st.view = k; wkOff(); draw(); }; });
+  VR_MODES.forEach(m => { const b = vrDom('button', 'btn sm', m[1], modes); b.type = 'button'; mb[m[0]] = b; b.onclick = () => { st.mode = m[0]; applyMode(); }; });
+  const fitB = vrDom('button', 'btn sm', 'Fit', bar); fitB.type = 'button';
+  const zin = vrDom('button', 'btn sm', '+', bar), zout = vrDom('button', 'btn sm', '−', bar); zin.type = zout.type = 'button'; zin.title = 'Zoom in'; zout.title = 'Zoom out';
+  const wkB = vrDom('button', 'btn sm', 'Walkthrough', bar); wkB.type = 'button'; wkB.title = 'Step through the added, changed and removed elements in reading order'; wkB.setAttribute('aria-pressed', 'false'); wkB.hidden = !!data.mapPath; /* a committed diagram has no added, changed or removed elements to step through */
+  const mmB = vrDom('button', 'btn sm', 'Mermaid', bar); mmB.type = 'button'; mmB.title = 'Export this view as mermaid flowchart text';
+  /* Full screen: the canvas takes the whole window (a body class, since the morph owns the host's own attributes); Esc or the button closes it. */
+  const fsB = vrDom('button', 'btn sm', '', bar); fsB.type = 'button'; fsB.title = 'Give the canvas the whole window (f; Esc closes)';
+  const setFs = (on) => { st.fs = on; document.body.classList.toggle('vrfs-on', on); fsB.textContent = on ? '✕ Close full screen' : '⤢ Full screen'; fsB.setAttribute('aria-pressed', String(on)); requestAnimationFrame(() => fit()); };
+  fsB.onclick = () => setFs(!st.fs); VR_FS.off = () => setFs(false); VR_FS.toggle = () => setFs(!st.fs); VR_FS.fit = () => fit();
+  const leg = vrDom('div', 'vrleg small mut', null, host); leg.hidden = !!data.mapPath; /* the change legend: a committed diagram shows no change marks */
+  ['added', 'changed', 'removed', 'context'].forEach(s => { const i = vrDom('span', 'vrlg', null, leg); const sw = vrDom('i', 'vrsw ' + s, VR_MARK[s], i); sw.setAttribute('aria-hidden', 'true'); i.appendChild(document.createTextNode(' ' + s)); });
+  vrDom('span', 'vrlg', '- - - dashed edge = inferred', leg);
+  const wbar = vrDom('div', 'vrwalk', null, host); wbar.hidden = true; wbar.setAttribute('role', 'group'); wbar.setAttribute('aria-label', 'Walkthrough');
+  const wkPrev = vrDom('button', 'btn sm', '◀ Previous', wbar), wkInd = vrDom('strong', 'vrwi', '', wbar), wkNext = vrDom('button', 'btn sm', 'Next ▶', wbar), wkExit = vrDom('button', 'btn sm', 'Exit', wbar), wkLab = vrDom('span', 'vrwl', '', wbar); vrDom('span', 'small mut', 'Arrow keys or n / p to move, Esc to leave', wbar);
+  wkPrev.type = wkNext.type = wkExit.type = 'button'; wkInd.setAttribute('aria-live', 'polite');
+  const body = vrDom('div', 'vrbody', null, host), svg = vrEl('svg', { class: 'vrsvg', role: 'img', 'aria-label': 'Change diagram' }); const cv = vrDom('div', 'vrcv', null, body); cv.tabIndex = -1; cv.appendChild(svg);
+  /* The hover card: the full text of whatever element the pointer is on (box, group, edge), at every zoom, since box text is cut and gets small. */
+  const hovIt = new WeakMap(), hc = vrDom('div', 'vrhc', null, cv); hc.hidden = true; hc.setAttribute('role', 'tooltip'); let hovOn = null;
+  const hovHide = () => { hc.hidden = true; hovOn = null; };
+  const hovShow = (g0, e) => { const it = hovIt.get(g0); if (!it) return hovHide();
+    if (hovOn !== g0) { hovOn = g0; hc.replaceChildren(); vrDom('b', '', it.label || (it.source + ' → ' + it.target), hc);
+      vrDom('div', 'mut', [it.kind, it.status, it.resolution === 'inferred' ? 'inferred' : ''].filter(Boolean).join(' · ') + (it.count > 1 && !it.collapsed ? ' · ' + it.count + ' links' : ''), hc);
+      if (it.collapsed && it.members) vrDom('p', 'mut', it.members + ' inside; click to open', hc);
+      if (it.stereotype) vrDom('div', 'mut', '«' + it.stereotype + '»', hc);
+      if (Array.isArray(it.members) && it.members.length) { const ul = vrDom('ul', 'vrhcm', null, hc); it.members.slice(0, 24).forEach(m => vrDom('li', '', typeof m === 'string' ? m : (m.text || m.name || JSON.stringify(m)), ul)); if (it.members.length > 24) vrDom('li', 'mut', '+' + (it.members.length - 24) + ' more (inspector)', ul); }
+      if (it.detail && it.detail.before) vrDom('p', '', 'Before: ' + it.detail.before, hc); if (it.detail && it.detail.after) vrDom('p', '', 'After: ' + it.detail.after, hc);
+      const ev = it.evidence || []; if (ev.length) vrDom('p', 'mut', vrEv(ev[0], vrHand(cur.graph)) + (ev.length > 1 ? ' (+' + (ev.length - 1) + ' more)' : ''), hc); }
+    hc.hidden = false; const r = cv.getBoundingClientRect(), w = hc.offsetWidth, h = hc.offsetHeight; let x = e.clientX - r.left + 14, y = e.clientY - r.top + 16;
+    if (x + w > r.width - 4) x = Math.max(4, e.clientX - r.left - w - 10); if (y + h > r.height - 4) y = Math.max(4, e.clientY - r.top - h - 10);
+    hc.style.left = x + 'px'; hc.style.top = y + 'px'; };
+  svg.addEventListener('pointermove', e => { if (e.buttons) return hovHide(); const g0 = e.target.closest && e.target.closest('[data-id]'); g0 ? hovShow(g0, e) : hovHide(); });
+  svg.addEventListener('pointerleave', hovHide); svg.addEventListener('pointerdown', hovHide); svg.addEventListener('wheel', hovHide, { passive: true });
+  const insp = vrDom('aside', 'vrinsp', null, body);
+  const note = vrDom('div', 'small mut vrnote', null, host);
+  const slash = key.indexOf('/'), vrRepo = key.slice(0, slash), vrDossier = data.dossier || '';
+  const reviewing = !!data.review;
+  const ban = vrDom('div', 'vrban', null, host); ban.hidden = true;
+  const rbar = vrDom('div', 'vrrev', null, host); rbar.hidden = !reviewing;
+  const sumEl = vrDom('span', 'vrsum', '', rbar), sendB = vrDom('button', 'btn primary sm', 'Send review', rbar), sendNote = vrDom('span', 'small mut', '', rbar); sendB.type = 'button';
+  const prev = vrDom('div', 'vrprev', null, host); prev.hidden = true;
+  const gone = vrDom('div', 'small mut', null, host);
+  const mm = vrDom('div', 'vrmm', null, host); mm.hidden = true;
+  const mmText = vrDom('textarea', 'vrta', null, mm); mmText.readOnly = true; mmText.rows = 8; mmText.setAttribute('aria-label', 'Mermaid text');
+  const mmCopy = vrDom('button', 'btn sm', 'Copy', mm); mmCopy.type = 'button';
+  let root = null, vp = { x: 0, y: 0, k: 1 }, els = {}, cur = null, drag = null, busy = false, wk = { on: false, list: [], i: 0 }, ovSvg = null, ovVp = null, ovRects = {};
+  const ov = vrDom('div', 'vrov', null, cv); ov.hidden = true; ov.title = 'Overview: click or drag to move the view';
+  const items = () => { const g = cur.graph, m = {}; (g.groups || []).forEach(x => m[x.id] = x); (g.lanes || []).forEach(x => m[x.id] = { id: x.id, label: x.label, status: 'context', evidence: [], kind: 'lane' }); g.nodes.forEach(x => m[x.id] = x); g.edges.forEach(x => m[x.id] = x); return m; };
+  const apply = () => { if (root) root.setAttribute('transform', 'translate(' + vp.x + ' ' + vp.y + ') scale(' + vp.k + ')'); mapUpd(); };
+  function fit() { if (!cur || !cur.layout) return; const r = svg.getBoundingClientRect(), W = cur.layout.width, H = cur.layout.height; let k = Math.max(0.1, Math.min((r.width || 600) / (W + 40), (r.height || 400) / (H + 40), 1.6)); if (data.mapPath && k < 0.92) { k = 0.92; vp = { k: k, x: Math.max(20, ((r.width || 600) - W * k) / 2), y: 20 }; apply(); return; } vp = { k: k, x: ((r.width || 600) - W * k) / 2, y: ((r.height || 400) - H * k) / 2 }; apply(); }
+  function zoomAt(f, mx, my) { const k = Math.max(0.15, Math.min(4, vp.k * f)); vp.x = mx - (mx - vp.x) * (k / vp.k); vp.y = my - (my - vp.y) * (k / vp.k); vp.k = k; apply(); }
+  function inspect(id) {
+    const it = items()[id]; insp.replaceChildren(); if (!it) return;
+    vrDom('h3', '', it.label || (it.source + ' → ' + it.target), insp);
+    const meta = vrDom('p', 'small', null, insp); const b = vrDom('span', 'vrbadge ' + it.status, VR_MARK[it.status] + ' ' + it.status, meta);
+    meta.appendChild(document.createTextNode(' ' + (it.kind || '') + (it.resolution ? ' · ' + it.resolution : '') + (it.label_source ? ' · label by ' + it.label_source : '')));
+    if (it.members && it.members.length) { vrDom('p', 'small mut', 'Members', insp); const pre = vrDom('pre', 'small', null, insp); pre.textContent = it.members.join('\n'); }
+    if (it.detail) { if (it.detail.before) vrDom('p', '', 'Before: ' + it.detail.before, insp); if (it.detail.after) vrDom('p', '', 'After: ' + it.detail.after, insp); }
+    const ev = it.evidence || [];
+    const tiers = ev.map(x => x.tier).filter((t, i, a) => a.indexOf(t) === i).join(' + ');
+    vrDom('p', 'small mut', 'Evidence' + (tiers ? ' (' + tiers + ')' : '') + (ev.length ? '' : ': none'), insp);
+    ev.forEach(x => vrDom('code', 'vrev', vrEv(x, vrHand(cur.graph)), vrDom('p', 'small', null, insp)));
+    Object.keys(els).forEach(k => els[k].g.classList.toggle('sel', k === id));
+    st.sel = id; if (reviewing && cur.graph.nodes.some(n => n.id === id && !n.collapsed)) verdictBox(id);
+  }
+  /* VR-04: the verdict of the owner on one element. Saved to review.json by the server; a Question with a comment also goes to the agent. */
+  const VD = [['ok', 'OK'], ['question', 'Question'], ['change', 'Change'], ['remove', 'Remove from scope']];
+  const VD_CODE = { ok: 'OK', question: '?', change: 'Δ', remove: '✕' };
+  const lineFor = (view, id) => ((st.review && st.review.lines) || []).find(l => l.anchor.diagram === view && l.anchor.element === id);
+  function verdictBox(id) {
+    const old = lineFor(st.view, id), box = vrDom('div', 'vrvd', null, insp); box.setAttribute('data-vd', id);
+    let pick = old ? old.verdict : '';
+    const state = vrDom('p', 'small', old ? (old.state === 'outdated' ? 'Outdated: this verdict was made on an earlier version of the diagram (' + old.verdict + '). Save it again to confirm.' : 'Your verdict: ' + old.verdict) : 'Not yet looked at.', box);
+    const grp = vrDom('div', 'vrgrp', null, box), btns = {};
+    VD.forEach(v => { const b = vrDom('button', 'btn sm', v[1], grp); b.type = 'button'; b.setAttribute('data-vd-pick', v[0]); btns[v[0]] = b; b.setAttribute('aria-pressed', String(pick === v[0])); b.onclick = () => { pick = v[0]; Object.keys(btns).forEach(k => btns[k].setAttribute('aria-pressed', String(k === pick))); save.disabled = false; }; });
+    const ta = vrDom('textarea', '', null, box); ta.maxLength = 1000; ta.value = old ? old.comment : ''; ta.placeholder = 'Optional comment'; ta.setAttribute('aria-label', 'Comment on this element');
+    const row = vrDom('div', 'vrgrp', null, box), save = vrDom('button', 'btn primary sm', 'Save verdict', row), clr = vrDom('button', 'btn sm', 'Clear', row), msg = vrDom('span', 'small mut', '', row);
+    save.type = clr.type = 'button'; save.disabled = !pick; clr.disabled = !old;
+    const go = async (verdict) => {
+      save.disabled = clr.disabled = true; msg.textContent = 'Saving…';
+      try {
+        const r = await fetch('/api/visual-review/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dossier: vrDossier, repo: vrRepo, diagram: st.view, element: id, verdict: verdict, comment: ta.value, graph_hash: (data.shownHashes || {})[st.view] }) });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { msg.textContent = j.error || ('HTTP ' + r.status); save.disabled = !pick; clr.disabled = !old; if (r.status === 409) vrLoad(vrRepo, vrDossier); return; }
+        st.review = j.review; paintAll(); if (j.followup) load(['questions']);
+      } catch (e) { msg.textContent = 'request failed'; save.disabled = !pick; clr.disabled = !old; }
+    };
+    save.onclick = () => go(pick); clr.onclick = () => go('unset');
+  }
+  function paintBadges() {
+    if (!cur || !cur.layout) return; svg.querySelectorAll('.vr-vd').forEach(e => e.remove());
+    cur.graph.nodes.forEach(n => { const l = lineFor(st.view, n.id), e = els[n.id], b = cur.layout.boxes[n.id]; if (!l || !e || !b) return;
+      const t = vrEl('text', { class: 'vr-vd vrcode', x: b.x + 8, y: b.y + b.h - 7, fill: 'var(--' + (l.state === 'current' ? ({ ok: 'ok', question: 'que', change: 'warn', remove: 'bad' })[l.verdict] : 'mut') + ')' }, e.g);
+      t.textContent = VD_CODE[l.verdict] + (l.state === 'outdated' ? ' (old)' : ''); });
+  }
+  /* The summary, the Send button and the stale banner: cheap, runs on every page render. */
+  function paintBar() {
+    const m = VRM[vrRepo] && VRM[vrRepo].status;
+    if (m && m.hasMap && m.stale) { ban.hidden = false; ban.textContent = 'The committed product map is stale: ' + m.stale + ' element' + (m.stale === 1 ? '' : 's') + ' (' + m.ids.join(', ') + ').'; } else { ban.hidden = true; ban.textContent = ''; }
+    if (!reviewing || !st.review) return;
+    const s = st.review.summary; sumEl.textContent = s.text;
+    const q = vrOpenQ(vrDossier, vrRepo);
+    sendB.disabled = !q || !s.checked;
+    sendNote.textContent = !q ? 'No open visual-review question for this dossier; Send review is enabled when the run asks for the visual review.' : !s.checked ? 'Check at least one element first.' : '';
+    const g = st.review.lines.filter(l => l.state === 'gone');
+    gone.textContent = g.length ? 'Element gone from the diagram (the comment is kept in review.json): ' + g.map(l => l.anchor.diagram + ' ' + l.anchor.element + (l.comment ? ' — ' + l.comment : '')).join('; ') : '';
+  }
+  function paintAll() { paintBar(); paintBadges(); if (st.sel && cur && cur.graph && cur.graph.nodes.some(n => n.id === st.sel)) inspect(st.sel); }
+  st.paint = paintAll; st.paintBar = paintBar;
+  sendB.onclick = async () => {
+    prev.hidden = false; prev.replaceChildren(); vrDom('p', 'small mut', 'Preview of the answer to the question:', prev);
+    let a = null; try { const r = await fetch('/api/visual-review/answer?dossier=' + enc(vrDossier) + '&repo=' + enc(vrRepo)); a = r.ok ? await r.json() : null; } catch (e) { a = null; }
+    if (!a || !a.canSend) { vrDom('p', 'small', a ? 'There is no open question to answer.' : 'Could not build the answer.', prev); return; }
+    vrDom('p', 'small', 'This sends option ' + a.option + ' (' + (a.choice === 'A' ? 'Approved' : 'Changes requested') + ') and closes the question. The first answer is final.', prev);
+    const ta = vrDom('textarea', '', null, prev); ta.readOnly = true; ta.value = a.text; ta.setAttribute('aria-label', 'Answer text');
+    const row = vrDom('div', 'vrgrp', null, prev), ok = vrDom('button', 'btn primary sm', 'Confirm and send', row), no = vrDom('button', 'btn sm', 'Cancel', row), msg = vrDom('span', 'small mut', '', row); ok.type = no.type = 'button';
+    no.onclick = () => { prev.hidden = true; };
+    ok.onclick = async () => { ok.disabled = true; msg.textContent = 'Sending…'; await post(a.question, { kind: 'answer', option: a.option, text: a.text, review: true }); if (S.qerr[a.question]) { msg.textContent = S.qerr[a.question]; ok.disabled = false; } else { prev.hidden = true; } };
+  };
+  function visible(status) { return VR_PASS[st.mode](status); }
+  function applyMode() {
+    Object.keys(mb).forEach(k => mb[k].setAttribute('aria-pressed', String(k === st.mode)));
+    const g = cur.graph, ok = {}; g.nodes.forEach(n => ok[n.id] = visible(n.status));
+    const up = {}; g.nodes.forEach(n => { const p = (vrLane(g.view) && (g.lanes || []).length ? n.lane : n.group); if (p) up[n.id] = p; }); (g.groups || []).forEach(x => { if (x.parent) up[x.id] = x.parent; });
+    (g.groups || []).forEach(x => ok[x.id] = visible(x.status)); (g.lanes || []).forEach(x => ok[x.id] = true);
+    g.nodes.forEach(n => { if (!ok[n.id]) return; let p = up[n.id], n2 = 0; while (p && n2++ < 50) { ok[p] = true; p = up[p]; } });
+    Object.keys(els).forEach(id => { const e = els[id]; let on; if (e.edge) on = visible(e.status) && ok[e.edge[0]] !== false && ok[e.edge[1]] !== false; else on = ok[id] !== false; e.g.classList.toggle('vroff', !on); if (e.lab) e.lab.classList.toggle('vroff', !on); });
+    note.textContent = vrNote(cur, st.mode);
+    Object.keys(ovRects).forEach(id => ovRects[id].classList.toggle('vroff', !!els[id] && els[id].g.classList.contains('vroff')));
+    if (wk.on) wkSync();
+    if (!mm.hidden) showMm();
+  }
+  function vrNote(v, mode) { const c = { added: 0, changed: 0, removed: 0 }; v.graph.nodes.forEach(n => { if (c[n.status] !== undefined && visible(n.status)) c[n.status]++; }); const is = v.issues.length ? ' · ' + v.issues.length + ' validation issue' + (v.issues.length > 1 ? 's' : '') + ': ' + v.issues.slice(0, 3).map(i => i.message).join('; ') : ''; const ti = v.graph.title ? v.graph.title + ' · ' : ''; if (data.mapPath) return ti.replace(/ · $/, '') + (is ? is : ''); return ti + c.added + ' added, ' + c.changed + ' changed, ' + c.removed + ' removed shown' + is; }
+  const colOf = v => st.col[v] || [];
+  const canCol = id => !(st.view === 'L1' && (data.views.L1.graph.lanes || []).length) && (data.views[st.view].graph.groups || []).some(x => x.id === id);
+  /* A collapse state is laid out by the server (the collapsed graph, edges aggregated); the answer is kept per state, so closing again is instant. */
+  function draw(anchor, selId) {
+    const base = data.views[st.view], ids = colOf(st.view);
+    if (!ids.length || !base.graph || (!base.layout && !data.mapPath)) { paint(base, anchor, selId); return; }
+    const ck = st.view + '|' + ids.join(','), hit = st.lc[ck];
+    if (hit) { paint(Object.assign({}, base, hit), anchor, selId); return; }
+    busy = true; note.textContent = 'Laying out the collapsed groups…';
+    fetch('/api/visual-review/layout?' + (data.mapPath ? 'repo=' + enc(vrRepo) + '&path=' + enc(data.mapPath) : 'dossier=' + enc(vrDossier) + '&repo=' + enc(vrRepo) + '&view=' + enc(st.view)) + '&collapsed=' + enc(ids.join(',')))
+      .then(r => r.json().then(j => { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }))
+      .then(j => { busy = false; st.lc[ck] = { graph: j.graph, layout: j.layout }; if (st.view + '|' + colOf(st.view).join(',') === ck) paint(Object.assign({}, base, st.lc[ck]), anchor, selId); })
+      .catch(e => { busy = false; st.col[st.view] = st.prevCol || []; note.textContent = 'Could not lay out the collapsed view: ' + e.message; });
+  }
+  function toggle(id) {
+    if (busy || !cur || !cur.layout) return;
+    const list = colOf(st.view).slice(), i = list.indexOf(id), b = cur.layout.boxes[id];
+    st.prevCol = list.slice(); if (i >= 0) list.splice(i, 1); else list.push(id); list.sort(); st.col[st.view] = list;
+    draw(b ? { id: id, sx: vp.x + b.x * vp.k, sy: vp.y + b.y * vp.k } : null, id);
+  }
+  function paint(v, anchor, selId) {
+    hovHide(); cur = v; Object.keys(tb).forEach(k => tb[k].setAttribute('aria-pressed', String(k === st.view)));
+    svg.replaceChildren(); els = {}; root = null; ovSvg = null; ovVp = null; ovRects = {}; ov.replaceChildren(); ov.hidden = true; st.sel = ''; insp.replaceChildren(); vrDom('p', 'small mut', 'Click an element for its description and evidence. Drag to pan; Ctrl or Cmd + wheel to zoom; click a group header to fold it; in a folded view, click a folded box to open it.', insp);
+    if (!cur.layout || !cur.graph) { note.textContent = cur.issues.map(i => i.message).join('; ') || 'This view could not be laid out.'; return; }
+    const g = cur.graph, L = cur.layout, defs = vrEl('defs', {}, svg), mk = vrEl('marker', { id: 'vr-ar', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, markerUnits: 'userSpaceOnUse', orient: 'auto-start-reverse' }, defs);
+    vrEl('path', { d: 'M0 0L10 5L0 10z', fill: 'var(--mut)' }, mk); root = vrEl('g', {}, svg);
+    const tip = (g0, it) => { hovIt.set(g0, it); g0.setAttribute('aria-label', (it.label || (it.source + ' to ' + it.target)) + ', ' + it.status); }; /* the hover card shows the rest */
+    const cont = [].concat(g.groups || [], (g.lanes || []).map(l => ({ id: l.id, label: l.label, status: 'context', evidence: [] })));
+    cont.forEach(c => { const b = L.boxes[c.id]; if (!b) return; const gg = vrEl('g', { 'data-id': c.id, 'data-status': c.status, class: 'vrg', tabindex: 0 }, root); els[c.id] = { g: gg, status: c.status };
+      vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 8, fill: 'var(--bg)', stroke: 'var(--' + vrTone(c.status) + ')', 'stroke-width': c.status === 'context' ? 1 : 2, 'stroke-dasharray': c.status === 'context' ? '4 3' : '0' }, gg);
+      const tx = vrEl('text', { x: b.x + 10, y: b.y + 19, fill: 'var(--fg)', 'font-weight': 600, 'font-size': 13 }, gg); tx.textContent = (canCol(c.id) ? '▾ ' : '') + VR_MARK[c.status] + ' ' + c.label; vrMark(gg, c.status, b.x + b.w - 14, b.y + 14); tip(gg, c);
+      if (canCol(c.id)) vrEl('rect', { class: 'vrhd', x: b.x, y: b.y, width: b.w, height: 30, fill: 'transparent', stroke: 'transparent', 'data-tog': c.id }, gg); });
+    /* seq frames (alt, opt, loop, par ...): a labelled box behind the steps it spans, a dashed rule where a branch (else, and) starts. */
+    (g.frames || []).forEach(f => { const b = L.frames && L.frames[f.id]; if (!b) return; const fg = vrEl('g', { class: 'vrfr', 'data-frame': f.id, 'pointer-events': 'none' }, root);
+      vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 4, fill: 'none', stroke: 'var(--mut)', 'stroke-width': 1.2 }, fg);
+      const lab = f.kind + (f.label ? ' [' + f.label + ']' : ''); const tw = Math.min(b.w - 8, Math.ceil(lab.length * 6.2) + 10); vrEl('rect', { x: b.x, y: b.y, width: tw, height: 15, fill: 'var(--card)', stroke: 'var(--mut)', 'stroke-width': 1 }, fg);
+      const ft = vrEl('text', { x: b.x + 5, y: b.y + 11, 'font-size': 10.5, fill: 'var(--mut)' }, fg); ft.textContent = lab.length * 6.2 + 10 > tw ? lab.slice(0, Math.max(1, Math.floor((tw - 10) / 6.2) - 1)) + '…' : lab;
+      (f.branches || []).forEach(br => { const sb = L.boxes[br.first]; if (!sb) return; const y = Math.max(b.y + 16, sb.y - 8); vrEl('line', { x1: b.x, x2: b.x + b.w, y1: y, y2: y, stroke: 'var(--mut)', 'stroke-width': 1, 'stroke-dasharray': '5 4' }, fg); const bt = vrEl('text', { x: b.x + 5, y: y + 11, 'font-size': 10.5, fill: 'var(--mut)' }, fg); bt.textContent = '[' + (br.label || br.kind) + ']'; }); });
+    g.edges.forEach(e => { const pts = L.edges[e.id]; if (!pts) return; const gg = vrEl('g', { 'data-id': e.id, 'data-status': e.status, 'data-resolution': e.resolution || '', class: 'vre', tabindex: 0 }, root); els[e.id] = { g: gg, status: e.status, edge: [e.source, e.target] };
+      const ps = pts.map(p => p.join(',')).join(' '), inf = vrInferred(e, g);
+      vrEl('polyline', { points: ps, fill: 'none', stroke: 'transparent', 'stroke-width': 12 }, gg);
+      vrEl('polyline', { class: 'vrline', points: ps, fill: 'none', stroke: e.status === 'context' ? 'var(--mut)' : 'var(--' + vrTone(e.status) + ')', 'stroke-width': (e.status === 'context' ? 1.2 : 2.2) + (e.count > 1 ? Math.min(0.8, Math.log2(e.count) * 0.3) : 0), 'stroke-dasharray': inf ? '6 4' : '0', 'marker-end': 'url(#vr-ar)' }, gg);
+      if (e.bidirectional) gg.querySelector('.vrline').setAttribute('marker-start', 'url(#vr-ar)');
+      tip(gg, e); });
+    g.nodes.forEach(n => { const b = L.boxes[n.id]; if (!b) return; const gg = vrEl('g', { 'data-id': n.id, 'data-status': n.status, class: 'vrn', tabindex: 0, role: 'button' }, root); els[n.id] = { g: gg, status: n.status, col: !!n.collapsed };
+      if (n.collapsed) { gg.setAttribute('data-collapsed', '1'); vrEl('rect', { x: b.x + 5, y: b.y + 5, width: b.w, height: b.h, rx: 6, fill: 'var(--card)', stroke: 'var(--mut)', 'stroke-width': 1.5 }, gg); }
+      vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 6, fill: 'var(--' + vrBg(n.status) + ')', stroke: 'var(--' + vrTone(n.status) + ')', 'stroke-width': n.status === 'context' ? 1 : 2.5, 'stroke-dasharray': n.status === 'removed' ? '3 3' : '0' }, gg);
+      const wl = vrWrap(n.label, Math.floor((b.w - 24) / 6.4)); const lines = wl.slice(0, 3); if (wl.length > 3) lines[2] = lines[2].replace(/.?$/, '…');
+      if (n.stereotype) lines.unshift('<<' + n.stereotype + '>>'); if (lines.length > 3) lines.length = 3;
+      lines.forEach((t, i) => { const x = vrEl('text', { x: b.x + 12, y: b.y + 19 + i * 15, 'font-size': 12, fill: 'var(--fg)', 'text-decoration': n.status === 'removed' ? 'line-through' : 'none' }, gg); x.textContent = (n.collapsed && i === 0 ? '▸ ' : '') + t; });
+      vrMark(gg, n.status, b.x + b.w - 12, b.y + 12);
+      if (n.collapsed) { const kinds = {}; (n.member_kinds || []).forEach(k => kinds[k] = (kinds[k] || 0) + 1); const ks = Object.keys(kinds).sort((a, c) => kinds[c] - kinds[a]); const word = ks.length === 1 ? ks[0] + (n.members === 1 ? '' : 's') : (n.members === 1 ? 'item' : 'items'); const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = (n.members || 0) + ' ' + word; }
+      else if (n.members && n.members.length) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = n.members.length + ' member' + (n.members.length === 1 ? '' : 's') + ' (hover)'; }
+      else if (!vrHand(g) && (n.evidence || []).some(x => x.tier === 'inferred')) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = '? inferred'; }
+      tip(gg, n); });
+    /* Edge labels sit where the layout kept room for them (L.labels); without that, on the segment where they cross no node box. On top, with a --bg backing. */
+    const nbx = g.nodes.map(n => L.boxes[n.id]).filter(Boolean), hit = (x, y, w, h) => nbx.some(b => x < b.x + b.w && x + w > b.x && y < b.y + b.h && y + h > b.y);
+    g.edges.forEach(e => { const pts = L.edges[e.id]; if (!pts || !e.label || !els[e.id]) return; const w = Math.ceil(e.label.length * 6.1) + 8, h = 15, cs = [];
+      for (let i = 0; i + 1 < pts.length; i++) { const a = pts[i], c = pts[i + 1], len = Math.abs(a[0] - c[0]) + Math.abs(a[1] - c[1]); for (const f of [0.5, 0.3, 0.7, 0.15, 0.85]) cs.push({ x: a[0] + (c[0] - a[0]) * f - w / 2, y: a[1] + (c[1] - a[1]) * f - h / 2 - 1, len: len - Math.abs(f - 0.5) * 8 }); }
+      cs.sort((p, q) => q.len - p.len); const kept = L.labels && L.labels[e.id]; const pick = kept ? { x: kept.x + (kept.w - w) / 2, y: kept.y + (kept.h - h) / 2 } : cs.find(c => !hit(c.x, c.y, w, h)) || cs[0]; if (!pick) return;
+      const lg = vrEl('g', { class: 'vrel', 'pointer-events': 'none' }, root); els[e.id].lab = lg; vrEl('rect', { x: pick.x, y: pick.y, width: w, height: h, rx: 3, fill: 'var(--bg)', 'fill-opacity': 0.88 }, lg);
+      const t = vrEl('text', { x: pick.x + w / 2, y: pick.y + h - 4, 'font-size': 11, 'text-anchor': 'middle', fill: 'var(--mut)' }, lg); t.textContent = e.label; });
+    mapBuild(); applyMode();
+    if (anchor && L.boxes[anchor.id]) { const b = L.boxes[anchor.id]; vp.x = anchor.sx - b.x * vp.k; vp.y = anchor.sy - b.y * vp.k; apply(); } else fit();
+    paintBadges(); if (selId && els[selId]) inspect(selId);
+  }
+  function vrLane(v) { return v === 'L1' || v === 'seq'; }
+  function vrBg(s) { return s === 'context' ? 'chip' : vrTone(s) + 'bg'; }
+  function vrTone(s) { return s === 'added' ? 'ok' : s === 'changed' ? 'warn' : s === 'removed' ? 'bad' : 'mut'; }
+  function vrMark(p, s, cx, cy) { const m = vrEl('g', { class: 'vr-mark', 'data-mark': s }, p); vrEl('circle', { cx: cx, cy: cy, r: 9, fill: 'var(--card)', stroke: 'var(--' + vrTone(s) + ')', 'stroke-width': 1.5 }, m); const t = vrEl('text', { x: cx, y: cy + 4, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': 700, fill: 'var(--' + vrTone(s) + ')' }, m); t.textContent = VR_MARK[s]; }
+  function toMermaid() {
+    const g = cur.graph, esc = s => String(s).replace(/#/g, '#35;').replace(/"/g, '#quot;').replace(/</g, '#lt;').replace(/>/g, '#gt;').replace(/[\r\n]+/g, ' ');
+    const vis = id => els[id] && !els[id].g.classList.contains('vroff'); const idOf = {}; let n = 0; const mid = id => idOf[id] = idOf[id] || ('n' + (n++));
+    const lanes = vrLane(g.view) && (g.lanes || []).length; const cont = [].concat(g.groups || [], lanes ? g.lanes : []).filter(c => vis(c.id));
+    const kids = {}, top = []; const put = (id, p) => { (p && cont.some(c => c.id === p) ? (kids[p] = kids[p] || []) : top).push(id); };
+    cont.forEach(c => put(c.id, lanes && g.lanes.some(l => l.id === c.id) ? '' : c.parent)); g.nodes.filter(x => vis(x.id)).forEach(x => put(x.id, lanes ? x.lane : x.group));
+    const out = ['flowchart ' + (vrLane(g.view) ? 'TD' : 'LR')], isC = id => cont.some(c => c.id === id), lab = {}; cont.forEach(c => lab[c.id] = c.label); g.nodes.forEach(x => lab[x.id] = x.label);
+    const emit = (id, ind) => { if (isC(id)) { out.push(ind + 'subgraph ' + mid(id) + '["' + esc(lab[id]) + '"]'); (kids[id] || []).forEach(k => emit(k, ind + '  ')); out.push(ind + 'end'); } else out.push(ind + mid(id) + '["' + esc(MARK(id) + ' ' + lab[id]) + '"]'); };
+    const MARK = id => { const x = g.nodes.find(y => y.id === id); return x ? VR_MARK[x.status] : ''; };
+    top.forEach(id => emit(id, '  '));
+    g.edges.filter(e => vis(e.id)).forEach(e => { const d = vrInferred(e, g), l = e.label ? '"' + esc(e.label) + '"' : '', b = e.bidirectional ? '<' : ''; out.push('  ' + mid(e.source) + (l ? (d ? ' ' + b + '-. ' + l + ' .-> ' : ' ' + b + '-- ' + l + ' --> ') : (d ? ' ' + b + '-.-> ' : ' ' + b + '--> ')) + mid(e.target)); });
+    out.push('  classDef added fill:#cfeccf,stroke:#2d7a2d', '  classDef changed fill:#fde9b8,stroke:#b07a00', '  classDef removed fill:#f6d0d0,stroke:#a33,stroke-dasharray:3 3', '  classDef context fill:#eeeeea,stroke:#999');
+    ['added', 'changed', 'removed', 'context'].forEach(s => { const ids = g.nodes.filter(x => x.status === s && vis(x.id)).map(x => mid(x.id)); if (ids.length) out.push('  class ' + ids.join(',') + ' ' + s); });
+    return out.join('\n');
+  }
+  function showMm() { mmText.value = toMermaid(); }
+  mmB.onclick = () => { mm.hidden = !mm.hidden; if (!mm.hidden) showMm(); };
+  mmCopy.onclick = () => { showMm(); mmText.select(); let p; try { p = navigator.clipboard.writeText(mmText.value); } catch (e) { p = null; } if (!p) { try { document.execCommand('copy'); } catch (e) {} } mmCopy.textContent = 'Copied'; setTimeout(() => { mmCopy.textContent = 'Copy'; }, 1500); };
+  fitB.onclick = fit; zin.onclick = () => { const r = svg.getBoundingClientRect(); zoomAt(1.25, r.width / 2, r.height / 2); }; zout.onclick = () => { const r = svg.getBoundingClientRect(); zoomAt(0.8, r.width / 2, r.height / 2); };
+  let panMoved = false;
+  svg.addEventListener('pointerdown', e => { panMoved = false; const own = e.target.closest('[data-id]'); /* a group box pans; a node, a group header and a folded box act on click */ if (own && (!own.classList.contains('vrg') || e.target.closest('[data-tog]') || (els[own.getAttribute('data-id')] && els[own.getAttribute('data-id')].col))) return; panMoved = false; drag = { x: e.clientX - vp.x, y: e.clientY - vp.y, sx: e.clientX, sy: e.clientY, id: e.pointerId }; if (!own) { svg.setPointerCapture(e.pointerId); svg.classList.add('drag'); } });
+  svg.addEventListener('pointermove', e => { if (!drag) return; if (!panMoved && Math.abs(e.clientX - drag.sx) + Math.abs(e.clientY - drag.sy) > 3) { panMoved = true; if (!svg.hasPointerCapture(drag.id)) { svg.setPointerCapture(drag.id); svg.classList.add('drag'); } } if (!panMoved) return; vp.x = e.clientX - drag.x; vp.y = e.clientY - drag.y; apply(); });
+  svg.addEventListener('pointerup', () => { drag = null; svg.classList.remove('drag'); });
+  svg.addEventListener('wheel', e => { if (!(e.ctrlKey || e.metaKey)) return; e.preventDefault(); const r = svg.getBoundingClientRect(); zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  svg.addEventListener('click', e => { if (panMoved) { panMoved = false; return; } const tg = e.target.closest('[data-tog]'); if (tg) { toggle(tg.getAttribute('data-tog')); return; } const t = e.target.closest('[data-id]'); if (!t) return; const id = t.getAttribute('data-id'); if (els[id] && els[id].col) toggle(id); else inspect(id); });
+  svg.addEventListener('keydown', e => { if (e.key !== 'Enter' && e.key !== ' ') return; const t = e.target.closest && e.target.closest('[data-id]'); if (t) { e.preventDefault(); const id = t.getAttribute('data-id'); if (els[id] && els[id].col || canCol(id)) toggle(id); else inspect(id); } });
+  /* Mini-map: boxes at 170x110 at most, a rectangle for what the canvas shows; click or drag moves the view. Only when the graph is larger than the canvas. */
+  function mapBuild() {
+    const L = cur.layout, W = Math.max(L.width, 1), H = Math.max(L.height, 1), k = Math.min(170 / W, 110 / H);
+    ovSvg = vrEl('svg', { viewBox: '0 0 ' + W + ' ' + H, width: Math.max(8, Math.round(W * k)), height: Math.max(8, Math.round(H * k)) }, ov); ovRects = {};
+    const one = (id, cls, status) => { const b = L.boxes[id]; if (b) ovRects[id] = vrEl('rect', { class: cls + ' ' + status, x: b.x, y: b.y, width: b.w, height: b.h }, ovSvg); };
+    (cur.graph.groups || []).concat(cur.graph.lanes || []).forEach(c => one(c.id, 'vrovg', c.status || 'context')); cur.graph.nodes.forEach(n => one(n.id, 'vrovn', n.status));
+    ovVp = vrEl('rect', { class: 'vrovvp' }, ovSvg);
+  }
+  function mapUpd() {
+    if (!cur || !cur.layout || !ovVp) return; const r = svg.getBoundingClientRect(), L = cur.layout;
+    const big = L.width * vp.k > r.width + 1 || L.height * vp.k > r.height + 1; ov.hidden = !big; if (!big) return;
+    ovVp.setAttribute('x', -vp.x / vp.k); ovVp.setAttribute('y', -vp.y / vp.k); ovVp.setAttribute('width', r.width / vp.k); ovVp.setAttribute('height', r.height / vp.k);
+  }
+  let mdrag = false;
+  const mapTo = e => { if (!ovSvg) return; const q = ovSvg.getBoundingClientRect(), r = svg.getBoundingClientRect(), s = q.width / cur.layout.width; vp.x = r.width / 2 - ((e.clientX - q.left) / s) * vp.k; vp.y = r.height / 2 - ((e.clientY - q.top) / s) * vp.k; apply(); };
+  ov.addEventListener('pointerdown', e => { if (!ovSvg) return; mdrag = true; ov.setPointerCapture(e.pointerId); mapTo(e); e.preventDefault(); });
+  ov.addEventListener('pointermove', e => { if (mdrag) mapTo(e); });
+  ov.addEventListener('pointerup', () => { mdrag = false; }); ov.addEventListener('pointercancel', () => { mdrag = false; });
+  /* Walkthrough: the added, changed and removed elements of the view in reading order (vrWalkOrder), one at a time. */
+  const wlist = () => vrWalkOrder(cur.graph, cur.layout).filter(id => els[id] && !els[id].g.classList.contains('vroff'));
+  function centre(id) {
+    const L = cur.layout; let b = L.boxes[id]; const ps = L.edges[id];
+    if (!b && ps && ps.length) { const xs = ps.map(p => p[0]), ys = ps.map(p => p[1]); b = { x: Math.min.apply(null, xs), y: Math.min.apply(null, ys), w: Math.max.apply(null, xs) - Math.min.apply(null, xs), h: Math.max.apply(null, ys) - Math.min.apply(null, ys) }; }
+    if (!b) return; const r = svg.getBoundingClientRect(), fitK = Math.min(r.width / (b.w + 80), r.height / (b.h + 80));
+    vp.k = Math.min(Math.max(vp.k, 0.7), Math.max(fitK, 0.15)); vp.x = r.width / 2 - (b.x + b.w / 2) * vp.k; vp.y = r.height / 2 - (b.y + b.h / 2) * vp.k; apply();
+  }
+  function wkClear() { svg.querySelectorAll('.vrhalo').forEach(x => x.remove()); Object.keys(els).forEach(k => els[k].g.classList.remove('walk')); }
+  function wkShow(quiet) {
+    wkClear(); const id = wk.list[wk.i], n = wk.list.length, e = els[id]; if (!e) return;
+    e.g.classList.add('walk'); const b = cur.layout.boxes[id];
+    if (b) vrEl('rect', { class: 'vrhalo', x: b.x - 5, y: b.y - 5, width: b.w + 10, height: b.h + 10, rx: 10, fill: 'none', stroke: 'var(--acc)', 'stroke-width': 3, 'stroke-dasharray': '7 4' }, e.g);
+    const it = items()[id]; wkInd.textContent = 'Step ' + (wk.i + 1) + ' of ' + n; wkLab.textContent = it ? (it.label || (it.source + ' → ' + it.target)) + ' [' + it.status + ']' : '';
+    wkPrev.disabled = wk.i === 0; wkNext.disabled = wk.i === n - 1;
+    if (!quiet) { centre(id); inspect(id); }
+  }
+  function wkOn() {
+    if (!cur || !cur.layout) return; const l = wlist();
+    if (!l.length) { note.textContent = 'No added, changed or removed element to walk through in this view and mode.'; return; }
+    wk.on = true; wk.list = l; wk.i = Math.max(0, l.indexOf(st.sel)); wbar.hidden = false; wkB.setAttribute('aria-pressed', 'true'); svg.classList.add('vrwk'); wkShow(false); cv.focus();
+  }
+  function wkOff() { if (!wk.on) return; wk.on = false; wbar.hidden = true; wkB.setAttribute('aria-pressed', 'false'); svg.classList.remove('vrwk'); wkClear(); }
+  function wkSync() { const id = wk.list[wk.i], l = wlist(); if (!l.length) { wkOff(); return; } wk.list = l; const j = l.indexOf(id); wk.i = j >= 0 ? j : Math.min(wk.i, l.length - 1); wkShow(true); }
+  const wkStep = d => { if (!wk.on) return; const i = wk.i + d; if (i < 0 || i >= wk.list.length) return; wk.i = i; wkShow(false); };
+  const wkKey = e => {
+    if (!wk.on || e.ctrlKey || e.metaKey || e.altKey || (e.target && /^(TEXTAREA|INPUT|SELECT)$/.test(e.target.tagName))) return; const k = e.key;
+    if (k === 'Escape') { e.preventDefault(); wkOff(); } else if (k === 'ArrowRight' || k === 'ArrowDown' || k === 'n') { e.preventDefault(); wkStep(1); } else if (k === 'ArrowLeft' || k === 'ArrowUp' || k === 'p') { e.preventDefault(); wkStep(-1); }
+  };
+  cv.addEventListener('keydown', wkKey); wbar.addEventListener('keydown', wkKey);
+  wkB.onclick = () => { if (wk.on) wkOff(); else wkOn(); }; wkPrev.onclick = () => wkStep(-1); wkNext.onclick = () => wkStep(1); wkExit.onclick = wkOff;
+  if (reviewing && !st.review) st.review = data.review;
+  draw(); paintBar(); setFs(!!st.fs);
+}
+
 // ---- state ----
 const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {} };
 let R = { kind: 'home' };
@@ -190,6 +600,7 @@ function parseRoute() {
     if (seg.length === 2) return { kind: 'repo', repo };
     if (seg[2] === 'stub' && seg[3]) return { kind: 'stub', repo, branch: seg.slice(3).join('/') };
     if (seg[2] === 'graph') return { kind: 'repo', repo };
+    if (seg[2] === 'architecture' && seg.length === 3) return { kind: 'arch', repo };
     return { kind: 'item', repo, id: seg[2], forceDossier: seg[3] === 'dossier' };
   }
   return { kind: 'home' };
@@ -197,6 +608,7 @@ function parseRoute() {
 function hashQ() { const m = location.hash.match(/^#(?:q=)?(.+)$/); return m ? decodeURIComponent(m[1]) : ''; }
 const hrefRepo = (repo) => '/repo/' + enc(repo);
 const hrefItem = (repo, id) => '/repo/' + enc(repo) + '/' + enc(id);
+const hrefArch = (repo, path) => '/repo/' + enc(repo) + '/architecture' + (path ? '?d=' + enc(path) : '');
 const hrefStub = (repo, b) => '/repo/' + enc(repo) + '/stub/' + b.split('/').map(enc).join('/');
 
 // ---- classification ----
@@ -618,6 +1030,7 @@ function repoView(repo) {
   // The stubs (the current one and the next) first, then Open work, each full width, one under the other.
   kids.push(sideColumn(repo));
   const dp = docPrsView(repo); if (dp) kids.push(dp);
+  const vm = vrRepoLink(repo); if (vm) kids.push(vm);
   kids.push(h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]));
   return h('div', {}, kids);
 }
@@ -710,6 +1123,7 @@ function itemView(repo, id) {
   if (!r) return h('div', {}, [h('h1', {}, [id]), h('div', { class: 'empty' }, [S.loaded ? 'No such dossier in ' + repo + '.' : 'Loading…'])]);
   const mode = itemMode(r); const d = S.detail && S.detail.url === detailUrl() ? S.detail.data : null;
   const kids = [header(r, mode)];
+  const vpn = vrPanel(r); if (vpn) kids.push(vpn);
   const bv = blockedView(r, d); if (bv) kids.push(bv);
   const rv = rulingsView(r, d); if (rv) kids.push(rv);
   const res = resultView(r, d); if (res) kids.push(res);
@@ -1014,6 +1428,7 @@ function crumbs() {
   if (R.kind === 'item') add(R.id, R.forceDossier ? hrefItem(R.repo, R.id) : null);
   if (R.kind === 'item' && R.forceDossier) add('Dossier');
   if (R.kind === 'stub') add(R.branch);
+  if (R.kind === 'arch') add('Architecture');
   return out;
 }
 function detailUrl() {
@@ -1025,6 +1440,7 @@ function build() {
   if (!S.loaded) return h('div', { class: 'empty' }, ['Loading…']);
   if (R.kind === 'questions') return questionsView(); if (R.kind === 'repo') return repoView(R.repo);
   if (R.kind === 'chat') return chatView();
+  if (R.kind === 'arch') return archView(R.repo);
   if (R.kind === 'item') return itemView(R.repo, R.id); if (R.kind === 'stub') return stubView(R.repo, R.branch);
   return homeView();
 }
@@ -1067,7 +1483,8 @@ function render() {
   const sl = document.createElement('div'); sl.appendChild(h('span', { class: 'dot ' + (S.slack ? 'ok' : '') })); sl.appendChild(h('span', {}, [S.slack ? 'Slack connected' : 'Slack off'])); morph(document.getElementById('slack'), sl);
   const up = document.createElement('div'); up.appendChild(h('span', { class: 'dot ' + (S.live ? 'ok' : 'warn'), title: S.live ? 'live updates' : 'polling every 60 s' }));
   const t = new Date(S.changedAt || Date.now()).toISOString(); up.appendChild(when(t, 'updated ') || h('span')); morph(document.getElementById('upd'), up);
-  document.title = (R.kind === 'chat' ? 'Ask the agent · ' : R.kind === 'item' ? R.id + ' · ' : R.kind === 'repo' ? R.repo + ' · ' : '') + 'Pipeline · Owner questions';
+  document.title = (R.kind === 'chat' ? 'Ask the agent · ' : R.kind === 'item' ? R.id + ' · ' : R.kind === 'repo' ? R.repo + ' · ' : R.kind === 'arch' ? 'Architecture · ' + R.repo + ' · ' : '') + 'Pipeline · Owner questions';
+  vrMount();
   if (scrollTarget) { const e = document.getElementById('q-' + scrollTarget); if (e) { e.scrollIntoView({ block: 'start' }); scrollTarget = ''; } }
 }
 
@@ -1085,6 +1502,9 @@ async function load(what) {
   if ((all || w.has('chat')) && R.kind === 'chat') jobs.push(loadChat());
   await Promise.all(jobs);
   await loadDetail();
+  if (R.kind === 'item') await vrLoad(R.repo, R.id);
+  if (R.kind === 'repo' || R.kind === 'arch') await vrMapLoad(R.repo);
+  if (R.kind === 'arch') { const want = new URLSearchParams(location.search).get('d'); const m = VRM[R.repo]; if (want && (!m || m.open !== want)) vrOpenDiagram(R.repo, want); }
   S.loaded = true; S.changedAt = Date.now(); render();
 }
 let sse = null;
@@ -1203,6 +1623,7 @@ document.addEventListener('click', (e) => {
       if (v) { ta.value = ''; post(t.dataset.qid, { kind: 'followup', text: v }); }
     } else if (act === 'ctl') control(t);
     else if (act === 'copy') { const lab = t.dataset.label || t.textContent; t.dataset.label = lab; try { navigator.clipboard.writeText(t.dataset.text); t.textContent = 'Copied'; setTimeout(() => { t.textContent = lab; }, 1500); } catch (_) {} }
+    else if (act === 'vr-open') vrOpenDiagram(t.dataset.repo, t.dataset.path);
     else if (act === 'ctl-cancel') { const s = S.ctl[t.dataset.repo + '/' + t.dataset.id]; if (s) s.confirm = null; render(); }
     else if (act === 'tab') { S.tab[t.dataset.key] = t.dataset.tab; render(); }
     else if (act === 'dsel') { const m = S.dsel[t.dataset.key] = S.dsel[t.dataset.key] || {}; if (m[t.dataset.id]) delete m[t.dataset.id]; else m[t.dataset.id] = true; render(); }

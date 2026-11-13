@@ -1,7 +1,7 @@
 # Feature 04: Approval and element comments
 
 - **Case ID**: VR-04
-- **Status**: PROPOSED. Blocked by OQ-01 (policy conflict).
+- **Status**: BUILT. OQ-01 = B (one product question), OQ-08 = A (the run waits). Verdicts per element in `review.json`, batch send, `diagrams` on the run detail, VR-06 banner and repo view.
 - **Dossier**: D4
 - **Depends on**: VR-03 (canvas).
 - **Design basis**: [Q6](../../research/synthesis/q6-approval-and-comments.md).

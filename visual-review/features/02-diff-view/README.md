@@ -1,7 +1,7 @@
 # Feature 02: Diff view (as-is, changes, to-be)
 
 - **Case ID**: VR-02
-- **Status**: PROPOSED
+- **Status**: BUILT (`scripts/vr_diff.py`; modes are before, after, diff)
 - **Dossier**: D2
 - **Depends on**: VR-01 (graph schema and validator).
 - **Needed by**: VR-03, VR-04, VR-05.
