@@ -21,6 +21,8 @@ export type Layout = {
   height: number
   boxes: Record<string, Box>
   edges: Record<string, [number, number][]>
+  /** Where ELK put each labelled edge's label (the box it kept free for it). */
+  labels?: Record<string, Box>
 }
 export type Issue = { code: string; where: string; message: string }
 /** One view as the page gets it. `layout` is null when the graph could not be laid out (see `issues`). */
@@ -112,19 +114,32 @@ export function closeLayout(): void {
   try { e?.terminateWorker() } catch { /* already gone */ }
 }
 
-const size = (g: any, label: string): { width: number; height: number } => {
+/** A folded box draws a ▸ before its label and a fold button after it: room for both. */
+const FOLDED_EXTRA = 36
+const size = (g: any, label: string, folded = false): { width: number; height: number } => {
   const t = String(label ?? "").length
-  return { width: Math.max(130, Math.min(250, Math.round(t * 6.6 + 28))), height: g.view === "L1" ? 62 : 50 }
+  return { width: Math.max(130, Math.min(250 + (folded ? FOLDED_EXTRA : 0), Math.round(t * 6.6 + 28 + (folded ? FOLDED_EXTRA : 0)))), height: g.view === "L1" ? 62 : 50 }
 }
 
+/** The size of an edge label as the page draws it (11 px text on a backing rect). */
+export const edgeLabelSize = (label: string): { width: number; height: number } => ({ width: Math.ceil(label.length * 6.1) + 8, height: 15 })
+
+/** The width-to-height ratio a wrapped layout aims for: about the canvas's shape. */
+export const WRAP_ASPECT = 1.8
+/** A left-to-right layout wider than this and more than WRAP_FLAT times as wide as tall is laid out again, wrapped onto more rows. */
+export const WRAP_WIDTH = 1020
+export const WRAP_FLAT = 3
+
 /** The ELK input for a graph: groups (or L1 lanes) as compound nodes, model order on. Pure. */
-export function elkInput(g: any, mode: "thorough" | "fast"): { root: any; direction: "RIGHT" | "DOWN" } {
+export function elkInput(g: any, mode: "thorough" | "fast", wrap = false): { root: any; direction: "RIGHT" | "DOWN" } {
   const direction = g.view === "L1" ? "DOWN" : "RIGHT"
   const opts: Record<string, string> = {
     "elk.algorithm": "layered", "elk.direction": direction, "elk.hierarchyHandling": "INCLUDE_CHILDREN",
     "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES", "elk.spacing.nodeNode": "28",
-    "elk.layered.spacing.nodeNodeBetweenLayers": "56", "elk.edgeRouting": "ORTHOGONAL", "elk.json.shapeCoords": "ROOT", "elk.json.edgeCoords": "ROOT",
+    "elk.layered.spacing.nodeNodeBetweenLayers": "28", "elk.edgeRouting": "ORTHOGONAL", "elk.json.shapeCoords": "ROOT", "elk.json.edgeCoords": "ROOT",
   }
+  // A long left-to-right chain wraps onto more rows near the canvas shape, instead of one strip the canvas must shrink to fit.
+  if (direction === "RIGHT" && wrap) Object.assign(opts, { "elk.layered.wrapping.strategy": "MULTI_EDGE", "elk.aspectRatio": String(WRAP_ASPECT) })
   if (mode === "fast") Object.assign(opts, { "elk.layered.thoroughness": "1", "elk.layered.nodePlacement.strategy": "SIMPLE", "elk.edgeRouting": "POLYLINE" })
   const lanes: any[] = g.view === "L1" ? g.lanes ?? [] : []
   const containers: any[] = [...(g.groups ?? []), ...lanes]
@@ -137,13 +152,18 @@ export function elkInput(g: any, mode: "thorough" | "fast"): { root: any; direct
   }
   const mk = new Map<string, any>()
   for (const c of containers) mk.set(c.id, { id: c.id, layoutOptions: { "elk.padding": "[top=30,left=14,bottom=14,right=14]" }, children: [] })
-  for (const n of g.nodes) mk.set(n.id, { id: n.id, ...size(g, n.label) })
+  for (const n of g.nodes) mk.set(n.id, { id: n.id, ...size(g, n.label, n.collapsed === true) })
   const root: any = { id: "root", layoutOptions: opts, children: [], edges: [] }
   // A parent cycle (a -> b -> a) would drop both groups out of the tree: break it by hanging the group on the root.
   const cyc = (id: string): boolean => { const seen = new Set<string>([id]); let p = parentOf(containers.find((c) => c.id === id) ?? {}, true); while (p) { if (seen.has(p)) return true; seen.add(p); p = parentOf(containers.find((c) => c.id === p) ?? {}, true) } return false }
   for (const c of containers) { const p = g.view === "L1" && lanes.some((l) => l.id === c.id) ? undefined : parentOf(c, true); (p && !cyc(c.id) ? mk.get(p).children : root.children).push(mk.get(c.id)) }
   for (const n of g.nodes) { const p = parentOf(n, false); (p ? mk.get(p).children : root.children).push(mk.get(n.id)) }
-  for (const e of g.edges) if (all.has(e.source) && all.has(e.target)) root.edges.push({ id: e.id, sources: [e.source], targets: [e.target] })
+  // A labelled edge carries its label at the size the page draws it, so ELK keeps room for it instead of the page squeezing it in later.
+  for (const e of g.edges) if (all.has(e.source) && all.has(e.target)) {
+    const ed: any = { id: e.id, sources: [e.source], targets: [e.target] }
+    if (typeof e.label === "string" && e.label) ed.labels = [{ id: e.id + "#label", text: e.label, ...edgeLabelSize(e.label), layoutOptions: { "elk.edgeLabels.inline": "true" } }]
+    root.edges.push(ed)
+  }
   return { root, direction }
 }
 
@@ -170,8 +190,31 @@ export async function layoutGraph(graph: any, timeoutMs = LAYOUT_TIMEOUT_MS): Pr
   return p
 }
 async function runLayout(g: any, key: string, timeoutMs: number): Promise<Layout> {
+  // A long flat strip (one chain of layers) is laid out again wrapped onto rows near the canvas shape. A small graph is never wrapped: its
+  // edges would loop around the rows. Wrapping is an ELK extra that can throw on some graphs: then the unwrapped layout stays.
+  const flat = await runLayoutOnce(g, key, timeoutMs, false)
+  if (flat.direction !== "RIGHT" || flat.mode !== "thorough" || flat.width <= WRAP_WIDTH || flat.width / Math.max(flat.height, 1) <= WRAP_FLAT) return flat
+  let wrapped: Layout
+  try { wrapped = await runLayoutOnce(g, key, timeoutMs, true) } catch (e) { if (/timed out/.test((e as Error).message)) throw e; return flat }
+  // ELK does not route a wrapped edge that crosses into a group: its pieces then join with a diagonal. Keep the flat layout then.
+  return hasDiagonal(wrapped) ? flat : wrapped
+}
+/** Whether any edge of an orthogonal layout has a segment that is neither horizontal nor vertical. */
+export function hasDiagonal(L: Layout): boolean {
+  return Object.values(L.edges).some((p) => p.some((q, i) => i > 0 && q[0] !== p[i - 1][0] && q[1] !== p[i - 1][1]))
+}
+/** The sections of one edge from source to target: the one with no incoming section first, then each `outgoingSections` in turn. */
+export function chainSections(secs: any[]): any[] {
+  if (secs.length < 2) return secs
+  const byId = new Map<string, any>(secs.map((x) => [x.id, x]))
+  let cur = secs.find((x) => !(x.incomingSections ?? []).length) ?? secs[0]
+  const out: any[] = [], seen = new Set<string>()
+  while (cur && !seen.has(cur.id)) { out.push(cur); seen.add(cur.id); cur = byId.get((cur.outgoingSections ?? [])[0]) }
+  return out.length === secs.length ? out : secs
+}
+async function runLayoutOnce(g: any, key: string, timeoutMs: number, wrap: boolean): Promise<Layout> {
   const mode: "thorough" | "fast" = g.nodes.length > FAST_ABOVE ? "fast" : "thorough"
-  const { root, direction } = elkInput(g, mode)
+  const { root, direction } = elkInput(g, mode, wrap)
   let timer: ReturnType<typeof setTimeout> | undefined
   const worker = client()
   inflight++
@@ -184,8 +227,11 @@ async function runLayout(g: any, key: string, timeoutMs: number): Promise<Layout
   const walk = (n: any) => { for (const c of n.children ?? []) { L.boxes[c.id] = { x: Math.round(c.x), y: Math.round(c.y), w: Math.round(c.width), h: Math.round(c.height) }; walk(c) } }
   walk(out)
   for (const e of out.edges ?? []) {
-    const s = (e.sections ?? [])[0]
-    if (s) L.edges[e.id] = [s.startPoint, ...(s.bendPoints ?? []), s.endPoint].map((p: any) => [Math.round(p.x), Math.round(p.y)] as [number, number])
+    // A wrapped edge comes in several sections, one per row it crosses: the drawn line is all of them in order.
+    const pts = chainSections(e.sections ?? []).flatMap((s: any) => [s.startPoint, ...(s.bendPoints ?? []), s.endPoint])
+    if (pts.length) L.edges[e.id] = pts.map((p: any) => [Math.round(p.x), Math.round(p.y)] as [number, number])
+    const lb = (e.labels ?? [])[0]
+    if (lb && typeof lb.x === "number") (L.labels ??= {})[e.id] = { x: Math.round(lb.x), y: Math.round(lb.y), w: Math.round(lb.width), h: Math.round(lb.height) }
   }
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value as string)
   cache.set(key, L)

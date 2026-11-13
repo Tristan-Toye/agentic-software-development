@@ -437,11 +437,11 @@ function vrBuild(host, key, data) {
       if (n.collapsed) { const kinds = {}; (n.member_kinds || []).forEach(k => kinds[k] = (kinds[k] || 0) + 1); const ks = Object.keys(kinds).sort((a, c) => kinds[c] - kinds[a]); const word = ks.length === 1 ? ks[0] + (n.members === 1 ? '' : 's') : (n.members === 1 ? 'item' : 'items'); const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = (n.members || 0) + ' ' + word; }
       else if ((n.evidence || []).some(x => x.tier === 'inferred')) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = '? inferred'; }
       tip(gg, n); });
-    /* Edge labels sit on top of the boxes, on the segment where they cross no node box, with a --bg backing so they stay readable. */
+    /* Edge labels sit where the layout kept room for them (L.labels); without that, on the segment where they cross no node box. On top, with a --bg backing. */
     const nbx = g.nodes.map(n => L.boxes[n.id]).filter(Boolean), hit = (x, y, w, h) => nbx.some(b => x < b.x + b.w && x + w > b.x && y < b.y + b.h && y + h > b.y);
     g.edges.forEach(e => { const pts = L.edges[e.id]; if (!pts || !e.label || !els[e.id]) return; const w = Math.ceil(e.label.length * 6.1) + 8, h = 15, cs = [];
       for (let i = 0; i + 1 < pts.length; i++) { const a = pts[i], c = pts[i + 1], len = Math.abs(a[0] - c[0]) + Math.abs(a[1] - c[1]); for (const f of [0.5, 0.3, 0.7, 0.15, 0.85]) cs.push({ x: a[0] + (c[0] - a[0]) * f - w / 2, y: a[1] + (c[1] - a[1]) * f - h / 2 - 1, len: len - Math.abs(f - 0.5) * 8 }); }
-      cs.sort((p, q) => q.len - p.len); const pick = cs.find(c => !hit(c.x, c.y, w, h)) || cs[0]; if (!pick) return;
+      cs.sort((p, q) => q.len - p.len); const kept = L.labels && L.labels[e.id]; const pick = kept ? { x: kept.x + (kept.w - w) / 2, y: kept.y + (kept.h - h) / 2 } : cs.find(c => !hit(c.x, c.y, w, h)) || cs[0]; if (!pick) return;
       const lg = vrEl('g', { class: 'vrel', 'pointer-events': 'none' }, root); els[e.id].lab = lg; vrEl('rect', { x: pick.x, y: pick.y, width: w, height: h, rx: 3, fill: 'var(--bg)', 'fill-opacity': 0.88 }, lg);
       const t = vrEl('text', { x: pick.x + w / 2, y: pick.y + h - 4, 'font-size': 11, 'text-anchor': 'middle', fill: 'var(--mut)' }, lg); t.textContent = e.label; });
     mapBuild(); applyMode();
