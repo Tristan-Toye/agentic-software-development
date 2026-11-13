@@ -17,3 +17,33 @@ Work decided but not done yet. Each item says what to do, when, and how to know 
   4. If the sets match, or every difference is explained, move the pin and update the version mentions in
      `references/visual-review/README.md`.
 - **Done when:** the pin names the new version, the selftests and VC-06 pass, and the comparison is recorded here.
+
+## FU-02. Bound label length and stop silent truncation
+
+- **What:** the canvas wraps a node label to 3 lines and drops the rest without a mark (`shared/questions/page.ts`, `vrWrap(...).slice(0, 3)`),
+  and neither `graph.schema.json` nor `vr_graph.py` limits a label. Found in the Visual-Explainer review
+  (`inspiration-repos/analysis/visual-explainer.md`).
+- **When:** with the next change to the renderer or the validator.
+- **How:** add a label length limit to `vr_graph.py validate` (a new issue code, a fixture for it, agent repair loop already
+  handles it); in the canvas, end a clipped label with an ellipsis and keep the full label in the inspector.
+- **Done when:** a 200-character label fails validation, a label near the limit shows no clipping on a 12-node fixture, and
+  the full label is readable in the inspector.
+
+## FU-03. Writing rules in the diagram-author prompt
+
+- **What:** the agent has one wording rule (product words for node labels). Visual-Explainer adds three that a reader notices:
+  every edge label is a verb phrase, the graph title states the takeaway rather than the topic, one term per concept.
+- **When:** the next time `sub-agents/diagram-author.md` is edited, or when the first demo shows vague edge or title text.
+- **How:** add the three rules to the Rules list in both agent copies (`sub-agents/` and `claude/agents/`); keep "names and groups,
+  nothing else" (a label is not a new edge). Compare titles and edge labels on the W-145 fixtures before and after.
+- **Done when:** both copies carry the rules and the W-145 fixture edges and titles follow them.
+
+## FU-04. Browser check of the rendered canvas
+
+- **What:** nothing measures the rendered page: label size, overlapping text, text outside its box, sideways scroll on a phone,
+  console errors. `testability.md` of VR-03 leaves the client check open. Visual-Explainer does this in `kit/look.mjs`.
+- **When:** before the page is widely used, after FU-02. Needs an owner decision on a headless browser dependency.
+- **How:** a selftest that opens the canvas on the W-145 fixtures at 390 and 1280 px and fails on a label under 12 px, two
+  overlapping label boxes, a label wider than its node, a horizontal page scroll or a console error. Read the DOM; do not
+  send screenshots to a model.
+- **Done when:** the selftest passes on the fixtures and fails on one seeded overflow fixture.
