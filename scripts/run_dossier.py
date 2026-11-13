@@ -126,6 +126,13 @@ NETWORK_RE = re.compile(r"ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|
                         r"|can'?t reach the API|couldn'?t reach Anthropic|unable to connect|could not connect|fetch failed|socket hang ?up|network (?:error|is unreachable)"
                         r"|connection (?:error|reset|refused|closed)|timed? ?out|API Error: 5\d\d|\b50[0234]\b|internal server error"
                         r"|bad gateway|service unavailable|gateway time-?out", re.I)
+# A sign-in the API refused for a reason outside the account: Cloudflare's bot page in front of the API ("403 Attention
+# Required! | Cloudflare", shown by the CLI as "Failed to authenticate") blocks the current network address for a while,
+# then lets it through again. Retried like a network error, but only ASD_RUNNER_AUTH_RETRIES times in a row (default 16,
+# about 3.5 hours at the network backoff): a sign-in that stays refused that long needs the owner.
+AUTH_OUTAGE_RE = re.compile(r"Attention Required|cloudflare|Failed to authenticate|API Error: 40[13]\b|authentication_error"
+                            r"|OAuth token has expired|invalid x-api-key", re.I)
+AUTH_RETRIES = 16
 # Waits between network retries, seconds; the last one repeats for as long as the outage lasts (ASD_RUNNER_NET_RETRIES
 # sets a limit; the default, 0, is none).
 GIT_SSH_HARDENED = "ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
@@ -175,7 +182,13 @@ def script_stamp(path: str) -> tuple[str, float]:
 
 def network_error(text: str) -> bool:
     """Whether a failed turn is a transient network or server error (wait and retry the stage), not a real failure."""
-    return bool(NETWORK_RE.search(text or "")) and not usage_limit(text)
+    return bool(NETWORK_RE.search(text or "") or AUTH_OUTAGE_RE.search(text or "")) and not usage_limit(text)
+
+
+def auth_outage(text: str) -> bool:
+    """Whether a failed turn is a refused sign-in (a Cloudflare block of this network, an expired token): retried a
+    bounded number of times, then asked."""
+    return bool(AUTH_OUTAGE_RE.search(text or "")) and not usage_limit(text)
 
 
 def usage_limit(text: str) -> bool:
@@ -2566,12 +2579,15 @@ class Runner:
                 net_tries += 1
                 self.mark_resume()
                 limit_n = int(os.environ.get("ASD_RUNNER_NET_RETRIES") or 0)
+                if auth_outage(detail):
+                    limit_n = int(os.environ.get("ASD_RUNNER_AUTH_RETRIES") or AUTH_RETRIES)
                 if not limit_n or net_tries <= limit_n:
                     wait = float(os.environ.get("ASD_RUNNER_NET_WAIT") or NETWORK_BACKOFF[min(net_tries, len(NETWORK_BACKOFF)) - 1])
                     until = time.time() + wait
                     at = datetime.datetime.fromtimestamp(until, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     self.save(state="paused", resumes_at=at)
-                    self.event(f"paused: network error ({detail[:160]}); retry {net_tries}{'/' + str(limit_n) if limit_n else ''} of stage {started} at {at}", "paused")
+                    what = "sign-in refused" if auth_outage(detail) else "network error"
+                    self.event(f"paused: {what} ({detail[:160]}); retry {net_tries}{'/' + str(limit_n) if limit_n else ''} of stage {started} at {at}", "paused")
                     while time.time() < until and not self.stopping:
                         time.sleep(min(5.0, max(0.2, until - time.time())))
                     if self.stopping:
@@ -2580,7 +2596,7 @@ class Runner:
                     self.event(f"resumed after the network error; stage {started} again", "running")
                     started -= 1
                     continue
-                detail = f"network errors on {limit_n} retries in a row: {detail}"
+                detail = f"{'sign-in refused' if auth_outage(detail) else 'network errors'} on {limit_n} retries in a row: {detail}"
             if outcome == "limit":
                 # Out of tokens: pause until the limit resets, then run the same stage
                 # again (its checkpoints are the hand-off; /work-on resumes from the dossier).
@@ -3653,6 +3669,10 @@ def selftest() -> int:
         check("network: ENOTFOUND and 5xx are network errors; a usage limit is not", network_error(net) and network_error("API Error: 503 Service Unavailable") and not network_error("usage limit reached") and not network_error("the contract is wrong"))
         check("network: claude unable to load the organisation's settings at start is a network error",
               network_error("Claude Code couldn't reach Anthropic to load your organization's settings (could not connect). Check your network connection and retry"))
+        cf = "Failed to authenticate. API Error: 403 <!DOCTYPE html> Attention Required! | Cloudflare"
+        check("auth outage: a Cloudflare 403 sign-in block retries like a network error, bounded; a usage limit and a plain 5xx are not auth",
+              network_error(cf) and auth_outage(cf) and auth_outage("API Error: 401 authentication_error")
+              and not auth_outage("API Error: 503 Service Unavailable") and not auth_outage("usage limit reached") and not network_error("TypeError: x is undefined"))
         scenario([{"turns": [[{"error": net}]]}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
         env["ASD_RUNNER_NET_WAIT"] = "0.2"
         p = start("W-32")

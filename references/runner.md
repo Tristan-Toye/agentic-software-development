@@ -159,6 +159,15 @@ the recorded checkpoints.
   `ASD_RUNNER_NET_RETRIES` makes it a failure the owner rules on after that many
   in a row ("network errors on 8 retries in a row: …"); the default, 0, never
   does. A stage that ends well resets the count.
+- **Refused sign-in:** a turn that fails because the API refused the sign-in
+  for a reason outside the account (Cloudflare's "403 Attention Required!" page
+  in front of the API, which the CLI shows as "Failed to authenticate"; a 401
+  `authentication_error`; an expired OAuth token) is retried the same way and
+  posts `paused: sign-in refused (…)`. A block of the network address clears by
+  itself within minutes to an hour, so it is not the owner's call at first; but
+  a sign-in that stays refused needs the owner, so it asks after
+  `ASD_RUNNER_AUTH_RETRIES` retries in a row (default 16, about 3.5 hours at the
+  backoff above): "sign-in refused on 16 retries in a row: …".
 - **A claude process killed from outside:** when the stage's claude process
   exits on a signal the runner did not send (exit 143, 137 or 129, or a
   negative return code: a memory or disk squeeze, a host app crash, a
