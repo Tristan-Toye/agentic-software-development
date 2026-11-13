@@ -96,7 +96,10 @@
    `python3 "${PLUGIN_ROOT}/scripts/vr_mermaid.py" check docs/architecture`
    must exit 0 (a block that differs from its JSON, or an unmarked Mermaid
    block, is a DEFECT). A diagram still only in Mermaid is converted once with
-   `vr_mermaid.py import <file>.md --write`.
+   `vr_mermaid.py import <file>.md --write`. When a tool rewrote a block
+   (`module_graph.py regen`, `check_diagram_anchors.py --fix`), run
+   `vr_mermaid.py import --adopt --write <file>.md` so the JSON follows; a
+   `sync` before that would revert the tool's edit.
 
 2. **Get the final verdict on the head the PR will carry** and keep the
     evidence — it goes in the PR description and in the Jira comment. Under
