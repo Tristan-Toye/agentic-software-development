@@ -39,8 +39,9 @@ from urllib.parse import quote, unquote, urlparse
 # Initialization options for a whole-repo batch run (vr_refresh.py). Names are the rust-analyzer settings without
 # the `rust-analyzer.` prefix (documented: cargo.buildScripts.enable, procMacro.enable, checkOnSave, cachePriming.enable,
 # diagnostics.enable). Build scripts and proc macros off means no `cargo check` of the dependency tree and no
-# proc-macro server; calls made only inside macro-expanded code are not resolved.
-FAST_OPTIONS = {"cargo": {"buildScripts": {"enable": False}}, "procMacro": {"enable": False}, "checkOnSave": False,
+# proc-macro server; `cargo.noDeps` runs `cargo metadata --no-deps`, which does not take cargo's package-cache lock (another
+# cargo build on the machine held it for 30+ s per metadata call and stalled every start); calls into dependencies are not resolved; calls made only inside macro-expanded code are not resolved.
+FAST_OPTIONS = {"cargo": {"buildScripts": {"enable": False}, "noDeps": True}, "procMacro": {"enable": False}, "checkOnSave": False,
                 "cachePriming": {"enable": False}, "diagnostics": {"enable": False}}
 
 
@@ -240,6 +241,9 @@ class RaClient:
         with open(full, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
         uri = _uri(full)
+        patient = tries
+        if getattr(self, "_proven", False):
+            tries = min(tries, 2)   # the server has answered before: an empty answer is a real one (no 15-30 s stall)
         self._send({"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
             "textDocument": {"uri": uri, "languageId": "rust", "version": 1, "text": text}}})
         try:
@@ -251,8 +255,9 @@ class RaClient:
                     if "timed out" in str(exc) or "exited" in str(exc):
                         raise
                 if syms:
+                    self._proven = True
                     break
-                time.sleep(1)
+                time.sleep(1 if tries == patient else 0.3)
             fns = []
 
             def walk(items):
