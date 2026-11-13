@@ -163,7 +163,7 @@ describe("answer text", () => {
     expect(a.text.length).toBeLessThanOrEqual(MAX_ANSWER)
     expect(a.text).toContain("cut")
   })
-  test("the option keys come from the labels the Phase 3 step sets, and the question has 2 options without the word approve as an action (VC-07)", () => {
+  test("the option keys come from the labels the Phase 3 step sets, and the question has 2 options, labelled Approved and Changes requested (VC-07 is waived by owner decision 2026-11-13)", () => {
     const opts = [{ key: "A", label: "Approved" }, { key: "B", label: "Changes requested" }]
     expect(reviewOptions(opts)).toEqual({ A: "A", B: "B" })
     expect(reviewOptions([{ key: "A", label: "Yes" }, { key: "B", label: "No" }])).toBeNull()

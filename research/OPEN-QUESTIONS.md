@@ -9,6 +9,7 @@ Each question has options and a proposal. The proposal is not a decision. Status
 - Options: A, a named exception. B, frame it as a product question. C, no gate.
 - Proposal: B, plus one sentence in the policy that names the visual-review question as a product question.
 - **Decision (owner, 2026-11-12): B.** The visual review is the product question "Is this what the feature should do?"; `references/owner-questions.md` gets one sentence naming it a product question, and the question must pass `ask_owner.py`'s approval lint unchanged. The run waits for the answer.
+- **Owner decision 2026-11-13:** the visual-review question may use the word "approve"; the option labels stay "Approved" and "Changes requested" (VC-07 of VR-04 is waived).
 - Blocks: [VR-04](../visual-review/features/04-approval-and-element-comments/README.md).
 
 ## OQ-02. React island or hand-written canvas
