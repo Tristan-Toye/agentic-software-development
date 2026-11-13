@@ -1,6 +1,6 @@
 // A minimal stdio MCP server (JSON-RPC 2.0, newline-delimited) for the Claude Code plugin.
-// It serves the six tools of shared/tools.ts: code_outline, code_item, code_find,
-// doc_section, code_replace, phase_checkpoint. Registered by the plugin's .mcp.json, so
+// It serves the seven tools of shared/tools.ts: code_outline, code_item, code_find,
+// doc_section, arch_find, code_replace, phase_checkpoint. Registered by the plugin's .mcp.json, so
 // Claude Code names them mcp__plugin_agentic-software-development_nav__<tool>.
 //
 // The code_* tools run scripts/code_nav.py in CLAUDE_PROJECT_DIR (Claude Code sets it in

@@ -17,6 +17,7 @@ Usage:
     validate_pipeline.py --write-index
     validate_pipeline.py --finalize-ids --base origin/development
     validate_pipeline.py --c3-gate --base origin/development
+    validate_pipeline.py --diagram-gate --base origin/development [--dossier W-014] [--pr-body FILE]
     validate_pipeline.py --mode
     validate_pipeline.py --selftest
 
@@ -2291,6 +2292,7 @@ def selftest() -> int:
         pre_fanout_local_ok = selftest_pre_fanout_local()
         visual_ok = selftest_visual_review()
         c3_ok = selftest_c3_gate()
+        diagram_ok = selftest_diagram_gate()
         mode_ok = selftest_mode()
         blockers_ok = selftest_blocker_removal()
         return (
@@ -2310,6 +2312,7 @@ def selftest() -> int:
                 and pre_fanout_local_ok
                 and visual_ok
                 and c3_ok
+                and diagram_ok
                 and mode_ok
                 and blockers_ok
             )
@@ -3641,6 +3644,215 @@ def selftest_c3_gate() -> bool:
     return not fails
 
 
+# --------------------------------------------------------------------------
+# diagram gate (--diagram-gate): architecture diagrams follow the branch's code changes
+# --------------------------------------------------------------------------
+
+DIAGRAMS_AFFECTED_RE = re.compile(r"^\s*Diagrams affected:\s*(.*?)\s*$", re.M | re.I)
+
+
+def diagram_anchor_index(arch: Path) -> dict[str, set[str]]:
+    """{diagram stem: repo paths its evidence anchors (tier source) point at}; non-graph JSON is skipped."""
+    out: dict[str, set[str]] = {}
+    for f in sorted(arch.glob("*.json")):
+        try:
+            g = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(g, dict) or not isinstance(g.get("nodes"), list):
+            continue
+        paths: set[str] = set()
+        for part in list(g["nodes"]) + list(g.get("edges") or []):
+            if not isinstance(part, dict):
+                continue
+            for ev in part.get("evidence") or []:
+                if isinstance(ev, dict) and ev.get("tier") == "source" and isinstance(ev.get("path"), str):
+                    paths.add(ev["path"])
+        out[f.stem] = paths
+    return out
+
+
+def diagram_base(stem: str) -> str:
+    """`seq-x.2` is block 2 of diagram `seq-x`."""
+    return re.sub(r"\.\d+$", "", stem)
+
+
+def dossier_diagrams(root: Path, dossier_id: str | None) -> tuple[list[str] | None, str]:
+    """(stems the dossier's `Diagrams affected:` line lists, note). None = no dossier or no line; [] = `none`."""
+    if not dossier_id:
+        return None, ""
+    files = sorted((root / ".discovery" / "dossiers").glob(f"{dossier_id}-*.md")) if (root / ".discovery" / "dossiers").is_dir() else []
+    if not files:
+        return None, f"diagram gate: dossier {dossier_id} not found under .discovery/dossiers; its `Diagrams affected:` line was not read"
+    m = DIAGRAMS_AFFECTED_RE.search(files[0].read_text())
+    if not m:
+        return None, f"diagram gate: {files[0].name} has no `Diagrams affected:` line"
+    stems = [re.sub(r"\.(json|md)$", "", s.strip().strip("`")) for s in m.group(1).split(",")]
+    stems = [s for s in stems if s and s.lower() != "none"]
+    return stems, ""
+
+
+def diagram_gate_run(root: Path, base: str, dossier_id: str | None = None, pr_text: str | None = None,
+                     check=None) -> tuple[list[str], list[str]]:
+    """(problems, notes) for the diagram gate. A problem (DEFECT) fails Phase 9; a note is printed as is
+    (``REVIEW:`` lines are notes that ask for an action).
+
+    (a) ``vr_mermaid.py check docs/architecture`` must pass (a block that differs from its JSON, or an
+    unmarked Mermaid block, is a DEFECT); the repository with no docs/architecture JSON gets a SKIP line.
+    (b) Every diagram whose source evidence anchors point into a file this branch changed
+    (``git diff --name-only base...HEAD``), and whose own JSON the branch did not touch, is listed as
+    ``REVIEW: <diagram> anchors <path>``: update the JSON and sync, or say in the PR description why it holds.
+    (c) A diagram the dossier's ``Diagrams affected:`` line lists and the branch did not touch is a DEFECT
+    when ``pr_text`` is given and does not mention it, else a REVIEW line. ``check`` is the test seam."""
+    problems: list[str] = []
+    notes: list[str] = []
+    arch = root / "docs" / "architecture"
+    index = diagram_anchor_index(arch) if arch.is_dir() else {}
+    if not index:
+        return problems, ["SKIP diagram gate: no docs/architecture/*.json in this repository"]
+    if check is None:
+        def check(repo: Path) -> tuple[int, str]:
+            script = Path(__file__).resolve().parent / "vr_mermaid.py"
+            p = subprocess.run([sys.executable, str(script), "check", "docs/architecture"], cwd=str(repo),
+                               capture_output=True, text=True)
+            return p.returncode, (p.stdout + p.stderr).strip()
+    rc, out = check(root)
+    if rc != 0:
+        first = "; ".join(out.splitlines()[:3]) if out else f"exit {rc}"
+        problems.append(f"diagram gate: vr_mermaid.py check docs/architecture failed ({first}). "
+                        "Fix: edit the diagram's JSON, run `vr_mermaid.py sync docs/architecture`, commit")
+    try:
+        changed = set(git_out(root, "diff", "--name-only", f"{base}...HEAD").splitlines())
+    except RuntimeError as exc:
+        problems.append(f"diagram gate: cannot list the branch diff against {base}: {exc}")
+        return problems, notes
+    touched_bases = {diagram_base(Path(p).stem) for p in changed
+                     if p.startswith("docs/architecture/") and p.endswith((".json", ".md"))}
+    code_changed = {p for p in changed if not p.startswith("docs/architecture/")}
+    for stem, paths in sorted(index.items()):
+        if diagram_base(stem) in touched_bases:
+            continue
+        for path in sorted(paths & code_changed):
+            notes.append(f"REVIEW: {stem} anchors {path}")
+    stale = []
+    listed, note = dossier_diagrams(root, dossier_id)
+    if note:
+        notes.append(note)
+    for stem in listed or []:
+        if stem not in index and not any(diagram_base(k) == stem for k in index):
+            notes.append(f"REVIEW: dossier lists diagram {stem}, which is not in docs/architecture")
+        elif diagram_base(stem) not in touched_bases:
+            stale.append(stem)
+    for stem in stale:
+        if pr_text is not None and stem not in pr_text:
+            problems.append(f"diagram gate: the dossier lists diagram {stem} as affected, the branch did not modify it "
+                            "and the PR description does not say why it still holds")
+        else:
+            notes.append(f"REVIEW: dossier lists diagram {stem} as affected and the branch did not modify it")
+    if not any(n.startswith("REVIEW") for n in notes) and not problems:
+        notes.append("diagram gate: vr_mermaid.py check passes; no diagram anchors a changed file without being updated")
+    return problems, notes
+
+
+def run_diagram_gate(root: Path, base: str, dossier_id: str | None = None, pr_body: str | None = None) -> int:
+    pr_text = None
+    if pr_body:
+        try:
+            pr_text = Path(pr_body).read_text()
+        except OSError as exc:
+            print(f"DEFECT  --pr-body {pr_body}: {exc}")
+            return 1
+    problems, notes = diagram_gate_run(root, base, dossier_id, pr_text)
+    for n in notes:
+        print(n)
+    for p in problems:
+        print(f"DEFECT  {p}")
+    return 1 if problems else 0
+
+
+def selftest_diagram_gate() -> bool:
+    print("\n--- selftest: the diagram gate (check, anchors into changed files, dossier line) ---")
+    fails: list[str] = []
+
+    def ok(name: str, cond: bool, detail: object = "") -> None:
+        if not cond:
+            fails.append(f"{name} {detail}")
+
+    def git(d: Path, *a: str) -> None:
+        subprocess.run(["git", "-C", str(d), "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                       check=True, capture_output=True)
+
+    def graph(path: str) -> str:
+        return json.dumps({"nodes": [{"id": "n", "label": "N", "kind": "class",
+                                      "evidence": [{"tier": "source", "path": path, "line": 1}, {"tier": "inferred", "note": "x"}]}],
+                           "edges": []})
+
+    passes = lambda repo: (0, "")  # noqa: E731
+    fails_check = lambda repo: (1, "c4-a.md: block differs from c4-a.json")  # noqa: E731
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        git(d, "init", "-q", "-b", "main")
+        (d / "src").mkdir()
+        (d / "src" / "a.rs").write_text("")
+        (d / "src" / "b.rs").write_text("")
+        p, n = diagram_gate_run(d, "main", None, None, passes)
+        ok("no docs/architecture: visible skip", not p and n and n[0].startswith("SKIP diagram gate"), (p, n))
+        arch = d / "docs" / "architecture"
+        arch.mkdir(parents=True)
+        (arch / "c4-a.json").write_text(graph("src/a.rs"))
+        (arch / "seq-b.1.json").write_text(graph("src/b.rs"))
+        (arch / "seq-b.2.json").write_text(graph("src/other.rs"))
+        (arch / "seq-c.json").write_text(graph("src/c.rs"))
+        (arch / "manifest.json").write_text('{"schema": "x"}')
+        (arch / "broken.json").write_text("{nope")
+        (d / ".discovery" / "dossiers").mkdir(parents=True)
+        git(d, "add", "-A")
+        git(d, "commit", "-q", "-m", "base")
+        git(d, "branch", "-q", "base")
+        git(d, "checkout", "-q", "-b", "work")
+
+        p, n = diagram_gate_run(d, "base", None, None, passes)
+        ok("an unchanged branch is clean", not p and not any(x.startswith("REVIEW") for x in n), (p, n))
+        (d / "src" / "a.rs").write_text("fn a() {}\n")
+        (d / "src" / "b.rs").write_text("fn b() {}\n")
+        git(d, "commit", "-qam", "code")
+        p, n = diagram_gate_run(d, "base", None, None, passes)
+        ok("anchored changed files give REVIEW lines", not p and "REVIEW: c4-a anchors src/a.rs" in n and "REVIEW: seq-b.1 anchors src/b.rs" in n, (p, n))
+        p, n = diagram_gate_run(d, "base", None, None, fails_check)
+        ok("a failing check is a DEFECT", len(p) == 1 and "vr_mermaid.py check" in p[0], p)
+
+        # editing a block's JSON clears the REVIEW for the diagram and its sibling blocks
+        (arch / "seq-b.2.json").write_text(graph("src/other.rs") + "\n")
+        (arch / "c4-a.json").write_text(graph("src/a.rs") + "\n")
+        git(d, "commit", "-qam", "diagrams")
+        p, n = diagram_gate_run(d, "base", None, None, passes)
+        ok("a modified diagram needs no REVIEW", not p and not any(x.startswith("REVIEW") for x in n), (p, n))
+
+        # the dossier line
+        (d / ".discovery" / "dossiers" / "W-001-x.md").write_text("# T\n\n## Approach\n\nx\nDiagrams affected: c4-a, seq-c\n")
+        p, n = diagram_gate_run(d, "base", "W-001", None, passes)
+        ok("a listed untouched diagram is REVIEW without PR text", not p and "REVIEW: dossier lists diagram seq-c as affected and the branch did not modify it" in n, (p, n))
+        p, n = diagram_gate_run(d, "base", "W-001", "Nothing else changed.", passes)
+        ok("with PR text that is silent, a DEFECT", len(p) == 1 and "seq-c" in p[0], (p, n))
+        p, n = diagram_gate_run(d, "base", "W-001", "seq-c still holds: only a comment moved.", passes)
+        ok("PR text that explains the diagram clears it", not p, (p, n))
+        (d / ".discovery" / "dossiers" / "W-001-x.md").write_text("Diagrams affected: none\n")
+        p, n = diagram_gate_run(d, "base", "W-001", None, passes)
+        ok("`none` lists nothing", not p, (p, n))
+        p, n = diagram_gate_run(d, "no-such-ref", None, None, passes)
+        ok("unknown base fails", len(p) == 1 and "cannot list the branch diff" in p[0], p)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run_diagram_gate(d, "no-such-ref")
+        ok("run_diagram_gate exits 1 on a defect", rc == 1 and "DEFECT" in buf.getvalue(), buf.getvalue())
+
+    for f in fails:
+        print("FAIL  " + f)
+    print(f"{'PASS' if not fails else 'FAIL'} — diagram gate {'behaves' if not fails else 'misbehaves'}")
+    return not fails
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -3691,6 +3903,20 @@ def main() -> int:
         "requires --base",
     )
     ap.add_argument(
+        "--diagram-gate",
+        action="store_true",
+        help="the Phase 9 close gate for architecture diagrams: vr_mermaid.py check must pass, and every "
+        "diagram anchored in a file the branch changed (and not itself modified) is listed as REVIEW; "
+        "--dossier W-NNN adds the dossier's `Diagrams affected:` stems, --pr-body FILE the PR text; "
+        "requires --base",
+    )
+    ap.add_argument(
+        "--pr-body",
+        metavar="FILE",
+        help="with --diagram-gate: the PR description; a diagram the dossier lists but the branch left alone "
+        "is a DEFECT when this text does not mention it",
+    )
+    ap.add_argument(
         "--mode",
         action="store_true",
         help="print which mode .discovery/ is in for --root — local, committed "
@@ -3724,6 +3950,12 @@ def main() -> int:
             print("DEFECT  --c3-gate requires --base <ref>")
             return 1
         return run_c3_gate(root, args.base)
+
+    if args.diagram_gate:
+        if not args.base:
+            print("DEFECT  --diagram-gate requires --base <ref>")
+            return 1
+        return run_diagram_gate(root, args.base, args.dossier, args.pr_body)
 
     if args.finalize_ids:
         if not args.base:

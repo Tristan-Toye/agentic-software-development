@@ -47,7 +47,7 @@ send({ jsonrpc: "2.0", method: "notifications/initialized" }) // a notification:
 check("ping", JSON.stringify((await rpc("ping")).result) === "{}")
 
 const list = (await rpc("tools/list")).result.tools
-check("tools/list: seven", list.map((t: any) => t.name).join() === "code_outline,code_item,code_find,doc_section,ref_section,code_replace,phase_checkpoint")
+check("tools/list: eight", list.map((t: any) => t.name).join() === "code_outline,code_item,code_find,doc_section,ref_section,arch_find,code_replace,phase_checkpoint")
 check(
   "tools/list: valid JSON Schema",
   list.every(
@@ -65,6 +65,44 @@ check("tools/list: claude host sentence", list.find((t: any) => t.name === "phas
 // doc_section on a fixture, relative to CLAUDE_PROJECT_DIR.
 const sec = (await rpc("tools/call", { name: "doc_section", arguments: { path: "notes.md", heading: "LRN-0001" } })).result
 check("doc_section: body", sec.isError === undefined && sec.content[0].text.includes("body one") && !sec.content[0].text.includes("body two"))
+// arch_find on a fixture docs/architecture: a class graph, a sequence graph, a non-graph JSON, broken JSON.
+const arch = join(dir, "docs", "architecture")
+mkdirSync(arch, { recursive: true })
+const ev = (path: string, line: number) => [{ tier: "source", path, line }, { tier: "inferred", note: "x" }]
+writeFileSync(join(arch, "c4-classes-store.json"), JSON.stringify({
+  title: "c4 - Classes: store",
+  nodes: [
+    { id: "class:TrackStore", label: "TrackStore", kind: "class", stereotype: "struct", members: Array.from({ length: 15 }, (_, i) => `+m${i}()`), evidence: ev("crates/harness/src/track.rs", 12) },
+    { id: "class:Runner", label: "Runner", kind: "class", evidence: ev("crates/harness/src/run.rs", 3) },
+  ],
+  edges: [{ source: "class:Runner", target: "class:TrackStore", label: "holds", kind: "association" }],
+}))
+writeFileSync(join(arch, "seq-boot.1.json"), JSON.stringify({
+  title: "seq - Boot (1)",
+  lanes: [{ id: "lane:A", label: "run" }, { id: "lane:B", label: "db" }],
+  nodes: [{ id: "msg:1", label: "load TrackStore", kind: "message", lane: "lane:A", seq: { to: "lane:B" }, evidence: [] }],
+  edges: [],
+}))
+writeFileSync(join(arch, "map-manifest.json"), JSON.stringify({ schema: "x", views: [] }))
+writeFileSync(join(arch, "broken.json"), "{not json")
+const af = async (args: object) => (await rpc("tools/call", { name: "arch_find", arguments: args })).result
+const bySym = await af({ query: "TrackStore" })
+const symText = bySym.content[0].text
+check("arch_find: symbol hit has id, kind, anchor, stereotype, 12 members and neighbour",
+  bySym.isError === undefined && symText.includes("c4-classes-store · class:TrackStore · class · TrackStore") && symText.includes("src: crates/harness/src/track.rs:12") &&
+  symText.includes("stereotype: struct") && symText.includes("(+3 more)") && !symText.includes("+m12()") && symText.includes("<- [holds] Runner"))
+check("arch_find: label substring in a sequence block", symText.includes("seq-boot.1 · msg:1 · message · load TrackStore") && symText.includes("lanes: run -> db"))
+const byPath = (await af({ query: "crates/harness/src/track.rs" })).content[0].text
+check("arch_find: repo path matches evidence", byPath.includes("class:TrackStore") && !byPath.includes("class:Runner ·"))
+check("arch_find: diagram restricts, and `seq-boot` selects block seq-boot.1", !(await af({ query: "TrackStore", diagram: "seq-boot" })).content[0].text.includes("c4-classes-store"))
+const outl = (await af({ query: "", diagram: "seq-boot" })).content[0].text
+check("arch_find: empty query + diagram = outline", outl.includes("seq - Boot (1)") && outl.includes("lanes: run | db") && outl.includes("run -> db: load TrackStore"))
+check("arch_find: no query, no diagram lists the graphs and skips non-graph JSON", (await af({ query: "" })).content[0].text.includes("2 diagram(s)"))
+check("arch_find: no match is a plain line, not an error", (await af({ query: "zzz-none" })).content[0].text.includes("nothing"))
+check("arch_find: repo without docs/architecture", (await af({ query: "x", repo_root: tmpdir() })).content[0].text.includes("no docs/architecture"))
+writeFileSync(join(arch, "many.json"), JSON.stringify({ title: "many", nodes: Array.from({ length: 50 }, (_, i) => ({ id: `n:${i}`, label: `zebra${i}`, kind: "x", evidence: [] })), edges: [] }))
+check("arch_find: caps at 40 matches and says how many were dropped", (await af({ query: "zebra" })).content[0].text.includes("10 more match(es) dropped"))
+
 const bad = (await rpc("tools/call", { name: "code_outline", arguments: { path: "notes.txt" } })).result
 check("code_* script failure is isError", bad.isError === true && bad.content[0].text.includes("code_nav failed"))
 check("missing argument is isError", (await rpc("tools/call", { name: "doc_section", arguments: { path: "notes.md" } })).result.isError === true)

@@ -55,7 +55,7 @@ whole documents never land in the dossier, only their outcomes as lines.
 | # | Heading | Content | Writer |
 |---|---|---|---|
 | 1 | `## Problem` | What is wrong or missing, with evidence labels. | `/plan` |
-| 2 | `## Approach` | One sentence, then the reasons. Then the rejected options. | `/plan` |
+| 2 | `## Approach` | One sentence, then the reasons. Then the rejected options. Last line: `Diagrams affected: <file stems of docs/architecture/, comma-separated>` or `Diagrams affected: none`. | `/plan` |
 | 3 | `## Contract` | Signatures and documentation comments. No bodies. | `/plan`, then `/work-on` until the fan-out |
 | 4 | `## Work packages` | Table: package, owned paths, depends on. | `/plan`, then `/work-on` until the fan-out |
 | 5 | `## Acceptance criteria` | Numbered. Each one falsifiable. | `/plan` |

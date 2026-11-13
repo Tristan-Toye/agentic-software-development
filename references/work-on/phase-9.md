@@ -92,14 +92,39 @@
    `.md` (`docs/architecture/<name>.json`): the JSON is the source and the
    Mermaid block in the `.md` is generated. Edit the JSON, never the block,
    then run `python3 "${PLUGIN_ROOT}/scripts/vr_mermaid.py" sync docs/architecture`;
-   the prose around the block stays hand-written. Before the session closes,
-   `python3 "${PLUGIN_ROOT}/scripts/vr_mermaid.py" check docs/architecture`
-   must exit 0 (a block that differs from its JSON, or an unmarked Mermaid
-   block, is a DEFECT). A diagram still only in Mermaid is converted once with
-   `vr_mermaid.py import <file>.md --write`. When a tool rewrote a block
-   (`module_graph.py regen`, `check_diagram_anchors.py --fix`), run
+   the prose around the block stays hand-written. A diagram still only in
+   Mermaid is converted once with `vr_mermaid.py import <file>.md --write`.
+   When a tool rewrote a block (`module_graph.py regen`,
+   `check_diagram_anchors.py --fix`), run
    `vr_mermaid.py import --adopt --write <file>.md` so the JSON follows; a
    `sync` before that would revert the tool's edit.
+
+   **Diagram gate (close gate).** After the sync, still inside `X`:
+
+   ```bash
+   python3 "${PLUGIN_ROOT}/scripts/validate_pipeline.py" \
+     --diagram-gate --base origin/<target> --dossier <W-NNN> [--pr-body <file>]
+   ```
+
+   It runs `vr_mermaid.py check docs/architecture` (a block that differs from
+   its JSON, or an unmarked Mermaid block, is a DEFECT: **the session does not
+   close** until it exits 0), then lists every diagram whose source anchors
+   point into a file this branch changed and which the branch did not modify,
+   as `REVIEW: <diagram> anchors <path>`, plus every diagram the dossier's
+   `Diagrams affected:` line lists that the branch left alone. Pass
+   `--pr-body` with the drafted PR description once it exists: a listed
+   diagram it does not mention is then a DEFECT. A `SKIP` line (no
+   `docs/architecture/*.json`) is a stated skip: copy it into the PR
+   description.
+
+   Every `REVIEW` line is settled before the PR opens, one of two ways. Open
+   the diagram with `arch_find` (`query` the path, `diagram` the stem), and if
+   the change altered what it shows, edit its JSON (never the generated block),
+   `vr_mermaid.py sync docs/architecture`, commit, rerun the gate. Or the
+   diagram still holds: write one line in the PR description,
+   `Diagram <stem> unchanged: <why it still holds>`. A REVIEW line left
+   unanswered in both places is an open defect for Phase 8's reviewers and the
+   owner.
 
 2. **Get the final verdict on the head the PR will carry** and keep the
     evidence — it goes in the PR description and in the Jira comment. Under
