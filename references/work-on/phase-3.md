@@ -299,10 +299,15 @@ payload holds no diagram file and no dossier text from this step.
    and prints a compact JSON summary. A non-zero exit stops the step: log
    `VISUAL-REVIEW: skipped-error — <step the JSON names>` as a build-log
    line, report it, and stop; never invent the facts by hand.
-2. Spawn `diagram-author` (payload file, linted like every payload): `DOSSIER_ID`,
+2. Spawn `diagram-author` (payload file in `.agent-staging/payloads/`): `DOSSIER_ID`,
    the dossier's `## Problem` and `## Approach`, the contract, `WORK_DIR`,
    `OUT_DIR`, `SCRIPTS_DIR`, `REPO`, and `DIAGRAMS_NEW` (the stems of the
-   `Diagrams new:` line, verbatim) when the dossier has one. It writes `l0.json`,
+   `Diagrams new:` line, one `<stem> — <what>` per line, verbatim; `none` when the dossier has no such
+   line). Lint it first:
+   `python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind diagram-author --host <claude|opencode> --live-dossier <live dossier>`
+   (it refuses a missing field, a `DIAGRAMS_NEW` that differs from the dossier's `Diagrams new:` stems or
+   names a stem not starting `seq-`, `c1-` or `c4-`, an `OUT_DIR` outside `REPO`, and a path that does not
+   exist); a repair re-spawn adds `ERRORS` and is linted the same way. It writes `l0.json`,
    `l1.json` and `l2.json` in `OUT_DIR`, and for every `c1-*` and `c4-*` stem a
    draft `OUT_DIR/arch/<stem>.json`; it only names and groups, and marks what
    no stub proves `inferred`.
@@ -368,14 +373,17 @@ payload holds no diagram file and no dossier text from this step.
 5. Record the outcome as a `## Build log` line, exactly one of:
 
    ```
-   VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n> (<dashboard link>)
+   VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n>, arch <stem> <n>, arch <stem> <n> (<dashboard link>)
    VISUAL-REVIEW: changes requested — <element ids of the review.json lines with verdict change or remove>
    ```
 
-   The counts are the node counts of the three files (the architecture
-   drafts are not counted); `validate_pipeline.py
-   --dossier <ID> --pre-fanout` checks them, the three files and the last
-   line (the gate holds for a dossier with the `visual_review:` field that
+   The counts are the node counts of the three files, then one
+   `arch <stem> <n>` entry per architecture draft in `arch/` (its node count;
+   none, and no comma, when the dossier lists no `Diagrams new:` stems).
+   `validate_pipeline.py --dossier <ID> --pre-fanout` checks them, the three
+   files, every draft (each `Diagrams new:` stem needs its draft, each draft
+   its entry; the PR's `Diagram <stem> not added:` escape does not excuse a
+   missing draft) and the last line (the gate holds for a dossier with the `visual_review:` field that
    step 1 sets; a build that never ran this step is not flagged).
    **`changes requested` goes back to the contract revision above, never
    forward:** fix the contract, re-run the contract review, then run this
