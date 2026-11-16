@@ -79,7 +79,7 @@ export function readDeferredRecord(dossierFile: string, id: string): DeferredIte
 export function parseDeferred(log: string, record: DeferredItem[] | null = null): { items: DeferredItem[]; pr: string; branch: string } {
   // A record, when the run wrote one, is the source of the items; the log still supplies the later events and the PR.
   const items = new Map<string, DeferredItem>((record ?? []).map((i) => [i.id, i]))
-  let pr = "", branch = ""
+  let pr = "", branch = "", prFixed = 0
   const asked = new Map<string, string>() // question id -> D-id
   for (const raw of log.split("\n")) {
     const l = raw.trim()
@@ -134,9 +134,24 @@ export function parseDeferred(log: string, record: DeferredItem[] | null = null)
     if (dr && items.has(dr[1])) { const it = items.get(dr[1])!; if (it.state !== "fixed") { it.state = "deprecated"; it.note = dr[2] } continue }
     const dd = l.match(/^(?:[-*]\s+)?DEFERRED-DOSSIER:\s*(D-\d+)\s*→\s*([A-Z][A-Z0-9]*-\d+)/)
     if (dd && items.has(dd[1])) { const it = items.get(dd[1])!; if (it.state !== "fixed") { it.state = "dossier"; it.dossier = dd[2] } continue }
-    const p = l.match(/DEFERRED-FIX:\s*PR\s+(\S+)/)
-    if (p) pr = p[1]
+    // The run's own summary of its commits: `DEFERRED-FIX: commits — D-4 817cf9b5, D-1 545dfe3f + b582af0f (…)`.
+    const cm = l.match(/^(?:[-*]\s+)?DEFERRED-FIX:\s*commits\b\s*(?:—\s*)?(.*)$/)
+    if (cm) {
+      for (const part of cm[1].split(/,\s*(?=D-\d+\b)/)) {
+        const c = part.match(/^(D-\d+)\s+([0-9a-f]{7,40}(?:\s*\+\s*[0-9a-f]{7,40})*)/)
+        const it = c ? items.get(c[1]) : undefined
+        if (c && it && (it.state === "open" || it.state === "fixing")) { it.state = "fixed"; it.note = c[2].replace(/\s+/g, "") }
+      }
+      continue
+    }
+    const p = l.match(/DEFERRED-FIX:\s*PR\s+(\S+)(?:.*?\bfixed\s+(\d+))?/)
+    if (p) { pr = p[1]; if (p[2]) prFixed = Number(p[2]) }
   }
+  // The PR line reports how many items the stacked PR fixed. Runs that closed their items there instead of with one
+  // `DEFERRED-FIXED:` line each left them `fixing`; when the PR accounts for all of them, they are fixed in that PR.
+  const still = [...items.values()].filter((i) => i.state === "fixing")
+  const done = [...items.values()].filter((i) => i.state === "fixed").length
+  if (pr && still.length && prFixed >= done + still.length) for (const it of still) { it.state = "fixed"; it.note = `in ${pr.replace(/^.*\/pull\//, "PR #")}` }
   return { items: [...items.values()], pr, branch }
 }
 /**

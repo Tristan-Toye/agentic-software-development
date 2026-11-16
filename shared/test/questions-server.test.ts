@@ -34,6 +34,13 @@ function check(name: string, ok: boolean, detail = ""): void {
   check("deferred: ledger items, first line per id, states and the stacked PR",
     pd.items.length === 3 && pd.items[0].title === "Retry ignores 429" && pd.items[0].loc === "src/a.rs:40" && pd.items[0].state === "fixed" && pd.items[0].note === "abc1234"
     && pd.items[1].state === "open" && pd.items[2].state === "dossier" && pd.pr === "https://github.com/o/r/pull/9", JSON.stringify(pd))
+  const dl = (tail: string[]) => parseDeferred(["- D-1 bug a — f:1 — low — x", "- D-2 bug b — f:2 — low — y", "- D-3 bug c — f:3 — low — z",
+    "DEFERRED-TRIAGE: D-1 → direct — fix a", "DEFERRED-TRIAGE: D-2 → direct — fix b", "DEFERRED-TRIAGE: D-3 → direct — fix c", ...tail].join("\n")).items.map((i) => `${i.id}:${i.state}:${i.note}`).join(" ")
+  check("deferred: a commits summary closes each item it names with its sha",
+    dl(["- DEFERRED-FIX: commits — D-2 817cf9b5, D-1 545dfe3f + b582af0f (bench stub)"]) === "D-1:fixed:545dfe3f+b582af0f D-2:fixed:817cf9b5 D-3:fixing:fix c", dl(["- DEFERRED-FIX: commits — D-2 817cf9b5, D-1 545dfe3f + b582af0f (bench stub)"]))
+  check("deferred: a PR line whose fixed count covers every item still being fixed closes them in that PR; a short count does not",
+    dl(["- DEFERRED-FIX: PR https://github.com/o/r/pull/9 — fixed 3, to dossier 0"]).split(/ (?=D-)/).every((x) => x.endsWith(":fixed:in PR #9"))
+    && dl(["- DEFERRED-FIX: PR https://github.com/o/r/pull/9 — fixed 2, to dossier 0"]).includes("D-3:fixing"), dl(["- DEFERRED-FIX: PR https://github.com/o/r/pull/9 — fixed 3"]))
   check("phase: a phase named mid-sentence is not progress; a line-start marker is", lastPhase("- OWNER-RULING: draft PR at Phase 6 yes\n- Phase 2 closed: contract committed\nnotes about Phase 7") === "2" && lastPhase("PHASE 9: synced") === "9")
 check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "Phase 6 soon" }, { kind: "stage", stage: "Phase 2 — contract", text: "x" }, { kind: "stage", stage: "Phase 1 — gates", text: "y" }]) === "2")
 {
