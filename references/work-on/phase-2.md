@@ -89,6 +89,25 @@ This is the step everything else depends on.
    `status: building`, `worktree` and `branch` into `X`'s copy; it is the
    live dossier from here.
 
+   **Stacked on an open plan PR (`plan-branch=` in `$ARGUMENTS`).** The re-plan
+   is on `plan/<KEY>`, not merged yet. Fork `X` from the target as above, then
+   bring in only the plan's own commits, never the base it forked from:
+
+   ```
+   git fetch origin <plan-branch>
+   git -C <X> cherry-pick -x $(git rev-list --reverse --no-merges origin/<plan-branch> --not origin/<plan-base>)
+   ```
+
+   `<plan-base>` is the branch the plan PR targets
+   (`gh pr view <plan-branch> --json baseRefName`, else `development`). The
+   commits touch only `.discovery/` and `.gitignore`; a conflict there is the
+   target's older copy of this dossier — keep the plan branch's side. Log
+   `PLAN-STACK: cherry-picked <n> plan commit(s) <shas> from <plan-branch>`
+   and name the plan PR in this build's PR body ("stacked on #<n>: merge it
+   first, or with this one"). The plan PR and this branch then carry the same
+   dossier change, which merges cleanly into development whichever lands
+   first. The live copy is `X`'s from here, as above.
+
 2. **Write the contract into real files.** You write the docstrings that every
    downstream agent builds against, so **read the contract-craft rules first** —
    every run, before you type a documentation comment:

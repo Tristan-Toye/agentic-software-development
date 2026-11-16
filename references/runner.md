@@ -58,6 +58,17 @@ the recorded checkpoints.
       starts with empty checkpoints. A `FAILED` whose reason says "sent back
       to /plan" is read as `REPLAN`. `ASD_RUNNER_REPLAN=0` keeps the status
       change and skips the automatic `/plan`.
+      When that re-plan ends `DONE` with the dossier `ready` (any `/plan` run
+      of a dossier a `/work-on` run already started counts, also one the
+      owner started), the runner requeues `/work-on` itself. In local mode,
+      or once the plan has merged into this checkout, that is the plain
+      `/work-on`. In committed mode with the plan PR still open, it is
+      `/work-on <ID> plan-branch=plan/<KEY>` (`--plan-branch`): the newest
+      `origin/plan/*` branch committed since the re-plan started whose copy
+      reads `ready`. The build forks from the stub as always and
+      cherry-picks the plan commits (`work-on/phase-2.md`). A plan that did
+      not reach `ready` is logged ("/work-on not requeued") and left to the
+      owner. `ASD_RUNNER_REQUEUE=0` turns this off.
     - `RUNNER: FAILED <why>`, or a turn with no `RUNNER:` line — the runner
       records `failed` with the reason, notifies the owner (a question
       through `ask_owner.py`: retry the stage, or stop), and acts on the

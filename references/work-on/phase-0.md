@@ -27,7 +27,14 @@ merges or pushes** — a dirty tracked dossier blocks a merge that touches it,
 and an unpushed record dies with the worktree. Add it by name, never with
 `git add -A`. State the mode in one line.
 
-`$ARGUMENTS` names a dossier ID, or is empty. Empty → read the front matter of
+`$ARGUMENTS` names a dossier ID, or is empty. It can add
+`plan-branch=plan/<KEY>`: the runner requeued this build after a re-plan
+whose plan PR has not merged yet (committed mode). The live dossier before `X`
+exists is then the copy on that branch — read it with
+`git fetch origin <branch> && git show origin/<branch>:.discovery/dossiers/<file>`
+and route on it (it reads `ready`; this checkout's copy still reads
+`planned`). Phase 2 stacks the build on that plan. Log
+`PLAN-STACK: <branch> — plan PR open, build stacked on it`. Empty → read the front matter of
 every `.discovery/dossiers/*.md`, and take the first with `status: ready` whose
 `blocked_by` entries are all `done`. State your pick and continue. In committed mode this checkout's copies show
 only what has merged, so list the worktrees first (`git worktree list`): a

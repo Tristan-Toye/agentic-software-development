@@ -1168,7 +1168,7 @@ ITEM_COMMANDS = ("fix-deferred", "after-merge", "plan", "resolve-merge", "stub")
 
 class Runner:
     def __init__(self, root: str, dossier: str, command: str, model: str | None,
-                 permission_mode: str, max_stages: int, items: str = ""):
+                 permission_mode: str, max_stages: int, items: str = "", plan_branch: str = ""):
         self.root = os.path.abspath(root)
         self.dossier = dossier
         self.command = command
@@ -1178,6 +1178,11 @@ class Runner:
         self.max_stages = max_stages
         prev = read_json(os.path.join(runs_dir(), run_key(root, dossier, command, items) + ".runner.json"), {}) or {}
         prev_acct = prev.get("account", "")
+        # /work-on stacked on a re-plan's unmerged plan branch (committed mode): a restart of the same unfinished build
+        # keeps the branch it was started with.
+        if command == "work-on" and not plan_branch and prev.get("command") == "work-on" and prev.get("state") != "done":
+            plan_branch = str(prev.get("plan_branch") or "")
+        self.plan_branch = plan_branch
         self.account, _ = pick_account(prefer=prev_acct)
         self.key = run_key(root, dossier, command, items)
         d = runs_dir()
@@ -1190,6 +1195,8 @@ class Runner:
                             # the owner's messages already delivered: a resumed run never sends one twice
                             "inbox_seen": int(prev.get("inbox_seen") or 0)}
         self.state["model"] = self.model
+        if self.plan_branch:
+            self.state["plan_branch"] = self.plan_branch
         self.driver_exports: dict = {}      # ASD_DRIVER_<NAME> the drivers file adds to the claude child (see start_drivers)
         self.stop_marker = os.path.join(d, self.key + ".stop-requested")
         self.checkpoints: list[dict] = read_json(self.cp_path, [])
@@ -1384,6 +1391,8 @@ class Runner:
         the branch itself (stub/2026-11-03), carried in --items."""
         if self.command == "stub" and self.items:
             return f"/{PLUGIN}:stub {self.items}"
+        if self.command == "work-on" and self.plan_branch:
+            return f"/{PLUGIN}:work-on {self.dossier} plan-branch={self.plan_branch}"
         return f"/{PLUGIN}:{self.command} {self.dossier}" + (f" {self.items}" if self.items and self.command in ITEM_COMMANDS else "")
 
     def handoff(self) -> str | None:
@@ -2598,7 +2607,9 @@ class Runner:
                 self.deferred_report()
                 self.product_summary()
                 self.ready_fix_pr()
-                return self.finish("done", "done", 0)
+                rc = self.finish("done", "done", 0)
+                self.requeue_build()
+                return rc
             if outcome == "replan":
                 return self.replan(detail)
             if outcome == "stopped":
@@ -2695,6 +2706,29 @@ class Runner:
             self.event(f"could not start the re-plan: {e}; start /plan from the dashboard", "done")
         return rc
 
+    def requeue_build(self) -> None:
+        """A re-plan that finished starts the build again: a /plan run of a dossier that a /work-on run sent back (any
+        `start /work-on` line before this run's start), once the plan review passed (`status: ready`), queues /work-on
+        itself, detached, for a slot like any run. Local mode, or a plan already merged into this checkout: the plain
+        /work-on. Committed mode with the plan PR still open: /work-on stacked on the plan branch (`plan-branch=`), which
+        forks from the stub as always and cherry-picks the plan commits (work-on Phase 2). A plan that did not reach
+        ready, or a ready copy found nowhere, is logged and left to the owner. `ASD_RUNNER_REQUEUE=0` turns it off."""
+        if self.command != "plan" or self.items or os.environ.get("ASD_RUNNER_REQUEUE", "1") == "0":
+            return
+        if not was_built_before(self.updates):
+            return
+        kind, branch = replan_followup(self.root, self.dossier, iso_epoch(self.state.get("started", "")))
+        if kind == "none":
+            self.event(f"re-plan finished, /work-on not requeued: {branch}", "done")
+            return
+        argv = [self.dossier, "--root", self.root, "--command", "work-on"] + (["--plan-branch", branch] if kind == "stacked" else [])
+        try:
+            detach(argv, self.root, self.dossier, self.key)
+            self.event("re-plan finished: /work-on " + self.dossier + (f" requeued, stacked on {branch}" if kind == "stacked" else " requeued")
+                       + " (it starts when a slot frees)", "done")
+        except OSError as e:
+            self.event(f"re-plan finished, but /work-on could not be requeued: {e}; start it from the dashboard", "done")
+
     def finish(self, state: str, text: str, rc: int) -> int:
         self.end_process()
         if state == "stopped" and self.stopping and not os.path.exists(self.stop_marker):
@@ -2771,11 +2805,86 @@ def cmd_revive() -> int:
         args = [sys.executable, os.path.abspath(__file__), dossier, "--root", root, "--command", st.get("command") or "work-on"]
         if st.get("items"):
             args += ["--items", st["items"]]
+        if st.get("plan_branch"):
+            args += ["--plan-branch", st["plan_branch"]]
         if st.get("model"):
             args += ["--model", st["model"]]
         subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
         print(f"run_dossier: restarted {key}")
     return 0
+
+
+def iso_epoch(ts: str) -> float:
+    """`2026-11-16T10:57:10Z` as epoch seconds; 0 when it does not parse."""
+    try:
+        return datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def was_built_before(updates_path: str) -> bool:
+    """True when the run's updates hold a `start /work-on` line before the newest `start /plan` line: this /plan run is
+    a re-plan of a dossier a build already worked on (sent back by RUNNER: REPLAN, or started again by the owner)."""
+    starts = []
+    try:
+        for line in open(updates_path, encoding="utf-8"):
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            m = re.match(r"start /([\w-]+) ", str(o.get("text", ""))) if o.get("kind") == "runner" else None
+            if m:
+                starts.append(m.group(1))
+    except OSError:
+        return False
+    last_plan = max((i for i, c in enumerate(starts) if c == "plan"), default=-1)
+    return "work-on" in starts[:max(last_plan, 0)]
+
+
+def front_status(text: str) -> str:
+    m = re.match(r"---\n(.*?)\n---\n", text or "", re.S)
+    s = re.search(r"(?m)^status:[ \t]*(\S+)", m.group(1)) if m else None
+    return s.group(1) if s else ""
+
+
+def replan_followup(root: str, dossier: str, since: float = 0.0) -> tuple[str, str]:
+    """What a finished re-plan hands to /work-on: ("plain", "") when this checkout's dossier reads `ready` (local mode,
+    or committed with the plan merged and pulled); ("stacked", "plan/<KEY>") when the checkout's copy is tracked and
+    not ready, and a `plan/*` branch on origin committed at or after `since` carries this dossier as `ready` (the newest
+    such branch); ("none", <why>) otherwise."""
+    d = os.path.join(root, ".discovery", "dossiers")
+    try:
+        names = sorted(n for n in os.listdir(d) if re.match(re.escape(dossier) + r"(-.*)?\.md$", n))
+    except OSError:
+        names = []
+    status = ""
+    if names:
+        try:
+            status = front_status(open(os.path.join(d, names[0]), encoding="utf-8").read())
+        except OSError:
+            pass
+        if status == "ready":
+            return "plain", ""
+        tracked = subprocess.run(["git", "ls-files", "--error-unmatch", os.path.join(".discovery", "dossiers", names[0])],
+                                 cwd=root, capture_output=True, text=True, stdin=subprocess.DEVNULL).returncode == 0
+        if not tracked:
+            return "none", f"the dossier reads `{status or 'no status'}`, not ready"
+    git = lambda *a: subprocess.run(["git", *a], cwd=root, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    try:
+        git("fetch", "--quiet", "origin", "+refs/heads/plan/*:refs/remotes/origin/plan/*")
+        refs = git("for-each-ref", "--sort=-committerdate", "--format=%(committerdate:unix) %(refname:short)", "refs/remotes/origin/plan/").stdout.split("\n")
+        for row in refs:
+            parts = row.split(" ", 1)
+            if len(parts) != 2 or not parts[0].isdigit() or int(parts[0]) < since - 60:
+                continue
+            ref = parts[1]
+            files = git("ls-tree", "--name-only", ref, ".discovery/dossiers/").stdout.split("\n")
+            mine = [f for f in files if re.match(r"\.discovery/dossiers/" + re.escape(dossier) + r"(-.*)?\.md$", f)]
+            if mine and front_status(git("show", f"{ref}:{mine[0]}").stdout) == "ready":
+                return "stacked", ref.split("/", 1)[1]
+    except (OSError, subprocess.TimeoutExpired):
+        return "none", "git could not list the plan branches"
+    return "none", f"the dossier reads `{status or 'missing'}` here and no plan/* branch since the re-plan started carries it as ready"
 
 
 def already_built(root: str, dossier: str) -> str:
@@ -3426,6 +3535,51 @@ def selftest() -> int:
             check(f"replan {did}: /plan gets the plan command, not the /work-on checkpoints",
                   msgs(2)[0] == f"/{PLUGIN}:plan {did}" and len(msgs(2)) == 1)
             check(f"replan {did}: the send-back is in the run's updates", any("sent back to /plan" in t for t in texts(did)))
+            check(f"replan {did}: a re-plan that did not reach ready does not requeue /work-on",
+                  bool(until(lambda: any("/work-on not requeued" in t for t in texts(did)), 30)) and state_of(did).get("command") == "plan")
+
+        # ---- 2a'. a finished re-plan that reached ready requeues /work-on --------
+        dpath = os.path.join(root, ".discovery", "dossiers", "W-92-x.md")
+        open(dpath, "w").write("---\nid: W-92\nstatus: ready\nblocked_by: []\n---\n# W-92\n")
+        append_line(os.path.join(rdir, "repo.W-92.jsonl"), {"ts": now(), "kind": "runner", "text": f"start /work-on W-92 in {root}", "state": "running"})
+        write_json(os.path.join(rdir, "repo.W-92.runner.json"), {"command": "work-on", "state": "done"})
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-92", "--command", "plan")
+        check("requeue: the re-plan run ends done", p.wait(timeout=60) == 0)
+        check("requeue: /work-on starts by itself and gets the plain command",
+              bool(until(lambda: state_of("W-92").get("command") == "work-on" and state_of("W-92").get("state") == "done", 60))
+              and msgs(2)[0] == f"/{PLUGIN}:work-on W-92" and any("/work-on W-92 requeued" in t for t in texts("W-92")))
+        open(dpath, "w").write("---\nid: W-93\nstatus: ready\n---\n")
+        os.rename(dpath, dpath.replace("W-92", "W-93"))
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-93", "--command", "plan")
+        check("requeue: a first /plan (no build before it) does not start /work-on",
+              p.wait(timeout=60) == 0 and state_of("W-93").get("command") == "plan" and not any("requeued" in t for t in texts("W-93")))
+        bad = subprocess.run([sys.executable, me, "--root", root, "--dossier", "W-92", "--plan-branch", "feat/x"], env=env, capture_output=True, text=True)
+        check("--plan-branch takes only plan/<KEY>", bad.returncode == 2)
+
+        # ---- 2a''. replan_followup on real git: plain, stacked on the newest ready plan branch, none ----
+        g = lambda cwd, *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a], cwd=cwd, capture_output=True, text=True)
+        origin, work = os.path.join(tmp, "rf-origin.git"), os.path.join(tmp, "rf-work")
+        g(tmp, "init", "-q", "--bare", origin)
+        g(tmp, "clone", "-q", origin, work)
+        os.makedirs(os.path.join(work, ".discovery", "dossiers"))
+        rf = os.path.join(work, ".discovery", "dossiers", "W-7-qc.md")
+        open(rf, "w").write("---\nid: W-7\nstatus: planned\n---\n")
+        g(work, "add", "."); g(work, "commit", "-qm", "base"); g(work, "push", "-q", "origin", "HEAD:development")
+        g(work, "checkout", "-qb", "plan/OLD"); open(rf, "w").write("---\nid: W-7\nstatus: planned\n---\nold\n")
+        g(work, "commit", "-qam", "old plan"); g(work, "push", "-q", "origin", "plan/OLD")
+        g(work, "checkout", "-q", "development") if g(work, "rev-parse", "--verify", "-q", "development").returncode == 0 else g(work, "checkout", "-q", "-b", "development", "origin/development")
+        check("replan_followup: committed, no ready plan branch -> none", replan_followup(work, "W-7")[0] == "none")
+        g(work, "checkout", "-qb", "plan/LABS-1", "origin/development"); open(rf, "w").write("---\nid: W-7\nstatus: ready\n---\nnew\n")
+        g(work, "commit", "-qam", "plan"); g(work, "push", "-q", "origin", "plan/LABS-1")
+        g(work, "checkout", "-q", "origin/development")
+        check("replan_followup: committed, plan PR open -> stacked on its branch", replan_followup(work, "W-7") == ("stacked", "plan/LABS-1"))
+        check("replan_followup: a plan branch older than the re-plan does not count", replan_followup(work, "W-7", time.time() + 3600)[0] == "none")
+        open(rf, "w").write("---\nid: W-7\nstatus: ready\n---\n")
+        check("replan_followup: the checkout's copy reads ready -> plain", replan_followup(work, "W-7") == ("plain", ""))
+        check("was_built_before: a /work-on start before the newest /plan start", was_built_before(os.path.join(rdir, "repo.W-92.jsonl"))
+              and not was_built_before(os.path.join(rdir, "repo.W-93.jsonl")) and not was_built_before(os.path.join(tmp, "absent.jsonl")))
 
         # ---- 2b. WAITING on background work (no question id) is not a failure --
         scenario([{"turns": [[{"final": "gates running\nRUNNER: WAITING gates,background,task,b1yrknlzz"}],
@@ -4666,6 +4820,7 @@ def main() -> int:
     ap.add_argument("--model")
     ap.add_argument("--permission-mode", default="auto")
     ap.add_argument("--max-stages", type=int, default=20)
+    ap.add_argument("--plan-branch", default="", help="work-on: build stacked on this unmerged plan branch (committed mode, after a re-plan): the plan commits are cherry-picked onto the build branch")
     ap.add_argument("--items", default="", help="fix-deferred: the D-ids to fix, e.g. D-1,D-3 (default: every open item); after-merge: the merged PR numbers, e.g. 429,430")
     ap.add_argument("--detach", action="store_true", help="the default: run in the background; output to <key>.runner.log")
     ap.add_argument("--foreground", action="store_true", help="run in this terminal instead of the background")
@@ -4683,6 +4838,9 @@ def main() -> int:
         print("run_dossier.py: --items takes D-ids (D-1,D-3) with --command fix-deferred, PR numbers (429,430) with --command after-merge, "
               "or one D-id with --command plan", file=sys.stderr)
         return 2
+    if a.plan_branch and (a.command != "work-on" or not re.fullmatch(r"plan/[\w./-]+", a.plan_branch) or ".." in a.plan_branch):
+        print("run_dossier.py: --plan-branch takes a plan/<KEY> branch, with --command work-on", file=sys.stderr)
+        return 2
     runner_model(a.model)  # refuses a forbidden model before anything starts
     if a.command == "work-on":
         why = already_built(a.root, a.dossier)
@@ -4691,7 +4849,7 @@ def main() -> int:
             return 2
     if not a.foreground:
         return detach(argv + ([] if "--root" in argv else ["--root", a.root]), a.root, a.dossier, run_key(a.root, a.dossier, a.command, items))
-    return Runner(a.root, a.dossier, a.command, a.model, a.permission_mode, a.max_stages, items).run()
+    return Runner(a.root, a.dossier, a.command, a.model, a.permission_mode, a.max_stages, items, a.plan_branch).run()
 
 
 if __name__ == "__main__":
