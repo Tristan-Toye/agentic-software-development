@@ -67,3 +67,9 @@ D-1 <kind> <title> — <path:line> — <risk>
 Every line ends with `contract:` and `effort:`
 `contract` is the boundary a fix crosses
 `DEFERRED: none — sources: …` is a real answer
+
+# Driver paragraphs of phases 3, 5, 6, 9: the header now covers `on` or `shadow`, and the shadow sentence says what to do
+**Driver (only when `ASD_DRIVER_
+`shadow` writes evidence to `.git/asd-drivers/driver-shadow/` and changes nothing
+`shadow` records evidence only;
+`shadow` runs in a throwaway worktree and changes nothing;
