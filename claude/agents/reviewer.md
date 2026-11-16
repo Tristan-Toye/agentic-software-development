@@ -165,6 +165,14 @@ Check, in this order:
    with the reason it lost? An approach with no rejected option usually means
    no choice was made.
 
+8. **New diagrams.** `## Approach` ends with `Diagrams affected:` and
+   `Diagrams new:` lines. If the approach adds a flow that crosses crates,
+   processes or containers (or a new external system) and the line says
+   `Diagrams new: none`, search `docs/architecture/` (seq and c1 files) for a
+   diagram that already shows the flow: finding none is a CR (propose the
+   stem). A repo with no `docs/architecture/` may say `none`. A missing
+   `Diagrams new:` line is a CR too.
+
 Do not design the solution. Do not propose your own approach. You judge whether
 this plan is buildable and checkable, not whether you would have chosen it.
 

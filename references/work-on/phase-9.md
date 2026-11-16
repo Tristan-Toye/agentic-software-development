@@ -128,6 +128,60 @@
    unanswered in both places is an open defect for Phase 8's reviewers and the
    owner.
 
+   **New diagrams.** For every stem on the dossier's `Diagrams new:` line,
+   create `docs/architecture/<stem>.json` and its `.md` before the PR opens,
+   inside `X`, and commit them with the rest. The gate (`--diagram-gate
+   --dossier`) fails the session when a listed stem has no
+   `docs/architecture/<stem>.json` on the branch, unless the PR description
+   carries `Diagram <stem> not added: <why>` (the plan was wrong: say how).
+   Two sources:
+
+   - *A Phase 3 visual review ran.* One call per stem, from the repo root,
+     mechanical:
+     `python3 "${PLUGIN_ROOT}/scripts/vr_promote.py" --dossier-id <ID> --stem <stem> --repo .`
+     It takes the flow of `.discovery/visual-review/<ID>/l1.json` whose
+     `new_stem` is the stem and drops the steps the owner marked `remove` in
+     `review.json`. Lanes become participants and steps become messages
+     (`seq.to` from the step's `to`; arrow from `call_kind`: call `->>`,
+     reply `-->>`, async and publish `-)`), with the evidence anchors carried
+     over. Every anchor is then mapped from `meta.base_sha` (the contract
+     commit the views were drawn on) to HEAD: through the line diff when its
+     region is unchanged, to the definition of the enclosing function at HEAD
+     when the body changed, following renames; a backticked name in the
+     anchor's note must agree (a repo with no `base_sha` falls back to the
+     name alone and prints `WARN`). It writes `docs/architecture/<stem>.json`,
+     the `.md` stub when absent, validates and runs `vr_mermaid.py sync`.
+     The owner's approval is tied to the exact file: each kept step needs an
+     `ok` in `review.json` on the current hash of `l1.json` (the dashboard's
+     `graph_hash`). Exit 1 is a stop, each with the step named:
+     `STALE-ANCHOR` (the code no longer has what the anchor pointed at: fix
+     the L1 step or the code and rerun), `UNRESOLVED-CHANGE` (a `change` or
+     `question` on the current hash is open; an `ok` never clears it),
+     `STALE-APPROVAL` (the owner's lines are on an older `l1.json`: it
+     changed since, so the owner approves the current file again) or
+     `NOT-APPROVED` (no verdict). Then commit and rerun the gate.
+   - *No visual review* (a repo whose language the visual review does not
+     cover, today anything but Rust). The orchestrator authors the seq graph
+     from the code (`arch_find` on the neighbouring diagrams as models): one
+     participant lane per crate, process or container, one message per call
+     or event in order (`seq.to` the receiving lane, `arrow` `->>`, `-->>`
+     for a reply, `-)` for async), **every message with a `path:line` source
+     evidence anchor** it opened; a step it cannot anchor is `inferred` with
+     a note, never invented. A new external system (`c1-*`) is a node and
+     edges added to the c1 context graph. Then write
+     `docs/architecture/<stem>.md` (title, one line saying what flow it
+     shows, the marker line
+     `<!-- generated from <stem>.json by vr_mermaid.py render; edit the JSON, not this block -->`,
+     an empty `mermaid` fence holding `sequenceDiagram`,
+     `<!-- end generated -->`), run
+     `python3 "${PLUGIN_ROOT}/scripts/vr_graph.py" validate docs/architecture/<stem>.json --root .`
+     (it must report `ok: true`) and
+     `python3 "${PLUGIN_ROOT}/scripts/vr_mermaid.py" sync docs/architecture`,
+     commit, and rerun the gate.
+
+   The new diagram is part of the PR like any other diagram change; mention
+   it in the PR description.
+
 2. **Get the final verdict on the head the PR will carry** and keep the
     evidence — it goes in the PR description and in the Jira comment. Under
     `ci` the run is CI's on the pushed final head: push, wait, and keep the

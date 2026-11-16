@@ -3698,6 +3698,45 @@ def selftest_c3_gate() -> bool:
 # --------------------------------------------------------------------------
 
 DIAGRAMS_AFFECTED_RE = re.compile(r"^\s*Diagrams affected:\s*(.*?)\s*$", re.M | re.I)
+DIAGRAMS_NEW_RE = re.compile(r"^\s*Diagrams new:\s*(.*?)\s*$", re.M | re.I)
+_STEM_TOKEN_RE = re.compile(r"^[A-Za-z0-9][\w.\-]*$")
+_STEM_PREFIX_RE = re.compile(r"^(seq|c[1-4])-", re.I)
+_DESC_SEP_RE = re.compile(r"\s+(?:\u2014|\u2013|--|-)\s+|\s*[\u2014\u2013]\s*")
+
+
+def parse_diagrams_new(text: str) -> list[str]:
+    """Stems of a `Diagrams new: <stem> \u2014 <flow>, <stem> \u2014 <flow>` value; `none` and empty give [].
+    A comma inside a description is not a separator: a piece is a new stem when it has a ` \u2014 ` (or ` - `,
+    ` -- `) description after a single stem token, is a bare stem token after a bare stem, or is a bare token
+    that starts `seq-`/`cN-`; anything else continues the previous description."""
+    stems: list[str] = []
+    prev_bare = True
+    for piece in text.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        parts = _DESC_SEP_RE.split(piece, maxsplit=1)
+        head = parts[0].strip().strip("`").strip()
+        head = re.sub(r"\.(json|md)$", "", head)
+        has_desc = len(parts) > 1
+        if _STEM_TOKEN_RE.match(head) and (has_desc or prev_bare or _STEM_PREFIX_RE.match(head)):
+            if head.lower() != "none":
+                stems.append(head)
+            prev_bare = not has_desc
+        # else: continuation of the previous description
+    return stems
+
+
+def dossier_new_diagrams(root: Path, dossier_id: str | None) -> list[str]:
+    """Stems the dossier's `Diagrams new:` line lists; [] for `none`, no dossier or no line (an older dossier has none)."""
+    if not dossier_id:
+        return []
+    ddir = root / ".discovery" / "dossiers"
+    files = sorted(ddir.glob(f"{dossier_id}-*.md")) if ddir.is_dir() else []
+    if not files:
+        return []
+    m = DIAGRAMS_NEW_RE.search(files[0].read_text())
+    return parse_diagrams_new(m.group(1)) if m else []
 
 
 def diagram_anchor_index(arch: Path) -> dict[str, set[str]]:
@@ -3752,13 +3791,31 @@ def diagram_gate_run(root: Path, base: str, dossier_id: str | None = None, pr_te
     (``git diff --name-only base...HEAD``), and whose own JSON the branch did not touch, is listed as
     ``REVIEW: <diagram> anchors <path>``: update the JSON and sync, or say in the PR description why it holds.
     (c) A diagram the dossier's ``Diagrams affected:`` line lists and the branch did not touch is a DEFECT
-    when ``pr_text`` is given and does not mention it, else a REVIEW line. ``check`` is the test seam."""
+    when ``pr_text`` is given and does not mention it, else a REVIEW line.
+    (d) A stem the dossier's ``Diagrams new:`` line lists with no ``docs/architecture/<stem>.json`` (or
+    ``<stem>.N.json`` block) on the branch is a DEFECT once ``pr_text`` is given, unless it says
+    ``Diagram <stem> not added: <why>``; without ``pr_text`` it is a REVIEW line. ``check`` is the test seam."""
     problems: list[str] = []
     notes: list[str] = []
     arch = root / "docs" / "architecture"
     index = diagram_anchor_index(arch) if arch.is_dir() else {}
+    new_stems = dossier_new_diagrams(root, dossier_id)
+    missing_new = [st for st in new_stems
+                   if not (arch / f"{st}.json").is_file() and not any(arch.glob(f"{st}.[0-9]*.json"))]
+
+    def settle_new() -> None:
+        for st in missing_new:
+            if pr_text is not None and f"Diagram {st} not added:" in pr_text:
+                notes.append(f"diagram gate: new diagram {st} not added, PR description says why")
+            elif pr_text is not None:
+                problems.append(f"diagram gate: the dossier lists new diagram {st} (`Diagrams new:`) and docs/architecture/{st}.json "
+                                f"is not on the branch; add it, or write `Diagram {st} not added: <why>` in the PR description")
+            else:
+                notes.append(f"REVIEW: dossier lists new diagram {st} and docs/architecture/{st}.json is not on the branch")
+
     if not index:
-        return problems, ["SKIP diagram gate: no docs/architecture/*.json in this repository"]
+        settle_new()
+        return problems, ["SKIP diagram gate: no docs/architecture/*.json in this repository"] + notes
     if check is None:
         def check(repo: Path) -> tuple[int, str]:
             script = Path(__file__).resolve().parent / "vr_mermaid.py"
@@ -3798,6 +3855,7 @@ def diagram_gate_run(root: Path, base: str, dossier_id: str | None = None, pr_te
                             "and the PR description does not say why it still holds")
         else:
             notes.append(f"REVIEW: dossier lists diagram {stem} as affected and the branch did not modify it")
+    settle_new()
     if not any(n.startswith("REVIEW") for n in notes) and not problems:
         notes.append("diagram gate: vr_mermaid.py check passes; no diagram anchors a changed file without being updated")
     return problems, notes
@@ -3891,6 +3949,30 @@ def selftest_diagram_gate() -> bool:
         ok("`none` lists nothing", not p, (p, n))
         p, n = diagram_gate_run(d, "no-such-ref", None, None, passes)
         ok("unknown base fails", len(p) == 1 and "cannot list the branch diff" in p[0], p)
+
+        # the `Diagrams new:` line
+        ok("parse: none", parse_diagrams_new("none") == [] and parse_diagrams_new("") == [])
+        ok("parse: stem with description", parse_diagrams_new("seq-x \u2014 the flow") == ["seq-x"])
+        ok("parse: comma list with descriptions and a comma inside one",
+           parse_diagrams_new("seq-x \u2014 a, b and c, seq-y \u2014 d, c1-ext") == ["seq-x", "seq-y", "c1-ext"],
+           parse_diagrams_new("seq-x \u2014 a, b and c, seq-y \u2014 d, c1-ext"))
+        ok("parse: bare list and backticks", parse_diagrams_new("`seq-x.json`, seq-y") == ["seq-x", "seq-y"])
+        (d / ".discovery" / "dossiers" / "W-002-n.md").write_text(
+            "## Approach\n\nx\nDiagrams affected: none\nDiagrams new: seq-new \u2014 a to b, seq-c \u2014 exists\n")
+        p, n = diagram_gate_run(d, "base", "W-002", None, passes)
+        ok("a missing new diagram is REVIEW without PR text", not p and "REVIEW: dossier lists new diagram seq-new and docs/architecture/seq-new.json is not on the branch" in n, (p, n))
+        p, n = diagram_gate_run(d, "base", "W-002", "Nothing about it.", passes)
+        ok("with silent PR text a missing new diagram is a DEFECT", len(p) == 1 and "seq-new" in p[0], (p, n))
+        p, n = diagram_gate_run(d, "base", "W-002", "Diagram seq-new not added: no new flow after all.", passes)
+        ok("`Diagram <stem> not added: why` clears it", not p, (p, n))
+        (arch / "seq-new.json").write_text(graph("src/a.rs"))
+        git(d, "add", "-A")
+        git(d, "commit", "-qm", "new diagram")
+        p, n = diagram_gate_run(d, "base", "W-002", "x", passes)
+        ok("an added new diagram passes", not p and not any("seq-new" in x for x in n), (p, n))
+        (d / ".discovery" / "dossiers" / "W-002-n.md").write_text("Diagrams new: none\n")
+        p, n = diagram_gate_run(d, "base", "W-002", "x", passes)
+        ok("`Diagrams new: none` lists nothing", not p, (p, n))
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = run_diagram_gate(d, "no-such-ref")
