@@ -349,6 +349,14 @@ payload holds no diagram file and no dossier text from this step.
    and a line with a different `anchor.graph_hash` than the file now has was
    made on an older version of the picture. These ids and comments are the
    input of the contract revision below.
+   When the answer is `A` and the dossier's `Diagrams new:` line lists
+   stems, first run per stem
+   `python3 scripts/vr_promote.py --dossier-id <ID> --stem <stem> --repo <repo> --check-approval`
+   (the approval rule only: no writes). An `A` typed as a chat answer has no
+   per-element `ok` lines in `review.json`, and Phase 9 would refuse it hours
+   later. On exit 1 do **not** record `VISUAL-REVIEW: approved`: ask the owner
+   again (`ask_owner.py`, same topic) naming the step ids it printed, who
+   `ok` them on the dashboard canvas; repeat until it exits 0.
 5. Record the outcome as a `## Build log` line, exactly one of:
 
    ```

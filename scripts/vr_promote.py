@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Promote an owner-reviewed L1 flow to a docs/architecture sequence diagram.
 
-    vr_promote.py --dossier-id ID --stem STEM --repo PATH [--preview]
+    vr_promote.py --dossier-id ID --stem STEM --repo PATH [--preview | --check-approval]
     vr_promote.py --selftest
 
 Reads `.discovery/visual-review/<ID>/l1.json` and `review.json`, takes the flow whose
@@ -303,7 +303,7 @@ def _sync(repo: str) -> None:
         raise PromoteError("vr_mermaid.py sync failed: " + (p.stdout + p.stderr).strip()[:300])
 
 
-def run(dossier_id: str, stem: str, repo: str, preview: bool = False) -> int:
+def run(dossier_id: str, stem: str, repo: str, preview: bool = False, check_only: bool = False) -> int:
     vr = os.path.join(repo, ".discovery", "visual-review", dossier_id)
     l1 = _load(os.path.join(vr, "l1.json"))
     rpath = os.path.join(vr, "review.json")
@@ -313,6 +313,12 @@ def run(dossier_id: str, stem: str, repo: str, preview: bool = False) -> int:
         print("ERROR expected exactly one flow with new_stem %r in l1.json, found %d" % (stem, len(flows)))
         return 2
     removed: set = set()
+    if check_only:
+        _, problems = approval(graph_hash(l1), review, flows[0].get("after", []))
+        for pr in problems:
+            print(pr)
+        print("approval: " + ("every step of %s is approved on the current l1.json" % stem if not problems else "%d step(s) not approved" % len(problems)))
+        return 1 if problems else 0
     if not preview:
         removed, problems = approval(graph_hash(l1), review, flows[0].get("after", []))
         for pr in problems:
@@ -518,6 +524,17 @@ def _selftest() -> int:
     review(d, l1, spec)
     rc, out = call(d)
     check("remove:drops-the-step", rc == 0 and "s3" not in [n["id"] for n in json.load(open(os.path.join(d, "docs", "architecture", "seq-new.json")))["nodes"]], out)
+    # --check-approval: rule only, nothing written
+    d, l1 = scenario({})
+    review(d, l1, all_ok(l1)[:-1])
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = run("W-9", "seq-new", d, check_only=True)
+    check("check-approval:names-step", rc == 1 and "NOT-APPROVED s10" in buf.getvalue() and not os.path.exists(os.path.join(d, "docs")), buf.getvalue())
+    review(d, l1, all_ok(l1))
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc = run("W-9", "seq-new", d, check_only=True)
+    check("check-approval:ok", rc == 0 and not os.path.exists(os.path.join(d, "docs")))
     # preview needs neither approval nor anchors
     d, l1 = scenario({})
     rc, out = call(d, preview=True)
@@ -550,12 +567,14 @@ def main(argv=None) -> int:
     ap.add_argument("--stem")
     ap.add_argument("--repo", default=".")
     ap.add_argument("--preview", action="store_true")
+    ap.add_argument("--check-approval", action="store_true",
+                    help="only the approval rule (no writes, no re-anchoring): exit 1 and name the unapproved steps")
     a = ap.parse_args(argv)
     if a.selftest:
         return _selftest()
     if not (a.dossier_id and a.stem):
         ap.error("--dossier-id and --stem are required")
-    return run(a.dossier_id, a.stem, os.path.abspath(a.repo), a.preview)
+    return run(a.dossier_id, a.stem, os.path.abspath(a.repo), a.preview, a.check_approval)
 
 
 if __name__ == "__main__":
