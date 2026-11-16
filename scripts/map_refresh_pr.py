@@ -15,7 +15,7 @@ commit of `docs/architecture/` on `chore/map-refresh-<stub date>`, a push and `g
 Opt-in: it acts only when the stub already carries `docs/architecture/map-manifest.json` or `crate-map.json` (a repo
 that never ran `vr_map.py refresh` is left alone), or when ASD_MAP_REFRESH=1. ASD_MAP_REFRESH=0 turns it off.
 Two moments, two branches. `--moment cut` (default, what `stub_target.py` starts) uses `chore/map-refresh-<stub date>`.
-`--moment integrate` (what the /stub command runs as its last step, once the stub's fixes are green) uses
+`--moment integrate` (what the /stub command runs after the stub's pull request is open and before the full run, because a receipt is bound to one head SHA) uses
 `chore/map-refresh-<stub date>-integrate`: the cut-time branch of the same stub usually exists already (its pull request
 merged long ago), so reusing it would end the run as "already exists". Distinct stubs have distinct dates, so the
 refresh of the next stub never meets the one of the stub under integration. With `--json` the last stdout line is one

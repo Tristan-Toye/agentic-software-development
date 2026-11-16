@@ -77,8 +77,9 @@ real-uncertainty questions, each passing `--kind`, and never an approval
   cuts a new stub, it starts `scripts/map_refresh_pr.py` detached: an
   incremental `vr_map.py refresh` from the previous map's extraction commit,
   committed to `chore/map-refresh-<date>` and opened as a pull request into
-  the new stub. And as the last step of this command (Step 8), once the
-  fixes are green, the same script runs with `--moment integrate` and opens
+  the new stub. And in this command (Step 4, after the stub's pull request is
+  open and before the full run, because a receipt is bound to one head SHA)
+  the same script runs with `--moment integrate` and opens
   `chore/map-refresh-<date>-integrate` into the stub under integration, so
   `development` receives current maps in the same merge as the stub. The cut
   refresh is the fallback: it ends quietly when nothing changed. Both act
@@ -107,9 +108,10 @@ all of it:
    **posts the `local-stack` receipt** on that pull request.
 3. It **spawns implementers and reviewers in worktrees** to fix failures,
    as pull requests into the stub, and **merges those fix pull requests
-   itself**. After the fixes are green it also **opens one architecture-map
-   refresh pull request into the stub and merges it itself** (Step 8;
-   documentation only, a failure of it never blocks the integration). The
+   itself**. Before the full run (and again before a re-run after a
+   product-code fix) it also **opens an architecture-map refresh pull request
+   into the stub and merges it itself** (Step 4; a failure of it never blocks
+   the integration). The
    yes covers these merges and nothing else. Nothing else is merged by this command: the stub pull request
    into `development` stays the user's, always.
 4. It **iterates until the full stack run is green**: as many
@@ -183,16 +185,49 @@ census, a `## Receipt` section left as `pending`, and a
 request; never open a second one. Ready, not draft — the checks run either
 way, and merging stays the user's.
 
-## Step 4 — CI green
+## Step 4 — Refresh the architecture map
+
+A `local-stack` receipt is bound to one head SHA: `local_stack_status.py post`
+refuses a receipt whose head differs from the checkout's or the pull
+request's, and the status lands on that SHA. A map refresh merged after the
+final receipt would move the head and leave the stub pull request without its
+required status, costing a second full VM run. So the refresh lands **before**
+the full run, and `development` still gets current maps in the same merge as
+the stub. The pull request is open, so the stub is closed to new dossiers.
+
+1. `python3 ${PLUGIN_ROOT}/scripts/map_refresh_pr.py --root <checkout>
+   --stub <the stub being integrated> --moment integrate --json`. The last
+   stdout line is JSON: `status` is `opened`, `exists` (an open pull request
+   of that branch, its `pr` number given), `nothing-changed` or `skipped`
+   (no committed map, or `ASD_MAP_REFRESH=0`: opt-in and opt-out are the
+   script's, unchanged), or `failed` with a `reason`. The branch is
+   `chore/map-refresh-<stub date>-integrate`, which never meets the
+   cut-time branch of the same stub or the refresh of the next stub.
+2. `nothing-changed` or `skipped`: log it in the record and go on; no pull
+   request, no cost.
+3. `opened` or `exists`: `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr
+   <pr>`, then **you merge it** into the stub exactly as Step 8 merges a fix
+   pull request — the yes from the gates covers this merge and nothing else.
+   Re-fetch the stub; Steps 5 and 6 then cover that head.
+4. **Again after a product-code fix.** Whenever Step 8 merges a fix that
+   touched product code (which already forces a Step 6 re-run), run this step
+   again before that re-run, so the last receipt's head includes current maps.
+5. **A failure never blocks the integration.** Any failure — the script
+   (`status: failed`), a red or superseded CI, a merge refused — is logged
+   as `MAP-REFRESH: failed — <why>` in the record and in a dashboard note;
+   an open refresh pull request is left for the user, and you continue. The
+   cut-time refresh remains the fallback.
+
+## Step 5 — CI green
 
 `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N>`. Exit 4 means a
 superseded head: re-run against the head that superseded it. Exit 5 means a
 conflicting pull request: resolve per the merge rules, never by force. A red
-check enters the Step 7 loop with the failing job's digest as its evidence;
+check enters the Step 8 loop with the failing job's digest as its evidence;
 the digest's failing tests map to crates through the census exactly as
 suite failures do.
 
-## Step 5 — The one full run
+## Step 6 — The one full run
 
 The integrated verdict, once per head, in the VM, on the guarded path:
 
@@ -219,7 +254,7 @@ The integrated verdict, once per head, in the VM, on the guarded path:
    re-run the full command for the new head and re-post. Documentation-only
    changes do not; log the ruling either way.
 
-## Step 6 — Audit every dossier against its criteria
+## Step 7 — Audit every dossier against its criteria
 
 For each census row, read the dossier's `## Criteria` and map every
 criterion to evidence that exists **now, on this stub**: a CI check, the
@@ -230,12 +265,12 @@ tier that ran here — that is what this run is for. One line per criterion
 in the record: `covered — <evidence>` or `GAP — <why>`.
 
 Every `GAP`, and every contradiction between a dossier's recorded verdict
-and this run's, enters the Step 7 loop attributed to that dossier. A clean
+and this run's, enters the Step 8 loop attributed to that dossier. A clean
 table on a green run ends the loop before it starts.
 
-## Step 7 — Attribute, inspect, fix — until green
+## Step 8 — Attribute, inspect, fix — until green
 
-One round fixes one attributed failure group; rounds repeat until Step 5
+One round fixes one attributed failure group; rounds repeat until Step 6
 reports a green full run:
 
 1. **Attribute.** Failing tests → owning crates → census rows. One dossier
@@ -260,7 +295,8 @@ reports a green full run:
    on the fix diff; its change requests go back to the same implementer.
    A fix pull request does not merge past an unresolved change request.
 5. **Re-verify.** The focused failing test first; the affected gates; then
-   Step 5 again — the fix changed product code, so the receipt must
+   Step 4 again (the map refresh, so the new head carries current maps),
+   then Step 6 again — the fix changed product code, so the receipt must
    describe the new head before the pull request can be called green.
 
 Each round appends to the record: the attribution and its evidence, the
@@ -270,35 +306,6 @@ so — an attribution that stays unresolved, a decision only the owner can make
 (asked through `ask_owner.py`, the run waits) — or when two consecutive rounds
 change nothing about what is red, which is reported with what each round
 tried, never retried blindly.
-
-## Step 8 — Refresh the architecture map
-
-After the last fix is merged and Step 5 holds a green receipt for the head
-(or straight after Step 6 when no fix round ran), refresh the generated maps
-so `development` gets them in the same merge as the stub:
-
-1. `python3 ${PLUGIN_ROOT}/scripts/map_refresh_pr.py --root <checkout>
-   --stub <the stub being integrated> --moment integrate --json`. The last
-   stdout line is JSON: `status` is `opened`, `exists` (an open pull request
-   of that branch, its `pr` number given), `nothing-changed` or `skipped`
-   (no committed map, or `ASD_MAP_REFRESH=0`: opt-in and opt-out are the
-   script's, unchanged), or `failed` with a `reason`. The branch is
-   `chore/map-refresh-<stub date>-integrate`, which never meets the
-   cut-time branch of the same stub or the refresh of the next stub.
-2. `nothing-changed` or `skipped`: log it in the record and go to Step 9.
-3. `opened` or `exists`: `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr
-   <pr>`, then **you merge it** into the stub exactly as Step 7 merges a fix
-   pull request — the yes from the gates covers this merge and nothing else.
-4. **Validity.** The refresh touches only `docs/architecture/`, so the
-   `local-stack` receipt stays valid: do not re-run Step 5. Log that ruling
-   as Step 5's validity rule asks (`documentation-only: receipt kept`), and
-   re-post nothing unless the receipt tooling needs the new head sha, in
-   which case re-post the same verdict, never a new run.
-5. **A failure never blocks the integration.** Any failure — the script
-   (`status: failed`), a red or superseded CI, a merge refused — is logged
-   as `MAP-REFRESH: failed — <why>` in the record and in a dashboard note,
-   an open refresh pull request is left for the user, and you continue to
-   Step 9.
 
 ## Step 9 — Report
 

@@ -15,7 +15,7 @@ it polls (`ASD_STUB_POLL` seconds, default 300) until the stub merges, then cuts
 runner the build ends its turn with `RUNNER: WAITING stub` instead, and the runner waits without spending tokens.
 After a new cut, `map_refresh_pr.py` runs detached to refresh the committed architecture map as a pull request into the
 new stub (opt-in: only when the repo already commits one; ASD_MAP_REFRESH=0 disables). This is the fallback: the /stub command also
-runs it with `--moment integrate` as its last step, so development gets current maps in the stub's own merge. `--dry-run` cuts nothing (prints `cut stub/<today>`). Exit 2 on a git or gh failure. `ASD_GH_BIN` replaces gh.
+runs it with `--moment integrate` before its full run (a receipt is bound to one head SHA), so development gets current maps in the stub's own merge. `--dry-run` cuts nothing (prints `cut stub/<today>`). Exit 2 on a git or gh failure. `ASD_GH_BIN` replaces gh.
 """
 from __future__ import annotations
 
