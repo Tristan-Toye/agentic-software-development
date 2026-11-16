@@ -63,7 +63,12 @@ scripts/vr_map.py refresh REPO [--since REV] [--full] [--no-calls] [--no-product
 scripts/vr_refresh.py --selftest | map_refresh_pr.py --selftest
 scripts/vr_c2_drift.py --selftest | vr_map.py --selftest | vr_metrics.py --selftest
 scripts/vr_mermaid.py import FILE.md [--write] [--adopt] | render FILE.json | sync DIR | check DIR | --selftest   # exit 1 on a problem
+bun shared/test/vr-canvas.browser.ts                  # FU-04: browser check of the rendered canvas (needs `bun install` in shared/ and Google Chrome; else SKIP, exit 0)
 ```
+
+Canvas size (owner decision 2026-11-16, "readable minimum + pan"): the canvas opens fitted to its box but never below the scale at which the smallest label text renders at 12 px (read from the drawn text); a larger diagram overflows the box and starts at its top-left, and is panned inside the box (drag, touch drag, wheel or trackpad scroll) so the page itself never scrolls sideways. The "Fit all" button shows the whole diagram (labels may be small) and toggles to "Readable size"; the zoom buttons still work and may go below the minimum on request.
+
+`shared/test/vr-canvas.browser.ts` (FU-04) opens the dashboard page on the W-145 fixtures at 390 and 1280 px in the installed Google Chrome (puppeteer-core, no browser download; `ASD_CHROME` overrides the path), reads the DOM of the three tabs and fails on a label rendered under 12 px, two overlapping label boxes, a label wider than or outside its node box, a horizontal page scroll or a console or page error. The 12 px rule applies to the opening state and after "Readable size", not in "Fit all"; the other rules apply everywhere. Two seeded fixtures (an unbreakable label, and a three-line label crowding a member count) must fail. No screenshots are taken or sent to a model; the server runs on an ephemeral port with every state dir in a temp folder. Without Chrome or puppeteer-core it prints one SKIP line and exits 0. It is not part of `bun test`.
 
 Architecture diagrams (c1 to c4, sequence) are change-graph JSON beside their `.md`; the `.md`'s Mermaid block is generated from it (`vr_mermaid.py`). To change one: edit the JSON, run `vr_mermaid.py sync docs/architecture`, commit both; the prose stays hand-written. `vr_mermaid.py check docs/architecture` belongs in CI and in the close gate. `vr_c2_drift.py` and `vr_c3_agree.py` read the JSON when it exists and parse the Mermaid otherwise; the dashboard opens a `.md` as a graph when its JSON exists, as raw Mermaid otherwise.
 

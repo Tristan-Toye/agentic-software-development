@@ -20,3 +20,5 @@ inspiration-repos/*
 
 # research PDFs stay local: every plugin update copies the repo into a per-commit cache dir; the paper docs keep each source URL
 visual-review/sources/*.pdf
+
+node_modules/

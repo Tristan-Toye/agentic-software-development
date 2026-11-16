@@ -1,0 +1,11 @@
+{
+  "name": "asd-shared",
+  "private": true,
+  "description": "Dev-only dependency for the browser check of the visual-review canvas (test/vr-canvas.browser.ts). Runtime code has no dependencies.",
+  "devDependencies": {
+    "puppeteer-core": "25.16.0"
+  },
+  "scripts": {
+    "vr-canvas": "bun test/vr-canvas.browser.ts"
+  }
+}
