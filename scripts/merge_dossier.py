@@ -1076,19 +1076,29 @@ def integrate(root: str, branch: str) -> int:
         append_line(log, {"ts": now(), "kind": kind, "text": text})
     line(f"start /merge-queue {branch}")
     # Step 1: the stub's pull request into development. Opening it closes the stub: new work goes to the next one.
-    into = stub_into_dev(root, branch)
-    if into == "merged":
-        state(state="failed", error=f"{branch} is already merged into development"); return 1
-    if not into:
+    # A stub nothing was merged into yet has no commits beyond development, and GitHub refuses that PR: it then
+    # opens right after the merge queue has merged the first finished dossiers, before /stub starts.
+    def open_pr() -> tuple[bool, str]:
         date = branch.split("/", 1)[1]
         rc, out = gh(root, "pr", "create", "--base", "development", "--head", branch, "--title", f"Stub {date}: integrating",
                      "--body", "Integration of this stub, started from the dashboard's Integrate.\n\n"
                      "1. The merge queue merges every finished dossier on the stub, one by one.\n"
                      "2. /stub runs the full stack suite, audits each dossier against its criteria, and fixes what fails.\n\n"
                      "## Receipt\n\npending\n\n## Fix rounds\n")
-        if rc != 0:
+        if rc == 0:
+            line(f"Opened the stub's pull request into development ({out.strip().splitlines()[-1] if out.strip() else ''}): {branch} is closed, new work goes to the next stub.", "update")
+        return rc == 0, out
+    into = stub_into_dev(root, branch)
+    if into == "merged":
+        state(state="failed", error=f"{branch} is already merged into development"); return 1
+    pr_later = False
+    if not into:
+        ok, out = open_pr()
+        if not ok and "no commits between" in out.lower():
+            pr_later = True
+            line(f"{branch} has nothing merged into it yet, so its pull request into development opens once the first finished dossiers are merged.", "update")
+        elif not ok:
             state(state="failed", error="could not open the stub's PR into development: " + out[-200:]); return 1
-        line(f"Opened the stub's pull request into development ({out.strip().splitlines()[-1] if out.strip() else ''}): {branch} is closed, new work goes to the next stub.", "update")
     rc, out = gh(root, "pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,baseRefName,isDraft")
     if rc != 0:
         state(state="failed", error="gh pr list failed: " + out[:200]); return 1
@@ -1110,6 +1120,11 @@ def integrate(root: str, branch: str) -> int:
         return not any(x.get("isDraft") for x in (chain or [p])) and not still_building(f"{repo}.{i}")
     finished = picked_stacks(ids, ready, (read_json(st_path, {}) or {}).get("finished") or [])
     inflight = [i for i, p in ids if i not in finished]
+    if pr_later and not finished:
+        why = (f"nothing to integrate: no dossier on {branch} is finished (no PR out of draft without a live run)"
+               + (f"; still in flight: {', '.join(inflight)}" if inflight else ""))
+        line(why[0].upper() + why[1:] + ".", "update")
+        state(state="failed", error=why); return 1
     state(state="merging", finished=finished, inflight=inflight, error="", root=root, branch=branch)
     line(("Integrating " + branch + ". Merging the finished dossiers first, in order: " + (", ".join(finished) or "none") + "."
           + (" Still in flight, so they move to the next stub once this one is in development: " + ", ".join(inflight) + "." if inflight else "")
@@ -1129,6 +1144,10 @@ def integrate(root: str, branch: str) -> int:
         why = "; ".join(f"{i}: {v.get('state')} {v.get('error', '')[:120]}" for i, v in bad.items())
         line("The merge queue did not merge every finished dossier, so /stub did not start: " + why, "update")
         state(state="failed", error=why); return 1
+    if pr_later:
+        ok, out = open_pr()
+        if not ok:
+            state(state="failed", error="could not open the stub's PR into development: " + out[-200:]); return 1
     line("All finished dossiers are merged into " + branch + ". Starting /stub: the full stack run, the audit and the stub's PR into development.", "update")
     start_stub(root, branch, slug)
     state(state="stub", note="/stub runs")
@@ -1172,6 +1191,8 @@ if a[:2] == ["pr", "close"]:
     for p in prs:
         if str(p["number"]) == a[2]: p["state"] = "CLOSED"
     json.dump(prs, open(os.path.join(d, "prs.json"), "w")); sys.exit(0)
+if a[:2] == ["pr", "create"] and os.environ.get("FAKE_NO_COMMITS") and not os.path.exists(os.path.join(d, "merged_any.txt")):
+    print("pull request create failed: GraphQL: No commits between development and " + a[a.index("--head") + 1] + " (createPullRequest)"); sys.exit(1)
 if a[:2] == ["pr", "create"]:
     open(os.path.join(d, "stubpr.txt"), "w").write(" ".join(a)); print("https://github.com/o/r/pull/900"); sys.exit(0)
 if a[:2] == ["stack", "link"]:
@@ -1183,6 +1204,7 @@ if a[:2] in (["stack", "merge"], ["pr", "merge"]):
     nums = open(os.path.join(d, "linked.txt")).read().split() if a[0] == "stack" else [a[2]]
     for p in prs:
         if str(p["number"]) in nums: p["state"] = "MERGED"
+    open(os.path.join(d, "merged_any.txt"), "w").write("1")
     if a[0] == "pr" and a[2] == "901" and os.environ.get("FAKE_NO_AUTOMARK") != "1":
         for p in prs:
             if p["headRefName"].startswith(("plan/", "docs/")) and p.get("state", "OPEN") == "OPEN": p["state"] = "MERGED"
@@ -1480,6 +1502,32 @@ print("started")
         finally:
             os.environ.clear(); os.environ.update(saved_env)
         check("integrate: a dossier not picked waits while the stub's PR is open", not late[0] and "being integrated" in late[1], str(late))
+        # ---- integrate a stub nothing was merged into yet: GitHub refuses its PR, so it opens after the first merges ----
+        def empty_stub(stub, prs_e):
+            for f in ("runs.txt", "calls.txt", "stubpr.txt", "merged_any.txt"):
+                if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
+            for n in os.listdir(rdir):   # only this scenario's dossiers: later checks read W-128's and W-130's merge state
+                if n.startswith(("repo.W-16", "repo.merge-queue")): os.remove(os.path.join(rdir, n))
+            json.dump(prs_e, open(os.path.join(fdir, "prs.json"), "w"))
+            saved = dict(os.environ)
+            os.environ.update(env, ASD_RUNNER_BIN=fr, ASD_MERGE_POLL="0.2", FAKE_NO_COMMITS="1")
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc_e = integrate(root, stub)
+            finally:
+                os.environ.clear(); os.environ.update(saved)
+            slug = stub.replace("/", "-")
+            runs_e = open(os.path.join(fdir, "runs.txt")).read().split("\n") if os.path.exists(os.path.join(fdir, "runs.txt")) else []
+            spr_e = open(os.path.join(fdir, "stubpr.txt")).read() if os.path.exists(os.path.join(fdir, "stubpr.txt")) else ""
+            tl_e = [json.loads(x)["text"] for x in open(os.path.join(rdir, f"repo.{slug}.jsonl"))]
+            return rc_e, runs_e, spr_e, tl_e, read_json(os.path.join(rdir, f"repo.{slug}.integrate.json"), {})
+        rc_e, runs_e, spr_e, tl_e, st_e = empty_stub("stub/e", [P(910, "feat/W-160-a", "stub/e"), P(911, "feat/W-161-b", "stub/e", True)])
+        check("integrate: an empty stub merges its finished dossiers first, then opens its PR and starts /stub",
+              rc_e == 0 and runs_e[:2] == ["W-160 after-merge", "stub-e stub"] and "--head stub/e" in spr_e and st_e.get("state") == "stub"
+              and any("nothing merged into it yet" in t for t in tl_e) and any("is closed" in t for t in tl_e), str((rc_e, runs_e, spr_e, st_e)))
+        rc_n, runs_n, spr_n, tl_n, st_n = empty_stub("stub/n", [P(920, "feat/W-162-a", "stub/n", True)])
+        check("integrate: an empty stub with nothing finished fails plainly, starts nothing and opens no PR",
+              rc_n == 1 and "stub-n stub" not in runs_n and not spr_n and "nothing to integrate" in str(st_n.get("error")) and "W-162" in str(st_n.get("error")), str((rc_n, runs_n, st_n)))
         # ---- non-code PRs into development: a colliding dossier id is renumbered by script, then merged; the stub is untouched ----
         g = lambda *x, cwd=None: subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", *x], cwd=cwd, capture_output=True, text=True)
         origin = os.path.join(tmp, "o.git"); clone = os.path.join(tmp, "clone"); pusher = os.path.join(tmp, "pusher")
@@ -1637,7 +1685,7 @@ print("started")
         check("resume: a stack that merged before the worker died reads merged, not failed", s77.get("state") == "merged" and not s77.get("error"), str(s77))
         sa, sb, cc, _ = batch_scenario("moved", FAKE_NO_AUTOMARK="1", FAKE_HEAD="pushed-during-the-batch")
         check("batch: a member pushed to during the batch is left open and says so, never closed", "pr close 530" not in cc and sa.get("state") == "failed" and "changed" in sa.get("error", ""), cc + str(sa))
-        check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged")
+        check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged", str(read_json(os.path.join(rdir, "repo.W-128.merge.json"), {})) + str(read_json(os.path.join(rdir, "repo.W-130.merge.json"), {})))
         RUNNER = saved
     leaked = {d: sorted(now_ - before_real[d]) for d, now_ in listing().items() if now_ - before_real[d]}
     check("no file was created in the real questions or runs dir during the selftest", not leaked, str(leaked))
