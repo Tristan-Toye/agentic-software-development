@@ -54,14 +54,18 @@ real-uncertainty questions, each passing `--kind`, and never an approval
   integrated: never while a stub's pull request into development is open,
   so the new stub starts with the whole integrated batch. A build that needs
   a stub meanwhile waits at that breakpoint (`RUNNER: WAITING stub`).
-- **The architecture map follows the cut.** When `stub_target.py` cuts a new
-  stub, it starts `scripts/map_refresh_pr.py` detached: an incremental
-  `vr_map.py refresh` from the previous map's extraction commit, committed to
-  `chore/map-refresh-<date>` and opened as a pull request into the new stub.
-  It acts only in a repo that already commits `docs/architecture/` maps
-  (`ASD_MAP_REFRESH=0` turns it off), never blocks the cut and never pushes to
-  `development`; the map reaches `development` with the next stub like any
-  other change.
+- **The architecture map is refreshed at two moments.** When `stub_target.py`
+  cuts a new stub, it starts `scripts/map_refresh_pr.py` detached: an
+  incremental `vr_map.py refresh` from the previous map's extraction commit,
+  committed to `chore/map-refresh-<date>` and opened as a pull request into
+  the new stub. And as the last step of this command (Step 8), once the
+  fixes are green, the same script runs with `--moment integrate` and opens
+  `chore/map-refresh-<date>-integrate` into the stub under integration, so
+  `development` receives current maps in the same merge as the stub. The cut
+  refresh is the fallback: it ends quietly when nothing changed. Both act
+  only in a repo that already commits `docs/architecture/` maps
+  (`ASD_MAP_REFRESH=0` turns them off), neither blocks its caller and
+  neither pushes to `development`.
 - The moment this command opens a stub's pull request, that stub is
   **closed** to new dossiers. A dossier started later targets a new stub cut
   the same way, dated that later day. Never retarget a dossier pull request
@@ -84,7 +88,10 @@ all of it:
    **posts the `local-stack` receipt** on that pull request.
 3. It **spawns implementers and reviewers in worktrees** to fix failures,
    as pull requests into the stub, and **merges those fix pull requests
-   itself**. Nothing else is merged by this command: the stub pull request
+   itself**. After the fixes are green it also **opens one architecture-map
+   refresh pull request into the stub and merges it itself** (Step 8;
+   documentation only, a failure of it never blocks the integration). The
+   yes covers these merges and nothing else. Nothing else is merged by this command: the stub pull request
    into `development` stays the user's, always.
 4. It **iterates until the full stack run is green**: as many
    attribute-inspect-fix rounds as it takes, with no round limit.
@@ -245,13 +252,42 @@ so — an attribution that stays unresolved, a decision only the owner can make
 change nothing about what is red, which is reported with what each round
 tried, never retried blindly.
 
-## Step 8 — Report
+## Step 8 — Refresh the architecture map
+
+After the last fix is merged and Step 5 holds a green receipt for the head
+(or straight after Step 6 when no fix round ran), refresh the generated maps
+so `development` gets them in the same merge as the stub:
+
+1. `python3 ${PLUGIN_ROOT}/scripts/map_refresh_pr.py --root <checkout>
+   --stub <the stub being integrated> --moment integrate --json`. The last
+   stdout line is JSON: `status` is `opened`, `exists` (an open pull request
+   of that branch, its `pr` number given), `nothing-changed` or `skipped`
+   (no committed map, or `ASD_MAP_REFRESH=0`: opt-in and opt-out are the
+   script's, unchanged), or `failed` with a `reason`. The branch is
+   `chore/map-refresh-<stub date>-integrate`, which never meets the
+   cut-time branch of the same stub or the refresh of the next stub.
+2. `nothing-changed` or `skipped`: log it in the record and go to Step 9.
+3. `opened` or `exists`: `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr
+   <pr>`, then **you merge it** into the stub exactly as Step 7 merges a fix
+   pull request — the yes from the gates covers this merge and nothing else.
+4. **Validity.** The refresh touches only `docs/architecture/`, so the
+   `local-stack` receipt stays valid: do not re-run Step 5. Log that ruling
+   as Step 5's validity rule asks (`documentation-only: receipt kept`), and
+   re-post nothing unless the receipt tooling needs the new head sha, in
+   which case re-post the same verdict, never a new run.
+5. **A failure never blocks the integration.** Any failure — the script
+   (`status: failed`), a red or superseded CI, a merge refused — is logged
+   as `MAP-REFRESH: failed — <why>` in the record and in a dashboard note,
+   an open refresh pull request is left for the user, and you continue to
+   Step 9.
+
+## Step 9 — Report
 
 In chat, and as the pull request body's final edit: the pull request URL;
 the census table with every dossier's final state — CI, new tests,
 mutation, audit, fix rounds; the receipt summary — suites passed, failed,
 skipped with their waivers, build and run seconds, the head it describes;
-the number of fix rounds and what each fixed; any ADR-worthy lesson as a
+the number of fix rounds and what each fixed; the map refresh (pull request merged, nothing changed, skipped, or the `MAP-REFRESH: failed` line); any ADR-worthy lesson as a
 `/plan D-n` seed, never an unratified write; and the one act left — the
 user merges. Then close the time-logging session, if one was opened.
 
@@ -263,7 +299,7 @@ user merges. Then close the time-logging session, if one was opened.
   tiers is not green; every `SKIP` is inspected and named.
 - **Attribution is evidence or it is nothing.** An ambiguous failure stops
   the run; it never selects a convenient dossier.
-- **The pipeline merges only its own fix pull requests.** The stub pull
+- **The pipeline merges only its own fix and map-refresh pull requests.** The stub pull
   request into `development` is the user's, without exception.
 - **No direct push to a protected branch** — creation of the stub and
   pull-request merges only; a bypass push needs the user's yes for that

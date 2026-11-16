@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Refresh the committed architecture map for a freshly cut stub and open the pull request into that stub.
 
-    map_refresh_pr.py --root R --stub stub/2026-11-20 [--dry-run]
+    map_refresh_pr.py --root R --stub stub/2026-11-20 [--moment cut|integrate] [--json] [--dry-run]
     map_refresh_pr.py --selftest
 
 Run by `stub_target.py` right after it cuts a new stub (detached, never blocking the cut). The cut is the one moment
@@ -14,6 +14,14 @@ commit of `docs/architecture/` on `chore/map-refresh-<stub date>`, a push and `g
 
 Opt-in: it acts only when the stub already carries `docs/architecture/map-manifest.json` or `crate-map.json` (a repo
 that never ran `vr_map.py refresh` is left alone), or when ASD_MAP_REFRESH=1. ASD_MAP_REFRESH=0 turns it off.
+Two moments, two branches. `--moment cut` (default, what `stub_target.py` starts) uses `chore/map-refresh-<stub date>`.
+`--moment integrate` (what the /stub command runs as its last step, once the stub's fixes are green) uses
+`chore/map-refresh-<stub date>-integrate`: the cut-time branch of the same stub usually exists already (its pull request
+merged long ago), so reusing it would end the run as "already exists". Distinct stubs have distinct dates, so the
+refresh of the next stub never meets the one of the stub under integration. With `--json` the last stdout line is one
+JSON object: {"status": "opened"|"exists"|"nothing-changed"|"skipped"|"failed", "branch", "pr" (number or null),
+"url" (or null), "reason"}; an existing open pull request of the branch is reported as "exists" with its number so the
+command can wait on it.
 Idempotent: an existing branch or open pull request of that name ends it quietly. Nothing changed means no pull
 request. Exit 0 on done or skipped, 1 on a failure (the log says where). `ASD_GH_BIN` replaces gh;
 `ASD_MAP_REFRESH_BIN` replaces the refresh command (it receives the worktree path).
@@ -21,7 +29,9 @@ request. Exit 0 on done or skipped, 1 on a failure (the log says where). `ASD_GH
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -54,27 +64,44 @@ def enabled(root: str, stub: str) -> bool:
     return any(sh(["git", "-C", root, "cat-file", "-e", f"origin/{stub}:{m}"])[0] == 0 for m in MARKERS)
 
 
-def run(root: str, stub: str, dry: bool = False, log=lambda m: print("map_refresh_pr: " + m, file=sys.stderr, flush=True)) -> int:
+def branch_for(stub: str, moment: str = "cut") -> str:
+    return "chore/map-refresh-" + stub.split("/", 1)[-1] + ("-integrate" if moment == "integrate" else "")
+
+
+def run(root: str, stub: str, dry: bool = False, log=lambda m: print("map_refresh_pr: " + m, file=sys.stderr, flush=True),
+        moment: str = "cut", result: dict | None = None) -> int:
+    res = result if result is not None else {}
     root = os.path.abspath(root)
+    branch = branch_for(stub, moment)
+    res.update(status="skipped", branch=branch, pr=None, url=None, reason="")
+
+    def done(status, reason, rc=0, pr=None, url=None):
+        res.update(status=status, reason=reason, pr=pr, url=url)
+        return rc
+
     if not enabled(root, stub):
         log("skipped: no committed map on %s (set ASD_MAP_REFRESH=1 to start one)" % stub)
-        return 0
-    branch = "chore/map-refresh-" + stub.split("/", 1)[-1]
+        return done("skipped", "no committed map")
     sh(["git", "-C", root, "fetch", "-q", "origin", stub])
+    rc, out = gh(root, "pr", "list", "--head", branch, "--state", "open", "--json", "number,url", "--jq", ".[0] | [.number, .url] | @tsv")
+    num, _, url = out.strip().partition("\t")
+    if rc == 0 and num.isdigit() and int(num) > 0:
+        log("skipped: pull request #%s is already open for %s" % (num, branch))
+        return done("exists", "open pull request", pr=int(num), url=url or None)
     if sh(["git", "-C", root, "ls-remote", "--exit-code", "--heads", "origin", branch])[0] == 0:
         log("skipped: %s already exists on origin" % branch)
-        return 0
+        return done("exists", "branch exists on origin")
     rc, out = gh(root, "pr", "list", "--head", branch, "--state", "all", "--json", "number", "--jq", "length")
     if rc == 0 and out.strip() not in ("", "0"):
         log("skipped: a pull request already exists for %s" % branch)
-        return 0
+        return done("exists", "pull request exists")
     tmp = tempfile.mkdtemp(prefix="map-refresh-")
     wt = os.path.join(tmp, "wt")
     try:
         rc, out = sh(["git", "-C", root, "worktree", "add", "--detach", wt, f"origin/{stub}"])
         if rc != 0:
             log("worktree failed: " + out[:200])
-            return 1
+            return done("failed", "worktree failed: " + out[:120], 1)
         try:
             tmo = float(os.environ.get("ASD_MAP_REFRESH_TIMEOUT") or 3600)
         except ValueError:
@@ -88,18 +115,18 @@ def run(root: str, stub: str, dry: bool = False, log=lambda m: print("map_refres
         log(out[-1500:] if out else "refresh produced no output")
         if rc != 0:
             log("refresh failed (exit %d)%s" % (rc, "" if out else " or timed out after %.0f s" % tmo))
-            return 1
+            return done("failed", "refresh failed (exit %d)" % rc, 1)
         changes = [x for x in sh(["git", "-C", wt, "status", "--porcelain", "--", DIR])[1].splitlines() if x.strip()]
         if not changes:
             log("nothing changed: no pull request")
-            return 0
+            return done("nothing-changed", "the map is current")
         if all("D" in x[:2] for x in changes):
             # views vanished and nothing was written: a layer that did not run, not a change of the repository
             log("refusing: the refresh only deleted %d file(s) under %s; no pull request" % (len(changes), DIR))
-            return 1
+            return done("failed", "the refresh only deleted views", 1)
         if dry:
             log("dry run: would open a pull request from %s into %s" % (branch, stub))
-            return 0
+            return done("skipped", "dry run")
         steps = [["git", "-C", wt, "checkout", "-q", "-b", branch],
                  ["git", "-C", wt, "add", "--", DIR],
                  ["git", "-C", wt, "commit", "-q", "-m", f"Refresh the architecture map for {stub}\n\nIncremental: recomputed from the previous extraction commit.\n"],
@@ -108,12 +135,16 @@ def run(root: str, stub: str, dry: bool = False, log=lambda m: print("map_refres
             rc, out = sh(c)
             if rc != 0:
                 log("%s failed: %s" % (c[3], out[:200]))
-                return 1
+                return done("failed", "%s failed: %s" % (c[3], out[:120]), 1)
         rc, out = gh(root, "pr", "create", "--base", stub, "--head", branch, "--title", f"Refresh the architecture map ({stub})",
                      "--body", "Regenerated by `vr_map.py refresh`, incrementally from the previous extraction commit "
                                "(see `docs/architecture/map-manifest.json`). Merge it into the stub like any dossier PR.")
         log("pull request: " + out[-300:] if rc == 0 else "gh pr create failed: " + out[:200])
-        return 0 if rc == 0 else 1
+        if rc != 0:
+            return done("failed", "gh pr create failed: " + out[:120], 1)
+        url = out.strip().splitlines()[-1] if out.strip() else ""
+        m = re.search(r"/pull/(\d+)\s*$", url)
+        return done("opened", "", pr=int(m.group(1)) if m else None, url=url or None)
     finally:
         sh(["git", "-C", root, "worktree", "remove", "--force", wt])
         shutil.rmtree(tmp, ignore_errors=True)
@@ -179,6 +210,38 @@ def selftest() -> int:
         os.environ["ASD_MAP_REFRESH_BIN"] = dele
         n = open(d + "/gh.log").read().count("pr create")
         check("deletions-only:refused", run(w, "stub/2027-01-01", log=q) == 1 and open(d + "/gh.log").read().count("pr create") == n)
+        # the two moments use distinct branches: a merged cut-time refresh of the same stub must not skip the integrate one
+        os.environ["ASD_MAP_REFRESH_BIN"] = refr
+        os.environ.pop("ASD_MAP_REFRESH", None)
+        check("branch:moments-differ", branch_for("stub/2026-11-20") == "chore/map-refresh-2026-11-20"
+              and branch_for("stub/2026-11-20", "integrate") == "chore/map-refresh-2026-11-20-integrate")
+        check("branch:other-stub-never-collides", branch_for("stub/2026-11-27", "integrate") != branch_for("stub/2026-11-20")
+              and branch_for("stub/2026-11-27") != branch_for("stub/2026-11-20", "integrate"))
+        r: dict = {}
+        g("-C", w, "push", "-q", "origin", "HEAD~1:refs/heads/stub/2027-02-01"); g("-C", w, "fetch", "-q", "origin")
+        n = open(d + "/gh.log").read().count("pr create")
+        rc = run(w, "stub/2026-11-20", log=q, moment="integrate", result=r)
+        check("integrate:opens-despite-cut-branch", rc == 0 and r["status"] == "opened" and r["pr"] == 1 and r["url"] == "https://x/pull/1"
+              and open(d + "/gh.log").read().count("pr create") == n + 1)
+        check("integrate:branch-pushed", sh(["git", "-C", w, "ls-remote", "--heads", "origin", "chore/map-refresh-2026-11-20-integrate"])[1] != "")
+        r = {}
+        run(w, "stub/2026-11-20", log=q, moment="integrate", result=r)
+        check("integrate:idempotent", r["status"] == "exists" and open(d + "/gh.log").read().count("pr create") == n + 1)
+        r = {}
+        os.environ["ASD_MAP_REFRESH"] = "0"
+        run(w, "stub/2026-11-20", log=q, moment="integrate", result=r)
+        check("integrate:opt-out", r["status"] == "skipped")
+        os.environ.pop("ASD_MAP_REFRESH")
+        r = {}
+        os.environ["ASD_MAP_REFRESH_BIN"] = "false"
+        rc = run(w, "stub/2027-02-01", log=q, moment="integrate", result=r)
+        check("integrate:failure-reported", rc == 1 and r["status"] == "failed" and "refresh failed" in r["reason"])
+        o = sh([sys.executable, os.path.abspath(__file__), "--root", w, "--stub", "stub/2027-02-01", "--moment", "integrate", "--json"])[1]
+        try:
+            last = json.loads([x for x in o.splitlines() if x.startswith("{")][-1])
+        except (ValueError, IndexError):
+            last = {}
+        check("cli:json-last-line", last.get("status") == "failed" and last.get("branch") == "chore/map-refresh-2027-02-01-integrate")
     print("all map_refresh_pr selftests passed" if not bad else "FAILED: " + ", ".join(bad))
     return 1 if bad else 0
 
@@ -186,6 +249,8 @@ def selftest() -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     ap.add_argument("--root"); ap.add_argument("--stub"); ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--moment", choices=("cut", "integrate"), default="cut")
+    ap.add_argument("--json", action="store_true", help="print the outcome as one JSON object on the last stdout line")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if a.selftest:
@@ -193,7 +258,11 @@ def main(argv=None) -> int:
     if not a.root or not a.stub:
         ap.print_usage(sys.stderr)
         return 2
-    return run(a.root, a.stub, a.dry_run)
+    res: dict = {}
+    rc = run(a.root, a.stub, a.dry_run, moment=a.moment, result=res)
+    if a.json:
+        print(json.dumps(res), flush=True)
+    return rc
 
 
 if __name__ == "__main__":
