@@ -7,7 +7,7 @@ import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, An
 import { channelNameFor, interpretEnvelope, isDuplicate, runSocket, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
 import { undecidedDeferred, parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, readDeferredRecord, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
-import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
+import { prNumberOf, prFieldNumber, prFieldNumbers, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { canIntegrate, integrationPhase, integrationStopped, markIntegrating, readIntegrate, readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule, runnerActive } from "../questions/runstore.ts"
 import { blockedTarget } from "../claude/permission-denied.ts"
@@ -374,6 +374,14 @@ check("runs: an answered question links to its dossier, open ones are not listed
 // stubs: pure parsers
 check("stubs: merge subject to PR number", prNumberOf("Merge pull request #41 from org/feat-x") === 41 && prNumberOf("feat: thing (#42)") === 42 && prNumberOf("Merge branch 'x'") === null)
 check("stubs: pr field forms", prFieldNumber("https://github.com/o/r/pull/7") === 7 && prFieldNumber("#8") === 8 && prFieldNumber("") === null && prFieldNumber(undefined) === null)
+check("stubs: a pr list names every number, newest last", prFieldNumber("[https://g/o/r/pull/5, https://g/o/r/pull/55]") === 55 && JSON.stringify(prFieldNumbers("[#5, https://g/o/r/pull/55]")) === "[5,55]" && prFieldNumbers("").length === 0)
+{
+  const bl = parseFrontMatter("---\nid: W-13\npr:\n  - https://github.com/o/r/pull/55\nblocked_by:\n  - W-1\n  - 'W-2'\nstatus: done\n---\nx\n")
+  check("runs: a block list reads as its inline form", bl.pr === "[https://github.com/o/r/pull/55]" && bl.blocked_by === "[W-1, W-2]" && bl.status === "done")
+  // W-013: a done dossier whose `pr:` is a block list stays under its stub through its open PR, head branch without the id.
+  const mb = stubMembers([{ branch: "stub/b", cut: "2026-11-10", state: "accepting", pr: null }], [{ id: "W-13", status: "done", pr: bl.pr }], { "stub/b": [{ number: 55, headRefName: "feat/LABS-135-x" }] })
+  check("stubs: a block-list pr places a done dossier under its stub", JSON.stringify(mb["stub/b"]) === JSON.stringify([{ id: "W-13", noPr: false }]))
+}
 check("stubs: merges map to dossiers via pr:", JSON.stringify(dossiersOnMerges(["Merge pull request #41 from a/b", "x (#42)", "Merge pull request #99 from c/d", "Merge pull request #41 again"], new Map([[41, "W-1"], [42, "W-2"]]))) === '["W-1","W-2"]')
 check("stubs: a merged plan is not an implemented dossier", JSON.stringify(dossiersOnMerges(["Merge pull request #392 from o/plan/W-123-stub-prune", "Merge pull request #405 from o/feat/W-127-x"], new Map([[392, "W-123"], [405, "W-127"]]))) === '["W-127"]')
 check("stubs: a fix branch in the merge subject names its dossier", JSON.stringify(dossiersOnMerges(["Merge pull request #404 from o/fix/W-122-stub2026-11-01-census", "Merge pull request #7 from o/feat/X-9"], new Map(), new Set(["W-122"]))) === '["W-122"]')
