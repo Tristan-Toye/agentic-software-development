@@ -136,42 +136,43 @@
    carries `Diagram <stem> not added: <why>` (the plan was wrong: say how).
    Two sources:
 
-   - *A Phase 3 visual review ran.* Take the owner-approved L1 flow view,
-     `.discovery/visual-review/<ID>/l1.json` (`view: flow`), and convert it
-     to a `seq` graph. `vr_graph.py validate` accepts both views but the
-     formats differ, so the orchestrator applies this mapping: `view` becomes
-     `seq` and `meta.mermaid.type` is `sequenceDiagram`; `lanes` carry over
-     unchanged (lane = participant, its `label` the participant name); each
-     L1 `step` node becomes a `message` node in its `order`, keeping `id`,
-     `label`, `status`, `lane` (the sender) and its `evidence` anchors
-     untouched; `seq.to` is the lane of the next step (the last step points
-     to its own lane) with `arrow` `->>`, corrected from the node's `detail`
-     or the code where the step is a reply (`-->>`) or fire-and-forget
-     (`-)`); `flows` becomes one flow whose `after` lists the step ids in
-     order (the L1 flow's `after` list; keep its `status` and `evidence`, a
-     flow with no evidence fails validation); `flow` edges between
-     consecutive steps carry over. L1 `before` lists and `detail` text are
-     dropped (a new diagram has no before). Carry only what the owner
-     approved: drop a step whose `review.json` verdict is `remove`, apply
-     `change` comments first.
-   - *No visual review.* The orchestrator authors the seq graph from the
-     code (`arch_find` on the neighbouring diagrams as models): one
+   - *A Phase 3 visual review ran.* One call per stem, from the repo root,
+     mechanical:
+     `python3 "${PLUGIN_ROOT}/scripts/vr_promote.py" --dossier-id <ID> --stem <stem> --repo .`
+     It takes the flow of `.discovery/visual-review/<ID>/l1.json` whose
+     `new_stem` is the stem, drops the steps the owner marked `remove` in
+     `review.json`, maps lanes to participants and steps to messages
+     (`seq.to` from the step's `to`; arrow from `call_kind`: call `->>`,
+     reply `-->>`, async and publish `-)`), carries the evidence anchors and
+     re-finds each anchor's line by the backticked name in its note at HEAD
+     (Phase 3 anchors point at stubs). It writes
+     `docs/architecture/<stem>.json`, the `.md` stub when absent, validates
+     and runs `vr_mermaid.py sync`. Exit 1 is a stop: `STALE-ANCHOR <step>
+     <path>:<line> <name>` (the code no longer has that name: fix the L1 step
+     or the code, rerun) or `UNRESOLVED-CHANGE <step>` (the owner's `change`
+     verdict was never answered with an `ok`: ask the owner). Then commit and
+     rerun the gate.
+   - *No visual review* (a repo whose language the visual review does not
+     cover, today anything but Rust). The orchestrator authors the seq graph
+     from the code (`arch_find` on the neighbouring diagrams as models): one
      participant lane per crate, process or container, one message per call
-     or event in order, **every message with a `path:line` source evidence
-     anchor** it opened; a step it cannot anchor is `inferred` with a note,
-     never invented. A new external system (`c1-*`) is a node and edges
-     added to the c1 context graph.
+     or event in order (`seq.to` the receiving lane, `arrow` `->>`, `-->>`
+     for a reply, `-)` for async), **every message with a `path:line` source
+     evidence anchor** it opened; a step it cannot anchor is `inferred` with
+     a note, never invented. A new external system (`c1-*`) is a node and
+     edges added to the c1 context graph. Then write
+     `docs/architecture/<stem>.md` (title, one line saying what flow it
+     shows, the marker line
+     `<!-- generated from <stem>.json by vr_mermaid.py render; edit the JSON, not this block -->`,
+     an empty `mermaid` fence holding `sequenceDiagram`,
+     `<!-- end generated -->`), run
+     `python3 "${PLUGIN_ROOT}/scripts/vr_graph.py" validate docs/architecture/<stem>.json --root .`
+     (it must report `ok: true`) and
+     `python3 "${PLUGIN_ROOT}/scripts/vr_mermaid.py" sync docs/architecture`,
+     commit, and rerun the gate.
 
-   Then, in both cases: write `docs/architecture/<stem>.md` (title, one line
-   saying what flow it shows, then the marker line
-   `<!-- generated from <stem>.json by vr_mermaid.py render; edit the JSON, not this block -->`,
-   an empty `mermaid` fence holding `sequenceDiagram`, and
-   `<!-- end generated -->`), run
-   `python3 "${PLUGIN_ROOT}/scripts/vr_graph.py" validate docs/architecture/<stem>.json --root .`
-   (it must report `ok: true`) and
-   `python3 "${PLUGIN_ROOT}/scripts/vr_mermaid.py" sync docs/architecture`
-   (it fills the block), commit, and rerun the gate. The new diagram is part
-   of the PR like any other diagram change; mention it in the PR description.
+   The new diagram is part of the PR like any other diagram change; mention
+   it in the PR description.
 
 2. **Get the final verdict on the head the PR will carry** and keep the
     evidence — it goes in the PR description and in the Jira comment. Under

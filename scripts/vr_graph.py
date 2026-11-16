@@ -272,6 +272,20 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
             issues.append(_issue("unknown_group_id", "nodes[%d].group" % i, "group %r is not defined" % n["group"]))
         if n.get("lane") is not None and n["lane"] not in lane_ids:
             issues.append(_issue("unknown_lane_id", "nodes[%d].lane" % i, "lane %r is not defined" % n["lane"]))
+        if n.get("to") is not None and n["to"] not in lane_ids:
+            issues.append(_issue("unknown_lane_id", "nodes[%d].to" % i, "lane %r is not defined" % n["to"]))
+    by_id = {n["id"]: (i, n) for i, n in enumerate(graph.get("nodes", []))}
+    for fi, f in enumerate(graph.get("flows", [])):
+        if not f.get("new_stem"):
+            continue
+        for sid in f.get("after", []):
+            if sid not in by_id:
+                continue
+            ni, n = by_id[sid]
+            for field in ("to", "call_kind"):
+                if n.get(field) is None:
+                    issues.append(_issue("step_missing_" + field, "nodes[%d].%s" % (ni, field),
+                                         "step %r of flow %r (new_stem %r) has no %s" % (sid, f["id"], f["new_stem"], field)))
     for i, g in enumerate(graph.get("groups", [])):
         if g.get("parent") is not None and g["parent"] not in group_ids:
             issues.append(_issue("unknown_group_id", "groups[%d].parent" % i, "group %r is not defined" % g["parent"]))
@@ -374,6 +388,22 @@ def _selftest() -> int:
             got = codes(validate(load(p), root=repo))
             check("vc03:" + code, code in got, "got %s" % got)
             check("vc03:only:" + code, got == [code], "got %s" % got)
+    # promotion fields: `to` must be a lane, a flow with new_stem needs to + call_kind on every step.
+    import copy
+    l1 = load(os.path.join(FIXTURES, "w145-l1.json"))
+    g = copy.deepcopy(l1)
+    g["nodes"][0]["to"] = "lane-nope"
+    check("to:unknown-lane", "unknown_lane_id" in codes(validate(g)))
+    g = copy.deepcopy(l1)
+    g["flows"][0]["new_stem"] = "seq-x"
+    got = codes(validate(g))
+    check("new_stem:steps-lack-to-and-kind", "step_missing_to" in got and "step_missing_call_kind" in got, got)
+    for n in g["nodes"]:
+        n["to"] = n["lane"]
+        n["call_kind"] = "call"
+    check("new_stem:complete-passes", validate(g) == [], validate(g))
+    g["nodes"][0]["call_kind"] = "shout"
+    check("call_kind:enum", validate(g) != [])
     # FU-02: 80 passes, 81 fails, a 200-character label fails, the message names the length.
     g = load(os.path.join(FIXTURES, "label-at-limit.json"))
     check("fu02:80-ok", len(g["nodes"][1]["label"]) == 80 and validate(g) == [])

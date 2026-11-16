@@ -483,6 +483,19 @@
               "description": "Lane ids of all anchors of a note, in written order."
             }
           }
+        },
+        "to": {
+          "$ref": "#/$defs/id",
+          "description": "L1 step: id of the lane the step talks to (the message target). Required on every step of a flow with new_stem."
+        },
+        "call_kind": {
+          "enum": [
+            "call",
+            "reply",
+            "async",
+            "publish"
+          ],
+          "description": "L1 step: how the step reaches `to`: call, reply, async or publish. Required on every step of a flow with new_stem."
         }
       }
     },
@@ -584,6 +597,10 @@
         },
         "evidence": {
           "$ref": "#/$defs/evidence"
+        },
+        "new_stem": {
+          "type": "string",
+          "description": "File stem of the docs/architecture sequence diagram this flow is promoted to (the dossier's `Diagrams new:` line)."
         }
       }
     },
