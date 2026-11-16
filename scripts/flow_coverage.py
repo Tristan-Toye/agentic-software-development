@@ -250,7 +250,7 @@ def sig_route(path, src, masked):
 
 
 def sig_run_shutdown(path, src, masked):
-    for m in re.finditer(r"\bpub\s+async\s+fn\s+run\s*(?:<[^>(]*>)?\s*\(", masked):
+    for m in re.finditer(r"\bpub\s+async\s+fn\s+run\s*(?:<[^\n]*?>)?\s*\(", masked):
         if "shutdown" in params_of(masked, m.end() - 1):
             sp = fn_span(masked, m.start())
             if sp:
@@ -258,7 +258,7 @@ def sig_run_shutdown(path, src, masked):
 
 
 def sig_register(path, src, masked):
-    for m in re.finditer(r"\bpub\s+fn\s+(register_\w+)\s*(?:<[^>(]*>)?\s*\(", masked):
+    for m in re.finditer(r"\bpub\s+fn\s+(register_\w+)\s*(?:<[^\n]*?>)?\s*\(", masked):
         if re.search(r"&\s*mut\s+(?:\w+::)*ToolRegistry\b", params_of(masked, m.end() - 1)):
             sp = fn_span(masked, m.start())
             if sp:
@@ -266,7 +266,7 @@ def sig_register(path, src, masked):
 
 
 def sig_serve(path, src, masked):
-    for m in re.finditer(r"\bpub\s+async\s+fn\s+(serve_\w+_requests)\s*(?:<[^>(]*>)?\s*\(", masked):
+    for m in re.finditer(r"\bpub\s+async\s+fn\s+(serve_\w+_requests)\s*(?:<[^\n]*?>)?\s*\(", masked):
         sp = fn_span(masked, m.start())
         if sp:
             yield "request-service", m.group(1), m.start(), sp[1]
@@ -326,10 +326,50 @@ def load_config(repo: Path) -> dict:
     return cfg
 
 
+def lang_of(rel: str):
+    for lang, spec in LANGUAGES.items():
+        if rel.endswith(spec["exts"]) and not spec["test_file"].search(rel):
+            return lang, spec
+    return None, None
+
+
+def compile_extra(cfg: dict):
+    return [(s, re.compile(s["regex"]), glob_re(s.get("glob", "**"))) for s in cfg["extra_signals"]]
+
+
+def scan_source(rel: str, src: str, lang: str, spec: dict, extra) -> list:
+    entries = []
+    masked = spec["mask"](src)
+    skip = spec["cfg_test"](masked)
+
+    def in_test(i):
+        return any(a <= i <= b for a, b in skip)
+
+    for sig in spec["signals"]:
+        for hit in sig(rel, src, masked):
+            kind, name, idx, end = hit[:4]
+            if in_test(idx):
+                continue
+            start = hit[4] if len(hit) > 4 else idx
+            entries.append(Entry(rel, line_of(src, idx), line_of(src, end), kind, name,
+                                 span_start=line_of(src, start)))
+    for s, rx, g in extra:
+        if not g.match(rel):
+            continue
+        for m in rx.finditer(src):
+            if in_test(m.start()):
+                continue
+            enc = enclosing_fn(masked, m.start()) if lang == "rust" else None
+            ln = line_of(src, m.start())
+            entries.append(Entry(rel, ln, line_of(src, enc[2]) if enc else ln, "extra:" + s["name"],
+                                 m.groupdict().get("name") or s["name"]))
+    return entries
+
+
 def find_entries(repo: Path, cfg: dict):
     """-> (entries, languages_found)"""
     entries, found = [], []
-    extra = [(s, re.compile(s["regex"]), glob_re(s.get("glob", "**"))) for s in cfg["extra_signals"]]
+    extra = compile_extra(cfg)
     for lang, spec in LANGUAGES.items():
         files = source_files(repo, spec["exts"])
         if not files:
@@ -339,30 +379,7 @@ def find_entries(repo: Path, cfg: dict):
             if spec["test_file"].search(rel):
                 continue
             src = (repo / rel).read_text(encoding="utf-8", errors="replace")
-            masked = spec["mask"](src)
-            skip = spec["cfg_test"](masked)
-
-            def in_test(i):
-                return any(a <= i <= b for a, b in skip)
-
-            for sig in spec["signals"]:
-                for hit in sig(rel, src, masked):
-                    kind, name, idx, end = hit[:4]
-                    if in_test(idx):
-                        continue
-                    start = hit[4] if len(hit) > 4 else idx
-                    entries.append(Entry(rel, line_of(src, idx), line_of(src, end), kind, name,
-                                         span_start=line_of(src, start)))
-            for s, rx, g in extra:
-                if not g.match(rel):
-                    continue
-                for m in rx.finditer(src):
-                    if in_test(m.start()):
-                        continue
-                    enc = enclosing_fn(masked, m.start()) if lang == "rust" else None
-                    ln = line_of(src, m.start())
-                    entries.append(Entry(rel, ln, line_of(src, enc[2]) if enc else ln, "extra:" + s["name"],
-                                         m.groupdict().get("name") or s["name"]))
+            entries += scan_source(rel, src, lang, spec, extra)
     return entries, found
 
 
@@ -421,6 +438,9 @@ def classify(entries, diagrams, cfg):
                 partial.append(stem)
         if covered:
             e.status, e.diagrams = "covered", covered
+        elif partial and e.kind == "tool-registration":
+            # the tool body lives beside its register fn: any anchor in the file covers it
+            e.status, e.diagrams = "covered", partial
         elif partial:
             e.status, e.diagrams = "partial", partial
         e.exempt = exempt.get(e.key)
@@ -429,12 +449,44 @@ def classify(entries, diagrams, cfg):
 
 # ------------------------------------------------------------------ git
 
-def changed_files(repo: Path, base: str) -> set:
-    r = subprocess.run(["git", "-C", str(repo), "diff", "--name-only", "--diff-filter=AMR", f"{base}...HEAD"],
-                       capture_output=True, text=True)
+def _git(repo: Path, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+
+
+def changed_files(repo: Path, base: str):
+    """-> (merge_base, {new_path: old_path or None}) for added, modified and renamed files."""
+    mb = _git(repo, "merge-base", base, "HEAD")
+    if mb.returncode != 0:
+        raise RuntimeError(f"git merge-base {base} HEAD failed: {mb.stderr.strip()}")
+    mbase = mb.stdout.strip()
+    r = _git(repo, "diff", "--name-status", "-M", "--diff-filter=AMR", f"{base}...HEAD")
     if r.returncode != 0:
         raise RuntimeError(f"git diff {base}...HEAD failed: {r.stderr.strip()}")
-    return {x for x in r.stdout.splitlines() if x}
+    out = {}
+    for ln in r.stdout.splitlines():
+        parts = ln.split("\t")
+        if parts[0].startswith("R") and len(parts) >= 3:
+            out[parts[2]] = parts[1]
+        elif parts[0] == "M":
+            out[parts[1]] = parts[1]
+        elif parts[0] == "A":
+            out[parts[1]] = None
+    return mbase, out
+
+
+def old_entry_keys(repo: Path, mbase: str, changed: dict, cfg: dict) -> set:
+    """(new_path, kind, name) of every entry point the changed files had at the merge base."""
+    keys, extra = set(), compile_extra(cfg)
+    for new, old in changed.items():
+        lang, spec = lang_of(new)
+        if not old or not lang:
+            continue
+        r = _git(repo, "show", f"{mbase}:{old}")
+        if r.returncode != 0:
+            continue
+        for e in scan_source(new, r.stdout, lang, spec, extra):
+            keys.add((new, e.kind, e.name))
+    return keys
 
 
 # ------------------------------------------------------------------ report
@@ -446,12 +498,18 @@ def analyse(repo: Path, changed_base: str | None = None) -> dict:
     stale = classify(entries, diagrams, cfg)
     entries.sort(key=lambda e: (e.path, e.line, e.name))
     scope = entries
+    failing, review = [], []
     if changed_base:
-        ch = changed_files(repo, changed_base)
+        mbase, ch = changed_files(repo, changed_base)
+        old = old_entry_keys(repo, mbase, ch, cfg)
         scope = [e for e in entries if e.path in ch]
-    failing = [e for e in scope if e.status == "uncovered" and not e.exempt]
+        for e in scope:
+            if e.status == "uncovered" and not e.exempt:
+                (review if (e.path, e.kind, e.name) in old else failing).append(e)
+    else:
+        failing = [e for e in scope if e.status == "uncovered" and not e.exempt]
     zero = sorted(s for s, d in diagrams.items() if not d["lines"] and not d["files"])
-    return {"languages": langs, "entries": entries, "scope": scope, "failing": failing,
+    return {"languages": langs, "entries": entries, "scope": scope, "failing": failing, "review": review,
             "zero_anchor_diagrams": zero, "stale_exemptions": stale, "diagrams": len(diagrams)}
 
 
@@ -476,8 +534,10 @@ def render(rep: dict, changed: bool) -> str:
         lines.append("seq diagrams with zero anchors: " + ", ".join(rep["zero_anchor_diagrams"]))
     if rep["stale_exemptions"]:
         lines.append("exemptions matching no entry point: " + ", ".join(rep["stale_exemptions"]))
+    for e in rep["review"]:
+        lines.append(f"REVIEW: {e.path}:{e.line} {e.name} is uncovered (existing entry point in a touched file, not a failure)")
     if changed and rep["failing"]:
-        lines.append("FAIL: uncovered and not exempt: " + ", ".join(f"{e.path}:{e.line} {e.name}" for e in rep["failing"]))
+        lines.append("FAIL: new entry point uncovered and not exempt: " + ", ".join(f"{e.path}:{e.line} {e.name}" for e in rep["failing"]))
     return "\n".join(lines)
 
 
@@ -495,7 +555,8 @@ def run(repo: Path, as_json: bool, changed: str | None) -> int:
                           "entries": [e.as_dict() for e in rep["scope"]],
                           "zero_anchor_diagrams": rep["zero_anchor_diagrams"],
                           "stale_exemptions": rep["stale_exemptions"],
-                          "failing": [e.key for e in rep["failing"]]}, indent=2))
+                          "failing": [e.key for e in rep["failing"]],
+                          "review": [e.key for e in rep["review"]]}, indent=2))
     else:
         print(render(rep, bool(changed)))
     return 1 if changed and rep["failing"] else 0
@@ -512,7 +573,8 @@ def _selftest() -> int:
 
     main_rs = 'fn main() {\n    let s = "{ not a brace";\n    // } nor this\n    run();\n}\n'
     bg_rs = ("pub async fn run(cfg: Cfg, shutdown: Shutdown) {\n    loop {}\n}\n\n"
-             "pub async fn run(cfg: Cfg) {}\n")
+             "pub async fn run(cfg: Cfg) {}\n"
+             "impl S {\n    pub async fn run<F: Future<Output = ()>>(&self, shutdown: F) {\n    }\n}\n")
     reg_rs = ("pub fn register_ask(registry: &mut ToolRegistry) -> R {\n    Ok(())\n}\n"
               "pub fn register_instruments(meter: &Meter) {}\n")
     srv_rs = "pub async fn serve_ping_requests(c: C) {\n    c.go();\n}\n"
@@ -538,7 +600,7 @@ def _selftest() -> int:
         w("crates/a/src/srv.rs", srv_rs)
         w("crates/a/src/http.rs", http_rs)
         w("crates/a/src/old.rs", exempt_rs)
-        w("crates/a/src/bin/tool.rs", "fn main() {}\n")
+        w("crates/a/src/bin/tool.rs", "// one-shot tool\n// with some\n// comment lines\n// to keep rename similarity\nfn main() {}\n")
         w("crates/a/tests/it.rs", "fn main() {}\n")
         d = "docs/architecture/"
         w(d + "seq-one.json", seq("boot crates/a/src/main.rs:4 `run`",
@@ -556,16 +618,17 @@ def _selftest() -> int:
         check("sig:main-bin", ("tool.rs", "main") in by)
         check("sig:main-tests-dir-skipped", ("it.rs", "main") not in by)
         check("sig:main-span-ignores-string-braces", by[("main.rs", "main")].end == 5)
-        check("sig:bg-only-with-shutdown", len([e for e in rep["entries"] if e.kind == "background-task"]) == 1)
+        check("sig:bg-only-with-shutdown", len([e for e in rep["entries"] if e.kind == "background-task"]) == 2)
+        check("sig:bg-generic-future-param", any(e.kind == "background-task" and e.line == 7 for e in rep["entries"]))
         check("sig:register-needs-registry", [e.name for e in rep["entries"] if e.kind == "tool-registration"] == ["register_ask"])
         check("sig:serve", ("srv.rs", "serve_ping_requests") in by)
         routes = sorted(e.name for e in rep["entries"] if e.kind == "http-route")
         check("sig:routes-per-path-not-test", routes == ["/health", "/v1/x"])
         check("cov:line-in-span", by[("main.rs", "main")].status == "covered")
         check("cov:stems", by[("main.rs", "main")].diagrams == ["seq-one"])
-        check("cov:bg", by[("bg.rs", "run")].status == "covered")
+        check("cov:bg", any(e.path.endswith("bg.rs") and e.line == 1 and e.status == "covered" for e in rep["entries"]))
         check("cov:by-name", by[("srv.rs", "serve_ping_requests")].status == "covered")
-        check("cov:partial", by[("reg.rs", "register_ask")].status == "partial")
+        check("cov:register-file-anchor-covers", by[("reg.rs", "register_ask")].status == "covered")
         check("cov:uncovered", by[("tool.rs", "main")].status == "uncovered")
         check("cov:evidence-path-is-partial", by[("old.rs", "serve_old_requests")].status == "partial")
         check("cov:route-in-enclosing-fn", by[("http.rs", "/health")].status == "covered")
@@ -619,6 +682,23 @@ def _selftest() -> int:
             g("add", "-A")
             g("commit", "-qm", "diagram")
             check("changed:covered-exit-0", run(root, False, "main") == 0)
+            # An old uncovered entry in a touched file is REVIEW, not a failure.
+            w("crates/a/src/bin/tool.rs", "// one-shot tool\n// with some\n// comment lines\n// to keep rename similarity\nfn main() {}\n// touched\n")
+            g("add", "-A")
+            g("commit", "-qm", "touch old")
+            rep = analyse(root, "main")
+            check("changed:old-uncovered-is-review", [e.name for e in rep["review"]] == ["main"] and rep["failing"] == [])
+            check("changed:old-uncovered-exit-0", run(root, False, "main") == 0)
+            check("changed:review-line", "REVIEW:" in render(rep, True))
+            # A rename keeps the old entry old; a genuinely new entry in the same file fails.
+            g("mv", "crates/a/src/bin/tool.rs", "crates/a/src/bin/tool2.rs")
+            g("commit", "-qam", "rename")
+            rep = analyse(root, "main")
+            check("changed:rename-maps-old", [e.name for e in rep["review"]] == ["main"] and rep["failing"] == [])
+            w("crates/a/src/bin/tool2.rs", "// one-shot tool\n// with some\n// comment lines\n// to keep rename similarity\nfn main() {}\n// touched\npub async fn serve_fresh_requests(c: C) {}\n")
+            g("commit", "-qam", "new in old file")
+            rep = analyse(root, "main")
+            check("changed:new-in-touched-file-fails", [e.name for e in rep["failing"]] == ["serve_fresh_requests"])
         else:
             print("flow_coverage selftest: git unavailable, --changed cases skipped", file=sys.stderr)
 
