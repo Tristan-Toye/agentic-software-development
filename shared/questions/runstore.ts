@@ -116,6 +116,8 @@ export type Block = { id: string; ts: string; tool: string; target: string; reas
 /** The refused calls of a run that the owner has not ruled on (`block-ruling` lines), newest first, at most `limit`; one per target. */
 /** A runner line that starts a new stage process: a block an older process hit has no one left waiting on it. */
 const NEW_PROCESS = /^(stage \d+ start|start \/|restarting stage|resumed after)/
+/** A refusal because the classifier could not be reached, not because it judged the call. */
+export const TRANSIENT_BLOCK = /classifier (is )?unavailable/i
 export function readBlocks(key: string, dir = runsDir(), limit = 5): Block[] {
   let all: any[] = []
   try { all = readFileSync(join(dir, `${key}.jsonl`), "utf8").split("\n").filter((l) => l.includes('"event":"block') || (l.includes('"runner"') && /stage \d+ start|start \/|restarting stage|resumed after/.test(l))).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean) } catch { return [] }
@@ -129,6 +131,8 @@ export function readBlocks(key: string, dir = runsDir(), limit = 5): Block[] {
   const seen = new Set<string>(); const out: Block[] = []
   for (const o of lines.reverse()) {
     if (o.event !== "blocked" || ruled.has(String(o.tool_use_id ?? "")) || ruledTargets.has(String(o.target ?? ""))) continue
+    // An outage of the safety check is no ruling on the call: the agent retries it, and nothing waits on the owner.
+    if (TRANSIENT_BLOCK.test(String(o.reason ?? ""))) continue
     const t = String(o.target ?? "")
     if (seen.has(t)) continue
     seen.add(t)

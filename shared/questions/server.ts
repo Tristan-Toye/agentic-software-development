@@ -448,8 +448,11 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && path === "/api/runs") {
     // Live runs carry their agent counts (this stage); the accounts carry their windows and which runs use them.
     const v = await getRuns(() => readAll(DIR))
-    const openQs = new Set(readAll(DIR).filter((q) => q.state === "open").map((q) => q.id))
-    const runs = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(readUpdates(`${r.repo}.${r.id}`, runsDir(), 3000)), blocked: readBlocks(`${r.repo}.${r.id}`).length } : r))
+    const open = readAll(DIR).filter((q) => q.state === "open")
+    const openQs = new Set(open.map((q) => q.id))
+    // A refusal counts as a blocker only while the run has an open question a ruling can answer.
+    const asking = new Set(open.map((q) => `${questionRepo(q, v.runs)}.${q.dossier}`))
+    const runs = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(readUpdates(`${r.repo}.${r.id}`, runsDir(), 3000)), blocked: asking.has(`${r.repo}.${r.id}`) ? readBlocks(`${r.repo}.${r.id}`).length : 0 } : r))
       .map((r) => { const m = mergeState(`${r.repo}.${r.id}`); return m ? { ...r, merge: m } : r })
       .map((r) => ({ ...r, deferredUndecided: undecidedDeferred(r.deferred.items, r.runner?.command === "fix-deferred" && runnerActive(r.runner), openQs) }))
     const plans = planRuns(runs)
@@ -587,8 +590,9 @@ export async function handle(req: Request): Promise<Response> {
     } catch { /* none yet */ }
     const c = readConversation(`${run.repo}.${run.id}`, run.runner?.state === "done")
     const conv = { ...c, result: c.result ? { ...c.result, html: renderMarkdown(c.result.text) } : null, chat: c.chat.map((l) => ({ ...l, html: renderMarkdown(l.text) })), canChat: !!c.result && !runnerActive(run.runner) }
-    const blocks = readBlocks(`${run.repo}.${run.id}`)
     const openQ = questions.filter((q) => q.state === "open").sort((a, b) => b.ts.localeCompare(a.ts))[0]?.id ?? ""
+    // A refusal is only a blocker while the agent waits on the owner (an open question a ruling can answer); otherwise it did without the call.
+    const blocks = openQ ? readBlocks(`${run.repo}.${run.id}`) : []
     return json({ run, html, entries, groups, sections, activeSection: latest.cmd, activity, now, log, conv, summary, blocks, rulings: readRulings(run.repo), blockQuestion: openQ, diagrams: vrDiagrams(run), summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
   }
   const dd = path.match(/^\/api\/dossier\/([\w.-]+)\/([\w.-]+)$/)
