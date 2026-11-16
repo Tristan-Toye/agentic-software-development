@@ -43,7 +43,8 @@ Work decided but not done yet. Each item says what to do, when, and how to know 
 
 ## FU-04. Browser check of the rendered canvas
 
-- **Status: done (2026-11-16), with one open finding below.** Decision (owner, 2026-11-16): puppeteer-core driving the Google Chrome already installed (`/Applications/Google Chrome.app`), no browser download; `shared/package.json` pins `puppeteer-core` 25.16.0. Command: `bun shared/test/vr-canvas.browser.ts` (SKIPs with exit 0 where Chrome or puppeteer-core is missing). Open finding: the canvas fits the whole diagram to the viewport, so on the real W-145 fixtures every label renders under 12 px (5.5 to 9.5 px); the check fails on that and its threshold was not loosened.
+- **Status: done (2026-11-16).** Decision (owner, 2026-11-16): puppeteer-core driving the Google Chrome already installed (`/Applications/Google Chrome.app`), no browser download; `shared/package.json` pins `puppeteer-core` 25.16.0. Command: `bun shared/test/vr-canvas.browser.ts` (SKIPs with exit 0 where Chrome or puppeteer-core is missing).
+- **Zoom decision (owner, 2026-11-16): readable minimum + pan.** The first run found every label of the real W-145 fixtures under 12 px (5.5 to 9.5 px) because the canvas fitted the whole diagram. The canvas now opens at no less than the 12 px scale, starts top-left and pans inside its box; "Fit all" shows everything. The 12 px rule is checked in the opening and readable states, not in "Fit all".
 
 - **What:** nothing measures the rendered page: label size, overlapping text, text outside its box, sideways scroll on a phone,
   console errors. `testability.md` of VR-03 leaves the client check open. Visual-Explainer does this in `kit/look.mjs`.

@@ -31,6 +31,8 @@ const real: Fix[] = [
 ]
 // The seeded bad fixture: the real L2 with one node whose label is a single unbreakable word far wider than any box.
 const BAD = { id: "W-147", expect: "fail" as const }
+// The seeded overlap fixture: a three-line label with a stereotype and a member count, so the lines run into the "N members" text.
+const OVERLAP = { id: "W-148", expect: "fail" as const }
 
 const work = mkdtempSync(join(tmpdir(), "vr-canvas-"))
 const repo = join(work, "repoV")
@@ -50,6 +52,13 @@ const badFiles = real[0].files
 seed({ ...BAD, files: badFiles }, (v, g) => {
   if (v !== "l2") return
   g.nodes[0].label = "Unbreakable" + "Overflowing".repeat(6) + "Label"
+})
+
+seed({ ...OVERLAP, files: badFiles }, (v, g) => {
+  if (v !== "l2") return
+  g.nodes[0].label = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega"
+  g.nodes[0].stereotype = "service"
+  g.nodes[0].members = ["m1", "m2", "m3"].map((m) => ({ id: m, label: m, kind: "function", status: "changed", evidence: [] }))
 })
 
 let proc: ReturnType<typeof Bun.spawn> | undefined
@@ -79,7 +88,7 @@ async function startServer(): Promise<string> {
 }
 
 /** Runs inside the page: measures the visible canvas of the open tab. Returns problem strings. */
-function measure(minFont: number, eps: number): { problems: string[]; labels: number; nodes: number } {
+function measure(minFont: number, eps: number, checkFont: boolean): { problems: string[]; labels: number; nodes: number } {
   const problems: string[] = []
   const svg = Array.from(document.querySelectorAll<SVGSVGElement>(".vr svg")).find((s) => (s as any).getBoundingClientRect().width > 0)
   if (!svg) return { problems: ["no visible canvas svg"], labels: 0, nodes: 0 }
@@ -96,7 +105,7 @@ function measure(minFont: number, eps: number): { problems: string[]; labels: nu
     labs.push({ el: t, id: name(t), r, txt: (t.textContent || "").trim() })
     const m = (t as unknown as SVGGraphicsElement).getScreenCTM()
     const px = parseFloat(getComputedStyle(t).fontSize) * (m ? Math.hypot(m.a, m.b) : 1)
-    if (px < minFont - 0.05) problems.push(`label under ${minFont}px: ${px.toFixed(1)}px on ${name(t)} "${(t.textContent || "").trim().slice(0, 40)}"`)
+    if (checkFont && px < minFont - 0.05) problems.push(`label under ${minFont}px: ${px.toFixed(1)}px on ${name(t)} "${(t.textContent || "").trim().slice(0, 40)}"`)
   })
   // a label wider than its node box
   let nodes = 0
@@ -110,7 +119,7 @@ function measure(minFont: number, eps: number): { problems: string[]; labels: nu
       const r = t.getBoundingClientRect()
       if (!r.width) return
       if (r.width > b.width + eps) problems.push(`label wider than its node: ${r.width.toFixed(0)}px > ${b.width.toFixed(0)}px on ${g.getAttribute("data-id")} "${(t.textContent || "").trim().slice(0, 40)}"`)
-      else if (r.left < b.left - eps || r.right > b.right + eps) problems.push(`label outside its node box on ${g.getAttribute("data-id")} "${(t.textContent || "").trim().slice(0, 40)}"`)
+      else if (r.left < b.left - eps || r.right > b.right + eps || r.top < b.top - eps || r.bottom > b.bottom + eps) problems.push(`label outside its node box on ${g.getAttribute("data-id")} "${(t.textContent || "").trim().slice(0, 40)}"`)
     })
   })
   // two overlapping label boxes (lines of one node are one box column apart, so only different texts are compared)
@@ -137,14 +146,22 @@ async function check(base: string, f: Fix, width: number): Promise<Result[]> {
   await page.waitForSelector(".vr svg .vrn", { timeout: 20_000 })
   const tabs: string[] = await page.$$eval(".vr button.btn.sm", (bs: Element[]) => bs.map((b) => b.textContent || "").filter((t) => /^L[012] /.test(t)))
   const out: Result[] = []
-  for (const tab of tabs.length ? tabs : [""]) {
-    if (tab) {
-      await page.evaluate((t: string) => { (Array.from(document.querySelectorAll(".vr button.btn.sm")).find((b) => b.textContent === t) as HTMLElement)?.click() }, tab)
-      await new Promise((r) => setTimeout(r, 400))
-      await page.waitForSelector(".vr svg .vrn", { timeout: 20_000 })
+  const click = async (text: RegExp): Promise<void> => {
+    await page.evaluate((src: string) => { (Array.from(document.querySelectorAll(".vr button.btn.sm")).find((b) => new RegExp(src).test(b.textContent || "")) as HTMLElement)?.click() }, text.source)
+    await new Promise((r) => setTimeout(r, 400))
+  }
+  // Readable opening state (12 px rule on), then "Fit all" (12 px rule off), then back to "Readable size" (12 px rule on again).
+  for (const [phase, font] of [["open", true], ["fit-all", false], ["readable", true]] as [string, boolean][]) {
+    if (phase === "fit-all") await click(/^Fit all$/)
+    if (phase === "readable") await click(/^Readable size$/)
+    for (const tab of tabs.length ? tabs : [""]) {
+      if (tab) {
+        await click(new RegExp("^" + tab.replace(/[^\w ]/g, "\\$&") + "$"))
+        await page.waitForSelector(".vr svg .vrn", { timeout: 20_000 })
+      }
+      const m = await page.evaluate(measure, MIN_FONT_PX, EPS, font)
+      out.push({ fix: f, width, tab: `${phase} ${tab}`.trim(), ...m })
     }
-    const m = await page.evaluate(measure, MIN_FONT_PX, EPS)
-    out.push({ fix: f, width, tab, ...m })
   }
   if (errors.length) out[0].problems.push(...errors)
   await page.close()
@@ -156,7 +173,7 @@ try {
   const base = await startServer()
   if (!base) throw new Error("the dashboard server did not start")
   try { browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ["--no-first-run", "--no-default-browser-check"] }) } catch (e) { await cleanup(); skip(`Chrome could not be launched (${(e as Error).message.split("\n")[0]})`) }
-  for (const f of [...real, { ...BAD, files: badFiles } as Fix]) {
+  for (const f of [...real, { ...BAD, files: badFiles } as Fix, { ...OVERLAP, files: badFiles } as Fix]) {
     for (const w of WIDTHS) {
       const rs = await check(base, f, w)
       const problems = rs.flatMap((r) => r.problems.map((p) => `[${r.tab || "canvas"}] ${p}`))
@@ -172,5 +189,5 @@ try {
     }
   }
 } finally { await cleanup() }
-console.log(failed ? `FAIL vr-canvas browser check: ${failed} case(s) differ from the expectation` : "PASS vr-canvas browser check: real fixtures pass, seeded bad fixture fails, at 390 and 1280 px")
+console.log(failed ? `FAIL vr-canvas browser check: ${failed} case(s) differ from the expectation` : "PASS vr-canvas browser check: real fixtures pass, seeded overflow and overlap fixtures fail, at 390 and 1280 px")
 process.exit(failed ? 1 : 0)
