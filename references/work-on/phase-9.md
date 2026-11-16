@@ -128,6 +128,51 @@
    unanswered in both places is an open defect for Phase 8's reviewers and the
    owner.
 
+   **New diagrams.** For every stem on the dossier's `Diagrams new:` line,
+   create `docs/architecture/<stem>.json` and its `.md` before the PR opens,
+   inside `X`, and commit them with the rest. The gate (`--diagram-gate
+   --dossier`) fails the session when a listed stem has no
+   `docs/architecture/<stem>.json` on the branch, unless the PR description
+   carries `Diagram <stem> not added: <why>` (the plan was wrong: say how).
+   Two sources:
+
+   - *A Phase 3 visual review ran.* Take the owner-approved L1 flow view,
+     `.discovery/visual-review/<ID>/l1.json` (`view: flow`), and convert it
+     to a `seq` graph. `vr_graph.py validate` accepts both views but the
+     formats differ, so the orchestrator applies this mapping: `view` becomes
+     `seq` and `meta.mermaid.type` is `sequenceDiagram`; `lanes` carry over
+     unchanged (lane = participant, its `label` the participant name); each
+     L1 `step` node becomes a `message` node in its `order`, keeping `id`,
+     `label`, `status`, `lane` (the sender) and its `evidence` anchors
+     untouched; `seq.to` is the lane of the next step (the last step points
+     to its own lane) with `arrow` `->>`, corrected from the node's `detail`
+     or the code where the step is a reply (`-->>`) or fire-and-forget
+     (`-)`); `flows` becomes one flow whose `after` lists the step ids in
+     order (the L1 flow's `after` list; keep its `status` and `evidence`, a
+     flow with no evidence fails validation); `flow` edges between
+     consecutive steps carry over. L1 `before` lists and `detail` text are
+     dropped (a new diagram has no before). Carry only what the owner
+     approved: drop a step whose `review.json` verdict is `remove`, apply
+     `change` comments first.
+   - *No visual review.* The orchestrator authors the seq graph from the
+     code (`arch_find` on the neighbouring diagrams as models): one
+     participant lane per crate, process or container, one message per call
+     or event in order, **every message with a `path:line` source evidence
+     anchor** it opened; a step it cannot anchor is `inferred` with a note,
+     never invented. A new external system (`c1-*`) is a node and edges
+     added to the c1 context graph.
+
+   Then, in both cases: write `docs/architecture/<stem>.md` (title, one line
+   saying what flow it shows, then the marker line
+   `<!-- generated from <stem>.json by vr_mermaid.py render; edit the JSON, not this block -->`,
+   an empty `mermaid` fence holding `sequenceDiagram`, and
+   `<!-- end generated -->`), run
+   `python3 "${PLUGIN_ROOT}/scripts/vr_graph.py" validate docs/architecture/<stem>.json --root .`
+   (it must report `ok: true`) and
+   `python3 "${PLUGIN_ROOT}/scripts/vr_mermaid.py" sync docs/architecture`
+   (it fills the block), commit, and rerun the gate. The new diagram is part
+   of the PR like any other diagram change; mention it in the PR description.
+
 2. **Get the final verdict on the head the PR will carry** and keep the
     evidence — it goes in the PR description and in the Jira comment. Under
     `ci` the run is CI's on the pushed final head: push, wait, and keep the

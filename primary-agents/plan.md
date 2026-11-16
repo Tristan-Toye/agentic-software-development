@@ -202,7 +202,12 @@ one line in the report, never a reason to read the older tree.
    and call order around them (with their source anchors) at a fraction of the
    cost of the `.md` or `.json` files, and `arch_find` with a `diagram` and an
    empty `query` outlines one diagram. Note which diagrams the change would
-   alter: Phase 4 records them as the `Diagrams affected:` line.
+   alter: Phase 4 records them as the `Diagrams affected:` line. Note too
+   whether the change introduces a flow that crosses crates, processes or
+   containers (or a new external system) that no existing `seq-*` diagram
+   shows: Phase 4 records a proposed diagram for it as the `Diagrams new:`
+   line. Searching the existing sequence diagrams for the flow is how you
+   tell "already shown" from "new".
 4. **Trace the code.** Find where the problem lives. Follow the real call path;
    never assume a function does what its name says. Every claim you will write
    as `FACT` needs a `path:line` anchor you actually opened.
@@ -280,9 +285,17 @@ re-checks it against the base tip before the push.
 End `## Approach` with one line, `Diagrams affected: <file stems>` (the
 `docs/architecture/` files, stem without extension, that this change makes
 stale: `c4-classes-ports, seq-boot`) or `Diagrams affected: none`; a repo
-without `docs/architecture/` gets `none`. The plan reviewer checks it against
-the change, and `/work-on` Phase 9 gates on it (`validate_pipeline.py
---diagram-gate`).
+without `docs/architecture/` gets `none`. Then one more line,
+`Diagrams new: <proposed stem> — <one line: the flow>` (several
+comma-separated: `seq-x — flow a, c1-ext — the new system`) or
+`Diagrams new: none`. It lists a diagram the change must **add**: a flow that
+crosses crates, processes or containers and that no existing `seq-*` diagram
+shows (stem `seq-<flow>`), or a new external system (stem `c1-<name>`, an
+addition to the c1 context). A change inside one component, or a flow an
+existing diagram already shows (that one goes on `Diagrams affected:`), gets
+`none`; so does a repo without `docs/architecture/`. The plan reviewer checks
+both lines against the change, and `/work-on` Phase 9 creates every listed
+diagram and gates on both (`validate_pipeline.py --diagram-gate`).
 
 All six matter. Two of them get extra care because **their errors are invisible
 until they are expensive** — the fan-out consumes them mechanically, so a defect
