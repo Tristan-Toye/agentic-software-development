@@ -3,11 +3,13 @@
 // Pure file work, no server state: the routes in server.ts call these.
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { graphHash, VR_VIEWS } from "./vrlayout.ts"
+import { archStemOf, archStems, graphHash, reviewViews, viewFile, VR_VIEWS } from "./vrlayout.ts"
 
 export const VERDICTS = ["ok", "question", "change", "remove"] as const
 export type Verdict = (typeof VERDICTS)[number]
-export type Diagram = (typeof VR_VIEWS)[number]
+/** A diagram of the review: L0, L1, L2, or `arch:<stem>` for a new architecture diagram drafted in arch/<stem>.json. */
+export type Diagram = (typeof VR_VIEWS)[number] | `arch:${string}`
+const isDiagramName = (d: unknown): d is Diagram => (VR_VIEWS as readonly unknown[]).includes(d) || archStemOf(d) !== null
 export type Anchor = { diagram: Diagram; element: string; graph_hash: string }
 export type ReviewLine = { anchor: Anchor; verdict: Verdict; comment: string; ts: string }
 export type Review = { schema_version: "1.0.0"; dossier: string; updated: string; lines: ReviewLine[] }
@@ -33,7 +35,7 @@ export class ReviewError extends Error {
 
 export const reviewFile = (dir: string): string => join(dir, "review.json")
 
-type Graphs = Partial<Record<Diagram, { hash: string; nodes: Set<string>; labels: Map<string, string> }>>
+type Graphs = Partial<Record<string, { hash: string; nodes: Set<string>; labels: Map<string, string> }>>
 /**
  * The nodes (the elements a verdict can be about) and the hash of each diagram file that exists and parses. `broken`
  * names each file that exists but is too large, does not parse or has no nodes array (e.g. caught mid-write): the review
@@ -42,8 +44,8 @@ type Graphs = Partial<Record<Diagram, { hash: string; nodes: Set<string>; labels
 export function readGraphsFull(dir: string): { graphs: Graphs; broken: Diagram[] } {
   const graphs: Graphs = {}
   const broken: Diagram[] = []
-  for (const v of VR_VIEWS) {
-    const file = join(dir, v.toLowerCase() + ".json")
+  for (const v of reviewViews(dir) as Diagram[]) {
+    const file = viewFile(dir, v)!
     try {
       if (!existsSync(file)) continue
       const st = statSync(file)
@@ -74,7 +76,7 @@ export function readReviewChecked(dir: string, dossier: string): { review: Revie
     const lines: ReviewLine[] = []
     for (const l of o.lines) {
       const a = l?.anchor
-      if (a && VR_VIEWS.includes(a.diagram) && typeof a.element === "string" && typeof a.graph_hash === "string" && (VERDICTS as readonly string[]).includes(l.verdict))
+      if (a && isDiagramName(a.diagram) && typeof a.element === "string" && typeof a.graph_hash === "string" && (VERDICTS as readonly string[]).includes(l.verdict))
         lines.push({ anchor: { diagram: a.diagram, element: a.element, graph_hash: a.graph_hash }, verdict: l.verdict, comment: typeof l.comment === "string" ? l.comment : "", ts: typeof l.ts === "string" ? l.ts : "" })
     }
     return { review: { schema_version: "1.0.0", dossier: typeof o.dossier === "string" ? o.dossier : dossier, updated: typeof o.updated === "string" ? o.updated : "", lines } }
@@ -93,13 +95,13 @@ export function reviewState(dir: string, dossier: string): ReviewState {
   const cur = new Map(lines.filter((l) => l.state === "current").map((l) => [l.anchor.diagram + "\u0000" + l.anchor.element, l]))
   const unchecked: { diagram: Diagram; element: string }[] = []
   let total = 0
-  for (const v of VR_VIEWS) for (const id of graphs[v]?.nodes ?? []) { total++; if (!cur.has(v + "\u0000" + id)) unchecked.push({ diagram: v, element: id }) }
+  for (const v of Object.keys(graphs) as Diagram[]) for (const id of graphs[v]?.nodes ?? []) { total++; if (!cur.has(v + "\u0000" + id)) unchecked.push({ diagram: v, element: id }) }
   const n = (k: Verdict) => [...cur.values()].filter((l) => l.verdict === k).length
   const s = { total, checked: cur.size, ok: n("ok"), question: n("question"), change: n("change"), remove: n("remove"), outdated: lines.filter((l) => l.state === "outdated").length, gone: lines.filter((l) => l.state === "gone").length, unchecked: unchecked.length }
   const bits = [s.question && s.question + " question" + (s.question > 1 ? "s" : ""), s.change && s.change + " change" + (s.change > 1 ? "s" : ""), s.remove && s.remove + " to remove", s.outdated && s.outdated + " outdated"].filter(Boolean)
   if (broken.length) bits.push("unreadable: " + broken.join(", "))
   const text = s.checked + " of " + s.total + " elements checked" + (bits.length ? ", " + bits.join(", ") : "")
-  return { exists: review !== null, broken, hashes: Object.fromEntries(VR_VIEWS.filter((v) => graphs[v]).map((v) => [v, graphs[v]!.hash])), lines, summary: { ...s, text }, unchecked }
+  return { exists: review !== null, broken, hashes: Object.fromEntries(Object.keys(graphs).map((v) => [v, graphs[v]!.hash])), lines, summary: { ...s, text }, unchecked }
 }
 
 /** `graph_hash` is the hash of the graph the owner saw (from the review state's `hashes`); when given it must match the file on disk. */
@@ -110,7 +112,7 @@ export type VerdictInput = { diagram: unknown; element: unknown; verdict: unknow
  * the route sends it to the agent as a follow-up that carries the same anchor.
  */
 export function setVerdict(dir: string, dossier: string, b: VerdictInput): { state: ReviewState; followup: { anchor: Anchor; text: string } | null } {
-  if (typeof b.diagram !== "string" || !(VR_VIEWS as readonly string[]).includes(b.diagram)) throw new ReviewError(400, "diagram must be L0, L1 or L2")
+  if (!isDiagramName(b.diagram)) throw new ReviewError(400, "diagram must be L0, L1, L2 or arch:<stem>")
   const diagram = b.diagram as Diagram
   if (typeof b.element !== "string" || !b.element || b.element.length > MAX_ID) throw new ReviewError(400, "element must be an id of at most " + MAX_ID + " characters")
   const unset = b.verdict === "unset"
@@ -190,12 +192,12 @@ export function reviewOptions(options: { key: string; label: string }[]): { A: s
 }
 
 /** The `diagrams` field of a run's detail: where the three files are (relative to the repo root) and the review counts. null when the dossier has no visual review. */
-export function diagramsOf(root: string, dossier: string): { dir: string; l0: string | null; l1: string | null; l2: string | null; review: Summary & { exists: boolean } } | null {
+export function diagramsOf(root: string, dossier: string): { dir: string; l0: string | null; l1: string | null; l2: string | null; arch: string[]; review: Summary & { exists: boolean } } | null {
   const rel = join(".discovery", "visual-review", dossier)
   const dir = join(root, rel)
   const f = (v: string) => (existsSync(join(dir, v + ".json")) ? join(rel, v + ".json") : null)
   const l0 = f("l0"), l1 = f("l1"), l2 = f("l2")
   if (!l0 && !l1 && !l2) return null
   const st = reviewState(dir, dossier)
-  return { dir: rel, l0, l1, l2, review: { ...st.summary, exists: st.exists } }
+  return { dir: rel, l0, l1, l2, arch: archStems(dir), review: { ...st.summary, exists: st.exists } }
 }

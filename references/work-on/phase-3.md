@@ -301,9 +301,11 @@ payload holds no diagram file and no dossier text from this step.
    line, report it, and stop; never invent the facts by hand.
 2. Spawn `diagram-author` (payload file, linted like every payload): `DOSSIER_ID`,
    the dossier's `## Problem` and `## Approach`, the contract, `WORK_DIR`,
-   `OUT_DIR`, `SCRIPTS_DIR`, `REPO`. It writes `l0.json`, `l1.json` and `l2.json`
-   in `OUT_DIR`; it only names and groups, and marks what no stub proves
-   `inferred`.
+   `OUT_DIR`, `SCRIPTS_DIR`, `REPO`, and `DIAGRAMS_NEW` (the stems of the
+   `Diagrams new:` line, verbatim) when the dossier has one. It writes `l0.json`,
+   `l1.json` and `l2.json` in `OUT_DIR`, and for every `c1-*` and `c4-*` stem a
+   draft `OUT_DIR/arch/<stem>.json`; it only names and groups, and marks what
+   no stub proves `inferred`.
 3. Validate each file yourself:
    `python3 scripts/vr_graph.py validate <OUT_DIR>/l<N>.json --root <repo>`
    (budgets L0 15, L1 12, L2 12). On a defect re-spawn the agent with the
@@ -313,17 +315,21 @@ payload holds no diagram file and no dossier text from this step.
    When the dossier's `Diagrams new:` line lists a stem, the author was told
    (it reads the line in `APPROACH`) to write that flow into `l1.json` with
    `new_stem` on the flow and `to` and `call_kind` on every step; `validate`
-   rejects a `new_stem` flow whose steps lack them. Then prove the promotion
-   works before the owner looks, per stem:
+   rejects a `new_stem` flow whose steps lack them. A `c1-*` or `c4-*` stem
+   has its own draft: validate it too,
+   `python3 scripts/vr_graph.py validate <OUT_DIR>/arch/<stem>.json --root <repo>`.
+   Then prove the promotion works before the owner looks, per stem:
    `python3 scripts/vr_promote.py --dossier-id <ID> --stem <stem> --repo <repo> --preview`
-   (writes `.discovery/visual-review/<ID>/<stem>.seq.json`, nothing under
-   `docs/`; the dashboard does not show it, the owner reviews the L1 view it
-   is made from). A non-zero exit is a defect in `l1.json`: re-spawn the
-   author with the output in `ERRORS`, same two-attempt limit. The owner's
-   verdicts are recorded in `review.json` against the hash of the `l1.json`
-   they saw; any later edit of `l1.json` (a contract revision that re-runs
-   the author) changes that hash, and Phase 9's promotion then requires the
-   owner's fresh approval of the new file.
+   (for a `seq-*` stem it writes the draft `.discovery/visual-review/<ID>/arch/<stem>.json`
+   from the `l1.json` flow; for `c1-*` and `c4-*` it validates the author's
+   draft; nothing is written under `docs/`). The dashboard shows each draft as
+   a tab of the fourth part, "Architecture impact", with the same verdicts as
+   L0, L1 and L2. A non-zero exit is a defect in the draft or in `l1.json`:
+   re-spawn the author with the output in `ERRORS`, same two-attempt limit.
+   The owner's verdicts are recorded in `review.json` against the hash of the
+   file they saw; any later edit of `l1.json` or of a draft (a contract
+   revision that re-runs the author) changes that hash, and Phase 9's
+   promotion then requires the owner's fresh approval of the new file.
 4. Ask the owner ONE product question with
    `ask_owner.py ask --kind product --topic visual-review`
    (`references/owner-questions.md`). The `--topic` marker is what makes it
@@ -334,7 +340,8 @@ payload holds no diagram file and no dossier text from this step.
    `B|Changes requested|back to the contract`, the dashboard view of the
    three files linked in the question text, `--blocks` the Phase 4 fan-out.
    Then `ask_owner.py wait`; the run waits for the answer, with no time-boxed
-   default (OQ-08 = A). The owner gives a verdict per element on the
+   default (OQ-08 = A). The owner reviews L0, L1, L2 and every architecture
+   tab; the answer `A` needs every element of all of them OK. The owner gives a verdict per element on the
    dashboard canvas (OK, Question, Change, Remove from scope) and sends the
    review in one action: the answer is `A` when every element is OK, else `B`
    with one line per flagged element (verdict, diagram, element id, comment)
@@ -349,13 +356,14 @@ payload holds no diagram file and no dossier text from this step.
    and a line with a different `anchor.graph_hash` than the file now has was
    made on an older version of the picture. These ids and comments are the
    input of the contract revision below.
+   `anchor.diagram` of an architecture element reads `arch:<stem>`.
    When the answer is `A` and the dossier's `Diagrams new:` line lists
-   stems, first run per stem
+   stems (`seq-*`, `c1-*` and `c4-*` alike), first run per stem
    `python3 scripts/vr_promote.py --dossier-id <ID> --stem <stem> --repo <repo> --check-approval`
    (the approval rule only: no writes). An `A` typed as a chat answer has no
    per-element `ok` lines in `review.json`, and Phase 9 would refuse it hours
    later. On exit 1 do **not** record `VISUAL-REVIEW: approved`: ask the owner
-   again (`ask_owner.py`, same topic) naming the step ids it printed, who
+   again (`ask_owner.py`, same topic) naming the element ids it printed, who
    `ok` them on the dashboard canvas; repeat until it exits 0.
 5. Record the outcome as a `## Build log` line, exactly one of:
 
@@ -364,7 +372,8 @@ payload holds no diagram file and no dossier text from this step.
    VISUAL-REVIEW: changes requested — <element ids of the review.json lines with verdict change or remove>
    ```
 
-   The counts are the node counts of the three files; `validate_pipeline.py
+   The counts are the node counts of the three files (the architecture
+   drafts are not counted); `validate_pipeline.py
    --dossier <ID> --pre-fanout` checks them, the three files and the last
    line (the gate holds for a dossier with the `visual_review:` field that
    step 1 sets; a build that never ran this step is not flagged).

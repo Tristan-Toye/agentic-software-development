@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { pendingSlack, readRunThread, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
 import { startLagWatch } from "./lagwatch.ts"
-import { collapsedView, hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
+import { archStemOf, collapsedView, hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
 import { buildAnswer, diagramsOf, MAX_BODY, ReviewError, isReviewQuestion, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
 import { collapsedDiagram, DiagramError, mapStatus, openDiagram } from "./vrmap.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
@@ -940,8 +940,8 @@ export async function handle(req: Request): Promise<Response> {
     let anchor: { diagram: string; element: string; graph_hash?: string } | undefined
     if (b.anchor !== undefined) {
       const a = b.anchor
-      const ok = a && typeof a === "object" && ["L0", "L1", "L2"].includes(a.diagram) && typeof a.element === "string" && a.element.length > 0 && a.element.length <= 200 && (a.graph_hash === undefined || (typeof a.graph_hash === "string" && a.graph_hash.length <= 64))
-      if (!ok || kind !== "followup") return json({ error: "anchor must be {diagram: L0|L1|L2, element, graph_hash?} on a follow-up" }, 400)
+      const ok = a && typeof a === "object" && (["L0", "L1", "L2"].includes(a.diagram) || archStemOf(a.diagram) !== null) && typeof a.element === "string" && a.element.length > 0 && a.element.length <= 200 && (a.graph_hash === undefined || (typeof a.graph_hash === "string" && a.graph_hash.length <= 64))
+      if (!ok || kind !== "followup") return json({ error: "anchor must be {diagram: L0|L1|L2|arch:<stem>, element, graph_hash?} on a follow-up" }, 400)
       anchor = { diagram: a.diagram, element: a.element, ...(a.graph_hash ? { graph_hash: a.graph_hash } : {}) }
     }
     // A visual-review answer is only accepted on the dossier's visual-review question, and its option and text are rebuilt
