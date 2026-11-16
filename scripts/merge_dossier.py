@@ -137,6 +137,15 @@ def chain_of(prs: list[dict], dossier: str) -> tuple[list[dict], str]:
     mine = [p for p in prs if pat.search(p.get("headRefName", "")) and not p.get("headRefName", "").startswith("plan/")]
     if not mine:
         return [], f"no open pull request of {dossier}"
+    # A PR stacked on one of them is part of the same stack whatever its branch is called: a repo that names its
+    # branches by Jira key (feat/LABS-117-…) gets /fix-deferred's fix/W-007-deferred on top, and GitHub refuses to
+    # merge the bottom of a stack alone.
+    while True:
+        on_top = [p for p in prs if p not in mine and p.get("baseRefName") in {x["headRefName"] for x in mine}
+                  and not p.get("headRefName", "").startswith(("plan/", "docs/"))]
+        if not on_top:
+            break
+        mine += on_top
     heads = {p["headRefName"]: p for p in mine}
     bottoms = [p for p in mine if p.get("baseRefName") not in heads]
     if len(bottoms) != 1:
@@ -172,6 +181,10 @@ def plan(root: str, dossier: str) -> tuple[list[dict], str]:
     chain, why = chain_of(prs, dossier)
     if not chain:
         return [], why
+    for k in chain_keys(repo_name(root), dossier, chain)[1:]:   # a dossier id another branch of the stack names
+        o = read_json(os.path.join(runs_dir(), k + ".runner.json"), {}) or {}
+        if o.get("state") in ("running", "testing", "waiting", "paused", "queued") and alive(o.get("pid")):
+            return [], f"a {o.get('command') or 'run'} run of {k.split('.', 1)[1]} on this stack is still live; merge when it is finished"
     base = chain[0].get("baseRefName", "")
     if not is_stub(base):
         return [], f"#{chain[0]['number']} goes into {base}, not a stub; only work on a stub is merged here"
@@ -338,6 +351,12 @@ def run_live(key: str) -> bool:
 
 
 QUEUE_RUNS = ("resolve-merge", "after-merge")
+
+
+def chain_keys(repo: str, dossier: str, chain: list[dict]) -> list[str]:
+    """The run keys of a stack: its dossier's, and every dossier id a branch in it names (fix/W-007-deferred on feat/LABS-117-…)."""
+    ids = [dossier] + [m.upper() for p in chain for m in re.findall(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]*-\d+)(?![0-9])", p.get("headRefName", ""))]
+    return [f"{repo}.{i}" for i in dict.fromkeys(i.upper() for i in ids)]
 
 
 def still_building(key: str) -> bool:
@@ -1117,7 +1136,7 @@ def integrate(root: str, branch: str) -> int:
     def ready(i: str, p: dict) -> bool:
         """Every PR of the dossier's stack is out of draft (the queue refuses a stack with a draft in it), and no run is live."""
         chain, _ = chain_of(everything, i)
-        return not any(x.get("isDraft") for x in (chain or [p])) and not still_building(f"{repo}.{i}")
+        return not any(x.get("isDraft") for x in (chain or [p])) and not any(still_building(k) for k in chain_keys(repo, i, chain or [p]))
     finished = picked_stacks(ids, ready, (read_json(st_path, {}) or {}).get("finished") or [])
     inflight = [i for i, p in ids if i not in finished]
     if pr_later and not finished:
@@ -1257,6 +1276,11 @@ def selftest() -> int:
     check("chain: two PRs both on the stub are not one chain", not c and "one chain" in why)
     c, why = chain_of([P(1, "plan/W-7", "development")], "W-7")
     check("chain: a plan branch is never a dossier's PR", not c and "no open pull request" in why)
+    c, why = chain_of([P(40, "feat/LABS-117-qc", "stub/x"), P(50, "fix/W-007-deferred", "feat/LABS-117-qc"), P(41, "fix/LABS-139-a", "stub/x"),
+                       P(60, "plan/W-9", "feat/LABS-117-qc")], "LABS-117")
+    check("chain: a PR stacked on the dossier's branch joins its stack whatever its branch is called", [p["number"] for p in c] == [40, 50], why)
+    check("chain: the stack's run keys include every dossier id its branches name",
+          chain_keys("repo", "LABS-117", c) == ["repo.LABS-117", "repo.W-007"], str(chain_keys("repo", "LABS-117", c)))
     check("chain: W-12 is not W-128", chain_of([P(1, "feat/W-128-x", "stub/x")], "W-12")[0] == [])
 
     with tempfile.TemporaryDirectory() as tmp:
