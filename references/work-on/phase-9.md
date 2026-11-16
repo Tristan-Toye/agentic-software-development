@@ -291,4 +291,4 @@
     count from step 8 — `N deferred issues captured; /deferred renders them`
     — with the worst risk named in one clause when N is not zero.
 
-**Driver (only when `ASD_DRIVER_FINALIZE_PR=on`).** `python3 scripts/finalize_pr.py --dossier ID --worktree PATH --target BRANCH` does the merge of the target, finalize-ids, validation, conflict-marker and duplicate-ADR checks and prints evidence; a merge conflict aborts and exits 2 for you to resolve. `shadow` runs in a throwaway worktree and changes nothing; `off` or unset: ignore this paragraph.
+**Driver (`ASD_DRIVER_FINALIZE_PR` is `on` or `shadow`).** `python3 scripts/finalize_pr.py --dossier ID --worktree PATH --target BRANCH` does the merge of the target, finalize-ids, validation, conflict-marker and duplicate-ADR checks and prints evidence; a merge conflict aborts and exits 2 for you to resolve. In `shadow`, do the manual finalize exactly as today, then run the driver once afterwards with the same arguments (no `--log`) and ignore its output for every decision; it runs in a throwaway worktree, changes nothing, and saves evidence for the rollout report. `off` or unset: ignore this paragraph.

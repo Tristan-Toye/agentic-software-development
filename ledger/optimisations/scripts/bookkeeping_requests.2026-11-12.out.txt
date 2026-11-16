@@ -1,0 +1,26 @@
+window: ['2026-11-09', '2026-11-13']
+files_scanned: 1497
+files_with_orchestrator_requests: 280
+tool_using_requests: 9141
+bookkeeping_only: 304
+tier2_any_log_or_note_present: 1081
+tier3_log_note_plus_trivial_companions: 436
+tier2_cache_read: 108665046
+tier3_cache_read: 46390167
+share: 0.0333
+only_log: 124
+only_note: 73
+log_and_note: 107
+preceded_by_bash_request: 181
+cache_read_tokens_total: 855665058
+cache_read_tokens_bookkeeping: 32247733
+avg_cache_read_per_bookkeeping: 106078
+lines_per_log_call: {0: 1, 1: 112, 2: 39, 3: 24, 4: 14, 5: 6, 6: 35}
+tool_of_next_request_after_bookkeeping_only: [('Bash', 146), ('phase_checkpoint', 47), ('Bash(log/note)', 43), ('ToolSearch', 32), ('none (end of session/turn)', 13), ('Read', 7), ('Workflow', 7), ('ref_section', 3), ('Agent', 2), ('code_outline', 1), ('ctx_execute', 1), ('code_item', 1), ('Write', 1)]
+log_line_kinds_in_bookkeeping_only_requests: [('(owner note)', 180), ('DEFERRED-LEDGER-ITEM', 121), ('WORKFLOW', 85), ('NOTICED', 45), ('AMBIGUITY-SETTLED', 27), ('CENSUS', 17), ('ARBITRATION', 17), ('DEFERRED-FIX', 15), ('REVIEW-LENS-ROUND', 12), ('QUESTION', 11), ('RETURNED', 11), ('GATES', 10), ('DEFERRED', 10), ('DEFERRED-TRIAGE', 10), ('CONTRACT-FIX', 9), ('CONTRACT-REVIEW', 8), ('RULES', 7), ('MUTATION', 7), ('CONTRACT-REVISION', 6), ('SUITE', 6), ('BLAST-RADIUS', 6), ('EXCLUDED', 6), ('FAILURE-SIGNALS', 6), ('LOG-SIGNALS', 6), ('SECURITY-TRIGGERS', 6), ('TESTS-LENS', 6), ('DEFERRED-RULING', 6), ('OWNER-RULING', 6), ('Phase-narrative', 5), ('CHECKLIST-IDS', 5), ('CI', 5), ('CASE', 5), ('other-prose', 5), ('RULING', 5), ('FLAKE-RISK', 5), ('PROMISE-COVERAGE', 4), ('STUB-RED-RUN', 4), ('SYNC', 4), ('PHASE', 4), ('COMMIT', 4)]
+log_line_kinds_all_requests: [('RETURNED', 171), ('DEFERRED-LEDGER-ITEM', 160), ('NOTICED', 146), ('REVIEW-LENS-ROUND', 136), ('WORKFLOW', 114), ('OWNER-RULING', 64), ('GATES', 63), ('ARBITRATION', 42), ('QUESTION', 37), ('AMBIGUITY-SETTLED', 33), ('MUTATION', 32), ('SUITE', 31), ('CI', 29), ('DEFERRED-FIX', 28), ('CENSUS', 22), ('SYNC', 22), ('RULING', 21), ('other-prose', 20), ('CONTRACT-REVISION', 19), ('STABILITY', 19), ('WAVE', 19), ('PHASE', 19), ('RED-RUN', 17), ('PR', 17), ('DEFERRED-TRIAGE', 17), ('Phase-narrative', 16), ('FAILURE-SIGNALS', 16), ('LOG-SIGNALS', 16), ('SECURITY-TRIGGERS', 16), ('RULES', 16), ('DEFERRED-FIXED', 16), ('SUITE-RUN', 15), ('BLAST-RADIUS', 15), ('EXCLUDED', 15), ('TESTS-LENS', 15), ('DEFERRED', 15), ('FLAKE-RISK', 14), ('DEFERRED-RULING', 14), ('CHECKLIST-IDS', 13), ('CONTRACT-REVIEW', 13), ('COMMIT', 12), ('CONTRACT-FIX', 12), ('CASE', 12), ('ENV', 11), ('MERGE', 11)]
+log_lines_all: 2215
+side_finding_toolsearch_only_requests: [134, 12652527]
+bookkeeping_only_requests_by_class: {'B log lines, no note': 92, 'owner note present': 180, 'A only': 30, 'C only': 1, 'A+C': 1}
+class_share_all_log_lines: {'A': [911, 0.411], 'B': [1200, 0.542], 'C': [104, 0.047]}
+class_share_in_bookkeeping_only_requests: {'A': [233, 0.325], 'B': [464, 0.648], 'C': [19, 0.027]}
