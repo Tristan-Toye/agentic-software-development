@@ -3,7 +3,7 @@
 // starts a Worker it cannot terminate and the process never exits (research/d0/REPORT.md, 1.2).
 // The page never lays out: it gets boxes and edge points from here and only draws them.
 import { createHash } from "node:crypto"
-import { existsSync, readFileSync, statSync } from "node:fs"
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 // @ts-ignore: vendored CommonJS build, no types
 import ElkModule from "./vendor/elk/elk-api.js"
@@ -29,7 +29,7 @@ export type Layout = {
 export type Issue = { code: string; where: string; message: string }
 /** One view as the page gets it. `layout` is null when the graph could not be laid out (see `issues`). */
 export type ViewResult = { file: string; view?: string; title?: string; graph: any | null; layout: Layout | null; issues: Issue[] }
-export type VisualReview = { dossier: string; dir: string; rev: string; views: Record<"L0" | "L1" | "L2", ViewResult | null>; issues: Issue[]; hasReview: boolean }
+export type VisualReview = { dossier: string; dir: string; rev: string; views: Record<string, ViewResult | null>; issues: Issue[]; hasReview: boolean }
 
 /** Above this many nodes the layout uses ELK's cheaper settings (scenario S9). */
 export const FAST_ABOVE = 150
@@ -490,15 +490,45 @@ export async function collapseLoaded(g: any, view: string, collapsed: string[]):
 
 /** One view of a dossier directory with `collapsed` groups drawn as boxes, and its layout (cached on the collapsed graph's hash). */
 export async function collapsedView(dir: string, view: string, collapsed: string[]): Promise<{ graph: any; layout: Layout; collapsed: string[] }> {
-  if (!(VR_VIEWS as readonly string[]).includes(view)) throw new Error("view must be L0, L1 or L2")
-  const file = join(dir, view.toLowerCase() + ".json")
-  if (!existsSync(file) || !statSync(file).isFile()) throw new Error("no " + view.toLowerCase() + ".json")
-  return collapseLoaded(JSON.parse(readFileSync(file, "utf8")), view, collapsed)
+  const file = viewFile(dir, view)
+  if (!file) throw new Error("view must be L0, L1, L2 or arch:<stem>")
+  if (!existsSync(file) || !statSync(file).isFile()) throw new Error("no " + view + " diagram")
+  const g = JSON.parse(readFileSync(file, "utf8"))
+  if (archStemOf(view) !== null) {
+    if (!ARCH_VIEWS.has(g?.view)) throw new Error(view + " must be a c1, c4 or seq graph")
+    return collapseLoaded(g, g.view, collapsed)
+  }
+  return collapseLoaded(g, view, collapsed)
 }
 
 // ---- the three files of a dossier ----
 export const VR_VIEWS = ["L0", "L1", "L2"] as const
 export const vrDir = (root: string, dossier: string): string => join(root, ".discovery", "visual-review", dossier)
+
+// ---- the architecture-impact diagrams: the NEW diagrams the dossier adds, drafted in <dir>/arch/<stem>.json ----
+export const ARCH_DIR = "arch"
+/** Views an architecture draft may have: the context (c1) and class (c4) diagrams and a sequence diagram. */
+export const ARCH_VIEWS = new Set(["c1", "c4", "seq"])
+/** A stem is a plain file name part (no dot, no slash): it cannot leave the arch folder. */
+export const ARCH_STEM = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/
+/** The stem of an `arch:<stem>` diagram name, or null for anything else (L0, L1, L2, a malformed stem). */
+export const archStemOf = (d: unknown): string | null => typeof d === "string" && d.startsWith("arch:") && ARCH_STEM.test(d.slice(5)) ? d.slice(5) : null
+/** The stems of the regular files `<stem>.json` in <dir>/arch (symlinks and other names are ignored), sorted. */
+export function archStems(dir: string): string[] {
+  const folder = join(dir, ARCH_DIR)
+  try {
+    if (!lstatSync(folder).isDirectory()) return []
+    return readdirSync(folder).filter((f) => f.endsWith(".json") && ARCH_STEM.test(f.slice(0, -5)) && lstatSync(join(folder, f)).isFile()).map((f) => f.slice(0, -5)).sort()
+  } catch { return [] }
+}
+/** The file of a view of the dossier directory: `L0`/`L1`/`L2`, or `arch:<stem>` when that stem is a file in arch/. null for any other name. */
+export function viewFile(dir: string, view: string): string | null {
+  if ((VR_VIEWS as readonly string[]).includes(view)) return join(dir, view.toLowerCase() + ".json")
+  const stem = archStemOf(view)
+  return stem !== null && archStems(dir).includes(stem) ? join(dir, ARCH_DIR, stem + ".json") : null
+}
+/** The views a review covers, in tab order: L0, L1, L2, then one `arch:<stem>` per draft in arch/. */
+export const reviewViews = (dir: string): string[] => [...VR_VIEWS, ...archStems(dir).map((s) => "arch:" + s)]
 
 /** Whether `root` holds a visual-review folder for the dossier with at least one of l0/l1/l2.json. */
 export const hasVisualReview = (root: string, dossier: string): boolean => VR_VIEWS.some((v) => existsSync(join(vrDir(root, dossier), v.toLowerCase() + ".json")))
@@ -510,10 +540,11 @@ export const hasVisualReview = (root: string, dossier: string): boolean => VR_VI
 export async function visualReview(dir: string, dossier: string): Promise<VisualReview> {
   const res: VisualReview = { dossier, dir, rev: "", views: { L0: null, L1: null, L2: null }, issues: [], hasReview: existsSync(join(dir, "review.json")) }
   const h = createHash("sha256")
-  for (const v of VR_VIEWS) {
-    const file = join(dir, v.toLowerCase() + ".json")
+  for (const v of reviewViews(dir)) {
+    const file = viewFile(dir, v)!
     if (!existsSync(file)) continue
-    const out: ViewResult = { file: v.toLowerCase() + ".json", graph: null, layout: null, issues: [] }
+    const isArch = archStemOf(v) !== null
+    const out: ViewResult = { file: isArch ? ARCH_DIR + "/" + v.slice(5) + ".json" : v.toLowerCase() + ".json", graph: null, layout: null, issues: [] }
     res.views[v] = out
     let g: any
     try {
@@ -522,7 +553,8 @@ export async function visualReview(dir: string, dossier: string): Promise<Visual
       h.update(v + ":" + text)
       g = JSON.parse(text)
     } catch (e) { out.issues.push({ code: "unreadable", where: "", message: "cannot read " + out.file + ": " + (e as Error).message }); continue }
-    out.issues.push(...checkGraph(g, v))
+    out.issues.push(...checkGraph(g, isArch ? undefined : v))
+    if (isArch && !out.issues.length && !ARCH_VIEWS.has(g.view)) out.issues.push({ code: "view", where: "view", message: "an architecture draft must have view c1, c4 or seq, not " + g.view })
     // A dangling edge is dropped by the layout and reported; every other issue means no layout.
     const fatal = out.issues.some((i) => i.code !== "dangling_edge")
     if (typeof g?.title === "string") out.title = g.title
@@ -536,6 +568,6 @@ export async function visualReview(dir: string, dossier: string): Promise<Visual
     try { out.layout = await layoutGraph(out.graph) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
   }
   res.rev = h.digest("hex").slice(0, 16)
-  res.issues = VR_VIEWS.flatMap((v) => (res.views[v]?.issues ?? []).map((i) => ({ ...i, where: v + (i.where ? "." + i.where : "") })))
+  res.issues = Object.keys(res.views).flatMap((v) => (res.views[v]?.issues ?? []).map((i) => ({ ...i, where: v + (i.where ? "." + i.where : "") })))
   return res
 }

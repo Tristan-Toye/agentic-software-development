@@ -8,6 +8,7 @@ import { buildAnswer, diagramsOf, isReviewQuestion, MAX_ANSWER, MAX_COMMENT, rea
 import { questionBlocks } from "../questions/slack.ts"
 import { parseQuestion } from "../questions/store.ts"
 import { PAGE } from "../questions/page.ts"
+import { archStems, collapsedView, viewFile, visualReview } from "../questions/vrlayout.ts"
 
 const FIX = join(import.meta.dir, "..", "..", "references", "visual-review", "fixtures")
 const load = (n: string) => JSON.parse(readFileSync(join(FIX, n), "utf8"))
@@ -502,5 +503,113 @@ describe("openDiagram keeps to the repo", () => {
     const ok: any = await openDiagram(repo, "docs/inner.md", listed)
     expect(ok.kind).toBe("mermaid")
     expect(ok.text).toContain("c --> d")
+  })
+})
+
+// ---- Architecture impact: one review tab per new diagram, drafted in arch/<stem>.json ----
+const ev = [{ tier: "inferred", note: "test" }]
+const seqDraft = () => ({
+  schema_version: "1.0.0", view: "seq", title: "Runs a call", meta: {},
+  lanes: [{ id: "lane:a", label: "A" }, { id: "lane:b", label: "B" }],
+  nodes: [
+    { id: "s1", label: "A calls B", kind: "message", status: "added", lane: "lane:a", order: 1, seq: { to: "lane:b", arrow: "->>" }, evidence: ev },
+    { id: "s2", label: "B replies", kind: "message", status: "added", lane: "lane:b", order: 2, seq: { to: "lane:a", arrow: "-->>" }, evidence: ev },
+  ],
+  edges: [], groups: [], flows: [{ id: "f", label: "f", status: "added", after: ["s1", "s2"], evidence: ev }],
+})
+const c1Draft = () => ({
+  schema_version: "1.0.0", view: "c1", title: "A new system", meta: {},
+  nodes: [{ id: "element:x", label: "X", kind: "element", status: "added", evidence: ev }, { id: "element:y", label: "Y", kind: "element", status: "added", evidence: ev }],
+  edges: [{ id: "edge:x:y", source: "element:x", target: "element:y", kind: "depends", status: "added", evidence: ev }], groups: [],
+})
+const withArch = (): string => {
+  const d = dirWith()
+  mkdirSync(join(d, "arch"))
+  writeFileSync(join(d, "arch", "seq-new.json"), JSON.stringify(seqDraft()))
+  writeFileSync(join(d, "arch", "c1-new.json"), JSON.stringify(c1Draft()))
+  return d
+}
+describe("architecture impact (arch:<stem>)", () => {
+  test("an arch verdict is stored with its anchor and counted in the totals", () => {
+    const d = withArch()
+    const base = nodes("l0").length + nodes("l1").length + nodes("l2").length
+    expect(reviewState(d, "W-145").summary.total).toBe(base + 4)
+    const r = setVerdict(d, "W-145", { diagram: "arch:seq-new", element: "s1", verdict: "change", comment: "wrong lane" })
+    const file = JSON.parse(readFileSync(join(d, "review.json"), "utf8"))
+    expect(file.lines[0].anchor).toEqual({ diagram: "arch:seq-new", element: "s1", graph_hash: reviewState(d, "W-145").hashes["arch:seq-new"] })
+    expect(r.state.summary.change).toBe(1)
+    expect(r.state.lines[0].state).toBe("current")
+    expect(r.state.unchecked.some((u) => u.diagram === "arch:c1-new" && u.element === "element:x")).toBe(true)
+  })
+  test("a path-like or unknown stem is refused, and a symlink or odd name in arch/ is not a view", () => {
+    const d = withArch()
+    for (const bad of ["arch:../l1", "arch:a/b", "arch:", "arch:.hidden", "arch:seq-new.json", "arch:missing"]) {
+      const e = fails(() => setVerdict(d, "W-145", { diagram: bad, element: "s1", verdict: "ok" }))
+      expect([400, 404]).toContain(e.status)
+    }
+    const outside = mkdtempSync(join(tmpdir(), "vrr-out-"))
+    writeFileSync(join(outside, "evil.json"), JSON.stringify(seqDraft()))
+    require("node:fs").symlinkSync(join(outside, "evil.json"), join(d, "arch", "evil.json"))
+    writeFileSync(join(d, "arch", "bad.name.json"), JSON.stringify(seqDraft()))
+    expect(archStems(d)).toEqual(["c1-new", "seq-new"])
+    expect(viewFile(d, "arch:evil")).toBeNull()
+    expect(viewFile(d, "arch:../l1")).toBeNull()
+    expect(fails(() => setVerdict(d, "W-145", { diagram: "arch:evil", element: "s1", verdict: "ok" })).status).toBe(404)
+  })
+  test("an element that is not a node of the arch draft is refused", () => {
+    const d = withArch()
+    expect(fails(() => setVerdict(d, "W-145", { diagram: "arch:seq-new", element: "element:x", verdict: "ok" })).status).toBe(400)
+  })
+  test("option A needs every arch element ok on the current hash, besides L0-L2", () => {
+    const d = withArch()
+    for (const v of ["L0", "L1", "L2"]) for (const id of nodes(v.toLowerCase())) setVerdict(d, "W-145", { diagram: v, element: id, verdict: "ok" })
+    expect(buildAnswer(reviewState(d, "W-145"), "W-145").option).toBe("B")
+    expect(buildAnswer(reviewState(d, "W-145"), "W-145").text).toContain("arch:seq-new s1")
+    for (const [st, ids] of [["seq-new", ["s1", "s2"]], ["c1-new", ["element:x"]]] as const) for (const id of ids) setVerdict(d, "W-145", { diagram: "arch:" + st, element: id, verdict: "ok" })
+    expect(buildAnswer(reviewState(d, "W-145"), "W-145").option).toBe("B")
+    setVerdict(d, "W-145", { diagram: "arch:c1-new", element: "element:y", verdict: "ok" })
+    expect(buildAnswer(reviewState(d, "W-145"), "W-145").option).toBe("A")
+    setVerdict(d, "W-145", { diagram: "arch:c1-new", element: "element:y", verdict: "remove" })
+    const b = buildAnswer(reviewState(d, "W-145"), "W-145")
+    expect(b.option).toBe("B")
+    expect(b.text).toContain("remove from scope arch:c1-new element:y")
+  })
+  test("editing the draft makes its lines outdated; deleting it makes them gone", () => {
+    const d = withArch()
+    setVerdict(d, "W-145", { diagram: "arch:seq-new", element: "s1", verdict: "ok" })
+    const g = seqDraft(); g.nodes[0].label = "A calls B differently"
+    writeFileSync(join(d, "arch", "seq-new.json"), JSON.stringify(g))
+    let st = reviewState(d, "W-145")
+    expect(st.lines[0].state).toBe("outdated")
+    expect(st.summary.outdated).toBe(1)
+    expect(st.summary.ok).toBe(0)
+    rmSync(join(d, "arch", "seq-new.json"))
+    st = reviewState(d, "W-145")
+    expect(st.lines[0].state).toBe("gone")
+  })
+  test("a stale graph_hash on an arch verdict is a 409", () => {
+    const d = withArch()
+    expect(fails(() => setVerdict(d, "W-145", { diagram: "arch:c1-new", element: "element:x", verdict: "ok", graph_hash: "0".repeat(64) })).status).toBe(409)
+  })
+  test("visualReview serves each arch draft as a view with a layout (seq lanes, c1 structure) and diagramsOf lists the stems", async () => {
+    const d = withArch()
+    const r = await visualReview(d, "W-145")
+    expect(Object.keys(r.views)).toEqual(["L0", "L1", "L2", "arch:c1-new", "arch:seq-new"])
+    expect(r.views["arch:seq-new"]!.view).toBe("seq")
+    expect(r.views["arch:seq-new"]!.layout).not.toBeNull()
+    expect(r.views["arch:c1-new"]!.layout).not.toBeNull()
+    expect(r.views["arch:c1-new"]!.file).toBe("arch/c1-new.json")
+    expect(r.issues.filter((i) => i.where.startsWith("arch:"))).toEqual([])
+    const bad = { ...c1Draft(), view: "L2" }
+    writeFileSync(join(d, "arch", "c1-new.json"), JSON.stringify(bad))
+    expect((await visualReview(d, "W-145")).issues.some((i) => i.where.startsWith("arch:c1-new"))).toBe(true)
+    const lay: any = await collapsedView(d, "arch:seq-new", [])
+    expect(lay.layout).toBeTruthy()
+    await expect(collapsedView(d, "arch:../l1", [])).rejects.toThrow()
+    const root = mkdtempSync(join(tmpdir(), "vrr-root-"))
+    mkdirSync(join(root, ".discovery", "visual-review", "W-1", "arch"), { recursive: true })
+    writeFileSync(join(root, ".discovery", "visual-review", "W-1", "l1.json"), "{}")
+    writeFileSync(join(root, ".discovery", "visual-review", "W-1", "arch", "seq-a.json"), "{}")
+    expect(diagramsOf(root, "W-1")!.arch).toEqual(["seq-a"])
   })
 })

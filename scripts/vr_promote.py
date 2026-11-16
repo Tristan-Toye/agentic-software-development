@@ -1,10 +1,25 @@
 #!/usr/bin/env python3
-"""Promote an owner-reviewed L1 flow to a docs/architecture sequence diagram.
+"""Promote an owner-reviewed NEW architecture diagram (the dossier's `Diagrams new:` stems) to docs/architecture.
 
     vr_promote.py --dossier-id ID --stem STEM --repo PATH [--preview | --check-approval]
     vr_promote.py --selftest
 
-Reads `.discovery/visual-review/<ID>/l1.json` and `review.json`, takes the flow whose
+The owner reviews each new diagram as an "Architecture impact" tab of the visual review: the draft
+`.discovery/visual-review/<ID>/arch/<STEM>.json` (anchor `arch:<STEM>`, the same verdicts and the same exact-version
+approval as L0/L1/L2). Two kinds of stem:
+
+  * a sequence stem: the L1 flow of `l1.json` whose `new_stem` is STEM; `--preview` writes the draft from it (below);
+  * a c1 / c4 stem: the `diagram-author` writes the draft itself, in the repo's c1/c4 JSON format; `--preview` only
+    validates it.
+
+`--check-approval` and the default promotion read the draft and `review.json`: every element of the draft needs an `ok`
+line whose `graph_hash` is the draft's current hash (`remove` drops the element, `change` / `question` block). The
+default promotion then copies the approved draft (without the removed elements), re-anchors its evidence (below),
+validates, writes `docs/architecture/<STEM>.json`, the `.md` stub when absent, and runs `vr_mermaid.py sync`.
+A dossier reviewed before the arch tabs existed has no draft: a sequence stem then still promotes from `l1.json` and
+the owner's L1 verdicts, as it did.
+
+The sequence draft is made from `l1.json` and `review.json`, takes the flow whose
 `new_stem` is STEM and maps it to a `seq` graph:
 
   lanes -> participants (unchanged); steps (the flow's `after` list, in order) -> `message` nodes on the
@@ -19,7 +34,7 @@ revised graph) exits 1 with the element id.
 
 Default: writes `docs/architecture/<stem>.json`, creates `<stem>.md` with the marker block when absent,
 runs vr_graph validate and `vr_mermaid.py sync docs/architecture`. `--preview` (Phase 3, before the owner
-approves) only writes `.discovery/visual-review/<ID>/<stem>.seq.json`: no re-anchoring (anchors still
+approves) only writes `.discovery/visual-review/<ID>/arch/<stem>.json`: no re-anchoring (anchors still
 point at stubs), no review check, nothing under docs/.
 
 Exit: 0 done, 1 a stale anchor, an unresolved `change` verdict or a validation failure, 2 usage / input error.
@@ -45,8 +60,14 @@ ARROWS = {"call": "->>", "reply": "-->>", "async": "-)", "publish": "-)"}
 MD_STUB = (
     "# {stem}\n\n{line}\n\n"
     "<!-- generated from {stem}.json by vr_mermaid.py render; edit the JSON, not this block -->\n"
-    "```mermaid\nsequenceDiagram\n```\n<!-- end generated -->\n"
+    "```mermaid\n{head}\n```\n<!-- end generated -->\n"
 )
+ARCH_DIR = "arch"
+ARCH_VIEWS = ("c1", "c4", "seq")
+STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")  # the dashboard's ARCH_STEM: no dot, no slash
+MERMAID_DEFAULT = {"c1": {"type": "flowchart", "header": "flowchart LR"}, "c4": {"type": "classDiagram"},
+                   "seq": {"type": "sequenceDiagram"}}
+STUB_LINE = {"c1": "The context: ", "c4": "The classes: ", "seq": "The flow: "}
 
 
 class PromoteError(Exception):
@@ -83,8 +104,9 @@ def graph_hash(graph) -> str:
 HASH_CASE_EXPECTED = "8ce8ade17ad88b468fe732549001fa366d19a7ee5fba0c509ad28cd8b081434a"
 
 
-def approval(l1_hash: str, review: dict | None, step_ids: list) -> tuple:
-    """(removed ids, problems). The owner's approval is tied to the exact L1 file: every promoted step needs an `ok`
+def approval(l1_hash: str, review: dict | None, step_ids: list, diagram: str = "L1", fname: str = "l1.json") -> tuple:
+    """(removed ids, problems). The owner's approval is tied to the exact file (`diagram` is its anchor: L1, or
+    `arch:<stem>` for a draft in arch/): every promoted element (a step of the flow) needs an `ok`
     line whose graph_hash is the current hash. A `change` or `question` line on the current hash is unresolved, and
     an `ok` never clears it (any order). A line on an older hash proves nothing about this file: the older versions
     of l1.json are not kept, so there is no way to tell whether the author revised that element, and the current-hash
@@ -92,7 +114,7 @@ def approval(l1_hash: str, review: dict | None, step_ids: list) -> tuple:
     lines: dict = {}
     for ln in (review or {}).get("lines", []):
         a = ln.get("anchor", {})
-        if a.get("diagram") == "L1":
+        if a.get("diagram") == diagram:
             lines.setdefault(a.get("element"), []).append(ln)
     removed = {e for e, ls in lines.items() if any(x.get("verdict") == "remove" for x in ls)}
     problems = []
@@ -103,13 +125,13 @@ def approval(l1_hash: str, review: dict | None, step_ids: list) -> tuple:
         cur = [x for x in ls if x["anchor"].get("graph_hash") == l1_hash]
         open_ = [x for x in cur if x.get("verdict") in ("change", "question")]
         if open_:
-            problems.append("UNRESOLVED-CHANGE %s: a %s verdict on the current L1 hash is open (%s)"
-                            % (sid, open_[0]["verdict"], (open_[0].get("comment") or "no comment")[:80]))
+            problems.append("UNRESOLVED-CHANGE %s: a %s verdict on the current %s hash is open (%s)"
+                            % (sid, open_[0]["verdict"], diagram, (open_[0].get("comment") or "no comment")[:80]))
         elif any(x.get("verdict") == "ok" for x in cur):
             continue
         elif ls:
-            problems.append("STALE-APPROVAL %s: the owner's lines are on an older L1 hash; l1.json changed since "
-                            "(older versions are not kept): the owner approves the current file again" % sid)
+            problems.append("STALE-APPROVAL %s: the owner's lines are on an older %s hash; %s changed since "
+                            "(older versions are not kept): the owner approves the current file again" % (sid, diagram, fname))
         else:
             problems.append("NOT-APPROVED %s: no verdict for the step" % sid)
     return removed, problems
@@ -240,10 +262,12 @@ def reanchor(graph: dict, repo: str, base_sha: str | None) -> list:
     if base_sha and subprocess.run(["git", "-C", repo, "cat-file", "-e", base_sha + "^{commit}"], capture_output=True).returncode:
         return ["STALE-ANCHOR * meta.base_sha %s is not a commit of this repository" % base_sha]
     if not base_sha:
-        out.append("WARN l1.json has no meta.base_sha: anchors are re-found by their backticked name only; "
+        out.append("WARN the graph has no meta.base_sha: anchors are re-found by their backticked name only; "
                    "an anchor without one keeps its Phase 3 line")
     cache: dict = {}
-    for part in graph["nodes"]:  # edges and the flow copy their step's anchors afterwards
+    # A sequence graph: edges and the flow copy their step's anchors afterwards. A c1/c4 graph: every element has its own.
+    parts = graph["nodes"] if graph.get("view") == "seq" else graph["nodes"] + graph.get("edges", []) + graph.get("groups", [])
+    for part in parts:
         for ev in part.get("evidence", []):
             if ev.get("tier") != "source" or "line" not in ev:
                 continue
@@ -288,11 +312,12 @@ def reanchor(graph: dict, repo: str, base_sha: str | None) -> list:
             if "end_line" in ev:
                 ev["end_line"] = min(len(head_lines), max(new, ev["end_line"] + (new - old_line)))
             ev["path"], ev["line"] = new_path, new
-    by_id = {n["id"]: n for n in graph["nodes"]}
-    for e in graph["edges"]:
-        e["evidence"] = copy.deepcopy(by_id[e["target"]]["evidence"])
-    for f in graph["flows"]:
-        f["evidence"] = copy.deepcopy(by_id[f["after"][0]]["evidence"])
+    if graph.get("view") == "seq":
+        by_id = {n["id"]: n for n in graph["nodes"]}
+        for e in graph["edges"]:
+            e["evidence"] = copy.deepcopy(by_id[e["target"]]["evidence"])
+        for f in graph["flows"]:
+            f["evidence"] = copy.deepcopy(by_id[f["after"][0]]["evidence"])
     return out
 
 
@@ -303,15 +328,116 @@ def _sync(repo: str) -> None:
         raise PromoteError("vr_mermaid.py sync failed: " + (p.stdout + p.stderr).strip()[:300])
 
 
+def drop_removed(graph: dict, removed: set) -> dict:
+    """The graph without the elements the owner marked `remove`. A sequence graph is renumbered and re-chained (its
+    messages are consecutive); any other view loses the edges that touch a removed node."""
+    g = copy.deepcopy(graph)
+    if not removed:
+        return g
+    g["nodes"] = [n for n in g["nodes"] if n["id"] not in removed]
+    if g.get("view") == "seq":
+        kept = sorted(g["nodes"], key=lambda n: n.get("order", 0))
+        for i, n in enumerate(kept, 1):
+            n["order"] = i
+        g["edges"] = [{"id": "f%d" % i, "source": kept[i - 1]["id"], "target": n["id"], "kind": "flow", "status": n.get("status", "added"),
+                       "evidence": copy.deepcopy(n["evidence"])} for i, n in enumerate(kept[1:], 1)]
+        used = {n["lane"] for n in kept} | {n["seq"]["to"] for n in kept if n.get("seq")}
+        g["lanes"] = [x for x in g.get("lanes", []) if x["id"] in used]
+        for f in g.get("flows", []):
+            f["after"] = [n["id"] for n in kept]
+            if kept:
+                f["evidence"] = copy.deepcopy(kept[0]["evidence"])
+    else:
+        g["edges"] = [e for e in g["edges"] if e["source"] not in removed and e["target"] not in removed]
+    return g
+
+
+def _arch_draft(vr: str, stem: str) -> str:
+    return os.path.join(vr, ARCH_DIR, stem + ".json")
+
+
+def _run_draft(dossier_id: str, stem: str, repo: str, vr: str, l1: dict | None, review: dict | None,
+               preview: bool, check_only: bool) -> int:
+    """The reviewed draft arch/<stem>.json: approval on its exact hash, then the copy, re-anchor, validate and sync."""
+    draft = _load(_arch_draft(vr, stem))
+    if draft.get("view") not in ARCH_VIEWS:
+        print("ERROR arch/%s.json has view %r, expected one of %s" % (stem, draft.get("view"), ", ".join(ARCH_VIEWS)))
+        return 2
+    label, fname = "arch:" + stem, "arch/%s.json" % stem
+    ids = [n["id"] for n in draft.get("nodes", [])]
+    removed, problems = approval(graph_hash(draft), review, ids, label, fname)
+    if check_only:
+        for pr in problems:
+            print(pr)
+        print("approval: " + ("every element of %s is approved on the current %s" % (stem, fname) if not problems else "%d element(s) not approved" % len(problems)))
+        return 1 if problems else 0
+    if not preview:
+        for pr in problems:
+            print(pr)
+        if problems:
+            return 1
+    graph = drop_removed(draft, removed)
+    if not graph["nodes"]:
+        print("ERROR no element left in %s after the owner's removals" % fname)
+        return 2
+    graph["meta"] = dict(graph.get("meta") or {})
+    graph["meta"].setdefault("mermaid", dict(MERMAID_DEFAULT[graph["view"]]))
+    graph["meta"].setdefault("promoted_from", "visual-review arch draft %s" % stem)
+    if not preview:
+        base = graph["meta"].get("base_sha") or ((l1 or {}).get("meta") or {}).get("base_sha")
+        out_lines = reanchor(graph, repo, base)
+        for s in out_lines:
+            print(s)
+        if any(s.startswith("STALE-ANCHOR") for s in out_lines):
+            return 1
+    issues = vr_graph.validate(graph, root=repo)
+    if issues:
+        print("ERROR the promoted graph does not validate: " + json.dumps(issues)[:600])
+        return 1
+    if preview:
+        print("draft ok: " + fname)
+        return 0
+    os.makedirs(os.path.join(repo, "docs", "architecture"), exist_ok=True)
+    out = os.path.join(repo, "docs", "architecture", stem + ".json")
+    with open(out, "w") as fh:
+        json.dump(graph, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    print("wrote " + os.path.relpath(out, repo))
+    md = os.path.join(repo, "docs", "architecture", stem + ".md")
+    if not os.path.exists(md):
+        with open(md, "w") as fh:
+            fh.write(MD_STUB.format(stem=stem, line=STUB_LINE[graph["view"]] + graph["title"] + ".",
+                                    head=graph["meta"]["mermaid"].get("header") or graph["meta"]["mermaid"]["type"]))
+        print("wrote " + os.path.relpath(md, repo))
+    try:
+        _sync(repo)
+    except PromoteError as exc:
+        print("ERROR " + str(exc))
+        return 1
+    print("synced docs/architecture")
+    return 0
+
+
 def run(dossier_id: str, stem: str, repo: str, preview: bool = False, check_only: bool = False) -> int:
+    if not STEM_RE.match(stem):
+        print("ERROR stem %r is not a plain name (letters, digits, - and _)" % stem)
+        return 2
     vr = os.path.join(repo, ".discovery", "visual-review", dossier_id)
-    l1 = _load(os.path.join(vr, "l1.json"))
+    l1p = os.path.join(vr, "l1.json")
+    l1 = _load(l1p) if os.path.isfile(l1p) else None
     rpath = os.path.join(vr, "review.json")
     review = _load(rpath) if os.path.isfile(rpath) else None
-    flows = [f for f in l1.get("flows", []) if f.get("new_stem") == stem]
-    if len(flows) != 1:
-        print("ERROR expected exactly one flow with new_stem %r in l1.json, found %d" % (stem, len(flows)))
+    flows = [f for f in (l1 or {}).get("flows", []) if f.get("new_stem") == stem]
+    has_draft = os.path.isfile(_arch_draft(vr, stem))
+    if len(flows) > 1 or (not flows and not has_draft):
+        print("ERROR expected exactly one flow with new_stem %r in l1.json, found %d, and no draft arch/%s.json"
+              % (stem, len(flows), stem))
         return 2
+    # The draft is what the owner reviewed. A sequence preview (re)writes it from the L1 flow; anything else with a draft
+    # (a c1/c4 stem, or a sequence stem already previewed) is read as it is.
+    if not (preview and flows):
+        if has_draft:
+            return _run_draft(dossier_id, stem, repo, vr, l1, review, preview, check_only)
     removed: set = set()
     if check_only:
         _, problems = approval(graph_hash(l1), review, flows[0].get("after", []))
@@ -343,7 +469,8 @@ def run(dossier_id: str, stem: str, repo: str, preview: bool = False, check_only
         print("ERROR the promoted graph does not validate: " + json.dumps(issues)[:600])
         return 1
     if preview:
-        out = os.path.join(vr, stem + ".seq.json")
+        os.makedirs(os.path.join(vr, ARCH_DIR), exist_ok=True)
+        out = _arch_draft(vr, stem)
     else:
         os.makedirs(os.path.join(repo, "docs", "architecture"), exist_ok=True)
         out = os.path.join(repo, "docs", "architecture", stem + ".json")
@@ -356,7 +483,7 @@ def run(dossier_id: str, stem: str, repo: str, preview: bool = False, check_only
     md = os.path.join(repo, "docs", "architecture", stem + ".md")
     if not os.path.exists(md):
         with open(md, "w") as fh:
-            fh.write(MD_STUB.format(stem=stem, line="The flow: " + graph["title"] + "."))
+            fh.write(MD_STUB.format(stem=stem, line="The flow: " + graph["title"] + ".", head="sequenceDiagram"))
         print("wrote " + os.path.relpath(md, repo))
     try:
         _sync(repo)
@@ -538,8 +665,113 @@ def _selftest() -> int:
     # preview needs neither approval nor anchors
     d, l1 = scenario({})
     rc, out = call(d, preview=True)
-    check("preview", rc == 0 and os.path.isfile(os.path.join(d, ".discovery", "visual-review", "W-9", "seq-new.seq.json"))
+    check("preview", rc == 0 and os.path.isfile(os.path.join(d, ".discovery", "visual-review", "W-9", "arch", "seq-new.json"))
           and not os.path.exists(os.path.join(d, "docs")), out)
+
+    # ---- Architecture impact: the reviewed draft arch/<stem>.json (anchor arch:<stem>) ----
+    def arch_review(d, stem, draft, spec):
+        """spec: [(element, verdict[, hash])]; default hash = the draft's current one."""
+        h = graph_hash(draft)
+        lines = [{"anchor": {"diagram": "arch:" + stem, "element": e, "graph_hash": (rest[0] if rest else h)}, "verdict": v,
+                  "comment": "", "ts": "2026-01-02T00:00:00Z"} for e, v, *rest in spec]
+        json.dump({"schema_version": "1.0.0", "dossier": "W-9", "updated": "2026-01-01T00:00:00Z", "lines": lines},
+                  open(os.path.join(d, ".discovery", "visual-review", "W-9", "review.json"), "w"))
+
+    def draft_of(d, stem):
+        return json.load(open(os.path.join(d, ".discovery", "visual-review", "W-9", "arch", stem + ".json")))
+
+    def call_stem(d, stem, preview=False, check=False):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run("W-9", stem, d, preview, check)
+        return rc, buf.getvalue()
+
+    # sequence stem: preview writes the draft; approval and promotion read the draft, not l1.json
+    d, l1 = scenario({1: ("src/a.rs", 4, "`beta`")})
+    check("arch-seq:preview", call_stem(d, "seq-new", preview=True)[0] == 0)
+    dr = draft_of(d, "seq-new")
+    check("arch-seq:draft-from-l1", dr["view"] == "seq" and [n["id"] for n in dr["nodes"]] == [n["id"] for n in l1["nodes"]])
+    review(d, l1, all_ok(l1))  # L1 approvals alone no longer approve a stem that has a draft
+    rc, out = call_stem(d, "seq-new", check=True)
+    check("arch-seq:l1-lines-not-enough", rc == 1 and "NOT-APPROVED s1" in out, out)
+    arch_review(d, "seq-new", dr, [(n["id"], "ok") for n in dr["nodes"]])
+    check("arch-seq:check-ok", call_stem(d, "seq-new", check=True)[0] == 0 and not os.path.exists(os.path.join(d, "docs")))
+    rc, out = call_stem(d, "seq-new")
+    g = json.load(open(os.path.join(d, "docs", "architecture", "seq-new.json"))) if rc == 0 else {}
+    check("arch-seq:promote", rc == 0 and g.get("view") == "seq" and g["nodes"][1]["evidence"][0]["line"] == 6
+          and os.path.isfile(os.path.join(d, "docs", "architecture", "seq-new.md")), out)
+    # a verdict on an older draft hash is stale; a change blocks; remove drops the message and re-chains
+    arch_review(d, "seq-new", dr, [(n["id"], "ok", "0" * 64) for n in dr["nodes"]])
+    rc, out = call_stem(d, "seq-new", check=True)
+    check("arch-seq:stale", rc == 1 and "STALE-APPROVAL s1" in out and "arch/seq-new.json" in out, out)
+    arch_review(d, "seq-new", dr, [(n["id"], "ok") for n in dr["nodes"]] + [("s2", "change")])
+    rc, out = call_stem(d, "seq-new", check=True)
+    check("arch-seq:change-blocks", rc == 1 and "UNRESOLVED-CHANGE s2" in out and "arch:seq-new" in out, out)
+    arch_review(d, "seq-new", dr, [(n["id"], "ok") for n in dr["nodes"] if n["id"] != "s2"] + [("s2", "remove")])
+    rc, out = call_stem(d, "seq-new")
+    g = json.load(open(os.path.join(d, "docs", "architecture", "seq-new.json"))) if rc == 0 else {"nodes": []}
+    check("arch-seq:remove-drops", rc == 0 and "s2" not in [n["id"] for n in g["nodes"]] and len(g["nodes"]) == len(dr["nodes"]) - 1
+          and [e["source"] for e in g["edges"]][:1] == ["s1"] and [n["order"] for n in g["nodes"]] == list(range(1, len(g["nodes"]) + 1)), out)
+
+    # c1 / c4 stems: the author's draft, no l1 flow; evidence re-anchored from base_sha, md stub, sync
+    def put_draft(d, stem, graph):
+        os.makedirs(os.path.join(d, ".discovery", "visual-review", "W-9", "arch"), exist_ok=True)
+        json.dump(graph, open(os.path.join(d, ".discovery", "visual-review", "W-9", "arch", stem + ".json"), "w"))
+        return graph
+
+    for view, stem in (("c1", "c1-newsys"), ("c4", "c4-newtypes")):
+        d, l1 = scenario({})
+        sha = l1["meta"]["base_sha"]
+        e1 = [{"tier": "source", "path": "src/a.rs", "line": 6, "note": "`gamma`"}]
+        inf = [{"tier": "inferred", "note": "named by the dossier"}]
+        if view == "c1":
+            gr = {"schema_version": "1.0.0", "view": "c1", "title": "The new system", "meta": {"repo": "r", "commit": sha, "base_sha": sha, "generated_by": "agent"},
+                  "nodes": [{"id": "element:app", "label": "App", "kind": "element", "status": "added", "evidence": e1},
+                            {"id": "element:ext", "label": "External API", "kind": "element", "status": "added", "evidence": inf}],
+                  "edges": [{"id": "edge:depends:element:app:element:ext", "source": "element:app", "target": "element:ext",
+                             "kind": "depends", "arrow": "-->", "label": "calls", "status": "added", "evidence": e1}], "groups": []}
+        else:
+            gr = {"schema_version": "1.0.0", "view": "c4", "title": "The new types", "meta": {"repo": "r", "commit": sha, "base_sha": sha, "generated_by": "agent"},
+                  "nodes": [{"id": "class:Gamma", "label": "Gamma", "kind": "class", "status": "added", "members": ["run()"], "evidence": e1},
+                            {"id": "class:Delta", "label": "Delta", "kind": "class", "status": "added", "evidence": inf}],
+                  "edges": [{"id": "edge:association:class:Gamma:class:Delta", "source": "class:Gamma", "target": "class:Delta",
+                             "kind": "association", "arrow": "-->", "label": "holds", "status": "added", "evidence": e1}], "groups": []}
+        put_draft(d, stem, gr)
+        rc, out = call_stem(d, stem, preview=True)
+        check(view + ":preview", rc == 0 and not os.path.exists(os.path.join(d, "docs")), out)
+        rc, out = call_stem(d, stem, check=True)
+        check(view + ":not-approved", rc == 1 and "NOT-APPROVED " + gr["nodes"][0]["id"] in out, out)
+        arch_review(d, stem, gr, [(n["id"], "ok") for n in gr["nodes"]])
+        check(view + ":check-ok", call_stem(d, stem, check=True)[0] == 0)
+        rc, out = call_stem(d, stem)
+        gp = os.path.join(d, "docs", "architecture", stem + ".json")
+        if rc == 0:
+            g = json.load(open(gp))
+            check(view + ":reanchored", g["nodes"][0]["evidence"][0]["line"] == 10 and g["edges"][0]["evidence"][0]["line"] == 10, g["nodes"][0]["evidence"])
+            p = subprocess.run([sys.executable, os.path.join(HERE, "vr_mermaid.py"), "check", "docs/architecture"], cwd=d, capture_output=True, text=True)
+            md = open(os.path.join(d, "docs", "architecture", stem + ".md")).read()
+            check(view + ":md-synced", p.returncode == 0 and ("flowchart LR" if view == "c1" else "classDiagram") in md and ("External API" if view == "c1" else "Delta") in md, md + p.stdout)
+        else:
+            check(view + ":promote", False, out)
+        # removing a node drops it and the edges that touch it
+        d2, l2_ = scenario({})
+        gr = copy.deepcopy(gr)
+        gr["meta"].update(commit=l2_["meta"]["base_sha"], base_sha=l2_["meta"]["base_sha"])
+        put_draft(d2, stem, gr)
+        arch_review(d2, stem, gr, [(gr["nodes"][0]["id"], "ok"), (gr["nodes"][1]["id"], "remove")])
+        rc, out = call_stem(d2, stem)
+        g = json.load(open(os.path.join(d2, "docs", "architecture", stem + ".json"))) if rc == 0 else {"nodes": [0], "edges": [0]}
+        check(view + ":remove", rc == 0 and len(g["nodes"]) == 1 and g["edges"] == [], out)
+        # an anchor the code no longer has is stale
+        d3, l3_ = scenario({}, delete=True)
+        gr = copy.deepcopy(gr)
+        gr["meta"].update(commit=l3_["meta"]["base_sha"], base_sha=l3_["meta"]["base_sha"])
+        put_draft(d3, stem, gr)
+        arch_review(d3, stem, gr, [(n["id"], "ok") for n in gr["nodes"]])
+        rc, out = call_stem(d3, stem)
+        check(view + ":stale-anchor", rc == 1 and "STALE-ANCHOR" in out, out)
+    # a stem that is not a plain name, and a stem with neither flow nor draft
+    check("stem:traversal", call_stem(d, "../x")[0] == 2 and call_stem(d, "c1-none")[0] == 2)
     with contextlib.redirect_stdout(io.StringIO()):
         check("noflow:exit2", run("W-9", "seq-other", d) == 2)
     bad = copy.deepcopy(l1)

@@ -296,13 +296,13 @@ function vrHand(g) { return !!(g && g.meta && g.meta.generated_by === 'hand'); }
 function vrInferred(e, g) { if (vrHand(g)) return /\./.test(e.arrow || ''); return e.resolution ? e.resolution === 'inferred' : (e.evidence || []).length > 0 && e.evidence.every(x => x.tier === 'inferred'); }
 function vrWrap(s, w) { const out = []; let l = ''; String(s).split(' ').forEach(t => { if ((l + ' ' + t).trim().length > w && l) { out.push(l); l = t; } else l = (l + ' ' + t).trim(); }); if (l) out.push(l); return out; }
 function vrBuild(host, key, data) {
-  const st = VRS[key] = VRS[key] || {}; const have = ['L0', 'L1', 'L2'].filter(k => data.views[k]);
+  const st = VRS[key] = VRS[key] || {}; const have = Object.keys(data.views).filter(k => data.views[k]); /* L0, L1, L2, then one arch:<stem> per new architecture diagram (Architecture impact) */
   if (!st.view || !data.views[st.view]) st.view = have[0]; st.mode = st.mode || 'diff';
   if (st.rev !== data.rev) { st.rev = data.rev; st.col = {}; st.lc = {}; /* a committed diagram opens with the groups the server named folded (the areas of the product map, the big groups of a large view) */ if (data.mapPath) have.forEach(k => { const c = data.views[k].collapsed; if (c && c.length) st.col[k] = c.slice().sort(); }); }
   const bar = vrDom('div', 'vrbar', null, host); vrDom('h2', 'vrh', (data.mapPath && data.views[have[0]] && data.views[have[0]].title) || 'Change diagram', bar);
   const tabs = vrDom('span', 'vrgrp', null, bar), modes = vrDom('span', 'vrgrp', null, bar);
   const tb = {}, mb = {}; modes.hidden = !!data.mapPath;
-  ['L0', 'L1', 'L2'].forEach(k => { const b = vrDom('button', 'btn sm', data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); b.type = 'button'; b.disabled = !data.views[k]; b.hidden = !!data.mapPath && !data.views[k]; tb[k] = b; b.onclick = () => { st.view = k; wkOff(); draw(); }; });
+  ['L0', 'L1', 'L2'].concat(have.filter(k => k.indexOf('arch:') === 0)).forEach(k => { const isArch = k.indexOf('arch:') === 0; const b = vrDom('button', 'btn sm', isArch ? k.slice(5) : data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); if (isArch) b.title = 'New architecture diagram ' + k.slice(5) + ' (Architecture impact)'; b.type = 'button'; b.disabled = !data.views[k]; b.hidden = !!data.mapPath && !data.views[k]; tb[k] = b; b.onclick = () => { st.view = k; wkOff(); draw(); }; });
   VR_MODES.forEach(m => { const b = vrDom('button', 'btn sm', m[1], modes); b.type = 'button'; mb[m[0]] = b; b.onclick = () => { st.mode = m[0]; applyMode(); }; });
   const fitB = vrDom('button', 'btn sm', 'Fit all', bar); fitB.title = 'Show the whole diagram (labels may get small)'; fitB.type = 'button';
   const zin = vrDom('button', 'btn sm', '+', bar), zout = vrDom('button', 'btn sm', '−', bar); zin.type = zout.type = 'button'; zin.title = 'Zoom in'; zout.title = 'Zoom out';
@@ -439,7 +439,7 @@ function vrBuild(host, key, data) {
   }
   function vrNote(v, mode) { const c = { added: 0, changed: 0, removed: 0 }; v.graph.nodes.forEach(n => { if (c[n.status] !== undefined && visible(n.status)) c[n.status]++; }); const is = v.issues.length ? ' · ' + v.issues.length + ' validation issue' + (v.issues.length > 1 ? 's' : '') + ': ' + v.issues.slice(0, 3).map(i => i.message).join('; ') : ''; const ti = v.graph.title ? v.graph.title + ' · ' : ''; if (data.mapPath) return ti.replace(/ · $/, '') + (is ? is : ''); return ti + c.added + ' added, ' + c.changed + ' changed, ' + c.removed + ' removed shown' + is; }
   const colOf = v => st.col[v] || [];
-  const canCol = id => !(st.view === 'L1' && (data.views.L1.graph.lanes || []).length) && (data.views[st.view].graph.groups || []).some(x => x.id === id);
+  const canCol = id => !(vrLane(data.views[st.view].graph.view) && (data.views[st.view].graph.lanes || []).length) && (data.views[st.view].graph.groups || []).some(x => x.id === id);
   /* A collapse state is laid out by the server (the collapsed graph, edges aggregated); the answer is kept per state, so closing again is instant. */
   function draw(anchor, selId) {
     const base = data.views[st.view], ids = colOf(st.view);

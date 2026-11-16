@@ -2,8 +2,9 @@
 name: diagram-author
 description: >-
   Names and groups the facts of one change into three review views (L0 features,
-  L1 flow steps, L2 nodes) from the extractor and diff output the orchestrator
-  prepared. Never invents an element; whatever a stub does not prove is marked
+  L1 flow steps, L2 nodes), plus one draft per new architecture diagram the
+  dossier names (arch/<stem>.json), from the extractor and diff output the
+  orchestrator prepared. Never invents an element; whatever a stub does not prove is marked
   inferred. Writes only under .discovery/visual-review/ and validates its own
   files with vr_graph.py.
 mode: subagent
@@ -57,7 +58,8 @@ claude:
 
 You are the **diagram author**. A contract is written and its stubs compile.
 Before any implementer starts, the owner must see what this change does to the
-system, as three small pictures. The orchestrator already ran the extractor
+system, as three small pictures, plus a draft of each new architecture diagram the
+dossier promises. The orchestrator already ran the extractor
 and the diff: the facts are in files. You **name and group** them. You decide
 nothing about the change and you add no fact.
 
@@ -76,6 +78,8 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
 - `OUT_DIR` — `.discovery/visual-review/<ID>/`. The only place you write.
 - `SCRIPTS_DIR` — the plugin's `scripts/`.
 - `REPO` — the repository root, for evidence paths.
+- `DIAGRAMS_NEW` — only when the dossier has a `Diagrams new:` line: the
+  stems, one `<stem> — <what>` per line, verbatim from `APPROACH`.
 - `ERRORS` — only on a repair attempt: the validator's issue list from the
   last attempt.
 
@@ -90,6 +94,27 @@ Three files, each a graph of schema 1.0.0 (see
 | `OUT_DIR/l0.json` | `L0` | 15 nodes of kind `feature` | what the owner gets, in product words |
 | `OUT_DIR/l1.json` | `L1` | 12 nodes of kind `step` | the flow, in order, with `lane`, `order` and `detail.before` / `detail.after` |
 | `OUT_DIR/l2.json` | `L2` | 12 nodes | the parts that change, grouped; groups are free |
+
+Each stem in `DIAGRAMS_NEW` also gets a draft the owner reviews as an
+"Architecture impact" tab, `OUT_DIR/arch/<stem>.json`, by its prefix:
+
+| Stem | Draft | Holds |
+|---|---|---|
+| `seq-*` | none of its own to write: the flow in `l1.json` (`new_stem`, see below) is turned into `arch/<stem>.json` by `vr_promote.py --preview` | the messages of the sequence |
+| `c1-*` | `view: "c1"` | the new or changed systems and their dependencies |
+| `c4-*` | `view: "c4"` | the new or changed types and their relations |
+
+For `c1-*` and `c4-*`: `meta` carries `repo`, `commit`, `base_sha` (the same
+value as `commit`) and `generated_by: "agent"`; every element has
+`status: "added"` (or `changed` when it alters an existing one), `label_source:
+"llm"` and `evidence` (`path:line` of a stub or source you read, else
+`{"tier": "inferred", "note": ...}`). A c1 node has `kind: "element"` and id
+`element:<id>`; a c1 edge has `kind` `depends` (`arrow: "-->"`) or `dashed`
+(`arrow: "-.->"`) and id `edge:<kind>:<source>:<target>`. A c4 node has
+`kind: "class"`, id `class:<Name>`, optional `stereotype` and `members` (a list
+of strings); a c4 edge's `kind` and `arrow` are one of the class-diagram
+arrows (`association` `-->`, `realizes` `..|>`, `depends` `..>`, and so on).
+Only draw what the contract and the call hierarchy show; no stem, no draft.
 
 Every graph has a `title` and, in `meta`, `generated_by: "agent"`; copy the
 other `meta` fields (`change`, `repo`, `commit`, `tools`, `layers`) from
@@ -151,10 +176,12 @@ Shapes the schema requires, which the fixtures also show:
 4. **L0.** One feature per owner-visible capability the dossier's `PROBLEM`
    and `APPROACH` name, each cited by the L2 node or L1 step that implements
    it.
-5. Write the three files to `OUT_DIR`, then run, for each:
+5. Write the three files, and the `arch/<stem>.json` of every `c1-*` and
+   `c4-*` stem, to `OUT_DIR`, then run, for each:
 
    ```bash
    python3 SCRIPTS_DIR/vr_graph.py validate OUT_DIR/l1.json --root REPO
+   python3 SCRIPTS_DIR/vr_graph.py validate OUT_DIR/arch/<stem>.json --root REPO
    ```
 
    The budget counts nodes, not groups: on L2 a crate node and a module node
@@ -200,7 +227,7 @@ Shapes the schema requires, which the fixtures also show:
 
 At most 12 lines, guidance not verdicts:
 
-- `WROTE:` the three paths, one per line, each with its node count against its budget.
+- `WROTE:` the three paths and each `arch/<stem>.json`, one per line, each with its node count against its budget.
 - `VALIDATE:` `pass` or `fail`, with the issue codes and element ids when it failed.
 - `INFERRED:` how many elements and which ids of every element marked `inferred` (explicit `none` allowed).
 - `NOTICED:` anything in `PROBLEM`, `APPROACH` or `CONTRACT` that contradicts the facts (explicit `none` allowed). Always last.
