@@ -219,6 +219,12 @@ export function parseFrontMatter(text: string): Front {
     const m = lines[i].match(/^([A-Za-z_][\w-]*):\s*(.*?)\s*$/)
     if (!m) continue
     let v = m[2]
+    if (v === "") {
+      // A block list (`pr:` then `  - a` lines) reads as its inline form `[a, b]`, like `pr: [a, b]`.
+      const items: string[] = []
+      while (i + 1 < lines.length && /^\s+-\s/.test(lines[i + 1])) items.push(lines[++i].replace(/^\s+-\s+/, "").trim().replace(/^(["'])(.*)\1$/, "$2"))
+      if (items.length) v = `[${items.join(", ")}]`
+    }
     if ((v.startsWith('"') && v.endsWith('"') || v.startsWith("'") && v.endsWith("'")) && v.length >= 2) v = v.slice(1, -1)
     out[m[1]] = v
   }

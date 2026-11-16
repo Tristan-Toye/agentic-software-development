@@ -230,6 +230,17 @@
    PR URL back**. Set `status: pr` while you wait — a run that ends here is
    resumable from exactly this point. Committed mode: commit the dossier
    before the push, so the PR opens with the build record in it.
+   **Under `local`, wait for the PR's own CI before step 5** when the host
+   runs CI on it: `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N> --log <dossier>`.
+   The local suite does not run in CI's environment (a tool installed here
+   but not on the runner, another OS), so a green local run does not prove
+   the PR is green. Green: log `CI: green on <sha> (<run URL>)`. Red because
+   of this change, its tests or its test helpers: treat it as a Phase 6
+   failure. Fix it on this branch, test first, through the implementer flow,
+   then push and wait again. Never declare the run done on a red PR. A red
+   check this branch does not touch (a network error, or a check that is red
+   on the base too): log it as `CI: red <check> — not this change: <evidence>`,
+   note it in the PR description, and rerun it once with `--rerun-failed`.
 5. **Record the URL and remove the worktree.** Once the URL is in hand, write it
    to the front matter and set `status: done`. Committed mode: commit that
    final state on `X` and push it — the branch is yours, the PR picks the

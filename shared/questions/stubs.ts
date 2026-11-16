@@ -50,7 +50,7 @@ export function stubMembers(
     for (const p of prsByBase[b] ?? []) {
       if (/^plan\//.test(p.headRefName)) continue
       // Head branches name the id in any case: feat/w-130-… is W-130's.
-      const hit = withPr.find((d) => prFieldNumber(d.pr) === p.number || new RegExp(`(^|[^A-Za-z0-9])${d.id.replace(/[^\w-]/g, "")}(?![\w])`, "i").test(p.headRefName))
+      const hit = withPr.find((d) => prFieldNumbers(d.pr).includes(p.number) || new RegExp(`(^|[^A-Za-z0-9])${d.id.replace(/[^\w-]/g, "")}(?![\w])`, "i").test(p.headRefName))
       if (hit) { add(b, { id: hit.id, noPr: false }); placed.add(hit.id) }
     }
   }
@@ -73,8 +73,12 @@ export function prNumberOf(subject: string): number | null {
 }
 /** The number in a dossier's `pr:` field (`123`, `#123`, a PR URL), or null. */
 export function prFieldNumber(v: string | undefined): number | null {
-  const m = (v ?? "").match(/(\d+)\s*$/)
-  return m ? Number(m[1]) : null
+  const all = prFieldNumbers(v)
+  return all.length ? all[all.length - 1] : null
+}
+/** Every PR number a `pr:` field names: a URL or number, or a list `[url1, url2]` (the newest is last). */
+export function prFieldNumbers(v: string | undefined): number[] {
+  return (v ?? "").replace(/^\[|\]$/g, "").split(",").map((x) => x.trim().match(/(\d+)\s*$/)).filter((m): m is RegExpMatchArray => !!m).map((m) => Number(m[1]))
 }
 /** Dossier ids for merge subjects: each subject's PR number looked up in `prToDossier`. */
 export function dossiersOnMerges(subjects: string[], prToDossier: Map<number, string>, known?: Set<string>): string[] {
@@ -208,7 +212,7 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
     const docs: Doc[] = await withBranchCopies(main, pickDossiers(wts))
     const byId = new Map(docs.map((d) => [d.front.id!, d]))
     const prToDossier = new Map<number, string>()
-    for (const d of docs) { const n = prFieldNumber(d.front.pr); if (n !== null) prToDossier.set(n, d.front.id!) }
+    for (const d of docs) for (const n of prFieldNumbers(d.front.pr)) prToDossier.set(n, d.front.id!)
     const mk = (id: string, via: StubDossier["via"]): StubDossier => {
       const d = byId.get(id)
       return { id, title: d?.front.title ?? "", status: d?.front.status ?? "", repo: baseName(main), via, answered: ans.get(id) ?? [] }
