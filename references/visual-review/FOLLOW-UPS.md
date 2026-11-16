@@ -16,6 +16,7 @@ Work decided but not done yet. Each item says what to do, when, and how to know 
   3. Run `vr_c3_agree.py` (VC-06) and `vr_extract.py --selftest` under the new version.
   4. If the sets match, or every difference is explained, move the pin and update the version mentions in
      `references/visual-review/README.md`.
+- **Owner re-confirmed 2026-11-16:** upgrade after the first demo.
 - **Done when:** the pin names the new version, the selftests and VC-06 pass, and the comparison is recorded here.
 
 ## FU-02. Bound label length and stop silent truncation
@@ -41,6 +42,8 @@ Work decided but not done yet. Each item says what to do, when, and how to know 
 - **Done when:** both copies carry the rules and the W-145 fixture edges and titles follow them.
 
 ## FU-04. Browser check of the rendered canvas
+
+- **Status: done (2026-11-16), with one open finding below.** Decision (owner, 2026-11-16): puppeteer-core driving the Google Chrome already installed (`/Applications/Google Chrome.app`), no browser download; `shared/package.json` pins `puppeteer-core` 25.16.0. Command: `bun shared/test/vr-canvas.browser.ts` (SKIPs with exit 0 where Chrome or puppeteer-core is missing). Open finding: the canvas fits the whole diagram to the viewport, so on the real W-145 fixtures every label renders under 12 px (5.5 to 9.5 px); the check fails on that and its threshold was not loosened.
 
 - **What:** nothing measures the rendered page: label size, overlapping text, text outside its box, sideways scroll on a phone,
   console errors. `testability.md` of VR-03 leaves the client check open. Visual-Explainer does this in `kit/look.mjs`.

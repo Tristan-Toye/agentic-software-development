@@ -63,7 +63,10 @@ scripts/vr_map.py refresh REPO [--since REV] [--full] [--no-calls] [--no-product
 scripts/vr_refresh.py --selftest | map_refresh_pr.py --selftest
 scripts/vr_c2_drift.py --selftest | vr_map.py --selftest | vr_metrics.py --selftest
 scripts/vr_mermaid.py import FILE.md [--write] [--adopt] | render FILE.json | sync DIR | check DIR | --selftest   # exit 1 on a problem
+bun shared/test/vr-canvas.browser.ts                  # FU-04: browser check of the rendered canvas (needs `bun install` in shared/ and Google Chrome; else SKIP, exit 0)
 ```
+
+`shared/test/vr-canvas.browser.ts` (FU-04) opens the dashboard page on the W-145 fixtures at 390 and 1280 px in the installed Google Chrome (puppeteer-core, no browser download; `ASD_CHROME` overrides the path), reads the DOM of the three tabs and fails on a label rendered under 12 px, two overlapping label boxes, a label wider than its node box, a horizontal page scroll or a console or page error. It also runs one seeded bad fixture (an unbreakable label) that must fail. No screenshots are taken or sent to a model; the server runs on an ephemeral port with every state dir in a temp folder. Without Chrome or puppeteer-core it prints one SKIP line and exits 0. It is not part of `bun test`.
 
 Architecture diagrams (c1 to c4, sequence) are change-graph JSON beside their `.md`; the `.md`'s Mermaid block is generated from it (`vr_mermaid.py`). To change one: edit the JSON, run `vr_mermaid.py sync docs/architecture`, commit both; the prose stays hand-written. `vr_mermaid.py check docs/architecture` belongs in CI and in the close gate. `vr_c2_drift.py` and `vr_c3_agree.py` read the JSON when it exists and parse the Mermaid otherwise; the dashboard opens a `.md` as a graph when its JSON exists, as raw Mermaid otherwise.
 
