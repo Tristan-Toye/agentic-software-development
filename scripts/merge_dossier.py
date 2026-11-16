@@ -285,7 +285,7 @@ def merge(root: str, dossier: str, method: str, dry: bool, no_cleanup: bool = Fa
     if no_cleanup:
         print(f"merge_dossier: merged {label} into {base}")
         return 0
-    after = start_run(root, dossier, "after-merge", nums)
+    after = start_run(root, dossier_id(root, dossier, chain), "after-merge", nums)
     print(f"merge_dossier: merged {label} into {base}; cleanup: {after[:200]}")
     return 0
 
@@ -431,6 +431,32 @@ def behind(root: str, nums: list[int]) -> list[int]:
 
 ID_FILE_RE = re.compile(r"^\.discovery/dossiers/([A-Z][A-Z0-9]*-\d+)-[^/]+\.md$")
 ADR_FILE_RE = re.compile(r"^docs/adr/(\d{4})-[^/]+\.md$")
+
+
+def dossier_id(root: str, fallback: str, chain: list[dict]) -> str:
+    """The dossier a stack belongs to, for the runs the queue starts on it (/resolve-merge, /after-merge), so they land on
+    the dossier's own timeline. The queue names a stack by the id in its bottom branch, which in a repo that names
+    branches by Jira key (feat/LABS-117-…) is not the dossier's: take an id a branch of the stack names that has a dossier
+    file, else the dossier whose `pr:` names one of the stack's PRs, else `fallback`."""
+    if not chain:
+        return fallback
+    cands = [k.split(".", 1)[1] for k in chain_keys("r", fallback, chain)]
+    nums = {str(p["number"]) for p in chain}
+    for ref in [f"origin/{p['headRefName']}" for p in reversed(chain)] + [f"origin/{chain[0].get('baseRefName', '')}"]:
+        rc, tree = git(root, "ls-tree", "--name-only", ref, ".discovery/dossiers/")
+        files = {m.group(1): l.strip() for l in (tree.splitlines() if rc == 0 else []) if (m := ID_FILE_RE.match(l.strip()))}
+        if not files:
+            continue
+        for c in cands:
+            if c in files:
+                return c
+        for i, f in files.items():
+            _, body = git(root, "show", f"{ref}:{f}")
+            head = body.split("\n---", 1)[0] if body.startswith("---") else ""
+            if set(re.findall(r"/pull/(\d+)", head)) & nums:
+                return i
+        return fallback
+    return fallback
 
 
 def git(root: str, *args: str, timeout: int = 300) -> tuple[int, str]:
@@ -798,7 +824,8 @@ def work_one(root: str, dossier: str) -> None:
     def note(state, text):
         set_state(key, state=state, prs=nums, error="", pid=os.getpid(), note=text)
         append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "runner", "text": "merge queue: " + text})
-    why = settle(root, key, dossier, chain, chain[0]["baseRefName"], [], note)
+    agent = dossier_id(root, dossier, chain)   # the dossier's own id: its agent resolves, its timeline gets the cleanup
+    why = settle(root, key, agent, chain, chain[0]["baseRefName"], [], note)
     if why:
         set_state(key, state="failed", prs=nums, error=why, pid=None); return
     set_state(key, state="merging", pid=os.getpid())
@@ -811,7 +838,7 @@ def work_one(root: str, dossier: str) -> None:
     st = read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}
     nums = st.get("prs") or []
     # /after-merge runs beside the queue: it never pushes to the stub, and a question it asks must not hold up the next merge.
-    start_run(root, dossier, "after-merge", nums)
+    start_run(root, agent, "after-merge", nums)
     set_state(key, state="merged", pid=None, note="merged; /after-merge runs")
 
 
@@ -1281,6 +1308,26 @@ def selftest() -> int:
     check("chain: a PR stacked on the dossier's branch joins its stack whatever its branch is called", [p["number"] for p in c] == [40, 50], why)
     check("chain: the stack's run keys include every dossier id its branches name",
           chain_keys("repo", "LABS-117", c) == ["repo.LABS-117", "repo.W-007"], str(chain_keys("repo", "LABS-117", c)))
+    real_git = globals()["git"]
+    trees = {"origin/fix/W-007-deferred": {".discovery/dossiers/W-007-qc.md": "---\nid: W-007\npr: https://x/pull/40\n---\nbody"},
+             "origin/feat/LABS-139-a": {".discovery/dossiers/W-018-order.md": "---\nid: W-018\npr:\n  - https://x/pull/41\n---\n",
+                                        ".discovery/dossiers/W-019-other.md": "---\nid: W-019\npr: https://x/pull/42\n---\n"}}
+    def fake_git(root, *a, timeout=300):
+        if a[0] == "ls-tree":
+            t = trees.get(a[2])
+            return (0, "\n".join(t)) if t is not None else (128, "not a tree")
+        if a[0] == "show":
+            ref, f = a[1].split(":", 1)
+            return 0, trees.get(ref, {}).get(f, "")
+        return 0, ""
+    globals()["git"] = fake_git
+    try:
+        check("dossier id: a stack's fix branch names the dossier that has a file", dossier_id("/r", "LABS-117", c) == "W-007", dossier_id("/r", "LABS-117", c))
+        one = [P(41, "feat/LABS-139-a", "stub/x")]
+        check("dossier id: without one, the dossier whose pr: block list names the stack's PR", dossier_id("/r", "LABS-139", one) == "W-018", dossier_id("/r", "LABS-139", one))
+        check("dossier id: nothing found keeps the queue's id", dossier_id("/r", "W-55", [P(9, "feat/W-55-z", "stub/x")]) == "W-55")
+    finally:
+        globals()["git"] = real_git
     check("chain: W-12 is not W-128", chain_of([P(1, "feat/W-128-x", "stub/x")], "W-12")[0] == [])
 
     with tempfile.TemporaryDirectory() as tmp:
