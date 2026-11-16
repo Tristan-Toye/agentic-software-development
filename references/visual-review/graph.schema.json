@@ -155,6 +155,11 @@
               }
             }
           }
+        },
+        "base_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{7,40}$",
+          "description": "The commit the evidence anchors were drawn on (the contract commit of Phase 3). vr_promote.py maps anchors from it to HEAD."
         }
       }
     },

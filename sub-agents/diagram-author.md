@@ -93,7 +93,10 @@ Three files, each a graph of schema 1.0.0 (see
 
 Every graph has a `title` and, in `meta`, `generated_by: "agent"`; copy the
 other `meta` fields (`change`, `repo`, `commit`, `tools`, `layers`) from
-`merged.json`. Every node, group and flow you write has `label_source: "llm"`.
+`merged.json`, and in `l1.json` also set `meta.base_sha` to the same value as
+`meta.commit` (the contract commit the anchors were drawn on, 7 to 40 hex
+characters): the promotion maps every anchor from it to the final code.
+Every node, group and flow you write has `label_source: "llm"`.
 
 `status` (`added`, `removed`, `changed`, `context`): an element that exists in
 `merged.json` keeps its status exactly. An L0 feature or an L1 step has no

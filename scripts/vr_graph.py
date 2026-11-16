@@ -388,6 +388,11 @@ def _selftest() -> int:
             got = codes(validate(load(p), root=repo))
             check("vc03:" + code, code in got, "got %s" % got)
             check("vc03:only:" + code, got == [code], "got %s" % got)
+    g = load(os.path.join(FIXTURES, "w145-l1.json"))
+    g["meta"]["base_sha"] = "abc1234"
+    check("base_sha:ok", validate(g) == [], validate(g))
+    g["meta"]["base_sha"] = "xyz"
+    check("base_sha:bad", validate(g) != [])
     # promotion fields: `to` must be a lane, a flow with new_stem needs to + call_kind on every step.
     import copy
     l1 = load(os.path.join(FIXTURES, "w145-l1.json"))

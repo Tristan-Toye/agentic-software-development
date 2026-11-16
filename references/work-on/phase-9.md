@@ -140,18 +140,26 @@
      mechanical:
      `python3 "${PLUGIN_ROOT}/scripts/vr_promote.py" --dossier-id <ID> --stem <stem> --repo .`
      It takes the flow of `.discovery/visual-review/<ID>/l1.json` whose
-     `new_stem` is the stem, drops the steps the owner marked `remove` in
-     `review.json`, maps lanes to participants and steps to messages
+     `new_stem` is the stem and drops the steps the owner marked `remove` in
+     `review.json`. Lanes become participants and steps become messages
      (`seq.to` from the step's `to`; arrow from `call_kind`: call `->>`,
-     reply `-->>`, async and publish `-)`), carries the evidence anchors and
-     re-finds each anchor's line by the backticked name in its note at HEAD
-     (Phase 3 anchors point at stubs). It writes
-     `docs/architecture/<stem>.json`, the `.md` stub when absent, validates
-     and runs `vr_mermaid.py sync`. Exit 1 is a stop: `STALE-ANCHOR <step>
-     <path>:<line> <name>` (the code no longer has that name: fix the L1 step
-     or the code, rerun) or `UNRESOLVED-CHANGE <step>` (the owner's `change`
-     verdict was never answered with an `ok`: ask the owner). Then commit and
-     rerun the gate.
+     reply `-->>`, async and publish `-)`), with the evidence anchors carried
+     over. Every anchor is then mapped from `meta.base_sha` (the contract
+     commit the views were drawn on) to HEAD: through the line diff when its
+     region is unchanged, to the definition of the enclosing function at HEAD
+     when the body changed, following renames; a backticked name in the
+     anchor's note must agree (a repo with no `base_sha` falls back to the
+     name alone and prints `WARN`). It writes `docs/architecture/<stem>.json`,
+     the `.md` stub when absent, validates and runs `vr_mermaid.py sync`.
+     The owner's approval is tied to the exact file: each kept step needs an
+     `ok` in `review.json` on the current hash of `l1.json` (the dashboard's
+     `graph_hash`). Exit 1 is a stop, each with the step named:
+     `STALE-ANCHOR` (the code no longer has what the anchor pointed at: fix
+     the L1 step or the code and rerun), `UNRESOLVED-CHANGE` (a `change` or
+     `question` on the current hash is open; an `ok` never clears it),
+     `STALE-APPROVAL` (the owner's lines are on an older `l1.json`: it
+     changed since, so the owner approves the current file again) or
+     `NOT-APPROVED` (no verdict). Then commit and rerun the gate.
    - *No visual review* (a repo whose language the visual review does not
      cover, today anything but Rust). The orchestrator authors the seq graph
      from the code (`arch_find` on the neighbouring diagrams as models): one

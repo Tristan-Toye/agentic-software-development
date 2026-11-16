@@ -319,7 +319,11 @@ payload holds no diagram file and no dossier text from this step.
    (writes `.discovery/visual-review/<ID>/<stem>.seq.json`, nothing under
    `docs/`; the dashboard does not show it, the owner reviews the L1 view it
    is made from). A non-zero exit is a defect in `l1.json`: re-spawn the
-   author with the output in `ERRORS`, same two-attempt limit.
+   author with the output in `ERRORS`, same two-attempt limit. The owner's
+   verdicts are recorded in `review.json` against the hash of the `l1.json`
+   they saw; any later edit of `l1.json` (a contract revision that re-runs
+   the author) changes that hash, and Phase 9's promotion then requires the
+   owner's fresh approval of the new file.
 4. Ask the owner ONE product question with
    `ask_owner.py ask --kind product --topic visual-review`
    (`references/owner-questions.md`). The `--topic` marker is what makes it

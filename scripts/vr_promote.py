@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import argparse
 import copy
+import difflib
+import hashlib
 import json
 import os
 import re
@@ -59,20 +61,61 @@ def _load(path: str) -> dict:
         raise PromoteError("cannot read %s: %s" % (path, exc))
 
 
-def current_verdicts(review: dict | None) -> dict:
-    """{L1 element id: verdict}, the latest line (by ts) per element."""
-    best: dict = {}
+def canon(v):
+    """The dashboard's canon(stripDollar(v)): `$`-prefixed keys dropped at any depth, keys sorted, whole floats as ints."""
+    if isinstance(v, list):
+        return [canon(x) for x in v]
+    if isinstance(v, dict):
+        return {k: canon(v[k]) for k in sorted(v) if not k.startswith("$")}
+    if isinstance(v, float) and v == int(v):
+        return int(v)
+    return v
+
+
+def graph_hash(graph) -> str:
+    """Port of `graphHash` in shared/questions/vrlayout.ts: sha256 of the canonical compact JSON. The review lines'
+    `anchor.graph_hash` is this hash of the file the owner saw. Cross-checked against shared/test/vrhash.test.ts
+    through fixtures/hash-case.json (HASH_CASE_EXPECTED)."""
+    txt = json.dumps(canon(graph), separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(txt.encode("utf-8")).hexdigest()
+
+
+HASH_CASE_EXPECTED = "8ce8ade17ad88b468fe732549001fa366d19a7ee5fba0c509ad28cd8b081434a"
+
+
+def approval(l1_hash: str, review: dict | None, step_ids: list) -> tuple:
+    """(removed ids, problems). The owner's approval is tied to the exact L1 file: every promoted step needs an `ok`
+    line whose graph_hash is the current hash. A `change` or `question` line on the current hash is unresolved, and
+    an `ok` never clears it (any order). A line on an older hash proves nothing about this file: the older versions
+    of l1.json are not kept, so there is no way to tell whether the author revised that element, and the current-hash
+    approval is required (STALE-APPROVAL). `remove` at any hash drops the step (the scope decision stands)."""
+    lines: dict = {}
     for ln in (review or {}).get("lines", []):
         a = ln.get("anchor", {})
-        if a.get("diagram") != "L1":
+        if a.get("diagram") == "L1":
+            lines.setdefault(a.get("element"), []).append(ln)
+    removed = {e for e, ls in lines.items() if any(x.get("verdict") == "remove" for x in ls)}
+    problems = []
+    for sid in step_ids:
+        if sid in removed:
             continue
-        e = a.get("element")
-        if e not in best or ln.get("ts", "") >= best[e].get("ts", ""):
-            best[e] = ln
-    return {e: ln.get("verdict") for e, ln in best.items()}
+        ls = lines.get(sid, [])
+        cur = [x for x in ls if x["anchor"].get("graph_hash") == l1_hash]
+        open_ = [x for x in cur if x.get("verdict") in ("change", "question")]
+        if open_:
+            problems.append("UNRESOLVED-CHANGE %s: a %s verdict on the current L1 hash is open (%s)"
+                            % (sid, open_[0]["verdict"], (open_[0].get("comment") or "no comment")[:80]))
+        elif any(x.get("verdict") == "ok" for x in cur):
+            continue
+        elif ls:
+            problems.append("STALE-APPROVAL %s: the owner's lines are on an older L1 hash; l1.json changed since "
+                            "(older versions are not kept): the owner approves the current file again" % sid)
+        else:
+            problems.append("NOT-APPROVED %s: no verdict for the step" % sid)
+    return removed, problems
 
 
-def promote_graph(l1: dict, stem: str, verdicts: dict, check_review: bool = True) -> dict:
+def promote_graph(l1: dict, stem: str, removed: set) -> dict:
     """The seq graph for the flow with new_stem == stem. Raises PromoteError on an input defect."""
     flows = [f for f in l1.get("flows", []) if f.get("new_stem") == stem]
     if len(flows) != 1:
@@ -85,11 +128,8 @@ def promote_graph(l1: dict, stem: str, verdicts: dict, check_review: bool = True
         n = nodes.get(sid)
         if n is None:
             raise PromoteError("flow %s lists unknown step %s" % (flow["id"], sid))
-        v = verdicts.get(sid)
-        if v == "remove":
+        if sid in removed:
             continue
-        if v == "change" and check_review:
-            raise PromoteError("UNRESOLVED-CHANGE %s: the owner asked for a change and no later ok replaced it" % sid)
         for field in ("to", "call_kind"):
             if n.get(field) is None:
                 raise PromoteError("step %s has no %s (a flow with new_stem needs both)" % (sid, field))
@@ -118,10 +158,17 @@ def promote_graph(l1: dict, stem: str, verdicts: dict, check_review: bool = True
                        "after": [n["id"] for n in out_nodes], "evidence": copy.deepcopy(kept[0]["evidence"])}]}
 
 
-def _file_at_head(repo: str, path: str) -> list | None:
-    p = subprocess.run(["git", "-C", repo, "show", "HEAD:" + path], capture_output=True, text=True)
+def _git_lines(repo: str, rev: str, path: str) -> list | None:
+    p = subprocess.run(["git", "-C", repo, "show", "%s:%s" % (rev, path)], capture_output=True, text=True)
     if p.returncode == 0:
         return p.stdout.split("\n")
+    return None
+
+
+def _file_at_head(repo: str, path: str) -> list | None:
+    got = _git_lines(repo, "HEAD", path)
+    if got is not None:
+        return got
     fp = os.path.join(repo, path)
     if os.path.isfile(fp):
         with open(fp, errors="replace") as fh:
@@ -129,38 +176,124 @@ def _file_at_head(repo: str, path: str) -> list | None:
     return None
 
 
-def reanchor(graph: dict, repo: str) -> list:
-    """Update each source anchor that has a backticked identifier in its note. Returns STALE-ANCHOR lines."""
-    stale = []
+# Per-language "name of the function a line defines" scanners; add a language by adding an extension here.
+_RS_FN = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:default\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?"
+                    r"(?:extern\s+\"[^\"]*\"\s+)?fn\s+([A-Za-z_]\w*)")
+DEF_SCANNERS = {".rs": _RS_FN}
+
+
+def fn_def_name(path: str, text: str) -> str | None:
+    rx = DEF_SCANNERS.get(os.path.splitext(path)[1])
+    m = rx.match(text) if rx else None
+    return m.group(1) if m else None
+
+
+def enclosing_fn(path: str, lines: list, line: int) -> str | None:
+    """The function the 1-based `line` of a base file sits in: the nearest definition at or above it."""
+    if path and os.path.splitext(path)[1] not in DEF_SCANNERS:
+        return None
+    for i in range(min(line, len(lines)), 0, -1):
+        n = fn_def_name(path, lines[i - 1])
+        if n:
+            return n
+    return None
+
+
+def _renames(repo: str, base: str) -> dict:
+    """{old path: new path or None when deleted} from `git diff -M --name-status base HEAD`."""
+    p = subprocess.run(["git", "-C", repo, "diff", "-M", "--name-status", base, "HEAD"], capture_output=True, text=True)
+    out: dict = {}
+    for ln in p.stdout.splitlines():
+        f = ln.split("\t")
+        if f[0].startswith("R") and len(f) == 3:
+            out[f[1]] = f[2]
+        elif f[0] == "D" and len(f) == 2:
+            out[f[1]] = None
+    return out
+
+
+def map_line(base_lines: list, head_lines: list, line: int, path: str) -> tuple:
+    """(new line, how) or (None, why). Unchanged region: through the difflib opcodes; changed hunk: the definition of the
+    function that encloses the line at base, found at HEAD (nearest to where the line was)."""
+    sm = difflib.SequenceMatcher(None, base_lines, head_lines, autojunk=False)
+    idx = line - 1
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal" and i1 <= idx < i2:
+            return j1 + (idx - i1) + 1, "unchanged"
+    name = enclosing_fn(path, base_lines, line)
+    if name is None:
+        return None, "line is in a changed hunk and no enclosing function is known"
+    hits = [i + 1 for i, ln in enumerate(head_lines) if fn_def_name(path, ln) == name]
+    if not hits:
+        return None, "enclosing function %s is gone at HEAD" % name
+    return min(hits, key=lambda i: abs(i - line)), "function " + name
+
+
+def reanchor(graph: dict, repo: str, base_sha: str | None) -> list:
+    """Update every source anchor with a line. Returns the output lines (WARN and STALE-ANCHOR); any STALE-ANCHOR fails.
+
+    With base_sha: renames and deletions through `git diff -M --name-status`, the line through map_line, and a
+    backticked name in the note as a cross-check (it must be in the new line, or be the enclosing function).
+    Without: the old lookup by the backticked name, and a WARN."""
+    out: list = []
+    renames = _renames(repo, base_sha) if base_sha else {}
+    if base_sha and subprocess.run(["git", "-C", repo, "cat-file", "-e", base_sha + "^{commit}"], capture_output=True).returncode:
+        return ["STALE-ANCHOR * meta.base_sha %s is not a commit of this repository" % base_sha]
+    if not base_sha:
+        out.append("WARN l1.json has no meta.base_sha: anchors are re-found by their backticked name only; "
+                   "an anchor without one keeps its Phase 3 line")
     cache: dict = {}
-    parts = [("node", n) for n in graph["nodes"]] + [("edge", e) for e in graph["edges"]] + [("flow", f) for f in graph["flows"]]
-    for _, part in parts:
+    for part in graph["nodes"]:  # edges and the flow copy their step's anchors afterwards
         for ev in part.get("evidence", []):
             if ev.get("tier") != "source" or "line" not in ev:
                 continue
+            old_path, old_line = ev["path"], ev["line"]
             m = re.search(r"`([A-Za-z_][\w:.]*)`", ev.get("note", ""))
-            if not m:
+            ident = m.group(1).split("::")[-1].split(".")[-1] if m else None
+            where = "%s %s:%s%s" % (part["id"], old_path, old_line, (" " + ident) if ident else "")
+            word = re.compile(r"(?<![\w])" + re.escape(ident) + r"(?![\w])") if ident else None
+            if not base_sha:
+                if not ident:
+                    continue
+                lines = cache.setdefault(old_path, _file_at_head(repo, old_path))
+                hits = [i + 1 for i, ln in enumerate(lines or []) if word.search(ln)]
+                if not hits:
+                    out.append("STALE-ANCHOR " + where + (" (file gone)" if lines is None else ""))
+                    continue
+                if old_line not in hits:
+                    defs = [i for i in hits if fn_def_name(old_path, lines[i - 1]) or re.search(r"\b(def|class|struct|enum|trait|interface|func|function)\b", lines[i - 1])]
+                    new = min(defs or hits, key=lambda i: abs(i - old_line))
+                    if "end_line" in ev:
+                        ev["end_line"] = max(new, ev["end_line"] + (new - old_line))
+                    ev["line"] = new
                 continue
-            ident = m.group(1).split("::")[-1].split(".")[-1]
-            lines = cache.setdefault(ev["path"], _file_at_head(repo, ev["path"]))
-            where = "%s %s:%s %s" % (part["id"], ev["path"], ev["line"], ident)
-            if lines is None:
-                stale.append("STALE-ANCHOR " + where + " (file gone)")
+            new_path = old_path
+            if old_path in renames:
+                new_path = renames[old_path]
+                if new_path is None:
+                    out.append("STALE-ANCHOR " + where + " (file deleted)")
+                    continue
+            base_lines = _git_lines(repo, base_sha, old_path)
+            head_lines = cache.setdefault(new_path, _git_lines(repo, "HEAD", new_path))
+            if base_lines is None or head_lines is None:
+                out.append("STALE-ANCHOR " + where + " (file not found at %s)" % ("base_sha" if base_lines is None else "HEAD"))
                 continue
-            word = re.compile(r"(?<![\w])" + re.escape(ident) + r"(?![\w])")
-            hits = [i + 1 for i, ln in enumerate(lines) if word.search(ln)]
-            if not hits:
-                stale.append("STALE-ANCHOR " + where)
+            new, how = map_line(base_lines, head_lines, old_line, old_path)
+            if new is None:
+                out.append("STALE-ANCHOR %s (%s)" % (where, how))
                 continue
-            if ev["line"] in hits:
+            if word is not None and not word.search(head_lines[new - 1]) and how.split(" ")[-1] != ident:
+                out.append("STALE-ANCHOR %s (note names %s, line %d of %s holds %r)" % (where, ident, new, new_path, head_lines[new - 1].strip()[:60]))
                 continue
-            defs = [i for i in hits if re.search(r"\b(fn|def|class|struct|enum|trait|impl|interface|type|func|function)\b", lines[i - 1])]
-            pool = defs or hits
-            new = min(pool, key=lambda i: abs(i - ev["line"]))
             if "end_line" in ev:
-                ev["end_line"] = max(new, ev["end_line"] + (new - ev["line"]))
-            ev["line"] = new
-    return stale
+                ev["end_line"] = min(len(head_lines), max(new, ev["end_line"] + (new - old_line)))
+            ev["path"], ev["line"] = new_path, new
+    by_id = {n["id"]: n for n in graph["nodes"]}
+    for e in graph["edges"]:
+        e["evidence"] = copy.deepcopy(by_id[e["target"]]["evidence"])
+    for f in graph["flows"]:
+        f["evidence"] = copy.deepcopy(by_id[f["after"][0]]["evidence"])
+    return out
 
 
 def _sync(repo: str) -> None:
@@ -175,16 +308,29 @@ def run(dossier_id: str, stem: str, repo: str, preview: bool = False) -> int:
     l1 = _load(os.path.join(vr, "l1.json"))
     rpath = os.path.join(vr, "review.json")
     review = _load(rpath) if os.path.isfile(rpath) else None
+    flows = [f for f in l1.get("flows", []) if f.get("new_stem") == stem]
+    if len(flows) != 1:
+        print("ERROR expected exactly one flow with new_stem %r in l1.json, found %d" % (stem, len(flows)))
+        return 2
+    removed: set = set()
+    if not preview:
+        removed, problems = approval(graph_hash(l1), review, flows[0].get("after", []))
+        for pr in problems:
+            print(pr)
+        if problems:
+            return 1
+    else:
+        removed, _ = approval(graph_hash(l1), review, [])
     try:
-        graph = promote_graph(l1, stem, current_verdicts(review), check_review=not preview)
+        graph = promote_graph(l1, stem, removed)
     except PromoteError as exc:
         print("ERROR " + str(exc))
-        return 1 if str(exc).startswith("UNRESOLVED-CHANGE") else 2
+        return 2
     if not preview:
-        stale = reanchor(graph, repo)
-        for s in stale:
+        out_lines = reanchor(graph, repo, (l1.get("meta") or {}).get("base_sha"))
+        for s in out_lines:
             print(s)
-        if stale:
+        if any(s.startswith("STALE-ANCHOR") for s in out_lines):
             return 1
     issues = vr_graph.validate(graph, root=None if preview else repo)
     if issues:
@@ -218,6 +364,8 @@ def run(dossier_id: str, stem: str, repo: str, preview: bool = False) -> int:
 # --------------------------------------------------------------------------- selftest
 
 def _selftest() -> int:
+    import contextlib
+    import io
     fails: list = []
 
     def check(name, cond, detail=""):
@@ -225,46 +373,69 @@ def _selftest() -> int:
             fails.append("%s %s" % (name, detail))
 
     def git(d, *a):
-        subprocess.run(["git", "-C", d, "-c", "user.email=t@t", "-c", "user.name=t", *a], check=True, capture_output=True)
+        return subprocess.run(["git", "-C", d, "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    # the hash is the dashboard's: shared/test/vrhash.test.ts asserts the same constant
+    hc = vr_graph.load(os.path.join(vr_graph.FIXTURES, "hash-case.json"))
+    check("hash:cross-language", graph_hash(hc) == HASH_CASE_EXPECTED, graph_hash(hc))
 
     base = vr_graph.load(os.path.join(vr_graph.FIXTURES, "w145-l1.json"))
+    BASE_A = ["// header", "fn alpha() { todo!() }", "fn beta() {", "    todo!()", "}", "fn gamma() { todo!() }"]
+    HEAD_A = ["// one", "// two", "// three", "// header", "fn alpha() { 1 }", "fn beta() {", "    let x = 1;", "    x", "}",
+              "fn gamma() { todo!() }"]
 
-    def make_l1(src_stale=False):
+    def make_l1(base_sha, anchors, with_base=True):
+        """anchors: {step index: (path, line, note)}; the others sit on gamma (line 6 at base)."""
         g = copy.deepcopy(base)
-        kinds = ["call", "reply", "async", "publish", "call", "call", "call", "call", "call", "call"]
+        kinds = ["call", "reply", "async", "publish"] * 3
         lanes = [x["id"] for x in g["lanes"]]
         for i, n in enumerate(g["nodes"]):
             n["to"] = lanes[(lanes.index(n["lane"]) + 1) % len(lanes)]
-            n["call_kind"] = kinds[i % len(kinds)]
+            n["call_kind"] = kinds[i]
             n.pop("detail", None)
-            n["evidence"] = [{"tier": "source", "path": "src/a.rs", "line": 1, "note": "`step_%d`" % i}]
+            path, line, note = anchors.get(i, ("src/a.rs", 6, "`gamma`"))
+            n["evidence"] = [{"tier": "source", "path": path, "line": line, "note": note}]
         g["flows"][0]["new_stem"] = "seq-new"
         g["flows"][0].pop("before", None)
+        if with_base:
+            g["meta"]["base_sha"] = base_sha
         return g
 
-    def repo_with(l1, review=None, shifted=True):
+    def scenario(anchors, head_files=None, rename=None, delete=False, with_base=True):
+        """A repo: base commit with the stubs, then a HEAD commit with the bodies written. Returns (dir, l1)."""
         d = tempfile.mkdtemp()
-        os.makedirs(os.path.join(d, "src"))
-        body = ["// header"] * (5 if shifted else 0)
-        body += ["fn step_%d() {}" % i for i in range(10)]
-        with open(os.path.join(d, "src", "a.rs"), "w") as fh:
-            fh.write("\n".join(body) + "\n")
         git(d, "init", "-q", "-b", "main")
+        os.makedirs(os.path.join(d, "src"))
+        open(os.path.join(d, "src", "a.rs"), "w").write("\n".join(BASE_A) + "\n")
         git(d, "add", "-A")
-        git(d, "commit", "-qm", "x")
+        git(d, "commit", "-qm", "stubs")
+        sha = git(d, "rev-parse", "HEAD")
+        if rename:
+            git(d, "mv", "src/a.rs", rename)
+        if delete:
+            git(d, "rm", "-q", "src/a.rs")
+        target = os.path.join(d, rename or "src/a.rs")
+        if not delete:
+            open(target, "w").write("\n".join(head_files or HEAD_A) + "\n")
+        git(d, "add", "-A")
+        git(d, "commit", "-qm", "bodies")
+        l1 = make_l1(sha, anchors, with_base)
         vr = os.path.join(d, ".discovery", "visual-review", "W-9")
         os.makedirs(vr)
         json.dump(l1, open(os.path.join(vr, "l1.json"), "w"))
-        if review is not None:
-            json.dump({"schema_version": "1.0.0", "dossier": "W-9", "updated": "2026-01-01T00:00:00Z", "lines": review},
-                      open(os.path.join(vr, "review.json"), "w"))
-        return d
+        return d, l1
 
-    def line(el, verdict, ts="2026-01-01T00:00:00Z"):
-        return {"anchor": {"diagram": "L1", "element": el, "graph_hash": "0" * 64}, "verdict": verdict, "comment": "", "ts": ts}
+    def review(d, l1, spec, hash_=None):
+        """spec: [(step, verdict, ts[, hash])]; default hash = the file's current one."""
+        h = graph_hash(l1)
+        lines = [{"anchor": {"diagram": "L1", "element": e, "graph_hash": (rest[0] if rest else h)}, "verdict": v,
+                  "comment": "", "ts": ts} for e, v, ts, *rest in spec]
+        json.dump({"schema_version": "1.0.0", "dossier": "W-9", "updated": "2026-01-01T00:00:00Z", "lines": lines},
+                  open(os.path.join(d, ".discovery", "visual-review", "W-9", "review.json"), "w"))
 
-    import contextlib
-    import io
+    def all_ok(l1, **kw):
+        return [(n["id"], "ok", "2026-01-02T00:00:00Z") for n in l1["nodes"]]
 
     def call(d, preview=False):
         buf = io.StringIO()
@@ -272,47 +443,92 @@ def _selftest() -> int:
             rc = run("W-9", "seq-new", d, preview)
         return rc, buf.getvalue()
 
-    # happy path: lines move, arrows follow call_kind, a removed step goes, md + sync
-    l1 = make_l1()
-    d = repo_with(l1, [line("s2", "remove"), line("s1", "ok")])
+    def anchor_of(d, sid):
+        g = json.load(open(os.path.join(d, "docs", "architecture", "seq-new.json")))
+        return [n for n in g["nodes"] if n["id"] == sid][0]["evidence"][0]
+
+    # (a) unchanged region + (b) changed hunk, approval on the current hash, md and sync
+    d, l1 = scenario({1: ("src/a.rs", 4, "`beta`"), 2: ("src/a.rs", 4, "")})
+    review(d, l1, all_ok(l1))
     rc, out = call(d)
-    check("happy:rc", rc == 0, out)
-    g = json.load(open(os.path.join(d, "docs", "architecture", "seq-new.json")))
-    ids = [n["id"] for n in g["nodes"]]
-    check("happy:remove", "s2" not in ids and "s1" in ids, ids)
-    check("happy:view", g["view"] == "seq" and g["flows"][0]["after"] == ids)
-    check("happy:arrows", g["nodes"][0]["seq"]["arrow"] == "->>" and g["nodes"][1]["seq"]["arrow"] == "-)", [n["seq"] for n in g["nodes"][:2]])
-    check("happy:reanchored", g["nodes"][0]["evidence"][0]["line"] == 6, g["nodes"][0]["evidence"])
-    check("happy:md", "sequenceDiagram" in open(os.path.join(d, "docs", "architecture", "seq-new.md")).read())
-    p = subprocess.run([sys.executable, os.path.join(HERE, "vr_mermaid.py"), "check", "docs/architecture"], cwd=d, capture_output=True, text=True)
-    check("happy:mermaid-check", p.returncode == 0, p.stdout + p.stderr)
-    # a reply arrow
-    l1r = make_l1()
-    check("arrow:reply", promote_graph(l1r, "seq-new", {})["nodes"][1]["seq"]["arrow"] == "-->>")
-    # unresolved change
-    d = repo_with(make_l1(), [line("s1", "change")])
+    check("map:rc", rc == 0, out)
+    if rc == 0:
+        check("map:unchanged-region", anchor_of(d, "s5")["line"] == 10, anchor_of(d, "s5"))
+        check("map:changed-hunk-enclosing-fn", anchor_of(d, "s2")["line"] == 6 and anchor_of(d, "s3")["line"] == 6,
+              (anchor_of(d, "s2"), anchor_of(d, "s3")))
+        check("map:md", os.path.isfile(os.path.join(d, "docs", "architecture", "seq-new.md")))
+        p = subprocess.run([sys.executable, os.path.join(HERE, "vr_mermaid.py"), "check", "docs/architecture"], cwd=d,
+                           capture_output=True, text=True)
+        check("map:mermaid-check", p.returncode == 0, p.stdout + p.stderr)
+        g = json.load(open(os.path.join(d, "docs", "architecture", "seq-new.json")))
+        check("map:arrows", [n["seq"]["arrow"] for n in g["nodes"][:4]] == ["->>", "-->>", "-)", "-)"])
+    # rename
+    d, l1 = scenario({}, rename="src/b.rs", head_files=BASE_A + ["// tail"])  # -M needs the file to stay similar
+    review(d, l1, all_ok(l1))
     rc, out = call(d)
-    check("change:exit1", rc == 1 and "s1" in out, out)
-    d = repo_with(make_l1(), [line("s1", "change", "2026-01-01T00:00:00Z"), line("s1", "ok", "2026-01-02T00:00:00Z")])
-    check("change-then-ok:passes", call(d)[0] == 0)
-    # stale anchor
-    g1 = make_l1()
-    g1["nodes"][0]["evidence"][0]["note"] = "`gone_fn`"
-    d = repo_with(g1, [])
+    check("rename:follows", rc == 0 and anchor_of(d, "s1")["path"] == "src/b.rs" and anchor_of(d, "s1")["line"] == 6, out)
+    # delete
+    d, l1 = scenario({}, delete=True)
+    review(d, l1, all_ok(l1))
     rc, out = call(d)
-    check("stale:exit1", rc == 1 and "STALE-ANCHOR s1 src/a.rs:1 gone_fn" in out, out)
-    # preview: nothing under docs/, no re-anchoring, change tolerated
-    d = repo_with(make_l1(), [line("s1", "change")])
+    check("delete:stale", rc == 1 and "STALE-ANCHOR s1 src/a.rs:6 gamma (file deleted)" in out, out)
+    # backtick mismatch
+    d, l1 = scenario({0: ("src/a.rs", 6, "`beta`")})
+    review(d, l1, all_ok(l1))
+    rc, out = call(d)
+    check("mismatch:stale", rc == 1 and "STALE-ANCHOR s1" in out and "note names beta" in out, out)
+    # an anchor in a changed hunk of a file with no known language scanner has nothing to map to
+    d, l1 = scenario({0: ("src/a.rs", 2, "")})  # `fn alpha() { todo!() }` changed, enclosing fn alpha still there: ok
+    review(d, l1, all_ok(l1))
+    rc, out = call(d)
+    check("changed-sigline:maps-to-def", rc == 0 and anchor_of(d, "s1")["line"] == 5, out)
+    # no base_sha: warn, fall back to the name lookup
+    d, l1 = scenario({0: ("src/a.rs", 6, "`gamma`")}, with_base=False)
+    review(d, l1, all_ok(l1))
+    rc, out = call(d)
+    check("no-base:warn", rc == 0 and "WARN" in out and anchor_of(d, "s1")["line"] == 10, out)
+    # approval: current hash, stale, change on the same hash, ok after change on the same hash, no line, remove
+    d, l1 = scenario({})
+    review(d, l1, all_ok(l1), None)
+    check("approval:current", call(d)[0] == 0)
+    d, l1 = scenario({})
+    review(d, l1, [(n["id"], "ok", "2026-01-02T00:00:00Z", "0" * 64) for n in l1["nodes"]])
+    rc, out = call(d)
+    check("approval:stale", rc == 1 and "STALE-APPROVAL s1" in out, out)
+    d, l1 = scenario({})
+    spec = all_ok(l1)
+    spec[2] = ("s3", "change", "2026-01-02T00:00:00Z")
+    review(d, l1, spec)
+    rc, out = call(d)
+    check("change:same-hash", rc == 1 and "UNRESOLVED-CHANGE s3" in out, out)
+    d, l1 = scenario({})
+    spec = all_ok(l1) + [("s3", "ok", "2026-01-03T00:00:00Z")]
+    spec[2] = ("s3", "change", "2026-01-01T00:00:00Z")
+    review(d, l1, spec)
+    rc, out = call(d)
+    check("ok-after-change:still-open", rc == 1 and "UNRESOLVED-CHANGE s3" in out, out)
+    d, l1 = scenario({})
+    spec = all_ok(l1)[:-1]
+    review(d, l1, spec)
+    rc, out = call(d)
+    check("approval:missing-line", rc == 1 and "NOT-APPROVED s10" in out, out)
+    d, l1 = scenario({})
+    spec = all_ok(l1)
+    spec[2] = ("s3", "remove", "2026-01-02T00:00:00Z", "0" * 64)
+    review(d, l1, spec)
+    rc, out = call(d)
+    check("remove:drops-the-step", rc == 0 and "s3" not in [n["id"] for n in json.load(open(os.path.join(d, "docs", "architecture", "seq-new.json")))["nodes"]], out)
+    # preview needs neither approval nor anchors
+    d, l1 = scenario({})
     rc, out = call(d, preview=True)
-    pv = os.path.join(d, ".discovery", "visual-review", "W-9", "seq-new.seq.json")
-    check("preview", rc == 0 and os.path.isfile(pv) and not os.path.exists(os.path.join(d, "docs")), out)
-    # no flow / missing fields
-    d = repo_with(make_l1(), [])
+    check("preview", rc == 0 and os.path.isfile(os.path.join(d, ".discovery", "visual-review", "W-9", "seq-new.seq.json"))
+          and not os.path.exists(os.path.join(d, "docs")), out)
     with contextlib.redirect_stdout(io.StringIO()):
         check("noflow:exit2", run("W-9", "seq-other", d) == 2)
-    bad = make_l1()
+    bad = copy.deepcopy(l1)
     del bad["nodes"][0]["call_kind"]
-    check("missing-kind", _raises(lambda: promote_graph(bad, "seq-new", {})))
+    check("missing-kind", _raises(lambda: promote_graph(bad, "seq-new", set())))
+    check("arrow:reply", promote_graph(l1, "seq-new", set())["nodes"][1]["seq"]["arrow"] == "-->>")
     for f in fails:
         print("FAIL  " + f)
     print("vr_promote selftest " + ("ok" if not fails else "FAILED"))
