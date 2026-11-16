@@ -14,6 +14,7 @@ The model behind the visual review of a change (feature VR-01). Language-neutral
 | `../../scripts/vr_c2_drift.py` | c2 drift: Cargo members and edges against the c2 containers file (VR-06). |
 | `../../scripts/vr_map.py` | The living product map (view `map`): build, staleness check, recall, plan check, repo diagram list (VR-06). |
 | `../../scripts/vr_metrics.py` | The tool-quality counters log (VR-06). |
+| `../../scripts/flow_coverage.py` | Flow coverage: lists the runtime entry points with no sequence diagram (see Flow coverage below). |
 | `../../scripts/vr_ra.py` | rust-analyzer call hierarchy client, used by the extractor's `--calls`. |
 
 VR-03 renderer: `../../shared/questions/vrlayout.ts` lays a graph out with ELK on the dashboard server (vendored elkjs 0.12.1 in `shared/questions/vendor/elk/`); `GET /api/visual-review?dossier=ID[&repo=R]` reads `.discovery/visual-review/<ID>/l0|l1|l2.json` and returns graph, boxes and edge points per view; the run page draws them above the questions.
@@ -61,7 +62,7 @@ scripts/vr_map.py plan-check BASE.json PLAN.json                          # exit
 scripts/vr_map.py list REPO [--dir docs/architecture]
 scripts/vr_map.py refresh REPO [--since REV] [--full] [--no-calls] [--no-product-map] [--calls-limit S] [--json]
 scripts/vr_refresh.py --selftest | map_refresh_pr.py --selftest
-scripts/vr_c2_drift.py --selftest | vr_map.py --selftest | vr_metrics.py --selftest
+scripts/vr_c2_drift.py --selftest | vr_map.py --selftest | vr_metrics.py --selftest | flow_coverage.py --selftest
 scripts/vr_mermaid.py import FILE.md [--write] [--adopt] | render FILE.json | sync DIR | check DIR | --selftest   # exit 1 on a problem
 bun shared/test/vr-canvas.browser.ts                  # FU-04: browser check of the rendered canvas (needs `bun install` in shared/ and Google Chrome; else SKIP, exit 0)
 ```
@@ -129,6 +130,21 @@ The c3 side follows the same reference (`scripts/module_graph.py`, config-harnes
 ### Close gate for /work-on
 
 `validate_pipeline.py --c3-gate --base origin/<target>` runs in Phase 9, after the sync. For a repository with `docs/architecture/c3-components-*.md` it runs `vr_c3_agree.py` on every crate the branch's diff touched (a path under `crates/<crate>/`) and the generator freshness check (`scripts/module_graph.py check --against <file>`); a crate below 95 percent or with a stale file is a DEFECT and the session does not close. The repair is `module_graph.py regen` or a parser fix, never a lower threshold. It prints a `SKIP` line, and exits 0, when there are no c3 files, `cargo-modules` is missing, the generator is absent, or the touched crates have no c3 file. Untouched crates are not checked.
+
+## Flow coverage
+
+`scripts/flow_coverage.py --repo REPO [--json]` answers "which runtime entry points of this repo have no sequence diagram?" for a repo with `docs/architecture/seq-*.json`. Rust only for now (the signal table is per language, so C# can be added). Entry points: `fn main` in `src/main.rs` and `src/bin/*.rs`; axum `Router::new()` ... `.route("/path", ..)` (one entry per route); `pub async fn run(` taking a `shutdown` parameter; `pub fn register_*(` taking `&mut ToolRegistry`; `pub async fn serve_*_requests(`. Test code (`tests/`, `#[cfg(test)]`) is skipped.
+
+A diagram anchors code as `path/file.rs:LINE` (optionally followed by a backticked identifier) anywhere in its JSON text, plus `evidence[].path`. An entry is `covered` when some diagram anchors a line inside the entry function (first line to its closing brace) or names the function in the same file, `partial` when a diagram anchors only the file, `uncovered` otherwise. A `register_*` tool registration counts as covered when a diagram anchors any line of its file (the tool body lives beside it). A `run` with a generic `F: Future` shutdown parameter matches too. The report also lists seq diagrams with zero anchors. Report mode always exits 0.
+
+`--changed BASE_REF` limits the report to entry points in files changed by `git diff BASE_REF...HEAD` and exits 1 when an entry point that is NEW since the merge base (compared by path, kind and name against `git show <merge-base>:<path>`, renames followed) is uncovered and not exempt; older uncovered entries in touched files print as `REVIEW` lines and do not fail (for the Phase 9 gate, integration later). A repo may commit `docs/architecture/flow-coverage.json`:
+
+```json
+{"exempt": [{"entry": "crates/x/src/bin/tool.rs::main", "why": "one-shot, no flow"}],
+ "extra_signals": [{"name": "job", "regex": "fn (?P<name>job_\\w+)\\(", "glob": "crates/**/*.rs"}]}
+```
+
+`entry` is `<path>::<fn or route path>`; an exemption without `why` is an error (exit 2). One-shot binaries are not auto-exempt. `flow_coverage.py --selftest` checks the checker.
 
 ## Follow-ups
 
