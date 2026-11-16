@@ -78,8 +78,9 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
 - `OUT_DIR` — `.discovery/visual-review/<ID>/`. The only place you write.
 - `SCRIPTS_DIR` — the plugin's `scripts/`.
 - `REPO` — the repository root, for evidence paths.
-- `DIAGRAMS_NEW` — only when the dossier has a `Diagrams new:` line: the
-  stems, one `<stem> — <what>` per line, verbatim from `APPROACH`.
+- `DIAGRAMS_NEW` — the stems of the dossier's `Diagrams new:` line, one
+  `<stem> — <what>` per line, verbatim from `APPROACH`; `none` when it has no
+  such line. `check_payload.py --kind diagram-author` compares it with the dossier.
 - `ERRORS` — only on a repair attempt: the validator's issue list from the
   last attempt.
 

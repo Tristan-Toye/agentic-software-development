@@ -857,6 +857,7 @@ def check_contract_fix_lessons(where: str, fm: dict, contract: str, repo_root: P
 VISUAL_REVIEW_RE = re.compile(r"^\s*[-*]?\s*VISUAL-REVIEW:\s*(.+?)\s*$", re.M)
 VISUAL_REVIEW_APPROVED_RE = re.compile(
     r"^approved\b.*?\bL0\s+(\d+)\b.*?\bL1\s+(\d+)\b.*?\bL2\s+(\d+)\b", re.I)
+VISUAL_REVIEW_ARCH_RE = re.compile(r"\barch\s+([A-Za-z0-9][A-Za-z0-9_-]*)\s+(\d+)\b", re.I)
 VISUAL_REVIEW_CHANGES_RE = re.compile(r"^changes requested\b.*\S", re.I)
 VISUAL_REVIEW_VIEWS = (("l0.json", "L0"), ("l1.json", "L1"), ("l2.json", "L2"))
 
@@ -869,16 +870,21 @@ def visual_review_problems(fm: dict, log: str, root: Path, worktree: Path | None
     """What is wrong with a dossier's visual review, [] when it is fine or does not apply.
 
     Needs, for a dossier the gate applies to (``visual_review_applies``): a ``VISUAL-REVIEW:`` line
-    in the build log, the last one being ``approved — L0 <n>, L1 <n>, L2 <n>`` (a ``changes
+    in the build log, the last one being ``approved — L0 <n>, L1 <n>, L2 <n>[, arch <stem> <n> ...]`` (a ``changes
     requested — <ids>`` line sends Phase 3 back to the contract; it is history, not a pass), and
     ``.discovery/visual-review/<ID>/l0.json``, ``l1.json`` and ``l2.json``, each valid under
-    ``vr_graph.py validate`` with the view its name says, whose node counts equal the line's."""
+    ``vr_graph.py validate`` with the view its name says, whose node counts equal the line's. Every ``Diagrams new:`` stem of the dossier needs its draft
+    ``arch/<stem>.json`` (valid, node count equal to its ``arch <stem> <n>`` entry), and every draft present
+    needs an entry; a dossier with no stems and no drafts keeps the older line without arch entries. (The PR
+    gate's ``Diagram <stem> not added:`` escape concerns docs/architecture at PR time and does not excuse a
+    missing draft here.)"""
     if not visual_review_applies(fm):
         return []
     lines = VISUAL_REVIEW_RE.findall(log)
     if not lines:
         return ["no VISUAL-REVIEW: line in ## Build log. Phase 3 runs the diagram step on every build: "
-                "`VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n> (<dashboard link>)`"]
+                "`VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n>, arch <stem> <n> (<dashboard link>)` "
+                "(the arch entries: one per `Diagrams new:` stem, none when the dossier lists none)"]
     last = lines[-1]
     approved = VISUAL_REVIEW_APPROVED_RE.match(last)
     if not approved:
@@ -886,7 +892,7 @@ def visual_review_problems(fm: dict, log: str, root: Path, worktree: Path | None
             return ["the last VISUAL-REVIEW: line is 'changes requested': revise the contract in Phase 3, "
                     "run the diagram step again and record 'approved'"]
         return [f"the last VISUAL-REVIEW: line is not well formed: {last[:80]!r}. Use "
-                "`approved — L0 <n>, L1 <n>, L2 <n>` or `changes requested — <element ids>`"]
+                "`approved — L0 <n>, L1 <n>, L2 <n>[, arch <stem> <n>]` or `changes requested — <element ids>`"]
     dossier_id = str(fm.get("id") or "").strip()
     base = None
     for cand in (worktree, root):
@@ -918,6 +924,42 @@ def visual_review_problems(fm: dict, log: str, root: Path, worktree: Path | None
         used = vr_graph.budget(graph).get("used") if isinstance(graph, dict) else None
         if used is not None and used != int(claimed):
             problems.append(f"{name}: the VISUAL-REVIEW: line says {view} {claimed}, the file holds {used}")
+    problems.extend(_visual_review_arch_problems(last, base, root, dossier_id, vr_graph))
+    return problems
+
+
+def _visual_review_arch_problems(line: str, base: Path, root: Path, dossier_id: str, vr_graph) -> list[str]:
+    """The ``arch <stem> <n>`` entries of an approved line against ``arch/<stem>.json`` and ``Diagrams new:``."""
+    claimed: dict[str, int] = {}
+    for stem, n in VISUAL_REVIEW_ARCH_RE.findall(line.split("(", 1)[0]):
+        claimed[stem] = int(n)
+    stems = dossier_new_diagrams(base, dossier_id) or dossier_new_diagrams(root, dossier_id)
+    arch = base / ".discovery" / "visual-review" / dossier_id / "arch"
+    drafts = {f.stem: f for f in sorted(arch.glob("*.json"))} if arch.is_dir() else {}
+    problems: list[str] = []
+    for stem in stems:
+        if stem not in drafts:
+            problems.append(f"arch/{stem}.json is missing: the dossier's `Diagrams new:` lists {stem}, so Phase 3 "
+                            "writes its draft (diagram-author for c1-/c4-, `vr_promote.py --preview` for seq-)")
+    for stem in sorted(drafts):
+        if stem not in claimed:
+            problems.append(f"arch/{stem}.json exists but the VISUAL-REVIEW: line has no `arch {stem} <n>` entry")
+    for stem, n in claimed.items():
+        f = drafts.get(stem)
+        if f is None:
+            if stem not in stems:
+                problems.append(f"the VISUAL-REVIEW: line has `arch {stem} {n}`, but there is no arch/{stem}.json")
+            continue
+        try:
+            graph = vr_graph.load(str(f))
+        except (OSError, ValueError) as exc:
+            problems.append(f"arch/{stem}.json is not readable: {exc}")
+            continue
+        for issue in vr_graph.validate(graph, root=str(base)):
+            problems.append(f"arch/{stem}.json: {issue.get('code')} {issue.get('path')}: {issue.get('message')}")
+        used = len([x for x in (graph.get("nodes") or []) if isinstance(x, dict)]) if isinstance(graph, dict) else None
+        if used is not None and used != n:
+            problems.append(f"arch/{stem}.json: the VISUAL-REVIEW: line says arch {stem} {n}, the file holds {used}")
     return problems
 
 
@@ -3157,6 +3199,45 @@ def selftest_visual_review() -> bool:
         ("duplicate id in a file: flagged", run(new_fm, approved, good, dup), True),
         ("element without evidence: flagged", run(new_fm, approved, good, no_evidence), True),
         ("file with the wrong view: flagged", run(new_fm, approved, good, wrong_view), True),
+    ]
+    # architecture drafts: one `arch <stem> <n>` entry per draft, one draft per `Diagrams new:` stem
+    def arch_graph(n: int) -> dict:
+        g = graph("c4", "class", n)
+        g["meta"]["base_sha"] = "0000000"
+        return g
+
+    def run_arch(log: str, stems: str, drafts: dict[str, int]) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ddir = root / ".discovery" / "dossiers"
+            ddir.mkdir(parents=True)
+            line = f"Diagrams new: {stems}\n" if stems else ""
+            (ddir / "W-9-x.md").write_text(new_fm + "## Approach\n" + line, encoding="utf-8")
+            out = root / ".discovery" / "visual-review" / "W-9"
+            (out / "arch").mkdir(parents=True)
+            for name, g in good.items():
+                (out / name).write_text(json.dumps(g), encoding="utf-8")
+            for stem, n in drafts.items():
+                (out / "arch" / f"{stem}.json").write_text(json.dumps(arch_graph(n)), encoding="utf-8")
+            fmd, _, _ = split_front_matter(new_fm + "## Build log\n")
+            return visual_review_problems(fmd, log, root)
+
+    base_line = "- VISUAL-REVIEW: approved — L0 3, L1 4, L2 5"
+    cases += [
+        ("arch: stem with draft and matching entry: clean",
+         run_arch(base_line + ", arch c4-q 2 (link)\n", "c4-q \u2014 the types", {"c4-q": 2}), False),
+        ("arch: two drafts, two entries: clean",
+         run_arch(base_line + ", arch c4-q 2, arch c4-r 3 (link)\n", "c4-q \u2014 a, c4-r \u2014 b",
+                  {"c4-q": 2, "c4-r": 3}), False),
+        ("arch: no stems, no drafts, old line: clean", run_arch(base_line + " (link)\n", "none", {}), False),
+        ("arch: count differs from the draft: flagged",
+         run_arch(base_line + ", arch c4-q 3 (link)\n", "c4-q \u2014 the types", {"c4-q": 2}), True),
+        ("arch: draft present, no entry: flagged",
+         run_arch(base_line + " (link)\n", "c4-q \u2014 the types", {"c4-q": 2}), True),
+        ("arch: listed stem without a draft: flagged",
+         run_arch(base_line + ", arch c4-q 2 (link)\n", "c4-q \u2014 a, c4-r \u2014 b", {"c4-q": 2}), True),
+        ("arch: entry for a stem with no draft and no listing: flagged",
+         run_arch(base_line + ", arch c4-z 2 (link)\n", "none", {}), True),
     ]
     ok = True
     for name, problems, expect in cases:

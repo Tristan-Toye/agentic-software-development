@@ -264,6 +264,15 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         "required": {"MODE", "FORMAT", "TARGET_PATHS", "SCRUB"},
         "optional": {"DECISIONS", "DOSSIER-EXCERPTS"},
     },
+    # sub-agents/diagram-author.md "Payload". DIAGRAMS_NEW is `none` when the dossier
+    # has no `Diagrams new:` line; ERRORS only travels on a repair attempt.
+    "diagram-author": {
+        "required": {
+            "DOSSIER_ID", "PROBLEM", "APPROACH", "CONTRACT", "WORK_DIR", "OUT_DIR",
+            "SCRIPTS_DIR", "REPO", "DIAGRAMS_NEW",
+        },
+        "optional": {"ERRORS"},
+    },
 }
 
 # kind -> groups where at least one field is required, unconditionally.
@@ -517,6 +526,7 @@ ASSIGNMENT = re.compile(r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(?P<value>
 VERBATIM_FIELDS = (
     "CRITERIA", "CONTRACT", "DOSSIER-EXCERPTS", "STYLE_SAMPLE", "SUPPORT",
     "FAILURES", "CRS", "PRIOR_CRS", "RUN_EVIDENCE", "CHECKLIST_RULES", "FORMAT",
+    "PROBLEM", "APPROACH", "ERRORS",
 )
 # A secret by its shape alone, whatever it is named: a known key prefix, or a
 # long mixed letter-and-digit string. Active everywhere, verbatim blocks included.
@@ -581,6 +591,7 @@ LIST_SEPARATOR = re.compile(r"[,\s]+")
 PATH_VALUED_FIELDS = (
     "TEST_PATHS", "STYLE_PATHS", "SUPPORT_PATHS", "WORKTREE_DIR", "DOSSIER",
     "STANDARDS", "CONTEXT_DOCS", "TARGET_PATHS",
+    "REPO", "WORK_DIR", "OUT_DIR", "SCRIPTS_DIR",
 )
 NOT_A_PATH_VALUE = re.compile(r"^(|none|null|n/a)$", re.IGNORECASE)
 
@@ -1025,6 +1036,78 @@ def bounded_read_findings(lines: list[str], kind: str | None,
     return out
 
 
+DIAGRAM_STEM = re.compile(r"^(?:seq|c1|c4)-[A-Za-z0-9][A-Za-z0-9_-]{0,75}$")  # vr_promote.STEM_RE plus the three prefixes
+
+
+def _under(child: str, parent: str) -> bool:
+    child, parent = os.path.realpath(child), os.path.realpath(parent)
+    return child == parent or child.startswith(parent.rstrip("/") + "/")
+
+
+def diagram_author_findings(lines: list[str], kind: str | None,
+                            live_dossier: str | None) -> tuple[list[str], list[str]]:
+    """The diagram author's DIAGRAMS_NEW must be the stems of the dossier's
+    `Diagrams new:` line (reusing validate_pipeline.parse_diagrams_new), or
+    `none`; each stem starts seq-, c1- or c4- (what vr_promote promotes and the
+    dashboard's arch tab shows). OUT_DIR sits under REPO and WORK_DIR under
+    OUT_DIR: the agent writes only there."""
+    if kind != "diagram-author":
+        return [], []
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from validate_pipeline import DIAGRAMS_NEW_RE, parse_diagrams_new
+    defects: list[str] = []
+    warnings: list[str] = []
+    body = field_body(lines, "DIAGRAMS_NEW")
+    if body.strip():
+        text = ",".join(piece.strip() for piece in body.splitlines() if piece.strip())
+        stems = parse_diagrams_new(text)
+        if not stems and text.strip().strip("`").lower() != "none":
+            defects.append(
+                "DIAGRAMS_NEW %r names no stem: write `none`, or one `<stem> \u2014 <what>` "
+                "per line, verbatim from the dossier's `Diagrams new:` line." % text[:60])
+        for stem in stems:
+            if not DIAGRAM_STEM.match(stem):
+                defects.append(
+                    "DIAGRAMS_NEW stem %r is not valid: a stem starts seq-, c1- or c4- and holds "
+                    "letters, digits, `_` and `-` only (vr_promote refuses any other)." % stem)
+    else:
+        stems = []
+    repo, out_dir, work_dir = (field_value(lines, n) for n in ("REPO", "OUT_DIR", "WORK_DIR"))
+    if repo and out_dir and out_dir.startswith("/") and not _under(out_dir, repo):
+        defects.append("OUT_DIR %s is not under REPO %s: the agent writes only inside the repo's "
+                       ".discovery/visual-review/<ID>/." % (out_dir, repo))
+    if out_dir and work_dir and work_dir.startswith("/") and not _under(work_dir, out_dir):
+        defects.append("WORK_DIR %s is not under OUT_DIR %s: vr_prepare writes `work/` inside it."
+                       % (work_dir, out_dir))
+    dossier = live_dossier
+    dossier_id = field_value(lines, "DOSSIER_ID")
+    if dossier is None and repo and dossier_id:
+        ddir = os.path.join(repo, ".discovery", "dossiers")
+        if os.path.isdir(ddir):
+            found = sorted(f for f in os.listdir(ddir)
+                           if f.startswith(dossier_id + "-") and f.endswith(".md"))
+            dossier = os.path.join(ddir, found[0]) if found else None
+    if dossier and os.path.isfile(dossier):
+        try:
+            with open(dossier, encoding="utf-8") as handle:
+                match = DIAGRAMS_NEW_RE.search(handle.read())
+        except OSError as err:
+            print("check_payload: cannot read %s" % err, file=sys.stderr)
+            raise SystemExit(2)
+        expected = parse_diagrams_new(match.group(1)) if match else []
+        if stems != expected:
+            defects.append(
+                "DIAGRAMS_NEW names %s, the dossier's `Diagrams new:` line lists %s. The author writes "
+                "a draft per stem it is told; a stem the dossier does not list is an unreviewed tab, "
+                "a stem left out is a Phase 3 defect."
+                % (", ".join(stems) or "none", ", ".join(expected) or "none"))
+    else:
+        warnings.append(
+            "DIAGRAMS_NEW was not compared with a dossier (none found under REPO/.discovery/dossiers "
+            "for %s): pass --live-dossier <the run's live copy>." % (dossier_id or "DOSSIER_ID"))
+    return defects, warnings
+
+
 def excerpt_findings(lines: list[str], kind: str | None,
                      live_dossier: str | None) -> tuple[list[str], list[str]]:
     """The integration author's DOSSIER excerpt must equal the live dossier's
@@ -1357,6 +1440,11 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     stale, stale_warnings = excerpt_findings(lines, kind, live_dossier)
     defects.extend(stale)
     warnings.extend(stale_warnings)
+
+    # 18. the diagram author's DIAGRAMS_NEW against the dossier's `Diagrams new:` line
+    da_defects, da_warnings = diagram_author_findings(lines, kind, live_dossier)
+    defects.extend(da_defects)
+    warnings.extend(da_warnings)
 
     # 12. a whole-value checklist line with no assertion form
     warnings.extend(assertion_form_findings(lines, kind))
@@ -1878,6 +1966,37 @@ def selftest() -> int:
     case("drafter pr clean, hyphen field accepted", drafter, "document-drafter", False)
     case("drafter adr needs decisions",
          drafter.replace("MODE: pr", "MODE: adr"), "document-drafter", True, "DECISIONS is missing")
+    da_dossier = ("---\nid: W-014\n---\n## Approach\nflush\n"
+                  "Diagrams new: seq-flush \u2014 the flush flow, c4-queue \u2014 queue types\n")
+    da = (
+        "DOSSIER_ID: W-014\nPROBLEM: |\n  queues drop\nAPPROACH: |\n  flush\n"
+        "CONTRACT: |\n  fn flush()\nWORK_DIR: {REAL}/.discovery/visual-review/W-014/work\n"
+        "OUT_DIR: {REAL}/.discovery/visual-review/W-014\nSCRIPTS_DIR: {REAL}/scripts\n"
+        "REPO: {REAL}\nDIAGRAMS_NEW: |\n  seq-flush \u2014 the flush flow\n  c4-queue \u2014 queue types\n"
+    )
+    da_files = {".discovery/dossiers/W-014-x.md": da_dossier,
+                ".discovery/visual-review/W-014/work/summary.json": "{}"}
+    case("diagram author clean", da, "diagram-author", False, repo_files=da_files, must_warn="")
+    case("diagram author: ERRORS is optional", da + "ERRORS: |\n  l1.json: x\n", "diagram-author", False,
+         repo_files=da_files)
+    case("diagram author: missing field", da.replace("REPO: {REAL}\n", ""), "diagram-author", True,
+         "REPO is missing", repo_files=da_files)
+    case("diagram author: DIAGRAMS_NEW differs from the dossier",
+         da.replace("  c4-queue \u2014 queue types\n", ""), "diagram-author", True,
+         "Diagrams new:", repo_files=da_files)
+    case("diagram author: none against a dossier that lists stems",
+         da.replace("DIAGRAMS_NEW: |\n  seq-flush \u2014 the flush flow\n  c4-queue \u2014 queue types\n",
+                    "DIAGRAMS_NEW: none\n"), "diagram-author", True, "Diagrams new:", repo_files=da_files)
+    case("diagram author: a bad stem prefix",
+         da.replace("c4-queue", "foo-queue"), "diagram-author", True, "not valid",
+         repo_files={**da_files, ".discovery/dossiers/W-014-x.md": da_dossier.replace("c4-queue", "foo-queue")})
+    case("diagram author: none with no dossier line is clean",
+         da.replace("DIAGRAMS_NEW: |\n  seq-flush \u2014 the flush flow\n  c4-queue \u2014 queue types\n",
+                    "DIAGRAMS_NEW: none\n"), "diagram-author", False,
+         repo_files={**da_files, ".discovery/dossiers/W-014-x.md": "---\nid: W-014\n---\n## Approach\nflush\n"})
+    case("diagram author: OUT_DIR outside the repo",
+         da.replace("OUT_DIR: {REAL}/.discovery/visual-review/W-014", "OUT_DIR: {REAL}/../elsewhere"),
+         "diagram-author", True, "not under REPO", repo_files=da_files)
     # a field that appears twice (issue #107)
     delivery = "DELIVERY_CHANGE: |\n  one Write, then Edits\n"
     case("one DELIVERY_CHANGE block is clean", unit_ok + delivery, "unit-test-author", False)
