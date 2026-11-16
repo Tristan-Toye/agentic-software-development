@@ -392,7 +392,9 @@ def load_diagrams(repo: Path) -> dict:
     for p in sorted(d.glob("seq-*.json")) if d.is_dir() else []:
         text = p.read_text(encoding="utf-8", errors="replace")
         lines, files = [], set()
-        for m in ANCHOR_RE.finditer(text):
+        # Labels hold escaped line breaks (`\\n`, sometimes double-escaped): they must not glue to a path.
+        flat = text.replace("\\n", " ").replace("\\t", " ")
+        for m in ANCHOR_RE.finditer(flat):
             a = int(m["line"])
             b = int(m["end"]) if m["end"] else a
             f = m["file"].lstrip("./") if m["file"].startswith("./") else m["file"]
@@ -603,7 +605,7 @@ def _selftest() -> int:
         w("crates/a/src/bin/tool.rs", "// one-shot tool\n// with some\n// comment lines\n// to keep rename similarity\nfn main() {}\n")
         w("crates/a/tests/it.rs", "fn main() {}\n")
         d = "docs/architecture/"
-        w(d + "seq-one.json", seq("boot crates/a/src/main.rs:4 `run`",
+        w(d + "seq-one.json", seq("boot\\ncrates/a/src/main.rs:4 `run`",
                                   "bg crates/a/src/bg.rs:2",
                                   "h crates/a/src/http.rs:3"))
         w(d + "seq-two.json", seq("name only crates/a/src/srv.rs:900 `serve_ping_requests`",
