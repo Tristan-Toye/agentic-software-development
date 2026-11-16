@@ -93,7 +93,10 @@ Three files, each a graph of schema 1.0.0 (see
 
 Every graph has a `title` and, in `meta`, `generated_by: "agent"`; copy the
 other `meta` fields (`change`, `repo`, `commit`, `tools`, `layers`) from
-`merged.json`. Every node, group and flow you write has `label_source: "llm"`.
+`merged.json`, and in `l1.json` also set `meta.base_sha` to the same value as
+`meta.commit` (the contract commit the anchors were drawn on, 7 to 40 hex
+characters): the promotion maps every anchor from it to the final code.
+Every node, group and flow you write has `label_source: "llm"`.
 
 `status` (`added`, `removed`, `changed`, `context`): an element that exists in
 `merged.json` keeps its status exactly. An L0 feature or an L1 step has no
@@ -108,6 +111,17 @@ Shapes the schema requires, which the fixtures also show:
 - L1 `flows`: one entry `{id, label, label_source, lanes: [lane ids], status,
   before: [step ids], after: [step ids], evidence}`. Steps are ordered by
   `order`; `edges` may stay `[]`, the flow carries the sequence.
+- A flow named on the `Diagrams new:` line (the last lines of `APPROACH`,
+  `Diagrams new: <stem> — <flow>`) becomes a sequence diagram of its own
+  later. For it: the flow entry also carries `new_stem: "<stem>"`, and
+  **every step of it carries `to` (the id of the lane it talks to, a lane
+  you declared) and `call_kind`** (`call`, `reply`, `async` or `publish`:
+  how the step reaches `to`; a return value is a `reply`, a queue or event
+  send is `publish`, a fire-and-forget call `async`). Give each such step a
+  `note` of the evidence entry that holds the function name in backticks
+  (`"note": "`run_calls`"`): the promotion re-finds the line by that name once
+  the bodies exist. `validate` rejects a `new_stem` flow whose steps lack `to`
+  or `call_kind`. No `Diagrams new:` flow, no extra fields.
 - L2: `groups` is a list of `{id, label, status, label_source, evidence}`; a
   node names its group with `group`. Copy `edges` from `merged.json` between
   the nodes you keep.
@@ -132,7 +146,8 @@ Shapes the schema requires, which the fixtures also show:
    path one request takes through the changed code, in order. A step cites
    the `fn:` node it names, or, when there is none, the `source` line of the
    function in `REPO`. Give each step a `lane` (its crate or module), an
-   `order`, and a one-line `detail.before` and `detail.after`.
+   `order`, and a one-line `detail.before` and `detail.after`. For a
+   `Diagrams new:` flow also `to` and `call_kind` on every step (above).
 4. **L0.** One feature per owner-visible capability the dossier's `PROBLEM`
    and `APPROACH` name, each cited by the L2 node or L1 step that implements
    it.

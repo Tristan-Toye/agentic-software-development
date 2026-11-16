@@ -1,0 +1,6 @@
+{
+  "$schema": "ignored",
+  "zeta": [3, {"b": "é—ü", "a": null, "$comment": "dropped"}, true],
+  "alpha": {"y": 2, "x": "quote \" and \\ and \n newline", "n": -7},
+  "meta": {"repo": "r", "commit": "abc1234"}
+}

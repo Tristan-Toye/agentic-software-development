@@ -240,8 +240,9 @@ def log_or_say(path: str, entries: list[str]) -> str:
 
 BLOCKER_KEY = "blocked_by"
 # Facts the build records in front matter, created on first `set`: the hook policy decided at the contract
-# commit (`none` or `<hook> — <policy>`), the contract commit's SHA, and the SHA the contract review read.
-CREATABLE_KEYS = {"hooks", "contract_commit", "contract_review"}
+# commit (`none` or `<hook> — <policy>`), the contract commit's SHA, the SHA the contract review read, and
+# `visual_review: required`, which Phase 3's visual-review step sets to switch its gate on for the dossier.
+CREATABLE_KEYS = {"hooks", "contract_commit", "contract_review", "visual_review"}
 
 
 def key_index(fm: list[str], key: str) -> int | None:
@@ -1049,6 +1050,8 @@ def selftest() -> int:
     check("set list may drop a done blocker unasked", "blocked_by: [W-0002]  # why" in new)
     new, changes = set_fields(blk, [("hooks", "none"), ("contract_commit", "abc1234")])
     check("set creates the build-record keys", "hooks: none" in new and "contract_commit: abc1234" in new)
+    new, _ = set_fields(blk, [("visual_review", "required")])
+    check("set creates visual_review (Phase 3 switches the visual-review gate on)", "visual_review: required" in new)
     check("set still never invents other keys", refused(set_fields, blk, [("invented", "x")]))
     with tempfile.TemporaryDirectory() as td:
         os.makedirs(os.path.join(td, "dossiers"))

@@ -186,7 +186,12 @@ one line in the report, never a reason to read the older tree.
    and call order around them (with their source anchors) at a fraction of the
    cost of the `.md` or `.json` files, and `arch_find` with a `diagram` and an
    empty `query` outlines one diagram. Note which diagrams the change would
-   alter: Phase 4 records them as the `Diagrams affected:` line.
+   alter: Phase 4 records them as the `Diagrams affected:` line. Note too
+   whether the change introduces a flow that crosses crates, processes or
+   containers (or a new external system) that no existing `seq-*` diagram
+   shows: Phase 4 records a proposed diagram for it as the `Diagrams new:`
+   line. Searching the existing sequence diagrams for the flow is how you
+   tell "already shown" from "new".
 4. **Trace the code.** Find where the problem lives. Follow the real call path;
    never assume a function does what its name says. Every claim you will write
    as `FACT` needs a `path:line` anchor you actually opened.
@@ -253,18 +258,28 @@ that record, not a log line.
 
 ## Phase 4 — Write the dossier
 
-Mint the ID atomically (`formats/evidence-and-ids.md` §4) and write
+Claim the ID from the central ledger, `python3 ${PLUGIN_ROOT}/scripts/claim_id.py
+--repo <repo> --kind W --for plan/<KEY>` (`formats/evidence-and-ids.md` §4):
+it is final, and no open sibling plan PR holds it. Only when the claim exits 1
+(no remote, no push access) mint provisionally as §4 says. Then write
 `${RUN_ROOT}/.discovery/dossiers/W-NNN-<slug>.md` with the front matter and
-the six sections in order. In committed mode the number is provisional until
-the plan PR merges — Phase 7 re-checks it against the base tip before the
-push.
+the six sections in order. A provisional number is settled at Phase 7, which
+re-checks it against the base tip before the push.
 
 End `## Approach` with one line, `Diagrams affected: <file stems>` (the
 `docs/architecture/` files, stem without extension, that this change makes
 stale: `c4-classes-ports, seq-boot`) or `Diagrams affected: none`; a repo
-without `docs/architecture/` gets `none`. The plan reviewer checks it against
-the change, and `/work-on` Phase 9 gates on it (`validate_pipeline.py
---diagram-gate`).
+without `docs/architecture/` gets `none`. Then one more line,
+`Diagrams new: <proposed stem> — <one line: the flow>` (several
+comma-separated: `seq-x — flow a, c1-ext — the new system`) or
+`Diagrams new: none`. It lists a diagram the change must **add**: a flow that
+crosses crates, processes or containers and that no existing `seq-*` diagram
+shows (stem `seq-<flow>`), or a new external system (stem `c1-<name>`, an
+addition to the c1 context). A change inside one component, or a flow an
+existing diagram already shows (that one goes on `Diagrams affected:`), gets
+`none`; so does a repo without `docs/architecture/`. The plan reviewer checks
+both lines against the change, and `/work-on` Phase 9 creates every listed
+diagram and gates on both (`validate_pipeline.py --diagram-gate`).
 
 All six matter. Two of them get extra care because **their errors are invisible
 until they are expensive** — the fan-out consumes them mechanically, so a defect
@@ -463,7 +478,8 @@ a change to review, so finish it as one:
    `--finalize-ids` renumbers the dossiers this branch added whose `id:` a
    file on the base already carries — the file name, `id:`, and every
    mention inside this branch's own dossiers — and leaves the sibling alone.
-   Re-run the validator on the renamed file. A collision with a plan PR
+   Re-run the validator on the renamed file. With a claimed ID (Phase 4)
+   nothing renumbers here. A provisional ID colliding with a plan PR
    still open cannot be seen from here: once both land,
    `validate_pipeline.py --all` names the two files, `/work-on` Phase 0
    stops on them, and the later one renumbers in its own PR the same way.

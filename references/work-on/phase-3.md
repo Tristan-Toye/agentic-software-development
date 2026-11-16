@@ -310,6 +310,20 @@ payload holds no diagram file and no dossier text from this step.
    issue list in `ERRORS`; **at most 2 repair attempts**, then stop, log the
    open issues in `## Build log` and report. A graph that fails validation
    creates **no** owner question.
+   When the dossier's `Diagrams new:` line lists a stem, the author was told
+   (it reads the line in `APPROACH`) to write that flow into `l1.json` with
+   `new_stem` on the flow and `to` and `call_kind` on every step; `validate`
+   rejects a `new_stem` flow whose steps lack them. Then prove the promotion
+   works before the owner looks, per stem:
+   `python3 scripts/vr_promote.py --dossier-id <ID> --stem <stem> --repo <repo> --preview`
+   (writes `.discovery/visual-review/<ID>/<stem>.seq.json`, nothing under
+   `docs/`; the dashboard does not show it, the owner reviews the L1 view it
+   is made from). A non-zero exit is a defect in `l1.json`: re-spawn the
+   author with the output in `ERRORS`, same two-attempt limit. The owner's
+   verdicts are recorded in `review.json` against the hash of the `l1.json`
+   they saw; any later edit of `l1.json` (a contract revision that re-runs
+   the author) changes that hash, and Phase 9's promotion then requires the
+   owner's fresh approval of the new file.
 4. Ask the owner ONE product question with
    `ask_owner.py ask --kind product --topic visual-review`
    (`references/owner-questions.md`). The `--topic` marker is what makes it
@@ -335,6 +349,14 @@ payload holds no diagram file and no dossier text from this step.
    and a line with a different `anchor.graph_hash` than the file now has was
    made on an older version of the picture. These ids and comments are the
    input of the contract revision below.
+   When the answer is `A` and the dossier's `Diagrams new:` line lists
+   stems, first run per stem
+   `python3 scripts/vr_promote.py --dossier-id <ID> --stem <stem> --repo <repo> --check-approval`
+   (the approval rule only: no writes). An `A` typed as a chat answer has no
+   per-element `ok` lines in `review.json`, and Phase 9 would refuse it hours
+   later. On exit 1 do **not** record `VISUAL-REVIEW: approved`: ask the owner
+   again (`ask_owner.py`, same topic) naming the step ids it printed, who
+   `ok` them on the dashboard canvas; repeat until it exits 0.
 5. Record the outcome as a `## Build log` line, exactly one of:
 
    ```
