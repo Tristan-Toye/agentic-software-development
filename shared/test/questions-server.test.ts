@@ -44,6 +44,17 @@ function check(name: string, ok: boolean, detail = ""): void {
   check("phase: a phase named mid-sentence is not progress; a line-start marker is", lastPhase("- OWNER-RULING: draft PR at Phase 6 yes\n- Phase 2 closed: contract committed\nnotes about Phase 7") === "2" && lastPhase("PHASE 9: synced") === "9")
 check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "Phase 6 soon" }, { kind: "stage", stage: "Phase 2 — contract", text: "x" }, { kind: "stage", stage: "Phase 1 — gates", text: "y" }]) === "2")
 {
+  const st = (stage: string) => ({ kind: "stage", stage, text: "" }), start = (cmd: string) => ({ kind: "runner", stage: "0", text: `start /${cmd} W-1 in /r` })
+  check("phase: a re-plan's stages after a build are not build phases (W-013: /plan Phase 8 read as /work-on Phase 8)",
+    stagePhase([start("work-on"), st("Phase 8 — plan: report"), start("plan"), st("Phase 2 — contract"), start("work-on")]) === null)
+  check("phase: only the latest /work-on run counts; another command's stages are skipped",
+    stagePhase([st("Phase 3 — Fix-deferred — Step 2"), start("fix-deferred"), st("Phase 9 — PR"), start("work-on")]) === "9"
+    && stagePhase([st("Phase 4 — wave 1"), start("work-on"), st("Phase 9 — PR"), start("work-on")]) === "4")
+  check("phase: a restarted /work-on run with no stage yet shows the phase its earlier run reached; a log with no start line keeps its newest stage; nothing recorded is empty",
+    stagePhase([start("work-on"), st("Phase 6 — tests"), start("work-on")]) === "6" && stagePhase([start("work-on"), start("fix-deferred")]) === ""
+    && stagePhase([st("Phase 5 — x")]) === "5" && stagePhase([]) === "")
+}
+{
   const rep = "## Deferred issues — W-9\n\n| ID | Kind | Title | Risk | Origin | Contract | Effort |\n|---|---|---|---|---|---|---|\n| D-1 | latent-bug | Make `x` cover links | medium | new | external | M |\n| D-3 | ssot | Fix doc | low | old | none | S |\n\n| other | table |\n|---|---|\n| D-9 | x |\n"
   const t = parseReportTable(rep)
   check("deferred report: the summary table by its header names", t.size === 2 && t.get("D-1")?.contract === "external" && t.get("D-1")?.effort === "M" && t.get("D-1")?.title === "Make x cover links" && t.get("D-3")?.risk === "low")

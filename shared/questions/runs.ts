@@ -245,10 +245,29 @@ export function lastPhase(log: string): string {
   for (const m of log.matchAll(/^\s*(?:[-*]\s+)?(?:\*\*)?(?:Phase|PHASE)\s+(\d+[a-z]?)\b/gm)) last = m[1]
   return last
 }
-/** The phase of the newest `stage` line in a run's updates (checkpoint names start `Phase <n>`). */
-export function stagePhase(updates: { kind: string; stage?: string; text: string }[]): string {
-  for (const u of updates) if (u.kind === "stage") { const m = `${u.stage ?? ""} ${u.text}`.match(/\b(?:Phase|PHASE)\s+(\d+[a-z]?)\b/); if (m) return m[1] }
-  return ""
+/**
+ * The /work-on phase of a run's updates (newest first; checkpoint names start `Phase <n>`). The phase names are
+ * /work-on's, so only a /work-on run's stage lines count: the stages of /fix-deferred, /resolve-merge and other runs
+ * are skipped, and a /plan run (a re-plan) makes any older build phase stale. A /work-on run with no stage yet (a
+ * restart) shows the phase its earlier /work-on run reached. Returns the newest /work-on stage, `null` when a /plan
+ * run came after every /work-on stage (so the caller does not fall back to the build log of that earlier attempt
+ * either), and "" when no /work-on stage is recorded at all.
+ * Stage lines older than every `start /<command>` line (logs from before runners wrote one) count as /work-on.
+ */
+export function stagePhase(updates: { kind: string; stage?: string; text: string }[]): string | null {
+  let pending = ""   // the newest stage seen since the last start line
+  for (const u of updates) {
+    if (u.kind === "runner") {
+      const cmd = u.text.match(/^start \/([\w-]+)/)?.[1]
+      if (!cmd) continue
+      if (cmd === "work-on") { if (pending) return pending; continue }
+      if (cmd === "plan") return null
+      pending = ""     // another command's stages say nothing about the build phase
+      continue
+    }
+    if (u.kind === "stage" && !pending) { const m = `${u.stage ?? ""} ${u.text}`.match(/\b(?:Phase|PHASE)\s+(\d+[a-z]?)\b/); if (m) pending = m[1] }
+  }
+  return pending
 }
 /** The last build-log entry, whole: a wrapped bullet is joined back, a trailing fenced block is skipped. */
 export function lastLine(log: string): string {
@@ -626,8 +645,10 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
     const f = d.front
     const log = buildLog(d.text)
     const status = f.status ?? "planned"
-    // The run's own stage lines (newest first) outrank the build log's text.
-    const phaseHit = stagePhase(readUpdates(`${baseName(d.main)}.${f.id}`)) || lastPhase(log)
+    // The latest /work-on run's own stage lines (newest first) outrank the build log's text.
+    // Every update line, not the 50 the view shows: the newest run's start line can be further back than that.
+    const sp = stagePhase(readUpdates(`${baseName(d.main)}.${f.id}`, runsDir(), Infinity))
+    const phaseHit = sp === null ? "" : sp || lastPhase(log)
     const phase = phaseHit || (status === "planned" || status === "ready" ? "plan" : "")
     const wt = d.worktree
     const repoName = baseName(await mainOf(wt))
