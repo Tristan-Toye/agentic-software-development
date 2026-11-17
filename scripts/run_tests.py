@@ -189,6 +189,18 @@ def inner_quote(value: str) -> str:
     return '"' + re.sub(r'(["\\`])', r"\\\1", value) + '"'
 
 
+def command_word(value: str) -> str:
+    """Quote one word of the command itself for the VM's inner script. Only
+    `$HOME` / `${HOME}` and a leading `~/` stay live (so `CARGO_TARGET_DIR=$HOME/t`
+    lands in the VM's home, not in a literal `$HOME` directory under the working
+    tree); every other character, `$(...)` and backticks included, is quoted
+    exactly as `shlex.join` would."""
+    if value.startswith("~/"):
+        value = "$HOME/" + value[2:]
+    pieces = re.split(r"\$HOME(?![A-Za-z0-9_])|\$\{HOME\}", value)
+    return '"$HOME"'.join(shlex.quote(p) if p else "" for p in pieces)
+
+
 def build_command(
     vm: str | None,
     workdir: str | None,
@@ -201,9 +213,9 @@ def build_command(
     (no shell=True at this level); display is `shlex.join(argv)` — the very
     command that is run, quoted so it pastes into a fresh shell unchanged (the
     inner script is one single-quoted word, so `$HOME` reaches the VM literal)."""
-    joined = shlex.join(command)
+    joined = " ".join(command_word(w) for w in command)
     if not vm:
-        return list(command), joined
+        return list(command), shlex.join(command)
     parts = []
     if pidfile:  # the VM-side runner's pid, so a host-side exit can tear it down
         parts.append(f"echo $$ > {inner_quote(pidfile)};")
@@ -1149,6 +1161,15 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         check("bash expands $HOME inside the VM script, not before", got.startswith("/zz-vm-home/.cargo/bin:"))
         rc = main(["--print-cmd", "--vm", "nightwatch", "--workdir", "/w", "--path-prepend", "$HOME/.cargo/bin", "--", "cargo", "test"])
         check("--print-cmd prints and runs nothing", rc == 0)
+
+        # --- #343: $HOME in a command word is live in the VM (no VM needed) ---
+        inner = build_command("vm", "/w", None, None, ["env", "CARGO_TARGET_DIR=$HOME/.cache/t", "~/bin/x", "a b", "$(id)"])[0][6]
+        check("a command word keeps $HOME live", 'CARGO_TARGET_DIR="$HOME"/.cache/t' in inner)
+        check("a command word's leading ~/ is a live $HOME", '"$HOME"/bin/x' in inner)
+        check("other command words stay quoted", "'a b'" in inner and "'$(id)'" in inner)
+        probe = build_command("vm", "/", None, None, ["env", "X=$HOME/t", "printenv", "X"])[0][6]
+        got = subprocess.run(["bash", "-c", probe], capture_output=True, text=True, env=dict(os.environ, HOME="/zz-vm-home"), check=False).stdout.strip()
+        check("bash expands $HOME of a command word to the VM home", got == "/zz-vm-home/t")
 
         # --- --test appends the filter after `--`, cargo only ---
         check("--test adds `--` and the name", add_test_filters(["cargo", "test", "-p", "x"], ["foo"]) == ["cargo", "test", "-p", "x", "--", "foo"])
