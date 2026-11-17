@@ -148,6 +148,7 @@ import argparse
 import contextlib
 import hashlib
 import io
+import json
 import os
 import re
 import shlex
@@ -818,6 +819,39 @@ def wait(args: argparse.Namespace, log_path: str) -> int:
         pause = min(pause * 1.5, 5.0)
 
 
+def stack_env_preflight(args: argparse.Namespace, command: list[str]) -> tuple[str | None, list[str]]:
+    """A VM run that sources the repo's stack env script first checks that the shared stack's settings are in
+    step with this tree (scripts/stack_env.py), re-running up.sh from the persistent checkout when it can. When
+    it cannot, the run goes ahead WITHOUT the env script and with the repo's skip switches, so the stack tests
+    report as not run instead of the whole run refusing, and a `STACK-ENV: skipped ...` line heads the digest.
+    Returns the (env script, command) to run. Never raises: any error leaves the run as it was."""
+    if not args.vm or os.environ.get("ASD_STACK_ENV_CHECK", "1") == "0":
+        return args.env_script, command
+    try:
+        import stack_env
+        tree = args.workdir or args.cwd or os.getcwd()
+        cfg = stack_env.config_for(tree)
+        if not cfg:
+            return args.env_script, command
+        suite = stack_env.is_suite_run(cfg, command)
+        if not suite and not stack_env.is_stack_run(cfg, args.env_script, command):
+            return args.env_script, command
+        res = stack_env.sync(tree, cfg, log=lambda t: print(t))
+        if res["state"] != "skipped" or suite:
+            if res["state"] != "ok":
+                print(stack_env.line(res) if not suite or res["state"] == "synced" else
+                      f"STACK-ENV: the full suite runs as asked, but the stack's settings are behind this tree "
+                      f"({', '.join(res['missing'])} missing): {res['why']}")
+            return args.env_script, command
+        print(stack_env.line(res))
+        env_script, command = stack_env.strip_env_script(cfg, args.env_script, command)
+        skips = [f"{k}={v}" for k, v in sorted((cfg.get("skip_env") or {}).items())]
+        return env_script, (["env", *skips] if skips else []) + command
+    except Exception as err:  # noqa: BLE001 - a preflight problem must never cost the run
+        print(f"STACK-ENV: check failed ({err}); running as asked")
+        return args.env_script, command
+
+
 def run(args: argparse.Namespace, own_args: list[str]) -> int:
     command = args.command
     if not command:
@@ -840,7 +874,11 @@ def run(args: argparse.Namespace, own_args: list[str]) -> int:
             return 2
 
     args.vm_pidfile = vm_pidfile() if args.vm else None
-    argv, display = build_command(args.vm, args.workdir, args.env_script, args.path_prepend, command, args.vm_pidfile)
+    if not args.print_cmd and not args.detach:
+        env_script, command = stack_env_preflight(args, command)
+    else:
+        env_script = args.env_script
+    argv, display = build_command(args.vm, args.workdir, env_script, args.path_prepend, command, args.vm_pidfile)
     if args.print_cmd:
         print(display)
         return 0
@@ -1358,6 +1396,45 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         check("the digest says the build-log line landed", "build log: 1 line(s) written" in buf.getvalue())
         check("the SUITE: local line has the shape the phase doc names",
               re.search(r"^- SUITE: local on \S+, base \S+ — .+; \S+$", got, re.M) is not None)
+    # The stack-env preflight: a stack run whose stack settings are behind, which no up.sh can fix yet, runs with
+    # the stack tests skipped and says so; a run that is not a stack run is left exactly as asked.
+    with tempfile.TemporaryDirectory() as td:
+        saved_env = {k: os.environ.get(k) for k in ("ASD_STACK_REPAIR_CONFIG", "ASD_STACK_REPAIR_DIR", "ASD_STACK_ENV_CHECK")}
+        main_c, tree_c = os.path.join(td, "repo"), os.path.join(td, "repo-W-1")
+        subprocess.run(["git", "init", "-q", main_c], check=True)
+        subprocess.run(["git", "-C", main_c, "-c", "user.email=a@b", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+        subprocess.run(["git", "-C", main_c, "worktree", "add", "-q", "--detach", tree_c], check=True)
+        for d, names in ((main_c, ["A"]), (tree_c, ["A", "B"])):
+            open(os.path.join(d, "cat.json"), "w").write(json.dumps({"bootstrap": [{"variable": n} for n in names]}))
+        open(os.path.join(main_c, ".runtime.env"), "w").write("A=never-printed\n")
+        cfgp = os.path.join(td, "cfg.json")
+        open(cfgp, "w").write(json.dumps({"vm": "fake", "env_script": "deploy/host/test-env.sh", "stack_up": ["false"],
+                                          "env_catalog": {"file": "cat.json", "key": "bootstrap"},
+                                          "skip_env": {"X_DB_TESTS": "skip"}, "suite_markers": ["--stack"]}))
+        os.environ.update(ASD_STACK_REPAIR_CONFIG=cfgp, ASD_STACK_REPAIR_DIR=os.path.join(td, "st"))
+        os.environ.pop("ASD_STACK_ENV_CHECK", None)
+        ns = argparse.Namespace(vm="fake", workdir=tree_c, cwd=None, env_script="deploy/host/test-env.sh")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            es, cmd = stack_env_preflight(ns, ["cargo", "nextest", "run"])
+            ns_plain = argparse.Namespace(vm="fake", workdir=tree_c, cwd=None, env_script=None)
+            plain = stack_env_preflight(ns_plain, ["cargo", "test", "-p", "x"])
+            suite = stack_env_preflight(ns_plain, ["scripts/run_all_tests.sh", "--stack"])
+        said = buf.getvalue()
+        check("stack env behind, no up.sh can fix it: the env script is dropped and the skips are set",
+              es is None and cmd == ["env", "X_DB_TESTS=skip", "cargo", "nextest", "run"])
+        check("the digest heads with STACK-ENV: skipped, naming the setting, never a value",
+              "STACK-ENV: skipped" in said and "B missing" in said and "never-printed" not in said)
+        check("a run that does not source the env script is left as asked", plain == (None, ["cargo", "test", "-p", "x"]))
+        check("the full suite is never run with tests skipped", suite == (None, ["scripts/run_all_tests.sh", "--stack"]))
+        os.environ["ASD_STACK_ENV_CHECK"] = "0"
+        check("ASD_STACK_ENV_CHECK=0 turns the preflight off",
+              stack_env_preflight(ns, ["cargo", "nextest", "run"]) == ("deploy/host/test-env.sh", ["cargo", "nextest", "run"]))
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     print(f"selftest: {len(failures_list)} failure(s)")
     return 1 if failures_list else 0
 

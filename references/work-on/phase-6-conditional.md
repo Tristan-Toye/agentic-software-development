@@ -198,7 +198,10 @@ through `python3 ${PLUGIN_ROOT}/scripts/run_tests.py --log <file> --build-log <l
 --suite-base <baseline sha> -- <full-suite command>` (add `--vm <name> --workdir <X> --env-script <file>`
 when the command itself does not manage its required VM). Under the runner, a VM
 that is down or a compose service that is unhealthy is reported as the single line
-`RUNNER: ENV <vm|stack|disk> <detail>`, not asked about (see runner.md). An implementer's
+`RUNNER: ENV <vm|stack|disk> <detail>`, not asked about (see runner.md). A digest
+headed `STACK-ENV: skipped` (the stack's settings are behind this branch and cannot
+be brought up yet) is not a red verdict and not an owner question: record the line
+in the build log and the PR note, and the stub's full suite runs those tests. An implementer's
 focused `TEST_COMMAND` is not a substitute. Keep the complete output and
 record the candidate commit, target baseline, exact command, environment,
 counts and log path as `SUITE: local on <sha>, base <sha> — <counts>; <log>` —

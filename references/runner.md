@@ -69,6 +69,17 @@ the recorded checkpoints.
       cherry-picks the plan commits (`work-on/phase-2.md`). A plan that did
       not reach `ready` is logged ("/work-on not requeued") and left to the
       owner. `ASD_RUNNER_REQUEUE=0` turns this off.
+      **Parking.** A `/work-on` started fresh (requeued, pressed, or started
+      by automatic work) whose `blocked_by` names a dossier that is not
+      `done` (the same rule as the dossier graph; a blocker with no dossier
+      file counts as missing) never opens a session or takes a slot: the run
+      ends `parked`, its record holding `parked.blockers` (`W-023
+      (building)`), and the dashboard shows "parked · waits for W-023". The
+      2-minute `revive` tick checks every parked run, with no age limit, and
+      once every blocker is `done` it starts `/work-on` again by itself (a
+      fresh session, the same `--plan-branch` and `--model`). A re-plan that
+      adds a blocker is the usual way in. A resumed run (a live record with a
+      session) is never parked. `ASD_RUNNER_PARK=0` turns it off.
     - `RUNNER: FAILED <why>`, or a turn with no `RUNNER:` line — the runner
       records `failed` with the reason, notifies the owner (a question
       through `ask_owner.py`: retry the stage, or stop), and acts on the
@@ -684,3 +695,21 @@ stage, and again on a `RUNNER: ENV vm|stack ...` line:
 - At most 2 attempts per hour per resource (`stack-repair-state.json`); after
   that the session is told `not repaired` and asks the owner.
 - Every action goes to the runner log and the run's events.
+
+**Stack settings behind a branch** (`scripts/stack_env.py`, called by `run_tests.py --vm`; on by default,
+`ASD_STACK_ENV_CHECK=0` turns the check off, `ASD_STACK_ENV_SYNC=0` keeps the check but never restarts).
+A branch can add a setting the shared stack needs (a new name in the repo's secrets catalog). The stack's env file
+predates it, and the repo's env script then refuses every test. Before a VM run that sources that env script, the
+setting NAMES the tree's catalog lists are compared with the NAMES in the env file the env script reads. No value
+is read into output. On drift:
+- re-run `stack_up` (the repo's `up.sh`) from the persistent checkout, the only checkout allowed to own the shared
+  stack (a worktree's `up.sh` refuses), when its own catalog already has the missing names and no run holds the
+  stack lease (`lease_probe`); under the repair lock, at most 4 times per hour per VM;
+- otherwise (the persistent checkout is on an older branch, the lease is held, or `up.sh` did not close the drift)
+  the run goes ahead without the env script and with the repo's `skip_env` switches, and its digest heads with
+  `STACK-ENV: skipped — ...`. The stack tests did not run: that goes in the PR note and the build log, and the
+  stub's full suite runs them. It is never an owner question, and the persistent checkout is never switched,
+  pulled or written to.
+- the full stack suite (`suite_markers`, for /stub) gets the sync but never the skip.
+Config keys, beside `stack_up` in `config/stack-repair.json`: `env_script`, `env_catalog`, `env_file`,
+`lease_probe`, `skip_env`, `suite_markers`.

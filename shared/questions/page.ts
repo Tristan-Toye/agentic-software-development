@@ -632,10 +632,10 @@ function stageText(r) {
   return 'Phase ' + r.phase + (r.phaseName ? ' · ' + r.phaseName : '');
 }
 /* The run's state in plain words, no "runner" jargon. */
-const RUN_STATE = { running: 'in progress', testing: 'testing \u00b7 slot released', waiting: 'waiting for you', paused: 'paused · usage limit', queued: 'queued · waiting for a slot', stopped: 'stopped', failed: 'failed', done: 'done' };
+const RUN_STATE = { running: 'in progress', testing: 'testing \u00b7 slot released', waiting: 'waiting for you', paused: 'paused · usage limit', queued: 'queued · waiting for a slot', parked: 'parked · waits for its blockers', stopped: 'stopped', failed: 'failed', done: 'done' };
 const waitsForStub = (rn) => !!rn && rn.state === 'waiting' && rn.waitingFor === 'stub';
 /* A runner's state, or just a state's name. A run held for the stub is not waiting for you. */
-const runChip = (x) => { const st = (x && x.state) || x; return waitsForStub(x) ? chip('queued · waiting for the stub', 'queued') : chip(RUN_STATE[st] || st, st); };
+const runChip = (x) => { const st = (x && x.state) || x; if (st === 'parked' && x && x.parkedFor && x.parkedFor.length) return h('span', { title: 'starts by itself once every blocker is done' }, [chip('parked · waits for ' + x.parkedFor.join(', '), 'queued')]); return waitsForStub(x) ? chip('queued · waiting for the stub', 'queued') : chip(RUN_STATE[st] || st, st === 'parked' ? 'queued' : st); };
 function itemMode(run) { if (R.forceDossier) return 'dossier'; return run.view === 'run' ? 'run' : 'dossier'; }
 function newestStub(repo) { const r = S.stubs.repos.find(x => x.repo === repo); return r && r.stubs.length ? r.stubs[0] : null; }
 const doneKey = (r) => (r.updated || '') + r.id;
