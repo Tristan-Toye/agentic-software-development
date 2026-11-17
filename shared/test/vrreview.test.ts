@@ -1,7 +1,7 @@
 // VR-04: verdicts per element (review.json), the batch answer, the run-detail `diagrams` field, and the VR-06 banner and
 // repo view on the dashboard. Run: bun test shared/test/vrreview.test.ts
 import { afterAll, describe, expect, test } from "bun:test"
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { buildAnswer, diagramsOf, isReviewQuestion, MAX_ANSWER, MAX_COMMENT, readReview, reviewOptions, reviewState, setVerdict, ReviewError } from "../questions/vrreview.ts"
@@ -326,6 +326,30 @@ else:
     expect((await fetch(`${base}/api/visual-review/layout?dossier=W-145&repo=repoV&view=L9`)).status).toBe(400)
     expect((await fetch(`${base}/api/visual-review/layout?dossier=..%2Fx&view=L2`)).status).toBe(400)
     expect((await fetch(`${base}/api/visual-review/layout?dossier=NOPE&view=L2`)).status).toBe(404)
+  })
+  test("a sequence draft in arch/ is served with its arrows; only real draft files are, anything else is refused", async () => {
+    await start()
+    const ev = [{ tier: "inferred", note: "t" }]
+    const draft = { schema_version: "1.0.0", view: "seq", title: "seq - new", meta: {}, lanes: [{ id: "lane:A", label: "A" }, { id: "lane:B", label: "B" }],
+      nodes: [{ id: "s1", label: "call", kind: "message", status: "added", lane: "lane:A", order: 1, seq: { to: "lane:B", arrow: "->>" }, evidence: ev },
+              { id: "s2", label: "reply", kind: "message", status: "added", lane: "lane:B", order: 2, seq: { to: "lane:A", arrow: "-->>" }, evidence: ev }],
+      edges: [], flows: [{ id: "flow:x", label: "x", status: "added", after: ["s1", "s2"], evidence: ev }] }
+    const arch = join(vdir, "arch")
+    mkdirSync(arch, { recursive: true })
+    try {
+      writeFileSync(join(arch, "seq-new.json"), JSON.stringify(draft))
+      writeFileSync(join(arch, "notes.txt"), "x")
+      writeFileSync(join(repo, "outside.json"), JSON.stringify(draft))
+      symlinkSync(join(repo, "outside.json"), join(arch, "seq-link.json"))
+      const all: any = await (await fetch(`${base}/api/visual-review?dossier=W-145`)).json()
+      expect(Object.keys(all.views)).toContain("arch:seq-new")
+      expect(Object.keys(all.views)).not.toContain("arch:seq-link")
+      expect(all.views["arch:seq-new"].layout.arrows.s1).toMatchObject({ from: "lane:A", to: "lane:B", kind: "call" })
+      const r = await fetch(`${base}/api/visual-review/layout?dossier=W-145&repo=repoV&view=arch:seq-new`)
+      expect(r.status).toBe(200)
+      expect(((await r.json()) as any).layout.arrows.s2.kind).toBe("reply")
+      for (const v of ["arch:seq-link", "arch:notes", "arch:..%2Foutside", "arch:missing", "arch:"]) expect((await fetch(`${base}/api/visual-review/layout?dossier=W-145&repo=repoV&view=${v}`)).status, v).toBe(400)
+    } finally { rmSync(arch, { recursive: true, force: true }); rmSync(join(repo, "outside.json"), { force: true }) }
   })
   test("POST review: a valid verdict is saved under the run's repo root and the response counts it", async () => {
     await start()
