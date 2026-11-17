@@ -215,7 +215,17 @@ def build_command(
     inner script is one single-quoted word, so `$HOME` reaches the VM literal)."""
     joined = " ".join(command_word(w) for w in command)
     if not vm:
-        return list(command), shlex.join(command)
+        if not (env_script or path_prepend):
+            return list(command), shlex.join(command)
+        # --env-script / --path-prepend apply to a local run too: source them in
+        # a bash that then execs the command, whose words travel as "$@".
+        script = ""
+        if path_prepend:
+            script += f"export PATH={inner_quote(path_prepend)}:$PATH; "
+        if env_script:
+            script += f". {inner_quote(env_script)} && "
+        argv = ["bash", "-c", script + 'exec "$@"', "run_tests", *command]
+        return argv, shlex.join(argv)
     parts = []
     if pidfile:  # the VM-side runner's pid, so a host-side exit can tear it down
         parts.append(f"echo $$ > {inner_quote(pidfile)};")
@@ -872,7 +882,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--line-chars", type=int, default=300)
     ap.add_argument("--vm", help="run inside `limactl shell VM -- bash -lc ...`")
     ap.add_argument("--workdir", help="cd here inside the VM (required with --vm)")
-    ap.add_argument("--env-script", help="sourced after cd, inside the VM")
+    ap.add_argument("--env-script", help="sourced before the command (inside the VM with --vm, else in a local bash)")
     ap.add_argument("--path-prepend", help="prepended to PATH, inside the VM ($HOME stays live there)")
     ap.add_argument("--cwd", help="cwd for a direct (non-VM) run; with --digest, resolves a suite aggregator's relative log path")
     ap.add_argument("--test", action="append", default=[], metavar="NAME", help="append a test filter to a cargo command")
@@ -1170,6 +1180,23 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         probe = build_command("vm", "/", None, None, ["env", "X=$HOME/t", "printenv", "X"])[0][6]
         got = subprocess.run(["bash", "-c", probe], capture_output=True, text=True, env=dict(os.environ, HOME="/zz-vm-home"), check=False).stdout.strip()
         check("bash expands $HOME of a command word to the VM home", got == "/zz-vm-home/t")
+
+        # --- #377: --env-script / --path-prepend apply to a local run too ---
+        env_file = os.path.join(tmp, "env.sh")
+        bin_dir = os.path.join(tmp, "bin")
+        os.makedirs(bin_dir)
+        with open(env_file, "w") as handle:
+            handle.write("export ZZ_RT_VAR=from-env-script\n")
+        tool = os.path.join(bin_dir, "zz-rt-tool")
+        with open(tool, "w") as handle:
+            handle.write("#!/bin/sh\necho tool-ran\n")
+        os.chmod(tool, 0o755)
+        main(["--log", log_path, "--env-script", env_file, "--path-prepend", bin_dir, "--", "sh", "-c", "echo $ZZ_RT_VAR; zz-rt-tool"])
+        logged = open(log_path).read()
+        check("a local run sources --env-script", "from-env-script" in logged)
+        check("a local run applies --path-prepend", "tool-ran" in logged)
+        rc = main(["--log", log_path, "--env-script", os.path.join(tmp, "missing.sh"), "--", "true"])
+        check("a local run with an unreadable --env-script fails, not silently unmodified", rc != 0)
 
         # --- --test appends the filter after `--`, cargo only ---
         check("--test adds `--` and the name", add_test_filters(["cargo", "test", "-p", "x"], ["foo"]) == ["cargo", "test", "-p", "x", "--", "foo"])
