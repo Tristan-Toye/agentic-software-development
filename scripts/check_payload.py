@@ -794,6 +794,26 @@ def field_command(lines: list[str], name: str) -> tuple[int, str]:
     return 0, ""
 
 
+def simple_commands(command: str) -> list[list[str]]:
+    """The simple commands of a one-line command, split on `&&`, `||`, `;` and
+    `|` (not quote-aware: a command field holds a plain invocation, and a
+    separator inside quotes only yields an extra harmless fragment)."""
+    return [c.split() for c in re.split(r"&&|\|\||;|\|", command) if c.split()]
+
+
+def unwrap_run_tests(tokens: list[str]) -> list[str]:
+    """`python3 .../run_tests.py --log F -- bash a.sh` -> `bash a.sh`: the
+    wrapper's own options end at the first `--`, and what follows is the shell
+    command it runs, not arguments of python3 (issue #363). Tokens unchanged
+    when this is not a run_tests wrapper or it has no `--`."""
+    for index, token in enumerate(tokens[:2]):
+        if re.fullmatch(r"run_tests(\.py)?", os.path.basename(token.strip("\"'"))):
+            if "--" in tokens[index + 1:]:
+                return tokens[tokens.index("--", index + 1) + 1:]
+            return tokens
+    return tokens
+
+
 def verb_findings(lines: list[str], worktree: str | None) -> list[str]:
     """A command field whose verb contradicts the named script's shebang."""
     out: list[str] = []
@@ -801,32 +821,39 @@ def verb_findings(lines: list[str], worktree: str | None) -> list[str]:
         number, command = field_command(lines, field)
         if not command:
             continue
-        tokens = [t for t in command.split() if not ENV_ASSIGNMENT.match(t)]
-        if tokens and os.path.basename(tokens[0]) == "env":
-            tokens = tokens[1:]
-        if not tokens:
-            continue
-        verb_family = interpreter_family(tokens[0])
-        if verb_family is None:
-            continue
-        for token in tokens[1:]:
-            if token.startswith("-") or not ("/" in token or re.search(r"\.\w+$", token)):
+        found = False
+        for simple in simple_commands(command):
+            tokens = [t for t in simple if not ENV_ASSIGNMENT.match(t)]
+            if tokens and os.path.basename(tokens[0]) == "env":
+                tokens = tokens[1:]
+            tokens = unwrap_run_tests(tokens)
+            tokens = [t for t in tokens if not ENV_ASSIGNMENT.match(t)]
+            if not tokens:
                 continue
-            candidates = [token] if os.path.isabs(token) else [
-                os.path.join(worktree, token) if worktree else token
-            ]
-            path = next((c for c in candidates if os.path.isfile(c)), None)
-            if path is None:
+            verb_family = interpreter_family(tokens[0])
+            if verb_family is None:
                 continue
-            family, shebang = shebang_family(path)
-            if family is None or family == verb_family:
-                continue
-            out.append(
-                "line %d: %s runs %s with %r, but its shebang says %r (%s). A verb "
-                "that contradicts the shebang lints clean and dies at run time; "
-                "copy the verified invocation." % (number, field, token, tokens[0], shebang, family)
-            )
-            break
+            for token in tokens[1:]:
+                if token.startswith("-") or not ("/" in token or re.search(r"\.\w+$", token)):
+                    continue
+                candidates = [token] if os.path.isabs(token) else [
+                    os.path.join(worktree, token) if worktree else token
+                ]
+                path = next((c for c in candidates if os.path.isfile(c)), None)
+                if path is None:
+                    continue
+                family, shebang = shebang_family(path)
+                if family is None or family == verb_family:
+                    continue
+                out.append(
+                    "line %d: %s runs %s with %r, but its shebang says %r (%s). A verb "
+                    "that contradicts the shebang lints clean and dies at run time; "
+                    "copy the verified invocation." % (number, field, token, tokens[0], shebang, family)
+                )
+                found = True
+                break
+            if found:
+                break
     return out
 
 
@@ -1914,6 +1941,15 @@ def selftest() -> int:
          "implementer", False)
     case("test command bash verb over a python script",
          impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: RUST_LOG=x sh {REAL}/scripts/check.py"),
+         "implementer", True, "shebang says")
+    case("a run_tests wrapper over a chain of bash scripts is shell, not python3 arguments (#363)",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: python3 run_tests.py --log x.log -- bash {REAL}/scripts/check.sh && bash {REAL}/scripts/check.sh"),
+         "implementer", False)
+    case("a run_tests wrapper still checks the script behind it (#363)",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: python3 run_tests.py --log x.log -- python3 {REAL}/scripts/check.sh && bash {REAL}/scripts/check.sh"),
+         "implementer", True, "shebang says")
+    case("a bad verb after && is still caught (#363)",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: bash {REAL}/scripts/check.sh && python3 {REAL}/scripts/check.sh"),
          "implementer", True, "shebang says")
     case("test command as a block field",
          impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: |\n  python3 {REAL}/scripts/check.sh"),

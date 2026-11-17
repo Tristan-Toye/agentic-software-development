@@ -189,6 +189,18 @@ def inner_quote(value: str) -> str:
     return '"' + re.sub(r'(["\\`])', r"\\\1", value) + '"'
 
 
+def command_word(value: str) -> str:
+    """Quote one word of the command itself for the VM's inner script. Only
+    `$HOME` / `${HOME}` and a leading `~/` stay live (so `CARGO_TARGET_DIR=$HOME/t`
+    lands in the VM's home, not in a literal `$HOME` directory under the working
+    tree); every other character, `$(...)` and backticks included, is quoted
+    exactly as `shlex.join` would."""
+    if value.startswith("~/"):
+        value = "$HOME/" + value[2:]
+    pieces = re.split(r"\$HOME(?![A-Za-z0-9_])|\$\{HOME\}", value)
+    return '"$HOME"'.join(shlex.quote(p) if p else "" for p in pieces)
+
+
 def build_command(
     vm: str | None,
     workdir: str | None,
@@ -201,9 +213,19 @@ def build_command(
     (no shell=True at this level); display is `shlex.join(argv)` — the very
     command that is run, quoted so it pastes into a fresh shell unchanged (the
     inner script is one single-quoted word, so `$HOME` reaches the VM literal)."""
-    joined = shlex.join(command)
+    joined = " ".join(command_word(w) for w in command)
     if not vm:
-        return list(command), joined
+        if not (env_script or path_prepend):
+            return list(command), shlex.join(command)
+        # --env-script / --path-prepend apply to a local run too: source them in
+        # a bash that then execs the command, whose words travel as "$@".
+        script = ""
+        if path_prepend:
+            script += f"export PATH={inner_quote(path_prepend)}:$PATH; "
+        if env_script:
+            script += f". {inner_quote(env_script)} && "
+        argv = ["bash", "-c", script + 'exec "$@"', "run_tests", *command]
+        return argv, shlex.join(argv)
     parts = []
     if pidfile:  # the VM-side runner's pid, so a host-side exit can tear it down
         parts.append(f"echo $$ > {inner_quote(pidfile)};")
@@ -271,6 +293,9 @@ def outcomes(log_text: str, names: list[str]) -> dict[str, str | None]:
     lines += [(m[0], "ok" if m[1] == "PASSED" else "FAILED")
               for m in re.findall(r"^(\S+::\S+) (PASSED|FAILED)\b", log_text, re.M)]
     lines += [(m, "FAILED") for m in re.findall(r"^FAILED (\S+::\S+)", log_text, re.M)]
+    # xunit v3 console: `    Ns.Class.Test [FAIL]` / `[PASS]`; the marker is not part of the name.
+    lines += [(m[0], "ok" if m[1] == "PASS" else "FAILED")
+              for m in re.findall(r"^[ \t]*(\S+) \[(FAIL|PASS)\]", log_text, re.M)]
     # Shell suites: `FAIL: <label> — why`, `ok: <label>`, `PASS: <label>`, or `<label> FAIL: why`. The label is
     # free text, so a name must stand alone in it (`G1` is not `G10`).
     shell = []
@@ -860,7 +885,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--line-chars", type=int, default=300)
     ap.add_argument("--vm", help="run inside `limactl shell VM -- bash -lc ...`")
     ap.add_argument("--workdir", help="cd here inside the VM (required with --vm)")
-    ap.add_argument("--env-script", help="sourced after cd, inside the VM")
+    ap.add_argument("--env-script", help="sourced before the command (inside the VM with --vm, else in a local bash)")
     ap.add_argument("--path-prepend", help="prepended to PATH, inside the VM ($HOME stays live there)")
     ap.add_argument("--cwd", help="cwd for a direct (non-VM) run; with --digest, resolves a suite aggregator's relative log path")
     ap.add_argument("--test", action="append", default=[], metavar="NAME", help="append a test filter to a cargo command")
@@ -1149,6 +1174,38 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         check("bash expands $HOME inside the VM script, not before", got.startswith("/zz-vm-home/.cargo/bin:"))
         rc = main(["--print-cmd", "--vm", "nightwatch", "--workdir", "/w", "--path-prepend", "$HOME/.cargo/bin", "--", "cargo", "test"])
         check("--print-cmd prints and runs nothing", rc == 0)
+
+        # --- #343: $HOME in a command word is live in the VM (no VM needed) ---
+        inner = build_command("vm", "/w", None, None, ["env", "CARGO_TARGET_DIR=$HOME/.cache/t", "~/bin/x", "a b", "$(id)"])[0][6]
+        check("a command word keeps $HOME live", 'CARGO_TARGET_DIR="$HOME"/.cache/t' in inner)
+        check("a command word's leading ~/ is a live $HOME", '"$HOME"/bin/x' in inner)
+        check("other command words stay quoted", "'a b'" in inner and "'$(id)'" in inner)
+        probe = build_command("vm", "/", None, None, ["env", "X=$HOME/t", "printenv", "X"])[0][6]
+        got = subprocess.run(["bash", "-c", probe], capture_output=True, text=True, env=dict(os.environ, HOME="/zz-vm-home"), check=False).stdout.strip()
+        check("bash expands $HOME of a command word to the VM home", got == "/zz-vm-home/t")
+
+        # --- #377: --env-script / --path-prepend apply to a local run too ---
+        env_file = os.path.join(tmp, "env.sh")
+        bin_dir = os.path.join(tmp, "bin")
+        os.makedirs(bin_dir)
+        with open(env_file, "w") as handle:
+            handle.write("export ZZ_RT_VAR=from-env-script\n")
+        tool = os.path.join(bin_dir, "zz-rt-tool")
+        with open(tool, "w") as handle:
+            handle.write("#!/bin/sh\necho tool-ran\n")
+        os.chmod(tool, 0o755)
+        main(["--log", log_path, "--env-script", env_file, "--path-prepend", bin_dir, "--", "sh", "-c", "echo $ZZ_RT_VAR; zz-rt-tool"])
+        logged = open(log_path).read()
+        check("a local run sources --env-script", "from-env-script" in logged)
+        check("a local run applies --path-prepend", "tool-ran" in logged)
+        rc = main(["--log", log_path, "--env-script", os.path.join(tmp, "missing.sh"), "--", "true"])
+        check("a local run with an unreadable --env-script fails, not silently unmodified", rc != 0)
+
+        # --- #377: xunit v3 console lines carry a trailing [FAIL]/[PASS] marker ---
+        xunit = "  Starting\n    Ns.Class.Test [FAIL]\n    Ns.Class.Other [PASS]\n"
+        check("xunit v3 [FAIL] line proves red by --proof-name", proof(xunit, ["Ns.Class.Test"], "red")[0])
+        check("xunit v3 [FAIL] line is not green", not proof(xunit, ["Ns.Class.Test"], "green")[0])
+        check("xunit v3 [PASS] line proves green", proof(xunit, ["Ns.Class.Other"], "green")[0])
 
         # --- --test appends the filter after `--`, cargo only ---
         check("--test adds `--` and the name", add_test_filters(["cargo", "test", "-p", "x"], ["foo"]) == ["cargo", "test", "-p", "x", "--", "foo"])
