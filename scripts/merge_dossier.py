@@ -1113,13 +1113,16 @@ def push_batch(root: str, base: str, cands: list[dict]) -> tuple[str, list[dict]
     members: list[dict] = []
     try:
         for m in cands:
-            head = m["p"]["headRefName"]
-            rc, sha = git(root, "rev-parse", f"origin/{head}")
+            head = m["tip"]["headRefName"]   # a stack goes in by its top PR's head, which holds the PRs below it
+            shas: dict[int, str] = {}
+            for p in m["chain"]:
+                rc, sha = git(root, "rev-parse", f"origin/{p['headRefName']}")
+                shas[p["number"]] = sha.strip() if rc == 0 else ""
             rc2, _ = git(wt, "merge", "--no-edit", "--no-ff", f"origin/{head}")
-            if rc != 0 or rc2 != 0:
+            if rc2 != 0 or not all(shas.values()):
                 git(wt, "merge", "--abort")   # it conflicts with the batch so far: alone, later
                 continue
-            members.append({**m, "sha": sha.strip()})
+            members.append({**m, "sha": shas[m["p"]["number"]], "shas": shas})
         if len(members) < 2:
             return "", members
         branch = f"{CODE_BATCH_PREFIX}{members[0]['p']['number']}-{members[-1]['p']['number']}"
@@ -1133,11 +1136,12 @@ def record_code_merged(root: str, repo: str, d: str, chain: list[dict], base: st
     """What work_one writes for a merged dossier: merge.json merged, the run's line, the detector, the /after-merge run."""
     key = f"{repo}.{d}"
     n = chain[0]["number"]
-    write_json(os.path.join(runs_dir(), key + ".merge.json"), {"state": "merged", "prs": [n], "base": base, "error": "", "ts": now()})
+    nums = [p["number"] for p in chain]   # a stack: its bottom PR merged through the batch (its head is in the stub), the PRs above it are closed
+    write_json(os.path.join(runs_dir(), key + ".merge.json"), {**(read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}), "state": "merged", "prs": nums, "base": base, "error": "", "ts": now(), **({"stack": nums} if len(nums) > 1 else {})})
     append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "runner", "text": f"merged #{n} into {base} through batch #{num} (merge queue)"})
     mark_detector(repo, chain, d)
     try:   # /after-merge runs beside the queue, as after one merge
-        start_run(root, dossier_id(root, d, chain), "after-merge", [n])
+        start_run(root, dossier_id(root, d, chain), "after-merge", nums)
     except (OSError, subprocess.TimeoutExpired):
         pass
     set_state(key, state="merged", pid=None, note=f"merged through batch #{num}; /after-merge runs")
@@ -1159,6 +1163,14 @@ class BatchRound:
         self.gen = 0
 
 
+def close_uppers(root: str, chain: list[dict], base: str, num: int) -> None:
+    """The PRs above the bottom one of a stack that went in through batch #num: closed, saying where their work went."""
+    for p in chain[1:]:
+        _, st = gh(root, "pr", "view", str(p["number"]), "--json", "state", "-q", ".state")
+        if st.strip() == "OPEN":
+            gh(root, "pr", "close", str(p["number"]), "--comment", f"Landed in {base} via batch PR #{num}.")
+
+
 class OpenBatch:
     """One open batch PR: its members, the number of landings it was cut after, and the slot it holds."""
 
@@ -1173,7 +1185,7 @@ class OpenBatch:
 
     def state_all(self, **kw) -> None:
         for m in self.members:   # what a restarted worker reads to finish or clean up this batch (recover_batches)
-            set_state(f"{self.rnd.repo}.{m['dossier']}", **{"code_batch": True, "prs": [m["p"]["number"]], "batch_chain": m["chain"], "base": self.rnd.base, **kw})
+            set_state(f"{self.rnd.repo}.{m['dossier']}", **{"code_batch": True, "prs": [p["number"] for p in m["chain"]], "batch_chain": m["chain"], "base": self.rnd.base, **kw})
 
     def note(self, state: str, text: str) -> None:
         self.state_all(state=state, batch=self.num, error="", pid=os.getpid(), note=f"in batch #{self.num}: {text}")
@@ -1235,7 +1247,7 @@ def close_batch(b: OpenBatch, why: str) -> None:
 
 
 def members_moved(b: OpenBatch) -> list[int]:
-    return [m["p"]["number"] for m in b.members if head_of(b.rnd.root, m["p"]["number"]) not in ("", m["sha"])]
+    return [n for m in b.members for n, sha in m["shas"].items() if head_of(b.rnd.root, n) not in ("", sha)]
 
 
 def check_batch(rnd: BatchRound, b: OpenBatch) -> str:
@@ -1280,7 +1292,8 @@ def land_batch(rnd: BatchRound, b: OpenBatch) -> str:
             return "unusual"
         rnd.gen += 1
         b.release()
-    # GitHub marks a member's PR merged by itself, a moment later (its head is in the base); one it does not is closed saying where its work went.
+    # GitHub marks a member's bottom PR merged by itself, a moment later (its head is in the base); one it does not is closed
+    # saying where its work went. The PRs above it in a stack have a feature branch for a base: GitHub never marks those.
     for m in b.members:
         d, n = m["dossier"], m["p"]["number"]
         state = ""
@@ -1294,7 +1307,8 @@ def land_batch(rnd: BatchRound, b: OpenBatch) -> str:
                 set_state(f"{rnd.repo}.{d}", state="failed", pid=None, error=f"its branch changed while batch #{b.num} ran; the new commits are not merged")
                 rnd.done.append(d)
                 continue
-            gh(rnd.root, "pr", "close", str(n), "--comment", f"Merged into {rnd.base} through #{b.num}.")
+            gh(rnd.root, "pr", "close", str(n), "--comment", f"Landed in {rnd.base} via batch PR #{b.num}.")
+        close_uppers(rnd.root, m["chain"], rnd.base, b.num)
         rnd.done.append(d)
         record_code_merged(rnd.root, rnd.repo, d, m["chain"], rnd.base, b.num)
     return "landed"
@@ -1371,33 +1385,48 @@ def bisect_batch(rnd: BatchRound, cands: list[dict], known_red: bool) -> None:
         run_parallel([lambda i=i: bisect_batch(rnd, halves[i], True) for i in reds])
 
 
+def stack_batchable(root: str, chain: list[dict]) -> bool:
+    """A stack joins a batch whole, by its top PR's head, only when nothing in it is a draft, in conflict or red, and each
+    PR's head is an ancestor of the one above it (so the top holds all of them). A one-PR chain only needs no conflict."""
+    if any(p.get("isDraft") for p in chain):
+        return False
+    bad, err = conflicting(root, [p["number"] for p in chain])
+    if bad or err:
+        return False
+    if len(chain) > 1:
+        if any(checks_state(root, p["number"]) == "red" for p in chain):
+            return False
+        for lo, hi in zip(chain, chain[1:]):
+            if git(root, "merge-base", "--is-ancestor", f"origin/{lo['headRefName']}", f"origin/{hi['headRefName']}")[0] != 0:
+                return False
+    return True
+
+
 def work_code_batch(root: str, ids: list[str], single: set, done: list[str]) -> None:
     """Merge the dossiers through one CI run (and, if it is red, bisected). Each one merged is appended to `done` as it lands;
     everything else stays queued and is in `single`, so it goes through work_one."""
     repo = repo_name(root)
     single.update(ids)   # whatever this does not merge goes one at a time afterwards
+    git(root, "fetch", "-q", "origin", "--prune")
     rows: list[dict] = []
     for d in ids[:code_batch_max()]:
         prior = read_json(os.path.join(runs_dir(), f"{repo}.{d}.merge.json"), {}) or {}
         if prior.get("resolve_attempts") or prior.get("state") == "resolving":
             continue   # already in the hands of its agent: its own attempts and blame stay with it
         chain, _ = plan(root, d)
-        if len(chain) != 1 or (rows and chain[0]["baseRefName"] != rows[0]["p"]["baseRefName"]):
-            continue   # refused (a live run, a draft, a stack of several PRs): work_one says why
-        bad, err = conflicting(root, [chain[0]["number"]])
-        if bad or err:
-            continue
-        rows.append({"dossier": d, "chain": chain, "p": chain[0]})
+        if not chain or (rows and chain[0]["baseRefName"] != rows[0]["p"]["baseRefName"]):
+            continue   # refused (a live run, a draft): work_one says why
+        if not stack_batchable(root, chain):
+            continue   # (a draft, a conflict, a red PR, or a stack whose top does not hold the PRs below: one at a time)
+        rows.append({"dossier": d, "chain": chain, "p": chain[0], "tip": chain[-1]})
     if len(rows) < 2:
         return
     base = rows[0]["p"]["baseRefName"]
-    git(root, "fetch", "-q", "origin", "--prune")
     kept: list[dict] = []
     for m in rows:   # an id or ADR number two members both add: the one earlier in the queue keeps it, the other goes alone
-        ren, adr = collisions(root, base, m["p"]["headRefName"], [x["p"]["headRefName"] for x in kept])
+        ren, adr = collisions(root, base, m["tip"]["headRefName"], [x["tip"]["headRefName"] for x in kept])
         if ren or adr:
             continue
-        git(root, "fetch", "-q", "origin", m["p"]["headRefName"])
         kept.append(m)
     bisect_batch(BatchRound(root, repo, base, done), kept, False)
 
@@ -1423,7 +1452,8 @@ def recover_batches(root: str) -> list[str]:
         b = batches.get(st.get("batch"))
         chain = st.get("batch_chain") or []
         if b and b.get("state") == "MERGED" and chain:
-            if all(gh(root, "pr", "view", str(p["number"]), "--json", "state", "-q", ".state")[1].strip() == "MERGED" for p in chain):
+            if gh(root, "pr", "view", str(chain[0]["number"]), "--json", "state", "-q", ".state")[1].strip() == "MERGED":
+                close_uppers(root, chain, st.get("base") or b.get("baseRefName", ""), int(b["number"]))
                 record_code_merged(root, repo, d, chain, st.get("base") or b.get("baseRefName", ""), int(b["number"]))
                 finished.append(d)
                 continue
@@ -2374,8 +2404,9 @@ print("started")
         # ---- a batch of code dossiers: one CI run, one merge; each dossier reads merged; trouble goes back to one at a time ----
         g("checkout", "-q", "development", cwd=pusher); g("pull", "-q", "origin", "development", cwd=pusher)
         g("checkout", "-q", "-b", "stub/2026-11-10", cwd=pusher); g("push", "-q", "origin", "stub/2026-11-10", cwd=pusher)
-        def code_scenario(tag: str, members: list[tuple[str, int, str]], seed=None, **extra) -> tuple[dict[str, dict], str, str]:
-            """members: (dossier, PR, file it writes); the same file twice is a git conflict. Returns the merge states, the calls, the batch branch's files."""
+        def code_scenario(tag: str, members: list[tuple[str, int, str]], seed=None, stacks=None, **extra) -> tuple[dict[str, dict], str, str]:
+            """members: (dossier, PR, file it writes); the same file twice is a git conflict. stacks: {dossier: (upper PR, its fields)}, a
+            fix PR on top of the dossier's branch. Returns the merge states, the calls, the batch branch's files."""
             stub = "stub/2026-11-10"
             rows = []
             used: list[str] = []
@@ -2387,6 +2418,12 @@ print("started")
                 open(os.path.join(pusher, "src", f), "w").write(f"{d}\n")
                 g("add", "-A", cwd=pusher); g("commit", "-q", "-m", br, cwd=pusher); g("push", "-q", "--force", "origin", br, cwd=pusher)
                 rows.append(dict(P(n, br, stub), mss="CLEAN", inbatch=f not in used)); used.append(f)
+                if stacks and d in stacks:
+                    un, ufields = stacks[d][0], dict(stacks[d][1]); ub = f"fix/{d}-deferred-{tag}"
+                    g("checkout", "-q", "-B", ub, stub if ufields.pop("unrelated", False) else br, cwd=pusher); os.makedirs(os.path.join(pusher, "src"), exist_ok=True)   # unrelated: its head does not hold the PR below
+                    open(os.path.join(pusher, "src", f"{d}-fix.txt"), "w").write(f"{d} fix\n")
+                    g("add", "-A", cwd=pusher); g("commit", "-q", "-m", ub, cwd=pusher); g("push", "-q", "--force", "origin", ub, cwd=pusher)
+                    rows.append(dict(P(un, ub, br), mss="CLEAN", **ufields))
             g("fetch", "-q", "origin", cwd=clone)
             for f in ("calls.txt", "runs.txt", "stubpr.txt", "head.txt", "merged_any.txt", "landed.txt"):
                 if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
@@ -2441,7 +2478,7 @@ print("started")
         ss, cc, _ = code_scenario("m", [("W-641", 641, "a.txt"), ("W-642", 642, "b.txt"), ("W-643", 643, "c.txt")], ASD_MERGE_BATCH_MAX="2")
         check("code batch: ASD_MERGE_BATCH_MAX caps the members; the rest follows", "--head queue-batch-641-642" in cc and "pr merge 643 --merge" in cc and "pr merge 901 --merge" in cc and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss))
         ss, cc, _ = code_scenario("p", [("W-651", 651, "a.txt"), ("W-652", 652, "b.txt")], FAKE_NO_AUTOMARK="1")
-        check("code batch: a member GitHub does not mark merged is closed saying where its work went, and still reads merged", "pr close 651" in cc and "through #901" in cc and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss))
+        check("code batch: a member GitHub does not mark merged is closed saying where its work went, and still reads merged", "pr close 651" in cc and "via batch PR #901" in cc and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss))
         def runs_of() -> list[str]:
             return open(os.path.join(fdir, "runs.txt")).read().split("\n") if os.path.exists(os.path.join(fdir, "runs.txt")) else []
         four = lambda n0: [(f"W-{n0 + i}", n0 + i, "abcd"[i] + ".txt") for i in range(4)]
@@ -2481,6 +2518,29 @@ print("started")
         ss, cc, _ = code_scenario("k", [(f"W-{751 + i}", 751 + i, "abcdefgh"[i] + ".txt") for i in range(8)], FAKE_BAD_PR="751,755", FAKE_CHECKS_SLOW="0.3")
         check("bisect: no more than two batch PRs are ever open at once, though two red halves each want to split into two (and two do run at once)",
               peak_open(cc) == 2 and all_merged(ss) and ("753-754", "MERGED") in bpr() and ("757-758", "MERGED") in bpr(), str(peak_open(cc)) + cc + str(bpr()))
+        def pr_states() -> dict[int, str]:
+            return {p["number"]: p.get("state", "OPEN") for p in json.load(open(os.path.join(fdir, "prs.json")))}
+        ss, cc, files = code_scenario("f", [("W-1001", 1001, "a.txt"), ("W-1002", 1002, "b.txt")], stacks={"W-1001": (1011, {})})
+        check("stack: a 2-PR stack goes in whole by its top PR's head, batched with a one-PR dossier: one batch PR, one CI wait, the bottom reads MERGED, the upper is closed saying where it landed, one after-merge each",
+              cc.count("pr create") == 1 and "src/W-1001-fix.txt" in files and "pr merge 1011" not in cc and "stack link" not in cc and "pr merge 1001" not in cc and "pr checks 1011" in cc
+              and pr_states()[1001] == "MERGED" and pr_states()[1002] == "MERGED" and pr_states()[1011] == "CLOSED" and "pr close 1011 --comment Landed in stub/2026-11-10 via batch PR #901" in cc
+              and ss["W-1001"].get("stack") == [1001, 1011] and "stack" not in ss["W-1002"] and all_merged(ss)
+              and runs_of().count("W-1001 after-merge") == 1 and runs_of().count("W-1002 after-merge") == 1, cc + str(ss) + str(pr_states()) + files)
+        ss, cc, files = code_scenario("n", [("W-1021", 1021, "a.txt"), ("W-1022", 1022, "b.txt"), ("W-1023", 1023, "c.txt")], stacks={"W-1021": (1031, {"bucket": "fail"})})
+        check("stack: a stack with a red upper PR is not batched: it goes one at a time; the others batch",
+              "--head queue-batch-1022-1023" in cc and cc.count("pr create") == 1 and "src/a.txt" not in files and "src/b.txt" in files and "src/c.txt" in files, cc + str(ss) + files)
+        ss, cc, files = code_scenario("o2", [("W-1041", 1041, "a.txt"), ("W-1042", 1042, "b.txt"), ("W-1043", 1043, "c.txt")], stacks={"W-1041": (1051, {"unrelated": True})})
+        check("stack: a stack whose upper head does not contain the lower one is not batched: one at a time; the others batch",
+              "--head queue-batch-1042-1043" in cc and cc.count("pr create") == 1 and "src/a.txt" not in files and "src/b.txt" in files, cc + files)
+        def stale_stack(rn_):   # the worker died after the batch merged: the stack's upper PR is still open
+            json.dump([dict(P(901, "queue-batch-1061-1062", "stub/2026-11-10"), state="MERGED"), dict(P(1061, "feat/W-1061-x", "stub/2026-11-10"), state="MERGED", inbatch=True),
+                       dict(P(1071, "fix/W-1061-deferred-x", "feat/W-1061-x")), dict(P(1062, "feat/W-1062-x", "stub/2026-11-10"), state="MERGED", inbatch=True)], open(os.path.join(fdir, "prs.json"), "w"))
+            for d, n, chain_ in (("W-1061", 1061, [P(1061, "feat/W-1061-x", "stub/2026-11-10"), P(1071, "fix/W-1061-deferred-x", "feat/W-1061-x")]), ("W-1062", 1062, [P(1062, "feat/W-1062-x", "stub/2026-11-10")])):
+                set_state(f"{rn_}.{d}", state="batching", batch=901, code_batch=True, prs=[p_["number"] for p_ in chain_], base="stub/2026-11-10", batch_chain=chain_)
+        ss, cc, _ = code_scenario("v", [("W-1061", 1061, "a.txt"), ("W-1062", 1062, "b.txt")], seed=stale_stack)
+        check("restart: a batch that merged with a stack member is finished: the upper PR is closed with the comment, both read merged, one after-merge each, no second batch",
+              "pr create" not in cc and "pr close 1071 --comment Landed in stub/2026-11-10 via batch PR #901" in cc and pr_states()[1071] == "CLOSED" and ss["W-1061"].get("stack") == [1061, 1071]
+              and all_merged(ss) and runs_of().count("W-1061 after-merge") == 1 and runs_of().count("W-1062 after-merge") == 1, cc + str(ss) + str(runs_of()))
         def stale_merged(rn_):   # the worker died after the batch merged: its members read MERGED, their merge.json says batching
             json.dump([dict(P(901, "queue-batch-801-802", "stub/2026-11-10"), state="MERGED"), dict(P(801, "feat/W-801-x", "stub/2026-11-10"), state="MERGED", inbatch=True),
                        dict(P(802, "feat/W-802-x", "stub/2026-11-10"), state="MERGED", inbatch=True)], open(os.path.join(fdir, "prs.json"), "w"))

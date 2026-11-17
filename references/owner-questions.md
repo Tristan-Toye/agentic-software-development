@@ -448,24 +448,38 @@ restarted server answers at once from them while its first scan runs.
     5xx is waited out for as long as it lasts, and a queue whose worker died (a
     logout, a reboot) restarts within two minutes of the dashboard running.
   - **Code dossiers in the merge queue batch too.** Dossiers waiting in a row
-    at the head, each with one PR into the same stub, no run live, no
-    `/resolve-merge` attempt spent and no conflict, are merged together on one
-    `queue-batch-*` branch cut from the stub head (up to `ASD_MERGE_BATCH_MAX`,
-    default 16), checked by one CI run and merged through one batch PR; GitHub
-    then marks each dossier's PR merged, and each gets the same record and
-    `/after-merge` run as after a single merge. A dossier with a stack of
-    several PRs, or one that conflicts with the batch so far (found on the
-    branch, before any CI run), goes one at a time. A batch that stays red
-    after the one rerun wakes no agent: it is closed and bisected. The first
-    half is tested on the stub head alone and lands when green; the rest goes
-    on against the new stub head; a red half is split again. The second half
-    is never tested beside the first on the old stub, so two PRs that only
-    break together never land on two green runs that did not hold both. A
-    half of one dossier goes one at a time through the usual path (rerun, then
-    `/resolve-merge`). `ASD_MERGE_BATCH=0` turns all batching off,
-    `ASD_MERGE_BATCH_CODE=0` only this one. A worker that restarts finishes a
-    batch that merged while it was down and closes one left open, so a second
-    batch PR never opens beside it.
+    at the head, into the same stub, with no run live, no `/resolve-merge`
+    attempt spent and no conflict, are merged together on one `queue-batch-*`
+    branch cut from the stub head (up to `ASD_MERGE_BATCH_MAX`, default 16),
+    checked by one CI run and merged through one batch PR; each gets the same
+    record and `/after-merge` run as after a single merge. A **stack** (the
+    build PR with its `fix/<ID>-deferred` PRs on top) goes in whole by its
+    top PR's head, which holds the PRs below it; nothing is merged into the
+    feature branches and no PR base changes. It is eligible only when no PR
+    in it is a draft, in conflict or red, its bottom PR targets the stub and
+    each PR's head is an ancestor of the one above; otherwise it goes one at a
+    time. After the merge GitHub marks the bottom PR merged by itself; the
+    upper PRs (their base is a feature branch) are closed with "Landed in
+    <stub> via batch PR #N", and `merge.json` records `stack: [bottom..top]`.
+    A dossier that conflicts with the batch so far (found on the branch,
+    before any CI run) goes one at a time. A batch that stays red after the
+    one rerun wakes no agent: it is closed and bisected. Both halves are
+    opened at once as batch PRs, each cut from the current stub head on its
+    own (never stacked), with at most two batch PRs open at once. At most one
+    half lands per round, on a green that did not hold the other: first green
+    and second red lands the first and splits the second against the new stub
+    head (and the other way round); both red split both halves at once; both
+    green land the first, and the second, which was not tested with it, is
+    opened again from the new head and tested before it lands. So two PRs that
+    only break together (A in one half, B in the other) never land on two
+    green runs that did not hold both. A green half whose sibling landed first
+    is never landed on its old result. A half of one dossier goes one at a time
+    through the usual path (rerun, then `/resolve-merge`). `ASD_MERGE_BATCH=0`
+    turns all batching off, `ASD_MERGE_BATCH_CODE=0` only this one. A worker
+    that restarts finishes a batch that merged while it was down (closing the
+    upper PRs of a stack still open, recording each dossier once) and closes
+    every batch PR left open (one or a pair of halves), so a second batch PR
+    never opens beside a live one.
   - **the merge detector** (`merges.ts`): every 2 min, `gh pr list --base <stub>
     --state merged` per open stub. A PR merged since the last look, mapped to
     its dossier by `pr:` number or the id in its head branch, starts
