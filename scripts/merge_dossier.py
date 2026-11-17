@@ -552,6 +552,18 @@ def fix_ids(root: str, base: str, head: str, renumber: list[tuple[str, str]], ad
         git(root, "worktree", "remove", "--force", wt)
 
 
+def stack_clash(root: str, base: str, head: str) -> bool:
+    """Whether the top of a stack (`head`) conflicts with `base` when the stack merges. GitHub reports each PR of a stack
+    only against the PR below it, so a top that clashes with a stub that moved after the bottom took it in reads CLEAN
+    everywhere, and only `gh stack merge` finds it ("Merge conflict detected", nothing merged)."""
+    git(root, "fetch", "-q", "origin", base, head)
+    rc, out = git(root, "merge-tree", "--write-tree", "--name-only", f"origin/{base}", f"origin/{head}")
+    # A conflict is exit 1 with the tree id first and the conflicted paths after it; anything else (a ref not on origin, an
+    # old git) is no evidence, and gh stack merge keeps the last word.
+    lines = out.split("\n")
+    return rc == 1 and bool(re.fullmatch(r"[0-9a-f]{40,64}", lines[0].strip())) and len([x for x in lines[1:] if x.strip()]) > 0
+
+
 def merge_base_in(root: str, head: str, base: str) -> str:
     """Merge the base into the branch and push; "" or why not. A conflict is left for the next round to find."""
     wt = os.path.join(tempfile.mkdtemp(prefix="asd-update-"), "w")
@@ -666,6 +678,13 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
                 moved = True
         return moved, ""
 
+    def top_clashes() -> bool:
+        """A stack whose top conflicts with the base goes to the dossier's agent, every PR of it, bottom first."""
+        if len(prs) < 2 or not stack_clash(root, prs[0]["baseRefName"], prs[-1]["headRefName"]):
+            return False
+        note("resolving", f"#{prs[-1]['number']}, the top of the stack, conflicts with {prs[0]['baseRefName']} when the stack merges")
+        return True
+
     def update_behind() -> tuple[bool, str]:
         """(updated any, why it could not). A conflict from the update comes back as CONFLICTING on the next round."""
         nonlocal updates
@@ -702,6 +721,8 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
         bad, err = conflicting(root, nums)
         if err:
             return err
+        if not bad and top_clashes():
+            bad = list(nums)
         # A clash is the stack's to fix, so no check is worth waiting for until it is gone.
         clashes = migration_clashes(root, prs[0]["baseRefName"], prs[-1]["headRefName"]) if not bad else []
         # 3. up to date with the base, and each PR of a stack holding the one below it, before spending a wait on checks
@@ -742,9 +763,12 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
                 return why
             if linked:
                 continue
-            if not link_conflicts:
+            if link_conflicts:
+                bad = list(link_conflicts)
+            elif top_clashes():   # the base moved while the checks ran
+                bad = list(nums)
+            else:
                 return ""
-            bad = list(link_conflicts)
         if pending and not bad and not clashes and not red:
             return "checks still running after " + str(int(check_timeout / 60)) + " min: " + ", ".join(f"#{n}" for n in pending)
         # 4. the dossier's agent
@@ -1671,6 +1695,12 @@ print("started")
         g("fetch", "-q", "origin", cwd=clone)
         anc = subprocess.run(["git", "-C", clone, "merge-base", "--is-ancestor", "origin/feat/W-90-low", "origin/fix/W-90-deferred"]).returncode
         check("stack: the PR on top is brought up with the one below it, or the stack merge is refused", why3 == "" and anc == 0, why3)
+        g("checkout", "-q", "development", cwd=pusher); g("pull", "-q", "origin", "development", cwd=pusher); g("checkout", "-q", "-b", "feat/W-91-low", cwd=pusher)
+        open(os.path.join(pusher, "low91.md"), "w").write("low\n"); g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "low", cwd=pusher); g("push", "-q", "origin", "feat/W-91-low", cwd=pusher)
+        g("checkout", "-q", "-b", "fix/W-91-deferred", cwd=pusher); open(os.path.join(pusher, "clash91.md"), "w").write("top\n"); g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "top", cwd=pusher); g("push", "-q", "origin", "fix/W-91-deferred", cwd=pusher)
+        g("checkout", "-q", "development", cwd=pusher); open(os.path.join(pusher, "clash91.md"), "w").write("base\n"); g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "base took clash91", cwd=pusher); g("push", "-q", "origin", "development", cwd=pusher)
+        check("stack: a top that conflicts with the base reads as a clash, though each PR is clean against the one below",
+              stack_clash(clone, "development", "fix/W-91-deferred") and not stack_clash(clone, "development", "fix/W-90-deferred"))
         g("checkout", "-q", "development", cwd=pusher); g("pull", "-q", "origin", "development", cwd=pusher); g("checkout", "-q", "-b", "plan/stale", cwd=pusher)
         open(os.path.join(pusher, ".discovery", "dossiers", "W-147-stale.md"), "w").write("---\nid: W-147\n---\n# stale\n")
         g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "stale", cwd=pusher); g("push", "-q", "origin", "plan/stale", cwd=pusher)
