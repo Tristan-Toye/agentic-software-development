@@ -295,6 +295,16 @@ function vrEv(ev, hand) { return ev.tier === 'source' ? (ev.path || '?') + (ev.l
 function vrHand(g) { return !!(g && g.meta && g.meta.generated_by === 'hand'); }
 function vrInferred(e, g) { if (vrHand(g)) return /\./.test(e.arrow || ''); return e.resolution ? e.resolution === 'inferred' : (e.evidence || []).length > 0 && e.evidence.every(x => x.tier === 'inferred'); }
 function vrWrap(s, w) { const out = []; let l = ''; String(s).split(' ').forEach(t => { if ((l + ' ' + t).trim().length > w && l) { out.push(l); l = t; } else l = (l + ' ' + t).trim(); }); if (l) out.push(l); return out; }
+/* Sequence view: the arrow of one message from its sender to its receiver, styled by kind (call solid + filled head, reply dashed + open head, async solid + half head), coloured by status. Markers are per tone because a marker cannot take the line colour everywhere. */
+function vrSeqTone(s) { return s === 'added' ? 'ok' : s === 'changed' ? 'warn' : s === 'removed' ? 'bad' : 'mut'; }
+function vrSeqMarkers(defs) {
+  ['ok', 'warn', 'bad', 'mut'].forEach(t => { [['f', 'M0 0L10 5L0 10z', 'var(--' + t + ')'], ['o', 'M0 0L10 5L0 10', 'none'], ['h', 'M0 0L10 5', 'none']].forEach(k => { const m = vrEl('marker', { id: 'vr-sq-' + k[0] + '-' + t, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 9, markerHeight: 9, markerUnits: 'userSpaceOnUse', orient: 'auto' }, defs); vrEl('path', { d: k[1], fill: k[2], stroke: 'var(--' + t + ')', 'stroke-width': 1.4, 'stroke-linejoin': 'round' }, m); }); });
+}
+function vrSeqArrow(gg, a, status) {
+  const t = vrSeqTone(status), head = a.kind === 'call' ? 'f' : a.kind === 'reply' ? 'o' : 'h', ps = a.points.map(p => p.join(',')).join(' ');
+  vrEl('polyline', { points: ps, fill: 'none', stroke: 'transparent', 'stroke-width': 12 }, gg);
+  vrEl('polyline', { class: 'vrline vrseq', 'data-kind': a.kind, points: ps, fill: 'none', stroke: 'var(--' + t + ')', 'stroke-width': status === 'context' ? 1.4 : 2.2, 'stroke-dasharray': a.kind === 'reply' ? '6 4' : '0', 'marker-end': 'url(#vr-sq-' + head + '-' + t + ')' }, gg);
+}
 function vrBuild(host, key, data) {
   const st = VRS[key] = VRS[key] || {}; const have = Object.keys(data.views).filter(k => data.views[k]); /* L0, L1, L2, then one arch:<stem> per new architecture diagram (Architecture impact) */
   if (!st.view || !data.views[st.view]) st.view = have[0]; st.mode = st.mode || 'diff';
@@ -463,12 +473,12 @@ function vrBuild(host, key, data) {
     svg.replaceChildren(); els = {}; root = null; ovSvg = null; ovVp = null; ovRects = {}; ov.replaceChildren(); ov.hidden = true; st.sel = ''; insp.replaceChildren(); vrDom('p', 'small mut', 'Click an element for its description and evidence. Drag to pan; Ctrl or Cmd + wheel to zoom; click a group header to fold it; in a folded view, click a folded box to open it.', insp);
     if (!cur.layout || !cur.graph) { note.textContent = cur.issues.map(i => i.message).join('; ') || 'This view could not be laid out.'; return; }
     const g = cur.graph, L = cur.layout, defs = vrEl('defs', {}, svg), mk = vrEl('marker', { id: 'vr-ar', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, markerUnits: 'userSpaceOnUse', orient: 'auto-start-reverse' }, defs);
-    vrEl('path', { d: 'M0 0L10 5L0 10z', fill: 'var(--mut)' }, mk); root = vrEl('g', {}, svg);
+    vrEl('path', { d: 'M0 0L10 5L0 10z', fill: 'var(--mut)' }, mk); vrSeqMarkers(defs); root = vrEl('g', {}, svg);
     const tip = (g0, it) => { hovIt.set(g0, it); g0.setAttribute('aria-label', (it.label || (it.source + ' to ' + it.target)) + ', ' + it.status); }; /* the hover card shows the rest */
     const cont = [].concat(g.groups || [], (g.lanes || []).map(l => ({ id: l.id, label: l.label, status: 'context', evidence: [] })));
     cont.forEach(c => { const b = L.boxes[c.id]; if (!b) return; const gg = vrEl('g', { 'data-id': c.id, 'data-status': c.status, class: 'vrg', tabindex: 0 }, root); els[c.id] = { g: gg, status: c.status };
       vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 8, fill: 'var(--bg)', stroke: 'var(--' + vrTone(c.status) + ')', 'stroke-width': c.status === 'context' ? 1 : 2, 'stroke-dasharray': c.status === 'context' ? '4 3' : '0' }, gg);
-      const tx = vrEl('text', { x: b.x + 10, y: b.y + 19, fill: 'var(--fg)', 'font-weight': 600, 'font-size': 13 }, gg); tx.textContent = (canCol(c.id) ? '▾ ' : '') + VR_MARK[c.status] + ' ' + c.label; vrMark(gg, c.status, b.x + b.w - 14, b.y + 14); tip(gg, c);
+      const tx = vrEl('text', { x: b.x + 10, y: b.y + 19, fill: 'var(--fg)', 'font-weight': 600, 'font-size': 13 }, gg); tx.textContent = (canCol(c.id) ? '▾ ' : '') + VR_MARK[c.status] + ' ' + c.label; vrMark(gg, c.status, b.x + b.w - 14, b.y + 14); if (L.arrows) vrEl('line', { class: 'vrlife', x1: b.x + b.w / 2, x2: b.x + b.w / 2, y1: b.y + 34, y2: b.y + b.h - 6, stroke: 'var(--mut)', 'stroke-width': 1, 'stroke-dasharray': '5 4', 'pointer-events': 'none' }, gg); tip(gg, c);
       if (canCol(c.id)) vrEl('rect', { class: 'vrhd', x: b.x, y: b.y, width: b.w, height: 30, fill: 'transparent', stroke: 'transparent', 'data-tog': c.id }, gg); });
     /* seq frames (alt, opt, loop, par ...): a labelled box behind the steps it spans, a dashed rule where a branch (else, and) starts. */
     (g.frames || []).forEach(f => { const b = L.frames && L.frames[f.id]; if (!b) return; const fg = vrEl('g', { class: 'vrfr', 'data-frame': f.id, 'pointer-events': 'none' }, root);
@@ -489,6 +499,7 @@ function vrBuild(host, key, data) {
       if (n.stereotype) lines.unshift('<<' + n.stereotype + '>>'); if (lines.length > 3) lines.length = 3;
       lines.forEach((t, i) => { const x = vrEl('text', { x: b.x + 12, y: b.y + 19 + i * 15, 'font-size': 12, fill: 'var(--fg)', 'text-decoration': n.status === 'removed' ? 'line-through' : 'none' }, gg); x.textContent = (n.collapsed && i === 0 ? '▸ ' : '') + t; });
       vrMark(gg, n.status, b.x + b.w - 12, b.y + 12);
+      if (L.arrows && L.arrows[n.id]) vrSeqArrow(gg, L.arrows[n.id], n.status);
       if (n.collapsed) { const kinds = {}; (n.member_kinds || []).forEach(k => kinds[k] = (kinds[k] || 0) + 1); const ks = Object.keys(kinds).sort((a, c) => kinds[c] - kinds[a]); const word = ks.length === 1 ? ks[0] + (n.members === 1 ? '' : 's') : (n.members === 1 ? 'item' : 'items'); const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = (n.members || 0) + ' ' + word; }
       else if (n.members && n.members.length) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = n.members.length + ' member' + (n.members.length === 1 ? '' : 's') + ' (hover)'; }
       else if (!vrHand(g) && (n.evidence || []).some(x => x.tier === 'inferred')) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = '? inferred'; }

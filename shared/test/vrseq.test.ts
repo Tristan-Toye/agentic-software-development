@@ -4,7 +4,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { checkGraph, closeLayout, elkInput, frameBoxes, isLaneView, layoutGraph, withFlowEdges } from "../questions/vrlayout.ts"
+import { checkGraph, closeLayout, elkInput, frameBoxes, isLaneView, layoutGraph, seqKind, seqLayout, seqReceiver, withFlowEdges } from "../questions/vrlayout.ts"
 import { collapsedDiagram, openDiagram, siblingJson } from "../questions/vrmap.ts"
 import { PAGE } from "../questions/page.ts"
 
@@ -123,5 +123,86 @@ describe("openDiagram prefers the sibling JSON", () => {
     expect(Object.keys(r.views)).toEqual(["L2"])
     const c = await collapsedDiagram(repo, l[0].path, l, ["group:g"])
     expect(c.collapsed).toEqual(["group:g"])
+  })
+})
+
+describe("seq draws sender-to-receiver arrows", () => {
+  const m = (id: string, lane: string, to: string, order: number, arrow = "->>", extra: any = {}) => ({ ...msg(id, lane, to, order), seq: { to, arrow }, ...extra })
+  const g3 = (): any => ({
+    schema_version: "1.0.0", view: "seq", title: "t", meta: {},
+    lanes: [{ id: "lane:A", label: "A" }, { id: "lane:B", label: "B" }, { id: "lane:C", label: "C" }],
+    nodes: [m("m1", "lane:A", "lane:C", 1), m("m2", "lane:C", "lane:C", 2, "->>"), m("m3", "lane:C", "lane:B", 3, "-->>"), m("m4", "lane:B", "lane:A", 4, "-)")],
+    edges: [], flows: [{ id: "flow:main", label: "x", status: "context", lanes: [], after: ["m1", "m2", "m3", "m4"], evidence: ev }],
+  })
+  const cxOf = (L: any, lane: string) => L.boxes[lane].x + L.boxes[lane].w / 2
+  test("each arrow runs from the sender's lifeline to the receiver's, in either direction", () => {
+    const L = seqLayout(g3()), a = L.arrows!
+    expect(a.m1.points.map((p) => p[0])).toEqual([cxOf(L, "lane:A"), cxOf(L, "lane:C")])
+    expect(a.m3.points.map((p) => p[0])).toEqual([cxOf(L, "lane:C"), cxOf(L, "lane:B")])
+    expect(a.m4.points.map((p) => p[0])).toEqual([cxOf(L, "lane:B"), cxOf(L, "lane:A")])
+    expect([a.m1.from, a.m1.to]).toEqual(["lane:A", "lane:C"])
+    expect(a.m1.points[0][1]).toBe(a.m1.points[1][1])
+  })
+  test("messages run top to bottom in order, each arrow below the one before", () => {
+    const a = seqLayout(g3()).arrows!
+    const ys = ["m1", "m2", "m3", "m4"].map((id) => Math.max(...a[id].points.map((p) => p[1])))
+    expect([...ys].sort((p, q) => p - q)).toEqual(ys)
+    expect(new Set(ys).size).toBe(4)
+  })
+  test("the label sits between the two lifelines, on the arrow", () => {
+    const L = seqLayout(g3()), b = L.boxes.m1
+    expect(b.x + b.w / 2).toBeCloseTo((cxOf(L, "lane:A") + cxOf(L, "lane:C")) / 2, 0)
+    expect(b.y).toBeLessThan(L.arrows!.m1.points[0][1])
+  })
+  test("a self-call is a loop that leaves and returns to the same lifeline", () => {
+    const L = seqLayout(g3()), s = L.arrows!.m2, cx = cxOf(L, "lane:C")
+    expect(s.self).toBe(true)
+    expect(s.points.length).toBe(4)
+    expect(s.points[0][0]).toBe(cx)
+    expect(s.points[3][0]).toBe(cx)
+    expect(Math.max(...s.points.map((p) => p[0]))).toBeGreaterThan(cx)
+    expect(s.points[3][1]).toBeGreaterThan(s.points[0][1])
+    expect(L.boxes.m2.x).toBeGreaterThan(cx)
+  })
+  test("the arrow kind comes from seq.arrow, or from call_kind on an L1 step; call_kind wins", () => {
+    const k = (arrow: string) => seqKind({ seq: { arrow } })
+    expect(["->>", "->", "-x"].map(k)).toEqual(["call", "call", "call"])
+    expect(["-->>", "-->", "--x"].map(k)).toEqual(["reply", "reply", "reply"])
+    expect(["-)", "--)"].map(k)).toEqual(["async", "async"])
+    expect(["call", "reply", "async", "publish"].map((c) => seqKind({ call_kind: c }))).toEqual(["call", "reply", "async", "async"])
+    expect(seqKind({ call_kind: "reply", seq: { arrow: "->>" } })).toBe("reply")
+    expect(seqKind({})).toBe("call")
+    const a = seqLayout(g3()).arrows!
+    expect([a.m1.kind, a.m3.kind, a.m4.kind]).toEqual(["call", "reply", "async"])
+  })
+  test("an L1-style step with `to` and no seq block still gets its arrow; a note has none", () => {
+    expect(seqReceiver({ to: "lane:B" })).toBe("lane:B")
+    expect(seqReceiver({ kind: "note", seq: { to: "lane:B" } })).toBeUndefined()
+    const g = g3()
+    g.nodes[0] = { id: "m1", label: "step", kind: "step", status: "added", lane: "lane:A", order: 1, to: "lane:B", call_kind: "async", evidence: ev }
+    g.nodes.push({ id: "n1", label: "note", kind: "note", status: "context", lane: "lane:A", order: 5, seq: { position: "right of" }, evidence: ev })
+    g.flows[0].after.push("n1")
+    const L = seqLayout(g)
+    expect(L.arrows!.m1).toMatchObject({ from: "lane:A", to: "lane:B", kind: "async" })
+    expect(L.arrows!.n1).toBeUndefined()
+    expect(L.boxes.n1.x).toBeGreaterThan(cxOf(L, "lane:A"))
+  })
+  test("lifelines are spaced so a long label fits between its two lifelines", () => {
+    const g = g3()
+    g.nodes[0].label = "x".repeat(60)
+    const L = seqLayout(g), b = L.boxes.m1
+    expect(b.x).toBeGreaterThanOrEqual(cxOf(L, "lane:A") - 1)
+    expect(b.x + b.w).toBeLessThanOrEqual(cxOf(L, "lane:C") + 1)
+  })
+  test("frames still cover the arrow's whole width", () => {
+    const g = g3()
+    g.frames = [{ id: "frame:loop:x", kind: "loop", first: "m1", last: "m3" }]
+    const L = seqLayout(g), f = L.frames!["frame:loop:x"]
+    expect(f.x).toBeLessThanOrEqual(cxOf(L, "lane:A"))
+    expect(f.x + f.w).toBeGreaterThanOrEqual(cxOf(L, "lane:C"))
+  })
+  test("the page draws the arrows by kind and status, and the lifelines, in theme variables", () => {
+    for (const s of ["vrSeqArrow", "vrSeqMarkers", "vrlife", "vr-sq-", "L.arrows"]) expect(PAGE).toContain(s)
+    expect(PAGE).toContain("'stroke-dasharray': a.kind === 'reply'")
   })
 })

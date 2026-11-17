@@ -25,6 +25,8 @@ export type Layout = {
   labels?: Record<string, Box>
   /** seq: the box around each frame's first..last steps (see frameBoxes), by frame id. */
   frames?: Record<string, Box>
+  /** seq: the sender-to-receiver arrow of each message node, by node id (see seqLayout). */
+  arrows?: Record<string, SeqArrow>
 }
 export type Issue = { code: string; where: string; message: string }
 /** One view as the page gets it. `layout` is null when the graph could not be laid out (see `issues`). */
@@ -205,11 +207,33 @@ export function frameBoxes(g: any, boxes: Record<string, Box>): Record<string, B
   return Object.keys(res).length ? res : undefined
 }
 
+export type SeqArrow = {
+  /** The sender lane (the message's own lane) and the receiver lane. Equal for a self-call. */
+  from: string; to: string
+  /** call: solid line, filled head. reply: dashed, open head. async: solid, open (half) head. */
+  kind: "call" | "reply" | "async"
+  self: boolean
+  /** The polyline from the sender's lifeline to the receiver's (a self-call: out, down, back). The head is at the last point. */
+  points: [number, number][]
+}
+/** The arrow kind of a message node: `call_kind` (an L1 step) or the Mermaid arrow of `seq.arrow`. `publish` is async. Undefined arrow is a call. */
+export function seqKind(n: any): SeqArrow["kind"] {
+  const k = n?.call_kind
+  if (k === "reply" || k === "async") return k
+  if (k === "publish") return "async"
+  if (k === "call") return "call"
+  const a = String(n?.seq?.arrow ?? "")
+  return a.includes(")") ? "async" : a.startsWith("--") ? "reply" : "call"
+}
+/** The receiver lane of a message node: `seq.to` (a seq graph) or `to` (an L1 step); undefined for a note or a node with neither. */
+export const seqReceiver = (n: any): string | undefined => (n?.kind === "note" ? undefined : n?.seq?.to ?? n?.to) || undefined
+
 /**
- * seq: the layout of a sequence diagram, computed here and not by ELK: ELK lays the lane boxes out one by one and loses the order of
- * steps that sit in different lanes. Lanes are columns in file order, each step is a box centred in its lane, one row per step in
- * flows[0].after order, joined to the next by the edge of `flow` kind (down, across, down). A frame that opens or closes at a step
- * adds room above or below it, so the frame boxes (frameBoxes) do not touch the neighbouring steps. Pure and deterministic.
+ * seq: the layout of a sequence diagram, computed here and not by ELK. Participants are columns in file order, each with a lifeline
+ * (the lane box is the full-height column; its centre line is the lifeline). Each message is one row in flows[0].after order: its node box
+ * is the label, centred between the sender's and the receiver's lifeline, and `arrows[id]` is the line under it from the sender to the
+ * receiver (a self-call is a loop to the right of the lifeline, the label beside it). A note sits beside or over its lane. The columns are
+ * spaced so every label fits between its two lifelines. A frame that opens or closes at a row adds room above or below it. Pure and deterministic.
  */
 export function seqLayout(g: any): Layout {
   const lanes: any[] = g.lanes ?? []
@@ -218,38 +242,63 @@ export function seqLayout(g: any): Layout {
   const seen = new Set<string>(order)
   for (const n of [...g.nodes].sort((a: any, b: any) => (a.order ?? 1e9) - (b.order ?? 1e9))) if (!seen.has(n.id)) { seen.add(n.id); order.push(n.id) }
   const node = new Map<string, any>(g.nodes.map((n: any) => [n.id, n]))
-  const laneOf = (n: any): number => Math.max(0, lanes.findIndex((l) => l.id === n.lane))
+  const laneIdx = (id: unknown): number => lanes.findIndex((l) => l.id === id)
+  const laneOf = (n: any): number => Math.max(0, laneIdx(n.lane))
+  const recvOf = (n: any): number => { const r = seqReceiver(n); const i = r === undefined ? -1 : laneIdx(r); return i < 0 ? laneOf(n) : i }
   const sz = new Map<string, { width: number; height: number }>(order.map((id) => [id, size(g, node.get(id).label)]))
-  const colW = lanes.map((_, i) => Math.max(160, ...order.filter((id) => laneOf(node.get(id)) === i).map((id) => sz.get(id)!.width)) + 2 * 20)
-  const colX: number[] = []
-  colW.reduce((x, w, i) => (colX[i] = x, x + w + 14), 0)
+  const isMsg = (n: any): boolean => n.kind !== "note"
+  // Gap between neighbouring lifelines: wide enough for the column header and, for every message, the label across the lifelines it spans.
+  const COL = 170
+  const gap: number[] = lanes.map(() => COL)
+  const need = order.map((id) => { const n = node.get(id); const a = laneOf(n), b = recvOf(n); return { lo: Math.min(a, b), hi: Math.max(a, b), w: sz.get(id)!.width + 24, self: a === b, msg: isMsg(n) } })
+  for (const r of [...need].filter((x) => x.msg).sort((p, q) => (p.hi - p.lo) - (q.hi - q.lo))) {
+    if (r.self) { if (r.lo < lanes.length - 1) gap[r.lo] = Math.max(gap[r.lo], 28 + r.w); continue }
+    let have = 0
+    for (let i = r.lo; i < r.hi; i++) have += gap[i]
+    if (have < r.w) for (let i = r.lo; i < r.hi; i++) gap[i] += (r.w - have) / (r.hi - r.lo)
+  }
+  const cx: number[] = []
+  lanes.reduce((x, _, i) => (cx[i] = x, x + gap[i]), COL / 2 + 10)
   const at = new Map<string, number>(order.map((id, i) => [id, i]))
   const starts = order.map(() => 0), ends = order.map(() => 0)
   for (const f of g.frames ?? []) { const a = at.get(f.first), b = at.get(f.last); if (a !== undefined && b !== undefined && a <= b) { starts[a]++; ends[b]++ } }
-  const boxes: Record<string, Box> = {}
-  let y = 44
+  const boxes: Record<string, Box> = {}, span: Record<string, Box> = {}, arrows: Record<string, SeqArrow> = {}
+  let y = 54
   order.forEach((id, i) => {
-    if (i) y += 28 + 18 * Math.min(starts[i], 4) + 8 * Math.min(ends[i - 1], 4)
-    const n = node.get(id), l = laneOf(n), s = sz.get(id)!
-    boxes[id] = { x: Math.round(colX[l] + (colW[l] - s.width) / 2), y, w: s.width, h: s.height }
-    y += s.height
+    if (i) y += 14 + 18 * Math.min(starts[i], 4) + 8 * Math.min(ends[i - 1], 4)
+    const n = node.get(id), l = laneOf(n), r = recvOf(n), s = sz.get(id)!
+    let bx: number
+    if (!isMsg(n)) {
+      const pos = n.seq?.position, over: number[] = (n.seq?.over ?? []).map(laneIdx).filter((k: number) => k >= 0)
+      bx = pos === "right of" ? cx[l] + 14 : pos === "left of" ? cx[l] - 14 - s.width : over.length ? (Math.min(...over.map((k) => cx[k])) + Math.max(...over.map((k) => cx[k]))) / 2 - s.width / 2 : cx[l] - s.width / 2
+      boxes[id] = { x: Math.round(bx), y, w: s.width, h: s.height }; span[id] = boxes[id]
+      y += s.height
+      return
+    }
+    const self = l === r, ay = y + s.height + 8
+    if (self) {
+      boxes[id] = { x: Math.round(cx[l] + 28), y, w: s.width, h: s.height }
+      const pts: [number, number][] = [[cx[l], y + 6], [cx[l] + 22, y + 6], [cx[l] + 22, ay], [cx[l], ay]]
+      arrows[id] = { from: lanes[l]?.id, to: lanes[r]?.id, kind: seqKind(n), self, points: pts.map(([a, b]) => [Math.round(a), Math.round(b)] as [number, number]) }
+    } else {
+      bx = (cx[l] + cx[r]) / 2 - s.width / 2
+      boxes[id] = { x: Math.round(bx), y, w: s.width, h: s.height }
+      arrows[id] = { from: lanes[l]?.id, to: lanes[r]?.id, kind: seqKind(n), self, points: [[Math.round(cx[l]), ay], [Math.round(cx[r]), ay]] }
+    }
+    const bb = boxes[id], xs = [bb.x, bb.x + bb.w, ...arrows[id].points.map((p) => p[0])]
+    span[id] = { x: Math.min(...xs), y, w: Math.max(...xs) - Math.min(...xs), h: ay - y + 6 }
+    y = ay + 6
   })
   const bottom = y + 20
   const last = lanes.length - 1
-  const L: Layout = { view: g.view, mode: "thorough", direction: "DOWN", width: last < 0 ? 0 : colX[last] + colW[last], height: bottom, boxes, edges: {} }
-  lanes.forEach((l, i) => { L.boxes[l.id] = { x: colX[i], y: 0, w: colW[i], h: bottom } })
-  for (const e of g.edges ?? []) {
-    const a = boxes[e.source], b = boxes[e.target]
-    if (!a || !b) continue
-    const ax = a.x + a.w / 2, bx = b.x + b.w / 2, ya = a.y + a.h, yb = b.y
-    const mid = Math.round((ya + yb) / 2)
-    L.edges[e.id] = (ax === bx || yb <= ya ? [[Math.round(ax), ya], [Math.round(bx), yb]] : [[Math.round(ax), ya], [Math.round(ax), mid], [Math.round(bx), mid], [Math.round(bx), yb]]) as [number, number][]
-  }
-  const fr = frameBoxes(g, boxes)
+  const half = COL / 2 - 10
+  const maxX = Math.max(last < 0 ? 0 : cx[last] + half, ...Object.values(span).map((b) => b.x + b.w + 10))
+  const L: Layout = { view: g.view, mode: "thorough", direction: "DOWN", width: Math.round(maxX), height: bottom, boxes, edges: {}, arrows }
+  lanes.forEach((l, i) => { L.boxes[l.id] = { x: Math.round(cx[i] - half), y: 0, w: half * 2, h: bottom } })
+  const fr = frameBoxes(g, span)
   if (fr) { L.frames = fr; for (const b of Object.values(fr)) { L.width = Math.max(L.width, b.x + b.w); L.height = Math.max(L.height, b.y + b.h) } }
   return L
 }
-
 const cache = new Map<string, Layout>()
 /** Cached layouts held at most. */
 const CACHE_MAX = 64
