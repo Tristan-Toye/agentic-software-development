@@ -634,6 +634,9 @@ export async function handle(req: Request): Promise<Response> {
     if (!rs || !stub || !/^(stub|release)\/[\w.-]+$/.test(stub.branch)) return json({ error: "no such stub" }, 404)
     const slug = stub.branch.replace(/\//g, "-")
     if (b.action === "integrate") {
+      // One integrate per stub: a press while one runs (readIntegrate reads "merging" only for a live pid) starts nothing. The
+      // script holds the same lock (`<key>.integrate.lock`) for the race this cannot see, and a second process exits at once.
+      if (readIntegrate(`${rs.repo}.${slug}`)?.state === "merging") return json({ ok: true, already: true })
       const fd = openSync(join(runsDir(), `${rs.repo}.${slug}.integrate.log`), "a")
       const proc = Bun.spawn(["python3", mergeScript(), "--integrate", stub.branch, "--root", rs.main], { stdout: fd, stderr: fd, stdin: "ignore" })
       proc.unref()
