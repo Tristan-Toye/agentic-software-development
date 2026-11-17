@@ -16,7 +16,12 @@ export type Stub = {
   /** Set per request by the server from the integration and run files, which move faster than the scan. */
   canIntegrate?: boolean
 }
-export type RepoStubs = { repo: string; label: string; main: string; stubs: Stub[]; open: string[] }
+export type RepoStubs = { repo: string; label: string; main: string; stubs: Stub[]; open: string[]; outside: OutsideDossier[] }
+/** A dossier's open PRs that target no open stub (development, a release, or a stack on such a PR). */
+export type OutsidePr = { number: number; url: string; base: string; mergeable?: string }
+export type OutsideDossier = { id: string; prs: OutsidePr[] }
+/** Any open PR of the repo, as `gh pr list --json` gives it. */
+export type OpenPr = { number: number; headRefName: string; baseRefName: string; url: string; mergeable?: string }
 /** The stubs that are not merged (accepting or integrating), newest first. */
 export function openStubs(stubs: Stub[]): Stub[] {
   return stubs.filter((s) => s.state !== "merged").sort((a, b) => b.cut.localeCompare(a.cut) || b.refAge.localeCompare(a.refAge) || b.branch.localeCompare(a.branch))
@@ -62,6 +67,44 @@ export function stubMembers(
     if (d.live || (!d.halted && (d.status === "building" || d.status === "review"))) add(accepting.branch, { id: d.id, noPr: true })
   }
   return out
+}
+/**
+ * The open PRs that belong to a dossier (its `pr:` number, or its id in the head branch; `plan/` heads never count)
+ * but do not go into an open stub: a PR into development or a release branch from before stubs existed, and any PR
+ * stacked on one (its base is the head of an outside PR; it takes that PR's dossier). A PR whose base chain reaches
+ * an open stub is on that stub, not outside. Returns one entry per dossier, PRs by number.
+ */
+export function outsideStubPrs(
+  openStubBranches: string[],
+  dossiers: { id: string; status: string; pr?: string; live?: boolean }[],
+  prs: OpenPr[],
+): OutsideDossier[] {
+  const stubSet = new Set(openStubBranches)
+  const withPr = dossiers.filter((d) => ["building", "review", "pr", "done"].includes(d.status) || d.live === true)
+  const byHead = new Map(prs.map((p) => [p.headRefName, p]))
+  const match = (p: OpenPr) => withPr.find((d) => prFieldNumbers(d.pr).includes(p.number) || new RegExp(`(^|[^A-Za-z0-9])${d.id.replace(/[^\w-]/g, "")}(?![\w])`, "i").test(p.headRefName))?.id
+  const onStub = (p: OpenPr, seen: Set<number>): boolean => {
+    if (stubSet.has(p.baseRefName)) return true
+    const parent = byHead.get(p.baseRefName)
+    if (!parent || seen.has(parent.number)) return false
+    return onStub(parent, new Set([...seen, p.number]))
+  }
+  const owner = (p: OpenPr, seen: Set<number>): string | undefined => {
+    const own = match(p)
+    if (own) return own
+    const parent = byHead.get(p.baseRefName)
+    return parent && !seen.has(parent.number) ? owner(parent, new Set([...seen, p.number])) : undefined
+  }
+  const out = new Map<string, OutsidePr[]>()
+  for (const p of prs) {
+    if (/^plan\//.test(p.headRefName) || onStub(p, new Set([p.number]))) continue
+    const id = owner(p, new Set([p.number]))
+    if (!id) continue
+    const l = out.get(id) ?? []
+    l.push({ number: p.number, url: p.url, base: p.baseRefName, ...(p.mergeable ? { mergeable: p.mergeable } : {}) })
+    out.set(id, l)
+  }
+  return [...out].map(([id, l]) => ({ id, prs: l.sort((a, b) => a.number - b.number) })).sort((a, b) => a.id.localeCompare(b.id))
 }
 export type StubsView = { scannedAt: string; repos: RepoStubs[]; openWork: { repo: string; updated: string }[] }
 
@@ -173,6 +216,13 @@ async function prsBase(main: string, branch: string): Promise<BasePr[]> {
     return (l ?? []).map((x) => ({ number: Number(x.number), headRefName: String(x.headRefName ?? "") }))
   })
 }
+/** Every open PR of the repo, in one call (not one per dossier). */
+async function openPrs(main: string): Promise<OpenPr[]> {
+  return cached(`open:${main}`, async () => {
+    const l = await gh(main, ["pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,baseRefName,url,mergeable"])
+    return (l ?? []).map((x) => ({ number: Number(x.number), headRefName: String(x.headRefName ?? ""), baseRefName: String(x.baseRefName ?? ""), url: String(x.url ?? ""), mergeable: x.mergeable ? String(x.mergeable) : undefined }))
+  })
+}
 async function mergeSubjects(main: string, branch: string): Promise<string[]> {
   return (await sh(["git", "-C", main, "log", "--merges", "--first-parent", "--format=%s", `origin/development..origin/${branch}`], undefined, 10_000)).split("\n").filter(Boolean)
 }
@@ -229,14 +279,15 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
         refAge: date, pr, dossiers, members: [],
       })
     }
+    const dinfo = docs.map((d) => ({ id: d.front.id!, status: d.front.status ?? "", pr: d.front.pr, live: runnerActive(runnerOf(baseName(main), d.front.id!, buildLog(d.text)).runner), halted: ["stopped", "failed"].includes(runnerOf(baseName(main), d.front.id!, buildLog(d.text)).runner?.state ?? "") }))
     if (stubs.length) {
       const prsByBase: Record<string, BasePr[]> = {}
       for (const s of openStubs(stubs)) prsByBase[s.branch] = await prsBase(main, s.branch)
-      const name = baseName(main)
-      const mem = stubMembers(stubs, docs.map((d) => ({ id: d.front.id!, status: d.front.status ?? "", pr: d.front.pr, live: runnerActive(runnerOf(name, d.front.id!, buildLog(d.text)).runner), halted: ["stopped", "failed"].includes(runnerOf(name, d.front.id!, buildLog(d.text)).runner?.state ?? "") })), prsByBase)
+      const mem = stubMembers(stubs, dinfo, prsByBase)
       for (const s of stubs) s.members = mem[s.branch] ?? []
     }
-    if (stubs.length) { const sorted = stubs.sort((a, b) => b.cut.localeCompare(a.cut) || b.branch.localeCompare(a.branch)); repos.push({ repo: baseName(main), label: repoLabel(main), main, stubs: sorted, open: openStubs(sorted).map((s) => s.branch) }) }
+    const outside = outsideStubPrs(openStubs(stubs).map((s) => s.branch), dinfo, await openPrs(main))
+    if (stubs.length || outside.length) { const sorted = stubs.sort((a, b) => b.cut.localeCompare(a.cut) || b.branch.localeCompare(a.branch)); repos.push({ repo: baseName(main), label: repoLabel(main), main, stubs: sorted, open: openStubs(sorted).map((s) => s.branch), outside }) }
   }
   repos.sort((a, b) => a.repo.localeCompare(b.repo))
   return { scannedAt: new Date(now).toISOString(), repos, openWork: [] }

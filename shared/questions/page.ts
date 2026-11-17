@@ -981,6 +981,11 @@ function sideColumn(repo) {
   if (loose.length) kids.push(h('div', { class: 'scol-sec', 'data-k': 'loose:' + repo }, [h('h3', {}, ['In progress']), h('ul', { class: 'tree' }, loose.map(r => subItem(repo, r.id, false, false)))]));
   kids.push(h('h2', {}, ['Stubs']));
   kids.push.apply(kids, os.length ? os.map(s => stubTree(repo, s)) : [h('div', { class: 'empty' }, ['No open stub for this repo.'])]);
+  // A dossier's open PR that targets no open stub (from before stubs existed) would otherwise be shown nowhere.
+  const outs = rr && rr.outside ? rr.outside : [];
+  if (outs.length) kids.push(h('div', { class: 'scol-sec', 'data-k': 'outside:' + repo }, [h('h3', { title: 'Open PRs of a dossier whose base is not an open stub (development, a release, or stacked on one). Nothing merges them into a stub.' }, ['Outside any stub']),
+    h('ul', { class: 'tree' }, outs.map(o => h('li', {}, [h('a', { class: 'sub-item', href: hrefItem(repo, o.id) }, [h('span', { class: 'sid mono' }, [o.id])]),
+      h('div', { class: 'small' }, o.prs.map(p => h('span', { style: 'margin-right:8px' }, [h('a', { href: p.url, target: '_blank', rel: 'noopener' }, ['#' + p.number]), ' → ' + p.base + ' ', p.mergeable === 'CONFLICTING' ? chip('⚠ CONFLICTING', 'blocked') : null])))])))]));
   // Dossiers on an open stub card show their deferred count there; this lists the rest (their stub merged).
   const onCard = {}; os.forEach(s => { (s.members || []).forEach(m => { onCard[m.id] = 1; }); s.dossiers.forEach(d => { onCard[d.id] = 1; }); });
   const dfd = S.runs.filter(r => r.repo === repo && r.deferredUndecided > 0 && !onCard[r.id]).sort((a, b) => b.deferredUndecided - a.deferredUndecided);
