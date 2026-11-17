@@ -30,7 +30,12 @@ Everything lands in `.discovery/visual-review/<ID>/work/` of REPO:
 and a `.gitignore` holding `*`, so the work directory never reaches git (the
 agent's three outputs, `l0.json`, `l1.json` and `l2.json` one level up, do).
 A compact JSON summary goes to stdout. Exit codes: 0 prepared; 1 a step failed
-(the JSON says which); 2 bad arguments or a script that is not there.
+(the JSON says which); 2 bad arguments or a script that is not there; 3 the
+repository is not supported: the visual review reads Rust only, and HEAD holds
+no `Cargo.toml`. That is a known limit, not a failure: the JSON is
+`{"ok": false, "status": "unsupported", "reason": ..., "languages": [...]}`
+(the languages found, by file extension), nothing is written, and Phase 3 skips
+the step with `VISUAL-REVIEW: skipped — unsupported repository (<reason>)`.
 
 `vr_extract.py` and `vr_diff.py` are shelled out to, from --scripts-dir (default:
 beside this file). No third-party imports.
@@ -53,6 +58,30 @@ OUT_REL = os.path.join(".discovery", "visual-review")
 FN_RE = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
 HUNK_RE = re.compile(r"^@@ [^@]*@@\s*(.*)$")
 ID_RE = re.compile(r"^[A-Za-z0-9]+([._-][A-Za-z0-9]+)*$")  # a dossier id: no slash, no ".." or dots-only
+
+
+class Unsupported(Exception):
+    """The repository is not one the visual review can read (exit 3, `status: unsupported`)."""
+
+    def __init__(self, reason: str, languages: list):
+        super().__init__(reason)
+        self.reason, self.languages = reason, languages
+
+
+LANGUAGES = {".rs": "Rust", ".cs": "C#", ".csproj": "C#", ".sln": "C#", ".py": "Python", ".tf": "Terraform",
+             ".ts": "TypeScript", ".tsx": "TypeScript", ".js": "JavaScript", ".go": "Go", ".java": "Java",
+             ".kt": "Kotlin", ".rb": "Ruby", ".php": "PHP", ".swift": "Swift", ".cpp": "C++", ".c": "C"}
+
+
+def unsupported_reason(repo: str, head: str) -> tuple[str, list] | None:
+    """None when HEAD holds a `Cargo.toml` anywhere (the extractor can run `cargo metadata`); else the reason
+    and the languages found, by file extension."""
+    names = run("tree", ["git", "ls-tree", "-r", "--name-only", head], cwd=repo).splitlines()
+    if any(os.path.basename(n) == "Cargo.toml" for n in names):
+        return None
+    langs = sorted({LANGUAGES[e] for e in (os.path.splitext(n)[1].lower() for n in names) if e in LANGUAGES})
+    found = ", ".join(langs) if langs else "no recognised source files"
+    return ("no Cargo.toml; the visual review reads Rust only (found: %s)" % found, langs)
 
 
 class Failed(Exception):
@@ -186,13 +215,16 @@ def prepare(repo: str, dossier_id: str, base: str, head: str, scripts: str,
     for p in (extract, diff):
         if not os.path.isfile(p):
             raise Failed("scripts", "%s is not there (VR-02 ships vr_diff.py)" % p, 2)
+    for rev in (base, head):
+        run("rev", ["git", "rev-parse", "--verify", "--quiet", rev + "^{commit}"], cwd=repo)
+    no = unsupported_reason(repo, head)
+    if no:
+        raise Unsupported(*no)
     out_dir = os.path.join(repo, OUT_REL, dossier_id)
     work = os.path.join(out_dir, "work")
     os.makedirs(work, exist_ok=True)
     with open(os.path.join(work, ".gitignore"), "w", encoding="utf-8") as fh:
         fh.write("*\n")
-    for rev in (base, head):
-        run("rev", ["git", "rev-parse", "--verify", "--quiet", rev + "^{commit}"], cwd=repo)
 
     touched = touched_functions(repo, base, head, dossier_id, calls)
     if crates == "derive":
@@ -308,6 +340,7 @@ def selftest() -> int:
         os.makedirs(scripts)
         _git(repo, "init", "-q")
         lib = os.path.join(repo, "src", "lib.rs")
+        open(os.path.join(repo, "Cargo.toml"), "w").write('[package]\nname = "demo"\n')
         open(lib, "w").write("pub fn old_one() {}\n")
         _git(repo, "add", "-A")
         _git(repo, "commit", "-q", "-m", "base")
@@ -382,6 +415,27 @@ def selftest() -> int:
         prepare(wsr, "W-4", b2, "HEAD", scripts, [], "1,2", 5, crates=["gamma"])
         check("prepare: an explicit list wins", "--crates gamma" in open(os.path.join(wsr, OUT_REL, "W-4", "work", "after.json.argv")).read())
 
+        # 2c. an unsupported repository (C# and Python, no Cargo.toml): typed, exit 3, nothing written
+        cs = os.path.join(td, "cs")
+        os.makedirs(cs)
+        open(os.path.join(cs, "App.csproj"), "w").write("<Project />\n")
+        open(os.path.join(cs, "tool.py"), "w").write("print(1)\n")
+        _git(cs, "init", "-q")
+        _git(cs, "add", "-A")
+        _git(cs, "commit", "-q", "-m", "base")
+        try:
+            prepare(cs, "W-5", "HEAD", "HEAD", scripts, [], "1", 5)
+            check("unsupported repo is reported", False)
+        except Unsupported as exc:
+            check("unsupported repo: reason names the languages", "C#" in exc.reason and "Python" in exc.reason
+                  and exc.languages == ["C#", "Python"])
+        check("unsupported repo: nothing written", not os.path.exists(os.path.join(cs, OUT_REL)))
+        r = subprocess.run([sys.executable, os.path.abspath(__file__), cs, "W-5", "--base", "HEAD", "--head", "HEAD",
+                            "--scripts-dir", scripts], capture_output=True, text=True)
+        out = json.loads(r.stdout or "{}")
+        check("unsupported repo: CLI exits 3 with status unsupported",
+              r.returncode == 3 and out.get("status") == "unsupported" and out.get("ok") is False and "C#" in out.get("reason", ""))
+
         # 3. a bad revision fails with a step name
         try:
             prepare(repo, "W-1", "nope", "HEAD", scripts, [], "1", 5)
@@ -428,6 +482,9 @@ def main(argv=None) -> int:
                           [c for c in args.calls.split(",") if c], args.layers, args.timeout,
                           crates=("derive" if args.crates == "derive" else None if args.crates == "all"
                                   else [c.strip() for c in args.crates.split(",") if c.strip()]))
+    except Unsupported as exc:
+        print(json.dumps({"ok": False, "status": "unsupported", "reason": exc.reason, "languages": exc.languages}))
+        return 3
     except Failed as exc:
         print(json.dumps({"ok": False, "step": exc.step, "error": exc.message}))
         return exc.code
