@@ -449,6 +449,15 @@ restarted server answers at once from them while its first scan runs.
     also runs `/after-merge`; a non-code PR does not, and
     nothing in it touches a stub. An item that still cannot merge is marked
     failed with why, and the queue goes on.
+    **A merged dossier's failure questions close by themselves:** the moment
+    the queue (or the Merge button) records a dossier as `merged`,
+    `merge_dossier.py` closes its still-open "The run of X failed at stage N"
+    questions (asked with `--topic run-failure`; older ones are found by that
+    text) with an answer from `runner`, option B, "Closed automatically: X was
+    merged; the failed run is no longer needed". The dashboard counts it as
+    answered and Slack marks it so. A question a live run still waits on
+    (runner.json: live pid, the question in its `questions`), an answered one
+    and every design or product question are left alone.
   - **Non-code PRs into development** (repo page, under the stubs): every
     open `plan/*` or `docs/*` PR into `development`, the PRs that may skip the
     stub, each with why it can or cannot merge now (`scripts/merge_docs_prs.py

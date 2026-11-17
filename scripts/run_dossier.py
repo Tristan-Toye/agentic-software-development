@@ -2194,7 +2194,7 @@ class Runner:
             "--question", clip(f"The run of {self.dossier} failed at stage {self.state['stage']}: {reason}", 1500),
             "--option", "A|Retry the stage|starts the stage again in a new process, with the same hand-off",
             "--option", "B|Stop|ends the run; the dossier keeps what the earlier stages committed",
-            "--recommend", "A", "--blocks", f"the run of {self.dossier}")
+            "--recommend", "A", "--blocks", f"the run of {self.dossier}", "--topic", "run-failure")
         out, err = p.communicate()
         qid = out.strip()
         if p.returncode != 0 or not qid:

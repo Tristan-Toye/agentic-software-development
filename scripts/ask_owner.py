@@ -146,7 +146,7 @@ def parse_option(spec: str) -> dict:
 # purpose, and applies only to a run the runner started: phrase patterns checked against the question texts of past runs, so a design question that mentions a push
 # in passing goes through. ASD_ASK_LINT=0 turns it off.
 KINDS = ("design", "product", "uncertainty")
-TOPICS = ("visual-review",)
+TOPICS = ("visual-review", "run-failure")
 _PR = r"(?:the |a |its |this |my )?(?:draft |plan |pull )?(?:PR|pull request)"
 APPROVAL_PATTERNS = [
     ("push the branch", re.compile(r"\b(?:may|can|shall|should) I (?:now )?push\b[^?]{0,40}\bbranch\b"
@@ -427,6 +427,8 @@ def selftest() -> int:
         check("--topic visual-review needs the two review labels", ask_q("Does this match?", ["--kind", "product", "--topic", "visual-review"], dossier="W-93").returncode != 0)
         check("--topic outside visual-review is refused", ask_q("Which?", ["--topic", "other"]).returncode != 0)
         check("no --topic stores none", "topic" not in kq)
+        rf = ask_q("The run of W-94 failed at stage 2: x", ["--topic", "run-failure"], dossier="W-94")
+        check("--topic run-failure is stored and needs no --kind", rf.returncode == 0 and json.loads(open(os.path.join(env["ASD_QUESTIONS_DIR"], rf.stdout.strip() + ".jsonl")).readline()).get("topic") == "run-failure")
         check("--kind outside design|product|uncertainty is refused", ask_q("Which?", ["--kind", "other"]).returncode != 0)
         check("no --kind still works (older prompts)", "qkind" not in json.loads(open(os.path.join(env["ASD_QUESTIONS_DIR"], ask_q("Which cache?", dossier="W-10").stdout.strip() + ".jsonl")).readline()))
         refused = ["May I push the plan branch and open its pull request into development?",
@@ -577,7 +579,7 @@ def main() -> int:
     p.add_argument("--recommend")
     p.add_argument("--blocks", required=True)
     p.add_argument("--kind", choices=KINDS, help="design, product or uncertainty: what the owner is asked to decide (optional)")
-    p.add_argument("--topic", choices=TOPICS, help="visual-review: marks the Phase 3 visual-review question the dashboard canvas answers (needs --kind product)")
+    p.add_argument("--topic", choices=TOPICS, help="visual-review: marks the Phase 3 visual-review question the dashboard canvas answers (needs --kind product); run-failure: marks the runner's \"the run failed\" question, which the merge queue closes once the dossier is merged")
     p.add_argument("--build-log", metavar="DOSSIER", help="also append `QUESTION: <id> — <question>` to this dossier's Build log")
     p = sub.add_parser("reply")
     p.add_argument("id")

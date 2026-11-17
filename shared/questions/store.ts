@@ -5,7 +5,7 @@ import { join } from "node:path"
 
 export type Line = {
   ts: string
-  from: "agent" | "owner"
+  from: "agent" | "owner" | "runner"
   kind: "question" | "reply" | "followup" | "answer"
   text: string
   via?: string
