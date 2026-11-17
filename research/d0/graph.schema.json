@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/visual-review/graph.schema.json",
+  "title": "Change graph (D0 proposal, version 0.1.0)",
+  "description": "One merged graph for one view (L0, L1 or L2). Language-neutral: no field names a Rust concept (OQ-10). The language lives in the values of kind, in the evidence path and in meta.tools.",
+  "type": "object",
+  "required": ["schema_version", "view", "title", "meta", "nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$", "description": "Semantic version of this schema. A reader rejects a different major version." },
+    "view": { "enum": ["L0", "L1", "L2", "L3"] },
+    "title": { "type": "string", "minLength": 1 },
+    "meta": {
+      "type": "object",
+      "required": ["repo", "commit", "generated_by"],
+      "additionalProperties": true,
+      "properties": {
+        "change": { "type": "string", "description": "Change id, for example a dossier id." },
+        "repo": { "type": "string" },
+        "commit": { "type": "string", "description": "Commit the evidence paths resolve at." },
+        "branch": { "type": "string" },
+        "generated_by": { "enum": ["hand", "extractor", "agent"] },
+        "tools": { "type": "array", "items": { "type": "object", "required": ["name", "version"], "properties": { "name": { "type": "string" }, "version": { "type": "string" } } }, "description": "Every extractor used, pinned (VC-09)." }
+      }
+    },
+    "lanes": { "type": "array", "description": "L1 only. Swim lanes in display order.", "items": { "$ref": "#/$defs/lane" } },
+    "groups": { "type": "array", "items": { "$ref": "#/$defs/group" }, "default": [] },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+    "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } }
+  },
+  "$defs": {
+    "status": { "enum": ["added", "changed", "removed", "context"] },
+    "resolution": { "enum": ["static", "dispatch", "inferred"], "description": "How the link was resolved. dispatch = trait object or dynamic call. inferred = no tool proved it." },
+    "evidence": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "oneOf": [
+          { "type": "object", "required": ["tier", "path"], "additionalProperties": false,
+            "properties": { "tier": { "const": "source" }, "path": { "type": "string", "description": "Repository-relative, forward slashes." }, "line": { "type": "integer", "minimum": 1 }, "end_line": { "type": "integer", "minimum": 1 }, "note": { "type": "string" } } },
+          { "type": "object", "required": ["tier", "note"], "additionalProperties": false,
+            "properties": { "tier": { "const": "inferred" }, "note": { "type": "string", "minLength": 1, "description": "Why the element is believed. An inferred element has no anchor." } } }
+        ]
+      }
+    },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]+$" },
+    "lane": { "type": "object", "required": ["id", "label"], "additionalProperties": false, "properties": { "id": { "$ref": "#/$defs/id" }, "label": { "type": "string" } } },
+    "group": {
+      "type": "object", "required": ["id", "label", "status", "evidence"], "additionalProperties": false,
+      "properties": { "id": { "$ref": "#/$defs/id" }, "label": { "type": "string" }, "parent": { "$ref": "#/$defs/id" }, "status": { "$ref": "#/$defs/status" }, "evidence": { "$ref": "#/$defs/evidence" } }
+    },
+    "node": {
+      "type": "object", "required": ["id", "label", "kind", "status", "evidence"], "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "label": { "type": "string" },
+        "kind": { "type": "string", "description": "Open vocabulary. Used so far: feature, step, crate, module, component." },
+        "status": { "$ref": "#/$defs/status" },
+        "group": { "$ref": "#/$defs/id", "description": "Id of a group." },
+        "lane": { "$ref": "#/$defs/id", "description": "L1: id of a lane." },
+        "order": { "type": "integer", "description": "L1: step number, also the ELK model order." },
+        "detail": { "type": "object", "additionalProperties": false, "properties": { "before": { "type": "string" }, "after": { "type": "string" } }, "description": "Before and after text of a changed element." },
+        "resolution": { "$ref": "#/$defs/resolution" },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    },
+    "edge": {
+      "type": "object", "required": ["id", "source", "target", "kind", "status", "evidence"], "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "source": { "$ref": "#/$defs/id", "description": "Id of a node or a group." },
+        "target": { "$ref": "#/$defs/id" },
+        "kind": { "type": "string", "description": "Open vocabulary: depends, uses, calls, flow, documents, called_by." },
+        "label": { "type": "string" },
+        "status": { "$ref": "#/$defs/status" },
+        "resolution": { "$ref": "#/$defs/resolution" },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    }
+  }
+}

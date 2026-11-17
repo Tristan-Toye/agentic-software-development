@@ -65,3 +65,13 @@ export function readRunThread(dir: string, key: string): RunThread | null {
 export function writeRunThread(dir: string, key: string, t: RunThread): void {
   try { writeFileSync(join(dir, `${key}.slack.json`), JSON.stringify(t) + "\n") } catch { /* best effort */ }
 }
+
+/** True when the sidecar must be (re)written: a rewrite of identical content fires the runs-dir watch and rescans, forever. */
+export function threadChanged(side: RunThread | null, thread: RunThread, upto: number): boolean {
+  return !side || side.channel !== thread.channel || side.ts !== thread.ts || side.seen !== upto
+}
+
+/** A runs-dir file name whose change must not wake the dashboard: the server's own sidecars and temp files. */
+export function runsWatchIgnored(name: string): boolean {
+  return /\.slack\.json$|\.tmp$/.test(name)
+}

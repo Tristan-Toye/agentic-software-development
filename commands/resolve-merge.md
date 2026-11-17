@@ -53,12 +53,15 @@ way, after that one is pushed. Then resolve each conflict:
   hand-merged: `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py
   --finalize-ids --base origin/<base>` renumbers ids that collide with ones the
   base took first.
-- **Check that nothing was lost**, mechanically, before committing: every
-  hunk the branch added over the merge base, and every hunk the base added,
-  still appears in the result (`git diff <merge-base> origin/<base>` and
-  `git diff <merge-base> <head before merge>` against the merged tree). Name
-  each hunk that did not survive and why in the merge commit body; a hunk
-  dropped without a reason is a defect, not a resolution.
+- **Check that nothing was lost**, mechanically, before committing: run
+  `python3 ${PLUGIN_ROOT}/scripts/merge_guard.py` in the worktree while the merge is still
+  pending. It compares every changed file's lines across base, both sides and
+  your result. `lost` (a line both sides kept) is always a defect: restore
+  it. `gone` (a line only one side had, no version of it left) needs a
+  `Dropped: <path> — <why>` line in the merge message (`.git/MERGE_MSG`);
+  `replaced` (another version kept, e.g. renumbered) needs nothing. Do not
+  commit until it exits 0; a line dropped without a reason is a defect, not
+  a resolution.
 - When two intents cannot both hold (the same behaviour changed two ways), do
   not choose: ask the owner (`--kind product`) with both versions and what each one does, and
   wait. Every other conflict you resolve yourself.
@@ -82,15 +85,26 @@ failed twice) is put to the owner with the evidence, never patched around.
 
 Run the gates on the touched paths (`run_gates.py`) and the tests of the
 packages the conflicts touched, plus the dossier's own new tests
-(`run_tests.py`; `--vm` where the repository needs it). A red result is fixed
-in this merge, inside the conflicted code only, or put to the owner.
+(`run_tests.py`; `--vm` where the repository needs it). After merging the base
+in, also run the tests of every package that both the base and this stack
+changed since they split (`git diff --name-only <merge-base>..origin/<base>`
+against the same diff of the head). This applies even where no line
+conflicted, because the base's new code and tests meet this change there. A
+test the base added can break on this stack's change without a text conflict.
+A red result is fixed in this merge (inside the conflicted code, or the test or
+wiring the merge made necessary) or put to the owner.
 
 ## Step 4 — Push
 
-Commit the merge (`git commit --no-edit`, the hunks note in the body when
-needed) and `git push` (never `--force`). Check each pull request reads
+Commit the merge (`git commit --no-edit`, keeping the `Dropped:` lines in the body; `merge_guard.py` exits 0) and `git push` (never `--force`). Check each pull request reads
 `MERGEABLE` (`gh pr view <n> --json mergeable`; GitHub may need a minute).
-Remove the worktrees. Post one note: which pull requests conflicted, in which
+Then wait for each pushed pull request's CI, bottom first, in one call each:
+`python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <n>`. Do not end while it is
+running. The queue gives this dossier two runs in all, and a check that turns
+red after you stop uses up the next one. A red check is fixed in this run, the
+way Step 2b fixes one, then pushed and waited for again. A check that is still
+pending at the timeout, or red for a cause the change did not make, goes into
+the note. Remove the worktrees. Post one note: which pull requests conflicted, in which
 files, how each was resolved, and the test and gate results. Under the runner,
 end with `RUNNER: DONE`; the merge queue merges next.
 

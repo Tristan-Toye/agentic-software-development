@@ -1,0 +1,56 @@
+[
+ {
+  "change": "#391 platform pool metrics",
+  "commit": "c240c954",
+  "touched_crates": [
+   "platform",
+   "protocol",
+   "workspace-hack"
+  ],
+  "crate_recall": "3/3",
+  "src_files": 5,
+  "module_recall": "5/5",
+  "module_misses": [],
+  "fn_names_from_hunks": 7,
+  "fn_in_ra_graph": "7/7"
+ },
+ {
+  "change": "#330 llm key denylist",
+  "commit": "7b433c2c",
+  "touched_crates": [
+   "composition-root",
+   "harness",
+   "platform",
+   "protocol",
+   "test-support"
+  ],
+  "crate_recall": "5/5",
+  "src_files": 13,
+  "module_recall": "12/13",
+  "module_misses": [
+   [
+    "crates/platform/src/bin/llm_gateway.rs",
+    "bin target, not in --lib"
+   ]
+  ],
+  "fn_names_from_hunks": 7,
+  "fn_in_ra_graph": "6/7"
+ },
+ {
+  "change": "#340 git mirror maintenance",
+  "commit": "d69d30d5",
+  "touched_crates": [
+   "composition-root",
+   "harness",
+   "platform",
+   "protocol",
+   "test-support"
+  ],
+  "crate_recall": "5/5",
+  "src_files": 10,
+  "module_recall": "10/10",
+  "module_misses": [],
+  "fn_names_from_hunks": 5,
+  "fn_in_ra_graph": "5/5"
+ }
+]

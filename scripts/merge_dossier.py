@@ -137,6 +137,15 @@ def chain_of(prs: list[dict], dossier: str) -> tuple[list[dict], str]:
     mine = [p for p in prs if pat.search(p.get("headRefName", "")) and not p.get("headRefName", "").startswith("plan/")]
     if not mine:
         return [], f"no open pull request of {dossier}"
+    # A PR stacked on one of them is part of the same stack whatever its branch is called: a repo that names its
+    # branches by Jira key (feat/LABS-117-…) gets /fix-deferred's fix/W-007-deferred on top, and GitHub refuses to
+    # merge the bottom of a stack alone.
+    while True:
+        on_top = [p for p in prs if p not in mine and p.get("baseRefName") in {x["headRefName"] for x in mine}
+                  and not p.get("headRefName", "").startswith(("plan/", "docs/"))]
+        if not on_top:
+            break
+        mine += on_top
     heads = {p["headRefName"]: p for p in mine}
     bottoms = [p for p in mine if p.get("baseRefName") not in heads]
     if len(bottoms) != 1:
@@ -160,7 +169,7 @@ def plan(root: str, dossier: str) -> tuple[list[dict], str]:
     """Resolve and check: (the chain, "") or ([], why it cannot merge)."""
     key = f"{repo_name(root)}.{dossier}"
     st = read_json(os.path.join(runs_dir(), key + ".runner.json"), {}) or {}
-    if st.get("state") in ("running", "waiting", "paused", "queued") and alive(st.get("pid")):
+    if st.get("state") in ("running", "testing", "waiting", "paused", "queued") and alive(st.get("pid")):
         return [], f"a {st.get('command') or 'run'} run of {dossier} is still live; merge when it is finished"
     rc, out = gh(root, "pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,baseRefName,isDraft,title,url")
     if rc != 0:
@@ -172,6 +181,10 @@ def plan(root: str, dossier: str) -> tuple[list[dict], str]:
     chain, why = chain_of(prs, dossier)
     if not chain:
         return [], why
+    for k in chain_keys(repo_name(root), dossier, chain)[1:]:   # a dossier id another branch of the stack names
+        o = read_json(os.path.join(runs_dir(), k + ".runner.json"), {}) or {}
+        if o.get("state") in ("running", "testing", "waiting", "paused", "queued") and alive(o.get("pid")):
+            return [], f"a {o.get('command') or 'run'} run of {k.split('.', 1)[1]} on this stack is still live; merge when it is finished"
     base = chain[0].get("baseRefName", "")
     if not is_stub(base):
         return [], f"#{chain[0]['number']} goes into {base}, not a stub; only work on a stub is merged here"
@@ -272,7 +285,7 @@ def merge(root: str, dossier: str, method: str, dry: bool, no_cleanup: bool = Fa
     if no_cleanup:
         print(f"merge_dossier: merged {label} into {base}")
         return 0
-    after = start_run(root, dossier, "after-merge", nums)
+    after = start_run(root, dossier_id(root, dossier, chain), "after-merge", nums)
     print(f"merge_dossier: merged {label} into {base}; cleanup: {after[:200]}")
     return 0
 
@@ -334,10 +347,16 @@ def enqueue(root: str, dossier: str) -> int:
 
 def run_live(key: str) -> bool:
     st = read_json(os.path.join(runs_dir(), key + ".runner.json"), {}) or {}
-    return st.get("state") in ("running", "waiting", "paused", "queued") and alive(st.get("pid"))
+    return st.get("state") in ("running", "testing", "waiting", "paused", "queued") and alive(st.get("pid"))
 
 
 QUEUE_RUNS = ("resolve-merge", "after-merge")
+
+
+def chain_keys(repo: str, dossier: str, chain: list[dict]) -> list[str]:
+    """The run keys of a stack: its dossier's, and every dossier id a branch in it names (fix/W-007-deferred on feat/LABS-117-…)."""
+    ids = [dossier] + [m.upper() for p in chain for m in re.findall(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]*-\d+)(?![0-9])", p.get("headRefName", ""))]
+    return [f"{repo}.{i}" for i in dict.fromkeys(i.upper() for i in ids)]
 
 
 def still_building(key: str) -> bool:
@@ -412,6 +431,32 @@ def behind(root: str, nums: list[int]) -> list[int]:
 
 ID_FILE_RE = re.compile(r"^\.discovery/dossiers/([A-Z][A-Z0-9]*-\d+)-[^/]+\.md$")
 ADR_FILE_RE = re.compile(r"^docs/adr/(\d{4})-[^/]+\.md$")
+
+
+def dossier_id(root: str, fallback: str, chain: list[dict]) -> str:
+    """The dossier a stack belongs to, for the runs the queue starts on it (/resolve-merge, /after-merge), so they land on
+    the dossier's own timeline. The queue names a stack by the id in its bottom branch, which in a repo that names
+    branches by Jira key (feat/LABS-117-…) is not the dossier's: take an id a branch of the stack names that has a dossier
+    file, else the dossier whose `pr:` names one of the stack's PRs, else `fallback`."""
+    if not chain:
+        return fallback
+    cands = [k.split(".", 1)[1] for k in chain_keys("r", fallback, chain)]
+    nums = {str(p["number"]) for p in chain}
+    for ref in [f"origin/{p['headRefName']}" for p in reversed(chain)] + [f"origin/{chain[0].get('baseRefName', '')}"]:
+        rc, tree = git(root, "ls-tree", "--name-only", ref, ".discovery/dossiers/")
+        files = {m.group(1): l.strip() for l in (tree.splitlines() if rc == 0 else []) if (m := ID_FILE_RE.match(l.strip()))}
+        if not files:
+            continue
+        for c in cands:
+            if c in files:
+                return c
+        for i, f in files.items():
+            _, body = git(root, "show", f"{ref}:{f}")
+            head = body.split("\n---", 1)[0] if body.startswith("---") else ""
+            if set(re.findall(r"/pull/(\d+)", head)) & nums:
+                return i
+        return fallback
+    return fallback
 
 
 def git(root: str, *args: str, timeout: int = 300) -> tuple[int, str]:
@@ -533,6 +578,18 @@ def fix_ids(root: str, base: str, head: str, renumber: list[tuple[str, str]], ad
         git(root, "worktree", "remove", "--force", wt)
 
 
+def stack_clash(root: str, base: str, head: str) -> bool:
+    """Whether the top of a stack (`head`) conflicts with `base` when the stack merges. GitHub reports each PR of a stack
+    only against the PR below it, so a top that clashes with a stub that moved after the bottom took it in reads CLEAN
+    everywhere, and only `gh stack merge` finds it ("Merge conflict detected", nothing merged)."""
+    git(root, "fetch", "-q", "origin", base, head)
+    rc, out = git(root, "merge-tree", "--write-tree", "--name-only", f"origin/{base}", f"origin/{head}")
+    # A conflict is exit 1 with the tree id first and the conflicted paths after it; anything else (a ref not on origin, an
+    # old git) is no evidence, and gh stack merge keeps the last word.
+    lines = out.split("\n")
+    return rc == 1 and bool(re.fullmatch(r"[0-9a-f]{40,64}", lines[0].strip())) and len([x for x in lines[1:] if x.strip()]) > 0
+
+
 def merge_base_in(root: str, head: str, base: str) -> str:
     """Merge the base into the branch and push; "" or why not. A conflict is left for the next round to find."""
     wt = os.path.join(tempfile.mkdtemp(prefix="asd-update-"), "w")
@@ -592,7 +649,26 @@ def wait_checks(root: str, nums: list[int], timeout_s: float) -> dict[int, str]:
         time.sleep(poll)
 
 
-AGENT_ROUNDS = 3   # /resolve-merge runs one attempt may spend on a stack; its own push can turn up the next failure
+AGENT_ATTEMPTS = 2   # /resolve-merge runs one PR may spend in one settle: once per PR head, two at most; then the owner is asked
+
+
+def head_of(root: str, n: int) -> str:
+    """The PR's current head commit ("" when unknown): a resolve run that pushed changed it."""
+    rc, out = gh(root, "pr", "view", str(n), "--json", "headRefOid", "-q", ".headRefOid")
+    return out.strip() if rc == 0 else ""
+
+
+def ask_resolve_failed(root: str, dossier: str, why: str) -> None:
+    """The one place the queue asks the owner about a conflict: /resolve-merge itself failed twice. Best effort."""
+    ask = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ask_owner.py")
+    try:
+        subprocess.run([sys.executable, ask, "ask", "--root", root, "--dossier", dossier, "--question",
+                        f"The merge queue could not bring the pull requests of {dossier} up to date: {why}. The dossier's agent tried twice. How should it go on?",
+                        "--option", "A|Resolve by hand|You resolve the conflict on the branch; the queue merges it on the next press of Merge",
+                        "--option", "B|Leave it|The pull requests stay open and conflicting", "--recommend", "A",
+                        "--blocks", "the merge of " + dossier], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, others: list[str], note, use_agent: bool = True) -> str:
@@ -601,7 +677,8 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
     nums = [p["number"] for p in prs]
     run_timeout = float(os.environ.get("ASD_MERGE_RUN_TIMEOUT") or 4 * 3600)
     check_timeout = float(os.environ.get("ASD_MERGE_CHECK_TIMEOUT") or 3600)
-    agent_rounds = 0
+    attempts: dict[int, int] = {}   # per PR: resolve-merge runs started in this settle
+    tried: dict[int, set] = {}      # per PR: the heads a run was started on and ended done
     rerun_used = False
     updates = 0
     link_conflicts: list[int] = []
@@ -626,6 +703,13 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
             else:
                 moved = True
         return moved, ""
+
+    def top_clashes() -> bool:
+        """A stack whose top conflicts with the base goes to the dossier's agent, every PR of it, bottom first."""
+        if len(prs) < 2 or not stack_clash(root, prs[0]["baseRefName"], prs[-1]["headRefName"]):
+            return False
+        note("resolving", f"#{prs[-1]['number']}, the top of the stack, conflicts with {prs[0]['baseRefName']} when the stack merges")
+        return True
 
     def update_behind() -> tuple[bool, str]:
         """(updated any, why it could not). A conflict from the update comes back as CONFLICTING on the next round."""
@@ -663,6 +747,8 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
         bad, err = conflicting(root, nums)
         if err:
             return err
+        if not bad and top_clashes():
+            bad = list(nums)
         # A clash is the stack's to fix, so no check is worth waiting for until it is gone.
         clashes = migration_clashes(root, prs[0]["baseRefName"], prs[-1]["headRefName"]) if not bad else []
         # 3. up to date with the base, and each PR of a stack holding the one below it, before spending a wait on checks
@@ -703,26 +789,41 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
                 return why
             if linked:
                 continue
-            if not link_conflicts:
+            if link_conflicts:
+                bad = list(link_conflicts)
+            elif top_clashes():   # the base moved while the checks ran
+                bad = list(nums)
+            else:
                 return ""
-            bad = list(link_conflicts)
         if pending and not bad and not clashes and not red:
             return "checks still running after " + str(int(check_timeout / 60)) + " min: " + ", ".join(f"#{n}" for n in pending)
         # 4. the dossier's agent
         if not use_agent:
             return ("conflicting: " + ", ".join(f"#{n}" for n in bad)) if bad else ("migration numbers clash: " + "; ".join(clashes)) if clashes else ("checks red: " + ", ".join(f"#{n}" for n in red))
-        if agent_rounds >= AGENT_ROUNDS:
-            rounds = f" after {agent_rounds} agent round{'s' if agent_rounds != 1 else ''}"
-            return ("still conflicting: " + ", ".join(f"#{n}" for n in bad) + rounds) if bad else ("migration numbers still clash: " + "; ".join(clashes) + rounds) if clashes else ("checks still red: " + ", ".join(f"#{n}" for n in red) + rounds)
-        agent_rounds += 1
-        rerun_used = False   # the agent's push is a new head: a flaky job there gets its own re-run before it costs a round
+        targets = bad or ([n for n in red] if red else list(nums))
+        heads = {n: head_of(root, n) for n in targets}
+        spent = [n for n in targets if attempts.get(n, 0) >= AGENT_ATTEMPTS]
+        unchanged = all(heads[n] and heads[n] in tried.get(n, set()) for n in targets)
+        if spent or unchanged:
+            rounds = f" after {max(attempts.get(n, 0) for n in targets)} resolve-merge attempt{'s' if max(attempts.get(n, 0) for n in targets) != 1 else ''}" + ("" if spent else "; its head did not change")
+            why = ("still conflicting: " + ", ".join(f"#{n}" for n in bad) + rounds) if bad else ("migration numbers still clash: " + "; ".join(clashes) + rounds) if clashes else ("checks still red: " + ", ".join(f"#{n}" for n in red) + rounds)
+            ask_resolve_failed(root, agent_id, why)
+            return why
+        for n in targets:
+            attempts[n] = attempts.get(n, 0) + 1
+        rerun_used = False   # the agent's push is a new head: a flaky job there gets its own re-run before it costs an attempt
         what = ("conflicts in " + ", ".join(f"#{n}" for n in bad)) if bad else ("migration numbers clash: " + "; ".join(clashes)) if clashes else ("red checks on " + ", ".join(f"#{n}" for n in red))
-        note("resolving", what + "; the dossier's agent resolves it")
+        note("resolving", what + "; the dossier's agent resolves it (resolve-merge, attempt " + str(max(attempts[n] for n in targets)) + f" of {AGENT_ATTEMPTS})")
         since = now()
         start_run(root, agent_id, "resolve-merge", nums)
         end = wait_run(f"{repo_name(root)}.{agent_id}", since, run_timeout)
-        if end != "done":
-            return f"the resolution run ended {end}"
+        if end == "done":
+            for n in targets:
+                tried.setdefault(n, set()).add(heads[n])
+        elif all(attempts[n] >= AGENT_ATTEMPTS for n in targets):
+            why = f"resolve-merge ended {end} twice"
+            ask_resolve_failed(root, agent_id, why)
+            return why
 
 
 def work_one(root: str, dossier: str) -> None:
@@ -747,7 +848,8 @@ def work_one(root: str, dossier: str) -> None:
     def note(state, text):
         set_state(key, state=state, prs=nums, error="", pid=os.getpid(), note=text)
         append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "runner", "text": "merge queue: " + text})
-    why = settle(root, key, dossier, chain, chain[0]["baseRefName"], [], note)
+    agent = dossier_id(root, dossier, chain)   # the dossier's own id: its agent resolves, its timeline gets the cleanup
+    why = settle(root, key, agent, chain, chain[0]["baseRefName"], [], note)
     if why:
         set_state(key, state="failed", prs=nums, error=why, pid=None); return
     set_state(key, state="merging", pid=os.getpid())
@@ -760,7 +862,7 @@ def work_one(root: str, dossier: str) -> None:
     st = read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}
     nums = st.get("prs") or []
     # /after-merge runs beside the queue: it never pushes to the stub, and a question it asks must not hold up the next merge.
-    start_run(root, dossier, "after-merge", nums)
+    start_run(root, agent, "after-merge", nums)
     set_state(key, state="merged", pid=None, note="merged; /after-merge runs")
 
 
@@ -1047,19 +1149,29 @@ def integrate(root: str, branch: str) -> int:
         append_line(log, {"ts": now(), "kind": kind, "text": text})
     line(f"start /merge-queue {branch}")
     # Step 1: the stub's pull request into development. Opening it closes the stub: new work goes to the next one.
-    into = stub_into_dev(root, branch)
-    if into == "merged":
-        state(state="failed", error=f"{branch} is already merged into development"); return 1
-    if not into:
+    # A stub nothing was merged into yet has no commits beyond development, and GitHub refuses that PR: it then
+    # opens right after the merge queue has merged the first finished dossiers, before /stub starts.
+    def open_pr() -> tuple[bool, str]:
         date = branch.split("/", 1)[1]
         rc, out = gh(root, "pr", "create", "--base", "development", "--head", branch, "--title", f"Stub {date}: integrating",
                      "--body", "Integration of this stub, started from the dashboard's Integrate.\n\n"
                      "1. The merge queue merges every finished dossier on the stub, one by one.\n"
                      "2. /stub runs the full stack suite, audits each dossier against its criteria, and fixes what fails.\n\n"
                      "## Receipt\n\npending\n\n## Fix rounds\n")
-        if rc != 0:
+        if rc == 0:
+            line(f"Opened the stub's pull request into development ({out.strip().splitlines()[-1] if out.strip() else ''}): {branch} is closed, new work goes to the next stub.", "update")
+        return rc == 0, out
+    into = stub_into_dev(root, branch)
+    if into == "merged":
+        state(state="failed", error=f"{branch} is already merged into development"); return 1
+    pr_later = False
+    if not into:
+        ok, out = open_pr()
+        if not ok and "no commits between" in out.lower():
+            pr_later = True
+            line(f"{branch} has nothing merged into it yet, so its pull request into development opens once the first finished dossiers are merged.", "update")
+        elif not ok:
             state(state="failed", error="could not open the stub's PR into development: " + out[-200:]); return 1
-        line(f"Opened the stub's pull request into development ({out.strip().splitlines()[-1] if out.strip() else ''}): {branch} is closed, new work goes to the next stub.", "update")
     rc, out = gh(root, "pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,baseRefName,isDraft")
     if rc != 0:
         state(state="failed", error="gh pr list failed: " + out[:200]); return 1
@@ -1078,9 +1190,14 @@ def integrate(root: str, branch: str) -> int:
     def ready(i: str, p: dict) -> bool:
         """Every PR of the dossier's stack is out of draft (the queue refuses a stack with a draft in it), and no run is live."""
         chain, _ = chain_of(everything, i)
-        return not any(x.get("isDraft") for x in (chain or [p])) and not still_building(f"{repo}.{i}")
+        return not any(x.get("isDraft") for x in (chain or [p])) and not any(still_building(k) for k in chain_keys(repo, i, chain or [p]))
     finished = picked_stacks(ids, ready, (read_json(st_path, {}) or {}).get("finished") or [])
     inflight = [i for i, p in ids if i not in finished]
+    if pr_later and not finished:
+        why = (f"nothing to integrate: no dossier on {branch} is finished (no PR out of draft without a live run)"
+               + (f"; still in flight: {', '.join(inflight)}" if inflight else ""))
+        line(why[0].upper() + why[1:] + ".", "update")
+        state(state="failed", error=why); return 1
     state(state="merging", finished=finished, inflight=inflight, error="", root=root, branch=branch)
     line(("Integrating " + branch + ". Merging the finished dossiers first, in order: " + (", ".join(finished) or "none") + "."
           + (" Still in flight, so they move to the next stub once this one is in development: " + ", ".join(inflight) + "." if inflight else "")
@@ -1100,6 +1217,10 @@ def integrate(root: str, branch: str) -> int:
         why = "; ".join(f"{i}: {v.get('state')} {v.get('error', '')[:120]}" for i, v in bad.items())
         line("The merge queue did not merge every finished dossier, so /stub did not start: " + why, "update")
         state(state="failed", error=why); return 1
+    if pr_later:
+        ok, out = open_pr()
+        if not ok:
+            state(state="failed", error="could not open the stub's PR into development: " + out[-200:]); return 1
     line("All finished dossiers are merged into " + branch + ". Starting /stub: the full stack run, the audit and the stub's PR into development.", "update")
     start_stub(root, branch, slug)
     state(state="stub", note="/stub runs")
@@ -1143,6 +1264,8 @@ if a[:2] == ["pr", "close"]:
     for p in prs:
         if str(p["number"]) == a[2]: p["state"] = "CLOSED"
     json.dump(prs, open(os.path.join(d, "prs.json"), "w")); sys.exit(0)
+if a[:2] == ["pr", "create"] and os.environ.get("FAKE_NO_COMMITS") and not os.path.exists(os.path.join(d, "merged_any.txt")):
+    print("pull request create failed: GraphQL: No commits between development and " + a[a.index("--head") + 1] + " (createPullRequest)"); sys.exit(1)
 if a[:2] == ["pr", "create"]:
     open(os.path.join(d, "stubpr.txt"), "w").write(" ".join(a)); print("https://github.com/o/r/pull/900"); sys.exit(0)
 if a[:2] == ["stack", "link"]:
@@ -1154,6 +1277,7 @@ if a[:2] in (["stack", "merge"], ["pr", "merge"]):
     nums = open(os.path.join(d, "linked.txt")).read().split() if a[0] == "stack" else [a[2]]
     for p in prs:
         if str(p["number"]) in nums: p["state"] = "MERGED"
+    open(os.path.join(d, "merged_any.txt"), "w").write("1")
     if a[0] == "pr" and a[2] == "901" and os.environ.get("FAKE_NO_AUTOMARK") != "1":
         for p in prs:
             if p["headRefName"].startswith(("plan/", "docs/")) and p.get("state", "OPEN") == "OPEN": p["state"] = "MERGED"
@@ -1176,7 +1300,8 @@ if a[:2] == ["pr", "view"] and "mergeStateStatus" in a:
 if a[:2] == ["pr", "view"] and "number,state,baseRefName,headRefName,isDraft,files" in a:
     p = next(p for p in prs if str(p["number"]) == a[2]); print(json.dumps(dict(p, state=p.get("state", "OPEN")))); sys.exit(0)
 if a[:2] == ["pr", "view"] and "headRefOid" in a:
-    print(os.environ.get("FAKE_HEAD", "")); sys.exit(0)
+    hf = os.path.join(d, "head.txt")
+    print(open(hf).read().strip() if os.path.exists(hf) else os.environ.get("FAKE_HEAD", "")); sys.exit(0)
 if a[:2] == ["pr", "view"]:
     p = next(p for p in prs if str(p["number"]) == a[2])
     print(p.get("mergeable", "MERGEABLE") if "mergeable" in a else p.get("state", "OPEN")); sys.exit(0)
@@ -1188,6 +1313,10 @@ def selftest() -> int:
     os.environ.setdefault("ASD_MERGE_NET_TRIES", "2")   # a fixture's unreachable remote must not be waited out for ever
     os.environ.setdefault("ASD_MERGE_NET_WAIT", "0.01")
     fails: list[str] = []
+    # Leak guard: the questions and runs the owner really sees must not gain a fixture's (repo.*, clone.*) file during this run.
+    real_dirs = [os.environ.get("ASD_QUESTIONS_DIR") or os.path.expanduser("~/.agentic/questions"), runs_dir()]
+    listing = lambda: {d: {f for f in os.listdir(d) if f.startswith(("repo.", "clone."))} if os.path.isdir(d) else set() for d in real_dirs}
+    before_real = listing()
 
     def check(name: str, ok: bool, why: str = "") -> None:
         print(("ok   " if ok else "FAIL ") + name + ("" if ok or not why else "  — " + why[:400]))
@@ -1201,6 +1330,31 @@ def selftest() -> int:
     check("chain: two PRs both on the stub are not one chain", not c and "one chain" in why)
     c, why = chain_of([P(1, "plan/W-7", "development")], "W-7")
     check("chain: a plan branch is never a dossier's PR", not c and "no open pull request" in why)
+    c, why = chain_of([P(40, "feat/LABS-117-qc", "stub/x"), P(50, "fix/W-007-deferred", "feat/LABS-117-qc"), P(41, "fix/LABS-139-a", "stub/x"),
+                       P(60, "plan/W-9", "feat/LABS-117-qc")], "LABS-117")
+    check("chain: a PR stacked on the dossier's branch joins its stack whatever its branch is called", [p["number"] for p in c] == [40, 50], why)
+    check("chain: the stack's run keys include every dossier id its branches name",
+          chain_keys("repo", "LABS-117", c) == ["repo.LABS-117", "repo.W-007"], str(chain_keys("repo", "LABS-117", c)))
+    real_git = globals()["git"]
+    trees = {"origin/fix/W-007-deferred": {".discovery/dossiers/W-007-qc.md": "---\nid: W-007\npr: https://x/pull/40\n---\nbody"},
+             "origin/feat/LABS-139-a": {".discovery/dossiers/W-018-order.md": "---\nid: W-018\npr:\n  - https://x/pull/41\n---\n",
+                                        ".discovery/dossiers/W-019-other.md": "---\nid: W-019\npr: https://x/pull/42\n---\n"}}
+    def fake_git(root, *a, timeout=300):
+        if a[0] == "ls-tree":
+            t = trees.get(a[2])
+            return (0, "\n".join(t)) if t is not None else (128, "not a tree")
+        if a[0] == "show":
+            ref, f = a[1].split(":", 1)
+            return 0, trees.get(ref, {}).get(f, "")
+        return 0, ""
+    globals()["git"] = fake_git
+    try:
+        check("dossier id: a stack's fix branch names the dossier that has a file", dossier_id("/r", "LABS-117", c) == "W-007", dossier_id("/r", "LABS-117", c))
+        one = [P(41, "feat/LABS-139-a", "stub/x")]
+        check("dossier id: without one, the dossier whose pr: block list names the stack's PR", dossier_id("/r", "LABS-139", one) == "W-018", dossier_id("/r", "LABS-139", one))
+        check("dossier id: nothing found keeps the queue's id", dossier_id("/r", "W-55", [P(9, "feat/W-55-z", "stub/x")]) == "W-55")
+    finally:
+        globals()["git"] = real_git
     check("chain: W-12 is not W-128", chain_of([P(1, "feat/W-128-x", "stub/x")], "W-12")[0] == [])
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -1211,7 +1365,8 @@ def selftest() -> int:
         open(os.path.join(fdir, "gh.py"), "w").write(FAKE_GH)
         fake_runner = os.path.join(tmp, "runner.py")
         open(fake_runner, "w").write("import sys\nopen(sys.argv[0] + '.args', 'w').write(' '.join(sys.argv[1:]))\nprint('started')\n")
-        env = dict(os.environ, ASD_GH_BIN=f"{sys.executable} {os.path.join(fdir, 'gh.py')}", FAKE_GH_DIR=fdir, ASD_RUNS_DIR=rdir)
+        env = dict(os.environ, ASD_GH_BIN=f"{sys.executable} {os.path.join(fdir, 'gh.py')}", FAKE_GH_DIR=fdir, ASD_RUNS_DIR=rdir, ASD_QUESTIONS_DIR=os.path.join(tmp, "questions"))
+        os.environ["ASD_QUESTIONS_DIR"] = os.path.join(tmp, "questions")   # the owner questions the queue asks stay in the fixture
         global RUNNER
         saved = RUNNER
         RUNNER = fake_runner
@@ -1265,12 +1420,13 @@ dossier, cmd = a[0], a[a.index("--command") + 1]
 open(os.path.join(d, "runs.txt"), "a").write(f"{dossier} {cmd}\n")
 if cmd == "resolve-merge":
     n = open(os.path.join(d, "runs.txt")).read().count("resolve-merge")
+    if not os.environ.get("FAKE_NO_PUSH"): open(os.path.join(d, "head.txt"), "w").write(f"sha{n}")
     if n >= int(os.environ.get("FAKE_RESOLVED_AT_ROUND") or 1):
         prs = json.load(open(os.path.join(d, "prs.json")))
         for p in prs: p["mergeable"] = "MERGEABLE"; p.pop("bucket", None)
         json.dump(prs, open(os.path.join(d, "prs.json"), "w"))
 ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-json.dump({"state": "done", "pid": 2 ** 22 + 7, "started": ts, "command": cmd}, open(os.path.join(rdir, "repo." + dossier + ".runner.json"), "w"))
+json.dump({"state": "failed" if cmd == "resolve-merge" and os.environ.get("FAKE_RUN_FAILS") else "done", "pid": 2 ** 22 + 7, "started": ts, "command": cmd}, open(os.path.join(rdir, "repo." + dossier + ".runner.json"), "w"))
 print("started")
 """
         fr = os.path.join(tmp, "fakerun.py"); open(fr, "w").write(FAKE_RUN)
@@ -1339,16 +1495,17 @@ print("started")
             left[0] = 99; seen_runs.clear()
             with contextlib.redirect_stdout(io.StringIO()):
                 why = settle(root, "repo.W-160", "W-160", one_pr, "stub/s", [], lambda s, t: None)
-            check("queue: a clash that stays stops at the round limit and says so", len(seen_runs) == 3 and "migration numbers still clash" in why and "after 3 agent rounds" in why, why)
+            check("queue: a clash that stays stops at the round limit and says so", len(seen_runs) == 2 and "migration numbers still clash" in why and "after 2 resolve-merge attempts" in why, why)
         finally:
             globals().update(saved_fns)
         # ---- agent rounds: the queue keeps at it, and stops at the limit ----
-        def rounds_scenario(dossier: str, pr: int, resolved_at: int, **fields) -> tuple[list[str], dict]:
+        def rounds_scenario(dossier: str, pr: int, resolved_at: int, extra_env: dict | None = None, **fields) -> tuple[list[str], dict]:
             json.dump([dict(P(pr, f"feat/{dossier}-x", "stub/s"), **(fields or {"mergeable": "CONFLICTING"}))], open(os.path.join(fdir, "prs.json"), "w"))
             for f in ("runs.txt", "calls.txt"):
                 if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
+            open(os.path.join(fdir, "head.txt"), "w").write("sha0")
             saved = dict(os.environ)
-            os.environ.update(env, ASD_RUNNER_BIN=fr, ASD_MERGE_POLL="0.2", FAKE_RESOLVED_AT_ROUND=str(resolved_at))
+            os.environ.update(env, ASD_RUNNER_BIN=fr, ASD_MERGE_POLL="0.2", FAKE_RESOLVED_AT_ROUND=str(resolved_at), **(extra_env or {}))
             try:
                 with contextlib.redirect_stdout(io.StringIO()):
                     enqueue(root, dossier)
@@ -1361,14 +1518,23 @@ print("started")
                 os.environ.clear(); os.environ.update(saved)
             made = open(os.path.join(fdir, "runs.txt")).read().split("\n") if os.path.exists(os.path.join(fdir, "runs.txt")) else []
             return [r for r in made if "resolve-merge" in r], read_json(os.path.join(rdir, f"repo.{dossier}.merge.json"), {}) or {}
-        r3, s3 = rounds_scenario("W-141", 610, 3)
-        check("queue: the third agent round may still resolve it, and the stack merges", len(r3) == 3 and s3.get("state") == "merged", str(r3) + str(s3))
+        r3, s3 = rounds_scenario("W-141", 610, 2)
+        check("queue: a conflict starts resolve-merge by itself; the second attempt may resolve it, and the stack merges", len(r3) == 2 and s3.get("state") == "merged", str(r3) + str(s3))
         r4, s4 = rounds_scenario("W-142", 620, 99)
-        check("queue: three agent rounds is the limit; the stack fails and says so", len(r4) == 3 and s4.get("state") == "failed" and "after 3 agent rounds" in str(s4.get("error")), str(r4) + str(s4))
+        check("queue: two resolve-merge attempts per PR is the cap; the stack fails and says so", len(r4) == 2 and s4.get("state") == "failed" and "after 2 resolve-merge attempts" in str(s4.get("error")), str(r4) + str(s4))
+        qdir = os.path.join(tmp, "questions")
+        asked = [f for f in os.listdir(qdir) if f.endswith(".jsonl")] if os.path.isdir(qdir) else []
+        check("queue: the owner is asked once the attempts are spent", any("W-142" in f for f in asked), str(asked))
+        check("queue: ... and not before (W-141 resolved on the second attempt, no question)", not any("W-141" in f for f in asked), str(asked))
+        r7, s7 = rounds_scenario("W-145", 650, 99, extra_env={"FAKE_NO_PUSH": "1"})
+        check("queue: once per PR head: a run that pushed nothing is not repeated on the same head", len(r7) == 1 and s7.get("state") == "failed" and "head did not change" in str(s7.get("error")), str(r7) + str(s7))
+        r8, s8 = rounds_scenario("W-146", 660, 99, extra_env={"FAKE_RUN_FAILS": "1"})
+        check("queue: resolve-merge failing twice stops after two runs and fails the stack", len(r8) == 2 and s8.get("state") == "failed" and "ended failed twice" in str(s8.get("error")), str(r8) + str(s8))
         r5, s5 = rounds_scenario("W-143", 630, 2, bucket="fail")
         check("queue: a check still red after the agent's push gets another round", len(r5) == 2 and s5.get("state") == "merged", str(r5) + str(s5))
         r6, s6 = rounds_scenario("W-144", 640, 99, bucket="fail")
-        check("queue: red checks stop at the limit too", len(r6) == 3 and s6.get("state") == "failed" and "checks still red: #640 after 3 agent rounds" in str(s6.get("error")), str(r6) + str(s6))
+        check("queue: red checks stop at the cap too", len(r6) == 2 and s6.get("state") == "failed" and "checks still red: #640 after 2 resolve-merge attempts" in str(s6.get("error")), str(r6) + str(s6))
+        os.remove(os.path.join(fdir, "head.txt"))
         # ---- integrate: the finished dossiers through the queue, the one in flight left, then /stub ----
         for f in ("runs.txt", "calls.txt"):
             if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
@@ -1434,6 +1600,32 @@ print("started")
         finally:
             os.environ.clear(); os.environ.update(saved_env)
         check("integrate: a dossier not picked waits while the stub's PR is open", not late[0] and "being integrated" in late[1], str(late))
+        # ---- integrate a stub nothing was merged into yet: GitHub refuses its PR, so it opens after the first merges ----
+        def empty_stub(stub, prs_e):
+            for f in ("runs.txt", "calls.txt", "stubpr.txt", "merged_any.txt"):
+                if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
+            for n in os.listdir(rdir):   # only this scenario's dossiers: later checks read W-128's and W-130's merge state
+                if n.startswith(("repo.W-16", "repo.merge-queue")): os.remove(os.path.join(rdir, n))
+            json.dump(prs_e, open(os.path.join(fdir, "prs.json"), "w"))
+            saved = dict(os.environ)
+            os.environ.update(env, ASD_RUNNER_BIN=fr, ASD_MERGE_POLL="0.2", FAKE_NO_COMMITS="1")
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    rc_e = integrate(root, stub)
+            finally:
+                os.environ.clear(); os.environ.update(saved)
+            slug = stub.replace("/", "-")
+            runs_e = open(os.path.join(fdir, "runs.txt")).read().split("\n") if os.path.exists(os.path.join(fdir, "runs.txt")) else []
+            spr_e = open(os.path.join(fdir, "stubpr.txt")).read() if os.path.exists(os.path.join(fdir, "stubpr.txt")) else ""
+            tl_e = [json.loads(x)["text"] for x in open(os.path.join(rdir, f"repo.{slug}.jsonl"))]
+            return rc_e, runs_e, spr_e, tl_e, read_json(os.path.join(rdir, f"repo.{slug}.integrate.json"), {})
+        rc_e, runs_e, spr_e, tl_e, st_e = empty_stub("stub/e", [P(910, "feat/W-160-a", "stub/e"), P(911, "feat/W-161-b", "stub/e", True)])
+        check("integrate: an empty stub merges its finished dossiers first, then opens its PR and starts /stub",
+              rc_e == 0 and runs_e[:2] == ["W-160 after-merge", "stub-e stub"] and "--head stub/e" in spr_e and st_e.get("state") == "stub"
+              and any("nothing merged into it yet" in t for t in tl_e) and any("is closed" in t for t in tl_e), str((rc_e, runs_e, spr_e, st_e)))
+        rc_n, runs_n, spr_n, tl_n, st_n = empty_stub("stub/n", [P(920, "feat/W-162-a", "stub/n", True)])
+        check("integrate: an empty stub with nothing finished fails plainly, starts nothing and opens no PR",
+              rc_n == 1 and "stub-n stub" not in runs_n and not spr_n and "nothing to integrate" in str(st_n.get("error")) and "W-162" in str(st_n.get("error")), str((rc_n, runs_n, st_n)))
         # ---- non-code PRs into development: a colliding dossier id is renumbered by script, then merged; the stub is untouched ----
         g = lambda *x, cwd=None: subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", *x], cwd=cwd, capture_output=True, text=True)
         origin = os.path.join(tmp, "o.git"); clone = os.path.join(tmp, "clone"); pusher = os.path.join(tmp, "pusher")
@@ -1553,6 +1745,12 @@ print("started")
         g("fetch", "-q", "origin", cwd=clone)
         anc = subprocess.run(["git", "-C", clone, "merge-base", "--is-ancestor", "origin/feat/W-90-low", "origin/fix/W-90-deferred"]).returncode
         check("stack: the PR on top is brought up with the one below it, or the stack merge is refused", why3 == "" and anc == 0, why3)
+        g("checkout", "-q", "development", cwd=pusher); g("pull", "-q", "origin", "development", cwd=pusher); g("checkout", "-q", "-b", "feat/W-91-low", cwd=pusher)
+        open(os.path.join(pusher, "low91.md"), "w").write("low\n"); g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "low", cwd=pusher); g("push", "-q", "origin", "feat/W-91-low", cwd=pusher)
+        g("checkout", "-q", "-b", "fix/W-91-deferred", cwd=pusher); open(os.path.join(pusher, "clash91.md"), "w").write("top\n"); g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "top", cwd=pusher); g("push", "-q", "origin", "fix/W-91-deferred", cwd=pusher)
+        g("checkout", "-q", "development", cwd=pusher); open(os.path.join(pusher, "clash91.md"), "w").write("base\n"); g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "base took clash91", cwd=pusher); g("push", "-q", "origin", "development", cwd=pusher)
+        check("stack: a top that conflicts with the base reads as a clash, though each PR is clean against the one below",
+              stack_clash(clone, "development", "fix/W-91-deferred") and not stack_clash(clone, "development", "fix/W-90-deferred"))
         g("checkout", "-q", "development", cwd=pusher); g("pull", "-q", "origin", "development", cwd=pusher); g("checkout", "-q", "-b", "plan/stale", cwd=pusher)
         open(os.path.join(pusher, ".discovery", "dossiers", "W-147-stale.md"), "w").write("---\nid: W-147\n---\n# stale\n")
         g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "stale", cwd=pusher); g("push", "-q", "origin", "plan/stale", cwd=pusher)
@@ -1591,8 +1789,10 @@ print("started")
         check("resume: a stack that merged before the worker died reads merged, not failed", s77.get("state") == "merged" and not s77.get("error"), str(s77))
         sa, sb, cc, _ = batch_scenario("moved", FAKE_NO_AUTOMARK="1", FAKE_HEAD="pushed-during-the-batch")
         check("batch: a member pushed to during the batch is left open and says so, never closed", "pr close 530" not in cc and sa.get("state") == "failed" and "changed" in sa.get("error", ""), cc + str(sa))
-        check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged")
+        check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged", str(read_json(os.path.join(rdir, "repo.W-128.merge.json"), {})) + str(read_json(os.path.join(rdir, "repo.W-130.merge.json"), {})))
         RUNNER = saved
+    leaked = {d: sorted(now_ - before_real[d]) for d, now_ in listing().items() if now_ - before_real[d]}
+    check("no file was created in the real questions or runs dir during the selftest", not leaked, str(leaked))
     print("FAILED: " + ", ".join(fails) if fails else "all ok")
     return 1 if fails else 0
 

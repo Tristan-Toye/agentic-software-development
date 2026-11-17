@@ -39,6 +39,27 @@ HARNESS: |
   The `app_client` fixture in tests/integration/conftest.py stands up the real
   app against a throwaway Postgres from testcontainers. Seed with
   `seed_publication(client, items=N)`.
+CI_ENVIRONMENT: |
+  services: none (the CI runner has no postgres, no broker)
+  skip: SKIP_STACK_TESTS=1
+  guard: require_stack!();
+          # THE TARGET REPOSITORY'S CI, not the local stack: the services its
+          # runner has (`none` when it has none), the skip / opt-out tokens it
+          # sets, and the guard line a stack-backed test opens with. Required
+          # whenever a test reaches a live service (database, broker, compose
+          # stack): check_payload.py refuses the payload without it, because a
+          # test that passes on the full local stack fails on CI's first
+          # environment read. The composer fills it from the repository's
+          # `.agent-pipeline/ci-environment.txt` and leaves
+          # `@@FILL_CI_ENVIRONMENT@@` when there is none — write `none` there
+          # when the tests reach no live service.
+TEST_FORM_RULES: |
+  env!("CARGO_MANIFEST_DIR") -> testsupport::repo_root()
+          # the repository's refused test-code forms, `refused form -> use
+          # instead` per line, from `.agent-pipeline/test-forms.txt`; the
+          # sentence `none declared (...)` when the repository has no such
+          # file. check_payload.py refuses a payload that omits it (or says
+          # `none declared`) for a repository that declares forms.
 STYLE_SAMPLE: |
   <one existing integration test, verbatim>
 BOUNDARIES: IClock (time), IPaymentClient (external API) — substitute these two
@@ -77,6 +98,11 @@ criteria were updated and the excerpt was not, and the author received
 integration-test-author --live-dossier <live copy>` compares the three
 sections byte for byte and refuses any difference; linted without the flag,
 the payload warns that the excerpt was not compared.
+
+**A negative step's input passes every other documented guard.** A flow step
+whose outcome is refused, `None`, `Ok(None)` or no event uses an input that
+every other guard on that path admits (the `input:` of its checklist line), so
+deleting or weakening that guard alone turns the test red.
 
 **A corrective round on a pre-existing test** carries `FAILURES` and
 `CORRECTION` instead of folding the fix into `DELIVERY_CHANGE`, which is

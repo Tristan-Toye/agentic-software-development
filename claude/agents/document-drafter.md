@@ -30,7 +30,11 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
 
 - `MODE` — `adr` or `pr`.
 - `DECISIONS` — in `adr` mode: the decisions to record, each with its
-  evidence already selected by the orchestrator.
+  evidence already selected by the orchestrator. They come from the decision
+  record `.discovery/decisions/<ID>.yaml` (entries of `decision`,
+  `alternatives`, `why`, `evidence`, `phase`); when the orchestrator names
+  that file as `DECISIONS_FILE`, read it and render exactly the entries it
+  selects. Never mine `## Build log` for decisions.
 - `DOSSIER-EXCERPTS` — in `pr` mode: the dossier sections the description is
   built from.
 - `FORMAT` — the target format and the file shape, verbatim (sections,

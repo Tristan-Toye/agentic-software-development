@@ -26,13 +26,15 @@
    what the union left duplicated.
 
    **Review every `updated dossier` line the finalizer prints before you
-   commit** — read the diff (`git diff --stat`, or `git_state.py`) for each
+   commit** — read the diff (`git diff --stat`, or `git_state.py --full`) for each
    one it names. It rewrites only dossiers this branch added or modified; a
    `NOTICE` line about a dossier it left alone is informational, never a
    rewrite to chase.
 
    **Conflicts on code** → show the user the conflicted files, resolve them
-   (through `implementer` for code, with the user for a judgement call), and
+   (through `implementer` for code, with the user for a judgement call),
+   run `python3 ${PLUGIN_ROOT}/scripts/merge_guard.py` before committing the merge (it must
+   exit 0; `/resolve-merge` Step 2 says how to read it), and
    if the resolution touched the blast radius, **get the runner's verdict on
    the merged head and re-run the three review lenses** before you go on.
    **Bookkeeping-only merges re-run nothing**: when the sync (merge plus finalize) touched only `docs/adr/**`
@@ -69,6 +71,122 @@
    where every concurrent branch pays this, and that is `GRADUATION:`
    material for the target repo's own rules file (content-addressed ids do
    not move).
+   **Architecture diagrams must match the code (close gate).** For a Rust
+   repository with `docs/architecture/c3-components-*.md`, run, after the
+   sync and still inside `X`:
+
+   ```bash
+   python3 "${PLUGIN_ROOT}/scripts/validate_pipeline.py" \
+     --c3-gate --base origin/<target>
+   ```
+
+   It runs `vr_c3_agree.py` on every crate this branch's diff touched, plus
+   the generator freshness check (`scripts/module_graph.py check`). A DEFECT
+   means a touched crate is below 95 percent agreement or its c3 file is
+   stale: **the session does not close.** Regenerate with
+   `python3 scripts/module_graph.py regen docs/architecture/c3-components-<crate>.md`,
+   or repair the parser when the diagram is still wrong, commit, and run the
+   gate again. Never lower the threshold. A `SKIP` line (no c3 files, no
+   `cargo-modules`, no touched crate with a file) is a stated skip, not a
+   pass: copy it into the PR description.
+
+   Architecture diagrams (c1 to c4, sequence) are JSON files beside their
+   `.md` (`docs/architecture/<name>.json`): the JSON is the source and the
+   Mermaid block in the `.md` is generated. Edit the JSON, never the block,
+   then run `python3 "${PLUGIN_ROOT}/scripts/vr_mermaid.py" sync docs/architecture`;
+   the prose around the block stays hand-written. A diagram still only in
+   Mermaid is converted once with `vr_mermaid.py import <file>.md --write`.
+   When a tool rewrote a block (`module_graph.py regen`,
+   `check_diagram_anchors.py --fix`), run
+   `vr_mermaid.py import --adopt --write <file>.md` so the JSON follows; a
+   `sync` before that would revert the tool's edit.
+
+   **Diagram gate (close gate).** After the sync, still inside `X`:
+
+   ```bash
+   python3 "${PLUGIN_ROOT}/scripts/validate_pipeline.py" \
+     --diagram-gate --base origin/<target> --dossier <W-NNN> [--pr-body <file>]
+   ```
+
+   It runs `vr_mermaid.py check docs/architecture` (a block that differs from
+   its JSON, or an unmarked Mermaid block, is a DEFECT: **the session does not
+   close** until it exits 0), then lists every diagram whose source anchors
+   point into a file this branch changed and which the branch did not modify,
+   as `REVIEW: <diagram> anchors <path>`, plus every diagram the dossier's
+   `Diagrams affected:` line lists that the branch left alone. Pass
+   `--pr-body` with the drafted PR description once it exists: a listed
+   diagram it does not mention is then a DEFECT. A `SKIP` line (no
+   `docs/architecture/*.json`) is a stated skip: copy it into the PR
+   description.
+
+   Every `REVIEW` line is settled before the PR opens, one of two ways. Open
+   the diagram with `arch_find` (`query` the path, `diagram` the stem), and if
+   the change altered what it shows, edit its JSON (never the generated block),
+   `vr_mermaid.py sync docs/architecture`, commit, rerun the gate. Or the
+   diagram still holds: write one line in the PR description,
+   `Diagram <stem> unchanged: <why it still holds>`. A REVIEW line left
+   unanswered in both places is an open defect for Phase 8's reviewers and the
+   owner.
+
+   **New diagrams.** For every stem on the dossier's `Diagrams new:` line,
+   create `docs/architecture/<stem>.json` and its `.md` before the PR opens,
+   inside `X`, and commit them with the rest. The gate (`--diagram-gate
+   --dossier`) fails the session when a listed stem has no
+   `docs/architecture/<stem>.json` on the branch, unless the PR description
+   carries `Diagram <stem> not added: <why>` (the plan was wrong: say how).
+   Two sources:
+
+   - *A Phase 3 visual review ran.* One call per stem, from the repo root,
+     mechanical:
+     `python3 "${PLUGIN_ROOT}/scripts/vr_promote.py" --dossier-id <ID> --stem <stem> --repo .`
+     It promotes the approved draft `.discovery/visual-review/<ID>/arch/<stem>.json`
+     (the "Architecture impact" tab the owner reviewed; written by the Phase 3
+     preview for a `seq-*` stem, by the `diagram-author` for `c1-*` and `c4-*`)
+     and drops the elements the owner marked `remove` in `review.json`. For a
+     seq stem lanes are participants and steps are messages (`seq.to` from the
+     step's `to`; arrow from `call_kind`: call `->>`, reply `-->>`, async and
+     publish `-)`), the messages renumbered and re-chained after a removal.
+     Every evidence anchor is then mapped from `meta.base_sha` (the contract
+     commit the views were drawn on) to HEAD: through the line diff when its
+     region is unchanged, to the definition of the enclosing function at HEAD
+     when the body changed, following renames; a backticked name in the
+     anchor's note must agree (a repo with no `base_sha` falls back to the
+     name alone and prints `WARN`). It writes `docs/architecture/<stem>.json`,
+     the `.md` stub when absent, validates and runs `vr_mermaid.py sync`.
+     The owner's approval is tied to the exact file: each kept element needs an
+     `ok` in `review.json` (`anchor.diagram` `arch:<stem>`) on the current hash
+     of the draft (the dashboard's `graph_hash`). Exit 1 is a stop, each with
+     the element named:
+     `STALE-ANCHOR` (the code no longer has what the anchor pointed at: fix
+     the draft or the code and rerun), `UNRESOLVED-CHANGE` (a `change` or
+     `question` on the current hash is open; an `ok` never clears it),
+     `STALE-APPROVAL` (the owner's lines are on an older draft: it
+     changed since, so the owner approves the current file again) or
+     `NOT-APPROVED` (no verdict). A dossier from before the fourth part, with
+     a `seq-*` stem and no draft, still promotes from the `new_stem` flow of
+     `l1.json` and the owner's L1 verdicts. Then commit and rerun the gate.
+   - *No visual review* (a repo whose language the visual review does not
+     cover, today anything but Rust). The orchestrator authors the seq graph
+     from the code (`arch_find` on the neighbouring diagrams as models): one
+     participant lane per crate, process or container, one message per call
+     or event in order (`seq.to` the receiving lane, `arrow` `->>`, `-->>`
+     for a reply, `-)` for async), **every message with a `path:line` source
+     evidence anchor** it opened; a step it cannot anchor is `inferred` with
+     a note, never invented. A new external system (`c1-*`) is a node and
+     edges added to the c1 context graph. Then write
+     `docs/architecture/<stem>.md` (title, one line saying what flow it
+     shows, the marker line
+     `<!-- generated from <stem>.json by vr_mermaid.py render; edit the JSON, not this block -->`,
+     an empty `mermaid` fence holding `sequenceDiagram`,
+     `<!-- end generated -->`), run
+     `python3 "${PLUGIN_ROOT}/scripts/vr_graph.py" validate docs/architecture/<stem>.json --root .`
+     (it must report `ok: true`) and
+     `python3 "${PLUGIN_ROOT}/scripts/vr_mermaid.py" sync docs/architecture`,
+     commit, and rerun the gate.
+
+   The new diagram is part of the PR like any other diagram change; mention
+   it in the PR description.
+
 2. **Get the final verdict on the head the PR will carry** and keep the
     evidence — it goes in the PR description and in the Jira comment. Under
     `ci` the run is CI's on the pushed final head: push, wait, and keep the
@@ -112,6 +230,17 @@
    PR URL back**. Set `status: pr` while you wait — a run that ends here is
    resumable from exactly this point. Committed mode: commit the dossier
    before the push, so the PR opens with the build record in it.
+   **Under `local`, wait for the PR's own CI before step 5** when the host
+   runs CI on it: `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N> --log <dossier>`.
+   The local suite does not run in CI's environment (a tool installed here
+   but not on the runner, another OS), so a green local run does not prove
+   the PR is green. Green: log `CI: green on <sha> (<run URL>)`. Red because
+   of this change, its tests or its test helpers: treat it as a Phase 6
+   failure. Fix it on this branch, test first, through the implementer flow,
+   then push and wait again. Never declare the run done on a red PR. A red
+   check this branch does not touch (a network error, or a check that is red
+   on the base too): log it as `CI: red <check> — not this change: <evidence>`,
+   note it in the PR description, and rerun it once with `--rerun-failed`.
 5. **Record the URL and remove the worktree.** Once the URL is in hand, write it
    to the front matter and set `status: done`. Committed mode: commit that
    final state on `X` and push it — the branch is yours, the PR picks the
@@ -190,30 +319,35 @@
  8. **Capture the deferred issues.** Your awareness of the code is at its
     highest now, and chat dies with the session; a later `/deferred` cannot
     reconstruct what you read here. Start from the `NOTICED:` lines in
-    `## Build log` (every stage logged them as it went, so a run whose stages
+    `## Build log` (`dossier_edit.py section <dossier> 'Build log' --all`; every stage logged them as it went, so a run whose stages
     were separate processes keeps them), then ask working memory: *what
     product-code issues are you aware of that this run did not tackle?* Sweep everything
     the run laid eyes on — the primary-surface files you read in full, every
     arbitration's evidence, every review reply, the `NOTICED:` harvest, every
     change request demoted for missing evidence, every `TOUCHED_BEYOND` path
     you accepted — write every item down before judging any, verify each
-    `path:line`, and append the ledger to `## Build log`:
+    `path:line`, and record each one in the structured record
+    `.discovery/deferred/<ID>.yaml`:
 
     ```
-    DEFERRED: <N> — sources: <own reads, NOTICED harvest, review replies>
-    - D-1 <kind> <title> — <path:line> — <risk> — <why deferred> — contract: <none|internal|external> — effort: <S|M|L>
+    python3 scripts/build_records.py deferred add <ID> --kind <kind> --title '<title>' \
+        --loc <path:line> --evidence '<path:line — what you saw>' --fix '<proposed fix>' \
+        --boundary '<none|internal|external>' --blast-radius '<risk>' \
+        --note 'effort: <S|M|L>' --source '<own reads|NOTICED harvest|review replies>' --log <dossier>
     ```
 
-    Every line ends with `contract:` and `effort:`, test tooling and other
+    Every item carries `boundary` and `effort`, test tooling and other
     non-product items included: you judge them best now, and the dashboard
-    and `/fix-deferred` triage on them when no report row exists. `contract`
-    is the boundary a fix crosses (`none`; `internal` — a signature or module
-    seam; `external` — a route, schema, event, config key or CLI with
-    consumers); `effort` is `S` (under an hour), `M` (hours) or `L` (days),
-    as `/deferred` defines them.
+    and `/fix-deferred` triage on them. `boundary` is what a fix crosses
+    (`none`; `internal` — a signature or module seam; `external` — a route,
+    schema, event, config key or CLI with consumers); `effort` is `S` (under
+    an hour), `M` (hours) or `L` (days), as `/deferred` defines them. `--log`
+    appends one summary line to the build log for a human reader; nothing
+    reads it.
 
-    `DEFERRED: none — sources: …` is a real answer; defend it or do not
-    write it. The D-IDs are minted here, once; the `/deferred` run that
+    No issue is a real answer: `build_records.py deferred none <ID>
+    --source 'own reads' --log <dossier>` writes `items: []` plus the
+    sources. Defend it or do not write it. The D-IDs are minted here, once; the `/deferred` run that
     follows — normally the very next command — reuses them and appends what
     its own recall adds. Capture only; `/deferred` renders the report.
  9. **Report**: the ticket, the branch, the PR URL, the suite runner and
@@ -226,3 +360,5 @@
     unblocks, and the deferred
     count from step 8 — `N deferred issues captured; /deferred renders them`
     — with the worst risk named in one clause when N is not zero.
+
+**Driver (`ASD_DRIVER_FINALIZE_PR` is `on` or `shadow`).** `python3 scripts/finalize_pr.py --dossier ID --worktree PATH --target BRANCH` does the merge of the target, finalize-ids, validation, conflict-marker and duplicate-ADR checks and prints evidence; a merge conflict aborts and exits 2 for you to resolve. In `shadow`, do the manual finalize exactly as today, then run the driver once afterwards with the same arguments (no `--log`) and ignore its output for every decision; it runs in a throwaway worktree, changes nothing, and saves evidence for the rollout report. `off` or unset: ignore this paragraph.

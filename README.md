@@ -87,6 +87,7 @@ every flag and keeps every judgement:
 | `stub-materialiser` | Read, Grep, Glob, Bash, Write | The contract verbatim into compiling stubs, past four members. |
 | `blast-radius-scout` | Read, Grep, Glob, Bash | The review scope as a location list, past five changed files. File selection comes from `ocr delegate preview`, so every dropped path arrives with the reason it was dropped. |
 | `document-drafter` | Read, Grep, Glob, Write | ADR and PR drafts from decisions already made, self-scrubbed. |
+| `diagram-author` | Read, Grep, Glob, Bash (vr scripts), Write — scoped to `.discovery/visual-review/` | Names and groups the facts of a change into the three review views (L0, L1, L2) at the end of Phase 3, plus a draft of every new c1/c4 architecture diagram; marks what no stub proves `inferred`. |
 | `scribe` | Read, Edit, Write — scoped to `.discovery/`, `docs/`, `.agent-staging/` | Prose edits to a dossier or a document from the facts and rulings it is handed. Never tests, docstrings or code. |
 | `code-scout` | Read, Grep, Glob, the code-navigation tools | Lookup chains — where a symbol is, what calls it — answered as `path:line` rows, never file contents. |
 
@@ -180,6 +181,11 @@ time and gets right.
 The pipeline runs under opencode and under Claude Code. Every file stays where
 opencode expects it; Claude Code reaches the same files through the path fields
 in `.claude-plugin/plugin.json`.
+
+The manifest sets no `version`. Claude Code then takes the commit SHA as the
+plugin's version, so every merge into `production` is an update for
+`claude plugin update`, and no pull request edits a version line that the next
+one conflicts with. `build_claude_plugin.py --check` fails a manifest that sets one.
 
 | Claude Code loads | From |
 |---|---|
@@ -417,7 +423,9 @@ are in `ledger/token-spend.md`; `scripts/token_report.py` produces the numbers.
 | `references/time-logging.md` | The Tempo contract: one session per run, orchestrator only. |
 | `skills/standards/` | The engineering standards. They bind generation and review symmetrically. |
 | `scripts/validate_pipeline.py` | Front matter, section set, **path disjointness**, contract shape, criterion falsifiability, anchors, ASD-STE100, and two dossiers sharing one ID. `--mode` settles which of the two `.discovery/` modes a checkout is in; `--finalize-ids` renumbers the ADRs, LRNs and dossiers a concurrent branch landed first. `--selftest` checks the checker. |
+| `scripts/claim_id.py` | Claims the next dossier (`--kind W`) or ADR (`--kind ADR`) number from the repository's central ID ledger: branch `asd/ids` on the remote, one line per claim, appended by a push without force, so a concurrent claim is rejected and retries with the next number. The next number is above the ledger and every number in any remote branch's tree (open plan PRs included). Never touches the working tree. `--peek` claims nothing. `--selftest` checks the claimer. |
 | `scripts/check_docs.py` | The flow documents' cross-references: section numbers and titles, command names, plugin paths, phase references. Catches the dangling pointer an agent would otherwise follow into nothing. `--selftest` checks the checker. |
+| `scripts/flow_coverage.py` | Which runtime entry points (Rust: `main`, axum routes, `run(.., shutdown)`, `register_*(&mut ToolRegistry)`, `serve_*_requests`) have no `docs/architecture/seq-*.json` diagram. `--repo R [--json]`, `--changed BASE` (exit 1 on an uncovered, non-exempt entry in changed files), `--selftest`. |
 | `scripts/check_permission_maps.py` | Sub-agent permission maps: allow-list shape, read-to-edit symmetry, and pre-spawn `TEST_PATHS` validation against the host's boundary (`--host`) — the frontmatter tool list is read first, so a read path for a tool list with no `Read` is refused, an existing `TEST_PATHS` target for a `Write`-only author warns delete-first, and a tool list that disagrees with a map is a defect in the agent file; the size and one-path-per-flow gates for both test authors (`--expected-lines`, `--flows`). `--selftest` checks the checker. |
 | `scripts/check_payload.py` | A spawn payload before it ships: field names per agent kind (missing and misnamed), absolute paths that exist, no unexpanded `${PLUGIN_ROOT}` or `@@TOKEN@@` template placeholder, no credential literal, a `TEST_COMMAND` verb that matches the script's shebang, a `DOSSIER` that is the run's live copy, no path handed to an agent whose tool list grants no `Read` — in a field or in prose (`--host claude`) — no read an agent cannot bound, an integration excerpt equal to the live dossier (`--live-dossier`), and a warning on a whole-value checklist line with no assertion-form tag. `--selftest` checks the checker. |
 | `scripts/check_harness_edit.py` | The row-4 boundary at Phase 6: exit 0 harness-only, exit 1 assertion-bearing — a hoisted expected value the assertion reads included — exit 2 unknown, ruled conservatively. `--selftest` checks the checker. |
@@ -436,6 +444,7 @@ are in `ledger/token-spend.md`; `scripts/token_report.py` produces the numbers.
 | `scripts/code_nav.py` | Structural reads and edits for Rust, Python, C# and markdown: an outline with line ranges, one item (whole, contract, doc or signature), where a symbol is defined, one markdown section by heading or id, and a replace of one item. Exposed to opencode as `code_*` and `doc_section` tools by `opencode/plugins/code-nav.ts`. `--selftest` checks the checker. |
 | `scripts/tftest_runs.py` | Terraform `.tftest.hcl` judged one run block at a time: a scratch module copy per run (shared mock_provider/variables kept), `terraform init -backend=false` + `test`, one `PASS\|FAIL <run name>` line each — because `terraform test` skips every run after a failed `expect_failures` run. `--selftest` checks the checker. |
 | `scripts/materialise_stubs.py` | Compiling stubs from a signature-only contract, deterministically: every contract line byte-for-byte, a throwing body per member that needs one, `### Definitions` placed, the mechanical diff run in-process — the no-agent route beside `stub-materialiser`. `--selftest` checks the checker. |
+| `scripts/merge_guard.py` | Fails a merge whose conflict resolution lost lines: per file, line multisets of base, both sides and the result. A line both sides kept that is missing is `lost` (always a defect); a line only one side had with no version left is `gone` (passes only with `Dropped: <path> — <why>` in the merge message); a renumbered or combined line is `replaced` (passes). Checks the pending merge, or `--commit <sha>`. `--selftest` checks the checker. |
 | `scripts/gate_commit.py` | Gates, stage only the named paths, commit (signed when asked), push when asked; `--forbid-id` refuses a commit that names the dossier id; at most 12 lines out. `--selftest` checks the checker. |
 | `scripts/verify_return.py` | One call after a subagent returns: worktree state, its commits, paths touched beyond ownership, stubs left, the contract hash and the slot release, with the mechanical half of the build-log line. `--selftest` checks the checker. `--gates FILE` reports whether a green `run_gates.py` receipt matches the tree. |
 | `scripts/ask_owner.py` | Owner questions from a run: `ask`, `reply`, `wait`, `list`, `show` against the store in `~/.agentic/questions`. Works with the server down. See `references/owner-questions.md`. |

@@ -23,6 +23,7 @@ reaches stdout, however large the run.
                  [--vm NAME --workdir DIR [--env-script FILE] [--path-prepend DIR]]
                  [--cwd DIR] [--test NAME ...] [--repeat N] [--detach] [--print-cmd]
                  -- <command...>
+    run_tests.py [...] --build-log DOSSIER [--suite-base SHA] -- <command...>
     run_tests.py --wait LOG [--timeout SECONDS=3600]
     run_tests.py --digest LOG
     run_tests.py --selftest
@@ -498,7 +499,10 @@ def suite_notes(text: str, root: str | None, max_items: int) -> list[str]:
 
 
 def parse_generic(text: str) -> tuple[Totals, list[Failure], bool]:
-    keep = [line for line in text.splitlines() if re.search(r"\bFAIL(?:ED)?\b|\bError\b", line)]
+    # MSBuild's summary prints `0 Error(s)` / `0 Warning(s)` on a green build: a count, not a failure.
+    zero_count = re.compile(r"^\s*0 (?:Error|Warning)\(s\)\s*$")
+    keep = [line for line in ANSI_RE.sub("", text).splitlines()
+            if re.search(r"\bFAIL(?:ED)?\b|\bError\b", line) and not zero_count.match(line)]
     if not keep:
         return Totals(), [], False
     return Totals(failed=len(keep)), [Failure(line.strip()) for line in keep], True
@@ -652,6 +656,21 @@ def run_root(args: argparse.Namespace) -> str | None:
     return args.workdir if args.vm else args.cwd
 
 
+def git_head(cwd: str | None) -> str:
+    try:
+        r = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=cwd or None, capture_output=True, text=True, timeout=20)
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def suite_line(sha: str, base: str | None, totals: "Totals", rc: int, log_path: str) -> str:
+    """The `SUITE: local on <sha>, base <sha> — <counts>; <log>` line phase-6-conditional.md asks for."""
+    verdict = "passed" if rc == 0 else f"exit {rc}"
+    return (f"SUITE: local on {sha}, base {(base or 'unknown')[:12]} — {totals.passed} passed, "
+            f"{totals.failed} failed, {totals.ignored} skipped, {verdict}; {log_path}")
+
+
 def single_run(args: argparse.Namespace, argv: list[str], display: str, log_path: str) -> int:
     rc, wall, log_text = execute(argv, log_path, args.cwd if not args.vm else None, args.vm, args.vm_pidfile)
     parser, totals, failures = parse_log(log_text)
@@ -665,6 +684,9 @@ def single_run(args: argparse.Namespace, argv: list[str], display: str, log_path
         held, line = proof(log_text, args.test or args.proof_name, args.expect)
         out += "\n" + line
         rc = 0 if held else 4
+    if args.build_log:
+        import dossier_edit
+        out += "\n" + dossier_edit.log_or_say(args.build_log, [suite_line(git_head(args.cwd), args.suite_base, totals, rc, log_path)])
     print(out)
     return rc
 
@@ -831,6 +853,8 @@ def main(argv: list[str] | None = None) -> int:
 
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--log", help="log file path (default: a hash of the command, under $TMPDIR)")
+    ap.add_argument("--build-log", metavar="DOSSIER", help="after a single run, append `SUITE: local on <sha>, base <sha> — <counts>; <log>` to this dossier's Build log (full-suite runs only; not for focused runs)")
+    ap.add_argument("--suite-base", metavar="SHA", help="with --build-log: the target baseline sha the line names")
     ap.add_argument("--max-failures", type=int, default=10)
     ap.add_argument("--lines", type=int, default=15, help="detail lines per failure / tail lines when nothing parses")
     ap.add_argument("--line-chars", type=int, default=300)
@@ -1249,7 +1273,34 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
           proof(sh_log, ["G10"], "red")[0] and proof(sh_log, ["G1"], "green")[0]
           and proof(sh_log, ["stale binary is rebuilt"], "green")[0] and proof(sh_log, ["case_down"], "red")[0])
     check("proof: a shell label must stand alone (G1 is not G10)", outcomes(sh_log, ["G1"])["G1"] == "ok")
+    sp_log = "PASS: first case\nFAIL: second case — why it failed\n"
+    check("proof: --expect accepts a bash `FAIL: <label>` line as red (label with spaces, whole after prefix)",
+          proof(sp_log, ["second case"], "red")[0])
+    check("proof: a label only under `PASS: ` is refused as red", not proof(sp_log, ["first case"], "red")[0])
+    check("proof: a label that is only a prefix of a FAIL: label is not matched",
+          proof(sp_log, ["second"], "red")[1].startswith("PROOF REFUSED") or outcomes(sp_log, ["second"])["second"] == "failed")
+    msb_green = "Build succeeded.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:00:01.23\n"
+    parser, totals, fails = parse_log(msb_green)
+    check("dotnet build: `0 Error(s)`/`0 Warning(s)` is not a failure", totals.failed == 0 and not fails)
+    parser, totals, fails = parse_log("Build FAILED.\n    0 Warning(s)\n    2 Error(s)\n")
+    check("dotnet build: a non-zero `Error(s)` count is still a failure", totals.failed == 2)
     check("proof: a name no shell line carries still did not run", proof(sh_log, ["G2"], "red")[1].startswith("PROOF REFUSED"))
+    # --build-log: the SUITE: local line, through dossier_edit's lock.
+    with tempfile.TemporaryDirectory() as td:
+        dos = os.path.join(td, "W-1.md")
+        open(dos, "w", encoding="utf-8").write("---\nid: W-1\n---\n\n# T\n\n## Build log\n\n- first\n")
+        subprocess.run(["git", "init", "-q", td], check=True)
+        subprocess.run(["git", "-C", td, "-c", "user.email=a@b", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc_l = main(["--cwd", td, "--log", os.path.join(td, "t.log"), "--build-log", dos, "--suite-base", "a" * 40, "--", "bash", "-c", "echo 'test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured'"])
+        got = open(dos, encoding="utf-8").read()
+        head = git_head(td)
+        check("--build-log writes SUITE: local with sha, base, counts and log path",
+              rc_l == 0 and f"- SUITE: local on {head}, base {'a' * 12} — 3 passed, 0 failed, 1 skipped, passed; {os.path.join(td, 't.log')}\n" in got)
+        check("the digest says the build-log line landed", "build log: 1 line(s) written" in buf.getvalue())
+        check("the SUITE: local line has the shape the phase doc names",
+              re.search(r"^- SUITE: local on \S+, base \S+ — .+; \S+$", got, re.M) is not None)
     print(f"selftest: {len(failures_list)} failure(s)")
     return 1 if failures_list else 0
 

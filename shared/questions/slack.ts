@@ -114,7 +114,9 @@ export function questionBlocks(q: Question, port: number | string, answered = fa
   if (opts) body += `\n\n${opts}`
   if (q.recommendation) body += `\n\n_Recommended:_ *${esc(q.recommendation)}*`
   if (answered && q.answer) {
-    body += `\n\n:white_check_mark: *Answered${q.answer.option ? ` (${esc(String(q.answer.option))})` : ""}:* ${esc(q.answer.text)}`
+    // A visual-review answer carries the owner's element verdicts: Slack gets the option only (VR-04).
+    const opt = q.answer.option ? ` (${esc(String(q.answer.option))})` : ""
+    body += q.answer.review === true ? `\n\n:white_check_mark: *Answered${opt}*` : `\n\n:white_check_mark: *Answered${opt}:* ${esc(q.answer.text)}`
   }
   const blocks: any[] = [{ type: "section", text: { type: "mrkdwn", text: clip(body, 2900) } }]
   if (!answered && q.options.length) {

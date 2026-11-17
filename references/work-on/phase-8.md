@@ -13,7 +13,7 @@
   rules file (Phase 8b), never an ADR and never an unratified write.
 
 **Spawning and workflows.** The rules for spawning an agent and for the two plugin
-workflows are in `phase-4.md`: `ref_section` with `phase-4` and the headings
+workflows are in `phase-4-conditional.md`: `ref_section` with `phase-4-conditional` and the headings
 "Spawning under Claude Code" and "Under Claude Code — two workflows".
 
 **Delegation and its size gates** are in `phase-2.md`: `ref_section` with `phase-2`
@@ -33,10 +33,15 @@ to it: a lesson this build paid for belongs to the repo that taught it.
 
 ### 8a — the ADRs
 
-Read `## Build log` and the review replies and ask: **what did this build decide
+Read the whole `## Build log` (`dossier_edit.py section <dossier> 'Build log' --all`; the default shows only the last 120 lines) and the review replies and ask: **what did this build decide
 that would change how a future agent writes code here?**
 
-The material is already there: the contract choices and the alternatives
+Start from the decision records, `.discovery/decisions/<ID>.yaml`
+(`python3 scripts/build_records.py decision show <ID>`): each entry is a
+`decision`, its `alternatives`, `why`, `evidence` and the `phase` that ruled
+it, written at ruling or checkpoint time. Select from them and give the chosen
+entries to `document-drafter` as `DECISIONS`; scrape `## Build log` only for a
+run that predates the records. The material is already there: the contract choices and the alternatives
 `/plan` rejected, every `CONTRACT-CHANGE:` ruling, every ambiguous-contract
 arbitration, and the trade-offs the architecture and performance lenses
 surfaced.
@@ -60,16 +65,23 @@ surfaced.
   `owned` = its `TARGET_PATHS`, `root` = `X`, its branch, and `base` = `X`'s HEAD
   at the spawn. The drafter never commits, so the wave verifies it with
   `--uncommitted`: written files raise no flag, a path outside `TARGET_PATHS` or a
-  target never written does. The PR description is drafted in Phase 9
+  target never written does. `X` is your own tree and you dirty it too (the
+  `WORKFLOW:` build-log line, an ADR you amend), so before the launch run
+  `python3 ${PLUGIN_ROOT}/scripts/verify_return.py --root X --snapshot
+  .agent-staging/pre-drafters.json` and set `preexisting` to that file on every
+  item (a path dirty then and unchanged is not the drafter's); list in
+  `orchestratorPaths` what you keep writing while it runs (the live dossier, an
+  ADR you amend). A real stray write still flags. The PR description is drafted in Phase 9
   (`phase-9.md`), outside this call.
 - A decision an existing ADR already covers is an **amendment**: add the
   constraint to that ADR's `## Consequences` and bump its `date`. Do not mint a
   near-duplicate.
 - Write `## Consequences` for the agent who will read it: state the constraint a
   future change must respect, not a summary of the work.
-- Mint IDs atomically and set `jira` to the ticket (never the dossier ID — an
+- Claim each ADR number with `claim_id.py --kind ADR --for <dossier ID>`
+  (`formats/evidence-and-ids.md` §4; mint atomically only when it exits 1) and set `jira` to the ticket (never the dossier ID — an
   ADR is read by people who never open a dossier, and in local mode the
-  dossier is not even in the repository). A number minted here is provisional
+  dossier is not even in the repository). A claimed number is final; a number minted here is provisional
   until the Phase 9 sync, where `--finalize-ids` settles a collision with a
   concurrent branch. Then run
   `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py` with no arguments, in
@@ -149,7 +161,11 @@ GAP: return — enough to reconstruct it.>
 
 Nothing else. No priority table, no scope field, no supersedes bookkeeping —
 the repo's file is read by whoever is about to write code in it, not
-audited.
+audited. One exception: where the repo's ledger tags its entries with a
+`<!-- phases: ... -->` line right under each heading (the `/work-on` phases
+`0`-`9`, `plan`, or `all` the rule bears on), the new entry carries one too —
+`phase_checkpoint` lists rules by that tag, and the repo's own check may
+refuse an entry without it.
 
 **The bar is high, and it is what keeps the file worth reading**: a rule
 earns its place only by being non-obvious *for this repo*, or by having a

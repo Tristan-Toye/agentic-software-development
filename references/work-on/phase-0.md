@@ -27,7 +27,14 @@ merges or pushes** — a dirty tracked dossier blocks a merge that touches it,
 and an unpushed record dies with the worktree. Add it by name, never with
 `git add -A`. State the mode in one line.
 
-`$ARGUMENTS` names a dossier ID, or is empty. Empty → read the front matter of
+`$ARGUMENTS` names a dossier ID, or is empty. It can add
+`plan-branch=plan/<KEY>`: the runner requeued this build after a re-plan
+whose plan PR has not merged yet (committed mode). The live dossier before `X`
+exists is then the copy on that branch — read it with
+`git fetch origin <branch> && git show origin/<branch>:.discovery/dossiers/<file>`
+and route on it (it reads `ready`; this checkout's copy still reads
+`planned`). Phase 2 stacks the build on that plan. Log
+`PLAN-STACK: <branch> — plan PR open, build stacked on it`. Empty → read the front matter of
 every `.discovery/dossiers/*.md`, and take the first with `status: ready` whose
 `blocked_by` entries are all `done`. State your pick and continue. In committed mode this checkout's copies show
 only what has merged, so list the worktrees first (`git worktree list`): a
@@ -42,7 +49,7 @@ later one renumbers in its own PR with `--finalize-ids`.
 | `status` | What this run does |
 |---|---|
 | `ready` | The full build, from Phase 1. |
-| `building` | Resume: read `## Build log`, find which packages have merged into the base branch, and continue the fan-out from the rest. |
+| `building` | Resume: find which packages have merged from git, not from the log — `git -C <X> branch --merged HEAD` lists the package branches already merged into `X`, `git -C <X> branch --no-merged HEAD` with `git worktree list` the rest — and continue the fan-out from the rest. The log still holds the rulings and agent IDs. |
 | `review` | Resume at Phase 6 — get the suite's verdict on the current head first, from the runner `SUITE-RUNNER:` names (CI's run on the pushed head, or a local run), and never trust a log line over the actual run. |
 | `pr` | Ask the user for the PR URL, then finish Phase 9: record it and remove the worktree. |
 | `done` | Ask what the user wants. A follow-up on finished work — PR review comments, a second pass — starts a **fresh worktree**, either as a new run on this dossier or as a new dossier. Never reopen the worktree that produced the PR. |

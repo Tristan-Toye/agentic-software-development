@@ -1,10 +1,11 @@
 // Pipeline discovery: dossiers, stage, session activity, PR/CI. Contract: references/owner-questions.md (Dashboard).
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs"
 import { homedir } from "node:os"
-import { basename, join, relative } from "node:path"
+import { basename, dirname, join, relative } from "node:path"
 import type { Question } from "./store.ts"
 import { emitChange } from "./events.ts"
 import { blockedByOf, controlsFor, type Controls } from "./controls.ts"
+import { applyPending } from "./pending.ts"
 import { readRunner, readUpdates, readViewCache, runnerActive, runsDir, summaryOf, writeViewCache, type RunnerState, type Update } from "./runstore.ts"
 
 export const STATUSES = ["planned", "ready", "building", "review", "pr", "done", "dropped"] as const
@@ -31,6 +32,8 @@ export type Run = {
   deferred: Deferred; deferredOpen: number; runnerLog: string
   /** The key of the run shown for this dossier: `<repo>.<ID>`, or the /plan run of the deferred item it comes from. */
   runKey?: string
+  /** Actions pressed whose run has not shown up yet (their buttons are hidden), and the note of one that failed or timed out. */
+  pending?: string[]; pendingNotes?: Record<string, string>
 }
 
 /**
@@ -45,7 +48,7 @@ export function deferredSince(updated: string, runner: unknown): boolean {
 /** One deferred issue from a dossier's ledger (`/work-on` Phase 9, `/deferred`, `/fix-deferred`). */
 export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixing" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string;
   /** The item a dossier is planned from: itself, or another dossier's same issue (`seed: /plan W-128 D-3`, `DEFERRED-SAME`). */
-  seed?: { src: string; item: string }; planBranch?: string; ownerKept?: boolean; planning?: "running" | "waiting" | "paused" | "done" | "failed" | "stopped"; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string; keptOpen?: boolean }
+  seed?: { src: string; item: string }; planBranch?: string; ownerKept?: boolean; planning?: "running" | "testing" | "waiting" | "paused" | "done" | "failed" | "stopped"; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string; keptOpen?: boolean }
 export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; branch?: string }
 
 /**
@@ -53,9 +56,30 @@ export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; bra
  * lines (first one per id wins; the `contract:` and `effort:` parts may sit anywhere after the title), closed by `DEFERRED-FIXED: D-n <sha>` and routed by
  * `DEFERRED-TRIAGE: D-n → dossier — …`; `DEFERRED-FIX: PR <url>` names the stacked PR.
  */
-export function parseDeferred(log: string): { items: DeferredItem[]; pr: string; branch: string } {
-  const items = new Map<string, DeferredItem>()
-  let pr = "", branch = ""
+/**
+ * The structured record `.discovery/deferred/<ID>.yaml` (JSON in a YAML file, written by `scripts/build_records.py`):
+ * `{items: [{id, evidence, fix, boundary, blast_radius, state, title?, kind?, loc?, note?}], sources: []}`. Null when absent or
+ * unreadable, which sends the caller back to the build-log parse.
+ */
+export function readDeferredRecord(dossierFile: string, id: string): DeferredItem[] | null {
+  let rec: any
+  try { rec = JSON.parse(readFileSync(join(dirname(dossierFile), "..", "deferred", `${id}.yaml`), "utf8")) } catch { return null }
+  if (!rec || !Array.isArray(rec.items)) return null
+  const states: Record<string, DeferredItem["state"]> = { open: "open", fixing: "fixing", fixed: "fixed", dossier: "dossier", wontfix: "deprecated" }
+  return rec.items.filter((i: any) => i && /^D-\d+$/.test(String(i.id))).map((i: any): DeferredItem => {
+    const note = String(i.note ?? ""), effort = note.match(/\beffort:\s*([SML])\b/i)?.[1]?.toUpperCase()
+    const contract = String(i.boundary ?? "").trim().split(/[:\s]/)[0].toLowerCase()
+    return {
+      id: i.id, kind: String(i.kind ?? "deferred"), title: String(i.title ?? i.evidence ?? ""), loc: String(i.loc ?? ""), risk: String(i.blast_radius ?? ""), why: String(i.fix ?? ""),
+      state: states[String(i.state)] ?? "open", note: /^effort:/i.test(note) ? "" : note, dossier: "", ...(contract ? { contract } : {}), ...(effort ? { effort } : {}),
+    }
+  })
+}
+
+export function parseDeferred(log: string, record: DeferredItem[] | null = null): { items: DeferredItem[]; pr: string; branch: string } {
+  // A record, when the run wrote one, is the source of the items; the log still supplies the later events and the PR.
+  const items = new Map<string, DeferredItem>((record ?? []).map((i) => [i.id, i]))
+  let pr = "", branch = "", prFixed = 0
   const asked = new Map<string, string>() // question id -> D-id
   for (const raw of log.split("\n")) {
     const l = raw.trim()
@@ -110,9 +134,24 @@ export function parseDeferred(log: string): { items: DeferredItem[]; pr: string;
     if (dr && items.has(dr[1])) { const it = items.get(dr[1])!; if (it.state !== "fixed") { it.state = "deprecated"; it.note = dr[2] } continue }
     const dd = l.match(/^(?:[-*]\s+)?DEFERRED-DOSSIER:\s*(D-\d+)\s*→\s*([A-Z][A-Z0-9]*-\d+)/)
     if (dd && items.has(dd[1])) { const it = items.get(dd[1])!; if (it.state !== "fixed") { it.state = "dossier"; it.dossier = dd[2] } continue }
-    const p = l.match(/DEFERRED-FIX:\s*PR\s+(\S+)/)
-    if (p) pr = p[1]
+    // The run's own summary of its commits: `DEFERRED-FIX: commits — D-4 817cf9b5, D-1 545dfe3f + b582af0f (…)`.
+    const cm = l.match(/^(?:[-*]\s+)?DEFERRED-FIX:\s*commits\b\s*(?:—\s*)?(.*)$/)
+    if (cm) {
+      for (const part of cm[1].split(/,\s*(?=D-\d+\b)/)) {
+        const c = part.match(/^(D-\d+)\s+([0-9a-f]{7,40}(?:\s*\+\s*[0-9a-f]{7,40})*)/)
+        const it = c ? items.get(c[1]) : undefined
+        if (c && it && (it.state === "open" || it.state === "fixing")) { it.state = "fixed"; it.note = c[2].replace(/\s+/g, "") }
+      }
+      continue
+    }
+    const p = l.match(/DEFERRED-FIX:\s*PR\s+(\S+)(?:.*?\bfixed\s+(\d+))?/)
+    if (p) { pr = p[1]; if (p[2]) prFixed = Number(p[2]) }
   }
+  // The PR line reports how many items the stacked PR fixed. Runs that closed their items there instead of with one
+  // `DEFERRED-FIXED:` line each left them `fixing`; when the PR accounts for all of them, they are fixed in that PR.
+  const still = [...items.values()].filter((i) => i.state === "fixing")
+  const done = [...items.values()].filter((i) => i.state === "fixed").length
+  if (pr && still.length && prFixed >= done + still.length) for (const it of still) { it.state = "fixed"; it.note = `in ${pr.replace(/^.*\/pull\//, "PR #")}` }
   return { items: [...items.values()], pr, branch }
 }
 /**
@@ -180,6 +219,12 @@ export function parseFrontMatter(text: string): Front {
     const m = lines[i].match(/^([A-Za-z_][\w-]*):\s*(.*?)\s*$/)
     if (!m) continue
     let v = m[2]
+    if (v === "") {
+      // A block list (`pr:` then `  - a` lines) reads as its inline form `[a, b]`, like `pr: [a, b]`.
+      const items: string[] = []
+      while (i + 1 < lines.length && /^\s+-\s/.test(lines[i + 1])) items.push(lines[++i].replace(/^\s+-\s+/, "").trim().replace(/^(["'])(.*)\1$/, "$2"))
+      if (items.length) v = `[${items.join(", ")}]`
+    }
     if ((v.startsWith('"') && v.endsWith('"') || v.startsWith("'") && v.endsWith("'")) && v.length >= 2) v = v.slice(1, -1)
     out[m[1]] = v
   }
@@ -206,10 +251,29 @@ export function lastPhase(log: string): string {
   for (const m of log.matchAll(/^\s*(?:[-*]\s+)?(?:\*\*)?(?:Phase|PHASE)\s+(\d+[a-z]?)\b/gm)) last = m[1]
   return last
 }
-/** The phase of the newest `stage` line in a run's updates (checkpoint names start `Phase <n>`). */
-export function stagePhase(updates: { kind: string; stage?: string; text: string }[]): string {
-  for (const u of updates) if (u.kind === "stage") { const m = `${u.stage ?? ""} ${u.text}`.match(/\b(?:Phase|PHASE)\s+(\d+[a-z]?)\b/); if (m) return m[1] }
-  return ""
+/**
+ * The /work-on phase of a run's updates (newest first; checkpoint names start `Phase <n>`). The phase names are
+ * /work-on's, so only a /work-on run's stage lines count: the stages of /fix-deferred, /resolve-merge and other runs
+ * are skipped, and a /plan run (a re-plan) makes any older build phase stale. A /work-on run with no stage yet (a
+ * restart) shows the phase its earlier /work-on run reached. Returns the newest /work-on stage, `null` when a /plan
+ * run came after every /work-on stage (so the caller does not fall back to the build log of that earlier attempt
+ * either), and "" when no /work-on stage is recorded at all.
+ * Stage lines older than every `start /<command>` line (logs from before runners wrote one) count as /work-on.
+ */
+export function stagePhase(updates: { kind: string; stage?: string; text: string }[]): string | null {
+  let pending = ""   // the newest stage seen since the last start line
+  for (const u of updates) {
+    if (u.kind === "runner") {
+      const cmd = u.text.match(/^start \/([\w-]+)/)?.[1]
+      if (!cmd) continue
+      if (cmd === "work-on") { if (pending) return pending; continue }
+      if (cmd === "plan") return null
+      pending = ""     // another command's stages say nothing about the build phase
+      continue
+    }
+    if (u.kind === "stage" && !pending) { const m = `${u.stage ?? ""} ${u.text}`.match(/\b(?:Phase|PHASE)\s+(\d+[a-z]?)\b/); if (m) pending = m[1] }
+  }
+  return pending
 }
 /** The last build-log entry, whole: a wrapped bullet is joined back, a trailing fenced block is skipped. */
 export function lastLine(log: string): string {
@@ -320,12 +384,18 @@ export async function pickDossiersByRepo(roots: string[], mainFor: (wt: string) 
   return out
 }
 
-/** The repo a question belongs to: among the runs with its dossier id, the one named by `q.repo` or whose checkouts contain `q.root`; the only candidate otherwise. */
+/**
+ * The repo a question belongs to: among the runs with its dossier id, the one named by `q.repo` or whose checkouts
+ * contain `q.root`. When `q.repo` names a repo the runs know, it is the answer even with no run of that dossier yet:
+ * dossier ids repeat across repos, and a question asked moments after its dossier was written must not be filed under
+ * another repo's dossier of the same id. The only candidate is the answer only when `q.repo` is not a known repo.
+ */
 export function questionRepo(q: { repo: string; dossier: string; root?: string }, runs: { repo: string; id: string; main: string; worktree: string }[]): string | undefined {
   const c = runs.filter((r) => r.id === q.dossier)
   const inside = (p: string, d: string) => !!p && !!d && (p === d || p.startsWith(d + "/"))
   const hit = c.find((r) => r.repo === q.repo) ?? c.find((r) => inside(q.root ?? "", r.worktree) || inside(q.root ?? "", r.main))
   if (hit) return hit.repo
+  if (q.repo && runs.some((r) => r.repo === q.repo)) return q.repo
   return c.length === 1 ? c[0].repo : undefined
 }
 
@@ -581,8 +651,10 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
     const f = d.front
     const log = buildLog(d.text)
     const status = f.status ?? "planned"
-    // The run's own stage lines (newest first) outrank the build log's text.
-    const phaseHit = stagePhase(readUpdates(`${baseName(d.main)}.${f.id}`)) || lastPhase(log)
+    // The latest /work-on run's own stage lines (newest first) outrank the build log's text.
+    // Every update line, not the 50 the view shows: the newest run's start line can be further back than that.
+    const sp = stagePhase(readUpdates(`${baseName(d.main)}.${f.id}`, runsDir(), Infinity))
+    const phaseHit = sp === null ? "" : sp || lastPhase(log)
     const phase = phaseHit || (status === "planned" || status === "ready" ? "plan" : "")
     const wt = d.worktree
     const repoName = baseName(await mainOf(wt))
@@ -610,7 +682,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       runnerLog: runner ? join(runsDir(), `${runKey}.runner.log`) : "",
       ...(() => {
         for (const x of deferredSources(log)) sources.set(`${repoName}/${x.src}/${x.item}`, f.id!)
-        const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log) : { items: [], pr: "", branch: "" }
+        const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log, readDeferredRecord(d.file, f.id!)) : { items: [], pr: "", branch: "" }
         let report = ""
         try { report = readFileSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`), "utf8") } catch { /* none */ }
         const deferred: Deferred = { items: withReport(pd.items, report), pr: pd.pr, report: report !== "", branch: pd.branch }
@@ -762,5 +834,7 @@ export async function getRuns(questions: () => Question[]): Promise<RunsView> {
     return { ...r, ...l, questions: qa?.open ?? [], answered: qa?.answered ?? [], view: viewFor(r.status, l.running, l.updates.length) }
   })
   const statusOf = (repo: string) => (id: string) => live.find((x) => x.repo === repo && x.id === id)?.status
-  return { ...cached, runs: live.map((r) => ({ ...r, controls: controlsFor(r, statusOf(r.repo)) })) }
+  // A pressed run button stays hidden while its run starts (pending.ts): the server-side marker outlives re-renders and tabs.
+  const now = Date.now()
+  return { ...cached, runs: live.map((r) => applyPending({ ...r, controls: controlsFor(r, statusOf(r.repo)) }, now)) }
 }

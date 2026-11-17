@@ -3,15 +3,21 @@
 import { appendFileSync, mkdirSync, openSync, readdirSync, statSync, watch, writeFileSync } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
+import { addRuling, readRulings, removeRuling } from "./rulings.ts"
 import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, undecidedDeferred, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile, refreshAfterControl } from "./stubs.ts"
 import { canIntegrate, checkRule, dossierPage, integrationPhase, integrationStopped, markIntegrating, readBlocks, readConversation, readIntegrate, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
 import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord, splitSections } from "./timeline.ts"
 import { runRunner, runTarget, runnerScript } from "./controls.ts"
+import { failPending, markPending, PENDING_TTL_MS, stubResumePending } from "./pending.ts"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { pendingSlack, readRunThread, runSlackEnabled, writeRunThread } from "./runslack.ts"
+import { pendingSlack, readRunThread, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
+import { startLagWatch } from "./lagwatch.ts"
+import { archStemOf, collapsedView, hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
+import { buildAnswer, diagramsOf, MAX_BODY, ReviewError, isReviewQuestion, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
+import { collapsedDiagram, DiagramError, mapStatus, openDiagram } from "./vrmap.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
 import { awakeDeps, checkAwake, releaseAwake } from "./awake.ts"
@@ -174,7 +180,8 @@ export async function scan(): Promise<void> {
       s.n = q.lines.length
       for (const l of fresh) {
         if (l.from === "agent" && l.kind === "reply" && slackOn()) await safe(slackThread(q.id, l.text), "slack reply")
-        else if (l.from === "owner" && l.via !== "slack" && slackOn()) {
+        // A line about one diagram element, and the batch answer of a visual review, stay on the page (VR-04): Slack gets the question text only.
+        else if (l.from === "owner" && l.via !== "slack" && !l.anchor && l.review !== true && slackOn()) {
           await safe(slackThread(q.id, `*Owner (${l.via ?? "cli"}) ${l.kind}${l.option ? ` ${l.option}` : ""}:* ${l.text}`), "slack mirror")
         }
       }
@@ -243,7 +250,7 @@ export async function scanRunThreads(): Promise<void> {
         } catch (e) { log(`slack run thread: ${(e as Error).message}`) }
       }
       runSeen.set(key, upto)
-      if (thread) writeRunThread(runsDir(), key, { ...thread, seen: upto })
+      if (thread && threadChanged(side, thread, upto)) writeRunThread(runsDir(), key, { ...thread, seen: upto })
     }
   } finally { scanningRuns = false }
 }
@@ -286,7 +293,7 @@ async function postStatus(a: Extract<OwnerAction, { type: "status" }>): Promise<
     if (hit) { repo = hit.repo; id = hit.id }
   }
   if (!repo) repo = await repoOfChannel(a.channel, repos)
-  const live = (r: Run) => !!r.runner && ["running", "waiting", "paused", "queued"].includes(r.runner.state)
+  const live = (r: Run) => !!r.runner && ["running", "testing", "waiting", "paused", "queued"].includes(r.runner.state)
   const picked = runs.filter((r) => (!repo || r.repo === repo) && (id ? r.id === id : live(r)))
   const { text, blocks } = statusBlocks(picked.map(statusRun), { repo: repo || undefined, id: id || undefined }, Date.now())
   if (a.refresh && a.ts) {
@@ -350,6 +357,37 @@ const html = (body: string) => new Response(body, { headers: { "content-type": "
 const allRuns = async (): Promise<Run[]> => (await getRuns(() => readAll(DIR))).runs
 const findRun = async (repo: string, id: string): Promise<Run | undefined> => (await allRuns()).find((r) => r.repo === repo && r.id === id)
 
+/** The repo roots of a repo's runs (runner root, worktree, main checkout), main first. */
+async function repoRoots(repo: string): Promise<string[]> {
+  const runs = (await allRuns()).filter((r) => r.repo === repo)
+  return [...new Set(runs.flatMap((r) => [r.main, r.runner?.root, r.worktree]).filter((x): x is string => !!x))]
+}
+/**
+ * The dossier's repo root that holds its visual-review folder, the way the dossier routes find it. The name check lives
+ * here for every visual-review route: a plain name, no leading dot, and a real run with that id (so no path is built from
+ * anything else).
+ */
+async function vrFind(dossier: string, repo: string): Promise<{ ok: true; root: string; dossier: string; repo: string; runs: Run[] } | { ok: false; status: number; error: string }> {
+  if (!/^[\w.-]+$/.test(dossier) || dossier.startsWith(".") || (repo && !/^[\w.-]+$/.test(repo))) return { ok: false, status: 400, error: "dossier (and repo) must be plain names" }
+  const runs = (await allRuns()).filter((r) => r.id === dossier && (!repo || r.repo === repo))
+  if (!runs.length) return { ok: false, status: 404, error: "no such dossier" + (repo ? " in " + repo : "") }
+  const roots = [...new Set(runs.flatMap((r) => [r.worktree, r.runner?.root, r.main]).filter((x): x is string => !!x))]
+  const root = roots.find((r) => hasVisualReview(r, dossier))
+  if (!root) return { ok: false, status: 404, error: "no visual review for " + dossier + ": none of l0/l1/l2.json exists under .discovery/visual-review/" + dossier + " in " + roots.join(", ") }
+  // Without a repo, the repo is the one of the run whose root holds the review (not just the first run found).
+  const own = runs.find((r) => [r.worktree, r.runner?.root, r.main].includes(root)) ?? runs[0]
+  return { ok: true, root, dossier, repo: repo || own.repo, runs }
+}
+/** The `diagrams` field of a run's detail: the paths of l0/l1/l2 and the review counts; null with no visual review. */
+function vrDiagrams(run: Run) {
+  for (const root of [run.worktree, run.runner?.root, run.main]) { const d = root ? diagramsOf(root, run.id) : null; if (d) return d }
+  return null
+}
+/** The open product question of the visual review for this dossier (its options are Approved and Changes requested), or undefined. */
+function vrQuestion(dossier: string, repo: string, runs: Run[]): Question | undefined {
+  return readAll(DIR).find((q) => q.state === "open" && q.dossier === dossier && isReviewQuestion(q) && questionRepo(q, runs) === repo)
+}
+
 /** Server-Sent Events: a `changed` event with the kinds that changed; a comment heartbeat keeps the stream open. */
 function events(req: Request): Response {
   let un = () => {}
@@ -373,6 +411,8 @@ function runnerLog(repo: string, id: string): string | null {
   try { return readFileSync(join(runsDir(), `${repo}.${id}.runner.log`), "utf8").split("\n").slice(-201).join("\n") } catch { return null }
 }
 const inflightControl = new Set<string>()
+// After a pressed button's window closes the page must hear about it: one change event when the marker times out.
+const expireWatch = (): void => { setTimeout(() => emitChange("runs"), PENDING_TTL_MS + 500).unref?.() }
 /** The page's version: an open tab reloads when the server it talks to serves a different page. */
 const PAGE_ID = String(Bun.hash(PAGE))
 const summaryInflight = new Set<string>()
@@ -408,13 +448,96 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && path === "/api/runs") {
     // Live runs carry their agent counts (this stage); the accounts carry their windows and which runs use them.
     const v = await getRuns(() => readAll(DIR))
-    const openQs = new Set(readAll(DIR).filter((q) => q.state === "open").map((q) => q.id))
-    const runs = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(readUpdates(`${r.repo}.${r.id}`, runsDir(), 3000)), blocked: readBlocks(`${r.repo}.${r.id}`).length } : r))
+    const open = readAll(DIR).filter((q) => q.state === "open")
+    const openQs = new Set(open.map((q) => q.id))
+    // A refusal counts as a blocker only while the run has an open question a ruling can answer.
+    const asking = new Set(open.map((q) => `${questionRepo(q, v.runs)}.${q.dossier}`))
+    const runs = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(readUpdates(`${r.repo}.${r.id}`, runsDir(), 3000)), blocked: asking.has(`${r.repo}.${r.id}`) ? readBlocks(`${r.repo}.${r.id}`).length : 0 } : r))
       .map((r) => { const m = mergeState(`${r.repo}.${r.id}`); return m ? { ...r, merge: m } : r })
       .map((r) => ({ ...r, deferredUndecided: undecidedDeferred(r.deferred.items, r.runner?.command === "fix-deferred" && runnerActive(r.runner), openQs) }))
     const plans = planRuns(runs)
     const accounts = readAccounts([...runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: r.runKey || `${r.repo}.${r.id}`, account: r.runner?.account })), ...plans.map((p) => ({ key: p.key, account: p.account }))])
     return json({ ...v, runs, plans, accounts, disk: diskReading(), slots: slotsReading(), usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
+  }
+  // Visual review (VR-03): the change graph l0/l1/l2.json of a dossier, laid out by ELK on the server. The dossier's repo
+  // roots are those of its runs (worktree, runner root, main checkout), the way the dossier routes find it.
+  if (req.method === "GET" && path === "/api/visual-review") {
+    const f = await vrFind(url.searchParams.get("dossier") ?? "", url.searchParams.get("repo") ?? "")
+    if (!f.ok) return json({ error: f.error }, f.status)
+    try { return json({ ...(await visualReview(vrDir(f.root, f.dossier), f.dossier)), review: reviewState(vrDir(f.root, f.dossier), f.dossier) }) } catch (e) { return json({ error: "visual review failed: " + (e as Error).message }, 500) }
+  }
+  // The same view with some groups collapsed to one box: the collapsed graph and its layout (the page only draws it).
+  if (req.method === "GET" && path === "/api/visual-review/layout" && url.searchParams.has("path")) {
+    // A committed diagram of a repo (the product map), folded the same way: `repo` + `path` instead of `dossier` + `view`.
+    const repo = url.searchParams.get("repo") ?? ""
+    if (!/^[\w.-]+$/.test(repo)) return json({ error: "repo must be a plain name" }, 400)
+    const root = (await repoRoots(repo))[0]
+    if (!root) return json({ error: "no such repo" }, 404)
+    const ids = (url.searchParams.get("collapsed") ?? "").split(",").filter(Boolean)
+    if (ids.some((i) => i.length > 200)) return json({ error: "collapsed ids are too long" }, 400)
+    try { return json(await collapsedDiagram(root, url.searchParams.get("path") ?? "", (await mapStatus(repo, root)).diagrams, ids)) } catch (e) { return json({ error: "collapsed layout failed: " + (e as Error).message }, 400) }
+  }
+  if (req.method === "GET" && path === "/api/visual-review/layout") {
+    const f = await vrFind(url.searchParams.get("dossier") ?? "", url.searchParams.get("repo") ?? "")
+    if (!f.ok) return json({ error: f.error }, f.status)
+    const ids = (url.searchParams.get("collapsed") ?? "").split(",").filter(Boolean)
+    if (ids.some((i) => i.length > 200)) return json({ error: "collapsed ids are too long" }, 400)
+    try { return json(await collapsedView(vrDir(f.root, f.dossier), url.searchParams.get("view") ?? "", ids)) } catch (e) { return json({ error: "collapsed layout failed: " + (e as Error).message }, 400) }
+  }
+  // VR-04: one verdict on one element (saved to review.json), the answer text built from all of them, and the question it answers.
+  if (path === "/api/visual-review/review") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const raw = await req.text()
+    if (raw.length > MAX_BODY) return json({ error: "body is larger than " + MAX_BODY + " bytes" }, 413)
+    let b: any
+    try { b = JSON.parse(raw) } catch { return json({ error: "body must be JSON" }, 400) }
+    if (!b || typeof b !== "object" || Array.isArray(b)) return json({ error: "body must be a JSON object" }, 400)
+    const f = await vrFind(typeof b.dossier === "string" ? b.dossier : "", typeof b.repo === "string" ? b.repo : "")
+    if (!f.ok) return json({ error: f.error }, f.status)
+    const dir = vrDir(f.root, f.dossier)
+    try {
+      const r = setVerdict(dir, f.dossier, b)
+      // A Question with a comment goes to the agent as a follow-up that carries the anchor; the question stays open.
+      let followup = false
+      const q = r.followup ? vrQuestion(f.dossier, f.repo, f.runs) : undefined
+      if (r.followup && q) {
+        try { appendOwner(DIR, q.id, { kind: "followup", text: "Element " + r.followup.anchor.element + " (" + r.followup.anchor.diagram + "): " + r.followup.text, via: "page", anchor: r.followup.anchor }); followup = true; void scan() } catch { /* the question was answered meanwhile: the verdict is still saved */ }
+      }
+      return json({ ok: true, review: r.state, followup })
+    } catch (e) {
+      if (e instanceof ReviewError) return json({ error: e.message }, e.status)
+      return json({ error: (e as Error).message }, 500)
+    }
+  }
+  if (req.method === "GET" && path === "/api/visual-review/answer") {
+    const f = await vrFind(url.searchParams.get("dossier") ?? "", url.searchParams.get("repo") ?? "")
+    if (!f.ok) return json({ error: f.error }, f.status)
+    const q = vrQuestion(f.dossier, f.repo, f.runs)
+    const st = reviewState(vrDir(f.root, f.dossier), f.dossier)
+    const a = buildAnswer(st, f.dossier)
+    const keys = q ? reviewOptions(q.options) : null
+    return json({ question: q?.id ?? "", option: keys ? keys[a.option] : "", choice: a.option, text: a.text, summary: st.summary, canSend: !!q && !!keys && st.summary.checked > 0 })
+  }
+  // VR-06: the committed product map of a repo, whether it is stale (vr_map.py check, cached on the map's mtime), and its committed diagrams.
+  if (req.method === "GET" && path === "/api/visual-review/map") {
+    const repo = url.searchParams.get("repo") ?? ""
+    if (!/^[\w.-]+$/.test(repo)) return json({ error: "repo must be a plain name" }, 400)
+    const root = (await repoRoots(repo))[0]
+    if (!root) return json({ error: "no such repo" }, 404)
+    return json(await mapStatus(repo, root))
+  }
+  if (req.method === "GET" && path === "/api/visual-review/diagram") {
+    const repo = url.searchParams.get("repo") ?? "", rel = url.searchParams.get("path") ?? ""
+    if (!/^[\w.-]+$/.test(repo)) return json({ error: "repo must be a plain name" }, 400)
+    const root = (await repoRoots(repo))[0]
+    if (!root) return json({ error: "no such repo" }, 404)
+    try { return json(await openDiagram(root, rel, (await mapStatus(repo, root)).diagrams)) } catch (e) { return json({ error: (e as Error).message }, e instanceof DiagramError ? e.status : 404) }
+  }
+  // The vendored ELK worker, from the dashboard's own origin (nothing is fetched from a CDN).
+  if (req.method === "GET" && path === "/vendor/elk/elk-worker.min.js") {
+    return new Response(Bun.file(new URL("./vendor/elk/elk-worker.min.js", import.meta.url)), { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=86400" } })
   }
   if (path === "/api/accounts/refresh") {
     if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
@@ -467,9 +590,10 @@ export async function handle(req: Request): Promise<Response> {
     } catch { /* none yet */ }
     const c = readConversation(`${run.repo}.${run.id}`, run.runner?.state === "done")
     const conv = { ...c, result: c.result ? { ...c.result, html: renderMarkdown(c.result.text) } : null, chat: c.chat.map((l) => ({ ...l, html: renderMarkdown(l.text) })), canChat: !!c.result && !runnerActive(run.runner) }
-    const blocks = readBlocks(`${run.repo}.${run.id}`)
     const openQ = questions.filter((q) => q.state === "open").sort((a, b) => b.ts.localeCompare(a.ts))[0]?.id ?? ""
-    return json({ run, html, entries, groups, sections, activeSection: latest.cmd, activity, now, log, conv, summary, blocks, blockQuestion: openQ, summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
+    // A refusal is only a blocker while the agent waits on the owner (an open question a ruling can answer); otherwise it did without the call.
+    const blocks = openQ ? readBlocks(`${run.repo}.${run.id}`) : []
+    return json({ run, html, entries, groups, sections, activeSection: latest.cmd, activity, now, log, conv, summary, blocks, rulings: readRulings(run.repo), blockQuestion: openQ, diagrams: vrDiagrams(run), summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
   }
   const dd = path.match(/^\/api\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && dd) {
@@ -494,11 +618,12 @@ export async function handle(req: Request): Promise<Response> {
     const groups = groupByPhase(entries, "Before the first step", false)
     const activity: unknown[] = []
     const runner = readRunner(key)
+    const pending = stubResumePending(repo, slug, runner)
     const now = nowPanel(entries, groups, { runner: runner?.state ?? "", waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: "" })
     const integrate = readIntegrate(key)
     let land: any = null
     try { land = JSON.parse(readFileSync(join(runsDir(), `${key}.land.json`), "utf8")) } catch { /* the scripted merge has not looked at it */ }
-    return json({ repo, stub, key, entries, groups, activity, now, runner, integrate, land, record: recordEntries, empty: entries.every((e) => e.type === "boundary"), hasRecord: !!file })
+    return json({ repo, stub, key, entries, groups, activity, now, runner, integrate, pending, land, record: recordEntries, empty: entries.every((e) => e.type === "boundary"), hasRecord: !!file })
   }
   // Integrate a stub: its finished dossiers through the merge queue (FIFO), then /stub on the runner; and Stop/Resume of
   // that /stub run. POST {repo, branch, action: integrate|stop|resume}.
@@ -519,7 +644,9 @@ export async function handle(req: Request): Promise<Response> {
       return json({ ok: true })
     }
     if (b.action === "stop" || b.action === "resume") {
+      if (b.action === "resume") { markPending(rs.repo, slug, "resume"); expireWatch() }
       const r = await runRunner(b.action === "stop" ? ["stop", slug, "--root", rs.main] : [slug, "--root", rs.main, "--command", "stub", "--items", stub.branch])
+      if (!r.ok && b.action === "resume") failPending(rs.repo, slug, "resume", r.output)
       emitChange("stubs")
       return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)
     }
@@ -554,6 +681,9 @@ export async function handle(req: Request): Promise<Response> {
       rule = typeof body.rule === "string" && body.rule.trim() ? body.rule.trim() : `${b.tool}(${b.target})`
       const bad = checkRule(rule)
       if (bad) return json({ error: bad }, 400)
+      // The ruling is the owner's, standing for the repo: kept in ~/.agentic/rulings so every later session of the repo gets it.
+      const kept = addRuling(run.repo, { rule, by: typeof (body as any).by === "string" && (body as any).by ? (body as any).by : "owner (dashboard)", question: q?.id ?? "", run: key, tool: b.tool, target: b.target })
+      if (kept) return json({ error: kept }, 400)
       const f = join(run.main, ".claude", "settings.local.json")
       let cfg: any = {}
       try { cfg = JSON.parse(readFileSync(f, "utf8")) } catch { cfg = {} }
@@ -576,6 +706,24 @@ export async function handle(req: Request): Promise<Response> {
     emitChange("runs"); emitChange("questions")
     const restarting = action === "always" && runnerActive(run.runner) && body.restart !== false
     return json({ ok: true, output: (action === "always" ? `saved ${rule} to ${run.repo}'s .claude/settings.local.json; ${restarting ? (q ? "the stage restarts now with your answer, so the rule applies" : "the stage restarts with the rule once the agent asks and you answer") : "it applies from the next stage"}` : `sent to the agent`) + (q ? ` · answered ${q.id}` : " · no open question to answer") })
+  }
+  const rg = path.match(/^\/api\/rulings\/([\w.-]+)$/)
+  if (rg && req.method === "GET") return json({ repo: rg[1], rules: readRulings(rg[1]) })
+  if (rg && req.method === "DELETE") {
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const body = await req.json().catch(() => ({})) as { rule?: unknown }
+    const rule = typeof body.rule === "string" ? body.rule : ""
+    if (!rule || !removeRuling(rg[1], rule)) return json({ error: "no such ruling" }, 404)
+    // The repo's own settings.local.json got the rule at the time it was saved: take it out there too.
+    for (const r of await allRuns()) {
+      if (r.repo !== rg[1]) continue
+      const f = join(r.main, ".claude", "settings.local.json")
+      try { const cfg = JSON.parse(readFileSync(f, "utf8")); if (Array.isArray(cfg.permissions?.allow)) { cfg.permissions.allow = cfg.permissions.allow.filter((x: string) => x !== rule); writeFileSync(f, JSON.stringify(cfg, null, 2) + "\n") } } catch { /* none */ }
+      break
+    }
+    emitChange("runs")
+    return json({ ok: true, output: `removed ${rule}; sessions started from now on no longer get it` })
   }
   const sm = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/summary$/)
   if (sm) {
@@ -702,8 +850,10 @@ export async function handle(req: Request): Promise<Response> {
     const item = typeof body.item === "string" ? body.item : ""
     const it = run.deferred.items.find((i) => i.id === item)
     if (!it || it.state !== "dossier" || it.dossier) return json({ error: "only an item ruled to its own dossier, not planned yet" }, 409)
-    if (it.planning && ["running", "waiting", "paused", "queued"].includes(it.planning)) return json({ error: "it is being planned" }, 409)
+    if (it.planning && ["running", "testing", "waiting", "paused", "queued"].includes(it.planning)) return json({ error: "it is being planned" }, 409)
+    markPending(run.repo, run.id, `plan:${item}`); expireWatch()
     const r = await runRunner([run.id, "--root", run.main, "--command", "plan", "--items", item])
+    if (!r.ok) failPending(run.repo, run.id, `plan:${item}`, r.output)
     emitChange("runs")
     return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)
   }
@@ -742,7 +892,10 @@ export async function handle(req: Request): Promise<Response> {
       const flow = action === "start" ? [`--command`, ctl.command || "work-on"]
         : action === "resume" ? ["--command", ctl.command || "work-on", ...(run.runner?.items ? ["--items", run.runner.items] : [])] : []
       const target = runTarget(repo, id, run.runKey, action)
+      // The marker goes down before the spawn: from here the button is hidden for every tab until the run shows up.
+      if (action !== "stop") { markPending(repo, id, action); expireWatch() }
       const r = await runRunner(action === "stop" ? ["stop", target.stop, "--root", root] : action === "fix-deferred" ? [id, "--root", root, "--command", "fix-deferred", ...(items.length ? ["--items", items.join(",")] : [])] : [target.dossier, "--root", root, ...flow])
+      if (!r.ok && action !== "stop") failPending(repo, id, action, r.output)
       if (r.ok) { refreshAfterControl(repo); void getStubs(() => readAll(DIR)) }
       emitChange("runs")
       return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 500)
@@ -779,14 +932,37 @@ export async function handle(req: Request): Promise<Response> {
     }
     const kind = b?.kind
     if (kind !== "followup" && kind !== "answer") return json({ error: "kind must be followup or answer" }, 400)
-    const option = typeof b.option === "string" ? b.option : ""
+    let option = typeof b.option === "string" ? b.option : ""
     if (option && !q.options.some((o) => o.key === option)) return json({ error: "unknown option" }, 400)
     if (kind === "followup" && option) return json({ error: "a follow-up has no option" }, 400)
     let text = typeof b.text === "string" ? b.text.trim() : ""
     if (!text && option) text = q.options.find((o) => o.key === option)!.label
     if (!text) return json({ error: "text is required" }, 400)
+    // VR-04: a follow-up may be about one diagram element; the answer of a visual review is marked `review`.
+    let anchor: { diagram: string; element: string; graph_hash?: string } | undefined
+    if (b.anchor !== undefined) {
+      const a = b.anchor
+      const ok = a && typeof a === "object" && (["L0", "L1", "L2"].includes(a.diagram) || archStemOf(a.diagram) !== null) && typeof a.element === "string" && a.element.length > 0 && a.element.length <= 200 && (a.graph_hash === undefined || (typeof a.graph_hash === "string" && a.graph_hash.length <= 64))
+      if (!ok || kind !== "followup") return json({ error: "anchor must be {diagram: L0|L1|L2|arch:<stem>, element, graph_hash?} on a follow-up" }, 400)
+      anchor = { diagram: a.diagram, element: a.element, ...(a.graph_hash ? { graph_hash: a.graph_hash } : {}) }
+    }
+    // A visual-review answer is only accepted on the dossier's visual-review question, and its option and text are rebuilt
+    // here from review.json, so the client cannot send an answer the verdicts do not support.
+    const review = kind === "answer" && b.review === true
+    if (review) {
+      const keys = reviewOptions(q.options)
+      if (!keys || !isReviewQuestion(q) || !q.dossier) return json({ error: "not a visual-review question" }, 400)
+      const runs = (await allRuns()).filter((r) => r.id === q.dossier)
+      const f = await vrFind(q.dossier, questionRepo(q, runs) ?? "")
+      if (!f.ok) return json({ error: f.error }, f.status)
+      const st = reviewState(vrDir(f.root, f.dossier), f.dossier)
+      if (st.summary.checked === 0) return json({ error: "no verdicts yet" }, 409)
+      const a = buildAnswer(st, f.dossier)
+      option = keys[a.option]
+      text = a.text
+    }
     try {
-      const after = appendOwner(DIR, q.id, { kind, text, option, via: "page" })
+      const after = appendOwner(DIR, q.id, { kind, text, option, via: "page", anchor, review })
       void scan()
       return json(after, 201)
     } catch (e) {
@@ -909,6 +1085,7 @@ async function main(): Promise<void> {
     log("slack disabled: no ASD_SLACK_USER (or ASD_QUESTIONS_NO_SLACK=1)")
   }
 
+  startLagWatch(log)
   await scan()
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -923,7 +1100,7 @@ async function main(): Promise<void> {
   try {
     mkdirSync(runsDir(), { recursive: true })
     let rt: ReturnType<typeof setTimeout> | undefined
-    watch(runsDir(), (_e, name) => { emitChange("runs"); if (/\.(integrate|land|runner)\.json$/.test(String(name ?? "")) && /\.(stub|release)-/.test(String(name ?? ""))) emitChange("stubs"); clearTimeout(rt); rt = setTimeout(() => void scanRunThreads(), 300) })
+    watch(runsDir(), (_e, name) => { if (runsWatchIgnored(String(name ?? ""))) return; emitChange("runs"); if (/\.(integrate|land|runner)\.json$/.test(String(name ?? "")) && /\.(stub|release)-/.test(String(name ?? ""))) emitChange("stubs"); clearTimeout(rt); rt = setTimeout(() => void scanRunThreads(), 300) })
   } catch (e) {
     log(`runs dir not watched: ${(e as Error).message}`)
   }

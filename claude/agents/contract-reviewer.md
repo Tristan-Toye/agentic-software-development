@@ -51,6 +51,9 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   The checklist also asks of a member that composes an existing one: does it
   pass inputs that meet that member's preconditions, and is the failure case
   stated? A member that omits either is an `AMBIGUITY`.
+  It asks of a member that normalises a value to locate, key or deduplicate it:
+  which form does the later comparison use, normalised or as written? A
+  docstring that names the normalisation only for the lookup is an `AMBIGUITY`.
 
 ## Method
 

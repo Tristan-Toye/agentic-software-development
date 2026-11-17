@@ -108,6 +108,13 @@ Twelve failure modes this catches, each of which cost a real build:
     survivors from three authors in one recorded build, every one on such a
     line.
 
+12b. **A negative checklist line with no isolating input** (WARNING). A
+    `PROMISE_CHECKLIST` line whose expected outcome is negative — refused,
+    rejected, skipped, `None`, `Ok(None)`, no event — carries an `input:`
+    that every other guard on that path admits. Without one the author picks
+    an input a different guard also rejects: a green test that leaves the
+    guard under test a mutation survivor.
+
 13. **A relative path in a path-valued field.** `CONTRACT` (when it names a
     path, never when it pastes text), `TEST_PATHS`, `STYLE_PATHS`,
     `SUPPORT_PATHS`, `WORKTREE_DIR`, `DOSSIER`, `STANDARDS`, `CONTEXT_DOCS`
@@ -204,7 +211,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         "optional": {
             "SHARED_IDIOM", "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS",
             "SUPPORT", "DELIVERY_CHANGE", "FAILURES", "CORRECTION",
-            "BASELINE_COUNTS_FROM",
+            "BASELINE_COUNTS_FROM", "TEST_FORM_RULES",
         },
     },
     "integration-test-author": {
@@ -221,7 +228,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         "optional": {
             "SHARED_IDIOM", "DELIVERY_CHANGE", "PROMISE_CHECKLIST",
             "SUPPORT_PATHS", "SUPPORT", "FAILURES", "CORRECTION",
-            "BASELINE_COUNTS_FROM", "CITATION",
+            "BASELINE_COUNTS_FROM", "CITATION", "CI_ENVIRONMENT", "TEST_FORM_RULES",
         },
     },
     "implementer": {
@@ -257,6 +264,15 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         "required": {"MODE", "FORMAT", "TARGET_PATHS", "SCRUB"},
         "optional": {"DECISIONS", "DOSSIER-EXCERPTS"},
     },
+    # sub-agents/diagram-author.md "Payload". DIAGRAMS_NEW is `none` when the dossier
+    # has no `Diagrams new:` line; ERRORS only travels on a repair attempt.
+    "diagram-author": {
+        "required": {
+            "DOSSIER_ID", "PROBLEM", "APPROACH", "CONTRACT", "WORK_DIR", "OUT_DIR",
+            "SCRIPTS_DIR", "REPO", "DIAGRAMS_NEW",
+        },
+        "optional": {"ERRORS"},
+    },
 }
 
 # kind -> groups where at least one field is required, unconditionally.
@@ -267,6 +283,73 @@ GROUPS: dict[str, list[set[str]]] = {
 # The pasted CONTRACT names each file: compose_payloads.py puts a `# path:` line
 # before every pasted file (#184).
 CONTRACT_PATH_LINE = re.compile(r"^\s*# path: \S", re.M)
+
+
+# A live service a stack-backed test reaches (#313): what the integration
+# author's HARNESS / TEST_FRAMEWORK / BOUNDARIES text names when the tests need one.
+LIVE_SERVICE = re.compile(
+    r"\b(postgres(?:ql)?|mysql|mariadb|mongo(?:db)?|redis|kafka|rabbitmq|nats|"
+    r"elasticsearch|opensearch|clickhouse|sqlite server|testcontainers?|"
+    r"docker[- ]compose|compose stack|compose file|database|broker|"
+    r"message queue|live stack|full stack|local stack)\b", re.IGNORECASE)
+CI_ENV_LINES = ("services", "skip", "guard")
+REPO_CONFIG_DIR = ".agent-pipeline"
+
+
+def repo_test_forms(root: str | None) -> list[str]:
+    """The `refused -> use instead` lines of the target repo's
+    `.agent-pipeline/test-forms.txt` (#301); [] when there is no root or file."""
+    if not root:
+        return []
+    path = os.path.join(root, REPO_CONFIG_DIR, "test-forms.txt")
+    if not os.path.isfile(path):
+        return []
+    with open(path, encoding="utf-8") as fh:
+        return [ln.strip() for ln in fh if "->" in ln and not ln.lstrip().startswith("#")]
+
+
+def environment_findings(lines: list[str], kind: str | None, root: str | None) -> list[str]:
+    """Two declarations a blind test author cannot discover, refused when absent:
+    CI_ENVIRONMENT on an integration payload whose tests reach a live service
+    (#313), and TEST_FORM_RULES on either test author's payload when the target
+    repository declares refused forms (#301)."""
+    if kind not in ("unit-test-author", "integration-test-author"):
+        return []
+    defects: list[str] = []
+    names = {name for _, name, _ in field_lines(lines)}
+    if kind == "integration-test-author":
+        text = "\n".join(field_body(lines, f) or field_value(lines, f)
+                         for f in ("HARNESS", "TEST_FRAMEWORK", "BOUNDARIES"))
+        hit = LIVE_SERVICE.search(text)
+        if hit and "CI_ENVIRONMENT" not in names:
+            defects.append(
+                "the tests reach a live service (%r in HARNESS/TEST_FRAMEWORK/BOUNDARIES) but "
+                "the payload has no CI_ENVIRONMENT: name the services the target repository's CI "
+                "runner has, the skip/opt-out tokens it sets and the guard line a stack-backed "
+                "test opens with (compose_payloads.py fills it from "
+                "%s/ci-environment.txt). Without it the tests pass on the local stack and fail on "
+                "CI's first environment read." % (hit.group(0), REPO_CONFIG_DIR))
+        elif "CI_ENVIRONMENT" in names:
+            body = (field_body(lines, "CI_ENVIRONMENT") or field_value(lines, "CI_ENVIRONMENT")).lower()
+            if not body.strip().startswith("none") and not all(
+                    re.search(r"^\s*%s\s*:" % k, body, re.M) for k in CI_ENV_LINES):
+                defects.append(
+                    "CI_ENVIRONMENT must carry `services:`, `skip:` and `guard:` lines (write "
+                    "`none` for a line with nothing, or the whole field as `none` when the tests "
+                    "reach no live service).")
+    forms = repo_test_forms(root)
+    if forms:
+        if "TEST_FORM_RULES" not in names:
+            defects.append(
+                "the target repository declares %d refused test form(s) in %s/test-forms.txt "
+                "but the payload has no TEST_FORM_RULES: its gate would refuse the test only "
+                "after the suite is green. Compose it with compose_payloads.py."
+                % (len(forms), REPO_CONFIG_DIR))
+        elif "none declared" in (field_body(lines, "TEST_FORM_RULES")
+                                 or field_value(lines, "TEST_FORM_RULES")).lower():
+            defects.append("TEST_FORM_RULES says `none declared` but the target repository "
+                           "declares forms in %s/test-forms.txt." % REPO_CONFIG_DIR)
+    return defects
 
 
 def skeleton_findings(lines: list[str], kind: str | None) -> tuple[list[str], list[str]]:
@@ -331,6 +414,9 @@ EXCERPT_SECTIONS = ("## Problem", "## Approach", "## Acceptance criteria")
 # assertion form.
 WHOLE_VALUE_HINT = re.compile(r"\bexactly\b|\b(gives|returns|yields)\s+`")
 ASSERTION_TAG = re.compile(r"\[(whole-value|member)\]")
+NEGATIVE_HINT = re.compile(
+    r"\b(refus\w*|reject\w*|skipp?\w*)\b|`(Ok\()?None\)?`|\bno event\b", re.I)
+ISOLATING_INPUT = re.compile(r"\binput:")
 
 # (kind, discriminator field, value) -> (fields that become required,
 #                                        groups where at least one is required)
@@ -440,6 +526,7 @@ ASSIGNMENT = re.compile(r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(?P<value>
 VERBATIM_FIELDS = (
     "CRITERIA", "CONTRACT", "DOSSIER-EXCERPTS", "STYLE_SAMPLE", "SUPPORT",
     "FAILURES", "CRS", "PRIOR_CRS", "RUN_EVIDENCE", "CHECKLIST_RULES", "FORMAT",
+    "PROBLEM", "APPROACH", "ERRORS",
 )
 # A secret by its shape alone, whatever it is named: a known key prefix, or a
 # long mixed letter-and-digit string. Active everywhere, verbatim blocks included.
@@ -504,6 +591,7 @@ LIST_SEPARATOR = re.compile(r"[,\s]+")
 PATH_VALUED_FIELDS = (
     "TEST_PATHS", "STYLE_PATHS", "SUPPORT_PATHS", "WORKTREE_DIR", "DOSSIER",
     "STANDARDS", "CONTEXT_DOCS", "TARGET_PATHS",
+    "REPO", "WORK_DIR", "OUT_DIR", "SCRIPTS_DIR",
 )
 NOT_A_PATH_VALUE = re.compile(r"^(|none|null|n/a)$", re.IGNORECASE)
 
@@ -948,6 +1036,78 @@ def bounded_read_findings(lines: list[str], kind: str | None,
     return out
 
 
+DIAGRAM_STEM = re.compile(r"^(?:seq|c1|c4)-[A-Za-z0-9][A-Za-z0-9_-]{0,75}$")  # vr_promote.STEM_RE plus the three prefixes
+
+
+def _under(child: str, parent: str) -> bool:
+    child, parent = os.path.realpath(child), os.path.realpath(parent)
+    return child == parent or child.startswith(parent.rstrip("/") + "/")
+
+
+def diagram_author_findings(lines: list[str], kind: str | None,
+                            live_dossier: str | None) -> tuple[list[str], list[str]]:
+    """The diagram author's DIAGRAMS_NEW must be the stems of the dossier's
+    `Diagrams new:` line (reusing validate_pipeline.parse_diagrams_new), or
+    `none`; each stem starts seq-, c1- or c4- (what vr_promote promotes and the
+    dashboard's arch tab shows). OUT_DIR sits under REPO and WORK_DIR under
+    OUT_DIR: the agent writes only there."""
+    if kind != "diagram-author":
+        return [], []
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from validate_pipeline import DIAGRAMS_NEW_RE, parse_diagrams_new
+    defects: list[str] = []
+    warnings: list[str] = []
+    body = field_body(lines, "DIAGRAMS_NEW")
+    if body.strip():
+        text = ",".join(piece.strip() for piece in body.splitlines() if piece.strip())
+        stems = parse_diagrams_new(text)
+        if not stems and text.strip().strip("`").lower() != "none":
+            defects.append(
+                "DIAGRAMS_NEW %r names no stem: write `none`, or one `<stem> \u2014 <what>` "
+                "per line, verbatim from the dossier's `Diagrams new:` line." % text[:60])
+        for stem in stems:
+            if not DIAGRAM_STEM.match(stem):
+                defects.append(
+                    "DIAGRAMS_NEW stem %r is not valid: a stem starts seq-, c1- or c4- and holds "
+                    "letters, digits, `_` and `-` only (vr_promote refuses any other)." % stem)
+    else:
+        stems = []
+    repo, out_dir, work_dir = (field_value(lines, n) for n in ("REPO", "OUT_DIR", "WORK_DIR"))
+    if repo and out_dir and out_dir.startswith("/") and not _under(out_dir, repo):
+        defects.append("OUT_DIR %s is not under REPO %s: the agent writes only inside the repo's "
+                       ".discovery/visual-review/<ID>/." % (out_dir, repo))
+    if out_dir and work_dir and work_dir.startswith("/") and not _under(work_dir, out_dir):
+        defects.append("WORK_DIR %s is not under OUT_DIR %s: vr_prepare writes `work/` inside it."
+                       % (work_dir, out_dir))
+    dossier = live_dossier
+    dossier_id = field_value(lines, "DOSSIER_ID")
+    if dossier is None and repo and dossier_id:
+        ddir = os.path.join(repo, ".discovery", "dossiers")
+        if os.path.isdir(ddir):
+            found = sorted(f for f in os.listdir(ddir)
+                           if f.startswith(dossier_id + "-") and f.endswith(".md"))
+            dossier = os.path.join(ddir, found[0]) if found else None
+    if dossier and os.path.isfile(dossier):
+        try:
+            with open(dossier, encoding="utf-8") as handle:
+                match = DIAGRAMS_NEW_RE.search(handle.read())
+        except OSError as err:
+            print("check_payload: cannot read %s" % err, file=sys.stderr)
+            raise SystemExit(2)
+        expected = parse_diagrams_new(match.group(1)) if match else []
+        if stems != expected:
+            defects.append(
+                "DIAGRAMS_NEW names %s, the dossier's `Diagrams new:` line lists %s. The author writes "
+                "a draft per stem it is told; a stem the dossier does not list is an unreviewed tab, "
+                "a stem left out is a Phase 3 defect."
+                % (", ".join(stems) or "none", ", ".join(expected) or "none"))
+    else:
+        warnings.append(
+            "DIAGRAMS_NEW was not compared with a dossier (none found under REPO/.discovery/dossiers "
+            "for %s): pass --live-dossier <the run's live copy>." % (dossier_id or "DOSSIER_ID"))
+    return defects, warnings
+
+
 def excerpt_findings(lines: list[str], kind: str | None,
                      live_dossier: str | None) -> tuple[list[str], list[str]]:
     """The integration author's DOSSIER excerpt must equal the live dossier's
@@ -1047,6 +1207,23 @@ def assertion_form_findings(lines: list[str], kind: str | None) -> list[str]:
                 "a length or membership check — or [member] for membership of the "
                 "whole element (references/formats/dossier.md, the observability checklist)."
                 % (number, line.strip()[:80])
+            )
+    return out
+
+
+def negative_input_findings(lines: list[str], kind: str | None) -> list[str]:
+    """A negative checklist line names the isolating input every other guard admits."""
+    if kind not in ("unit-test-author", "integration-test-author"):
+        return []
+    out: list[str] = []
+    for number in sorted(field_line_numbers(lines, "PROMISE_CHECKLIST")):
+        line = lines[number - 1]
+        if NEGATIVE_HINT.search(line) and not ISOLATING_INPUT.search(line):
+            out.append(
+                "checklist line %d has a negative outcome with no isolating input: "
+                "%r. Add `input: <value>` that every other guard on that path admits, "
+                "so only the guard under test refuses it (work-on phase 3, promise "
+                "checklist derivation)." % (number, line.strip()[:80])
             )
     return out
 
@@ -1248,6 +1425,9 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     defects.extend(dead)
     warnings.extend(dead_warnings)
 
+    # 17. the target repository's CI environment and refused test forms
+    defects.extend(environment_findings(lines, kind, worktree or field_value(lines, "WORKTREE_DIR")))
+
     # 16. skeleton fields: contract path lines, citation, correction rounds
     skel_defects, skel_warnings = skeleton_findings(lines, kind)
     defects.extend(skel_defects)
@@ -1261,8 +1441,14 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     defects.extend(stale)
     warnings.extend(stale_warnings)
 
+    # 18. the diagram author's DIAGRAMS_NEW against the dossier's `Diagrams new:` line
+    da_defects, da_warnings = diagram_author_findings(lines, kind, live_dossier)
+    defects.extend(da_defects)
+    warnings.extend(da_warnings)
+
     # 12. a whole-value checklist line with no assertion form
     warnings.extend(assertion_form_findings(lines, kind))
+    warnings.extend(negative_input_findings(lines, kind))
 
     # 6. a dossier path that is not the run's live copy
     dossier, worktree_dir = field_value(lines, "DOSSIER"), field_value(lines, "WORKTREE_DIR")
@@ -1304,7 +1490,8 @@ def selftest() -> int:
              host: str | None = None, tools: list[str] | None = None,
              live: str | None = None, worktree: bool = False,
              allow_tokens: list[str] | None = None,
-             allow_paths: list[str] | None = None) -> None:
+             allow_paths: list[str] | None = None,
+             repo_files: dict[str, str] | None = None) -> None:
         nonlocal groups
         groups += 1
         with tempfile.TemporaryDirectory() as tmp:
@@ -1334,6 +1521,10 @@ def selftest() -> int:
             with open(os.path.join(real, ".agent-staging", "W-014.stale.md"), "w") as fh:
                 fh.write("## Problem\nqueues drop\n\n## Approach\nflush\n\n"
                          "## Acceptance criteria\n1. five shapes\n")
+            for rel, content in (repo_files or {}).items():
+                os.makedirs(os.path.dirname(os.path.join(real, rel)), exist_ok=True)
+                with open(os.path.join(real, rel), "w") as fh:
+                    fh.write(content)
             body = text.replace("{REAL}", real)
             live_path = live.replace("{REAL}", real) if live else None
             wt = real if worktree else None
@@ -1491,6 +1682,14 @@ def selftest() -> int:
          pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
                         "PROMISE_CHECKLIST: |\n  flush — order: gives exactly `[A, B]` [whole-value]\n"),
          "unit-test-author", False, must_warn="", host="claude", tools=write_only)
+    case("negative line: a refusal with no input: warns",
+         pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
+                        "PROMISE_CHECKLIST: |\n  flush — invalid case: refused with `Err(Empty)`\n"),
+         "unit-test-author", False, must_warn="isolating input", host="claude", tools=write_only)
+    case("negative line: a refusal with input: is quiet",
+         pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
+                        "PROMISE_CHECKLIST: |\n  flush — invalid case: refused with `Err(Empty)` → input: [\"a\"], passes every other guard\n"),
+         "unit-test-author", False, must_warn="", host="claude", tools=write_only)
     case("unit author missing checklist",
          unit_ok.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n", ""),
          "unit-test-author", True, "PROMISE_CHECKLIST is missing")
@@ -1615,6 +1814,38 @@ def selftest() -> int:
 
     # --- issue #78: a routed checklist is checked the same way as the unit
     # author's, SUPPORT_PATHS included ---
+    # --- #313: CI_ENVIRONMENT for tests that reach a live service ---
+    stack = integ.replace("HARNESS: |\n  app_client\n",
+                          "HARNESS: |\n  app_client against a throwaway Postgres from testcontainers\n")
+    ci_env = ("CI_ENVIRONMENT: |\n  services: none (CI has no postgres)\n"
+              "  skip: SKIP_STACK_TESTS=1\n  guard: require_stack!();\n")
+    case("integration author: a service-backed test with no CI_ENVIRONMENT is refused",
+         stack, "integration-test-author", True, "no CI_ENVIRONMENT", host="claude", tools=rw)
+    case("integration author: a service-backed test with CI_ENVIRONMENT passes",
+         stack + ci_env, "integration-test-author", False, host="claude", tools=rw, live="{REAL}/.discovery/dossiers/W-014-x.md", must_warn="")
+    case("integration author: a CI_ENVIRONMENT without a guard line is refused",
+         stack + "CI_ENVIRONMENT: |\n  services: none\n  skip: none\n", "integration-test-author",
+         True, "`guard:`", host="claude", tools=rw)
+    case("integration author: no live service and no CI_ENVIRONMENT passes",
+         integ, "integration-test-author", False, host="claude", tools=rw, live="{REAL}/.discovery/dossiers/W-014-x.md", must_warn="")
+    # --- #301: TEST_FORM_RULES when the repository declares refused forms ---
+    forms = {".agent-pipeline/test-forms.txt": "# refused\nenv!(\"CARGO_MANIFEST_DIR\") -> testsupport::root()\n"}
+    case("integration author: a repo that declares refused forms, payload without the field, is refused",
+         integ, "integration-test-author", True, "no TEST_FORM_RULES", host="claude", tools=rw,
+         worktree=True, repo_files=forms)
+    case("integration author: TEST_FORM_RULES present passes",
+         integ + "TEST_FORM_RULES: |\n  env!(\"CARGO_MANIFEST_DIR\") -> testsupport::root()\n",
+         "integration-test-author", False, host="claude", tools=rw, worktree=True, repo_files=forms,
+         live="{REAL}/.discovery/dossiers/W-014-x.md", must_warn="")
+    case("integration author: `none declared` against a repo that declares forms is refused",
+         integ + "TEST_FORM_RULES: none declared\n", "integration-test-author", True,
+         "none declared", host="claude", tools=rw, worktree=True, repo_files=forms)
+    case("integration author: a repo with no test-forms file needs no TEST_FORM_RULES",
+         integ, "integration-test-author", False, host="claude", tools=rw, worktree=True, live="{REAL}/.discovery/dossiers/W-014-x.md", must_warn="")
+    case("unit author: a repo that declares refused forms, payload without the field, is refused",
+         unit_ok, "unit-test-author", True, "no TEST_FORM_RULES", host="opencode", worktree=True,
+         repo_files=forms)
+
     integ_grant = integ + "PROMISE_CHECKLIST: |\n  flush — invalid case: RepoGrant::mint(bad) raises\n"
     case("integration author with a routed checklist: an unstaged surface is a defect",
          integ_grant, "integration-test-author", True, "RepoGrant", host="claude", tools=rw,
@@ -1667,6 +1898,9 @@ def selftest() -> int:
     fix = impl.replace("MODE: build", "MODE: fix").replace("PACKAGE: P1 thing\n", "").replace("CRITERIA: |\n  1. x\n", "")
     case("implementer fix needs crs or failures", fix, "implementer", True, "CRS / FAILURES")
     case("implementer fix with failures", fix + "FAILURES: |\n  assert x\nBASELINE_COUNTS_FROM: pre-change tree re-run\n", "implementer", False)
+    case("implementer fix: several failing tests of one package travel in one FAILURES block",
+         fix + "FAILURES: |\n  test_flush_retry\n    expected 3, got 2\n  test_reload_empty\n    KeyError: 'x'\n"
+         "  test_flush_order\n    assert a == b\nBASELINE_COUNTS_FROM: pre-change tree re-run\n", "implementer", False)
     case("a diff hunk header is not a template token",
          fix + "FAILURES: |\n  @@ -1,4 +1,5 @@\n  -assert x\n  +assert y\nBASELINE_COUNTS_FROM: pre-change tree re-run\n", "implementer", False)
     case("implementer bad mode", impl.replace("MODE: build", "MODE: repair"), "implementer", True, "takes one of")
@@ -1732,6 +1966,37 @@ def selftest() -> int:
     case("drafter pr clean, hyphen field accepted", drafter, "document-drafter", False)
     case("drafter adr needs decisions",
          drafter.replace("MODE: pr", "MODE: adr"), "document-drafter", True, "DECISIONS is missing")
+    da_dossier = ("---\nid: W-014\n---\n## Approach\nflush\n"
+                  "Diagrams new: seq-flush \u2014 the flush flow, c4-queue \u2014 queue types\n")
+    da = (
+        "DOSSIER_ID: W-014\nPROBLEM: |\n  queues drop\nAPPROACH: |\n  flush\n"
+        "CONTRACT: |\n  fn flush()\nWORK_DIR: {REAL}/.discovery/visual-review/W-014/work\n"
+        "OUT_DIR: {REAL}/.discovery/visual-review/W-014\nSCRIPTS_DIR: {REAL}/scripts\n"
+        "REPO: {REAL}\nDIAGRAMS_NEW: |\n  seq-flush \u2014 the flush flow\n  c4-queue \u2014 queue types\n"
+    )
+    da_files = {".discovery/dossiers/W-014-x.md": da_dossier,
+                ".discovery/visual-review/W-014/work/summary.json": "{}"}
+    case("diagram author clean", da, "diagram-author", False, repo_files=da_files, must_warn="")
+    case("diagram author: ERRORS is optional", da + "ERRORS: |\n  l1.json: x\n", "diagram-author", False,
+         repo_files=da_files)
+    case("diagram author: missing field", da.replace("REPO: {REAL}\n", ""), "diagram-author", True,
+         "REPO is missing", repo_files=da_files)
+    case("diagram author: DIAGRAMS_NEW differs from the dossier",
+         da.replace("  c4-queue \u2014 queue types\n", ""), "diagram-author", True,
+         "Diagrams new:", repo_files=da_files)
+    case("diagram author: none against a dossier that lists stems",
+         da.replace("DIAGRAMS_NEW: |\n  seq-flush \u2014 the flush flow\n  c4-queue \u2014 queue types\n",
+                    "DIAGRAMS_NEW: none\n"), "diagram-author", True, "Diagrams new:", repo_files=da_files)
+    case("diagram author: a bad stem prefix",
+         da.replace("c4-queue", "foo-queue"), "diagram-author", True, "not valid",
+         repo_files={**da_files, ".discovery/dossiers/W-014-x.md": da_dossier.replace("c4-queue", "foo-queue")})
+    case("diagram author: none with no dossier line is clean",
+         da.replace("DIAGRAMS_NEW: |\n  seq-flush \u2014 the flush flow\n  c4-queue \u2014 queue types\n",
+                    "DIAGRAMS_NEW: none\n"), "diagram-author", False,
+         repo_files={**da_files, ".discovery/dossiers/W-014-x.md": "---\nid: W-014\n---\n## Approach\nflush\n"})
+    case("diagram author: OUT_DIR outside the repo",
+         da.replace("OUT_DIR: {REAL}/.discovery/visual-review/W-014", "OUT_DIR: {REAL}/../elsewhere"),
+         "diagram-author", True, "not under REPO", repo_files=da_files)
     # a field that appears twice (issue #107)
     delivery = "DELIVERY_CHANGE: |\n  one Write, then Edits\n"
     case("one DELIVERY_CHANGE block is clean", unit_ok + delivery, "unit-test-author", False)

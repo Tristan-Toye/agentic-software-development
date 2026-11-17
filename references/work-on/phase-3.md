@@ -6,17 +6,19 @@
 ### The contract-reviewer has no size gate, and its skip must be auditable
 
 **`contract-reviewer` has no size gate, and its skip must still be
-auditable** (the why is in Phase 3). Write exactly one of these into
-`## Build log` before the fan-out, every run:
+auditable** (the why is in Phase 3). Record exactly one of these in the
+dossier front matter before the fan-out, every run:
 
 ```
-CONTRACT-REVIEW: spawned <session ref> — <N> checklist lines, <N> DEFECT, <N> AMBIGUITY
-CONTRACT-REVIEW: skipped — <reason>
+dossier_edit.py set <dossier> 'contract_review=<contract commit SHA the review read>'
+dossier_edit.py set <dossier> 'contract_review=skipped — <reason>'
 ```
 
-`scripts/validate_pipeline.py --dossier <ID> --pre-fanout` refuses to pass
-while neither line is present — and likewise without the `HOOKS:` line
-(Phase 2), the `PAYLOAD-LINT:` line and the `ADMISSION:` line (Phase 4), and
+The SHA is the contract commit the reviewer's stubs came from. If the contract
+changes afterwards the SHA is stale, and `scripts/validate_pipeline.py
+--dossier <ID> --pre-fanout` refuses until the review runs again and the new
+SHA is recorded. It also refuses without the `hooks:` field (Phase 2), the
+`PAYLOAD-LINT:` line and the `ADMISSION:` line (Phase 4), and
 the `CENSUS:` and `CHECKLIST-IDS:` lines (Phase 3). A
 skip stays possible; a *silent* skip does not.
 
@@ -68,12 +70,20 @@ member (`references/formats/dossier.md` § "The observability checklist") is the
 derivation: keep its output. One line per member per category the docstring
 actually states — return meaning, named error, order, empty case, invalid
 case, concurrency semantics, and the derive-set each assertion shape needs —
-becomes `PROMISE_CHECKLIST`. Write it into
-`## Build log` before you spawn and pass it verbatim in the unit author's
+becomes `PROMISE_CHECKLIST`. Write it as the artefact
+`python3 scripts/build_records.py checklist write <dossier>` (one
+`member — category: promise` line per promise, from stdin; it lands in
+`.discovery/checklists/<ID>.md`) before you spawn; the gate checks that the
+file exists and covers the contract's members, and its failure names the
+missing IDs. Pass it verbatim in the unit author's
 payload beside `CONTRACT`. A promise missing from a test traces to a thin
 checklist: a Phase 3 defect to fix in the checklist and the contract
 together, never a reason to ask a blind agent to re-read what its payload
-never named.
+never named. A line whose expected outcome is negative (refused, `None`,
+`Ok(None)`, no event) carries an `input:` that passes every other guard the
+contract documents on that path, so a mutant that deletes or weakens the one
+guard under test turns that test red. `check_payload.py` warns on a negative
+line with no `input:` before the fan-out.
 
 **Match the checklist's ids to the repo's own coverage script, before
 deriving it.** When the target repo owns a promise-coverage script, read its
@@ -88,7 +98,13 @@ so re-derive them in it, never fall back to a Phase 5 manual diff.
 migration, a table, a counted file, or moves a file, grep the tree for pins
 that count or list it — a table-name census, a migration count `(1..=N)`, a
 `[&str; N]` array, an inventory row count — and give each one an owner: the
-package that moves it, or a criterion with a test-author owner. Also grep for **exact-output
+package that moves it, or a criterion with a test-author owner. The same census runs when the contract moves code from an existing file into a
+new one: grep the whole
+tree outside the source crates (scripts, `*.tsv` registers, allowlists,
+inventories) for the old file's path: a register that classifies files by path
+(a seam-file TSV, an allowlist keyed by path) gets an owner who adds the new
+file's row, and the suite that pins that register's row count gets an owner
+who re-derives the count — a second pin, owned like the first. Also grep for **exact-output
 assertions over changed members**: a test that compares the whole result of a
 member this contract changes (full-map or collection equality) breaks when the
 result gains a key or an item. Recipe per language: Rust
@@ -110,6 +126,16 @@ checkout while the stubs live in the package worktree X — pass
 `--worktree <X>` (or set the dossier's `worktree:` front-matter field, which
 the check resolves itself); a package that owns a directory is walked whole,
 every file under it.
+
+**Every prose promise in `## Contract` maps to a criterion.** Each sentence of
+the contract's prose (outside code blocks) that promises observable behaviour
+of a binary, a wiring step, an environment variable, a router mount or a
+deployment input names a token: an ALL_CAPS env var, a route path in backticks, a `bin/x` path or
+"the `x` binary". Some acceptance criterion must contain that same token; a
+promise with none is a pre-fan-out gap — add the criterion before you
+spawn, or state in the build log why none is needed. Log `PROSE-PROMISES: <N>, <M> without a criterion` into `## Build
+log`; `validate_pipeline.py --pre-fanout` runs the same check on the dossier
+and lists each uncovered token as a WARNING; it does not block the fan-out.
 
 **A frozen count or oracle carries its derivation command beside the
 number.** Write `12 tables (grep -c 'CREATE TABLE' migrations/*.sql)`, never a
@@ -261,3 +287,106 @@ are its whole world. So a criterion that states a scale the contract does not
 as an explicit strength requirement — in `FIXTURES` or `TEST_FRAMEWORK`,
 phrased as a property of the contract surface, never as a criterion number —
 or the contract itself must be fixed to state the scale.
+
+**The visual review — the last step of Phase 3, before any Phase 4 spawn; every
+build, no size gate.** The owner sees what the change does to the system
+before an implementer starts. It is its own step: the `contract-reviewer`
+payload holds no diagram file and no dossier text from this step.
+
+1. Mark the dossier: `dossier_edit.py set <dossier> 'visual_review=required'`
+   (this switches the gate on for this dossier). Then run `python3 scripts/vr_prepare.py <repo> <ID> --base <baseline_commit> --head X`
+   (`X` = the contract commit). It writes `.discovery/visual-review/<ID>/work/`
+   and prints a compact JSON summary. A non-zero exit stops the step: log
+   `VISUAL-REVIEW: skipped-error — <step the JSON names>` as a build-log
+   line, report it, and stop; never invent the facts by hand.
+2. Spawn `diagram-author` (payload file in `.agent-staging/payloads/`): `DOSSIER_ID`,
+   the dossier's `## Problem` and `## Approach`, the contract, `WORK_DIR`,
+   `OUT_DIR`, `SCRIPTS_DIR`, `REPO`, and `DIAGRAMS_NEW` (the stems of the
+   `Diagrams new:` line, one `<stem> — <what>` per line, verbatim; `none` when the dossier has no such
+   line). Lint it first:
+   `python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind diagram-author --host <claude|opencode> --live-dossier <live dossier>`
+   (it refuses a missing field, a `DIAGRAMS_NEW` that differs from the dossier's `Diagrams new:` stems or
+   names a stem not starting `seq-`, `c1-` or `c4-`, an `OUT_DIR` outside `REPO`, and a path that does not
+   exist); a repair re-spawn adds `ERRORS` and is linted the same way. It writes `l0.json`,
+   `l1.json` and `l2.json` in `OUT_DIR`, and for every `c1-*` and `c4-*` stem a
+   draft `OUT_DIR/arch/<stem>.json`; it only names and groups, and marks what
+   no stub proves `inferred`.
+3. Validate each file yourself:
+   `python3 scripts/vr_graph.py validate <OUT_DIR>/l<N>.json --root <repo>`
+   (budgets L0 15, L1 12, L2 12). On a defect re-spawn the agent with the
+   issue list in `ERRORS`; **at most 2 repair attempts**, then stop, log the
+   open issues in `## Build log` and report. A graph that fails validation
+   creates **no** owner question.
+   When the dossier's `Diagrams new:` line lists a stem, the author was told
+   (it reads the line in `APPROACH`) to write that flow into `l1.json` with
+   `new_stem` on the flow and `to` and `call_kind` on every step; `validate`
+   rejects a `new_stem` flow whose steps lack them. A `c1-*` or `c4-*` stem
+   has its own draft: validate it too,
+   `python3 scripts/vr_graph.py validate <OUT_DIR>/arch/<stem>.json --root <repo>`.
+   Then prove the promotion works before the owner looks, per stem:
+   `python3 scripts/vr_promote.py --dossier-id <ID> --stem <stem> --repo <repo> --preview`
+   (for a `seq-*` stem it writes the draft `.discovery/visual-review/<ID>/arch/<stem>.json`
+   from the `l1.json` flow; for `c1-*` and `c4-*` it validates the author's
+   draft; nothing is written under `docs/`). The dashboard shows each draft as
+   a tab of the fourth part, "Architecture impact", with the same verdicts as
+   L0, L1 and L2. A non-zero exit is a defect in the draft or in `l1.json`:
+   re-spawn the author with the output in `ERRORS`, same two-attempt limit.
+   The owner's verdicts are recorded in `review.json` against the hash of the
+   file they saw; any later edit of `l1.json` or of a draft (a contract
+   revision that re-runs the author) changes that hash, and Phase 9's
+   promotion then requires the owner's fresh approval of the new file.
+4. Ask the owner ONE product question with
+   `ask_owner.py ask --kind product --topic visual-review`
+   (`references/owner-questions.md`). The `--topic` marker is what makes it
+   the visual-review question: the dashboard canvas and the answer path
+   accept only a question that carries it (the two option labels below are a
+   secondary guard), so a question without it gets the ordinary buttons: "Does this picture match what the
+   feature should do?", options `A|Approved|fan-out starts` and
+   `B|Changes requested|back to the contract`, the dashboard view of the
+   three files linked in the question text, `--blocks` the Phase 4 fan-out.
+   Then `ask_owner.py wait`; the run waits for the answer, with no time-boxed
+   default (OQ-08 = A). The owner reviews L0, L1, L2 and every architecture
+   tab; the answer `A` needs every element of all of them OK. The owner gives a verdict per element on the
+   dashboard canvas (OK, Question, Change, Remove from scope) and sends the
+   review in one action: the answer is `A` when every element is OK, else `B`
+   with one line per flagged element (verdict, diagram, element id, comment)
+   and the elements not yet looked at. A Question verdict reaches you as a
+   follow-up (`FOLLOWUP`, the question stays open; answer it with
+   `ask_owner.py reply`).
+   When the answer is `B`, read
+   `.discovery/visual-review/<ID>/review.json` (schema
+   `references/visual-review/review.schema.json`) for the element ids and
+   comments: each line's `anchor.diagram` and `anchor.element` name the
+   element, `verdict` is `change`, `remove` (out of scope) or `question`,
+   and a line with a different `anchor.graph_hash` than the file now has was
+   made on an older version of the picture. These ids and comments are the
+   input of the contract revision below.
+   `anchor.diagram` of an architecture element reads `arch:<stem>`.
+   When the answer is `A` and the dossier's `Diagrams new:` line lists
+   stems (`seq-*`, `c1-*` and `c4-*` alike), first run per stem
+   `python3 scripts/vr_promote.py --dossier-id <ID> --stem <stem> --repo <repo> --check-approval`
+   (the approval rule only: no writes). An `A` typed as a chat answer has no
+   per-element `ok` lines in `review.json`, and Phase 9 would refuse it hours
+   later. On exit 1 do **not** record `VISUAL-REVIEW: approved`: ask the owner
+   again (`ask_owner.py`, same topic) naming the element ids it printed, who
+   `ok` them on the dashboard canvas; repeat until it exits 0.
+5. Record the outcome as a `## Build log` line, exactly one of:
+
+   ```
+   VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n>, arch <stem> <n>, arch <stem> <n> (<dashboard link>)
+   VISUAL-REVIEW: changes requested — <element ids of the review.json lines with verdict change or remove>
+   ```
+
+   The counts are the node counts of the three files, then one
+   `arch <stem> <n>` entry per architecture draft in `arch/` (its node count;
+   none, and no comma, when the dossier lists no `Diagrams new:` stems).
+   `validate_pipeline.py --dossier <ID> --pre-fanout` checks them, the three
+   files, every draft (each `Diagrams new:` stem needs its draft, each draft
+   its entry; the PR's `Diagram <stem> not added:` escape does not excuse a
+   missing draft) and the last line (the gate holds for a dossier with the `visual_review:` field that
+   step 1 sets; a build that never ran this step is not flagged).
+   **`changes requested` goes back to the contract revision above, never
+   forward:** fix the contract, re-run the contract review, then run this
+   step again and record a new line. Fan-out waits for `approved`.
+
+**Driver (`ASD_DRIVER_PRE_FANOUT_CHECK` is `on` or `shadow`).** `python3 scripts/pre_fanout_check.py --dossier ID` runs the pre-fan-out mechanics (validation, receipts, criteria owner/env map, census grep, frozen counts, gates, slices vs checklist) and prints evidence only; you rule on it. Exit 2 means a surprise: do the step by hand. In `shadow`, do the manual steps exactly as today, then run the driver once afterwards with the same arguments (no `--log`) and ignore its output for every decision; it saves evidence to `.git/asd-drivers/driver-shadow/` for the rollout report. Unset or `off` means ignore this paragraph.

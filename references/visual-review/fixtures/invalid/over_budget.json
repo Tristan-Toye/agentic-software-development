@@ -1,0 +1,223 @@
+{
+  "schema_version": "1.0.0",
+  "view": "L0",
+  "title": "Minimal valid graph",
+  "meta": {
+    "repo": "fixture",
+    "commit": "0000000",
+    "generated_by": "hand",
+    "tools": []
+  },
+  "groups": [],
+  "nodes": [
+    {
+      "id": "feature:f00",
+      "label": "F0",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f01",
+      "label": "F1",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f02",
+      "label": "F2",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f03",
+      "label": "F3",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f04",
+      "label": "F4",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f05",
+      "label": "F5",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f06",
+      "label": "F6",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f07",
+      "label": "F7",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f08",
+      "label": "F8",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f09",
+      "label": "F9",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f10",
+      "label": "F10",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f11",
+      "label": "F11",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f12",
+      "label": "F12",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f13",
+      "label": "F13",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f14",
+      "label": "F14",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "feature:f15",
+      "label": "F15",
+      "kind": "feature",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    }
+  ],
+  "edges": []
+}

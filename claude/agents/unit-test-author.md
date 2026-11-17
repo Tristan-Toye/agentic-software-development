@@ -89,6 +89,9 @@ tool set — that request is always refused.
 - `NAMING` — the test naming convention.
 - `VOCABULARY` — domain terms to use in names, so the tests read in the
   project's own language.
+- `TEST_FORM_RULES` — the repository's refused test-code forms, one
+  `refused form -> use instead` line each, or `none declared`. Never write a
+  refused form; use the helper named after the arrow.
 - `FIXTURES` — how to construct the subject under test, and the fakes or stubs
   available to you.
 - `SHARED_IDIOM` — present only when a test must construct or invoke a

@@ -16,11 +16,11 @@ const { tool } = (await import(
 //
 // Every model step re-bills the whole context, so a 60 KB Rust file paged in with
 // `sed -n` windows, whole-file reads and chains of greps is paid for on every later
-// step. The tools (code_outline, code_item, code_find, doc_section, code_replace) are
+// step. The tools (code_outline, code_item, code_find, doc_section, arch_find, code_replace) are
 // defined once in shared/tools.ts, which also serves Claude Code's MCP server; this file
 // is the opencode adapter. The plugin holds no state and persists nothing.
 
-const NAV = ["code_outline", "code_item", "code_find", "doc_section", "code_replace"]
+const NAV = ["code_outline", "code_item", "code_find", "doc_section", "arch_find", "code_replace"]
 
 export const CodeNavPlugin: Plugin = async () => ({
   tool: Object.fromEntries(

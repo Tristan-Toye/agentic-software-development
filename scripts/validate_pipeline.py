@@ -16,6 +16,8 @@ Usage:
     validate_pipeline.py --all
     validate_pipeline.py --write-index
     validate_pipeline.py --finalize-ids --base origin/development
+    validate_pipeline.py --c3-gate --base origin/development
+    validate_pipeline.py --diagram-gate --base origin/development [--dossier W-014] [--pr-body FILE]
     validate_pipeline.py --mode
     validate_pipeline.py --selftest
 
@@ -30,6 +32,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import os
 import re
 import shutil
@@ -730,34 +733,257 @@ def check_criteria(where: str, text: str, rep: Report) -> None:
             )
 
 
-def check_build_log(where: str, text: str, status: str, rep: Report) -> None:
-    row3 = re.compile(r"^ARBITRATION\s+\d+\s*[—–-]+\s*row\s*3\b", re.M)
-    for chunk in row3.split(text)[1:]:
-        scope = re.split(r"^ARBITRATION\s", chunk, flags=re.M)[0]
-        if "Lesson:" not in scope:
+def _records():
+    """build_records.py, beside this script (the one reader of the record formats)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import build_records
+
+    return build_records
+
+
+def contract_paths(contract: str) -> list[str]:
+    """The files the contract names: each `### <path>` heading under `## Contract`
+    (`### Definitions` is prose, not a file)."""
+    out = []
+    for m in re.finditer(r"^###\s+`?([^\s`]+)`?[^\n]*$", contract, re.M):
+        if not m.group(1).lower().startswith("definitions"):
+            out.append(m.group(1))
+    return out
+
+
+CONTRACT_MEMBER_RE = re.compile(r"\b(?:def|fn|func|function)\s+([A-Za-z_]\w*)")
+
+
+def check_checklist(where: str, path: Path, fm: dict, contract: str, log: str, status: str, rep: Report) -> None:
+    """The promise checklist is an artefact, `.discovery/checklists/<ID>.md`, not a log mention.
+    It must exist once the build is past planning, and its members must be in the contract.
+    A contract member (def/fn/func/function) with no checklist line is a WARNING: a member with
+    no stated promise legitimately has none."""
+    if status not in {"building", "review", "pr", "done"}:
+        return
+    sev = rep.warn if status == "building" else rep.defect
+    f = path.parent.parent / "checklists" / f"{fm.get('id')}.md"
+    if not f.is_file():
+        if "PROMISE_CHECKLIST" in log:
+            rep.warn(where, f"promise checklist only named in the Build log (legacy); write {f.name} with "
+                            f"`build_records.py checklist write {fm.get('id')} --from-file F`")
+            return
+        sev(where, f"status is '{status}' but there is no promise checklist artefact "
+                   f".discovery/checklists/{fm.get('id')}.md (`build_records.py checklist write`)")
+        return
+    members = _records().checklist_members(f.read_text(encoding="utf-8"))
+    if not members:
+        rep.defect(where, f"checklist {f.name} holds no `<member> — <category>: <promise>` line")
+        return
+    phantom = [m for m in members if not re.search(r"(?<![\w])" + re.escape(re.split(r"[.:#]", m)[-1].strip("()")) + r"(?![\w])", contract)]
+    if phantom:
+        rep.defect(where, f"checklist {f.name} names members the contract does not: {', '.join(phantom)}")
+    tails = {re.split(r"[.:#]", m)[-1].strip("()") for m in members}
+    uncovered = sorted({m for m in CONTRACT_MEMBER_RE.findall(contract) if m not in tails and m not in members})
+    if uncovered:
+        rep.warn(where, f"contract members with no checklist line (fine when the docs state no promise): "
+                        f"{', '.join(uncovered)}")
+
+
+def check_deferred_record(where: str, path: Path, fm: dict, log: str, status: str, rep: Report) -> None:
+    """The deferred ledger is a record, `.discovery/deferred/<ID>.yaml`: items (possibly none)
+    plus `sources`. Status `done` needs it; a record that exists is checked at any status."""
+    f = path.parent.parent / "deferred" / f"{fm.get('id')}.yaml"
+    if f.is_file():
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            rep.defect(where, f"{f.name} is not readable: {exc}")
+            return
+        for problem in _records().validate_deferred(data if isinstance(data, dict) else {}):
+            rep.defect(where, f"deferred record {f.name}: {problem}")
+        return
+    if status == "done":
+        if "DEFERRED" in log:
+            rep.warn(where, "deferred ledger only in the Build log (legacy); "
+                            "`build_records.py deferred add|none` writes the record")
+        else:
             rep.defect(
                 where,
-                "a row-3 arbitration records no 'Lesson:' line; the "
-                "contract fix must name the lesson",
+                "status is 'done' but there is no deferred record "
+                f".discovery/deferred/{fm.get('id')}.yaml; /work-on Phase 9 writes it "
+                "(`build_records.py deferred add`, or `deferred none --source ...` when nothing was left)",
             )
-    if "PROMISE_CHECKLIST" not in text:
-        if status in {"review", "pr", "done"}:
-            rep.defect(
-                where,
-                f"status is '{status}' but the Build log names no PROMISE_CHECKLIST",
-            )
-        elif status == "building":
-            rep.warn(
-                where,
-                "status is 'building' but the Build log names no PROMISE_CHECKLIST",
-            )
-    if "DEFERRED" not in text and status == "done":
+
+
+ROW3_RE = re.compile(r"^\W*ARBITRATION\b[^\n]*?\brows?\s*3\b", re.M)
+
+
+def check_contract_fix_lessons(where: str, fm: dict, contract: str, repo_root: Path, status: str, rep: Report,
+                               log: str = "") -> None:
+    """A row-3 arbitration (the contract was ambiguous) is fixed by a commit that names its lesson in a
+    `Lesson:` git trailer. Each row-3 ARBITRATION line in the build log needs one such commit after
+    `contract_commit` touching a contract file. Implementer bodies and row-1/2 fixes touch the same
+    files and need no trailer, so only the count is checked. Silent without git, a worktree, or a
+    recorded contract commit."""
+    if status not in {"building", "review", "pr", "done"}:
+        return
+    row3 = len(ROW3_RE.findall(log))
+    base = str(fm.get("contract_commit") or "").strip()
+    paths = contract_paths(contract)
+    wt = str(fm.get("worktree") or "").strip()
+    cwd = (repo_root / wt).resolve() if wt else repo_root
+    if not row3 or not base or not paths or not cwd.is_dir():
+        return
+    try:
+        out = git_out(cwd, "log", "--no-merges", "--format=%H%x00%B%x01", f"{base}..HEAD", "--", *paths)
+    except RuntimeError:
+        return
+    lessons = sum(
+        1 for chunk in out.split("\x01")
+        if chunk.strip() and re.search(r"^Lesson:\s*\S", chunk.partition("\x00")[2], re.M)
+    )
+    if lessons < row3:
         rep.defect(
             where,
-            "status is 'done' but the Build log carries no DEFERRED ledger; "
-            "/work-on Phase 9 captures the deferred issues (or DEFERRED: none) "
-            "before closing the run",
+            f"{row3} row-3 arbitration(s) in the build log but {lessons} commit(s) after the contract "
+            f"commit {base[:8]} carry a `Lesson:` trailer; a contract fix names the lesson in its commit message",
         )
+
+
+# --------------------------------------------------------------------------
+# visual review gate (VR-05)
+# --------------------------------------------------------------------------
+
+# The gate applies to a dossier whose front matter carries a `visual_review:` field. The Phase 3
+# visual-review step writes it (`dossier_edit.py set <dossier> 'visual_review=required'`) before it
+# runs, so a build that started before this step existed - including one still running when the
+# plugin updates - is never flagged retroactively.
+VISUAL_REVIEW_RE = re.compile(r"^\s*[-*]?\s*VISUAL-REVIEW:\s*(.+?)\s*$", re.M)
+VISUAL_REVIEW_APPROVED_RE = re.compile(
+    r"^approved\b.*?\bL0\s+(\d+)\b.*?\bL1\s+(\d+)\b.*?\bL2\s+(\d+)\b", re.I)
+VISUAL_REVIEW_ARCH_RE = re.compile(r"\barch\s+([A-Za-z0-9][A-Za-z0-9_-]*)\s+(\d+)\b", re.I)
+VISUAL_REVIEW_CHANGES_RE = re.compile(r"^changes requested\b.*\S", re.I)
+VISUAL_REVIEW_VIEWS = (("l0.json", "L0"), ("l1.json", "L1"), ("l2.json", "L2"))
+
+
+def visual_review_applies(fm: dict) -> bool:
+    return "visual_review" in fm
+
+
+def visual_review_problems(fm: dict, log: str, root: Path, worktree: Path | None = None) -> list[str]:
+    """What is wrong with a dossier's visual review, [] when it is fine or does not apply.
+
+    Needs, for a dossier the gate applies to (``visual_review_applies``): a ``VISUAL-REVIEW:`` line
+    in the build log, the last one being ``approved — L0 <n>, L1 <n>, L2 <n>[, arch <stem> <n> ...]`` (a ``changes
+    requested — <ids>`` line sends Phase 3 back to the contract; it is history, not a pass), and
+    ``.discovery/visual-review/<ID>/l0.json``, ``l1.json`` and ``l2.json``, each valid under
+    ``vr_graph.py validate`` with the view its name says, whose node counts equal the line's. Every ``Diagrams new:`` stem of the dossier needs its draft
+    ``arch/<stem>.json`` (valid, node count equal to its ``arch <stem> <n>`` entry), and every draft present
+    needs an entry; a dossier with no stems and no drafts keeps the older line without arch entries. (The PR
+    gate's ``Diagram <stem> not added:`` escape concerns docs/architecture at PR time and does not excuse a
+    missing draft here.)"""
+    if not visual_review_applies(fm):
+        return []
+    lines = VISUAL_REVIEW_RE.findall(log)
+    if not lines:
+        return ["no VISUAL-REVIEW: line in ## Build log. Phase 3 runs the diagram step on every build: "
+                "`VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n>, arch <stem> <n> (<dashboard link>)` "
+                "(the arch entries: one per `Diagrams new:` stem, none when the dossier lists none)"]
+    last = lines[-1]
+    approved = VISUAL_REVIEW_APPROVED_RE.match(last)
+    if not approved:
+        if VISUAL_REVIEW_CHANGES_RE.match(last):
+            return ["the last VISUAL-REVIEW: line is 'changes requested': revise the contract in Phase 3, "
+                    "run the diagram step again and record 'approved'"]
+        return [f"the last VISUAL-REVIEW: line is not well formed: {last[:80]!r}. Use "
+                "`approved — L0 <n>, L1 <n>, L2 <n>[, arch <stem> <n>]` or `changes requested — <element ids>`"]
+    dossier_id = str(fm.get("id") or "").strip()
+    base = None
+    for cand in (worktree, root):
+        if cand and (cand / ".discovery" / "visual-review" / dossier_id).is_dir():
+            base = cand
+            break
+    if base is None:
+        return [f".discovery/visual-review/{dossier_id}/ is missing: the diagram step wrote no l0.json, l1.json, l2.json"]
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import vr_graph
+    except ImportError:
+        return ["vr_graph.py is not beside this script; the visual-review files cannot be validated"]
+    problems: list[str] = []
+    for (name, view), claimed in zip(VISUAL_REVIEW_VIEWS, approved.groups()):
+        f = base / ".discovery" / "visual-review" / dossier_id / name
+        if not f.is_file():
+            problems.append(f"{f.relative_to(base)} is missing")
+            continue
+        try:
+            graph = vr_graph.load(str(f))
+        except (OSError, ValueError) as exc:
+            problems.append(f"{name} is not readable: {exc}")
+            continue
+        for issue in vr_graph.validate(graph, root=str(base)):
+            problems.append(f"{name}: {issue.get('code')} {issue.get('path')}: {issue.get('message')}")
+        if isinstance(graph, dict) and graph.get("view") != view:
+            problems.append(f"{name}: view is {graph.get('view')!r}, expected {view!r}")
+        used = vr_graph.budget(graph).get("used") if isinstance(graph, dict) else None
+        if used is not None and used != int(claimed):
+            problems.append(f"{name}: the VISUAL-REVIEW: line says {view} {claimed}, the file holds {used}")
+    problems.extend(_visual_review_arch_problems(last, base, root, dossier_id, vr_graph))
+    return problems
+
+
+def _visual_review_arch_problems(line: str, base: Path, root: Path, dossier_id: str, vr_graph) -> list[str]:
+    """The ``arch <stem> <n>`` entries of an approved line against ``arch/<stem>.json`` and ``Diagrams new:``."""
+    claimed: dict[str, int] = {}
+    for stem, n in VISUAL_REVIEW_ARCH_RE.findall(line.split("(", 1)[0]):
+        claimed[stem] = int(n)
+    stems = dossier_new_diagrams(base, dossier_id) or dossier_new_diagrams(root, dossier_id)
+    arch = base / ".discovery" / "visual-review" / dossier_id / "arch"
+    drafts = {f.stem: f for f in sorted(arch.glob("*.json"))} if arch.is_dir() else {}
+    problems: list[str] = []
+    for stem in stems:
+        if stem not in drafts:
+            problems.append(f"arch/{stem}.json is missing: the dossier's `Diagrams new:` lists {stem}, so Phase 3 "
+                            "writes its draft (diagram-author for c1-/c4-, `vr_promote.py --preview` for seq-)")
+    for stem in sorted(drafts):
+        if stem not in claimed:
+            problems.append(f"arch/{stem}.json exists but the VISUAL-REVIEW: line has no `arch {stem} <n>` entry")
+    for stem, n in claimed.items():
+        f = drafts.get(stem)
+        if f is None:
+            if stem not in stems:
+                problems.append(f"the VISUAL-REVIEW: line has `arch {stem} {n}`, but there is no arch/{stem}.json")
+            continue
+        try:
+            graph = vr_graph.load(str(f))
+        except (OSError, ValueError) as exc:
+            problems.append(f"arch/{stem}.json is not readable: {exc}")
+            continue
+        for issue in vr_graph.validate(graph, root=str(base)):
+            problems.append(f"arch/{stem}.json: {issue.get('code')} {issue.get('path')}: {issue.get('message')}")
+        used = len([x for x in (graph.get("nodes") or []) if isinstance(x, dict)]) if isinstance(graph, dict) else None
+        if used is not None and used != n:
+            problems.append(f"arch/{stem}.json: the VISUAL-REVIEW: line says arch {stem} {n}, the file holds {used}")
+    return problems
+
+
+def check_visual_review(where: str, path: Path, fm: dict, log: str, status: str, rep: Report) -> None:
+    """Past the review (status review, pr, done) a dossier the gate applies to carries its record.
+    The same check runs before the fan-out in ``check_pre_fanout``."""
+    if status not in {"review", "pr", "done"}:
+        return
+    root = path.resolve().parents[2]
+    wt = str(fm.get("worktree") or "").strip()
+    worktree = (root / wt).resolve() if wt and (root / wt).is_dir() else None
+    for problem in visual_review_problems(fm, log, root, worktree):
+        rep.defect(where, problem)
+
+
+def check_build_log(where: str, text: str, status: str, rep: Report, path: Path | None = None,
+                    fm: dict | None = None, contract: str = "") -> None:
+    """The gates read facts: the checklist artefact, the deferred record, the `Lesson:` trailers.
+    The build log is the human view; nothing here greps it for a fact except the legacy fallbacks."""
+    if path is None or fm is None:
+        return
+    check_checklist(where, path, fm, contract, text, status, rep)
+    check_deferred_record(where, path, fm, text, status, rep)
+    check_visual_review(where, path, fm, text, status, rep)
 
 
 def check_contract_id(where: str, dossier_id: str, contract: str, rep: Report) -> None:
@@ -822,7 +1048,10 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
             f"{where} ## Acceptance criteria", sec["## Acceptance criteria"], rep
         )
     if "## Build log" in sec:
-        check_build_log(f"{where} ## Build log", sec["## Build log"], str(status), rep)
+        check_build_log(f"{where} ## Build log", sec["## Build log"], str(status), rep,
+                        path, fm, sec.get("## Contract", ""))
+    check_contract_fix_lessons(where, fm, sec.get("## Contract", ""), repo_root, str(status), rep,
+                               sec.get("## Build log", ""))
 
     if status == "ready" and not fm.get("baseline_commit"):
         rep.defect(
@@ -1103,8 +1332,10 @@ def collect_adr_ids(adr_dir: Path) -> dict[str, list[Path]]:
     return by_id
 
 
-# `BLOCKER-REMOVED: W-079 — <reason>`: a blocker taken out of `blocked_by` on
-# purpose. Without this line in `## Build log` a removal is a defect.
+# A blocker taken out of `blocked_by` is justified by a fact: the blocker dossier is `done`, or
+# `.discovery/blocker-removals/<ID>.yaml` holds a `{blocker, reason}` row (written by
+# `dossier_edit.py ... --reason`). The legacy `BLOCKER-REMOVED: W-079 — <reason>` build-log line
+# still justifies a removal in a dossier written before the record existed.
 BLOCKER_REMOVED_RE = re.compile(r"BLOCKER-REMOVED:\s*(W-\d+)\s*[—-]+\s*\S")
 WID_RE = re.compile(r"W-\d+")
 
@@ -1118,6 +1349,27 @@ def default_base(root: Path) -> str | None:
         text=True,
     )
     return "origin/HEAD" if p.returncode == 0 else None
+
+
+def blocker_removal_facts(path: Path, then: set[str]) -> set[str]:
+    """The ids of `then` whose removal from the dossier at `path` is justified by a fact."""
+    ok: set[str] = set()
+    disc = path.parent.parent
+    try:
+        fm, _, _ = split_front_matter(path.read_text())
+        rec = json.loads((disc / "blocker-removals" / f"{fm.get('id')}.yaml").read_text())
+        ok |= {str(r.get("blocker")) for r in rec.get("removals", []) if str(r.get("reason") or "").strip()}
+    except (ValueError, OSError, AttributeError):
+        pass
+    for wid in then - ok:
+        for q in sorted(path.parent.glob(f"{wid}*.md")):
+            try:
+                qfm, _, _ = split_front_matter(q.read_text())
+            except (ValueError, OSError):
+                continue
+            if qfm.get("id") == wid and qfm.get("status") == "done":
+                ok.add(wid)
+    return ok
 
 
 def check_blocker_removals(
@@ -1154,13 +1406,13 @@ def check_blocker_removals(
             continue
         then = set(WID_RE.findall(str(fm_then.get("blocked_by") or "")))
         now = set(WID_RE.findall(str(fm_now.get("blocked_by") or "")))
-        justified = set(BLOCKER_REMOVED_RE.findall(body))
+        justified = blocker_removal_facts(p, then - now) | set(BLOCKER_REMOVED_RE.findall(body))
         for wid in sorted(then - now - justified):
             rep.defect(
                 p.name,
-                f"blocked_by drops {wid}, which it holds at {base}. A done blocker "
-                f"stays: it records what this dossier builds on. To remove a wrong "
-                f"blocker, log `BLOCKER-REMOVED: {wid} — <reason>` in ## Build log.",
+                f"blocked_by drops {wid}, which it holds at {base}, and {wid} is not done. "
+                f"Remove it with `dossier_edit.py remove ... blocked_by={wid} --reason '<why>'`, "
+                f"which records the reason.",
             )
 
 
@@ -1202,7 +1454,7 @@ def check_dossier_ids(dossier_dir: Path, rep: Report) -> None:
 
 
 def plan_renumber(
-    by_id: dict[str, list[str]], own: set[str], taken: list[int], fmt: str
+    by_id: dict[str, list[str]], own: set[str], taken: list[int], fmt: str, mint=None
 ) -> tuple[dict[str, str], list[str]]:
     """Plan fresh ids for the branch's own files inside duplicate-id groups.
 
@@ -1212,6 +1464,9 @@ def plan_renumber(
     `W-{:03d}`). A group with no own claimant means the base itself is
     broken; a group with two own claimants means this branch minted one id
     twice. Both are DEFECTs: this tool renumbers merge collisions only.
+    `mint`, when given, returns a fresh id claimed from the repository's
+    central ledger (claim_id.py), or None to fall back to the next number
+    above `taken`.
     """
     nxt = max(taken) + 1 if taken else 1
     renames: dict[str, str] = {}
@@ -1226,9 +1481,40 @@ def plan_renumber(
         if len(own_files) > 1:
             defects.append(f"{aid}: this branch minted the id twice")
             continue
+        claimed = mint() if mint else None
+        if claimed:
+            renames[own_files[0]] = claimed
+            continue
         renames[own_files[0]] = fmt.format(nxt)
         nxt += 1
     return renames, defects
+
+
+def ledger_minter(root: Path, kind: str, label: str):
+    """A `mint` for plan_renumber that claims from the central ID ledger
+    (scripts/claim_id.py, branch asd/ids on ASD_ID_REMOTE, default origin),
+    or None when the remote has no ledger or ASD_ID_LEDGER=0: a repository
+    that never claimed keeps the next-number rule."""
+    if os.environ.get("ASD_ID_LEDGER", "1") == "0":
+        return None
+    remote = os.environ.get("ASD_ID_REMOTE", "origin")
+    p = subprocess.run(
+        ["git", "-C", str(root), "ls-remote", "--heads", remote, "asd/ids"],
+        capture_output=True, text=True,
+    )
+    if p.returncode != 0 or not p.stdout.strip():
+        return None
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import claim_id  # noqa: E402
+
+    def mint():
+        try:
+            return claim_id.claim(str(root), remote, kind, label)
+        except RuntimeError as exc:
+            print(f"NOTICE  ID ledger claim failed ({exc}); next free number used")
+            return None
+
+    return mint
 
 
 def plan_adr_renumber(
@@ -1391,7 +1677,10 @@ def run_finalize(root: Path, base: str) -> int:
             for aid in by_id
             if re.fullmatch(r"ADR-\d{4}", aid)
         ]
-        renames, defects = plan_adr_renumber(rel_by_id, own, taken)
+        renames, defects = plan_renumber(
+            rel_by_id, own, taken, "ADR-{:04d}",
+            ledger_minter(root, "ADR", "finalize " + tip[:12]),
+        )
         for rel, new_id in renames.items():
             old_id = f"ADR-{rel.split('/')[-1][:4]}"
             id_map[old_id] = new_id
@@ -1455,7 +1744,8 @@ def run_finalize(root: Path, base: str) -> int:
         taken_d = [int(did[2:]) for did in numbered]
         width = max((len(did[2:]) for did in numbered), default=3)
         renames_d, defects_d = plan_renumber(
-            rel_by_did, own_d, taken_d, "W-{:0" + str(width) + "d}"
+            rel_by_did, own_d, taken_d, "W-{:0" + str(width) + "d}",
+            ledger_minter(root, "W", "finalize " + tip[:12]),
         )
         defects += defects_d
         for rel, new_id in sorted(renames_d.items()):
@@ -1652,6 +1942,17 @@ def selftest_finalize() -> bool:
     case = no_chain == "x ADR-0101 y ADR-0102"
     ok &= case
     print(f"{'PASS' if case else 'FAIL'} — rewrite is single-pass: {no_chain}")
+
+    minted = plan_renumber(
+        {"W-015": ["a/W-015-own.md", "a/W-015-sib.md"], "W-016": ["a/W-016-own.md", "a/W-016-sib.md"]},
+        {"a/W-015-own.md", "a/W-016-own.md"},
+        [15, 16],
+        "W-{:03d}",
+        iter(["W-171", None]).__next__,
+    )[0]
+    case = minted == {"a/W-015-own.md": "W-171", "a/W-016-own.md": "W-017"}
+    ok &= case
+    print(f"{'PASS' if case else 'FAIL'} — renumber takes a ledger claim, else the next free number: {minted}")
 
     renames_d, defects_d = plan_renumber(
         {"W-014": ["a/W-014-one.md"], "W-015": ["a/W-015-own.md", "a/W-015-sib.md"]},
@@ -1982,15 +2283,32 @@ def selftest() -> int:
             f"{'ignored' if clean else 'treated as a section'}"
         )
 
-        print("\n--- selftest: review status without PROMISE_CHECKLIST is a DEFECT ---")
+        print("\n--- selftest: review status without a checklist artefact is a DEFECT ---")
         nocheck = GOOD_DOSSIER.replace("status: ready", "status: review")
         (d / "W-017-nocheck.md").write_text(nocheck.replace("W-014", "W-017"))
         nocheck_rep = validate_dossier(d / "W-017-nocheck.md", root)
-        caught_pcl = any("PROMISE_CHECKLIST" in x for x in nocheck_rep.defects)
-        print("\n".join(nocheck_rep.defects) or "(no defects)")
+        caught_pcl = any("checklist artefact" in x for x in nocheck_rep.defects)
+        # a Build log mention is not a checklist
+        (d / "W-017-nocheck.md").write_text(
+            nocheck.replace("W-014", "W-017").replace("## Build log\n", "## Build log\n\nPROMISE_CHECKLIST: flush — return meaning.\n")
+        )
+        mention_rep = validate_dossier(d / "W-017-nocheck.md", root)
+        caught_pcl = caught_pcl and not any("PROMISE_CHECKLIST" in x for x in mention_rep.defects) and any(
+            "legacy" in x for x in mention_rep.warnings
+        )
+        # the artefact must name contract members
+        ck = root / ".discovery" / "checklists"
+        ck.mkdir(parents=True, exist_ok=True)
+        (ck / "W-017.md").write_text("ghost_member — return meaning: gives 3\n")
+        ghost_rep = validate_dossier(d / "W-017-nocheck.md", root)
+        caught_pcl = caught_pcl and any("ghost_member" in x for x in ghost_rep.defects)
+        (ck / "W-017.md").write_text("flush — return meaning: gives 3\n")
+        ok_rep = validate_dossier(d / "W-017-nocheck.md", root)
+        caught_pcl = caught_pcl and not any("checklist" in x for x in ok_rep.defects)
+        print("\n".join(nocheck_rep.defects + ghost_rep.defects) or "(no defects)")
         print(
-            f"\n{'PASS' if caught_pcl else 'FAIL'} — missing PROMISE_CHECKLIST "
-            f"{'detected' if caught_pcl else 'NOT detected'}"
+            f"\n{'PASS' if caught_pcl else 'FAIL'} — missing checklist artefact "
+            f"{'detected, a log mention is not one, phantom members refused' if caught_pcl else 'NOT detected'}"
         )
 
         print("\n--- selftest: a criterion with no owner/env is a DEFECT ---")
@@ -2008,48 +2326,41 @@ def selftest() -> int:
             f"{'detected' if caught_owner else 'NOT detected'}"
         )
 
-        print("\n--- selftest: a row-3 arbitration without a Lesson is a DEFECT ---")
-        row3 = GOOD_DOSSIER.replace(
-            "## Build log\n",
-            "## Build log\n\n"
-            "ARBITRATION 1 — row 3 (contract ambiguous).\n"
-            "Re-spawned both agents.\n",
-        )
-        (d / "W-018-row3.md").write_text(row3.replace("W-014", "W-018"))
-        row3_rep = validate_dossier(d / "W-018-row3.md", root)
-        caught_lesson = any("Lesson" in x for x in row3_rep.defects)
-        print("\n".join(row3_rep.defects) or "(no defects)")
-        print(
-            f"\n{'PASS' if caught_lesson else 'FAIL'} — lesson-less row 3 "
-            f"{'detected' if caught_lesson else 'NOT detected'}"
-        )
+        print("\n--- selftest: a contract-fix commit without a Lesson trailer is a DEFECT ---")
+        caught_lesson = selftest_contract_lessons()
+        caught_receipts = selftest_receipts()
 
-        print("\n--- selftest: done without a DEFERRED ledger is a DEFECT ---")
-        nodeferred = GOOD_DOSSIER.replace("status: ready", "status: done").replace(
-            "## Build log\n",
-            "## Build log\n\nPROMISE_CHECKLIST: flush — return meaning.\n",
-        )
+        print("\n--- selftest: done without a deferred record is a DEFECT ---")
+        nodeferred = GOOD_DOSSIER.replace("status: ready", "status: done")
         (d / "W-020-nodeferred.md").write_text(nodeferred.replace("W-014", "W-020"))
         nodeferred_rep = validate_dossier(d / "W-020-nodeferred.md", root)
-        caught_deferred = any("DEFERRED" in x for x in nodeferred_rep.defects)
+        caught_deferred = any("no deferred record" in x for x in nodeferred_rep.defects)
+        legacy = nodeferred.replace("W-014", "W-020").replace("## Build log\n", "## Build log\n\nDEFERRED: none — sources: own reads.\n")
+        (d / "W-020-nodeferred.md").write_text(legacy)
+        legacy_rep = validate_dossier(d / "W-020-nodeferred.md", root)
+        caught_deferred = caught_deferred and not any("deferred record" in x for x in legacy_rep.defects)
+        dr = root / ".discovery" / "deferred"
+        dr.mkdir(parents=True, exist_ok=True)
+        (dr / "W-020.yaml").write_text('{"items": [], "sources": []}')
+        empty_rep = validate_dossier(d / "W-020-nodeferred.md", root)
+        caught_deferred = caught_deferred and any("sources" in x for x in empty_rep.defects)
+        (dr / "W-020.yaml").unlink()
         print("\n".join(nodeferred_rep.defects) or "(no defects)")
         print(
-            f"\n{'PASS' if caught_deferred else 'FAIL'} — missing DEFERRED "
-            f"ledger {'detected' if caught_deferred else 'NOT detected'}"
+            f"\n{'PASS' if caught_deferred else 'FAIL'} — missing deferred "
+            f"record {'detected' if caught_deferred else 'NOT detected'}"
         )
 
-        print("\n--- selftest: done with a DEFERRED ledger is clean ---")
-        deferred = GOOD_DOSSIER.replace("status: ready", "status: done").replace(
-            "## Build log\n",
-            "## Build log\n\nPROMISE_CHECKLIST: flush — return meaning.\n"
-            "DEFERRED: none — sources: own reads, NOTICED harvest.\n",
-        )
-        (d / "W-021-deferred.md").write_text(deferred.replace("W-014", "W-021"))
+        print("\n--- selftest: done with a deferred record is clean ---")
+        deferred = GOOD_DOSSIER.replace("status: ready", "status: done").replace("W-014", "W-021")
+        (d / "W-021-deferred.md").write_text(deferred)
+        (ck / "W-021.md").write_text("flush — return meaning: gives 3\n")
+        (dr / "W-021.yaml").write_text('{"items": [], "sources": ["own reads", "NOTICED harvest"]}')
         deferred_rep = validate_dossier(d / "W-021-deferred.md", root)
-        deferred_clean = not any("DEFERRED" in x for x in deferred_rep.defects)
+        deferred_clean = not any("deferred record" in x or "checklist" in x for x in deferred_rep.defects)
         print("\n".join(deferred_rep.defects) or "(no defects)")
         print(
-            f"\n{'PASS' if deferred_clean else 'FAIL'} — DEFERRED ledger "
+            f"\n{'PASS' if deferred_clean else 'FAIL'} — deferred record "
             f"{'accepted' if deferred_clean else 'rejected'}"
         )
         print("\n--- selftest: two dossiers with one id is a DEFECT ---")
@@ -2070,6 +2381,9 @@ def selftest() -> int:
         finalize_ok = selftest_finalize()
         pre_fanout_ok = selftest_pre_fanout()
         pre_fanout_local_ok = selftest_pre_fanout_local()
+        visual_ok = selftest_visual_review()
+        c3_ok = selftest_c3_gate()
+        diagram_ok = selftest_diagram_gate()
         mode_ok = selftest_mode()
         blockers_ok = selftest_blocker_removal()
         return (
@@ -2079,6 +2393,7 @@ def selftest() -> int:
                 and clean
                 and caught_pcl
                 and caught_lesson
+                and caught_receipts
                 and caught_owner
                 and caught_deferred
                 and deferred_clean
@@ -2086,11 +2401,111 @@ def selftest() -> int:
                 and finalize_ok
                 and pre_fanout_ok
                 and pre_fanout_local_ok
+                and visual_ok
+                and c3_ok
+                and diagram_ok
                 and mode_ok
                 and blockers_ok
             )
             else 1
         )
+
+
+def selftest_receipts() -> bool:
+    """check_receipts: hooks and contract_review live in front matter; a stale SHA is refused."""
+    if not shutil.which("git"):
+        print("SKIP  git not found; the receipts scenario was not run")
+        return True
+    body = "## Contract\n\n### src/flush.py\n\n```python\ndef flush(): ...\n```\n"
+
+    def doc(extra: str) -> str:
+        return f"---\nid: W-9\nstatus: building\n{extra}---\n\n{body}"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        try:
+            git_out(root, "init", "-q", "-b", "main")
+            git_out(root, "config", "user.email", "selftest@example.invalid")
+            git_out(root, "config", "user.name", "selftest")
+            (root / "src").mkdir()
+            (root / "src" / "flush.py").write_text("def flush(): ...\n")
+            git_out(root, "add", "-A")
+            git_out(root, "commit", "-q", "-m", "contract")
+            first = git_out(root, "rev-parse", "HEAD").strip()
+            (root / "src" / "flush.py").write_text("def flush():  # returns the count\n")
+            git_out(root, "commit", "-q", "-am", "contract moved")
+            second = git_out(root, "rev-parse", "HEAD").strip()
+        except RuntimeError as exc:
+            print(f"FAIL  fixture: {exc}")
+            return False
+
+        def run(extra: str) -> int:
+            f = root / "dossier.md"
+            f.write_text(doc(extra), encoding="utf-8")
+            return check_receipts(f, f.read_text(encoding="utf-8"), root, None)
+
+        cases = [
+            ("current SHA passes", run(f"hooks: none\ncontract_review: {second}\n") == 0),
+            ("stale SHA is refused", run(f"hooks: none\ncontract_review: {first}\n") == 1),
+            ("missing hooks is refused", run(f"contract_review: {second}\n") == 1),
+            ("missing review is refused", run("hooks: none\n") == 1),
+            ("skipped with a reason passes", run("hooks: none\ncontract_review: skipped \u2014 tiny\n") == 0),
+            ("skipped without a reason is refused", run("hooks: none\ncontract_review: skipped\n") == 1),
+        ]
+    ok = True
+    for name, passed in cases:
+        print(f"{'ok  ' if passed else 'FAIL'}  receipts: {name}")
+        ok &= passed
+    return ok
+
+
+def selftest_contract_lessons() -> bool:
+    """Each row-3 arbitration needs one `Lesson:`-trailed commit to a contract file after the contract commit."""
+    if not shutil.which("git"):
+        print("SKIP  git not found; the contract-fix scenario was not run")
+        return True
+    contract = "### src/flush.py\n\n```python\ndef flush(): ...\n```\n"
+    one = "ARBITRATION 1 — row 3 (contract ambiguous).\n"
+    two = one + "- ARBITRATION: test_flush red — contract ambiguous, row 3\n"
+    fm = {"worktree": "", "contract_commit": ""}
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        try:
+            git_out(root, "init", "-q", "-b", "main")
+            git_out(root, "config", "user.email", "selftest@example.invalid")
+            git_out(root, "config", "user.name", "selftest")
+            (root / "src").mkdir()
+            (root / "src" / "flush.py").write_text("def flush(): ...\n")
+            git_out(root, "add", "-A")
+            git_out(root, "commit", "-q", "-m", "contract")
+            fm["contract_commit"] = git_out(root, "rev-parse", "HEAD").strip()
+            (root / "src" / "flush.py").write_text("def flush():\n    return 0\n")
+            git_out(root, "commit", "-q", "-am", "implement flush")
+            body = Report()
+            check_contract_fix_lessons("w", fm, contract, root, "building", body, "")
+            bad = Report()
+            check_contract_fix_lessons("w", fm, contract, root, "building", bad, one)
+            (root / "src" / "flush.py").write_text("def flush():  # returns the count\n    return 0\n")
+            git_out(root, "commit", "-q", "-am", "fix the contract\n\nLesson: name the return meaning")
+            good = Report()
+            check_contract_fix_lessons("w", fm, contract, root, "building", good, one)
+            short = Report()
+            check_contract_fix_lessons("w", fm, contract, root, "building", short, two)
+            planned = Report()
+            check_contract_fix_lessons("w", fm, contract, root, "ready", planned, two)
+        except RuntimeError as exc:
+            print(f"FAIL  fixture: {exc}")
+            return False
+    cases = [
+        ("an implementer body with no row 3 needs no trailer", not body.defects),
+        ("a row 3 with no Lesson commit is refused", len(bad.defects) == 1 and "Lesson" in bad.defects[0]),
+        ("a Lesson commit covers one row 3", not good.defects),
+        ("two row 3s need two Lesson commits", len(short.defects) == 1),
+        ("a ready dossier is not checked", not planned.defects),
+    ]
+    for name, passed in cases:
+        print(f"{'PASS' if passed else 'FAIL'}  {name}")
+    return all(p for _, p in cases)
 
 
 def selftest_blocker_removal() -> bool:
@@ -2133,16 +2548,25 @@ def selftest_blocker_removal() -> bool:
             ("a kept blocker passes", not defects("[W-0001]")),
             ("an added blocker passes", not defects("[W-0001, W-0003]")),
             (
-                "a justified removal passes",
-                not defects(
-                    "[]", "\n- BLOCKER-REMOVED: W-0001 — the dependency was wrong"
-                ),
+                "a legacy log line still justifies a removal",
+                not defects("[]", "\n- BLOCKER-REMOVED: W-0001 — the dependency was wrong"),
             ),
             (
-                "a justification without a reason is refused",
+                "a legacy log line without a reason is refused",
                 bool(defects("[]", "\n- BLOCKER-REMOVED: W-0001 —")),
             ),
         ]
+        rec_dir = root / ".discovery" / "blocker-removals"
+        rec_dir.mkdir()
+        (rec_dir / "W-0002.yaml").write_text('{"removals": [{"blocker": "W-0001", "reason": "wrong"}]}')
+        cases.append(("a recorded reason justifies a removal", not defects("[]")))
+        (rec_dir / "W-0002.yaml").write_text('{"removals": [{"blocker": "W-0001", "reason": ""}]}')
+        cases.append(("a recorded row without a reason does not", bool(defects("[]"))))
+        (rec_dir / "W-0002.yaml").unlink()
+        (d / "W-0001-a.md").write_text("---\nid: W-0001\nstatus: done\n---\n\n## Build log\n")
+        cases.append(("a done blocker leaves without a reason", not defects("[]")))
+        (d / "W-0001-a.md").write_text("---\nid: W-0001\nstatus: building\n---\n\n## Build log\n")
+        cases.append(("a building blocker does not", bool(defects("[]"))))
         rep = Report()
         check_blocker_removals(root, [path], None, rep)
         cases.append(("no base, no check", not rep.defects))
@@ -2156,13 +2580,9 @@ def selftest_blocker_removal() -> bool:
 # pre-fan-out obligations
 # --------------------------------------------------------------------------
 
-CONTRACT_REVIEW_RE = re.compile(
-    r"^\s*[-*]?\s*CONTRACT-REVIEW:\s*(spawned|skipped)\b", re.MULTILINE
-)
-# `HOOKS: none` or `HOOKS: <hook> — <policy>`: the Phase 2 decision about what
-# the repository's commit hooks do to a mid-migration tree. Without it every
-# implementer learns the answer at its commit step, once per agent.
-HOOKS_RE = re.compile(r"^\s*[-*]?\s*HOOKS:\s*(none|\S.*)$", re.MULTILINE)
+# The contract review and the hook policy are front matter facts, not log lines: `contract_review:`
+# holds the SHA the review read (or `skipped — <reason>`), `hooks:` holds `none` or `<hook> — <policy>`.
+# See check_receipts.
 # `PAYLOAD-LINT: <N> payloads, <N> defects ...`: every payload was a file and
 # went through check_payload.py before the fan-out message. A payload that was
 # never a file was never linted.
@@ -2280,23 +2700,81 @@ def check_definitions(
     return rc
 
 
+PROSE_ENV_RE = re.compile(r"\b[A-Z][A-Z0-9]*_[A-Z0-9_]*[A-Z0-9]\b")
+PROSE_ENV_CUE_RE = re.compile(
+    r"\b(env|environment|variables?|vars?|secrets?|reads?|set)\b", re.I
+)
+PROSE_ROUTE_RE = re.compile(
+    r"\b(?:GET|POST|PUT|PATCH|DELETE|mounts?|mounted at|routes?|endpoints?)\s+`?(/[\w.{}:/-]*\w)"
+)
+PROSE_BIN_RE = re.compile(r"\bbin/([\w.-]+)|`([\w.-]+)`\s+binary\b")
+
+
+def _command_names() -> set[str]:
+    """Slash-command names of this plugin (commands/*.md stems), never routes."""
+    base = Path(__file__).resolve().parent.parent
+    return {
+        f.stem
+        for d in ("commands", "claude/commands")
+        for f in (base / d).glob("*.md")
+    }
+
+
+def prose_promises(contract: str) -> list[tuple[str, str]]:
+    """The (token, sentence) promises in `## Contract` prose, outside fenced
+    code blocks and table rows: an ALL_CAPS_UNDERSCORE env var (the sentence
+    also has a cue word: env, variable, secret, reads, set), a route after
+    GET/POST/PUT/PATCH/DELETE/mount/route/endpoint, or a binary (`bin/x`,
+    "the `x` binary"). Plugin command names (/work-on) are never routes."""
+    prose = re.sub(r"^```.*?^```[ \t]*$", "", contract, flags=re.M | re.S)
+    commands = _command_names()
+    found: list[tuple[str, str]] = []
+    for line in prose.splitlines():
+        if line.lstrip().startswith("|"):
+            continue
+        for sentence in re.split(r"(?<=[.!?])\s+", line):
+            tokens = []
+            if PROSE_ENV_CUE_RE.search(sentence):
+                tokens += PROSE_ENV_RE.findall(sentence)
+            tokens += [
+                r for r in PROSE_ROUTE_RE.findall(sentence) if r.lstrip("/") not in commands
+            ]
+            tokens += [
+                re.sub(r"\.\w+$", "", a or b)
+                for a, b in PROSE_BIN_RE.findall(sentence)
+            ]
+            found += [(t, sentence.strip()) for t in tokens]
+    return found
+
+
+def check_prose_promises(path: Path, text: str) -> int:
+    """Every prose promise in `## Contract` names a token that some
+    `## Acceptance criteria` item also contains; one with none is a
+    pre-fan-out WARNING (#337), never blocking. Prints `PROSE-PROMISES: N, M without a criterion`."""
+    secs = sections(text)
+    promises = prose_promises(secs.get("## Contract", ""))
+    if not promises:
+        return 0
+    criteria = secs.get("## Acceptance criteria", "")
+    seen: set[str] = set()
+    missing = []
+    for token, sentence in promises:
+        if token in seen:
+            continue
+        seen.add(token)
+        if token not in criteria:
+            missing.append((token, sentence))
+    print(f"PROSE-PROMISES: {len(seen)}, {len(missing)} without a criterion")
+    for token, sentence in missing:
+        print(
+            f"WARNING {path.name}: ## Contract prose promises {token!r} "
+            f"({sentence[:80]!r}) but no acceptance criterion names it. "
+            f"Add a criterion that names {token!r}, or state why none is needed."
+        )
+    return 0
+
+
 PRE_FANOUT_LINES = (
-    (
-        "CONTRACT-REVIEW",
-        CONTRACT_REVIEW_RE,
-        "The contract review runs on every build and has no size gate.",
-        (
-            "CONTRACT-REVIEW: spawned <ref> — <N> lines, <N> DEFECT, <N> AMBIGUITY",
-            "CONTRACT-REVIEW: skipped — <reason>",
-        ),
-    ),
-    (
-        "HOOKS",
-        HOOKS_RE,
-        "The hook policy is decided at the contract commit, never at an "
-        "implementer's commit step.",
-        ("HOOKS: none", "HOOKS: <hook> — <policy>"),
-    ),
     (
         "PAYLOAD-LINT",
         PAYLOAD_LINT_RE,
@@ -2377,18 +2855,81 @@ def front_matter_worktree(text: str, root: Path) -> Path | None:
     return wt if wt.is_dir() else None
 
 
+def check_receipts(path: Path, text: str, root: Path, worktree: Path | None) -> int:
+    """The pre-fan-out facts that live in front matter:
+
+    * ``hooks: none | <hook> — <policy>`` — the hook policy, decided at the contract commit.
+    * ``contract_review: <sha> | skipped — <reason>`` — the contract commit the review read. A SHA
+      that is not the current contract commit (the last commit touching a contract file) is a stale
+      review: the contract moved after it was read. ``skipped`` stays allowed with its reason.
+
+    Write them with ``dossier_edit.py set DOSSIER hooks=... contract_review=<sha>``. Returns 0 or 1."""
+    try:
+        fm, _, _ = split_front_matter(text)
+    except ValueError:
+        fm = {}
+    rc = 0
+    if not str(fm.get("hooks") or "").strip():
+        print(f"DEFECT  {path.name}: no `hooks:` front matter field. The hook policy is decided at the "
+              f"contract commit, never at an implementer's commit step. Record `hooks: none` or "
+              f"`hooks: <hook> — <policy>` (dossier_edit.py set).")
+        rc = 1
+    else:
+        print(f"ok      {path.name}: hooks recorded ({fm['hooks']})")
+    review = str(fm.get("contract_review") or "").strip()
+    if not review:
+        print(f"DEFECT  {path.name}: no `contract_review:` front matter field. The contract review runs on "
+              f"every build and has no size gate. Record the contract commit SHA it read, or "
+              f"`contract_review: skipped — <reason>` (dossier_edit.py set).")
+        return 1
+    if review.startswith("skipped"):
+        if not re.match(r"skipped\s*[—–-]+\s*\S", review):
+            print(f"DEFECT  {path.name}: `contract_review: skipped` names no reason; write "
+                  f"`skipped — <reason>`.")
+            return 1
+        print(f"ok      {path.name}: contract review skipped ({review})")
+        return rc
+    cwd = worktree or root
+    try:
+        reviewed = git_out(cwd, "rev-parse", "--verify", "--quiet", f"{review}^{{commit}}").strip()
+    except RuntimeError:
+        print(f"DEFECT  {path.name}: contract_review {review!r} is not a commit in {cwd}.")
+        return 1
+    current = ""
+    paths = contract_paths(text.split("## Contract", 1)[1].split("\n## ", 1)[0]) if "## Contract" in text else []
+    if paths:
+        try:
+            current = git_out(cwd, "log", "-1", "--format=%H", "--", *paths).strip()
+        except RuntimeError:
+            current = ""
+    if not current and str(fm.get("contract_commit") or "").strip():
+        try:
+            current = git_out(cwd, "rev-parse", "--verify", "--quiet", f"{fm['contract_commit']}^{{commit}}").strip()
+        except RuntimeError:
+            current = ""
+    if not current:
+        print(f"DEFECT  {path.name}: cannot tell which commit is the contract commit (no contract file has "
+              f"a commit in {cwd}, and no `contract_commit:` field); commit the contract first.")
+        return 1
+    if reviewed != current:
+        print(f"DEFECT  {path.name}: stale contract review: it read {reviewed[:8]} but the contract commit "
+              f"is {current[:8]}. The contract changed after the review; run the review again and "
+              f"record the new SHA.")
+        return 1
+    print(f"ok      {path.name}: contract review read the current contract commit ({reviewed[:8]})")
+    return rc
+
+
 def check_pre_fanout(
     path: Path, root: Path | None = None, worktree: Path | None = None
 ) -> int:
     """Check the obligations that must hold before /work-on Phase 4 fans out.
 
-    Eight lines in ``## Build log``, each recording a decision the orchestrator
-    otherwise makes silently — or forgets, which reads the same:
+    Two facts in front matter (``hooks:`` and ``contract_review:``, see
+    ``check_receipts``) and six lines in ``## Build log``, each recording a
+    decision the orchestrator otherwise makes silently — or forgets, which
+    reads the same:
 
-    * ``CONTRACT-REVIEW: spawned ... | skipped — <reason>`` — the review has no
-      size gate; a skip stays allowed, a silent skip does not.
-    * ``HOOKS: none | <hook> — <policy>`` — what the commit hooks do to a
-      mid-migration tree, decided once instead of once per implementer.
     * ``PAYLOAD-LINT: <N> payloads, <N> defects ...`` — every payload went
       through ``check_payload.py`` as a file.
     * ``ADMISSION: granted ... <provider>/<model> ... | skipped — <reason>`` —
@@ -2406,7 +2947,8 @@ def check_pre_fanout(
       script`` — the draft checklist parses in the repo's own promise-line
       grammar; a ``parsed 0/`` line is refused, not recorded.
 
-    Also refuses a ``### Definitions`` term (under ``## Contract``) found in no
+    Also refuses a ``## Contract`` prose promise (env var, route, binary) that
+    no ``## Acceptance criteria`` item names (a WARNING, ``PROSE-PROMISES:``), and a ``### Definitions`` term (under ``## Contract``) found in no
     owned stub file and not listed in ``DOSSIER-ONLY-TERMS:``.
 
     Returns 0 when every obligation is recorded, 1 otherwise.
@@ -2460,7 +3002,9 @@ def check_pre_fanout(
             )
             rc = 1
 
+    rc |= check_receipts(path, text, root, worktree)
     rc |= check_definitions(path, text, body[1], root, worktree)
+    rc |= check_prose_promises(path, text)
 
     checklist_ids = CHECKLIST_IDS_RE.search(body[1])
     if checklist_ids and CHECKLIST_IDS_ZERO_RE.search(checklist_ids.group(1)):
@@ -2471,7 +3015,21 @@ def check_pre_fanout(
             f"re-derive the ids in it, never a Phase 5 manual-diff fallback."
         )
         rc = 1
+
+    try:
+        fm_vr, _, _ = split_front_matter(text)
+    except ValueError:
+        fm_vr = {}
+    for problem in visual_review_problems(fm_vr, body[1], root, worktree):
+        print(f"DEFECT  {path.name}: {problem}")
+        rc = 1
     return rc
+
+
+RECEIPTS_FM = (
+    "---\nid: W-9\nstatus: building\nhooks: none\n"
+    "contract_review: skipped — two-member contract, reviewed by hand\n---\n\n"
+)
 
 
 def selftest_pre_fanout_local() -> bool:
@@ -2481,8 +3039,6 @@ def selftest_pre_fanout_local() -> bool:
         root = Path(tmp)
         full = (
             "## Build log\n"
-            "- CONTRACT-REVIEW: spawned ses_1 — 12 lines, 0 DEFECT, 1 AMBIGUITY\n"
-            "- HOOKS: none\n"
             "- PAYLOAD-LINT: 5 payloads, 1 defect fixed — P1 P2 UT-A UT-B IT\n"
             "- ADMISSION: granted 5 slots — selftest-provider/selftest-model, cap 8, ceiling 5\n"
             "- SUITE-RUNNER: local — no CI in this repository\n"
@@ -2515,7 +3071,7 @@ def selftest_pre_fanout_local() -> bool:
             "- **plan window** — the first instant a plan covers.\n"
             "- **track rows** — the rows of one track, oldest first.\n\n",
         )
-        (root / "def-dir.md").write_text(dir_dossier + full, encoding="utf-8")
+        (root / "def-dir.md").write_text(RECEIPTS_FM + dir_dossier + full, encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()) as dirbuf:
             dir_rc = check_pre_fanout(root / "def-dir.md", root)
         ok &= (
@@ -2536,13 +3092,14 @@ def selftest_pre_fanout_local() -> bool:
         (root / "src" / "flush.py").write_text(
             '"""Flush — the stubs are not here in local mode."""\n', encoding="utf-8"
         )
-        (root / "def-wt.md").write_text(dossier + full, encoding="utf-8")
+        (root / "def-wt.md").write_text(RECEIPTS_FM + dossier + full, encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()) as wbuf:
             wt_rc = check_pre_fanout(root / "def-wt.md", root, x)
         ok &= wt_rc == 0 and "is in no owned stub file" not in wbuf.getvalue()
         # the front-matter `worktree:` field resolves the same way when the flag is absent
-        fm_dossier = "---\nworktree: X-stubs\n---\n" + dossier
-        (root / "def-fmwt.md").write_text(fm_dossier + full, encoding="utf-8")
+        (root / "def-fmwt.md").write_text(
+            RECEIPTS_FM.replace("---\nid:", "---\nworktree: X-stubs\nid:", 1) + dossier + full, encoding="utf-8"
+        )
         with contextlib.redirect_stdout(io.StringIO()) as fbuf:
             fm_rc = check_pre_fanout(root / "def-fmwt.md", root)
         ok &= fm_rc == 0 and "is in no owned stub file" not in fbuf.getvalue()
@@ -2553,7 +3110,7 @@ def selftest_pre_fanout_local() -> bool:
 
         # #169: a DOSSIER-ONLY-TERMS line may carry its reason after an em dash.
         (root / "def-dash.md").write_text(
-            dossier
+            RECEIPTS_FM + dossier
             + full
             + "- DOSSIER-ONLY-TERMS: Track Rows — kept in the dossier for the operators\n",
             encoding="utf-8",
@@ -2564,11 +3121,11 @@ def selftest_pre_fanout_local() -> bool:
         adr = root / "docs" / "adr"
         adr.mkdir(parents=True)
         (adr / "RULES.md").write_text(
-            "# Rules\n\nNo front matter: a rules file.\n", encoding="utf-8"
+            RECEIPTS_FM + "# Rules\n\nNo front matter: a rules file.\n", encoding="utf-8"
         )
-        (adr / "index.md").write_text("# Index\n", encoding="utf-8")
+        (adr / "index.md").write_text(RECEIPTS_FM + "# Index\n", encoding="utf-8")
         (adr / "0007-flush.md").write_text(
-            "---\nid: ADR-0007\nstatus: accepted\ntitle: Coalesce flush calls\n---\n\nBody.\n",
+            RECEIPTS_FM + "---\nid: ADR-0007\nstatus: accepted\ntitle: Coalesce flush calls\n---\n\nBody.\n",
             encoding="utf-8",
         )
         ok &= [p.name for p in adr_targets(adr)] == ["0007-flush.md"]
@@ -2578,15 +3135,144 @@ def selftest_pre_fanout_local() -> bool:
         return bool(ok)
 
 
+def selftest_visual_review() -> bool:
+    """The visual-review gate: gated by the `visual_review:` field the Phase 3 step sets, never otherwise."""
+    import copy
+
+    def node(i: str, kind: str) -> dict:
+        return {"id": i, "label": i, "kind": kind, "status": "added",
+                "evidence": [{"tier": "inferred", "note": "selftest"}], "label_source": "llm"}
+
+    def graph(view: str, kind: str, n: int) -> dict:
+        return {"schema_version": "1.0.0", "view": view, "title": f"{view} selftest",
+                "meta": {"repo": "t", "commit": "0", "generated_by": "agent", "tools": []},
+                "nodes": [node(f"n{i}", kind) for i in range(n)], "edges": []}
+
+    good = {"l0.json": graph("L0", "feature", 3), "l1.json": graph("L1", "step", 4),
+            "l2.json": graph("L2", "module", 5)}
+    approved = "- VISUAL-REVIEW: approved — L0 3, L1 4, L2 5 (dashboard link)\n"
+    new_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-11-12\nvisual_review: required\n---\n\n"
+    unmarked_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-11-12\n---\n\n"
+    old_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-08-10\n---\n\n"
+    optin_fm = "---\nid: W-9\nstatus: building\ncreated: 2026-08-10\nvisual_review: required\n---\n\n"
+
+    def run(fm: str, log: str, files: dict | None, mutate=None) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".discovery" / "dossiers").mkdir(parents=True)
+            if files is not None:
+                out = root / ".discovery" / "visual-review" / "W-9"
+                out.mkdir(parents=True)
+                for name, g in copy.deepcopy(files).items():
+                    if mutate:
+                        mutate(name, g)
+                    (out / name).write_text(json.dumps(g), encoding="utf-8")
+            fmd, _, _ = split_front_matter(fm + "## Build log\n")
+            return visual_review_problems(fmd, log, root)
+
+    def dup(name: str, g: dict) -> None:
+        if name == "l1.json":
+            g["nodes"][1]["id"] = g["nodes"][0]["id"]
+
+    def no_evidence(name: str, g: dict) -> None:
+        if name == "l0.json":
+            g["nodes"][0]["evidence"] = []
+
+    def wrong_view(name: str, g: dict) -> None:
+        if name == "l2.json":
+            g["view"] = "L1"
+
+    cases = [
+        ("old dossier, no line: not flagged", run(old_fm, "## Build log\n", None), False),
+        ("new dossier the step never marked: not flagged", run(unmarked_fm, "no line\n", None), False),
+        ("new dossier, no line: flagged", run(new_fm, "no line\n", good), True),
+        ("new dossier, line and files: clean", run(new_fm, approved, good), False),
+        ("opt-in field on an old dossier: flagged", run(optin_fm, "no line\n", None), True),
+        ("changes requested last: flagged", run(new_fm, "- VISUAL-REVIEW: changes requested — n1 n2\n", good), True),
+        ("changes requested, then approved: clean",
+         run(new_fm, "- VISUAL-REVIEW: changes requested — n1\n" + approved, good), False),
+        ("malformed line: flagged", run(new_fm, "- VISUAL-REVIEW: fine\n", good), True),
+        ("folder missing: flagged", run(new_fm, approved, None), True),
+        ("l2.json missing: flagged", run(new_fm, approved, {k: v for k, v in good.items() if k != "l2.json"}), True),
+        ("counts differ from the line: flagged",
+         run(new_fm, "- VISUAL-REVIEW: approved — L0 3, L1 4, L2 6\n", good), True),
+        ("duplicate id in a file: flagged", run(new_fm, approved, good, dup), True),
+        ("element without evidence: flagged", run(new_fm, approved, good, no_evidence), True),
+        ("file with the wrong view: flagged", run(new_fm, approved, good, wrong_view), True),
+    ]
+    # architecture drafts: one `arch <stem> <n>` entry per draft, one draft per `Diagrams new:` stem
+    def arch_graph(n: int) -> dict:
+        g = graph("c4", "class", n)
+        g["meta"]["base_sha"] = "0000000"
+        return g
+
+    def run_arch(log: str, stems: str, drafts: dict[str, int]) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ddir = root / ".discovery" / "dossiers"
+            ddir.mkdir(parents=True)
+            line = f"Diagrams new: {stems}\n" if stems else ""
+            (ddir / "W-9-x.md").write_text(new_fm + "## Approach\n" + line, encoding="utf-8")
+            out = root / ".discovery" / "visual-review" / "W-9"
+            (out / "arch").mkdir(parents=True)
+            for name, g in good.items():
+                (out / name).write_text(json.dumps(g), encoding="utf-8")
+            for stem, n in drafts.items():
+                (out / "arch" / f"{stem}.json").write_text(json.dumps(arch_graph(n)), encoding="utf-8")
+            fmd, _, _ = split_front_matter(new_fm + "## Build log\n")
+            return visual_review_problems(fmd, log, root)
+
+    base_line = "- VISUAL-REVIEW: approved — L0 3, L1 4, L2 5"
+    cases += [
+        ("arch: stem with draft and matching entry: clean",
+         run_arch(base_line + ", arch c4-q 2 (link)\n", "c4-q \u2014 the types", {"c4-q": 2}), False),
+        ("arch: two drafts, two entries: clean",
+         run_arch(base_line + ", arch c4-q 2, arch c4-r 3 (link)\n", "c4-q \u2014 a, c4-r \u2014 b",
+                  {"c4-q": 2, "c4-r": 3}), False),
+        ("arch: no stems, no drafts, old line: clean", run_arch(base_line + " (link)\n", "none", {}), False),
+        ("arch: count differs from the draft: flagged",
+         run_arch(base_line + ", arch c4-q 3 (link)\n", "c4-q \u2014 the types", {"c4-q": 2}), True),
+        ("arch: draft present, no entry: flagged",
+         run_arch(base_line + " (link)\n", "c4-q \u2014 the types", {"c4-q": 2}), True),
+        ("arch: listed stem without a draft: flagged",
+         run_arch(base_line + ", arch c4-q 2 (link)\n", "c4-q \u2014 a, c4-r \u2014 b", {"c4-q": 2}), True),
+        ("arch: entry for a stem with no draft and no listing: flagged",
+         run_arch(base_line + ", arch c4-z 2 (link)\n", "none", {}), True),
+    ]
+    ok = True
+    for name, problems, expect in cases:
+        passed = bool(problems) == expect
+        ok &= passed
+        print(f"{'ok  ' if passed else 'FAIL'}    visual review: {name}" + (f" ({problems[0][:70]})" if problems else ""))
+
+    # the same gate through the two entry points
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".discovery" / "dossiers").mkdir(parents=True)
+        d = root / ".discovery" / "dossiers" / "W-9.md"
+        d.write_text(new_fm + "## Build log\n- hooks: none\n", encoding="utf-8")
+        rep = Report()
+        check_visual_review("W-9", d, {"id": "W-9", "created": "2026-11-12", "visual_review": "required"}, "- x\n", "review", rep)
+        ok &= bool(rep.defects)
+        rep = Report()
+        check_visual_review("W-9", d, {"id": "W-9", "created": "2026-11-12", "visual_review": "required"}, "- x\n", "building", rep)
+        ok &= not rep.defects  # mid-build: the pre-fan-out check owns that state
+        rc = check_pre_fanout(d, root)
+        ok &= rc == 1
+        out = root / ".discovery" / "visual-review" / "W-9"
+        out.mkdir(parents=True)
+        for name, g in good.items():
+            (out / name).write_text(json.dumps(g), encoding="utf-8")
+    print(f"{'PASS' if ok else 'FAIL'} — visual-review gate")
+    return ok
+
+
 def selftest_pre_fanout() -> bool:
     """The pre-fan-out check refuses each missing line and passes a full log."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         full = (
             "## Build log\n"
-            "- CONTRACT-REVIEW: spawned ses_1 — 12 lines, 0 DEFECT, 1 AMBIGUITY\n"
-            "- HOOKS: lefthook clippy --workspace — agents stop on refusal, "
-            "orchestrator commits with --no-verify\n"
             "- PAYLOAD-LINT: 5 payloads, 1 defect fixed — P1 P2 UT-A UT-B IT\n"
             "- ADMISSION: granted 5 slots — selftest-provider/selftest-model, cap 8, ceiling 5\n"
             "- SUITE-RUNNER: ci — .github/workflows/ci.yml, on push; push and draft PR: yes\n"
@@ -2601,11 +3287,9 @@ def selftest_pre_fanout() -> bool:
             "- P1 (agent a1b2c3d4) RETURNED: 3f2a1b9 on feat/x-p1, lib.rs +2/-2 only, 0 unimplemented left, hash stable, tree exact\n"
         )
         ok = True
-        (root / "full.md").write_text(full, encoding="utf-8")
+        (root / "full.md").write_text(RECEIPTS_FM + full, encoding="utf-8")
         ok &= check_pre_fanout(root / "full.md") == 0
         for token in (
-            "CONTRACT-REVIEW",
-            "HOOKS",
             "PAYLOAD-LINT",
             "ADMISSION",
             "SUITE-RUNNER",
@@ -2616,10 +3300,10 @@ def selftest_pre_fanout() -> bool:
             partial = "\n".join(
                 line for line in full.splitlines() if not line.startswith(f"- {token}:")
             )
-            (root / f"no-{token}.md").write_text(partial + "\n", encoding="utf-8")
+            (root / f"no-{token}.md").write_text(RECEIPTS_FM + partial + "\n", encoding="utf-8")
             ok &= check_pre_fanout(root / f"no-{token}.md") == 1
         (root / "none.md").write_text(
-            "## Build log\n- HOOKS: none\n- PAYLOAD-LINT: 2 payloads, 0 defects — P1 UT\n- CONTRACT-REVIEW: skipped — two-member contract, reviewed by hand\n- ADMISSION: skipped — one spawn\n- SUITE-RUNNER: local — no CI in this repository\n- GATES: none — no CI workflow builds anything\n- CENSUS: none — grepped for table censuses and migration counts\n- CHECKLIST-IDS: none — no coverage script\n",
+            RECEIPTS_FM + "## Build log\n- PAYLOAD-LINT: 2 payloads, 0 defects — P1 UT\n- ADMISSION: skipped — one spawn\n- SUITE-RUNNER: local — no CI in this repository\n- GATES: none — no CI workflow builds anything\n- CENSUS: none — grepped for table censuses and migration counts\n- CHECKLIST-IDS: none — no coverage script\n",
             encoding="utf-8",
         )
         ok &= check_pre_fanout(root / "none.md") == 0
@@ -2631,7 +3315,7 @@ def selftest_pre_fanout() -> bool:
             "- CHECKLIST-IDS: scripts/check_promise_coverage.py parsed 8/8 lines\n",
             "- CHECKLIST-IDS: scripts/check_promise_coverage.py parsed 0/8 lines\n",
         )
-        (root / "zero.md").write_text(zero, encoding="utf-8")
+        (root / "zero.md").write_text(RECEIPTS_FM + zero, encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()) as zbuf:
             zero_rc = check_pre_fanout(root / "zero.md")
         ok &= zero_rc == 1 and "parsed 0/" in zbuf.getvalue()
@@ -2651,7 +3335,7 @@ def selftest_pre_fanout() -> bool:
             "## Work packages\n\n| Package | Owned paths |\n|---|---|\n"
             "| P1 | src/flush.py |\n\n"
         )
-        (root / "def-missing.md").write_text(dossier + full, encoding="utf-8")
+        (root / "def-missing.md").write_text(RECEIPTS_FM + dossier + full, encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()) as dbuf:
             miss = check_pre_fanout(root / "def-missing.md", root)
         ok &= (
@@ -2660,18 +3344,57 @@ def selftest_pre_fanout() -> bool:
             and "'window start'" not in dbuf.getvalue()
         )
         (root / "def-skipped.md").write_text(
-            dossier + full + "- DOSSIER-ONLY-TERMS: Track Rows\n", encoding="utf-8"
+            RECEIPTS_FM + dossier + full + "- DOSSIER-ONLY-TERMS: Track Rows\n", encoding="utf-8"
         )
         ok &= check_pre_fanout(root / "def-skipped.md", root) == 0
         (root / "src" / "flush.py").write_text(
             '"""Flush: window start; track rows are one track\'s rows."""\n',
             encoding="utf-8",
         )
-        (root / "def-placed.md").write_text(dossier + full, encoding="utf-8")
+        (root / "def-placed.md").write_text(RECEIPTS_FM + dossier + full, encoding="utf-8")
         ok &= check_pre_fanout(root / "def-placed.md", root) == 0
+        # #337: a prose promise (env var, route, binary) needs a criterion.
+        pp = (
+            "## Contract\n\nThe runner reads ASD_RUNNER_MAX_LIVE and mounts `/api/runs`.\n\n"
+            "```sh\nexport HIDDEN_CODE_VAR=1\n```\n\n"
+            "## Acceptance criteria\n\n1. {crit}\n\n"
+        )
+        (root / "pp-none.md").write_text(
+            RECEIPTS_FM + pp.format(crit="It starts.") + full, encoding="utf-8"
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as pbuf:
+            pp_rc = check_pre_fanout(root / "pp-none.md")
+        out = pbuf.getvalue()
+        ok &= (
+            pp_rc == 0
+            and "PROSE-PROMISES: 2, 2 without" in out
+            and "WARNING" in out
+            and "'ASD_RUNNER_MAX_LIVE'" in out
+            and "HIDDEN_CODE_VAR" not in out
+        )
+        (root / "pp-ok.md").write_text(
+            RECEIPTS_FM + pp.format(crit="ASD_RUNNER_MAX_LIVE=2 caps spawns; GET `/api/runs` lists.")
+            + full,
+            encoding="utf-8",
+        )
+        ok &= check_pre_fanout(root / "pp-ok.md") == 0
+        # A GET/POST route without backticks is a promise too.
+        (root / "pp-route.md").write_text(
+            RECEIPTS_FM + "## Contract\n\nThe server answers GET /health. Run /work-on next. "
+            "See TIMED_OUT.\n\n| `/patches` | SOME_KEY reads |\n\n"
+            "## Acceptance criteria\n\n1. It starts.\n\n" + full,
+            encoding="utf-8",
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as rbuf:
+            route_rc = check_pre_fanout(root / "pp-route.md")
+        ok &= (
+            route_rc == 0
+            and "PROSE-PROMISES: 1, 1 without" in rbuf.getvalue()
+            and "/health" in rbuf.getvalue()
+        )
         # A malformed GATES line (no gate count) is refused like a missing one.
         bad = full.replace("— 3 gates; axes: default, fault-inject", "— several")
-        (root / "gates-bad.md").write_text(bad, encoding="utf-8")
+        (root / "gates-bad.md").write_text(RECEIPTS_FM + bad, encoding="utf-8")
         ok &= check_pre_fanout(root / "gates-bad.md", root) == 1
 
         # A granted line is refused while the admission ledger defers that key.
@@ -2854,6 +3577,494 @@ def selftest_mode() -> bool:
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# c3 gate (--c3-gate): a Rust repo's architecture diagrams must match the code
+# --------------------------------------------------------------------------
+
+C3_FILE_RE = re.compile(r"^docs/architecture/c3-components-(.+)\.md$")
+C3_CRATE_PATH_RE = re.compile(r"^crates/([^/]+)/")
+
+
+def c3_gate_run(root: Path, base: str, have_cargo_modules=None, agree=None, fresh=None) -> tuple[list[str], list[str]]:
+    """(problems, notes) for the c3 gate. A problem fails Phase 9; a note says what was skipped and why.
+
+    The gate applies to a repository that holds ``docs/architecture/c3-components-<crate>.md`` files.
+    It checks ONLY the crates this branch's diff against ``base`` touched (a path under
+    ``crates/<crate>/``) that have such a file: for each, the module graph ``cargo modules`` derives
+    must agree with the c3 diagram at 95 percent or better (``vr_c3_agree.py``), and the diagram must
+    equal what the repository's own generator prints (``scripts/module_graph.py check``).
+    A crate below threshold is repaired, never excused: regenerate the file with
+    ``module_graph.py regen``, or fix the generator. The threshold is not an argument.
+
+    Skips are visible, never silent: no c3 files, no ``cargo-modules``, no touched crate with a file,
+    no generator in the repository. ``have_cargo_modules``, ``agree`` and ``fresh`` are the test seams."""
+    problems: list[str] = []
+    notes: list[str] = []
+    c3 = sorted(p.name for p in (root / "docs" / "architecture").glob("c3-components-*.md")) \
+        if (root / "docs" / "architecture").is_dir() else []
+    if not c3:
+        return problems, ["SKIP c3 gate: no docs/architecture/c3-components-*.md in this repository"]
+    have = have_cargo_modules() if have_cargo_modules else shutil.which("cargo-modules") is not None
+    if not have:
+        return problems, ["SKIP c3 gate: cargo-modules is not installed (cargo install cargo-modules --version 0.27.0); "
+                          "the c3 diagrams were NOT compared with the code"]
+    try:
+        merge_base = git_out(root, "merge-base", base, "HEAD").strip()
+        changed = git_out(root, "diff", "--name-only", f"{merge_base}..HEAD").splitlines()
+    except RuntimeError as exc:
+        return [f"c3 gate: cannot list the branch diff against {base}: {exc}"], notes
+    touched = sorted({m.group(1) for m in map(C3_CRATE_PATH_RE.match, changed) if m})
+    have_c3 = {C3_FILE_RE.match("docs/architecture/" + n).group(1) for n in c3}  # type: ignore[union-attr]
+    skipped = [t for t in touched if t not in have_c3]
+    if skipped:
+        notes.append("SKIP c3 gate for crates with no c3 file: " + ", ".join(skipped))
+    todo = [t for t in touched if t in have_c3]
+    if not todo:
+        notes.append("c3 gate: this diff touches no crate that has a c3 file; nothing to check")
+        return problems, notes
+    if agree is None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import vr_c3_agree
+
+        def agree(repo: str, crate: str) -> dict:
+            return vr_c3_agree.check(repo, crate)
+
+        agree_error: tuple = (vr_c3_agree.AgreeError,)
+    else:
+        agree_error = (RuntimeError,)
+    generator = root / "scripts" / "module_graph.py"
+    if fresh is None:
+        def fresh(repo: Path, c3_file: Path) -> tuple[int, str]:
+            p = subprocess.run([sys.executable, str(generator), "check", "--root", str(repo), "--against", str(c3_file)],
+                               capture_output=True, text=True)
+            return p.returncode, (p.stdout + p.stderr).strip()
+    if not generator.is_file():
+        notes.append("SKIP c3 freshness check: scripts/module_graph.py is not in this repository")
+    for crate in todo:
+        c3_file = root / "docs" / "architecture" / f"c3-components-{crate}.md"
+        fix = f"regenerate it with `python3 scripts/module_graph.py regen docs/architecture/c3-components-{crate}.md`, or repair scripts/module_graph.py"
+        try:
+            r = agree(str(root), crate)
+        except agree_error as exc:
+            problems.append(f"c3 gate, crate {crate}: {exc}")
+            continue
+        if not r["ok"]:
+            problems.append(
+                f"c3 gate, crate {crate}: the diagram agrees with cargo-modules at {r['agreement']:.2f}%, "
+                f"threshold {r['threshold']:.0f}%. Missing from the diagram: {', '.join(r['missing_edges'][:5]) or 'none'}. "
+                f"Not in the code: {', '.join(r['extra_edges'][:5]) or 'none'}. Fix: {fix}. Never lower the threshold.")
+        else:
+            notes.append(f"c3 gate, crate {crate}: {r['agreement']:.2f}% agreement")
+        if generator.is_file():
+            rc, out = fresh(root, c3_file)
+            if rc != 0:
+                problems.append(f"c3 gate, crate {crate}: the diagram is not what scripts/module_graph.py prints "
+                                f"for the current sources ({out.splitlines()[0] if out else 'exit ' + str(rc)}). Fix: {fix}.")
+    return problems, notes
+
+
+def run_c3_gate(root: Path, base: str) -> int:
+    problems, notes = c3_gate_run(root, base)
+    for n in notes:
+        print(n)
+    for p in problems:
+        print(f"DEFECT  {p}")
+    return 1 if problems else 0
+
+
+def selftest_c3_gate() -> bool:
+    print("\n--- selftest: the c3 gate (touched crates only, visible skips, no threshold escape) ---")
+    fails: list[str] = []
+
+    def ok(name: str, cond: bool, detail: object = "") -> None:
+        if not cond:
+            fails.append(f"{name} {detail}")
+
+    def git(d: Path, *a: str) -> None:
+        subprocess.run(["git", "-C", str(d), "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                       check=True, capture_output=True)
+
+    def agree_with(table: dict):
+        def agree(repo: str, crate: str) -> dict:
+            if crate not in table:
+                raise RuntimeError("no stub answer for " + crate)
+            return table[crate]
+        return agree
+
+    good = {"ok": True, "agreement": 100.0, "threshold": 95.0, "missing_edges": [], "extra_edges": []}
+    bad = {"ok": False, "agreement": 80.0, "threshold": 95.0, "missing_edges": ["a::x -> a::y"], "extra_edges": ["a::x -> a::z"]}
+    fresh_ok = lambda repo, f: (0, "")  # noqa: E731
+    fresh_stale = lambda repo, f: (1, "--- stale\n+++ fresh")  # noqa: E731
+    yes = lambda: True  # noqa: E731
+    no = lambda: False  # noqa: E731
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        git(d, "init", "-q", "-b", "main")
+        (d / "docs").mkdir()
+        (d / "crates" / "alpha" / "src").mkdir(parents=True)
+        (d / "crates" / "beta" / "src").mkdir(parents=True)
+        (d / "crates" / "gamma" / "src").mkdir(parents=True)
+        (d / "scripts").mkdir()
+        (d / "scripts" / "module_graph.py").write_text("")
+        for c in ("alpha", "beta", "gamma"):
+            (d / "crates" / c / "src" / "lib.rs").write_text("")
+        git(d, "add", "-A")
+        git(d, "commit", "-q", "-m", "base")
+        git(d, "branch", "-q", "base")
+        git(d, "checkout", "-q", "-b", "work")
+
+        # no c3 files: a visible skip, exit clean
+        p, n = c3_gate_run(d, "base", yes, agree_with({}), fresh_ok)
+        ok("no c3 files skips visibly", not p and any(x.startswith("SKIP") and "no docs/architecture" in x for x in n), (p, n))
+
+        arch = d / "docs" / "architecture"
+        arch.mkdir()
+        for c in ("alpha", "beta"):
+            (arch / f"c3-components-{c}.md").write_text("x")
+        git(d, "add", "-A")
+        git(d, "commit", "-q", "-m", "c3")
+        git(d, "branch", "-q", "-f", "base")
+
+        # cargo-modules missing: visible skip
+        (d / "crates" / "alpha" / "src" / "lib.rs").write_text("pub fn a() {}\n")
+        git(d, "commit", "-qam", "touch alpha")
+        p, n = c3_gate_run(d, "base", no, agree_with({"alpha": bad}), fresh_stale)
+        ok("missing cargo-modules skips visibly", not p and any("cargo-modules is not installed" in x for x in n), (p, n))
+
+        # touched crate at threshold and fresh: passes; the untouched crate is never looked at
+        p, n = c3_gate_run(d, "base", yes, agree_with({"alpha": good}), fresh_ok)
+        ok("touched crate that agrees passes", not p and any("crate alpha: 100.00%" in x for x in n), (p, n))
+        ok("an untouched crate is not checked", not any("beta" in x for x in n + p), (p, n))
+
+        # below threshold: a defect that names the repair, and no way to lower it
+        p, n = c3_gate_run(d, "base", yes, agree_with({"alpha": bad}), fresh_ok)
+        ok("below threshold fails", len(p) == 1 and "80.00%" in p[0] and "regen" in p[0] and "Never lower the threshold" in p[0], p)
+
+        # stale diagram with full agreement: the freshness check fails it on its own
+        p, n = c3_gate_run(d, "base", yes, agree_with({"alpha": good}), fresh_stale)
+        ok("stale diagram fails the freshness check", len(p) == 1 and "not what scripts/module_graph.py prints" in p[0], p)
+
+        # a touched crate with no c3 file is named in a skip, not ignored
+        (d / "crates" / "gamma" / "src" / "lib.rs").write_text("pub fn g() {}\n")
+        git(d, "commit", "-qam", "touch gamma")
+        p, n = c3_gate_run(d, "base", yes, agree_with({"alpha": good}), fresh_ok)
+        ok("crate without c3 file skips visibly", not p and any("no c3 file: gamma" in x for x in n), (p, n))
+
+        # only a crate with no file is touched: nothing to check, said out loud
+        git(d, "checkout", "-q", "-B", "work2", "base")
+        (d / "crates" / "gamma" / "src" / "lib.rs").write_text("pub fn g2() {}\n")
+        git(d, "commit", "-qam", "gamma only")
+        p, n = c3_gate_run(d, "base", yes, agree_with({}), fresh_ok)
+        ok("no touched crate with a c3 file", not p and any("nothing to check" in x for x in n), (p, n))
+
+        # an unreadable base fails closed
+        p, n = c3_gate_run(d, "no-such-ref", yes, agree_with({}), fresh_ok)
+        ok("unknown base fails", len(p) == 1 and "cannot list the branch diff" in p[0], p)
+
+        # exit codes through the public entry
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc_bad = run_c3_gate(d, "no-such-ref")
+        ok("run_c3_gate exits 1 on a defect", rc_bad == 1 and "DEFECT" in buf.getvalue(), buf.getvalue())
+
+    for f in fails:
+        print("FAIL  " + f)
+    print(f"{'PASS' if not fails else 'FAIL'} — c3 gate {'behaves' if not fails else 'misbehaves'}")
+    return not fails
+
+
+# --------------------------------------------------------------------------
+# diagram gate (--diagram-gate): architecture diagrams follow the branch's code changes
+# --------------------------------------------------------------------------
+
+DIAGRAMS_AFFECTED_RE = re.compile(r"^\s*Diagrams affected:\s*(.*?)\s*$", re.M | re.I)
+DIAGRAMS_NEW_RE = re.compile(r"^\s*Diagrams new:\s*(.*?)\s*$", re.M | re.I)
+_STEM_TOKEN_RE = re.compile(r"^[A-Za-z0-9][\w.\-]*$")
+_STEM_PREFIX_RE = re.compile(r"^(seq|c[1-4])-", re.I)
+_DESC_SEP_RE = re.compile(r"\s+(?:\u2014|\u2013|--|-)\s+|\s*[\u2014\u2013]\s*")
+
+
+def parse_diagrams_new(text: str) -> list[str]:
+    """Stems of a `Diagrams new: <stem> \u2014 <flow>, <stem> \u2014 <flow>` value; `none` and empty give [].
+    A comma inside a description is not a separator: a piece is a new stem when it has a ` \u2014 ` (or ` - `,
+    ` -- `) description after a single stem token, is a bare stem token after a bare stem, or is a bare token
+    that starts `seq-`/`cN-`; anything else continues the previous description."""
+    stems: list[str] = []
+    prev_bare = True
+    for piece in text.split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        parts = _DESC_SEP_RE.split(piece, maxsplit=1)
+        head = parts[0].strip().strip("`").strip()
+        head = re.sub(r"\.(json|md)$", "", head)
+        has_desc = len(parts) > 1
+        if _STEM_TOKEN_RE.match(head) and (has_desc or prev_bare or _STEM_PREFIX_RE.match(head)):
+            if head.lower() != "none":
+                stems.append(head)
+            prev_bare = not has_desc
+        # else: continuation of the previous description
+    return stems
+
+
+def dossier_new_diagrams(root: Path, dossier_id: str | None) -> list[str]:
+    """Stems the dossier's `Diagrams new:` line lists; [] for `none`, no dossier or no line (an older dossier has none)."""
+    if not dossier_id:
+        return []
+    ddir = root / ".discovery" / "dossiers"
+    files = sorted(ddir.glob(f"{dossier_id}-*.md")) if ddir.is_dir() else []
+    if not files:
+        return []
+    m = DIAGRAMS_NEW_RE.search(files[0].read_text())
+    return parse_diagrams_new(m.group(1)) if m else []
+
+
+def diagram_anchor_index(arch: Path) -> dict[str, set[str]]:
+    """{diagram stem: repo paths its evidence anchors (tier source) point at}; non-graph JSON is skipped."""
+    out: dict[str, set[str]] = {}
+    for f in sorted(arch.glob("*.json")):
+        try:
+            g = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(g, dict) or not isinstance(g.get("nodes"), list):
+            continue
+        paths: set[str] = set()
+        for part in list(g["nodes"]) + list(g.get("edges") or []):
+            if not isinstance(part, dict):
+                continue
+            for ev in part.get("evidence") or []:
+                if isinstance(ev, dict) and ev.get("tier") == "source" and isinstance(ev.get("path"), str):
+                    paths.add(ev["path"])
+        out[f.stem] = paths
+    return out
+
+
+def diagram_base(stem: str) -> str:
+    """`seq-x.2` is block 2 of diagram `seq-x`."""
+    return re.sub(r"\.\d+$", "", stem)
+
+
+def dossier_diagrams(root: Path, dossier_id: str | None) -> tuple[list[str] | None, str]:
+    """(stems the dossier's `Diagrams affected:` line lists, note). None = no dossier or no line; [] = `none`."""
+    if not dossier_id:
+        return None, ""
+    files = sorted((root / ".discovery" / "dossiers").glob(f"{dossier_id}-*.md")) if (root / ".discovery" / "dossiers").is_dir() else []
+    if not files:
+        return None, f"diagram gate: dossier {dossier_id} not found under .discovery/dossiers; its `Diagrams affected:` line was not read"
+    m = DIAGRAMS_AFFECTED_RE.search(files[0].read_text())
+    if not m:
+        return None, f"diagram gate: {files[0].name} has no `Diagrams affected:` line"
+    stems = [re.sub(r"\.(json|md)$", "", s.strip().strip("`")) for s in m.group(1).split(",")]
+    stems = [s for s in stems if s and s.lower() != "none"]
+    return stems, ""
+
+
+def diagram_gate_run(root: Path, base: str, dossier_id: str | None = None, pr_text: str | None = None,
+                     check=None) -> tuple[list[str], list[str]]:
+    """(problems, notes) for the diagram gate. A problem (DEFECT) fails Phase 9; a note is printed as is
+    (``REVIEW:`` lines are notes that ask for an action).
+
+    (a) ``vr_mermaid.py check docs/architecture`` must pass (a block that differs from its JSON, or an
+    unmarked Mermaid block, is a DEFECT); the repository with no docs/architecture JSON gets a SKIP line.
+    (b) Every diagram whose source evidence anchors point into a file this branch changed
+    (``git diff --name-only base...HEAD``), and whose own JSON the branch did not touch, is listed as
+    ``REVIEW: <diagram> anchors <path>``: update the JSON and sync, or say in the PR description why it holds.
+    (c) A diagram the dossier's ``Diagrams affected:`` line lists and the branch did not touch is a DEFECT
+    when ``pr_text`` is given and does not mention it, else a REVIEW line.
+    (d) A stem the dossier's ``Diagrams new:`` line lists with no ``docs/architecture/<stem>.json`` (or
+    ``<stem>.N.json`` block) on the branch is a DEFECT once ``pr_text`` is given, unless it says
+    ``Diagram <stem> not added: <why>``; without ``pr_text`` it is a REVIEW line. ``check`` is the test seam."""
+    problems: list[str] = []
+    notes: list[str] = []
+    arch = root / "docs" / "architecture"
+    index = diagram_anchor_index(arch) if arch.is_dir() else {}
+    new_stems = dossier_new_diagrams(root, dossier_id)
+    missing_new = [st for st in new_stems
+                   if not (arch / f"{st}.json").is_file() and not any(arch.glob(f"{st}.[0-9]*.json"))]
+
+    def settle_new() -> None:
+        for st in missing_new:
+            if pr_text is not None and f"Diagram {st} not added:" in pr_text:
+                notes.append(f"diagram gate: new diagram {st} not added, PR description says why")
+            elif pr_text is not None:
+                problems.append(f"diagram gate: the dossier lists new diagram {st} (`Diagrams new:`) and docs/architecture/{st}.json "
+                                f"is not on the branch; add it, or write `Diagram {st} not added: <why>` in the PR description")
+            else:
+                notes.append(f"REVIEW: dossier lists new diagram {st} and docs/architecture/{st}.json is not on the branch")
+
+    if not index:
+        settle_new()
+        return problems, ["SKIP diagram gate: no docs/architecture/*.json in this repository"] + notes
+    if check is None:
+        def check(repo: Path) -> tuple[int, str]:
+            script = Path(__file__).resolve().parent / "vr_mermaid.py"
+            p = subprocess.run([sys.executable, str(script), "check", "docs/architecture"], cwd=str(repo),
+                               capture_output=True, text=True)
+            return p.returncode, (p.stdout + p.stderr).strip()
+    rc, out = check(root)
+    if rc != 0:
+        first = "; ".join(out.splitlines()[:3]) if out else f"exit {rc}"
+        problems.append(f"diagram gate: vr_mermaid.py check docs/architecture failed ({first}). "
+                        "Fix: edit the diagram's JSON, run `vr_mermaid.py sync docs/architecture`, commit")
+    try:
+        changed = set(git_out(root, "diff", "--name-only", f"{base}...HEAD").splitlines())
+    except RuntimeError as exc:
+        problems.append(f"diagram gate: cannot list the branch diff against {base}: {exc}")
+        return problems, notes
+    touched_bases = {diagram_base(Path(p).stem) for p in changed
+                     if p.startswith("docs/architecture/") and p.endswith((".json", ".md"))}
+    code_changed = {p for p in changed if not p.startswith("docs/architecture/")}
+    for stem, paths in sorted(index.items()):
+        if diagram_base(stem) in touched_bases:
+            continue
+        for path in sorted(paths & code_changed):
+            notes.append(f"REVIEW: {stem} anchors {path}")
+    stale = []
+    listed, note = dossier_diagrams(root, dossier_id)
+    if note:
+        notes.append(note)
+    for stem in listed or []:
+        if stem not in index and not any(diagram_base(k) == stem for k in index):
+            notes.append(f"REVIEW: dossier lists diagram {stem}, which is not in docs/architecture")
+        elif diagram_base(stem) not in touched_bases:
+            stale.append(stem)
+    for stem in stale:
+        if pr_text is not None and stem not in pr_text:
+            problems.append(f"diagram gate: the dossier lists diagram {stem} as affected, the branch did not modify it "
+                            "and the PR description does not say why it still holds")
+        else:
+            notes.append(f"REVIEW: dossier lists diagram {stem} as affected and the branch did not modify it")
+    settle_new()
+    if not any(n.startswith("REVIEW") for n in notes) and not problems:
+        notes.append("diagram gate: vr_mermaid.py check passes; no diagram anchors a changed file without being updated")
+    return problems, notes
+
+
+def run_diagram_gate(root: Path, base: str, dossier_id: str | None = None, pr_body: str | None = None) -> int:
+    pr_text = None
+    if pr_body:
+        try:
+            pr_text = Path(pr_body).read_text()
+        except OSError as exc:
+            print(f"DEFECT  --pr-body {pr_body}: {exc}")
+            return 1
+    problems, notes = diagram_gate_run(root, base, dossier_id, pr_text)
+    for n in notes:
+        print(n)
+    for p in problems:
+        print(f"DEFECT  {p}")
+    return 1 if problems else 0
+
+
+def selftest_diagram_gate() -> bool:
+    print("\n--- selftest: the diagram gate (check, anchors into changed files, dossier line) ---")
+    fails: list[str] = []
+
+    def ok(name: str, cond: bool, detail: object = "") -> None:
+        if not cond:
+            fails.append(f"{name} {detail}")
+
+    def git(d: Path, *a: str) -> None:
+        subprocess.run(["git", "-C", str(d), "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                       check=True, capture_output=True)
+
+    def graph(path: str) -> str:
+        return json.dumps({"nodes": [{"id": "n", "label": "N", "kind": "class",
+                                      "evidence": [{"tier": "source", "path": path, "line": 1}, {"tier": "inferred", "note": "x"}]}],
+                           "edges": []})
+
+    passes = lambda repo: (0, "")  # noqa: E731
+    fails_check = lambda repo: (1, "c4-a.md: block differs from c4-a.json")  # noqa: E731
+
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        git(d, "init", "-q", "-b", "main")
+        (d / "src").mkdir()
+        (d / "src" / "a.rs").write_text("")
+        (d / "src" / "b.rs").write_text("")
+        p, n = diagram_gate_run(d, "main", None, None, passes)
+        ok("no docs/architecture: visible skip", not p and n and n[0].startswith("SKIP diagram gate"), (p, n))
+        arch = d / "docs" / "architecture"
+        arch.mkdir(parents=True)
+        (arch / "c4-a.json").write_text(graph("src/a.rs"))
+        (arch / "seq-b.1.json").write_text(graph("src/b.rs"))
+        (arch / "seq-b.2.json").write_text(graph("src/other.rs"))
+        (arch / "seq-c.json").write_text(graph("src/c.rs"))
+        (arch / "manifest.json").write_text('{"schema": "x"}')
+        (arch / "broken.json").write_text("{nope")
+        (d / ".discovery" / "dossiers").mkdir(parents=True)
+        git(d, "add", "-A")
+        git(d, "commit", "-q", "-m", "base")
+        git(d, "branch", "-q", "base")
+        git(d, "checkout", "-q", "-b", "work")
+
+        p, n = diagram_gate_run(d, "base", None, None, passes)
+        ok("an unchanged branch is clean", not p and not any(x.startswith("REVIEW") for x in n), (p, n))
+        (d / "src" / "a.rs").write_text("fn a() {}\n")
+        (d / "src" / "b.rs").write_text("fn b() {}\n")
+        git(d, "commit", "-qam", "code")
+        p, n = diagram_gate_run(d, "base", None, None, passes)
+        ok("anchored changed files give REVIEW lines", not p and "REVIEW: c4-a anchors src/a.rs" in n and "REVIEW: seq-b.1 anchors src/b.rs" in n, (p, n))
+        p, n = diagram_gate_run(d, "base", None, None, fails_check)
+        ok("a failing check is a DEFECT", len(p) == 1 and "vr_mermaid.py check" in p[0], p)
+
+        # editing a block's JSON clears the REVIEW for the diagram and its sibling blocks
+        (arch / "seq-b.2.json").write_text(graph("src/other.rs") + "\n")
+        (arch / "c4-a.json").write_text(graph("src/a.rs") + "\n")
+        git(d, "commit", "-qam", "diagrams")
+        p, n = diagram_gate_run(d, "base", None, None, passes)
+        ok("a modified diagram needs no REVIEW", not p and not any(x.startswith("REVIEW") for x in n), (p, n))
+
+        # the dossier line
+        (d / ".discovery" / "dossiers" / "W-001-x.md").write_text("# T\n\n## Approach\n\nx\nDiagrams affected: c4-a, seq-c\n")
+        p, n = diagram_gate_run(d, "base", "W-001", None, passes)
+        ok("a listed untouched diagram is REVIEW without PR text", not p and "REVIEW: dossier lists diagram seq-c as affected and the branch did not modify it" in n, (p, n))
+        p, n = diagram_gate_run(d, "base", "W-001", "Nothing else changed.", passes)
+        ok("with PR text that is silent, a DEFECT", len(p) == 1 and "seq-c" in p[0], (p, n))
+        p, n = diagram_gate_run(d, "base", "W-001", "seq-c still holds: only a comment moved.", passes)
+        ok("PR text that explains the diagram clears it", not p, (p, n))
+        (d / ".discovery" / "dossiers" / "W-001-x.md").write_text("Diagrams affected: none\n")
+        p, n = diagram_gate_run(d, "base", "W-001", None, passes)
+        ok("`none` lists nothing", not p, (p, n))
+        p, n = diagram_gate_run(d, "no-such-ref", None, None, passes)
+        ok("unknown base fails", len(p) == 1 and "cannot list the branch diff" in p[0], p)
+
+        # the `Diagrams new:` line
+        ok("parse: none", parse_diagrams_new("none") == [] and parse_diagrams_new("") == [])
+        ok("parse: stem with description", parse_diagrams_new("seq-x \u2014 the flow") == ["seq-x"])
+        ok("parse: comma list with descriptions and a comma inside one",
+           parse_diagrams_new("seq-x \u2014 a, b and c, seq-y \u2014 d, c1-ext") == ["seq-x", "seq-y", "c1-ext"],
+           parse_diagrams_new("seq-x \u2014 a, b and c, seq-y \u2014 d, c1-ext"))
+        ok("parse: bare list and backticks", parse_diagrams_new("`seq-x.json`, seq-y") == ["seq-x", "seq-y"])
+        (d / ".discovery" / "dossiers" / "W-002-n.md").write_text(
+            "## Approach\n\nx\nDiagrams affected: none\nDiagrams new: seq-new \u2014 a to b, seq-c \u2014 exists\n")
+        p, n = diagram_gate_run(d, "base", "W-002", None, passes)
+        ok("a missing new diagram is REVIEW without PR text", not p and "REVIEW: dossier lists new diagram seq-new and docs/architecture/seq-new.json is not on the branch" in n, (p, n))
+        p, n = diagram_gate_run(d, "base", "W-002", "Nothing about it.", passes)
+        ok("with silent PR text a missing new diagram is a DEFECT", len(p) == 1 and "seq-new" in p[0], (p, n))
+        p, n = diagram_gate_run(d, "base", "W-002", "Diagram seq-new not added: no new flow after all.", passes)
+        ok("`Diagram <stem> not added: why` clears it", not p, (p, n))
+        (arch / "seq-new.json").write_text(graph("src/a.rs"))
+        git(d, "add", "-A")
+        git(d, "commit", "-qm", "new diagram")
+        p, n = diagram_gate_run(d, "base", "W-002", "x", passes)
+        ok("an added new diagram passes", not p and not any("seq-new" in x for x in n), (p, n))
+        (d / ".discovery" / "dossiers" / "W-002-n.md").write_text("Diagrams new: none\n")
+        p, n = diagram_gate_run(d, "base", "W-002", "x", passes)
+        ok("`Diagrams new: none` lists nothing", not p, (p, n))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run_diagram_gate(d, "no-such-ref")
+        ok("run_diagram_gate exits 1 on a defect", rc == 1 and "DEFECT" in buf.getvalue(), buf.getvalue())
+
+    for f in fails:
+        print("FAIL  " + f)
+    print(f"{'PASS' if not fails else 'FAIL'} — diagram gate {'behaves' if not fails else 'misbehaves'}")
+    return not fails
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -2884,8 +4095,8 @@ def main() -> int:
         "--pre-fanout",
         action="store_true",
         help="check the pre-fan-out obligations for --dossier: the build log "
-        "must record CONTRACT-REVIEW: (spawned or skipped), HOOKS: (none or "
-        "a policy), PAYLOAD-LINT: (payload and defect counts) and GATES: "
+        "must carry `hooks:` and `contract_review:` (current contract commit SHA, "
+        "or skipped — reason) front matter, and record PAYLOAD-LINT: (payload and defect counts) and GATES: "
         "(the CI gate list) lines, and every ### Definitions term of "
         "## Contract must reach a stub file or be in DOSSIER-ONLY-TERMS:",
     )
@@ -2895,6 +4106,27 @@ def main() -> int:
         "is not --root (local mode validates the dossier from the main "
         "checkout while the stubs live in X; the dossier's `worktree:` front-"
         "matter field is used when the flag is not given)",
+    )
+    ap.add_argument(
+        "--c3-gate",
+        action="store_true",
+        help="the Phase 9 close gate for a Rust repo with docs/architecture/c3-components-*.md: every "
+        "touched crate's c3 diagram must agree with cargo-modules (95 percent) and be fresh; "
+        "requires --base",
+    )
+    ap.add_argument(
+        "--diagram-gate",
+        action="store_true",
+        help="the Phase 9 close gate for architecture diagrams: vr_mermaid.py check must pass, and every "
+        "diagram anchored in a file the branch changed (and not itself modified) is listed as REVIEW; "
+        "--dossier W-NNN adds the dossier's `Diagrams affected:` stems, --pr-body FILE the PR text; "
+        "requires --base",
+    )
+    ap.add_argument(
+        "--pr-body",
+        metavar="FILE",
+        help="with --diagram-gate: the PR description; a diagram the dossier lists but the branch left alone "
+        "is a DEFECT when this text does not mention it",
     )
     ap.add_argument(
         "--mode",
@@ -2924,6 +4156,18 @@ def main() -> int:
         (adr_dir / "index.md").write_text(render_index(adr_rows(adr_dir)))
         print(f"wrote {adr_dir / 'index.md'}")
         return 0
+
+    if args.c3_gate:
+        if not args.base:
+            print("DEFECT  --c3-gate requires --base <ref>")
+            return 1
+        return run_c3_gate(root, args.base)
+
+    if args.diagram_gate:
+        if not args.base:
+            print("DEFECT  --diagram-gate requires --base <ref>")
+            return 1
+        return run_diagram_gate(root, args.base, args.dossier, args.pr_body)
 
     if args.finalize_ids:
         if not args.base:

@@ -1,0 +1,6 @@
+{"flat":true,"n":50,"strategy":"NONE","deterministic":true,"moved_pct":100,"mean_px":215,"max_px":566,"layout_w":3824,"layout_h":672}
+{"flat":true,"n":50,"strategy":"NODES_AND_EDGES","deterministic":true,"moved_pct":96,"mean_px":272,"max_px":671,"layout_w":3824,"layout_h":639}
+{"flat":true,"n":100,"strategy":"NONE","deterministic":true,"moved_pct":100,"mean_px":423,"max_px":1024,"layout_w":8048,"layout_h":1271}
+{"flat":true,"n":100,"strategy":"NODES_AND_EDGES","deterministic":true,"moved_pct":100,"mean_px":377,"max_px":864,"layout_w":8048,"layout_h":962}
+{"grouped":true,"n":50,"identical_json":false,"json_kb":37}
+{"grouped":true,"n":200,"identical_json":false,"json_kb":158}

@@ -20,7 +20,7 @@ a flag here.
 
     wait_ci.py --pr N [--repo OWNER/NAME] [--timeout SECONDS=3600]
                [--interval SECONDS=30] [--register-wait SECONDS=120]
-               [--lines N=20] [--line-chars N=300]
+               [--lines N=20] [--line-chars N=300] [--log DOSSIER]
     wait_ci.py --branch NAME [--sha SHA] ...        find the PR (or the runs) by branch
     wait_ci.py --idle-first [--idle-timeout S=7200] ...   wait for a free runner first
     wait_ci.py (--pr N | --branch NAME) --job-log JOB --grep REGEX [--lines N=20]
@@ -381,6 +381,23 @@ def failure_digest(runner: Runner, check: dict, lines_n: int, line_chars: int) -
     return [f"--- {check.get('name')} ---", *body, f"  link: {check.get('link', '')}"]
 
 
+RUN_URL_RE = re.compile(r"https?://\S+?/actions/runs/\d+")
+
+
+def ci_line(checks: list[dict], sha: str | None) -> str:
+    """The build-log line phase-6.md asks for after a CI verdict:
+    `SUITE: ci run <url> on <sha> — <N> failed / <N> passed` (counts are checks)."""
+    failed = sum(1 for c in checks if c.get("bucket") in BAD_BUCKETS)
+    passed = sum(1 for c in checks if c.get("bucket") == "pass")
+    urls = [m.group(0) for c in checks if (m := RUN_URL_RE.search(str(c.get("link") or "")))]
+    return f"SUITE: ci run {urls[0] if urls else 'n/a'} on {(sha or 'unknown')[:12]} — {failed} failed / {passed} passed"
+
+
+def write_ci_line(args: argparse.Namespace, checks: list[dict], sha: str | None) -> None:
+    import dossier_edit
+    print(dossier_edit.log_or_say(args.log, [ci_line(checks, sha)]))
+
+
 def report(runner: Runner, checks: list[dict], args: argparse.Namespace) -> None:
     lines = [f"{c.get('bucket', '?'):8} {c.get('name', '?')}" for c in checks]
     for c in checks:
@@ -481,6 +498,7 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     ap.add_argument("--grep", metavar="REGEX", help="with --job-log: the pattern")
     ap.add_argument("--rerun-failed", action="store_true", help="re-run the failed jobs once and wait again")
     ap.add_argument("--rerun-settle", type=float, default=20, help="seconds to let GitHub register the rerun")
+    ap.add_argument("--log", metavar="DOSSIER", help="append `SUITE: ci run <url> on <sha> — <N> failed / <N> passed` to this dossier's Build log once the checks have a verdict")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     if args.selftest:
@@ -556,6 +574,8 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
             return 4
 
     report(active_runner, checks, args)
+    if args.log and outcome == "done" and checks:
+        write_ci_line(args, checks, str((state or {}).get("headRefOid") or args.sha or ""))
 
     if outcome == "timeout":
         print(f"wait_ci: timed out after {args.timeout:.0f}s with checks still pending", file=sys.stderr)
@@ -620,6 +640,28 @@ def selftest() -> int:
     with contextlib.redirect_stdout(io.StringIO()):
         outcome, _, err = poll(lambda c: (1, "", "authentication required"), 5, None, timeout=5, interval=0.01, register_wait=5)
     check("another gh error still fails fast", outcome == "error" and NOT_REGISTERED not in err)
+
+    # 1c. --log DOSSIER writes the SUITE: ci line through dossier_edit's one lock.
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        dos = os.path.join(td, "W-1.md")
+        open(dos, "w", encoding="utf-8").write("---\nid: W-1\n---\n\n# T\n\n## Build log\n\n- first\n")
+        ok_checks = [{"name": "build", "state": "SUCCESS", "bucket": "pass", "link": "https://github.com/o/r/actions/runs/111/job/222", "workflow": "CI"},
+                     {"name": "lint", "state": "FAILURE", "bucket": "fail", "link": "https://github.com/o/r/actions/runs/111/job/223", "workflow": "CI"}]
+
+        def runner_log(cmd: list[str]) -> tuple[int, str, str]:
+            if cmd[:3] == ["gh", "pr", "checks"]:
+                return 0, json.dumps(ok_checks), ""
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return 0, json.dumps({"headRefOid": "abcdef0123456789", "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"}), ""
+            return 1, "", "unexpected call"
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["--pr", "5", "--log", dos, "--interval", "0.01"], runner=runner_log)
+        got = open(dos, encoding="utf-8").read()
+        check("--log writes the SUITE: ci line with run url, sha and counts",
+              "- SUITE: ci run https://github.com/o/r/actions/runs/111 on abcdef012345 — 1 failed / 1 passed\n" in got)
+        check("the --log line matches the format the phase doc names", re.search(r"^- SUITE: ci run \S+ on \S+ — \d+ failed / \d+ passed$", got, re.M) is not None)
 
     # 2. a failure, with a fake --log-failed body that includes a huge line.
     huge = "boom" * 20000

@@ -1,6 +1,6 @@
 // Run: bun --no-install shared/test/mcp.test.ts
 // Spawns the MCP server as Claude Code does (stdio, newline-delimited JSON-RPC) and drives it.
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -15,7 +15,7 @@ const proc = Bun.spawn(["bun", "--no-install", join(root, "shared", "claude", "m
   stdin: "pipe",
   stdout: "pipe",
   stderr: "pipe",
-  env: { ...process.env, CLAUDE_PROJECT_DIR: dir },
+  env: { ...process.env, CLAUDE_PROJECT_DIR: dir, ASD_RUNS_DIR: join(dir, "runs") },
 })
 const reader = proc.stdout.getReader()
 const decoder = new TextDecoder()
@@ -47,7 +47,7 @@ send({ jsonrpc: "2.0", method: "notifications/initialized" }) // a notification:
 check("ping", JSON.stringify((await rpc("ping")).result) === "{}")
 
 const list = (await rpc("tools/list")).result.tools
-check("tools/list: seven", list.map((t: any) => t.name).join() === "code_outline,code_item,code_find,doc_section,ref_section,code_replace,phase_checkpoint")
+check("tools/list: eight", list.map((t: any) => t.name).join() === "code_outline,code_item,code_find,doc_section,ref_section,arch_find,code_replace,phase_checkpoint")
 check(
   "tools/list: valid JSON Schema",
   list.every(
@@ -57,7 +57,7 @@ check(
       t.description.length > 50 &&
       Array.isArray(t.inputSchema.required) &&
       t.inputSchema.required.every((r: string) => r in t.inputSchema.properties) &&
-      Object.values(t.inputSchema.properties).every((p: any) => ["string", "number", "boolean"].includes(p.type) && typeof p.description === "string"),
+      Object.values(t.inputSchema.properties).every((p: any) => ["string", "number", "boolean", "array"].includes(Array.isArray(p.type) ? p.type[0] : p.type) && typeof p.description === "string"),
   ),
 )
 check("tools/list: claude host sentence", list.find((t: any) => t.name === "phase_checkpoint").description.includes("does not cut"))
@@ -65,6 +65,44 @@ check("tools/list: claude host sentence", list.find((t: any) => t.name === "phas
 // doc_section on a fixture, relative to CLAUDE_PROJECT_DIR.
 const sec = (await rpc("tools/call", { name: "doc_section", arguments: { path: "notes.md", heading: "LRN-0001" } })).result
 check("doc_section: body", sec.isError === undefined && sec.content[0].text.includes("body one") && !sec.content[0].text.includes("body two"))
+// arch_find on a fixture docs/architecture: a class graph, a sequence graph, a non-graph JSON, broken JSON.
+const arch = join(dir, "docs", "architecture")
+mkdirSync(arch, { recursive: true })
+const ev = (path: string, line: number) => [{ tier: "source", path, line }, { tier: "inferred", note: "x" }]
+writeFileSync(join(arch, "c4-classes-store.json"), JSON.stringify({
+  title: "c4 - Classes: store",
+  nodes: [
+    { id: "class:TrackStore", label: "TrackStore", kind: "class", stereotype: "struct", members: Array.from({ length: 15 }, (_, i) => `+m${i}()`), evidence: ev("crates/harness/src/track.rs", 12) },
+    { id: "class:Runner", label: "Runner", kind: "class", evidence: ev("crates/harness/src/run.rs", 3) },
+  ],
+  edges: [{ source: "class:Runner", target: "class:TrackStore", label: "holds", kind: "association" }],
+}))
+writeFileSync(join(arch, "seq-boot.1.json"), JSON.stringify({
+  title: "seq - Boot (1)",
+  lanes: [{ id: "lane:A", label: "run" }, { id: "lane:B", label: "db" }],
+  nodes: [{ id: "msg:1", label: "load TrackStore", kind: "message", lane: "lane:A", seq: { to: "lane:B" }, evidence: [] }],
+  edges: [],
+}))
+writeFileSync(join(arch, "map-manifest.json"), JSON.stringify({ schema: "x", views: [] }))
+writeFileSync(join(arch, "broken.json"), "{not json")
+const af = async (args: object) => (await rpc("tools/call", { name: "arch_find", arguments: args })).result
+const bySym = await af({ query: "TrackStore" })
+const symText = bySym.content[0].text
+check("arch_find: symbol hit has id, kind, anchor, stereotype, 12 members and neighbour",
+  bySym.isError === undefined && symText.includes("c4-classes-store · class:TrackStore · class · TrackStore") && symText.includes("src: crates/harness/src/track.rs:12") &&
+  symText.includes("stereotype: struct") && symText.includes("(+3 more)") && !symText.includes("+m12()") && symText.includes("<- [holds] Runner"))
+check("arch_find: label substring in a sequence block", symText.includes("seq-boot.1 · msg:1 · message · load TrackStore") && symText.includes("lanes: run -> db"))
+const byPath = (await af({ query: "crates/harness/src/track.rs" })).content[0].text
+check("arch_find: repo path matches evidence", byPath.includes("class:TrackStore") && !byPath.includes("class:Runner ·"))
+check("arch_find: diagram restricts, and `seq-boot` selects block seq-boot.1", !(await af({ query: "TrackStore", diagram: "seq-boot" })).content[0].text.includes("c4-classes-store"))
+const outl = (await af({ query: "", diagram: "seq-boot" })).content[0].text
+check("arch_find: empty query + diagram = outline", outl.includes("seq - Boot (1)") && outl.includes("lanes: run | db") && outl.includes("run -> db: load TrackStore"))
+check("arch_find: no query, no diagram lists the graphs and skips non-graph JSON", (await af({ query: "" })).content[0].text.includes("2 diagram(s)"))
+check("arch_find: no match is a plain line, not an error", (await af({ query: "zzz-none" })).content[0].text.includes("nothing"))
+check("arch_find: repo without docs/architecture", (await af({ query: "x", repo_root: tmpdir() })).content[0].text.includes("no docs/architecture"))
+writeFileSync(join(arch, "many.json"), JSON.stringify({ title: "many", nodes: Array.from({ length: 50 }, (_, i) => ({ id: `n:${i}`, label: `zebra${i}`, kind: "x", evidence: [] })), edges: [] }))
+check("arch_find: caps at 40 matches and says how many were dropped", (await af({ query: "zebra" })).content[0].text.includes("10 more match(es) dropped"))
+
 const bad = (await rpc("tools/call", { name: "code_outline", arguments: { path: "notes.txt" } })).result
 check("code_* script failure is isError", bad.isError === true && bad.content[0].text.includes("code_nav failed"))
 check("missing argument is isError", (await rpc("tools/call", { name: "doc_section", arguments: { path: "notes.md" } })).result.isError === true)
@@ -78,6 +116,32 @@ const noNext = (await rpc("tools/call", { name: "phase_checkpoint", arguments: {
 check("phase_checkpoint: a summary without a NEXT: line -> isError naming it", noNext.isError === true && noNext.content[0].text.includes("NEXT:"))
 const ok = (await rpc("tools/call", { name: "phase_checkpoint", arguments: { phase: "Phase 4 — wave 1", summary: "wave 1 returned\nNEXT: rule the returns" } })).result
 check("phase_checkpoint: confirmed as recorded and restored after compaction", ok.isError === undefined && ok.content[0].text.includes("recorded") && ok.content[0].text.includes("restored"))
+
+// phase_checkpoint `dossier`, `log`, `note`: the build-log lines and the owner note ride on the call.
+const cpTool = list.find((t: any) => t.name === "phase_checkpoint")
+check("phase_checkpoint: schema offers dossier, log (array of strings) and note (string or boolean)",
+  cpTool.inputSchema.properties.log.type === "array" && cpTool.inputSchema.properties.log.items.type === "string" &&
+  cpTool.inputSchema.properties.dossier.type === "string" && cpTool.inputSchema.properties.note.type.includes("boolean") &&
+  cpTool.inputSchema.required.join() === "phase,summary")
+mkdirSync(join(dir, ".discovery", "dossiers"), { recursive: true })
+const dos = join(dir, ".discovery", "dossiers", "W-9.md")
+writeFileSync(dos, "---\nid: W-9\nstatus: building\n---\n\n# T\n\n## Build log\n\n- first\n")
+const cpArgs = { phase: "Phase 6 — round 1", summary: "round 1 ruled\nNEXT: phase 7", dossier: dos }
+const withLog = (await rpc("tools/call", { name: "phase_checkpoint", arguments: { ...cpArgs, log: ["ARBITRATION: F1 — test wins. Lesson: none", "RULING: R1 — keep"], note: "round 1 ruled; starting review" } })).result
+check("phase_checkpoint log: recorded, and says what it wrote", withLog.isError === undefined && withLog.content[0].text.includes("recorded") && withLog.content[0].text.includes("appended 2 line(s)") && withLog.content[0].text.includes("owner note: posted"))
+const body = readFileSync(dos, "utf8")
+check("phase_checkpoint log: both lines are in ## Build log, bulleted", body.endsWith("- first\n- ARBITRATION: F1 — test wins. Lesson: none\n- RULING: R1 — keep\n"))
+const upd = JSON.parse(readFileSync(join(dir, "runs", `${dir.split("/").pop()}.W-9.jsonl`), "utf8").trim().split("\n").pop()!)
+check("phase_checkpoint note: an update line, stage = the phase, text = the note", upd.kind === "update" && upd.stage === "Phase 6 — round 1" && upd.text === "round 1 ruled; starting review")
+await rpc("tools/call", { name: "phase_checkpoint", arguments: { ...cpArgs, log: ["ARBITRATION: F1 — test wins. Lesson: none"], note: true } })
+check("phase_checkpoint log: a re-run adds no second copy", readFileSync(dos, "utf8").split("ARBITRATION: F1").length === 2)
+const upd2 = JSON.parse(readFileSync(join(dir, "runs", `${dir.split("/").pop()}.W-9.jsonl`), "utf8").trim().split("\n").pop()!)
+check("phase_checkpoint note: true posts the summary", upd2.text === cpArgs.summary)
+const noDos = (await rpc("tools/call", { name: "phase_checkpoint", arguments: { phase: "Phase 6", summary: "x\nNEXT: y", log: ["RULING: x"] } })).result
+check("phase_checkpoint log without dossier: still recorded, and says nothing was written", noDos.isError === undefined && noDos.content[0].text.includes("NOT written"))
+check("phase_checkpoint: a log that is not an array of strings -> isError", (await rpc("tools/call", { name: "phase_checkpoint", arguments: { ...cpArgs, log: "RULING: x" } })).result.isError === true)
+const plain = (await rpc("tools/call", { name: "phase_checkpoint", arguments: cpArgs })).result
+check("phase_checkpoint without log or note writes nothing", !plain.content[0].text.includes("build log") && readFileSync(dos, "utf8") === readFileSync(dos, "utf8"))
 
 // protocol errors
 const unknown = await rpc("tools/call", { name: "nope", arguments: {} })

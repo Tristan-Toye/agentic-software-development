@@ -1,0 +1,126 @@
+digraph {
+
+    graph [
+        label="platform",
+        labelloc=t,
+
+        pad=0.4,
+
+        // Consider rendering the graph using a different layout algorithm, such as:
+        // [dot, neato, twopi, circo, fdp, sfdp]
+        layout=neato,
+        overlap=false,
+        splines="line",
+        rankdir=LR,
+
+        fontname="Helvetica", 
+        fontsize="36",
+    ];
+
+    node [
+        fontname="monospace",
+        fontsize="10",
+        shape="record",
+        style="filled",
+    ];
+
+    edge [
+        fontname="monospace",
+        fontsize="10",
+    ];
+
+    "platform" [label="crate|platform", fillcolor="#5397c8"]; // "crate" node
+    "platform::artifact_fs" [label="pub mod|artifact_fs", fillcolor="#81c169"]; // "mod" node
+    "platform::client_secrets_admin" [label="pub mod|client_secrets_admin", fillcolor="#81c169"]; // "mod" node
+    "platform::client_secrets_bao" [label="pub mod|client_secrets_bao", fillcolor="#81c169"]; // "mod" node
+    "platform::cloud" [label="pub mod|cloud", fillcolor="#81c169"]; // "mod" node
+    "platform::cloud::credential" [label="pub mod|cloud::credential", fillcolor="#81c169"]; // "mod" node
+    "platform::cloud::fallback" [label="pub mod|cloud::fallback", fillcolor="#81c169"]; // "mod" node
+    "platform::cloud::gcp" [label="pub mod|cloud::gcp", fillcolor="#81c169"]; // "mod" node
+    "platform::cloud::local" [label="pub mod|cloud::local", fillcolor="#81c169"]; // "mod" node
+    "platform::cloud::selection" [label="pub mod|cloud::selection", fillcolor="#81c169"]; // "mod" node
+    "platform::db" [label="pub mod|db", fillcolor="#81c169"]; // "mod" node
+    "platform::litellm" [label="pub mod|litellm", fillcolor="#81c169"]; // "mod" node
+    "platform::llm_gateway" [label="pub mod|llm_gateway", fillcolor="#81c169"]; // "mod" node
+    "platform::llm_gateway::backpressure" [label="pub mod|llm_gateway::backpressure", fillcolor="#81c169"]; // "mod" node
+    "platform::llm_gateway::queue" [label="pub mod|llm_gateway::queue", fillcolor="#81c169"]; // "mod" node
+    "platform::llm_gateway::retry" [label="pub mod|llm_gateway::retry", fillcolor="#81c169"]; // "mod" node
+    "platform::llm_gateway::revocations" [label="pub mod|llm_gateway::revocations", fillcolor="#81c169"]; // "mod" node
+    "platform::llm_gateway::service" [label="pub mod|llm_gateway::service", fillcolor="#81c169"]; // "mod" node
+    "platform::nats_accounts" [label="pub mod|nats_accounts", fillcolor="#81c169"]; // "mod" node
+    "platform::nats_auth" [label="pub mod|nats_auth", fillcolor="#81c169"]; // "mod" node
+    "platform::parameters" [label="pub mod|parameters", fillcolor="#81c169"]; // "mod" node
+    "platform::pool_metrics" [label="pub mod|pool_metrics", fillcolor="#81c169"]; // "mod" node
+    "platform::provider_usage" [label="pub mod|provider_usage", fillcolor="#81c169"]; // "mod" node
+    "platform::secrets_file" [label="pub mod|secrets_file", fillcolor="#81c169"]; // "mod" node
+    "platform::service_start" [label="pub mod|service_start", fillcolor="#81c169"]; // "mod" node
+    "platform::stubs" [label="pub mod|stubs", fillcolor="#81c169"]; // "mod" node
+    "platform::stubs::artifact_store" [label="pub mod|stubs::artifact_store", fillcolor="#81c169"]; // "mod" node
+    "platform::stubs::chat" [label="pub mod|stubs::chat", fillcolor="#81c169"]; // "mod" node
+    "platform::stubs::client_secrets" [label="pub mod|stubs::client_secrets", fillcolor="#81c169"]; // "mod" node
+    "platform::stubs::counter" [label="pub(crate) mod|stubs::counter", fillcolor="#f8c04c"]; // "mod" node
+    "platform::stubs::git_host" [label="pub mod|stubs::git_host", fillcolor="#81c169"]; // "mod" node
+    "platform::stubs::llm" [label="pub mod|stubs::llm", fillcolor="#81c169"]; // "mod" node
+    "platform::stubs::parameters" [label="pub mod|stubs::parameters", fillcolor="#81c169"]; // "mod" node
+    "platform::stubs::search" [label="pub mod|stubs::search", fillcolor="#81c169"]; // "mod" node
+    "platform::stubs::secrets" [label="pub mod|stubs::secrets", fillcolor="#81c169"]; // "mod" node
+    "platform::stubs::ticketing" [label="pub mod|stubs::ticketing", fillcolor="#81c169"]; // "mod" node
+    "platform::stubs::trigger_source" [label="pub mod|stubs::trigger_source", fillcolor="#81c169"]; // "mod" node
+    "platform::telemetry" [label="pub mod|telemetry", fillcolor="#81c169"]; // "mod" node
+    "platform::test_graphs" [label="pub mod|test_graphs", fillcolor="#81c169"]; // "mod" node
+    "platform::trigger_listener" [label="pub mod|trigger_listener", fillcolor="#81c169"]; // "mod" node
+    "platform::trigger_registry" [label="pub mod|trigger_registry", fillcolor="#81c169"]; // "mod" node
+    "platform::trigger_schedule" [label="pub mod|trigger_schedule", fillcolor="#81c169"]; // "mod" node
+    "platform::trigger_sources" [label="pub mod|trigger_sources", fillcolor="#81c169"]; // "mod" node
+
+    "platform::artifact_fs" -> "platform::db" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::client_secrets_admin" -> "platform::client_secrets_bao" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::client_secrets_admin" -> "platform::db" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::cloud" -> "platform::cloud::credential" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::cloud" -> "platform::cloud::fallback" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::cloud" -> "platform::cloud::gcp" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::cloud" -> "platform::cloud::local" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::cloud" -> "platform::cloud::selection" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::cloud::gcp" -> "platform::cloud::credential" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::cloud::local" -> "platform::secrets_file" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::cloud::selection" -> "platform::cloud::credential" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::cloud::selection" -> "platform::cloud::fallback" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::cloud::selection" -> "platform::cloud::gcp" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::cloud::selection" -> "platform::cloud::local" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::cloud::selection" -> "platform::parameters" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::db" -> "platform::pool_metrics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::litellm" -> "platform::provider_usage" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::llm_gateway" -> "platform::llm_gateway::backpressure" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::llm_gateway" -> "platform::llm_gateway::retry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::llm_gateway::service" -> "platform::llm_gateway" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::llm_gateway::service" -> "platform::llm_gateway::backpressure" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::llm_gateway::service" -> "platform::llm_gateway::queue" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::llm_gateway::service" -> "platform::llm_gateway::retry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::llm_gateway::service" -> "platform::llm_gateway::revocations" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::nats_accounts" -> "platform::db" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::nats_accounts" -> "platform::nats_auth" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::nats_auth" -> "platform::db" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::pool_metrics" -> "platform::db" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::stubs::artifact_store" -> "platform::stubs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::stubs::chat" -> "platform::stubs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::stubs::client_secrets" -> "platform::stubs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::stubs::git_host" -> "platform::stubs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::stubs::git_host" -> "platform::stubs::counter" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::stubs::llm" -> "platform::stubs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::stubs::llm" -> "platform::stubs::counter" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::stubs::parameters" -> "platform::stubs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::stubs::search" -> "platform::stubs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::stubs::secrets" -> "platform::stubs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::stubs::ticketing" -> "platform::stubs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::stubs::trigger_source" -> "platform::stubs" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::telemetry" -> "platform::pool_metrics" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::telemetry" -> "platform::service_start" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::test_graphs" -> "platform::stubs::secrets" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::test_graphs" -> "platform::trigger_registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::trigger_listener" -> "platform::trigger_registry" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::trigger_listener" -> "platform::trigger_sources" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::trigger_registry" -> "platform::db" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::trigger_schedule" -> "platform::db" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+    "platform::trigger_schedule" -> "platform::trigger_listener" [label="uses", color="#7f7f7f", style="dashed"] [constraint=false]; // "uses" edge
+
+}

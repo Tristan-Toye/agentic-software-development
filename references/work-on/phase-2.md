@@ -89,6 +89,25 @@ This is the step everything else depends on.
    `status: building`, `worktree` and `branch` into `X`'s copy; it is the
    live dossier from here.
 
+   **Stacked on an open plan PR (`plan-branch=` in `$ARGUMENTS`).** The re-plan
+   is on `plan/<KEY>`, not merged yet. Fork `X` from the target as above, then
+   bring in only the plan's own commits, never the base it forked from:
+
+   ```
+   git fetch origin <plan-branch>
+   git -C <X> cherry-pick -x $(git rev-list --reverse --no-merges origin/<plan-branch> --not origin/<plan-base>)
+   ```
+
+   `<plan-base>` is the branch the plan PR targets
+   (`gh pr view <plan-branch> --json baseRefName`, else `development`). The
+   commits touch only `.discovery/` and `.gitignore`; a conflict there is the
+   target's older copy of this dossier — keep the plan branch's side. Log
+   `PLAN-STACK: cherry-picked <n> plan commit(s) <shas> from <plan-branch>`
+   and name the plan PR in this build's PR body ("stacked on #<n>: merge it
+   first, or with this one"). The plan PR and this branch then carry the same
+   dossier change, which merges cleanly into development whichever lands
+   first. The live copy is `X`'s from here, as above.
+
 2. **Write the contract into real files.** You write the docstrings that every
    downstream agent builds against, so **read the contract-craft rules first** —
    every run, before you type a documentation comment:
@@ -206,9 +225,11 @@ This is the step everything else depends on.
    — every payload inherits them as `EXPECTED_HOOK_OUTPUTS` (pass
    `--hook-outputs STEP:GLOB` to `compose_payloads.py`), and an implementer
    whose hook rewrote only those paths commits through. A glob must not touch
-   any package's `OWNED_PATHS`. Log `HOOKS: none`
-   or `HOOKS: <hook> — <policy>` before the fan-out;
-   `validate_pipeline.py --pre-fanout` refuses without it.
+   any package's `OWNED_PATHS`. Record the policy as front matter before the
+   fan-out: `dossier_edit.py set <dossier> 'hooks=none'` or
+   `'hooks=<hook> — <policy>'`; `validate_pipeline.py --pre-fanout` refuses
+   without it. Right after the contract commit, record
+   `contract_commit=$(git rev-parse HEAD)` the same way.
 
    **Decide the suite runner by coverage, beside the hook policy.** Inspect
    the target's repository instructions, full-suite entry point and CI
@@ -279,6 +300,17 @@ This is the step everything else depends on.
    a receipt keyed by the gates file and the working tree (build log
    excluded); the next call on the same tree reuses it (`REUSED`) instead of
    running the list twice.
+
+   Put the repository's PATH needs on the run, never inside each line: when
+   its toolchain is not on a non-interactive shell's PATH (cargo under
+   `~/.cargo/bin`), pass `--path-prepend "$HOME/.cargo/bin"` (repeatable) and,
+   for anything more, `--env-script <file>` on every `run_gates.py` call, the
+   flags `run_tests.py` has. A gate that exits 127 is reported as "command not
+   found — environment, not a gate failure": fix the flags, do not read it as
+   red. A list too long for one tool call (the Bash cap is 10 minutes) runs
+   with `--detach` (prints a run id, returns at once) and then
+   `--wait <id>` (prints the foreground summary; exit 6 means still running,
+   call it again).
 
 You write this yourself. Do not delegate it: the contract is what you will
 referee with in Phase 6, and a contract you did not write is one you cannot

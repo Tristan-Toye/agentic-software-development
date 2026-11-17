@@ -13,7 +13,7 @@ never a verdict: the lens judges it, and an unjudged marker is not a change requ
 
 # Usage
 
-    review_signals.py --root DIR --base SHA [--head HEAD] [--max N=40] [--field]
+    review_signals.py --root DIR --base SHA [--head HEAD] [--max N=40] [--field] [--log DOSSIER]
     review_signals.py --selftest
 
 Prints one line per marker, `path:line  <group>/<kind>  <the line, cut at 120 chars>`, at
@@ -89,7 +89,9 @@ No third-party imports: this runs wherever python3 does.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
+import io
 import os
 import re
 import subprocess
@@ -476,6 +478,17 @@ def selftest() -> int:
         check("the payload field is one block", block.startswith("SIGNALS: |\n  FAILURE-SIGNALS:") and "  src/lib.rs:2" in block, block)
         lines, _ = report(repo, "HEAD~1", "HEAD", 0)
         check("a cap never drops silently", lines == ["... 1 more (raise --max to list them)"], lines)
+        dos = os.path.join(repo, "W-1.md")
+        with open(dos, "w", encoding="utf-8") as fh:
+            fh.write("---\nid: W-1\n---\n\n# T\n\n## Build log\n\n- first\n")
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            main(["--root", repo, "--base", "HEAD~1", "--log", dos])
+        got = open(dos, encoding="utf-8").read()
+        check("--log appends the three summary lines, as printed", all(f"- {x}\n" in got for x in sums), got)
+        check("--log says it wrote them", "build log: 3 line(s) written" in out.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()):
+            main(["--root", repo, "--base", "HEAD~1", "--log", dos])
+        check("--log run twice adds nothing", open(dos, encoding="utf-8").read() == got)
     print(f"selftest: {len(failures)} failure(s)")
     return 1 if failures else 0
 
@@ -487,6 +500,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--head", default="HEAD")
     ap.add_argument("--max", type=int, default=40)
     ap.add_argument("--field", action="store_true", help="print the SIGNALS payload block")
+    ap.add_argument("--log", metavar="DOSSIER", help="append the three summary lines to this dossier's Build log")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -500,6 +514,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"review_signals: {err}", file=sys.stderr)
         return 2
     print(field_block(lines, sums) if args.field else "\n".join(lines + sums))
+    if args.log:
+        import dossier_edit
+        print(dossier_edit.log_or_say(args.log, sums))
     return 0
 
 

@@ -12,7 +12,7 @@ verdict: the lens judges whether the line is a race.
 
 # Usage
 
-    flake_risk.py [--max N=40] [--exempt TABLE | --no-exempt] FILE ...
+    flake_risk.py [--max N=40] [--exempt TABLE | --no-exempt] [--log DOSSIER] FILE ...
     flake_risk.py --selftest
 
 Prints one line per marker, `path:line  <kind>  <the line, cut at 120
@@ -425,7 +425,7 @@ def find_table(path: str, cache: dict[str, str | None]) -> str | None:
     return cache[directory]
 
 
-def run(paths: list[str], cap: int, exempt: str | None = None, use_tables: bool = True) -> int:
+def run(paths: list[str], cap: int, exempt: str | None = None, use_tables: bool = True, log: str | None = None) -> int:
     if not paths:
         print("flake_risk: no file given", file=sys.stderr)
         return 2
@@ -478,11 +478,15 @@ def run(paths: list[str], cap: int, exempt: str | None = None, use_tables: bool 
         print(f"… {len(rows) - cap} more")
     tail = f" ({exempted} exempt)" if exempted else ""
     if not rows:
-        print(f"FLAKE-RISK: none in {len(paths)} files{tail}")
-        return 0
-    kinds = ", ".join(f"{kind} {n}" for kind, n in sorted(counts.items()))
-    print(f"FLAKE-RISK: {len(rows)} markers in {hit_files} of {len(paths)} files ({kinds}){tail}")
-    return 1
+        summary = f"FLAKE-RISK: none in {len(paths)} files{tail}"
+    else:
+        kinds = ", ".join(f"{kind} {n}" for kind, n in sorted(counts.items()))
+        summary = f"FLAKE-RISK: {len(rows)} markers in {hit_files} of {len(paths)} files ({kinds}){tail}"
+    print(summary)
+    if log:
+        import dossier_edit
+        print(dossier_edit.log_or_say(log, [summary]))
+    return 1 if rows else 0
 
 
 def selftest() -> int:
@@ -674,6 +678,25 @@ def selftest() -> int:
         if load_exempt(bars)[0]["contains"] != "x.map(|v| v)":
             failures.append(f"an escaped bar reads as a bar: {load_exempt(bars)[0]['contains']!r}")
 
+    with tempfile.TemporaryDirectory() as tmp:
+        dos = os.path.join(tmp, "W-1.md")
+        with open(dos, "w", encoding="utf-8") as fh:
+            fh.write("---\nid: W-1\n---\n\n# T\n\n## Build log\n\n- first\n")
+        tf = os.path.join(tmp, "test_a.py")
+        with open(tf, "w", encoding="utf-8") as fh:
+            fh.write("import time\n\ndef test_a():\n    time.sleep(1)\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = run([tf], 40, use_tables=False, log=dos)
+        got = open(dos, encoding="utf-8").read()
+        summary = [l for l in buf.getvalue().splitlines() if l.startswith("FLAKE-RISK:")][0]
+        if not (rc == 1 and f"- {summary}\n" in got):
+            failures.append(f"--log appends the printed FLAKE-RISK line: {got!r}")
+        with contextlib.redirect_stdout(io.StringIO()):
+            run([tf], 40, use_tables=False, log=dos)
+        if open(dos, encoding="utf-8").read() != got:
+            failures.append("--log run twice adds nothing")
+
     for failure in failures:
         print("FAIL", failure)
     print(f"selftest: {len(failures)} failure(s)")
@@ -686,11 +709,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max", type=int, default=40, help="marker lines printed at most")
     ap.add_argument("--exempt", metavar="TABLE", help=f"the exempt table (default: nearest {EXEMPT_NAME})")
     ap.add_argument("--no-exempt", action="store_true", help="ignore every exempt table")
+    ap.add_argument("--log", metavar="DOSSIER", help="append the FLAKE-RISK: summary line to this dossier's Build log")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
-    return run(args.paths, args.max, exempt=args.exempt, use_tables=not args.no_exempt)
+    return run(args.paths, args.max, exempt=args.exempt, use_tables=not args.no_exempt, log=args.log)
 
 
 if __name__ == "__main__":

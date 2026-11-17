@@ -43,8 +43,32 @@ the recorded checkpoints.
       message: `OWNER ANSWER <id>: …` or `OWNER FOLLOWUP <id>: …`. On a
       follow-up the agent answers with `ask_owner.py reply` and ends the turn
       with `RUNNER: WAITING <id>` again.
+    - `RUNNER: ENV <vm|stack|disk> <detail>` — a broken environment (the
+      Lima VM down, a compose service unhealthy, the disk low), reported
+      instead of asked about. The session stays open; the runner answers with
+      `RUNNER ENV <kind>: repaired ...` (carry on) or `RUNNER ENV <kind>: not
+      repaired ...` (ask the owner as usual). See "Standing repair" below.
     - `RUNNER: DONE` — the dossier is finished: the runner records `done`
       and exits 0.
+    - `RUNNER: REPLAN <why>` — the owner ruled the dossier back to `/plan`
+      (or the build showed it must be re-planned and the owner agreed). Not
+      a failure and not a question: the runner sets the dossier's `status:`
+      to `planned`, records the run `done` with the reason, and starts a
+      `/plan` run of the dossier, which queues for a slot like any run and
+      starts with empty checkpoints. A `FAILED` whose reason says "sent back
+      to /plan" is read as `REPLAN`. `ASD_RUNNER_REPLAN=0` keeps the status
+      change and skips the automatic `/plan`.
+      When that re-plan ends `DONE` with the dossier `ready` (any `/plan` run
+      of a dossier a `/work-on` run already started counts, also one the
+      owner started), the runner requeues `/work-on` itself. In local mode,
+      or once the plan has merged into this checkout, that is the plain
+      `/work-on`. In committed mode with the plan PR still open, it is
+      `/work-on <ID> plan-branch=plan/<KEY>` (`--plan-branch`): the newest
+      `origin/plan/*` branch committed since the re-plan started whose copy
+      reads `ready`. The build forks from the stub as always and
+      cherry-picks the plan commits (`work-on/phase-2.md`). A plan that did
+      not reach `ready` is logged ("/work-on not requeued") and left to the
+      owner. `ASD_RUNNER_REQUEUE=0` turns this off.
     - `RUNNER: FAILED <why>`, or a turn with no `RUNNER:` line — the runner
       records `failed` with the reason, notifies the owner (a question
       through `ask_owner.py`: retry the stage, or stop), and acts on the
@@ -95,6 +119,31 @@ the recorded checkpoints.
   frees. A run waiting on the owner holds no slot. The dashboard
   shows "queued · waiting for a slot". So a usage-limit reset, or many Start
   presses, no longer sets ten sessions going in the same minute.
+  **`testing` releases the slot:** while the session is blocked on a long wait
+  the runner records `testing` and `slot_census` does not count it, so queued
+  runs may start (podcast W-007 once sat 35 min in the foreground on
+  `run_tests.py` holding a slot the whole time). The session is blocked when its
+  in-flight foreground Bash call runs `run_tests.py` or `run_gates.py` (`--wait`
+  included), polls a detached run's state directory (`run_gates-detach/`,
+  `run_tests-detach/`), or waits on CI (`wait_ci.py`, `gh pr checks --watch`,
+  `gh run watch`), or has produced no output for more than
+  `TESTING_QUIET_SECS` (300; `ASD_TESTING_QUIET_SECS` overrides). The CLI's own
+  progress lines for the call in flight (`tool_progress`, the `task_started` and
+  `task_progress` system lines) are not output here: they arrive every few
+  seconds during any long Bash call, and counting them kept a 10-minute poll
+  loop from ever looking quiet (podcast W-018, 2026-11-13). They still count
+  against a stall. It is also blocked when its turn ended and the only work
+  still in flight is background Bash commands (a CI wait launched with
+  `run_in_background`; config-harness W-132 and W-156 each held a slot ~45 min
+  that way): once the idle window passes with those in the transcript, the
+  slot is released; a background agent or workflow keeps it, because a model
+  works there. The session's next event ends that wait. When the call's result
+  arrives the state
+  goes back to `running` at once, without queueing. Trade-off, accepted: the
+  live count may briefly exceed the cap until another run finishes or waits.
+  `testing` counts as live everywhere else (stale-pid checks, dashboard,
+  awake, merge guards); a `testing` run is never nudged or pinged. The
+  dashboard shows "testing · slot released".
 - **Replies on open questions, mid-run:** an agent may ask and keep working
   on what is not blocked. Each question records the run that asked it
   (`run`, the run key). While the run works, the runner checks that run's
@@ -121,6 +170,15 @@ the recorded checkpoints.
   `ASD_RUNNER_NET_RETRIES` makes it a failure the owner rules on after that many
   in a row ("network errors on 8 retries in a row: …"); the default, 0, never
   does. A stage that ends well resets the count.
+- **Refused sign-in:** a turn that fails because the API refused the sign-in
+  for a reason outside the account (Cloudflare's "403 Attention Required!" page
+  in front of the API, which the CLI shows as "Failed to authenticate"; a 401
+  `authentication_error`; an expired OAuth token) is retried the same way and
+  posts `paused: sign-in refused (…)`. A block of the network address clears by
+  itself within minutes to an hour, so it is not the owner's call at first; but
+  a sign-in that stays refused needs the owner, so it asks after
+  `ASD_RUNNER_AUTH_RETRIES` retries in a row (default 16, about 3.5 hours at the
+  backoff above): "sign-in refused on 16 retries in a row: …".
 - **A claude process killed from outside:** when the stage's claude process
   exits on a signal the runner did not send (exit 143, 137 or 129, or a
   negative return code: a memory or disk squeeze, a host app crash, a
@@ -289,8 +347,13 @@ what the accounts have left.
   previous one: delta used% divided by (runs in state `running` on that account
   x delta hours). An interval that crosses a reset, runs over 2 h, has no run
   working, or shows the percentage falling is skipped. An EWMA (alpha 0.2) per
-  window, not per account, lives in `<usage dir>/burn.json`
-  (`{"rates": {...}, "last": {...}}`). The prior, until something is learned:
+  window lives in `<usage dir>/burn.json` as the pooled rate, and each account
+  has its own EWMA and sample count (`{"rates": {...}, "by_account": {name:
+  {window: {"rate", "n"}}}, "last": {...}}`; a file without `by_account` still
+  loads). Accounts are different plans, so an account's own rate is used once
+  it has `ASD_BURN_MIN_SAMPLES` (3) samples in that window, else the pooled
+  rate, else the prior; the `accounts` rows of `slots-cap.json` say which
+  (`burn`, `burn_from`). The prior, until something is learned:
   `five_hour` 6.0 and `seven_day` 0.5 points per run-hour. They come from this
   machine's history: the runs' `.jsonl` `state` events give how many runs were
   `running` over time (41 runs, 435 run-hours), `~/.claude/usage-log.jsonl`
@@ -313,6 +376,14 @@ what the accounts have left.
   account (`<usage dir>/<account>.refresh`, with a lock file so several runners
   do not all refresh). An account with no reading counts `4 / number of
   accounts`; with no reading anywhere the cap is 4.
+- **Account at slot grant.** A run that starts a stage with no session to
+  resume (no `--resume`: a fresh session) is placed, when it is granted its
+  slot, on the account with the most paced headroom: the largest `runs_a` minus
+  the runs already working on that account. Limited accounts and accounts with
+  no reading are not chosen; a tie keeps the account it had. A run that resumes
+  a session keeps its account (the transcript lives in that account's config
+  dir) unless it is limited, as before. The event is `slot free on account
+  NAME (most headroom: ...)`. Not with a fixed cap.
 - **Never preempts.** A lower cap only stops admissions; a run that works
   keeps working. The cap is cached for ~60 s (`ASD_PACE_TTL`) in
   `<runs dir>/slots-cap.json` (`{cap, reason, ts, accounts, rates, ...}`), so
@@ -322,7 +393,7 @@ what the accounts have left.
 
 Knobs: `ASD_RUNNER_ADAPTIVE` (`0` = fixed), `ASD_RUNNER_MAX_LIVE` (fixed cap),
 `ASD_RUNNER_MIN_LIVE` (3), `ASD_RUNNER_CAP_MAX` (6), `ASD_PACE_TTL` (60 s),
-`ASD_PACE_REFRESH_S` (900 s), and for tests `ASD_RUNNER_NOW` (epoch seconds).
+`ASD_PACE_REFRESH_S` (900 s), `ASD_BURN_MIN_SAMPLES` (3), and for tests `ASD_RUNNER_NOW` (epoch seconds).
 
 ## Keep-alive pings
 
@@ -508,8 +579,9 @@ The prompt tells the orchestrator these rules:
   - when nothing can proceed, end the turn with
     `RUNNER: WAITING <id>[,<id>...]`.
 - Run every test through `run_tests.py` and every gate list through
-  `run_gates.py`, never an ad-hoc script, so the timeline gets the suite and
-  gate lines; and only the tests the step names (under SUITE-MODE `stub`, the
+  `run_gates.py` (`--path-prepend`/`--env-script` for a toolchain off the
+  shell PATH, `--detach` then `--wait ID` for a long run), never an ad-hoc
+  script, so the timeline gets the suite and gate lines; and only the tests the step names (under SUITE-MODE `stub`, the
   new and affected tests plus CI: the full suite belongs to `/stub`).
 - Never end a stage while background work it started is still running;
   wait for its notification first (the runner holds an early end).
@@ -521,7 +593,10 @@ The prompt tells the orchestrator these rules:
   `RUNNER:` line, no change to your plan). The runner asks nothing else of you
   with it.
 - End with `RUNNER: DONE` when `/work-on` is finished, and with
-  `RUNNER: FAILED <why>` when you cannot go on.
+  `RUNNER: FAILED <why>` when you cannot go on. When the owner rules the
+  dossier back to `/plan`, record the ruling and the re-plan's inputs in the
+  dossier, leave nothing half-built behind, and end with
+  `RUNNER: REPLAN <why>`, never `FAILED`: the runner starts `/plan` itself.
 - Post an update within a long stage, in one line, when something worth
   knowing happens:
   `ask_owner.py note --root R --dossier ID --text "..."`.
@@ -567,3 +642,25 @@ The prompt tells the orchestrator these rules:
   `stopped`. A pid that is no longer alive reads as `stopped`.
 
 The dashboard shows these lines on each running dossier, newest first.
+
+## Standing repair of the VM and the stack (`scripts/stack_repair.py`)
+
+Off unless `ASD_STACK_REPAIR=1`: a repair restarts resources other runs share,
+so the owner enables it explicitly. When on, the runner checks before every
+stage, and again on a `RUNNER: ENV vm|stack ...` line:
+
+- Detect, read-only: `limactl list --json` (the VM must be Running) and
+  `docker compose ps --format json` over `limactl shell` (every service running,
+  none unhealthy). The disk is detected (the existing floor) but never repaired
+  automatically: no deletion, the owner is asked as before.
+- Repair, with the repo's own commands only, named in the repo's
+  `.agentic/stack-repair.json` (or `ASD_STACK_REPAIR_CONFIG`, or the plugin's
+  `config/stack-repair.json` under `repos.<directory name>`): `vm_start` (VM
+  stopped) and `stack_up` (stack unhealthy; the repo's `up.sh`, which takes the
+  repo's stack lease itself). Placeholders `{vm} {root} {compose_dir}`.
+- One repairer at a time: an flock on `~/.agentic/stack-repair.lock`
+  (`ASD_STACK_REPAIR_DIR` moves it); other runners wait, then look again before
+  they touch anything.
+- At most 2 attempts per hour per resource (`stack-repair-state.json`); after
+  that the session is told `not repaired` and asks the owner.
+- Every action goes to the runner log and the run's events.

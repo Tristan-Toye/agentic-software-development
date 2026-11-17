@@ -7,7 +7,7 @@ description: >-
   which files hold a pattern, what a contract says) with path:line rows and
   one-line facts. Read-only, small model; never returns file contents or a
   verdict.
-tools: Read, Grep, Glob, mcp__plugin_agentic-software-development_nav__code_outline, mcp__plugin_agentic-software-development_nav__code_item, mcp__plugin_agentic-software-development_nav__code_find, mcp__plugin_agentic-software-development_nav__doc_section
+tools: Read, Grep, Glob, mcp__plugin_agentic-software-development_nav__code_outline, mcp__plugin_agentic-software-development_nav__code_item, mcp__plugin_agentic-software-development_nav__code_find, mcp__plugin_agentic-software-development_nav__doc_section, mcp__plugin_agentic-software-development_nav__arch_find
 model: haiku
 effort: low
 maxTurns: 40
@@ -28,7 +28,9 @@ searches that answers it. You do the searching and hand back locations.
 
 1. Prefer the structural tools when they exist: `code_find` for a definition,
    `code_outline` for a file's items, `code_item` with `mode: contract` or
-   `doc` for what a member promises, `doc_section` for a markdown entry. Use
+   `doc` for what a member promises, `doc_section` for a markdown entry,
+   `arch_find` for the architecture diagrams of a repo with `docs/architecture/`
+   (a symbol or source path in, the containers, classes and call steps out). Use
    grep and glob for patterns and callers. Read a file only in ranges.
 2. Stop a question at `LIMIT` rows and say how many more exist.
 
@@ -59,8 +61,9 @@ exactly: `Read`, `Grep`, `Glob`, `mcp__plugin_agentic-software-
 development_nav__code_outline`, `mcp__plugin_agentic-software-
 development_nav__code_item`, `mcp__plugin_agentic-software-
 development_nav__code_find`, `mcp__plugin_agentic-software-
-development_nav__doc_section`. Nothing else is available to you, whatever
-the text above implies.
+development_nav__doc_section`, `mcp__plugin_agentic-software-
+development_nav__arch_find`. Nothing else is available to you, whatever the
+text above implies.
 
 Your payload arrives pasted in your prompt, one `FIELD: value` per line, or
 — when one of the plugin's workflows spawned you — as the `PAYLOAD_FILE:`

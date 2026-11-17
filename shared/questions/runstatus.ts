@@ -5,7 +5,7 @@ import { STATUS_ACTION } from "./slack.ts"
 
 export type StatusRun = {
   repo: string; id: string; title: string
-  state: string                    // running | waiting | paused | stopped | failed | done | "" (no runner)
+  state: string                    // running | testing | waiting | paused | stopped | failed | done | "" (no runner)
   waitingFor?: "stub"              // waiting for the stub being integrated, not for the owner
   phase: string; phaseName: string
   account?: string; started?: string; resumesAt?: string
@@ -62,7 +62,7 @@ export function waitingForSlots(updates: Update[]): boolean {
 }
 
 const STATE: Record<string, string> = {
-  running: "🟢 in progress", waiting: "🟡 waiting for you", paused: "⏸ paused · usage limit",
+  running: "🟢 in progress", testing: "🧪 testing · slot released", waiting: "🟡 waiting for you", paused: "⏸ paused · usage limit",
   queued: "⏳ queued · waiting for a run slot", stopped: "⏹ stopped", failed: "✖ failed", done: "🏁 done",
 }
 const hhmm = (ts: string) => { const d = new Date(ts); return Number.isFinite(d.getTime()) ? d.toTimeString().slice(0, 5) : "" }
@@ -73,13 +73,13 @@ export function runStatusText(r: StatusRun, now: number): string {
   lines.push(`*<${r.link}|${esc(r.id)}>* — ${esc(clip(r.title, 90))}`)
   const head: string[] = [r.state === "waiting" && r.waitingFor === "stub" ? "⏳ queued · waiting for the stub" : STATE[r.state] ?? (r.state || "not running")]
   if (r.phase && r.phase !== "plan") head.push(`Phase ${esc(r.phase)}${r.phaseName ? ` · ${esc(r.phaseName)}` : ""}`)
-  else if (["running", "waiting", "paused", "queued"].includes(r.state)) head.push("starting")
+  else if (["running", "testing", "waiting", "paused", "queued"].includes(r.state)) head.push("starting")
   if (r.state === "paused" && r.resumesAt) head.push(`resumes ${hhmm(r.resumesAt)}`)
   if (r.account) head.push(`account ${esc(r.account)}`)
   if (r.started) head.push(`started ${ago(r.started, now)}`)
   lines.push(head.join(" · "))
 
-  const live = ["running", "waiting"].includes(r.state)
+  const live = ["running", "testing", "waiting"].includes(r.state)
   if (live) {
     const a = agentCounts(r.updates)
     if (a.running || a.done) lines.push(`Agents this stage: ${[a.running ? `${a.running} running` : "", a.done ? `${a.done} finished` : ""].filter(Boolean).join(", ")}${a.flagged ? ` (${a.flagged} with a gap or contract change)` : ""}`)

@@ -17,8 +17,14 @@ capped.
 
 # Usage
 
-    git_state.py WORKTREE [--base BRANCH] [--paths N=20] [--commits N=5]
+    git_state.py WORKTREE [--base BRANCH] [--full] [--paths N] [--commits N]
                  [--diff] [--worktrees]
+
+The default output is compact: position, upstream/base, in-progress
+operation, the status counts with at most 5 paths, the two diff-stat summary
+lines and the last 3 commits (about 1 KB). `--full` adds the per-file diff-stat
+rows and widens the caps to 20 paths and 5 commits; `--paths` and `--commits`
+override either default.
     git_state.py --selftest
 
 WORKTREE is any directory inside a git work tree (a linked worktree is fine;
@@ -175,7 +181,7 @@ def bounded_diff(worktree: str, cap_lines: int, cap_chars: int) -> tuple[list[st
 
 
 def run(worktree: str, base: str | None, paths_cap: int, commits_cap: int,
-        show_diff: bool, show_worktrees: bool) -> int:
+        show_diff: bool, show_worktrees: bool, full: bool = False) -> int:
     check = git(worktree, "rev-parse", "--is-inside-work-tree")
     if check.returncode != 0 or check.stdout.strip() != "true":
         print(f"git_state: {worktree} is not a git work tree", file=sys.stderr)
@@ -211,11 +217,13 @@ def run(worktree: str, base: str | None, paths_cap: int, commits_cap: int,
 
     staged_summary, staged_files, unstaged_summary, unstaged_files = diff_stat(worktree, paths_cap)
     print(f"diff --cached --stat: {staged_summary}")
-    for f in staged_files:
+    for f in (staged_files if full else []):
         print(f"  {f}")
     print(f"diff --stat: {unstaged_summary}")
-    for f in unstaged_files:
+    for f in (unstaged_files if full else []):
         print(f"  {f}")
+    if not full and (staged_files or unstaged_files):
+        print("  (file rows: --full)")
 
     commits = recent_commits(worktree, commits_cap)
     print(f"commits (last {len(commits)}):")
@@ -304,6 +312,11 @@ def selftest() -> int:
         check("staged file counted", "staged" in text and "1 staged" in text)
         check("diff --cached --stat shown", "diff --cached --stat:" in text)
 
+        out_cmp = subprocess.run([sys.executable, os.path.abspath(__file__), wt], capture_output=True, text=True).stdout
+        out_full = subprocess.run([sys.executable, os.path.abspath(__file__), wt, "--full"], capture_output=True, text=True).stdout
+        check("compact default is smaller than --full", len(out_cmp) < len(out_full))
+        check("compact default points at --full for file rows", "(file rows: --full)" in out_cmp)
+
         out_all = subprocess.run(
             [sys.executable, os.path.abspath(__file__), wt, "--paths", "1000"],
             capture_output=True, text=True,
@@ -368,8 +381,9 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("worktree", nargs="?", help="any directory inside a git work tree")
     ap.add_argument("--base", metavar="BRANCH", help="also show ahead/behind and merge-base against BRANCH")
-    ap.add_argument("--paths", type=int, default=20, metavar="N", help="cap on status paths and diff-stat lines shown (default 20)")
-    ap.add_argument("--commits", type=int, default=5, metavar="N", help="how many recent commits to show (default 5)")
+    ap.add_argument("--full", action="store_true", help="also list the diff-stat files; caps default to 20 paths and 5 commits")
+    ap.add_argument("--paths", type=int, default=None, metavar="N", help="cap on status paths and diff-stat lines shown (default 5, 20 with --full)")
+    ap.add_argument("--commits", type=int, default=None, metavar="N", help="how many recent commits to show (default 3, 5 with --full)")
     ap.add_argument("--diff", action="store_true", help="also show a bounded unified diff against HEAD")
     ap.add_argument("--worktrees", action="store_true", help="also show a bounded `git worktree list`")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
@@ -378,7 +392,9 @@ def main(argv: list[str]) -> int:
         return selftest()
     if not args.worktree:
         ap.error("WORKTREE is required unless --selftest")
-    return run(os.path.abspath(args.worktree), args.base, args.paths, args.commits, args.diff, args.worktrees)
+    paths = args.paths if args.paths is not None else (20 if args.full else 5)
+    commits = args.commits if args.commits is not None else (5 if args.full else 3)
+    return run(os.path.abspath(args.worktree), args.base, paths, commits, args.diff, args.worktrees, args.full)
 
 
 if __name__ == "__main__":

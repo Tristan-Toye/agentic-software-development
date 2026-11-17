@@ -26,9 +26,13 @@ export type BasePr = { number: number; headRefName: string }
 /**
  * Which in-progress dossiers belong under which open stub. A dossier belongs to a stub when an open PR into
  * that stub is its own (the `pr:` number, or its id in the head branch); `plan/...` heads never count. A dossier
- * in building/review (or with a live runner) that has no `pr:` and no PR into any stub goes under the accepting
- * stub (the newest open stub with no PR into development; else the newest open stub) with `noPr`. A done
- * dossier appears only through its open PR into the stub; ready, planned and dropped dossiers never appear. Returns branch -> members; stubs with none are omitted.
+ * in building/review, or with a live runner (queued, running, waiting or paused: a follow-up `/fix-deferred` or
+ * `/plan` on a done dossier counts), and no open PR into any open stub yet goes under the accepting stub (the
+ * newest open stub with no PR into development; else the newest open stub) with `noPr`, until its new PR into the
+ * stub exists. A `pr:` field does not keep it off: a done dossier's `pr:` is its old, merged build PR; only an open
+ * PR into an open stub places it, and the loop above has then already placed it. A halted runner (stopped or
+ * failed) takes a PR-less dossier off; a done dossier with no live runner appears only through its open PR into
+ * the stub; ready, planned and dropped dossiers never appear (unless live). Returns branch -> members; stubs with none are omitted.
  */
 export function stubMembers(
   stubs: { branch: string; cut: string; refAge?: string; state: Stub["state"]; pr: unknown | null }[],
@@ -46,13 +50,13 @@ export function stubMembers(
     for (const p of prsByBase[b] ?? []) {
       if (/^plan\//.test(p.headRefName)) continue
       // Head branches name the id in any case: feat/w-130-… is W-130's.
-      const hit = withPr.find((d) => prFieldNumber(d.pr) === p.number || new RegExp(`(^|[^A-Za-z0-9])${d.id.replace(/[^\w-]/g, "")}(?![\w])`, "i").test(p.headRefName))
+      const hit = withPr.find((d) => prFieldNumbers(d.pr).includes(p.number) || new RegExp(`(^|[^A-Za-z0-9])${d.id.replace(/[^\w-]/g, "")}(?![\w])`, "i").test(p.headRefName))
       if (hit) { add(b, { id: hit.id, noPr: false }); placed.add(hit.id) }
     }
   }
   const accepting = open.find((s) => s.pr === null) ?? open[0]
   if (accepting) for (const d of eligible) {
-    if (placed.has(d.id) || prFieldNumber(d.pr) !== null) continue
+    if (placed.has(d.id)) continue
     // Without a PR a dossier belongs to the stub only while work on it is under way:
     // a runner that was stopped or failed takes it off until it resumes.
     if (d.live || (!d.halted && (d.status === "building" || d.status === "review"))) add(accepting.branch, { id: d.id, noPr: true })
@@ -69,8 +73,12 @@ export function prNumberOf(subject: string): number | null {
 }
 /** The number in a dossier's `pr:` field (`123`, `#123`, a PR URL), or null. */
 export function prFieldNumber(v: string | undefined): number | null {
-  const m = (v ?? "").match(/(\d+)\s*$/)
-  return m ? Number(m[1]) : null
+  const all = prFieldNumbers(v)
+  return all.length ? all[all.length - 1] : null
+}
+/** Every PR number a `pr:` field names: a URL or number, or a list `[url1, url2]` (the newest is last). */
+export function prFieldNumbers(v: string | undefined): number[] {
+  return (v ?? "").replace(/^\[|\]$/g, "").split(",").map((x) => x.trim().match(/(\d+)\s*$/)).filter((m): m is RegExpMatchArray => !!m).map((m) => Number(m[1]))
 }
 /** Dossier ids for merge subjects: each subject's PR number looked up in `prToDossier`. */
 export function dossiersOnMerges(subjects: string[], prToDossier: Map<number, string>, known?: Set<string>): string[] {
@@ -204,7 +212,7 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
     const docs: Doc[] = await withBranchCopies(main, pickDossiers(wts))
     const byId = new Map(docs.map((d) => [d.front.id!, d]))
     const prToDossier = new Map<number, string>()
-    for (const d of docs) { const n = prFieldNumber(d.front.pr); if (n !== null) prToDossier.set(n, d.front.id!) }
+    for (const d of docs) for (const n of prFieldNumbers(d.front.pr)) prToDossier.set(n, d.front.id!)
     const mk = (id: string, via: StubDossier["via"]): StubDossier => {
       const d = byId.get(id)
       return { id, title: d?.front.title ?? "", status: d?.front.status ?? "", repo: baseName(main), via, answered: ans.get(id) ?? [] }

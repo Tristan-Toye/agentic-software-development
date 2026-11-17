@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>W-145 change graph demo (D0)</title>
+<style>
+:root{--bg:#fafaf7;--fg:#1d1d1b;--mut:#6b6b66;--line:#8a8a84;--panel:#fff;--bd:#d6d6cf;
+--added:#cfeccf;--added-s:#2d7a2d;--changed:#fde9b8;--changed-s:#b07a00;--removed:#f6d0d0;--removed-s:#a33;--context:#eeeeea;--context-s:#999;--grp:#f3f3ee}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#17171a;--fg:#e8e8e4;--mut:#a0a09a;--line:#8a8a94;--panel:#222226;--bd:#3a3a40;
+--added:#1f3a25;--added-s:#6fcf7f;--changed:#44371a;--changed-s:#e0b040;--removed:#4a2626;--removed-s:#e07070;--context:#2a2a2e;--context-s:#777;--grp:#1d1d21}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--bd)}
+h1{font-size:15px;margin:0 12px 0 0}button{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--bd);border-radius:6px;padding:4px 10px;cursor:pointer}
+button[aria-pressed=true]{border-color:var(--fg);font-weight:600}
+main{display:grid;grid-template-columns:1fr 300px;height:calc(100vh - 52px)}
+@media (max-width:720px){main{grid-template-columns:1fr;grid-template-rows:60% 40%}}
+#cv{width:100%;height:100%;touch-action:none;cursor:grab;background:var(--bg)}#cv.drag{cursor:grabbing}
+aside{border-left:1px solid var(--bd);padding:12px 16px;overflow:auto;background:var(--panel)}
+aside h2{font-size:14px;margin:0 0 6px}.mut{color:var(--mut)}code{font-size:12px;word-break:break-all}
+.legend span{display:inline-block;margin-right:10px}.sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:4px;border:2px solid}
+</style></head><body>
+<header><h1>W-145 change graph (hand-built fixture, ELK positions)</h1>
+<span id="tabs"></span><button id="fit">Fit</button>
+<span class="legend mut"><span><i class="sw" style="background:var(--added);border-color:var(--added-s)"></i>+ added</span><span><i class="sw" style="background:var(--changed);border-color:var(--changed-s)"></i>~ changed</span><span><i class="sw" style="background:var(--removed);border-color:var(--removed-s)"></i>- removed</span><span><i class="sw" style="background:var(--context);border-color:var(--context-s)"></i>= context</span><span>dashed edge = inferred</span></span></header>
+<main><svg id="cv" role="img" aria-label="Change graph canvas"></svg><aside id="insp"><h2>Inspector</h2><p class="mut">Click an element. Drag to pan. Wheel to zoom.</p></aside></main>
+<script>
+const DATA = /*DATA*/null;
+/*CANVAS-START*/
+const NS='http://www.w3.org/2000/svg', MARK={added:'+',changed:'~',removed:'-',context:'='};
+const svg=document.getElementById('cv'), insp=document.getElementById('insp');
+let cur=null, vp={x:0,y:0,k:1}, root=null;
+const el=(n,a={},p)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);if(p)p.appendChild(e);return e;};
+const col=(s,f)=>`var(--${s}${f?'-s':''})`;
+function draw(view){
+  cur=view; const {fx,ly}=DATA[view]; svg.replaceChildren();
+  const defs=el('defs',{},svg), mk=el('marker',{id:'ar',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:7,markerHeight:7,orient:'auto-start-reverse'},defs);
+  el('path',{d:'M0 0L10 5L0 10z',fill:'var(--line)'},mk);
+  root=el('g',{},svg); const items={};
+  for(const g of fx.groups||[]) items[g.id]=g; for(const n of fx.nodes) items[n.id]=n;
+  for(const l of fx.lanes||[]) items[l.id]={id:l.id,label:l.label,status:'context',evidence:[]};
+  const boxes=ly.boxes;
+  for(const id of [...(fx.groups||[]).map(g=>g.id),...(fx.lanes||[]).map(l=>l.id)]){const b=boxes[id],g=items[id];if(!b)continue;
+    const gg=el('g',{'data-id':id},root);
+    el('rect',{x:b.x,y:b.y,width:b.w,height:b.h,rx:8,fill:'var(--grp)',stroke:col(g.status,1),'stroke-width':g.status==='context'?1:2,'stroke-dasharray':g.status==='context'?'4 3':'0'},gg);
+    el('text',{x:b.x+10,y:b.y+19,fill:'var(--fg)','font-weight':600,'font-size':13},gg).textContent=(MARK[g.status]||'')+' '+g.label;}
+  for(const e of fx.edges){const pts=ly.edges[e.id];if(!pts)continue; const inf=e.evidence.every(x=>x.tier==='inferred');
+    const gg=el('g',{'data-id':e.id,style:'cursor:pointer'},root);
+    el('polyline',{points:pts.map(p=>p.join(',')).join(' '),fill:'none',stroke:'transparent','stroke-width':12},gg);
+    el('polyline',{points:pts.map(p=>p.join(',')).join(' '),fill:'none',stroke:e.status==='context'?'var(--line)':col(e.status,1),'stroke-width':e.status==='context'?1.2:2.2,'stroke-dasharray':inf?'6 4':'0','marker-end':'url(#ar)'},gg);
+    if(e.label){const m=pts[Math.floor(pts.length/2)];el('text',{x:m[0]+4,y:m[1]-4,'font-size':11,fill:'var(--mut)'},gg).textContent=e.label;}}
+  for(const n of fx.nodes){const b=boxes[n.id];if(!b)continue; const gg=el('g',{'data-id':n.id,style:'cursor:pointer'},root);
+    el('rect',{x:b.x,y:b.y,width:b.w,height:b.h,rx:6,fill:col(n.status),stroke:col(n.status,1),'stroke-width':2},gg);
+    const lines=wrap(n.label,Math.floor((b.w-24)/6.4));
+    lines.slice(0,3).forEach((t,i)=>el('text',{x:b.x+12,y:b.y+19+i*15,'font-size':12,fill:'var(--fg)'},gg).textContent=t);
+    el('text',{x:b.x+b.w-8,y:b.y+b.h-7,'font-size':11,'text-anchor':'end',fill:col(n.status,1),'font-weight':700},gg).textContent=MARK[n.status]+(n.evidence.some(x=>x.tier==='inferred')?' ?':'');}
+  fit();
+}
+function wrap(s,w){const out=[];let l='';for(const t of s.split(' ')){if((l+' '+t).trim().length>w&&l){out.push(l);l=t;}else l=(l+' '+t).trim();}if(l)out.push(l);return out;}
+function apply(){root.setAttribute('transform',`translate(${vp.x} ${vp.y}) scale(${vp.k})`);}
+function fit(){const r=svg.getBoundingClientRect(),{width:W,height:H}=DATA[cur].ly;const k=Math.min(r.width/(W+40),r.height/(H+40),1.6);vp={k,x:(r.width-W*k)/2,y:(r.height-H*k)/2};apply();}
+let drag=null;
+svg.addEventListener('pointerdown',e=>{if(e.target.closest('[data-id]'))return;drag={x:e.clientX-vp.x,y:e.clientY-vp.y};svg.setPointerCapture(e.pointerId);svg.classList.add('drag');});
+svg.addEventListener('pointermove',e=>{if(!drag)return;vp.x=e.clientX-drag.x;vp.y=e.clientY-drag.y;apply();});
+svg.addEventListener('pointerup',()=>{drag=null;svg.classList.remove('drag');});
+svg.addEventListener('wheel',e=>{e.preventDefault();const r=svg.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top,f=Math.exp(-e.deltaY*0.0015),k=Math.max(0.2,Math.min(4,vp.k*f));
+  vp.x=mx-(mx-vp.x)*(k/vp.k);vp.y=my-(my-vp.y)*(k/vp.k);vp.k=k;apply();},{passive:false});
+svg.addEventListener('click',e=>{const t=e.target.closest('[data-id]');if(!t)return;const fx=DATA[cur].fx,id=t.dataset.id;
+  const it=[...(fx.nodes),...(fx.groups||[]),...(fx.edges)].find(x=>x.id===id);if(it)inspect(it);});
+function inspect(it){insp.replaceChildren();const h=document.createElement('h2');h.textContent=it.label||`${it.source} -> ${it.target}`;insp.appendChild(h);
+  const add=(t,c)=>{const p=document.createElement('p');if(c)p.className=c;p.textContent=t;insp.appendChild(p);};
+  add(`${it.kind} - status ${it.status}${it.resolution?' - '+it.resolution:''}`,'mut');
+  if(it.detail){if(it.detail.before)add('Before: '+it.detail.before);if(it.detail.after)add('After: '+it.detail.after);}
+  for(const ev of it.evidence){const p=document.createElement('p');const c=document.createElement('code');c.textContent=ev.tier==='source'?`${ev.path}${ev.line?':'+ev.line:''}`:'inferred: '+ev.note;p.appendChild(c);if(ev.note&&ev.tier==='source'){p.appendChild(document.createTextNode(' '+ev.note));}insp.appendChild(p);}}
+const tabs=document.getElementById('tabs');
+for(const v of ['L0','L1','L2']){const b=document.createElement('button');b.textContent=v+' '+{L0:'features',L1:'flow',L2:'crates'}[v];b.onclick=()=>{[...tabs.children].forEach(x=>x.setAttribute('aria-pressed',x===b));draw(v);};tabs.appendChild(b);}
+addEventListener('resize',()=>cur&&fit()); tabs.children[2].click();
+/*CANVAS-END*/
+</script></body></html>

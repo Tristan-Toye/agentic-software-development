@@ -16,8 +16,11 @@ line is written with one O_APPEND write of under 4 KB; longer text is cut at
     ask_owner.py ask --root R --dossier ID --question TEXT
                      --option "A|label|consequence" [--option ...]
                      [--recommend A] --blocks TEXT        # prints the id
+                     [--build-log DOSSIER]                # also logs `QUESTION: <id> — <question>`
     ask_owner.py reply ID --text TEXT
-    ask_owner.py wait ID [--timeout SECONDS]               # default: no timeout
+    ask_owner.py wait ID [--timeout SECONDS] [--build-log DOSSIER]   # default: no timeout; the
+                                                           # build log gets `OWNER-RULING (<date>): <id> — <answer>`
+    ask_owner.py accept ID --text TEXT [--build-log DOSSIER]
     ask_owner.py list [--open] [--dossier ID]
     ask_owner.py show ID
     ask_owner.py note --root R --dossier ID [--stage S] --text T
@@ -74,8 +77,20 @@ def now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def today() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+
+
 def clip(text: str) -> str:
     return text if len(text) <= CUT else text[:CUT] + " [cut]"
+
+
+def build_log(path: str | None, line: str) -> None:
+    """`--build-log DOSSIER`: write one build-log line through dossier_edit's lock."""
+    if not path:
+        return
+    import dossier_edit
+    print(dossier_edit.log_or_say(path, [" ".join(line.split())]), file=sys.stderr)
 
 
 def path_of(qid: str) -> str:
@@ -131,6 +146,7 @@ def parse_option(spec: str) -> dict:
 # purpose, and applies only to a run the runner started: phrase patterns checked against the question texts of past runs, so a design question that mentions a push
 # in passing goes through. ASD_ASK_LINT=0 turns it off.
 KINDS = ("design", "product", "uncertainty")
+TOPICS = ("visual-review",)
 _PR = r"(?:the |a |its |this |my )?(?:draft |plan |pull )?(?:PR|pull request)"
 APPROVAL_PATTERNS = [
     ("push the branch", re.compile(r"\b(?:may|can|shall|should) I (?:now )?push\b[^?]{0,40}\bbranch\b"
@@ -162,6 +178,11 @@ def cmd_ask(a: argparse.Namespace) -> int:
     options = [parse_option(o) for o in (a.option or [])]
     if not 2 <= len(options) <= 4:
         raise SystemExit("need 2 to 4 --option values")
+    if a.topic == "visual-review":
+        # The dashboard canvas answers only this question: a product question whose labels are the review's two.
+        labels = [o["label"].lower() for o in options]
+        if a.kind != "product" or len(options) != 2 or labels != ["approved", "changes requested"]:
+            raise SystemExit("--topic visual-review needs --kind product and exactly the options A|Approved|... and B|Changes requested|...")
     # Only a run the runner started (ASD_RUN_KEY) has the standing authority; a terminal run's start gate still asks.
     if os.environ.get("ASD_RUN_KEY") and (os.environ.get("ASD_ASK_LINT") or "1").strip() != "0":
         hit = approval_kind(a.question, options)
@@ -190,6 +211,7 @@ def cmd_ask(a: argparse.Namespace) -> int:
         **({"run": os.environ["ASD_RUN_KEY"]} if os.environ.get("ASD_RUN_KEY") else {}),
         "recommendation": rec, "blocks": clip(a.blocks),
         **({"qkind": a.kind} if a.kind else {}),
+        **({"topic": a.topic} if a.topic else {}),
     }
     while True:
         qid = f"{prefix}{n}"
@@ -204,6 +226,7 @@ def cmd_ask(a: argparse.Namespace) -> int:
             os.close(fd)
         break
     print(qid)
+    build_log(a.build_log, f"QUESTION: {qid} — {' '.join(a.question.split())[:240]}")
     return 0
 
 
@@ -247,6 +270,7 @@ def cmd_accept(a: argparse.Namespace) -> int:
         return 1
     write_line(path_of(a.id), {"ts": now(), "from": "agent", "kind": "answer", "accepted": True,
                                "text": clip(a.text), "owner_text": clip(str(owner[-1].get("text", "")))})
+    build_log(a.build_log, f"OWNER-RULING ({today()}): {a.id} — {' '.join(a.text.split())[:300]}")
     return 0
 
 
@@ -283,6 +307,7 @@ def cmd_wait(a: argparse.Namespace) -> int:
             opt = ln.get("option") or ""
             tag = f" [option {opt}]" if opt else ""
             emit(f"ANSWER {a.id}{tag}: {ln.get('text', '')}")
+            build_log(a.build_log, f"OWNER-RULING ({today()}): {a.id} —{tag} {' '.join(str(ln.get('text', '')).split())[:300]}")
             return 0
         if state == "followup":
             emit(f"FOLLOWUP {a.id}: {ln.get('text', '')}")
@@ -394,6 +419,14 @@ def selftest() -> int:
         k = ask_q("Two designs for the cache: keep one map or two?", ["--kind", "design"], dossier="W-91")
         kq = json.loads(open(os.path.join(env["ASD_QUESTIONS_DIR"], "myrepo.W-91.Q1.jsonl")).readline())
         check("--kind is stored on the question", k.returncode == 0 and kq.get("qkind") == "design" and kq.get("kind") == "question")
+        vr_opts = ("A|Approved|fan-out starts", "B|Changes requested|back to the contract")
+        v = ask_q("Does this picture match what the feature should do?", ["--kind", "product", "--topic", "visual-review"], dossier="W-92", opts=vr_opts)
+        vq = json.loads(open(os.path.join(env["ASD_QUESTIONS_DIR"], "myrepo.W-92.Q1.jsonl")).readline())
+        check("--topic visual-review is stored and passes the approval lint", v.returncode == 0 and vq.get("topic") == "visual-review" and vq.get("qkind") == "product")
+        check("--topic visual-review needs --kind product", ask_q("Does this match?", ["--topic", "visual-review"], dossier="W-93", opts=vr_opts).returncode != 0)
+        check("--topic visual-review needs the two review labels", ask_q("Does this match?", ["--kind", "product", "--topic", "visual-review"], dossier="W-93").returncode != 0)
+        check("--topic outside visual-review is refused", ask_q("Which?", ["--topic", "other"]).returncode != 0)
+        check("no --topic stores none", "topic" not in kq)
         check("--kind outside design|product|uncertainty is refused", ask_q("Which?", ["--kind", "other"]).returncode != 0)
         check("no --kind still works (older prompts)", "qkind" not in json.loads(open(os.path.join(env["ASD_QUESTIONS_DIR"], ask_q("Which cache?", dossier="W-10").stdout.strip() + ".jsonl")).readline()))
         refused = ["May I push the plan branch and open its pull request into development?",
@@ -501,6 +534,21 @@ def selftest() -> int:
         wq = run("ask", "--root", wt, "--dossier", "W-7", "--question", "q?", "--option", "A|a|x", "--option", "B|b|y", "--blocks", "z", env=env).stdout.strip()
         check("a question asked from a worktree carries the repo name", wq == "mainrepo.W-7.Q1")
 
+        # --build-log: the QUESTION and OWNER-RULING lines the dashboard parses
+        dos = os.path.join(tmp, "W-5.md")
+        open(dos, "w", encoding="utf-8").write("---\nid: W-5\n---\n\n# T\n\n## Build log\n\n- first\n")
+        bq = run(*base[:-2], "--blocks", "the build", "--build-log", dos, env=env).stdout.strip()
+        check("ask --build-log writes `QUESTION: <id> — <question>`", f"- QUESTION: {bq} — Which?\n" in open(dos, encoding="utf-8").read())
+        with open(os.path.join(env["ASD_QUESTIONS_DIR"], bq + ".jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"ts": now(), "from": "owner", "kind": "answer", "option": "A", "text": "go with one"}) + "\n")
+        wt_ = run("wait", bq, "--timeout", "5", "--build-log", dos, env=env)
+        got_log = open(dos, encoding="utf-8").read()
+        check("wait --build-log writes the OWNER-RULING line", wt_.returncode == 0 and f"- OWNER-RULING ({today()}): {bq} — [option A] go with one\n" in got_log)
+        check("those lines match the dashboard's parsers", re.search(r"^- QUESTION:\s*(\S+\.Q\d+)\s*—", got_log, re.M) is not None
+              and re.search(r"^- OWNER-RULING\b[^:]*:\s*(\S+\.Q\d+)\s*—\s*(.*)$", got_log, re.M) is not None)
+        run("wait", bq, "--timeout", "5", "--build-log", dos, env=env)
+        check("wait run twice logs the ruling once", open(dos, encoding="utf-8").read().count("OWNER-RULING") == 1)
+
         # note
         env["ASD_RUNS_DIR"] = os.path.join(tmp, "runs")
         n = run("note", "--root", root, "--dossier", "W-1", "--stage", "Phase 4", "--text", "wave 1 back", env=env)
@@ -529,6 +577,8 @@ def main() -> int:
     p.add_argument("--recommend")
     p.add_argument("--blocks", required=True)
     p.add_argument("--kind", choices=KINDS, help="design, product or uncertainty: what the owner is asked to decide (optional)")
+    p.add_argument("--topic", choices=TOPICS, help="visual-review: marks the Phase 3 visual-review question the dashboard canvas answers (needs --kind product)")
+    p.add_argument("--build-log", metavar="DOSSIER", help="also append `QUESTION: <id> — <question>` to this dossier's Build log")
     p = sub.add_parser("reply")
     p.add_argument("id")
     p.add_argument("--text", required=True)
@@ -537,9 +587,11 @@ def main() -> int:
     p = sub.add_parser("accept")
     p.add_argument("id")
     p.add_argument("--text", required=True)
+    p.add_argument("--build-log", metavar="DOSSIER", help="also append `OWNER-RULING (<date>): <id> — <text>` to this dossier's Build log")
     p = sub.add_parser("wait")
     p.add_argument("id")
     p.add_argument("--timeout", type=float)
+    p.add_argument("--build-log", metavar="DOSSIER", help="when the owner has answered, append `OWNER-RULING (<date>): <id> — <answer>` to this dossier's Build log")
     p = sub.add_parser("list")
     p.add_argument("--open", action="store_true")
     p.add_argument("--dossier")

@@ -22,7 +22,7 @@ branch: fix/PROJ-142-flush-coalescing
 worktree: ../repo-W-014
 pr: null
 blocked_by: []         # dossier IDs that must reach `done` first; a done
-                       # blocker stays (removal needs BLOCKER-REMOVED: in the log)
+                       # blocker stays (removal: blocker done, or `--reason`)
 adrs: []               # ADR IDs this build produced; /work-on fills it
 ---
 ```
@@ -55,7 +55,7 @@ whole documents never land in the dossier, only their outcomes as lines.
 | # | Heading | Content | Writer |
 |---|---|---|---|
 | 1 | `## Problem` | What is wrong or missing, with evidence labels. | `/plan` |
-| 2 | `## Approach` | One sentence, then the reasons. Then the rejected options. | `/plan` |
+| 2 | `## Approach` | One sentence, then the reasons. Then the rejected options. Last lines: `Diagrams affected: <file stems of docs/architecture/, comma-separated>` or `Diagrams affected: none`. Then `Diagrams new: <proposed stem> — <one line: the flow>` (comma-separated for several) or `Diagrams new: none`: a diagram the change must add (a flow across crates, processes or containers that no existing sequence diagram shows, or a new external system). | `/plan` |
 | 3 | `## Contract` | Signatures and documentation comments. No bodies. | `/plan`, then `/work-on` until the fan-out |
 | 4 | `## Work packages` | Table: package, owned paths, depends on. | `/plan`, then `/work-on` until the fan-out |
 | 5 | `## Acceptance criteria` | Numbered. Each one falsifiable. | `/plan` |
@@ -130,6 +130,7 @@ the fan-out:
 | Is the member's **visibility** stated? | `header_of` named as the read seam with no `pub` — the blind author cannot even compile against the contract |
 | Are the words in the docstring measurable? | `"efficiently"`, `"properly"`, `"safely"` are never promises — delete them |
 | Does a new event or typed-payload variant name **every member it carries and every member it leaves empty**? | `EventKind::Resumed` leaning on `track`'s general docstring ("the track, when the event is about one") — the implementer reads it narrow, the test author wide |
+| Does a member that **normalises** a value to find, key or deduplicate it (strip, rstrip, case fold, path cleanup) say, in the same sentence, which form the later comparison or output uses — normalised or as written? | `"the first line equal to it after rstrip"` beside a block compared "line by line" — the blind test pins the normalised reading, the implementation compares the line as written |
 | Are the trait bounds an assertion needs **derived**? | `expect_err` on a type without `Debug`, `assert_eq!` without `PartialEq`, a second move without `Clone` — the stub compiles, the test does not, and a blind author cannot see the derive set |
 
 A promise that survives this list is one a blind test author can turn into an
@@ -257,18 +258,38 @@ without a substitute.
 Append-only. One line per event, newest last. Record: each spawn and its
 outcome, each worktree merge, each test-versus-implementation arbitration and
 its ruling, each `CONTRACT-CHANGE:` decision, each review round and its change
-requests, the deferred-issues ledger `/work-on` Phase 9 captures at close
-(one `DEFERRED:` header plus one line per untackled issue, each ending with
-its `contract:` and `effort:`; `DEFERRED: none` allowed), and anything that surprised the orchestrator. This section replaces
-the changelog, the review files, and the anomaly log.
+requests, the one-line summary of each structured record below, and anything
+that surprised the orchestrator. This section replaces the changelog, the
+review files, and the anomaly log. It is a human view: no gate or tool depends
+on a line in it that a record below also holds.
 
-`scripts/validate_pipeline.py --pre-fanout` requires seven lines before the
-fan-out: `CONTRACT-REVIEW:`, `HOOKS:`, `PAYLOAD-LINT:`, `ADMISSION:`,
-`SUITE-RUNNER:`, `CENSUS:` (a pin the contract shifts, with its owner, or
-`CENSUS: none — <what was grepped>`), and `CHECKLIST-IDS:` (the repo's
-promise-coverage script's parse count against the draft `PROMISE_CHECKLIST`,
-or `CHECKLIST-IDS: none — no coverage script`; a `parsed 0/` line is
-refused).
+`scripts/validate_pipeline.py --pre-fanout` reads the pre-fan-out facts from
+front matter and the log: the `hooks:` and `contract_review:` front matter
+fields (the contract commit SHA the review read, or `skipped — <reason>`; a SHA
+that is no longer the current contract commit is refused as stale), and the
+log lines `PAYLOAD-LINT:`, `ADMISSION:`, `SUITE-RUNNER:`, `CENSUS:` (a pin the
+contract shifts, with its owner, or `CENSUS: none — <what was grepped>`), and
+`CHECKLIST-IDS:` (the repo's promise-coverage script's parse count against the
+draft `PROMISE_CHECKLIST`, or `CHECKLIST-IDS: none — no coverage script`; a
+`parsed 0/` line is refused).
+
+**Structured build records.** Facts a gate or a tool reads live in files next
+to the dossier, written by `scripts/build_records.py` and
+`scripts/dossier_edit.py`, never scraped from the log (the `.yaml` files hold
+JSON, a YAML subset):
+
+- `.discovery/checklists/<ID>.md` — the `PROMISE_CHECKLIST`, one
+  `member — category: promise` line each; the gate checks it exists and names
+  the contract's members.
+- `.discovery/deferred/<ID>.yaml` — `items` (`id` D-n, `evidence`, `fix`,
+  `boundary`, `blast_radius`, `state` open|fixing|fixed|wontfix|dossier) and
+  `sources`; "nothing deferred" is `items: []` plus sources.
+- `.discovery/decisions/<ID>.yaml` — `decision`, `alternatives`, `why`,
+  `evidence`, `phase`, the source of the Phase 8 ADRs.
+- `.discovery/blocker-removals/<ID>.yaml` — a blocker removed while its
+  dossier was not done, with the `--reason` given.
+- A row-3 lesson is a `Lesson:` git trailer on the commit that fixes the
+  contract, not a log line.
 
 **One line per event means no embedded documents.** A reviewer reply lands as
 a ledger — one line per change request:

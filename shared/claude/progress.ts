@@ -141,13 +141,32 @@ export function gatedKind(line: string): "" | "gap" | "contract-change" {
   return m[1] === "GAP" ? "gap" : "contract-change"
 }
 
-/** The first heading or `TITLE:` line of a payload file, for the spawn table; "" when unreadable. */
+/**
+ * What a payload works on, for the spawn table: its `TITLE:` line or first heading; else (a field-only payload, such
+ * as an implementer fix) the files of its `OWNED_PATHS:` block, prefixed `fix:` in `MODE: fix`, or the first line of
+ * its `FAILURES:`/`WORK_PACKAGE:` block. "" when unreadable or none of these is there.
+ */
 export function payloadTitle(path: string): string {
-  try {
-    const text = readFileSync(path, "utf8").slice(0, 16_000)
-    const t = text.match(/^TITLE:\s*(.+)$/m) ?? text.match(/^\s*#{2,3}\s+(?:CR-\d+[:.]?\s*)?(.+)$/m) ?? text.match(/^\s*#\s+(?!compose_payloads)(.+)$/m)
-    return t ? t[1].trim().slice(0, 100) : ""
-  } catch { return "" }
+  try { return payloadSubject(readFileSync(path, "utf8").slice(0, 16_000)) } catch { return "" }
+}
+/** `payloadTitle` on the payload's text. */
+export function payloadSubject(text: string): string {
+  const t = text.match(/^TITLE:\s*(.+)$/m) ?? text.match(/^\s*#{2,3}\s+(?:CR-\d+[:.]?\s*)?(.+)$/m) ?? text.match(/^\s*#\s+(?!compose_payloads)(.+)$/m)
+  if (t) return t[1].trim().slice(0, 100)
+  const fix = /^MODE:\s*fix\b/m.test(text) ? "fix: " : ""
+  const files = fieldLines(text, "OWNED_PATHS").filter((l) => /^[\w./*@-]+$/.test(l)).map((l) => l.split("/").pop()!)
+  if (files.length) return (fix + files.slice(0, 4).join(", ") + (files.length > 4 ? ` +${files.length - 4}` : "")).slice(0, 100)
+  const first = fieldLines(text, "FAILURES")[0] ?? fieldLines(text, "WORK_PACKAGE")[0]
+  return first ? (fix + first).slice(0, 100) : ""
+}
+/** The lines of a `NAME: |` block (or the value of a one-line `NAME: value`), trimmed, blanks dropped. */
+function fieldLines(text: string, name: string): string[] {
+  const m = new RegExp(`^${name}:[ \\t]*(.*)$`, "m").exec(text)
+  if (!m) return []
+  if (m[1].trim() && m[1].trim() !== "|") return [m[1].trim()]
+  const out: string[] = []
+  for (const l of text.slice(m.index + m[0].length + 1).split("\n")) { if (!/^\s/.test(l) && l.trim()) break; if (l.trim()) out.push(l.trim()) }
+  return out
 }
 const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim()
 

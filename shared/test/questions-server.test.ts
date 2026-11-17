@@ -6,10 +6,10 @@ import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
 import { channelNameFor, interpretEnvelope, isDuplicate, runSocket, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
-import { undecidedDeferred, parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
-import { prNumberOf, prFieldNumber, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
+import { undecidedDeferred, parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, readDeferredRecord, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
+import { prNumberOf, prFieldNumber, prFieldNumbers, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
-import { canIntegrate, integrationPhase, integrationStopped, markIntegrating, readIntegrate, readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule } from "../questions/runstore.ts"
+import { canIntegrate, integrationPhase, integrationStopped, markIntegrating, readIntegrate, readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule, runnerActive } from "../questions/runstore.ts"
 import { blockedTarget } from "../claude/permission-denied.ts"
 import { mergeSpawns, inTimeline } from "../questions/timeline.ts"
 import { nextMerges, dossierOfPr } from "../questions/merges.ts"
@@ -34,8 +34,26 @@ function check(name: string, ok: boolean, detail = ""): void {
   check("deferred: ledger items, first line per id, states and the stacked PR",
     pd.items.length === 3 && pd.items[0].title === "Retry ignores 429" && pd.items[0].loc === "src/a.rs:40" && pd.items[0].state === "fixed" && pd.items[0].note === "abc1234"
     && pd.items[1].state === "open" && pd.items[2].state === "dossier" && pd.pr === "https://github.com/o/r/pull/9", JSON.stringify(pd))
+  const dl = (tail: string[]) => parseDeferred(["- D-1 bug a — f:1 — low — x", "- D-2 bug b — f:2 — low — y", "- D-3 bug c — f:3 — low — z",
+    "DEFERRED-TRIAGE: D-1 → direct — fix a", "DEFERRED-TRIAGE: D-2 → direct — fix b", "DEFERRED-TRIAGE: D-3 → direct — fix c", ...tail].join("\n")).items.map((i) => `${i.id}:${i.state}:${i.note}`).join(" ")
+  check("deferred: a commits summary closes each item it names with its sha",
+    dl(["- DEFERRED-FIX: commits — D-2 817cf9b5, D-1 545dfe3f + b582af0f (bench stub)"]) === "D-1:fixed:545dfe3f+b582af0f D-2:fixed:817cf9b5 D-3:fixing:fix c", dl(["- DEFERRED-FIX: commits — D-2 817cf9b5, D-1 545dfe3f + b582af0f (bench stub)"]))
+  check("deferred: a PR line whose fixed count covers every item still being fixed closes them in that PR; a short count does not",
+    dl(["- DEFERRED-FIX: PR https://github.com/o/r/pull/9 — fixed 3, to dossier 0"]).split(/ (?=D-)/).every((x) => x.endsWith(":fixed:in PR #9"))
+    && dl(["- DEFERRED-FIX: PR https://github.com/o/r/pull/9 — fixed 2, to dossier 0"]).includes("D-3:fixing"), dl(["- DEFERRED-FIX: PR https://github.com/o/r/pull/9 — fixed 3"]))
   check("phase: a phase named mid-sentence is not progress; a line-start marker is", lastPhase("- OWNER-RULING: draft PR at Phase 6 yes\n- Phase 2 closed: contract committed\nnotes about Phase 7") === "2" && lastPhase("PHASE 9: synced") === "9")
 check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "Phase 6 soon" }, { kind: "stage", stage: "Phase 2 — contract", text: "x" }, { kind: "stage", stage: "Phase 1 — gates", text: "y" }]) === "2")
+{
+  const st = (stage: string) => ({ kind: "stage", stage, text: "" }), start = (cmd: string) => ({ kind: "runner", stage: "0", text: `start /${cmd} W-1 in /r` })
+  check("phase: a re-plan's stages after a build are not build phases (W-013: /plan Phase 8 read as /work-on Phase 8)",
+    stagePhase([start("work-on"), st("Phase 8 — plan: report"), start("plan"), st("Phase 2 — contract"), start("work-on")]) === null)
+  check("phase: only the latest /work-on run counts; another command's stages are skipped",
+    stagePhase([st("Phase 3 — Fix-deferred — Step 2"), start("fix-deferred"), st("Phase 9 — PR"), start("work-on")]) === "9"
+    && stagePhase([st("Phase 4 — wave 1"), start("work-on"), st("Phase 9 — PR"), start("work-on")]) === "4")
+  check("phase: a restarted /work-on run with no stage yet shows the phase its earlier run reached; a log with no start line keeps its newest stage; nothing recorded is empty",
+    stagePhase([start("work-on"), st("Phase 6 — tests"), start("work-on")]) === "6" && stagePhase([start("work-on"), start("fix-deferred")]) === ""
+    && stagePhase([st("Phase 5 — x")]) === "5" && stagePhase([]) === "")
+}
 {
   const rep = "## Deferred issues — W-9\n\n| ID | Kind | Title | Risk | Origin | Contract | Effort |\n|---|---|---|---|---|---|---|\n| D-1 | latent-bug | Make `x` cover links | medium | new | external | M |\n| D-3 | ssot | Fix doc | low | old | none | S |\n\n| other | table |\n|---|---|\n| D-9 | x |\n"
   const t = parseReportTable(rep)
@@ -49,6 +67,23 @@ check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "
   const rep2 = "| ID | Kind | Title | Risk | Origin | Contract | Effort |\n|---|---|---|---|---|---|---|\n| D-1 | bug | a | low | new | none | S |\n"
   const wr2 = withReport(led, rep2)
   check("deferred: the report supersedes the ledger's contract and effort; items it lacks keep theirs", wr2[0].contract === "none" && wr2[0].effort === "S" && wr2[1].contract === "internal" && wr2[1].effort === "S" && wr2[1].inReport === false)
+}
+{
+  // The structured record is the source of the items; the log still layers events; no record falls back to the log.
+  const dir = mkdtempSync(join(tmpdir(), "defrec-"))
+  mkdirSync(join(dir, "dossiers"), { recursive: true }); mkdirSync(join(dir, "deferred"), { recursive: true })
+  const dossier = join(dir, "dossiers", "W-7.md")
+  writeFileSync(join(dir, "deferred", "W-7.yaml"), JSON.stringify({ items: [
+    { id: "D-1", evidence: "a.py:4 ignores 429", fix: "back off", boundary: "none", blast_radius: "one package", state: "open", note: "effort: M" },
+    { id: "D-2", evidence: "b.py:9 dup", fix: "share it", boundary: "internal: seam", blast_radius: "wide", state: "wontfix" }], sources: ["own reads"] }))
+  const rec = readDeferredRecord(dossier, "W-7")
+  check("deferred record: items map evidence, fix, boundary, blast radius, effort and state", rec !== null && rec.length === 2 && rec[0].title === "a.py:4 ignores 429" && rec[0].why === "back off" && rec[0].risk === "one package" && rec[0].contract === "none" && rec[0].effort === "M" && rec[1].state === "deprecated" && rec[1].contract === "internal")
+  const layered = parseDeferred("- D-1 bug stale ledger line — f:1 — low — x\n- DEFERRED-FIXED: D-1 abc1234", rec)
+  check("deferred record: the record wins over a ledger line, and log events still apply", layered.items.length === 2 && layered.items[0].title === "a.py:4 ignores 429" && layered.items[0].state === "fixed" && layered.items[0].note === "abc1234")
+  check("deferred record: no record is null, and the log parse is the fallback", readDeferredRecord(join(dir, "dossiers", "W-8.md"), "W-8") === null && parseDeferred("- D-1 bug a — f:1 — low — x", null).items.length === 1)
+  writeFileSync(join(dir, "deferred", "W-9.yaml"), JSON.stringify({ items: [], sources: ["own reads"] }))
+  check("deferred record: items [] is an empty list, not a fallback", readDeferredRecord(join(dir, "dossiers", "W-9.md"), "W-9")?.length === 0)
+  rmSync(dir, { recursive: true, force: true })
 }
 {
   const ah = mkdtempSync(join(tmpdir(), "acct-"))
@@ -98,6 +133,8 @@ check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "
   check("blocks: only the current stage process's refusals are open", b2.length === 1 && b2[0].id === "s2", JSON.stringify(b2))
   appendFileSync(join(bd, "r.W-2.jsonl"), JSON.stringify({ ts: "4", kind: "runner", text: "start /fix-deferred W-2 in /r" }) + "\n")
   check("blocks: a restarted run starts with none", readBlocks("r.W-2", bd).length === 0)
+  writeFileSync(join(bd, "r.W-3.jsonl"), L({ ts: "1", event: "blocked", tool: "Bash", target: "rtk read x", reason: "Classifier unavailable", tool_use_id: "c1" }) + "\n")
+  check("blocks: a refusal because the classifier was unavailable is no blocker", readBlocks("r.W-3", bd).length === 0)
   rmSync(bd, { recursive: true, force: true })
   check("blocks: a rule must be narrow", checkRule("Bash(ssh vm-test *)") === "" && checkRule("Bash(*)") !== "" && checkRule("Bash(python3 *)") !== "" && checkRule("Bash(python3 scripts/x.py --y)") === "" && checkRule("ssh x") !== "" && checkRule("Read(/etc/x)") === "")
   check("blocks: the hook records the exact command, a path, else the input", blockedTarget("Bash", { command: "ssh vm x" }) === "ssh vm x" && blockedTarget("Write", { file_path: "/a/b" }) === "/a/b" && blockedTarget("X", { a: 1 }) === '{"a":1}')
@@ -142,6 +179,11 @@ check("deferred: dropped items are deprecated, a dossier link names the new doss
 check("deferred: old dossiers are ignored unless the runner ran them", !deferredSince("2026-10-20", null) && deferredSince("2026-11-03", null) && deferredSince("2026-10-01", { state: "done" }))
 check("deferred: an item marked RESOLVED in place is closed", parseDeferred("- D-1 RESOLVED: renumbered — x").items[0].state === "fixed")
   const c = (status: string, open: number, state?: string) => controlsFor({ status, blockedBy: [], runner: state ? ({ state } as any) : null, deferredOpen: open }, () => "done")["fix-deferred"].show
+  const cr = (status: string, state: string, command: string) => controlsFor({ status, blockedBy: [], runner: { state, command } as any }, () => "done")
+  check("controls: a planned dossier whose /work-on run failed (sent back) offers Start (plan), not Resume",
+    cr("planned", "failed", "work-on").start.show && cr("planned", "failed", "work-on").start.command === "plan" && !cr("planned", "failed", "work-on").resume.show)
+  check("controls: a failed run of the same flow still offers Resume, not Start",
+    !cr("planned", "failed", "plan").start.show && cr("planned", "failed", "plan").resume.show && !cr("ready", "failed", "work-on").start.show && cr("ready", "failed", "work-on").resume.show)
   check("deferred: Fix all shows on pr/done with open items and no live runner", c("done", 2) && c("pr", 1) && !c("done", 0) && !c("building", 2) && !c("done", 2, "running") && c("done", 2, "done"))
   const sm = (t: string) => slackMessageFor({ ts: "t", kind: "runner", text: t } as any, { repo: "r", id: "W-1", title: "x", link: "L" })
   check("deferred: the run thread gets the deferred count, not a zero", (sm("deferred report: 3 issue(s)")?.text ?? "").startsWith("📋 3 deferred issues") && sm("deferred report: 0 issue(s)") === null)
@@ -282,6 +324,7 @@ check("slack: Status on a thread opener answers in a new message for that run", 
   const run = { repo: "config-harness", id: "W-1", title: "A <title>", state: "running", phase: "4", phaseName: "Fan-out", account: "b", started: T(0), context: 63000, questions: [{ id: "Q1", text: "Pick one" }], updates: ups, link: "http://x/r" }
   const t = runStatusText(run, Date.parse(T(30)))
   check("status: one run's text", t.includes("in progress · Phase 4 · Fan-out · account b") && t.includes("1 running, 2 finished (1 with a gap") && t.includes("Wave one is out.") && !t.includes("More detail") && t.includes("context 63k") && t.includes("❓ *Q1* Pick one") && t.includes("A &lt;title&gt;") && t.includes("⚠ quiet"), t)
+  check("status: a testing run reads as testing with its slot released", /testing/.test(runStatusText({ ...run, state: "testing" }, Date.parse(T(30)))))
   check("status: a run held for the stub reads queued, not waiting for you", runStatusText({ ...run, state: "waiting", waitingFor: "stub" }, Date.parse(T(30))).includes("queued · waiting for the stub") && runStatusText({ ...run, state: "waiting" }, Date.parse(T(30))).includes("waiting for you"))
   const sb = statusBlocks([run], { repo: "config-harness" }, Date.parse(T(30)))
   check("status: blocks carry a heading, the run and a Refresh button with the scope", sb.blocks[0].text.text.startsWith("*Status — config-harness*") && sb.blocks.at(-1).elements[0].value === "config-harness|" && sb.text.includes("W-1 running"))
@@ -331,6 +374,14 @@ check("runs: an answered question links to its dossier, open ones are not listed
 // stubs: pure parsers
 check("stubs: merge subject to PR number", prNumberOf("Merge pull request #41 from org/feat-x") === 41 && prNumberOf("feat: thing (#42)") === 42 && prNumberOf("Merge branch 'x'") === null)
 check("stubs: pr field forms", prFieldNumber("https://github.com/o/r/pull/7") === 7 && prFieldNumber("#8") === 8 && prFieldNumber("") === null && prFieldNumber(undefined) === null)
+check("stubs: a pr list names every number, newest last", prFieldNumber("[https://g/o/r/pull/5, https://g/o/r/pull/55]") === 55 && JSON.stringify(prFieldNumbers("[#5, https://g/o/r/pull/55]")) === "[5,55]" && prFieldNumbers("").length === 0)
+{
+  const bl = parseFrontMatter("---\nid: W-13\npr:\n  - https://github.com/o/r/pull/55\nblocked_by:\n  - W-1\n  - 'W-2'\nstatus: done\n---\nx\n")
+  check("runs: a block list reads as its inline form", bl.pr === "[https://github.com/o/r/pull/55]" && bl.blocked_by === "[W-1, W-2]" && bl.status === "done")
+  // W-013: a done dossier whose `pr:` is a block list stays under its stub through its open PR, head branch without the id.
+  const mb = stubMembers([{ branch: "stub/b", cut: "2026-11-10", state: "accepting", pr: null }], [{ id: "W-13", status: "done", pr: bl.pr }], { "stub/b": [{ number: 55, headRefName: "feat/LABS-135-x" }] })
+  check("stubs: a block-list pr places a done dossier under its stub", JSON.stringify(mb["stub/b"]) === JSON.stringify([{ id: "W-13", noPr: false }]))
+}
 check("stubs: merges map to dossiers via pr:", JSON.stringify(dossiersOnMerges(["Merge pull request #41 from a/b", "x (#42)", "Merge pull request #99 from c/d", "Merge pull request #41 again"], new Map([[41, "W-1"], [42, "W-2"]]))) === '["W-1","W-2"]')
 check("stubs: a merged plan is not an implemented dossier", JSON.stringify(dossiersOnMerges(["Merge pull request #392 from o/plan/W-123-stub-prune", "Merge pull request #405 from o/feat/W-127-x"], new Map([[392, "W-123"], [405, "W-127"]]))) === '["W-127"]')
 check("stubs: a fix branch in the merge subject names its dossier", JSON.stringify(dossiersOnMerges(["Merge pull request #404 from o/fix/W-122-stub2026-11-01-census", "Merge pull request #7 from o/feat/X-9"], new Map(), new Set(["W-122"]))) === '["W-122"]')
@@ -352,6 +403,9 @@ check("runstore: updates newest first, torn and unknown kinds skipped", ups.map(
 check("runstore: no file means no updates", readUpdates("nope.X-1", udir).length === 0)
 writeFileSync(join(udir, "repoB.W-7.runner.json"), JSON.stringify({ pid: 4242, started: "s", state: "running", stage: "4" }))
 check("runstore: a live pid keeps running, a dead pid reads as stopped", readRunner("repoB.W-7", udir, () => true)?.state === "running" && readRunner("repoB.W-7", udir, () => false)?.state === "stopped" && readRunner("none.X", udir) === null)
+writeFileSync(join(udir, "repoB.W-7.runner.json"), JSON.stringify({ pid: 4242, started: "s", state: "testing", stage: "4" }))
+check("runstore: testing (slot released) is live: a live pid keeps it, a dead pid reads as stopped, and the run is active",
+  readRunner("repoB.W-7", udir, () => true)?.state === "testing" && readRunner("repoB.W-7", udir, () => false)?.state === "stopped" && runnerActive(readRunner("repoB.W-7", udir, () => true)))
 writeFileSync(join(udir, "repoB.W-7.runner.json"), JSON.stringify({ pid: 4242, state: "done" }))
 check("runstore: a finished state is kept whatever the pid", readRunner("repoB.W-7", udir, () => false)?.state === "done")
 check("integrate: an open stub offers it, and an integration in progress does not", canIntegrate("accepting", null, null) && !canIntegrate("accepting", { state: "merging" }, null) && !canIntegrate("integrating", { state: "merging" }, null) && !canIntegrate("integrating", { state: "stub" }, null))
@@ -532,6 +586,9 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
   const runsX = [{ repo: "alpha", id: "W-001", main: "/a", worktree: "/a" }, { repo: "beta", id: "W-001", main: "/b", worktree: "/b-W-001" }, { repo: "beta", id: "W-002", main: "/b", worktree: "/b" }]
   const qq = (repo: string, root: string, dossier = "W-001") => ({ repo, root, dossier })
   check("repos: a question belongs to the repo that named it or whose checkout holds its root", questionRepo(qq("alpha", ""), runsX) === "alpha" && questionRepo(qq("zzz", "/b-W-001/src"), runsX) === "beta" && questionRepo(qq("zzz", ""), runsX) === undefined && questionRepo(qq("zzz", "", "W-002"), runsX) === "beta")
+  // W-021: podcast's question arrived before its run of W-021 did; only the other repo had a W-021 then.
+  const runsY = [{ repo: "alpha", id: "W-021", main: "/a", worktree: "/a" }, { repo: "beta", id: "W-002", main: "/b", worktree: "/b" }]
+  check("repos: a question's own known repo wins over another repo's only run of the same dossier id", questionRepo(qq("beta", "/b", "W-021"), runsY) === "beta" && questionRepo(qq("zzz", "", "W-021"), runsY) === "alpha")
   rmSync(t, { recursive: true, force: true })
   check("view: done shows the dossier, running or with updates the run, otherwise the dossier", viewFor("done", false, 5) === "dossier" && viewFor("building", false, 0) === "run" && viewFor("ready", true, 0) === "run" && viewFor("ready", false, 2) === "run" && viewFor("ready", false, 0) === "dossier" && viewFor("planned", false, 1) === "run")
   const mkStub = (branch: string, state: string, cut: string) => ({ branch, cut, state, stage: "", refAge: cut, pr: null, dossiers: [] }) as any
@@ -544,6 +601,13 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
     check("stubMembers: plan merges never count and ready/planned never appear", !JSON.stringify(m).includes("W-4") && !JSON.stringify(m).includes("W-5") && !m["stub/2026-10-24"].some((x) => x.id === "W-6") && !m["stub/2026-09-01"])
     const m2 = stubMembers([{ branch: "stub/a", cut: "2026-01-01", state: "integrating", pr: {} }], [{ id: "W-9", status: "ready", live: true }], {})
     check("stubMembers: with no accepting stub the newest open stub takes it; a live runner counts", m2["stub/a"]?.[0]?.id === "W-9" && m2["stub/a"][0].noPr)
+    {
+      const sx = [{ branch: "stub/x", cut: "2026-11-07", state: "accepting" as const, pr: null }]
+      const mx = stubMembers(sx, [{ id: "W-130", status: "done", pr: "#426", live: true }, { id: "W-131", status: "done", pr: "#427" }, { id: "W-132", status: "done", pr: "#430", live: true }], { "stub/x": [{ number: 430, headRefName: "fix/deferred-x" }] })
+      check("stubMembers: a done dossier with a live follow-up run and a merged old pr goes under the accepting stub with noPr", mx["stub/x"]?.some((x) => x.id === "W-130" && x.noPr === true))
+      check("stubMembers: a done dossier with no live runner stays off the stub", !JSON.stringify(mx).includes("W-131"))
+      check("stubMembers: a live done dossier whose pr is an open PR into the stub is placed once, noPr false", mx["stub/x"]?.filter((x) => x.id === "W-132").length === 1 && mx["stub/x"].find((x) => x.id === "W-132")?.noPr === false)
+    }
     check("stubMembers: no open stub, no members", Object.keys(stubMembers([{ branch: "stub/z", cut: "2026-01-01", state: "merged", pr: {} }], [{ id: "W-3", status: "building" }], {})).length === 0)
   }
   const os = openStubs([mkStub("stub/2026-10-24", "merged", "2026-10-24"), mkStub("stub/2026-10-31", "accepting", "2026-10-31"), mkStub("release/W-115", "integrating", "2026-10-29")])
@@ -771,8 +835,10 @@ try {
     const bt: any = await (await fetch(`${base}/api/timeline/repoC/W-9`)).json()
     const rule = (b: unknown) => fetch(`${base}/api/runs/repoC/W-9/blocks/toolu_9`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) })
     const r0 = await rule({ action: "once" })
-    check("server: a block shows on the dossier; Allow once needs the agent's open question", bt.blocks?.[0]?.target === "ssh vm-test rebuild fake-llm" && bt.blockQuestion === "" && r0.status === 409 && (await rule({ action: "always", rule: "Bash(*)" })).status === 400)
+    check("server: a block the agent has not asked about is not shown; Allow once needs the agent's open question", (bt.blocks ?? []).length === 0 && bt.blockQuestion === "" && r0.status === 409 && (await rule({ action: "always", rule: "Bash(*)" })).status === 400)
     writeFileSync(join(sdir, "repoC.W-9.Q7.jsonl"), JSON.stringify({ ts: "2026-11-04T08:11:00Z", from: "agent", kind: "question", text: "May I rebuild the fixture?", repo: "repoC", dossier: "W-9", root: realpathSync(repoC), options: [{ key: "A", label: "yes" }, { key: "B", label: "no" }], recommendation: "A", blocks: "x" }) + "\n")
+    const bt2: any = await (await fetch(`${base}/api/timeline/repoC/W-9`)).json()
+    check("server: with the agent's question open, the block shows and the ruling goes to it", bt2.blocks?.[0]?.target === "ssh vm-test rebuild fake-llm" && bt2.blockQuestion !== "", JSON.stringify([bt2.blocks, bt2.blockQuestion]))
     const r1 = await rule({ action: "always", rule: "Bash(ssh vm-test *)" })
     const cfg = JSON.parse(readFileSync(join(realpathSync(repoC), ".claude", "settings.local.json"), "utf8"))
     const qa = readFileSync(join(sdir, "repoC.W-9.Q7.jsonl"), "utf8")

@@ -29,6 +29,8 @@ found on PATH. Gate names must be unique and match `[A-Za-z0-9_.-]+`.
     run_gates.py GATES_FILE [--root DIR] [--only NAME[,NAME]] [--list]
                  [--log-dir DIR] [--jobs N=1] [--lines N=15]
                  [--line-chars N=300] [--timeout SECONDS]
+                 [--path-prepend DIR ...] [--env-script FILE] [--detach]
+    run_gates.py --wait ID [--wait-cap SECONDS=540]
     run_gates.py --from-workflow FILE [FILE...]
     run_gates.py --selftest
 
@@ -44,6 +46,37 @@ the failure excerpt: up to N lines that match
 `DEFECT|FAIL|ERROR|error|Error|panicked|not ok|✗`, or the last N lines when
 none match, each cut to `--line-chars` characters. `--timeout` caps each
 gate's wall time; a gate that times out is reported FAIL.
+
+# The toolchain on every gate's PATH
+
+`--path-prepend DIR` (repeatable; the first given is first on PATH) and
+`--env-script FILE` mean what they mean in `run_tests.py`: DIR is prepended to
+the PATH of every gate, and FILE is sourced (`. FILE && <gate>`) before every
+gate. `$HOME`, `$VAR` and a leading `~/` in DIR expand here. A `[needs: tool]`
+check looks on the same PATH. A repository whose toolchain is only on an
+interactive PATH (cargo under `~/.cargo/bin`) runs green with
+`--path-prepend "$HOME/.cargo/bin"`, with no `export PATH=...` in any line. A
+gate that exits 127 is still a failure, but the summary counts it apart:
+"command not found — environment, not a gate failure".
+
+There is no `--vm`: a gate that must run in the VM carries its own
+`limactl shell NAME -- ...` in its line, or the list runs inside the VM.
+
+# Long runs: --detach, then --wait
+
+`--detach` starts the same run (every other flag kept) in its own session,
+SIGHUP ignored, stdio detached, so it survives the calling shell or tool call
+returning. It prints the run id, the state directory, the receipt path and the
+exact `--wait` command, and exits 0 at once. The state directory
+(`$RUN_GATES_STATE_DIR`, default `<tmp>/run_gates-detach/<id>/`) holds
+`state.json`, `out.txt` (what a foreground run prints) and, once the run ends,
+`exit` (its exit code).
+
+`--wait ID` blocks up to `--wait-cap` seconds (default 540, under a 10-minute
+tool cap), then prints `out.txt` — the same summary a foreground run prints —
+and exits with the run's own exit code. Still running at the cap: it prints
+`run_gates: run ID still running ...` and exits 6; call it again. 125: the run
+died without writing an exit code. 2: no such run.
 
 # Receipts: a green run is never repeated on the same tree
 
@@ -76,7 +109,8 @@ a merge, rebase, cherry-pick or bisect in progress (MERGE_HEAD, rebase-merge/,
 rebase-apply/, CHERRY_PICK_HEAD, BISECT_LOG in `git rev-parse --git-path`):
 a gate read a half-mutated tree once, so the run refuses to start. `--list`
 and `--from-workflow` do not check. 4 `--receipt` found no matching green
-receipt.
+receipt. 6 `--wait` hit its cap with the run still going; 125 a detached run died
+without an exit code.
 
 # From a CI workflow
 
@@ -115,7 +149,9 @@ import fnmatch
 import hashlib
 import json
 import re
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -601,12 +637,31 @@ def parse_gates(text: str) -> list[dict]:
     return gates
 
 
-def run_gate(command: str, root: str, timeout: float | None) -> dict:
+def gate_env(path_prepend: list[str] | None) -> dict:
+    """The environment every gate runs in: this process's, with each
+    --path-prepend DIR (`$HOME`, `~/` expanded) in front of PATH, in order."""
+    env = dict(os.environ)
+    if path_prepend:
+        dirs = [os.path.expandvars(os.path.expanduser(d)) for d in path_prepend]
+        env["PATH"] = os.pathsep.join(dirs + [env.get("PATH", "")]).rstrip(os.pathsep)
+    return env
+
+
+def gate_script(command: str, env_script: str | None) -> str:
+    """The `bash -c` script for one gate: the command, behind `. ENV-SCRIPT &&`
+    when --env-script is given (the same shape run_tests.py builds)."""
+    if not env_script:
+        return command
+    return f". {shlex.quote(os.path.expanduser(env_script))} && {{ {command}\n}}"
+
+
+def run_gate(command: str, root: str, timeout: float | None,
+             env: dict | None = None, env_script: str | None = None) -> dict:
     start = time.perf_counter()
     try:
         proc = subprocess.run(
-            ["bash", "-c", command], cwd=root, capture_output=True, text=True,
-            timeout=timeout, check=False,
+            ["bash", "-c", gate_script(command, env_script)], cwd=root, capture_output=True,
+            text=True, timeout=timeout, check=False, env=env,
         )
         return {"rc": proc.returncode, "output": proc.stdout + proc.stderr,
                 "elapsed": time.perf_counter() - start, "timed_out": False}
@@ -631,8 +686,97 @@ def write_log(log_dir: str, name: str, output: str) -> str:
     return path
 
 
+EXIT_STILL_RUNNING = 6
+EXIT_DIED = 125
+
+
+def state_root() -> str:
+    return os.environ.get("RUN_GATES_STATE_DIR") or os.path.join(tempfile.gettempdir(), "run_gates-detach")
+
+
+def detach(argv: list[str], args: argparse.Namespace) -> int:
+    """Start this same run in a new session and return at once; see "Long runs"."""
+    if not args.gates_file:
+        print("run_gates: --detach needs a GATES_FILE", file=sys.stderr)
+        return 2
+    run_id = time.strftime("%Y%m%dT%H%M%S") + "-" + os.urandom(3).hex()
+    sdir = os.path.join(state_root(), run_id)
+    os.makedirs(sdir)
+    out_path, exit_path = os.path.join(sdir, "out.txt"), os.path.join(sdir, "exit")
+    child = [a for a in argv if a != "--detach"]
+    receipt = None
+    try:
+        with open(args.gates_file, encoding="utf-8") as fh:
+            sha = hashlib.sha256(fh.read().encode("utf-8")).hexdigest()
+        receipt = receipt_path(os.path.abspath(args.root), sha)
+    except OSError:
+        pass
+    script = ('"$@" > "$OUT" 2>&1 < /dev/null; echo $? > "$EXIT.tmp"; mv "$EXIT.tmp" "$EXIT"')
+    proc = subprocess.Popen(
+        ["bash", "-c", script, "run_gates", sys.executable, os.path.abspath(__file__), *child],
+        env={**os.environ, "OUT": out_path, "EXIT": exit_path},
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True, preexec_fn=lambda: signal.signal(signal.SIGHUP, signal.SIG_IGN),
+    )
+    with open(os.path.join(sdir, "state.json"), "w", encoding="utf-8") as fh:
+        json.dump({"id": run_id, "pid": proc.pid, "argv": child, "cwd": os.getcwd(), "out": out_path,
+                   "exit": exit_path, "receipt": receipt, "started": time.time()}, fh)
+    print(f"run_gates: detached run {run_id} (pid {proc.pid})")
+    print(f"state {sdir}")
+    print(f"receipt {receipt or '(none: not a git worktree)'}")
+    print(f"wait: {shlex.quote(os.path.abspath(__file__))} --wait {run_id}")
+    return 0
+
+
+def wait_run(run_id: str, cap: float) -> int:
+    """Block up to `cap` seconds for a detached run, then print its output and
+    return its exit code; EXIT_STILL_RUNNING at the cap."""
+    sdir = os.path.join(state_root(), run_id)
+    try:
+        with open(os.path.join(sdir, "state.json"), encoding="utf-8") as fh:
+            st = json.load(fh)
+    except (OSError, ValueError):
+        print(f"run_gates: no detached run {run_id!r} under {state_root()}", file=sys.stderr)
+        return 2
+
+    def finished() -> bool:
+        return os.path.exists(st["exit"])
+
+    def alive() -> bool:
+        try:
+            os.kill(st["pid"], 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+
+    deadline = time.monotonic() + cap
+    while not finished():
+        if not alive() and not finished():
+            break
+        if time.monotonic() >= deadline:
+            print(f"run_gates: run {run_id} still running after {cap:.0f}s (pid {st['pid']}); "
+                  f"call --wait {run_id} again. Output so far: {st['out']}")
+            return EXIT_STILL_RUNNING
+        time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+    try:
+        with open(st["out"], encoding="utf-8", errors="replace") as fh:
+            sys.stdout.write(fh.read())
+    except OSError:
+        pass
+    if not finished():
+        print(f"run_gates: run {run_id} died without an exit code; output above is what it wrote")
+        return EXIT_DIED
+    try:
+        with open(st["exit"], encoding="utf-8") as fh:
+            return int(fh.read().strip())
+    except ValueError:
+        return EXIT_DIED
+
+
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0], allow_abbrev=False)
     ap.add_argument("gates_file", nargs="?")
     ap.add_argument("--root", default=".", help="directory each gate's command runs in")
     ap.add_argument("--only", metavar="NAME[,NAME]", help="run only these gates")
@@ -647,10 +791,22 @@ def main(argv: list[str]) -> int:
                     help="--from-workflow: list a derived gate whose name matches GLOB as skipped")
     ap.add_argument("--fresh", action="store_true", help="run every gate even when a green receipt matches this tree")
     ap.add_argument("--receipt", action="store_true", help="exit 0 when a green receipt matches this tree, 4 when none; run nothing")
+    ap.add_argument("--path-prepend", action="append", default=[], metavar="DIR",
+                    help="prepend DIR to every gate's PATH (repeatable; $HOME and ~/ expand)")
+    ap.add_argument("--env-script", metavar="FILE", help="source FILE before every gate (`. FILE && gate`)")
+    ap.add_argument("--detach", action="store_true",
+                    help="start the run in the background, print a run id and return at once")
+    ap.add_argument("--wait", metavar="ID", help="wait for a detached run, print its summary, exit with its code")
+    ap.add_argument("--wait-cap", type=float, default=540, metavar="SECONDS",
+                    help="--wait: longest block (default 540); exit 6 when the run is still going")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
+    if args.wait:
+        return wait_run(args.wait, args.wait_cap)
+    if args.detach:
+        return detach(argv, args)
     if args.from_workflow:
         return from_workflow(args.from_workflow, args.skip_step)
     if not args.gates_file:
@@ -709,13 +865,19 @@ def main(argv: list[str]) -> int:
     to_run = []
     results: list[tuple[str, dict, dict | None]] = [None] * len(gates)  # type: ignore[list-item]
     for i, g in enumerate(gates):
-        if g["needs"] and shutil.which(g["needs"]) is None:
+        if g["needs"] and shutil.which(g["needs"], path=gate_env(args.path_prepend).get("PATH")) is None:
             results[i] = ("skip", g, None)
         else:
             to_run.append(i)
 
+    env = gate_env(args.path_prepend)
+    env_script = args.env_script
+    if env_script and not os.path.isfile(os.path.expanduser(env_script)):
+        print(f"run_gates: --env-script {env_script}: no such file", file=sys.stderr)
+        return 2
+
     def work(i: int) -> tuple[int, dict]:
-        return i, run_gate(gates[i]["command"], root, args.timeout)
+        return i, run_gate(gates[i]["command"], root, args.timeout, env, env_script)
 
     if args.jobs > 1 and len(to_run) > 1:
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as ex:
@@ -726,7 +888,7 @@ def main(argv: list[str]) -> int:
             i, res = work(i)
             results[i] = ("ran", gates[i], res)
 
-    passed = failed = skipped = 0
+    passed = failed = skipped = notfound = 0
     for kind, g, res in results:
         if kind == "skip":
             skipped += 1
@@ -744,11 +906,19 @@ def main(argv: list[str]) -> int:
             print(f"PASS {g['name']} ({res['elapsed']:.1f}s)")
         else:
             failed += 1
-            print(f"FAIL {g['name']} (exit {res['rc']}, {res['elapsed']:.1f}s) — log {path}")
+            tag = ""
+            if res["rc"] == 127:
+                notfound += 1
+                tag = " — command not found: environment, not a gate failure"
+            print(f"FAIL {g['name']} (exit {res['rc']}, {res['elapsed']:.1f}s){tag} — log {path}")
             for line in excerpt(res["output"], args.lines, args.line_chars):
                 print(f"    {line}")
 
     print(f"run_gates: {passed} passed, {failed} failed, {skipped} skipped")
+    if notfound:
+        print(f"run_gates: {notfound} of the {failed} failed gate(s) exited 127 — command not found — "
+              "environment, not a gate failure; put the toolchain on PATH with --path-prepend DIR "
+              "or --env-script FILE, then rerun")
     if fingerprint and not failed:
         # Fingerprint again: a gate that rewrote the tree (a formatter) leaves no receipt.
         if tree_fingerprint(root) == fingerprint:
@@ -1048,6 +1218,76 @@ def selftest() -> int:
         with contextlib.redirect_stderr(err_io):
             rc_b = main(["--from-workflow", bad])
         check("flow-style steps refused with exit 2", rc_b == 2 and "refused" in err_io.getvalue())
+
+        # --path-prepend, --env-script, exit 127
+        tools = os.path.join(tmp, "tools")
+        os.makedirs(tools)
+        tool = os.path.join(tools, "faketool-xyz")
+        with open(tool, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\necho faketool ran\n")
+        os.chmod(tool, 0o755)
+        envsh = os.path.join(tmp, "env.sh")
+        with open(envsh, "w", encoding="utf-8") as fh:
+            fh.write("export FROM_ENV_SCRIPT=yes\n")
+        pgates = os.path.join(tmp, "path-gates.txt")
+        with open(pgates, "w", encoding="utf-8") as fh:
+            fh.write("tool: faketool-xyz\nenvv: test \"$FROM_ENV_SCRIPT\" = yes\n"
+                     "gated: faketool-xyz [needs: faketool-xyz]\n")
+        out_io = io.StringIO()
+        with contextlib.redirect_stdout(out_io):
+            rc_n = main([pgates, "--root", tmp, "--log-dir", os.path.join(tmp, "l1")])
+        o = out_io.getvalue()
+        check("without --path-prepend the tool gate is exit 127, labelled environment",
+              rc_n == 1 and "exit 127" in o and "environment, not a gate failure" in o
+              and "1 of the 2 failed gate(s) exited 127" in o and "SKIP gated" in o)
+        out_io = io.StringIO()
+        with contextlib.redirect_stdout(out_io):
+            rc_p = main([pgates, "--root", tmp, "--log-dir", os.path.join(tmp, "l2"),
+                         "--path-prepend", tools, "--env-script", envsh])
+        o = out_io.getvalue()
+        check("--path-prepend and --env-script make every gate green",
+              rc_p == 0 and "3 passed, 0 failed, 0 skipped" in o and "127" not in o)
+        out_io = io.StringIO()
+        with contextlib.redirect_stdout(out_io):
+            main([pgates, "--root", tmp, "--log-dir", os.path.join(tmp, "l3"), "--path-prepend", "$HOME/nope",
+                  "--path-prepend", tools, "--only", "tool"])
+        check("repeatable --path-prepend with $HOME expansion", "1 passed, 0 failed" in out_io.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()):
+            check("a missing --env-script file is refused with exit 2",
+                  main([pgates, "--root", tmp, "--env-script", os.path.join(tmp, "nope.sh")]) == 2)
+
+        # --detach then --wait
+        os.environ["RUN_GATES_STATE_DIR"] = os.path.join(tmp, "state")
+        try:
+            dgates = os.path.join(tmp, "detach-gates.txt")
+            with open(dgates, "w", encoding="utf-8") as fh:
+                fh.write("slow: sleep 1.5; echo done\nbad: exit 3\n")
+            t0 = time.monotonic()
+            out_io = io.StringIO()
+            with contextlib.redirect_stdout(out_io):
+                rc_d = main([dgates, "--root", tmp, "--detach", "--jobs", "2"])
+            d = out_io.getvalue()
+            m = re.search(r"detached run (\S+) \(pid", d)
+            check("--detach returns at once with a run id, state dir and receipt line",
+                  rc_d == 0 and m is not None and time.monotonic() - t0 < 1.4 and "receipt " in d and "--wait" in d)
+            if m:
+                rid = m.group(1)
+                out_io = io.StringIO()
+                with contextlib.redirect_stdout(out_io):
+                    rc_c = wait_run(rid, 0.2)
+                check("--wait at a short cap says still running, exit 6",
+                      rc_c == EXIT_STILL_RUNNING and "still running" in out_io.getvalue())
+                out_io = io.StringIO()
+                with contextlib.redirect_stdout(out_io):
+                    rc_w = wait_run(rid, 30)
+                w = out_io.getvalue()
+                check("--wait prints the foreground summary and the run's exit code",
+                      rc_w == 1 and "PASS slow" in w and "FAIL bad (exit 3" in w
+                      and "1 passed, 1 failed, 0 skipped" in w)
+            with contextlib.redirect_stderr(io.StringIO()):
+                check("--wait on an unknown id exits 2", wait_run("nope", 1) == 2)
+        finally:
+            os.environ.pop("RUN_GATES_STATE_DIR", None)
 
     for item in failures:
         print("SELFTEST FAIL  " + item)

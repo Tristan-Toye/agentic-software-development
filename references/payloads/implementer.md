@@ -133,6 +133,10 @@ A Phase 6 row-2 re-spawn — the implementation does not do what the contract
 promises — is also `MODE: fix` in the base worktree: the implementer's own
 worktree is gone, the tests are committed, and blindness no longer applies.
 `CRS:` is omitted and `FAILURES:` carries the verbatim failure output.
+`FAILURES:` carries every failing test of the round that belongs to this
+package, one block per test (the test name on its own line, then its verbatim
+output indented beneath): a round sends one fix payload per package, never one
+per failing test.
 
 **Both modes end their report with a `TOUCHED_BEYOND` section** listing every
 path they changed outside `OWNED_PATHS`, one line per path with a one-line

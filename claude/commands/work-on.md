@@ -48,7 +48,13 @@ and open items, the budgets spent, the next phase — and never as a diary; the
 detail is already in `## Build log`. End it with a `NEXT:` line — the exact
 next action with the paths, branches and IDs it needs; the tool refuses a
 summary without one — because a restore starts from that line instead of
-re-deriving where the run stands. Under Claude Code a hook also tells you when
+re-deriving where the run stands. Under Claude Code the call also writes for
+you: pass `dossier` (the live dossier's path) and the phase's judgement lines
+as `log` (each line as you would give `dossier_edit.py log`, the same kind
+prefix, no dash) and its owner note as `note` (the text, or `true` to post the
+summary), and the tool appends the lines and posts the note in that one call —
+never a separate turn for either. Under opencode those fields do not exist: use
+`dossier_edit.py log` and `ask_owner.py note` as below. Under Claude Code a hook also tells you when
 the context nears compaction: finish the step you are on, log it, and
 checkpoint then, `Phase <N> — <stage>, before compaction`, even mid-stage. Call it at a phase end, and at every
 stage boundary inside a phase, named `Phase <N> — <stage>` with the phase's own
@@ -60,6 +66,15 @@ cannot shrink what you must keep, so a long stage is what grows your context;
 after 80 tool calls without a checkpoint a tool result reminds you to close
 the stage you are in. Phases 0 and 1 are short: checkpoint them together,
 as "Phase 1", when Phase 1 ends.
+
+**Learned rules arrive with the checkpoint.** Name the next phase in the `NEXT:`
+line as `Phase <N>`. The checkpoint's result then ends with "Learned rules for
+Phase <N>": the ids and one-line titles of the rules this repository's
+`docs/learned-rules.md` tags for that phase (its `<!-- phases: -->` lines). Open
+the ones that bear on your step with `doc_section docs/learned-rules.md <id>`
+(several with `LRN-0073 | LRN-0081`); do not read the ledger whole. No list means
+no rule is tagged for that phase. The ledger stays the source of truth: the rule
+text there binds, and a list line is only a pointer to it.
 
 On both hosts a guard also refuses a whole read of a
 dossier or of a file over 20 KB (never of a phase file) and a VM test run that bypasses
@@ -95,7 +110,7 @@ not a chain you type. Before you compose a shell command, take the tool:
 
 | Work | One call |
 |---|---|
-| The state of a worktree after a change — branch, HEAD, ahead/behind, status, diff stat, in-progress merge | `python3 ${PLUGIN_ROOT}/scripts/git_state.py <X> --base <target> [--diff] [--worktrees]` |
+| The state of a worktree after a change — branch, HEAD, ahead/behind, status, diff stat, in-progress merge | `python3 ${PLUGIN_ROOT}/scripts/git_state.py <X> --base <target> [--full] [--diff] [--worktrees]` (compact by default; `--full` adds the diff-stat files) |
 | Run a suite or a subset, locally or in a Linux VM | `python3 ${PLUGIN_ROOT}/scripts/run_tests.py --log <file> [--vm <name> --workdir <X> --env-script <file>] -- <command>` |
 | Wait for CI and read its failures | `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N>` |
 | Several of the target's gate scripts | write them once to `.agent-staging/gates.txt` (`name: command` per line), then `python3 ${PLUGIN_ROOT}/scripts/run_gates.py .agent-staging/gates.txt --root <X>` |
@@ -155,6 +170,11 @@ and fetch only that.
 the appended system prompt and take precedence: ask only through
 `ask_owner.py`, end a stage with its `phase_checkpoint` and the `RUNNER:` line
 it names, and post `ask_owner.py note` for what is worth knowing mid-stage.
+A broken environment (the Lima VM down or unreachable, a shared compose service
+unhealthy, the disk low) is not a question: end the turn with one line
+`RUNNER: ENV <vm|stack|disk> <detail>`; the runner repairs vm and stack when the
+owner enabled it and answers `RUNNER ENV <kind>: repaired ..` (carry on) or
+`not repaired ..` (then ask as usual). A disk is never repaired automatically.
 
 **Deferred issues, as you go.** Whenever you notice a product-code issue you
 will not fix in this run — in a file you read, an arbitration's evidence, a
@@ -163,13 +183,22 @@ review reply, or a sub-agent's `NOTICED:` lines — log it at once with
 Never keep it in memory only: under the runner each stage is a new process,
 and Phase 9 builds the deferred ledger from these lines.
 
+**A log line or owner note that is not a checkpoint's goes in the same message
+as the next tool call, never a turn of its own.** Write the
+`dossier_edit.py log` or `ask_owner.py note` call beside the action it
+precedes (the next script, read or spawn); a request that carries nothing but
+bookkeeping re-reads the whole context for no work. Where a script takes
+`--log <live dossier>` it writes its own lines: pass the flag, do not retype
+the line.
+
 **Progress updates, every run.** The plugin's PostToolUse hook posts most of
 them for you, at no token cost, under the runner and interactively alike:
 each `phase_checkpoint` (a stage line), each `dossier_edit.py log` line, each
 suite and gates result, each workflow started and agent spawned, and each PR
-opened or merged. The dashboard's timeline shows only what a person wants to read, so post
-`ask_owner.py note --root R --dossier ID --text "..."` at the start and end of
-every phase and for what no command shows: a ruling you made, a plan you
+opened or merged. The dashboard's timeline shows only what a person wants to read, so post a note at the
+start of every phase (`ask_owner.py note --root R --dossier ID --text "..."`, in the message of
+the phase's first tool call), at its end (the checkpoint's `note`), and for
+what no command shows: a ruling you made, a plan you
 changed, a suite going green or red, why you are about to wait. Write each
 note for a person reading on a phone: what happened and what it means, in
 plain sentences, with markdown bullets or a small table where they help.
@@ -267,5 +296,5 @@ disagreement between a list and a phase is a defect in the list.
 ## Rules by phase
 
 The delegation rules and the size gates are in `phase-2.md`; spawning and the
-two workflows are in `phase-4.md`; the gates, the mode and the time-logging
+two workflows are in `phase-4-conditional.md`; the gates, the mode and the time-logging
 gate are in `phase-0.md`. Each phase file says which of them it needs.

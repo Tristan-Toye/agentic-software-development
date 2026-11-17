@@ -1,0 +1,226 @@
+{
+ "schema_version": "1.0.0",
+ "view": "L0",
+ "title": "W-145: read-only tool calls run concurrently (features)",
+ "meta": {
+  "change": "W-145",
+  "repo": "config-harness",
+  "commit": "30e77c94",
+  "generated_by": "agent",
+  "tools": [
+   {
+    "name": "cargo",
+    "version": "1.97.1"
+   },
+   {
+    "name": "cargo-modules",
+    "version": "0.27.0"
+   },
+   {
+    "name": "vr_extract",
+    "version": "1.0.0"
+   }
+  ],
+  "layers": {
+   "crates": {
+    "status": "ran"
+   },
+   "modules": {
+    "status": "ran",
+    "limited_to": [
+     "harness",
+     "protocol",
+     "test-support"
+    ],
+    "skipped_crates": [
+     "composition-root",
+     "fault",
+     "graph-runtime",
+     "platform",
+     "sandbox-tool",
+     "step-timing",
+     "workspace-hack"
+    ]
+   },
+   "calls": {
+    "status": "skipped",
+    "reason": "not requested"
+   }
+  }
+ },
+ "nodes": [
+  {
+   "id": "feature:read-calls-run-together",
+   "label": "Read-only tool calls of one answer run at the same time",
+   "kind": "feature",
+   "status": "added",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1668,
+     "note": "run_group: decide in order, run together, settle in order"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1723,
+     "note": "stream::iter(runs).buffer_unordered(read_concurrency)"
+    }
+   ]
+  },
+  {
+   "id": "feature:only-reads-are-grouped",
+   "label": "Only calls that change no file are grouped",
+   "kind": "feature",
+   "status": "added",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/pipeline.rs",
+     "line": 513,
+     "note": "Pipeline::reads_only"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1656,
+     "note": "is_groupable: not phase_boundary, not ask_human"
+    }
+   ]
+  },
+  {
+   "id": "feature:results-keep-call-order",
+   "label": "Decisions and results keep the order the model asked in",
+   "kind": "feature",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1668,
+     "note": "run_group decides and settles in call order"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1738,
+     "note": "settle_slots"
+    }
+   ]
+  },
+  {
+   "id": "feature:owner-sets-concurrency",
+   "label": "The operator sets how many reads run at once (default 4, 1 to 64)",
+   "kind": "feature",
+   "status": "added",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/migrations/0063_tool_read_concurrency.sql",
+     "line": 4,
+     "note": "column tool_read_concurrency, default 4, check 1..64"
+    },
+    {
+     "tier": "source",
+     "path": "crates/protocol/src/schema/settings.rs",
+     "line": 222,
+     "note": "RuntimeSettingsRow.tool_read_concurrency"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 71,
+     "note": "StepPolicy.read_concurrency"
+    }
+   ]
+  },
+  {
+   "id": "feature:one-keeps-old-behaviour",
+   "label": "Setting it to 1 keeps the one-after-the-other behaviour",
+   "kind": "feature",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1600,
+     "note": "run_len is 0 unless read_concurrency >= 2"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1890,
+     "note": "run_one_call stays the path of every ungrouped call"
+    }
+   ]
+  },
+  {
+   "id": "feature:git-reads-take-no-lock",
+   "label": "Git reads running together take no index lock",
+   "kind": "feature",
+   "status": "added",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/git_tools.rs",
+     "line": 981,
+     "note": "env for effect Reading: GIT_OPTIONAL_LOCKS=0 and diff.autoRefreshIndex=false"
+    },
+    {
+     "tier": "inferred",
+     "note": "the no-lock outcome rests on the dossier's MEASURED statement (git 2.49.1) and criterion 6; the source proves only that the pairs are set"
+    }
+   ]
+  },
+  {
+   "id": "feature:duration-is-own-time",
+   "label": "A call's recorded time no longer includes the wait for slower calls",
+   "kind": "feature",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2085,
+     "note": "run_in_group: the clock starts when the run is first polled"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2069,
+     "note": "run_phase"
+    }
+   ]
+  },
+  {
+   "id": "feature:boundary-reminder-unchanged",
+   "label": "The phase-boundary reminder shows the same counts as before",
+   "kind": "feature",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2681,
+     "note": "append_boundary_reminder_at takes the count the call's decide phase left"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2647,
+     "note": "count_call"
+    }
+   ]
+  }
+ ],
+ "edges": []
+}

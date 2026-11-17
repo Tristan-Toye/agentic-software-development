@@ -1,0 +1,311 @@
+{
+ "schema_version": "1.0.0",
+ "view": "L1",
+ "title": "W-145: one answer with several read-only calls",
+ "meta": {
+  "change": "W-145",
+  "repo": "config-harness",
+  "commit": "30e77c94",
+  "generated_by": "agent",
+  "tools": [
+   {
+    "name": "cargo",
+    "version": "1.97.1"
+   },
+   {
+    "name": "cargo-modules",
+    "version": "0.27.0"
+   },
+   {
+    "name": "vr_extract",
+    "version": "1.0.0"
+   }
+  ],
+  "layers": {
+   "crates": {
+    "status": "ran"
+   },
+   "modules": {
+    "status": "ran",
+    "limited_to": [
+     "harness",
+     "protocol",
+     "test-support"
+    ],
+    "skipped_crates": [
+     "composition-root",
+     "fault",
+     "graph-runtime",
+     "platform",
+     "sandbox-tool",
+     "step-timing",
+     "workspace-hack"
+    ]
+   },
+   "calls": {
+    "status": "skipped",
+    "reason": "not requested"
+   }
+  }
+ },
+ "lanes": [
+  {
+   "id": "lane:settings",
+   "label": "Settings (protocol)"
+  },
+  {
+   "id": "lane:step",
+   "label": "Turn step (harness::tools::step)"
+  },
+  {
+   "id": "lane:pipeline",
+   "label": "Pipeline (harness::tools::pipeline)"
+  },
+  {
+   "id": "lane:git",
+   "label": "Git tools (harness::tools::git_tools)"
+  }
+ ],
+ "nodes": [
+  {
+   "id": "step:read-the-setting",
+   "label": "Read how many reads may run at once",
+   "kind": "step",
+   "status": "added",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/protocol/migrations/0063_tool_read_concurrency.sql",
+     "line": 4,
+     "note": "tool_read_concurrency column"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 80,
+     "note": "StepPolicy::from_settings, floor of 1"
+    }
+   ],
+   "lane": "lane:settings",
+   "order": 1,
+   "detail": {
+    "before": "no such setting",
+    "after": "tool_read_concurrency read with a floor of 1 into StepPolicy"
+   }
+  },
+  {
+   "id": "step:know-which-are-reads",
+   "label": "Ask the registry which tools only read",
+   "kind": "step",
+   "status": "added",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/pipeline.rs",
+     "line": 513,
+     "note": "Pipeline::reads_only"
+    }
+   ],
+   "lane": "lane:pipeline",
+   "order": 2,
+   "detail": {
+    "before": "the step never asks",
+    "after": "reads_only is true when the spec's changes_files is false"
+   }
+  },
+  {
+   "id": "step:split-the-response",
+   "label": "Cut the answer's calls into groups of consecutive reads",
+   "kind": "step",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1587,
+     "note": "run_calls"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1656,
+     "note": "is_groupable"
+    }
+   ],
+   "lane": "lane:step",
+   "order": 3,
+   "detail": {
+    "before": "every call is taken one by one",
+    "after": "a run of two or more groupable calls becomes a group, only when the setting is 2 or more"
+   }
+  },
+  {
+   "id": "step:run-one-call",
+   "label": "Run an ungrouped call from start to end",
+   "kind": "step",
+   "status": "changed",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1890,
+     "note": "run_one_call"
+    }
+   ],
+   "lane": "lane:step",
+   "order": 4,
+   "detail": {
+    "before": "the path of every call",
+    "after": "the path of every call outside a group, and of all calls when the setting is 1"
+   }
+  },
+  {
+   "id": "step:decide-in-order",
+   "label": "Check each call of the group, one after the other",
+   "kind": "step",
+   "status": "added",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1931,
+     "note": "decide_call, called from run_group in call order"
+    }
+   ],
+   "lane": "lane:step",
+   "order": 5,
+   "detail": {
+    "before": "decide and run happen together for each call",
+    "after": "decide phases run first, in call order"
+   }
+  },
+  {
+   "id": "step:run-reads-together",
+   "label": "Run the group's reads at the same time",
+   "kind": "step",
+   "status": "added",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1714,
+     "note": "run_slots_concurrently"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1723,
+     "note": "buffer_unordered(read_concurrency)"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2085,
+     "note": "run_in_group: own clock"
+    }
+   ],
+   "lane": "lane:step",
+   "order": 6,
+   "detail": {
+    "before": "each read waits for the one before",
+    "after": "at most read_concurrency reads run together on the step's own task; each has its own clock"
+   }
+  },
+  {
+   "id": "step:git-reads-read-env",
+   "label": "Git reads set the no-lock environment",
+   "kind": "step",
+   "status": "added",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/git_tools.rs",
+     "line": 981,
+     "note": "env pairs for effect Reading"
+    }
+   ],
+   "lane": "lane:git",
+   "order": 7,
+   "detail": {
+    "before": "git reads could take the index lock",
+    "after": "GIT_OPTIONAL_LOCKS=0 and diff.autoRefreshIndex=false are added to every read"
+   }
+  },
+  {
+   "id": "step:settle-in-order",
+   "label": "Record results and reminders in call order",
+   "kind": "step",
+   "status": "added",
+   "label_source": "llm",
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1738,
+     "note": "settle_slots"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2100,
+     "note": "settle_phase"
+    },
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 2681,
+     "note": "append_boundary_reminder_at"
+    }
+   ],
+   "lane": "lane:step",
+   "order": 8,
+   "detail": {
+    "before": "each call settles before the next starts",
+    "after": "settle phases run in call order; the reminder uses the count its own decide phase kept"
+   }
+  }
+ ],
+ "edges": [],
+ "flows": [
+  {
+   "id": "flow:one-answer-many-calls",
+   "label": "An answer with several tool calls",
+   "label_source": "llm",
+   "lanes": [
+    "lane:settings",
+    "lane:step",
+    "lane:pipeline",
+    "lane:git"
+   ],
+   "status": "changed",
+   "before": [
+    "step:run-one-call"
+   ],
+   "after": [
+    "step:read-the-setting",
+    "step:know-which-are-reads",
+    "step:split-the-response",
+    "step:run-one-call",
+    "step:decide-in-order",
+    "step:run-reads-together",
+    "step:git-reads-read-env",
+    "step:settle-in-order"
+   ],
+   "evidence": [
+    {
+     "tier": "source",
+     "path": "crates/harness/src/tools/step.rs",
+     "line": 1587,
+     "note": "run_calls"
+    }
+   ]
+  }
+ ]
+}

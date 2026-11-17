@@ -1,0 +1,71 @@
+{
+  "schema_version": "1.0.0",
+  "view": "L2",
+  "title": "A node label of exactly 80 characters validates",
+  "meta": {
+    "repo": "fixture",
+    "commit": "0000000",
+    "generated_by": "hand",
+    "tools": []
+  },
+  "groups": [
+    {
+      "id": "group:core",
+      "label": "Core",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "module:demo::a",
+      "label": "a",
+      "kind": "module",
+      "status": "context",
+      "group": "group:core",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 1
+        }
+      ]
+    },
+    {
+      "id": "module:demo::b",
+      "label": "Ingest rows from the upstream ledger and checks them against the open balance xx",
+      "kind": "module",
+      "status": "context",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 2
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge:uses:module:demo::a:module:demo::b",
+      "source": "module:demo::a",
+      "target": "module:demo::b",
+      "kind": "uses",
+      "status": "context",
+      "resolution": "static",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/lib.rs",
+          "line": 3
+        }
+      ]
+    }
+  ]
+}

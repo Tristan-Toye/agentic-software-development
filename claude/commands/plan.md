@@ -166,25 +166,58 @@ one line in the report, never a reason to read the older tree.
    a constraint you must respect, and it may answer the question outright. If an
    existing ADR already covers this, say so and stop — amend that ADR instead
    of planning duplicate work.
-2. **Trace the code.** Find where the problem lives. Follow the real call path;
+2. **Check the dossiers already planned.** Search the titles and `## Problem`
+   sections of every dossier in `${RUN_ROOT}/.discovery/dossiers/` whose status
+   is not `dropped` for the files, symbols and failure this request names
+   (`grep -il` on two or three distinctive terms, then read only the hits'
+   front matter and Problem). A dossier's status on the base can lag its
+   build, so also list the open pull requests whose title names a dossier
+   (`gh pr list --state open --search "W- in:title"`) and the open `plan/*`
+   branches. When a dossier that is not `done`, or an open pull request,
+   already addresses the same problem — even by another approach — stop and
+   report `covered by W-NNN (<status or PR>)`: extend that dossier through its
+   own flow instead of minting a second one, and name any part it leaves out
+   so the owner can decide. A `done` dossier on the same problem is not a stop
+   when the defect is still in the tree: cite it in `## Problem` as the change
+   that did not hold, with the anchor that proves it.
+3. **Learn the shape from the diagrams first.** When the target repo has
+   `docs/architecture/`, call `arch_find` on each file path and symbol the
+   change will touch before reading code: it returns the containers, classes
+   and call order around them (with their source anchors) at a fraction of the
+   cost of the `.md` or `.json` files, and `arch_find` with a `diagram` and an
+   empty `query` outlines one diagram. Note which diagrams the change would
+   alter: Phase 4 records them as the `Diagrams affected:` line. Note too
+   whether the change introduces a flow that crosses crates, processes or
+   containers (or a new external system) that no existing `seq-*` diagram
+   shows: Phase 4 records a proposed diagram for it as the `Diagrams new:`
+   line. Searching the existing sequence diagrams for the flow is how you
+   tell "already shown" from "new".
+4. **Trace the code.** Find where the problem lives. Follow the real call path;
    never assume a function does what its name says. Every claim you will write
    as `FACT` needs a `path:line` anchor you actually opened.
-3. **Use history when history answers the question.** `git log`, `git blame`,
+5. **Use history when history answers the question.** `git log`, `git blame`,
    `git show` are a command away. A regression window or a churn hotspot is
    evidence.
-4. **Run an experiment when you need one.** For a suspected bug, reproduce it.
+6. **Run an experiment when you need one.** For a suspected bug, reproduce it.
    For an empirical unknown, run a timeboxed experiment in a throwaway
    `git worktree`, then remove it. Ask before you run anything that writes
    outside the repository.
-5. **Record what you cannot settle** as `UNKNOWN` with the name of who or what
+7. **Record what you cannot settle** as `UNKNOWN` with the name of who or what
    answers it. Never launder an unknown into an inference.
 
 **Checkpoint each phase.** Call `phase_checkpoint` at the end of every
-phase below, named `Phase <n> — <title>`, and in Phase 2 after every few
+phase below, named `Phase <n> — plan: <title>`, and in Phase 2 after every few
 settled findings: the summary names the findings file, what is settled, what
 is open, and a `NEXT:` line. Under the runner each restart starts from these
 checkpoints; a plan with none redoes its whole investigation (one recorded
 plan restarted seven times with no checkpoint and was still at intake).
+
+**Learned rules arrive with the checkpoint.** The result of a `plan:` checkpoint
+ends with "Learned rules for plan": the ids and one-line titles of the rules in
+`docs/learned-rules.md` tagged `plan` or `all`. Make the first checkpoint right
+after Phase 0 (`Phase 0 — plan: mode`) so the list reaches you before intake, and
+open the rules that bear on the dossier with `doc_section docs/learned-rules.md
+<id>` instead of reading the ledger whole. The ledger stays the source of truth.
 
 ## Phase 3 — Scope: one dossier by default
 
@@ -216,17 +249,37 @@ better than tidiness.
 anything, but it records what this dossier builds on, and the open-work
 report draws its dependency graph from those links: a recorded plan dropped
 a done blocker and left that dossier in a box of its own. Remove a blocker
-only when the dependency itself was wrong, and say so in `## Build log` as
-`BLOCKER-REMOVED: W-NNN — <reason>`; `validate_pipeline.py --dossier` refuses
-a removal without that line.
+only when the dependency itself was wrong. The guard decides from facts: a
+blocker whose dossier is `done` may leave unasked; any other leaves only on
+the same call that carries the reason, `dossier_edit.py remove|set ...
+--reason '<why>'`, which records it (`.discovery/blocker-removals/`) and
+writes the one build-log line itself. `validate_pipeline.py --dossier` reads
+that record, not a log line.
 
 ## Phase 4 — Write the dossier
 
-Mint the ID atomically (`formats/evidence-and-ids.md` §4) and write
+Claim the ID from the central ledger, `python3 ${PLUGIN_ROOT}/scripts/claim_id.py
+--repo <repo> --kind W --for plan/<KEY>` (`formats/evidence-and-ids.md` §4):
+it is final, and no open sibling plan PR holds it. Only when the claim exits 1
+(no remote, no push access) mint provisionally as §4 says. Then write
 `${RUN_ROOT}/.discovery/dossiers/W-NNN-<slug>.md` with the front matter and
-the six sections in order. In committed mode the number is provisional until
-the plan PR merges — Phase 7 re-checks it against the base tip before the
-push.
+the six sections in order. A provisional number is settled at Phase 7, which
+re-checks it against the base tip before the push.
+
+End `## Approach` with one line, `Diagrams affected: <file stems>` (the
+`docs/architecture/` files, stem without extension, that this change makes
+stale: `c4-classes-ports, seq-boot`) or `Diagrams affected: none`; a repo
+without `docs/architecture/` gets `none`. Then one more line,
+`Diagrams new: <proposed stem> — <one line: the flow>` (several
+comma-separated: `seq-x — flow a, c1-ext — the new system`) or
+`Diagrams new: none`. It lists a diagram the change must **add**: a flow that
+crosses crates, processes or containers and that no existing `seq-*` diagram
+shows (stem `seq-<flow>`), or a new external system (stem `c1-<name>`, an
+addition to the c1 context). A change inside one component, or a flow an
+existing diagram already shows (that one goes on `Diagrams affected:`), gets
+`none`; so does a repo without `docs/architecture/`. The plan reviewer checks
+both lines against the change, and `/work-on` Phase 9 creates every listed
+diagram and gates on both (`validate_pipeline.py --diagram-gate`).
 
 All six matter. Two of them get extra care because **their errors are invisible
 until they are expensive** — the fan-out consumes them mechanically, so a defect
@@ -425,7 +478,8 @@ a change to review, so finish it as one:
    `--finalize-ids` renumbers the dossiers this branch added whose `id:` a
    file on the base already carries — the file name, `id:`, and every
    mention inside this branch's own dossiers — and leaves the sibling alone.
-   Re-run the validator on the renamed file. A collision with a plan PR
+   Re-run the validator on the renamed file. With a claimed ID (Phase 4)
+   nothing renumbers here. A provisional ID colliding with a plan PR
    still open cannot be seen from here: once both land,
    `validate_pipeline.py --all` names the two files, `/work-on` Phase 0
    stops on them, and the later one renumbers in its own PR the same way.
@@ -437,6 +491,9 @@ a change to review, so finish it as one:
    gh pr create --base <base> --head plan/<KEY> \
      --title "<KEY>: plan — <title>" --body-file <scratch>/plan-pr.md
    ```
+
+   Not a draft: the plan is reviewed and final; a draft is skipped by the
+   dashboard's Merge all.
 
    You write the body yourself — no drafter spawn; this command spawns one
    agent, the reviewer. Four parts: `## Problem` and `## Approach` verbatim,

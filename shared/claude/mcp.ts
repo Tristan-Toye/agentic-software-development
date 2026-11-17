@@ -1,6 +1,6 @@
 // A minimal stdio MCP server (JSON-RPC 2.0, newline-delimited) for the Claude Code plugin.
-// It serves the six tools of shared/tools.ts: code_outline, code_item, code_find,
-// doc_section, code_replace, phase_checkpoint. Registered by the plugin's .mcp.json, so
+// It serves the seven tools of shared/tools.ts: code_outline, code_item, code_find,
+// doc_section, arch_find, code_replace, phase_checkpoint. Registered by the plugin's .mcp.json, so
 // Claude Code names them mcp__plugin_agentic-software-development_nav__<tool>.
 //
 // The code_* tools run scripts/code_nav.py in CLAUDE_PROJECT_DIR (Claude Code sets it in
@@ -9,6 +9,8 @@
 // is the tool call itself in the session transcript, which the SessionStart(compact) hook
 // reads back after a compaction.
 import { MAX_SUMMARY_CHARS, TOOL, validateCheckpoint } from "../checkpoint"
+import { applyCheckpointWrites } from "./checkpoint-writes"
+import { learnedRulesFor } from "../ledger"
 import { TOOLS, describeTool, inputSchema, toolByName, type ToolDef } from "../tools"
 
 const SERVER = { name: "agentic-software-development-nav", version: "1.8.0" }
@@ -27,6 +29,14 @@ function checkArgs(def: ToolDef, args: unknown): string | undefined {
       if (!p.optional) return `missing required argument "${p.name}"`
       continue
     }
+    if (p.type === "array") {
+      if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) return `argument "${p.name}" must be an array of strings`
+      continue
+    }
+    if (p.type === "string|boolean") {
+      if (typeof v !== "string" && typeof v !== "boolean") return `argument "${p.name}" must be a string or a boolean`
+      continue
+    }
     if (typeof v !== p.type) return `argument "${p.name}" must be a ${p.type}`
     if (p.enum && !p.enum.includes(v as string)) return `argument "${p.name}" must be one of ${p.enum.join(", ")}`
   }
@@ -42,10 +52,14 @@ async function callTool(name: string, args: unknown) {
   if (name === TOOL) {
     const why = validateCheckpoint(a.phase, a.summary)
     if (why) return text(`${TOOL}: refused — ${why}`, true)
+    const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd()
+    const wrote = applyCheckpointWrites(a, a.phase, a.summary, dir)
     return text(
       `${TOOL}: recorded after ${a.phase} (summary ${a.summary.length} of ${MAX_SUMMARY_CHARS} characters). ` +
         "Claude Code compacts on its own and cannot be cut from here; after the next compaction this checkpoint " +
-        "and every earlier one are restored into your context with the original task.",
+        "and every earlier one are restored into your context with the original task." +
+        wrote +
+        learnedRulesFor(dir, a.phase, a.summary),
     )
   }
   const out = await def.execute!(a, { directory: process.env.CLAUDE_PROJECT_DIR || process.cwd() })

@@ -2,9 +2,10 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { rulingRefused } from "./rulings.ts"
 
 export type Update = { ts: string; kind: "runner" | "stage" | "update"; text: string; stage?: string; state?: string; auto?: boolean; event?: string; status?: string; agent_id?: string }
-export type RunnerState = { state: "running" | "waiting" | "paused" | "queued" | "done" | "failed" | "stopped"; waitingFor?: "stub"; stage: string; pid: number; started: string; root: string; account?: string; resumesAt?: string; command?: string; session?: string; items?: string }
+export type RunnerState = { state: "running" | "testing" | "waiting" | "paused" | "queued" | "done" | "failed" | "stopped"; waitingFor?: "stub"; stage: string; pid: number; started: string; root: string; account?: string; resumesAt?: string; command?: string; session?: string; items?: string }
 
 export const runsDir = (): string => process.env.ASD_RUNS_DIR || join(homedir(), ".agentic", "runs")
 
@@ -38,7 +39,7 @@ export function integrationStopped(integrate: { state: string } | null, runner: 
 export function integrationPhase(integrate: { state: string } | null, runner: { state: string } | null): string {
   if (integrationStopped(integrate, runner)) return "integration stopped"
   if (integrate?.state === "merging") return "merging dossiers into stub"
-  if (runner && ["running", "waiting", "paused", "queued"].includes(runner.state)) return "validating stub"
+  if (runner && ["running", "testing", "waiting", "paused", "queued"].includes(runner.state)) return "validating stub"
   if (integrate?.state === "merged") return "merged into development"
   if (runner?.state === "done") return "validation finished · your merge"
   return "integrating"
@@ -46,7 +47,7 @@ export function integrationPhase(integrate: { state: string } | null, runner: { 
 
 /** Whether Integrate is offered, on the stub's card and on its page: an open stub, or one whose integration failed and can be retried. Never while its merges or its /stub run are going. */
 export function canIntegrate(stubState: string, integrate: { state: string } | null, runner: { state: string } | null): boolean {
-  if (runner && ["running", "waiting", "paused", "queued"].includes(runner.state)) return false
+  if (runner && ["running", "testing", "waiting", "paused", "queued"].includes(runner.state)) return false
   return stubState === "accepting" ? integrate?.state !== "merging" : stubState === "integrating" && integrate?.state === "failed"
 }
 
@@ -75,8 +76,8 @@ export function pidAlive(pid: number): boolean {
 export function readRunner(key: string, dir = runsDir(), alive: (pid: number) => boolean = pidAlive): RunnerState | null {
   try {
     const j = JSON.parse(readFileSync(join(dir, `${key}.runner.json`), "utf8"))
-    let state = ["running", "waiting", "paused", "queued", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
-    if ((state === "running" || state === "waiting" || state === "paused" || state === "queued") && !alive(Number(j.pid))) state = "stopped"
+    let state = ["running", "testing", "waiting", "paused", "queued", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
+    if ((state === "running" || state === "testing" || state === "waiting" || state === "paused" || state === "queued") && !alive(Number(j.pid))) state = "stopped"
     // A run that waits with no question is waiting for the stub being integrated (`wait_for_stub`), not for the owner.
     const waitingFor = state === "waiting" && Array.isArray(j.questions) && j.questions.length === 0 ? { waitingFor: "stub" as const } : {}
     return { ...waitingFor, state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "", ...(typeof j.account === "string" ? { account: j.account } : {}), ...(typeof j.resumes_at === "string" ? { resumesAt: j.resumes_at } : {}), ...(typeof j.command === "string" ? { command: j.command } : {}), ...(typeof j.session === "string" && j.session ? { session: j.session } : {}), ...(typeof j.items === "string" && j.items ? { items: j.items } : {}) }
@@ -115,6 +116,8 @@ export type Block = { id: string; ts: string; tool: string; target: string; reas
 /** The refused calls of a run that the owner has not ruled on (`block-ruling` lines), newest first, at most `limit`; one per target. */
 /** A runner line that starts a new stage process: a block an older process hit has no one left waiting on it. */
 const NEW_PROCESS = /^(stage \d+ start|start \/|restarting stage|resumed after)/
+/** A refusal because the classifier could not be reached, not because it judged the call. */
+export const TRANSIENT_BLOCK = /classifier (is )?unavailable/i
 export function readBlocks(key: string, dir = runsDir(), limit = 5): Block[] {
   let all: any[] = []
   try { all = readFileSync(join(dir, `${key}.jsonl`), "utf8").split("\n").filter((l) => l.includes('"event":"block') || (l.includes('"runner"') && /stage \d+ start|start \/|restarting stage|resumed after/.test(l))).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean) } catch { return [] }
@@ -128,6 +131,8 @@ export function readBlocks(key: string, dir = runsDir(), limit = 5): Block[] {
   const seen = new Set<string>(); const out: Block[] = []
   for (const o of lines.reverse()) {
     if (o.event !== "blocked" || ruled.has(String(o.tool_use_id ?? "")) || ruledTargets.has(String(o.target ?? ""))) continue
+    // An outage of the safety check is no ruling on the call: the agent retries it, and nothing waits on the owner.
+    if (TRANSIENT_BLOCK.test(String(o.reason ?? ""))) continue
     const t = String(o.target ?? "")
     if (seen.has(t)) continue
     seen.add(t)
@@ -146,9 +151,9 @@ export function checkRule(rule: string): string {
   const inner = m[2].trim()
   if (!inner || /^\*+$/.test(inner) || /^\*\s/.test(inner)) return "that rule would allow every command"
   if (m[1] === "Bash" && /^(bash|sh|zsh|python3?|node|bun|npx|npm|uv|pip3?|perl|ruby)\b(\s+\*|\*|$)/.test(inner)) return "a rule for a whole interpreter is dropped in auto mode; name the command"
-  return ""
+  return rulingRefused(rule)
 }
-export const runnerActive = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "waiting" || r?.state === "paused" || r?.state === "queued"
+export const runnerActive = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "testing" || r?.state === "waiting" || r?.state === "paused" || r?.state === "queued"
 
 /** First paragraph of the `## Problem` section, else of the body after the front matter and title; <= 300 chars. */
 export function summaryOf(text: string): string {

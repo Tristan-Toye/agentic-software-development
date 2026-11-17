@@ -1,9 +1,10 @@
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
+import { archFind } from "./arch"
 import { MAX_SUMMARY_CHARS, TOOL as CHECKPOINT } from "./checkpoint"
 
-// Host-neutral definitions of the six tools. opencode's plugins build `tool({...})` from
+// Host-neutral definitions of the seven tools. opencode's plugins build `tool({...})` from
 // them with tool.schema; the Claude Code MCP server (shared/claude/mcp.ts) builds JSON
 // Schema from the same list. Description, parameters and (for the code_* tools) execute
 // live here once. phase_checkpoint has no execute: what it does differs per host.
@@ -16,8 +17,11 @@ export type Host = "opencode" | "claude"
 
 export type Param = {
   name: string
-  type: "string" | "number" | "boolean"
+  // "array" is a list of strings; "string|boolean" takes either (a Claude-only checkpoint field).
+  type: "string" | "number" | "boolean" | "array" | "string|boolean"
   optional?: boolean
+  // The hosts that offer this parameter; absent = both. Keeps a Claude-only field out of opencode's schema.
+  hosts?: Host[]
   description: string
   // Only for a string parameter with a closed set of values.
   enum?: string[]
@@ -155,6 +159,24 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "arch_find",
+    description:
+      "Use instead of reading a target repo's docs/architecture/*.md or *.json whole: finds the diagram elements " +
+      "that bear on a symbol (`TrackStore`), a label substring or a repo path (`crates/harness/src/track.rs`) and " +
+      "returns compact text per match: `diagram · element id · kind · label`, its source anchors (path:line), " +
+      "stereotype, up to 12 members and its one-hop neighbours (edge label and the other end). Learn the shape " +
+      "(containers, classes, call order) before reading code. Matches label, id, members and evidence paths; at " +
+      "most 40 matches, with the count dropped. `diagram` restricts to one file stem (`seq-boot`, " +
+      "`c4-classes-ports`; a multi-block diagram's blocks `x.1`, `x.2` come with `x`). An empty `query` with a " +
+      "`diagram` returns that diagram's outline (title, lanes or groups, node labels); with neither, the list of diagrams.",
+    params: [
+      { name: "query", type: "string", description: "symbol, label substring or repo-relative source path; empty with `diagram` for the outline" },
+      { name: "diagram", type: "string", optional: true, description: "restrict to one diagram file stem, e.g. `seq-conversation-compaction`" },
+      { name: "repo_root", type: "string", optional: true, description: "the target repo (the directory holding docs/architecture); default the working directory" },
+    ],
+    execute: ({ query, diagram, repo_root }, ctx) => archFind(String(query ?? ""), diagram, repo_root ? abs(repo_root, ctx) : ctx.directory),
+  },
+  {
     name: "code_replace",
     description:
       "Use instead of an edit that needs the old text pasted or the whole file read: replace ONE Rust, Python or C# " +
@@ -200,7 +222,9 @@ export const TOOLS: ToolDef[] = [
         "task and the summaries of completed phases and stages.",
       claude:
         "It records the checkpoint and does not cut: Claude Code compacts on its own, and after each compaction the " +
-        "original task and the summaries of every checkpoint are restored into your context.",
+        "original task and the summaries of every checkpoint are restored into your context. With `dossier` it also " +
+        "appends your `log` lines to ## Build log and posts your `note` to the owner, in this same call: put the " +
+        "stage's judgement lines and its owner note here instead of spending a turn on each.",
     },
     params: [
       {
@@ -209,6 +233,28 @@ export const TOOLS: ToolDef[] = [
         description: 'what just finished, starting "Phase <N>": "Phase 3 — Mechanical check", or a stage: "Phase 6 — round 2", "Phase 4 — wave 1"',
       },
       { name: "summary", type: "string", description: "the hand-off to the rest of the run, self-contained" },
+      {
+        name: "dossier",
+        type: "string",
+        optional: true,
+        hosts: ["claude"],
+        description: "path of the live dossier (needed with `log` or `note`); the tool appends and posts for it, so you do not spend a turn on either",
+      },
+      {
+        name: "log",
+        type: "array",
+        optional: true,
+        hosts: ["claude"],
+        description:
+          "build-log lines (kind prefix included, no leading dash) to append to the dossier's ## Build log in this call: the stage's rulings and judgement lines. Skips a line already there.",
+      },
+      {
+        name: "note",
+        type: "string|boolean",
+        optional: true,
+        hosts: ["claude"],
+        description: "the owner note for this boundary: the text, or true to post the summary itself. Omit for none. Goes where `ask_owner.py note` goes.",
+      },
     ],
   },
 ]
@@ -225,15 +271,21 @@ export function describeTool(def: ToolDef, host: Host): string {
 }
 
 // JSON Schema (draft 2020-12 subset) of a tool's parameters, for MCP.
-export function inputSchema(def: ToolDef): Record<string, unknown> {
+export function inputSchema(def: ToolDef, host: Host = "claude"): Record<string, unknown> {
   const properties: Record<string, unknown> = {}
   for (const p of def.params) {
-    properties[p.name] = { type: p.type, description: p.description, ...(p.enum ? { enum: p.enum } : {}) }
+    if (p.hosts && !p.hosts.includes(host)) continue
+    properties[p.name] = {
+      type: p.type === "string|boolean" ? ["string", "boolean"] : p.type,
+      description: p.description,
+      ...(p.type === "array" ? { items: { type: "string" } } : {}),
+      ...(p.enum ? { enum: p.enum } : {}),
+    }
   }
   return {
     type: "object",
     properties,
-    required: def.params.filter((p) => !p.optional).map((p) => p.name),
+    required: def.params.filter((p) => !p.optional && (!p.hosts || p.hosts.includes(host))).map((p) => p.name),
     additionalProperties: false,
   }
 }
