@@ -377,6 +377,36 @@ restarted server answers at once from them while its first scan runs.
     `/stub` writes with no gap, unresolved item or `ATTENTION:` line, no open
     question, no open PR of this integration into the stub, no change to a guarded
     path. Otherwise the PR stays the owner's, and the stub page and timeline say why.
+  - **Automatic work** (a toggle per repository, off by default; `auto_work.py`).
+    One switch, on the repository's page and as `auto_work.py --enable --root R`
+    (`--disable` turns it off). It is one switch with the scripted stub merge
+    above, not two: a cycle ends with that merge, so `--enable` turns
+    `land_stub.py` on for the repository too (`land_stub.py --enable` alone still
+    works for a repository that wants only the merge). A cycle: the stub's PR
+    into development merging (or **Start cycle now**) snapshots the frontier once,
+    the dossiers `ready` with every `blocked_by` done (to /work-on) and the
+    `planned` ones with every `blocked_by` done (to /plan, then /work-on); only
+    that snapshot is worked, what becomes eligible later waits for the next
+    start. Every member starts through `run_dossier.py`, so the slot cap, the
+    `queued` state, the account routing and the owner questions apply unchanged.
+    A member whose build finished (status `pr` or `done`) gets "Fix all
+    deferred" exactly as the Deferred button sends it (every open item except
+    the ones ruled leave-open). When every member is finished (its fix run done
+    and no open item left), the non-code PRs are merged as "Merge all" does and
+    awaited, then the stub is integrated (the Integrate button), then
+    `land_stub.py` merges the stub PR; that merge starts the next cycle. Owner
+    questions and diagram reviews are only waited for, never answered, skipped or
+    timed out. A run that ends `failed` or `stopped`, never shows up, a
+    non-code PR that cannot merge, a failed integration or a failed /stub run
+    pauses the cycle (state `paused`, the reason on the page); nothing retries by
+    itself, **Resume** (or `--resume`) goes on. Turning it off starts nothing new
+    and never stops a live run. The decisions come from the script, not an agent,
+    on the page's 2-minute interval: the server hands it the facts on stdin
+    (`--tick --facts -`). State: `~/.agentic/runs/<repo>.auto-work.json`
+    (`cycle`, `step`, `phase`, `started`, `stub`, `paused`, `members` with `stage`,
+    `state` and `error`), written atomically; routes `GET`/`POST /api/autowork`
+    (`enable`, `disable`, `start-now`, `resume`). Env: `ASD_AUTO_WORK_BIN`,
+    `ASD_AUTO_WORK_GRACE`.
   - **One merge queue for both kinds of PR** (`merge_dossier.py`): a
     dossier's stack into its stub, and a plan or docs PR into development
     (`--enqueue-pr`). FIFO per repository, one worker. Each item goes through

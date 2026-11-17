@@ -28,6 +28,7 @@ import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runst
 import { readAccounts, usageDir } from "./accounts.ts"
 import { mergeDetectorEnabled, nextMerges, readMergeSeen, writeMergeSeen, type MergedPr } from "./merges.ts"
 import { sh } from "./runs.ts"
+import { argvFor, buildFacts, runAutoWork, tickAutoWork, viewsFor } from "./autowork.ts"
 import { logBlock } from "../claude/permission-denied.ts"
 
 const DIR = storeDir()
@@ -627,6 +628,18 @@ export async function handle(req: Request): Promise<Response> {
   }
   // Integrate a stub: its finished dossiers through the merge queue (FIFO), then /stub on the runner; and Stop/Resume of
   // that /stub run. POST {repo, branch, action: integrate|stop|resume}.
+  if (req.method === "GET" && path === "/api/autowork") return json({ repos: viewsFor((await getRuns(() => readAll(DIR))).runs) })
+  if (req.method === "POST" && path === "/api/autowork") {
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const b = await req.json().catch(() => ({})) as { repo?: string; action?: string }
+    const v = viewsFor((await getRuns(() => readAll(DIR))).runs).find((x) => x.repo === b.repo)
+    const argv = v ? argvFor(String(b.action), v.root) : null
+    if (!v || !argv) return json({ error: "no such repository, or the action is not enable, disable, start-now or resume" }, v ? 400 : 404)
+    const r = await runAutoWork(argv)
+    emitChange("runs")
+    return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)
+  }
   if (req.method === "POST" && path === "/api/stub/control") {
     const origin = req.headers.get("origin")
     if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
@@ -1121,6 +1134,16 @@ async function main(): Promise<void> {
   const reviveQueues = () => { try {
     Bun.spawn(["python3", mergeScript(), "--revive"], { stdout: "ignore", stderr: "ignore", stdin: "ignore" }).unref()
     Bun.spawn(["python3", runnerScript(), "revive"], { stdout: "ignore", stderr: "ignore", stdin: "ignore" }).unref()
+  } catch { /* the next tick tries again */ }
+    void autoWorkTick() }
+  // Automatic work: the facts go to the script, which decides (no agent) and takes at most one step per repository. Off unless a repository is switched on.
+  const autoWorkTick = async () => { try {
+    const runs = (await getRuns(() => readAll(DIR))).runs
+    const stubs = (await getStubs(() => readAll(DIR))).repos.map((r) => ({ ...r, stubs: r.stubs.map((s) => {
+      const key = `${r.repo}.${s.branch.replace(/\//g, "-")}`
+      return { ...s, canIntegrate: canIntegrate(s.state, readIntegrate(key), readRunner(key)) }
+    }) }))
+    tickAutoWork(buildFacts(runs, stubs))
   } catch { /* the next tick tries again */ } }
   setTimeout(reviveQueues, 5_000)
   setInterval(reviveQueues, 120_000)

@@ -643,6 +643,21 @@ The prompt tells the orchestrator these rules:
 
 The dashboard shows these lines on each running dossier, newest first.
 
+## Automatic work (`scripts/auto_work.py`)
+
+Off unless the owner turns it on for a repository (the dashboard toggle, or
+`auto_work.py --enable --root R`, which also turns the scripted stub merge on).
+It starts nothing itself: every member of a cycle goes through
+`run_dossier.py <ID> --command work-on|plan|fix-deferred`, so the slot cap, the
+`queued` state, the account routing and every owner question work as for a
+click. It follows the runner's file per dossier (`<repo>.<ID>.runner.json`):
+a state in `running`, `testing`, `waiting`, `queued` or `paused` is waited for;
+`failed` or `stopped` pauses the cycle. The file lags a start by a few seconds,
+so a started run is matched by its command and its `pid`/`started` pair before its
+end is believed, and a run that shows nothing within `ASD_AUTO_WORK_GRACE`
+seconds (default 600) pauses the cycle. See `references/owner-questions.md`
+(Dashboard, Automatic work) for the cycle.
+
 ## Standing repair of the VM and the stack (`scripts/stack_repair.py`)
 
 Off unless `ASD_STACK_REPAIR=1`: a repair restarts resources other runs share,

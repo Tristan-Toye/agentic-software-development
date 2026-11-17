@@ -18,6 +18,7 @@ import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPane
 import { blockedByOf, controlsFor, runTarget } from "../questions/controls.ts"
 import { readAccounts } from "../questions/accounts.ts"
 import { execFileSync } from "node:child_process"
+import { argvFor, autoWorkOn, buildFacts, readAutoState, viewsFor } from "../questions/autowork.ts"
 
 let failed = 0
 function check(name: string, ok: boolean, detail = ""): void {
@@ -964,6 +965,34 @@ try {
   check("socket: the same message on an old then a new socket runs onAction once", actions.length === 1 && FakeWS.all.length === 2, JSON.stringify({ actions, n: FakeWS.all.length }))
   check("socket: both envelopes are acked, one duplicate is logged", oldWs.sent[0] === '{"envelope_id":"e1"}' && newWs.sent[0] === '{"envelope_id":"e2"}' && logs.filter((l) => l.startsWith("slack duplicate")).length === 1)
   check("socket: the envelope log line carries the ids", logs.some((l) => l.includes("envelope_id=e2") && l.includes("ts=5.5") && l.includes("retry_attempt=1")))
+}
+
+{
+  // Automatic work: the switch, the facts the script is given, the state the page shows, the toggle route's action names.
+  const dir = mkdtempSync(join(tmpdir(), "aw-"))
+  const sw = join(dir, "switch.json")
+  check("auto work: off when the file is missing or the repo is not in it", !autoWorkOn("r", sw))
+  writeFileSync(sw, JSON.stringify({ r: { enabled: true }, on: { auto_work: true, enabled: true } }))
+  check("auto work: only auto_work turns it on (the scripted stub merge alone does not)", !autoWorkOn("r", sw) && autoWorkOn("on", sw))
+  const run = (repo: string, id: string, status: string, extra: any = {}) => ({ repo, root: "/x/" + repo, id, status, blockedBy: [], runner: null, deferred: { items: [] }, ...extra })
+  const facts = buildFacts(
+    [run("on", "A", "ready"), run("on", "B", "pr", { blockedBy: ["A"], runner: { state: "done", command: "work-on", pid: 7, started: "t" }, deferred: { items: [{ id: "D-1", state: "open", keptOpen: true }, { id: "D-2", state: "open" }] } }), run("off", "C", "ready")],
+    [{ repo: "on", main: "/x/on", stubs: [{ branch: "stub/1", state: "accepting", canIntegrate: true }, { branch: "stub/0", state: "merged" }] }, { repo: "off", main: "/x/off", stubs: [] }],
+    (r) => r === "on")
+  check("auto work: facts hold only the repositories that are switched on", Object.keys(facts.repos).join() === "on")
+  check("auto work: facts carry status, blockers, the runner's launch fingerprint and every deferred item with its kept-open flag",
+    facts.repos.on.root === "/x/on" && facts.repos.on.runs.length === 2 && facts.repos.on.runs[1].blockedBy[0] === "A" && facts.repos.on.runs[1].runner.pid === 7
+    && facts.repos.on.runs[1].deferred[0].keptOpen === true && facts.repos.on.runs[1].deferred[1].keptOpen === false, JSON.stringify(facts))
+  check("auto work: facts list the open stubs only, with whether they can be integrated", facts.repos.on.stubs.length === 1 && facts.repos.on.stubs[0].canIntegrate === true)
+  check("auto work: no repository switched on gives empty facts (nothing is spawned)", Object.keys(buildFacts([run("off", "C", "ready")], [], () => false).repos).length === 0)
+  writeFileSync(join(dir, "on.auto-work.json"), JSON.stringify({ cycle: 2, step: "work", phase: "paused", stub: "stub/1", paused: { reason: "A failed", kind: "member", member: "A", action: "relaunch", at: "t" }, members: [{ id: "A", stage: "build", state: "failed", error: "A failed" }], note: "" }))
+  const st = readAutoState("on", dir)
+  check("auto work: the state file is read as the page shows it", !!st && st.cycle === 2 && st.paused?.reason === "A failed" && st.members[0].state === "failed" && st.phase === "paused", JSON.stringify(st))
+  check("auto work: a missing or torn state file reads as no state", readAutoState("none", dir) === null && (writeFileSync(join(dir, "bad.auto-work.json"), "{not json"), readAutoState("bad", dir) === null))
+  const views = viewsFor([run("on", "A", "ready"), run("on", "B", "ready"), run("off", "C", "ready")], (r) => r === "on", (r) => readAutoState(r, dir))
+  check("auto work: one view per repository with its switch and state", views.length === 2 && views[0].on && views[0].state?.cycle === 2 && !views[1].on && views[1].state === null)
+  check("auto work: the route's actions are the four buttons and nothing else", argvFor("enable", "/r")?.slice(-3).join(" ") === "--enable --root /r" && argvFor("resume", "/r") !== null && argvFor("start-now", "/r") !== null && argvFor("disable", "/r") !== null && argvFor("rm -rf", "/r") === null)
+  rmSync(dir, { recursive: true, force: true })
 }
 console.log(failed ? `FAIL (${failed})` : "PASS (all cases)")
 process.exit(failed ? 1 : 0)
