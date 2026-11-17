@@ -204,6 +204,8 @@ check("replies: typed text is always a follow-up; the question stays open", repl
   const qa = parseQuestion("r.W-1.Q1", [JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Which?" }), JSON.stringify({ ts: "2", from: "owner", kind: "followup", text: "use B" }), JSON.stringify({ ts: "3", from: "agent", kind: "answer", accepted: true, text: "I will use B.", owner_text: "use B" })].join("\n"))
   const qo = parseQuestion("r.W-1.Q2", [JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Which?" }), JSON.stringify({ ts: "2", from: "owner", kind: "followup", text: "use B" }), JSON.stringify({ ts: "3", from: "agent", kind: "answer", text: "not accepted" })].join("\n"))
   check("store: a typed message the agent accepted closes the question; an agent line without accepted does not", qa?.state === "answered" && qa.answer?.text === "I will use B." && qo?.state === "open")
+  const qr = parseQuestion("r.W-1.Q3", [JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "The run of W-1 failed at stage 2: x", topic: "run-failure" }), JSON.stringify({ ts: "2", from: "runner", kind: "answer", accepted: true, option: "B", via: "merge-queue", text: "Closed automatically: W-1 was merged; the failed run is no longer needed" })].join("\n"))
+  check("store: the merge queue's automatic answer (from runner, accepted) counts as answered, and the topic is read", qr?.state === "answered" && qr.answer?.from === "runner" && qr.topic === "run-failure")
 }
 check("slack: channel names from repo names", channelNameFor("config-harness") === "config-harness" && channelNameFor("Documents/Twipe/repos") === "documents-twipe-repos" && channelNameFor("A__b.c") === "a__b-c" && channelNameFor("x".repeat(100)).length === 79)
 {

@@ -127,6 +127,52 @@ def alive(pid) -> bool:
         return False
 
 
+FAILURE_TEXT = re.compile(r"^The run of \S+ failed at stage \S+:")
+
+
+def close_failure_questions(key: str) -> list[str]:
+    """Close the still-open "the run failed" questions of the dossier `key` (<repo>.<dossier>) once it is merged: the
+    failed run is no longer needed, and its question would sit on the dashboard as if it still blocked something.
+    A failure question is one asked with `--topic run-failure`, or (older ones) with the "failed at stage" text. One a
+    live run still waits on (runner.json: live pid, the question in its `questions`) is left alone, as is every
+    other question and every answered one. Returns the ids closed."""
+    qdir = os.environ.get("ASD_QUESTIONS_DIR") or os.path.expanduser("~/.agentic/questions")
+    try:
+        names = sorted(os.listdir(qdir))
+    except OSError:
+        return []
+    rs = read_json(os.path.join(runs_dir(), key + ".runner.json"), {}) or {}
+    waiting = set(rs.get("questions") or []) if alive(rs.get("pid")) else set()
+    closed: list[str] = []
+    for f in names:
+        m = re.fullmatch(re.escape(key) + r"\.Q\d+\.jsonl", f)
+        if not m:
+            continue
+        qid = f[: -len(".jsonl")]
+        lines = []
+        try:
+            with open(os.path.join(qdir, f), encoding="utf-8") as fh:
+                for raw in fh:
+                    try:
+                        lines.append(json.loads(raw))
+                    except ValueError:
+                        continue
+        except OSError:
+            continue
+        q = next((x for x in lines if isinstance(x, dict) and x.get("kind") == "question"), None)
+        if not q or qid in waiting:
+            continue
+        if any(isinstance(x, dict) and x.get("kind") == "answer" and (x.get("from") == "owner" or x.get("accepted") is True) for x in lines):
+            continue
+        if q.get("topic") != "run-failure" and not (not q.get("topic") and FAILURE_TEXT.match(str(q.get("text") or ""))):
+            continue
+        dossier = str(q.get("dossier") or key.rsplit(".", 1)[-1])
+        append_line(os.path.join(qdir, f), {"ts": now(), "from": "runner", "kind": "answer", "accepted": True, "option": "B", "via": "merge-queue",
+                                            "text": f"Closed automatically: {dossier} was merged; the failed run is no longer needed"})
+        closed.append(qid)
+    return closed
+
+
 def is_stub(branch: str) -> bool:
     return bool(re.match(r"(stub|release)/", branch))
 
@@ -280,6 +326,7 @@ def merge(root: str, dossier: str, method: str, dry: bool, no_cleanup: bool = Fa
     if open_left:
         return fail(state_path, nums, base, "not merged afterwards: " + ", ".join(open_left))
     write_json(state_path, {"state": "merged", "prs": nums, "base": base, "error": "", "ts": now()})
+    close_failure_questions(key)
     append_line(os.path.join(d, key + ".jsonl"), {"ts": now(), "kind": "runner", "text": f"merged {label} into {base}" + (" as one stack" if len(nums) > 1 else "") + " (your Merge button)"})
     mark_detector(repo, chain, dossier)
     if no_cleanup:
@@ -317,6 +364,8 @@ def locked(repo: str):
 def set_state(key: str, **kw) -> None:
     p = os.path.join(runs_dir(), key + ".merge.json")
     write_json(p, {**(read_json(p, {}) or {}), "ts": now(), **kw})
+    if kw.get("state") == "merged":
+        close_failure_questions(key)
 
 
 def enqueue(root: str, dossier: str) -> int:
@@ -1990,6 +2039,50 @@ print("started")
         check("batch: a member pushed to during the batch is left open and says so, never closed", "pr close 530" not in cc and sa.get("state") == "failed" and "changed" in sa.get("error", ""), cc + str(sa))
         check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged", str(read_json(os.path.join(rdir, "repo.W-128.merge.json"), {})) + str(read_json(os.path.join(rdir, "repo.W-130.merge.json"), {})))
         RUNNER = saved
+    # ---- a merged dossier's failure questions close by themselves ----
+    with tempfile.TemporaryDirectory() as t2:
+        qd, rd = os.path.join(t2, "q"), os.path.join(t2, "r")
+        os.makedirs(qd); os.makedirs(rd)
+        saved_env = {k: os.environ.get(k) for k in ("ASD_QUESTIONS_DIR", "ASD_RUNS_DIR")}
+        os.environ["ASD_QUESTIONS_DIR"], os.environ["ASD_RUNS_DIR"] = qd, rd
+        try:
+            def mkq(n: int, text: str, dossier: str = "W-150", **extra) -> str:
+                qid = f"repo.{dossier}.Q{n}"
+                append_line(os.path.join(qd, qid + ".jsonl"), {"ts": now(), "from": "agent", "kind": "question", "text": text, "dossier": dossier, "repo": "repo", **extra})
+                return qid
+            def lines_of(qid: str) -> list[dict]:
+                return [json.loads(x) for x in open(os.path.join(qd, qid + ".jsonl")) if x.strip()]
+            fail_txt = "The run of W-150 failed at stage 4: PR shows CONFLICTING"
+            a = mkq(1, fail_txt, topic="run-failure")
+            b = mkq(2, fail_txt)   # an old one: no marker, the text only
+            c = mkq(3, "Two designs for the cache: keep one map or two?", qkind="design")
+            d_ = mkq(4, fail_txt, topic="run-failure")
+            append_line(os.path.join(qd, d_ + ".jsonl"), {"ts": now(), "from": "owner", "kind": "answer", "option": "A", "text": "Retry"})
+            e = mkq(5, fail_txt, topic="run-failure")   # a live run waits on this one
+            write_json(os.path.join(rd, "repo.W-150.runner.json"), {"state": "failed", "pid": os.getpid(), "questions": [e]})
+            o = mkq(1, "The run of W-151 failed at stage 2: x", dossier="W-151", topic="run-failure")   # W-151 is not merged
+            set_state("repo.W-151", state="failed")
+            check("failure questions: not merged, nothing closes", lines_of(o)[-1]["kind"] == "question")
+            set_state("repo.W-150", state="merged")
+            la, lb = lines_of(a), lines_of(b)
+            check("failure questions: a merged dossier's open failure question is closed with an automatic answer",
+                  len(la) == 2 and la[-1]["from"] == "runner" and la[-1]["accepted"] is True and la[-1]["option"] == "B" and la[-1]["text"].startswith("Closed automatically: W-150 was merged"), str(la))
+            check("failure questions: ... also an old one found by its text", len(lb) == 2 and lb[-1]["from"] == "runner", str(lb))
+            check("failure questions: a non-failure question stays open", len(lines_of(c)) == 1)
+            check("failure questions: an answered one is untouched", len(lines_of(d_)) == 2 and lines_of(d_)[-1]["from"] == "owner")
+            check("failure questions: one a live run waits on stays open", len(lines_of(e)) == 1)
+            check("failure questions: a different dossier's stays open", len(lines_of(o)) == 1)
+            set_state("repo.W-150", state="merged")
+            check("failure questions: closing happens once", len(lines_of(a)) == 2 and len(lines_of(b)) == 2)
+            write_json(os.path.join(rd, "repo.W-150.runner.json"), {"state": "running", "pid": 2 ** 22 + 5, "questions": [e]})
+            set_state("repo.W-150", state="merged")
+            check("failure questions: a dead run no longer holds its question", len(lines_of(e)) == 2 and lines_of(e)[-1]["from"] == "runner")
+        finally:
+            for k, v in saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
     leaked = {d: sorted(now_ - before_real[d]) for d, now_ in listing().items() if now_ - before_real[d]}
     check("no file was created in the real questions or runs dir during the selftest", not leaked, str(leaked))
     print("FAILED: " + ", ".join(fails) if fails else "all ok")
