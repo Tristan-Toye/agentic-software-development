@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { rulingRefused } from "./rulings.ts"
 
 export type Update = { ts: string; kind: "runner" | "stage" | "update"; text: string; stage?: string; state?: string; auto?: boolean; event?: string; status?: string; agent_id?: string }
-export type RunnerState = { state: "running" | "testing" | "waiting" | "paused" | "queued" | "done" | "failed" | "stopped"; waitingFor?: "stub"; stage: string; pid: number; started: string; root: string; account?: string; resumesAt?: string; command?: string; session?: string; items?: string }
+export type RunnerState = { state: "running" | "testing" | "waiting" | "paused" | "queued" | "parked" | "done" | "failed" | "stopped"; waitingFor?: "stub"; parkedFor?: string[]; stage: string; pid: number; started: string; root: string; account?: string; resumesAt?: string; command?: string; session?: string; items?: string }
 
 export const runsDir = (): string => process.env.ASD_RUNS_DIR || join(homedir(), ".agentic", "runs")
 
@@ -76,11 +76,11 @@ export function pidAlive(pid: number): boolean {
 export function readRunner(key: string, dir = runsDir(), alive: (pid: number) => boolean = pidAlive): RunnerState | null {
   try {
     const j = JSON.parse(readFileSync(join(dir, `${key}.runner.json`), "utf8"))
-    let state = ["running", "testing", "waiting", "paused", "queued", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
+    let state = ["running", "testing", "waiting", "paused", "queued", "parked", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
     if ((state === "running" || state === "testing" || state === "waiting" || state === "paused" || state === "queued") && !alive(Number(j.pid))) state = "stopped"
     // A run that waits with no question is waiting for the stub being integrated (`wait_for_stub`), not for the owner.
     const waitingFor = state === "waiting" && Array.isArray(j.questions) && j.questions.length === 0 ? { waitingFor: "stub" as const } : {}
-    return { ...waitingFor, state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "", ...(typeof j.account === "string" ? { account: j.account } : {}), ...(typeof j.resumes_at === "string" ? { resumesAt: j.resumes_at } : {}), ...(typeof j.command === "string" ? { command: j.command } : {}), ...(typeof j.session === "string" && j.session ? { session: j.session } : {}), ...(typeof j.items === "string" && j.items ? { items: j.items } : {}) }
+    return { ...waitingFor, state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "", ...(typeof j.account === "string" ? { account: j.account } : {}), ...(typeof j.resumes_at === "string" ? { resumesAt: j.resumes_at } : {}), ...(typeof j.command === "string" ? { command: j.command } : {}), ...(typeof j.session === "string" && j.session ? { session: j.session } : {}), ...(typeof j.items === "string" && j.items ? { items: j.items } : {}), ...(state === "parked" && Array.isArray(j.parked?.blockers) ? { parkedFor: j.parked.blockers.map(String) } : {}) }
   } catch { return null }
 }
 /** A finished run's last reply and the owner's chat with its session (`run_dossier.py chat`). */
