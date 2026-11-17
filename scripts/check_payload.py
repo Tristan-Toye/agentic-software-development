@@ -922,10 +922,33 @@ def round_relaxes_signals(kind: str | None, round_value: str | None, prior_crs: 
     return value.isdigit() and int(value) > 1 and prior_crs
 
 
+TEST_FRAMEWORK_REF = re.compile(r"Microsoft\.NET\.Test\.Sdk|xunit|nunit|MSTest|TUnit", re.I)
+
+
+def in_test_project(path: str) -> bool:
+    """True when the nearest ancestor directory holding a csproj holds one that references
+    a test framework: a test project of the target repository whatever it is named
+    (mirrors `inTestProject` in shared/blind-read.ts)."""
+    d = os.path.dirname(os.path.abspath(path))
+    while True:
+        try:
+            for f in os.listdir(d):
+                if f.endswith(".csproj"):
+                    with open(os.path.join(d, f), encoding="utf-8", errors="replace") as fh:
+                        if TEST_FRAMEWORK_REF.search(fh.read()):
+                            return True
+        except OSError:
+            pass
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
+
+
 def readable(path: str, kind: str | None) -> bool:
     """Whether a Read-granted agent may open the path under Claude Code."""
     scope = HOOK_READ_SCOPE.get(kind or "")
-    return scope is None or any(seg in scope for seg in path.split("/")[:-1])
+    return scope is None or any(seg in scope for seg in path.split("/")[:-1]) or in_test_project(path)
 
 
 def dead_letter_findings(lines: list[str], kind: str | None,
@@ -1652,6 +1675,21 @@ def selftest() -> int:
          pasted.replace("FIXTURES: |\n  FlushQueue()\n",
                         "FIXTURES: |\n  FlushQueue()\n  match the idiom in {REAL}/tests/unit/test_retry.py\n"),
          "unit-test-author", True, "/tests/unit/test_retry.py is handed", host="claude", tools=write_only)
+    with tempfile.TemporaryDirectory() as ttd:
+        tproj = os.path.join(ttd, "Source", "Twipe.Podcast.Runtime.Tests")
+        os.makedirs(tproj)
+        with open(os.path.join(tproj, "Runtime.Tests.csproj"), "w") as fh:
+            fh.write('<Project><ItemGroup><PackageReference Include="xunit.v3" /></ItemGroup></Project>')
+        sproj = os.path.join(ttd, "Source", "Twipe.Podcast.Runtime")
+        os.makedirs(sproj)
+        with open(os.path.join(sproj, "Runtime.csproj"), "w") as fh:
+            fh.write("<Project></Project>")
+        groups += 1
+        if not readable(os.path.join(tproj, "FooTests.cs"), "unit-test-author"):
+            failures.append("a file in a test project named by no family must be readable")
+        groups += 1
+        if readable(os.path.join(sproj, "Foo.cs"), "unit-test-author"):
+            failures.append("a file in a non-test project must stay outside the read scope")
     case("host claude: a read-verb sentence warns",
          pasted.replace("FIXTURES: |\n  FlushQueue()\n",
                         "FIXTURES: |\n  FlushQueue()\n  read the sibling test file first and match its idiom\n"),
