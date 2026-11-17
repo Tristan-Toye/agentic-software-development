@@ -332,7 +332,8 @@ def enqueue(root: str, dossier: str) -> int:
         write_json(queue_path(repo), q)
         pos = [i["id"] for i in items].index(dossier) + 1
         if not waiting:   # one already in the queue keeps its state: the worker may be busy with it
-            set_state(f"{repo}.{dossier}", state="queued", position=pos, error="", prs=[], pid=None)
+            # a new press is the owner's retry: it starts with fresh resolve-merge attempts (a restart keeps them)
+            set_state(f"{repo}.{dossier}", state="queued", position=pos, error="", prs=[], pid=None, resolve_attempts=None)
         worker = q.get("worker")
         if not (worker and alive(worker)):
             log = os.path.join(runs_dir(), f"{repo}.merge-queue.log")
@@ -372,12 +373,14 @@ def picked_stacks(ids: list, ready, before: list) -> list:
 
 
 def wait_run(key: str, since: str, timeout_s: float) -> str:
-    """Wait for the run started at `since` to end; its end state ("done", "failed", "stopped") or "timeout"."""
+    """Wait for the run started at `since` (or later) to end; its end state ("done", "failed", "stopped") or "timeout".
+    Only the run's own working time counts against `timeout_s`: an outage, a usage limit, a run slot and an owner question
+    (`waiting`: W-134 sat on Q21 for 7 h and its attempt was written off at 4 h) each extend the deadline."""
     poll = float(os.environ.get("ASD_MERGE_POLL") or 15)
     end = time.time() + timeout_s
     while time.time() < end:
         st = read_json(os.path.join(runs_dir(), key + ".runner.json"), {}) or {}
-        if st.get("state") in ("paused", "queued"):   # an outage, a usage limit or a run slot: not the run taking too long
+        if st.get("state") in ("paused", "queued", "waiting"):   # an outage, a usage limit, a run slot or an owner question: not the run taking too long
             end += poll
         if str(st.get("started") or "") >= since and not run_live(key):
             return str(st.get("state") or "stopped") if alive(st.get("pid")) or st.get("state") in ("done", "failed", "stopped") else "stopped"
@@ -658,6 +661,25 @@ def head_of(root: str, n: int) -> str:
     return out.strip() if rc == 0 else ""
 
 
+def load_attempts(key: str, heads: dict[int, str]) -> tuple[dict[int, int], dict[int, set], dict[int, set]]:
+    """The resolve-merge attempts this stack already spent, read back from `<key>.merge.json` (`resolve_attempts`), so a
+    worker restart does not hand a red stack fresh ones. Per PR: {count, tried (heads a run ended done on), heads (every
+    head the queue started or saw a resolve-merge end on)}. A PR whose head is not among its known heads moved for some
+    other reason (the owner's push, the dossier's own run, a base update): its attempts are reset."""
+    saved = (read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}).get("resolve_attempts") or {}
+    attempts: dict[int, int] = {}; tried: dict[int, set] = {}; known: dict[int, set] = {}
+    for n, h in heads.items():
+        e = saved.get(str(n)) or {}
+        if h and h in (e.get("heads") or []):
+            attempts[n] = int(e.get("count") or 0); tried[n] = set(e.get("tried") or []); known[n] = set(e.get("heads") or [])
+    return attempts, tried, known
+
+
+def save_attempts(key: str, attempts: dict[int, int], tried: dict[int, set], known: dict[int, set]) -> None:
+    set_state(key, resolve_attempts={str(n): {"count": attempts.get(n, 0), "tried": sorted(h for h in tried.get(n, set()) if h), "heads": sorted(h for h in known.get(n, set()) if h)}
+                                     for n in set(attempts) | set(known)})
+
+
 def ask_resolve_failed(root: str, dossier: str, why: str) -> None:
     """The one place the queue asks the owner about a conflict: /resolve-merge itself failed twice. Best effort."""
     ask = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ask_owner.py")
@@ -677,8 +699,9 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
     nums = [p["number"] for p in prs]
     run_timeout = float(os.environ.get("ASD_MERGE_RUN_TIMEOUT") or 4 * 3600)
     check_timeout = float(os.environ.get("ASD_MERGE_CHECK_TIMEOUT") or 3600)
-    attempts: dict[int, int] = {}   # per PR: resolve-merge runs started in this settle
-    tried: dict[int, set] = {}      # per PR: the heads a run was started on and ended done
+    # per PR: resolve-merge runs started, the heads a run ended done on, every head the queue knows as its own. Kept in
+    # the stack's merge.json (load_attempts) so they outlive this settle and a worker restart.
+    attempts, tried, known = load_attempts(key, {n: head_of(root, n) for n in nums})
     rerun_used = False
     updates = 0
     link_conflicts: list[int] = []
@@ -794,6 +817,8 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
             elif top_clashes():   # the base moved while the checks ran
                 bad = list(nums)
             else:
+                if attempts:
+                    set_state(key, resolve_attempts=None)   # settled: the next red stack starts with fresh attempts
                 return ""
         if pending and not bad and not clashes and not red:
             return "checks still running after " + str(int(check_timeout / 60)) + " min: " + ", ".join(f"#{n}" for n in pending)
@@ -811,16 +836,46 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
             return why
         for n in targets:
             attempts[n] = attempts.get(n, 0) + 1
+            known.setdefault(n, set()).add(heads[n])
+        save_attempts(key, attempts, tried, known)
         rerun_used = False   # the agent's push is a new head: a flaky job there gets its own re-run before it costs an attempt
         what = ("conflicts in " + ", ".join(f"#{n}" for n in bad)) if bad else ("migration numbers clash: " + "; ".join(clashes)) if clashes else ("red checks on " + ", ".join(f"#{n}" for n in red))
         note("resolving", what + "; the dossier's agent resolves it (resolve-merge, attempt " + str(max(attempts[n] for n in targets)) + f" of {AGENT_ATTEMPTS})")
         since = now()
         start_run(root, agent_id, "resolve-merge", nums)
-        end = wait_run(f"{repo_name(root)}.{agent_id}", since, run_timeout)
+        rkey = f"{repo_name(root)}.{agent_id}"
+        live = read_json(os.path.join(runs_dir(), rkey + ".runner.json"), {}) or {}
+        adopted = run_live(rkey) and str(live.get("started") or "") < since
+        if adopted:
+            # The runner refused (or ignored) the start because a run of this dossier is still live. Wait for that run by its
+            # own start, not for a new one that never comes; it is not a new attempt.
+            for n in targets:
+                attempts[n] -= 1
+            note("resolving", f"a run of {agent_id} ({live.get('command') or 'run'}) is still live; waiting for it instead of starting another")
+            end = wait_run(rkey, str(live.get("started") or ""), run_timeout)
+            if end == "done":
+                if live.get("command") == "resolve-merge":
+                    for n in targets:
+                        tried.setdefault(n, set()).add(heads[n])
+                for n in targets:
+                    known.setdefault(n, set()).add(head_of(root, n))
+                save_attempts(key, attempts, tried, known)
+                continue   # the run ended done: look at the stack again straight away
+            if end == "timeout":
+                for n in targets:
+                    attempts[n] += 1   # its own time ran out: that is a spent attempt after all
+            save_attempts(key, attempts, tried, known)
+            if end != "timeout":
+                continue
+        else:
+            end = wait_run(rkey, since, run_timeout)
+        for n in targets:
+            known.setdefault(n, set()).add(head_of(root, n))   # a push of the agent is the queue's own head
         if end == "done":
             for n in targets:
                 tried.setdefault(n, set()).add(heads[n])
-        elif all(attempts[n] >= AGENT_ATTEMPTS for n in targets):
+        save_attempts(key, attempts, tried, known)
+        if end != "done" and all(attempts[n] >= AGENT_ATTEMPTS for n in targets):
             why = f"resolve-merge ended {end} twice"
             ask_resolve_failed(root, agent_id, why)
             return why
@@ -1107,6 +1162,11 @@ def revive() -> int:
     for path in glob.glob(os.path.join(runs_dir(), "*.integrate.json")):
         st = read_json(path, {}) or {}
         if st.get("state") == "merging" and st.get("root") and st.get("branch") and os.path.isdir(st["root"]) and not alive(st.get("pid")):
+            held = integrate_held(os.path.basename(path)[:-len(".integrate.json")])
+            if held:   # an integrate of this stub is running (a press recorded a pid that already exited): never a second one
+                if held > 0:
+                    write_json(path, {**st, "pid": held})
+                continue
             with open(path[:-5] + ".log", "ab") as fh:
                 p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--integrate", st["branch"], "--root", st["root"]], stdin=subprocess.DEVNULL,
                                      stdout=fh, stderr=subprocess.STDOUT, start_new_session=True)
@@ -1139,10 +1199,48 @@ def unqueue(root: str, dossier: str) -> int:
 # in flight (a draft PR, or a live run) stay out: their stub closes, and the merge queue moves them to the next stub
 # once this one is in development.
 
+def integrate_lock(key: str):
+    """(file handle, 0) when this process now holds the stub's integrate lock `<key>.integrate.lock` (held until the handle
+    closes or the process ends), else (None, pid of the holder). One integrate per stub: a dashboard press and a revive
+    seen 20 min apart ran two on stub/2026-11-08."""
+    import fcntl
+    os.makedirs(runs_dir(), exist_ok=True)
+    fh = open(os.path.join(runs_dir(), key + ".integrate.lock"), "a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.seek(0)
+        try:
+            holder = int(fh.read().strip() or 0)
+        except ValueError:
+            holder = 0
+        fh.close()
+        return None, holder
+    fh.seek(0); fh.truncate(); fh.write(str(os.getpid())); fh.flush()
+    return fh, 0
+
+
+def integrate_held(key: str) -> int:
+    """The pid of the process integrating the stub `key` (0 when none does); the lock is only probed."""
+    fh, holder = integrate_lock(key)
+    if fh:
+        fh.truncate(0); fh.close()
+        return 0
+    return holder or -1
+
+
 def integrate(root: str, branch: str) -> int:
     repo = repo_name(root); slug = branch.replace("/", "-"); key = f"{repo}.{slug}"
     log = os.path.join(runs_dir(), key + ".jsonl")
     st_path = os.path.join(runs_dir(), key + ".integrate.json")
+    lock, holder = integrate_lock(key)
+    if not lock:
+        append_line(log, {"ts": now(), "kind": "runner", "text": f"another integrate of {branch} is running (pid {holder or 'unknown'}); this one exits"})
+        cur = read_json(st_path, {}) or {}
+        if holder > 0 and cur.get("state") == "merging" and cur.get("pid") != holder:
+            write_json(st_path, {**cur, "pid": holder})   # a press recorded the pid of this process that exits now: the holder's is the real one
+        print(f"merge_dossier: another integrate of {branch} is running; nothing to do")
+        return 0
     def state(**kw):
         write_json(st_path, {**(read_json(st_path, {}) or {}), "ts": now(), "pid": os.getpid(), **kw})
     def line(text, kind="runner"):
@@ -1367,6 +1465,7 @@ def selftest() -> int:
         open(fake_runner, "w").write("import sys\nopen(sys.argv[0] + '.args', 'w').write(' '.join(sys.argv[1:]))\nprint('started')\n")
         env = dict(os.environ, ASD_GH_BIN=f"{sys.executable} {os.path.join(fdir, 'gh.py')}", FAKE_GH_DIR=fdir, ASD_RUNS_DIR=rdir, ASD_QUESTIONS_DIR=os.path.join(tmp, "questions"))
         os.environ["ASD_QUESTIONS_DIR"] = os.path.join(tmp, "questions")   # the owner questions the queue asks stay in the fixture
+        os.environ["ASD_RUNS_DIR"] = rdir   # ... and so does the state the queue keeps (resolve_attempts)
         global RUNNER
         saved = RUNNER
         RUNNER = fake_runner
@@ -1535,6 +1634,91 @@ print("started")
         r6, s6 = rounds_scenario("W-144", 640, 99, bucket="fail")
         check("queue: red checks stop at the cap too", len(r6) == 2 and s6.get("state") == "failed" and "checks still red: #640 after 2 resolve-merge attempts" in str(s6.get("error")), str(r6) + str(s6))
         os.remove(os.path.join(fdir, "head.txt"))
+        # ---- defects seen on W-134 (2026-11-17): owner questions, a refused start, restarts, two integrates ----
+        os.environ["ASD_MERGE_POLL"] = "0.05"
+        import threading
+        later = lambda secs, fn: threading.Timer(secs, fn).start()
+        rk = "repo.W-134"; rpath = os.path.join(rdir, rk + ".runner.json")
+        def runner_state(state, started, command="resolve-merge"):
+            write_json(rpath, {"state": state, "pid": os.getpid(), "started": started, "command": command})
+        # 1. a run waiting on an owner question does not use up the attempt's time
+        runner_state("waiting", "2026-11-17T01:44:00Z")
+        later(1.0, lambda: runner_state("done", "2026-11-17T01:44:00Z"))
+        got = wait_run(rk, "2026-11-17T01:44:00Z", 0.4)
+        check("wait: a run waiting on an owner question is not timed out", got == "done", got)
+        runner_state("running", "2026-11-17T01:44:00Z")
+        later(1.0, lambda: runner_state("done", "2026-11-17T01:44:00Z"))
+        got = wait_run(rk, "2026-11-17T01:44:00Z", 0.4)
+        check("wait: a run that works longer than the limit still times out", got == "timeout", got)
+        runner_state("done", "2026-11-17T01:44:00Z")
+        # 2. the runner refused the start, since the dossier's run is live: the queue waits for that run, no new attempt
+        saved_fns = {n: globals()[n] for n in ("conflicting", "wait_checks", "behind", "collisions", "start_run", "head_of", "ask_resolve_failed", "migration_clashes")}
+        state = {"live": True, "starts": 0}
+        def refused_start(*_a):
+            state["starts"] += 1
+            return "repo.W-134 is already run by pid 1"   # what the runner says; its runner.json stays the live run's
+        def end_old_run():
+            runner_state("done", "2026-11-17T01:44:00Z"); state["live"] = False
+        globals().update(conflicting=lambda r, n: (list(n) if state["live"] else [], ""), wait_checks=lambda r, n, t: {x: "green" for x in n},
+                         behind=lambda *_a: [], collisions=lambda *_a: ([], False), start_run=refused_start, head_of=lambda *_a: "h1",
+                         ask_resolve_failed=lambda *_a: None, migration_clashes=lambda *_a: [])
+        os.environ["ASD_MERGE_RUN_TIMEOUT"] = "1.5"
+        one_w134 = [P(537, "feat/W-134-x", "stub/s")]
+        runner_state("running", "2026-11-17T01:44:00Z")
+        later(0.5, end_old_run)
+        t0 = time.time()
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                why = settle(root, rk, "W-134", one_w134, "stub/s", [], lambda s_, t_: None)
+            took = time.time() - t0
+            check("queue: a start the runner refuses for a live run adopts that run; it ends done and the stack is re-checked at once",
+                  why == "" and took < 1.4 and state["starts"] == 1, f"why={why!r} took={took:.2f} starts={state['starts']}")
+            check("queue: ... and the adopted run is no new attempt", ((read_json(os.path.join(rdir, rk + ".merge.json"), {}) or {}).get("resolve_attempts") in (None, {})) or why == "", str(read_json(os.path.join(rdir, rk + ".merge.json"), {})))
+            # 3. attempts survive a worker restart; a head moved by someone else resets them
+            for f in (rk + ".merge.json", rk + ".runner.json"):
+                if os.path.exists(os.path.join(rdir, f)): os.remove(os.path.join(rdir, f))
+            hd = {"h": "sha0", "runs": 0}
+            def pushing_start(*_a):
+                hd["runs"] += 1; hd["h"] = f"sha{hd['runs']}"   # the resolve-merge run pushes
+                return "started"
+            globals().update(start_run=pushing_start, head_of=lambda *_a: hd["h"], conflicting=lambda r, n: (list(n), ""), wait_run=lambda *_a: "done")
+            def one_settle():
+                with contextlib.redirect_stdout(io.StringIO()):
+                    return settle(root, rk, "W-134", one_w134, "stub/s", [], lambda s_, t_: None)
+            w1 = one_settle(); runs1 = hd["runs"]
+            w2 = one_settle()   # the worker restarted: a new settle in a new process
+            check("queue: resolve-merge attempts persist: a restarted worker does not give a red stack fresh ones", runs1 == 2 and hd["runs"] == 2 and "still conflicting" in w2,
+                  f"{w1!r} {w2!r} runs={hd['runs']}")
+            check("queue: ... they are kept in the stack's merge.json", "resolve_attempts" in (read_json(os.path.join(rdir, rk + ".merge.json"), {}) or {}))
+            hd["h"] = "owner-pushed"   # the owner (or the dossier's own run) moved the head
+            one_settle()
+            check("queue: a head moved for another reason resets the attempts", hd["runs"] == 4, str(hd["runs"]))
+        finally:
+            globals().update(saved_fns)
+            del os.environ["ASD_MERGE_RUN_TIMEOUT"]
+            for f in (rk + ".merge.json", rk + ".runner.json"):
+                if os.path.exists(os.path.join(rdir, f)): os.remove(os.path.join(rdir, f))
+        # 4. one integrate per stub: a second exits at once; the revive leaves a held stub alone
+        ikey = repo_name(root) + ".stub-stub-lock"; held, _ = integrate_lock(ikey)
+        for f in ("calls.txt",):
+            if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc2 = integrate(root, "stub/stub-lock")
+        said = open(os.path.join(rdir, ikey + ".jsonl")).read() if os.path.exists(os.path.join(rdir, ikey + ".jsonl")) else ""
+        check("integrate: a second one for the same stub exits 0 at once and says another is running", rc2 == 0 and "another integrate" in said and not os.path.exists(os.path.join(fdir, "calls.txt")), f"{rc2} {said} {buf.getvalue()}")
+        ipath = os.path.join(rdir, ikey + ".integrate.json")
+        write_json(ipath, {"state": "merging", "root": root, "branch": "stub/stub-lock", "pid": 2 ** 22 + 9})
+        with contextlib.redirect_stdout(io.StringIO()):
+            revive()
+        check("integrate: a revive does not start a second integrate while one holds the lock, and records the holder's pid", (read_json(ipath, {}) or {}).get("pid") == os.getpid(), str(read_json(ipath, {})))
+        if held: held.close()
+        os.remove(ipath)
+        free, _ = integrate_lock(ikey); check("integrate: the lock is free once the holder ends", free is not None)
+        if free: free.close()
+        for f in (ikey + ".jsonl", ikey + ".integrate.lock"):
+            if os.path.exists(os.path.join(rdir, f)): os.remove(os.path.join(rdir, f))
+        os.environ["ASD_MERGE_POLL"] = "0.2"
         # ---- integrate: the finished dossiers through the queue, the one in flight left, then /stub ----
         for f in ("runs.txt", "calls.txt"):
             if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))

@@ -61,7 +61,9 @@ writes inside a pattern-scoped map — `.agent-staging/` and the test families
 `.agent-staging/` (hash-stampable as bytes on disk) or paste it, and *name*
 style samples as paths instead of pasting them. **Under Claude Code the same
 agent has `Write` and a `Read` the plugin's hook confines to the same staging
-area and test families** (`shared/blind-read.ts`), so a path outside them is
+area, the test families and every test project of the target repository (a
+csproj referencing a test framework, whatever its directory is called)**
+(`shared/blind-read.ts`), so a path outside them is
 a dead letter — in a field or in a sentence. The Claude Code form of its
 skeleton still pastes `CONTRACT` inline, `STYLE_SAMPLE` in place of
 `STYLE_PATHS` and `SUPPORT` in place of `SUPPORT_PATHS`, and its payload

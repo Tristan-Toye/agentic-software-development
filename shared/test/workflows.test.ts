@@ -149,6 +149,13 @@ const fakeWave = (prompt: string, opts: Opts) => {
   check("wave: a real GAP still flags, behind a prefix", real.result[0].flags.includes("gap") && !real.result[0].flags.includes("contract-change"))
   const { gatedKind } = await import("../claude/progress.ts")
   const lines = ["GAP: none", "- GAP: None.", "* CONTRACT-CHANGE: none", "> GAP: missing x", "* CONTRACT-CHANGE: f takes &mut self", "GAP: nonexistent", "GAP:", "NOTICED: GAP: x"]
+  // #360: a sentence after `none` is still no gap; `nonexistent ...` and `none of ...` still are
+  const sentence = ["GAP: none. Every criterion routed to IT has a test.", "GAP: nonexistent member Foo", "GAP: none of the members is specified"]
+  check("gap rule: a sentence after GAP: none is no gap (hook)", sentence.map(gatedKind).join() === ",gap,gap", sentence.map(gatedKind).join())
+  const sq = await run(wave, [item("P1")], (p, o) => (o.agentType ? "GAP: none. Every criterion has a test.\nNOTICED: x" : { verdict: "clean", flags: [], returned_line: "P1 RETURNED: x" }))
+  check("wave: GAP: none followed by a sentence raises no flag", sq.result[0].flags.length === 0, JSON.stringify(sq.result[0]))
+  const sr = await run(wave, [item("P1")], (p, o) => (o.agentType ? "GAP: nonexistent member Foo" : { verdict: "clean", flags: [], returned_line: "P1 RETURNED: x" }))
+  check("wave: GAP: nonexistent member still flags", sr.result[0].flags.includes("gap"))
   check("gap rule: the hook and the wave agree", lines.map(gatedKind).join() === ",,,gap,contract-change,gap,gap,", lines.map(gatedKind).join())
 }
 {

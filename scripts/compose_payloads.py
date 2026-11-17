@@ -557,6 +557,28 @@ MAX_SINGLE_EDIT_DEFAULT = (
     "350 lines — the cap for one Write or Edit; a larger deliverable is "
     "named as a split at spawn, never improvised"
 )
+WHOLE_FILE_MARGIN = 50
+
+
+def whole_file_edit_cap(test_paths: str) -> str | None:
+    """#361: under Claude Code the unit author has Read and Write only, so a correction round
+    on an existing test file is one whole-file Write. When the largest existing TEST_PATHS file
+    plus a margin exceeds the default cap, the MAX_SINGLE_EDIT line that covers it; else None."""
+    sizes = []
+    for token in re.split(r"[,\n]", test_paths):
+        token = token.strip()
+        if token.startswith("/") and os.path.isfile(token):
+            with open(token, encoding="utf-8", errors="replace") as fh:
+                sizes.append(len(fh.read().splitlines()))
+    if not sizes:
+        return None
+    cap = -(-(max(sizes) + WHOLE_FILE_MARGIN) // 10) * 10
+    if cap <= 350:
+        return None
+    return ("%d lines — the cap for one whole-file Write; this correction rewrites an existing "
+            "test file of %d lines whole, the only edit this author can make" % (cap, max(sizes)))
+
+
 CITATION_DEFAULT = (
     "// promise: <member>/<category>\n"
     "One comment per test, the line above the test, in exactly this shape — "
@@ -871,6 +893,10 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
         fields["BASELINE_COUNTS_FROM"] = Field("BASELINE_COUNTS_FROM", placeholder(
             "BASELINE_COUNTS_FROM", "the sha the FAILURES counts were taken at, or "
             "`pre-change tree re-run` — never an earlier phase's numbers"))
+    if host == "claude" and "CORRECTION" in fields and "MAX_SINGLE_EDIT" not in sets:
+        raised = whole_file_edit_cap(fields["TEST_PATHS"].value)
+        if raised:
+            fields["MAX_SINGLE_EDIT"] = Field("MAX_SINGLE_EDIT", raised)
     order = ["CONTRACT", "PROMISE_CHECKLIST", "TEST_PATHS", "TEST_FRAMEWORK",
              "MAX_SINGLE_EDIT", "CITATION", "CONVENTIONS",
              "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
@@ -1913,6 +1939,24 @@ def selftest() -> int:
                               filled_path, "--kind", "unit-test-author", "--host", host,
                               "--worktree", root])
             check("unit-test-author (%s) filled payload lints clean" % label, rc2 == 0, out2)
+
+        # --- unit-test-author, claude, correction round on a long existing test file (#361) ---
+        long_test = os.path.join(root, "tests", "unit", "test_long.py")
+        with open(long_test, "w", encoding="utf-8") as fh:
+            fh.write("".join("# line %d\n" % i for i in range(470)))
+        rc, ut_corr_path, out = run_compose("UT1-correction.md", [
+            "unit-test-author", "--host", "claude", "--contract-paths", "src/flush.py",
+            "--set", "TEST_PATHS=%s" % long_test, "--set", "CORRECTION=add an assert to test_a",
+        ])
+        ut_corr = read_text(ut_corr_path) if rc == 0 else ""
+        check("unit-test-author (claude) correction on a 470-line file covers it whole",
+              rc == 0 and "MAX_SINGLE_EDIT: 520 lines" in ut_corr, out)
+        rc, ut_short_path, out = run_compose("UT1-correction-short.md", [
+            "unit-test-author", "--host", "claude", "--contract-paths", "src/flush.py",
+            "--set", "TEST_PATHS=%s" % style_path, "--set", "CORRECTION=add an assert to test_a",
+        ])
+        check("unit-test-author (claude) correction on a short file keeps the default cap",
+              rc == 0 and "MAX_SINGLE_EDIT: 350 lines" in read_text(ut_short_path), out)
 
         # --- integration-test-author ---
         rc, it_path, out = run_compose("IT1.md", [

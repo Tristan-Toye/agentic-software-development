@@ -97,6 +97,11 @@ them needs to see the others.
   `## Contract`, one `- **term** — meaning` each. Phase 2 copies every one into
   the stubs' documentation; `validate_pipeline.py --pre-fanout` refuses a term
   that reached no stub unless it is logged `DOSSIER-ONLY-TERMS:`.
+- A file's code block sits under `### <path>` or `### New: `<path>``;
+  `dossier_edit.py sync-contract` takes `<path>` (the backticked one when the
+  heading has a `New:`/`Changed:` prefix) and rebuilds the block. A
+  `### Changed: `<path>`` section with prose and no code block is allowed and
+  `sync-contract` leaves it as written.
 - Documentation uses the language's own form: XML doc comments for C#, rustdoc
   for Rust, docstrings for Python, TSDoc for TypeScript, javadoc for Java.
   Never a bare `//` where the language has a documentation form.

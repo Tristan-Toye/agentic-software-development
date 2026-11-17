@@ -61,9 +61,17 @@ surfaced.
   run the validator, fix every DEFECT, and commit — drafting is mechanical,
   selecting and validating never are.
   **Under Claude Code, send every ADR draft in one `phase4-wave` call** (compose
-  and lint each payload first): one item per draft with `kind: document-drafter`,
-  `owned` = its `TARGET_PATHS`, `root` = `X`, its branch, and `base` = `X`'s HEAD
-  at the spawn. The drafter never commits, so the wave verifies it with
+  and lint each payload first): the `args` are a **bare JSON array** (never an
+  object wrapping it), one item per draft, each carrying every field the workflow
+  refuses an item without: `agentType` (`agentic-software-development:document-drafter`),
+  `label`, `payloadPath` (the linted final, absolute, under `X/.agent-staging/`),
+  `payloadSha256` (that file's line in the `.agent-staging/wave-<holder>.hashes`
+  file `prepare_wave.py` writes, `<sha256>  <path>`; or `shasum -a 256`), `root`
+  = `X`, `branch` (its branch), `base` (`X`'s HEAD at the spawn), `pluginRoot`
+  (`${PLUGIN_ROOT}`), plus `kind: document-drafter` and `owned` = its
+  `TARGET_PATHS`. Without `payloadPath`/`payloadSha256` the spawn guard refuses the
+  launch; with the args wrapped in an object the workflow dies at once as
+  `bad-args`. The drafter never commits, so the wave verifies it with
   `--uncommitted`: written files raise no flag, a path outside `TARGET_PATHS` or a
   target never written does. `X` is your own tree and you dirty it too (the
   `WORKFLOW:` build-log line, an ADR you amend), so before the launch run

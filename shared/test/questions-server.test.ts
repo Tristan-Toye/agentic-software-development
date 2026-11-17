@@ -7,7 +7,7 @@ import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, An
 import { channelNameFor, interpretEnvelope, isDuplicate, runSocket, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
 import { undecidedDeferred, parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, readDeferredRecord, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
-import { prNumberOf, prFieldNumber, prFieldNumbers, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, fetchStubRefs } from "../questions/stubs.ts"
+import { prNumberOf, prFieldNumber, prFieldNumbers, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, outsideStubPrs, fetchStubRefs } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { canIntegrate, integrationPhase, integrationStopped, markIntegrating, readIntegrate, readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule, runnerActive } from "../questions/runstore.ts"
 import { blockedTarget } from "../claude/permission-denied.ts"
@@ -600,6 +600,14 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
     check("stubMembers: a PR into the stub places its dossier (pr: field or id in head)", m["stub/2026-10-24"]?.map((x) => x.id).sort().join() === "W-1,W-2" && m["stub/2026-10-24"].every((x) => !x.noPr))
     check("stubMembers: building without a PR goes under the accepting stub with noPr", m["stub/2026-10-31"]?.map((x) => x.id + ":" + x.noPr).sort().join() === "W-3:true,W-6:true")
     check("stubMembers: plan merges never count and ready/planned never appear", !JSON.stringify(m).includes("W-4") && !JSON.stringify(m).includes("W-5") && !m["stub/2026-10-24"].some((x) => x.id === "W-6") && !m["stub/2026-09-01"])
+    {
+      const pr = (number: number, head: string, base: string, mergeable = "MERGEABLE") => ({ number, headRefName: head, baseRefName: base, url: "https://x/pull/" + number, mergeable })
+      const o = outsideStubPrs(["stub/2026-11-15"], [{ id: "W-017", status: "done", pr: "https://github.com/o/r/pull/31" }, { id: "W-020", status: "done", pr: "#40" }],
+        [pr(31, "feat/W-017-podcast", "development", "CONFLICTING"), pr(36, "fix/W-017-deferred", "feat/W-017-podcast"), pr(41, "feat/W-020-x", "stub/2026-11-15"), pr(42, "feat/other", "feat/W-020-x"), pr(43, "plan/W-017-p", "development")])
+      check("outsideStubPrs: a done dossier's PR into development and the PR stacked on it are listed outside", o.length === 1 && o[0].id === "W-017" && o[0].prs.map((x) => x.number + ">" + x.base + ":" + x.mergeable).join() === "31>development:CONFLICTING,36>feat/W-017-podcast:MERGEABLE")
+      check("outsideStubPrs: a PR into an open stub, a PR stacked on it, and plan PRs are not outside", !JSON.stringify(o).includes("W-020") && !o[0].prs.some((x) => [41, 42, 43].includes(x.number)))
+      check("outsideStubPrs: a PR into a merged (not open) stub branch is outside; no open PRs gives none", outsideStubPrs([], [{ id: "W-1", status: "done", pr: "#5" }], [pr(5, "feat/a", "stub/old")])[0]?.prs[0]?.number === 5 && outsideStubPrs(["stub/a"], [], []).length === 0)
+    }
     const m2 = stubMembers([{ branch: "stub/a", cut: "2026-01-01", state: "integrating", pr: {} }], [{ id: "W-9", status: "ready", live: true }], {})
     check("stubMembers: with no accepting stub the newest open stub takes it; a live runner counts", m2["stub/a"]?.[0]?.id === "W-9" && m2["stub/a"][0].noPr)
     {
@@ -780,6 +788,12 @@ try {
     const during = (await stubOf()).canIntegrate
     rmSync(ifile)
     check("server: /api/stubs offers Integrate from the integration file at once, without a rescan", s0.state === "accepting" && offered === true && during === false, JSON.stringify({ state: s0.state, offered, during }))
+    // a press while an integrate of the stub is running starts no second one and leaves its pid alone
+    writeFileSync(ifile, JSON.stringify({ state: "merging", pid: process.pid, marker: "held" }))
+    const again: any = await (await fetch(`${base}/api/stub/control`, { method: "POST", body: JSON.stringify({ repo: "repoC", branch: s0.branch, action: "integrate" }) })).json()
+    const kept = JSON.parse(readFileSync(ifile, "utf8"))
+    rmSync(ifile)
+    check("server: Integrate while one runs starts no second integrate", again.already === true && kept.pid === process.pid && kept.marker === "held", JSON.stringify({ again, kept }))
   }
   const rpage = await (await fetch(`${base}/repo/repoC`)).text()
   check("server: every step of the merge queue that needs no owner has its own label", ["fixing: 'merge queue", "rerunning: 'merge queue", "resolving: 'merge queue"].every((x) => rpage.includes(x)))
