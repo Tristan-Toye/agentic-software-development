@@ -166,7 +166,7 @@
      a `seq-*` stem and no draft, still promotes from the `new_stem` flow of
      `l1.json` and the owner's L1 verdicts. Then commit and rerun the gate.
    - *No visual review* (a repo whose language the visual review does not
-     cover, today anything but Rust). The orchestrator authors the seq graph
+     cover, today anything but Rust; Phase 3 logged `VISUAL-REVIEW: skipped — ...`). The orchestrator authors the seq graph
      from the code (`arch_find` on the neighbouring diagrams as models): one
      participant lane per crate, process or container, one message per call
      or event in order (`seq.to` the receiving lane, `arrow` `->>`, `-->>`

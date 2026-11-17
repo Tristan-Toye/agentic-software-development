@@ -296,9 +296,17 @@ payload holds no diagram file and no dossier text from this step.
 1. Mark the dossier: `dossier_edit.py set <dossier> 'visual_review=required'`
    (this switches the gate on for this dossier). Then run `python3 scripts/vr_prepare.py <repo> <ID> --base <baseline_commit> --head X`
    (`X` = the contract commit). It writes `.discovery/visual-review/<ID>/work/`
-   and prints a compact JSON summary. A non-zero exit stops the step: log
-   `VISUAL-REVIEW: skipped-error — <step the JSON names>` as a build-log
-   line, report it, and stop; never invent the facts by hand.
+   and prints a compact JSON summary.
+   - **Exit 3, `"status": "unsupported"`:** the review reads Rust only and the repo has no
+     `Cargo.toml`. A known limit, not an error: log `VISUAL-REVIEW: skipped — unsupported repository (<the JSON's reason>)`
+     as a build-log line, run `dossier_edit.py set <dossier> 'visual_review=skipped — <reason>'`,
+     and go on to Phase 4 without asking the owner. Steps 2 to 5 do not run. Phase 9
+     authors the seq graph by hand (its "No visual review" source).
+   - **Any other non-zero exit** stops the step: log
+     `VISUAL-REVIEW: skipped-error — <step the JSON names>` as a build-log
+     line, report it, and stop; never invent the facts by hand. The gate refuses
+     `skipped-error`: if the owner says go on without diagrams, record
+     `VISUAL-REVIEW: skipped — <reason>` and set the switch to `skipped — <reason>`.
 2. Spawn `diagram-author` (payload file in `.agent-staging/payloads/`): `DOSSIER_ID`,
    the dossier's `## Problem` and `## Approach`, the contract, `WORK_DIR`,
    `OUT_DIR`, `SCRIPTS_DIR`, `REPO`, and `DIAGRAMS_NEW` (the stems of the
@@ -375,6 +383,7 @@ payload holds no diagram file and no dossier text from this step.
    ```
    VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n>, arch <stem> <n>, arch <stem> <n> (<dashboard link>)
    VISUAL-REVIEW: changes requested — <element ids of the review.json lines with verdict change or remove>
+   VISUAL-REVIEW: skipped — <reason>   (step 1 only: unsupported repository, or the owner said go on)
    ```
 
    The counts are the node counts of the three files, then one
@@ -384,7 +393,8 @@ payload holds no diagram file and no dossier text from this step.
    files, every draft (each `Diagrams new:` stem needs its draft, each draft
    its entry; the PR's `Diagram <stem> not added:` escape does not excuse a
    missing draft) and the last line (the gate holds for a dossier with the `visual_review:` field that
-   step 1 sets; a build that never ran this step is not flagged).
+   step 1 sets; a build that never ran this step is not flagged; a `skipped — <reason>` last line, or a
+   `visual_review` value starting `skipped`, passes with no view files, `skipped-error` does not).
    **`changes requested` goes back to the contract revision above, never
    forward:** fix the contract, re-run the contract review, then run this
    step again and record a new line. Fan-out waits for `approved`.

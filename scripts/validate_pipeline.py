@@ -859,6 +859,10 @@ VISUAL_REVIEW_APPROVED_RE = re.compile(
     r"^approved\b.*?\bL0\s+(\d+)\b.*?\bL1\s+(\d+)\b.*?\bL2\s+(\d+)\b", re.I)
 VISUAL_REVIEW_ARCH_RE = re.compile(r"\barch\s+([A-Za-z0-9][A-Za-z0-9_-]*)\s+(\d+)\b", re.I)
 VISUAL_REVIEW_CHANGES_RE = re.compile(r"^changes requested\b.*\S", re.I)
+# `skipped — <reason>`: the step does not apply (an unsupported repository) or the owner said go on without
+# diagrams. `skipped-error` has no whitespace after `skipped`, so it never matches.
+VISUAL_REVIEW_SKIPPED_RE = re.compile(r"^skipped\s+[—–-]+\s*\S", re.I)
+VISUAL_REVIEW_SKIPPED_ERROR_RE = re.compile(r"^skipped-error\b", re.I)
 VISUAL_REVIEW_VIEWS = (("l0.json", "L0"), ("l1.json", "L1"), ("l2.json", "L2"))
 
 
@@ -877,8 +881,16 @@ def visual_review_problems(fm: dict, log: str, root: Path, worktree: Path | None
     ``arch/<stem>.json`` (valid, node count equal to its ``arch <stem> <n>`` entry), and every draft present
     needs an entry; a dossier with no stems and no drafts keeps the older line without arch entries. (The PR
     gate's ``Diagram <stem> not added:`` escape concerns docs/architecture at PR time and does not excuse a
-    missing draft here.)"""
+    missing draft here.)
+
+    A skip is a valid record and needs no view files: a front-matter ``visual_review`` that starts with
+    ``skipped`` (Phase 3 sets ``skipped — <reason>`` for a repository the review does not support, today
+    anything without a ``Cargo.toml``), or a last line ``skipped — <reason>`` (also what the orchestrator
+    records when the owner said to go on without diagrams). ``skipped-error — <step>`` is not a record: it
+    is a failure to report, so the orchestrator asks the owner, then records ``skipped — <reason>``."""
     if not visual_review_applies(fm):
+        return []
+    if str(fm.get("visual_review") or "").strip().lower().startswith("skipped"):
         return []
     lines = VISUAL_REVIEW_RE.findall(log)
     if not lines:
@@ -886,13 +898,18 @@ def visual_review_problems(fm: dict, log: str, root: Path, worktree: Path | None
                 "`VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n>, arch <stem> <n> (<dashboard link>)` "
                 "(the arch entries: one per `Diagrams new:` stem, none when the dossier lists none)"]
     last = lines[-1]
+    if VISUAL_REVIEW_SKIPPED_RE.match(last):
+        return []
+    if VISUAL_REVIEW_SKIPPED_ERROR_RE.match(last):
+        return ["the last VISUAL-REVIEW: line is 'skipped-error': the diagram step failed. Report it and ask the "
+                "owner; if the owner says go on without diagrams, record `VISUAL-REVIEW: skipped — <reason>`"]
     approved = VISUAL_REVIEW_APPROVED_RE.match(last)
     if not approved:
         if VISUAL_REVIEW_CHANGES_RE.match(last):
             return ["the last VISUAL-REVIEW: line is 'changes requested': revise the contract in Phase 3, "
                     "run the diagram step again and record 'approved'"]
         return [f"the last VISUAL-REVIEW: line is not well formed: {last[:80]!r}. Use "
-                "`approved — L0 <n>, L1 <n>, L2 <n>[, arch <stem> <n>]` or `changes requested — <element ids>`"]
+                "`approved — L0 <n>, L1 <n>, L2 <n>[, arch <stem> <n>]`, `changes requested — <element ids>` or `skipped — <reason>`"]
     dossier_id = str(fm.get("id") or "").strip()
     base = None
     for cand in (worktree, root):
@@ -3199,7 +3216,18 @@ def selftest_visual_review() -> bool:
         ("duplicate id in a file: flagged", run(new_fm, approved, good, dup), True),
         ("element without evidence: flagged", run(new_fm, approved, good, no_evidence), True),
         ("file with the wrong view: flagged", run(new_fm, approved, good, wrong_view), True),
+        ("skipped last, no view files: clean",
+         run(new_fm, "- VISUAL-REVIEW: skipped \u2014 unsupported repository (no Cargo.toml)\n", None), False),
+        ("skipped-error last: flagged",
+         run(new_fm, "- VISUAL-REVIEW: skipped-error \u2014 extract-before\n", None), True),
+        ("front matter skipped, no line, no files: clean",
+         run("---\nid: W-9\nstatus: building\ncreated: 2026-11-12\nvisual_review: skipped \u2014 unsupported repository\n---\n\n",
+             "no line\n", None), False),
     ]
+    err = run(new_fm, "- VISUAL-REVIEW: skipped-error \u2014 extract-before\n", None)
+    cases.append(("skipped-error message tells the orchestrator to ask the owner",
+                  err, True))
+    ok_msg = bool(err) and "ask the" in err[0] and "skipped \u2014 <reason>" in err[0]
     # architecture drafts: one `arch <stem> <n>` entry per draft, one draft per `Diagrams new:` stem
     def arch_graph(n: int) -> dict:
         g = graph("c4", "class", n)
@@ -3239,7 +3267,8 @@ def selftest_visual_review() -> bool:
         ("arch: entry for a stem with no draft and no listing: flagged",
          run_arch(base_line + ", arch c4-z 2 (link)\n", "none", {}), True),
     ]
-    ok = True
+    ok = ok_msg
+    print(f"{'ok  ' if ok_msg else 'FAIL'}    visual review: skipped-error message names the owner and the skipped record")
     for name, problems, expect in cases:
         passed = bool(problems) == expect
         ok &= passed
