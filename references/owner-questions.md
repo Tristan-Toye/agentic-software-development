@@ -398,6 +398,25 @@ restarted server answers at once from them while its first scan runs.
     one PR at a time (`ASD_MERGE_BATCH=0` always does). An outage or a GitHub
     5xx is waited out for as long as it lasts, and a queue whose worker died (a
     logout, a reboot) restarts within two minutes of the dashboard running.
+  - **Code dossiers in the merge queue batch too.** Dossiers waiting in a row
+    at the head, each with one PR into the same stub, no run live, no
+    `/resolve-merge` attempt spent and no conflict, are merged together on one
+    `queue-batch-*` branch cut from the stub head (up to `ASD_MERGE_BATCH_MAX`,
+    default 16), checked by one CI run and merged through one batch PR; GitHub
+    then marks each dossier's PR merged, and each gets the same record and
+    `/after-merge` run as after a single merge. A dossier with a stack of
+    several PRs, or one that conflicts with the batch so far (found on the
+    branch, before any CI run), goes one at a time. A batch that stays red
+    after the one rerun wakes no agent: it is closed and bisected. The first
+    half is tested on the stub head alone and lands when green; the rest goes
+    on against the new stub head; a red half is split again. The second half
+    is never tested beside the first on the old stub, so two PRs that only
+    break together never land on two green runs that did not hold both. A
+    half of one dossier goes one at a time through the usual path (rerun, then
+    `/resolve-merge`). `ASD_MERGE_BATCH=0` turns all batching off,
+    `ASD_MERGE_BATCH_CODE=0` only this one. A worker that restarts finishes a
+    batch that merged while it was down and closes one left open, so a second
+    batch PR never opens beside it.
   - **the merge detector** (`merges.ts`): every 2 min, `gh pr list --base <stub>
     --state merged` per open stub. A PR merged since the last look, mapped to
     its dossier by `pr:` number or the id in its head branch, starts

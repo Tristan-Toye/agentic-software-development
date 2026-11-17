@@ -1074,6 +1074,227 @@ def work_batch(root: str, nums: list[int]) -> list[int]:
     return done
 
 
+# ---------------------------------------------------------------- a batch of code dossiers, one CI run
+# The same idea for dossiers: with a strict branch rule and a CI run of 30+ minutes, N dossiers one at a time cost N runs
+# and hours. Waiting dossiers that have ONE pull request each into the same stub are merged together on one
+# queue-batch-* branch cut from the stub, checked by one CI run and merged through one PR; GitHub then marks each
+# dossier's PR merged, because its head is in the base. A dossier with a stack of PRs, one that already spent a
+# /resolve-merge attempt, one that conflicts with the batch so far, or one with a live run goes one at a time through
+# work_one. Every eligible dossier waiting goes into one batch. A batch that stays red after the one rerun wakes no agent:
+# it is closed and bisected (bisect_batch): the first half is tested on the stub head and lands when green, the rest goes on
+# against the new stub head, so no two halves ever land without a green run that holds both; a red half of one goes through
+# work_one, where the rerun and /resolve-merge logic and the blame are clear. A conflict is found locally, on the batch
+# branch, so it never costs a CI run. A worker that restarts mid-batch finishes a batch that merged and closes one that did
+# not (recover_batches), so a second PR never opens beside the first. ASD_MERGE_BATCH=0 turns every batching off,
+# ASD_MERGE_BATCH_CODE=0 only this one; ASD_MERGE_BATCH_MAX (default 16) is a safety cap on the members.
+CODE_BATCH_PREFIX = "queue-batch-"
+
+
+def code_batch_max() -> int:
+    try:
+        return int(os.environ.get("ASD_MERGE_BATCH_MAX") or 16)
+    except ValueError:
+        return 16
+
+
+def code_batching() -> bool:
+    return os.environ.get("ASD_MERGE_BATCH") != "0" and os.environ.get("ASD_MERGE_BATCH_CODE") != "0" and code_batch_max() > 1
+
+
+def push_batch(root: str, base: str, cands: list[dict]) -> tuple[str, list[dict]]:
+    """Merge the candidates' heads, in queue order, onto a branch cut from the stub head and push it: (branch, the members that
+    went in). A candidate that conflicts with the batch so far is left out, here, before any CI run is spent on it."""
+    wt = os.path.join(tempfile.mkdtemp(prefix="asd-batch-"), "w")
+    rc, out = git(root, "worktree", "add", "-q", "--detach", wt, f"origin/{base}")
+    if rc != 0:
+        return "", []
+    members: list[dict] = []
+    try:
+        for m in cands:
+            head = m["p"]["headRefName"]
+            rc, sha = git(root, "rev-parse", f"origin/{head}")
+            rc2, _ = git(wt, "merge", "--no-edit", "--no-ff", f"origin/{head}")
+            if rc != 0 or rc2 != 0:
+                git(wt, "merge", "--abort")   # it conflicts with the batch so far: alone, later
+                continue
+            members.append({**m, "sha": sha.strip()})
+        if len(members) < 2:
+            return "", members
+        branch = f"{CODE_BATCH_PREFIX}{members[0]['p']['number']}-{members[-1]['p']['number']}"
+        rc, out = git(wt, "push", "-q", "--force", "origin", f"HEAD:refs/heads/{branch}")
+        return (branch if rc == 0 else ""), members
+    finally:
+        git(root, "worktree", "remove", "--force", wt)
+
+
+def record_code_merged(root: str, repo: str, d: str, chain: list[dict], base: str, num: int) -> None:
+    """What work_one writes for a merged dossier: merge.json merged, the run's line, the detector, the /after-merge run."""
+    key = f"{repo}.{d}"
+    n = chain[0]["number"]
+    write_json(os.path.join(runs_dir(), key + ".merge.json"), {"state": "merged", "prs": [n], "base": base, "error": "", "ts": now()})
+    append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "runner", "text": f"merged #{n} into {base} through batch #{num} (merge queue)"})
+    mark_detector(repo, chain, d)
+    try:   # /after-merge runs beside the queue, as after one merge
+        start_run(root, dossier_id(root, d, chain), "after-merge", [n])
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    set_state(key, state="merged", pid=None, note=f"merged through batch #{num}; /after-merge runs")
+
+
+def try_batch(root: str, repo: str, base: str, cands: list[dict], done: list[str]) -> str:
+    """One batch PR for the candidates, cut from the stub head as it is now: "landed" (merged, members recorded in `done`),
+    "red" (checks red after the one rerun: closed, nothing merged) or "unusual" (anything else: closed, nothing merged)."""
+    git(root, "fetch", "-q", "origin", base)
+    branch, members = push_batch(root, base, cands)
+    if not branch:
+        return "unusual"
+    label = ", ".join(f"#{m['p']['number']}" for m in members)
+    rc, out = gh(root, "pr", "create", "--base", base, "--head", branch, "--title", f"dossiers: batch of {label}",
+                 "--body", f"The merge queue checks and merges {label} together, in one CI run. Each of them reads as merged once this lands.")
+    mt = re.search(r"/pull/(\d+)", out) if rc == 0 else None
+    if not mt:   # the worker was interrupted after opening it: carry on with the same PR
+        rc, out = gh(root, "pr", "view", branch, "--json", "number", "-q", r'"/pull/\(.number)"')
+        mt = re.search(r"/pull/(\d+)", out) if rc == 0 else None
+    if not mt:
+        git(root, "push", "-q", "origin", "--delete", branch)
+        return "unusual"
+    num = int(mt.group(1))
+    def state_all(**kw):
+        for m in members:   # what a restarted worker reads to finish or clean up this batch (recover_batches)
+            set_state(f"{repo}.{m['dossier']}", **{"code_batch": True, "prs": [m["p"]["number"]], "batch_chain": m["chain"], "base": base, **kw})
+    def note(state, text):
+        state_all(state=state, batch=num, error="", pid=os.getpid(), note=f"in batch #{num}: {text}")
+    def give_up(why: str, outcome: str) -> str:
+        gh(root, "pr", "close", str(num), "--delete-branch", "--comment", f"Back to one at a time: {why}")
+        state_all(state="queued", batch=None, code_batch=None, pid=None, note=f"batch #{num} did not land ({why}); split or one at a time now")
+        return outcome
+    note("batching", "waiting for its checks")
+    row = {"number": num, "headRefName": branch, "baseRefName": base}
+    out = ""
+    for _ in range(3):
+        why = settle(root, f"{repo}.pr-{num}", f"PR-{num}", [row], base, [], note, use_agent=False)   # no agent for a batch
+        if why:
+            return give_up(why, "red" if why.startswith("checks red") else "unusual")
+        moved = [m["p"]["number"] for m in members if head_of(root, m["p"]["number"]) not in ("", m["sha"])]
+        if moved:   # pushed to while the batch ran: that push is not in it
+            return give_up("the branch of " + ", ".join(f"#{n}" for n in moved) + " changed during the batch", "unusual")
+        rc, out = gh(root, "pr", "merge", str(num), "--merge", "--delete-branch", timeout=300)
+        if not (rc != 0 and "not up to date" in out):
+            break   # (up to date again, then checked again, when the stub moved meanwhile)
+    rc2, st = gh(root, "pr", "view", str(num), "--json", "state", "-q", ".state")
+    if st.strip() != "MERGED":
+        return give_up(out[-200:] if rc != 0 else f"not merged afterwards ({st.strip()})", "unusual")
+    # GitHub marks a member's PR merged by itself, a moment later (its head is in the base); one it does not is closed saying where its work went.
+    for m in members:
+        d, n = m["dossier"], m["p"]["number"]
+        state = ""
+        for _ in range(int(os.environ.get("ASD_MERGE_MERGEABLE_TRIES") or 12)):
+            _, state = gh(root, "pr", "view", str(n), "--json", "state", "-q", ".state")
+            if state.strip() == "MERGED":
+                break
+            time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15) / 3)
+        if state.strip() != "MERGED":
+            if head_of(root, n) not in ("", m["sha"]):
+                set_state(f"{repo}.{d}", state="failed", pid=None, error=f"its branch changed while batch #{num} ran; the new commits are not merged")
+                done.append(d)
+                continue
+            gh(root, "pr", "close", str(n), "--comment", f"Merged into {base} through #{num}.")
+        done.append(d)
+        record_code_merged(root, repo, d, m["chain"], base, num)
+    return "landed"
+
+
+def bisect_batch(root: str, repo: str, base: str, cands: list[dict], done: list[str], known_red: bool) -> None:
+    """Land as many of the candidates as green batches allow; the rest stays queued for work_one. Every batch that lands
+    was green on the stub head it landed on, with exactly the members it holds.
+    `cands` all red as one batch (`known_red`) or not tested yet. A red batch is split in two halves, in queue order:
+    the first half is tested on the stub head; the second half would be tested on top of the first, and that is the red
+    batch itself, so it is not run again. Two halves tested side by side on the same old stub could both pass and land
+    a red stub, when only the two together break (A in one, B in the other).
+      first half green -> it lands; the second half goes on against the new stub head, still red as a whole
+      first half red   -> split that one the same way; the second half is tested afresh on whatever stub results
+    A half of one member is no batch: it goes through work_one (rerun, /resolve-merge, clear blame)."""
+    if len(cands) < 2:
+        return
+    if not known_red:
+        r = try_batch(root, repo, base, cands, done)
+        if r != "red":
+            return   # landed, or unusual: the rest goes one at a time
+    mid = len(cands) // 2
+    first, second = cands[:mid], cands[mid:]
+    r1 = try_batch(root, repo, base, first, done) if len(first) > 1 else "single"
+    if r1 == "landed":
+        bisect_batch(root, repo, base, second, done, True)
+    elif r1 == "red":
+        bisect_batch(root, repo, base, first, done, True)
+        bisect_batch(root, repo, base, second, done, False)
+    elif r1 == "single":
+        bisect_batch(root, repo, base, second, done, False)
+
+
+def work_code_batch(root: str, ids: list[str], single: set, done: list[str]) -> None:
+    """Merge the dossiers through one CI run (and, if it is red, bisected). Each one merged is appended to `done` as it lands;
+    everything else stays queued and is in `single`, so it goes through work_one."""
+    repo = repo_name(root)
+    single.update(ids)   # whatever this does not merge goes one at a time afterwards
+    rows: list[dict] = []
+    for d in ids[:code_batch_max()]:
+        prior = read_json(os.path.join(runs_dir(), f"{repo}.{d}.merge.json"), {}) or {}
+        if prior.get("resolve_attempts") or prior.get("state") == "resolving":
+            continue   # already in the hands of its agent: its own attempts and blame stay with it
+        chain, _ = plan(root, d)
+        if len(chain) != 1 or (rows and chain[0]["baseRefName"] != rows[0]["p"]["baseRefName"]):
+            continue   # refused (a live run, a draft, a stack of several PRs): work_one says why
+        bad, err = conflicting(root, [chain[0]["number"]])
+        if bad or err:
+            continue
+        rows.append({"dossier": d, "chain": chain, "p": chain[0]})
+    if len(rows) < 2:
+        return
+    base = rows[0]["p"]["baseRefName"]
+    git(root, "fetch", "-q", "origin", "--prune")
+    kept: list[dict] = []
+    for m in rows:   # an id or ADR number two members both add: the one earlier in the queue keeps it, the other goes alone
+        ren, adr = collisions(root, base, m["p"]["headRefName"], [x["p"]["headRefName"] for x in kept])
+        if ren or adr:
+            continue
+        git(root, "fetch", "-q", "origin", m["p"]["headRefName"])
+        kept.append(m)
+    bisect_batch(root, repo, base, kept, done, False)
+
+
+def recover_batches(root: str) -> list[str]:
+    """A worker that starts finds what an earlier one left of a code batch (`queue-batch-*`): a batch PR that merged is
+    finished for its members (merge.json merged, the detector, /after-merge); one still open or closed is closed and its
+    branch deleted, and its members go back to queued, so the next batch opens a fresh PR instead of a second one beside
+    it. The dossiers it finished are returned."""
+    repo = repo_name(root)
+    rc, out = gh(root, "pr", "list", "--state", "all", "--limit", "200", "--json", "number,headRefName,baseRefName,state")
+    try:
+        prs = json.loads(out or "[]") if rc == 0 else []
+    except ValueError:
+        prs = []
+    batches = {p["number"]: p for p in prs if str(p.get("headRefName", "")).startswith(CODE_BATCH_PREFIX)}
+    finished: list[str] = []
+    for path in glob.glob(os.path.join(runs_dir(), f"{repo}.*.merge.json")):
+        st = read_json(path, {}) or {}
+        if not (st.get("code_batch") and st.get("state") == "batching"):
+            continue
+        d = os.path.basename(path)[len(repo) + 1:-len(".merge.json")]
+        b = batches.get(st.get("batch"))
+        chain = st.get("batch_chain") or []
+        if b and b.get("state") == "MERGED" and chain:
+            if all(gh(root, "pr", "view", str(p["number"]), "--json", "state", "-q", ".state")[1].strip() == "MERGED" for p in chain):
+                record_code_merged(root, repo, d, chain, st.get("base") or b.get("baseRefName", ""), int(b["number"]))
+                finished.append(d)
+                continue
+        set_state(f"{repo}.{d}", state="queued", batch=None, code_batch=None, pid=None, note="the batch it was in did not finish; one at a time or a new batch")
+    for p in batches.values():
+        if p.get("state") == "OPEN":
+            gh(root, "pr", "close", str(p["number"]), "--delete-branch", "--comment", "The merge queue worker that opened this batch stopped; the queue starts it again.")
+    return finished
+
+
 def work_pr(root: str, n: int) -> None:
     """One non-code PR into development through the shared steps, then merged by script (no cleanup run)."""
     repo = repo_name(root); key = f"{repo}.pr-{n}"
@@ -1109,7 +1330,16 @@ def worker(root: str) -> int:
         if q.get("worker") and q["worker"] != os.getpid() and alive(q["worker"]):
             return 0
         q["worker"] = os.getpid(); write_json(queue_path(repo), q)
-    single: set[int] = set()   # tried in a batch already: one at a time now
+    single: set = set()   # tried in a batch already: one at a time now
+    try:
+        back = recover_batches(q.get("root") or root)
+    except Exception:   # best effort: a batch left behind is found again at the next start
+        back = []
+    if back:
+        with locked(repo):
+            q = read_json(queue_path(repo), {}) or {}
+            q["items"] = [i for i in (q.get("items") or []) if i["id"] not in back]
+            write_json(queue_path(repo), q)
     while True:
         with locked(repo):
             q = read_json(queue_path(repo), {}) or {}
@@ -1128,8 +1358,20 @@ def worker(root: str) -> int:
                 if int(it["pr"]) not in single:
                     run.append(int(it["pr"]))
         finished = [head]
+        # The dossiers waiting in a row from the head (a non-code PR keeps its place in the line), unless tried in a batch already.
+        crun: list[str] = []
+        for it in items:
+            if it.get("pr"):
+                break
+            if it["id"] not in single:
+                crun.append(it["id"])
+        crun = crun[:code_batch_max()]
+        batched: list[str] | None = None
         try:
-            if head_pr and len(run) > 1 and run[0] == int(head_pr) and os.environ.get("ASD_MERGE_BATCH") != "0":
+            if not head_pr and len(crun) > 1 and crun[0] == head and code_batching():
+                batched = finished = []
+                work_code_batch(q.get("root") or root, crun, single, batched)
+            elif head_pr and len(run) > 1 and run[0] == int(head_pr) and os.environ.get("ASD_MERGE_BATCH") != "0":
                 single.update(run)
                 finished = [f"#{n}" for n in work_batch(q.get("root") or root, run)]
             elif head_pr:
@@ -1137,7 +1379,10 @@ def worker(root: str) -> int:
             else:
                 work_one(q.get("root") or root, head)
         except Exception as e:  # one dossier's failure never stops the queue
-            if head_pr and len(run) > 1 and int(head_pr) in single and finished == [head] and run[0] == int(head_pr):
+            import traceback; traceback.print_exc()   # into the worker's log
+            if batched is not None:
+                finished = batched   # the batch failed: what it merged is done, the rest goes through on its own
+            elif head_pr and len(run) > 1 and int(head_pr) in single and finished == [head] and run[0] == int(head_pr):
                 finished = []   # the batch failed: each goes through on its own
             else:
                 set_state(f"{repo}.pr-{head_pr}" if head_pr else f"{repo}.{head}", state="failed", error=f"{type(e).__name__}: {e}", pid=None)
@@ -1271,7 +1516,7 @@ def integrate(root: str, branch: str) -> int:
     if rc != 0:
         state(state="failed", error="gh pr list failed: " + out[:200]); return 1
     everything = json.loads(out or "[]")
-    prs = sorted([p for p in everything if p.get("baseRefName") == branch and p["headRefName"] != branch], key=lambda p: p["number"])
+    prs = sorted([p for p in everything if p.get("baseRefName") == branch and p["headRefName"] != branch and not p["headRefName"].startswith(CODE_BATCH_PREFIX)], key=lambda p: p["number"])   # a batch PR is the queue's own
     ids = []
     others = []   # no dossier's stack: never merged from here, only named, so the owner can decide about it
     for p in prs:
@@ -1344,17 +1589,23 @@ prs = json.load(open(os.path.join(d, "prs.json")))
 if a[:2] == ["pr", "list"]:
     if "--head" in a and a[a.index("--head") + 1].startswith(("stub/", "release/")):
         print("OPEN" if os.path.exists(os.path.join(d, "stubpr.txt")) else ""); sys.exit(0)
-    sel = [p for p in prs if p.get("state", "OPEN") == "OPEN"]
+    sel = [p for p in prs if p.get("state", "OPEN") == "OPEN" or (a[a.index("--state") + 1] == "all" if "--state" in a else False)]
+    for p in sel: p.setdefault("state", "OPEN")
     if "--base" in a: sel = [p for p in sel if p["baseRefName"] == a[a.index("--base") + 1]] if a[a.index("--base") + 1].startswith("stub/") else sel
     print(json.dumps(sel)); sys.exit(0)
-if a[:2] == ["pr", "view"] and a[2].startswith("plan/queue-batch-"):
-    print("/pull/901"); sys.exit(0)
-if a[:2] == ["pr", "create"] and a[a.index("--head") + 1].startswith("plan/queue-batch-") and os.environ.get("FAKE_BATCH_EXISTS"):
+if a[:2] == ["pr", "view"] and a[2].startswith(("plan/queue-batch-", "queue-batch-")):
+    print("/pull/" + str(next((p["number"] for p in prs if p["headRefName"] == a[2] and p.get("state", "OPEN") == "OPEN"), 901))); sys.exit(0)
+if a[:2] == ["pr", "create"] and a[a.index("--head") + 1].startswith(("plan/queue-batch-", "queue-batch-")) and os.environ.get("FAKE_BATCH_EXISTS"):
     prs.append({"number": 901, "headRefName": a[a.index("--head") + 1], "baseRefName": a[a.index("--base") + 1], "isDraft": False, "title": "b", "url": "u"})
     json.dump(prs, open(os.path.join(d, "prs.json"), "w")); print("a pull request for branch already exists"); sys.exit(1)
-if a[:2] == ["pr", "create"] and a[a.index("--head") + 1].startswith("plan/queue-batch-"):
-    prs.append({"number": 901, "headRefName": a[a.index("--head") + 1], "baseRefName": a[a.index("--base") + 1], "isDraft": False, "title": "b", "url": "u", "bucket": os.environ.get("FAKE_BATCH_BUCKET", "pass")})
-    json.dump(prs, open(os.path.join(d, "prs.json"), "w")); print("https://github.com/o/r/pull/901"); sys.exit(0)
+if a[:2] == ["pr", "create"] and a[a.index("--head") + 1].startswith(("plan/queue-batch-", "queue-batch-")):
+    hd = a[a.index("--head") + 1]; nb = 901 + len([p for p in prs if p["headRefName"].startswith(("plan/queue-batch-", "queue-batch-"))])
+    bad = os.environ.get("FAKE_BAD_PR"); lo, hi = (hd.split("batch-")[1].split("-") + ["0"])[:2]
+    red = bool(bad) and hd.startswith("queue-batch-") and int(lo) <= int(bad) <= int(hi)
+    pair = os.environ.get("FAKE_PAIR_BAD")   # red only when both are in the batch: each alone is green
+    if pair and hd.startswith("queue-batch-") and all(int(lo) <= int(x) <= int(hi) for x in pair.split(",")): red = True
+    prs.append({"number": nb, "headRefName": hd, "baseRefName": a[a.index("--base") + 1], "isDraft": False, "title": "b", "url": "u", "bucket": "fail" if red else os.environ.get("FAKE_BATCH_BUCKET", "pass")})
+    json.dump(prs, open(os.path.join(d, "prs.json"), "w")); print("https://github.com/o/r/pull/" + str(nb)); sys.exit(0)
 if a[:2] == ["pr", "close"]:
     for p in prs:
         if str(p["number"]) == a[2]: p["state"] = "CLOSED"
@@ -1373,6 +1624,11 @@ if a[:2] in (["stack", "merge"], ["pr", "merge"]):
     for p in prs:
         if str(p["number"]) in nums: p["state"] = "MERGED"
     open(os.path.join(d, "merged_any.txt"), "w").write("1")
+    bp = next((p for p in prs if a[0] == "pr" and str(p["number"]) == a[2] and p["headRefName"].startswith(("plan/queue-batch-", "queue-batch-"))), None)
+    if bp and bp["headRefName"].startswith("queue-batch-") and os.environ.get("FAKE_NO_AUTOMARK") != "1":
+        lo, hi = bp["headRefName"].split("batch-")[1].split("-")
+        for p in prs:
+            if p.get("inbatch") and int(lo) <= p["number"] <= int(hi) and p.get("state", "OPEN") == "OPEN": p["state"] = "MERGED"
     if a[0] == "pr" and a[2] == "901" and os.environ.get("FAKE_NO_AUTOMARK") != "1":
         for p in prs:
             if p["headRefName"].startswith(("plan/", "docs/")) and p.get("state", "OPEN") == "OPEN": p["state"] = "MERGED"
@@ -1970,6 +2226,115 @@ print("started")
         check("resume: a stack that merged before the worker died reads merged, not failed", s77.get("state") == "merged" and not s77.get("error"), str(s77))
         sa, sb, cc, _ = batch_scenario("moved", FAKE_NO_AUTOMARK="1", FAKE_HEAD="pushed-during-the-batch")
         check("batch: a member pushed to during the batch is left open and says so, never closed", "pr close 530" not in cc and sa.get("state") == "failed" and "changed" in sa.get("error", ""), cc + str(sa))
+        # ---- a batch of code dossiers: one CI run, one merge; each dossier reads merged; trouble goes back to one at a time ----
+        g("checkout", "-q", "development", cwd=pusher); g("pull", "-q", "origin", "development", cwd=pusher)
+        g("checkout", "-q", "-b", "stub/2026-11-10", cwd=pusher); g("push", "-q", "origin", "stub/2026-11-10", cwd=pusher)
+        def code_scenario(tag: str, members: list[tuple[str, int, str]], seed=None, **extra) -> tuple[dict[str, dict], str, str]:
+            """members: (dossier, PR, file it writes); the same file twice is a git conflict. Returns the merge states, the calls, the batch branch's files."""
+            stub = "stub/2026-11-10"
+            rows = []
+            used: list[str] = []
+            for d, n, f in members:
+                br = f"feat/{d}-{tag}"
+                g("checkout", "-q", "-B", br, f"origin/{stub}" if False else stub, cwd=pusher)
+                g("reset", "-q", "--hard", "origin/" + stub, cwd=pusher)
+                os.makedirs(os.path.join(pusher, "src"), exist_ok=True)
+                open(os.path.join(pusher, "src", f), "w").write(f"{d}\n")
+                g("add", "-A", cwd=pusher); g("commit", "-q", "-m", br, cwd=pusher); g("push", "-q", "--force", "origin", br, cwd=pusher)
+                rows.append(dict(P(n, br, stub), mss="CLEAN", inbatch=f not in used)); used.append(f)
+            g("fetch", "-q", "origin", cwd=clone)
+            for f in ("calls.txt", "runs.txt", "stubpr.txt", "head.txt", "merged_any.txt"):
+                if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
+            json.dump(rows, open(os.path.join(fdir, "prs.json"), "w"))
+            rn_ = repo_name(clone)
+            for d, n, _ in members:
+                for suffix in ("merge.json", "runner.json"):
+                    if os.path.exists(os.path.join(rdir, f"{rn_}.{d}.{suffix}")): os.remove(os.path.join(rdir, f"{rn_}.{d}.{suffix}"))
+                set_state(f"{rn_}.{d}", state="queued", position=1, error="", prs=[], pid=None)
+            write_json(queue_path(rn_), {"items": [{"id": d, "ts": now()} for d, _, _ in members], "root": clone, "worker": 999999})
+            if seed: seed(rn_)
+            saved = dict(os.environ)
+            os.environ.update(env, ASD_RUNNER_BIN=fr, ASD_MERGE_POLL="0.1", **extra)
+            for k in ("ASD_MERGE_BATCH", "ASD_MERGE_BATCH_CODE"):
+                if k not in extra: os.environ.pop(k, None)
+            try:
+                revive()
+                for _ in range(600):
+                    q = read_json(queue_path(rn_), {}) or {}
+                    if not q.get("items") and not (q.get("worker") and alive(q["worker"])): break
+                    time.sleep(0.1)
+            finally:
+                os.environ.clear(); os.environ.update(saved)
+            cc = open(os.path.join(fdir, "calls.txt")).read()
+            g("fetch", "-q", "origin", cwd=clone)
+            bb = [l for l in cc.splitlines() if l.startswith("pr create") and "--head queue-batch-" in l]
+            files = ""
+            if bb:
+                br = bb[0].split("--head ")[1].split()[0]
+                files = subprocess.run(["git", "-C", clone, "ls-tree", "-r", "--name-only", f"origin/{br}", "src/"], capture_output=True, text=True).stdout
+            return {d: read_json(os.path.join(rdir, f"{rn_}.{d}.merge.json"), {}) or {} for d, _, _ in members}, cc, files
+        ss, cc, files = code_scenario("g", [("W-601", 601, "a.txt"), ("W-602", 602, "b.txt")])
+        check("code batch: two dossiers go through one batch PR, one CI wait and one merge; each reads merged",
+              "pr merge 901 --merge" in cc and "pr merge 601" not in cc and "pr merge 602" not in cc and "pr checks 601" not in cc and "pr checks 602" not in cc
+              and cc.count("pr create") == 1 and all(v.get("state") == "merged" and v.get("prs") for v in ss.values()) and "batch #901" in ss["W-601"].get("note", ""), cc + str(ss))
+        check("code batch: the batch branch holds both members' work", "src/a.txt" in files and "src/b.txt" in files, files)
+        seen = read_json(os.path.join(rdir, f"{repo_name(clone)}.merges.json"), {})
+        runs_ = open(os.path.join(fdir, "runs.txt")).read().split("\n") if os.path.exists(os.path.join(fdir, "runs.txt")) else []
+        check("code batch: the after-merge detector and the cleanup run see each dossier's PR as merged", seen.get("601", {}).get("state") == "started" and seen.get("602", {}).get("state") == "started"
+              and "W-601 after-merge" in runs_ and "W-602 after-merge" in runs_, str(seen) + str(runs_))
+        ss, cc, _ = code_scenario("r", [("W-611", 611, "a.txt"), ("W-612", 612, "b.txt")], FAKE_BATCH_BUCKET="fail")
+        runs_ = open(os.path.join(fdir, "runs.txt")).read().split("\n") if os.path.exists(os.path.join(fdir, "runs.txt")) else []
+        check("code batch: red after the rerun closes the batch, wakes no agent, and each dossier goes through work_one on its own",
+              "pr close 901" in cc and "pr merge 611 --merge" in cc and "pr merge 612 --merge" in cc and "pr merge 901" not in cc and not any("resolve-merge" in r for r in runs_)
+              and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss) + str(runs_))
+        ss, cc, files = code_scenario("c", [("W-621", 621, "a.txt"), ("W-622", 622, "a.txt"), ("W-623", 623, "c.txt")])
+        check("code batch: a member that conflicts with the batch so far is left out and goes alone afterwards",
+              "src/a.txt" in files and "src/c.txt" in files and "--head queue-batch-621-623" in cc and "pr merge 901 --merge" in cc and "pr merge 622 --merge" in cc
+              and cc.index("pr merge 901") < cc.index("pr merge 622") and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss) + files)
+        ss, cc, _ = code_scenario("o", [("W-631", 631, "a.txt"), ("W-632", 632, "b.txt")], ASD_MERGE_BATCH_CODE="0")
+        check("code batch: ASD_MERGE_BATCH_CODE=0 keeps one at a time", "pr create" not in cc and "pr merge 631 --merge" in cc and "pr merge 632 --merge" in cc and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss))
+        ss, cc, _ = code_scenario("m", [("W-641", 641, "a.txt"), ("W-642", 642, "b.txt"), ("W-643", 643, "c.txt")], ASD_MERGE_BATCH_MAX="2")
+        check("code batch: ASD_MERGE_BATCH_MAX caps the members; the rest follows", "--head queue-batch-641-642" in cc and "pr merge 643 --merge" in cc and "pr merge 901 --merge" in cc and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss))
+        ss, cc, _ = code_scenario("p", [("W-651", 651, "a.txt"), ("W-652", 652, "b.txt")], FAKE_NO_AUTOMARK="1")
+        check("code batch: a member GitHub does not mark merged is closed saying where its work went, and still reads merged", "pr close 651" in cc and "through #901" in cc and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss))
+        def runs_of() -> list[str]:
+            return open(os.path.join(fdir, "runs.txt")).read().split("\n") if os.path.exists(os.path.join(fdir, "runs.txt")) else []
+        four = lambda n0: [(f"W-{n0 + i}", n0 + i, "abcd"[i] + ".txt") for i in range(4)]
+        ss, cc, _ = code_scenario("b", four(701), FAKE_BAD_PR="703")
+        check("code batch: red bisects; the first half is tested alone and lands, the half with the bad one is not batched again, its members go one at a time, no agent woken",
+              cc.count("pr create") == 2 and "--head queue-batch-701-704" in cc and "--head queue-batch-701-702" in cc and cc.count("pr close 901") == 1
+              and "pr merge 701" not in cc and "pr merge 702" not in cc and "pr merge 703 --merge" in cc and "pr merge 704 --merge" in cc
+              and all(v.get("state") == "merged" for v in ss.values()) and not any("resolve-merge" in r for r in runs_of())
+              and all(f"{d} after-merge" in runs_of() for d in ss), cc + str(ss) + str(runs_of()))
+        ss, cc, _ = code_scenario("e", four(721), FAKE_BAD_PR="721")
+        check("code batch: a red first half is split on, and the second half is tested afresh on the stub that results, then lands as a batch",
+              "--head queue-batch-721-722" in cc and "--head queue-batch-723-724" in cc and cc.count("pr create") == 3 and "pr merge 721 --merge" in cc and "pr merge 722 --merge" in cc
+              and "pr merge 723" not in cc and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss))
+        ss, cc, _ = code_scenario("x", four(711), FAKE_PAIR_BAD="711,713")
+        made = sorted(l.split("--head ")[1].split()[0] for l in cc.splitlines() if l.startswith("pr create") and "--head queue-batch-" in l)
+        check("code batch: two that break only together (A in the first half, B in the second) are never landed by two green runs that never held both: only the first half batches, A lands, B goes one at a time",
+              made == ["queue-batch-711-712", "queue-batch-711-714"] and "pr merge 713 --merge" in cc and "pr merge 714 --merge" in cc and "pr merge 712" not in cc
+              and cc.count("pr close 901") == 1 and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss) + str(made))
+        def stale_merged(rn_):   # the worker died after the batch merged: its members read MERGED, their merge.json says batching
+            json.dump([dict(P(901, "queue-batch-801-802", "stub/2026-11-10"), state="MERGED"), dict(P(801, "feat/W-801-x", "stub/2026-11-10"), state="MERGED", inbatch=True),
+                       dict(P(802, "feat/W-802-x", "stub/2026-11-10"), state="MERGED", inbatch=True)], open(os.path.join(fdir, "prs.json"), "w"))
+            for d, n in (("W-801", 801), ("W-802", 802)):
+                set_state(f"{rn_}.{d}", state="batching", batch=901, code_batch=True, prs=[n], base="stub/2026-11-10", batch_chain=[P(n, f"feat/{d}-x", "stub/2026-11-10")])
+        ss, cc, _ = code_scenario("s", [("W-801", 801, "a.txt"), ("W-802", 802, "b.txt")], seed=stale_merged)
+        runs_ = open(os.path.join(fdir, "runs.txt")).read().split("\n") if os.path.exists(os.path.join(fdir, "runs.txt")) else []
+        seen = read_json(os.path.join(rdir, f"{repo_name(clone)}.merges.json"), {})
+        check("restart: a batch that merged while the worker was down is adopted: every member reads merged, one after-merge each, no second batch",
+              "pr create" not in cc and all(v.get("state") == "merged" for v in ss.values()) and "W-801 after-merge" in runs_ and "W-802 after-merge" in runs_
+              and "801" in seen and "802" in seen, cc + str(ss) + str(runs_))
+        def stale_open(rn_):   # the worker died with the batch PR open: it is closed, not left beside a second one
+            rows_ = json.load(open(os.path.join(fdir, "prs.json")))
+            rows_.append(P(901, "queue-batch-811-812", "stub/2026-11-10"))
+            json.dump(rows_, open(os.path.join(fdir, "prs.json"), "w"))
+            for d, n in (("W-811", 811), ("W-812", 812)):
+                set_state(f"{rn_}.{d}", state="batching", batch=901, code_batch=True, prs=[n], base="stub/2026-11-10", batch_chain=[P(n, f"feat/{d}-x", "stub/2026-11-10")])
+        ss, cc, _ = code_scenario("t", [("W-811", 811, "a.txt"), ("W-812", 812, "b.txt")], seed=stale_open)
+        check("restart: a batch PR left open by a dead worker is closed first, then one fresh batch merges the members",
+              "pr close 901" in cc and cc.count("pr create") == 1 and cc.index("pr close 901") < cc.index("pr create") and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss))
         check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged", str(read_json(os.path.join(rdir, "repo.W-128.merge.json"), {})) + str(read_json(os.path.join(rdir, "repo.W-130.merge.json"), {})))
         RUNNER = saved
     leaked = {d: sorted(now_ - before_real[d]) for d, now_ in listing().items() if now_ - before_real[d]}
