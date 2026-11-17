@@ -249,8 +249,11 @@
    `python3 ${PLUGIN_ROOT}/scripts/remove_worktree.py --root <main checkout> <path>...
    --branch` — never a bare `git worktree remove --force`, which auto mode
    refuses: the script removes only this repository's `<repo>-…` worktrees,
-   refuses uncommitted work unless `--copy-to` saves it first, and deletes a
-   fan-out branch only once it is merged. The branch stays on the remote; the PR is the
+   refuses uncommitted work unless `--save` saves it first (under
+   `~/.agentic/leftovers/`; a `--copy-to DIR` inside any checkout of the
+   repository is refused), and deletes a fan-out branch only once it is merged.
+   **Leftovers and staging go under `~/.agentic/`, never into the repository's
+   main checkout.** The branch stays on the remote; the PR is the
    user's from here.
    **Do not wait for the merge and do not track it.** Review comments on the PR
    are new work, and they get a **fresh worktree** — a new `/work-on` run on this

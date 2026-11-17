@@ -10,15 +10,19 @@ owner. This script makes the call safe enough to allow outright:
 - the path must be a worktree registered in `--root`'s repository, never the
   main checkout, and a sibling of it whose name starts with `<repo>-`;
 - uncommitted agent work has no second copy (`safe_revert.py`): a tree with
-  tracked changes or untracked files is refused unless `--copy-to DIR`
-  (outside the tree) is given, which first saves the diff and every untracked
-  file there and prints where. Ignored files (build output) are dropped;
+  tracked changes or untracked files is refused unless `--save` or
+  `--copy-to DIR` is given, which first saves the diff and every untracked
+  file there and prints where. `--save` writes under
+  `~/.agentic/leftovers/<main dir name>/<worktree>-<UTC stamp>/` (override the
+  base with `ASD_LEFTOVERS_DIR`). `--copy-to` refuses a DIR inside ANY checkout
+  of the repository (main or worktree): leftovers never land in the repo.
+  Ignored files (build output) are dropped;
 - `--branch` also deletes the worktree's branch, only when it is merged into
   HEAD of `--root` or already on its remote (`git branch -d`, never `-D`).
 
 # Usage
 
-    remove_worktree.py --root /abs/main/checkout PATH [PATH ...] [--copy-to DIR] [--branch]
+    remove_worktree.py --root /abs/main/checkout PATH [PATH ...] [--save | --copy-to DIR] [--branch]
     remove_worktree.py --selftest
 
 Exit 0: every PATH removed (a PATH that is already gone counts, after a
@@ -32,6 +36,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def git(cwd: str, *a: str, check: bool = True) -> str:
@@ -80,8 +85,26 @@ def dirty(path: str) -> tuple[str, list[str]]:
     return diff, untracked
 
 
-def save(path: str, dest: str, diff: str, untracked: list[str]) -> str:
-    out = os.path.join(os.path.realpath(dest), os.path.basename(path))
+def inside_a_checkout(root: str, dest: str) -> str | None:
+    """The checkout of ROOT's repository that DEST lies in (or is), or None."""
+    d = os.path.realpath(dest)
+    for t in worktrees(root):
+        w = os.path.realpath(t["worktree"])
+        if d == w or d.startswith(w + os.sep):
+            return w
+    return None
+
+
+def leftovers_dir(root: str, path: str) -> str:
+    """Default `--save` location for PATH's uncommitted work, outside every checkout."""
+    base = os.environ.get("ASD_LEFTOVERS_DIR") or os.path.join(os.path.expanduser("~"), ".agentic", "leftovers")
+    main = os.path.basename(os.path.realpath(worktrees(root)[0]["worktree"]))
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    return os.path.join(base, main, f"{os.path.basename(path)}-{stamp}")
+
+
+def save(path: str, dest: str, diff: str, untracked: list[str], direct: bool = False) -> str:
+    out = os.path.realpath(dest) if direct else os.path.join(os.path.realpath(dest), os.path.basename(path))
     os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "changes.diff"), "w") as fh:
         fh.write(diff)
@@ -93,7 +116,7 @@ def save(path: str, dest: str, diff: str, untracked: list[str]) -> str:
     return out
 
 
-def remove(root: str, path: str, copy_to: str | None, branch: bool) -> tuple[bool, str]:
+def remove(root: str, path: str, copy_to: str | None, branch: bool, save_default: bool = False) -> tuple[bool, str]:
     real = os.path.realpath(path)
     if not os.path.exists(real):
         git(root, "worktree", "prune")
@@ -104,12 +127,22 @@ def remove(root: str, path: str, copy_to: str | None, branch: bool) -> tuple[boo
     diff, untracked = dirty(real)
     note = ""
     if diff.strip() or untracked:
-        if not copy_to:
+        if not copy_to and not save_default:
             return False, (f"REFUSED {path}: uncommitted work ({len(untracked)} untracked file(s), "
-                           f"{'a' if diff.strip() else 'no'} tracked diff); pass --copy-to DIR to save it first")
-        if os.path.realpath(copy_to).startswith(real + os.sep) or os.path.realpath(copy_to) == real:
-            return False, f"REFUSED {path}: --copy-to lies inside the tree being removed"
-        note = f"; uncommitted work saved to {save(real, copy_to, diff, untracked)}"
+                           f"{'a' if diff.strip() else 'no'} tracked diff); pass --save (or --copy-to DIR) to save it first")
+        if copy_to:
+            if os.path.realpath(copy_to).startswith(real + os.sep) or os.path.realpath(copy_to) == real:
+                return False, f"REFUSED {path}: --copy-to lies inside the tree being removed"
+            where = inside_a_checkout(root, copy_to)
+            if where:
+                return False, (f"REFUSED {path}: --copy-to lies inside a checkout of this repository ({where}); "
+                               f"use --save (saves under ~/.agentic/leftovers/)")
+            note = f"; uncommitted work saved to {save(real, copy_to, diff, untracked)}"
+        else:
+            dest = leftovers_dir(root, real)
+            if inside_a_checkout(root, dest):
+                return False, f"REFUSED {path}: the leftovers directory {dest} lies inside a checkout of this repository"
+            note = f"; uncommitted work saved to {save(real, dest, diff, untracked, direct=True)}"
     head = next((t for t in worktrees(root) if os.path.realpath(t["worktree"]) == real), {})
     br = str(head.get("branch", "")).removeprefix("refs/heads/")
     git(root, "worktree", "remove", "--force", real)
@@ -155,6 +188,23 @@ def selftest() -> int:
         check("refuses uncommitted work without --copy-to", not ok and os.path.isdir(wt))
         ok, msg = remove(root, wt, os.path.join(wt, "save"), False)
         check("refuses a --copy-to inside the tree", not ok and os.path.isdir(wt))
+        ok, msg = remove(root, wt, os.path.join(root, ".discovery", "analysis", "W-1"), False)
+        check("refuses a --copy-to inside the main checkout", not ok and "inside a checkout" in msg and os.path.isdir(wt))
+        ok, msg = remove(root, wt, os.path.join(other, "stash"), False)
+        check("refuses a --copy-to inside another worktree", not ok and "inside a checkout" in msg and os.path.isdir(wt))
+        lo = os.path.join(t, "leftovers")
+        os.environ["ASD_LEFTOVERS_DIR"] = lo
+        wt2 = os.path.join(t, "repo-W-2")
+        git(root, "worktree", "add", "-q", "-b", "w2b", wt2)
+        open(os.path.join(wt2, "n.txt"), "w").write("n\n")
+        ok, msg = remove(root, wt2, None, False, save_default=True)
+        sd = os.path.join(lo, "repo")
+        names = os.listdir(sd) if os.path.isdir(sd) else []
+        check("--save writes under ASD_LEFTOVERS_DIR/<repo>/<worktree>-<stamp>/",
+              ok and not os.path.exists(wt2) and len(names) == 1 and names[0].startswith("repo-W-2-")
+              and names[0].endswith("Z") and os.path.isfile(os.path.join(sd, names[0], "untracked", "n.txt"))
+              and sd in msg)
+        os.environ.pop("ASD_LEFTOVERS_DIR")
         save_dir = os.path.join(t, "saved")
         ok, msg = remove(root, wt, save_dir, True)
         saved = os.path.join(save_dir, "repo-W-1")
@@ -177,6 +227,8 @@ def main() -> int:
     ap.add_argument("paths", nargs="*")
     ap.add_argument("--root", help="the repository's main checkout")
     ap.add_argument("--copy-to", help="save uncommitted work here (outside the tree) before removing")
+    ap.add_argument("--save", action="store_true",
+                    help="save uncommitted work under ~/.agentic/leftovers/<repo>/<worktree>-<stamp>/ (ASD_LEFTOVERS_DIR overrides)")
     ap.add_argument("--branch", action="store_true", help="also delete the worktree's branch when merged")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
@@ -187,7 +239,7 @@ def main() -> int:
     bad = False
     for p in a.paths:
         try:
-            ok, msg = remove(a.root, p, a.copy_to, a.branch)
+            ok, msg = remove(a.root, p, a.copy_to, a.branch, a.save)
         except RuntimeError as e:
             ok, msg = False, f"REFUSED {p}: {e}"
         print(msg)

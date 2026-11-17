@@ -92,6 +92,51 @@ class Refused(Exception):
     pass
 
 
+_REDIRECTED: set[str] = set()
+
+
+def _git(cwd: str, *a: str) -> str:
+    r = subprocess.run(["git", "-C", cwd, *a], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def redirect_path(path: str) -> str:
+    """The path a dossier WRITE should go to. A run never edits the main
+    checkout's dossier (it is the persistent clone owning the shared test stack):
+    when PATH lies in a repository's main checkout and a worktree of it, whose
+    name carries the dossier's ID (`W-132` from the file name), holds the same
+    relative file, that copy is returned and `redirected: A -> B` is printed once.
+    No such worktree (e.g. /plan in the main checkout), a path outside a main
+    checkout, or ASD_DOSSIER_REDIRECT=0: PATH unchanged."""
+    if os.environ.get("ASD_DOSSIER_REDIRECT") == "0":
+        return path
+    real = os.path.realpath(path)
+    here = os.path.dirname(real)
+    if not os.path.isdir(here):
+        return path
+    common = _git(here, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    top = _git(here, "rev-parse", "--show-toplevel")
+    if not common or not top or os.path.dirname(os.path.realpath(common)) != os.path.realpath(top):
+        return path
+    top = os.path.realpath(top)
+    m = re.match(r"[A-Za-z]+-\d+", os.path.basename(real))
+    if not m:
+        return path
+    did = re.compile(r"(?<![A-Za-z0-9])" + re.escape(m.group(0)) + r"(?![0-9])")
+    rel = os.path.relpath(real, top)
+    for line in _git(top, "worktree", "list", "--porcelain").splitlines():
+        if not line.startswith("worktree "):
+            continue
+        wt = os.path.realpath(line[len("worktree "):])
+        cand = os.path.join(wt, rel)
+        if wt != top and did.search(os.path.basename(wt)) and os.path.isfile(cand):
+            if real not in _REDIRECTED:
+                _REDIRECTED.add(real)
+                print(f"redirected: {real} -> {cand}", file=sys.stderr)
+            return cand
+    return path
+
+
 def read(path: str) -> str:
     with open(path, encoding="utf-8") as fh:
         return fh.read()
@@ -202,6 +247,7 @@ def log_lines(path: str, entries: list[str]) -> tuple[int, int]:
     skipping a line already present verbatim in that section (an idempotent
     re-run adds nothing). Returns (appended, skipped). Raises Refused like
     append_log, OSError when the file cannot be read or written."""
+    path = redirect_path(path)
     with locked(path):
         text = read(path)
         lines = text.split("\n")
@@ -871,6 +917,8 @@ def run(argv: list[str]) -> int:
         return selftest()
     if not args.cmd:
         ap.error("a subcommand is required unless --selftest")
+    if args.cmd != "section":
+        args.dossier = redirect_path(args.dossier)
     try:
         if args.cmd == "log":
             entries = sys.stdin.read().splitlines() if args.lines == ["-"] else args.lines
@@ -1265,6 +1313,41 @@ def selftest() -> int:
         open(fresh, "w", encoding="utf-8").write("/// New.\npub fn brand_new() {\n    y();\n}\n")
         n4 = sync_contract(SD.replace("### `src/lib.rs` — two", "### `src/new.rs` — two").replace("impl K {\n    /// Second.\n    pub fn second(&self) { … }\n}", "stale"), td)[0]
         check("scoped sync: a file new since the baseline is whole", "pub fn brand_new() { … }" in n4)
+
+    # Redirect guard: a write aimed at the main checkout's dossier lands in the run's worktree.
+    with tempfile.TemporaryDirectory() as rt:
+        rt = os.path.realpath(rt)
+        main = os.path.join(rt, "app")
+        os.makedirs(os.path.join(main, ".discovery", "dossiers"))
+
+        def gx(cwd: str, *a: str) -> None:
+            subprocess.run(["git", "-C", cwd, *a], capture_output=True, check=True)
+
+        for a in (["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+            gx(main, *a)
+        rel = os.path.join(".discovery", "dossiers", "W-132-x.md")
+        open(os.path.join(main, rel), "w", encoding="utf-8").write(SAMPLE.replace("W-001", "W-132"))
+        gx(main, "add", "."); gx(main, "commit", "-qm", "i")
+        mp = os.path.join(main, rel)
+        saved_env = os.environ.pop("ASD_DOSSIER_REDIRECT", None)
+        check("redirect: no worktree, the main path is kept", redirect_path(mp) == os.path.realpath(mp))
+        wt13 = os.path.join(rt, "app-W-13")
+        gx(main, "worktree", "add", "-q", "-b", "w13", wt13)
+        check("redirect: a worktree whose name only prefixes the ID (W-13 vs W-132) is not taken", redirect_path(mp) == os.path.realpath(mp))
+        wt = os.path.join(rt, "app-W-132")
+        gx(main, "worktree", "add", "-q", "-b", "w132", wt)
+        want = os.path.join(wt, rel)
+        check("redirect: main path -> the worktree holding that ID", redirect_path(mp) == want)
+        check("redirect: a path already in the worktree is unchanged", redirect_path(want) == want)
+        n, _ = log_lines(mp, ["- QUESTION: q"])
+        check("redirect: a log line lands in the worktree copy, the main copy stays clean",
+              n == 1 and "QUESTION: q" in read(want) and "QUESTION" not in read(mp)
+              and subprocess.run(["git", "-C", main, "status", "--porcelain"], capture_output=True, text=True).stdout.strip() == "")
+        os.environ["ASD_DOSSIER_REDIRECT"] = "0"
+        check("redirect: ASD_DOSSIER_REDIRECT=0 turns it off", redirect_path(mp) == mp)
+        os.environ.pop("ASD_DOSSIER_REDIRECT")
+        if saved_env is not None:
+            os.environ["ASD_DOSSIER_REDIRECT"] = saved_env
 
     for item in failures:
         print("SELFTEST FAIL  " + item)
