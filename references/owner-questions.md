@@ -418,6 +418,22 @@ restarted server answers at once from them while its first scan runs.
     `state` and `error`), written atomically; routes `GET`/`POST /api/autowork`
     (`enable`, `disable`, `start-now`, `resume`). Env: `ASD_AUTO_WORK_BIN`,
     `ASD_AUTO_WORK_GRACE`.
+  - **Eager merge** (a switch per repository, on by default; `auto_work.py`).
+    `auto_work.py --eager-merge on --root R` (`off` turns it off; `--status` shows
+    it). It is its own switch, kept in the same file as automatic work, and works
+    with automatic work on or off. When it is on, a dossier is put on the open stub
+    through the merge queue (`merge_dossier.py ID --enqueue`, what the Merge button
+    does) as soon as it is finished: its build is done (`pr` or `done`), no run of it
+    is live (so its fix-deferred run is over) and no open deferred item is left
+    (dismissed, fixed and converted ones do not count; one the owner ruled to stay
+    open does not either). It needs an open pull request into an open stub. The
+    stub grows during the week, and Integrate has little left to merge before /stub.
+    A dossier with a `<repo>.<dossier>.merge.json` record (queued, running, waiting,
+    merged, failed or cancelled) is never put on again: a failed one waits for the
+    owner. Non-code PRs are not touched. Integrate only merges the dossiers that
+    still have an open PR into the stub, so it skips what is already merged. The
+    server sends a switched-on repository's facts on the 2-minute tick for either
+    switch. Off, nothing of this runs.
   - **One merge queue for both kinds of PR** (`merge_dossier.py`): a
     dossier's stack into its stub, and a plan or docs PR into development
     (`--enqueue-pr`). FIFO per repository, one worker. Each item goes through
@@ -447,39 +463,6 @@ restarted server answers at once from them while its first scan runs.
     one PR at a time (`ASD_MERGE_BATCH=0` always does). An outage or a GitHub
     5xx is waited out for as long as it lasts, and a queue whose worker died (a
     logout, a reboot) restarts within two minutes of the dashboard running.
-  - **Code dossiers in the merge queue batch too.** Dossiers waiting in a row
-    at the head, into the same stub, with no run live, no `/resolve-merge`
-    attempt spent and no conflict, are merged together on one `queue-batch-*`
-    branch cut from the stub head (up to `ASD_MERGE_BATCH_MAX`, default 16),
-    checked by one CI run and merged through one batch PR; each gets the same
-    record and `/after-merge` run as after a single merge. A **stack** (the
-    build PR with its `fix/<ID>-deferred` PRs on top) goes in whole by its
-    top PR's head, which holds the PRs below it; nothing is merged into the
-    feature branches and no PR base changes. It is eligible only when no PR
-    in it is a draft, in conflict or red, its bottom PR targets the stub and
-    each PR's head is an ancestor of the one above; otherwise it goes one at a
-    time. After the merge GitHub marks the bottom PR merged by itself; the
-    upper PRs (their base is a feature branch) are closed with "Landed in
-    <stub> via batch PR #N", and `merge.json` records `stack: [bottom..top]`.
-    A dossier that conflicts with the batch so far (found on the branch,
-    before any CI run) goes one at a time. A batch that stays red after the
-    one rerun wakes no agent: it is closed and bisected. Both halves are
-    opened at once as batch PRs, each cut from the current stub head on its
-    own (never stacked), with at most two batch PRs open at once. At most one
-    half lands per round, on a green that did not hold the other: first green
-    and second red lands the first and splits the second against the new stub
-    head (and the other way round); both red split both halves at once; both
-    green land the first, and the second, which was not tested with it, is
-    opened again from the new head and tested before it lands. So two PRs that
-    only break together (A in one half, B in the other) never land on two
-    green runs that did not hold both. A green half whose sibling landed first
-    is never landed on its old result. A half of one dossier goes one at a time
-    through the usual path (rerun, then `/resolve-merge`). `ASD_MERGE_BATCH=0`
-    turns all batching off, `ASD_MERGE_BATCH_CODE=0` only this one. A worker
-    that restarts finishes a batch that merged while it was down (closing the
-    upper PRs of a stack still open, recording each dossier once) and closes
-    every batch PR left open (one or a pair of halves), so a second batch PR
-    never opens beside a live one.
   - **the merge detector** (`merges.ts`): every 2 min, `gh pr list --base <stub>
     --state merged` per open stub. A PR merged since the last look, mapped to
     its dossier by `pr:` number or the id in its head branch, starts

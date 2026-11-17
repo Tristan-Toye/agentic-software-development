@@ -23,6 +23,10 @@ function readJson(path: string): any {
 /** The one switch of a repository: automatic work (and, with it, the scripted stub merge). Off unless the file says so. */
 export const autoWorkOn = (repo: string, file = switchFile()): boolean => !!readJson(file)?.[repo]?.auto_work
 
+/** The eager-merge switch of a repository (each finished dossier joins the merge queue for the open stub), on unless set to false. It works with automatic work off. */
+export const eagerMergeOn = (repo: string, file = switchFile()): boolean => readJson(file)?.[repo]?.eager_merge !== false
+/** Whether a repository's facts go to the script: automatic work or eager merge is on. */
+export const factsOn = (repo: string, file = switchFile()): boolean => autoWorkOn(repo, file) || eagerMergeOn(repo, file)
 export function readAutoState(repo: string, dir = runsDir()): AutoState | null {
   const s = readJson(join(dir, `${repo}.auto-work.json`))
   if (!s || typeof s !== "object" || !Array.isArray(s.members)) return null
@@ -38,7 +42,7 @@ type RunLike = { repo: string; root: string; main?: string; id: string; status: 
 type StubLike = { branch: string; state: string; canIntegrate?: boolean }
 
 /** The facts `auto_work.py --tick` reads: per repository its root, its dossiers (status, blockers, runner, deferred items) and its open stubs. */
-export function buildFacts(runs: RunLike[], stubs: { repo: string; main: string; stubs: StubLike[] }[], on: (repo: string) => boolean = autoWorkOn): { repos: Record<string, any> } {
+export function buildFacts(runs: RunLike[], stubs: { repo: string; main: string; stubs: StubLike[] }[], on: (repo: string) => boolean = factsOn): { repos: Record<string, any> } {
   const repos: Record<string, any> = {}
   for (const r of runs) {
     const root = r.main || r.root   // the repository's main checkout, as Start and Fix all deferred use

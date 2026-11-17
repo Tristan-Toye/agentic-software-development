@@ -12,7 +12,8 @@ the `queued` state, the account routing and every owner question apply unchanged
     auto_work.py --disable --root R     # both off; live runs are never touched
     auto_work.py --start-now --root R   # the next tick starts a cycle now (the first cycle; later ones start by themselves)
     auto_work.py --resume --root R      # a paused cycle goes on (a failed or stopped run is started again)
-    auto_work.py --status --root R      # the state file
+    auto_work.py --status --root R      # the state file and the eager-merge switch
+    auto_work.py --eager-merge on|off --root R   # put each finished dossier on the open stub at once (on by default; works with auto work off)
     auto_work.py --tick --facts FILE|-  # one step for every enabled repository (the dashboard)
     auto_work.py --selftest
 
@@ -32,6 +33,16 @@ the `queued` state, the account routing and every owner question apply unchanged
    runs and the script waits for it to reach /stub; then land_stub.py merges the stub's PR when its conditions hold.
 6. That merge is the next START.
 
+# Eager merge (its own switch, on by default; `--eager-merge off` turns it off)
+
+`--eager-merge on` puts each dossier on the open stub as soon as it is finished, through the existing merge queue
+(`merge_dossier.py ID --enqueue`, the Merge button's entry point), so the stub grows during the week and Integrate has
+little left to merge. Finished is the same as for a cycle member: build done (status `pr` or `done`), no run live (so a
+fix-deferred run is over) and no open deferred item left (one the owner ruled to stay open does not count). The dossier
+must have an open pull request into an open stub. A dossier whose `<repo>.<dossier>.merge.json` exists is never enqueued
+again (queued, running, waiting, merged, failed or cancelled: a failed one waits for the owner). It works with auto work
+on or off; with the switch off nothing of this runs.
+
 # The rules it never bends
 
 Every owner question and every diagram review still waits for the owner: a live run in `waiting` is waited for, never
@@ -43,7 +54,7 @@ run again. Disabled, the script starts nothing and changes nothing; runs that ar
 # Files
 
 Switch: `$ASD_STUB_AUTOMERGE_FILE` (default `~/.agentic/stub-auto-merge.json`, land_stub.py's file) key `auto_work`,
-next to that repository's `enabled` (the scripted stub merge). State: `<runs dir>/<repo>.auto-work.json`, written
+next to that repository's `enabled` (the scripted stub merge) and `eager_merge` (the eager-merge switch). State: `<runs dir>/<repo>.auto-work.json`, written
 atomically: `{cycle, phase, step, started, stub, paused, members: [{id, stage, state, error}], ...}`.
 Facts (from the dashboard): `{"repos": {"<repo>": {"root", "runs": [{id, status, blockedBy, runner, deferred}],
 "stubs": [{branch, state, canIntegrate}]}}}`.
@@ -110,6 +121,16 @@ def write_atomic(path: str, obj) -> None:
 
 def enabled(repo: str) -> bool:
     return bool(land_stub.settings_of(repo).get("auto_work"))
+
+
+def eager_on(repo: str) -> bool:
+    return land_stub.settings_of(repo).get("eager_merge") is not False   # on unless turned off
+
+
+def set_eager(repo: str, on: bool) -> None:
+    """The eager-merge switch: its own key, next to `auto_work` and `enabled`, which it never touches."""
+    all_ = read_json(land_stub.settings_path(), {}) or {}
+    write_atomic(land_stub.settings_path(), {**all_, repo: {**(all_.get(repo) or {}), "eager_merge": on}})
 
 
 def set_switch(repo: str, on: bool) -> None:
@@ -462,9 +483,60 @@ def step_cycle(st: dict, facts: dict) -> bool:
 LAND = land_stub.land_all
 
 
+def finished_run(run: dict) -> bool:
+    """A dossier that is finished the way a cycle member is: build done (`pr` or `done`), no run of it live (a fix-deferred
+    run is over) and no open deferred item left (open_items: one the owner ruled to stay open does not count)."""
+    return run.get("status") in ("pr", "done") and (run.get("runner") or {}).get("state") not in LIVE and not open_items(run)
+
+
+def stub_dossiers(root: str, branch: str) -> list[str]:
+    """The dossiers with an open pull request into the stub, asked of merge_dossier.py (the same view Integrate has)."""
+    script = os.environ.get("ASD_MERGE_BIN") or os.path.join(HERE, "merge_dossier.py")
+    try:
+        p = subprocess.run([sys.executable, script, "--stub-dossiers", branch, "--root", root], capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [x.strip().upper() for x in (p.stdout or "").splitlines() if x.strip()] if p.returncode == 0 else []
+
+
+def enqueue_merge(root: str, dossier: str) -> tuple[bool, str]:
+    """The Merge button's entry point: `merge_dossier.py ID --enqueue --root R` (stacks merge whole, conflicts go to /resolve-merge)."""
+    script = os.environ.get("ASD_MERGE_BIN") or os.path.join(HERE, "merge_dossier.py")
+    return run_runner([sys.executable, script, dossier, "--enqueue", "--root", root])
+
+
+def eager_step(repo: str, root: str, facts: dict) -> list[str]:
+    """Eager merge: every finished dossier on an open stub joins the merge queue, once. Returns the ones enqueued."""
+    stubs = [s["branch"] for s in facts.get("stubs") or [] if s.get("branch")]
+    todo = [r for r in facts.get("runs") or [] if finished_run(r)
+            and not os.path.exists(os.path.join(runs_dir(), f"{repo}.{r['id']}.merge.json"))]   # any record: queued, running, merged, waiting, failed, cancelled
+    if not stubs or not todo:
+        return []
+    on_stub: set[str] = set()
+    for b in stubs:
+        on_stub.update(stub_dossiers(root, b))
+    out = []
+    for r in sorted(todo, key=lambda r: r["id"]):
+        if r["id"].upper() in on_stub:
+            ok, msg = enqueue_merge(root, r["id"])
+            print(f"auto_work: {repo}: eager merge of {r['id']}: " + (msg if ok else "not enqueued: " + msg))
+            if ok:
+                out.append(r["id"])
+    return out
+
+
 def tick_repo(repo: str, facts: dict) -> None:
     root = facts.get("root") or ""
-    if not enabled(repo) or not root or not os.path.isdir(runs_dir()):
+    if not root or not os.path.isdir(runs_dir()) or not (enabled(repo) or eager_on(repo)):
+        return
+    if eager_on(repo):
+        lk = lock_try(repo)
+        if lk is not None:
+            try:
+                eager_step(repo, root, facts)
+            finally:
+                lk.close()
+    if not enabled(repo):
         return
     lk = lock_try(repo)
     if lk is None:
@@ -519,6 +591,15 @@ def cmd_disable(root: str) -> int:
     return 0
 
 
+def cmd_eager(root: str, value: str) -> int:
+    repo = repo_name(root)
+    set_eager(repo, value == "on")
+    print(f"auto_work: eager merge {value} for {repo}" + (" (each finished dossier on an open stub joins the merge queue)" if value == "on" else ""))
+    return 0
+def cmd_status(root: str) -> int:
+    repo = repo_name(root)
+    print(json.dumps({**(read_json(state_path(repo), {}) or {}), "eager_merge": eager_on(repo)}, indent=1))
+    return 0
 def cmd_start_now(root: str) -> int:
     repo = repo_name(root)
     if not enabled(repo):
@@ -588,7 +669,7 @@ def selftest() -> int:
         calls = os.path.join(tmp, "calls.txt")
         for n, body in (("runner.py", "import sys\nopen(%r,'a').write('runner '+' '.join(sys.argv[1:])+'\\n')\nif 'BADDOSSIER' in sys.argv: sys.stderr.write('refused\\n'); sys.exit(2)\nprint('started')\n"),
                         ("docs.py", "import sys\nopen(%r,'a').write('docs '+' '.join(sys.argv[1:])+'\\n')\nprint('queued #11 plan/a')\nprint('queued #12 docs/b')\n"),
-                        ("merge.py", "import sys\nopen(%r,'a').write('integrate '+' '.join(sys.argv[1:])+'\\n')\n")):
+                        ("merge.py", "import sys, os\nopen(%r,'a').write(('integrate ' if '--integrate' in sys.argv else 'stubdossiers ' if '--stub-dossiers' in sys.argv else 'enqueue ')+' '.join(sys.argv[1:])+'\\n')\nif '--stub-dossiers' in sys.argv:\n    f = os.environ.get('FAKE_STUB_DOSSIERS')\n    print(open(f).read() if f and os.path.exists(f) else '', end='')\n")):
             open(os.path.join(tmp, n), "w").write(body % calls)
         os.environ.update(ASD_RUNS_DIR=runs, ASD_STUB_AUTOMERGE_FILE=os.path.join(tmp, "settings.json"), ASD_RUNNER_BIN=os.path.join(tmp, "runner.py"),
                           ASD_DOCS_MERGE_BIN=os.path.join(tmp, "docs.py"), ASD_MERGE_BIN=os.path.join(tmp, "merge.py"))
@@ -625,6 +706,7 @@ def selftest() -> int:
         facts_runs[:] = [run_("A", "ready"), run_("B", "ready", ["C"]), run_("C", "building", runner=runner("running", "work-on")), run_("D", "planned"),
                          run_("E", "planned", ["A"]), run_("F", "ready", ["G"]), run_("G", "done"), run_("H", "dropped")]
 
+        set_eager(repo, False)   # eager merge is on by default: the auto work cases below run without it (it has its own cases)
         # Off by default: nothing is looked at, nothing is written, nothing starts.
         tk()
         check("disabled: no state file, no run started", not os.path.exists(state_path(repo)) and log() == [])
@@ -809,6 +891,66 @@ def selftest() -> int:
         tk()
         check("disabled: the loop starts nothing and changes nothing", st() == s_before and len(log()) == n_before)
         check("the state file is whole json, never a torn write", isinstance(st(), dict) and not glob.glob(P(".auto-work-*.tmp")))
+        # Eager merge: its own switch (on by default); each finished dossier on an open stub joins the merge queue, once.
+        cmd_disable(root)   # auto work is off for all of these
+        stubf = os.path.join(tmp, "stub-dossiers.txt"); os.environ["FAKE_STUB_DOSSIERS"] = stubf
+        open(stubf, "w").write("E1\nE2\nE3\nE4\nE5\nE6\nE7\n")   # the dossiers with an open PR into the stub
+        facts_stubs[:] = [{"branch": "stub/2026-11-24", "state": "accepting", "canIntegrate": True}]
+        done_ = lambda s_="done": runner(s_, "fix-deferred", pid=700, started="2026-11-17T16:00:00Z")
+        facts_runs[:] = [run_("E1", "pr", runner=runner("done", "work-on")),                                           # built, nothing deferred
+                         run_("E2", "done", runner=done_(), items=[("D-1", "fixed"), ("D-2", "dismissed"), ("D-3", "converted")]),   # fixed by hand or by fix-deferred
+                         run_("E3", "pr", runner=runner("done", "work-on"), items=[("D-1", "open")]),                  # an open item
+                         run_("E4", "pr", runner=done_("running")),                                                     # fix-deferred still running
+                         run_("E5", "pr", runner=runner("done", "work-on")),                                           # already queued
+                         run_("E6", "pr", runner=runner("done", "work-on")),                                           # merged
+                         run_("E7", "pr", runner=runner("done", "work-on")),                                           # failed
+                         run_("E8", "pr", runner=runner("done", "work-on")),                                           # finished but no open PR into the stub
+                         run_("E9", "building", runner=runner("running", "work-on"))]                                   # not built
+        for k, v in (("E5", "queued"), ("E6", "merged"), ("E7", "failed")):
+            json.dump({"state": v}, open(P(f"{repo}.{k}.merge.json"), "w"))
+        all_ = read_json(land_stub.settings_path(), {}); all_[repo].pop("eager_merge"); write_atomic(land_stub.settings_path(), all_)
+        check("eager merge is on by default (no key in the switch file)", eager_on(repo) and eager_on("other"))
+        cmd_eager(root, "off")
+        n_before = len(log()); st_before = st()
+        tk()
+        check("eager off: nothing is asked, nothing is enqueued, even with finished dossiers", log()[n_before:] == [] and st() == st_before, log()[n_before:])
+        cmd_eager(root, "on")
+        sw = land_stub.settings_of(repo)
+        check("eager-merge on is its own key: it leaves auto_work and the scripted stub merge off", sw.get("eager_merge") is True and sw.get("auto_work") is False and sw.get("enabled") is False, sw)
+        s_before = st(); n_before = len(log()); tk()
+        enq = [l for l in log()[n_before:] if l.startswith("enqueue")]
+        check("eager on, auto work off: the finished dossiers E1 and E2 are enqueued, through the merge entry point, and only those",
+              enq == [f"enqueue E1 --enqueue --root {root}", f"enqueue E2 --enqueue --root {root}"], log()[n_before:])
+        check("eager asks the merge script which dossiers have an open PR into the stub", f"stubdossiers --stub-dossiers stub/2026-11-24 --root {root}" in log()[n_before:])
+        check("the auto work state file is untouched by the eager step", st() == s_before)
+        for k in ("E1", "E2"):   # the queue writes the record, as merge_dossier.enqueue does
+            json.dump({"state": "queued"}, open(P(f"{repo}.{k}.merge.json"), "w"))
+        n_before = len(log()); tk(); tk()
+        check("idempotent: queued, running, merged and failed records are never enqueued again", not [l for l in log()[n_before:] if l.startswith("enqueue")], log()[n_before:])
+        for state_ in ("merging", "waiting", "cancelled", "cleanup"):
+            json.dump({"state": state_}, open(P(f"{repo}.E1.merge.json"), "w")); tk()
+        check("any other record state is left alone too", not [l for l in log()[n_before:] if l.startswith("enqueue")])
+        # A dossier becomes finished: the open item is fixed, the fix-deferred run ends.
+        setrun("E3", deferred=[{"id": "D-1", "state": "fixed", "keptOpen": False}]); setrun("E4", runner=done_())
+        n_before = len(log()); tk()
+        check("a dossier whose item got fixed and whose fix-deferred run ended is enqueued next look",
+              [l for l in log()[n_before:] if l.startswith("enqueue")] == [f"enqueue E3 --enqueue --root {root}", f"enqueue E4 --enqueue --root {root}"], log()[n_before:])
+        # No open stub: nothing.
+        for k in ("E3", "E4"):
+            json.dump({"state": "queued"}, open(P(f"{repo}.{k}.merge.json"), "w"))
+        os.remove(P(f"{repo}.E7.merge.json")); facts_stubs[:] = []
+        n_before = len(log()); tk()
+        check("no open stub: nothing is enqueued", log()[n_before:] == [], log()[n_before:])
+        facts_stubs[:] = [{"branch": "stub/2026-11-24", "state": "accepting", "canIntegrate": True}]
+        # With auto work on as well, the eager step still runs and the cycle is not disturbed.
+        cmd_enable(root); n_before = len(log()); tk()
+        check("auto work on as well: the eager step enqueues the finished one (E7, its record gone)", [l for l in log()[n_before:] if l.startswith("enqueue")] == [f"enqueue E7 --enqueue --root {root}"], log()[n_before:])
+        cmd_eager(root, "off"); sw = land_stub.settings_of(repo)
+        check("eager-merge off leaves auto work and the scripted stub merge as they were", sw.get("eager_merge") is False and sw.get("auto_work") is True and sw.get("enabled") is True, sw)
+        n_before = len(log()); tk()   # E7 still has no record: only the switch keeps it out
+        check("eager off again: auto work alone enqueues nothing", not [l for l in log()[n_before:] if l.startswith(("enqueue", "stubdossiers"))], log()[n_before:])
+        cmd_disable(root)
+        check("status shows the eager-merge switch", cmd_status(root) == 0)
     LAND = real_land
     land_dirs_ok = [land_stub.settings_path(), runs_dir()] != real_dirs
     check("the selftest used its own settings and runs directory", land_dirs_ok)
@@ -824,6 +966,7 @@ def main(argv: list[str] | None = None) -> int:
                  ("tick", "one step for every enabled repository"), ("selftest", "")):
         ap.add_argument("--" + f, action="store_true", help=h)
     ap.add_argument("--facts", help="tick: the facts file, or - for stdin")
+    ap.add_argument("--eager-merge", choices=["on", "off"], help="the eager-merge switch: each finished dossier joins the merge queue for the open stub")
     a = ap.parse_args(argv)
     if a.selftest:
         return selftest()
@@ -835,12 +978,14 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError) as e:
             print(f"auto_work: facts unreadable: {e}", file=sys.stderr); return 2
         return tick(facts)
-    chosen = [x for x in ("enable", "disable", "start_now", "resume", "status") if getattr(a, x)]
+    chosen = [x for x in ("enable", "disable", "start_now", "resume", "status", "eager_merge") if getattr(a, x)]
     if not a.root or len(chosen) != 1:
         ap.print_usage(sys.stderr); return 2
     root = os.path.abspath(a.root)
     if chosen[0] == "status":
-        print(json.dumps(read_json(state_path(repo_name(root)), {}), indent=1)); return 0
+        return cmd_status(root)
+    if chosen[0] == "eager_merge":
+        return cmd_eager(root, a.eager_merge)
     return {"enable": cmd_enable, "disable": cmd_disable, "start_now": cmd_start_now, "resume": cmd_resume}[chosen[0]](root)
 
 
