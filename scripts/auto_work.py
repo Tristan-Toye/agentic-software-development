@@ -25,7 +25,12 @@ the `queued` state, the account routing and every owner question apply unchanged
    (to /work-on) and every `planned` one whose `blocked_by` are all `done` (to /plan, then /work-on once the plan made
    it ready). Dossiers already in flight are adopted too: status `building` or `review`, any dossier with a live run,
    and a `pr` or `done` dossier with deferred items still open. Their live run is waited for, never started again, and they get
-   Fix all deferred like any member, so integrate never runs past a build or a deferred fix that is still going. Only that snapshot is worked in the cycle; a dossier that becomes eligible later waits for the next START.
+   Fix all deferred like any member, so integrate never runs past a build or a deferred fix that is still going. A blocker
+   adopted that way does not count as `done` for this snapshot: its dependents start in the cycle after, once its fixes
+   are in development. Only that snapshot is worked in the cycle; a dossier that becomes eligible later waits for the next START.
+   Before the cycle, each merged stub is carried over once (`merge_dossier.py --carry-over`): the open PRs it left behind,
+   which GitHub moves to development when the stub's branch is deleted on merge, go to the accepting stub, so this
+   cycle's Integrate (and eager merge) takes them.
 3. Each member is started through `run_dossier.py` and followed to the end.
 4. A member whose build is finished (status `pr` or `done`) gets "Fix all deferred" exactly as the dashboard button
    sends it: every open item except the ones the owner ruled to leave open, named explicitly. It is finished when
@@ -276,11 +281,12 @@ def in_flight(r: dict) -> bool:
 
 def frontier(runs: list[dict]) -> list[dict]:
     """Who is worked this cycle: `ready` and `planned` dossiers whose blockers are all `done`, plus every dossier already
-    in flight (`in_flight`). A blocker not known is not done."""
-    status = {r["id"]: r.get("status") for r in runs}
+    in flight (`in_flight`). A blocker not known is not done, and neither is one adopted this cycle (a `done` build whose
+    deferred items are still open): the dependent waits for the cycle after, when the blocker's fixes are in development."""
+    done = {r["id"] for r in runs if r.get("status") == "done" and not in_flight(r)}
     out = []
     for r in sorted(runs, key=lambda r: r["id"]):
-        if in_flight(r) or r.get("status") in ("ready", "planned") and all(status.get(b) == "done" for b in r.get("blockedBy") or []):
+        if in_flight(r) or r.get("status") in ("ready", "planned") and all(b in done for b in r.get("blockedBy") or []):
             out.append({"id": r["id"], "stage": STAGE_OF[r["status"]], "state": "pending", "error": "", "launch": None, "lag": 0, "asked": None, "accepted": False, "rounds": 0, "retried": False})
     return out
 
@@ -540,6 +546,24 @@ def eager_step(repo: str, root: str, facts: dict) -> list[str]:
     return out
 
 
+def carry_step(st: dict, facts: dict) -> list[str]:
+    """Once per merged stub: `merge_dossier.py --carry-over` moves the open PRs it left behind (dossiers still in flight
+    when it was integrated) to the accepting stub. Deleting the stub's branch on merge makes GitHub move them to
+    development, where neither Integrate nor eager merge sees them. A stub is marked carried only when that succeeded
+    (exit 0); otherwise the next tick tries again. Returns the stubs carried now."""
+    script = os.environ.get("ASD_MERGE_BIN") or os.path.join(HERE, "merge_dossier.py")
+    carried, out = st.setdefault("carried", []), []
+    for b in sorted(set(merged_triggers(st["root"], facts).values()) - set(carried)):
+        try:
+            p = subprocess.run([sys.executable, script, "--carry-over", b, "--root", st["root"]], capture_output=True, text=True, timeout=600, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"auto_work: {st['repo']}: carry-over of {b}: {e}"); continue
+        print(f"auto_work: {st['repo']}: carry-over of {b}: " + ("; ".join((p.stdout or p.stderr or "").split("\n")).strip("; ") or "nothing left on it"))
+        if p.returncode == 0:
+            carried.append(b); out.append(b)
+    return out
+
+
 def tick_repo(repo: str, facts: dict) -> None:
     root = facts.get("root") or ""
     if not root or not os.path.isdir(runs_dir()) or not (enabled(repo) or eager_on(repo)):
@@ -560,6 +584,7 @@ def tick_repo(repo: str, facts: dict) -> None:
         st = read_json(state_path(repo), None) or blank(repo, root)
         before = json.dumps(st, sort_keys=True)
         st["root"] = root
+        carry_step(st, facts)
         if not st["paused"]:
             for _ in range(8):
                 if not step_cycle(st, facts):
@@ -684,6 +709,9 @@ def selftest() -> int:
               {"id": "K", "status": "pr", "deferred": [dict(item("open"), keptOpen=True), item("fixed")]},
               {"id": "Q", "status": "pr"}, {"id": "X", "status": "done", "deferred": [item("open")]}, {"id": "Y", "status": "done", "deferred": [item("fixed")]},
               {"id": "Z", "status": "dropped"}]) == ["B", "L", "P", "R", "X"])
+    check("frontier: a dependent of a blocker adopted this cycle (done, deferred still open) waits for the cycle after",
+          fr([{"id": "B8", "status": "done", "deferred": [item("open")]}, {"id": "B9", "status": "ready", "blockedBy": ["B8"]},
+              {"id": "C1", "status": "done", "deferred": [item("fixed")]}, {"id": "C2", "status": "ready", "blockedBy": ["C1"]}]) == ["B8", "C2"])
     m_ = {"id": "R", "stage": "build", "state": "pending", "error": "", "launch": None, "lag": 0, "asked": None, "accepted": False, "rounds": 0, "retried": False}
     st0 = {"root": "/nonexistent", "repo": "x", "members": [m_], "paused": None}
     step_member(st0, m_, {"id": "R", "status": "review", "runner": {"state": "running", "command": "work-on"}})
@@ -700,8 +728,8 @@ def selftest() -> int:
         calls = os.path.join(tmp, "calls.txt")
         for n, body in (("runner.py", "import sys\nopen(%r,'a').write('runner '+' '.join(sys.argv[1:])+'\\n')\nif 'BADDOSSIER' in sys.argv: sys.stderr.write('refused\\n'); sys.exit(2)\nprint('started')\n"),
                         ("docs.py", "import sys\nopen(%r,'a').write('docs '+' '.join(sys.argv[1:])+'\\n')\nprint('queued #11 plan/a')\nprint('queued #12 docs/b')\n"),
-                        ("merge.py", "import sys, os\nopen(%r,'a').write(('integrate ' if '--integrate' in sys.argv else 'stubdossiers ' if '--stub-dossiers' in sys.argv else 'enqueue ')+' '.join(sys.argv[1:])+'\\n')\nif '--stub-dossiers' in sys.argv:\n    f = os.environ.get('FAKE_STUB_DOSSIERS')\n    print(open(f).read() if f and os.path.exists(f) else '', end='')\n")):
-            open(os.path.join(tmp, n), "w").write(body % calls)
+                        ("merge.py", "import sys, os\nif '--carry-over' in sys.argv:\n    open(%r + '.carry','a').write(' '.join(sys.argv[1:3]) + '\\n'); print('moved #5 feat/x from ' + sys.argv[2] + ' to stub/next'); sys.exit(int(os.environ.get('FAKE_CARRY_RC') or 0))\nopen(%r,'a').write(('integrate ' if '--integrate' in sys.argv else 'stubdossiers ' if '--stub-dossiers' in sys.argv else 'enqueue ')+' '.join(sys.argv[1:])+'\\n')\nif '--stub-dossiers' in sys.argv:\n    f = os.environ.get('FAKE_STUB_DOSSIERS')\n    print(open(f).read() if f and os.path.exists(f) else '', end='')\n")):
+            open(os.path.join(tmp, n), "w").write(body % ((calls, calls) if n == "merge.py" else calls))
         os.environ.update(ASD_RUNS_DIR=runs, ASD_STUB_AUTOMERGE_FILE=os.path.join(tmp, "settings.json"), ASD_RUNNER_BIN=os.path.join(tmp, "runner.py"),
                           ASD_DOCS_MERGE_BIN=os.path.join(tmp, "docs.py"), ASD_MERGE_BIN=os.path.join(tmp, "merge.py"))
         landed = []
@@ -749,6 +777,17 @@ def selftest() -> int:
         json.dump({"state": "stub", "root": root, "branch": "stub/2026-11-03", "ts": "2026-11-03T10:00:00Z"}, open(P(f"{repo}.stub-2026-11-03.integrate.json"), "w"))
         tk(); tk()
         check("the stubs merged before the switch (by land_stub or by hand) started no cycle", st()["cycle"] == 0 and log() == [], st())
+        carry = lambda: open(calls + ".carry").read().splitlines() if os.path.exists(calls + ".carry") else []
+        check("every merged stub is carried over once (its leftover PRs go to the accepting stub)",
+              sorted(carry()) == ["--carry-over stub/2026-11-03", "--carry-over stub/2026-11-10"] and sorted(st()["carried"]) == ["stub/2026-11-03", "stub/2026-11-10"], (carry(), st().get("carried")))
+        s9 = {"repo": repo, "root": root, "carried": list(st()["carried"])}
+        f9 = {"mergedStubs": ["stub/2099-01-01"]}
+        os.environ["FAKE_CARRY_RC"] = "1"
+        r1, r2 = carry_step(s9, f9), carry_step(s9, f9)
+        del os.environ["FAKE_CARRY_RC"]
+        r3, r4 = carry_step(s9, f9), carry_step(s9, f9)
+        check("a carry-over that could not finish is tried again; a finished one never again",
+              r1 == r2 == r4 == [] and r3 == ["stub/2099-01-01"] and "stub/2099-01-01" in s9["carried"] and carry().count("--carry-over stub/2099-01-01") == 3, (r1, r2, r3, r4, carry()))
 
         # A stub merges: START. The frontier is snapshotted once.
         json.dump({"state": "merged", "root": root, "branch": "stub/2026-11-17", "ts": "2026-11-17T09:00:00Z"}, open(P(f"{repo}.stub-2026-11-17.integrate.json"), "w"))

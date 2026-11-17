@@ -233,7 +233,12 @@ def plan(root: str, dossier: str) -> tuple[list[dict], str]:
             return [], f"a {o.get('command') or 'run'} run of {k.split('.', 1)[1]} on this stack is still live; merge when it is finished"
     base = chain[0].get("baseRefName", "")
     if not is_stub(base):
-        return [], f"#{chain[0]['number']} goes into {base}, not a stub; only work on a stub is merged here"
+        # Deleting a merged stub's branch (delete-on-merge) makes GitHub move its open PRs to development: such a PR
+        # still belongs on a stub and moves to the accepting one below, like a PR whose old stub branch is kept.
+        was = moved_off(root, chain[0]["number"]) if base == "development" else ""
+        if not was or stub_into_dev(root, was) != "merged":
+            return [], f"#{chain[0]['number']} goes into {base}, not a stub; only work on a stub is merged here"
+        base = was
     # A dossier still in flight when its stub was integrated moves to the next stub, but only once its old stub is in
     # development: before that, the next stub lacks the old batch and the retargeted PR would carry it along.
     state = stub_into_dev(root, base)
@@ -274,10 +279,59 @@ def accepting_stub(root: str, old: str) -> tuple[str, str]:
     if rc == 3:
         return "", f"{b.split()[-1]} is being integrated; the next stub is cut once it merges"
     subprocess.run(["git", "-C", root, "fetch", "-q", "origin", "--prune"], capture_output=True, timeout=180)
-    held = subprocess.run(["git", "-C", root, "merge-base", "--is-ancestor", f"origin/{old}", f"origin/{b}"], capture_output=True).returncode == 0
+    tip = f"origin/{old}"
+    if subprocess.run(["git", "-C", root, "rev-parse", "-q", "--verify", tip], capture_output=True).returncode != 0:
+        # The old stub's branch was deleted on merge: what development took from it is that PR's merge commit.
+        rc, tip = gh(root, "pr", "list", "--head", old, "--base", "development", "--state", "merged", "--json", "mergeCommit", "-q", ".[0].mergeCommit.oid")
+        if rc != 0 or not tip:
+            return "", f"{old} is gone from origin and its merge into development was not found"
+    held = subprocess.run(["git", "-C", root, "merge-base", "--is-ancestor", tip, f"origin/{b}"], capture_output=True).returncode == 0
     if not held:
         return "", f"the accepting stub {b} does not hold {old} yet; it takes development first (/stub Step 1), then the dossier moves"
     return b, ""
+
+
+def moved_off(root: str, num: int) -> str:
+    """The stub GitHub moved this PR off onto development, or "". Deleting a merged stub's branch (the repository's
+    delete-on-merge setting) moves every open PR into it to the stub PR's base and records an AutomaticBaseChange
+    event; a hand retarget records a BaseRefChanged one. Either keeps the old base."""
+    q = ("query($owner:String!,$repo:String!,$n:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$n){"
+         "timelineItems(last:20,itemTypes:[AUTOMATIC_BASE_CHANGE_SUCCEEDED_EVENT,BASE_REF_CHANGED_EVENT]){nodes{"
+         "... on AutomaticBaseChangeSucceededEvent{oldBase newBase} ... on BaseRefChangedEvent{previousRefName currentRefName}}}}}}")
+    rc, out = gh(root, "api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}", "-F", f"n={num}", "-f", f"query={q}",
+                 "--jq", '[.data.repository.pullRequest.timelineItems.nodes[] | {was: (.oldBase // .previousRefName), now: (.newBase // .currentRefName)}'
+                 ' | select(.now == "development")] | last | .was // ""')
+    return out.strip() if rc == 0 and is_stub(out.strip()) else ""
+
+
+def carry_over(root: str, stub: str) -> tuple[bool, list[str]]:
+    """After `stub` merged into development: move the open PRs it left behind (still on it, or moved to development by
+    GitHub when its branch was deleted) to the accepting stub, and drop the failed merge records that only said "its
+    stub is being integrated", so the queue and Integrate take those dossiers on the next stub. (done, lines): done is
+    False when it must be tried again (the stub not merged yet, the next stub not ready, a gh failure)."""
+    if stub_into_dev(root, stub) != "merged":
+        return False, [f"{stub} is not merged into development yet"]
+    rc, out = gh(root, "pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,baseRefName")
+    if rc != 0:
+        return False, [f"gh pr list failed: {out[:200]}"]
+    left = [p for p in json.loads(out or "[]") if p.get("baseRefName") == stub
+            or p.get("baseRefName") == "development" and moved_off(root, p["number"]) == stub]
+    lines, done = [], True
+    if left:
+        nxt, why = accepting_stub(root, stub)
+        if not nxt:
+            return False, [why]
+        for p in left:
+            rc, out = gh(root, "pr", "edit", str(p["number"]), "--base", nxt)
+            if rc != 0:
+                done = False; lines.append(f"could not move #{p['number']} to {nxt}: {out[:200]}"); continue
+            lines.append(f"moved #{p['number']} {p['headRefName']} from {stub} to {nxt}")
+    repo, stale = repo_name(root), f"its stub {stub} is being integrated"
+    for f in sorted(glob.glob(os.path.join(runs_dir(), f"{repo}.*.merge.json"))):
+        st = read_json(f, {}) or {}
+        if st.get("state") == "failed" and stale in (st.get("error") or ""):
+            os.remove(f); lines.append(f"cleared the stale merge record of {os.path.basename(f)[len(repo) + 1:-len('.merge.json')]}")
+    return done, lines
 
 
 def mark_detector(repo: str, chain: list[dict], dossier: str) -> None:
@@ -1519,6 +1573,55 @@ def selftest() -> int:
         globals()["git"] = real_git
     check("chain: W-12 is not W-128", chain_of([P(1, "feat/W-128-x", "stub/x")], "W-12")[0] == [])
 
+    # carry-over: a merged stub's leftover PRs, moved to development by GitHub when its branch was deleted on merge
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "repo"); rdir = os.path.join(tmp, "runs")
+        os.makedirs(rdir); subprocess.run(["git", "init", "-q", root], check=True)
+        saved_env, saved = os.environ.get("ASD_RUNS_DIR"), {k: globals()[k] for k in ("gh", "stub_into_dev", "accepting_stub")}
+        os.environ["ASD_RUNS_DIR"] = rdir
+        edits: list[str] = []
+        timeline = {7: [{"oldBase": "stub/old", "newBase": "development"}], 8: [], 9: [{"previousRefName": "stub/old", "currentRefName": "development"}]}
+        open_prs = [{"number": 7, "headRefName": "feat/W-1-a", "baseRefName": "development"}, {"number": 8, "headRefName": "docs/x", "baseRefName": "development"},
+                    {"number": 9, "headRefName": "fix/W-2-deferred", "baseRefName": "development"}, {"number": 10, "headRefName": "feat/W-3", "baseRefName": "stub/old"},
+                    {"number": 11, "headRefName": "feat/W-1-b", "baseRefName": "feat/W-1-a"}]
+        def fake(_root, *a, **_k):
+            if a[:2] == ("api", "graphql"):
+                n = int(next(x for x in a if x.startswith("n=")).split("=")[1])
+                nodes = timeline.get(n, [])
+                was = [x.get("oldBase") or x.get("previousRefName") for x in nodes if (x.get("newBase") or x.get("currentRefName")) == "development"]
+                return 0, (was[-1] if was else "")
+            if a[:2] == ("pr", "list"):
+                return 0, json.dumps(open_prs)
+            if a[:2] == ("pr", "edit"):
+                edits.append(f"{a[2]}>{a[4]}"); return 0, ""
+            return 1, "unexpected"
+        try:
+            globals().update(gh=fake, stub_into_dev=lambda _r, b: "merged" if b == "stub/old" else "", accepting_stub=lambda _r, _o: ("stub/new", ""))
+            check("moved_off: the automatic retarget names the old stub", moved_off(root, 7) == "stub/old")
+            check("moved_off: never moved, nothing", moved_off(root, 8) == "")
+            name = repo_name(root)
+            write_json(os.path.join(rdir, f"{name}.W-1.merge.json"), {"state": "failed", "error": "its stub stub/old is being integrated into development; it moves to the next stub once that merges"})
+            write_json(os.path.join(rdir, f"{name}.W-4.merge.json"), {"state": "failed", "error": "merge blocked by branch protection"})
+            done, lines = carry_over(root, "stub/old")
+            check("carry-over: every PR left on the merged stub (moved to development or still on it) goes to the accepting stub; a docs PR and a stacked one stay",
+                  done and sorted(edits) == ["10>stub/new", "7>stub/new", "9>stub/new"], str((done, edits, lines)))
+            check("carry-over: the stale 'being integrated' record is cleared, any other failure kept",
+                  not os.path.exists(os.path.join(rdir, f"{name}.W-1.merge.json")) and os.path.exists(os.path.join(rdir, f"{name}.W-4.merge.json")), str(lines))
+            edits.clear()
+            globals().update(accepting_stub=lambda _r, _o: ("", "stub/x is being integrated; the next stub is cut once it merges"))
+            done, lines = carry_over(root, "stub/old")
+            check("carry-over: no accepting stub yet, nothing moved and it is tried again", not done and edits == [] and "being integrated" in lines[0], str((done, lines)))
+            done, lines = carry_over(root, "stub/other")
+            check("carry-over: a stub not merged yet is tried again", not done and "not merged" in lines[0], str(lines))
+            globals().update(accepting_stub=lambda _r, _o: ("stub/new", ""))
+            edits.clear()
+            chain, why = plan(root, "W-1")
+            check("plan: a dossier GitHub moved to development is taken onto the accepting stub, not refused", why == "" and bool(chain) and chain[0]["baseRefName"] == "stub/new" and "7>stub/new" in edits, str((why, edits)))
+        finally:
+            globals().update(saved)
+            if saved_env is None: os.environ.pop("ASD_RUNS_DIR", None)
+            else: os.environ["ASD_RUNS_DIR"] = saved_env
+
     with tempfile.TemporaryDirectory() as tmp:
         fdir, rdir, root = (os.path.join(tmp, x) for x in ("gh", "runs", "repo"))
         for x in (fdir, rdir, root):
@@ -2102,6 +2205,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--enqueue-pr", metavar="N", type=int, help="add a non-code PR into development to the merge queue")
     ap.add_argument("--integrate", metavar="STUB", help="merge every finished dossier on the stub through the queue, then start /stub")
     ap.add_argument("--stub-dossiers", metavar="STUB", help="print the dossiers with an open pull request into the stub, one per line")
+    ap.add_argument("--carry-over", metavar="STUB", help="after STUB merged: move its leftover open PRs to the accepting stub (exit 1: try again later)")
     ap.add_argument("--migration-clashes", metavar="HEAD", help="print the migrations this branch adds under a number already taken (needs --base)")
     ap.add_argument("--base", help="the branch --migration-clashes compares with")
     ap.add_argument("--selftest", action="store_true")
@@ -2121,6 +2225,10 @@ def main(argv: list[str] | None = None) -> int:
     if a.stub_dossiers and a.root:
         print("\n".join(stub_dossiers(os.path.abspath(a.root), a.stub_dossiers)))
         return 0
+    if a.carry_over and a.root:
+        done, lines = carry_over(os.path.abspath(a.root), a.carry_over)
+        print("\n".join(lines))
+        return 0 if done else 1
     if a.integrate and a.root:
         if not re.fullmatch(r"(?:stub|release)/[\w.-]+", a.integrate):
             print("merge_dossier: --integrate takes a stub branch, e.g. stub/2026-11-03", file=sys.stderr); return 2
