@@ -93,6 +93,14 @@ conflicted, because the base's new code and tests meet this change there. A
 test the base added can break on this stack's change without a text conflict.
 A red result is fixed in this merge (inside the conflicted code, or the test or
 wiring the merge made necessary) or put to the owner.
+A digest that heads with `STACK-ENV: skipped` means the shared stack's settings
+are behind this branch and cannot be brought up to it yet (for example the
+persistent checkout is still on the branch before the stub): the stack tests
+were skipped on purpose. That is not a red result and not an owner question.
+Push on the gates and the tests that ran, and say in the PR note and the build
+log which stack tests did not run and why, quoting the line; the stub's full
+suite runs them. Never run `up.sh`, reset a database or switch the persistent
+checkout to get them to run.
 
 ## Step 4 — Push
 
