@@ -67,7 +67,7 @@ arbitration, and the mechanic is the same in all three places. It turns on
 
 | What is vacuous | What you do |
 |---|---|
-| **Individual tests** in a file whose other tests are sound | re-spawn the author onto that file with **the tests named** and the complete intent. Under opencode it reads its own earlier output and edits in place — no delete, nothing pasted. Under Claude Code it reads its earlier output (its `Read` reaches the test families) and rewrites the file whole with the changed tests named — no delete. |
+| **Individual tests** in a file whose other tests are sound | re-spawn the author onto that file with **the tests named** and the complete intent. Under opencode it reads its own earlier output and edits in place — no delete, nothing pasted. Under Claude Code it reads its earlier output (its `Read` reaches the test families) and rewrites the file whole with the changed tests named — no delete; `compose_payloads.py` raises `MAX_SINGLE_EDIT` to cover the largest existing `TEST_PATHS` file plus a margin (a whole-file `Write` is its only edit), so no hand-raised limit. |
 | **The whole file** — a wholesale contract change, or every test in it asserts nothing | **delete it with `safe_revert.py --delete`** (Phase 4), which copies it outside the repository first; say so in the payload, and let a fresh `Write` recreate it — a re-spawn that stalls after a bare delete leaves the run at zero tests, and the recorded case was saved only by an unrelated commit. The same on either host. |
 
 **Under Claude Code, a round that corrects two or more authors is one
