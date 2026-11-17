@@ -13,7 +13,7 @@ the `queued` state, the account routing and every owner question apply unchanged
     auto_work.py --start-now --root R   # the next tick starts a cycle now (the first cycle; later ones start by themselves)
     auto_work.py --resume --root R      # a paused cycle goes on (a failed or stopped run is started again)
     auto_work.py --status --root R      # the state file and the eager-merge switch
-    auto_work.py --eager-merge on|off --root R   # put each finished dossier on the open stub at once (off by default; works with auto work off)
+    auto_work.py --eager-merge on|off --root R   # put each finished dossier on the open stub at once (on by default; works with auto work off)
     auto_work.py --tick --facts FILE|-  # one step for every enabled repository (the dashboard)
     auto_work.py --selftest
 
@@ -33,7 +33,7 @@ the `queued` state, the account routing and every owner question apply unchanged
    runs and the script waits for it to reach /stub; then land_stub.py merges the stub's PR when its conditions hold.
 6. That merge is the next START.
 
-# Eager merge (its own switch, off by default)
+# Eager merge (its own switch, on by default; `--eager-merge off` turns it off)
 
 `--eager-merge on` puts each dossier on the open stub as soon as it is finished, through the existing merge queue
 (`merge_dossier.py ID --enqueue`, the Merge button's entry point), so the stub grows during the week and Integrate has
@@ -124,7 +124,7 @@ def enabled(repo: str) -> bool:
 
 
 def eager_on(repo: str) -> bool:
-    return bool(land_stub.settings_of(repo).get("eager_merge"))
+    return land_stub.settings_of(repo).get("eager_merge") is not False   # on unless turned off
 
 
 def set_eager(repo: str, on: bool) -> None:
@@ -706,6 +706,7 @@ def selftest() -> int:
         facts_runs[:] = [run_("A", "ready"), run_("B", "ready", ["C"]), run_("C", "building", runner=runner("running", "work-on")), run_("D", "planned"),
                          run_("E", "planned", ["A"]), run_("F", "ready", ["G"]), run_("G", "done"), run_("H", "dropped")]
 
+        set_eager(repo, False)   # eager merge is on by default: the auto work cases below run without it (it has its own cases)
         # Off by default: nothing is looked at, nothing is written, nothing starts.
         tk()
         check("disabled: no state file, no run started", not os.path.exists(state_path(repo)) and log() == [])
@@ -890,7 +891,7 @@ def selftest() -> int:
         tk()
         check("disabled: the loop starts nothing and changes nothing", st() == s_before and len(log()) == n_before)
         check("the state file is whole json, never a torn write", isinstance(st(), dict) and not glob.glob(P(".auto-work-*.tmp")))
-        # Eager merge: its own switch (off by default); each finished dossier on an open stub joins the merge queue, once.
+        # Eager merge: its own switch (on by default); each finished dossier on an open stub joins the merge queue, once.
         cmd_disable(root)   # auto work is off for all of these
         stubf = os.path.join(tmp, "stub-dossiers.txt"); os.environ["FAKE_STUB_DOSSIERS"] = stubf
         open(stubf, "w").write("E1\nE2\nE3\nE4\nE5\nE6\nE7\n")   # the dossiers with an open PR into the stub
@@ -907,6 +908,9 @@ def selftest() -> int:
                          run_("E9", "building", runner=runner("running", "work-on"))]                                   # not built
         for k, v in (("E5", "queued"), ("E6", "merged"), ("E7", "failed")):
             json.dump({"state": v}, open(P(f"{repo}.{k}.merge.json"), "w"))
+        all_ = read_json(land_stub.settings_path(), {}); all_[repo].pop("eager_merge"); write_atomic(land_stub.settings_path(), all_)
+        check("eager merge is on by default (no key in the switch file)", eager_on(repo) and eager_on("other"))
+        cmd_eager(root, "off")
         n_before = len(log()); st_before = st()
         tk()
         check("eager off: nothing is asked, nothing is enqueued, even with finished dossiers", log()[n_before:] == [] and st() == st_before, log()[n_before:])

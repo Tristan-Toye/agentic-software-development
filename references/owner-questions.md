@@ -418,7 +418,7 @@ restarted server answers at once from them while its first scan runs.
     `state` and `error`), written atomically; routes `GET`/`POST /api/autowork`
     (`enable`, `disable`, `start-now`, `resume`). Env: `ASD_AUTO_WORK_BIN`,
     `ASD_AUTO_WORK_GRACE`.
-  - **Eager merge** (a switch per repository, off by default; `auto_work.py`).
+  - **Eager merge** (a switch per repository, on by default; `auto_work.py`).
     `auto_work.py --eager-merge on --root R` (`off` turns it off; `--status` shows
     it). It is its own switch, kept in the same file as automatic work, and works
     with automatic work on or off. When it is on, a dossier is put on the open stub

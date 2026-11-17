@@ -23,8 +23,8 @@ function readJson(path: string): any {
 /** The one switch of a repository: automatic work (and, with it, the scripted stub merge). Off unless the file says so. */
 export const autoWorkOn = (repo: string, file = switchFile()): boolean => !!readJson(file)?.[repo]?.auto_work
 
-/** The eager-merge switch of a repository (each finished dossier joins the merge queue for the open stub). It works with automatic work off. */
-export const eagerMergeOn = (repo: string, file = switchFile()): boolean => !!readJson(file)?.[repo]?.eager_merge
+/** The eager-merge switch of a repository (each finished dossier joins the merge queue for the open stub), on unless set to false. It works with automatic work off. */
+export const eagerMergeOn = (repo: string, file = switchFile()): boolean => readJson(file)?.[repo]?.eager_merge !== false
 /** Whether a repository's facts go to the script: automatic work or eager merge is on. */
 export const factsOn = (repo: string, file = switchFile()): boolean => autoWorkOn(repo, file) || eagerMergeOn(repo, file)
 export function readAutoState(repo: string, dir = runsDir()): AutoState | null {

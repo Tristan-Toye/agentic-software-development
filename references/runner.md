@@ -675,7 +675,7 @@ reply, no reply within `ASD_AUTO_WORK_ASK_WAIT` seconds (default 1800), or a fai
 (Dashboard, Automatic work) for the cycle.
 
 Eager merge is a second, separate switch (`auto_work.py --eager-merge on|off --root R`,
-off by default, works with automatic work off): each dossier that is finished (build
+on by default, works with automatic work off): each dossier that is finished (build
 done, fix-deferred run over, no open deferred item) and has an open pull request into
 an open stub is put on the merge queue once, so Integrate has little left to merge.
 
