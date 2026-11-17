@@ -2515,7 +2515,7 @@ print("started")
               and any("queue-batch-743-744" in l for l in evs[evs.index(next(l for l in evs if l.startswith("pr merge 90"))):]), cc + str(ss) + str(bpr()))
         check("bisect: a green half whose sibling landed first is not landed on its old result: it is closed saying the stub moved, then opened again",
               "the stub moved on" in cc and cc.count("--head queue-batch-743-744") == 2, cc)
-        ss, cc, _ = code_scenario("k", [(f"W-{751 + i}", 751 + i, "abcdefgh"[i] + ".txt") for i in range(8)], FAKE_BAD_PR="751,755", FAKE_CHECKS_SLOW="0.3")
+        ss, cc, _ = code_scenario("k", [(f"W-{751 + i}", 751 + i, "abcdefgh"[i] + ".txt") for i in range(8)], FAKE_BAD_PR="751,755", FAKE_CHECKS_SLOW="1.0")
         check("bisect: no more than two batch PRs are ever open at once, though two red halves each want to split into two (and two do run at once)",
               peak_open(cc) == 2 and all_merged(ss) and ("753-754", "MERGED") in bpr() and ("757-758", "MERGED") in bpr(), str(peak_open(cc)) + cc + str(bpr()))
         def pr_states() -> dict[int, str]:
