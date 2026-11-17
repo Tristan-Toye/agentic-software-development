@@ -1418,9 +1418,10 @@ class Runner:
     def start_drivers(self, prev: dict | None = None) -> None:
         """Read the drivers file (~/.agentic/drivers.json, $ASD_DRIVERS_FILE) when the run first starts: the modes this
         run's claude children get as ASD_DRIVER_<NAME>, a warning per bad entry, and the effective modes in the runner
-        metadata (`drivers`), so a later report knows which arm the dossier ran in. A restarted runner of the same,
+        metadata (`drivers`), so a later report knows which arm the dossier ran in. With a run quota in the file (`driver_modes.py
+        limit N`) only a fresh /work-on run that claims a place carries the modes; the others get every driver off. A restarted runner of the same,
         unfinished run keeps the modes it recorded, so editing the file mid-run never moves a dossier to the other arm;
-        only a switch to `off` reaches it (rollback)."""
+        only a switch to `off` reaches it (rollback), never a quota that ran out."""
         prev = prev or {}
         pinned = prev.get("drivers")
         if isinstance(pinned, dict) and prev.get("state") != "done" and prev.get("command") == self.command:
@@ -1439,6 +1440,21 @@ class Runner:
             effective, self.driver_exports, warnings = driver_modes.resolve(os.environ)
             for w in warnings:
                 self.event("warning: " + w)
+            quota = driver_modes.load_quota()
+            if quota is not None and self.driver_exports:
+                # A run quota: only a fresh /work-on run that gets a place carries the file's modes. Any other run
+                # (a full quota, /plan, ...) gets every file-driven driver off; an explicit ASD_DRIVER_* still wins.
+                placed = False
+                if self.command == driver_modes.QUOTA_COMMAND:
+                    try:
+                        placed = driver_modes.claim(self.key)
+                    except OSError as err:
+                        self.event(f"warning: drivers quota not claimed, drivers off: {err}")
+                if not placed:
+                    effective = {n: ("off" if driver_modes.env_name(n) in self.driver_exports else m) for n, m in effective.items()}
+                    self.driver_exports = {}
+                    if self.command == driver_modes.QUOTA_COMMAND:
+                        self.event(f"drivers: off (quota of {quota['limit']} used up)")
         self.save(drivers=effective)
         if any(m != "off" for m in effective.values()):
             self.event("drivers: " + ", ".join(f"{n}={m}" for n, m in effective.items() if m != "off"))
@@ -3996,6 +4012,36 @@ def selftest() -> int:
         done98 = p.wait(timeout=60) == 0
         check("drivers: a driver switched off in the file is off for a restarted run too; the others stay pinned",
               done98 and drv(1) == {"ASD_DRIVER_TEST_ROUND": "shadow"} and state_of("W-98").get("drivers") == pinned97)
+
+        # ---- the run quota: only the next N fresh /work-on runs carry the file's modes ----
+        qfile_ = os.path.join(tmp, "quota-drivers.json")
+        env["ASD_DRIVERS_FILE"] = qfile_
+        write_json(qfile_, {"test_round": "shadow", "pre_fanout_check": "on"})
+        check("quota: no quota in the file means every run carries the modes (old behaviour)", driver_modes.load_quota(qfile_) is None)
+        subprocess.run([sys.executable, os.path.join(os.path.dirname(me), "driver_modes.py"), "--file", qfile_, "limit", "2"], check=True, capture_output=True)
+        qmodes = lambda d: state_of(d).get("drivers")
+        qshadow = {n: "off" for n in driver_modes.NAMES}
+        qshadow.update(test_round="shadow", pre_fanout_check="on")
+        qoff = {n: "off" for n in driver_modes.NAMES}
+        q3env: dict | None = None
+        for did in ("W-q1", "W-q2", "W-q3"):
+            scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+            start(did).wait(timeout=60)
+            if did == "W-q3":
+                q3env = drv(1)
+        check("quota 2: the first two /work-on runs carry the modes", qmodes("W-q1") == qshadow and qmodes("W-q2") == qshadow)
+        check("quota 2: the third /work-on run gets every driver off, and says why",
+              qmodes("W-q3") == qoff and any("drivers: off (quota of 2 used up)" in t for t in texts("W-q3")))
+        check("quota 2: the third run's child gets no ASD_DRIVER_*", q3env == {})
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        start("W-q4", "--command", "plan").wait(timeout=60)
+        check("quota: a plan run gets every driver off and does not claim", qmodes("W-q4") == qoff and len((driver_modes.load_quota(qfile_) or {})["claimed"]) == 2)
+        write_json(os.path.join(rdir, "repo.W-q1.runner.json"), {"state": "running", "command": "work-on", "drivers": qshadow})
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        start("W-q1").wait(timeout=60)
+        check("quota: a restarted, claimed run keeps its modes after the quota is full, and does not claim again",
+              qmodes("W-q1") == qshadow and len((driver_modes.load_quota(qfile_) or {})["claimed"]) == 2)
+        # (several processes claiming at once is proved in driver_modes.py --selftest)
         env["ASD_DRIVERS_FILE"] = os.path.join(tmp, "no-drivers.json")
 
         # ---- the orchestrator's model: pinned to an exact id, never Fable ----

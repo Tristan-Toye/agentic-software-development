@@ -15,11 +15,22 @@ about in the runner log and ignored. Runs already started keep the modes they
 started with (their runner metadata records them); the file is read when a run
 starts.
 
+A run quota keeps the token cost small: `limit 3` means only the next 3 fresh
+/work-on runs carry the modes in the file. Each one claims a place (its run key is
+written under "_quota" in the same file, under a file lock). A run that finds the
+quota full, and every run that is not /work-on, gets every driver off. The modes
+stay in the file, so `show` still tells the story. A claimed run keeps its modes
+for its whole life, even after the quota is full; only an explicit `off` takes
+them away. No quota means every run carries the modes, as before.
+
 Usage:
     driver_modes.py show                      effective modes from the file
     driver_modes.py set NAME=MODE [...]       change some; the others stay
     driver_modes.py all MODE                  every driver to MODE
     driver_modes.py off                       every driver off (rollback)
+    driver_modes.py limit N                   only the next N /work-on runs carry the modes
+                                              (starts a fresh count; the claimed runs are listed by show)
+    driver_modes.py limit none                no quota: every run carries the modes
     driver_modes.py --file PATH ...           another file than the default
     driver_modes.py --selftest
 
@@ -34,14 +45,19 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
+import time
 
 NAMES = ("finalize_pr", "merge_packages", "pre_fanout_check", "strength_gate_prep", "test_round")
 MODES = ("off", "shadow", "on")
+QUOTA_KEY = "_quota"   # in the drivers file next to the driver names: {"limit": N, "claimed": [{"run", "at"}]}
+QUOTA_COMMAND = "work-on"
 
 
 def env_name(name: str) -> str:
@@ -68,6 +84,8 @@ def load(path: str | None = None) -> tuple[dict[str, str], list[str]]:
     modes: dict[str, str] = {}
     warnings: list[str] = []
     for key, value in raw.items():
+        if key == QUOTA_KEY:
+            continue
         name = str(key).strip().lower()
         mode = str(value).strip().lower() if isinstance(value, str) else ""
         if name not in NAMES:
@@ -98,14 +116,35 @@ def resolve(environ: dict, path: str | None = None) -> tuple[dict[str, str], dic
     return effective, exports, warnings
 
 
-def write(path: str, modes: dict[str, str]) -> None:
-    """Atomic: a temp file in the same directory, then rename."""
+def _quota_of(raw: object) -> dict | None:
+    """The valid quota of a parsed file, or None: {"limit": int >= 0, "claimed": [{"run": str, "at": str}, ...]}."""
+    q = raw.get(QUOTA_KEY) if isinstance(raw, dict) else None
+    if not isinstance(q, dict) or isinstance(q.get("limit"), bool) or not isinstance(q.get("limit"), int) or q["limit"] < 0:
+        return None
+    claimed = [c for c in (q.get("claimed") or []) if isinstance(c, dict) and isinstance(c.get("run"), str)]
+    return {"limit": q["limit"], "claimed": claimed}
+
+
+def load_quota(path: str | None = None) -> dict | None:
+    """The quota in the file, or None when there is none (or the file is missing or unreadable)."""
+    try:
+        with open(path or default_file(), encoding="utf-8") as fh:
+            return _quota_of(json.load(fh))
+    except (OSError, ValueError):
+        return None
+
+
+def write(path: str, modes: dict[str, str], quota: dict | None = None) -> None:
+    """Atomic: a temp file in the same directory, then rename. The quota (if any) goes in beside the modes."""
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
+    out: dict = {k: modes[k] for k in NAMES if k in modes}
+    if quota is not None:
+        out[QUOTA_KEY] = quota
     fd, tmp = tempfile.mkstemp(prefix=".drivers.", suffix=".tmp", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({k: modes[k] for k in NAMES if k in modes}, fh, indent=1)
+            json.dump(out, fh, indent=1)
             fh.write("\n")
         os.replace(tmp, path)
     except BaseException:
@@ -116,11 +155,50 @@ def write(path: str, modes: dict[str, str]) -> None:
         raise
 
 
+@contextlib.contextmanager
+def locked(path: str):
+    """An exclusive lock on <file>.lock, so two processes never read-modify-write the file at the same time."""
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    with open(path + ".lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def claim(run_key: str, path: str | None = None) -> bool:
+    """Ask for a place in the quota for a fresh run. No quota: True (nothing is recorded). A run that already holds a
+    place: True again, no second place. Quota full: False. Read, check and write happen under the file lock."""
+    path = path or default_file()
+    with locked(path):
+        modes, _ = load(path)
+        quota = load_quota(path)
+        if quota is None:
+            return True
+        if any(c["run"] == run_key for c in quota["claimed"]):
+            return True
+        if len(quota["claimed"]) >= quota["limit"]:
+            return False
+        quota["claimed"].append({"run": run_key, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
+        write(path, modes, quota)
+        return True
+
+
 def show(path: str) -> str:
     modes, warnings = load(path)
     rows = [f"drivers file: {path}" + ("" if os.path.exists(path) else " (absent: every driver off)")]
     for name in NAMES:
         rows.append(f"  {name:<20} {modes.get(name, 'off')}")
+    quota = load_quota(path)
+    if quota is None:
+        rows.append("  quota: none (every run carries the modes)")
+    else:
+        used = len(quota["claimed"])
+        rows.append(f"  quota: {used} of {quota['limit']} used" + (" (used up: new runs get every driver off)" if used >= quota["limit"] else ""))
+        for c in quota["claimed"]:
+            rows.append(f"    {c['run']}  {c.get('at', '')}")
     for w in warnings:
         rows.append(f"  warning: {w}")
     held = [f"{env_name(n)}={os.environ[env_name(n)]}" for n in NAMES if env_name(n) in os.environ]
@@ -140,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
     p_all = sub.add_parser("all", help="every driver to MODE")
     p_all.add_argument("mode", choices=MODES)
     sub.add_parser("off", help="every driver off")
+    p_limit = sub.add_parser("limit", help="only the next N /work-on runs carry the modes; 'none' clears the quota")
+    p_limit.add_argument("count", metavar="N|none")
     a = ap.parse_args(argv)
     if a.selftest:
         return selftest()
@@ -147,7 +227,32 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd in (None, "show"):
         print(show(path))
         return 0
+    if a.cmd == "limit":
+        c = a.count.strip().lower()
+        if c != "none" and not (c.isdigit() and int(c) >= 0):
+            print("driver_modes.py: limit takes a number (0 or more) or 'none'", file=sys.stderr)
+            return 2
+        try:
+            with locked(path):
+                modes, _ = load(path)
+                write(path, modes, None if c == "none" else {"limit": int(c), "claimed": []})
+        except OSError as err:
+            print(f"driver_modes.py: cannot write {path}: {err}", file=sys.stderr)
+            return 2
+        print(show(path))
+        return 0
+    try:
+        with locked(path):
+            return _change(a, path)
+    except OSError as err:
+        print(f"driver_modes.py: cannot write {path}: {err}", file=sys.stderr)
+        return 2
+
+
+def _change(a: argparse.Namespace, path: str) -> int:
+    """set / all / off, with the file lock held; the quota (if any) is kept."""
     modes, _ = load(path)
+    quota = load_quota(path)
     if a.cmd == "set":
         for pair in a.pairs:
             name, _, mode = pair.partition("=")
@@ -161,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "off":
         modes = {}
     try:
-        write(path, modes)
+        write(path, modes, quota)
     except OSError as err:
         print(f"driver_modes.py: cannot write {path}: {err}", file=sys.stderr)
         return 2
@@ -222,6 +327,36 @@ def _run_selftest() -> list[str]:
             check("ASD_DRIVERS_FILE moves the default", default_file() == f and load()[0]["pre_fanout_check"] == "on")
             del os.environ["ASD_DRIVERS_FILE"]
             check("show lists all five", all(n in show(f) for n in NAMES))
+            # ---- the run quota
+            q = os.path.join(tmp, "quota", "drivers.json")
+            check("no quota: claim is always true and records nothing", claim("r0", q) is True and not os.path.exists(q))
+            main(["--file", q, "set", "test_round=shadow"])
+            check("no quota in a file with modes: claim true, file unchanged", claim("r0", q) and load_quota(q) is None and "claimed" not in open(q).read())
+            check("limit 2 stores the quota beside the modes", main(["--file", q, "limit", "2"]) == 0 and load_quota(q) == {"limit": 2, "claimed": []}
+                  and load(q) == ({"test_round": "shadow"}, []))
+            check("the quota key is not read as a driver name", load(q)[1] == [])
+            check("the first two claims succeed, the third is refused", claim("r1", q) and claim("r2", q) and not claim("r3", q))
+            check("a claimed run claims again without a new place", claim("r1", q) and [c["run"] for c in (load_quota(q) or {})["claimed"]] == ["r1", "r2"])
+            check("a full quota leaves the modes alone", load(q)[0] == {"test_round": "shadow"})
+            shown = show(q)
+            check("show prints the quota and the claimed runs", "2 of 2 used" in shown and "r1" in shown and "r2" in shown and "used up" in shown)
+            check("set keeps the quota and its claims", main(["--file", q, "set", "finalize_pr=on"]) == 0 and len((load_quota(q) or {})["claimed"]) == 2)
+            check("off keeps the quota", main(["--file", q, "off"]) == 0 and (load_quota(q) or {})["limit"] == 2 and load(q)[0] == {})
+            check("limit N starts a fresh count", main(["--file", q, "limit", "3"]) == 0 and load_quota(q) == {"limit": 3, "claimed": []})
+            check("a bad limit is refused", main(["--file", q, "limit", "many"]) == 2 and main(["--file", q, "limit", "-1"]) == 2 and (load_quota(q) or {})["limit"] == 3)
+            check("limit none clears the quota", main(["--file", q, "limit", "none"]) == 0 and load_quota(q) is None and QUOTA_KEY not in json.load(open(q)))
+            with open(q, "w") as fh:
+                fh.write('{"test_round": "shadow"}')
+            check("an old file with only modes still reads", load(q) == ({"test_round": "shadow"}, []) and load_quota(q) is None)
+            # concurrent claims from separate processes never pass the limit
+            c = os.path.join(tmp, "conc", "drivers.json")
+            main(["--file", c, "set", "test_round=shadow"])
+            main(["--file", c, "limit", "3"])
+            code = "import sys; sys.path.insert(0, %r); import driver_modes as d; print(d.claim(sys.argv[2], sys.argv[1]))" % os.path.dirname(os.path.abspath(__file__))
+            procs = [subprocess.Popen([sys.executable, "-c", code, c, f"run{i}"], stdout=subprocess.PIPE, text=True) for i in range(12)]
+            got = [pr.communicate()[0].strip() for pr in procs]
+            check("12 concurrent claims on a quota of 3: exactly 3 win", got.count("True") == 3 and got.count("False") == 9
+                  and len((load_quota(c) or {})["claimed"]) == 3 and len({x["run"] for x in (load_quota(c) or {})["claimed"]}) == 3)
     finally:
         os.environ.update(saved)
     return failures
