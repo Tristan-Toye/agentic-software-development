@@ -23,7 +23,9 @@ the `queued` state, the account routing and every owner question apply unchanged
    land_stub.py writes whether it or the owner merged), or `--start-now`.
 2. The frontier is snapshotted once, at START: every dossier with status `ready` whose `blocked_by` are all `done`
    (to /work-on) and every `planned` one whose `blocked_by` are all `done` (to /plan, then /work-on once the plan made
-   it ready). Only that snapshot is worked in the cycle; a dossier that becomes eligible later waits for the next START.
+   it ready). Dossiers already in flight are adopted too: status `building` or `review`, any dossier with a live run,
+   and a `pr` dossier with deferred items still open. Their live run is waited for, never started again, and they get
+   Fix all deferred like any member, so integrate never runs past a build or a deferred fix that is still going. Only that snapshot is worked in the cycle; a dossier that becomes eligible later waits for the next START.
 3. Each member is started through `run_dossier.py` and followed to the end.
 4. A member whose build is finished (status `pr` or `done`) gets "Fix all deferred" exactly as the dashboard button
    sends it: every open item except the ones the owner ruled to leave open, named explicitly. It is finished when
@@ -260,12 +262,25 @@ def start_integrate(root: str, branch: str) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------- the decisions
+def in_flight(r: dict) -> bool:
+    """A dossier already being worked when the cycle starts: building or in review, a live run of any kind, or a
+    finished build (`pr`) with deferred items still open. The cycle adopts it, so integrate waits for its run and its
+    Fix all deferred instead of landing the stub without it."""
+    status = r.get("status")
+    if status in ("building", "review"):
+        return True
+    if ((r.get("runner") or {}).get("state") in LIVE) and status in STAGE_OF:
+        return True
+    return status == "pr" and bool(open_items(r))
+
+
 def frontier(runs: list[dict]) -> list[dict]:
-    """Who is worked this cycle: `ready` and `planned` dossiers whose blockers are all `done`. A blocker not known is not done."""
+    """Who is worked this cycle: `ready` and `planned` dossiers whose blockers are all `done`, plus every dossier already
+    in flight (`in_flight`). A blocker not known is not done."""
     status = {r["id"]: r.get("status") for r in runs}
     out = []
     for r in sorted(runs, key=lambda r: r["id"]):
-        if r.get("status") in ("ready", "planned") and all(status.get(b) == "done" for b in r.get("blockedBy") or []):
+        if in_flight(r) or r.get("status") in ("ready", "planned") and all(status.get(b) == "done" for b in r.get("blockedBy") or []):
             out.append({"id": r["id"], "stage": STAGE_OF[r["status"]], "state": "pending", "error": "", "launch": None, "lag": 0, "asked": None, "accepted": False, "rounds": 0, "retried": False})
     return out
 
@@ -658,6 +673,21 @@ def selftest() -> int:
         if not ok:
             fails.append(name)
 
+    # Adoption of dossiers already in flight (pure): the W-008 case, a /work-on in review when the cycle starts.
+    item = lambda st_: {"id": "D-1", "state": st_}
+    fr = lambda runs_: sorted(m["id"] for m in frontier(runs_))
+    check("in flight: review or building, a live run, and pr with an open deferred item are adopted; pr with none, done, dropped are not",
+          fr([{"id": "R", "status": "review", "runner": {"state": "running", "command": "work-on"}},
+              {"id": "B", "status": "building"},
+              {"id": "L", "status": "done", "runner": {"state": "running", "command": "fix-deferred"}},
+              {"id": "P", "status": "pr", "deferred": [item("open")]},
+              {"id": "K", "status": "pr", "deferred": [dict(item("open"), keptOpen=True), item("fixed")]},
+              {"id": "Q", "status": "pr"}, {"id": "X", "status": "done", "deferred": [item("open")]}, {"id": "Z", "status": "dropped"}]) == ["B", "L", "P", "R"])
+    m_ = {"id": "R", "stage": "build", "state": "pending", "error": "", "launch": None, "lag": 0, "asked": None, "accepted": False, "rounds": 0, "retried": False}
+    st0 = {"root": "/nonexistent", "repo": "x", "members": [m_], "paused": None}
+    step_member(st0, m_, {"id": "R", "status": "review", "runner": {"state": "running", "command": "work-on"}})
+    check("an adopted live /work-on is waited for: no launch, the member is not finished", m_["launch"] is None and m_["stage"] == "build" and m_["state"] == "running", m_)
+
     global LAND
     real_land = LAND
     real_dirs = [land_stub.settings_path(), runs_dir()]
@@ -724,8 +754,9 @@ def selftest() -> int:
         tk()
         s = st()
         check("START: the stub's merge starts cycle 1", s["cycle"] == 1 and s["step"] == "work" and s["stub"] == "stub/2026-11-17", s)
-        check("snapshot: ready and planned with every blocker done; blocked by an unfinished one, and dropped, are out",
-              sorted(members()) == ["A", "D", "F"], sorted(members()))
+        check("snapshot: ready and planned with every blocker done; blocked by an unfinished one, and dropped, are out; C, in flight, is adopted",
+              sorted(members()) == ["A", "C", "D", "F"], sorted(members()))
+        check("the adopted C is waited for, never started again", "running" == members()["C"]["state"] and not any(l.startswith("runner C ") for l in log()), (members()["C"], log()))
         check("A /work-on, F /work-on and D /plan are started through the runner",
               sorted(log()) == sorted([f"runner A --root {root} --command work-on", f"runner D --root {root} --command plan", f"runner F --root {root} --command work-on"]), log())
         before = log()
@@ -735,7 +766,7 @@ def selftest() -> int:
         setrun("F", runner=runner("waiting", "work-on", pid=201, started="2026-11-17T10:01:00Z"))
         setrun("D", runner=runner("running", "plan", pid=202, started="2026-11-17T10:01:00Z"))
         tk()
-        check("a dossier created after START and a blocker finishing mid-cycle add nobody", sorted(members()) == ["A", "D", "F"] and log() == before, members())
+        check("a dossier created after START and a blocker finishing mid-cycle add nobody; the adopted C finishes with no deferred item", sorted(members()) == ["A", "C", "D", "F"] and members()["C"]["stage"] == "finished" and log() == before, members())
         check("an open question just waits: no second start, nothing answered", members()["F"]["state"] == "waiting for the owner" and members()["A"]["state"] == "queued for a slot" and log() == before)
         check("the phase reads building", st()["phase"] == "building")
 
