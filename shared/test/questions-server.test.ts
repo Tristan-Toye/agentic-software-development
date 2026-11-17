@@ -787,6 +787,12 @@ try {
     const during = (await stubOf()).canIntegrate
     rmSync(ifile)
     check("server: /api/stubs offers Integrate from the integration file at once, without a rescan", s0.state === "accepting" && offered === true && during === false, JSON.stringify({ state: s0.state, offered, during }))
+    // a press while an integrate of the stub is running starts no second one and leaves its pid alone
+    writeFileSync(ifile, JSON.stringify({ state: "merging", pid: process.pid, marker: "held" }))
+    const again: any = await (await fetch(`${base}/api/stub/control`, { method: "POST", body: JSON.stringify({ repo: "repoC", branch: s0.branch, action: "integrate" }) })).json()
+    const kept = JSON.parse(readFileSync(ifile, "utf8"))
+    rmSync(ifile)
+    check("server: Integrate while one runs starts no second integrate", again.already === true && kept.pid === process.pid && kept.marker === "held", JSON.stringify({ again, kept }))
   }
   const rpage = await (await fetch(`${base}/repo/repoC`)).text()
   check("server: every step of the merge queue that needs no owner has its own label", ["fixing: 'merge queue", "rerunning: 'merge queue", "resolving: 'merge queue"].every((x) => rpage.includes(x)))
