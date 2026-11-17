@@ -387,8 +387,10 @@ restarted server answers at once from them while its first scan runs.
     the dossiers `ready` with every `blocked_by` done (to /work-on) and the
     `planned` ones with every `blocked_by` done (to /plan, then /work-on; a plan that
     ended done without making the dossier `ready` is run again, after a tick or two
-    for a late status write, as "plan round n", until it reads `ready`); only
-    that snapshot is worked, what becomes eligible later waits for the next
+    for a late status write, as "plan round n", until it reads `ready`), plus
+    every dossier already in flight (`building` or `review`, a live run, or `pr`
+    with deferred items still open: its run is waited for, then it gets Fix all
+    deferred, so integrate never runs past it); only that snapshot is worked, what becomes eligible later waits for the next
     start. Every member starts through `run_dossier.py`, so the slot cap, the
     `queued` state, the account routing and the owner questions apply unchanged.
     A member whose build finished (status `pr` or `done`) gets "Fix all
