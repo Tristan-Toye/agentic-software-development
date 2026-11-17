@@ -6,7 +6,7 @@ description: >-
   wait for green CI, run the one full stack suite in the VM and post its
   receipt as the local-stack check, audit every dossier on the stub, attribute
   any failure to its dossier and fix it through the implementer and reviewer
-  flow until green. Merging the stub PR stays the user's.
+  flow until green. Merging the stub PR is the user's, or land_stub.py's where the user turned that on.
 argument-hint: [stub branch, e.g. stub/2026-10-29 — or empty for the accepting stub]
 ---
 
@@ -94,7 +94,8 @@ all of it:
    into the stub and merges it itself** (Step 4; a failure of it never blocks
    the integration). The
    yes covers these merges and nothing else. Nothing else is merged by this command: the stub pull request
-   into `development` stays the user's, always.
+   into `development` is the user's, or `land_stub.py`'s when the user turned it on
+   for this repository.
 4. It **iterates until the full stack run is green**: as many
    attribute-inspect-fix rounds as it takes, with no round limit.
 
@@ -296,7 +297,26 @@ mutation, audit, fix rounds; the receipt summary — suites passed, failed,
 skipped with their waivers, build and run seconds, the head it describes;
 the number of fix rounds and what each fixed; the map refresh (pull request merged, nothing changed, skipped, or the `MAP-REFRESH: failed` line); any ADR-worthy lesson as a
 `/plan D-n` seed, never an unratified write; and the one act left — the
-user merges. Then close the time-logging session, if one was opened.
+merge into `development`, which is never yours. Then close the time-logging
+session, if one was opened.
+
+End the pull request body with this block, every line at the start of its own
+line, written last and true of the head it names. `land_stub.py` reads it; with
+no block, or any other value, the pull request waits for the user:
+
+```
+STUB-RESULT: green
+STUB-HEAD: <the full SHA of the head the receipt describes>
+STUB-GAPS: <the number of GAP lines left in the Step 6 table>
+STUB-UNRESOLVED: <unresolved attributions and change requests>
+ATTENTION: <one line per thing the user should see before this merges>
+```
+
+`STUB-RESULT` is `green` only when the run ended green; otherwise write `red`.
+Write an `ATTENTION:` line for a waived `SKIP`, an ADR-worthy lesson, a
+contradiction you ruled on, or anything else the record calls surprising. Leave
+them out only when there is nothing to say; a dossier in flight is named in the
+report and needs none.
 
 ## Invariants
 
@@ -307,7 +327,8 @@ user merges. Then close the time-logging session, if one was opened.
 - **Attribution is evidence or it is nothing.** An ambiguous failure stops
   the run; it never selects a convenient dossier.
 - **The pipeline merges only its own fix and map-refresh pull requests.** The stub pull
-  request into `development` is the user's, without exception.
+  request into `development` is the user's, or `land_stub.py`'s where the user turned it
+  on and every check it makes holds; never an agent's.
 - **No direct push to a protected branch** — creation of the stub and
   pull-request merges only; a bypass push needs the user's yes for that
   push, logged.

@@ -588,7 +588,7 @@ function vrBuild(host, key, data) {
 }
 
 // ---- state ----
-const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {} };
+const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {}, auto: {} };
 let R = { kind: 'home' };
 let routeSig = '';
 let scrollTarget = '';
@@ -1029,6 +1029,34 @@ async function docPrsAct(btn, act) {
   S.docPrs[repo] = j; render();
   if (j.merging) setTimeout(() => docPrsAct({ dataset: { repo } }, 'docprs-refresh'), 5000);
 }
+/* Automatic work: one switch per repository (off by default) and the cycle it runs, decided by scripts/auto_work.py. The switch
+   also turns the scripted stub merge on: the cycle ends with it, so the two are one choice. */
+function autoWorkView(repo) {
+  const v = S.auto[repo]; if (!v) return null;
+  const st = v.state, busy = S.ctl['aw:' + repo] && S.ctl['aw:' + repo].busy;
+  const idle = !st || st.step === 'idle';
+  const head = [h('h2', {}, ['Automatic work']), h('span', { class: 'small mut' }, [v.on ? (st && st.cycle ? 'cycle ' + st.cycle : 'on') : 'off']), h('span', { class: 'grow' }),
+    v.on && idle && !(st && st.request) ? h('button', { class: 'btn sm', type: 'button', 'data-act': 'aw-act', 'data-aw': 'start-now', 'data-repo': repo, disabled: busy ? true : null, title: 'Start a cycle now instead of waiting for the next stub to merge.' }, ['Start cycle now']) : null,
+    st && st.paused ? h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'aw-act', 'data-aw': 'resume', 'data-repo': repo, disabled: busy ? true : null, title: 'Go on: a failed run is started again, a failed integration runs again.' }, ['Resume']) : null,
+    h('button', { class: 'btn sm' + (v.on ? '' : ' primary'), type: 'button', 'data-act': 'aw-act', 'data-aw': v.on ? 'disable' : 'enable', 'data-repo': repo, disabled: busy ? true : null,
+      title: v.on ? 'Turn it off. Nothing new starts; runs that are live go on.' : 'Turn it on. From the next stub merge on, the dossiers that are ready (and the planned ones, planned first) are built, their deferred items fixed, the non-code PRs merged, the stub integrated and merged, with no click. Every owner question still waits for you. It also turns the scripted stub merge on.' }, [v.on ? 'Turn off' : 'Turn on'])];
+  const kids = [h('div', { class: 'sechd' }, head)];
+  if (S.ctl['aw:' + repo] && S.ctl['aw:' + repo].msg) kids.push(h('div', { class: 'err' }, [S.ctl['aw:' + repo].msg]));
+  if (v.on && st) {
+    const phase = st.paused ? 'paused' : st.request === 'start' && idle ? 'starting' : st.phase;
+    kids.push(h('p', { class: 'small' }, [chip(phase, st.paused ? 'blocked' : idle ? 'neutral' : 'pending'), h('span', { class: 'mut' }, [(st.stub ? ' after ' + st.stub : '') + (st.note ? ' · ' + st.note : idle && !st.request ? ' · waiting for the next stub to merge' : '')])]));
+    if (st.paused) kids.push(h('div', { class: 'err' }, [st.paused.reason]));
+    if (st.members.length) kids.push(h('div', { class: 'srows' }, st.members.map(m => h('div', { class: 'srow', 'data-k': 'aw:' + m.id }, [h('span', { class: 'sid mono' }, [m.id]), h('span', { class: 'sname' }, [h('span', {}, [m.stage + (m.rounds > 0 && (m.stage === 'plan' || m.rounds > 1) ? ' · plan round ' + m.rounds : '')]), m.error ? h('span', { class: 'small mut rsub' }, [m.error]) : null]), h('span', { class: 'sright' }, [chip(m.state, m.state === 'failed' ? 'blocked' : m.state === 'finished' ? 'done' : 'pending')])]))));
+  } else if (v.on) kids.push(h('p', { class: 'small mut' }, ['On. The first cycle starts when the next stub merges, or with Start cycle now.']));
+  return h('section', { class: 'sec', 'data-k': 'sec:autowork' }, kids);
+}
+async function autoWorkAct(btn) {
+  const repo = btn.dataset.repo, key = 'aw:' + repo; S.ctl[key] = { busy: true }; render();
+  const r = await fetch('/api/autowork', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repo, action: btn.dataset.aw }) }).then(x => x.json()).catch(() => ({ error: 'request failed' }));
+  S.ctl[key] = (r && (r.error || r.ok === false)) ? { msg: r.error || r.output || 'failed' } : {};
+  const d = await fetchJ('/api/autowork'); if (d && d.repos) { S.auto = {}; d.repos.forEach(v => { S.auto[v.repo] = v; }); }
+  render();
+}
 function repoView(repo) {
   const rs = S.runs.filter(r => r.repo === repo); const prog = rs.filter(inProgress); const os = openStubs(repo);
   const ow = (S.stubs.openWork || []).find(o => o.repo === repo); const oq = S.q.filter(q => q.state === 'open' && qRepo(q) === repo).sort((a, b) => a.ts.localeCompare(b.ts));
@@ -1037,6 +1065,7 @@ function repoView(repo) {
   const frame = ow ? h('iframe', { class: 'report', 'data-repo': repo, src: '/open-work/' + enc(repo) + '?theme=dark&v=' + enc(ow.updated), title: 'Open work', scrolling: 'no', style: S.frameH[repo] ? 'height:' + S.frameH[repo] + 'px' : null }) : h('div', { class: 'empty' }, ['The open-work report is not generated yet.']);
   // The stubs (the current one and the next) first, then Open work, each full width, one under the other.
   kids.push(sideColumn(repo));
+  const aw = autoWorkView(repo); if (aw) kids.push(aw);
   const dp = docPrsView(repo); if (dp) kids.push(dp);
   const vm = vrRepoLink(repo); if (vm) kids.push(vm);
   kids.push(h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]));
@@ -1365,6 +1394,7 @@ function stubView(repo, branch) {
   const rn = d && d.runner; const ig = d && d.integrate; const ctl = [];
   if (rn && rn.state !== 'done') cs.push(runChip(rn));
   if (ig && ig.state === 'merging') { const hold = holdsChip(repo, ig.finished || []); if (hold) cs.push(hold); }
+  if (d && d.land && d.land.state === 'waiting') cs.push(h('span', { title: (d.land.reasons || []).join('\n') }, [chip('auto-merge is holding it', 'pending')]));
   const liveRun = rn && ['running', 'testing', 'waiting', 'paused', 'queued'].includes(rn.state);
   if (s.canIntegrate) ctl.push(integrateBtn(repo, branch));
   if (liveRun) ctl.push(h('button', { class: 'btn', type: 'button', 'data-act': 'stub-ctl', 'data-op': 'stop', 'data-repo': repo, 'data-branch': branch }, ['Stop']));
@@ -1507,6 +1537,7 @@ async function load(what) {
   if (all || w.has('questions')) jobs.push(fetchJ('/api/questions?state=all').then(d => { if (Array.isArray(d)) S.q = d; }));
   if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.accounts = d.accounts || []; S.disk = d.disk || null; S.plans = d.plans || []; S.usageBusy = !!d.usageBusy; } }));
   if (all || w.has('stubs') || w.has('scan')) jobs.push(fetchJ('/api/stubs').then(d => { if (d && d.repos) S.stubs = d; }));
+  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/autowork').then(d => { if (d && d.repos) { S.auto = {}; d.repos.forEach(v => { S.auto[v.repo] = v; }); } }));
   if ((all || w.has('chat')) && R.kind === 'chat') jobs.push(loadChat());
   await Promise.all(jobs);
   await loadDetail();
@@ -1645,6 +1676,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'stub-cancel') { S.ctl[t.dataset.key] = {}; render(); }
     else if (act === 'stub-ctl') stubCtl(t);
     else if (act === 'docprs-merge' || act === 'docprs-refresh') docPrsAct(t, act);
+    else if (act === 'aw-act') autoWorkAct(t);
     else if (act === 'merge-plan' || act === 'merge-go' || act === 'merge-cancel' || act === 'merge-unqueue') mergeAct(t, act);
     else if (act === 'summary') writeSummary(t);
     else if (act === 'blk') ruleBlock(t);
