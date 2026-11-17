@@ -69,6 +69,17 @@ the recorded checkpoints.
       cherry-picks the plan commits (`work-on/phase-2.md`). A plan that did
       not reach `ready` is logged ("/work-on not requeued") and left to the
       owner. `ASD_RUNNER_REQUEUE=0` turns this off.
+      **Parking.** A `/work-on` started fresh (requeued, pressed, or started
+      by automatic work) whose `blocked_by` names a dossier that is not
+      `done` (the same rule as the dossier graph; a blocker with no dossier
+      file counts as missing) never opens a session or takes a slot: the run
+      ends `parked`, its record holding `parked.blockers` (`W-023
+      (building)`), and the dashboard shows "parked · waits for W-023". The
+      2-minute `revive` tick checks every parked run, with no age limit, and
+      once every blocker is `done` it starts `/work-on` again by itself (a
+      fresh session, the same `--plan-branch` and `--model`). A re-plan that
+      adds a blocker is the usual way in. A resumed run (a live record with a
+      session) is never parked. `ASD_RUNNER_PARK=0` turns it off.
     - `RUNNER: FAILED <why>`, or a turn with no `RUNNER:` line — the runner
       records `failed` with the reason, notifies the owner (a question
       through `ask_owner.py`: retry the stage, or stop), and acts on the

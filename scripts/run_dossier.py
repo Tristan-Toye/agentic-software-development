@@ -2528,6 +2528,15 @@ class Runner:
             write_json(self.cp_path, [])
         signal.signal(signal.SIGTERM, self.on_term)
         signal.signal(signal.SIGINT, self.on_term)
+        self.state.pop("parked", None)
+        resuming = prev.get("state") in ("running", "testing", "waiting", "queued", "paused") and bool(prev.get("session"))
+        if self.command == "work-on" and not self.items and not resuming and os.environ.get("ASD_RUNNER_PARK", "1") != "0":
+            waits = open_blockers(self.root, self.dossier)
+            if waits:
+                # A blocker is not done (a re-plan that added one, a start pressed too early): no session, no slot. The
+                # run parks; `revive` starts it again by itself once every blocker is done.
+                self.save(parked={"blockers": waits, "since": now()})
+                return self.finish("parked", "parked: waits for " + ", ".join(waits) + "; /work-on starts by itself once they are done", 0)
         self.save()
         self.event(f"start /{self.command} {self.dossier} in {self.root}", "running")
         self.start_drivers(prev)
@@ -2777,6 +2786,9 @@ def cmd_revive() -> int:
     for path in glob.glob(os.path.join(runs_dir(), "*.runner.json")):
         st = read_json(path, {}) or {}
         root = st.get("root") or ""
+        if st.get("state") == "parked":
+            unpark(path, st)
+            continue
         if st.get("state") not in ("running", "testing", "waiting", "paused", "queued") or runner_alive(st.get("pid")) or not os.path.isdir(root):
             continue
         if time.time() - os.path.getmtime(path) > hours * 3600:
@@ -2814,6 +2826,42 @@ def cmd_revive() -> int:
     return 0
 
 
+def unpark(path: str, st: dict) -> bool:
+    """A parked /work-on whose blockers are all done now: start it again, detached (it queues for a slot like any run).
+    No age limit: a blocker can take days. The record turns `queued` first, so the next tick does not start it twice."""
+    root = st.get("root") or ""
+    key = os.path.basename(path)[:-len(".runner.json")]
+    prefix = main_repo_name(root) + "." if root else ""
+    if not root or not os.path.isdir(root) or not key.startswith(prefix):
+        return False
+    dossier = key[len(prefix):]
+    waits = open_blockers(root, dossier)
+    if waits:
+        if waits != (st.get("parked") or {}).get("blockers"):
+            st["parked"] = {**(st.get("parked") or {}), "blockers": waits}
+            write_json(path, st)
+        return False
+    argv = [dossier, "--root", root, "--command", "work-on"]
+    if st.get("plan_branch"):
+        argv += ["--plan-branch", st["plan_branch"]]
+    if st.get("model"):
+        argv += ["--model", st["model"]]
+    st["state"] = "queued"
+    st["pid"] = None
+    st["session"] = ""   # a fresh build on the new base: never the old session
+    write_json(path, st)
+    append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "runner", "text": "every blocker is done: /work-on starts again (it starts when a slot frees)", "state": "queued"})
+    try:
+        detach(argv, root, dossier, key)
+    except OSError as e:
+        st["state"] = "parked"
+        write_json(path, st)
+        append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "runner", "text": f"could not start /work-on: {e}; the next tick tries again", "state": "parked"})
+        return False
+    print(f"run_dossier: unparked {key}")
+    return True
+
+
 def iso_epoch(ts: str) -> float:
     """`2026-11-16T10:57:10Z` as epoch seconds; 0 when it does not parse."""
     try:
@@ -2839,6 +2887,42 @@ def was_built_before(updates_path: str) -> bool:
         return False
     last_plan = max((i for i, c in enumerate(starts) if c == "plan"), default=-1)
     return "work-on" in starts[:max(last_plan, 0)]
+
+
+def blocked_by_of(text: str) -> list[str]:
+    """The ids in the front matter's `blocked_by` (an inline list or a block list); comments dropped."""
+    m = re.match(r"---\n(.*?)\n---\n", text or "", re.S)
+    if not m:
+        return []
+    fm = m.group(1)
+    b = re.search(r"(?m)^blocked_by:[ \t]*\[([^\]]*)\]", fm)
+    if b:
+        items = b.group(1).split(",")
+    else:
+        b = re.search(r"(?m)^blocked_by:[ \t]*(?:#.*)?\n((?:[ \t]+-[^\n]*\n?)+)", fm)
+        items = [ln.strip()[1:] for ln in b.group(1).splitlines()] if b else []
+    return [i for i in (x.split("#")[0].strip().strip("'\"") for x in items) if i]
+
+
+def open_blockers(root: str, dossier: str) -> list[str]:
+    """The dossier's blockers that are not done yet, each as `W-023 (building)`; a blocker with no dossier file counts
+    as `missing`. The same rule as the dossier graph (generate_open_work.py): only `done` frees a dependant."""
+    d = os.path.join(root, ".discovery", "dossiers")
+
+    def text_of(did: str) -> str | None:
+        try:
+            names = sorted(n for n in os.listdir(d) if re.match(re.escape(did) + r"(-.*)?\.md$", n))
+            return open(os.path.join(d, names[0]), encoding="utf-8").read() if names else None
+        except OSError:
+            return None
+    own = text_of(dossier)
+    out = []
+    for b in blocked_by_of(own or ""):
+        t = text_of(b)
+        st = front_status(t) if t is not None else "missing"
+        if st != "done":
+            out.append(f"{b} ({st or 'no status'})")
+    return out
 
 
 def front_status(text: str) -> str:
@@ -3549,6 +3633,52 @@ def selftest() -> int:
         check("requeue: /work-on starts by itself and gets the plain command",
               bool(until(lambda: state_of("W-92").get("command") == "work-on" and state_of("W-92").get("state") == "done", 60))
               and msgs(2)[0] == f"/{PLUGIN}:work-on W-92" and any("/work-on W-92 requeued" in t for t in texts("W-92")))
+        # ---- 2a''. a requeued /work-on whose blocker is not done parks (no session), and unparks once it is done ----
+        ddir = os.path.join(root, ".discovery", "dossiers")
+        bpath = os.path.join(ddir, "W-95-blocker.md")
+        open(bpath, "w").write("---\nid: W-95\nstatus: building\n---\n")
+        open(os.path.join(ddir, "W-94-x.md"), "w").write("---\nid: W-94\nstatus: ready\nblocked_by: [W-92, W-95]  # why\n---\n# W-94\n")
+        check("blocked_by_of: inline, comment dropped", blocked_by_of("---\nid: X\nblocked_by: [W-1, 'W-2']  # c\n---\n") == ["W-1", "W-2"])
+        check("blocked_by_of: block list", blocked_by_of("---\nid: X\nblocked_by:\n  - W-1\n  - W-2 # c\nstatus: ready\n---\n") == ["W-1", "W-2"])
+        open(os.path.join(ddir, "W-92-x.md"), "w").write("---\nid: W-92\nstatus: done\n---\n")
+        check("open_blockers: a done blocker frees, others are named with their status",
+              open_blockers(root, "W-94") == ["W-95 (building)"] and blocked_by_of("---\nblocked_by: []\n---\n") == [])
+        open(os.path.join(ddir, "W-96-x.md"), "w").write("---\nid: W-96\nstatus: ready\nblocked_by: [W-97]\n---\n")
+        check("open_blockers: a blocker with no dossier file counts as missing", open_blockers(root, "W-96") == ["W-97 (missing)"])
+        os.remove(os.path.join(ddir, "W-96-x.md"))
+
+        def in_env(fn):
+            saved = dict(os.environ)
+            os.environ.update(env)
+            try:
+                return fn()
+            finally:
+                os.environ.clear()
+                os.environ.update(saved)
+        append_line(os.path.join(rdir, "repo.W-94.jsonl"), {"ts": now(), "kind": "runner", "text": f"start /work-on W-94 in {root}", "state": "running"})
+        write_json(os.path.join(rdir, "repo.W-94.runner.json"), {"command": "work-on", "state": "done"})
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-94", "--command", "plan")
+        check("park: the re-plan run ends done", p.wait(timeout=60) == 0)
+        check("park: the requeued /work-on parks on the open blocker, no session",
+              bool(until(lambda: state_of("W-94").get("command") == "work-on" and state_of("W-94").get("state") == "parked", 60))
+              and (state_of("W-94").get("parked") or {}).get("blockers") == ["W-95 (building)"] and not state_of("W-94").get("session")
+              and any("parked: waits for W-95 (building)" in t for t in texts("W-94")))
+        spath = os.path.join(rdir, "repo.W-94.runner.json")
+        check("unpark: nothing starts while the blocker is open", in_env(lambda: unpark(spath, state_of("W-94"))) is False and state_of("W-94").get("state") == "parked")
+        open(bpath, "w").write("---\nid: W-95\nstatus: done\n---\n")
+        check("unpark: a done blocker starts /work-on again, which builds", in_env(lambda: unpark(spath, state_of("W-94"))) is True
+              and bool(until(lambda: state_of("W-94").get("state") == "done", 60)) and msgs(2)[0] == f"/{PLUGIN}:work-on W-94"
+              and any("every blocker is done" in t for t in texts("W-94")))
+        env["ASD_RUNNER_PARK"] = "0"
+        open(bpath, "w").write("---\nid: W-95\nstatus: building\n---\n")
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-94")
+        check("park: ASD_RUNNER_PARK=0 builds anyway", p.wait(timeout=60) == 0 and state_of("W-94").get("state") == "done")
+        del env["ASD_RUNNER_PARK"]
+        for n in ("W-94-x.md", "W-95-blocker.md", "W-92-x.md"):
+            os.remove(os.path.join(ddir, n))
+
         open(dpath, "w").write("---\nid: W-93\nstatus: ready\n---\n")
         os.rename(dpath, dpath.replace("W-92", "W-93"))
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
