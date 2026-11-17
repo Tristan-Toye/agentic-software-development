@@ -293,6 +293,9 @@ def outcomes(log_text: str, names: list[str]) -> dict[str, str | None]:
     lines += [(m[0], "ok" if m[1] == "PASSED" else "FAILED")
               for m in re.findall(r"^(\S+::\S+) (PASSED|FAILED)\b", log_text, re.M)]
     lines += [(m, "FAILED") for m in re.findall(r"^FAILED (\S+::\S+)", log_text, re.M)]
+    # xunit v3 console: `    Ns.Class.Test [FAIL]` / `[PASS]`; the marker is not part of the name.
+    lines += [(m[0], "ok" if m[1] == "PASS" else "FAILED")
+              for m in re.findall(r"^[ \t]*(\S+) \[(FAIL|PASS)\]", log_text, re.M)]
     # Shell suites: `FAIL: <label> — why`, `ok: <label>`, `PASS: <label>`, or `<label> FAIL: why`. The label is
     # free text, so a name must stand alone in it (`G1` is not `G10`).
     shell = []
@@ -1197,6 +1200,12 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         check("a local run applies --path-prepend", "tool-ran" in logged)
         rc = main(["--log", log_path, "--env-script", os.path.join(tmp, "missing.sh"), "--", "true"])
         check("a local run with an unreadable --env-script fails, not silently unmodified", rc != 0)
+
+        # --- #377: xunit v3 console lines carry a trailing [FAIL]/[PASS] marker ---
+        xunit = "  Starting\n    Ns.Class.Test [FAIL]\n    Ns.Class.Other [PASS]\n"
+        check("xunit v3 [FAIL] line proves red by --proof-name", proof(xunit, ["Ns.Class.Test"], "red")[0])
+        check("xunit v3 [FAIL] line is not green", not proof(xunit, ["Ns.Class.Test"], "green")[0])
+        check("xunit v3 [PASS] line proves green", proof(xunit, ["Ns.Class.Other"], "green")[0])
 
         # --- --test appends the filter after `--`, cargo only ---
         check("--test adds `--` and the name", add_test_filters(["cargo", "test", "-p", "x"], ["foo"]) == ["cargo", "test", "-p", "x", "--", "foo"])
