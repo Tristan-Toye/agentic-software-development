@@ -1709,8 +1709,10 @@ print("started")
         with contextlib.redirect_stdout(io.StringIO()):
             revive()
         check("integrate: a revive does not start a second integrate while one holds the lock, and records the holder's pid", (read_json(ipath, {}) or {}).get("pid") == os.getpid(), str(read_json(ipath, {})))
-        held.close(); os.remove(ipath)
-        free, _ = integrate_lock(ikey); check("integrate: the lock is free once the holder ends", free is not None); free.close()
+        if held: held.close()
+        os.remove(ipath)
+        free, _ = integrate_lock(ikey); check("integrate: the lock is free once the holder ends", free is not None)
+        if free: free.close()
         for f in (ikey + ".jsonl", ikey + ".integrate.lock"):
             if os.path.exists(os.path.join(rdir, f)): os.remove(os.path.join(rdir, f))
         os.environ["ASD_MERGE_POLL"] = "0.2"
