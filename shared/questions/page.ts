@@ -1041,7 +1041,7 @@ function autoWorkView(repo) {
     const phase = st.paused ? 'paused' : st.request === 'start' && idle ? 'starting' : st.phase;
     kids.push(h('p', { class: 'small' }, [chip(phase, st.paused ? 'blocked' : idle ? 'neutral' : 'pending'), h('span', { class: 'mut' }, [(st.stub ? ' after ' + st.stub : '') + (st.note ? ' · ' + st.note : idle && !st.request ? ' · waiting for the next stub to merge' : '')])]));
     if (st.paused) kids.push(h('div', { class: 'err' }, [st.paused.reason]));
-    if (st.members.length) kids.push(h('div', { class: 'srows' }, st.members.map(m => h('div', { class: 'srow', 'data-k': 'aw:' + m.id }, [h('span', { class: 'sid mono' }, [m.id]), h('span', { class: 'sname' }, [h('span', {}, [m.stage]), m.error ? h('span', { class: 'small mut rsub' }, [m.error]) : null]), h('span', { class: 'sright' }, [chip(m.state, m.state === 'failed' ? 'blocked' : m.state === 'finished' ? 'done' : 'pending')])]))));
+    if (st.members.length) kids.push(h('div', { class: 'srows' }, st.members.map(m => h('div', { class: 'srow', 'data-k': 'aw:' + m.id }, [h('span', { class: 'sid mono' }, [m.id]), h('span', { class: 'sname' }, [h('span', {}, [m.stage + (m.rounds > 0 && (m.stage === 'plan' || m.rounds > 1) ? ' · plan round ' + m.rounds : '')]), m.error ? h('span', { class: 'small mut rsub' }, [m.error]) : null]), h('span', { class: 'sright' }, [chip(m.state, m.state === 'failed' ? 'blocked' : m.state === 'finished' ? 'done' : 'pending')])]))));
   } else if (v.on) kids.push(h('p', { class: 'small mut' }, ['On. The first cycle starts when the next stub merges, or with Start cycle now.']));
   return h('section', { class: 'sec', 'data-k': 'sec:autowork' }, kids);
 }

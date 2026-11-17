@@ -28,7 +28,7 @@ import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runst
 import { readAccounts, usageDir } from "./accounts.ts"
 import { mergeDetectorEnabled, nextMerges, readMergeSeen, writeMergeSeen, type MergedPr } from "./merges.ts"
 import { sh } from "./runs.ts"
-import { argvFor, buildFacts, runAutoWork, tickAutoWork, viewsFor } from "./autowork.ts"
+import { argvFor, buildFacts, markMerged, runAutoWork, tickAutoWork, viewsFor } from "./autowork.ts"
 import { logBlock } from "../claude/permission-denied.ts"
 
 const DIR = storeDir()
@@ -1143,6 +1143,7 @@ async function main(): Promise<void> {
       const key = `${r.repo}.${s.branch.replace(/\//g, "-")}`
       return { ...s, canIntegrate: canIntegrate(s.state, readIntegrate(key), readRunner(key)) }
     }) }))
+    for (const r of stubs) for (const x of r.stubs) if (x.state === "merged" && markMerged(`${r.repo}.${x.branch.replace(/\//g, "-")}`)) emitChange("stubs")
     tickAutoWork(buildFacts(runs, stubs))
   } catch { /* the next tick tries again */ } }
   setTimeout(reviveQueues, 5_000)

@@ -385,7 +385,9 @@ restarted server answers at once from them while its first scan runs.
     works for a repository that wants only the merge). A cycle: the stub's PR
     into development merging (or **Start cycle now**) snapshots the frontier once,
     the dossiers `ready` with every `blocked_by` done (to /work-on) and the
-    `planned` ones with every `blocked_by` done (to /plan, then /work-on); only
+    `planned` ones with every `blocked_by` done (to /plan, then /work-on; a plan that
+    ended done without making the dossier `ready` is run again, after a tick or two
+    for a late status write, as "plan round n", until it reads `ready`); only
     that snapshot is worked, what becomes eligible later waits for the next
     start. Every member starts through `run_dossier.py`, so the slot cap, the
     `queued` state, the account routing and the owner questions apply unchanged.
@@ -394,9 +396,13 @@ restarted server answers at once from them while its first scan runs.
     the ones ruled leave-open). When every member is finished (its fix run done
     and no open item left), the non-code PRs are merged as "Merge all" does and
     awaited, then the stub is integrated (the Integrate button), then
-    `land_stub.py` merges the stub PR; that merge starts the next cycle. Owner
+    `land_stub.py` merges the stub PR; that merge starts the next cycle. A stub PR the
+    owner merged by hand counts as well: the server sees it on GitHub (the facts'
+    `mergedStubs`) and writes `merged` into the stub's integrate file, so every reader agrees. Owner
     questions and diagram reviews are only waited for, never answered, skipped or
-    timed out. A run that ends `failed` or `stopped`, never shows up, a
+    timed out. A run that ends `failed` or `stopped`, never shows up (a run `queued` for a slot counts as shown;
+    one with no trace after the grace is started once more, recorded as `retried`,
+    and only a retry that also shows nothing pauses), a
     non-code PR that cannot merge, a failed integration or a failed /stub run
     pauses the cycle (state `paused`, the reason on the page); nothing retries by
     itself, **Resume** (or `--resume`) goes on. Turning it off starts nothing new

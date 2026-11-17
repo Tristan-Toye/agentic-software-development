@@ -123,26 +123,37 @@ def grace() -> float:
 
 def blank(repo: str, root: str) -> dict:
     return {"repo": repo, "root": root, "cycle": 0, "step": "idle", "phase": "idle", "started": "", "stub": "", "trigger": "",
-            "paused": None, "members": [], "docs": {}, "integrate": {}, "note": "", "seen": [], "request": None, "ts": now()}
+            "paused": None, "members": [], "docs": {}, "integrate": {}, "note": "", "seen": [], "baseline": False, "request": None, "ts": now()}
 
 
-def merged_triggers(root: str) -> dict[str, str]:
-    """{trigger id: stub branch}: every stub of this repository whose pull request merged into development."""
+def merged_triggers(root: str, facts: dict | None = None) -> dict[str, str]:
+    """{trigger id: stub branch}: every stub of this repository whose pull request merged into development. The id is the branch.
+    Two sources: an integrate file reading `merged` (land_stub.py writes it) and the dashboard's facts (`mergedStubs`, read
+    from GitHub), which also see a PR the owner merged by hand, where the integrate file still reads `stub`."""
     out = {}
     for p in glob.glob(os.path.join(runs_dir(), "*.integrate.json")):
         st = read_json(p, {}) or {}
         if st.get("state") == "merged" and st.get("root") == root and st.get("branch"):
-            out[f"{os.path.basename(p)}@{st.get('ts', '')}"] = st["branch"]
+            out[st["branch"]] = st["branch"]
+    for b in (facts or {}).get("mergedStubs") or []:
+        out[b] = b
     return out
 
 
-def lock_for(repo: str, blocking: bool):
+def lock_try(repo: str):
+    """The repository's lock, or None when another process holds it (that one is already taking the step)."""
     fh = open(os.path.join(runs_dir(), f"{repo}.auto-work.lock"), "w")
     try:
-        fcntl.flock(fh, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         fh.close()
         return None
+    return fh
+
+
+def lock_wait(repo: str):
+    fh = open(os.path.join(runs_dir(), f"{repo}.auto-work.lock"), "w")
+    fcntl.flock(fh, fcntl.LOCK_EX)
     return fh
 
 
@@ -193,7 +204,7 @@ def frontier(runs: list[dict]) -> list[dict]:
     out = []
     for r in sorted(runs, key=lambda r: r["id"]):
         if r.get("status") in ("ready", "planned") and all(status.get(b) == "done" for b in r.get("blockedBy") or []):
-            out.append({"id": r["id"], "stage": STAGE_OF[r["status"]], "state": "pending", "error": "", "launch": None, "lag": 0, "accepted": False})
+            out.append({"id": r["id"], "stage": STAGE_OF[r["status"]], "state": "pending", "error": "", "launch": None, "lag": 0, "accepted": False, "rounds": 0, "retried": False})
     return out
 
 
@@ -225,6 +236,8 @@ def launch(st: dict, m: dict, command: str, runner: dict, items: str = "") -> bo
     if not ok:
         pause(st, f"{m['id']}: could not start /{command}: {out}", "member", m["id"])
         return False
+    if command == "plan":
+        m["rounds"] = int(m.get("rounds") or 0) + 1   # plan round n: a plan that ended done without making the dossier ready is run again
     m["launch"] = {"command": command, "items": items, "ts": now(), "pid": runner.get("pid"), "started": runner.get("started")}
     m["state"], m["error"], m["lag"] = "starting", "", 0
     return True
@@ -247,14 +260,22 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
     if r.get("state") in LIVE:   # waiting = an owner question: never answered, skipped or timed out here
         m["stage"] = STAGE_OF.get(status, m["stage"])
         m["state"] = {"queued": "queued for a slot", "waiting": "waiting for the owner", "paused": "paused (usage limit)"}.get(r["state"], "running")
-        m["lag"] = 0
+        m["lag"], m["retried"] = 0, False
         return
     if L and not fresh(m, r):
         if age(L["ts"]) > grace():
-            pause(st, f"{m['id']}: the /{L['command']} run never showed up", "member", m["id"])
+            if m.get("retried"):   # the retry left no trace either
+                pause(st, f"{m['id']}: the /{L['command']} run never showed up, and neither did its retry", "member", m["id"])
+            else:                  # no trace of the first start: start it once more, and record that
+                if L["command"] == "plan":
+                    m["rounds"] = max(0, int(m.get("rounds") or 0) - 1)   # a retried start is not another plan round
+                if launch(st, m, L["command"], r, L.get("items", "")):
+                    m["retried"] = True; m["state"] = "starting (retry)"
         else:
             m["state"] = "starting"
         return
+    if L:
+        m["retried"] = False
     if L and r.get("state") in ("failed", "stopped"):
         pause(st, f"{m['id']}: the /{L['command']} run ended {r['state']}", "member", m["id"]); return
     m["stage"] = STAGE_OF.get(status, m["stage"])
@@ -273,8 +294,12 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
     want = "plan" if status == "planned" else "work-on"
     if L and L["command"] == want:   # it ended done, and the dossier does not show what it should yet
         m["lag"] += 1
-        if m["lag"] >= LAG_TICKS and not m["accepted"]:
-            pause(st, f"{m['id']}: /{want} is done but the dossier still reads {status}", "member", m["id"], "recheck")
+        if m["lag"] < LAG_TICKS:     # a status write may land late: wait before believing "not ready"
+            return
+        if want == "plan":           # the owner's ruling: plan again, until the dossier reads ready (questions, failures and stops are handled above)
+            launch(st, m, "plan", r); return
+        if not m["accepted"]:
+            pause(st, f"{m['id']}: /work-on is done but the dossier still reads {status}", "member", m["id"], "recheck")
         return
     launch(st, m, want, r)
 
@@ -282,14 +307,19 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
 def start_cycle(st: dict, facts: dict, trigger: str, stub: str) -> None:
     st.update(cycle=st["cycle"] + 1, step="work", started=now(), stub=stub, trigger=trigger, paused=None, docs={}, integrate={}, note="", request=None,
               members=frontier(facts.get("runs") or []))
-    st["seen"] = sorted(set(st["seen"]) | set(merged_triggers(st["root"])))
+    st["seen"] = sorted(set(st["seen"]) | set(merged_triggers(st["root"], facts)))
 
 
 def step_cycle(st: dict, facts: dict) -> bool:
     """One transition at most. True when the state moved on and the next step may be looked at in the same tick."""
     step, runs = st["step"], {r["id"]: r for r in facts.get("runs") or []}
     if step == "idle":
-        fresh_ones = {k: b for k, b in merged_triggers(st["root"]).items() if k not in st["seen"]}
+        merged = merged_triggers(st["root"], facts)
+        if not st.get("baseline", True):   # the first look after the switch went on: what merged before it never starts a cycle
+            st["seen"] = sorted(set(st["seen"]) | set(merged)); st["baseline"] = True
+            if st.get("request") != "start":
+                return False
+        fresh_ones = {k: b for k, b in merged.items() if k not in st["seen"]}
         if st.get("request") == "start" or fresh_ones:
             k, b = (sorted(fresh_ones.items())[-1] if fresh_ones else ("manual", ""))
             start_cycle(st, facts, k, b)
@@ -346,12 +376,13 @@ def step_cycle(st: dict, facts: dict) -> bool:
         return False
     if step == "land":
         it = st["integrate"]; key = f"{st['repo']}.{it['branch'].replace('/', '-')}"
-        if not (read_json(os.path.join(runs_dir(), key + ".integrate.json"), {}) or {}).get("state") == "merged":
+        handmerged = it["branch"] in (facts.get("mergedStubs") or [])   # the owner merged the PR; the integrate file may still read `stub`
+        if not handmerged and (read_json(os.path.join(runs_dir(), key + ".integrate.json"), {}) or {}).get("state") != "merged":
             with contextlib.redirect_stdout(io.StringIO()):
                 LAND()   # land_stub.py looks at every stub that reached /stub, in repositories that opted in
         ig = read_json(os.path.join(runs_dir(), key + ".integrate.json"), {}) or {}
-        if ig.get("state") == "merged":
-            trig = f"{key}.integrate.json@{ig.get('ts', '')}"
+        if ig.get("state") == "merged" or handmerged:
+            trig = it["branch"]
             st["seen"] = sorted(set(st["seen"]) | {trig})
             start_cycle(st, facts, trig, it["branch"])   # the stub's merge is the next START
             return True
@@ -371,7 +402,7 @@ def tick_repo(repo: str, facts: dict) -> None:
     root = facts.get("root") or ""
     if not enabled(repo) or not root or not os.path.isdir(runs_dir()):
         return
-    lk = lock_for(repo, False)
+    lk = lock_try(repo)
     if lk is None:
         return
     try:
@@ -403,14 +434,14 @@ def tick(facts: dict) -> int:
 def cmd_enable(root: str) -> int:
     repo = repo_name(root)
     set_switch(repo, True)
-    lk = lock_for(repo, True)
+    lk = lock_wait(repo)
     try:
         st = read_json(state_path(repo), None)
         if not st:   # a stub merged before this moment never starts a cycle
             st = blank(repo, root); st["seen"] = sorted(merged_triggers(root))
             write_atomic(state_path(repo), st)
-        elif st["step"] == "idle":
-            st["seen"] = sorted(set(st["seen"]) | set(merged_triggers(root))); write_atomic(state_path(repo), st)
+        elif st["step"] == "idle":   # the next look (which has the dashboard's facts) marks what merged by hand before this as seen
+            st["seen"] = sorted(set(st["seen"]) | set(merged_triggers(root))); st["baseline"] = False; write_atomic(state_path(repo), st)
     finally:
         lk.close()
     print(f"auto_work: on for {repo} (the scripted stub merge is on with it)")
@@ -428,7 +459,7 @@ def cmd_start_now(root: str) -> int:
     repo = repo_name(root)
     if not enabled(repo):
         print("auto_work: it is off for this repository"); return 1
-    lk = lock_for(repo, True)
+    lk = lock_wait(repo)
     try:
         st = read_json(state_path(repo), None) or blank(repo, root)
         if st["step"] != "idle":
@@ -443,14 +474,14 @@ def cmd_start_now(root: str) -> int:
 
 def cmd_resume(root: str) -> int:
     repo = repo_name(root)
-    lk = lock_for(repo, True)
+    lk = lock_wait(repo)
     try:
-        st = read_json(state_path(repo), None)
-        p = (st or {}).get("paused")
+        st = read_json(state_path(repo), None) or {}
+        p = st.get("paused")
         if not p:
             print("auto_work: nothing is paused"); return 1
         for m in st["members"]:
-            if m["id"] == p.get("member") or (not p.get("member") and False):
+            if m["id"] == p.get("member"):
                 m["error"], m["state"], m["lag"] = "", "pending", 0
                 if p["action"] == "accept":
                     m["accepted"] = True
@@ -512,9 +543,10 @@ def selftest() -> int:
         def run_(id, status, blocked=(), runner=None, items=()):
             return {"id": id, "status": status, "blockedBy": list(blocked), "runner": runner, "deferred": [{"id": i[0], "state": i[1], "keptOpen": len(i) > 2} for i in items]}
         facts_runs = []
+        facts_merged = []
         facts_stubs = [{"branch": "stub/2026-11-24", "state": "accepting", "canIntegrate": True}]
         def tk():
-            tick({"repos": {repo: {"root": root, "runs": facts_runs, "stubs": facts_stubs}}})
+            tick({"repos": {repo: {"root": root, "runs": facts_runs, "stubs": facts_stubs, "mergedStubs": facts_merged}}})
         def setrun(id, **kw):
             for r in facts_runs:
                 if r["id"] == id:
@@ -536,8 +568,10 @@ def selftest() -> int:
         cmd_enable(root)
         sw = land_stub.settings_of(repo)
         check("enable: one switch turns the scripted stub merge on with it", sw.get("auto_work") is True and sw.get("enabled") is True and not land_stub.settings_of("other"))
-        tk()
-        check("the stub merged before the switch started no cycle", st()["cycle"] == 0 and log() == [], st())
+        facts_merged = ["stub/2026-11-03"]   # a stub the owner merged by hand before the switch: its integrate file still reads `stub`
+        json.dump({"state": "stub", "root": root, "branch": "stub/2026-11-03", "ts": "2026-11-03T10:00:00Z"}, open(P(f"{repo}.stub-2026-11-03.integrate.json"), "w"))
+        tk(); tk()
+        check("the stubs merged before the switch (by land_stub or by hand) started no cycle", st()["cycle"] == 0 and log() == [], st())
 
         # A stub merges: START. The frontier is snapshotted once.
         json.dump({"state": "merged", "root": root, "branch": "stub/2026-11-17", "ts": "2026-11-17T09:00:00Z"}, open(P(f"{repo}.stub-2026-11-17.integrate.json"), "w"))
@@ -564,7 +598,22 @@ def selftest() -> int:
         tk()
         check("a member with no deferred items finishes without a fix-deferred run", members()["A"]["stage"] == "finished" and not any("fix-deferred" in l and " A " in l for l in log()), log())
         # D: planned -> plan -> work-on.
-        setrun("D", status="ready", runner=runner("done", "plan", pid=202, started="2026-11-17T10:01:00Z"))
+        n_plan = sum(1 for l in log() if l.startswith("runner D") and "--command plan" in l)
+        setrun("D", runner=runner("done", "plan", pid=202, started="2026-11-17T10:01:00Z"))   # /plan ended done, the dossier still reads planned
+        tk()
+        check("plan done but not ready: the first look waits (a status write may land late), no pause, no second plan",
+              not st()["paused"] and sum(1 for l in log() if l.startswith("runner D") and "--command plan" in l) == n_plan, st().get("paused"))
+        tk()
+        check("plan done and still not ready: /plan runs again (plan round 2), no pause",
+              not st()["paused"] and sum(1 for l in log() if l.startswith("runner D") and "--command plan" in l) == n_plan + 1 and members()["D"]["rounds"] == 2, (st().get("paused"), members()["D"]))
+        setrun("D", runner=runner("waiting", "plan", pid=210, started="2026-11-17T10:20:00Z")); tk()
+        check("an owner question in the second plan round is only waited for", members()["D"]["state"] == "waiting for the owner" and not st()["paused"])
+        setrun("D", runner=runner("failed", "plan", pid=210, started="2026-11-17T10:20:00Z")); tk()
+        check("a plan round that ends failed pauses the cycle", bool(st()["paused"]) and st()["paused"]["member"] == "D", st().get("paused"))
+        cmd_resume(root)
+        tk()
+        check("resume starts the failed plan round again (round 3)", members()["D"]["rounds"] == 3 and not st()["paused"], members()["D"])
+        setrun("D", status="ready", runner=runner("done", "plan", pid=212, started="2026-11-17T10:30:00Z"))
         tk()
         check("planned -> /plan -> /work-on once the plan made it ready", f"runner D --root {root} --command work-on" in log() and members()["D"]["stage"] == "build", log())
         # D and F build and finish with deferred items; one is ruled to stay open.
@@ -620,7 +669,8 @@ def selftest() -> int:
         os.remove(P(f"{repo}.stub-2026-11-24.runner.json")); st_ = st(); st_["paused"] = None; write_atomic(state_path(repo), st_)
         # The stub merges: that is the next START, with a new snapshot.
         facts_runs[:] = [run_("N", "ready"), run_("A", "done"), run_("M", "ready", ["N"])]
-        w(state="merged", note="merged into development", ts="2026-11-17T13:00:00Z")
+        w(state="stub", note="/stub done", ts="2026-11-17T13:00:00Z")   # the owner merges the PR by hand: GitHub says merged, the file still says `stub`
+        facts_merged.append("stub/2026-11-24")
         n_before = len(log()); tk()
         check("the stub's merge restarts the cycle: cycle 2, a fresh snapshot of what is eligible now",
               st()["cycle"] == 2 and st()["stub"] == "stub/2026-11-24" and sorted(members()) == ["N"] and log()[n_before:] == [f"runner N --root {root} --command work-on"], (st()["cycle"], sorted(members()), log()[n_before:]))
@@ -629,8 +679,20 @@ def selftest() -> int:
 
         # A run that never shows up, a refused start, an empty frontier, a manual start.
         os.environ["ASD_AUTO_WORK_GRACE"] = "0"
-        s = st(); s["members"][0]["launch"]["ts"] = "2020-01-01T00:00:00Z"; write_atomic(state_path(repo), s); tk()
-        check("a run that never shows its state pauses the cycle after the grace", st()["paused"] and "never showed up" in st()["paused"]["reason"], st().get("paused"))
+        s = st(); s["members"][0]["launch"]["ts"] = "2020-01-01T00:00:00Z"; write_atomic(state_path(repo), s)
+        setrun("N", runner=runner("queued", "work-on", pid=400, started="2026-11-17T14:00:00Z")); tk()
+        check("a run the runner put in queued for a slot counts as shown: the grace never fires on it", not st()["paused"] and members()["N"]["state"] == "queued for a slot", st().get("paused"))
+        setrun("N", runner=None)
+        old = lambda: (lambda s_: (s_["members"][0]["launch"].update(ts="2020-01-01T00:00:00Z"), write_atomic(state_path(repo), s_)))(st())
+        n_before = len(log()); old(); tk()
+        check("a run that left no trace within the grace is started once more, and the retry is recorded",
+              not st()["paused"] and members()["N"]["retried"] is True and len(log()) == n_before + 1 and log()[-1].startswith("runner N "), (st().get("paused"), log()[n_before:]))
+        os.environ["ASD_AUTO_WORK_GRACE"] = "600"
+        setrun("N", runner=runner("running", "work-on", pid=500, started="2026-11-17T15:00:00Z")); tk()
+        check("the retry shows up: the cycle continues, the retry flag clears", not st()["paused"] and members()["N"]["retried"] is False and members()["N"]["state"] == "running")
+        setrun("N", runner=None); s_ = st(); s_["members"][0]["launch"]["ts"] = now(); write_atomic(state_path(repo), s_)
+        os.environ["ASD_AUTO_WORK_GRACE"] = "0"; old(); tk(); old(); n_before = len(log()); tk()
+        check("both starts vanish: the cycle pauses, once, after exactly one retry", st()["paused"] and "retry" in st()["paused"]["reason"] and len(log()) == n_before, st().get("paused"))
         os.environ.pop("ASD_AUTO_WORK_GRACE")
         s = st(); s["paused"] = None; s["step"] = "idle"; s["members"] = []; s["request"] = None; write_atomic(state_path(repo), s)
         facts_runs[:] = [run_("BADDOSSIER", "ready")]
@@ -640,8 +702,8 @@ def selftest() -> int:
         s = st(); s.update(paused=None, step="idle", members=[]); write_atomic(state_path(repo), s)
         facts_runs[:] = []
         check("start-now is refused while a cycle runs", (lambda: (cmd_start_now(root), 0)[1] == 0)() and True)
-        cmd_start_now(root); n_before = len(log()); tk()
-        check("an empty frontier goes straight to the non-code merge", st()["cycle"] == 4 and st()["step"] in ("docs", "integrate") and log()[n_before] == f"docs merge --root {root}", (st()["step"], log()[n_before:]))
+        facts_merged.clear(); cmd_start_now(root); n_before = len(log()); tk()
+        check("an empty frontier goes straight to the non-code merge", st()["cycle"] == 4 and st()["step"] in ("docs", "integrate", "land") and log()[n_before] == f"docs merge --root {root}", (st()["cycle"], st()["step"], log()[n_before:]))
 
         # Disabled again: nothing moves, live runs are not touched.
         cmd_disable(root)

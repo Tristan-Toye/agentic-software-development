@@ -655,7 +655,8 @@ a state in `running`, `testing`, `waiting`, `queued` or `paused` is waited for;
 `failed` or `stopped` pauses the cycle. The file lags a start by a few seconds,
 so a started run is matched by its command and its `pid`/`started` pair before its
 end is believed, and a run that shows nothing within `ASD_AUTO_WORK_GRACE`
-seconds (default 600) pauses the cycle. See `references/owner-questions.md`
+seconds (default 600) is started once more (recorded on the member), and a retry that
+also shows nothing pauses the cycle; a run in `queued` counts as shown. See `references/owner-questions.md`
 (Dashboard, Automatic work) for the cycle.
 
 ## Standing repair of the VM and the stack (`scripts/stack_repair.py`)

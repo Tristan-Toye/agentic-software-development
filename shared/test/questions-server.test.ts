@@ -18,7 +18,7 @@ import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPane
 import { blockedByOf, controlsFor, runTarget } from "../questions/controls.ts"
 import { readAccounts } from "../questions/accounts.ts"
 import { execFileSync } from "node:child_process"
-import { argvFor, autoWorkOn, buildFacts, readAutoState, viewsFor } from "../questions/autowork.ts"
+import { argvFor, autoWorkOn, buildFacts, markMerged, readAutoState, viewsFor } from "../questions/autowork.ts"
 
 let failed = 0
 function check(name: string, ok: boolean, detail = ""): void {
@@ -984,10 +984,16 @@ try {
     facts.repos.on.root === "/x/on" && facts.repos.on.runs.length === 2 && facts.repos.on.runs[1].blockedBy[0] === "A" && facts.repos.on.runs[1].runner.pid === 7
     && facts.repos.on.runs[1].deferred[0].keptOpen === true && facts.repos.on.runs[1].deferred[1].keptOpen === false, JSON.stringify(facts))
   check("auto work: facts list the open stubs only, with whether they can be integrated", facts.repos.on.stubs.length === 1 && facts.repos.on.stubs[0].canIntegrate === true)
+  const hand = buildFacts([run("on", "A", "ready")], [{ repo: "on", main: "/x/on", stubs: [{ branch: "stub/1", state: "accepting" }, { branch: "stub/0", state: "merged" }] }], (r) => r === "on")
+  check("auto work: facts name the stubs GitHub shows merged, so a hand merge starts the next cycle", hand.repos.on.mergedStubs.join() === "stub/0" && hand.repos.on.stubs.length === 1, JSON.stringify(hand))
+  writeFileSync(join(dir, "on.stub-0.integrate.json"), JSON.stringify({ state: "stub", branch: "stub/0", root: "/x/on", ts: "old" }))
+  check("auto work: a stub merged by hand gets merged in its integrate file, once; a missing file is left alone",
+    markMerged("on.stub-0", dir) && JSON.parse(readFileSync(join(dir, "on.stub-0.integrate.json"), "utf8")).state === "merged" && JSON.parse(readFileSync(join(dir, "on.stub-0.integrate.json"), "utf8")).branch === "stub/0"
+    && !markMerged("on.stub-0", dir) && !markMerged("on.stub-9", dir))
   check("auto work: no repository switched on gives empty facts (nothing is spawned)", Object.keys(buildFacts([run("off", "C", "ready")], [], () => false).repos).length === 0)
-  writeFileSync(join(dir, "on.auto-work.json"), JSON.stringify({ cycle: 2, step: "work", phase: "paused", stub: "stub/1", paused: { reason: "A failed", kind: "member", member: "A", action: "relaunch", at: "t" }, members: [{ id: "A", stage: "build", state: "failed", error: "A failed" }], note: "" }))
+  writeFileSync(join(dir, "on.auto-work.json"), JSON.stringify({ cycle: 2, step: "work", phase: "paused", stub: "stub/1", paused: { reason: "A failed", kind: "member", member: "A", action: "relaunch", at: "t" }, members: [{ id: "A", stage: "build", state: "failed", error: "A failed", rounds: 2 }], note: "" }))
   const st = readAutoState("on", dir)
-  check("auto work: the state file is read as the page shows it", !!st && st.cycle === 2 && st.paused?.reason === "A failed" && st.members[0].state === "failed" && st.phase === "paused", JSON.stringify(st))
+  check("auto work: the state file is read as the page shows it", !!st && st.cycle === 2 && st.paused?.reason === "A failed" && st.members[0].state === "failed" && st.members[0].rounds === 2 && st.phase === "paused", JSON.stringify(st))
   check("auto work: a missing or torn state file reads as no state", readAutoState("none", dir) === null && (writeFileSync(join(dir, "bad.auto-work.json"), "{not json"), readAutoState("bad", dir) === null))
   const views = viewsFor([run("on", "A", "ready"), run("on", "B", "ready"), run("off", "C", "ready")], (r) => r === "on", (r) => readAutoState(r, dir))
   check("auto work: one view per repository with its switch and state", views.length === 2 && views[0].on && views[0].state?.cycle === 2 && !views[1].on && views[1].state === null)

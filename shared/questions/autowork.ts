@@ -1,11 +1,11 @@
 // Automatic work, per repository (scripts/auto_work.py decides; this file only reads, builds the facts it is given, and starts it).
 // Contract: references/owner-questions.md (Dashboard, "Automatic work").
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { runsDir } from "./runstore.ts"
 
-export type AutoMember = { id: string; stage: string; state: string; error: string }
+export type AutoMember = { id: string; stage: string; state: string; error: string; rounds: number }
 export type AutoPaused = { reason: string; kind: string; member: string; action: string; at: string }
 export type AutoState = {
   repo: string; cycle: number; step: string; phase: string; started: string; stub: string
@@ -29,7 +29,7 @@ export function readAutoState(repo: string, dir = runsDir()): AutoState | null {
   return {
     repo, cycle: Number(s.cycle) || 0, step: String(s.step ?? "idle"), phase: String(s.phase ?? "idle"), started: String(s.started ?? ""), stub: String(s.stub ?? ""),
     paused: s.paused ? { reason: String(s.paused.reason ?? ""), kind: String(s.paused.kind ?? ""), member: String(s.paused.member ?? ""), action: String(s.paused.action ?? ""), at: String(s.paused.at ?? "") } : null,
-    members: s.members.map((m: any) => ({ id: String(m.id), stage: String(m.stage ?? ""), state: String(m.state ?? ""), error: String(m.error ?? "") })),
+    members: s.members.map((m: any) => ({ id: String(m.id), stage: String(m.stage ?? ""), state: String(m.state ?? ""), error: String(m.error ?? ""), rounds: Number(m.rounds) || 0 })),
     note: String(s.note ?? ""), request: s.request ? String(s.request) : null, ts: String(s.ts ?? ""),
   }
 }
@@ -43,7 +43,7 @@ export function buildFacts(runs: RunLike[], stubs: { repo: string; main: string;
   for (const r of runs) {
     const root = r.main || r.root   // the repository's main checkout, as Start and Fix all deferred use
     if (!on(r.repo) || !root) continue
-    const f = (repos[r.repo] ??= { root, runs: [], stubs: [] })
+    const f = (repos[r.repo] ??= { root, runs: [], stubs: [], mergedStubs: [] })
     f.runs.push({
       id: r.id, status: r.status, blockedBy: r.blockedBy,
       runner: r.runner ? { state: r.runner.state, command: r.runner.command ?? "", pid: r.runner.pid, started: r.runner.started } : null,
@@ -52,6 +52,7 @@ export function buildFacts(runs: RunLike[], stubs: { repo: string; main: string;
   }
   for (const s of stubs) {
     const f = repos[s.repo]
+    if (f) f.mergedStubs = s.stubs.filter((x) => x.state === "merged").map((x) => x.branch)   // GitHub says the PR merged, by land_stub.py or by hand
     if (f) f.stubs = s.stubs.filter((x) => x.state !== "merged").map((x) => ({ branch: x.branch, state: x.state, canIntegrate: !!x.canIntegrate }))
   }
   return { repos }
@@ -85,4 +86,19 @@ export function tickAutoWork(facts: { repos: Record<string, any> }): void {
   p.stdin.write(JSON.stringify(facts))
   p.stdin.end()
   p.unref()
+}
+
+/**
+ * A stub whose PR GitHub shows merged gets `merged` in its integrate file, so every reader agrees (land_stub.py writes it for its own
+ * merges; a merge by hand left it at `stub`). Only a file that exists and is not merged yet is touched. Returns whether it wrote.
+ */
+export function markMerged(key: string, dir = runsDir(), now = new Date()): boolean {
+  const path = join(dir, `${key}.integrate.json`)
+  if (!existsSync(path)) return false
+  const cur = readJson(path)
+  if (!cur || typeof cur !== "object" || cur.state === "merged") return false
+  const tmp = `${path}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify({ ...cur, state: "merged", note: "merged into development", ts: now.toISOString().replace(/\.\d+Z$/, "Z") }, null, 1))
+  renameSync(tmp, path)
+  return true
 }
