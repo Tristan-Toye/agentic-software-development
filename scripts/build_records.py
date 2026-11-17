@@ -43,6 +43,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 
@@ -101,9 +102,40 @@ def atomic_write(path: str, text: str) -> None:
         raise
 
 
+EXCLUDE_LINE = ".discovery/deferred/"
+
+
+def exclude_store(path: str) -> bool:
+    """Keep the deferred store (plugin working state: `<ID>.yaml` and its `.lock`)
+    out of `git status` when PATH lies in a repository's MAIN checkout: add
+    `.discovery/deferred/` to the repository's `.git/info/exclude` (local, never
+    a tracked change), once. A worktree or a non-repo is left alone. Returns True
+    when a line was added."""
+    d = os.path.dirname(os.path.realpath(path))
+    def git(*a: str) -> str:
+        r = subprocess.run(["git", "-C", d, *a], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    common, top = git("rev-parse", "--path-format=absolute", "--git-common-dir"), git("rev-parse", "--show-toplevel")
+    if not common or not top or os.path.dirname(os.path.realpath(common)) != os.path.realpath(top):
+        return False
+    ex = os.path.join(common, "info", "exclude")
+    try:
+        have = open(ex, encoding="utf-8").read() if os.path.exists(ex) else ""
+        if EXCLUDE_LINE in (x.strip() for x in have.splitlines()):
+            return False
+        os.makedirs(os.path.dirname(ex), exist_ok=True)
+        with open(ex, "a", encoding="utf-8") as fh:
+            fh.write(("" if not have or have.endswith("\n") else "\n") + EXCLUDE_LINE + "\n")
+    except OSError:
+        return False
+    return True
+
+
 def update(path: str, default: dict, fn) -> dict:
     """Read-modify-write under one lock; `fn` mutates the mapping and returns a note."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.basename(os.path.dirname(path)) == "deferred":
+        exclude_store(path)
     lock = open(path + ".lock", "w")
     try:
         if fcntl:
@@ -394,6 +426,28 @@ def selftest() -> int:
         check("the CLI writes the record and one log line", rc == 0 and "- D-1 deferred (open)" in log
               and load(record_path(os.path.join(tmp, ".discovery"), "deferred", "W-003"), {})["items"][0]["id"] == "D-1")
         check("the CLI refuses a missing field with exit 1", run(["deferred", "add", "W-003", "--root", tmp, "--evidence", "e"]) == 1)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = os.path.realpath(tmp)
+        repo = os.path.join(tmp, "app")
+        os.makedirs(repo)
+        for a in (["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+            subprocess.run(["git", "-C", repo, *a], capture_output=True, check=True)
+        open(os.path.join(repo, "f"), "w").write("x")
+        subprocess.run(["git", "-C", repo, "add", "."], capture_output=True, check=True)
+        subprocess.run(["git", "-C", repo, "commit", "-qm", "i"], capture_output=True, check=True)
+        dp = record_path(os.path.join(repo, ".discovery"), "deferred", "W-001")
+        deferred_add(dp, dict(evidence="e", fix="f", boundary="b", blast_radius="r"), [])
+        deferred_add(dp, dict(evidence="e", fix="f", boundary="b", blast_radius="r"), [])
+        exf = os.path.join(repo, ".git", "info", "exclude")
+        check("store under a main checkout is excluded exactly once",
+              open(exf).read().splitlines().count(EXCLUDE_LINE) == 1)
+        st = subprocess.run(["git", "-C", repo, "status", "--porcelain"], capture_output=True, text=True).stdout
+        check("the store (yaml and lock) no longer shows in git status", st.strip() == "")
+        wt = os.path.join(tmp, "app-W-1")
+        subprocess.run(["git", "-C", repo, "worktree", "add", "-q", "-b", "w1", wt], capture_output=True, check=True)
+        before = open(exf).read()
+        deferred_add(record_path(os.path.join(wt, ".discovery"), "deferred", "W-001"), dict(evidence="e", fix="f", boundary="b", blast_radius="r"), [])
+        check("a worktree's store changes no exclude file", open(exf).read() == before)
     print("selftest:", "ok" if ok else "FAILED")
     return 0 if ok else 1
 

@@ -182,7 +182,7 @@ the guard:
 
 ```bash
 python3 "${PLUGIN_ROOT}/scripts/safe_revert.py" --repo <X or worktree> \
-  --copy-to <dir outside every repository> [--delete] <path> ...
+  --copy-to <dir under ~/.agentic/, outside every repository> [--delete] <path> ...
 ```
 
 It copies each path outside the repository first, prints where (log it),

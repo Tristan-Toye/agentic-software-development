@@ -3,8 +3,45 @@
     "config-harness": {
       "vm": "nightwatch",
       "compose_dir": "deploy/compose",
-      "vm_start": ["limactl", "start", "{vm}"],
-      "stack_up": ["limactl", "shell", "{vm}", "--", "bash", "-lc", "cd {root} && bash deploy/scripts/up.sh core"]
+      "vm_start": [
+        "limactl",
+        "start",
+        "{vm}"
+      ],
+      "stack_up": [
+        "limactl",
+        "shell",
+        "{vm}",
+        "--",
+        "bash",
+        "-lc",
+        "cd {root} && bash deploy/scripts/up.sh core"
+      ],
+      "env_script": "deploy/host/test-env.sh",
+      "env_catalog": {
+        "file": "deploy/secrets-catalog.json",
+        "key": "bootstrap",
+        "field": "variable"
+      },
+      "lease_probe": [
+        "limactl",
+        "shell",
+        "{vm}",
+        "--",
+        "bash",
+        "-lc",
+        "d=/tmp; [ -n \"$TMPDIR\" ] && d=$TMPDIR; f=$d/nightwatch-locks/stack-suite.lease; [ -e \"$f\" ] || exit 0; flock -n \"$f\" true"
+      ],
+      "skip_env": {
+        "NIGHTWATCH_DB_TESTS": "skip",
+        "NIGHTWATCH_NATS_TESTS": "skip",
+        "NIGHTWATCH_PROXY_TESTS": "skip",
+        "NIGHTWATCH_COLLECTOR_TESTS": "skip",
+        "NIGHTWATCH_GCP_TESTS": "skip"
+      },
+      "suite_markers": [
+        "--stack"
+      ]
     }
   }
 }

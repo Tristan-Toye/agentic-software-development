@@ -54,7 +54,9 @@ dossier, `status: done`, and log `MERGED: PR <n> into <stub> @ <sha>` with
 - The main checkout on the stub and clean: `git pull --ff-only`. On another
   branch, or dirty: leave it, and say so.
 - A worktree still on the merged head branch: remove it when it is clean
-  (`git worktree remove`), else leave it and name it. Then `git worktree prune`.
+  (`git worktree remove`), else leave it and name it (to save its leftovers use
+  `remove_worktree.py --save`). Leftovers and staging go under `~/.agentic/`,
+  never into the repository's main checkout. Then `git worktree prune`.
 - The merged head branch locally: delete it with `git branch -d` (never `-D`)
   when no worktree uses it. Never delete a remote branch.
 

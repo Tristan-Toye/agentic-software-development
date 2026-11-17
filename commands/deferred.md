@@ -155,14 +155,17 @@ one anyway, it goes in the footer — one line, no ID.
 - Never omit a field. `none` and `unknown` are answers; silence is not.
 - Zero issues is a real result: state the sources harvested, print `**None.**`,
   and do not pad or invent.
-- You change no code and no tracked file. The only writes you perform are
-  record appends: to the dossier's deferred record
-  (`build_records.py deferred add`) when a dossier covers the run, and otherwise to `.discovery/deferred-ledger.md` — one block per
-  changeset (`## <ref> — <date>`, then the `DEFERRED:` lines), created on
-  first use, so a dossier-less report persists beyond the session. Report
-  only. When the repository commits `.discovery/` — `validate_pipeline.py
-  --mode` prints `committed`; `formats/README.md` § "Two modes" — the dossier
-  append is the one tracked change you make: it stays
-  uncommitted on the checked-out branch, you name it in the report as such,
-  and the user commits or discards it — never you. The fallback ledger stays
-  local in both modes.
+- You change no code and no tracked file, and you never edit the main
+  checkout's dossier (the persistent clone that owns the shared test stack).
+  The only writes you perform are record appends: to the dossier's deferred
+  record (`build_records.py deferred add`, the store, which is kept out of
+  `git status`) when a dossier covers the run, and otherwise to
+  `.discovery/deferred-ledger.md` — one block per changeset
+  (`## <ref> — <date>`, then the `DEFERRED:` lines), created on first use, so
+  a dossier-less report persists beyond the session. Report only. When the
+  repository commits `.discovery/` — `validate_pipeline.py --mode` prints
+  `committed`; `formats/README.md` § "Two modes" — additions to the dossier
+  itself go only into the dossier's own worktree and branch (the copy in the
+  main checkout is never written), you name them in the report, and the user
+  commits or discards them — never you. The fallback ledger stays local in
+  both modes.
