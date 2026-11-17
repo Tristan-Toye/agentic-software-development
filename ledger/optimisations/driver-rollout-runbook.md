@@ -48,9 +48,21 @@ This writes `~/.agentic/drivers.json` atomically. No LaunchAgent edit, no restar
 `<key>.runner.json` (`drivers`), and warns in the runner log about an unknown name or mode. An explicit
 `ASD_DRIVER_*` in the runner's own environment would win over the file.
 
+Token cost: a driver costs tokens on every run that carries it, so cap it with a run quota instead of leaving the
+switch on for everyone:
+
+    python3 $S/driver_modes.py limit 3        # only the next 3 /work-on runs carry the modes
+    python3 $S/driver_modes.py limit none     # no quota again
+
+Each fresh `/work-on` run that starts claims one place (its run key goes in the file, under a lock, so thirty runs
+starting in the same minute still never pass the limit). A run that finds the quota full, and every run that is not
+`/work-on`, gets every driver off. The modes stay in the file; `show` prints the quota and the claimed runs. A claimed
+run keeps its modes to the end, even after the quota is full, and a restarted runner does not claim twice. Only an
+explicit `off` takes the modes away from a running dossier. `limit N` always starts a fresh count.
+
 ## (d) Pick the three shadow dossiers
 
-Any three dossiers that start after (c) and reach the phases the driver covers: the first three to finish Phase 9
+With `limit 3` in place the three are the next three `/work-on` runs that start; `show` lists them. Any three dossiers that start after (c) and reach the phases the driver covers: the first three to finish Phase 9
 give `finalize_pr` evidence; `merge_packages`, `strength_gate_prep` and `test_round` need dossiers with at least
 two packages and a failing suite round to say anything about failures (a green single-package dossier is valid
 evidence but a weak one). Prefer different repos over three of one. Do not hand-pick easy ones and do not skip a
