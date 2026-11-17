@@ -528,6 +528,18 @@ VERBATIM_FIELDS = (
     "FAILURES", "CRS", "PRIOR_CRS", "RUN_EVIDENCE", "CHECKLIST_RULES", "FORMAT",
     "PROBLEM", "APPROACH", "ERRORS",
 )
+# #362: the fields whose text is quoted material (verbatim contract text, evidence, excerpts):
+# neither the path-existence check nor the partial-read heuristic reads it as an instruction.
+QUOTED_FIELDS = VERBATIM_FIELDS + ("DECISIONS",)
+
+# A shell variable in front of a path (`$HOME/x`, `${HOME}/x`, `"$HOME"/x`): the path after it
+# cannot be resolved here, so it is never tested as an absolute path of its own.
+VAR_PREFIX = re.compile(r"\$\{?[A-Za-z_]\w*\}?[\"']?(?=/)")
+
+
+def unvar(line: str) -> str:
+    return VAR_PREFIX.sub("$", line)
+
 # A secret by its shape alone, whatever it is named: a known key prefix, or a
 # long mixed letter-and-digit string. Active everywhere, verbatim blocks included.
 STRONG_SECRET = re.compile(
@@ -978,7 +990,7 @@ def dead_letter_findings(lines: list[str], kind: str | None,
             continue
         # #156: an inline-code span is prose (a log group name, a route shape),
         # not a path handed to the agent — match outside the backticks.
-        for match in ABS_PATH.finditer(CODE_SPAN.sub("` `", line)):
+        for match in ABS_PATH.finditer(CODE_SPAN.sub("` `", unvar(line))):
             token = match.group(1)
             if scoped and readable(token, kind):
                 continue
@@ -1035,8 +1047,10 @@ def bounded_read_findings(lines: list[str], kind: str | None,
         return []
     out: list[str] = []
     for number, name, rest in field_lines(lines):
+        if name in QUOTED_FIELDS:
+            continue  # quoted material, not an instruction (#362)
         body = field_body(lines, name)
-        paths = [m.group(1) for m in ABS_PATH.finditer(body)
+        paths = [m.group(1) for m in ABS_PATH.finditer(unvar(body))
                  if not SYSTEM_BIN.match(m.group(1)) or COMMAND_SHAPED.search(body[:m.start()])]
         if not paths:
             continue
@@ -1359,11 +1373,19 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     }
     allowed = set(allow_paths)
     allowed_used: set[str] = set()
+    quoted_lines: set[int] = set()
+    for field in QUOTED_FIELDS:
+        quoted_lines |= field_line_numbers(lines, field)
     for number, line in enumerate(lines, 1):
         if number in owned_lines:
             continue  # a path the agent is told to create
+        if number in quoted_lines:
+            for match in ABS_PATH.finditer(unvar(line)):
+                if match.group(1) in allowed:
+                    allowed_used.add(match.group(1))  # vouched for, though quoted text is not checked
+            continue  # quoted evidence or contract text: a path in a VM or a log, not an instruction (#362)
         # #156: an inline-code span is prose, not a path handed to the agent.
-        for match in ABS_PATH.finditer(LOG_OUTPUT.sub("--log", CODE_SPAN.sub("` `", mask_remote(line)))):
+        for match in ABS_PATH.finditer(LOG_OUTPUT.sub("--log", CODE_SPAN.sub("` `", mask_remote(unvar(line))))):
             path = match.group(1)
             if os.path.exists(path):
                 continue
@@ -2002,6 +2024,22 @@ def selftest() -> int:
         "TARGET_PATHS: {REAL}/.discovery/pr-draft.md\nSCRUB: W-014\n"
     )
     case("drafter pr clean, hyphen field accepted", drafter, "document-drafter", False)
+    adr = drafter.replace("MODE: pr", "MODE: adr").replace(
+        "DOSSIER-EXCERPTS: |\n  ## Problem\n",
+        "DECISIONS: |\n  evidence: the socket is '/var/run/docker.sock' and auth in $HOME/.docker/config.json\n")
+    case("#362: quoted DECISIONS evidence with a VM path and a $HOME path lints clean",
+         adr, "document-drafter", False)
+    case("#362: a $VAR/ path in an instruction field is not tested as /...",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: cat $HOME/.docker/config.json"),
+         "implementer", False)
+    case("#362: a real missing absolute path in an instruction field still fails",
+         impl.replace("TEST_COMMAND: pytest -q", "TEST_COMMAND: cat /no/such/place/here"),
+         "implementer", True, "does not exist")
+    case("#362: a contract sentence beside a path is not a partial-read instruction",
+         live.replace("CONTRACT: |\n", "CONTRACT: |\n  status is read only that one time, see {REAL}/tests/unit/test_retry.py\n")
+         if "CONTRACT: |\n" in live else
+         "WORKTREE_DIR: {REAL}\nCONTRACT: |\n  status is read only that one time, see {REAL}/tests/unit/test_retry.py\n",
+         None, False)
     case("drafter adr needs decisions",
          drafter.replace("MODE: pr", "MODE: adr"), "document-drafter", True, "DECISIONS is missing")
     da_dossier = ("---\nid: W-014\n---\n## Approach\nflush\n"
