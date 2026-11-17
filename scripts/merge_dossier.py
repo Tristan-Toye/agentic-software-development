@@ -1229,6 +1229,27 @@ def integrate_held(key: str) -> int:
     return holder or -1
 
 
+def stub_stacks(everything: list[dict], branch: str) -> tuple[list[tuple[str, dict]], list[dict]]:
+    """The open PRs straight into the stub, as ([(dossier id, its bottom PR)], [PRs no dossier owns]). Only PRs still open
+    count, so a dossier already merged into the stub is not in it."""
+    prs = sorted([p for p in everything if p.get("baseRefName") == branch and p["headRefName"] != branch], key=lambda p: p["number"])
+    ids: list[tuple[str, dict]] = []
+    others: list[dict] = []
+    for p in prs:
+        m = re.search(r"([A-Za-z][A-Za-z0-9]*-\d+)", p["headRefName"])
+        if m and not p["headRefName"].startswith(("plan/", "docs/")):
+            i = m.group(1).upper()
+            if i not in [x[0] for x in ids]:
+                ids.append((i, p))
+        else:
+            others.append(p)
+    return ids, others
+def stub_dossiers(root: str, branch: str) -> list[str]:
+    """The dossiers with an open pull request into the stub (the ones eager merging may put on it)."""
+    rc, out = gh(root, "pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,baseRefName,isDraft")
+    if rc != 0:
+        return []
+    return [i for i, _ in stub_stacks(json.loads(out or "[]"), branch)[0]]
 def integrate(root: str, branch: str) -> int:
     repo = repo_name(root); slug = branch.replace("/", "-"); key = f"{repo}.{slug}"
     log = os.path.join(runs_dir(), key + ".jsonl")
@@ -1274,17 +1295,7 @@ def integrate(root: str, branch: str) -> int:
     if rc != 0:
         state(state="failed", error="gh pr list failed: " + out[:200]); return 1
     everything = json.loads(out or "[]")
-    prs = sorted([p for p in everything if p.get("baseRefName") == branch and p["headRefName"] != branch], key=lambda p: p["number"])
-    ids = []
-    others = []   # no dossier's stack: never merged from here, only named, so the owner can decide about it
-    for p in prs:
-        m = re.search(r"([A-Za-z][A-Za-z0-9]*-\d+)", p["headRefName"])
-        if m and not p["headRefName"].startswith(("plan/", "docs/")):
-            i = m.group(1).upper()
-            if i not in [x[0] for x in ids]:
-                ids.append((i, p))
-        else:
-            others.append(p)
+    ids, others = stub_stacks(everything, branch)   # others: no dossier's stack, never merged from here, only named, so the owner can decide about it
     def ready(i: str, p: dict) -> bool:
         """Every PR of the dossier's stack is out of draft (the queue refuses a stack with a draft in it), and no run is live."""
         chain, _ = chain_of(everything, i)
@@ -1422,6 +1433,10 @@ def selftest() -> int:
             fails.append(name)
 
     P = lambda n, head, base, draft=False: {"number": n, "headRefName": head, "baseRefName": base, "isDraft": draft, "title": "t", "url": "u"}
+    ids_, others_ = stub_stacks([P(5, "feat/W-9-b", "stub/s"), P(3, "feat/W-8-a", "stub/s"), P(4, "fix/W-8-deferred", "feat/W-8-a"), P(6, "plan/x", "stub/s"), P(7, "feat/W-10-c", "development"), P(8, "feat/W-8-again", "stub/s")], "stub/s")
+    check("stub members: the dossiers with an open PR straight into the stub, once each, in PR order; stacked, plan and other-base PRs are not extra members",
+          [i for i, _ in ids_] == ["W-8", "W-9"] and [p["number"] for p in others_] == [6], f"{ids_} {others_}")
+    check("stub members: a dossier already merged into the stub has no open PR, so integrate never meets it", stub_stacks([P(6, "plan/x", "stub/s")], "stub/s")[0] == [])
     c, why = chain_of([P(427, "feat/W-128-x", "stub/2026-11-03"), P(429, "fix/W-128-deferred", "feat/W-128-x"), P(500, "feat/w-130-y", "stub/2026-11-03")], "W-128")
     check("chain: the build PR then the stacked one, bottom to top; another dossier's PR is not in it", [p["number"] for p in c] == [427, 429])
     c, why = chain_of([P(1, "feat/w-7-a", "stub/x"), P(2, "fix/W-7-b", "stub/x")], "W-7")
@@ -1993,6 +2008,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--revive", action="store_true", help="restart any merge queue with work whose worker is gone")
     ap.add_argument("--enqueue-pr", metavar="N", type=int, help="add a non-code PR into development to the merge queue")
     ap.add_argument("--integrate", metavar="STUB", help="merge every finished dossier on the stub through the queue, then start /stub")
+    ap.add_argument("--stub-dossiers", metavar="STUB", help="print the dossiers with an open pull request into the stub, one per line")
     ap.add_argument("--migration-clashes", metavar="HEAD", help="print the migrations this branch adds under a number already taken (needs --base)")
     ap.add_argument("--base", help="the branch --migration-clashes compares with")
     ap.add_argument("--selftest", action="store_true")
@@ -2009,6 +2025,9 @@ def main(argv: list[str] | None = None) -> int:
         return worker(os.path.abspath(a.root))
     if a.enqueue_pr and a.root:
         return enqueue_pr(os.path.abspath(a.root), a.enqueue_pr)
+    if a.stub_dossiers and a.root:
+        print("\n".join(stub_dossiers(os.path.abspath(a.root), a.stub_dossiers)))
+        return 0
     if a.integrate and a.root:
         if not re.fullmatch(r"(?:stub|release)/[\w.-]+", a.integrate):
             print("merge_dossier: --integrate takes a stub branch, e.g. stub/2026-11-03", file=sys.stderr); return 2

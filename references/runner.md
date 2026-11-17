@@ -674,6 +674,11 @@ not at `pr`/`done` first gets one `run_dossier.py chat` message to its own sessi
 reply, no reply within `ASD_AUTO_WORK_ASK_WAIT` seconds (default 1800), or a failed chat. See `references/owner-questions.md`
 (Dashboard, Automatic work) for the cycle.
 
+Eager merge is a second, separate switch (`auto_work.py --eager-merge on|off --root R`,
+off by default, works with automatic work off): each dossier that is finished (build
+done, fix-deferred run over, no open deferred item) and has an open pull request into
+an open stub is put on the merge queue once, so Integrate has little left to merge.
+
 ## Standing repair of the VM and the stack (`scripts/stack_repair.py`)
 
 Off unless `ASD_STACK_REPAIR=1`: a repair restarts resources other runs share,

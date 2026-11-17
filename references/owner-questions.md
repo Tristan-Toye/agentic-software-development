@@ -418,6 +418,22 @@ restarted server answers at once from them while its first scan runs.
     `state` and `error`), written atomically; routes `GET`/`POST /api/autowork`
     (`enable`, `disable`, `start-now`, `resume`). Env: `ASD_AUTO_WORK_BIN`,
     `ASD_AUTO_WORK_GRACE`.
+  - **Eager merge** (a switch per repository, off by default; `auto_work.py`).
+    `auto_work.py --eager-merge on --root R` (`off` turns it off; `--status` shows
+    it). It is its own switch, kept in the same file as automatic work, and works
+    with automatic work on or off. When it is on, a dossier is put on the open stub
+    through the merge queue (`merge_dossier.py ID --enqueue`, what the Merge button
+    does) as soon as it is finished: its build is done (`pr` or `done`), no run of it
+    is live (so its fix-deferred run is over) and no open deferred item is left
+    (dismissed, fixed and converted ones do not count; one the owner ruled to stay
+    open does not either). It needs an open pull request into an open stub. The
+    stub grows during the week, and Integrate has little left to merge before /stub.
+    A dossier with a `<repo>.<dossier>.merge.json` record (queued, running, waiting,
+    merged, failed or cancelled) is never put on again: a failed one waits for the
+    owner. Non-code PRs are not touched. Integrate only merges the dossiers that
+    still have an open PR into the stub, so it skips what is already merged. The
+    server sends a switched-on repository's facts on the 2-minute tick for either
+    switch. Off, nothing of this runs.
   - **One merge queue for both kinds of PR** (`merge_dossier.py`): a
     dossier's stack into its stub, and a plan or docs PR into development
     (`--enqueue-pr`). FIFO per repository, one worker. Each item goes through

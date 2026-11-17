@@ -18,7 +18,7 @@ import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPane
 import { blockedByOf, controlsFor, runTarget } from "../questions/controls.ts"
 import { readAccounts } from "../questions/accounts.ts"
 import { execFileSync } from "node:child_process"
-import { argvFor, autoWorkOn, buildFacts, markMerged, readAutoState, viewsFor } from "../questions/autowork.ts"
+import { argvFor, autoWorkOn, buildFacts, eagerMergeOn, factsOn, markMerged, readAutoState, viewsFor } from "../questions/autowork.ts"
 
 let failed = 0
 function check(name: string, ok: boolean, detail = ""): void {
@@ -988,6 +988,10 @@ try {
   check("auto work: off when the file is missing or the repo is not in it", !autoWorkOn("r", sw))
   writeFileSync(sw, JSON.stringify({ r: { enabled: true }, on: { auto_work: true, enabled: true } }))
   check("auto work: only auto_work turns it on (the scripted stub merge alone does not)", !autoWorkOn("r", sw) && autoWorkOn("on", sw))
+  writeFileSync(sw, JSON.stringify({ e: { eager_merge: true }, on: { auto_work: true, enabled: true }, off: { eager_merge: false } }))
+  check("eager merge: its own switch; it sends the repository's facts to the script with auto work off, and does not turn auto work on",
+    eagerMergeOn("e", sw) && !autoWorkOn("e", sw) && factsOn("e", sw) && factsOn("on", sw) && !eagerMergeOn("off", sw) && !factsOn("off", sw) && !factsOn("none", sw))
+  writeFileSync(sw, JSON.stringify({ r: { enabled: true }, on: { auto_work: true, enabled: true } }))
   const run = (repo: string, id: string, status: string, extra: any = {}) => ({ repo, root: "/x/" + repo, id, status, blockedBy: [], runner: null, deferred: { items: [] }, ...extra })
   const facts = buildFacts(
     [run("on", "A", "ready"), run("on", "B", "pr", { blockedBy: ["A"], runner: { state: "done", command: "work-on", pid: 7, started: "t" }, deferred: { items: [{ id: "D-1", state: "open", keptOpen: true }, { id: "D-2", state: "open" }] } }), run("off", "C", "ready")],
