@@ -24,7 +24,7 @@ the `queued` state, the account routing and every owner question apply unchanged
 2. The frontier is snapshotted once, at START: every dossier with status `ready` whose `blocked_by` are all `done`
    (to /work-on) and every `planned` one whose `blocked_by` are all `done` (to /plan, then /work-on once the plan made
    it ready). Dossiers already in flight are adopted too: status `building` or `review`, any dossier with a live run,
-   and a `pr` dossier with deferred items still open. Their live run is waited for, never started again, and they get
+   and a `pr` or `done` dossier with deferred items still open. Their live run is waited for, never started again, and they get
    Fix all deferred like any member, so integrate never runs past a build or a deferred fix that is still going. Only that snapshot is worked in the cycle; a dossier that becomes eligible later waits for the next START.
 3. Each member is started through `run_dossier.py` and followed to the end.
 4. A member whose build is finished (status `pr` or `done`) gets "Fix all deferred" exactly as the dashboard button
@@ -264,14 +264,14 @@ def start_integrate(root: str, branch: str) -> tuple[bool, str]:
 # ---------------------------------------------------------------- the decisions
 def in_flight(r: dict) -> bool:
     """A dossier already being worked when the cycle starts: building or in review, a live run of any kind, or a
-    finished build (`pr`) with deferred items still open. The cycle adopts it, so integrate waits for its run and its
+    finished build (`pr` or `done`) with deferred items still open. The cycle adopts it, so integrate waits for its run and its
     Fix all deferred instead of landing the stub without it."""
     status = r.get("status")
     if status in ("building", "review"):
         return True
     if ((r.get("runner") or {}).get("state") in LIVE) and status in STAGE_OF:
         return True
-    return status == "pr" and bool(open_items(r))
+    return status in ("pr", "done") and bool(open_items(r))
 
 
 def frontier(runs: list[dict]) -> list[dict]:
@@ -676,13 +676,14 @@ def selftest() -> int:
     # Adoption of dossiers already in flight (pure): the W-008 case, a /work-on in review when the cycle starts.
     item = lambda st_: {"id": "D-1", "state": st_}
     fr = lambda runs_: sorted(m["id"] for m in frontier(runs_))
-    check("in flight: review or building, a live run, and pr with an open deferred item are adopted; pr with none, done, dropped are not",
+    check("in flight: review or building, a live run, and pr or done with an open deferred item are adopted (W-008 read done with 8 open); pr or done with none, and dropped, are not",
           fr([{"id": "R", "status": "review", "runner": {"state": "running", "command": "work-on"}},
               {"id": "B", "status": "building"},
               {"id": "L", "status": "done", "runner": {"state": "running", "command": "fix-deferred"}},
               {"id": "P", "status": "pr", "deferred": [item("open")]},
               {"id": "K", "status": "pr", "deferred": [dict(item("open"), keptOpen=True), item("fixed")]},
-              {"id": "Q", "status": "pr"}, {"id": "X", "status": "done", "deferred": [item("open")]}, {"id": "Z", "status": "dropped"}]) == ["B", "L", "P", "R"])
+              {"id": "Q", "status": "pr"}, {"id": "X", "status": "done", "deferred": [item("open")]}, {"id": "Y", "status": "done", "deferred": [item("fixed")]},
+              {"id": "Z", "status": "dropped"}]) == ["B", "L", "P", "R", "X"])
     m_ = {"id": "R", "stage": "build", "state": "pending", "error": "", "launch": None, "lag": 0, "asked": None, "accepted": False, "rounds": 0, "retried": False}
     st0 = {"root": "/nonexistent", "repo": "x", "members": [m_], "paused": None}
     step_member(st0, m_, {"id": "R", "status": "review", "runner": {"state": "running", "command": "work-on"}})
