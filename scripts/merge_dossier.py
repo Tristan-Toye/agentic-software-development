@@ -39,6 +39,7 @@ import sys
 import contextlib
 import io
 import tempfile
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1081,10 +1082,11 @@ def work_batch(root: str, nums: list[int]) -> list[int]:
 # dossier's PR merged, because its head is in the base. A dossier with a stack of PRs, one that already spent a
 # /resolve-merge attempt, one that conflicts with the batch so far, or one with a live run goes one at a time through
 # work_one. Every eligible dossier waiting goes into one batch. A batch that stays red after the one rerun wakes no agent:
-# it is closed and bisected (bisect_batch): the first half is tested on the stub head and lands when green, the rest goes on
-# against the new stub head, so no two halves ever land without a green run that holds both; a red half of one goes through
-# work_one, where the rerun and /resolve-merge logic and the blame are clear. A conflict is found locally, on the batch
-# branch, so it never costs a CI run. A worker that restarts mid-batch finishes a batch that merged and closes one that did
+# it is closed and bisected (bisect_batch): both halves are opened at once, each cut from the stub head on its own, never
+# stacked, at most two batch PRs open at once. At most one half lands per round on a green that did not hold the other: the
+# other is split on against the new stub head, or (both green) opened again from it and tested before it lands. A red half
+# of one goes through work_one, where the rerun and /resolve-merge logic and the blame are clear. A conflict is found
+# locally, on the batch branch, so it never costs a CI run. A worker that restarts mid-batch finishes a batch that merged and closes one that did
 # not (recover_batches), so a second PR never opens beside the first. ASD_MERGE_BATCH=0 turns every batching off,
 # ASD_MERGE_BATCH_CODE=0 only this one; ASD_MERGE_BATCH_MAX (default 16) is a safety cap on the members.
 CODE_BATCH_PREFIX = "queue-batch-"
@@ -1141,95 +1143,232 @@ def record_code_merged(root: str, repo: str, d: str, chain: list[dict], base: st
     set_state(key, state="merged", pid=None, note=f"merged through batch #{num}; /after-merge runs")
 
 
-def try_batch(root: str, repo: str, base: str, cands: list[dict], done: list[str]) -> str:
-    """One batch PR for the candidates, cut from the stub head as it is now: "landed" (merged, members recorded in `done`),
-    "red" (checks red after the one rerun: closed, nothing merged) or "unusual" (anything else: closed, nothing merged)."""
-    git(root, "fetch", "-q", "origin", base)
-    branch, members = push_batch(root, base, cands)
-    if not branch:
+BATCH_OPEN_MAX = 2   # batch PRs open at once per stub: a red batch is tested as two halves, side by side, and no more
+
+
+class BatchRound:
+    """What the batches of one bisect round share (one worker, one stub). `gen` counts the landings: a batch that was cut
+    before another landed was never tested with it, so it is tested again instead of landing on its old result."""
+
+    def __init__(self, root: str, repo: str, base: str, done: list[str]):
+        self.root, self.repo, self.base, self.done = root, repo, base, done
+        self.land_lock = threading.Lock()   # one landing at a time
+        self.git_lock = threading.Lock()    # one batch branch built and pushed at a time
+        self.pair_lock = threading.Lock()   # two slots are taken together, so two pairs never hold one each
+        self.slots = threading.Semaphore(BATCH_OPEN_MAX)
+        self.gen = 0
+
+
+class OpenBatch:
+    """One open batch PR: its members, the number of landings it was cut after, and the slot it holds."""
+
+    def __init__(self, rnd: BatchRound, num: int, branch: str, members: list[dict], gen: int):
+        self.rnd, self.num, self.branch, self.members, self.gen = rnd, num, branch, members, gen
+        self.has_slot = True
+
+    def release(self) -> None:
+        if self.has_slot:
+            self.has_slot = False
+            self.rnd.slots.release()
+
+    def state_all(self, **kw) -> None:
+        for m in self.members:   # what a restarted worker reads to finish or clean up this batch (recover_batches)
+            set_state(f"{self.rnd.repo}.{m['dossier']}", **{"code_batch": True, "prs": [m["p"]["number"]], "batch_chain": m["chain"], "base": self.rnd.base, **kw})
+
+    def note(self, state: str, text: str) -> None:
+        self.state_all(state=state, batch=self.num, error="", pid=os.getpid(), note=f"in batch #{self.num}: {text}")
+
+
+def run_parallel(fns: list) -> None:
+    """Run the functions at once and wait for all; the first exception any raised is raised here."""
+    errs: list[BaseException] = []
+    def wrap(fn):
+        try:
+            fn()
+        except BaseException as e:   # noqa: BLE001 - handed to the caller below
+            errs.append(e)
+    ts = [threading.Thread(target=wrap, args=(fn,)) for fn in fns]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    if errs:
+        raise errs[0]
+
+
+def open_batch(rnd: BatchRound, cands: list[dict], held: bool = False) -> OpenBatch | None:
+    """One batch PR for the candidates, cut from the stub head as it is now. `held`: the caller took the slot already.
+    None when it cannot be opened (the slot is given back)."""
+    if not held:
+        rnd.slots.acquire()
+    b: OpenBatch | None = None
+    try:
+        with rnd.git_lock:
+            gen = rnd.gen
+            git(rnd.root, "fetch", "-q", "origin", rnd.base)
+            branch, members = push_batch(rnd.root, rnd.base, cands)
+            if not branch:
+                return None
+            label = ", ".join(f"#{m['p']['number']}" for m in members)
+            rc, out = gh(rnd.root, "pr", "create", "--base", rnd.base, "--head", branch, "--title", f"dossiers: batch of {label}",
+                         "--body", f"The merge queue checks and merges {label} together, in one CI run. Each of them reads as merged once this lands.")
+            mt = re.search(r"/pull/(\d+)", out) if rc == 0 else None
+            if not mt:   # the worker was interrupted after opening it: carry on with the same PR
+                rc, out = gh(rnd.root, "pr", "view", branch, "--json", "number", "-q", r'"/pull/\(.number)"')
+                mt = re.search(r"/pull/(\d+)", out) if rc == 0 else None
+            if not mt:
+                git(rnd.root, "push", "-q", "origin", "--delete", branch)
+                return None
+            b = OpenBatch(rnd, int(mt.group(1)), branch, members, gen)
+        b.note("batching", "waiting for its checks")
+        return b
+    finally:
+        if b is None:
+            rnd.slots.release()
+
+
+def close_batch(b: OpenBatch, why: str) -> None:
+    """Close the batch PR and its branch: its members are queued again, nothing of it is merged."""
+    gh(b.rnd.root, "pr", "close", str(b.num), "--delete-branch", "--comment", f"Back to one at a time: {why}")
+    b.state_all(state="queued", batch=None, code_batch=None, pid=None, note=f"batch #{b.num} did not land ({why}); split or one at a time now")
+    b.release()
+
+
+def members_moved(b: OpenBatch) -> list[int]:
+    return [m["p"]["number"] for m in b.members if head_of(b.rnd.root, m["p"]["number"]) not in ("", m["sha"])]
+
+
+def check_batch(rnd: BatchRound, b: OpenBatch) -> str:
+    """Wait for the batch's checks (one rerun of a red one, update-behind, no agent): "green" (still open, not merged),
+    "red" or "unusual" (closed, nothing merged)."""
+    row = {"number": b.num, "headRefName": b.branch, "baseRefName": rnd.base}
+    why = settle(rnd.root, f"{rnd.repo}.pr-{b.num}", f"PR-{b.num}", [row], rnd.base, [], b.note, use_agent=False)
+    if why:
+        close_batch(b, why)
+        return "red" if why.startswith("checks red") else "unusual"
+    moved = members_moved(b)
+    if moved:   # pushed to while the batch ran: that push is not in it
+        close_batch(b, "the branch of " + ", ".join(f"#{n}" for n in moved) + " changed during the batch")
         return "unusual"
-    label = ", ".join(f"#{m['p']['number']}" for m in members)
-    rc, out = gh(root, "pr", "create", "--base", base, "--head", branch, "--title", f"dossiers: batch of {label}",
-                 "--body", f"The merge queue checks and merges {label} together, in one CI run. Each of them reads as merged once this lands.")
-    mt = re.search(r"/pull/(\d+)", out) if rc == 0 else None
-    if not mt:   # the worker was interrupted after opening it: carry on with the same PR
-        rc, out = gh(root, "pr", "view", branch, "--json", "number", "-q", r'"/pull/\(.number)"')
-        mt = re.search(r"/pull/(\d+)", out) if rc == 0 else None
-    if not mt:
-        git(root, "push", "-q", "origin", "--delete", branch)
-        return "unusual"
-    num = int(mt.group(1))
-    def state_all(**kw):
-        for m in members:   # what a restarted worker reads to finish or clean up this batch (recover_batches)
-            set_state(f"{repo}.{m['dossier']}", **{"code_batch": True, "prs": [m["p"]["number"]], "batch_chain": m["chain"], "base": base, **kw})
-    def note(state, text):
-        state_all(state=state, batch=num, error="", pid=os.getpid(), note=f"in batch #{num}: {text}")
-    def give_up(why: str, outcome: str) -> str:
-        gh(root, "pr", "close", str(num), "--delete-branch", "--comment", f"Back to one at a time: {why}")
-        state_all(state="queued", batch=None, code_batch=None, pid=None, note=f"batch #{num} did not land ({why}); split or one at a time now")
-        return outcome
-    note("batching", "waiting for its checks")
-    row = {"number": num, "headRefName": branch, "baseRefName": base}
-    out = ""
-    for _ in range(3):
-        why = settle(root, f"{repo}.pr-{num}", f"PR-{num}", [row], base, [], note, use_agent=False)   # no agent for a batch
-        if why:
-            return give_up(why, "red" if why.startswith("checks red") else "unusual")
-        moved = [m["p"]["number"] for m in members if head_of(root, m["p"]["number"]) not in ("", m["sha"])]
-        if moved:   # pushed to while the batch ran: that push is not in it
-            return give_up("the branch of " + ", ".join(f"#{n}" for n in moved) + " changed during the batch", "unusual")
-        rc, out = gh(root, "pr", "merge", str(num), "--merge", "--delete-branch", timeout=300)
-        if not (rc != 0 and "not up to date" in out):
-            break   # (up to date again, then checked again, when the stub moved meanwhile)
-    rc2, st = gh(root, "pr", "view", str(num), "--json", "state", "-q", ".state")
-    if st.strip() != "MERGED":
-        return give_up(out[-200:] if rc != 0 else f"not merged afterwards ({st.strip()})", "unusual")
+    return "green"
+
+
+def land_batch(rnd: BatchRound, b: OpenBatch) -> str:
+    """Merge a green batch: "landed" (members recorded in `rnd.done`), "unusual" (closed, nothing merged) or "stale"
+    (closed: another batch landed after this one was cut, so its green run never held that; the caller tests it again)."""
+    with rnd.land_lock:
+        if b.gen != rnd.gen:
+            close_batch(b, f"the stub moved on while it was checked (another batch landed); checked again on the new head")
+            return "stale"
+        moved = members_moved(b)
+        if moved:
+            close_batch(b, "the branch of " + ", ".join(f"#{n}" for n in moved) + " changed during the batch")
+            return "unusual"
+        row = {"number": b.num, "headRefName": b.branch, "baseRefName": rnd.base}
+        rc, out = 0, ""
+        for _ in range(3):
+            rc, out = gh(rnd.root, "pr", "merge", str(b.num), "--merge", "--delete-branch", timeout=300)
+            if not (rc != 0 and "not up to date" in out):
+                break   # (up to date again, then checked again, when the stub moved meanwhile)
+            why = settle(rnd.root, f"{rnd.repo}.pr-{b.num}", f"PR-{b.num}", [row], rnd.base, [], b.note, use_agent=False)
+            if why:
+                close_batch(b, why)
+                return "unusual"
+        rc2, st = gh(rnd.root, "pr", "view", str(b.num), "--json", "state", "-q", ".state")
+        if st.strip() != "MERGED":
+            close_batch(b, out[-200:] if rc != 0 else f"not merged afterwards ({st.strip()})")
+            return "unusual"
+        rnd.gen += 1
+        b.release()
     # GitHub marks a member's PR merged by itself, a moment later (its head is in the base); one it does not is closed saying where its work went.
-    for m in members:
+    for m in b.members:
         d, n = m["dossier"], m["p"]["number"]
         state = ""
         for _ in range(int(os.environ.get("ASD_MERGE_MERGEABLE_TRIES") or 12)):
-            _, state = gh(root, "pr", "view", str(n), "--json", "state", "-q", ".state")
+            _, state = gh(rnd.root, "pr", "view", str(n), "--json", "state", "-q", ".state")
             if state.strip() == "MERGED":
                 break
             time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15) / 3)
         if state.strip() != "MERGED":
-            if head_of(root, n) not in ("", m["sha"]):
-                set_state(f"{repo}.{d}", state="failed", pid=None, error=f"its branch changed while batch #{num} ran; the new commits are not merged")
-                done.append(d)
+            if head_of(rnd.root, n) not in ("", m["sha"]):
+                set_state(f"{rnd.repo}.{d}", state="failed", pid=None, error=f"its branch changed while batch #{b.num} ran; the new commits are not merged")
+                rnd.done.append(d)
                 continue
-            gh(root, "pr", "close", str(n), "--comment", f"Merged into {base} through #{num}.")
-        done.append(d)
-        record_code_merged(root, repo, d, m["chain"], base, num)
+            gh(rnd.root, "pr", "close", str(n), "--comment", f"Merged into {rnd.base} through #{b.num}.")
+        rnd.done.append(d)
+        record_code_merged(rnd.root, rnd.repo, d, m["chain"], rnd.base, b.num)
     return "landed"
 
 
-def bisect_batch(root: str, repo: str, base: str, cands: list[dict], done: list[str], known_red: bool) -> None:
-    """Land as many of the candidates as green batches allow; the rest stays queued for work_one. Every batch that lands
-    was green on the stub head it landed on, with exactly the members it holds.
-    `cands` all red as one batch (`known_red`) or not tested yet. A red batch is split in two halves, in queue order:
-    the first half is tested on the stub head; the second half would be tested on top of the first, and that is the red
-    batch itself, so it is not run again. Two halves tested side by side on the same old stub could both pass and land
-    a red stub, when only the two together break (A in one, B in the other).
-      first half green -> it lands; the second half goes on against the new stub head, still red as a whole
-      first half red   -> split that one the same way; the second half is tested afresh on whatever stub results
-    A half of one member is no batch: it goes through work_one (rerun, /resolve-merge, clear blame)."""
+def run_batch(rnd: BatchRound, cands: list[dict], b: OpenBatch | None = None) -> str:
+    """Test and land one batch: "landed", "red" or "unusual". `b`: one already open and green. A batch that went stale
+    (another landed first) is opened again from the new stub head and checked again before it lands."""
+    while True:
+        if b is None:
+            b = open_batch(rnd, cands)
+            if b is None:
+                return "unusual"
+            r = check_batch(rnd, b)
+            if r != "green":
+                return r
+        r = land_batch(rnd, b)
+        if r != "stale":
+            return r
+        b = None
+
+
+def bisect_batch(rnd: BatchRound, cands: list[dict], known_red: bool) -> None:
+    """Land as many of the candidates as green batches allow; the rest stays queued for work_one. A batch that lands was
+    green on the stub head it landed on, with exactly the members it holds.
+    `cands` are red as one batch (`known_red`) or not tested yet. A red batch is split in two halves, in queue order, and
+    both are opened at once, each cut from the CURRENT stub head on its own (not stacked), at most BATCH_OPEN_MAX PRs open:
+      first green, second red  -> the first lands; the second is split on against the new stub head
+      first red, second green  -> the second lands; the first is split on against the new stub head
+      both red                 -> both are split on, at once
+      both green               -> the first lands; the second was not tested with it (they may break only together, A in one
+                                  and B in the other), so it is opened again from the new head and tested before it lands
+    At most one half lands per round on a green that did not hold the other. A half of one member is no batch: it goes
+    through work_one (rerun, /resolve-merge, clear blame). A batch left over from a landing elsewhere is tested again."""
     if len(cands) < 2:
         return
-    if not known_red:
-        r = try_batch(root, repo, base, cands, done)
-        if r != "red":
-            return   # landed, or unusual: the rest goes one at a time
+    if not known_red and run_batch(rnd, cands) != "red":
+        return   # landed, or unusual: whatever is left goes one at a time
     mid = len(cands) // 2
-    first, second = cands[:mid], cands[mid:]
-    r1 = try_batch(root, repo, base, first, done) if len(first) > 1 else "single"
-    if r1 == "landed":
-        bisect_batch(root, repo, base, second, done, True)
-    elif r1 == "red":
-        bisect_batch(root, repo, base, first, done, True)
-        bisect_batch(root, repo, base, second, done, False)
-    elif r1 == "single":
-        bisect_batch(root, repo, base, second, done, False)
+    halves = [h for h in (cands[:mid], cands[mid:]) if len(h) > 1]
+    if len(halves) < 2:
+        if halves:   # the other half is one member, for work_one
+            bisect_batch(rnd, halves[0], False)
+        return
+    with rnd.pair_lock:   # both slots at once
+        rnd.slots.acquire()
+        rnd.slots.acquire()
+    res: dict[int, str] = {}
+    held: dict[int, OpenBatch] = {}
+    def probe(i: int, half: list[dict]) -> None:
+        b = open_batch(rnd, half, held=True)
+        if b is None:
+            res[i] = "unusual"
+            return
+        try:
+            res[i] = check_batch(rnd, b)
+        except BaseException:
+            close_batch(b, "the merge queue hit an error")
+            raise
+        if res[i] == "green":
+            held[i] = b
+    run_parallel([lambda: probe(0, halves[0]), lambda: probe(1, halves[1])])
+    def land_half(i: int) -> None:   # a green half; run_batch tests it again first if a sibling landed meanwhile
+        if run_batch(rnd, halves[i], held[i]) == "red":
+            bisect_batch(rnd, halves[i], True)
+    greens = [i for i in (0, 1) if res.get(i) == "green"]
+    reds = [i for i in (0, 1) if res.get(i) == "red"]
+    for i in greens:
+        land_half(i)   # (the second of two greens is stale after the first: it is tested again)
+    if greens:
+        for i in reds:
+            bisect_batch(rnd, halves[i], True)
+    else:
+        run_parallel([lambda i=i: bisect_batch(rnd, halves[i], True) for i in reds])
 
 
 def work_code_batch(root: str, ids: list[str], single: set, done: list[str]) -> None:
@@ -1260,7 +1399,7 @@ def work_code_batch(root: str, ids: list[str], single: set, done: list[str]) -> 
             continue
         git(root, "fetch", "-q", "origin", m["p"]["headRefName"])
         kept.append(m)
-    bisect_batch(root, repo, base, kept, done, False)
+    bisect_batch(BatchRound(root, repo, base, done), kept, False)
 
 
 def recover_batches(root: str) -> list[str]:
@@ -1581,9 +1720,11 @@ def fail(state_path: str, nums: list[int], base: str, why: str) -> int:
 # ---------------------------------------------------------------- selftest
 
 FAKE_GH = r'''
-import json, os, sys
+import fcntl, json, os, sys, time
 d = os.environ["FAKE_GH_DIR"]
 a = sys.argv[1:]
+if os.environ.get("FAKE_CHECKS_SLOW") and a[:2] == ["pr", "checks"]: time.sleep(float(os.environ["FAKE_CHECKS_SLOW"]))   # a CI run that takes a while: batches overlap
+_lk = open(os.path.join(d, "lock"), "w"); fcntl.flock(_lk, fcntl.LOCK_EX)   # concurrent calls (halves checked at once) one at a time
 open(os.path.join(d, "calls.txt"), "a").write(" ".join(a) + "\n")
 prs = json.load(open(os.path.join(d, "prs.json")))
 if a[:2] == ["pr", "list"]:
@@ -1601,9 +1742,10 @@ if a[:2] == ["pr", "create"] and a[a.index("--head") + 1].startswith(("plan/queu
 if a[:2] == ["pr", "create"] and a[a.index("--head") + 1].startswith(("plan/queue-batch-", "queue-batch-")):
     hd = a[a.index("--head") + 1]; nb = 901 + len([p for p in prs if p["headRefName"].startswith(("plan/queue-batch-", "queue-batch-"))])
     bad = os.environ.get("FAKE_BAD_PR"); lo, hi = (hd.split("batch-")[1].split("-") + ["0"])[:2]
-    red = bool(bad) and hd.startswith("queue-batch-") and int(lo) <= int(bad) <= int(hi)
-    pair = os.environ.get("FAKE_PAIR_BAD")   # red only when both are in the batch: each alone is green
-    if pair and hd.startswith("queue-batch-") and all(int(lo) <= int(x) <= int(hi) for x in pair.split(",")): red = True
+    red = bool(bad) and hd.startswith("queue-batch-") and any(int(lo) <= int(x) <= int(hi) for x in bad.split(","))
+    pair = os.environ.get("FAKE_PAIR_BAD")   # red only when both are in the batch or already in the stub it is cut from: each alone is green
+    landed = open(os.path.join(d, "landed.txt")).read().split() if os.path.exists(os.path.join(d, "landed.txt")) else []
+    if pair and hd.startswith("queue-batch-") and all(int(lo) <= int(x) <= int(hi) or x in landed for x in pair.split(",")): red = True
     prs.append({"number": nb, "headRefName": hd, "baseRefName": a[a.index("--base") + 1], "isDraft": False, "title": "b", "url": "u", "bucket": "fail" if red else os.environ.get("FAKE_BATCH_BUCKET", "pass")})
     json.dump(prs, open(os.path.join(d, "prs.json"), "w")); print("https://github.com/o/r/pull/" + str(nb)); sys.exit(0)
 if a[:2] == ["pr", "close"]:
@@ -1622,13 +1764,13 @@ if a[:2] in (["stack", "merge"], ["pr", "merge"]):
     if a[0] == "pr" and next((p for p in prs if str(p["number"]) == a[2]), {}).get("mss") == "BEHIND": print("the head branch is not up to date with the base branch"); sys.exit(1)
     nums = open(os.path.join(d, "linked.txt")).read().split() if a[0] == "stack" else [a[2]]
     for p in prs:
-        if str(p["number"]) in nums: p["state"] = "MERGED"
+        if str(p["number"]) in nums: p["state"] = "MERGED"; open(os.path.join(d, "landed.txt"), "a").write(str(p["number"]) + " ")
     open(os.path.join(d, "merged_any.txt"), "w").write("1")
     bp = next((p for p in prs if a[0] == "pr" and str(p["number"]) == a[2] and p["headRefName"].startswith(("plan/queue-batch-", "queue-batch-"))), None)
     if bp and bp["headRefName"].startswith("queue-batch-") and os.environ.get("FAKE_NO_AUTOMARK") != "1":
         lo, hi = bp["headRefName"].split("batch-")[1].split("-")
         for p in prs:
-            if p.get("inbatch") and int(lo) <= p["number"] <= int(hi) and p.get("state", "OPEN") == "OPEN": p["state"] = "MERGED"
+            if p.get("inbatch") and int(lo) <= p["number"] <= int(hi) and p.get("state", "OPEN") == "OPEN": p["state"] = "MERGED"; open(os.path.join(d, "landed.txt"), "a").write(str(p["number"]) + " ")
     if a[0] == "pr" and a[2] == "901" and os.environ.get("FAKE_NO_AUTOMARK") != "1":
         for p in prs:
             if p["headRefName"].startswith(("plan/", "docs/")) and p.get("state", "OPEN") == "OPEN": p["state"] = "MERGED"
@@ -2243,7 +2385,7 @@ print("started")
                 g("add", "-A", cwd=pusher); g("commit", "-q", "-m", br, cwd=pusher); g("push", "-q", "--force", "origin", br, cwd=pusher)
                 rows.append(dict(P(n, br, stub), mss="CLEAN", inbatch=f not in used)); used.append(f)
             g("fetch", "-q", "origin", cwd=clone)
-            for f in ("calls.txt", "runs.txt", "stubpr.txt", "head.txt", "merged_any.txt"):
+            for f in ("calls.txt", "runs.txt", "stubpr.txt", "head.txt", "merged_any.txt", "landed.txt"):
                 if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
             json.dump(rows, open(os.path.join(fdir, "prs.json"), "w"))
             rn_ = repo_name(clone)
@@ -2300,21 +2442,42 @@ print("started")
         def runs_of() -> list[str]:
             return open(os.path.join(fdir, "runs.txt")).read().split("\n") if os.path.exists(os.path.join(fdir, "runs.txt")) else []
         four = lambda n0: [(f"W-{n0 + i}", n0 + i, "abcd"[i] + ".txt") for i in range(4)]
+        def bpr() -> list[tuple[str, str]]:   # every batch PR the fake gh saw, in the order opened: (branch, final state)
+            return [(p["headRefName"][len("queue-batch-"):], p.get("state", "OPEN")) for p in sorted(json.load(open(os.path.join(fdir, "prs.json"))), key=lambda p: p["number"]) if p["headRefName"].startswith("queue-batch-")]
+        def peak_open(cc: str) -> int:   # most batch PRs open at once, from the order of the calls
+            live: set[str] = set(); top = 0; k = 0
+            for l in cc.splitlines():
+                if l.startswith("pr create") and "--head queue-batch-" in l:
+                    k += 1; live.add(str(900 + k)); top = max(top, len(live))
+                elif l.startswith(("pr close ", "pr merge ")):
+                    live.discard(l.split()[2])
+            return top
+        def all_merged(ss: dict) -> bool:
+            return all(v.get("state") == "merged" for v in ss.values()) and all(f"{d} after-merge" in runs_of() for d in ss)
         ss, cc, _ = code_scenario("b", four(701), FAKE_BAD_PR="703")
-        check("code batch: red bisects; the first half is tested alone and lands, the half with the bad one is not batched again, its members go one at a time, no agent woken",
-              cc.count("pr create") == 2 and "--head queue-batch-701-704" in cc and "--head queue-batch-701-702" in cc and cc.count("pr close 901") == 1
-              and "pr merge 701" not in cc and "pr merge 702" not in cc and "pr merge 703 --merge" in cc and "pr merge 704 --merge" in cc
-              and all(v.get("state") == "merged" for v in ss.values()) and not any("resolve-merge" in r for r in runs_of())
-              and all(f"{d} after-merge" in runs_of() for d in ss), cc + str(ss) + str(runs_of()))
+        check("bisect: first half green, second red: both halves opened at once off the stub head, the first lands, the second (two members) is split on and goes one at a time; no agent woken",
+              sorted(bpr()) == [("701-702", "MERGED"), ("701-704", "CLOSED"), ("703-704", "CLOSED")] and cc.count("pr create") == 3
+              and "pr merge 703 --merge" in cc and "pr merge 704 --merge" in cc and "pr merge 701" not in cc and "pr merge 702" not in cc
+              and not any("resolve-merge" in r for r in runs_of()) and all_merged(ss), cc + str(ss) + str(bpr()))
         ss, cc, _ = code_scenario("e", four(721), FAKE_BAD_PR="721")
-        check("code batch: a red first half is split on, and the second half is tested afresh on the stub that results, then lands as a batch",
-              "--head queue-batch-721-722" in cc and "--head queue-batch-723-724" in cc and cc.count("pr create") == 3 and "pr merge 721 --merge" in cc and "pr merge 722 --merge" in cc
-              and "pr merge 723" not in cc and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss))
-        ss, cc, _ = code_scenario("x", four(711), FAKE_PAIR_BAD="711,713")
-        made = sorted(l.split("--head ")[1].split()[0] for l in cc.splitlines() if l.startswith("pr create") and "--head queue-batch-" in l)
-        check("code batch: two that break only together (A in the first half, B in the second) are never landed by two green runs that never held both: only the first half batches, A lands, B goes one at a time",
-              made == ["queue-batch-711-712", "queue-batch-711-714"] and "pr merge 713 --merge" in cc and "pr merge 714 --merge" in cc and "pr merge 712" not in cc
-              and cc.count("pr close 901") == 1 and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss) + str(made))
+        check("bisect: first half red, second green: the second lands, the first is split on against the new stub head",
+              sorted(bpr()) == [("721-722", "CLOSED"), ("721-724", "CLOSED"), ("723-724", "MERGED")] and cc.count("pr create") == 3
+              and "pr merge 721 --merge" in cc and "pr merge 722 --merge" in cc and "pr merge 723" not in cc and all_merged(ss), cc + str(ss) + str(bpr()))
+        ss, cc, _ = code_scenario("d", four(731), FAKE_BAD_PR="731,733")
+        check("bisect: both halves red: neither lands, both are split on, every member goes one at a time",
+              sorted(bpr()) == [("731-732", "CLOSED"), ("731-734", "CLOSED"), ("733-734", "CLOSED")] and "pr merge 901" not in cc and "pr merge 902" not in cc and "pr merge 903" not in cc
+              and all(f"pr merge {n} --merge" in cc for n in range(731, 735)) and all_merged(ss), cc + str(ss) + str(bpr()))
+        ss, cc, _ = code_scenario("x", four(741), FAKE_PAIR_BAD="741,743")
+        evs = [l for l in cc.splitlines() if l.startswith(("pr create", "pr merge 90"))]
+        check("bisect: A in the first half and B in the second, red only together: the halves are green alone and never both land; the first lands, the second is tested again on the new head, is red, and goes one at a time",
+              [b for b in bpr() if b[1] == "MERGED"] == [("741-742", "MERGED")] and sorted(bpr()) == [("741-742", "MERGED"), ("741-744", "CLOSED"), ("743-744", "CLOSED"), ("743-744", "CLOSED")]
+              and "pr merge 743 --merge" in cc and "pr merge 744 --merge" in cc and all_merged(ss)
+              and any("queue-batch-743-744" in l for l in evs[evs.index(next(l for l in evs if l.startswith("pr merge 90"))):]), cc + str(ss) + str(bpr()))
+        check("bisect: a green half whose sibling landed first is not landed on its old result: it is closed saying the stub moved, then opened again",
+              "the stub moved on" in cc and cc.count("--head queue-batch-743-744") == 2, cc)
+        ss, cc, _ = code_scenario("k", [(f"W-{751 + i}", 751 + i, "abcdefgh"[i] + ".txt") for i in range(8)], FAKE_BAD_PR="751,755", FAKE_CHECKS_SLOW="0.3")
+        check("bisect: no more than two batch PRs are ever open at once, though two red halves each want to split into two (and two do run at once)",
+              peak_open(cc) == 2 and all_merged(ss) and ("753-754", "MERGED") in bpr() and ("757-758", "MERGED") in bpr(), str(peak_open(cc)) + cc + str(bpr()))
         def stale_merged(rn_):   # the worker died after the batch merged: its members read MERGED, their merge.json says batching
             json.dump([dict(P(901, "queue-batch-801-802", "stub/2026-11-10"), state="MERGED"), dict(P(801, "feat/W-801-x", "stub/2026-11-10"), state="MERGED", inbatch=True),
                        dict(P(802, "feat/W-802-x", "stub/2026-11-10"), state="MERGED", inbatch=True)], open(os.path.join(fdir, "prs.json"), "w"))
@@ -2335,6 +2498,16 @@ print("started")
         ss, cc, _ = code_scenario("t", [("W-811", 811, "a.txt"), ("W-812", 812, "b.txt")], seed=stale_open)
         check("restart: a batch PR left open by a dead worker is closed first, then one fresh batch merges the members",
               "pr close 901" in cc and cc.count("pr create") == 1 and cc.index("pr close 901") < cc.index("pr create") and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss))
+        def stale_open2(rn_):   # the worker died with both halves of a batch open: both are closed, no second pair opens beside them
+            rows_ = json.load(open(os.path.join(fdir, "prs.json")))
+            rows_ += [P(901, "queue-batch-821-822", "stub/2026-11-10"), P(902, "queue-batch-823-824", "stub/2026-11-10")]
+            json.dump(rows_, open(os.path.join(fdir, "prs.json"), "w"))
+            for d, n, b_ in (("W-821", 821, 901), ("W-822", 822, 901), ("W-823", 823, 902), ("W-824", 824, 902)):
+                set_state(f"{rn_}.{d}", state="batching", batch=b_, code_batch=True, prs=[n], base="stub/2026-11-10", batch_chain=[P(n, f"feat/{d}-x", "stub/2026-11-10")])
+        ss, cc, _ = code_scenario("u", four(821), seed=stale_open2)
+        check("restart: two batch PRs left open (a pair of halves) are both closed before anything opens; then one fresh batch merges the members",
+              "pr close 901" in cc and "pr close 902" in cc and cc.count("pr create") == 1 and cc.index("pr close 901") < cc.index("pr create") and cc.index("pr close 902") < cc.index("pr create")
+              and all(v.get("state") == "merged" for v in ss.values()), cc + str(ss))
         check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged", str(read_json(os.path.join(rdir, "repo.W-128.merge.json"), {})) + str(read_json(os.path.join(rdir, "repo.W-130.merge.json"), {})))
         RUNNER = saved
     leaked = {d: sorted(now_ - before_real[d]) for d, now_ in listing().items() if now_ - before_real[d]}
