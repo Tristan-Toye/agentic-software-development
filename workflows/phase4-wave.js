@@ -91,9 +91,12 @@ const slug = (value) => String(value).replace(/[^\w.-]+/g, '_')
 // reports there is none (`GAP: none`, any case, trailing punctuation) is no gap. The same rule as `gatedKind` in
 // shared/claude/progress.ts (the SubagentStop status); workflow scripts cannot import, so workflows.test.ts checks both.
 const GATED_RE = /^\s*(?:[-*>]\s*)?(GAP|CONTRACT-CHANGE)\s*:\s*(.*)$/
+// `none` alone, or `none` then punctuation and any free text (`GAP: none. Every criterion has a test.`); `none of the
+// members ...` and `nonexistent ...` are real gaps.
+const NONE_RE = /^none\s*(?:[^\w\s].*)?$/i
 const gatedKind = (line) => {
   const m = GATED_RE.exec(String(line))
-  if (!m || /^none\W*$/i.test(m[2].trim())) return ''
+  if (!m || NONE_RE.test(m[2].trim())) return ''
   return m[1] === 'GAP' ? 'gap' : 'contract-change'
 }
 const NOTED_LINE = /^\s*(?:[-*>]\s*)?(?:NOTICED|TOUCHED_BEYOND)\b/

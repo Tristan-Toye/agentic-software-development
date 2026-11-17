@@ -714,8 +714,10 @@ def git_show(root: str, commit: str, path: str) -> str | None:
 
 
 def contract_blocks(lines: list[str]) -> list[tuple[str, int, int]]:
-    """(path, first body line, closing fence line) of each `### <path>` code
-    block under `## Contract`; `### Definitions` is skipped."""
+    """(path, first body line, closing fence line) of each `### <path>` (or
+    `### New: `<path>``) code block under `## Contract`; `### Definitions` is
+    skipped, and so is a `### Changed: `<path>`` section with no code block
+    (a prose change)."""
     hs = headings(lines)
     n = next((k for k, (_, lv, t) in enumerate(hs) if lv == 2 and t.strip("`").lower() == "contract"), None)
     if n is None:
@@ -728,10 +730,17 @@ def contract_blocks(lines: list[str]) -> list[tuple[str, int, int]]:
             break
         if lv != 3 or title.strip("`").lower().startswith("definitions"):
             continue
-        parts = title.strip().strip("`").split()
-        path = parts[0].strip("`") if parts else ""
+        prefixed = re.match(r"(?i)(new|changed)\s*:\s*", title.strip())
+        quoted = re.search(r"`([^`]+)`", title)
+        if prefixed and quoted:
+            path = quoted.group(1).strip()
+        else:
+            parts = title.strip().strip("`").split()
+            path = parts[0].strip("`") if parts else ""
         nxt = min(hs[k + 1][0] if k + 1 < len(hs) else len(lines), end)
         open_i = next((j for j in range(i + 1, nxt) if lines[j].strip().startswith("```")), None)
+        if open_i is None and prefixed and prefixed.group(1).lower() == "changed":
+            continue  # a prose change: nothing to rebuild, left as written
         if open_i is None:
             raise Refused(f"`### {title}` has no code block to rebuild")
         close_i = next((j for j in range(open_i + 1, end) if lines[j].strip().startswith("```")), None)
@@ -1167,6 +1176,12 @@ def selftest() -> int:
                 fh.write(body)
         new, notes, problems = sync_contract(DOS, td)
         check("sync-contract rebuilds all three blocks and verifies clean", len(notes) == 3 and problems == [])
+        MIXED = ("## Contract\n\n### New: `src/lib.rs`\n\n```rust\nstale\n```\n\n"
+                 "### Changed: `src/Existing.cs`\n\nThe `Run` method now takes a token.\n\n## Build log\n\n- x\n")
+        mnew, mnotes, mprob = sync_contract(MIXED, td)
+        check("sync-contract: `### New: `path`` takes the path, `### Changed: `path`` prose is left as written",
+              mnotes == ["rebuilt `src/lib.rs`"] and mprob == [] and "pub fn run(a: u32) -> u32 { … }" in mnew
+              and "### Changed: `src/Existing.cs`\n\nThe `Run` method now takes a token.\n" in mnew)
         check("sync rebuilds a C# block: overloads, nested type, record; bodies dropped",
               "public double Area(int w) { … }" in new and "public double Area(int w, int h) => …;" in new
               and "public struct Inner {\n            public int V;\n        }" in new and "public record Point(int X, int Y);" in new

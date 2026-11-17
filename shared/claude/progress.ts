@@ -133,11 +133,13 @@ export function endStatus(lastMessage: string): string {
 }
 /**
  * A `GAP:` / `CONTRACT-CHANGE:` line that reports a real one ("gap" / "contract-change"), else "". `GAP: none` (any
- * case, trailing punctuation) is no gap. The same rule as `gatedKind` in workflows/phase4-wave.js.
+ * case, trailing punctuation or a sentence after it) is no gap. The same rule as `gatedKind` in workflows/phase4-wave.js.
  */
+const NONE_RE = /^none\s*(?:[^\w\s].*)?$/i
+
 export function gatedKind(line: string): "" | "gap" | "contract-change" {
   const m = /^\s*(?:[-*>]\s*)?(GAP|CONTRACT-CHANGE)\s*:\s*(.*)$/.exec(String(line))
-  if (!m || /^none\W*$/i.test(m[2].trim())) return ""
+  if (!m || NONE_RE.test(m[2].trim())) return ""
   return m[1] === "GAP" ? "gap" : "contract-change"
 }
 

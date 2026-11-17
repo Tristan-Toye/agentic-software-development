@@ -78,6 +78,13 @@ check("pre: blind author may read a test family", blind("/wt/crates/platform/tes
 check("pre: blind author may not read a source body", blind("/wt/crates/platform/src/nats_auth.rs").includes('"deny"'))
 check("pre: blind author may not read a dossier", blind("/wt/.discovery/dossiers/W-014.md").includes("GAP:"))
 check("pre: .. cannot climb out of a test family", blind("/wt/tests/../src/lib.rs").includes('"deny"'))
+// A test project is admitted by what it is (a csproj referencing a test framework), not by its directory name.
+const tp = join(tmp, "Source", "Twipe.Podcast.Runtime.Tests")
+mkdirSync(join(tp, "Sub"), { recursive: true })
+writeFileSync(join(tp, "Twipe.Podcast.Runtime.Tests.csproj"), '<Project><ItemGroup><PackageReference Include="xunit.v3" Version="1" /></ItemGroup></Project>')
+writeFileSync(join(tp, "Sub", "FooTests.cs"), "class FooTests {}")
+check("pre: blind author may read a file in a test project named by no family", blind(join(tp, "Sub", "FooTests.cs")) === "")
+check("pre: blind author may re-open a file it is about to write in a test project", blind(join(tp, "NewTests.cs")) === "")
 check("pre: blind author's Bash is not this hook's business", blind("", { tool_name: "Bash", tool_input: { command: "cat src/lib.rs" } }) === "")
 check("pre: another subagent reads freely", hook("pre-tool-use.ts", pre({ agent_id: "a1", agent_type: "agentic-software-development:implementer", tool_input: { file_path: "/wt/src/lib.rs" } })).out === "")
 {
