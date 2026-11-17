@@ -48,9 +48,21 @@ atomically: `{cycle, phase, step, started, stub, paused, members: [{id, stage, s
 Facts (from the dashboard): `{"repos": {"<repo>": {"root", "runs": [{id, status, blockedBy, runner, deferred}],
 "stubs": [{branch, state, canIntegrate}]}}}`.
 
+# A /work-on that ends done with the dossier not at `pr` or `done`
+
+That should not happen. After LAG_TICKS ticks (a status write may land late) the run's own agent is asked once per
+launch, through `run_dossier.py chat ID --root R --text ...` (the finished run resumes its session): "the dossier reads
+<status>; if that is a mistake, finish the phases now; if intended, reply `INTENDED:` and why". The member's `asked`
+records `{ts, status}` and its state reads "asked the agent why it stopped at <status>"; the cycle does not pause. Later
+ticks: status `pr`/`done` goes the normal path; an agent `chat` reply newer than `asked.ts` and LAG_TICKS more ticks with
+the status still not `pr`/`done` pause with the reply's first 200 characters in the reason; no reply within
+`ASD_AUTO_WORK_ASK_WAIT` seconds (default 1800) pauses with "its agent did not answer"; a chat that cannot start pauses
+with the error. The ask is never repeated for the same launch (`launch()` resets it).
+
 Exit 0 done, 1 refused (resume of a cycle that is not paused...), 2 bad usage. `ASD_RUNNER_BIN`, `ASD_MERGE_BIN`,
 `ASD_DOCS_MERGE_BIN` replace the scripts it starts (tests); `ASD_AUTO_WORK_GRACE` (seconds, default 600) is how long a
-started run may take to show its state before the cycle pauses.
+started run may take to show its state before the cycle pauses; `ASD_AUTO_WORK_ASK_WAIT` (default 1800) how long the
+asked agent may take to reply.
 """
 from __future__ import annotations
 
@@ -117,6 +129,26 @@ def age(iso: str) -> float:
     return datetime.datetime.now(datetime.timezone.utc).timestamp() - secs(iso)
 
 
+def ask_wait() -> float:
+    return float(os.environ.get("ASD_AUTO_WORK_ASK_WAIT") or 1800)
+
+
+def agent_reply(repo: str, dossier: str, since: str) -> str | None:
+    """The first chat reply of the run's agent written after `since` (its text), or None while there is none."""
+    try:
+        with open(os.path.join(runs_dir(), f"{repo}.{dossier}.jsonl"), encoding="utf-8") as fh:
+            for raw in fh:
+                try:
+                    o = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(o, dict) and o.get("kind") == "chat" and o.get("from") == "agent" and str(o.get("ts", "")) > since:
+                    return str(o.get("text") or "")
+    except OSError:
+        pass
+    return None
+
+
 def grace() -> float:
     return float(os.environ.get("ASD_AUTO_WORK_GRACE") or 600)
 
@@ -163,7 +195,16 @@ def runner_bin() -> str:
 
 
 def start_runner(root: str, dossier: str, command: str, items: str = "") -> tuple[bool, str]:
-    args = [sys.executable, runner_bin(), dossier, "--root", root, "--command", command] + (["--items", items] if items else [])
+    return run_runner([sys.executable, runner_bin(), dossier, "--root", root, "--command", command] + (["--items", items] if items else []))
+
+
+def ask_agent(root: str, dossier: str, text: str) -> tuple[bool, str]:
+    """`run_dossier.py chat ID --root R --text T`: the message goes to the finished run's own session; its reply lands as a
+    `chat` line from `agent` in the run's log."""
+    return run_runner([sys.executable, runner_bin(), "chat", dossier, "--root", root, "--text", text])
+
+
+def run_runner(args: list[str]) -> tuple[bool, str]:
     try:
         p = subprocess.run(args, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -204,7 +245,7 @@ def frontier(runs: list[dict]) -> list[dict]:
     out = []
     for r in sorted(runs, key=lambda r: r["id"]):
         if r.get("status") in ("ready", "planned") and all(status.get(b) == "done" for b in r.get("blockedBy") or []):
-            out.append({"id": r["id"], "stage": STAGE_OF[r["status"]], "state": "pending", "error": "", "launch": None, "lag": 0, "accepted": False, "rounds": 0, "retried": False})
+            out.append({"id": r["id"], "stage": STAGE_OF[r["status"]], "state": "pending", "error": "", "launch": None, "lag": 0, "asked": None, "accepted": False, "rounds": 0, "retried": False})
     return out
 
 
@@ -239,7 +280,7 @@ def launch(st: dict, m: dict, command: str, runner: dict, items: str = "") -> bo
     if command == "plan":
         m["rounds"] = int(m.get("rounds") or 0) + 1   # plan round n: a plan that ended done without making the dossier ready is run again
     m["launch"] = {"command": command, "items": items, "ts": now(), "pid": runner.get("pid"), "started": runner.get("started")}
-    m["state"], m["error"], m["lag"] = "starting", "", 0
+    m["state"], m["error"], m["lag"], m["asked"] = "starting", "", 0, None
     return True
 
 
@@ -280,6 +321,7 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
         pause(st, f"{m['id']}: the /{L['command']} run ended {r['state']}", "member", m["id"]); return
     m["stage"] = STAGE_OF.get(status, m["stage"])
     if status in ("pr", "done"):
+        m["asked"] = None   # the agent fixed it (or it was intended after all and the dossier moved): the normal path takes over
         todo = open_items(run)
         if L and L["command"] == "fix-deferred":
             if not todo:
@@ -298,10 +340,32 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
             return
         if want == "plan":           # the owner's ruling: plan again, until the dossier reads ready (questions, failures and stops are handled above)
             launch(st, m, "plan", r); return
-        if not m["accepted"]:
-            pause(st, f"{m['id']}: /work-on is done but the dossier still reads {status}", "member", m["id"], "recheck")
+        if m["accepted"]:
+            return
+        ask = m.get("asked")
+        if not ask:   # the owner's ruling: this should not happen, so the run's own agent is asked first, once per launch
+            ok, out = ask_agent(st["root"], m["id"], ASK_TEXT.format(status=status))
+            if not ok:
+                pause(st, f"{m['id']}: /work-on stopped at {status} and its agent could not be asked: {out}", "member", m["id"], "recheck"); return
+            m["asked"] = {"ts": now(), "status": status, "after": 0}
+            m["state"] = f"asked the agent why it stopped at {status}"
+            return
+        reply = agent_reply(st["repo"], m["id"], ask["ts"])
+        if reply is not None:
+            ask["after"] = int(ask.get("after") or 0) + (1 if ask.get("replied") else 0)
+            ask["replied"] = True
+            if ask["after"] >= LAG_TICKS:   # the reply may be followed by a status write: wait for it before believing "still not"
+                said = " ".join(reply.split())[:200]
+                pause(st, f"{m['id']}: /work-on stopped at {status}; its agent says: {said}", "member", m["id"], "recheck")
+        elif age(ask["ts"]) > ask_wait():
+            pause(st, f"{m['id']}: /work-on stopped at {status}; its agent did not answer", "member", m["id"], "recheck")
         return
     launch(st, m, want, r)
+
+
+ASK_TEXT = ("The runner's check: /work-on ended, but the dossier front matter reads `status: {status}`, not `pr` or `done`. "
+            "If that is a mistake, finish the remaining phases now (open the PR, set the status). If it is intended, reply with "
+            "a first line starting `INTENDED:` and the reason.")
 
 
 def start_cycle(st: dict, facts: dict, trigger: str, stub: str) -> None:
@@ -705,6 +769,37 @@ def selftest() -> int:
         facts_merged.clear(); cmd_start_now(root); n_before = len(log()); tk()
         check("an empty frontier goes straight to the non-code merge", st()["cycle"] == 4 and st()["step"] in ("docs", "integrate", "land") and log()[n_before] == f"docs merge --root {root}", (st()["cycle"], st()["step"], log()[n_before:]))
 
+        # A /work-on that ended done with the dossier not at pr/done: the run's own agent is asked once, before the owner.
+        def stuck(id):
+            s_ = st(); s_.update(paused=None, step="work", phase="building", members=[{"id": id, "stage": "build", "state": "running", "error": "", "launch": {"command": "work-on", "items": "", "ts": now(), "pid": 1, "started": "s0"},
+                                                                                  "lag": 0, "asked": None, "accepted": False, "rounds": 0, "retried": False}])
+            write_atomic(state_path(repo), s_)
+            facts_runs[:] = [run_(id, "ready", runner=runner("done", "work-on", pid=9, started="s1"))]
+        asks = lambda id: [l for l in log() if l.startswith(f"runner chat {id} ")]
+        stuck("X1"); tk(); n_ask = len(asks("X1"))
+        check("a /work-on that ended with the dossier still ready waits a tick before the agent is asked", n_ask == 0 and not st()["paused"])
+        tk()
+        check("then its agent is asked, through run_dossier chat, and the cycle does not pause",
+              len(asks("X1")) == 1 and f"--root {root} --text" in asks("X1")[0] and "INTENDED:" in asks("X1")[0] and "`status: ready`" in asks("X1")[0] and not st()["paused"]
+              and members()["X1"]["state"] == "asked the agent why it stopped at ready" and members()["X1"]["asked"]["status"] == "ready", (asks("X1"), st().get("paused")))
+        tk(); tk(); tk()
+        check("the agent is asked only once per launch, and the cycle waits for the answer", len(asks("X1")) == 1 and not st()["paused"])
+        setrun("X1", status="pr"); tk()
+        check("asked, then fixed: the status reached pr, the ask clears and the normal path takes over", not st()["paused"] and members()["X1"]["asked"] is None and members()["X1"]["stage"] == "finished", members()["X1"])
+        stuck("X2"); tk(); tk(); tk()
+        json.dump({"ts": "2099-01-01T00:00:00Z", "kind": "chat", "from": "agent", "text": "INTENDED: the plan says the owner opens the PR\nmore"}, open(P(f"{repo}.X2.jsonl"), "w")); tk(); tk()
+        check("an agent reply does not pause at once: the status may still land", not st()["paused"])
+        tk()
+        check("asked, replied INTENDED, still ready: the cycle pauses with the agent's words", st()["paused"] and "stopped at ready; its agent says: INTENDED: the plan says the owner opens the PR more" in st()["paused"]["reason"] and len(asks("X2")) == 1, st().get("paused"))
+        stuck("X3"); tk(); tk(); tk()
+        check("asked, no reply, within the wait: no pause", not st()["paused"] and len(asks("X3")) == 1)
+        os.environ["ASD_AUTO_WORK_ASK_WAIT"] = "0"
+        s_ = st(); s_["members"][0]["asked"]["ts"] = "2020-01-01T00:00:00Z"; write_atomic(state_path(repo), s_); tk()
+        check("asked, no reply after the wait: pauses, saying the agent did not answer", st()["paused"] and "its agent did not answer" in st()["paused"]["reason"], st().get("paused"))
+        os.environ.pop("ASD_AUTO_WORK_ASK_WAIT")
+        stuck("BADDOSSIER"); tk(); tk()
+        check("the chat cannot start: the cycle pauses with the error", st()["paused"] and "could not be asked: refused" in st()["paused"]["reason"], st().get("paused"))
+        s_ = st(); s_.update(paused=None, step="idle", phase="idle", members=[]); write_atomic(state_path(repo), s_); facts_runs[:] = []
         # Disabled again: nothing moves, live runs are not touched.
         cmd_disable(root)
         sw = land_stub.settings_of(repo)

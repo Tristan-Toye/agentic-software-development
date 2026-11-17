@@ -404,7 +404,12 @@ restarted server answers at once from them while its first scan runs.
     one with no trace after the grace is started once more, recorded as `retried`,
     and only a retry that also shows nothing pauses), a
     non-code PR that cannot merge, a failed integration or a failed /stub run
-    pauses the cycle (state `paused`, the reason on the page); nothing retries by
+    pauses the cycle (state `paused`, the reason on the page). A /work-on that ends done
+    with the dossier not at `pr` or `done` should not happen: its own agent is asked once
+    per launch (`run_dossier.py chat`; state "asked the agent why it stopped at <status>",
+    no pause), and only if the status still is not `pr`/`done` after its reply (first 200
+    characters in the reason), or after `ASD_AUTO_WORK_ASK_WAIT` seconds (default 1800) with
+    no reply, or when the chat cannot start, does the cycle pause; nothing retries by
     itself, **Resume** (or `--resume`) goes on. Turning it off starts nothing new
     and never stops a live run. The decisions come from the script, not an agent,
     on the page's 2-minute interval: the server hands it the facts on stdin

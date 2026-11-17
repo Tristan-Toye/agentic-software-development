@@ -656,7 +656,10 @@ a state in `running`, `testing`, `waiting`, `queued` or `paused` is waited for;
 so a started run is matched by its command and its `pid`/`started` pair before its
 end is believed, and a run that shows nothing within `ASD_AUTO_WORK_GRACE`
 seconds (default 600) is started once more (recorded on the member), and a retry that
-also shows nothing pauses the cycle; a run in `queued` counts as shown. See `references/owner-questions.md`
+also shows nothing pauses the cycle; a run in `queued` counts as shown. A /work-on that ends done with the dossier
+not at `pr`/`done` first gets one `run_dossier.py chat` message to its own session (reply
+`INTENDED:` + reason if it is meant); the cycle pauses only on a still-wrong status after the
+reply, no reply within `ASD_AUTO_WORK_ASK_WAIT` seconds (default 1800), or a failed chat. See `references/owner-questions.md`
 (Dashboard, Automatic work) for the cycle.
 
 ## Standing repair of the VM and the stack (`scripts/stack_repair.py`)
