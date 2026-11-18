@@ -8,6 +8,7 @@ The script decides and merges; no agent does. It is off for every repository unt
     land_stub.py --enable --root R [--receipt-context NAME]
     land_stub.py --disable --root R
     land_stub.py --check STUB --root R     # what would hold it back now; merges nothing
+    land_stub.py --waive TEXT --root R     # record a standing waiver the owner accepted (--unwaive TEXT drops it)
     land_stub.py --selftest
 
 `merge_dossier.py --revive` (the dashboard, every two minutes) calls `land_all()`: every stub whose integration
@@ -24,6 +25,9 @@ reached `/stub`, in a repository that opted in, is looked at again until its pul
    overrides that. Without one, CI on the head is the verdict (the stub's full run is CI).
 4. The pull request body carries the block `/stub` writes last (`primary-agents/stub.md`, Step 8):
    `STUB-RESULT: green`, `STUB-HEAD: <this head>`, `STUB-GAPS: 0`, `STUB-UNRESOLVED: 0`, and no `ATTENTION:` line.
+   `none` counts as 0. Two kinds of `ATTENTION:` line do not hold it: one that names a standing waiver the owner
+   recorded (`--waive TEXT`, matched as a case-insensitive substring), and, in a repository that needs no receipt,
+   one that only says the receipt is absent (that absence is the rule there, not news).
 5. No open owner question on the stub or on a dossier the integration merged.
 6. No open pull request into the stub that belongs to this integration: its own `fix/*-stub*` or a stack it merged.
    A dossier that was still in flight moves to the next stub, so it holds nothing back.
@@ -35,7 +39,8 @@ Anything else, or anything unreadable, leaves the pull request for the owner. Th
 # Files
 
 Settings: `$ASD_STUB_AUTOMERGE_FILE` (default `~/.agentic/stub-auto-merge.json`),
-`{"<repo>": {"enabled": true, "receipt": true, "receipt_context": "local-stack", "guarded_paths": ["..."]}}`.
+`{"<repo>": {"enabled": true, "receipt": true, "receipt_context": "local-stack", "guarded_paths": ["..."],
+"standing_waivers": ["W-007 criterion 18"]}}`.
 State: `<key>.land.json` `{state: waiting|merged, pr, head, reasons, ts}`, read by the dashboard. A change of reasons
 writes one line on the stub's timeline.
 
@@ -68,6 +73,17 @@ def settings_path() -> str:
 
 def settings_of(repo: str) -> dict:
     return (read_json(settings_path(), {}) or {}).get(repo) or {}
+
+
+def set_waiver(repo: str, text: str, keep: bool) -> list[str]:
+    all_ = read_json(settings_path(), {}) or {}
+    cur = dict(all_.get(repo) or {})
+    ws = [w for w in (cur.get("standing_waivers") or []) if w.strip().lower() != text.strip().lower()]
+    if keep:
+        ws.append(text.strip())
+    cur["standing_waivers"] = ws
+    write_json(settings_path(), {**all_, repo: cur})
+    return ws
 
 
 def set_enabled(repo: str, enabled: bool, context: str = "") -> None:
@@ -103,8 +119,13 @@ def check_failures(rollup: list, context: str | None) -> list[str]:
     return out
 
 
-def result_failures(body: str, head: str) -> list[str]:
-    """What the result block in the pull request body holds back. No block, no merge."""
+RECEIPT_ABSENT = re.compile(r"\bno (?:local[- ]stack )?receipt\b", re.I)
+
+
+def result_failures(body: str, head: str, standing: list[str] | tuple = (), receipt: bool = True) -> list[str]:
+    """What the result block in the pull request body holds back. No block, no merge.
+
+    An ATTENTION line naming a standing waiver, or (when no receipt is needed) only reporting its absence, holds nothing."""
     def field(name: str) -> str:
         m = re.search(rf"^{name}:[ \t]*(\S*)[ \t]*$", body or "", re.M)
         return m.group(1) if m else ""
@@ -120,8 +141,14 @@ def result_failures(body: str, head: str) -> list[str]:
         out.append("the audit does not report STUB-GAPS: 0")
     if not zero("STUB-UNRESOLVED"):
         out.append("the run does not report STUB-UNRESOLVED: 0")
+    keys = [w.strip().lower() for w in standing if isinstance(w, str) and w.strip()]
     for m in re.finditer(r"^ATTENTION:[ \t]*(.*)$", body or "", re.M):
-        out.append("attention: " + m.group(1).strip()[:200])
+        text = m.group(1).strip()
+        if any(k in text.lower() for k in keys):
+            continue
+        if not receipt and RECEIPT_ABSENT.search(text):
+            continue
+        out.append("attention: " + text[:200])
     return out
 
 
@@ -188,9 +215,10 @@ def assess(root: str, repo: str, branch: str, finished: list[str], cfg: dict) ->
         reasons.append(f"GitHub reads it {pr.get('mergeable') or 'UNKNOWN'}")
     if pr.get("mergeStateStatus") != "CLEAN":
         reasons.append(f"its merge state is {pr.get('mergeStateStatus') or 'UNKNOWN'}, not CLEAN")
-    context = (cfg.get("receipt_context") or DEFAULT_CONTEXT) if needs_receipt(root, cfg) else None
+    receipt = needs_receipt(root, cfg)
+    context = (cfg.get("receipt_context") or DEFAULT_CONTEXT) if receipt else None
     reasons += check_failures(pr.get("statusCheckRollup") or [], context)
-    reasons += result_failures(pr.get("body") or "", head)
+    reasons += result_failures(pr.get("body") or "", head, cfg.get("standing_waivers") or [], receipt)
     q = open_questions(repo, [slug] + finished)
     if q:
         reasons.append("open questions: " + ", ".join(q))
@@ -382,6 +410,14 @@ def selftest() -> int:
         check("'none' counts as zero unresolved and zero gaps",
               not result_failures(block.replace("STUB-UNRESOLVED: 0", "STUB-UNRESOLVED: none").replace("STUB-GAPS: 0", "STUB-GAPS: None"), head), "")
         held("an attention line", "attention: a waiver was carried", body=block + "ATTENTION: a waiver was carried\n")
+        att = block + "ATTENTION: one waived QC skip (W-007 Criterion 18)\nATTENTION: no local-stack receipt — CI is the full run\n"
+        check("a standing waiver and an absent receipt that is not needed hold nothing",
+              not result_failures(att, head, ["w-007 criterion 18"], receipt=False), result_failures(att, head, ["w-007 criterion 18"], receipt=False))
+        check("without them both lines hold", len(result_failures(att, head)) == 2, result_failures(att, head))
+        check("an absent receipt still holds where one is needed",
+              len(result_failures(att, head, ["W-007 criterion 18"], receipt=True)) == 1)
+        check("an unrelated attention line still holds under a waiver",
+              len(result_failures(block + "ATTENTION: a contradiction was ruled\n", head, ["W-007 criterion 18"], receipt=False)) == 1)
 
         setup(); open(os.path.join(qs, f"{repo}.stub-x.Q1.jsonl"), "w").write('{"from": "agent", "kind": "question"}\n')
         rc, st = run_land(); check("held: an open question on the stub", rc == 1 and "stub-x.Q1" in " ".join(st["reasons"]), st)
@@ -433,16 +469,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--disable", action="store_true", help="turn it off for this repository")
     ap.add_argument("--receipt-context", default="", help="the commit status that carries the full run's receipt (default local-stack)")
     ap.add_argument("--check", metavar="STUB", help="print what would hold this stub back; merges nothing")
+    ap.add_argument("--waive", metavar="TEXT", help="record a standing waiver: an ATTENTION line containing TEXT no longer holds the stub")
+    ap.add_argument("--unwaive", metavar="TEXT", help="drop a standing waiver")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if a.selftest:
         return selftest()
-    if not a.root or (a.enable + a.disable + bool(a.check)) != 1:
+    if not a.root or (a.enable + a.disable + bool(a.check) + bool(a.waive) + bool(a.unwaive)) != 1:
         ap.print_usage(sys.stderr)
         return 2
     root = os.path.abspath(a.root)
     if a.check:
         return land(root, a.check, dry=True)
+    if a.waive or a.unwaive:
+        ws = set_waiver(repo_name(root), a.waive or a.unwaive, bool(a.waive))
+        print(f"land_stub: standing waivers for {repo_name(root)}: {ws or 'none'}")
+        return 0
     set_enabled(repo_name(root), a.enable, a.receipt_context)
     print(f"land_stub: {'on' if a.enable else 'off'} for {repo_name(root)}")
     return 0
