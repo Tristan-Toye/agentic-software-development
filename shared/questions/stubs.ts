@@ -1,7 +1,10 @@
 // Weekly stubs per repo and the per-repo open-work report. Contract: references/owner-questions.md (Dashboard).
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path"
+import { fileSig, IO_CONCURRENCY, mapLimit, readText } from "./asyncio.ts"
+import { offThread } from "./scanpool.ts"
 import type { Question } from "./store.ts"
 import { readRunner, readViewCache, runnerActive, writeViewCache } from "./runstore.ts"
 import { emitChange } from "./events.ts"
@@ -248,6 +251,10 @@ const recordDate = (f: string | null) => (f ? f.match(/stub-(\d{4}-\d{2}-\d{2})/
 // ---- assemble ----
 type Doc = ReturnType<typeof pickDossiers>[number]
 export async function buildStubs(questions: Question[], now = Date.now()): Promise<StubsView> {
+  return (await buildStubsWithRoots(questions, now)).view
+}
+/** The view plus the worktrees of each main checkout it scanned, so the rescan need not list the roots again. */
+export async function buildStubsWithRoots(questions: Question[], now = Date.now()): Promise<{ view: StubsView; groups: [string, string[]][] }> {
   const roots = await candidateRoots(questions, listTranscripts())
   const byMain = new Map<string, string[]>()
   for (const wt of roots) {
@@ -290,7 +297,7 @@ export async function buildStubs(questions: Question[], now = Date.now()): Promi
     if (stubs.length || outside.length) { const sorted = stubs.sort((a, b) => b.cut.localeCompare(a.cut) || b.branch.localeCompare(a.branch)); repos.push({ repo: baseName(main), label: repoLabel(main), main, stubs: sorted, open: openStubs(sorted).map((s) => s.branch), outside }) }
   }
   repos.sort((a, b) => a.repo.localeCompare(b.repo))
-  return { scannedAt: new Date(now).toISOString(), repos, openWork: [] }
+  return { view: { scannedAt: new Date(now).toISOString(), repos, openWork: [] }, groups: [...byMain] }
 }
 
 // ---- open work ----
@@ -309,6 +316,18 @@ export function dossierSignature(wts: string[]): string {
   }
   return parts.join("|")
 }
+/** dossierSignature without blocking the event loop. */
+export async function dossierSignatureAsync(wts: string[]): Promise<string> {
+  const parts: string[] = []
+  for (const wt of wts) {
+    const dir = join(wt, ".discovery", "dossiers")
+    let names: string[] = []
+    try { names = (await readdir(dir)).sort() } catch { continue }
+    const sigs = await mapLimit(names, IO_CONCURRENCY, async (n) => { try { return (await stat(join(dir, n))).mtimeMs } catch { return null } })
+    names.forEach((n, i) => { if (sigs[i] !== null) parts.push(`${wt}/${n}:${sigs[i]}`) })
+  }
+  return parts.join("|")
+}
 async function runGen(root: string, out: string, embed: boolean, linkBase = "", controlsFile = ""): Promise<boolean> {
   try {
     const p = Bun.spawn(["python3", GEN, "--root", root, "--worktrees", "--out", out, "--quiet", ...(embed ? ["--embed", "--simplify-default"] : []), ...(linkBase ? ["--link-base", linkBase] : []), ...(controlsFile ? ["--run-controls", controlsFile] : [])], { stdout: "ignore", stderr: "ignore", stdin: "ignore" })
@@ -322,14 +341,14 @@ async function runGen(root: string, out: string, embed: boolean, linkBase = "", 
 export async function refreshOpenWork(repo: string, root: string, wts: string[], now = Date.now(), controls: Record<string, string> = {}, refsSig = ""): Promise<void> {
   const out = join(openWorkDir(), `${repo}.html`)
   // The ▶ in the report follows the runner state, so a run that stops or starts regenerates it.
-  const sig = dossierSignature(wts) + "#" + JSON.stringify(controls) + "#" + refsSig
+  const sig = (await dossierSignatureAsync(wts)) + "#" + JSON.stringify(controls) + "#" + refsSig
   const st = lastRun.get(repo)
-  if (st && (st.inflight || (st.sig === sig && existsSync(out)) || now - st.at < 30_000)) return
-  mkdirSync(openWorkDir(), { recursive: true })
+  if (st && (st.inflight || (st.sig === sig && (await fileSig(out)) !== null) || now - st.at < 30_000)) return
+  await mkdir(openWorkDir(), { recursive: true })
   const rec = { at: now, sig, inflight: true }
   lastRun.set(repo, rec)
   const cf = join(openWorkDir(), `${repo}.controls.json`)
-  writeFileSync(cf, JSON.stringify(controls))
+  await writeFile(cf, JSON.stringify(controls))
   try { if (!(await runGen(root, out, true, `/repo/${repo}`, cf))) await runGen(root, out, false) } finally { rec.inflight = false; rec.at = Date.now() }
 }
 
@@ -339,15 +358,13 @@ let inflight: Promise<void> | null = null
 let lastScan = 0
 let lastSig = ""
 async function rescan(questions: Question[]): Promise<void> {
-  const view = await buildStubs(questions)
-  const roots = await candidateRoots(questions, listTranscripts())
-  const byMain = new Map<string, string[]>()
-  for (const wt of roots) { const m = await mainOf(wt); byMain.set(m, [...(byMain.get(m) ?? []), wt]) }
+  const { view, groups } = await offThread("stubs", questions, () => buildStubsWithRoots(questions))
+  const byMain = new Map<string, string[]>(groups)
   const openWork: StubsView["openWork"] = []
   for (const [main, wts] of byMain) {
     const repo = baseName(main)
     if (!safeRepo(repo)) continue
-    const root = existsSync(join(main, ".discovery")) ? join(main, ".discovery") : join(wts[0], ".discovery")
+    const root = (await fileSig(join(main, ".discovery"))) !== null ? join(main, ".discovery") : join(wts[0], ".discovery")
     const runs = (await getRuns(() => questions)).runs.filter((r) => r.repo === repo)
     const controls: Record<string, string> = {}
     for (const r of runs) {
@@ -357,7 +374,7 @@ async function rescan(questions: Question[]): Promise<void> {
     // A finished build's copy lives on its branch (the report overlays it), so a moved ref regenerates the report too.
     const refs = await sh(["git", "-C", main, "for-each-ref", "--format=%(objectname)", "refs/heads", "refs/remotes/origin"], undefined, 5000)
     await refreshOpenWork(repo, root, wts, Date.now(), controls, String(Bun.hash(refs)))
-    try { openWork.push({ repo, updated: new Date(statSync(join(openWorkDir(), `${repo}.html`)).mtimeMs).toISOString() }) } catch { /* not generated */ }
+    try { openWork.push({ repo, updated: new Date((await stat(join(openWorkDir(), `${repo}.html`))).mtimeMs).toISOString() }) } catch { /* not generated */ }
   }
   const next = { ...view, openWork: openWork.sort((a, b) => a.repo.localeCompare(b.repo)) }
   const sig = JSON.stringify([next.repos.map((r) => [r.repo, r.stubs.map((s) => [s.branch, s.state, s.stage, s.pr, s.dossiers.map((d) => d.id), s.members])]), next.openWork])
@@ -385,6 +402,6 @@ export async function getStubs(questions: () => Question[]): Promise<StubsView> 
 export async function openWorkHtml(repo: string, questions: Question[]): Promise<string | null> {
   if (!safeRepo(repo)) return null
   const f = join(openWorkDir(), `${repo}.html`)
-  if (!existsSync(f)) await getStubs(() => questions)
-  try { return readFileSync(f, "utf8") } catch { return null }
+  if ((await fileSig(f)) === null) await getStubs(() => questions)
+  return readText(f)
 }

@@ -28,6 +28,7 @@ import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runst
 import { readAccounts, usageDir } from "./accounts.ts"
 import { mergeDetectorEnabled, nextMerges, readMergeSeen, writeMergeSeen, type MergedPr } from "./merges.ts"
 import { sh } from "./runs.ts"
+import { enableScanWorker } from "./scanpool.ts"
 import { argvFor, buildFacts, markMerged, runAutoWork, tickAutoWork, viewsFor } from "./autowork.ts"
 import { logBlock } from "../claude/permission-denied.ts"
 
@@ -1089,6 +1090,8 @@ async function checkMerges(): Promise<void> {
 
 async function main(): Promise<void> {
   stampConsole()
+  // The 30 s run and stub rescans read hundreds of files synchronously; on their own thread a slow disk delays a view, never a request.
+  if (process.env.ASD_SCAN_INLINE !== "1") enableScanWorker()
   const requested = process.env.ASD_QUESTIONS_PORT
   // The first stubs and runs scan runs git and gh per repo and can pass Bun's 10 s idle default.
   const server = Bun.serve({ hostname: "127.0.0.1", port: requested !== undefined && requested !== "" ? Number(requested) : 7317, idleTimeout: 120, fetch: handle })

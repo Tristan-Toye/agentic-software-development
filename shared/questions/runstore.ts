@@ -101,8 +101,18 @@ export function pidAlive(pid: number): boolean {
 
 /** `<key>.runner.json`; a running or waiting state with a dead pid reads as stopped. null when absent. */
 export function readRunner(key: string, dir = runsDir(), alive: (pid: number) => boolean = pidAlive): RunnerState | null {
+  let text: string
+  try { text = readFileSync(join(dir, `${key}.runner.json`), "utf8") } catch { return null }
+  return parseRunner(text, alive)
+}
+/** readRunner without blocking the event loop (the dashboard's per-request read). */
+export async function readRunnerAsync(key: string, dir = runsDir(), alive: (pid: number) => boolean = pidAlive): Promise<RunnerState | null> {
+  const text = await readText(join(dir, `${key}.runner.json`))
+  return text === null ? null : parseRunner(text, alive)
+}
+function parseRunner(text: string, alive: (pid: number) => boolean): RunnerState | null {
   try {
-    const j = JSON.parse(readFileSync(join(dir, `${key}.runner.json`), "utf8"))
+    const j = JSON.parse(text)
     let state = ["running", "testing", "waiting", "paused", "queued", "parked", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
     if ((state === "running" || state === "testing" || state === "waiting" || state === "paused" || state === "queued") && !alive(Number(j.pid))) state = "stopped"
     // A run that waits with no question is waiting for the stub being integrated (`wait_for_stub`), not for the owner.
