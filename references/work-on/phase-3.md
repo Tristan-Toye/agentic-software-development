@@ -120,8 +120,18 @@ and every package worktree IS a secondary worktree; each such case gets an
 owner and a fixture (a main-checkout copy) before the fan-out, or the wave
 prep will explain a failure the contract never predicted. Log
 `CENSUS: <path>:<line> — <owner>`, or `CENSUS: none — <what was grepped>`,
-into `## Build log` before you spawn; `validate_pipeline.py --pre-fanout`
-requires the line. In local mode — the dossier validated from the main
+into `## Build log` before you spawn. **A row whose path is an existing test
+file or shell check is a census package, spawned as a plugin agent, never a
+general-purpose one:** `unit-test-author` (Python, Rust, C#, TS test files) or
+`integration-test-author` (existing shell checks), with `CENSUS:` carrying the
+package's rows in its payload (`references/payloads/unit-test-author.md`, "A
+census round"), `TEST_PATHS` the existing files and no `CORRECTION`. Both have
+`Edit` under Claude Code, so the change is a scoped in-place edit under the same
+read and edit confinement; `prepare_wave.py` admits the payload, and
+`verify_return.py --census-paths <TEST_PATHS>` checks the return stayed on the
+census paths and was not a whole-file rewrite. The same package form serves a
+Phase 6 correction on a long test file.
+`validate_pipeline.py --pre-fanout` requires the `CENSUS:` line. In local mode — the dossier validated from the main
 checkout while the stubs live in the package worktree X — pass
 `--worktree <X>` (or set the dossier's `worktree:` front-matter field, which
 the check resolves itself); a package that owns a directory is walked whole,

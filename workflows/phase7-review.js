@@ -87,6 +87,35 @@ function checkDocument(doc) {
   return out
 }
 
+// #399: the structured `unreached` is the model's own fill and was observed empty beside a document that named
+// three UNREACHED locations. Every `UNREACHED:` line of the document and of the notes is parsed here: the inline
+// list (split on ; or ,) and the bullet lines under a bare `UNREACHED:` heading. `none` names no location.
+function unreachedFromText(text) {
+  const found = []
+  const lines = String(text || '').split(/\r?\n/)
+  const isNone = (v) => /^[`*_\s]*none[`*_.\s]*$/i.test(v)
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^\s*(?:[-*>]\s*)?[*_`]*UNREACHED[*_`]*\s*(?:locations)?\s*[:\-][*_`]*\s*(.*)$/i.exec(lines[i])
+    if (!m) continue
+    const inline = m[1].trim()
+    if (inline !== '' && !isNone(inline)) {
+      for (const part of inline.split(/\s*;\s*|\s*,\s+(?=[`\w./-]+[:/.])/)) {
+        const loc = part.replace(/^[`*_\s]+|[`*_.\s]+$/g, '')
+        if (loc !== '' && !isNone(loc)) found.push(loc)
+      }
+      continue
+    }
+    if (inline !== '') continue
+    for (let j = i + 1; j < lines.length; j++) {
+      const b = /^\s*(?:[-*]|\d+[.)])\s+(.*)$/.exec(lines[j])
+      if (!b) { if (lines[j].trim() === '') continue; break }
+      const loc = b[1].replace(/^[`*_\s]+|[`*_.\s]+$/g, '')
+      if (loc !== '' && !isNone(loc)) found.push(loc)
+    }
+  }
+  return found
+}
+
 const REVIEW_SCHEMA = {
   type: 'object',
   required: ['verdict', 'crs', 'document', 'unreached', 'payload_last'],
@@ -198,6 +227,12 @@ async function keep(reviewed) {
   const unreached = out && Array.isArray(out.unreached)
     ? out.unreached.map(String).filter((loc) => loc.trim() !== '' && !/^none$/i.test(loc.trim()))
     : []
+  // The structured list and the reviewer's own text must agree: a location the document or the notes name as
+  // UNREACHED joins the list, and a PASS that names any is never a PASS (it is re-run narrowed to them).
+  const named = unreachedFromText(doc).concat(unreachedFromText(out && out.notes))
+  const known = new Set(unreached.map((l) => l.trim()))
+  let disagreed = false
+  for (const loc of named) if (!known.has(loc)) { known.add(loc); unreached.push(loc); disagreed = true }
   let verdict = out ? out.verdict : 'died'
   if (verdict === 'PASS' && unreached.length > 0) verdict = 'incomplete'
   // #257: a reviewer that could not read its payload whole reviewed nothing; the orchestrator checks payload_last
@@ -226,7 +261,7 @@ async function keep(reviewed) {
     payload_last: payloadLast,
     answers: out && Array.isArray(out.answers) ? out.answers : [],
     unreached,
-    notes: out && typeof out.notes === 'string' ? out.notes.slice(0, 400) : '',
+    notes: (disagreed ? '[unreached filled from the reviewer\'s text: its structured list was short] ' : '') + (out && typeof out.notes === 'string' ? out.notes.slice(0, 400) : ''),
     document_path: written ? path : '',
   }
 }

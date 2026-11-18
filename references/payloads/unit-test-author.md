@@ -6,9 +6,9 @@ test families, and `bash`/`glob`/`grep`/web are denied outright: name a path
 inside that map and the author opens it itself — stage the contract as
 files, name the style samples, never paste what a pointed-at path can
 carry; name a path outside the map and the tool call is refused. **Under
-Claude Code** the author has `Write` and a `Read` the plugin's PreToolUse hook
-confines to `.agent-staging/` and the test families — no `Edit`, no `Glob`,
-no `Grep` (`claude/agents/unit-test-author.md`, `shared/blind-read.ts`): a path
+Claude Code** the author has `Write`, `Edit` and a `Read` the plugin's PreToolUse
+hook confines to `.agent-staging/` and the test families (the hook confines its
+`Edit` to the same boundary) — no `Glob`, no `Grep` (`claude/agents/unit-test-author.md`, `shared/blind-read.ts`): a path
 field outside that boundary is a dead letter, and the Claude Code skeleton
 pastes `CONTRACT`, `STYLE_SAMPLE` and `SUPPORT` regardless. The recorded wave shipped four payloads
 with all three as paths; two blind authors built from `PROMISE_CHECKLIST`
@@ -166,10 +166,30 @@ warns when a pasted `CONTRACT` has no `# path:` line.
 
 **A corrective round on an existing test file** carries `FAILURES` and
 `CORRECTION`, the same rules as the integration author's: the author reads the
-whole file, then Writes it back with exactly the changes `CORRECTION` names,
-and `CONVENTIONS` and the other fields stay as they were.
-`check_payload.py` requires `CORRECTION` when `TEST_PATHS` names a file that
-exists.
+whole file, then changes it in place with scoped `Edit`s, exactly the changes
+`CORRECTION` names and never a whole-file `Write` over it, and `CONVENTIONS` and
+the other fields stay as they were.
+`check_payload.py` requires `CORRECTION` or `CENSUS` when `TEST_PATHS` names a
+file that exists.
+
+**A census round on existing test files** (issue #392) carries `CENSUS` instead of
+`CORRECTION`: the Phase 3 `CENSUS:` rows whose owner is this package, one per line,
+```
+CENSUS: |
+  tests/unit/test_migrations.py:41 — the migration count (1..=17) becomes (1..=18)
+  tests/unit/test_tables.py:12 — EXPECTED_TABLES gains `audit_log`
+```
+and `TEST_PATHS` lists exactly those files (each must be named by a row;
+`check_payload.py` refuses a path no row names and a CENSUS with no row). The
+author reads each file and changes the pinned lines with `Edit`, in place; the
+rows are its whole edit list. The confinement is the author's usual one: the
+`Read` and `Edit` hook boundary, and on return
+`verify_return.py --census-paths <the TEST_PATHS>` flags an edit off the census
+paths (`TOUCHED_BEYOND`) and a whole-file rewrite (`whole-file-rewrite`). Compose
+it with `compose_payloads.py --set CENSUS=...`; `prepare_wave.py` admits it without
+`CORRECTION`. `FAILURES` / `CORRECTION` may ride beside it for a failing run's
+output. The integration author takes the same field for the existing shell
+checks of its package.
 
 `CONTRACT_HASH` is the orchestrator's stamp of the contract the author saw —
 hash the staged files (or the pasted text) at spawn time and paste the hash
@@ -193,7 +213,8 @@ read map does not. Stage the file's current content under `.agent-staging/`
 yourself and have the author rewrite the whole file with `Write`. It never
 opens the original; the staged copy is its only view of what exists. Under
 Claude Code a `TEST_PATHS` file in a test family that already exists is read
-first and rewritten whole (`Write` refuses a file the author has not read);
+first and changed with scoped `Edit`s (`Write` refuses a file the author has not
+read, and a whole-file `Write` over it is what `Edit` replaced, #392);
 one outside the test families is the staged-copy case above.
 
 Absolute `TEST_PATHS` inside the base worktree. The orchestrator commits its

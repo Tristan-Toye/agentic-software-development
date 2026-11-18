@@ -8,8 +8,8 @@
 - **Blindness is structural, and informational where a tool set cannot
   reach.** The unit author's `read` and `edit` maps deny everything outside
   `.agent-staging/` and the test families under opencode, and under Claude
-  Code it has `Write` and a `Read` the plugin's hook confines to the same
-  boundary, its payload pasted or staged as a `PAYLOAD_FILE`; the
+  Code it has `Write`, `Edit` and a `Read` the plugin's hook confines (Read
+  and Edit) to the same boundary, its payload pasted or staged as a `PAYLOAD_FILE`; the
   integration author sees stubs
   and has no `Bash`; the implementer's worktree has no tests. Never hand an
   agent something its blindness depends on not having, never rely on an

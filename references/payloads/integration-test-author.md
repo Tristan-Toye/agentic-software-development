@@ -126,9 +126,16 @@ BASELINE_COUNTS_FROM: <the sha the counts were taken at, or `pre-change tree
 CORRECTION: |
   1. <the first edit, exact and ordered>
   2. <the next edit>
-  Read the whole file, then Write it back with exactly these changes,
-  nothing else — never a partial Edit, and never a new test.
+  Read the whole file, then change it with scoped Edits, exactly these
+  changes, nothing else — never a whole-file Write, and never a new test.
 ```
+
+**A census round on existing files** (issue #392) carries `CENSUS` (the Phase 3
+`CENSUS:` rows, `<path>:<line> — <change>`, one per line) in place of
+`CORRECTION`: `TEST_PATHS` lists the existing test files or shell checks the rows
+name, the author edits those lines in place with `Edit`, and
+`verify_return.py --census-paths` checks the return stayed on them. The field and
+its rules are the unit author's (`unit-test-author.md`, "A census round").
 
 Routing note: a Phase 6 row-1 ruling on a pre-existing test — its hoisted
 expected value is assertion-bearing, so the orchestrator may not edit it,

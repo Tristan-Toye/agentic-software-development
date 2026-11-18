@@ -1,6 +1,6 @@
 // PreToolUse hook for Read|Edit|Write|Grep|Bash. In the /work-on orchestrator (the main session of a
 // session that ran the work-on command) it applies the shared read guard. In a subagent it
-// applies only the unit test author's read boundary and the integration test author's seal
+// applies only the unit test author's read and edit boundary and the integration test author's seal
 // (shared/blind-read.ts). Denies with the
 // documented PreToolUse JSON. Fails open.
 import { BLIND_AGENT, INTEGRATION_AGENT, blindRead, sealedGrep, sealedRead } from "../blind-read"
@@ -19,11 +19,12 @@ await runHook(async () => {
     const agent = agentTypeOf(input)
     const ti = input.tool_input ?? {}
     const cwd = input.cwd ?? process.cwd()
-    if (agent === BLIND_AGENT && input.tool_name === "Read") {
+    if (agent === BLIND_AGENT && (input.tool_name === "Read" || input.tool_name === "Edit")) {
+      // Edit (the in-place change of an existing test file, #392) stays inside the same boundary as Read.
       const reason = blindRead(String(ti.file_path ?? ""), cwd)
       if (!reason) return undefined
-      log("refused", input.session_id, `${BLIND_AGENT} ${input.agent_id} Read: ${reason}`)
-      return deny(`blind read: ${reason}`)
+      log("refused", input.session_id, `${BLIND_AGENT} ${input.agent_id} ${input.tool_name}: ${reason}`)
+      return deny(`blind ${input.tool_name.toLowerCase()}: ${reason}`)
     }
     if (agent === INTEGRATION_AGENT) {
       const reason =

@@ -209,7 +209,7 @@ check("log: timestamped", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z /.test(l
 check("log: mask lines for ses_w (two moves)", ev("mask").filter((l) => l.includes(" ses_w ")).length === 2)
 check("log: mask line format", ev("mask").some((l) => / mask ses_w watermark a4: ~\d+k -> ~\d+k tokens, 2 outputs, 0 inputs, 2 reasoning$/.test(l)))
 check("log: refused line format", ev("refused").some((l) => / refused g_work work-on read: read a dossier by section/.test(l)))
-check("log: refusals count", ev("refused").length === 8)
+check("log: refusals count", ev("refused").length === 10)
 check("log: floor line for the thrash session", ev("floor").some((l) => / floor ses_floor ~\d+k tokens, a move would free ~\d+k: /.test(l)))
 check("log: no mask line on every step", ev("mask").filter((l) => l.includes(" ses_thrash ")).length === 1)
 

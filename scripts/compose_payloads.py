@@ -51,6 +51,10 @@ are optional judgement fields, included only when given with --set. So are
 the integration author's FAILURES / CORRECTION (issue #82's corrective-round
 pair for a Phase 6 row-1 ruling on a pre-existing test) — included only when
 given with --set, same as SHARED_IDIOM / DELIVERY_CHANGE for that kind.
+CENSUS (both test authors, #392) is the Phase 3 `CENSUS:` rows of a package that
+edits existing test files (`<path>:<line> — <change>`, one per line): given with
+--set it admits an existing TEST_PATHS file without CORRECTION, and the author
+changes only those rows, in place, with Edit.
 
 # Usage
 
@@ -557,28 +561,6 @@ MAX_SINGLE_EDIT_DEFAULT = (
     "350 lines — the cap for one Write or Edit; a larger deliverable is "
     "named as a split at spawn, never improvised"
 )
-WHOLE_FILE_MARGIN = 50
-
-
-def whole_file_edit_cap(test_paths: str) -> str | None:
-    """#361: under Claude Code the unit author has Read and Write only, so a correction round
-    on an existing test file is one whole-file Write. When the largest existing TEST_PATHS file
-    plus a margin exceeds the default cap, the MAX_SINGLE_EDIT line that covers it; else None."""
-    sizes = []
-    for token in re.split(r"[,\n]", test_paths):
-        token = token.strip()
-        if token.startswith("/") and os.path.isfile(token):
-            with open(token, encoding="utf-8", errors="replace") as fh:
-                sizes.append(len(fh.read().splitlines()))
-    if not sizes:
-        return None
-    cap = -(-(max(sizes) + WHOLE_FILE_MARGIN) // 10) * 10
-    if cap <= 350:
-        return None
-    return ("%d lines — the cap for one whole-file Write; this correction rewrites an existing "
-            "test file of %d lines whole, the only edit this author can make" % (cap, max(sizes)))
-
-
 CITATION_DEFAULT = (
     "// promise: <member>/<category>\n"
     "One comment per test, the line above the test, in exactly this shape — "
@@ -886,22 +868,21 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
     apply_overrides(fields, sets, blocks={
         "CONTRACT", "PROMISE_CHECKLIST", "CONVENTIONS", "FIXTURES", "STYLE_SAMPLE",
         "SUPPORT", "SHARED_IDIOM", "DELIVERY_CHANGE", "CITATION", "FAILURES", "CORRECTION",
-        "TEST_FORM_RULES",
+        "CENSUS", "TEST_FORM_RULES",
     })
     if "FAILURES" in fields and not is_placeholder(fields["FAILURES"].value) \
             and "BASELINE_COUNTS_FROM" not in fields:
         fields["BASELINE_COUNTS_FROM"] = Field("BASELINE_COUNTS_FROM", placeholder(
             "BASELINE_COUNTS_FROM", "the sha the FAILURES counts were taken at, or "
             "`pre-change tree re-run` — never an earlier phase's numbers"))
-    if host == "claude" and "CORRECTION" in fields and "MAX_SINGLE_EDIT" not in sets:
-        raised = whole_file_edit_cap(fields["TEST_PATHS"].value)
-        if raised:
-            fields["MAX_SINGLE_EDIT"] = Field("MAX_SINGLE_EDIT", raised)
+    # #392: under Claude Code the author now has Edit, so a correction or census round on an existing
+    # test file is a run of scoped in-place edits under the default cap; the #361 whole-file cap
+    # raise (one Write of a long file) is gone.
     order = ["CONTRACT", "PROMISE_CHECKLIST", "TEST_PATHS", "TEST_FRAMEWORK",
              "MAX_SINGLE_EDIT", "CITATION", "CONVENTIONS",
              "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
              "NAMING", "TEST_FORM_RULES", "VOCABULARY", "FIXTURES", "SHARED_IDIOM",
-             "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "BASELINE_COUNTS_FROM",
+             "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "CENSUS", "BASELINE_COUNTS_FROM",
              "CONTRACT_HASH"]
     return ordered(fields, order)
 
@@ -993,7 +974,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     }
     apply_overrides(fields, sets, blocks={
         "CONTRACT", "HARNESS", "STYLE_SAMPLE", "PROMISE_CHECKLIST", "SHARED_IDIOM",
-        "DELIVERY_CHANGE", "SUPPORT", "FAILURES", "CORRECTION", "CITATION",
+        "DELIVERY_CHANGE", "SUPPORT", "FAILURES", "CORRECTION", "CENSUS", "CITATION",
         "CI_ENVIRONMENT", "TEST_FORM_RULES",
     })
     if "FAILURES" in fields and not is_placeholder(fields["FAILURES"].value) \
@@ -1004,7 +985,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     order = ["WORKTREE_DIR", "DOSSIER", "CONTRACT", "PROMISE_CHECKLIST", "TEST_PATHS",
              "TEST_FRAMEWORK", "CITATION", "HARNESS", "CI_ENVIRONMENT", "TEST_FORM_RULES",
              "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
-             "BOUNDARIES", "SHARED_IDIOM", "DELIVERY_CHANGE", "FAILURES", "CORRECTION",
+             "BOUNDARIES", "SHARED_IDIOM", "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "CENSUS",
              "CONTRACT_HASH"]
     return ordered(fields, order)
 
@@ -1972,14 +1953,28 @@ def selftest() -> int:
             "--set", "TEST_PATHS=%s" % long_test, "--set", "CORRECTION=add an assert to test_a",
         ])
         ut_corr = read_text(ut_corr_path) if rc == 0 else ""
-        check("unit-test-author (claude) correction on a 470-line file covers it whole",
-              rc == 0 and "MAX_SINGLE_EDIT: 520 lines" in ut_corr, out)
+        check("unit-test-author (claude) correction on a 470-line file keeps the default cap (in-place Edit, #392)",
+              rc == 0 and "MAX_SINGLE_EDIT: 350 lines" in ut_corr and "520" not in ut_corr, out)
         rc, ut_short_path, out = run_compose("UT1-correction-short.md", [
             "unit-test-author", "--host", "claude", "--contract-paths", "src/flush.py",
             "--set", "TEST_PATHS=%s" % style_path, "--set", "CORRECTION=add an assert to test_a",
         ])
         check("unit-test-author (claude) correction on a short file keeps the default cap",
               rc == 0 and "MAX_SINGLE_EDIT: 350 lines" in read_text(ut_short_path), out)
+
+        # --- #392: a CENSUS round on an existing test file, no CORRECTION ---
+        rc, ut_census_path, out = run_compose("UT1-census.md", [
+            "unit-test-author", "--host", "claude", "--contract-paths", "src/flush.py",
+            "--set", "TEST_PATHS=%s" % long_test, "--set", "CENSUS=tests/unit/test_long.py:12 — count 17 becomes 18",
+        ])
+        ut_census = read_text(ut_census_path) if rc == 0 else ""
+        check("#392 unit-test-author (claude) CENSUS round carries the rows and no whole-file cap raise",
+              rc == 0 and "CENSUS: |" in ut_census and "test_long.py:12" in ut_census and "MAX_SINGLE_EDIT: 350 lines" in ut_census, out)
+        if rc == 0:
+            rc3, out3 = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"), ut_census_path,
+                              "--kind", "unit-test-author", "--host", "claude", "--worktree", root])
+            check("#392 a CENSUS payload on an existing test file is not refused for a missing CORRECTION",
+                  "CORRECTION" not in out3, out3)
 
         # --- integration-test-author ---
         rc, it_path, out = run_compose("IT1.md", [
