@@ -152,7 +152,7 @@ def run(d: dc.Driver, args) -> int:
     if not args.worktree or not args.branch:
         raise dc.Surprise("--worktree and at least one --branch PKG=BRANCH are required")
     wt = os.path.abspath(args.worktree)
-    dossier_file = args.log or os.path.join(args.root, ".discovery", "dossiers", f"{args.dossier}.md")
+    dossier_file = dc.resolve_dossier(args.root, args.dossier, args.log)
     if not os.path.isfile(dossier_file):
         raise dc.Surprise(f"dossier file not found: {dossier_file} (give --dossier or --log)")
     order = merge_order(parse_package_table(open(dossier_file, encoding="utf-8").read()))
@@ -250,7 +250,7 @@ def selftest() -> int:
         dc.fixture_commit(w3, "src/flush.py", "x = 3\n", "p3 edit")
         dc.fixture_commit(x, "src/flush.py", "x = 4\n", "x edit")
         rows3 = ("## Work packages\n\n| Package | Owned paths | Depends on |\n|---|---|---|\n| P3 third | src/flush.py | — |\n\n## Build log\n")
-        dc.fixture_write(main, ".discovery/dossiers/W-3.md", "---\nid: W-3\n---\n" + rows3)
+        dc.fixture_write(main, ".discovery/dossiers/W-3-slug.md", "---\nid: W-3\n---\n" + rows3)
         before = dc.fixture_git(x, "rev-parse", "HEAD").strip()
         rc, out = dc.run_self("merge_packages.py", "--worktree", x, "--dossier", "W-3", "--root", main, "--branch", "P3=pkg-p3", env=env)
         c("a conflict exits 2, names the path, aborts", rc == 2 and "src/flush.py" in out and dc.worktree_state(x)["operation"] == [])

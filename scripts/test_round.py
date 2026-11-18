@@ -104,7 +104,7 @@ def run(d: dc.Driver, args) -> int:
     sys.path.insert(0, dc.SCRIPTS)
     import run_tests
 
-    dossier_file = args.log or os.path.join(args.root, ".discovery", "dossiers", f"{args.dossier}.md")
+    dossier_file = dc.resolve_dossier(args.root, args.dossier, args.log, required=False) or ""
     rows: list[dict] = []
     if os.path.isfile(dossier_file):
         try:
