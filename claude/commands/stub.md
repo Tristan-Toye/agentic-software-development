@@ -368,7 +368,10 @@ ATTENTION: <one line per thing the user should see before this merges>
 ```
 
 `STUB-RESULT` is `green` only when the run ended green; otherwise write `red`.
-Write an `ATTENTION:` line for a waived `SKIP`, an ADR-worthy lesson, a
+A waived `SKIP` the owner recorded as standing (`land_stub.py --waive`, the
+`standing_waivers` of `~/.agentic/stub-auto-merge.json`) is named in the
+report, not as an `ATTENTION:` line, and so is a receipt the repository does
+not need. Write an `ATTENTION:` line for any other waived `SKIP`, an ADR-worthy lesson, a
 contradiction you ruled on, or anything else the record calls surprising. Leave
 them out only when there is nothing to say; a dossier in flight is named in the
 report and needs none.
