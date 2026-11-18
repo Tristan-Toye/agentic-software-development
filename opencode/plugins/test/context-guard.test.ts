@@ -1,7 +1,7 @@
 // Run: bun --no-install opencode/plugins/test/context-guard.test.ts
 // Drives the plugin through its hooks: chat.params, tool.execute.before and the
 // messages transform. The config comes from context-guard.test.yaml via the env override.
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -159,6 +159,16 @@ const attempt = async (sessionID: string, tool: string, args: any) => {
 const dossier = "/repo/.discovery/dossiers/feature-x.md"
 const cargo = "limactl shell nightwatch -- cargo test -p foo"
 
+// The integration test author's seal: sealed-paths.txt beside .agent-staging refuses read/edit/write.
+{
+  const wt = join(tmp, "wt-seal")
+  mkdirSync(join(wt, ".agent-staging"), { recursive: true })
+  writeFileSync(join(wt, ".agent-staging", "sealed-paths.txt"), "# sealed\nsrc/flush.py\n")
+  await params({ sessionID: "g_int", agent: "integration-test-author" })
+  check("seal: sealed read refused", (await attempt("g_int", "read", { filePath: join(wt, "src", "flush.py") }))?.includes("sealed") === true)
+  check("seal: sealed edit refused", (await attempt("g_int", "edit", { filePath: join(wt, "src", "flush.py") })) !== undefined)
+  check("seal: other source read allowed", (await attempt("g_int", "read", { filePath: join(wt, "src", "main.py") })) === undefined)
+}
 check("dossier read refused", (await attempt("g_work", "read", { filePath: dossier }))?.includes("dossier_edit.py section") === true)
 check("dossier read with limit allowed", (await attempt("g_work", "read", { filePath: dossier, offset: 1, limit: 50 })) === undefined)
 check("dossier: other agent allowed", (await attempt("g_other", "read", { filePath: dossier })) === undefined)
@@ -199,7 +209,7 @@ check("log: timestamped", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z /.test(l
 check("log: mask lines for ses_w (two moves)", ev("mask").filter((l) => l.includes(" ses_w ")).length === 2)
 check("log: mask line format", ev("mask").some((l) => / mask ses_w watermark a4: ~\d+k -> ~\d+k tokens, 2 outputs, 0 inputs, 2 reasoning$/.test(l)))
 check("log: refused line format", ev("refused").some((l) => / refused g_work work-on read: read a dossier by section/.test(l)))
-check("log: refusals count", ev("refused").length === 8)
+check("log: refusals count", ev("refused").length === 10)
 check("log: floor line for the thrash session", ev("floor").some((l) => / floor ses_floor ~\d+k tokens, a move would free ~\d+k: /.test(l)))
 check("log: no mask line on every step", ev("mask").filter((l) => l.includes(" ses_thrash ")).length === 1)
 

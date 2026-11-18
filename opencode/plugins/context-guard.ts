@@ -3,6 +3,7 @@ import { appendFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } 
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { configLoader, protectRegexes, type Config } from "../../shared/config"
+import { sealedRead } from "../../shared/blind-read"
 import { readGuard } from "../../shared/read-guard"
 
 // Context guard — keeps an orchestrator's carried context small, and stops the reads
@@ -258,17 +259,25 @@ export const ContextGuardPlugin: Plugin = async () => {
     "tool.execute.before": async (input, output) => {
       let reason: string | undefined
       let agent = ""
+      let prefix = "context-guard"
       try {
         const cfg = currentConfig()
         agent = sessionAgents.get(input.sessionID) ?? ""
-        if (!agent || !cfg.guard_agents.includes(agent)) return
-        reason = refusal(input.tool, output.args, cfg)
+        // The integration test author never reads or edits an implementation body: the files in
+        // .agent-staging/sealed-paths.txt are refused (shared/blind-read.ts). Grep is not covered here.
+        if (agent === "integration-test-author" && ["read", "edit", "write"].includes(input.tool)) {
+          reason = sealedRead(String(output.args?.filePath ?? ""), process.cwd())
+          prefix = "sealed"
+        } else {
+          if (!agent || !cfg.guard_agents.includes(agent)) return
+          reason = refusal(input.tool, output.args, cfg)
+        }
       } catch {
         return // a guard error never breaks a call
       }
       if (!reason) return
       log("refused", input.sessionID, `${agent} ${input.tool}: ${reason}`)
-      throw new Error(`context-guard: ${reason}`)
+      throw new Error(`${prefix}: ${reason}`)
     },
 
     "experimental.chat.messages.transform": async (_input, output) => {

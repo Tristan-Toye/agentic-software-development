@@ -1,8 +1,9 @@
-// PreToolUse hook for Read|Edit|Bash. In the /work-on orchestrator (the main session of a
+// PreToolUse hook for Read|Edit|Write|Grep|Bash. In the /work-on orchestrator (the main session of a
 // session that ran the work-on command) it applies the shared read guard. In a subagent it
-// applies only the unit test author's read and edit boundary (shared/blind-read.ts). Denies with the
+// applies only the unit test author's read and edit boundary and the integration test author's seal
+// (shared/blind-read.ts). Denies with the
 // documented PreToolUse JSON. Fails open.
-import { BLIND_AGENT, blindRead } from "../blind-read"
+import { BLIND_AGENT, INTEGRATION_AGENT, blindRead, sealedGrep, sealedRead } from "../blind-read"
 import { configLoader } from "../config"
 import { bigGuardOn, phaseFileOf, phaseRereadReason, readGuard, windowReason, type ReadGuardCall } from "../read-guard"
 import { agentTypeOf, configPath, isOrchestrator, loadState, log, pipelineRoot, readInput, runHook, saveState } from "./common"
@@ -15,12 +16,28 @@ await runHook(async () => {
   const input = await readInput()
   if (!input || !input.tool_name || !input.session_id) return undefined
   if (input.agent_id) {
-    if ((input.tool_name !== "Read" && input.tool_name !== "Edit") || agentTypeOf(input) !== BLIND_AGENT) return undefined
-    // Edit (the in-place change of an existing test file, #392) stays inside the same boundary as Read.
-    const reason = blindRead(String(input.tool_input?.file_path ?? ""), input.cwd ?? process.cwd())
-    if (!reason) return undefined
-    log("refused", input.session_id, `${BLIND_AGENT} ${input.agent_id} ${input.tool_name}: ${reason}`)
-    return deny(`blind ${input.tool_name.toLowerCase()}: ${reason}`)
+    const agent = agentTypeOf(input)
+    const ti = input.tool_input ?? {}
+    const cwd = input.cwd ?? process.cwd()
+    if (agent === BLIND_AGENT && (input.tool_name === "Read" || input.tool_name === "Edit")) {
+      // Edit (the in-place change of an existing test file, #392) stays inside the same boundary as Read.
+      const reason = blindRead(String(ti.file_path ?? ""), cwd)
+      if (!reason) return undefined
+      log("refused", input.session_id, `${BLIND_AGENT} ${input.agent_id} ${input.tool_name}: ${reason}`)
+      return deny(`blind ${input.tool_name.toLowerCase()}: ${reason}`)
+    }
+    if (agent === INTEGRATION_AGENT) {
+      const reason =
+        input.tool_name === "Read" || input.tool_name === "Edit" || input.tool_name === "Write"
+          ? sealedRead(String(ti.file_path ?? ""), cwd)
+          : input.tool_name === "Grep"
+            ? sealedGrep(ti.path === undefined ? undefined : String(ti.path), ti.output_mode, cwd)
+            : undefined
+      if (!reason) return undefined
+      log("refused", input.session_id, `${INTEGRATION_AGENT} ${input.agent_id} ${input.tool_name}: ${reason}`)
+      return deny(`sealed: ${reason}`)
+    }
+    return undefined
   }
   const toolInput = input.tool_input ?? {}
   let call: ReadGuardCall

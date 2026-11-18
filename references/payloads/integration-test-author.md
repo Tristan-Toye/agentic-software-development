@@ -86,6 +86,15 @@ tests were written against. The excerpt goes with the rest of
 `.agent-staging/` before the commit. The orchestrator commits its output; it
 has no `Bash`.
 
+**The sealed files.** `compose_payloads.py` also writes
+`.agent-staging/sealed-paths.txt` beside the payload: the implementation paths
+of every work package in the dossier plus the `--contract-paths` files, one
+repo-relative path per line, rewritten on each compose. The plugin's hook
+refuses this author's Read, Edit and Write of those files, and a content-mode
+Grep over one, at any time, so after the Phase 4 merge (and in Phase 5/6
+correction runs) it still cannot see a body. It never needs to open them: the
+stub text is pasted in `CONTRACT`.
+
 **The excerpt is derived state, regenerated at spawn time.** Like the staged
 contract and its `CONTRACT_HASH`, it equals the live dossier's three
 sections at the moment the payload ships — not at the moment the file was
