@@ -2,6 +2,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { fileSig, readText } from "./asyncio.ts"
 import { rulingRefused } from "./rulings.ts"
 
 export type Update = { ts: string; kind: "runner" | "stage" | "update"; text: string; stage?: string; state?: string; auto?: boolean; event?: string; status?: string; agent_id?: string }
@@ -55,6 +56,11 @@ export function canIntegrate(stubState: string, integrate: { state: string } | n
 export function readUpdates(key: string, dir = runsDir(), limit = 50): Update[] {
   let text = ""
   try { text = readFileSync(join(dir, `${key}.jsonl`), "utf8") } catch { return [] }
+  return parseUpdates(text).slice(0, limit)
+}
+
+/** All updates of a log, newest first. */
+function parseUpdates(text: string): Update[] {
   const out: Update[] = []
   for (const l of text.split("\n")) {
     if (!l.trim()) continue
@@ -64,7 +70,28 @@ export function readUpdates(key: string, dir = runsDir(), limit = 50): Update[] 
       out.push({ ts: String(o.ts ?? ""), kind: o.kind, text: o.text, stage: typeof o.stage === "string" ? o.stage : undefined, state: typeof o.state === "string" ? o.state : undefined, ...(o.auto === true ? { auto: true } : {}), ...(typeof o.event === "string" ? { event: o.event } : {}), ...(typeof o.status === "string" ? { status: o.status } : {}), ...(typeof o.agent_id === "string" && o.agent_id ? { agent_id: o.agent_id } : {}) })
     } catch { /* torn line */ }
   }
-  return out.reverse().slice(0, limit)
+  return out.reverse()
+}
+
+
+const ucache = new Map<string, { sig: string; all: Update[] }>()
+/** `readUpdates` off the main thread. A log whose size and mtime are unchanged since the last call is not read again. */
+export async function readUpdatesAsync(key: string, dir = runsDir(), limit = 50): Promise<Update[]> {
+  return (await readUpdatesSig(key, dir)).all.slice(0, limit)
+}
+
+/** Parsed log (newest first) with `changed`: false when the file is the same as at the previous call. */
+export async function readUpdatesSig(key: string, dir = runsDir()): Promise<{ all: Update[]; changed: boolean; sig: string | null }> {
+  const path = join(dir, `${key}.jsonl`)
+  const sig = await fileSig(path)
+  if (sig === null) { ucache.delete(path); return { all: [], changed: true, sig } }
+  const hit = ucache.get(path)
+  if (hit && hit.sig === sig) return { all: hit.all, changed: false, sig }
+  const text = await readText(path)
+  if (text === null) return { all: [], changed: true, sig: null }
+  const all = parseUpdates(text)
+  ucache.set(path, { sig, all })
+  return { all, changed: true, sig }
 }
 
 export function pidAlive(pid: number): boolean {

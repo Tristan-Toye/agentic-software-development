@@ -1,19 +1,19 @@
 // Owner-questions server. Run: bun --no-install shared/questions/server.ts
 // Contract: references/owner-questions.md
 import { appendFileSync, mkdirSync, openSync, readdirSync, statSync, watch, writeFileSync } from "node:fs"
-import { AnsweredError, appendOwner, idForThread, readAll, readQuestion, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
+import { AnsweredError, appendOwner, idForThread, readAll, readAllAsync, readQuestion, readSidecarAsync, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
 import { addRuling, readRulings, removeRuling } from "./rulings.ts"
 import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, undecidedDeferred, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile, refreshAfterControl } from "./stubs.ts"
-import { canIntegrate, checkRule, dossierPage, integrationPhase, integrationStopped, markIntegrating, readBlocks, readConversation, readIntegrate, readRunner, readUpdates, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
+import { canIntegrate, checkRule, dossierPage, integrationPhase, integrationStopped, markIntegrating, readBlocks, readConversation, readIntegrate, readRunner, readUpdates, readUpdatesAsync, readUpdatesSig, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
 import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord, splitSections } from "./timeline.ts"
 import { runRunner, runTarget, runnerScript } from "./controls.ts"
 import { failPending, markPending, PENDING_TTL_MS, stubResumePending } from "./pending.ts"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { pendingSlack, readRunThread, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
+import { pendingSlack, readRunThreadAsync, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
 import { startLagWatch } from "./lagwatch.ts"
 import { archStemOf, collapsedView, hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
 import { buildAnswer, diagramsOf, MAX_BODY, ReviewError, isReviewQuestion, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
@@ -163,10 +163,10 @@ export async function scan(): Promise<void> {
   if (scanning) return void (again = true)
   scanning = true
   try {
-    for (const q of readAll(DIR)) {
+    for (const q of await readAllAsync(DIR)) {
       const s = seen.get(q.id)
       if (!s) {
-        const side = readSidecar(DIR, q.id)
+        const side = await readSidecarAsync(DIR, q.id)
         const last = q.lines[q.lines.length - 1]
         // A question already posted before this start is caught up without a burst of reminders.
         const caughtUp = side && last.from === "agent" ? remindersDue(Date.now() - Date.parse(last.ts)) : 0
@@ -213,6 +213,8 @@ export async function scan(): Promise<void> {
 
 // ---- Slack progress thread per run ----
 const runSeen = new Map<string, number>()
+/** Signature (size:mtime) of each run log as of the last tick that left nothing pending to post. */
+const runQuiet = new Map<string, string | null>()
 let scanningRuns = false
 /** The agent's own notes are markdown (bullets, tables): render them for the timeline. */
 function withHtml<T extends { type: string; auto?: boolean; text: string; html?: string }>(es: T[]): T[] {
@@ -227,9 +229,12 @@ export async function scanRunThreads(): Promise<void> {
   try {
     for (const r of await allRuns()) {
       const key = `${r.repo}.${r.id}`
-      const chrono = readUpdates(key, runsDir(), 100000).reverse()
+      // stat is cheaper than read: a log unchanged since a tick that left nothing to post has nothing new.
+      const log = await readUpdatesSig(key, runsDir())
+      if (runQuiet.get(key) === log.sig && !log.changed && runSeen.has(key)) continue
+      const chrono = [...log.all].reverse()
       if (!chrono.length) continue
-      const side = readRunThread(runsDir(), key)
+      const side = await readRunThreadAsync(runsDir(), key)
       // A run first seen without a thread: one that began before this server
       // started is caught up silently (no backlog after a restart); one that
       // began since is new and gets its thread from its first line.
@@ -237,7 +242,7 @@ export async function scanRunThreads(): Promise<void> {
         const began = Date.parse(String(chrono[0]?.ts ?? ""))
         const old = !side && !(began >= SERVER_START - 60_000)
         runSeen.set(key, side?.seen ?? (old ? chrono.length : 0))
-        if (old) continue
+        if (old) { runQuiet.set(key, log.sig); continue }
       }
       const link = `http://127.0.0.1:${PORT}/repo/${encodeURIComponent(r.repo)}/${encodeURIComponent(r.id)}`
       const { upto, msgs } = pendingSlack(chrono, runSeen.get(key)!, !!side, { repo: r.repo, id: r.id, title: r.title, link })
@@ -251,6 +256,8 @@ export async function scanRunThreads(): Promise<void> {
         } catch (e) { log(`slack run thread: ${(e as Error).message}`) }
       }
       runSeen.set(key, upto)
+      if (msgs.length === 0 && !!thread === !!side) runQuiet.set(key, log.sig)
+      else runQuiet.delete(key)
       if (thread && threadChanged(side, thread, upto)) writeRunThread(runsDir(), key, { ...thread, seen: upto })
     }
   } finally { scanningRuns = false }
@@ -355,7 +362,10 @@ async function onSlackAction(a: OwnerAction): Promise<void> {
 // ---- HTTP ----
 const json = (body: unknown, status = 200) => Response.json(body, { status })
 const html = (body: string) => new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } })
-const allRuns = async (): Promise<Run[]> => (await getRuns(() => readAll(DIR))).runs
+/** getRuns/getStubs take a sync question list; read it async first so the handler never blocks on the disk. */
+const getRunsA = async () => { const qs = await readAllAsync(DIR); return getRuns(() => qs) }
+const getStubsA = async () => { const qs = await readAllAsync(DIR); return getStubs(() => qs) }
+const allRuns = async (): Promise<Run[]> => (await getRunsA()).runs
 const findRun = async (repo: string, id: string): Promise<Run | undefined> => (await allRuns()).find((r) => r.repo === repo && r.id === id)
 
 /** The repo roots of a repo's runs (runner root, worktree, main checkout), main first. */
@@ -385,8 +395,8 @@ function vrDiagrams(run: Run) {
   return null
 }
 /** The open product question of the visual review for this dossier (its options are Approved and Changes requested), or undefined. */
-function vrQuestion(dossier: string, repo: string, runs: Run[]): Question | undefined {
-  return readAll(DIR).find((q) => q.state === "open" && q.dossier === dossier && isReviewQuestion(q) && questionRepo(q, runs) === repo)
+async function vrQuestion(dossier: string, repo: string, runs: Run[]): Promise<Question | undefined> {
+  return (await readAllAsync(DIR)).find((q) => q.state === "open" && q.dossier === dossier && isReviewQuestion(q) && questionRepo(q, runs) === repo)
 }
 
 /** Server-Sent Events: a `changed` event with the kinds that changed; a comment heartbeat keeps the stream open. */
@@ -448,12 +458,13 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && path === "/api/events") return events(req)
   if (req.method === "GET" && path === "/api/runs") {
     // Live runs carry their agent counts (this stage); the accounts carry their windows and which runs use them.
-    const v = await getRuns(() => readAll(DIR))
-    const open = readAll(DIR).filter((q) => q.state === "open")
+    const v = await getRunsA()
+    const open = (await readAllAsync(DIR)).filter((q) => q.state === "open")
     const openQs = new Set(open.map((q) => q.id))
     // A refusal counts as a blocker only while the run has an open question a ruling can answer.
     const asking = new Set(open.map((q) => `${questionRepo(q, v.runs)}.${q.dossier}`))
-    const runs = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(readUpdates(`${r.repo}.${r.id}`, runsDir(), 3000)), blocked: asking.has(`${r.repo}.${r.id}`) ? readBlocks(`${r.repo}.${r.id}`).length : 0 } : r))
+    const active = new Map(await Promise.all(v.runs.filter((r) => runnerActive(r.runner)).map(async (r) => [`${r.repo}.${r.id}`, await readUpdatesAsync(`${r.repo}.${r.id}`, runsDir(), 3000)] as const)))
+    const runs = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(active.get(`${r.repo}.${r.id}`) ?? []), blocked: asking.has(`${r.repo}.${r.id}`) ? readBlocks(`${r.repo}.${r.id}`).length : 0 } : r))
       .map((r) => { const m = mergeState(`${r.repo}.${r.id}`); return m ? { ...r, merge: m } : r })
       .map((r) => ({ ...r, deferredUndecided: undecidedDeferred(r.deferred.items, r.runner?.command === "fix-deferred" && runnerActive(r.runner), openQs) }))
     const plans = planRuns(runs)
@@ -502,7 +513,7 @@ export async function handle(req: Request): Promise<Response> {
       const r = setVerdict(dir, f.dossier, b)
       // A Question with a comment goes to the agent as a follow-up that carries the anchor; the question stays open.
       let followup = false
-      const q = r.followup ? vrQuestion(f.dossier, f.repo, f.runs) : undefined
+      const q = r.followup ? await vrQuestion(f.dossier, f.repo, f.runs) : undefined
       if (r.followup && q) {
         try { appendOwner(DIR, q.id, { kind: "followup", text: "Element " + r.followup.anchor.element + " (" + r.followup.anchor.diagram + "): " + r.followup.text, via: "page", anchor: r.followup.anchor }); followup = true; void scan() } catch { /* the question was answered meanwhile: the verdict is still saved */ }
       }
@@ -515,7 +526,7 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && path === "/api/visual-review/answer") {
     const f = await vrFind(url.searchParams.get("dossier") ?? "", url.searchParams.get("repo") ?? "")
     if (!f.ok) return json({ error: f.error }, f.status)
-    const q = vrQuestion(f.dossier, f.repo, f.runs)
+    const q = await vrQuestion(f.dossier, f.repo, f.runs)
     const st = reviewState(vrDir(f.root, f.dossier), f.dossier)
     const a = buildAnswer(st, f.dossier)
     const keys = q ? reviewOptions(q.options) : null
@@ -552,7 +563,7 @@ export async function handle(req: Request): Promise<Response> {
     return json({ ok: true, output: "checking the accounts" })
   }
   if (req.method === "GET" && path === "/api/stubs") {
-    const view = await getStubs(() => readAll(DIR))
+    const view = await getStubsA()
     return json({ ...view, repos: view.repos.map((r) => ({ ...r, stubs: r.stubs.map((s) => {
       const key = `${r.repo}.${s.branch.replace(/\//g, "-")}`
       const integrate = readIntegrate(key), runner = readRunner(key)
@@ -562,7 +573,7 @@ export async function handle(req: Request): Promise<Response> {
   }
   const ow = path.match(/^\/open-work\/([\w.-]+)$/)
   if (req.method === "GET" && ow) {
-    const html = await openWorkHtml(ow[1], readAll(DIR))
+    const html = await openWorkHtml(ow[1], await readAllAsync(DIR))
     return html === null ? json({ error: "no open-work report for that repo" }, 404) : new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } })
   }
   const tl = path.match(/^\/api\/timeline\/([\w.-]+)\/([\w.-]+)$/)
@@ -572,8 +583,8 @@ export async function handle(req: Request): Promise<Response> {
     if (!run) return json({ error: "no such dossier" }, 404)
     let log: string[] = []
     try { log = logEntries(buildLog(readDossier(run.file))) } catch { /* unreadable */ }
-    const updates = readUpdates(run.runKey || `${run.repo}.${run.id}`, runsDir(), 1000)
-    const questions = readAll(DIR).filter((q) => q.dossier === run.id && questionRepo(q, runs) === run.repo)
+    const updates = await readUpdatesAsync(run.runKey || `${run.repo}.${run.id}`, runsDir(), 1000)
+    const questions = (await readAllAsync(DIR)).filter((q) => q.dossier === run.id && questionRepo(q, runs) === run.repo)
     const entries = withHtml(mergeTimeline({ updates, questions, names: PHASE_NAMES }))
     // One tab per run section: Implement dossier (the /work-on phases), then each later command (its own steps).
     const sections = splitSections(entries).map((x) => ({ cmd: x.cmd, label: x.label, lastTs: x.lastTs, groups: groupByPhase(x.entries, x.cmd ? "Started" : "Setup", false) }))
@@ -604,16 +615,16 @@ export async function handle(req: Request): Promise<Response> {
   }
   if (req.method === "GET" && path === "/api/stub") {
     const repo = url.searchParams.get("repo") ?? "", branch = url.searchParams.get("branch") ?? ""
-    const rs = (await getStubs(() => readAll(DIR))).repos.find((r) => r.repo === repo)
+    const rs = (await getStubsA()).repos.find((r) => r.repo === repo)
     const stub = rs?.stubs.find((s) => s.branch === branch)
     if (!rs || !stub) return json({ error: "no such stub" }, 404)
     const slug = branch.replace(/\//g, "-"), key = `${repo}.${slug}`
     const file = recordFile(rs.main, branch)
     let record = ""
     try { record = file ? readFileSync(file, "utf8") : "" } catch { /* unreadable */ }
-    const questions = readAll(DIR).filter((q) => q.dossier === slug || q.dossier === branch || `${q.repo}.${q.dossier}` === key)
+    const questions = (await readAllAsync(DIR)).filter((q) => q.dossier === slug || q.dossier === branch || `${q.repo}.${q.dossier}` === key)
     const recordEntries = parseRecord(record, stub.cut)
-    const upd = readUpdates(key, runsDir(), 1000)
+    const upd = await readUpdatesAsync(key, runsDir(), 1000)
     const extra = recordEntries.filter((e) => e.type === "boundary").map((e) => ({ ...e, text: "" }))
     const entries = withHtml(mergeTimeline({ updates: upd, questions, extra, unit: "Step" }))
     const groups = groupByPhase(entries, "Before the first step", false)
@@ -628,12 +639,12 @@ export async function handle(req: Request): Promise<Response> {
   }
   // Integrate a stub: its finished dossiers through the merge queue (FIFO), then /stub on the runner; and Stop/Resume of
   // that /stub run. POST {repo, branch, action: integrate|stop|resume}.
-  if (req.method === "GET" && path === "/api/autowork") return json({ repos: viewsFor((await getRuns(() => readAll(DIR))).runs) })
+  if (req.method === "GET" && path === "/api/autowork") return json({ repos: viewsFor((await getRunsA()).runs) })
   if (req.method === "POST" && path === "/api/autowork") {
     const origin = req.headers.get("origin")
     if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
     const b = await req.json().catch(() => ({})) as { repo?: string; action?: string }
-    const v = viewsFor((await getRuns(() => readAll(DIR))).runs).find((x) => x.repo === b.repo)
+    const v = viewsFor((await getRunsA()).runs).find((x) => x.repo === b.repo)
     const argv = v ? argvFor(String(b.action), v.root) : null
     if (!v || !argv) return json({ error: "no such repository, or the action is not enable, disable, start-now or resume" }, v ? 400 : 404)
     const r = await runAutoWork(argv)
@@ -644,7 +655,7 @@ export async function handle(req: Request): Promise<Response> {
     const origin = req.headers.get("origin")
     if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
     const b = await req.json().catch(() => ({})) as { repo?: string; branch?: string; action?: string }
-    const rs = (await getStubs(() => readAll(DIR))).repos.find((r) => r.repo === b.repo)
+    const rs = (await getStubsA()).repos.find((r) => r.repo === b.repo)
     const stub = rs?.stubs.find((x) => x.branch === b.branch)
     if (!rs || !stub || !/^(stub|release)\/[\w.-]+$/.test(stub.branch)) return json({ error: "no such stub" }, 404)
     const slug = stub.branch.replace(/\//g, "-")
@@ -689,7 +700,7 @@ export async function handle(req: Request): Promise<Response> {
     // The agent hears the ruling through its open question: an option-style answer, which the classifier reads as the
     // owner's own words naming the exact action.
     const rs = await allRuns()
-    const qs = readAll(DIR).filter((q) => q.dossier === run.id && questionRepo(q, rs) === run.repo && q.state === "open").sort((a, c) => c.ts.localeCompare(a.ts))
+    const qs = (await readAllAsync(DIR)).filter((q) => q.dossier === run.id && questionRepo(q, rs) === run.repo && q.state === "open").sort((a, c) => c.ts.localeCompare(a.ts))
     const q = qs[0]
     const what = b.tool === "Bash" ? `this exact command: \`${b.target}\`` : `${b.tool} on \`${b.target}\``
     let rule = ""
@@ -912,7 +923,7 @@ export async function handle(req: Request): Promise<Response> {
       if (action !== "stop") { markPending(repo, id, action); expireWatch() }
       const r = await runRunner(action === "stop" ? ["stop", target.stop, "--root", root] : action === "fix-deferred" ? [id, "--root", root, "--command", "fix-deferred", ...(items.length ? ["--items", items.join(",")] : [])] : [target.dossier, "--root", root, ...flow])
       if (!r.ok && action !== "stop") failPending(repo, id, action, r.output)
-      if (r.ok) { refreshAfterControl(repo); void getStubs(() => readAll(DIR)) }
+      if (r.ok) { refreshAfterControl(repo); void getStubsA() }
       emitChange("runs")
       return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 500)
     } finally { inflightControl.delete(key) }
@@ -924,12 +935,12 @@ export async function handle(req: Request): Promise<Response> {
   }
   const ds = path.match(/^\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && ds) {
-    const run = (await getRuns(() => readAll(DIR))).runs.find((r) => r.repo === ds[1] && r.id === ds[2])
+    const run = (await getRunsA()).runs.find((r) => r.repo === ds[1] && r.id === ds[2])
     if (!run) return json({ error: "no such dossier" }, 404)
     try { return new Response(dossierPage(run.id, run.repo, readDossier(run.file)), { headers: { "content-type": "text/html; charset=utf-8" } }) } catch { return json({ error: "dossier unreadable" }, 404) }
   }
   if (req.method === "GET" && path === "/api/questions") {
-    const all = url.searchParams.get("state") === "open" ? readAll(DIR).filter((q) => q.state === "open") : readAll(DIR)
+    const all = url.searchParams.get("state") === "open" ? (await readAllAsync(DIR)).filter((q) => q.state === "open") : await readAllAsync(DIR)
     return json(all)
   }
   const m = path.match(/^\/api\/questions\/([\w.-]+)(\/messages)?$/)
@@ -1042,8 +1053,8 @@ async function checkMerges(): Promise<void> {
   if (mergeInflight || !mergeDetectorEnabled() || process.env.ASD_RUNS_NO_GH === "1") return
   mergeInflight = true
   try {
-    const st = await getStubs(() => readAll(DIR))
-    const runs = (await getRuns(() => readAll(DIR))).runs
+    const st = await getStubsA()
+    const runs = (await getRunsA()).runs
     for (const rr of st.repos) {
       if (!rr.open.length) continue
       // Only a main checkout: a scan that took a worktree for a repo (its `.git` is a file) must not baseline or start runs.
@@ -1141,8 +1152,8 @@ async function main(): Promise<void> {
     void autoWorkTick() }
   // Automatic work: the facts go to the script, which decides (no agent) and takes at most one step per repository. Off unless a repository is switched on.
   const autoWorkTick = async () => { try {
-    const runs = (await getRuns(() => readAll(DIR))).runs
-    const stubs = (await getStubs(() => readAll(DIR))).repos.map((r) => ({ ...r, stubs: r.stubs.map((s) => {
+    const runs = (await getRunsA()).runs
+    const stubs = (await getStubsA()).repos.map((r) => ({ ...r, stubs: r.stubs.map((s) => {
       const key = `${r.repo}.${s.branch.replace(/\//g, "-")}`
       return { ...s, canIntegrate: canIntegrate(s.state, readIntegrate(key), readRunner(key)) }
     }) }))

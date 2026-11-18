@@ -2,6 +2,7 @@
 // Contract: references/owner-questions.md (Dashboard). No network here; the server posts what these functions select.
 import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { readText } from "./asyncio.ts"
 import type { Update } from "./runstore.ts"
 
 export type RunSlackMsg = { role: "open" | "reply"; text: string }
@@ -59,6 +60,14 @@ export type RunThread = { channel: string; ts: string; seen?: number }
 export function readRunThread(dir: string, key: string): RunThread | null {
   try {
     const j = JSON.parse(readFileSync(join(dir, `${key}.slack.json`), "utf8"))
+    return typeof j?.channel === "string" && typeof j?.ts === "string" ? { channel: j.channel, ts: j.ts, seen: typeof j.seen === "number" ? j.seen : undefined } : null
+  } catch { return null }
+}
+export async function readRunThreadAsync(dir: string, key: string): Promise<RunThread | null> {
+  const text = await readText(join(dir, `${key}.slack.json`))
+  if (text === null) return null
+  try {
+    const j = JSON.parse(text)
     return typeof j?.channel === "string" && typeof j?.ts === "string" ? { channel: j.channel, ts: j.ts, seen: typeof j.seen === "number" ? j.seen : undefined } : null
   } catch { return null }
 }
