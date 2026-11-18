@@ -232,7 +232,9 @@ point you picked. Write it with `PROPERTY_LIBRARY` and these rules:
   leaves the property testing trivial inputs. Make the boundaries the line
   names (empty, one element, duplicates, extremes) reachable, and pin the
   line's concrete example too (`@example`, a fixed case, or an explicit
-  example test beside it in the same test).
+  example test beside it in the same test). Never turn off the library's
+  health checks (`suppress_health_check`, or the like): they are what tells
+  you a filter is throwing most cases away.
 - **Keep it stable.** Use the library's fixed-seed or derandomised setting,
   and a bounded number of cases that runs in about a second. Keep shrinking
   on: a shrunk counterexample is what arbitration quotes against the line.

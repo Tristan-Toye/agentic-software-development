@@ -48,6 +48,21 @@ and judged), so each exclusion below names a shape that was never the race:
   that is only parsed, formatted or compared.
 - `random` — an unseeded generator.
 
+Three more kinds, only in a file that holds a property test (`@given`,
+`fc.assert`/`fc.property`, `proptest!`, `quickcheck`, `Prop.ForAll`,
+`checkAll`, `rapid.Check`, ...), because a property test is random input by
+design:
+
+- `property-unseeded` — the file runs property tests with no fixed seed or
+  derandomised setting anywhere in it; marked once, on the first property.
+- `property-health-off` — the library's health checks turned off
+  (`suppress_health_check`, `HealthCheck.all()`). They are what reports a
+  filter discarding most cases, so the property may test only trivial input.
+- `property-filter` — an `assume(...)`, `prop_assume!`, `fc.pre(...)`, `==>`,
+  or a `.filter(...)` on a generator: a domain built by filtering instead of by
+  construction (QuickCheck's ordered-insert law tested 19 non-trivial cases of
+  100 that way). A reason to look: a filter that discards little is fine.
+
 Comment lines and `use`/`import` lines are skipped, and string literals are
 blanked before every kind but `fixed-resource` is matched, so a word in an
 assertion message is not code.
@@ -112,6 +127,16 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"\bthread_rng\(\)|\brand::random\b|\brandom\.(random|randint|choice|shuffle|sample)\(|"
         r"\bMath\.random\(\)|\bnew Random\(\)")),
 ]
+# Property-test kinds: only in a file that holds a property test.
+PROPERTY_FILE = re.compile(
+    r"@given\b|\bfc\.(assert|property|asyncProperty)\(|\bproptest!|\bquickcheck\b|\bProp\.ForAll\b|"
+    r"\[Property\b|\bcheckAll\b|\bforAll\b|\brapid\.Check\(|\.Sample\(")
+PROPERTY_SEED = re.compile(
+    r"derandomize\s*=\s*True|@seed\(|\bseed\s*[:=]|rng_seed|PROPTEST_RNG_SEED|\bReplay\b|"
+    r"\bwithSeed\b|\bSeed\s*=|QUICKCHECK_SEED|\bPropTestConfig\b[^\n]*seed")
+PROPERTY_HEALTH_OFF = re.compile(r"\bsuppress_health_check\b|\bHealthCheck\.all\(\)")
+PROPERTY_FILTER = re.compile(r"\bassume\(|\bprop_assume!|\bfc\.pre\(|==>|\bwhenever\b")
+GENERATOR_FILTER = re.compile(r"\b(st|strategies|fc|Gen|Arb|prop|any::<[^>]*>)\b[^\n]*\.(filter|Where)\(")
 # Kinds matched on the raw line: the resource IS a string literal.
 HOST_PORT = re.compile(r"\b(127\.0\.0\.1|localhost|0\.0\.0\.0):\d{2,5}\b")
 BINDS = re.compile(r"\bbind\b|\blisten\b|TcpListener|UdpSocket|\bserve\b|--port")
@@ -354,6 +379,8 @@ def markers(text: str, python_like: bool = False) -> list[tuple[int, str, str]]:
     lines = blank_strings(text, python_like).splitlines()
     lines += [""] * (len(raw_lines) - len(lines))
     consts = sub_second_consts(text)
+    is_property = bool(PROPERTY_FILE.search(text))
+    seeded = bool(PROPERTY_SEED.search(text))
     found: list[tuple[int, str, str]] = []
     for index, (raw, line) in enumerate(zip(raw_lines, lines)):
         if COMMENT.match(raw) or USE_LINE.match(raw):
@@ -372,6 +399,14 @@ def markers(text: str, python_like: bool = False) -> list[tuple[int, str, str]]:
             kinds.append("wall-clock")
         if (HOST_PORT.search(raw) and BINDS.search(line)) or (TMP_PATH.search(raw) and FILE_IO.search(line)):
             kinds.append("fixed-resource")
+        if is_property:
+            if PROPERTY_HEALTH_OFF.search(line):
+                kinds.append("property-health-off")
+            if PROPERTY_FILTER.search(line) or GENERATOR_FILTER.search(line):
+                kinds.append("property-filter")
+            if not seeded and PROPERTY_FILE.search(line):
+                kinds.append("property-unseeded")
+                seeded = True  # marked once per file
         for kind in kinds:
             found.append((index + 1, kind, raw.strip()))
     return found
@@ -523,6 +558,14 @@ def selftest() -> int:
         ("unseeded random", "let mut rng = rand::thread_rng();", ["random"]),
         ("seeded random", "let mut rng = StdRng::seed_from_u64(7);", []),
         ("python sleep", "    time.sleep(0.1)", ["sleep"]),
+        ("unseeded hypothesis property", "@given(st.lists(st.integers()))\ndef test_sorted(xs):\n    assert ok(xs)", ["property-unseeded"]),
+        ("derandomised hypothesis property", "@settings(derandomize=True)\n@given(st.lists(st.integers()))\ndef test_sorted(xs):\n    pass", []),
+        ("health checks turned off", "@settings(derandomize=True, suppress_health_check=list(HealthCheck))\n@given(st.integers())\ndef t(x): pass", ["property-health-off"]),
+        ("assume in a property", "@settings(derandomize=True)\n@given(st.lists(st.integers()))\ndef t(xs):\n    assume(xs == sorted(xs))", ["property-filter"]),
+        ("filtered generator", "@settings(derandomize=True)\n@given(st.lists(st.integers()).filter(is_sorted))\ndef t(xs): pass", ["property-filter"]),
+        ("fast-check precondition, seeded", "fc.assert(fc.property(fc.integer(), (n) => {\n  fc.pre(n > 0);\n}), { seed: 42 });", ["property-filter"]),
+        ("assume outside a property file is not a marker", "def test_x():\n    assume(True)", []),
+        ("array filter in a property body is not a generator filter", "fc.assert(fc.property(fc.array(fc.nat()), (xs) => {\n  const ev = xs.filter(isEven);\n}), { seed: 1 });", []),
         ("python timeout", "    q.get(timeout=0.2)", ["wall-clock"]),
         ("rust comment", "    // thread::sleep is never used here", []),
         ("python comment", "    # time.sleep(1)", []),

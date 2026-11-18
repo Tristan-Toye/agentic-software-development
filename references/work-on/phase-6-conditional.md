@@ -255,6 +255,14 @@ mechanism. When the scan warns `stale exempt row`, this build changed the line
 that row named. Delete the row in this build, and the scan reads the line
 afresh.
 
+The three `property-*` kinds are the unit-test author's own rules, read
+mechanically. `property-unseeded` and `property-health-off` are a
+test-form correction to that author with the next round, never a lens question: the
+test must be fixed-seed and keep its health checks. `property-filter` is a
+reason to look. Route it as a weak line only when the library's health check
+or its statistics show the filter discarding most cases, or when the line's
+mutant survived (the mutation check below).
+
 There is no mandatory two- or three-run whole-suite stability gate. One green
 run is a suite verdict, not proof that every test is stable.
 
