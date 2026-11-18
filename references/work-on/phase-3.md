@@ -300,6 +300,7 @@ payload holds no diagram file and no dossier text from this step.
    - **Exit 3, `"status": "unsupported"`:** the review reads Rust only and the repo has no
      `Cargo.toml`. A known limit, not an error: log `VISUAL-REVIEW: skipped — unsupported repository (<the JSON's reason>)`
      as a build-log line, run `dossier_edit.py set <dossier> 'visual_review=skipped — <reason>'`,
+     (`skipped-<kind> — <reason>` is accepted as the same record; `dossier_edit.py unset <dossier> visual_review` removes the switch),
      and go on to Phase 4 without asking the owner. Steps 2 to 5 do not run. Phase 9
      authors the seq graph by hand (its "No visual review" source).
    - **Any other non-zero exit** stops the step: log

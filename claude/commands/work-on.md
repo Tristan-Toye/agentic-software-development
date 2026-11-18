@@ -131,7 +131,7 @@ arguments, same output shape.
 | Replace one item without reading its file | `code_replace` (or `code_nav.py replace <file> <symbol> --from-file <f>`) |
 | A chain of lookups — where X is, what calls Y | spawn `code-scout` with the questions; it returns `path:line` rows |
 | Check a subagent's return | `python3 ${PLUGIN_ROOT}/scripts/verify_return.py …` (Phase 4) |
-| Gate, stage named paths, commit, push | `python3 ${PLUGIN_ROOT}/scripts/gate_commit.py --root <X> --paths … -m …` |
+| Gate, stage named paths, commit, push | `python3 ${PLUGIN_ROOT}/scripts/gate_commit.py --root <X> --paths a,b -m …` (comma list; a repeated `--paths` also adds) `` |
 | A prose edit to the dossier or a document from facts you hold | spawn `scribe` with the edits and the facts |
 
 Under Claude Code the navigation tools are the plugin's MCP tools, named
