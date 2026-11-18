@@ -83,101 +83,109 @@ class Refusal(Exception):
 # ---------------------------------------------------------------------------
 
 
+def _top_level_assign(text: str) -> bool:
+    """True when `text` has an `=` outside parentheses and not part of `=>`/`==`
+    (a field initialiser); a default value inside a parameter list does not count."""
+    depth = 0
+    for i, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "=" and depth == 0:
+            nxt = text[i + 1 : i + 2]
+            prev = text[i - 1 : i]
+            if nxt not in ("=", ">") and prev not in ("=", "!", "<", ">"):
+                return True
+            if nxt == ">":
+                return True  # already expression-bodied
+    return False
+
+
 def transform_csharp(contract: str) -> str:
+    """Stub a signature-only C# contract.
+
+    A statement is the run of non-comment lines up to its `;`, `{` or `}`.
+    Documentation (`///`), other comments and blank lines are copied where they
+    stand and never join a statement, so a type-level `<remarks>` block stays
+    above its type. Only a `;`-terminated method or constructor directly inside
+    a class or struct gains a body; a positional record (header ending in `;`)
+    gets none, only its CS9113 pragma pair.
+    """
     out: list[str] = []
-    stack: list[tuple[str, int]] = []  # (type kind, pragma depth marker) for `{`-blocks
-    pending: list[str] = []  # declaration header lines awaiting their `{`
-    current_kind: list[str] = []  # the kind whose block we are directly inside
-    type_names: list[str] = []
-    sig: list[str] = []  # a logical signature buffered until its `;` or `{`
+    # one entry per open `{`: (kind, type name, restore pragma on close)
+    stack: list[tuple[str, str, bool]] = []
+    sig: list[str] = []
 
-    def inside_kind() -> str:
-        return current_kind[-1] if current_kind else ""
+    def enclosing() -> tuple[str, str]:
+        for kind, name, _pragma in reversed(stack):
+            return kind, name
+        return "", ""
 
-    def flush(member_line: str | None = None) -> None:
-        nonlocal sig
-        if not sig:
-            if member_line is not None:
-                out.append(member_line)
+    def header() -> re.Match[str] | None:
+        for text in sig:
+            if text.strip().startswith("["):
+                continue
+            return TYPE_DECL.match(text)
+        return None
+
+    def emit_statement(last: str) -> None:
+        """`last` ends the statement in `sig` (the last element) with a `;`."""
+        decl = header()
+        if decl:
+            if decl.group(1) == "record" and "(" in "".join(sig):
+                out.append("#pragma warning disable CS9113")
+                out.extend(sig)
+                out.append("#pragma warning restore CS9113")
+            else:
+                out.extend(sig)
             return
-        if member_line is not None:
-            sig.append(member_line)
         joined = "".join(sig)
-        last = sig[-1].rstrip()
-        kind = inside_kind()
+        kind, name = enclosing()
         transformable = (
-            last.endswith(MEMBER_END)
+            kind in ("class", "struct")
             and "(" in joined
-            and "=" not in joined
-            and "abstract" not in joined
-            and "extern" not in joined
-            and "partial" not in joined
-            and kind not in ("interface", "record")
+            and not _top_level_assign(joined)
+            and not re.search(r"\b(abstract|extern|partial|delegate|event)\b", joined)
         )
         if transformable:
             head = joined.rstrip()[: -len(MEMBER_END)].rstrip()
-            name_match = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", head)
-            is_ctor = bool(
-                name_match and type_names and name_match.group(1) == type_names[-1]
-            )
+            ctor = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", head)
+            is_ctor = bool(ctor and name and ctor.group(1) == name)
             body = THROW_BLOCK if is_ctor else THROW_EXPRESSION
-            sig[-1] = last[: last.rfind(MEMBER_END)].rstrip() + body
+            sig[-1] = last.rstrip()[: -len(MEMBER_END)].rstrip() + body
         out.extend(sig)
-        sig = []
 
     for line in contract.split("\n"):
-        decl = TYPE_DECL.match(line)
-        if decl and "{" not in line and not line.rstrip().endswith(MEMBER_END):
-            pending.append(line)
-            current_kind.append(decl.group(1))
-            type_names.append(decl.group(2))
-            if decl.group(1) == "record" and "(" in line:
-                out.append("#pragma warning disable CS9113")
-                out.append(line)
-                # a record header without a body ends at its `;`; with one, the
-                # pragma restores when the record's block closes (brace tracking)
-                stack.append(("record-pragma", 0))
-                current_kind.pop()
-                type_names.pop()
-                pending.pop()
-                continue
-            continue
-        if pending and "{" in line:
-            out.extend(pending)
-            pending = []
-            stack.append(
-                (
-                    current_kind[-1] if current_kind else "",
-                    line.count("{") - line.count("}"),
-                )
-            )
-            out.append(line)
-            continue
         stripped = line.strip()
-        if stripped.endswith(MEMBER_END) or "{" in line or "}" in line or not stripped:
-            if stripped.endswith(MEMBER_END):
-                flush(line)
-                continue
-            flush()
-            out.append(line)
-            # brace tracking (a signature contract holds no brace-bearing strings)
-            delta = line.count("{") - line.count("}")
-            if stack:
-                kind, depth = stack[-1]
-                depth += delta
-                if depth <= 0:
-                    stack.pop()
-                    if kind == "record-pragma":
-                        out.append("#pragma warning restore CS9113")
-                    if current_kind:
-                        current_kind.pop()
-                    if type_names:
-                        type_names.pop()
-                else:
-                    stack[-1] = (kind, depth)
+        if not stripped or stripped.startswith("//"):
+            (sig if sig else out).append(line)
             continue
-        sig.append(line)  # a continuation line of a (maybe multi-line) member
-    flush()
+        sig.append(line)
+        net = line.count("{") - line.count("}")
+        if net > 0:
+            decl = header()
+            kind = decl.group(1) if decl else "other"
+            name = decl.group(2) if decl else ""
+            pragma = bool(decl and kind == "record" and "(" in "".join(sig))
+            if pragma:
+                out.append("#pragma warning disable CS9113")
+            out.extend(sig)
+            sig = []
+            stack.append((kind, name, pragma))
+            stack.extend([("other", "", False)] * (net - 1))
+        elif "{" in line or "}" in line:
+            out.extend(sig)
+            sig = []
+            for _ in range(-net):
+                if stack:
+                    _kind, _name, pragma = stack.pop()
+                    if pragma:
+                        out.append("#pragma warning restore CS9113")
+        elif stripped.endswith(MEMBER_END):
+            emit_statement(line)
+            sig = []
+    out.extend(sig)
     return "\n".join(out)
 
 
@@ -338,6 +346,86 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
+# Selftest fixtures: each contract and its exact expected stub. The three shapes
+# of issue #402; the same text compiles with warnings as errors.
+RECORD_CONTRACT = """/// <summary>A pair of ids.</summary>
+public record Pair(
+    int First,
+    string Second);
+"""
+RECORD_STUB = """/// <summary>A pair of ids.</summary>
+#pragma warning disable CS9113
+public record Pair(
+    int First,
+    string Second);
+#pragma warning restore CS9113
+"""
+
+CLASS_CONTRACT = """/// <summary>A box.</summary>
+public class Box
+{
+    /// <summary>Opens a box.</summary>
+    public Box(int size);
+
+    /// <summary>The size.</summary>
+    public int Size { get; }
+
+    /// <summary>Adds an item.</summary>
+    public void Add(string item);
+
+    /// <summary>Gets an item.</summary>
+    public string Get(int index, string fallback = "none");
+
+    /// <summary>Counts the items.</summary>
+    public int Count();
+}
+"""
+CLASS_STUB = """/// <summary>A box.</summary>
+public class Box
+{
+    /// <summary>Opens a box.</summary>
+    public Box(int size) { throw new NotImplementedException(); }
+
+    /// <summary>The size.</summary>
+    public int Size { get; }
+
+    /// <summary>Adds an item.</summary>
+    public void Add(string item) => throw new NotImplementedException();
+
+    /// <summary>Gets an item.</summary>
+    public string Get(int index, string fallback = "none") => throw new NotImplementedException();
+
+    /// <summary>Counts the items.</summary>
+    public int Count() => throw new NotImplementedException();
+}
+"""
+
+REMARKS_CONTRACT = """/// <summary>Holds items.</summary>
+/// <remarks>
+/// Definitions:
+/// - item (a thing); stored once
+/// - key = the id
+/// </remarks>
+public class Shelf
+{
+    /// <summary>Stores one.</summary>
+    public void Put(string key);
+}
+"""
+REMARKS_STUB = """/// <summary>Holds items.</summary>
+/// <remarks>
+/// Definitions:
+/// - item (a thing); stored once
+/// - key = the id
+/// </remarks>
+public class Shelf
+{
+    /// <summary>Stores one.</summary>
+    public void Put(string key) => throw new NotImplementedException();
+}
+"""
+
+
 # -------------------------------------------------------------------- selftest
 
 
@@ -410,6 +498,19 @@ public class PlanWriter
     check(
         "the mechanical diff passes over the transformed stub",
         True,
+    )
+
+    check(
+        "a positional record gets no body, only its pragma pair, exactly",
+        transform_csharp(RECORD_CONTRACT) == RECORD_STUB,
+    )
+    check(
+        "a multi-member class: every method and constructor gets the placeholder body",
+        transform_csharp(CLASS_CONTRACT) == CLASS_STUB,
+    )
+    check(
+        "a multi-line type-level <remarks> stays above its type, line for line",
+        transform_csharp(REMARKS_CONTRACT) == REMARKS_STUB,
     )
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -515,6 +616,8 @@ public class PlanWriter
     for item in failures:
         print("SELFTEST FAIL  " + item)
     print(f"selftest: {len(failures)} failure(s)")
+    if not failures:
+        print("all ok")
     return 1 if failures else 0
 
 
