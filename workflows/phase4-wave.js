@@ -139,6 +139,7 @@ const gateFlags = (report) => {
 // that never saw its payload returned as if it had worked. Its proof of a whole read is the payload's last line.
 const READ_RULE = '\nRead check: your payload\'s last non-empty line proves you read it whole. If what Read returned is not your payload ' +
   '(a note, a redirect, a summary or a cut), read the file again in parts with offset and limit, 120 lines at a time, to its end. ' +
+  'That last line is `PAYLOAD-END: <label> <hash>`, a line no other field repeats: copy it whole, hash included. ' +
   'Begin your report with the line PAYLOAD-LAST: <that last line, verbatim>. If you cannot read it whole, return only ' +
   'PAYLOAD-UNREAD: <what Read gave you> and write nothing.'
 function spawnPrompt(item) {

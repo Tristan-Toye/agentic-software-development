@@ -461,8 +461,8 @@ def field_lines(lines: list[str]) -> list[tuple[int, str, str]]:
                 continue
             in_block = False
         match = FIELD_LINE.match(line)
-        if not match:
-            continue
+        if not match or match.group("name") == "PAYLOAD-END":
+            continue  # #403: the sentinel line is the payload's end marker, not a field
         found.append((number, match.group("name"), (match.group("rest") or "").strip()))
         if BLOCK_OPEN.match(line):
             in_block = True
@@ -1629,6 +1629,7 @@ def selftest() -> int:
              "CHECKLIST_RULES: |\n  return meaning, named error, order, empty case, invalid case, concurrency\n")
     case("contract reviewer clean", cr_ok, "contract-reviewer", False)
     case("contract reviewer: BASE_TEMPLATES is a known field", cr_ok + "BASE_TEMPLATES: src/base.py:40-88\n", "contract-reviewer", False)
+    case("#403: the PAYLOAD-END sentinel is not an unknown field", cr_ok + "PAYLOAD-END: CR1 1a2b3c4d\n", "contract-reviewer", False)
     case("contract reviewer: an unknown field is still refused", cr_ok + "PLAN: the dossier\n", "contract-reviewer", True)
     # --- #198: a unit-author round on an existing test file needs CORRECTION ---
     unit_existing = unit_ok.replace("TEST_PATHS: {REAL}/tests/unit/test_flush.py",

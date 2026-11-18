@@ -156,6 +156,7 @@ for (const item of args) {
 // that never saw its payload returned as if it had worked. Its proof of a whole read is the payload's last line.
 const READ_RULE = '\nRead check: your payload\'s last non-empty line proves you read it whole. If what Read returned is not your payload ' +
   '(a note, a redirect, a summary or a cut), read the file again in parts with offset and limit, 120 lines at a time, to its end. ' +
+  'That last line is `PAYLOAD-END: <label> <hash>`, a line no other field repeats: copy it whole, hash included. ' +
   'Set payload_last to that last line, verbatim. If you cannot read it whole, set payload_last to ' +
   'UNREAD: <what Read gave you>, verdict CHANGES-REQUIRED and no crs.'
 const spawnPrompt = (item) =>

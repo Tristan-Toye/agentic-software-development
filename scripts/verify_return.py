@@ -198,6 +198,45 @@ def payload_last_line(path: str) -> str:
     return lines[-1] if lines else ""
 
 
+SENTINEL_PREFIX = "PAYLOAD-END:"
+
+
+def payload_sentinel_line(path: str) -> str:
+    """#403: the payload's `PAYLOAD-END: <label> <hash>` last line, or "" for a
+    payload without one."""
+    last = payload_last_line(path)
+    if not last.startswith(SENTINEL_PREFIX):
+        return ""
+    return last
+
+
+def sentinel_repeats(path: str, sentinel: str) -> bool:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read().count(sentinel) != 1
+    except OSError:
+        return False
+
+
+def payload_read_problem(path: str, said: str | None) -> str:
+    """Why `said` (the line a return quotes as PAYLOAD-LAST) does not prove a
+    whole read of `path`, or "" when it does. Compared exactly; a payload with a
+    sentinel names it in the message."""
+    last = payload_last_line(path)
+    if not last:
+        return ""
+    sentinel = payload_sentinel_line(path)
+    if sentinel:
+        if sentinel_repeats(path, sentinel):
+            return f"the sentinel {sentinel!r} appears more than once in the payload, so quoting it proves nothing"
+        if said is None:
+            return f"its report does not name the payload's sentinel {sentinel!r}"
+        return "" if said.strip() == sentinel else f"it names {said.strip()[:80]!r}, not the payload's sentinel {sentinel!r}"
+    if said is None:
+        return "its report does not name the payload's last line"
+    return "" if said.strip() == last else "the last line it names is not the payload's"
+
+
 def script(name: str, *args: str) -> tuple[int, list[str]]:
     proc = subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, name), *args], capture_output=True, text=True, check=False)
     return proc.returncode, (proc.stdout + proc.stderr).splitlines()
@@ -555,9 +594,9 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
         last = payload_last_line(args.payload)
         said = re.search(r"^\s*PAYLOAD-LAST:[ \t]*(.*?)\s*$", report_text, re.M)
         unread = re.search(r"^\s*PAYLOAD-UNREAD:", report_text, re.M)
-        if unread or (last and (not said or said.group(1).strip() != last)):
-            why = "the agent says it could not read its payload" if unread else \
-                "its report does not name the payload's last line" if not said else "the last line it names is not the payload's"
+        problem = payload_read_problem(args.payload, said.group(1) if said else None)
+        if unread or problem:
+            why = "the agent says it could not read its payload" if unread else problem
             out.append(f"payload read: UNREAD — {why}; it worked from a cut payload or none (a read hook, or a file too large)")
             parts.append("PAYLOAD UNREAD")
             flags.append("payload-unread")
@@ -656,8 +695,10 @@ def main(argv: list[str] | None = None) -> int:
         if not args.payload:
             ap.error("--payload-last needs --payload")
         last = payload_last_line(args.payload)
-        ok = bool(last) and args.payload_last.strip() == last and not args.payload_last.strip().upper().startswith("UNREAD")
-        print("payload read: whole" if ok else f"payload read: UNREAD — named {args.payload_last.strip()[:80]!r}, the payload ends {last[:80]!r}")
+        ok = bool(last) and not payload_read_problem(args.payload, args.payload_last) \
+            and not args.payload_last.strip().upper().startswith("UNREAD")
+        expected = payload_sentinel_line(args.payload) or last
+        print("payload read: whole" if ok else f"payload read: UNREAD — named {args.payload_last.strip()[:80]!r}, the payload ends {expected[:80]!r}")
         return 0 if ok else 1
     if args.snapshot:
         if not args.root:
@@ -980,6 +1021,28 @@ def selftest() -> int:
             rc, out = call(["--payload", pl, "--payload-last", "END: last line here"])
             rc2, out2 = call(["--payload", pl, "--payload-last", "UNREAD: a note"])
             check("#257: --payload-last checks a reviewer's echo", rc == 0 and "whole" in out and rc2 == 1 and "UNREAD" in out2)
+
+            # --- #403: a payload ends in a unique PAYLOAD-END sentinel; only that exact line proves a read ---
+            sent = "PAYLOAD-END: P1 1a2b3c4d"
+            ps = os.path.join(tmp, "ps.md"); open(ps, "w").write("JIRA_KEY: PROJ-1\nBRANCH: feat/PROJ-1\nSTANDARDS: skills/standards\n" + sent + "\n")
+            pssha = hashlib.sha256(open(ps, "rb").read()).hexdigest()
+            for name, body, want in (("s-ok.md", f"PAYLOAD-LAST: {sent}\nDone.\n", "whole"),
+                                     ("s-std.md", "PAYLOAD-LAST: STANDARDS: skills/standards\n", "UNREAD"),
+                                     ("s-key.md", "PAYLOAD-LAST: PROJ-1\n", "UNREAD"),
+                                     ("s-prose.md", f"PAYLOAD-LAST: STANDARDS: skills/standards\nThe last line is {sent}\n", "UNREAD")):
+                put(tmp, name, body)
+                rc, out = call(["--root", root, "--branch", "feat/empty", "--base", base, "--payload", ps, "--payload-sha256", pssha,
+                                "--report", os.path.join(tmp, name), "--kind", "writer"])
+                check(f"#403: sentinel read {want} for {name}",
+                      f"payload read: {want}" in out and (("payload-unread" in out.splitlines()[0]) == (want == "UNREAD"))
+                      and (want == "whole" or sent in out))
+            rc, out = call(["--payload", ps, "--payload-last", sent])
+            rc2, out2 = call(["--payload", ps, "--payload-last", "PROJ-1"])
+            check("#403: --payload-last accepts the sentinel and refuses another line, naming the sentinel",
+                  rc == 0 and rc2 == 1 and sent in out2)
+            pd = os.path.join(tmp, "pd.md"); open(pd, "w").write(f"NOTE: x {sent} y\n{sent}\n")
+            rc, out = call(["--payload", pd, "--payload-last", sent])
+            check("#403: a sentinel repeated in the payload proves nothing", rc == 1)
 
             # --- --uncommitted: a drafter writes its owned files and never commits ---
             git(root, "checkout", "-q", "feat/empty")

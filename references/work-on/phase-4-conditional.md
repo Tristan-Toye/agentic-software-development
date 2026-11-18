@@ -267,6 +267,21 @@ payload dwarfs the prompt — one recorded contract plus lens documents reached
 pasted (`phase-7.md`, "Spawn one implementer in MODE: fix"). The next
 paragraph is the opencode form.
 
+### Blind-author payloads: existing types and the contract ref
+
+**Check the types first** (#401). Before a unit-test-author or
+integration-test-author spawn, read the `SUPPORT` that `compose_payloads.py`
+wrote: it carries an elided view of every existing type the contract's
+signatures, doc comments and documented reads name (records, ports, key
+helpers), resolved at the contract commit. A `# UNRESOLVED-TYPES:` line, and the
+composer's WARNING, name each type it could not find; add its view with
+`--set SUPPORT` before the spawn, or the author returns `GAP:` for it.
+
+**After the merge, `--contract-paths` reads at the contract commit** (#404).
+`--contract-ref REF` reads each path at `REF`, not at HEAD; once the build log
+has a MERGE line the dossier's `contract_review` SHA is the default. A path
+absent at the ref refuses by name.
+
 ### A whole-file rewrite is diffed first; a payload-unread return is discarded
 
 **A whole-file rewrite of an existing file is diffed before any behaviour
@@ -279,7 +294,11 @@ it follows, and you splice it into the staged file.
 
 **A return flagged `payload-unread` read nothing whole** (#257). Every
 workflow spawn begins its report with `PAYLOAD-LAST: <its payload's last
-line>`; `verify_return.py` compares it with the file. A report without that
+line>`. Every payload `compose_payloads.py` writes ends in a unique sentinel,
+`PAYLOAD-END: <label> <short hash>` (#403), that no other field repeats, so the
+line to quote is that one and a Jira key, the STANDARDS line or the branch name
+proves nothing; `verify_return.py` compares the quote with the file exactly and
+names the expected sentinel when it differs. A report without that
 exact line (or with `PAYLOAD-UNREAD:`) means a read hook or a size limit cut
 the payload, and whatever the agent did was done without its fields: discard
 its work and spawn it again (a resume carries the same cut read). A Phase 7
