@@ -63,6 +63,33 @@ class Surprise(Exception):
     """Anything the driver cannot classify. Carries where it stopped."""
 
 
+def resolve_dossier(root: str, dossier: str | None, explicit: str | None = None, required: bool = True) -> str | None:
+    """The dossier file of one ID. Dossiers are named `<ID>-<slug>.md`, so
+    `<ID>.md` alone is not enough. Order: an explicit path (`--log`), then
+    `.discovery/dossiers/<ID>.md`, then exactly one `<ID>-*.md`. Several matches
+    are a surprise naming every candidate. No match is a surprise when
+    `required`, else None."""
+    if explicit:
+        return explicit
+    if not dossier:
+        if required:
+            raise Surprise("no dossier ID or path given (give --dossier or --log)")
+        return None
+    folder = os.path.join(root, ".discovery", "dossiers")
+    plain = os.path.join(folder, f"{dossier}.md")
+    if os.path.isfile(plain):
+        return plain
+    found = sorted(os.path.join(folder, n) for n in (os.listdir(folder) if os.path.isdir(folder) else [])
+                   if n.startswith(dossier + "-") and n.endswith(".md"))
+    if len(found) == 1:
+        return found[0]
+    if len(found) > 1:
+        raise Surprise(f"dossier {dossier} is ambiguous, candidates: {', '.join(found)}")
+    if required:
+        raise Surprise(f"dossier file not found: {plain} (nor {dossier}-*.md)")
+    return None
+
+
 def env_name(name: str) -> str:
     return "ASD_DRIVER_" + name.upper()
 
@@ -351,6 +378,25 @@ def selftest() -> int:
     os.environ["ASD_DRIVER_X_Y"] = "bogus"
     c("an unknown mode is off", read_mode("x_y") == "off")
     del os.environ["ASD_DRIVER_X_Y"]
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = os.path.join(tmp, ".discovery", "dossiers")
+        for n in ("W-1.md", "W-2-slug.md", "W-3-a.md", "W-3-b.md", "W-22-other.md"):
+            fixture_write(tmp, f".discovery/dossiers/{n}", "x\n")
+        c("resolver: plain name", resolve_dossier(tmp, "W-1") == os.path.join(folder, "W-1.md"))
+        c("resolver: slugged name", resolve_dossier(tmp, "W-2") == os.path.join(folder, "W-2-slug.md"))
+        c("resolver: explicit path wins", resolve_dossier(tmp, "W-3", "/x/y.md") == "/x/y.md")
+        c("resolver: W-2 does not match W-22", resolve_dossier(tmp, "W-22") == os.path.join(folder, "W-22-other.md"))
+        try:
+            resolve_dossier(tmp, "W-3")
+            c("resolver: ambiguous raises", False)
+        except Surprise as err:
+            c("resolver: ambiguous names candidates", "W-3-a.md" in str(err) and "W-3-b.md" in str(err))
+        try:
+            resolve_dossier(tmp, "W-9")
+            c("resolver: missing raises", False)
+        except Surprise:
+            c("resolver: missing raises", True)
+        c("resolver: missing optional is None", resolve_dossier(tmp, "W-9", required=False) is None)
     c("cap bounds lines", len(cap("\n".join(str(i) for i in range(50)), 5)) == 6)
     with tempfile.TemporaryDirectory() as tmp:
         repo = os.path.join(tmp, "r")

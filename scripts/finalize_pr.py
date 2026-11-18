@@ -168,7 +168,7 @@ def sync(d: dc.Driver, wt: str, target: str, args) -> None:
         d.step("gates", "skipped", "no --gates FILE given; the compile per gated configuration is yours")
 
     cands = []
-    dossier_file = args.log or os.path.join(args.root, ".discovery", "dossiers", f"{args.dossier}.md") if args.dossier or args.log else None
+    dossier_file = dc.resolve_dossier(args.root, args.dossier, args.log, required=False)
     for path, line in census_paths(dossier_file):
         if any(n == path or n.startswith(path.rstrip("/") + "/") for n in changed):
             cands.append(line)

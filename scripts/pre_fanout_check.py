@@ -206,9 +206,7 @@ def validator_step(d: dc.Driver, name: str, wt_root: str, args, extra: list[str]
 def run(d: dc.Driver, args) -> int:
     if not args.dossier:
         raise dc.Surprise("--dossier is required")
-    path = os.path.join(args.root, ".discovery", "dossiers", f"{args.dossier}.md")
-    if not os.path.isfile(path):
-        raise dc.Surprise(f"dossier file not found: {path}")
+    path = dc.resolve_dossier(args.root, args.dossier)
     text = open(path, encoding="utf-8").read()
     wt = os.path.abspath(args.worktree) if args.worktree else args.root
     validator_step(d, "validate", args.root, args, [])
@@ -260,7 +258,7 @@ def selftest() -> int:
         dc.fixture_commit(main, "src/a.py", "def add():\n    pass\n", "init")
         dc.fixture_commit(main, "tests/old.py", "assert_eq!(add(), 1)\n", "old test")
         dc.fixture_commit(main, "migrations/1.sql", "CREATE TABLE a;\nCREATE TABLE b;\n", "migs")
-        dc.fixture_write(main, ".discovery/dossiers/W-1.md",
+        dc.fixture_write(main, ".discovery/dossiers/W-1-slug.md",
                          "---\nid: W-1\nstatus: building\n---\n\n" + text.replace("## Build log\n", "")
                          + "Frozen: 5 tables (grep -c 'CREATE TABLE' migrations/1.sql).\n\n## Build log\n")
         dc.fixture_write(main, ".discovery/checklists/W-1.md", "- add — return: gives 1\n- sub — return: gives 2\n")
