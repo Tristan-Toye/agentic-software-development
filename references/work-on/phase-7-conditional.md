@@ -184,7 +184,13 @@ re-spawn") or call the workflow again with that lens alone; it is never
 the workflow never reports that as a pass, and neither do you — resume it, or
 call the workflow again with that lens alone and `SCOPE` narrowed to the
 `unreached` locations. A `CHANGES-REQUIRED` with a non-empty `unreached` keeps
-its CRs and gets the same follow-up for the rest. A check round calls the
+its CRs and gets the same follow-up for the rest. **The workflow fills `unreached`
+from the reviewer's own text, not only from the structured field** (#399): every
+`UNREACHED:` line of the document and of the notes (inline or as bullets) joins the
+list, and the return's `notes` then starts with `[unreached filled from the
+reviewer's text...]`. So a lens whose document names unreached locations never comes
+back `PASS` with `unreached: []`; re-run that lens narrowed to those locations
+(`SCOPE` = the `unreached` list), and log the line as above. A check round calls the
 workflow with only the lenses that have an open CR, each payload carrying its
 `PRIOR_CRS`. Under opencode there is no workflow:
 spawn the lenses in one message as written.

@@ -210,7 +210,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         # SUPPORT is the pasted form of SUPPORT_PATHS.
         "optional": {
             "SHARED_IDIOM", "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS",
-            "SUPPORT", "DELIVERY_CHANGE", "FAILURES", "CORRECTION",
+            "SUPPORT", "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "CENSUS",
             "BASELINE_COUNTS_FROM", "TEST_FORM_RULES",
         },
     },
@@ -227,7 +227,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         # on a pre-existing test (issue #82) — never folded into DELIVERY_CHANGE.
         "optional": {
             "SHARED_IDIOM", "DELIVERY_CHANGE", "PROMISE_CHECKLIST",
-            "SUPPORT_PATHS", "SUPPORT", "FAILURES", "CORRECTION",
+            "SUPPORT_PATHS", "SUPPORT", "FAILURES", "CORRECTION", "CENSUS",
             "BASELINE_COUNTS_FROM", "CITATION", "CI_ENVIRONMENT", "TEST_FORM_RULES",
         },
     },
@@ -352,6 +352,36 @@ def environment_findings(lines: list[str], kind: str | None, root: str | None) -
     return defects
 
 
+CENSUS_ROW = re.compile(r"^\s*[-*]?\s*(\S+?)(?::(\d+(?:-\d+)?))?\s+[—-]+\s+\S")
+
+
+def census_rows(lines: list[str]) -> list[str]:
+    """The paths of the `<path>:<line> — <change>` rows of a payload's CENSUS block."""
+    out: list[str] = []
+    for row in field_body(lines, "CENSUS").splitlines():
+        m = CENSUS_ROW.match(row)
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+def census_findings(lines: list[str]) -> list[str]:
+    """#392: a CENSUS payload bounds a scoped in-place edit. It needs at least one row, and every
+    TEST_PATHS file must be named by a row (the Edit scope is the rows, never a path no row names)."""
+    rows = census_rows(lines)
+    if not rows:
+        return ["CENSUS carries no `<path>:<line> — <what changes there>` row: the census rows are the "
+                "author's whole edit list, so a CENSUS with none bounds nothing."]
+    out: list[str] = []
+    for number in sorted(field_line_numbers(lines, "TEST_PATHS")):
+        for m in ABS_PATH.finditer(lines[number - 1]):
+            path = m.group(1)
+            if not any(path == r or path.endswith("/" + r.lstrip("./")) for r in rows):
+                out.append("line %d: TEST_PATHS %s is named by no CENSUS row: under a CENSUS payload the "
+                           "author edits only the census paths." % (number, path))
+    return out
+
+
 def skeleton_findings(lines: list[str], kind: str | None) -> tuple[list[str], list[str]]:
     """Fields the test-author skeletons carry beyond the plain field list:
     a unit CONTRACT without path lines (#184, warning), an integration
@@ -368,7 +398,9 @@ def skeleton_findings(lines: list[str], kind: str | None) -> tuple[list[str], li
                 "test. Compose it with compose_payloads.py --contract-paths, which prefixes "
                 "each pasted file with `# path:` (and `# import:` for a Python package)."
             )
-        if "CORRECTION" not in names:
+        # #392: a CENSUS payload (the Phase 3 `CENSUS:` rows) is the other admitted round on an
+        # existing file: the author edits only the rows' lines, in place, with Edit.
+        if "CORRECTION" not in names and "CENSUS" not in names:
             for number in sorted(field_line_numbers(lines, "TEST_PATHS")):
                 hit = next((m.group(1) for m in ABS_PATH.finditer(lines[number - 1])
                             if os.path.isfile(m.group(1))), None)
@@ -380,6 +412,8 @@ def skeleton_findings(lines: list[str], kind: str | None) -> tuple[list[str], li
                         % (number, hit)
                     )
                     break
+    if kind in ("unit-test-author", "integration-test-author") and "CENSUS" in names:
+        defects.extend(census_findings(lines))
     if kind == "integration-test-author" and "PROMISE_CHECKLIST" in names and "CITATION" not in names:
         warnings.append(
             "PROMISE_CHECKLIST is given but there is no CITATION: the Phase 5 index is built "
@@ -572,8 +606,8 @@ REQUIRED_TOOLS: dict[str, tuple[tuple[str, str], ...]] = {
     "blast-radius-scout": (("Bash", "BASELINE"),),
     "stub-materialiser": (("Write", "OWNED_PATHS"), ("Bash", "BUILD_CHECK")),
     "implementer": (("Bash", "TEST_COMMAND"),),
-    "unit-test-author": (("Write", "TEST_PATHS"),),
-    "integration-test-author": (("Write", "TEST_PATHS"),),
+    "unit-test-author": (("Write", "TEST_PATHS"), ("Edit", "CENSUS")),
+    "integration-test-author": (("Write", "TEST_PATHS"), ("Edit", "CENSUS")),
 }
 
 
@@ -1761,6 +1795,29 @@ def selftest() -> int:
          pasted.replace("TEST_PATHS: {REAL}/tests/unit/test_flush.py", "TEST_PATHS: {REAL}/tests/unit/test_retry.py")
          + "CORRECTION: |\n  Change only what FAILURES names.\n",
          "unit-test-author", False, host="claude", tools=["Read", "Write"])
+    # --- #392: a CENSUS payload admits an existing TEST_PATHS file for an agent that has Edit ---
+    census_unit = (pasted.replace("TEST_PATHS: {REAL}/tests/unit/test_flush.py", "TEST_PATHS: {REAL}/tests/unit/test_retry.py")
+                   + "CENSUS: |\n  tests/unit/test_retry.py:12 — expected table count 17 becomes 18\n")
+    edit_tools = ["Read", "Write", "Edit"]
+    case("#392 host claude: an existing TEST_PATHS file with CENSUS and no CORRECTION lints clean",
+         census_unit, "unit-test-author", False, host="claude", tools=edit_tools)
+    case("#392 host claude: CENSUS for an agent with no Edit is refused",
+         census_unit, "unit-test-author", True, "grants no Edit", host="claude", tools=["Read", "Write"])
+    case("#392 host claude: a CENSUS payload naming a TEST_PATHS file no row names is refused",
+         census_unit.replace("tests/unit/test_retry.py:12", "tests/unit/test_other.py:12"),
+         "unit-test-author", True, "named by no CENSUS row", host="claude", tools=edit_tools)
+    case("#392 host claude: a CENSUS with no row is refused",
+         census_unit.split("CENSUS:")[0] + "CENSUS: |\n  see the dossier\n",
+         "unit-test-author", True, "no `<path>:<line>", host="claude", tools=edit_tools)
+    case("#392 host claude: an existing TEST_PATHS file with neither CORRECTION nor CENSUS is still refused",
+         pasted.replace("TEST_PATHS: {REAL}/tests/unit/test_flush.py", "TEST_PATHS: {REAL}/tests/unit/test_retry.py"),
+         "unit-test-author", True, "CORRECTION", host="claude", tools=edit_tools)
+    case("#392 integration author: CENSUS is a known field and admits an existing file",
+         "WORKTREE_DIR: {REAL}\nDOSSIER: {REAL}/.agent-staging/W-014.excerpt.md\nCONTRACT: |\n  fn flush()\n"
+         "TEST_PATHS: {REAL}/scripts/check.sh\nTEST_FRAMEWORK: bash\nHARNESS: none\nSTYLE_SAMPLE: |\n  echo ok\n"
+         "BOUNDARIES: none\nCONTRACT_HASH: 3f2611f0a91c4d8e\n"
+         "CENSUS: |\n  scripts/check.sh:3 — the expected count becomes 18\n",
+         "integration-test-author", False, host="claude", tools=["Read", "Grep", "Glob", "Write", "Edit"])
     case("assertion form: a whole-value line with no tag warns",
          pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
                         "PROMISE_CHECKLIST: |\n  flush — order: gives exactly `[A, B]`\n"),

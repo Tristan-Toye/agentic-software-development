@@ -17,7 +17,7 @@ agent's tool list makes impossible.
 # Usage
 
     verify_return.py --root X --branch B --base SHA
-        [--owned p1,p2] [--shared-tree p1,p2]
+        [--owned p1,p2] [--census-paths p1,p2] [--shared-tree p1,p2]
         [--contract-hash H [--contract-files f1,f2]]
         [--payload FILE --payload-sha256 H]
         [--release HOLDER --provider P --model M]
@@ -29,6 +29,14 @@ agent's tool list makes impossible.
 
 `--root` is the worktree the agent worked in; `--branch` the branch it was told
 to commit on; `--base` the sha that worktree forked from.
+
+`--census-paths p1,p2` (#392) judges a census-edit author (a `CENSUS` payload: the
+Phase 3 rows on existing test files). The census paths are the agent's `--owned`
+(when `--owned` is not given), so an edit anywhere else is `TOUCHED_BEYOND`; each
+must already exist at `--base` (a census row names an existing file) and be changed
+in place: a census path whose base content was almost wholly deleted and re-added
+is flagged `whole-file-rewrite`, and a census path that is new, or gone, at HEAD is
+flagged `census-path`.
 
 `--uncommitted` is for an agent that writes files and never commits
 (`document-drafter`: `--owned` is its `TARGET_PATHS`). Files it wrote under
@@ -384,6 +392,33 @@ def clamp(lines: list[str]) -> list[str]:
     return lines if len(lines) <= MAX_LINES else lines[: MAX_LINES - 1] + [f"(+{len(lines) - MAX_LINES + 1} more line(s))"]
 
 
+REWRITE_SHARE = 0.8
+REWRITE_MIN_LINES = 20
+
+
+def census_findings(root: str, base: str, census: list[str]) -> list[str]:
+    """#392: a census edit is scoped and in place. A census path must exist at base and now, and
+    must not be a whole-file replacement (a Write over the file): at least REWRITE_SHARE of a
+    base file of REWRITE_MIN_LINES or more deleted and as much re-added."""
+    out: list[str] = []
+    for rel in census:
+        rc, old = git(root, "show", f"{base}:{rel}", strip=False)
+        if rc != 0:
+            out.append(f"census-path: {rel} is not in the base tree (a census row names an existing file)")
+            continue
+        if not os.path.isfile(os.path.join(root, rel)):
+            out.append(f"census-path: {rel} is gone")
+            continue
+        _, stat = git(root, "diff", "--numstat", base, "--", rel)
+        row = stat.split("\t")
+        if len(row) < 2 or not (row[0].isdigit() and row[1].isdigit()):
+            continue
+        lines = len(old.splitlines())
+        if lines >= REWRITE_MIN_LINES and int(row[1]) >= REWRITE_SHARE * lines and int(row[0]) >= REWRITE_SHARE * lines:
+            out.append(f"whole-file-rewrite: {rel} +{row[0]}/-{row[1]} of {lines} lines (an Edit changes lines, never the file)")
+    return out
+
+
 def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
     """(report lines, flags, the pieces of the RETURNED line)."""
     root = os.path.abspath(args.root)
@@ -407,6 +442,9 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
     _, sha = git(root, "rev-parse", "--short", "HEAD")
     paths, rows, dirty = changed_files(root, args.base)
     owned = relative_owned(root, args.owned) if args.owned else []
+    census = relative_owned(root, args.census_paths) if args.census_paths else []
+    if census and not owned:
+        owned = census
     baseline: dict[str, str] = {}
     if args.preexisting:
         try:
@@ -479,6 +517,13 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
             out.append("STUBS_LEFT: not checked (no owned .rs file)")
     else:
         out.append("TOUCHED_BEYOND: not checked (no --owned)")
+
+    if census:
+        problems = census_findings(root, args.base, census)
+        out.append("CENSUS: " + ("; ".join(problems[:4]) if problems else f"{len(census)} path(s) edited in place"))
+        if problems:
+            flags.append("census")
+            parts.append("CENSUS: " + problems[0])
 
     report_text: str | None = None
     if args.report:
@@ -565,8 +610,8 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
             out.append("payload read: whole (its last line echoed)")
 
     own_dirty = [p for p in dirty if not is_shared(p)]
-    if args.uncommitted and args.owned:
-        own_dirty = [p for p in own_dirty if not is_owned(p, relative_owned(root, args.owned))]
+    if args.uncommitted and owned:
+        own_dirty = [p for p in own_dirty if not is_owned(p, owned)]
     sibling_dirty = [p for p in dirty if is_shared(p)]
     if own_dirty:
         out.append(f"tree: dirty, {len(own_dirty)} path(s): {', '.join(own_dirty[:3])}")
@@ -622,6 +667,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--branch", help="the branch it was told to commit on")
     ap.add_argument("--base", help="the sha the worktree forked from")
     ap.add_argument("--owned", default="", help="comma list of the files/dirs/globs the agent owns")
+    ap.add_argument("--census-paths", default="",
+                    help="comma list of the census paths a CENSUS payload names: the agent's edit scope, checked for in-place edits")
     ap.add_argument("--shared-tree", default="",
                     help="comma list of the sibling authors' paths in the same worktree, "
                          "judged by their own verification, never this one's")
@@ -1055,6 +1102,30 @@ def selftest() -> int:
             put(root, "aa_new.md", "n\n")
             check("an untracked first entry (??) keeps its whole path", porcelain_paths(root) == ["aa_new.md"])
             os.remove(os.path.join(root, "aa_new.md"))
+
+            # --- #392: a census-edit author stays on the census paths and edits in place ---
+            census_body = "".join("check %d\n" % i for i in range(40))
+            put(root, "tests/census/test_pin.py", census_body)
+            put(root, "tests/census/test_other.py", census_body)
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "census base")
+            cbase = git(root, "rev-parse", "HEAD")[1]
+            cargs = ["--root", root, "--branch", git(root, "rev-parse", "--abbrev-ref", "HEAD")[1], "--base", cbase,
+                     "--uncommitted", "--census-paths", "tests/census/test_pin.py"]
+            put(root, "tests/census/test_pin.py", census_body.replace("check 3\n", "check three\n").replace("check 9\n", "check nine\n"))
+            rc, out = call(cargs)
+            check("#392 a scoped in-place census edit is clean", rc == 0 and "verdict: clean" in out and "edited in place" in out)
+            put(root, "tests/census/test_pin.py", "".join("rewritten %d\n" % i for i in range(40)))
+            rc, out = call(cargs)
+            check("#392 a whole-file rewrite of a census path is flagged", rc == 1 and "whole-file-rewrite" in out and "FLAGGED" in out.splitlines()[0])
+            put(root, "tests/census/test_pin.py", census_body.replace("check 3\n", "check three\n"))
+            put(root, "tests/census/test_other.py", census_body.replace("check 4\n", "check four\n"))
+            rc, out = call(cargs)
+            check("#392 an edit beyond the census paths is TOUCHED_BEYOND", rc == 1 and "touched-beyond" in out.splitlines()[0] and "test_other.py" in out)
+            git(root, "checkout", "-q", "--", "tests/census")
+            rc, out = call(["--root", root, "--branch", git(root, "rev-parse", "--abbrev-ref", "HEAD")[1], "--base", cbase,
+                            "--uncommitted", "--census-paths", "tests/census/test_missing.py"])
+            check("#392 a census path that is not in the base tree is flagged", rc == 1 and "census-path" in out)
 
             # --- unusable input ---
             git(root, "checkout", "-q", "feat/empty")
