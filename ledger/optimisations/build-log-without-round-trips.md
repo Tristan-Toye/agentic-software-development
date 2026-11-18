@@ -1,6 +1,23 @@
 # Build log without round trips
 
-Status: research and design only. No product code changed.
+Status: **built for Claude Code** (merged 2026-11-12 16:46 in #347: `d05d63c` scripts self-log with `--log` / `--build-log`, `d242ecf` phase_checkpoint takes `dossier`, `log`, `note`, `afe99ed` phase docs route lines through them; `dossier_edit.py` takes a flock). opencode parity: skipped by owner decision 2026-11-18 (Claude Code only). Not built: the PostToolUse hook (option 4) and the Haiku note writer (option 5).
+
+## 0. Result (re-measured 2026-11-18)
+
+Same script, orchestrator requests only. Before: 2026-11-09..13. After: 2026-11-13..19 (saved: `scripts/bookkeeping_requests.2026-11-18.out.txt`).
+
+| | Before (4 days) | After (6 days) |
+|---|---|---|
+| Tool-using requests | 9,789 | 11,980 |
+| Bookkeeping-only requests | 316 (3.23%) | 163 (1.36%) |
+| Their cache-read | 33.4M (≈58M / week) | 13.1M (≈15M / week) |
+| Avg cache-read per such request | 106k | 80k |
+| Log lines written | 2,306 | 1,271 |
+
+- About **-74% cache-read per week** on bookkeeping-only requests (≈43M / week saved), and the share of requests fell by 58%. Inside the 60-90% target of section 7.
+- What is left is mostly **owner notes**: 112 of 163 (69%). The `note` parameter on phase_checkpoint is used less than hoped; the next step, if worth it, is the same-message rule for notes or option 5.
+- 25 requests still carry only class-a lines (script results); the scripts that already self-log should make these zero, so the prompt still retypes some.
+- Confounded: different dossiers and repos in the two windows, and the runner's fresh-stage change landed in the same period.
 
 ## 1. Problem
 
