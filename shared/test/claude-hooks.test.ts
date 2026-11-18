@@ -410,7 +410,7 @@ check("flight: missing dossier fails open", r.code === 0 && !r.out.includes("Bui
 const lines = readFileSync(join(tmp, "agentic-software-development", "claude", "claude-hooks.log"), "utf8").trim().split("\n")
 const count = (e: string) => lines.filter((l) => l.split(" ")[1] === e).length
 check("log: timestamped, one line per event", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z (refused|nudge|recorded|restored) \S+ /.test(l)))
-check("log: refusals (six orchestrator, one a runner-style /plan session; five blind-read; three stateful reads)", count("refused") === 14)
+check("log: refusals (six orchestrator, one a runner-style /plan session; five blind-read; eight integration seal; three stateful reads)", count("refused") === 22)
 check("log: nudges (two call-count, two pressure, one call-count in the pressure session)", count("nudge") === 5)
 check("log: restores", count("restored") === 2 + restores)
 check("log: checkpoints recorded (the interactive one, and the runner stage's two: a runner stage is an orchestrator now)", count("recorded") === 3)
