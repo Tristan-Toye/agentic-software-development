@@ -1,7 +1,7 @@
 // Run: bun --no-install opencode/plugins/test/context-guard.test.ts
 // Drives the plugin through its hooks: chat.params, tool.execute.before and the
 // messages transform. The config comes from context-guard.test.yaml via the env override.
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -159,6 +159,16 @@ const attempt = async (sessionID: string, tool: string, args: any) => {
 const dossier = "/repo/.discovery/dossiers/feature-x.md"
 const cargo = "limactl shell nightwatch -- cargo test -p foo"
 
+// The integration test author's seal: sealed-paths.txt beside .agent-staging refuses read/edit/write.
+{
+  const wt = join(tmp, "wt-seal")
+  mkdirSync(join(wt, ".agent-staging"), { recursive: true })
+  writeFileSync(join(wt, ".agent-staging", "sealed-paths.txt"), "# sealed\nsrc/flush.py\n")
+  await params({ sessionID: "g_int", agent: "integration-test-author" })
+  check("seal: sealed read refused", (await attempt("g_int", "read", { filePath: join(wt, "src", "flush.py") }))?.includes("sealed") === true)
+  check("seal: sealed edit refused", (await attempt("g_int", "edit", { filePath: join(wt, "src", "flush.py") })) !== undefined)
+  check("seal: other source read allowed", (await attempt("g_int", "read", { filePath: join(wt, "src", "main.py") })) === undefined)
+}
 check("dossier read refused", (await attempt("g_work", "read", { filePath: dossier }))?.includes("dossier_edit.py section") === true)
 check("dossier read with limit allowed", (await attempt("g_work", "read", { filePath: dossier, offset: 1, limit: 50 })) === undefined)
 check("dossier: other agent allowed", (await attempt("g_other", "read", { filePath: dossier })) === undefined)

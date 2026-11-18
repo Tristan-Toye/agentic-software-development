@@ -96,6 +96,29 @@ check("pre: another subagent reads freely", hook("pre-tool-use.ts", pre({ agent_
   check("pre: the record is found beside the agent's own transcript too", blind("/wt/src/lib.rs", { agent_id: "w1", agent_type: undefined, transcript_path: join(runDir, "agent-w1.jsonl") }).includes('"deny"'))
   check("pre: an agent with no record reads freely", blind("/wt/src/lib.rs", { agent_id: "w9", agent_type: undefined }) === "")
 }
+// The integration test author's seal: files listed in <root>/.agent-staging/sealed-paths.txt.
+const IT = "agentic-software-development:integration-test-author"
+const sealRoot = join(tmp, "seal-wt")
+mkdirSync(join(sealRoot, ".agent-staging"), { recursive: true })
+mkdirSync(join(sealRoot, "src", "flush"), { recursive: true })
+mkdirSync(join(sealRoot, "wiring"), { recursive: true })
+writeFileSync(join(sealRoot, ".agent-staging", "sealed-paths.txt"), "# sealed: implementation bodies\nsrc/flush/queue.rs\nsrc/lib.rs\n")
+const sealed = (tool: string, input: object, over: object = {}) =>
+  hook("pre-tool-use.ts", pre({ agent_id: "i1", agent_type: IT, tool_name: tool, cwd: sealRoot, tool_input: input, ...over })).out
+check("seal: sealed Read denied", sealed("Read", { file_path: join(sealRoot, "src", "lib.rs") }).includes("CONTRACT"))
+check("seal: sealed Read by relative path denied", sealed("Read", { file_path: "src/flush/queue.rs" }).includes('"deny"'))
+check("seal: .. cannot climb to a sealed file", sealed("Read", { file_path: "wiring/../src/lib.rs" }).includes('"deny"'))
+check("seal: sealed Edit denied", sealed("Edit", { file_path: join(sealRoot, "src", "lib.rs") }).includes('"deny"'))
+check("seal: sealed Write denied", sealed("Write", { file_path: join(sealRoot, "src", "flush", "queue.rs") }).includes("GAP:"))
+check("seal: other source Read allowed", sealed("Read", { file_path: join(sealRoot, "wiring", "routes.rs") }) === "")
+check("seal: test path Write allowed", sealed("Write", { file_path: join(sealRoot, "tests", "flush_flow.rs") }) === "")
+check("seal: content Grep over a dir holding a sealed file denied", sealed("Grep", { pattern: "fn ", path: join(sealRoot, "src"), output_mode: "content" }).includes("files_with_matches"))
+check("seal: content Grep of a sealed file denied", sealed("Grep", { pattern: "fn ", path: join(sealRoot, "src", "lib.rs"), output_mode: "content" }).includes('"deny"'))
+check("seal: content Grep with no path (cwd holds sealed files) denied", sealed("Grep", { pattern: "fn ", output_mode: "content" }).includes('"deny"'))
+check("seal: files_with_matches Grep allowed", sealed("Grep", { pattern: "fn ", path: join(sealRoot, "src"), output_mode: "files_with_matches" }) === "")
+check("seal: content Grep over a dir with no sealed file allowed", sealed("Grep", { pattern: "x", path: join(sealRoot, "wiring"), output_mode: "content" }) === "")
+check("seal: no sealed-paths.txt allows a Read", sealed("Read", { file_path: join(tmp, "unsealed", "src", "lib.rs") }, { cwd: tmp }) === "")
+check("seal: the seal does not touch other agents", hook("pre-tool-use.ts", pre({ agent_id: "a1", agent_type: "agentic-software-development:implementer", cwd: sealRoot, tool_input: { file_path: join(sealRoot, "src", "lib.rs") } })).out === "")
 check("pre: other command's session is a no-op", hook("pre-tool-use.ts", pre({ session_id: "s-plan", transcript_path: plan })).out === "")
 {
   // A runner stage starts with a bare "/plugin:plan W-1" line, no command tag; /plan sessions are guarded too.

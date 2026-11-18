@@ -105,7 +105,8 @@ python3 "${PLUGIN_ROOT}/scripts/compose_payloads.py" --kind <agent> \
 
 It fills every mechanical field from the files, adds each contract member's
 `path:line` to the owned paths so an implementer starts where the stub is,
-regenerates the integration author's excerpt from the live dossier, and
+regenerates the integration author's excerpt from the live dossier (and its
+`.agent-staging/sealed-paths.txt`, the files its hook refuses to open), and
 leaves every judgement field as `@@FILL_<FIELD>@@` with a one-line hint.
 Replace each `@@FILL_…@@` yourself — `check_payload.py` refuses any that
 is left — or pass it with `--set FIELD=VALUE`. `--contract-paths` is for this

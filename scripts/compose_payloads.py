@@ -906,6 +906,28 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
     return ordered(fields, order)
 
 
+def write_sealed_paths(staging: str, dossier_text: str, contract_paths: list[str]) -> None:
+    """The files the integration test author's hook refuses to Read or Edit
+    (shared/blind-read.ts `sealedRead`): every work package's implementation
+    paths plus the --contract-paths files, one repo-relative path per line.
+    Rewritten on each compose."""
+    sealed: list[str] = []
+    for cells in work_packages(dossier_text):
+        if len(cells) < 2:
+            continue
+        for p in cells[1].split(","):
+            p = p.strip().strip("`")
+            if p and p not in sealed:
+                sealed.append(p)
+    for p in contract_paths:
+        if p not in sealed:
+            sealed.append(p)
+    with open(os.path.join(staging, "sealed-paths.txt"), "w", encoding="utf-8") as fh:
+        fh.write("# sealed: implementation files the integration test author may not Read or Edit "
+                 "(its payload's CONTRACT holds the signatures); written by compose_payloads.py\n")
+        fh.write("".join(p + "\n" for p in sealed))
+
+
 def compose_integration_test_author(ctx: dict) -> list[Field]:
     """WORKTREE_DIR: mechanical, --root. DOSSIER: mechanical — this script
     generates the excerpt itself (`## Problem`, `## Approach`,
@@ -938,6 +960,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     with open(excerpt_path, "w", encoding="utf-8") as fh:
         fh.write(excerpt_text_)
 
+    write_sealed_paths(staging, dossier_text, ctx["args"].contract_paths)
     contract_text = contract_text_for(ctx)
     fields: dict[str, Field] = {
         "WORKTREE_DIR": Field("WORKTREE_DIR", root),
@@ -1965,6 +1988,15 @@ def selftest() -> int:
         check("integration-test-author compose exit 0", rc == 0, out)
         it_text = read_text(it_path) if rc == 0 else ""
         excerpt_path = os.path.join(root, ".agent-staging", "W-014.excerpt.md")
+        sealed_file = os.path.join(root, ".agent-staging", "sealed-paths.txt")
+        sealed_lines = read_text(sealed_file).splitlines() if os.path.exists(sealed_file) else []
+        check("integration-test-author compose writes sealed-paths.txt with the contract file",
+              "src/flush.py" in sealed_lines and sealed_lines[:1] and sealed_lines[0].startswith("#"), repr(sealed_lines))
+        pkg_paths = [p.strip() for c in work_packages(DOSSIER_FIXTURE) for p in c[1].split(",") if p.strip()]
+        check("integration-test-author sealed-paths.txt lists every work package path",
+              bool(pkg_paths) and all(p in sealed_lines for p in pkg_paths), repr((pkg_paths, sealed_lines)))
+        check("integration-test-author sealed-paths.txt has no duplicates",
+              len(sealed_lines) == len(set(sealed_lines)))
         check("integration-test-author DOSSIER names the generated excerpt",
               ("DOSSIER: %s" % excerpt_path) in it_text)
         import io, contextlib
