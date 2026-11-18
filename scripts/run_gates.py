@@ -157,6 +157,9 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import build_slots  # noqa: E402
+
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 NEEDS_RE = re.compile(r"^(?P<rest>.*)\[needs:\s*(?P<tool>[^\]]+)\]\s*$")
 FAILURE_RE = re.compile(r"DEFECT|FAIL|ERROR|error|Error|panicked|not ok|✗")
@@ -870,7 +873,7 @@ def main(argv: list[str]) -> int:
         else:
             to_run.append(i)
 
-    env = gate_env(args.path_prepend)
+    env = build_slots.held_env(gate_env(args.path_prepend))
     env_script = args.env_script
     if env_script and not os.path.isfile(os.path.expanduser(env_script)):
         print(f"run_gates: --env-script {env_script}: no such file", file=sys.stderr)
@@ -879,14 +882,20 @@ def main(argv: list[str]) -> int:
     def work(i: int) -> tuple[int, dict]:
         return i, run_gate(gates[i]["command"], root, args.timeout, env, env_script)
 
-    if args.jobs > 1 and len(to_run) > 1:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as ex:
-            for i, res in ex.map(work, to_run):
+    # One host build slot for the whole run (build_slots.py): every run builds in its own worktree, so
+    # fifteen runs gating at once were fifteen cargo builds and a swapping host. Waiting is not gate time:
+    # --timeout starts once the slot is held.
+    with build_slots.slot("run_gates " + root, log=lambda m: print("run_gates: " + m, flush=True)) as waited:
+        if waited >= 1:
+            print(f"run_gates: got a host build slot after {waited:.0f}s", flush=True)
+        if args.jobs > 1 and len(to_run) > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as ex:
+                for i, res in ex.map(work, to_run):
+                    results[i] = ("ran", gates[i], res)
+        else:
+            for i in to_run:
+                i, res = work(i)
                 results[i] = ("ran", gates[i], res)
-    else:
-        for i in to_run:
-            i, res = work(i)
-            results[i] = ("ran", gates[i], res)
 
     passed = failed = skipped = notfound = 0
     for kind, g, res in results:
@@ -989,6 +998,7 @@ jobs:
 
 
 def selftest() -> int:
+    os.environ["ASD_BUILD_SLOTS"] = "0"  # a self-test never waits on, or takes, a real host build slot
     failures: list[str] = []
 
     def check(name: str, ok: bool) -> None:

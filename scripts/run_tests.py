@@ -644,9 +644,17 @@ def execute(
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             with contextlib.suppress(ValueError, OSError):  # not the main thread
                 saved[sig] = signal.signal(sig, bail)
+    # A host run takes a host build slot (build_slots.py) so concurrent runs do not swap the machine; a VM
+    # run builds in the VM, which has its own suite lease. Wall time starts once the slot is held.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import build_slots
+    host_slot = contextlib.nullcontext(0.0) if vm else build_slots.slot(
+        "run_tests " + (cwd or os.getcwd()), log=lambda m: print("run_tests: " + m, file=sys.stderr, flush=True))
     try:
-        with open(log_path, "w", encoding="utf-8", errors="replace") as fh:
-            proc = subprocess.Popen(argv, stdout=fh, stderr=subprocess.STDOUT, cwd=cwd)
+        with host_slot, open(log_path, "w", encoding="utf-8", errors="replace") as fh:
+            start = time.time()
+            proc = subprocess.Popen(argv, stdout=fh, stderr=subprocess.STDOUT, cwd=cwd,
+                                    env=None if vm else build_slots.held_env())
             try:
                 proc.wait()
             finally:
@@ -1076,6 +1084,7 @@ Build finished in 3.2s
 
 
 def selftest() -> int:
+    os.environ["ASD_BUILD_SLOTS"] = "0"  # a self-test never waits on, or takes, a real host build slot
     failures_list: list[str] = []
 
     def check(name: str, ok: bool) -> None:
