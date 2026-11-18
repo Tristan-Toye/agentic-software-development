@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The one switch for the five mechanical-phase drivers, without touching the LaunchAgent.
+"""The one switch for the mechanical-phase drivers, without touching the LaunchAgent.
 
 The dashboard server runs as a LaunchAgent whose environment holds only PATH and
 ASD_SLACK_USER, so `ASD_DRIVER_<NAME>` cannot be set there per run. Instead
@@ -23,6 +23,11 @@ stay in the file, so `show` still tells the story. A claimed run keeps its modes
 for its whole life, even after the quota is full; only an explicit `off` takes
 them away. No quota means every run carries the modes, as before.
 
+Two drivers are script-only and cost no tokens (FREE: flow_coverage_gate, vr_promote_preview). They are
+exempt from the quota: a run that finds the quota full, and a run that is not /work-on, still gets them
+exported with the mode in the file, and they never claim a place. `show` marks them "(no quota)".
+vr_promote_preview has no `on` mode (`set` refuses it).
+
 Usage:
     driver_modes.py show                      effective modes from the file
     driver_modes.py set NAME=MODE [...]       change some; the others stay
@@ -35,7 +40,7 @@ Usage:
     driver_modes.py --selftest
 
 NAME is one of finalize_pr, merge_packages, pre_fanout_check, strength_gate_prep,
-test_round; MODE is off, shadow or on. The file is written atomically.
+test_round, flow_coverage_gate, vr_promote_preview; MODE is off, shadow or on. The file is written atomically.
 Exit 0 done, 2 bad arguments or an unreadable file.
 
 No third-party imports.
@@ -54,7 +59,10 @@ import sys
 import tempfile
 import time
 
-NAMES = ("finalize_pr", "merge_packages", "pre_fanout_check", "strength_gate_prep", "test_round")
+NAMES = ("finalize_pr", "merge_packages", "pre_fanout_check", "strength_gate_prep", "test_round",
+         "flow_coverage_gate", "vr_promote_preview")
+FREE = ("flow_coverage_gate", "vr_promote_preview")   # script-only, no tokens: exempt from the run quota
+NO_ON = {"vr_promote_preview": "no on mode yet: promotion stays tied to `Diagrams new:`"}   # modes a driver refuses
 MODES = ("off", "shadow", "on")
 QUOTA_KEY = "_quota"   # in the drivers file next to the driver names: {"limit": N, "claimed": [{"run", "at"}]}
 QUOTA_COMMAND = "work-on"
@@ -62,6 +70,11 @@ QUOTA_COMMAND = "work-on"
 
 def env_name(name: str) -> str:
     return "ASD_DRIVER_" + name.upper()
+
+
+def name_of(var: str) -> str:
+    """The driver name of an ASD_DRIVER_<NAME> variable (the inverse of env_name)."""
+    return var[len("ASD_DRIVER_"):].lower()
 
 
 def default_file() -> str:
@@ -190,7 +203,7 @@ def show(path: str) -> str:
     modes, warnings = load(path)
     rows = [f"drivers file: {path}" + ("" if os.path.exists(path) else " (absent: every driver off)")]
     for name in NAMES:
-        rows.append(f"  {name:<20} {modes.get(name, 'off')}")
+        rows.append(f"  {name:<20} {modes.get(name, 'off')}" + ("  (no quota)" if name in FREE else ""))
     quota = load_quota(path)
     if quota is None:
         rows.append("  quota: none (every run carries the modes)")
@@ -260,9 +273,12 @@ def _change(a: argparse.Namespace, path: str) -> int:
             if name not in NAMES or mode not in MODES:
                 print(f"driver_modes.py: bad pair {pair!r}: NAME is one of {', '.join(NAMES)}; MODE is one of {', '.join(MODES)}", file=sys.stderr)
                 return 2
+            if mode == "on" and name in NO_ON:
+                print(f"driver_modes.py: {name}=on refused: {NO_ON[name]}", file=sys.stderr)
+                return 2
             modes[name] = mode
     elif a.cmd == "all":
-        modes = {n: a.mode for n in NAMES}
+        modes = {n: ("shadow" if (a.mode == "on" and n in NO_ON) else a.mode) for n in NAMES}
     elif a.cmd == "off":
         modes = {}
     try:
@@ -326,7 +342,14 @@ def _run_selftest() -> list[str]:
             os.environ["ASD_DRIVERS_FILE"] = f
             check("ASD_DRIVERS_FILE moves the default", default_file() == f and load()[0]["pre_fanout_check"] == "on")
             del os.environ["ASD_DRIVERS_FILE"]
-            check("show lists all five", all(n in show(f) for n in NAMES))
+            check("show lists every driver and marks the script-only ones", all(n in show(f) for n in NAMES)
+                  and show(f).count("(no quota)") == len(FREE))
+            check("flow_coverage_gate can be set to shadow", main(["--file", f, "set", "flow_coverage_gate=shadow"]) == 0 and load(f)[0]["flow_coverage_gate"] == "shadow")
+            check("vr_promote_preview=on is refused and writes nothing", main(["--file", f, "set", "vr_promote_preview=on"]) == 2
+                  and "vr_promote_preview" not in load(f)[0] and main(["--file", f, "set", "vr_promote_preview=shadow"]) == 0)
+            check("all on keeps vr_promote_preview at shadow", main(["--file", f, "all", "on"]) == 0 and load(f)[0]["vr_promote_preview"] == "shadow"
+                  and load(f)[0]["test_round"] == "on")
+            check("the free drivers are known names", set(FREE) <= set(NAMES) and name_of(env_name("flow_coverage_gate")) == "flow_coverage_gate")
             # ---- the run quota
             q = os.path.join(tmp, "quota", "drivers.json")
             check("no quota: claim is always true and records nothing", claim("r0", q) is True and not os.path.exists(q))
