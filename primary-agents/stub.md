@@ -276,6 +276,17 @@ the stub. The pull request is open, so the stub is closed to new dossiers.
 
 ## Step 5 — CI green
 
+**The ADR index, first.** In a repository whose `docs/adr/index.md` is generated
+and no workflow on `development` writes it (no `regen-adr-index.yml` or the like),
+the stub branch is the index's one writer: regenerate it with the repository's
+generator (`scripts/write_adr_index.py`, else
+`python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --write-index`) and, when
+it changed, commit that file alone (`chore: regenerate the ADR index`) and
+push. Do it again after any fix round that merged an ADR into the stub. Where
+a workflow on `development` writes the index, leave it alone: that repository's
+CI refuses a pull request that commits it. Never edit the index by hand, not
+even to renumber an ADR.
+
 `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N>`. Exit 4 means a
 superseded head: re-run against the head that superseded it. Exit 5 means a
 conflicting pull request: resolve per the merge rules, never by force. A red
