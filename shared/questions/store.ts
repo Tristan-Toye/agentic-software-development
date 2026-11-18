@@ -2,6 +2,8 @@
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { readdir } from "node:fs/promises"
+import { fileSig, IO_CONCURRENCY, mapLimit, readText } from "./asyncio.ts"
 
 export type Line = {
   ts: string
@@ -97,6 +99,39 @@ export function readAll(dir: string): Question[] {
     if (q) out.push(q)
   }
   return out.sort((a, b) => a.ts.localeCompare(b.ts) || a.id.localeCompare(b.id))
+}
+
+/** Parsed questions by path with the file signature they were parsed at: an unchanged file is not read again. */
+const qcache = new Map<string, { sig: string; q: Question | null }>()
+
+export async function readQuestionAsync(dir: string, id: string): Promise<Question | null> {
+  if (!/^[\w.-]+$/.test(id)) return null
+  const path = join(dir, `${id}.jsonl`)
+  const sig = await fileSig(path)
+  if (sig === null) { qcache.delete(path); return null }
+  const hit = qcache.get(path)
+  if (hit && hit.sig === sig) return hit.q
+  const text = await readText(path)
+  const q = text === null ? null : (() => { try { return parseQuestion(id, text) } catch { return null } })()
+  if (text !== null) qcache.set(path, { sig, q })
+  return q
+}
+
+/** `readAll` off the main thread: async stat and read, 16 files at a time, unchanged files served from the cache. */
+export async function readAllAsync(dir: string): Promise<Question[]> {
+  const ids = (await readdir(dir)).filter((f) => f.endsWith(".jsonl")).map((f) => f.slice(0, -".jsonl".length))
+  const qs = await mapLimit(ids, IO_CONCURRENCY, (id) => readQuestionAsync(dir, id))
+  const out = qs.filter((q): q is Question => q !== null)
+  return out.sort((a, b) => a.ts.localeCompare(b.ts) || a.id.localeCompare(b.id))
+}
+
+export async function readSidecarAsync(dir: string, id: string): Promise<Sidecar | null> {
+  const text = await readText(join(dir, `${id}.slack.json`))
+  if (text === null) return null
+  try {
+    const o = JSON.parse(text)
+    return o && typeof o.channel === "string" && typeof o.ts === "string" ? o : null
+  } catch { return null }
 }
 
 export function cut(text: string): string {

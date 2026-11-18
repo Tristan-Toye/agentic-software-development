@@ -6,7 +6,9 @@ import type { Question } from "./store.ts"
 import { emitChange } from "./events.ts"
 import { blockedByOf, controlsFor, type Controls } from "./controls.ts"
 import { applyPending } from "./pending.ts"
-import { readRunner, readUpdates, readViewCache, runnerActive, runsDir, summaryOf, writeViewCache, type RunnerState, type Update } from "./runstore.ts"
+import { IO_CONCURRENCY, mapLimit, readText } from "./asyncio.ts"
+import { offThread } from "./scanpool.ts"
+import { readRunner, readRunnerAsync, readUpdates, readUpdatesAsync, readViewCache, runnerActive, runsDir, summaryOf, writeViewCache, type RunnerState, type Update } from "./runstore.ts"
 
 export const STATUSES = ["planned", "ready", "building", "review", "pr", "done", "dropped"] as const
 const TAIL = 256 * 1024
@@ -791,12 +793,12 @@ let lastSig = ""
 export function undecidedDeferred(items: DeferredItem[], fixLive: boolean, openQuestions: Set<string>): number {
   return items.filter((i) => i.state === "open" && !i.keptOpen && (!fixLive || (!!i.question && openQuestions.has(i.question)))).length
 }
-/** Updates and runner state are cheap local reads, so they are fresh on every request. */
-function liveStore(r: Run): Pick<Run, "updates" | "runner" | "running" | "deferred" | "deferredOpen"> {
+/** Updates, runner state and the owner's rulings are fresh on every request; read async so a slow disk never stalls the server. */
+async function liveStore(r: Run): Promise<Pick<Run, "updates" | "runner" | "running" | "deferred" | "deferredOpen">> {
   const key = r.runKey || `${r.repo}.${r.id}`
-  const runner = readRunner(key)
-  const deferred = withOwnerRulings(r.deferred, `${r.repo}.${r.id}`)
-  return { updates: readUpdates(key), runner, running: isRunning(r.status) || runnerActive(runner), deferred,
+  const [runner, rulings, updates] = await Promise.all([readRunnerAsync(key), readText(ownerRulingsFile(`${r.repo}.${r.id}`)), readUpdatesAsync(key)])
+  const deferred = applyOwnerRulings(r.deferred, rulings)
+  return { updates, runner, running: isRunning(r.status) || runnerActive(runner), deferred,
     deferredOpen: deferred.items.filter((i) => i.state === "open" && !i.keptOpen).length }
 }
 /**
@@ -806,8 +808,15 @@ function liveStore(r: Run): Pick<Run, "updates" | "runner" | "running" | "deferr
  */
 export function ownerRulingsFile(key: string, dir = runsDir()): string { return join(dir, `${key}.deferred-owner.json`) }
 export function withOwnerRulings(d: Deferred, key: string, dir = runsDir()): Deferred {
+  let text: string | null = null
+  try { text = readFileSync(ownerRulingsFile(key, dir), "utf8") } catch { /* none */ }
+  return applyOwnerRulings(d, text)
+}
+/** The rulings file's text (null when there is none) applied to the deferred items. */
+export function applyOwnerRulings(d: Deferred, text: string | null): Deferred {
+  if (text === null) return d
   let o: Record<string, { keepOpen?: boolean; ts?: string }> = {}
-  try { o = JSON.parse(readFileSync(ownerRulingsFile(key, dir), "utf8")) } catch { return d }
+  try { o = JSON.parse(text) } catch { return d }
   return { ...d, items: d.items.map((i) => {
     const r = o[i.id]
     if (!r || i.state !== "open") return i
@@ -819,7 +828,7 @@ export function withOwnerRulings(d: Deferred, key: string, dir = runsDir()): Def
 export async function getRuns(questions: () => Question[]): Promise<RunsView> {
   if (!inflight && Date.now() - lastScan > 30_000) {
     lastScan = Date.now()
-    inflight = buildRuns(questions()).then((v) => {
+    inflight = offThread<RunsView>("runs", questions(), () => buildRuns(questions())).then((v) => {
       const sig = JSON.stringify(v.runs.map((r) => [r.repo, r.id, r.status, r.phase, r.lastActivity, r.session.state, r.pr, r.session.activity?.doing ?? "", r.session.activity?.background.length ?? 0]))
       cached = v
       writeViewCache("runs", v)
@@ -829,8 +838,9 @@ export async function getRuns(questions: () => Question[]): Promise<RunsView> {
   }
   if (!cached.scannedAt && inflight) await inflight
   const linked = linkQuestions(cached.runs, questions())
-  const live = cached.runs.map((r) => {
-    const l = liveStore(r), qa = linked.get(`${r.repo}/${r.id}`)
+  const lives = await mapLimit(cached.runs, IO_CONCURRENCY, liveStore)
+  const live = cached.runs.map((r, i) => {
+    const l = lives[i], qa = linked.get(`${r.repo}/${r.id}`)
     return { ...r, ...l, questions: qa?.open ?? [], answered: qa?.answered ?? [], view: viewFor(r.status, l.running, l.updates.length) }
   })
   const statusOf = (repo: string) => (id: string) => live.find((x) => x.repo === repo && x.id === id)?.status
