@@ -6,6 +6,9 @@ format), finds the runtime entry points in the source with a per-language
 signal table (Rust only for now), and reports each as covered, partial or
 uncovered. Python standard library only.
 
+Candidate files: in a git work tree only the repo's own files (`git ls-files`: tracked, staged, plus untracked
+but not ignored), so a gitignored directory of cloned third-party code is never scanned; a plain directory is walked.
+
 Usage:
     flow_coverage.py --repo REPO [--json]
     flow_coverage.py --repo REPO --changed BASE_REF [--json]   # exit 1: uncovered entry in changed files
@@ -289,7 +292,28 @@ LANGUAGES = {
 
 # ------------------------------------------------------------------ discovery
 
+def git_files(repo: Path):
+    """Tracked files plus untracked-but-not-ignored ones (relative, posix), when REPO is the top of a git work tree;
+    None otherwise (not a repo, or git unavailable): the caller walks the file system instead."""
+    try:
+        top = subprocess.run(["git", "-C", str(repo), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != repo.resolve():
+            return None
+        r = subprocess.run(["git", "-C", str(repo), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                           capture_output=True, text=True)
+    except OSError:
+        return None
+    if r.returncode != 0:
+        return None
+    return sorted({f for f in r.stdout.split("\0") if f and (repo / f).is_file()})
+
+
 def source_files(repo: Path, exts) -> list:
+    """Source files with one of EXTS. In a git work tree only the repo's own files count (tracked, staged, and
+    untracked but not ignored), so a gitignored directory of cloned third-party code is never scanned."""
+    tracked = git_files(repo)
+    if tracked is not None:
+        return [f for f in tracked if f.endswith(exts) and not any(p in SKIP_DIRS for p in f.split("/")[:-1])]
     out = []
     for root, dirs, files in os.walk(repo):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith(".git"))
@@ -703,6 +727,26 @@ def _selftest() -> int:
             check("changed:new-in-touched-file-fails", [e.name for e in rep["failing"]] == ["serve_fresh_requests"])
         else:
             print("flow_coverage selftest: git unavailable, --changed cases skipped", file=sys.stderr)
+
+        # Only the repo's own files count: an ignored directory is skipped, an untracked non-ignored file is not.
+        with tempfile.TemporaryDirectory() as tg:
+            gr = Path(tg)
+            gg = lambda *a: subprocess.run(["git", "-C", tg, *a], capture_output=True, text=True)
+            if gg("init", "-q", "-b", "main").returncode == 0:
+                (gr / "src").mkdir()
+                (gr / "inspiration-repos/x/src").mkdir(parents=True)
+                (gr / "src/main.rs").write_text("fn main() {}\n")
+                (gr / "inspiration-repos/x/src/main.rs").write_text("fn main() {}\n")
+                (gr / ".gitignore").write_text("inspiration-repos/\n")
+                gg("add", "-A")
+                names = lambda: sorted(e.path for e in analyse(gr)["entries"])
+                check("git:ignored-dir-not-counted", names() == ["src/main.rs"])
+                (gr / "src/bin").mkdir()
+                (gr / "src/bin/new.rs").write_text("fn main() {}\n")
+                check("git:untracked-non-ignored-counted", names() == ["src/bin/new.rs", "src/main.rs"])
+                check("git:plain-dir-walks-everything", len(source_files(gr / "inspiration-repos", (".rs",))) == 1)
+            else:
+                print("flow_coverage selftest: git unavailable, ignore cases skipped", file=sys.stderr)
 
         # No supported language.
         with tempfile.TemporaryDirectory() as td2:

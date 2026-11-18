@@ -2,6 +2,7 @@
 """Promote an owner-reviewed NEW architecture diagram (the dossier's `Diagrams new:` stems) to docs/architecture.
 
     vr_promote.py --dossier-id ID --stem STEM --repo PATH [--preview | --check-approval]
+    vr_promote.py --shadow-all --dossier-id ID --repo PATH
     vr_promote.py --selftest
 
 The owner reviews each new diagram as an "Architecture impact" tab of the visual review: the draft
@@ -37,7 +38,17 @@ runs vr_graph validate and `vr_mermaid.py sync docs/architecture`. `--preview` (
 approves) only writes `.discovery/visual-review/<ID>/arch/<stem>.json`: no re-anchoring (anchors still
 point at stubs), no review check, nothing under docs/.
 
-Exit: 0 done, 1 a stale anchor, an unresolved `change` verdict or a validation failure, 2 usage / input error.
+`--shadow-all` (driver `vr_promote_preview`, ASD_DRIVER_VR_PROMOTE_PREVIEW; off: exit 3, shadow: runs, on: exit 2,
+there is no on mode: promotion stays tied to `Diagrams new:`) measures whether a seq draft could be built
+mechanically for every L1 flow with an added or changed step, not only the stems a dossier lists. For each such flow it
+builds the draft exactly as `--preview` does (a flow with no `new_stem` gets the stem `seq-shadow-<flow id>`),
+validates it the same way, and writes nothing under the dossier's visual-review directory: the drafts and one
+`vr_promote_preview-<ts>.json` (per flow: steps, built ok or the errors, lanes, steps missing `to` / `call_kind`) go
+into `<git common dir>/asd-drivers/driver-shadow/<ID>/`. l1.json and review.json are only read. Exit 0 always, 2
+when l1.json is missing or unusable.
+
+Exit: 0 done, 1 a stale anchor, an unresolved `change` verdict or a validation failure, 2 usage / input error,
+3 (`--shadow-all` only) the driver is off.
 """
 from __future__ import annotations
 
@@ -418,6 +429,110 @@ def _run_draft(dossier_id: str, stem: str, repo: str, vr: str, l1: dict | None, 
     return 0
 
 
+SHADOW_DRIVER = "vr_promote_preview"
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", str(text)).strip("-")[:60] or "flow"
+
+
+def shadow_flow(l1: dict, flow: dict, removed: set) -> tuple:
+    """(record, draft or None) for one L1 flow: the draft built and validated exactly as `--preview` does."""
+    nodes = {n.get("id"): n for n in l1.get("nodes", [])}
+    steps = [nodes[i] for i in flow.get("after", []) if i in nodes]
+    stem = flow.get("new_stem") or "seq-shadow-" + _slug(flow.get("id", ""))
+    rec = {"flow": flow.get("id"), "stem": stem, "steps": len(flow.get("after", [])),
+           "changed_steps": sum(1 for n in steps if n.get("status") in ("added", "changed")),
+           "missing_to": sum(1 for n in steps if n.get("to") is None),
+           "missing_call_kind": sum(1 for n in steps if n.get("call_kind") is None),
+           "built_ok": False, "errors": [], "lanes": 0}
+    graph = None
+    try:
+        graph = promote_graph(dict(l1, flows=[dict(flow, new_stem=stem)]), stem, removed)
+    except (PromoteError, KeyError, TypeError) as exc:
+        rec["errors"].append(("%s: %s" % (type(exc).__name__, exc))[:300] if not isinstance(exc, PromoteError) else str(exc)[:300])
+    if graph is not None:
+        rec["lanes"] = len(graph.get("lanes", []))
+        issues = vr_graph.validate(graph, root=None)
+        if issues:
+            rec["errors"].append("does not validate: " + json.dumps(issues)[:500])
+        else:
+            rec["built_ok"] = True
+    return rec, graph
+
+
+def shadow_all(dossier_id: str, repo: str, mode: str | None = None) -> int:
+    """Driver `vr_promote_preview`, shadow only: build a seq draft for every L1 flow with an added or changed step and
+    record the outcome in the git common dir. Reads l1.json / review.json, writes nothing under the dossier."""
+    import datetime
+    import driver_common
+    mode = driver_common.read_mode(SHADOW_DRIVER, mode)
+    if mode == "off":
+        print("%s is off (the default): nothing to do. Set it to shadow to run this." % driver_common.env_name(SHADOW_DRIVER))
+        return 3
+    if mode == "on":
+        print("ERROR no on mode yet: promotion stays tied to `Diagrams new:`")
+        return 2
+    vr = os.path.join(repo, ".discovery", "visual-review", dossier_id)
+    l1p = os.path.join(vr, "l1.json")
+    try:
+        l1 = _load(l1p)
+        if not isinstance(l1.get("flows", []), list) or not isinstance(l1.get("nodes", []), list):
+            raise PromoteError("l1.json has no flows / nodes lists")
+    except (OSError, ValueError, PromoteError, AttributeError) as exc:
+        print("ERROR cannot use %s: %s" % (l1p, exc))
+        return 2
+    rpath = os.path.join(vr, "review.json")
+    try:
+        review = _load(rpath) if os.path.isfile(rpath) else None
+    except (OSError, ValueError, PromoteError):
+        review = None
+    try:
+        removed, _ = approval(graph_hash(l1), review, [])
+    except (KeyError, TypeError, AttributeError):
+        removed = set()
+    nodes = {n.get("id"): n for n in l1.get("nodes", []) if isinstance(n, dict)}
+    records, drafts = [], {}
+    skipped = 0
+    for flow in l1.get("flows", []):
+        if not isinstance(flow, dict):
+            continue
+        if not any((nodes.get(i) or {}).get("status") in ("added", "changed") for i in flow.get("after", [])):
+            skipped += 1
+            continue
+        rec, graph = shadow_flow(l1, flow, removed)
+        records.append(rec)
+        if graph is not None and rec["built_ok"]:
+            drafts[rec["stem"]] = graph
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    base = os.path.join(driver_common.evidence_root(repo), "driver-shadow", dossier_id)
+    ok = sum(1 for r in records if r["built_ok"])
+    failed = [r for r in records if not r["built_ok"]]
+    findings = ["flow %s: %s" % (r["flow"], "; ".join(r["errors"])[:300]) for r in failed]
+    summary = "%d flows with an added or changed step: %d built ok, %d failed" % (len(records), ok, len(failed))
+    evidence = {"driver": SHADOW_DRIVER, "mode": "shadow", "dossier": dossier_id, "verdict": "findings" if failed else "clean",
+                "exit": 1 if failed else 0, "summary": summary, "stopped_at": None, "steps": [], "findings": findings,
+                "facts": {"flows": records, "built_ok": ok, "failed": len(failed), "flows_without_change": skipped,
+                          "drafts_dir": "%s-%s-drafts" % (SHADOW_DRIVER, stamp)},
+                "time": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    try:
+        os.makedirs(base, exist_ok=True)
+        if drafts:
+            ddir = os.path.join(base, evidence["facts"]["drafts_dir"])
+            os.makedirs(ddir, exist_ok=True)
+            for stem, g in drafts.items():
+                with open(os.path.join(ddir, stem + ".json"), "w") as fh:
+                    json.dump(g, fh, indent=2, ensure_ascii=False)
+                    fh.write("\n")
+        path = os.path.join(base, "%s-%s.json" % (SHADOW_DRIVER, stamp))
+        with open(path, "w") as fh:
+            json.dump(evidence, fh, indent=1, sort_keys=True)
+        print("%s: %s; evidence %s" % (SHADOW_DRIVER, summary, path))
+    except OSError as exc:
+        print("%s: %s; evidence not written: %s" % (SHADOW_DRIVER, summary, exc))
+    return 0
+
+
 def run(dossier_id: str, stem: str, repo: str, preview: bool = False, check_only: bool = False) -> int:
     if not STEM_RE.match(stem):
         print("ERROR stem %r is not a plain name (letters, digits, - and _)" % stem)
@@ -778,6 +893,59 @@ def _selftest() -> int:
     del bad["nodes"][0]["call_kind"]
     check("missing-kind", _raises(lambda: promote_graph(bad, "seq-new", set())))
     check("arrow:reply", promote_graph(l1, "seq-new", set())["nodes"][1]["seq"]["arrow"] == "-->>")
+
+    # ---- --shadow-all (driver vr_promote_preview): evidence in the git common dir, nothing under the dossier ----
+    import glob
+    ds, l1s = scenario({})
+    vrs = os.path.join(ds, ".discovery", "visual-review", "W-9")
+    l1s["flows"].append({"id": "f-extra", "label": "extra", "status": "added", "after": [n["id"] for n in l1s["nodes"][:2]],
+                         "evidence": copy.deepcopy(l1s["flows"][0]["evidence"])})
+    bad_node = copy.deepcopy(l1s["nodes"][0])
+    bad_node.update(id="sx1", status="added")
+    del bad_node["call_kind"]
+    del bad_node["to"]
+    ctx_node = copy.deepcopy(l1s["nodes"][1])
+    ctx_node.update(id="sx2", status="context")
+    l1s["nodes"] += [bad_node, ctx_node]
+    l1s["flows"].append({"id": "f-bad", "label": "bad", "status": "added", "after": ["sx1"], "evidence": copy.deepcopy(l1s["flows"][0]["evidence"])})
+    l1s["flows"].append({"id": "f-ctx", "label": "unchanged", "status": "context", "after": ["sx2"], "evidence": copy.deepcopy(l1s["flows"][0]["evidence"])})
+    json.dump(l1s, open(os.path.join(vrs, "l1.json"), "w"))
+    json.dump({"schema_version": "1.0.0", "dossier": "W-9", "updated": "2026-01-01T00:00:00Z", "lines": []}, open(os.path.join(vrs, "review.json"), "w"))
+
+    def tree(path):
+        return sorted((os.path.relpath(os.path.join(r, f), path), open(os.path.join(r, f), "rb").read())
+                      for r, _, fs in os.walk(path) for f in fs)
+
+    before = tree(vrs)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc_off = shadow_all("W-9", ds, "off")
+        rc_on = shadow_all("W-9", ds, "on")
+        rc_sh = shadow_all("W-9", ds, "shadow")
+        rc_none = shadow_all("W-404", ds, "shadow")
+    check("shadow-all:off-exit-3", rc_off == 3)
+    check("shadow-all:on-refused", rc_on == 2 and "no on mode yet" in buf.getvalue())
+    check("shadow-all:exit-0", rc_sh == 0, buf.getvalue())
+    check("shadow-all:no-l1-exit-2", rc_none == 2)
+    check("shadow-all:dossier-untouched", tree(vrs) == before and not os.path.exists(os.path.join(vrs, "arch")))
+    evf = sorted(glob.glob(os.path.join(ds, ".git", "asd-drivers", "driver-shadow", "W-9", "vr_promote_preview-*.json")))
+    ev = json.load(open(evf[-1])) if evf else {}
+    recs = {r["flow"]: r for r in ev.get("facts", {}).get("flows", [])}
+    check("shadow-all:evidence-flows", set(recs) == {l1s["flows"][0]["id"], "f-extra", "f-bad"}, sorted(recs))
+    check("shadow-all:context-flow-skipped", "f-ctx" not in recs and ev.get("facts", {}).get("flows_without_change") == 1)
+    check("shadow-all:new_stem-flow-built", recs.get(l1s["flows"][0]["id"], {}).get("built_ok") is True and recs[l1s["flows"][0]["id"]]["stem"] == "seq-new")
+    check("shadow-all:no-new_stem-gets-shadow-stem", recs.get("f-extra", {}).get("stem") == "seq-shadow-f-extra" and recs["f-extra"]["built_ok"] is True
+          and recs["f-extra"]["lanes"] >= 1)
+    check("shadow-all:missing-fields-counted", recs.get("f-bad", {}).get("built_ok") is False and recs["f-bad"]["missing_to"] == 1
+          and recs["f-bad"]["missing_call_kind"] == 1 and recs["f-bad"]["errors"])
+    check("shadow-all:built-count", ev.get("facts", {}).get("built_ok") == 2 and ev["facts"]["failed"] == 1)
+    check("shadow-all:findings", len(ev.get("findings", [])) == 1 and ev["findings"][0].startswith("flow f-bad") and ev.get("exit") == 1)
+    drafts = glob.glob(os.path.join(ds, ".git", "asd-drivers", "driver-shadow", "W-9", "*-drafts", "*.json"))
+    check("shadow-all:drafts-in-common-dir", sorted(os.path.basename(x) for x in drafts) == ["seq-new.json", "seq-shadow-f-extra.json"], drafts)
+    check("shadow-all:no-driver-evidence-leak", not os.path.exists(os.path.join(ds, ".git", "asd-drivers", "driver-evidence")))
+    rc_cli = subprocess.run([sys.executable, os.path.abspath(__file__), "--shadow-all", "--dossier-id", "W-9", "--repo", ds],
+                            capture_output=True, text=True, env=dict(os.environ, ASD_DRIVER_VR_PROMOTE_PREVIEW="")).returncode
+    check("shadow-all:cli-off-exit-3", rc_cli == 3)
     for f in fails:
         print("FAIL  " + f)
     print("vr_promote selftest " + ("ok" if not fails else "FAILED"))
@@ -799,11 +967,18 @@ def main(argv=None) -> int:
     ap.add_argument("--stem")
     ap.add_argument("--repo", default=".")
     ap.add_argument("--preview", action="store_true")
+    ap.add_argument("--shadow-all", action="store_true",
+                    help="driver vr_promote_preview: build a seq draft for every L1 flow with an added or changed step; "
+                         "evidence goes to the git common dir, nothing is written under the dossier")
     ap.add_argument("--check-approval", action="store_true",
                     help="only the approval rule (no writes, no re-anchoring): exit 1 and name the unapproved steps")
     a = ap.parse_args(argv)
     if a.selftest:
         return _selftest()
+    if a.shadow_all:
+        if not a.dossier_id:
+            ap.error("--shadow-all needs --dossier-id")
+        return shadow_all(a.dossier_id, os.path.abspath(a.repo))
     if not (a.dossier_id and a.stem):
         ap.error("--dossier-id and --stem are required")
     return run(a.dossier_id, a.stem, os.path.abspath(a.repo), a.preview, a.check_approval)
