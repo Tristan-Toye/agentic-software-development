@@ -8,7 +8,7 @@ import { runsDir } from "./runstore.ts"
 export type AutoMember = { id: string; stage: string; state: string; error: string; rounds: number }
 export type AutoPaused = { reason: string; kind: string; member: string; action: string; at: string }
 export type AutoState = {
-  repo: string; cycle: number; step: string; phase: string; started: string; stub: string
+  repo: string; cycle: number; step: string; phase: string; started: string; stub: string; integrating: string
   paused: AutoPaused | null; members: AutoMember[]; note: string; request: string | null; ts: string
 }
 export type AutoView = { repo: string; root: string; on: boolean; state: AutoState | null }
@@ -31,7 +31,7 @@ export function readAutoState(repo: string, dir = runsDir()): AutoState | null {
   const s = readJson(join(dir, `${repo}.auto-work.json`))
   if (!s || typeof s !== "object" || !Array.isArray(s.members)) return null
   return {
-    repo, cycle: Number(s.cycle) || 0, step: String(s.step ?? "idle"), phase: String(s.phase ?? "idle"), started: String(s.started ?? ""), stub: String(s.stub ?? ""),
+    repo, cycle: Number(s.cycle) || 0, step: String(s.step ?? "idle"), phase: String(s.phase ?? "idle"), started: String(s.started ?? ""), stub: String(s.stub ?? ""), integrating: String(s.integrate?.branch ?? ""),
     paused: s.paused ? { reason: String(s.paused.reason ?? ""), kind: String(s.paused.kind ?? ""), member: String(s.paused.member ?? ""), action: String(s.paused.action ?? ""), at: String(s.paused.at ?? "") } : null,
     members: s.members.map((m: any) => ({ id: String(m.id), stage: String(m.stage ?? ""), state: String(m.state ?? ""), error: String(m.error ?? ""), rounds: Number(m.rounds) || 0 })),
     note: String(s.note ?? ""), request: s.request ? String(s.request) : null, ts: String(s.ts ?? ""),

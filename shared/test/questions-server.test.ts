@@ -1014,6 +1014,8 @@ try {
   writeFileSync(join(dir, "on.auto-work.json"), JSON.stringify({ cycle: 2, step: "work", phase: "paused", stub: "stub/1", paused: { reason: "A failed", kind: "member", member: "A", action: "relaunch", at: "t" }, members: [{ id: "A", stage: "build", state: "failed", error: "A failed", rounds: 2 }], note: "" }))
   const st = readAutoState("on", dir)
   check("auto work: the state file is read as the page shows it", !!st && st.cycle === 2 && st.paused?.reason === "A failed" && st.members[0].state === "failed" && st.members[0].rounds === 2 && st.phase === "paused", JSON.stringify(st))
+  writeFileSync(join(dir, "land.auto-work.json"), JSON.stringify({ cycle: 2, step: "land", phase: "landing", stub: "stub/1", integrate: { branch: "stub/2" }, members: [] }))
+  check("auto work: the state names the stub being integrated, apart from the one the cycle started after", readAutoState("land", dir)?.integrating === "stub/2" && readAutoState("land", dir)?.stub === "stub/1" && st?.integrating === "")
   check("auto work: a missing or torn state file reads as no state", readAutoState("none", dir) === null && (writeFileSync(join(dir, "bad.auto-work.json"), "{not json"), readAutoState("bad", dir) === null))
   const views = viewsFor([run("on", "A", "ready"), run("on", "B", "ready"), run("off", "C", "ready")], (r) => r === "on", (r) => readAutoState(r, dir))
   check("auto work: one view per repository with its switch and state", views.length === 2 && views[0].on && views[0].state?.cycle === 2 && !views[1].on && views[1].state === null)
