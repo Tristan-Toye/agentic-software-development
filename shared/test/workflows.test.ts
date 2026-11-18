@@ -224,6 +224,9 @@ const fakeReview = (prompt: string, opts: Opts) => {
     if (prompt.includes("rv-style.md")) return { verdict: "PASS", crs: [], document: "", notes: "clean", unreached: ["none"], payload_last: "END" }
     if (prompt.includes("rv-performance.md")) return null
     if (prompt.includes("rv-tests.md")) return { verdict: "PASS", crs: [], document: "", notes: "", unreached: ["tests/flush_test.rs :: reload_drains_queue"], payload_last: "END" }
+    if (prompt.includes("rv-notesonly.md")) return { verdict: "PASS", crs: [], document: "# Review\n\nUNREACHED: infra/prod/feedback.tf; modules/x/main.tf, engine/raise_sites.py\n", notes: "clean", unreached: [], payload_last: "END" }
+    if (prompt.includes("rv-bullets.md")) return { verdict: "PASS", crs: [], document: "", notes: "ok\nUNREACHED:\n- a/b.tf\n- `c/d.rs :: f`\n", unreached: ["none"], payload_last: "END" }
+    if (prompt.includes("rv-nonenone.md")) return { verdict: "PASS", crs: [], document: "ok\nUNREACHED: none\n", notes: "UNREACHED: none", unreached: [], payload_last: "END" }
     if (prompt.includes("rv-unread.md")) return { verdict: "CHANGES-REQUIRED", crs: [], document: "", unreached: [], payload_last: "UNREAD: Read returned a note pointing at ctx_search" }
     return {
       verdict: "CHANGES-REQUIRED",
@@ -243,6 +246,11 @@ const fakeReview = (prompt: string, opts: Opts) => {
   check("review: a reviewer that could not read its payload is 'unread', never PASS (#257)", un.result[0].verdict === "unread" && /^UNREAD/.test(un.result[0].payload_last))
   check("review: UNREACHED none is no unreached location", by("style").verdict === "PASS" && by("style").unreached.length === 0)
   check("review: a PASS with an unreached location is 'incomplete', never PASS", by("tests").verdict === "incomplete" && by("tests").unreached[0] === "tests/flush_test.rs :: reload_drains_queue")
+  const nb = await run(review, [lens("notesonly"), lens("bullets"), lens("nonenone")], fakeReview)
+  const nby = (n: string) => nb.result.find((r: any) => r.lens === n)
+  check("review: UNREACHED in the document fills unreached and is never PASS", nby("notesonly").verdict === "incomplete" && nby("notesonly").unreached.length === 3 && nby("notesonly").unreached.includes("modules/x/main.tf"))
+  check("review: UNREACHED bullets in the notes are parsed", nby("bullets").verdict === "incomplete" && nby("bullets").unreached.join("|") === "a/b.tf|c/d.rs :: f")
+  check("review: UNREACHED none in the text stays PASS", nby("nonenone").verdict === "PASS" && nby("nonenone").unreached.length === 0)
   check("review: the schema demands the unreached list", calls.some((c) => c.opts.schema && c.opts.schema.required.includes("unreached")))
   check("review: PASS lens writes no document", by("style").verdict === "PASS" && by("style").crs.length === 0 && by("style").document_path === "")
   check("review: CRs are compact with ledger ids", by("architecture").verdict === "CHANGES-REQUIRED" && by("architecture").crs[0].ledger_id === "CR-architecture-1" && by("architecture").crs[0].location === "src/a.rs:10" && by("architecture").crs[0].severity === "blocking")

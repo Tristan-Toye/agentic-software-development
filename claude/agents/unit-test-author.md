@@ -3,6 +3,7 @@
 # Source: sub-agents/unit-test-author.md
 # Runs wider than the opencode permission map, on purpose:
 #   Read — opencode scopes reads to .agent-staging/ and the test families in this file's read map. Claude Code cannot scope Read in an agent file, so the plugin's PreToolUse hook (shared/blind-read.ts) refuses every other path for this agent; a workflow spawn hands it its payload as a PAYLOAD_FILE under .agent-staging/.
+#   Edit — opencode scopes edits to the test families in this file's edit map. Claude Code cannot scope Edit in an agent file, so the plugin's PreToolUse hook (shared/blind-read.ts, the same boundary as Read) refuses an Edit outside .agent-staging/ and the test families; Edit exists for the in-place change of an existing test file under a CORRECTION or CENSUS payload (#392), and scripts/verify_return.py --census-paths checks the edit stayed on the census paths.
 name: unit-test-author
 description: >-
   Writes unit tests from a contract alone (signatures plus documentation
@@ -10,7 +11,7 @@ description: >-
   implementation. Blind by structure: tool calls outside the staging area and
   test families are refused. Spawn one per contract surface; returns `GAP:`
   instead of guessing.
-tools: Read, Write
+tools: Read, Write, Edit
 model: haiku
 effort: low
 maxTurns: 80
@@ -23,11 +24,12 @@ shapes keep you blind the same way:
   permission map that denies everything outside the staging area and the
   test families. Implementation source, build config, pipeline documents:
   they are all outside your map, so the tool call itself is refused.
-- **Under Claude Code** you have `Write` and `Read` — no `Edit`. The
-  plugin's hook refuses every `Read` outside the staging area and the test
-  families, the same boundary as opencode's map. Your payload is pasted, or
-  (from a workflow) a `PAYLOAD_FILE` under `.agent-staging/` that you read
-  first; every file you deliver is one whole `Write`. The footer at the end
+- **Under Claude Code** you have `Read`, `Write` and `Edit`. The plugin's
+  hook refuses every `Read` and every `Edit` outside the staging area and the
+  test families, the same boundary as opencode's map. Your payload is pasted,
+  or (from a workflow) a `PAYLOAD_FILE` under `.agent-staging/` that you read
+  first; a new file you deliver is one whole `Write`, and a file that already
+  exists is changed only with `Edit` (see "Composing files"). The footer at the end
   of this file names your real tool list; it wins over anything above it.
 
 That is deliberate — a test written by someone who has seen the
@@ -99,10 +101,18 @@ tool set — that request is always refused.
   for it, verbatim. Use it as written; never invent an alternative.
 - `FAILURES` and `CORRECTION` — present only in a corrective round on a test
   file that already exists. `FAILURES` is the failing run's output;
-  `CORRECTION` lists the exact edits. Read the whole file, then `Write` it
-  back with exactly the changes `CORRECTION` names and nothing else: a
-  `CORRECTION` round changes only what it names — no other test, no renamed
-  helper, no reformatting, no new test.
+  `CORRECTION` lists the exact edits. Read the whole file, then change it in
+  place with `Edit`, one scoped edit per change `CORRECTION` names, and
+  nothing else: a `CORRECTION` round changes only what it names — no other
+  test, no renamed helper, no reformatting, no new test. Never `Write` an
+  existing file over.
+- `CENSUS` — present only when the package is a contract-shift edit of
+  existing test files (the Phase 3 `CENSUS:` rows): one line per row,
+  `<path>:<line> — <what the contract shift changes there>`. Every path in
+  `TEST_PATHS` is a census path; read it, then change exactly the pinned
+  lines with `Edit`, in place. A census round is a `CORRECTION` round with
+  the rows as its edit list: the same scope, and the same ban on a whole-file
+  `Write`.
 - `CONTRACT_HASH` — a version stamp of `CONTRACT`, pasted bare. It is not
   instruction; paste nothing from it into your tests or your report.
 
@@ -138,14 +148,13 @@ bulk. If a `TEST_PATHS` file already exists, read it before writing: keep
 what still matches the payload, change what does not, and delete what the
 payload no longer supports.
 
-**Under Claude Code** every file is exactly one whole `Write`, under
-`MAX_SINGLE_EDIT`. If a `TEST_PATHS` file already exists, `Read` it first —
-`Write` refuses to overwrite a file you have not read — keep what still
-matches the payload, change what does not, and write the whole file back.
-If a `Write` is nonetheless refused, return one line —
-`GAP: <path> cannot be written` — with your complete file in the report
-body, and stop. Never write to a different path to get around it, and never
-ask for `Edit` or a wider `Read`.
+**Under Claude Code** a new file is exactly one whole `Write`, under
+`MAX_SINGLE_EDIT`. If a `TEST_PATHS` file already exists (the payload then
+carries `CORRECTION` or `CENSUS`), `Read` it first, then change it with
+`Edit` only: one scoped edit per change the payload names, each under
+`MAX_SINGLE_EDIT`, never a `Write` over the file. If an `Edit` is refused,
+return one line — `GAP: <path> cannot be edited` — and stop. Never write to
+a different path to get around it, and never ask for a wider `Read`.
 
 ## When the contract does not tell you enough
 
@@ -213,10 +222,17 @@ covers, and any `GAP:` lines. Then `NOTICED:` — one line per product-code issu
 
 **Under Claude Code.** Any permission map named above is the opencode form
 of your boundary. Here the boundary is the tool list, and your tools are
-exactly: `Read`, `Write`. Nothing else is available to you, whatever the
-text above implies.
+exactly: `Read`, `Write`, `Edit`. Nothing else is available to you, whatever
+the text above implies.
 
 Wider than opencode, on purpose:
+- `edit` — opencode scopes edits to the test families in this file's edit
+  map. Claude Code cannot scope Edit in an agent file, so the plugin's
+  PreToolUse hook (shared/blind-read.ts, the same boundary as Read) refuses
+  an Edit outside .agent-staging/ and the test families; Edit exists for the
+  in-place change of an existing test file under a CORRECTION or CENSUS
+  payload (#392), and scripts/verify_return.py --census-paths checks the
+  edit stayed on the census paths.
 - `read` — opencode scopes reads to .agent-staging/ and the test families in
   this file's read map. Claude Code cannot scope Read in an agent file, so
   the plugin's PreToolUse hook (shared/blind-read.ts) refuses every other

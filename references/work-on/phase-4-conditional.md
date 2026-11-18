@@ -139,7 +139,7 @@ promise you extract from a prompt:
 
 | Agent | Cannot see | Enforced by |
 |---|---|---|
-| `unit-test-author` | the implementation, the dossier, every pipeline document, anything outside `.agent-staging/` and the test families | under opencode its permission map: `read` and `edit` deny every path outside the staging area and the test families; under Claude Code `Write` and a `Read` the plugin's PreToolUse hook confines to the same staging area and test families — either way the tool call is refused, not merely discouraged |
+| `unit-test-author` | the implementation, the dossier, every pipeline document, anything outside `.agent-staging/` and the test families | under opencode its permission map: `read` and `edit` deny every path outside the staging area and the test families; under Claude Code `Write`, `Edit` and a `Read` the plugin's PreToolUse hook confines (both Read and Edit) to the same staging area and test families — either way the tool call is refused, not merely discouraged |
 | `integration-test-author` | any implementation body | the bodies are stubs on `X`; it has no Bash and cannot reach another branch |
 | `implementer` | the tests | its worktree forks from `X` at this commit, and no test exists there |
 

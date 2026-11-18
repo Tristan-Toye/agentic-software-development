@@ -221,11 +221,11 @@ the read map denies while the edit map admits it — `deploy/scripts/` is the
 recorded case — cannot be opened; stage the file's current content under
 `.agent-staging/` yourself and have the fresh instance rewrite the whole
 file with `Write`. **Under Claude Code every re-spawn onto an existing path
-is read-then-rewrite** — corrective rounds, coverage gaps, review CRs and
-hash mismatches alike. The author has `Write` and a hook-confined `Read`, and
-Claude Code's `Write` refuses to overwrite a file the agent has not read, its
-own earlier output included: the author reads the file, then lands the
-whole file in one `Write`. (When it had `Write` alone, that refusal cost the
+is read-then-edit** — corrective rounds, coverage gaps, review CRs, census
+rows and hash mismatches alike. The author has `Write`, `Edit` and a
+hook-confined `Read` (the hook confines `Edit` too), and Claude Code's `Write`
+refuses to overwrite a file the agent has not read: the author reads the file,
+then changes it with scoped `Edit`s, never one whole `Write` over it (#392). (When it had `Write` alone, that refusal cost the
 recorded repo two rounds; the confined `Read` is what removed the
 delete-first step.) A file outside the test families is the staged-copy
 exception above. Resume the same session where you hold its ID — it reuses
