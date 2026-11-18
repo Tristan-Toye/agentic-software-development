@@ -203,6 +203,46 @@ index — membership: holds every seen id → assert the whole element
         (id, seen_at) is in the index [member] — never the id alone
 ```
 
+**A line that holds for every input of a domain carries `[property: <kind>]`
+and the `domain:` its generator builds.** An example test checks a promise at
+the one point the author picked; a property checks it across generated
+inputs, and kills the mutants that the one point misses (a wrong branch for
+two-element lists, a swap that only shows with duplicates). Tag a line only
+when its promise is stated for a whole domain, and only with a kind the
+contract line itself justifies:
+
+| Kind | The contract states | The test asserts |
+|---|---|---|
+| `invariant` | a bound, shape, order or membership of every result | the stated fact, for every generated input |
+| `round-trip` | both directions (`decode(encode(x)) == x`, a parse of a render) | the round trip, never one direction recomputed |
+| `metamorphic` | how the result moves when the input moves (permuting the input leaves the set unchanged, a bigger limit never returns less) | the relation between two calls |
+| `model` | behaviour a tiny model reproduces (a dict for a store, a list for a queue) | the subject equals the model after the same generated operations |
+| `error-domain` | a named error for a whole class of invalid input | that error, for every generated input of that class, and nothing else asserted |
+
+Never tag a line whose only test would compute the expected value with the
+algorithm the contract describes: that property passes against any body that
+makes the same mistake as the test. Idempotence, commutativity and the like
+are properties only when the docstring states them. `domain:` names the
+inputs the generator builds **by construction**, boundaries included (empty,
+one element, duplicates, the extremes the docstring names): a generator that
+filters a broad domain runs most cases on trivial inputs, and QuickCheck's own
+worked example of an ordered-list property had only 19 of 100 cases with more
+than one element. The line keeps its concrete example, and its other tags:
+
+```
+flush — order: oldest first → queue A, B, C; the store received exactly
+        [A, B, C] [whole-value] [property: model]
+        domain: 0..20 distinct items, queued in generated order
+parse — invalid case: raises ParseError on a line with no `=` →
+        [property: error-domain] domain: any printable string without `=`
+```
+
+The unit author writes a property only when `PROPERTY_LIBRARY` names a
+library the repository already declares (`compose_payloads.py` reads the
+manifests; the author cannot add a dependency). Otherwise the tag is dropped
+and the line stays an example test. A property counts as covering its line
+only when it kills that line's mutant in the Phase 6 mutation check.
+
 A line whose strong form cannot be written is a promise no test can observe,
 and the observability checklist should have deleted it one step earlier.
 

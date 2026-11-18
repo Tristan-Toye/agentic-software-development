@@ -115,6 +115,15 @@ Twelve failure modes this catches, each of which cost a real build:
     an input a different guard also rejects: a green test that leaves the
     guard under test a mutation survivor.
 
+12c. **A property line the author cannot write as one** (WARNING). A
+    `PROMISE_CHECKLIST` line tagged `[property: <kind>]` names one of the
+    kinds a contract line can justify (invariant, round-trip, metamorphic,
+    model, error-domain) and the `domain:` its generator builds by
+    construction, and travels only beside a `PROPERTY_LIBRARY` that names a
+    library. Without a domain the author filters a broad generator and the
+    property runs on trivial cases (QuickCheck's ordered-insert example: 19
+    of 100 cases non-trivial); without a library the tag is a dead letter.
+
 13. **A relative path in a path-valued field.** `CONTRACT` (when it names a
     path, never when it pastes text), `TEST_PATHS`, `STYLE_PATHS`,
     `SUPPORT_PATHS`, `WORKTREE_DIR`, `DOSSIER`, `STANDARDS`, `CONTEXT_DOCS`
@@ -211,7 +220,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         "optional": {
             "SHARED_IDIOM", "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS",
             "SUPPORT", "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "CENSUS",
-            "BASELINE_COUNTS_FROM", "TEST_FORM_RULES",
+            "BASELINE_COUNTS_FROM", "TEST_FORM_RULES", "PROPERTY_LIBRARY",
         },
     },
     "integration-test-author": {
@@ -229,6 +238,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
             "SHARED_IDIOM", "DELIVERY_CHANGE", "PROMISE_CHECKLIST",
             "SUPPORT_PATHS", "SUPPORT", "FAILURES", "CORRECTION", "CENSUS",
             "BASELINE_COUNTS_FROM", "CITATION", "CI_ENVIRONMENT", "TEST_FORM_RULES",
+            "PROPERTY_LIBRARY",
         },
     },
     "implementer": {
@@ -448,6 +458,14 @@ EXCERPT_SECTIONS = ("## Problem", "## Approach", "## Acceptance criteria")
 # assertion form.
 WHOLE_VALUE_HINT = re.compile(r"\bexactly\b|\b(gives|returns|yields)\s+`")
 ASSERTION_TAG = re.compile(r"\[(whole-value|member)\]")
+# A checklist line the unit author writes as a property test, and the kinds a
+# contract line can justify (references/formats/dossier.md, property lines).
+PROPERTY_TAG = re.compile(r"\[property(?::\s*([\w-]*))?\]")
+PROPERTY_KINDS = ("invariant", "round-trip", "metamorphic", "model", "error-domain")
+PROPERTY_DOMAIN = re.compile(r"\bdomain:\s*\S")
+# `<member> — <category>: <promise>`: a new checklist entry; any other line in
+# the field continues the entry above it
+CHECKLIST_ENTRY = re.compile(r"^\s*(PROMISE_CHECKLIST:\s*)?[-*]?\s*[^\s—:][^—:]*?\s+—\s+[^:]+?:")
 NEGATIVE_HINT = re.compile(
     r"\b(refus\w*|reject\w*|skipp?\w*)\b|`(Ok\()?None\)?`|\bno event\b", re.I)
 ISOLATING_INPUT = re.compile(r"\binput:")
@@ -1309,6 +1327,50 @@ def assertion_form_findings(lines: list[str], kind: str | None) -> list[str]:
     return out
 
 
+def property_line_findings(lines: list[str], kind: str | None) -> list[str]:
+    """A `[property: <kind>]` checklist line names a known kind and its
+    generator's `domain:`, and travels beside a PROPERTY_LIBRARY that names a
+    library (12c)."""
+    if kind not in ("unit-test-author", "integration-test-author"):
+        return []
+    numbers = sorted(field_line_numbers(lines, "PROMISE_CHECKLIST"))
+    # a wrapped checklist line continues on the next indented line, so a tag or
+    # a domain on the continuation counts for the line it continues
+    entries: list[tuple[int, str]] = []
+    for number in numbers:
+        line = lines[number - 1]
+        if entries and not CHECKLIST_ENTRY.match(line):
+            entries[-1] = (entries[-1][0], entries[-1][1] + "\n" + line)
+        else:
+            entries.append((number, line))
+    out: list[str] = []
+    tagged = 0
+    for number, text in entries:
+        m = PROPERTY_TAG.search(text)
+        if not m:
+            continue
+        tagged += 1
+        head = text.strip().splitlines()[0][:80]
+        if (m.group(1) or "") not in PROPERTY_KINDS:
+            out.append(
+                "checklist line %d: %r names property kind %r; use one of %s, or drop the tag "
+                "and keep the line an example test (references/formats/dossier.md, property lines)."
+                % (number, head, m.group(1) or "", ", ".join(PROPERTY_KINDS)))
+        if not PROPERTY_DOMAIN.search(text):
+            out.append(
+                "checklist line %d: %r is a property line with no `domain:` — name the inputs "
+                "its generator builds by construction, boundaries included, so the property "
+                "never runs on filtered, trivial cases." % (number, head))
+    if tagged:
+        lib = (field_value(lines, "PROPERTY_LIBRARY") or "").strip()
+        if not lib or lib.lower().startswith("none"):
+            out.append(
+                "%d checklist line(s) carry [property: ...] but PROPERTY_LIBRARY names no "
+                "library: the author cannot add one, so drop the tags (example tests only) "
+                "or name the library the repository declares." % tagged)
+    return out
+
+
 def negative_input_findings(lines: list[str], kind: str | None) -> list[str]:
     """A negative checklist line names the isolating input every other guard admits."""
     if kind not in ("unit-test-author", "integration-test-author"):
@@ -1555,6 +1617,8 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     # 12. a whole-value checklist line with no assertion form
     warnings.extend(assertion_form_findings(lines, kind))
     warnings.extend(negative_input_findings(lines, kind))
+    # 12c. a property line the author cannot write as one
+    warnings.extend(property_line_findings(lines, kind))
 
     # 6. a dossier path that is not the run's live copy
     dossier, worktree_dir = field_value(lines, "DOSSIER"), field_value(lines, "WORKTREE_DIR")
@@ -1827,6 +1891,24 @@ def selftest() -> int:
          pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
                         "PROMISE_CHECKLIST: |\n  flush — order: gives exactly `[A, B]` [whole-value]\n"),
          "unit-test-author", False, must_warn="", host="claude", tools=write_only)
+    prop_line = ("PROMISE_CHECKLIST: |\n  flush — order: oldest first → the store receives the queued "
+                 "items in queue order [property: model]\n    domain: 0..20 distinct items, built in order\n")
+    with_lib = "PROPERTY_LIBRARY: hypothesis (declared in pyproject.toml)\n"
+    case("property line: kind, wrapped domain: and a library are quiet",
+         pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n", prop_line + with_lib),
+         "unit-test-author", False, must_warn="", host="claude", tools=write_only)
+    case("property line: no domain: warns",
+         pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
+                        prop_line.replace("    domain: 0..20 distinct items, built in order\n", "") + with_lib),
+         "unit-test-author", False, must_warn="no `domain:`", host="claude", tools=write_only)
+    case("property line: an unknown kind warns",
+         pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
+                        prop_line.replace("[property: model]", "[property: oracle]") + with_lib),
+         "unit-test-author", False, must_warn="names property kind 'oracle'", host="claude", tools=write_only)
+    case("property line: no library warns",
+         pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
+                        prop_line + "PROPERTY_LIBRARY: none declared (no property-testing library)\n"),
+         "unit-test-author", False, must_warn="names no library", host="claude", tools=write_only)
     case("negative line: a refusal with no input: warns",
          pasted.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
                         "PROMISE_CHECKLIST: |\n  flush — invalid case: refused with `Err(Empty)`\n"),

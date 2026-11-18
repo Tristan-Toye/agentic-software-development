@@ -155,7 +155,7 @@ to match a stale total. An oracle never derives ground truth by running the
 subject afterwards, because it then asserts whatever the subject does; it must
 be constructible without invoking the subject.
 
-**Seven diffs over the checklist, before anything spawns:**
+**Eight diffs over the checklist, before anything spawns:**
 
 1. **Slice it per surface, and make the slices add up.** Each unit author gets
    exactly the lines its surface can observe — but every line lands with
@@ -206,6 +206,19 @@ be constructible without invoking the subject.
    mutation check: six survivors from three authors in one recorded build,
    every one on such a line, three delete-first rewrite rounds to fix.
    `check_payload.py` warns on an untagged "exactly" line.
+8. **Tag the lines that hold over a whole domain as properties.** When
+   `PROPERTY_LIBRARY` (which `compose_payloads.py` fills from the
+   repository's manifests) names a library, give every line whose promise
+   the docstring states for a whole domain a `[property: <kind>]` tag and a
+   `domain:` its generator builds by construction, boundaries included
+   (`references/formats/dossier.md` § "The observability checklist" holds the
+   five kinds and what each must not do). Tag only what the docstring
+   states: a property the contract does not justify fails a correct body,
+   and about one generated property in five is unsound even from frontier
+   models (Vikram et al., 79% sound). Never tag a line whose only property
+   would recompute the expected value the way the body does. The line keeps
+   its concrete example. With no library, tag nothing. `check_payload.py`
+   warns on an unknown kind, a missing `domain:`, or a tag with no library.
 
 **The independent contract review — spawn `contract-reviewer` now, before the
 fan-out.** You wrote the contract and derived the checklist; a defect in

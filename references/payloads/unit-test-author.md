@@ -29,6 +29,8 @@ PROMISE_CHECKLIST: |
   flush — invalid case: raises ValueError when batch_size < 1
   flush — concurrency: concurrent calls coalesce; each item reaches the
           store exactly one time
+  flush — order: any queue drains in queue order [property: model]
+          domain: 0..20 distinct items, queued in generated order
 TEST_PATHS: /abs/path/repo-W-014/tests/unit/test_flush_queue.py
 TEST_FRAMEWORK: pytest; plain `assert`; run with `pytest tests/unit -q`
 MAX_SINGLE_EDIT: 350 lines — the cap for one Write or Edit; a larger
@@ -61,6 +63,11 @@ TEST_FORM_RULES: |
           # sentence `none declared (...)` when the repository has no such
           # file. The composer fills it; check_payload.py refuses a payload
           # that omits it for a repository that declares forms.
+PROPERTY_LIBRARY: hypothesis (declared in pyproject.toml)
+          # the composer reads the repository's manifests; `none declared
+          # (...)` when none declares a property library, and then no
+          # checklist line carries [property: ...] (work-on.md Phase 3,
+          # diff 8). The author never adds a dependency.
 FIXTURES: |
   FlushQueue(store=FakeStore(), clock=FakeClock())
   FakeStore exposes .written -> list[Item] and .write_count -> int

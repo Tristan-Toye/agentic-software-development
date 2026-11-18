@@ -285,15 +285,32 @@ every test *can* fail; this check proves the suite catches *faults* — and
 weak oracles are the known weakness of LLM-written tests, so skipping needs a
 reason, not the other way round. Default on the **primary surface** (the
 surface with the most `PROMISE_CHECKLIST` lines, or the one with branching,
-concurrency, or a security or money path) every build; skip only mechanical
-work, and log the reason.
+concurrency, or a security or money path) **and the usage surface** every
+build; skip only mechanical work, and log the reason.
+
+**The usage surface is the one the acceptance criteria exercise most.** Run
+`python3 scripts/build_records.py checklist usage <ID> --dossier <dossier>
+--surface <name>=<member>,<member> ...` with one `--surface` per Phase 3
+unit-author surface (every checklist member in exactly one) and `--log
+<dossier>`: it counts, per surface, the distinct criteria that name one of
+its members, and logs `USAGE-SURFACE: <name>`. When it names the primary
+surface, or `none`, the check runs on the primary surface alone; on a tie,
+take the tied surface with the most checklist lines. The usage surface is
+added to the primary surface, never in its place: the primary rule keeps a
+rarely exercised security or money path in scope, and the usage rule puts
+the mutants where the criteria say the change is used. The count is a proxy
+for an operational profile (inputs weighted by how often they occur), drawn
+from the criteria's text rather than measured, and Google's mutation
+service, the largest recorded deployment, chooses what to mutate by changed
+and covered lines, not by usage. So it widens the check, and never narrows
+it.
 
 **Run it yourself, the moment the suite first goes green.** On a throwaway
 branch off `X` (`<branch>-MUT`, never merged, never pushed, removed when the
 table is in — mutants run locally under either suite runner, because a
 mutant is not a head anyone wants CI to remember),
 derive the mutants from `PROMISE_CHECKLIST` in its strong form: **one mutant
-per checklist line on the primary surface** — a return-meaning line gets a
+per checklist line on each chosen surface** — a return-meaning line gets a
 wrong constant, an order line a swap, a named-guard line a dropped guard —
 each a fault a real body could plausibly hide, never line noise a formatter
 would catch, and — where a schema binds the surface — one the schema's own
@@ -323,11 +340,18 @@ Route each result:
 - **A baseline that is not green** — the check did not run. That is exit-2
   semantics and never a pass: fix the baseline, or log why the check could
   not run.
-- **Killed** — one `## Build log` line and done.
+- **Killed** — one `## Build log` line and done. On a `[property: …]`
+  line, name which test killed it. A property counts as covering its line
+  only when a generated input kills the line's mutant. When the only
+  failing input is the line's pinned example, the property is vacuous or
+  restates the body: route it to the owning author like a weak line, with the mutant
+  named, so the property is strengthened or turned back into an example
+  test.
 
 **Revert every mutant as you go, and prove the tree clean before you leave
 the branch.** Nothing ever commits there, so a clean status is the whole
 check. A mutant left behind by an interrupted run silently corrupts whatever
 runs next — a red baseline read as a broken harness, or a kill table computed
 against an already-mutated body, with no mechanical trace. One `## Build log`
-line either way: mutants killed and survived, or skipped and the reason.
+line either way: mutants killed and survived (per surface, primary and
+usage), or skipped and the reason.

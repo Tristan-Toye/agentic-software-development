@@ -3,7 +3,7 @@
 
 Everything here is a grep, a parse or a set check. Every judgement the phase
 owns stays with the orchestrator: which test file owns a criterion, the
-`PROMISE_CHECKLIST` derivation and its seven diffs, the contract review's
+`PROMISE_CHECKLIST` derivation and its eight diffs, the contract review's
 `AMBIGUITY:` and `DEFECT:` lines, the test files and their sizes.
 
 Steps (each prints one status line; a failed step does not stop the others,

@@ -94,6 +94,10 @@ tool set — that request is always refused.
 - `TEST_FORM_RULES` — the repository's refused test-code forms, one
   `refused form -> use instead` line each, or `none declared`. Never write a
   refused form; use the helper named after the arrow.
+- `PROPERTY_LIBRARY` — the property-testing library the repository already
+  declares, with its manifest, or `none declared`. Use only the library it
+  names, and never add one: with `none declared`, every line is an example
+  test, `[property: …]` tag or not.
 - `FIXTURES` — how to construct the subject under test, and the fakes or stubs
   available to you.
 - `SHARED_IDIOM` — present only when a test must construct or invoke a
@@ -125,7 +129,8 @@ tool set — that request is always refused.
    for each line's exact wording, but never add a promise the checklist omits
    and never skip one it lists.
 2. Write one test per checklist line. One promise, one test, one assertion
-   focus.
+   focus. A line tagged `[property: <kind>]` is still one test, written as a
+   property with `PROPERTY_LIBRARY` — see "Property lines" below.
 3. Take the expected value from the **promise**, never from a computation that
    mirrors what the body would do. If the docstring says `returns the items in
    insertion order`, assert a literal expected order. If it says
@@ -136,6 +141,37 @@ tool set — that request is always refused.
 5. Name each test `Subject_StateUnderTest_ExpectedBehavior`, where `Subject` is
    the public member from `CONTRACT`. `FlushAsync_ThreeParallelCalls_EachItemWrittenOnce`
    tells a reader the promise. `TestFlush2` tells them nothing.
+
+## Property lines
+
+A line tagged `[property: <kind>]` promises something for every input in its
+`domain:`, so its test checks it for every generated input, not for one
+point you picked. Write it with `PROPERTY_LIBRARY` and these rules:
+
+- **Assert only what the line states, as the kind says.** `invariant`: the
+  stated bound, order or membership of every result. `round-trip`: the two
+  named directions undo each other. `metamorphic`: the stated relation
+  between two calls. `model`: the subject and a tiny model you write in the
+  test file (a dict, a list) agree after the same generated operations.
+  `error-domain`: the named error for every generated invalid input, and
+  nothing else.
+- **Never recompute the answer.** A property whose expected value comes from
+  the same algorithm the docstring describes passes against any body that
+  makes the same mistake. Assert a relation, or compare against a model far
+  simpler than the subject. If neither is possible from the contract, write
+  the line as an example test and say so in your report.
+- **Build the domain by construction, never by filtering.** Generate exactly
+  the inputs `domain:` names. A filter or `assume` that discards most cases
+  leaves the property testing trivial inputs. Make the boundaries the line
+  names (empty, one element, duplicates, extremes) reachable, and pin the
+  line's concrete example too (`@example`, a fixed case, or an explicit
+  example test beside it in the same test).
+- **Keep it stable.** Use the library's fixed-seed or derandomised setting,
+  and a bounded number of cases that runs in about a second. Keep shrinking
+  on: a shrunk counterexample is what arbitration quotes against the line.
+- **A domain the contract does not bound is a gap.** If `domain:` admits
+  inputs the docstring says nothing about, return `GAP:` naming the line and
+  the input class, exactly as for any other unsupported assertion.
 
 ## Composing files
 
@@ -209,14 +245,16 @@ arbitration round, and the orchestrator repeats the suite to find it.
 - **Concurrent promises: assert after every worker is joined.** Start the
   workers, join them all, then assert on the final state. Never assert on a
   state that only exists between two steps of another thread.
-- **Randomness is seeded**, and the seed is in the test.
+- **Randomness is seeded**, and the seed is in the test. A property test
+  uses its library's fixed-seed setting.
 - **A retry, a longer sleep, or a skip never makes a test stable.** It hides
   the race, and the race may be a real defect in the code under test.
 
 ## Report
 
 The paths you wrote, one line per test with the member and the promise it
-covers, and any `GAP:` lines. Then `NOTICED:` — one line per product-code issue you saw outside your task and did not fix (`<path:line> — <kind> — <what is wrong>`; kind is bug, latent-bug, architecture, performance, duplication or ssot), or `NOTICED: none`. Never fix it yourself; the orchestrator logs it for the deferred ledger.
+covers (and `property` on a property test, or `example: <why>` on a
+`[property]` line you wrote as an example test), and any `GAP:` lines. Then `NOTICED:` — one line per product-code issue you saw outside your task and did not fix (`<path:line> — <kind> — <what is wrong>`; kind is bug, latent-bug, architecture, performance, duplication or ssot), or `NOTICED: none`. Never fix it yourself; the orchestrator logs it for the deferred ledger.
 
 ---
 

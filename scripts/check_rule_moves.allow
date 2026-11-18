@@ -73,3 +73,9 @@ Every line ends with `contract:` and `effort:`
 `shadow` writes evidence to `.git/asd-drivers/driver-shadow/` and changes nothing
 `shadow` records evidence only;
 `shadow` runs in a throwaway worktree and changes nothing;
+
+# Property tests and the usage surface: phase 3 grows an eighth diff, and the mutation check names the usage surface next to the primary one (reworded, not dropped)
+**Seven diffs over the checklist, before anything spawns:**
+Default on the **primary surface** (the surface with the most `PROMISE_CHECKLIST`
+**one mutant per checklist line on the primary surface**
+One `## Build log` line either way: mutants killed and survived, or skipped and the reason.
