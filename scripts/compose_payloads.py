@@ -96,7 +96,12 @@ authors, the integration author, an implementer in MODE build) paste the
 implementer in MODE fix run after the merge, when those files hold the
 implementation, so their CONTRACT is the dossier's `## Contract` section,
 byte for byte (an empty section is refused) and `--contract-paths` is refused
-for them: the files are not their authority. `--no-stub-hints` leaves the
+for them: the files are not their authority. `--contract-ref REF` reads the
+`--contract-paths` at that commit instead of the working tree (a test author
+composed after the merge; default: the dossier's `contract_review` SHA once its
+build log has a MERGE line). Both test authors' SUPPORT also gets an elided view
+of every existing type the contract reads, and each payload ends in a
+`PAYLOAD-END: <label> <hash>` sentinel line. `--no-stub-hints` leaves the
 `# stub locations` aid out of OWNED_PATHS.
 
 `--hook-outputs STEP:GLOB` (implementer, repeatable) appends an
@@ -293,16 +298,66 @@ def find_package_row(text: str, package: str) -> list[str]:
 # always stamps exactly what the field carries.
 # ---------------------------------------------------------------------------
 
-def contract_bytes(paths: list[str], root: str) -> str:
+def git_out(root: str, *argv: str) -> tuple[int, str]:
+    proc = subprocess.run(["git", "-C", root, *argv], capture_output=True, text=True, check=False)
+    return proc.returncode, proc.stdout
+
+
+def check_ref(root: str, ref: str) -> None:
+    rc, _ = git_out(root, "rev-parse", "--verify", "--quiet", ref + "^{commit}")
+    if rc != 0:
+        raise Refusal("--contract-ref %s is not a commit in %s" % (ref, root))
+
+
+def contract_bytes(paths: list[str], root: str, ref: str | None = None) -> str:
+    """The contract files' bytes. With `ref` (#404) each path is read at that
+    commit, never from the working tree: after the implementer merge the files
+    hold bodies, and the commit is the only place the stubs still are. A path
+    absent at `ref` refuses by name."""
     if not paths:
         raise Refusal("CONTRACT is required and --contract-paths was not given")
+    if ref:
+        check_ref(root, ref)
     texts = []
+    absent = []
     for raw in paths:
         path = raw if os.path.isabs(raw) else os.path.join(root, raw)
+        if ref:
+            rel = os.path.relpath(path, root).replace(os.sep, "/")
+            rc, body = git_out(root, "show", "%s:%s" % (ref, rel))
+            if rc != 0:
+                absent.append(rel)
+                continue
+            texts.append(pwh.contract_file_text(path, raw, root, body))
+            continue
         if not os.path.isfile(path):
             raise Refusal("contract file not found: %s" % path)
         texts.append(pwh.contract_file_text(path, raw, root, read_text(path)))
+    if absent:
+        raise Refusal("contract path(s) not present at --contract-ref %s: %s" % (ref, ", ".join(absent)))
     return "\n\n".join(texts)
+
+
+MERGE_LINE = re.compile(r"\bMERGE\b")
+SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def contract_ref_for(args: argparse.Namespace, dossier_text: str, fm: dict[str, str]) -> str | None:
+    """The commit --contract-paths are read at: --contract-ref when given, else
+    the dossier's `contract_review:` SHA once a MERGE line is in its build log
+    (the contract files hold implementation bodies from then on), else None (the
+    working tree, the stubs as written)."""
+    explicit = getattr(args, "contract_ref", None)
+    if explicit:
+        return explicit
+    sha = fm.get("contract_review", "").strip()
+    if not SHA_RE.match(sha):
+        return None
+    try:
+        log = section_body(dossier_text, "## Build log")
+    except Refusal:
+        return None
+    return sha if any(MERGE_LINE.search(l) for l in log.splitlines()) else None
 
 
 # CONTRACT_HASH is payload_hash.py's canonical block recipe — the same helper
@@ -351,7 +406,8 @@ def contract_text_for(ctx: dict) -> str:
     # --contract-paths is that route; CONTRACT_HASH covers the subsections.
     if not args.contract_paths and args.contract_extra and args.kind in ("unit-test-author", "integration-test-author"):
         return "\n\n".join(contract_subsection(ctx["dossier_text"], h) for h in args.contract_extra)
-    text = contract_bytes(args.contract_paths, root)
+    ctx["contract_ref"] = contract_ref_for(args, ctx["dossier_text"], ctx["fm"])
+    text = contract_bytes(args.contract_paths, root, ctx["contract_ref"])
     for heading in args.contract_extra:
         text = text + "\n\n" + contract_subsection(ctx["dossier_text"], heading)
     return text
@@ -830,6 +886,266 @@ def compose_implementer(ctx: dict) -> list[Field]:
     return ordered(fields, order)
 
 
+# ---------------------------------------------------------------------------
+# #401: the existing types a contract member reads. A blind test author sees
+# only CONTRACT and SUPPORT, so a record a handler deserialises or a port it
+# calls must be in one of them. The names are taken from the contract's
+# signatures, its `cref`/backtick/`{@link}` references and its "reads X" prose,
+# resolved against the tree at the contract commit, and pasted into SUPPORT as
+# elided views (declaration, doc comments, member signatures, bodies elided).
+# A name no declaration can be found for is listed by name, never dropped.
+# ---------------------------------------------------------------------------
+
+TYPE_SOURCE_EXTS = (".cs", ".py", ".ts", ".tsx", ".java", ".kt", ".go", ".rs", ".scala", ".swift", ".fs", ".js")
+TYPE_SKIP_DIRS = {".git", "node_modules", "bin", "obj", "target", "dist", "build", ".agent-staging",
+                  ".discovery", "__pycache__", ".venv", "venv", ".idea"}
+TYPE_MAX_FILE_BYTES = 400_000
+TYPE_VIEW_MAX_LINES = 120
+TYPE_VIEW_MAX_TYPES = 25
+TYPE_DECL_KEYWORDS = r"(?:class|record|interface|struct|enum|trait|type|protocol|union)"
+TYPE_DECL_RE = re.compile(r"\b" + TYPE_DECL_KEYWORDS + r"\s+(?:(?:struct|class)\s+)?([A-Z]\w*)")
+# Names every language already provides: never a project type to paste.
+TYPE_STOPLIST = {
+    "String", "Int", "Int16", "Int32", "Int64", "UInt", "Long", "Short", "Byte", "Bool", "Boolean", "Char", "Float",
+    "Double", "Decimal", "Object", "Void", "Task", "ValueTask", "List", "Dict", "Dictionary", "Set", "HashSet", "Map",
+    "Array", "Tuple", "Optional", "Union", "Any", "None", "True", "False", "Self", "Type", "Callable", "Iterable",
+    "Iterator", "IEnumerable", "IList", "IDictionary", "ICollection", "IReadOnlyList", "IReadOnlyCollection",
+    "IReadOnlyDictionary", "IAsyncEnumerable", "Action", "Func", "Exception", "ArgumentException",
+    "ArgumentNullException", "InvalidOperationException", "NotImplementedException", "KeyNotFoundException",
+    "CancellationToken", "Guid", "DateTime", "DateTimeOffset", "TimeSpan", "Uri", "Stream", "Nullable", "Result",
+    "Error", "Promise", "Record", "Partial", "Readonly", "Sequence", "Mapping", "Literal", "Final", "ClassVar",
+    "Returns", "Param", "Params", "Throws", "Raises", "See", "Summary", "Remarks", "Example", "Note", "Todo",
+    "NotImplementedError", "ValueError", "TypeError", "KeyError", "RuntimeError", "IOError", "OSError", "Path",
+    "Number", "Date", "Buffer", "Vec", "Box", "Arc", "Rc", "Option", "Err", "Ok", "Some",
+}
+TYPE_COMMENT_START = ("///", "//", "#", "*", "/*", "<!--", '"""', "'''")
+TYPE_CREF = re.compile(r"""(?:cref=["']|\{@(?:link|see)\s+|:(?:class|py:class|mod):`~?\.?|`)([A-Za-z_][\w.<>,]*)""")
+TYPE_READS = re.compile(
+    r"\b(?:reads?|calls?|invokes?|consults?|checks?|resolves?|queries|persists?|publishes|emits|sends?|deserialis(?:es|ed?)|deserializ(?:es|ed?)|uses?|derives?|loads?|writes?|stores?|"
+    r"via|from|through|takes?|given|against|of)\s+(?:the\s+|a\s+|an\s+|each\s+|every\s+)?`?([A-Z][A-Za-z0-9_]*)", re.I)
+TYPE_IDENT = re.compile(r"\b([A-Z][A-Za-z0-9_]*[a-z0-9][A-Za-z0-9_]*)\b")
+
+
+def referenced_type_names(contract_text: str) -> list[str]:
+    """Candidate type names, in first-seen order, that the contract reads without
+    declaring: PascalCase identifiers in the code lines (signatures), names in
+    cref / backtick / {@link} references and in "reads X"-style doc prose. Names
+    the contract itself declares and the language-provided ones are left out."""
+    declared = set(TYPE_DECL_RE.findall(contract_text))
+    found: dict[str, None] = {}
+
+    def add(name: str) -> None:
+        for part in re.split(r"[.<>,\s]+", name):
+            if part and part[0].isupper() and part not in declared and part not in TYPE_STOPLIST \
+                    and len(part) > 1 and re.search(r"[a-z]", part):
+                found.setdefault(part)
+
+    for line in contract_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# path:") or stripped.startswith("# import:"):
+            continue
+        is_comment = stripped.startswith(TYPE_COMMENT_START)
+        if not is_comment:
+            for m in TYPE_IDENT.finditer(re.sub(r'"[^"]*"|\'[^\']*\'', "", line)):
+                if not line[m.end():].lstrip().startswith("("):  # a member's own name, not a type
+                    add(m.group(1))
+        for m in TYPE_CREF.finditer(line):
+            add(m.group(1))
+        if is_comment or '"""' in line:
+            for m in TYPE_READS.finditer(line):
+                add(m.group(1))
+    return list(found)
+
+
+def tree_source_files(root: str, ref: str | None, skip: set[str]) -> list[str]:
+    """Repo-relative source files: at `ref` via git, else the working tree."""
+    if ref:
+        rc, out = git_out(root, "ls-tree", "-r", "--name-only", ref)
+        names = out.splitlines() if rc == 0 else []
+    else:
+        names = []
+        for here, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in TYPE_SKIP_DIRS]
+            for f in files:
+                names.append(os.path.relpath(os.path.join(here, f), root).replace(os.sep, "/"))
+    return sorted(n for n in names if n.endswith(TYPE_SOURCE_EXTS) and n not in skip
+                  and not (TYPE_SKIP_DIRS & set(n.split("/")[:-1])))
+
+
+def tree_read(root: str, ref: str | None, rel: str) -> str:
+    if ref:
+        rc, out = git_out(root, "show", "%s:%s" % (ref, rel))
+        return out if rc == 0 and len(out) <= TYPE_MAX_FILE_BYTES else ""
+    path = os.path.join(root, rel)
+    try:
+        if os.path.getsize(path) > TYPE_MAX_FILE_BYTES:
+            return ""
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _block_end_braces(lines: list[str], start: int) -> int:
+    depth, seen = 0, False
+    for n in range(start, len(lines)):
+        code = re.sub(r'"(?:\\.|[^"\\])*"', '""', lines[n])
+        code = re.sub(r"//.*$", "", code)
+        depth += code.count("{") - code.count("}")
+        seen = seen or "{" in code
+        if seen and depth <= 0:
+            return n
+        if not seen and code.rstrip().endswith(";"):
+            return n  # a bodiless declaration (a positional record)
+    return min(len(lines) - 1, start + TYPE_VIEW_MAX_LINES)
+
+
+def _elide_brace_bodies(block: list[str]) -> list[str]:
+    """Inside a type body (depth >= 1), a `{ ... }` that follows `)` or `=>` is
+    a member body and becomes `{ ... }`; the type's own braces and property
+    accessors (`{ get; set; }`) stay."""
+    text = "\n".join(block)
+    out: list[str] = []
+    depth, i = 0, 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "{":
+            before = "".join(out).rstrip()
+            if depth >= 1 and (before.endswith(")") or before.endswith("=>")):
+                level, j = 1, i + 1
+                while j < len(text) and level:
+                    level += (text[j] == "{") - (text[j] == "}")
+                    j += 1
+                out.append("{ ... }")
+                i = j
+                continue
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        out.append(ch)
+        i += 1
+    return "".join(out).split("\n")
+
+
+def _python_view(lines: list[str], start: int) -> list[str]:
+    """A Python class: its lines with every def body replaced by `...`, a
+    leading docstring kept."""
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    block = [lines[start]]
+    for n in range(start + 1, len(lines)):
+        if lines[n].strip() and len(lines[n]) - len(lines[n].lstrip()) <= indent:
+            break
+        block.append(lines[n])
+    out: list[str] = []
+    n = 0
+    while n < len(block):
+        m = re.match(r"^(\s*)(?:async\s+)?def\s", block[n])
+        if not m:
+            out.append(block[n])
+            n += 1
+            continue
+        body_indent = len(m.group(1))
+        sig_end = n
+        while sig_end < len(block) - 1 and not block[sig_end].rstrip().endswith(":"):
+            sig_end += 1
+        out.extend(block[n:sig_end + 1])
+        j = sig_end + 1
+        while j < len(block) and (not block[j].strip() or len(block[j]) - len(block[j].lstrip()) > body_indent):
+            j += 1
+        k = sig_end + 1
+        if k < j and block[k].lstrip().startswith(('"""', "'''")):
+            quote = block[k].lstrip()[:3]
+            end = k
+            if block[k].count(quote) < 2:
+                end = k + 1
+                while end < j and quote not in block[end]:
+                    end += 1
+            out.extend(block[k:end + 1])
+        out.append(" " * (body_indent + 4) + "...")
+        n = j
+    return out
+
+
+def type_view(text: str, name: str) -> str:
+    """The declaration of `name` in `text`, its leading doc comments and
+    attributes included, member bodies elided; "" when it is not declared."""
+    lines = text.split("\n")
+    pattern = re.compile(r"\b" + TYPE_DECL_KEYWORDS + r"\s+(?:(?:struct|class)\s+)?" + re.escape(name) + r"\b")
+    start = next((n for n, l in enumerate(lines) if pattern.search(l) and not l.lstrip().startswith(TYPE_COMMENT_START)), None)
+    if start is None:
+        return ""
+    head = start
+    while head > 0 and lines[head - 1].strip().startswith(("///", "//", "#", "[", "@", "*", "/**", "/*")):
+        head -= 1
+    if lines[start].lstrip().startswith("class ") and lines[start].rstrip().endswith(":"):
+        body = _python_view(lines, start)
+    else:
+        end = _block_end_braces(lines, start)
+        body = _elide_brace_bodies(lines[start:end + 1])
+    view = lines[head:start] + body
+    if len(view) > TYPE_VIEW_MAX_LINES:
+        view = view[:TYPE_VIEW_MAX_LINES] + ["// ... view cut at %d lines; the file holds the rest" % TYPE_VIEW_MAX_LINES]
+    return "\n".join(view)
+
+
+def resolve_referenced_types(contract_text: str, root: str, ref: str | None, contract_paths: list[str]) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """([(type name, repo-relative file, elided view)], [names no declaration
+    was found for]) for every type the contract reads."""
+    names = referenced_type_names(contract_text)
+    if not names:
+        return [], []
+    skip = {os.path.relpath(p if os.path.isabs(p) else os.path.join(root, p), root).replace(os.sep, "/")
+            for p in contract_paths}
+    wanted = re.compile(r"\b" + TYPE_DECL_KEYWORDS + r"\s+(?:(?:struct|class)\s+)?(" + "|".join(re.escape(n) for n in names) + r")\b")
+    where: dict[str, str] = {}
+    texts: dict[str, str] = {}
+    for rel in tree_source_files(root, ref, skip):
+        if len(where) == len(names):
+            break
+        body = tree_read(root, ref, rel)
+        if not body:
+            continue
+        for m in wanted.finditer(body):
+            if m.group(1) not in where and not body[:m.start()].rsplit("\n", 1)[-1].lstrip().startswith(TYPE_COMMENT_START):
+                where[m.group(1)] = rel
+                texts[rel] = body
+    found = []
+    for name in names:
+        if name in where:
+            view = type_view(texts[where[name]], name)
+            if view:
+                found.append((name, where[name], view))
+    got = {f[0] for f in found}
+    return found[:TYPE_VIEW_MAX_TYPES], [n for n in names if n not in got]
+
+
+def referenced_types_block(found: list[tuple[str, str, str]], unresolved: list[str]) -> str:
+    parts = []
+    for name, rel, view in found:
+        parts.append("# type %s (existing, %s; member bodies elided)\n%s" % (name, rel, view))
+    if unresolved:
+        parts.append("# UNRESOLVED-TYPES: no declaration found for %s; name each in the GAP "
+                     "return or add its view with --set SUPPORT" % ", ".join(unresolved))
+    return "\n\n".join(parts)
+
+
+def add_referenced_types(ctx: dict, fields: dict[str, Field], contract_text: str) -> None:
+    """Append the elided views of the existing types the contract reads to
+    SUPPORT (after anything --set gave), and warn on stdout for each name that
+    could not be resolved. CONTRACT stays the contract files' bytes, so
+    CONTRACT_HASH is unchanged."""
+    args = ctx["args"]
+    found, unresolved = resolve_referenced_types(contract_text, ctx["root"], ctx.get("contract_ref"), args.contract_paths)
+    block = referenced_types_block(found, unresolved)
+    if not block:
+        return
+    if unresolved:
+        print("compose_payloads: WARNING — type(s) the contract reads not found in the tree: %s" % ", ".join(unresolved))
+    mine = fields.get("SUPPORT")
+    value = (mine.value.rstrip("\n") + "\n\n" if mine and mine.value.strip() else "") + block
+    fields["SUPPORT"] = Field("SUPPORT", value, block=True)
+
+
 def compose_unit_test_author(ctx: dict) -> list[Field]:
     """CONTRACT/CONTRACT_HASH: mechanical, pasted bytes + hash — always
     pasted regardless of host (README: "the pasted fields ... carry what the
@@ -888,6 +1204,7 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
         "SUPPORT", "SHARED_IDIOM", "DELIVERY_CHANGE", "CITATION", "FAILURES", "CORRECTION",
         "TEST_FORM_RULES",
     })
+    add_referenced_types(ctx, fields, contract_text)
     if "FAILURES" in fields and not is_placeholder(fields["FAILURES"].value) \
             and "BASELINE_COUNTS_FROM" not in fields:
         fields["BASELINE_COUNTS_FROM"] = Field("BASELINE_COUNTS_FROM", placeholder(
@@ -973,6 +1290,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
         "DELIVERY_CHANGE", "SUPPORT", "FAILURES", "CORRECTION", "CITATION",
         "CI_ENVIRONMENT", "TEST_FORM_RULES",
     })
+    add_referenced_types(ctx, fields, contract_text)
     if "FAILURES" in fields and not is_placeholder(fields["FAILURES"].value) \
             and "BASELINE_COUNTS_FROM" not in fields:
         fields["BASELINE_COUNTS_FROM"] = Field("BASELINE_COUNTS_FROM", placeholder(
@@ -1203,7 +1521,13 @@ def refresh_contract(args: argparse.Namespace) -> int:
     field) keep the files route either way."""
     if not args.root:
         raise Refusal("--refresh-contract needs --root (the contract files resolve against it)")
-    text = contract_bytes(args.contract_paths, os.path.abspath(args.root))
+    ref = None
+    if args.dossier:
+        dtext = read_text(args.dossier)
+        ref = contract_ref_for(args, dtext, front_matter(dtext))
+    elif getattr(args, "contract_ref", None):
+        ref = args.contract_ref
+    text = contract_bytes(args.contract_paths, os.path.abspath(args.root), ref)
     new_hash = contract_hash(text)
     review = bool(args.dossier) and front_matter(read_text(args.dossier)).get("status") == "review"
     dossier_section = None
@@ -1355,6 +1679,21 @@ def verbatim_findings(text: str, fields: list[Field], names: tuple[str, ...]) ->
     return found
 
 
+PAYLOAD_END = "PAYLOAD-END:"
+
+
+def payload_sentinel(path: str, body: str) -> str:
+    """#403: the payload's last line, `PAYLOAD-END: <label> <short hash>`. The
+    label is the payload file's stem and the hash covers label and body, so the
+    whole line is in no other field: a quote of any other line, or of a value
+    another field shares (a Jira key, the branch name), cannot stand for it.
+    A body that already carries the marker is refused."""
+    if re.search(r"^\s*" + re.escape(PAYLOAD_END), body, re.M):
+        raise Refusal("a field carries a line starting %s, which only the payload's last line may" % PAYLOAD_END)
+    label = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.splitext(os.path.basename(path))[0]).strip("-") or "payload"
+    return "%s %s %s" % (PAYLOAD_END, label, hashlib.sha256((label + "\n" + body).encode("utf-8")).hexdigest()[:8])
+
+
 def write_payload(path: str, fields: list[Field], force: bool, verbatim: tuple[str, ...] = VERBATIM_FIELDS) -> None:
     if os.path.exists(path):
         with open(path, encoding="utf-8") as fh:
@@ -1372,6 +1711,7 @@ def write_payload(path: str, fields: list[Field], force: bool, verbatim: tuple[s
     if empty:
         raise Refusal("verbatim block(s) empty: %s" % ", ".join(empty))
     text = MARKER + "\n" + "".join(render_field(f) for f in fields)
+    text += payload_sentinel(path, text) + "\n"
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text)
@@ -1634,6 +1974,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--package", help="the ## Work packages row (implementer)")
     parser.add_argument("--contract-paths", default="",
                         help="comma-separated contract files, absolute or relative to --root")
+    parser.add_argument("--contract-ref", metavar="REF",
+                        help="read each --contract-paths file at this commit instead of the working tree "
+                             "(default: the dossier's contract_review SHA once its build log has a MERGE line)")
     parser.add_argument("--test-command")
     parser.add_argument("--hooks")
     parser.add_argument("--set", action="append", default=[], metavar="FIELD=VALUE")
@@ -1825,6 +2168,105 @@ def _fill_placeholders(text: str, real_style_path: str, new_test_path: str) -> s
         value = value.replace("__STYLE_PATH__", real_style_path).replace("__NEW_TEST_PATH__", new_test_path)
         return value
     return re.sub(r"@@FILL_([A-Z_]+)@@[^\n]*", repl, text)
+
+
+def selftest_blind_inputs(failures: list[str]) -> None:
+    """#401 referenced types in SUPPORT, #403 the PAYLOAD-END sentinel, #404
+    --contract-ref. Everything lives in one throwaway git repo under a temp dir."""
+    import contextlib
+    import io
+
+    def check(name: str, ok: bool, detail: str = "") -> None:
+        if not ok:
+            failures.append("%s%s" % (name, (": " + detail) if detail else ""))
+
+    def git(root: str, *argv: str) -> str:
+        rc, out = git_out(root, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *argv)
+        return out.strip()
+
+    stub = ("/// <summary>Reads each <see cref=\"DecisionRecord\"/> from <see cref=\"IRevisionStore\"/>, derives keys "
+            "via KeyHelper and consults MissingThing.</summary>\n"
+            "public sealed class Handler\n{\n"
+            "    public Task<int> Handle(DecisionRecord record, IRevisionStore store) { throw new NotImplementedException(); }\n}\n")
+    merged = stub.replace("throw new NotImplementedException();", "return SECRETBODY;")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "repo")
+        os.makedirs(os.path.join(root, "src"))
+        git(root, "init", "-q")
+        with open(os.path.join(root, "src", "Records.cs"), "w", encoding="utf-8") as fh:
+            fh.write("/// <summary>A QC decision.</summary>\npublic record DecisionRecord(string Id, int Score);\n\n"
+                     "public interface IRevisionStore\n{\n    Task<DecisionRecord> Load(string id);\n}\n\n"
+                     "public static class KeyHelper\n{\n    public static string Key(string id)\n    {\n"
+                     "        return \"k\" + id; // KEYBODY\n    }\n}\n")
+        with open(os.path.join(root, "src", "Handler.cs"), "w", encoding="utf-8") as fh:
+            fh.write(stub)
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "contract")
+        sha = git(root, "rev-parse", "HEAD")
+        with open(os.path.join(root, "src", "Handler.cs"), "w", encoding="utf-8") as fh:
+            fh.write(merged)
+        git(root, "commit", "-q", "-am", "merge")
+        plugin_root = os.path.join(tmp, "plugin")
+        os.makedirs(os.path.join(plugin_root, "skills", "standards"))
+        with open(os.path.join(plugin_root, "skills", "standards", "engineering-standards.md"), "w", encoding="utf-8") as fh:
+            fh.write("# standards\n")
+        pre = os.path.join(tmp, "pre.md")
+        post = os.path.join(tmp, "post.md")
+        with open(pre, "w", encoding="utf-8") as fh:
+            fh.write(DOSSIER_FIXTURE.replace("worktree: ../repo-W-014", "worktree: ../repo"))
+        with open(post, "w", encoding="utf-8") as fh:
+            fh.write(DOSSIER_FIXTURE.replace("adrs: []\n", "adrs: []\ncontract_review: %s\n" % sha, 1)
+                     .rstrip("\n") + "\n- MERGE P1 merged at %s\n" % git(root, "rev-parse", "HEAD"))
+
+        def compose_to(name: str, dossier: str, extra: list[str], kind: str = "unit-test-author") -> tuple[int, str, str]:
+            out = os.path.join(tmp, name)
+            err = io.StringIO()
+            with contextlib.redirect_stdout(err), contextlib.redirect_stderr(err):
+                rc = main(["--kind", kind, "--dossier", dossier, "--root", root, "--out", out, "--host", "claude",
+                           "--plugin-root", plugin_root, "--force", "--contract-paths", "src/Handler.cs"] + extra)
+            return rc, (read_text(out) if os.path.isfile(out) else ""), err.getvalue()
+
+        # --- #401 ---
+        rc, text, out = compose_to("UT-types.md", pre, [])
+        support = parsed_field(text, "SUPPORT") or ""
+        check("#401: the record the handler reads is pasted into SUPPORT", rc == 0 and "record DecisionRecord(string Id, int Score);" in support, support[:300])
+        check("#401: the port is pasted into SUPPORT", "interface IRevisionStore" in support and "Task<DecisionRecord> Load(string id);" in support)
+        check("#401: the key helper named in prose is pasted, its body elided", "class KeyHelper" in support and "public static string Key(string id)" in support and "{ ... }" in support and "KEYBODY" not in support, support)
+        check("#401: a type no declaration exists for is listed by name, not dropped",
+              "UNRESOLVED-TYPES" in support and "MissingThing" in support and "MissingThing" in out, support)
+        check("#401: CONTRACT stays the contract file's bytes", "class Handler" in (parsed_field(text, "CONTRACT") or "") and "DecisionRecord(string Id" not in (parsed_field(text, "CONTRACT") or ""))
+        rc, itext, _ = compose_to("IT-types.md", pre, [], kind="integration-test-author")
+        check("#401: the integration author gets the same types", rc == 0 and "interface IRevisionStore" in (parsed_field(itext, "SUPPORT") or ""))
+        rc, mtext, _ = compose_to("UT-set.md", pre, ["--set", "SUPPORT=hand note"])
+        check("#401: a hand-set SUPPORT is kept, the views follow it", "hand note" in (parsed_field(mtext, "SUPPORT") or "") and "record DecisionRecord" in (parsed_field(mtext, "SUPPORT") or ""))
+        check("#401: names a contract declares itself are not looked up", "Handler" not in support.replace("class Handler", ""), support)
+        py_names = referenced_type_names("class Flush:\n    def run(self, rec: DecisionRow, port: StorePort) -> None:\n        \"\"\"Reads the Ledger.\"\"\"\n")
+        check("#401: python signatures and doc prose name their types", py_names[:3] == ["DecisionRow", "StorePort", "Ledger"], str(py_names))
+
+        # --- #403 ---
+        lines = [l for l in text.split("\n") if l.strip()]
+        check("#403: the last non-empty line is PAYLOAD-END: <label> <hash>", re.fullmatch(r"PAYLOAD-END: UT-types [0-9a-f]{8}", lines[-1]) is not None, lines[-1])
+        check("#403: the sentinel appears nowhere else in the payload", text.count(lines[-1]) == 1 and text.count("PAYLOAD-END") == 1)
+        rc, text2, _ = compose_to("UT-other.md", pre, [])
+        check("#403: two payloads have two sentinels", [l for l in text2.split("\n") if l.strip()][-1] != lines[-1])
+        rc, _t, out = compose_to("UT-clash.md", pre, ["--set", "CONVENTIONS=x\n  PAYLOAD-END: fake"])
+        check("#403: a field carrying a sentinel-shaped line is refused", rc == 1 and "PAYLOAD-END" in out, out[-200:])
+
+        # --- #404 ---
+        rc, t, out = compose_to("UT-head.md", pre, [])
+        check("a pre-merge dossier reads the working tree (baseline)", rc == 0 and "SECRETBODY" in (parsed_field(t, "CONTRACT") or ""))
+        rc, t, out = compose_to("UT-ref.md", pre, ["--contract-ref", sha])
+        c = parsed_field(t, "CONTRACT") or ""
+        check("#404: --contract-ref pastes the stub at that commit", rc == 0 and "SECRETBODY" not in c and "NotImplementedException" in c, c)
+        rc, t, out = compose_to("UT-merge.md", post, [])
+        c = parsed_field(t, "CONTRACT") or ""
+        check("#404: after a MERGE line the contract_review SHA is the default ref", rc == 0 and "SECRETBODY" not in c and "NotImplementedException" in c, c)
+        rc, _t, out = compose_to("UT-bad.md", pre, ["--contract-ref", "deadbeefdeadbeef"])
+        check("#404: an unknown ref is refused", rc == 1 and "--contract-ref" in out, out[-200:])
+        rc, _t, out = compose_to("UT-gone.md", pre, ["--contract-ref", sha, "--contract-paths", "src/Handler.cs,src/Later.cs"])
+        check("#404: a path absent at the ref is refused by name", rc == 1 and "src/Later.cs" in out, out[-200:])
+        rc, _t, out = compose_to("UT-ref2.md", post, ["--contract-ref", sha], kind="integration-test-author")
+        check("#404: the integration author reads at the ref too", rc == 0 and "SECRETBODY" not in _t)
 
 
 def selftest() -> int:
@@ -2632,6 +3074,8 @@ def selftest() -> int:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             rc = main(route_base + ["--assign", "CR-9=P1", "--assign", "CR-3=P1"])
         check("--assign naming no section is refused", rc == 1)
+
+    selftest_blind_inputs(failures)
 
     for item in failures:
         print("SELFTEST FAIL  %s" % item)
