@@ -724,6 +724,58 @@ def test_form_rules(root: str) -> str:
     return "\n".join(lines)
 
 
+# PROPERTY_LIBRARY: the property-testing libraries a blind author may use, by
+# the manifest that declares them. The author cannot add a dependency, so only
+# a library the repository already declares is ever named.
+PROPERTY_LIBRARIES: tuple[tuple[str, tuple[str, ...], re.Pattern], ...] = (
+    ("hypothesis", ("pyproject.toml", "setup.cfg", "setup.py", "Pipfile", "requirements*.txt"),
+     re.compile(r"""(^|["'\s,\[])hypothesis\b""", re.M)),
+    ("fast-check", ("package.json",), re.compile(r'"(@fast-check/[\w-]+|fast-check)"\s*:')),
+    ("proptest", ("Cargo.toml",), re.compile(r"^\s*proptest\s*=", re.M)),
+    ("quickcheck", ("Cargo.toml",), re.compile(r"^\s*quickcheck\s*=", re.M)),
+    ("FsCheck", ("*.csproj", "*.fsproj", "Directory.Packages.props"), re.compile(r'Include="FsCheck[\w.]*"')),
+    ("CsCheck", ("*.csproj", "Directory.Packages.props"), re.compile(r'Include="CsCheck"')),
+    ("jqwik", ("pom.xml", "build.gradle", "build.gradle.kts"), re.compile(r"\bjqwik\b")),
+    ("kotest-property", ("build.gradle.kts", "build.gradle", "pom.xml"), re.compile(r"kotest-property")),
+    ("rapid", ("go.mod",), re.compile(r"pgregory\.net/rapid\b")),
+)
+PROPERTY_SCAN_SKIP = {".git", "node_modules", "target", "bin", "obj", ".venv", "venv",
+                      "dist", "build", ".agent-staging", ".discovery", "vendor"}
+
+
+def property_library(root: str, max_depth: int = 3) -> str:
+    """PROPERTY_LIBRARY: every property-testing library the repository's own
+    manifests declare (root and up to `max_depth` directories down), with the
+    manifest that declares it — or the explicit `none declared` sentence, so
+    the author can tell "no library" from "nobody looked" and writes example
+    tests only."""
+    import fnmatch
+
+    found: dict[str, str] = {}
+    root = os.path.abspath(root)
+    for here, dirs, files in os.walk(root):
+        depth = here[len(root):].count(os.sep)
+        dirs[:] = sorted(d for d in dirs if d not in PROPERTY_SCAN_SKIP and depth < max_depth)
+        for name, patterns, rx in PROPERTY_LIBRARIES:
+            if name in found:
+                continue
+            for f in sorted(files):
+                if not any(fnmatch.fnmatch(f, p) for p in patterns):
+                    continue
+                try:
+                    with open(os.path.join(here, f), encoding="utf-8", errors="replace") as fh:
+                        text = fh.read(400_000)
+                except OSError:
+                    continue
+                if rx.search(text):
+                    found[name] = os.path.relpath(os.path.join(here, f), root)
+                    break
+    if not found:
+        return ("none declared (no property-testing library in the repository's "
+                "manifests): write example tests only, and never add a dependency")
+    return "; ".join("%s (declared in %s)" % (n, p) for n, p in found.items())
+
+
 def ci_environment(root: str) -> str | None:
     """CI_ENVIRONMENT (#313): what the target repository's CI runner has, read
     from `.agent-pipeline/ci-environment.txt` — three `key: value` lines,
@@ -1167,6 +1219,7 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
             "repo itself"), block=True),
         "NAMING": Field("NAMING", NAMING_DEFAULT),
         "TEST_FORM_RULES": Field("TEST_FORM_RULES", test_form_rules(ctx["root"]), block=True),
+        "PROPERTY_LIBRARY": Field("PROPERTY_LIBRARY", property_library(ctx["root"])),
         "VOCABULARY": Field("VOCABULARY", placeholder(
             "VOCABULARY", "the project's own terms for the ideas under test")),
         "FIXTURES": Field("FIXTURES", placeholder(
@@ -1198,9 +1251,9 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
     order = ["CONTRACT", "PROMISE_CHECKLIST", "TEST_PATHS", "TEST_FRAMEWORK",
              "MAX_SINGLE_EDIT", "CITATION", "CONVENTIONS",
              "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
-             "NAMING", "TEST_FORM_RULES", "VOCABULARY", "FIXTURES", "SHARED_IDIOM",
-             "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "CENSUS", "BASELINE_COUNTS_FROM",
-             "CONTRACT_HASH"]
+             "NAMING", "TEST_FORM_RULES", "PROPERTY_LIBRARY", "VOCABULARY", "FIXTURES",
+             "SHARED_IDIOM", "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "CENSUS",
+             "BASELINE_COUNTS_FROM", "CONTRACT_HASH"]
     return ordered(fields, order)
 
 
@@ -2517,6 +2570,28 @@ def selftest() -> int:
             "unit-test-author", "--host", "claude", "--contract-paths", "src/flush.py"])
         check("unit payload carries the refused form with its replacement",
               rc == 0 and 'env!("CARGO_BIN_EXE_x") -> testsupport::bin_path("x")' in read_text(ut2_path))
+        # --- PROPERTY_LIBRARY: only a library the repository already declares ---
+        check("no property library: the unit payload says `none declared`, never omits the field",
+              "PROPERTY_LIBRARY: none declared" in read_text(ut_cl_path))
+        with open(os.path.join(root, "pyproject.toml"), "w", encoding="utf-8") as fh:
+            fh.write('[project.optional-dependencies]\ntest = ["pytest", "hypothesis>=6"]\n')
+        rc, ut4_path, out = run_compose("UT4.md", [
+            "unit-test-author", "--host", "claude", "--contract-paths", "src/flush.py"])
+        check("a declared hypothesis is named with its manifest",
+              rc == 0 and "PROPERTY_LIBRARY: hypothesis (declared in pyproject.toml)" in read_text(ut4_path),
+              out)
+        os.remove(os.path.join(root, "pyproject.toml"))
+        nested = os.path.join(root, "web")
+        os.makedirs(nested, exist_ok=True)
+        with open(os.path.join(nested, "package.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"devDependencies": {"fast-check": "^3.0.0"}}\n')
+        check("a nested package.json fast-check is found",
+              property_library(root) == "fast-check (declared in %s)" % os.path.join("web", "package.json"))
+        with open(os.path.join(nested, "package.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"description": "no fast-check here"}\n')
+        check("a mention outside a dependency key is not a declaration",
+              property_library(root).startswith("none declared"))
+        shutil.rmtree(nested)
         with open(os.path.join(cfg, TEST_FORMS_FILE), "w", encoding="utf-8") as fh:
             fh.write("a bare line with no arrow\n")
         rc, _p, out = run_compose("UT3.md", [

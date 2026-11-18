@@ -89,6 +89,15 @@ change:
 | The failure reproduces on the **target branch at the merge-base**, untouched by this build | nobody — **upstream** | Prove it first (below), then fix it on your branch to keep green, log `UPSTREAM:` with the proof, and say in the PR description that the fix belongs upstream independently of this change. |
 | The failure is **intermittent** — `FLAKY` in a repeat run, or a red that a rerun of the same head turns green | **unknown until the mechanism is found** | Find the race (below), then rule on the mechanism: rows 1–3, or row 5 with a repeated proof. Never "nobody", and never a rerun until green. |
 
+**A failing property test is ruled on its shrunk counterexample.** Quote the
+smallest failing input the library reports against the checklist line the
+test cites. An input outside the line's `domain:`, or outside what the
+docstring promises for it, is row 1 (the test): the property asserted more
+than the contract states. An input inside both is row 2 (the
+implementation). An input the docstring leaves open is row 3 (the
+contract). Expect row 1 often: about one LLM-written property in five is
+unsound against its documentation (Vikram et al.).
+
 Write every arbitration as one `ARBITRATION:` line — the failure, the ruling, and which
 of the six rows applied — and hand the round's lines to its checkpoint as `log`
 (below); if the round runs on past a tool call, put them in the same message as the next call.

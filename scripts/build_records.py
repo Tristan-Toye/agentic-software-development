@@ -26,6 +26,7 @@ validator and the dashboard read them with no YAML dependency.
     build_records.py decision show W-014
     build_records.py checklist write W-014 --from-file F                          [--log DOSSIER]
     build_records.py checklist show W-014
+    build_records.py checklist usage W-014 --dossier D [--surface NAME=MEMBER,MEMBER ...] [--log DOSSIER]
     build_records.py --selftest
 
 `--root DIR` (default: the current directory) is the tree whose `.discovery/`
@@ -265,6 +266,72 @@ def checklist_members(text: str) -> list[str]:
     return seen
 
 
+def criteria_items(dossier_text: str) -> list[tuple[int, str]]:
+    """The numbered `## Acceptance criteria`, continuation lines folded in and
+    the `(owner: ...; env: ...)` annotation dropped, so a test file's name never
+    counts as a mention of the member it is named after."""
+    m = re.search(r"^## Acceptance criteria\s*$(.*?)(?=^## |\Z)", dossier_text, re.M | re.S)
+    if not m:
+        return []
+    items: list[tuple[int, str]] = []
+    for line in m.group(1).splitlines():
+        n = re.match(r"^\s*(\d+)[.)]\s+(.*)", line)
+        if n:
+            items.append((int(n.group(1)), n.group(2)))
+        elif items and line.strip():
+            items[-1] = (items[-1][0], items[-1][1] + " " + line.strip())
+    return [(k, re.sub(r"\(owner:[^)]*\)", "", t)) for k, t in items]
+
+
+def member_pattern(member: str) -> re.Pattern:
+    """A member id names itself by its last segment (`Queue.flush`,
+    `flush`), matched as a whole identifier."""
+    last = re.split(r"\.|::|#", member.strip("`"))[-1]
+    return re.compile(r"(?<![\w$])%s(?![\w$])" % re.escape(last))
+
+
+def checklist_usage(checklist_text: str, dossier_text: str,
+                    surfaces: dict[str, list[str]] | None = None) -> dict:
+    """How often the acceptance criteria exercise each checklist member, and,
+    given the Phase 3 surface split, each surface: the usage half of the
+    mutation check's surface choice (references/work-on/phase-6-conditional.md).
+    A surface's weight is the number of DISTINCT criteria naming any of its
+    members, so a surface with many members is not counted twice for one
+    criterion. A proxy for an operational profile (Musa), never a measured one."""
+    items = criteria_items(dossier_text)
+    members = checklist_members(checklist_text)
+    per_member = {m: [k for k, t in items if member_pattern(m).search(t)] for m in members}
+    out: dict = {"criteria": len(items), "members": per_member, "surfaces": {}, "usage_surface": []}
+    if surfaces:
+        unknown = sorted({m for ms in surfaces.values() for m in ms} - set(members))
+        if unknown:
+            raise Refused("--surface names member(s) the checklist does not: %s" % ", ".join(unknown))
+        unassigned = [m for m in members if not any(m in ms for ms in surfaces.values())]
+        if unassigned:
+            raise Refused("checklist member(s) in no --surface: %s — every member belongs "
+                          "to the surface whose unit author covers it" % ", ".join(unassigned))
+        for name, ms in surfaces.items():
+            out["surfaces"][name] = sorted({k for m in ms for k in per_member[m]})
+        top = max((len(v) for v in out["surfaces"].values()), default=0)
+        if top:
+            out["usage_surface"] = [n for n, v in out["surfaces"].items() if len(v) == top]
+    return out
+
+
+def usage_lines(u: dict) -> list[str]:
+    lines = []
+    for m, ks in sorted(u["members"].items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        lines.append("USAGE: %s %d/%d (%s)" % (m, len(ks), u["criteria"],
+                                              "criteria " + ", ".join(map(str, ks)) if ks else "no criterion"))
+    for name, ks in sorted(u["surfaces"].items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        lines.append("SURFACE-USAGE: %s %d/%d (%s)" % (name, len(ks), u["criteria"],
+                                                      "criteria " + ", ".join(map(str, ks)) if ks else "no criterion"))
+    if u["surfaces"]:
+        lines.append("USAGE-SURFACE: " + (", ".join(u["usage_surface"]) if u["usage_surface"]
+                                         else "none — no criterion names a checklist member"))
+    return lines
+
+
 # -- CLI --------------------------------------------------------------------
 
 def say_log(args, line: str) -> None:
@@ -314,6 +381,11 @@ def run(argv: list[str]) -> int:
     common(p)
     p.add_argument("--from-file", required=True, help="the checklist text; - reads stdin")
     common(c.add_parser("show"))
+    p = c.add_parser("usage")
+    common(p)
+    p.add_argument("--dossier", required=True, help="the dossier whose ## Acceptance criteria are counted")
+    p.add_argument("--surface", action="append", default=[], metavar="NAME=MEMBER[,MEMBER...]",
+                   help="one per Phase 3 surface: the checklist members its unit author covers")
 
     args = ap.parse_args(argv)
     if args.selftest:
@@ -353,6 +425,25 @@ def run(argv: list[str]) -> int:
             if args.verb == "show":
                 with open(path, encoding="utf-8") as fh:
                     sys.stdout.write(fh.read())
+            elif args.verb == "usage":
+                surfaces: dict[str, list[str]] = {}
+                for spec in args.surface:
+                    name, sep, ms = spec.partition("=")
+                    if not sep or not name.strip() or not ms.strip():
+                        raise Refused("--surface %r is not NAME=MEMBER[,MEMBER...]" % spec)
+                    surfaces[name.strip()] = [m.strip() for m in ms.split(",") if m.strip()]
+                with open(path, encoding="utf-8") as fh:
+                    checklist = fh.read()
+                with open(args.dossier, encoding="utf-8") as fh:
+                    dossier_text = fh.read()
+                u = checklist_usage(checklist, dossier_text, surfaces or None)
+                if not u["criteria"]:
+                    raise Refused("%s has no numbered ## Acceptance criteria" % args.dossier)
+                lines = usage_lines(u)
+                print("\n".join(lines))
+                if surfaces:
+                    say_log(args, "- " + lines[-1] + " — "
+                            + "; ".join(l.split(": ", 1)[1] for l in lines if l.startswith("SURFACE-USAGE")))
             else:
                 text = sys.stdin.read() if args.from_file == "-" else open(args.from_file, encoding="utf-8").read()
                 members = checklist_members(text)
@@ -415,6 +506,51 @@ def selftest() -> int:
         check("a bad dossier id is refused", refused(record_path, tmp, "deferred", "x"))
         text = "flush — return meaning: count written\n- flush — order: oldest first\nparse — empty case: 0\n"
         check("checklist members are read", checklist_members(text) == ["flush", "parse"])
+        # usage: which criteria exercise which member and surface
+        cl = ("Queue.flush — order: oldest first\nQueue.drain — empty case: 0\n"
+              "parse — invalid case: raises\nStore.put — return meaning: id\n")
+        dos = ("# T\n\n## Acceptance criteria\n\n"
+               "1. With 3 parallel `flush()` calls the store receives each item once.\n"
+               "   (owner: tests/integration/test_parse_flow.py; env: local)\n"
+               "2. After `flush()` then `drain()`, put is called once per item.\n"
+               "3. A malformed line makes `parse` raise. (owner: tests/unit/test_flush.py; env: local)\n"
+               "4. flushing is logged. (owner: t.py; env: local)\n\n## Work packages\n\n5. parse flush\n")
+        u = checklist_usage(cl, dos, {"queue": ["Queue.flush", "Queue.drain"], "codec": ["parse"],
+                                      "store": ["Store.put"]})
+        check("usage counts criteria per member, last segment, whole identifier",
+              u["members"] == {"Queue.flush": [1, 2], "Queue.drain": [2], "parse": [3], "Store.put": [2]},
+              )
+        check("the owner annotation never counts (test_parse_flow.py, test_flush.py)",
+              1 not in u["members"]["parse"] and 3 not in u["members"]["Queue.flush"])
+        check("a surface counts distinct criteria, not member mentions",
+              u["surfaces"] == {"queue": [1, 2], "codec": [3], "store": [2]})
+        check("the usage surface is the most-exercised one", u["usage_surface"] == ["queue"])
+        lines = usage_lines(u)
+        check("usage lines end with USAGE-SURFACE", lines[-1] == "USAGE-SURFACE: queue"
+              and "USAGE: Queue.flush 2/4 (criteria 1, 2)" in lines)
+        check("a tie names every tied surface",
+              checklist_usage(cl, dos, {"a": ["Queue.drain", "Queue.flush"], "b": ["parse", "Store.put"]})
+              ["usage_surface"] == ["a", "b"])
+        check("a member in no surface is refused",
+              refused(checklist_usage, cl, dos, {"queue": ["Queue.flush"]}))
+        check("a surface naming an unknown member is refused",
+              refused(checklist_usage, cl, dos, {"queue": ["nope"], "x": ["Queue.flush", "Queue.drain",
+                                                                          "parse", "Store.put"]}))
+        # the CLI end to end
+        cdir = os.path.join(tmp, ".discovery", "checklists")
+        os.makedirs(cdir, exist_ok=True)
+        with open(os.path.join(cdir, "W-004.md"), "w") as fh:
+            fh.write(cl)
+        dpath = os.path.join(tmp, "W-004.md")
+        with open(dpath, "w") as fh:
+            fh.write("---\nid: W-004\n---\n\n" + dos.replace("## Work packages", "## Build log"))
+        rc = run(["checklist", "usage", "W-004", "--root", tmp, "--dossier", dpath,
+                  "--surface", "queue=Queue.flush,Queue.drain", "--surface", "rest=parse,Store.put",
+                  "--log", dpath])
+        with open(dpath) as fh:
+            check("the usage CLI logs the USAGE-SURFACE line", rc == 0 and "- USAGE-SURFACE: queue, rest — queue 2/4" in fh.read())
+        check("a malformed --surface is refused with exit 1",
+              run(["checklist", "usage", "W-004", "--root", tmp, "--dossier", dpath, "--surface", "queue"]) == 1)
         # the CLI end to end, with a dossier that takes the log line
         dossier = os.path.join(tmp, "W-003.md")
         with open(dossier, "w") as fh:
