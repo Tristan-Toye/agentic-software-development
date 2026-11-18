@@ -1040,27 +1040,21 @@ async function docPrsAct(btn, act) {
   S.docPrs[repo] = j; render();
   if (j.merging) setTimeout(() => docPrsAct({ dataset: { repo } }, 'docprs-refresh'), 5000);
 }
-/* Automatic work: one switch per repository (off by default) and the cycle it runs, decided by scripts/auto_work.py. The switch
-   also turns the scripted stub merge on: the cycle ends with it, so the two are one choice. */
+/* Automatic work: one switch per repository (off by default); scripts/auto_work.py decides the cycle. The switch also turns the
+   scripted stub merge on: the cycle ends with it, so the two are one choice. Only the controls and a pause reason show here: the
+   stub cards already show what the cycle builds and lands. */
 function autoWorkView(repo) {
   const v = S.auto[repo]; if (!v) return null;
   const st = v.state, busy = S.ctl['aw:' + repo] && S.ctl['aw:' + repo].busy;
   const idle = !st || st.step === 'idle';
-  const head = [h('h2', {}, ['Automatic work']), h('span', { class: 'small mut' }, [v.on ? (st && st.cycle ? 'cycle ' + st.cycle : 'on') : 'off']), h('span', { class: 'grow' }),
+  const head = [h('h2', {}, ['Automatic work']), h('span', { class: 'small mut' }, [v.on ? 'on' : 'off']), h('span', { class: 'grow' }),
     v.on && idle && !(st && st.request) ? h('button', { class: 'btn sm', type: 'button', 'data-act': 'aw-act', 'data-aw': 'start-now', 'data-repo': repo, disabled: busy ? true : null, title: 'Start a cycle now instead of waiting for the next stub to merge.' }, ['Start cycle now']) : null,
     st && st.paused ? h('button', { class: 'btn sm primary', type: 'button', 'data-act': 'aw-act', 'data-aw': 'resume', 'data-repo': repo, disabled: busy ? true : null, title: 'Go on: a failed run is started again, a failed integration runs again.' }, ['Resume']) : null,
     h('button', { class: 'btn sm' + (v.on ? '' : ' primary'), type: 'button', 'data-act': 'aw-act', 'data-aw': v.on ? 'disable' : 'enable', 'data-repo': repo, disabled: busy ? true : null,
       title: v.on ? 'Turn it off. Nothing new starts; runs that are live go on.' : 'Turn it on. From the next stub merge on, the dossiers that are ready (and the planned ones, planned first) are built, their deferred items fixed, the non-code PRs merged, the stub integrated and merged, with no click. Every owner question still waits for you. It also turns the scripted stub merge on.' }, [v.on ? 'Turn off' : 'Turn on'])];
   const kids = [h('div', { class: 'sechd' }, head)];
   if (S.ctl['aw:' + repo] && S.ctl['aw:' + repo].msg) kids.push(h('div', { class: 'err' }, [S.ctl['aw:' + repo].msg]));
-  if (v.on && st) {
-    const phase = st.paused ? 'paused' : st.request === 'start' && idle ? 'starting' : st.phase;
-    const onStub = (st.step === 'integrate' || st.step === 'land') && st.integrating ? st.integrating : '';   // the stub being integrated: its own card shows the members, so name it instead of the stub the cycle started after
-    const cardShown = !!onStub && openStubs(repo).some(x => x.branch === onStub);
-    kids.push(h('p', { class: 'small' }, [chip(phase, st.paused ? 'blocked' : idle ? 'neutral' : 'pending'), h('span', { class: 'mut' }, [(onStub ? ' ' + onStub : st.stub ? ' after ' + st.stub : '') + (st.note ? ' · ' + st.note : idle && !st.request ? ' · waiting for the next stub to merge' : '')])]));
-    if (st.paused) kids.push(h('div', { class: 'err' }, [st.paused.reason]));
-    if (st.members.length && !cardShown) kids.push(h('div', { class: 'srows' }, st.members.map(m => h('div', { class: 'srow', 'data-k': 'aw:' + m.id }, [h('span', { class: 'sid mono' }, [m.id]), h('span', { class: 'sname' }, [h('span', {}, [m.stage + (m.rounds > 0 && (m.stage === 'plan' || m.rounds > 1) ? ' · plan round ' + m.rounds : '')]), m.error ? h('span', { class: 'small mut rsub' }, [m.error]) : null]), h('span', { class: 'sright' }, [chip(m.state, m.state === 'failed' ? 'blocked' : m.state === 'finished' ? 'done' : 'pending')])]))));
-  } else if (v.on) kids.push(h('p', { class: 'small mut' }, ['On. The first cycle starts when the next stub merges, or with Start cycle now.']));
+  if (v.on && st && st.paused) kids.push(h('div', { class: 'err' }, [st.paused.reason]));
   return h('section', { class: 'sec', 'data-k': 'sec:autowork' }, kids);
 }
 async function autoWorkAct(btn) {
