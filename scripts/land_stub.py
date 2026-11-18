@@ -17,8 +17,11 @@ reached `/stub`, in a repository that opted in, is looked at again until its pul
 
 1. The stub's `/stub` run ended `done`.
 2. The pull request is open, not a draft, and GitHub reads it `MERGEABLE` and `CLEAN`.
-3. Every check on the head passed (skipped and neutral are fine), and the receipt context (`local-stack`) is
-   among them and green. A commit status belongs to one commit, so a later push takes the receipt away.
+3. Every check on the head passed (skipped and neutral are fine), and, in a repository with a local stack suite,
+   the receipt context (`local-stack`) is among them and green. A commit status belongs to one commit, so a later
+   push takes the receipt away. A repository has a local stack suite when its stack config
+   (`stack_repair.load_config`) names a `suite_markers` or `env_script`; the setting `receipt` (true or false)
+   overrides that. Without one, CI on the head is the verdict (the stub's full run is CI).
 4. The pull request body carries the block `/stub` writes last (`primary-agents/stub.md`, Step 8):
    `STUB-RESULT: green`, `STUB-HEAD: <this head>`, `STUB-GAPS: 0`, `STUB-UNRESOLVED: 0`, and no `ATTENTION:` line.
 5. No open owner question on the stub or on a dossier the integration merged.
@@ -32,7 +35,7 @@ Anything else, or anything unreadable, leaves the pull request for the owner. Th
 # Files
 
 Settings: `$ASD_STUB_AUTOMERGE_FILE` (default `~/.agentic/stub-auto-merge.json`),
-`{"<repo>": {"enabled": true, "receipt_context": "local-stack", "guarded_paths": ["..."]}}`.
+`{"<repo>": {"enabled": true, "receipt": true, "receipt_context": "local-stack", "guarded_paths": ["..."]}}`.
 State: `<key>.land.json` `{state: waiting|merged, pr, head, reasons, ts}`, read by the dashboard. A change of reasons
 writes one line on the stub's timeline.
 
@@ -52,6 +55,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from merge_dossier import append_line, gh, git, now, read_json, repo_name, run_live, runs_dir, write_json  # noqa: E402
+import stack_repair  # noqa: E402
 
 DEFAULT_CONTEXT = "local-stack"
 DEFAULT_GUARDED = ["scripts/local_stack_status.py"]
@@ -74,8 +78,16 @@ def set_enabled(repo: str, enabled: bool, context: str = "") -> None:
     write_json(settings_path(), {**all_, repo: cur})
 
 
-def check_failures(rollup: list, context: str) -> list[str]:
-    """What the head's checks hold back. `context` must be there and green; the rest must have passed."""
+def needs_receipt(root: str, cfg: dict) -> bool:
+    """Whether the stub's verdict is a local-stack receipt (a repo with a local stack suite) or CI alone."""
+    if isinstance(cfg.get("receipt"), bool):
+        return cfg["receipt"]
+    stack = stack_repair.load_config(root) or {}
+    return bool(stack.get("suite_markers") or stack.get("env_script"))
+
+
+def check_failures(rollup: list, context: str | None) -> list[str]:
+    """What the head's checks hold back. `context`, when named, must be there and green; the rest must have passed."""
     out, seen = [], False
     for c in rollup or []:
         name = c.get("name") or c.get("context") or "?"
@@ -86,7 +98,7 @@ def check_failures(rollup: list, context: str) -> list[str]:
                 out.append(f"the {context} receipt on this head reads {verdict or 'nothing'}")
         elif verdict not in PASSED:
             out.append(f"check {name} reads {verdict or 'nothing'}")
-    if not seen:
+    if context and not seen:
         out.append(f"this head has no {context} receipt")
     return out
 
@@ -173,7 +185,8 @@ def assess(root: str, repo: str, branch: str, finished: list[str], cfg: dict) ->
         reasons.append(f"GitHub reads it {pr.get('mergeable') or 'UNKNOWN'}")
     if pr.get("mergeStateStatus") != "CLEAN":
         reasons.append(f"its merge state is {pr.get('mergeStateStatus') or 'UNKNOWN'}, not CLEAN")
-    reasons += check_failures(pr.get("statusCheckRollup") or [], cfg.get("receipt_context") or DEFAULT_CONTEXT)
+    context = (cfg.get("receipt_context") or DEFAULT_CONTEXT) if needs_receipt(root, cfg) else None
+    reasons += check_failures(pr.get("statusCheckRollup") or [], context)
     reasons += result_failures(pr.get("body") or "", head)
     q = open_questions(repo, [slug] + finished)
     if q:
@@ -323,6 +336,7 @@ def selftest() -> int:
         setup(); land_all()
         check("off by default: no gh call, no state", calls() == "" and not os.path.exists(os.path.join(runs, key + ".land.json")), calls())
         set_enabled(repo, True)
+        write_json(settings_path(), {repo: {**settings_of(repo), "receipt": True}})   # the receipt checks below
         check("settings: enable is per repository", settings_of(repo).get("enabled") is True and not settings_of("other"))
 
         # Everything holds.
@@ -342,6 +356,22 @@ def selftest() -> int:
         held("a pending check", "check Rust", statusCheckRollup=[{"name": "Rust", "status": "IN_PROGRESS"}, {"context": "local-stack", "state": "SUCCESS"}])
         held("no receipt on this head", "no local-stack receipt", statusCheckRollup=[{"name": "Rust", "conclusion": "SUCCESS"}])
         held("a red receipt", "receipt on this head reads FAILURE", statusCheckRollup=[{"context": "local-stack", "state": "FAILURE"}])
+
+        # A repo without a local stack suite: CI on the head is the verdict, no receipt asked for.
+        all_ = read_json(settings_path(), {}) or {}
+        write_json(settings_path(), {**all_, repo: {**all_[repo], "receipt": False}})
+        setup(statusCheckRollup=[{"name": "Rust", "conclusion": "SUCCESS"}])
+        rc, st = run_land()
+        check("no stack suite: CI alone is the verdict", rc == 0 and st.get("state") == "merged" and "pr merge 9" in calls(), st)
+        held("no stack suite: a red check still holds", "check Rust", statusCheckRollup=[{"name": "Rust", "conclusion": "FAILURE"}])
+        held("no stack suite: the result block still holds", "STUB-UNRESOLVED", body=block.replace("STUB-UNRESOLVED: 0", "STUB-UNRESOLVED: 1"), statusCheckRollup=[{"name": "Rust", "conclusion": "SUCCESS"}])
+        write_json(settings_path(), {**all_, repo: {**all_[repo], "receipt": True}})
+        check("receipt follows the stack config when not set",
+              needs_receipt(w, {}) is False and needs_receipt(w, {"receipt": True}) is True)
+        os.makedirs(os.path.join(w, ".agentic"), exist_ok=True)
+        json.dump({"vm": "v", "suite_markers": ["--stack"]}, open(os.path.join(w, ".agentic", "stack-repair.json"), "w"))
+        check("a repo whose stack config names a suite needs the receipt", needs_receipt(w, {}) is True and needs_receipt(w, {"receipt": False}) is False)
+        os.remove(os.path.join(w, ".agentic", "stack-repair.json"))
         held("no result block", "STUB-RESULT", body="Report only.")
         held("a result for an older head", "STUB-HEAD", body=block.replace(head, "0" * 40))
         held("an audit gap", "STUB-GAPS", body=block.replace("STUB-GAPS: 0", "STUB-GAPS: 2"))

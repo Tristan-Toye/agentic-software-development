@@ -9,13 +9,9 @@
         "{vm}"
       ],
       "stack_up": [
-        "limactl",
-        "shell",
-        "{vm}",
-        "--",
         "bash",
         "-lc",
-        "cd {root} && bash deploy/scripts/up.sh core"
+        "cd {root} && bash deploy/host/host.sh exec -- deploy/scripts/up.sh test"
       ],
       "env_script": "deploy/host/test-env.sh",
       "env_catalog": {

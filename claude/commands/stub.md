@@ -79,14 +79,19 @@ real-uncertainty questions, each passing `--kind`, and never an approval
 ## Gates — before anything
 
 Follow `${PLUGIN_ROOT}/references/time-logging.md` for the time-logging
-gate; one session covers this run. Then state plainly and get one yes for
-all of it:
+gate; one session covers this run. Starting this command is the yes for
+all of the following: post them as the first note and go on, never as a
+question:
 
 1. This command **pushes the stub branch when it is missing**, and **opens
    the pull request stub → development**.
 2. It **runs the full stack suite once in the VM** —
    `scripts/run_all_tests.sh --stack` through `run_tests.py --vm` — and
-   **posts the `local-stack` receipt** on that pull request.
+   **posts the `local-stack` receipt** on that pull request. In a repository
+   with no local stack suite (no `suite_markers` in its stack config, the
+   runner's `config/stack-repair.json` or `.agentic/stack-repair.json`), CI
+   on the head is the full run: no receipt, and no `ATTENTION:` line for its
+   absence.
 3. It **spawns implementers and reviewers in worktrees** to fix failures,
    as pull requests into the stub, and **merges those fix pull requests
    itself**. Before the full run (and again before a re-run after a
@@ -102,6 +107,53 @@ all of it:
 No Jira transition, no push to a protected branch, no ruleset change beyond
 that yes. A bypass push past the stub ruleset happens only on the user's
 explicit yes for that push, logged in the record — never by default.
+
+## The environment is yours to repair
+
+The VM, its docker daemon, the shared compose stack, the stack's test
+database and the repository's self-hosted CI runner pool are test
+infrastructure this run owns while it integrates. When one of them is in the
+way, repair it yourself with the repository's own documented commands
+(`AGENTS.md`, `deploy/`, its runbooks), note what you did and why on the
+timeline, write it in the record, and go on. Never ask the owner for these:
+
+- **Stale stack settings** (`.runtime.env` lacks names the catalog has, a
+  test or `test-env.sh` says to re-run `up.sh`): `run_tests.py --vm` syncs it
+  itself (`STACK-ENV:` in its output). When it reports `skipped`, run the
+  repository's `up.sh` from the persistent checkout through the repository's
+  host wrapper (config-harness: `bash deploy/host/host.sh exec --
+  deploy/scripts/up.sh --build test`, which forwards the sops key into the
+  VM; plain `limactl shell` cannot decrypt), then check every service is
+  healthy.
+- **A stopped VM or an unhealthy stack service**: report
+  `RUNNER: ENV vm|stack <detail>`; for a /stub run the runner repairs it
+  (`scripts/stack_repair.py`) and answers. When it answers `not repaired`,
+  use the repository's documented repair for that service yourself once.
+- **A leftover stack** another checkout started (its worktree no longer
+  registered, no live run of its dossier, no lease held): tear it down with
+  its volumes through the repository's documented teardown.
+- **Migration drift in the shared test database** left by a dossier build
+  (a migration applied under a number the stub now gives another one): undo
+  exactly that migration with the repository's tooling. Never rebuild the
+  database from empty without asking.
+- **A docker daemon the stub's own change broke** (its config refused): back
+  up the daemon config, restore the last working one, restart docker, and
+  fix the cause as a fix round (Step 8).
+- **A stuck CI runner pool** (runners offline, jobs queued with no runner):
+  the pool's own sweep and restart (`ci_runner.sh` or its launchd agent).
+  Never switch CI to hosted runners.
+
+Each repair is tried at most twice per cause. Ask the owner (`ask_owner.py
+--kind uncertainty`, then wait) only when:
+
+- the repair needs something outside the VM and the pool: the Mac itself
+  (its user account, its keychain, its disk), a secret value or a cloud
+  secret that does not exist yet, or an account or ruleset change;
+- it would delete data that is not test state of this run, or another run
+  holds the stack lease and is still alive;
+- the documented repair failed twice, or no documented command exists;
+- a harness permission check refused the command (name the command and the
+  refusal; never retry it another way).
 
 ## Step 1 — Resolve the stub
 
@@ -152,9 +204,12 @@ and one `code_item` call naming every item (`A | B::c`), a document section is
 `doc_section`, and a search is `code_find` or `grep -n … | head -40` — never a
 third `Read` window on one file. The read guard refuses it.
 
-Write the table to the record file. A merge that maps to no dossier is a
-defect in the batch, not in your method: report it and stop; the user
-decides. Fix merges — `fix/<ID>-stub<date>-<n>`, this command's own — map
+Write the table to the record file. A merge that maps to no dossier is kept
+and integrated, not a stop: trace it (a deferred item `D-n` of an earlier
+run, a map refresh, an ADR index or documentation change), name it and its
+trace in the record and the report. Only one that changes product code and
+traces to nothing gets an `ATTENTION:` line, so the user sees it before the
+stub merges; the run still goes on. Fix merges — `fix/<ID>-stub<date>-<n>`, this command's own — map
 to the dossier they fix, marked as fix rounds, never as new work.
 
 ## Step 3 — The pull request
