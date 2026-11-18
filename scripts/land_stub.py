@@ -113,9 +113,12 @@ def result_failures(body: str, head: str) -> list[str]:
         out.append("the pull request has no STUB-RESULT: green line")
     if field("STUB-HEAD") != head:
         out.append(f"STUB-HEAD does not name this head ({head[:8]})")
-    if field("STUB-GAPS") != "0":
+    def zero(name: str) -> bool:
+        # A count, and "none" is the same answer: the run wrote "STUB-UNRESOLVED: none" (podcast stub 2026-11-18).
+        return field(name).lower() in ("0", "none")
+    if not zero("STUB-GAPS"):
         out.append("the audit does not report STUB-GAPS: 0")
-    if field("STUB-UNRESOLVED") != "0":
+    if not zero("STUB-UNRESOLVED"):
         out.append("the run does not report STUB-UNRESOLVED: 0")
     for m in re.finditer(r"^ATTENTION:[ \t]*(.*)$", body or "", re.M):
         out.append("attention: " + m.group(1).strip()[:200])
@@ -376,6 +379,8 @@ def selftest() -> int:
         held("a result for an older head", "STUB-HEAD", body=block.replace(head, "0" * 40))
         held("an audit gap", "STUB-GAPS", body=block.replace("STUB-GAPS: 0", "STUB-GAPS: 2"))
         held("an unresolved attribution", "STUB-UNRESOLVED", body=block.replace("STUB-UNRESOLVED: 0", "STUB-UNRESOLVED: 1"))
+        check("'none' counts as zero unresolved and zero gaps",
+              not result_failures(block.replace("STUB-UNRESOLVED: 0", "STUB-UNRESOLVED: none").replace("STUB-GAPS: 0", "STUB-GAPS: None"), head), "")
         held("an attention line", "attention: a waiver was carried", body=block + "ATTENTION: a waiver was carried\n")
 
         setup(); open(os.path.join(qs, f"{repo}.stub-x.Q1.jsonl"), "w").write('{"from": "agent", "kind": "question"}\n')

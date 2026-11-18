@@ -381,8 +381,8 @@ no block, or any other value, the pull request waits for the user:
 ```
 STUB-RESULT: green
 STUB-HEAD: <the full SHA of the head the receipt describes>
-STUB-GAPS: <the number of GAP lines left in the Step 6 table>
-STUB-UNRESOLVED: <unresolved attributions and change requests>
+STUB-GAPS: <the number of GAP lines left in the Step 6 table, 0 when none>
+STUB-UNRESOLVED: <the number of unresolved attributions and change requests, 0 when none>
 ATTENTION: <one line per thing the user should see before this merges>
 ```
 
