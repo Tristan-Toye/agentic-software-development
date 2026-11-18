@@ -346,9 +346,11 @@ Route each result:
 
 - **`SURVIVED`** — first ask whether any reachable state distinguishes the
   mutant from the original. **None does → an equivalent mutant**: evidence
-  about the code, not about the tests. Record it in `## Build log` with the
-  proof — the constraint or invariant that makes the two behaviours
-  identical; the recorded case dropped a `status = 'running'` conjunct under
+  about the code, not about the tests. Record it in `## Build log` as one
+  line, `MUTANT-EQUIVALENT: <surface> <checklist member> — <mechanism>`, the
+  mechanism being the proof — the constraint or invariant that makes the two
+  behaviours identical (the fixed form lets equivalent mutants be counted
+  across builds, to see whether the mutant rules waste runs); the recorded case dropped a `status = 'running'` conjunct under
   a check constraint tying `status` to `claimed_by` — and route nothing: a
   blind author asked to distinguish two behaviours that cannot differ
   returns `GAP:` by construction, and the round is spent. **Some state does

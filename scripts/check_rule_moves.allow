@@ -79,3 +79,5 @@ Every line ends with `contract:` and `effort:`
 Default on the **primary surface** (the surface with the most `PROMISE_CHECKLIST`
 **one mutant per checklist line on the primary surface**
 One `## Build log` line either way: mutants killed and survived, or skipped and the reason.
+# An equivalent mutant is recorded as a fixed MUTANT-EQUIVALENT line (reworded, not dropped)
+Record it in `## Build log` with the proof — the constraint or invariant that makes the two behaviours identical;
