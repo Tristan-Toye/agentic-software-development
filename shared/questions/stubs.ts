@@ -8,7 +8,7 @@ import { offThread } from "./scanpool.ts"
 import type { Question } from "./store.ts"
 import { readRunner, readViewCache, runnerActive, writeViewCache } from "./runstore.ts"
 import { emitChange } from "./events.ts"
-import { answeredBy, baseName, buildLog, getRuns, repoLabel, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, runnerOf, withBranchCopies, questionInRepo, sh, worktreesOf, type Pr, type QA } from "./runs.ts"
+import { answeredBy, baseName, buildLog, getRuns, repoLabel, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, runnerOf, withBranchCopies, questionInRepo, sh, shOrNull, worktreesOf, type Pr, type QA } from "./runs.ts"
 
 export type StubDossier = { id: string; title: string; status: string; repo: string; via: "merged"; answered: QA[] }
 /** An in-progress dossier shown under a stub; `noPr` = no PR yet, parked on the accepting stub. */
@@ -200,11 +200,23 @@ export async function fetchStubRefs(main: string, now = Date.now()): Promise<boo
   for (const k of [...memo.keys()]) if (k.startsWith(`mg:${main}:`) || k.startsWith(`rd:${main}:`) || k.startsWith(`ls:${main}`)) memo.delete(k)
   return true
 }
-async function stubBranches(main: string): Promise<string[]> {
-  return cached(`ls:${main}`, async () => {
-    const out = await sh(["git", "-C", main, "ls-remote", "--heads", "origin", "stub/*", "release/*"], undefined, 10_000)
-    return out.split("\n").map((l) => l.split("\t")[1]?.replace(/^refs\/heads\//, "")).filter((b): b is string => !!b)
-  })
+/**
+ * The stub and release branches on origin. A failed `ls-remote` (a timeout, an SSH or network hiccup) is not "no
+ * stubs": it falls back to the refs the last fetch left under `refs/remotes/origin` (the fetch prunes, so a deleted
+ * stub is gone there too), and the failure is not cached. Before, one failed call emptied every stub card of the
+ * repository for the cache's two minutes, and the open dossier PRs into the stub showed as outside any stub.
+ */
+export async function stubBranches(main: string): Promise<string[]> {
+  const c = memo.get(`ls:${main}`)
+  if (c && Date.now() - c.at < TTL) return c.v
+  const out = await shOrNull(["git", "-C", main, "ls-remote", "--heads", "origin", "stub/*", "release/*"], undefined, 10_000)
+  if (out === null) {
+    const local = await sh(["git", "-C", main, "for-each-ref", "--format=%(refname:lstrip=3)", "refs/remotes/origin/stub", "refs/remotes/origin/release"], undefined, 5000)
+    return local.split("\n").filter(Boolean)
+  }
+  const v = out.split("\n").map((l) => l.split("\t")[1]?.replace(/^refs\/heads\//, "")).filter((b): b is string => !!b)
+  memo.set(`ls:${main}`, { at: Date.now(), v })
+  return v
 }
 async function prInto(main: string, branch: string): Promise<Pr | null> {
   return cached(`pr:${main}:${branch}`, async () => {

@@ -7,7 +7,7 @@ import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, An
 import { channelNameFor, interpretEnvelope, isDuplicate, runSocket, questionBlocks, replyKind } from "../questions/slack.ts"
 import { remindersDue } from "../questions/server.ts"
 import { undecidedDeferred, parseFrontMatter, lastPhase, stagePhase, lastLine, buildLog, pickDossiers, pickDossiersByRepo, questionRepo, viewFor, tailTranscript, transcriptCwd, loadPhaseNames, phaseNameOf, isRunning, answeredBy, repoLabel, parseDeferred, readDeferredRecord, deferredSince, parseReportTable, withReport, withBranchCopies, isBuildBranch, readDossier, activityOf, toolLabel, linkPlannedItems, deferredSources, withOwnerRulings, ownerRulingsFile } from "../questions/runs.ts"
-import { prNumberOf, prFieldNumber, prFieldNumbers, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, outsideStubPrs, fetchStubRefs } from "../questions/stubs.ts"
+import { prNumberOf, prFieldNumber, prFieldNumbers, dossiersOnMerges, stubStage, stubState, recordFile, openStubs, stubMembers, outsideStubPrs, fetchStubRefs, stubBranches } from "../questions/stubs.ts"
 import { slackMessageFor, pendingSlack } from "../questions/runslack.ts"
 import { canIntegrate, integrationPhase, integrationStopped, markIntegrating, readIntegrate, readUpdates, readRunner, summaryOf, renderMarkdown, readConversation, readBlocks, checkRule, runnerActive } from "../questions/runstore.ts"
 import { blockedTarget } from "../claude/permission-denied.ts"
@@ -522,6 +522,15 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
   check("fetch: a merge pushed to the stub reaches origin/stub/* in the main checkout", moved && g(M, "log", "-1", "--format=%s", "origin/stub/2026-11-03") === "Merge pull request #7 from o/feat/w-7")
   check("fetch: the checked-out branch does not move", g(M, "rev-parse", "HEAD") === head0)
   check("fetch: at most once per interval", (await fetchStubRefs(M, 1e15 + 1000)) === false)
+  check("stub list: read from origin", JSON.stringify(await stubBranches(M)) === JSON.stringify(["stub/2026-11-03"]))
+  // origin unreachable: ls-remote fails. The card must not vanish: the fetched refs stand in, and the failure is not cached.
+  const M2 = join(gd, "main2")
+  Bun.spawnSync(["git", "clone", "-q", join(gd, "origin.git"), M2])
+  g(M2, "remote", "set-url", "origin", join(gd, "gone.git"))
+  check("stub list: a failed ls-remote falls back to the fetched origin/stub/* refs", JSON.stringify(await stubBranches(M2)) === JSON.stringify(["stub/2026-11-03"]))
+  g(M2, "remote", "set-url", "origin", join(gd, "origin.git"))
+  g(P, "push", "-q", "origin", "HEAD:stub/2026-11-10")
+  check("stub list: the failure was not cached; the next call reads origin again", (await stubBranches(M2)).includes("stub/2026-11-10"))
   rmSync(gd, { recursive: true, force: true })
 }
 {
