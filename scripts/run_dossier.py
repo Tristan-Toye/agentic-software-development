@@ -20,7 +20,7 @@ the `result` event ends a turn and the turn's RUNNER: line decides:
                                 live process as `OWNER ANSWER|FOLLOWUP <id>: ..`
     RUNNER: ENV <vm|stack|disk> <detail>
                                 a broken environment (the Lima VM down, a compose service unhealthy, the disk low),
-                                reported instead of asked about; with ASD_STACK_REPAIR=1 the runner repairs vm and
+                                reported instead of asked about; with ASD_STACK_REPAIR=1 (or a /stub run) the runner repairs vm and
                                 stack (scripts/stack_repair.py) and answers `RUNNER ENV <kind>: repaired ..` or
                                 `.. not repaired ..`; the turn goes on, no stage ends
     RUNNER: DONE                state done, exit 0
@@ -2239,8 +2239,9 @@ class Runner:
 
     def repair_env(self, why: str) -> dict:
         """The standing repair (scripts/stack_repair.py): detect the VM and stack, repair what is down, within its
-        bounds. Off unless ASD_STACK_REPAIR=1. Never raises and never fails the run; returns {resource: outcome}."""
-        if not stack_repair.enabled():
+        bounds. Off unless ASD_STACK_REPAIR=1, except for a /stub run (on unless ASD_STACK_REPAIR=0). Never raises and
+        never fails the run; returns {resource: outcome}."""
+        if not stack_repair.enabled(self.command):
             return {}
         out: dict = {}
         try:
@@ -2252,7 +2253,7 @@ class Runner:
                 if not found:
                     break
                 self.event(f"environment ({why}): " + "; ".join(f"{k}: {v}" for k, v in found.items()))
-                res = stack_repair.repair(cfg, self.root, found, lambda t: self.event(t))
+                res = stack_repair.repair(cfg, self.root, found, lambda t: self.event(t), command=self.command)
                 out.update(res)
                 if not any(v.startswith("repaired") for v in res.values()):
                     break
@@ -2269,7 +2270,7 @@ class Runner:
         ask = "Ask the owner about it as usual (ask_owner.py, then RUNNER: WAITING)."
         if kind not in ("vm", "stack"):
             return f"RUNNER ENV {kind or '?'}: the runner does not repair this; {ask}"
-        if not stack_repair.enabled():
+        if not stack_repair.enabled(self.command):
             return f"RUNNER ENV {kind}: automatic repair is off (ASD_STACK_REPAIR is not 1); {ask}"
         if n > 4:
             return f"RUNNER ENV {kind}: reported {n} times this stage; {ask}"
@@ -4312,6 +4313,10 @@ def selftest() -> int:
         fake_reset("Stopped")
         check("repair gate: off unless ASD_STACK_REPAIR=1, nothing is run",
               not stack_repair.enabled() and stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append) == {"vm": "off"} and calls() == [])
+        check("repair gate: a /stub run has it on unless ASD_STACK_REPAIR=0",
+              stack_repair.enabled("stub") and not stack_repair.enabled("work-on"))
+        os.environ["ASD_STACK_REPAIR"] = "0"
+        check("repair gate: ASD_STACK_REPAIR=0 turns it off for /stub too", not stack_repair.enabled("stub"))
         os.environ["ASD_STACK_REPAIR"] = "1"
         res = stack_repair.repair(cfg, root, {"vm": "x"}, rlog.append)
         check("repair vm: a stopped VM is started with the configured command", res["vm"] == "repaired" and calls() == ["start nightwatch"]

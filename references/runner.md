@@ -682,7 +682,14 @@ an open stub is put on the merge queue once, so Integrate has little left to mer
 ## Standing repair of the VM and the stack (`scripts/stack_repair.py`)
 
 Off unless `ASD_STACK_REPAIR=1`: a repair restarts resources other runs share,
-so the owner enables it explicitly. When on, the runner checks before every
+so the owner enables it explicitly. A /stub run is the exception: it owns the
+shared stack for its full run, so repair is on for it unless
+`ASD_STACK_REPAIR=0`, and its agent repairs the rest of the test
+infrastructure itself (`primary-agents/stub.md`, "The environment is yours to
+repair"). Its `stack_up` must reach the repo's secrets: config-harness runs
+`up.sh` through `deploy/host/host.sh exec`, which forwards the sops key into
+the VM (a plain `limactl shell` cannot decrypt, and `up.sh` then fails without
+touching `.runtime.env`). When on, the runner checks before every
 stage, and again on a `RUNNER: ENV vm|stack ...` line:
 
 - Detect, read-only: `limactl list --json` (the VM must be Running) and

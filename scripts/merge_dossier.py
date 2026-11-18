@@ -249,7 +249,7 @@ def plan(root: str, dossier: str) -> tuple[list[dict], str]:
         nxt, why = accepting_stub(root, base)
         if not nxt:
             return [], why
-        rc, out = gh(root, "pr", "edit", str(chain[0]["number"]), "--base", nxt)
+        rc, out = move_base(root, [p["number"] for p in chain], nxt)
         if rc != 0:
             return [], f"could not move #{chain[0]['number']} from {base} to {nxt}: {out[:200]}"
         append_line(os.path.join(runs_dir(), f"{repo_name(root)}.{dossier}.jsonl"), {"ts": now(), "kind": "runner", "text": f"moved #{chain[0]['number']} from {base} (integrated) to the accepting stub {nxt}"})
@@ -304,6 +304,46 @@ def moved_off(root: str, num: int) -> str:
     return out.strip() if rc == 0 and is_stub(out.strip()) else ""
 
 
+def stack_numbers(root: str, num: int) -> list[int]:
+    """The GitHub stacks this PR was added to (newest last), from its timeline."""
+    q = ("query($owner:String!,$repo:String!,$n:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$n){"
+         "timelineItems(last:20,itemTypes:[ADDED_TO_STACK_EVENT]){nodes{... on AddedToStackEvent{stackNumber}}}}}}")
+    rc, out = gh(root, "api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}", "-F", f"n={num}", "-f", f"query={q}",
+                 "--jq", "[.data.repository.pullRequest.timelineItems.nodes[].stackNumber | numbers] | map(tostring) | join(\" \")")
+    return [int(x) for x in out.split()] if rc == 0 else []
+
+
+def move_base(root: str, chain: list[int], nxt: str) -> tuple[int, str]:
+    """Point the bottom PR of `chain` (bottom to top) at `nxt`. GitHub refuses a base change on a PR in a stack
+    ("part of a stack"): then every stack the chain's PRs were in is unstacked, the bottom moved, and the chain linked
+    again as one stack on `nxt` (merged PRs stay in their old stack; GitHub keeps them there)."""
+    rc, out = gh(root, "pr", "edit", str(chain[0]), "--base", nxt)
+    if rc == 0 or "part of a stack" not in out:
+        return rc, out
+    for n in sorted({s for c in chain for s in stack_numbers(root, c)}):
+        gh(root, "stack", "unstack", str(n))
+    rc, out = gh(root, "pr", "edit", str(chain[0]), "--base", nxt)
+    if rc != 0:
+        return rc, out
+    if len(chain) > 1:
+        rc2, out2 = gh(root, "stack", "link", "--base", nxt, *[str(c) for c in chain])
+        if rc2 != 0:
+            return 0, f"moved, but relinking the stack failed (merge relinks it): {out2[-200:]}"
+    return 0, out
+
+
+def stacked_on(prs: list[dict], num: int) -> list[int]:
+    """`num` and the open PRs stacked on it, bottom to top (one PR per level: the first whose base is the head)."""
+    by_base = {}
+    for p in prs:
+        by_base.setdefault(p.get("baseRefName"), p)
+    head = next((p.get("headRefName") for p in prs if p["number"] == num), None)
+    out, seen = [num], {num}
+    while head in by_base and by_base[head]["number"] not in seen:
+        nxt = by_base[head]; out.append(nxt["number"]); seen.add(nxt["number"]); head = nxt.get("headRefName")
+    return out
+
+
 def carry_over(root: str, stub: str) -> tuple[bool, list[str]]:
     """After `stub` merged into development: move the open PRs it left behind (still on it, or moved to development by
     GitHub when its branch was deleted) to the accepting stub, and drop the failed merge records that only said "its
@@ -321,8 +361,9 @@ def carry_over(root: str, stub: str) -> tuple[bool, list[str]]:
         nxt, why = accepting_stub(root, stub)
         if not nxt:
             return False, [why]
+        prs = json.loads(out or "[]")
         for p in left:
-            rc, out = gh(root, "pr", "edit", str(p["number"]), "--base", nxt)
+            rc, out = move_base(root, stacked_on(prs, p["number"]), nxt)
             if rc != 0:
                 done = False; lines.append(f"could not move #{p['number']} to {nxt}: {out[:200]}"); continue
             lines.append(f"moved #{p['number']} {p['headRefName']} from {stub} to {nxt}")
@@ -1583,8 +1624,17 @@ def selftest() -> int:
         timeline = {7: [{"oldBase": "stub/old", "newBase": "development"}], 8: [], 9: [{"previousRefName": "stub/old", "currentRefName": "development"}]}
         open_prs = [{"number": 7, "headRefName": "feat/W-1-a", "baseRefName": "development"}, {"number": 8, "headRefName": "docs/x", "baseRefName": "development"},
                     {"number": 9, "headRefName": "fix/W-2-deferred", "baseRefName": "development"}, {"number": 10, "headRefName": "feat/W-3", "baseRefName": "stub/old"},
-                    {"number": 11, "headRefName": "feat/W-1-b", "baseRefName": "feat/W-1-a"}]
+                    {"number": 11, "headRefName": "feat/W-1-b", "baseRefName": "feat/W-1-a"},
+                    {"number": 12, "headRefName": "fix/W-3-b", "baseRefName": "feat/W-3"}]
+        stacked = {10: [5]}   # #10 is in GitHub stack 5: a plain base change is refused until it is unstacked
         def fake(_root, *a, **_k):
+            if a[:2] == ("api", "graphql") and any("ADDED_TO_STACK" in x for x in a):
+                n = int(next(x for x in a if x.startswith("n=")).split("=")[1])
+                return 0, " ".join(map(str, stacked.get(n, [])))
+            if a[:2] == ("stack", "unstack"):
+                edits.append(f"unstack {a[2]}"); [v.remove(int(a[2])) for v in stacked.values() if int(a[2]) in v]; return 0, ""
+            if a[:2] == ("stack", "link"):
+                edits.append("link " + " ".join(a[2:])); return 0, ""
             if a[:2] == ("api", "graphql"):
                 n = int(next(x for x in a if x.startswith("n=")).split("=")[1])
                 nodes = timeline.get(n, [])
@@ -1593,6 +1643,8 @@ def selftest() -> int:
             if a[:2] == ("pr", "list"):
                 return 0, json.dumps(open_prs)
             if a[:2] == ("pr", "edit"):
+                if stacked.get(int(a[2])):
+                    return 1, "GraphQL: Cannot change the base branch because the pull request is part of a stack. (updatePullRequest)"
                 edits.append(f"{a[2]}>{a[4]}"); return 0, ""
             return 1, "unexpected"
         try:
@@ -1604,7 +1656,9 @@ def selftest() -> int:
             write_json(os.path.join(rdir, f"{name}.W-4.merge.json"), {"state": "failed", "error": "merge blocked by branch protection"})
             done, lines = carry_over(root, "stub/old")
             check("carry-over: every PR left on the merged stub (moved to development or still on it) goes to the accepting stub; a docs PR and a stacked one stay",
-                  done and sorted(edits) == ["10>stub/new", "7>stub/new", "9>stub/new"], str((done, edits, lines)))
+                  done and sorted(e for e in edits if ">" in e) == ["10>stub/new", "7>stub/new", "9>stub/new"], str((done, edits, lines)))
+            check("carry-over: a PR in a GitHub stack is unstacked, moved, and its chain linked again on the new stub",
+                  "unstack 5" in edits and edits.index("unstack 5") < edits.index("10>stub/new") and "link --base stub/new 10 12" in edits, str(edits))
             check("carry-over: the stale 'being integrated' record is cleared, any other failure kept",
                   not os.path.exists(os.path.join(rdir, f"{name}.W-1.merge.json")) and os.path.exists(os.path.join(rdir, f"{name}.W-4.merge.json")), str(lines))
             edits.clear()

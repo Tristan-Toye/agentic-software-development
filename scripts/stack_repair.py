@@ -2,6 +2,8 @@
 """Standing repair of the shared environment a dossier run depends on: the Lima VM and its docker compose stack.
 
 Opt-in: nothing here runs unless ASD_STACK_REPAIR=1, because a repair restarts resources that other runs share.
+A /stub run is the exception: it owns the shared stack for its full run, so repair is on for it unless
+ASD_STACK_REPAIR=0 (`enabled("stub")`).
 
 Detection is read-only and cheap:
   vm     `limactl list --json`                          the VM's status must be Running
@@ -39,8 +41,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_PS = ["limactl", "shell", "{vm}", "--", "bash", "-lc", "cd {root}/{compose_dir} && docker compose ps --format json"]
 
 
-def enabled() -> bool:
-    return os.environ.get("ASD_STACK_REPAIR", "").strip() == "1"
+def enabled(command: str = "") -> bool:
+    """On with ASD_STACK_REPAIR=1; for a /stub run also when it is unset (ASD_STACK_REPAIR=0 turns it off)."""
+    flag = os.environ.get("ASD_STACK_REPAIR", "").strip()
+    return flag == "1" or (command == "stub" and flag != "0")
 
 
 def state_dir() -> str:
@@ -209,12 +213,12 @@ def _record(resource: str, now: float) -> None:
     os.replace(tmp, path)
 
 
-def repair(cfg: dict, root: str, resources: dict[str, str], log, wait_s: float = 1800) -> dict[str, str]:
+def repair(cfg: dict, root: str, resources: dict[str, str], log, wait_s: float = 1800, command: str = "") -> dict[str, str]:
     """Try to repair each broken resource. Returns {resource: outcome} where outcome starts with
     'repaired', 'failed', 'bound' (attempts used up) or 'no-command'; the caller asks the owner for any but 'repaired'.
     Never called unless enabled(); `log(text)` records every action."""
     results: dict[str, str] = {}
-    if not enabled():
+    if not enabled(command):
         return {r: "off" for r in resources}
     with _Lock(wait_s) as got:
         if not got:
