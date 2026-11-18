@@ -520,10 +520,10 @@ def stub_dossiers(root: str, branch: str) -> list[str]:
     return [x.strip().upper() for x in (p.stdout or "").splitlines() if x.strip()] if p.returncode == 0 else []
 
 
-def enqueue_merge(root: str, dossier: str) -> tuple[bool, str]:
+def enqueue_merge(root: str, dossier: str, by: str = "button") -> tuple[bool, str]:
     """The Merge button's entry point: `merge_dossier.py ID --enqueue --root R` (stacks merge whole, conflicts go to /resolve-merge)."""
     script = os.environ.get("ASD_MERGE_BIN") or os.path.join(HERE, "merge_dossier.py")
-    return run_runner([sys.executable, script, dossier, "--enqueue", "--root", root])
+    return run_runner([sys.executable, script, dossier, "--enqueue", "--root", root, "--by", by])
 
 
 def eager_step(repo: str, root: str, facts: dict) -> list[str]:
@@ -539,7 +539,10 @@ def eager_step(repo: str, root: str, facts: dict) -> list[str]:
     out = []
     for r in sorted(todo, key=lambda r: r["id"]):
         if r["id"].upper() in on_stub:
-            ok, msg = enqueue_merge(root, r["id"])
+            ok, msg = enqueue_merge(root, r["id"], "eager")
+            if not ok:   # the eager step's own output reaches no log: the dossier's timeline says why it did not queue
+                merge_dossier.append_line(os.path.join(runs_dir(), f"{repo}.{r['id']}.jsonl"),
+                            {"ts": now(), "kind": "runner", "text": "eager merge: not queued: " + msg[:300]})
             print(f"auto_work: {repo}: eager merge of {r['id']}: " + (msg if ok else "not enqueued: " + msg))
             if ok:
                 out.append(r["id"])
@@ -991,7 +994,7 @@ def selftest() -> int:
         s_before = st(); n_before = len(log()); tk()
         enq = [l for l in log()[n_before:] if l.startswith("enqueue")]
         check("eager on, auto work off: the finished dossiers E1 and E2 are enqueued, through the merge entry point, and only those",
-              enq == [f"enqueue E1 --enqueue --root {root}", f"enqueue E2 --enqueue --root {root}"], log()[n_before:])
+              enq == [f"enqueue E1 --enqueue --root {root} --by eager", f"enqueue E2 --enqueue --root {root} --by eager"], log()[n_before:])
         check("eager asks the merge script which dossiers have an open PR into the stub", f"stubdossiers --stub-dossiers stub/2026-11-24 --root {root}" in log()[n_before:])
         check("the auto work state file is untouched by the eager step", st() == s_before)
         for k in ("E1", "E2"):   # the queue writes the record, as merge_dossier.enqueue does
@@ -1005,7 +1008,7 @@ def selftest() -> int:
         setrun("E3", deferred=[{"id": "D-1", "state": "fixed", "keptOpen": False}]); setrun("E4", runner=done_())
         n_before = len(log()); tk()
         check("a dossier whose item got fixed and whose fix-deferred run ended is enqueued next look",
-              [l for l in log()[n_before:] if l.startswith("enqueue")] == [f"enqueue E3 --enqueue --root {root}", f"enqueue E4 --enqueue --root {root}"], log()[n_before:])
+              [l for l in log()[n_before:] if l.startswith("enqueue")] == [f"enqueue E3 --enqueue --root {root} --by eager", f"enqueue E4 --enqueue --root {root} --by eager"], log()[n_before:])
         # No open stub: nothing.
         for k in ("E3", "E4"):
             json.dump({"state": "queued"}, open(P(f"{repo}.{k}.merge.json"), "w"))
@@ -1015,7 +1018,7 @@ def selftest() -> int:
         facts_stubs[:] = [{"branch": "stub/2026-11-24", "state": "accepting", "canIntegrate": True}]
         # With auto work on as well, the eager step still runs and the cycle is not disturbed.
         cmd_enable(root); n_before = len(log()); tk()
-        check("auto work on as well: the eager step enqueues the finished one (E7, its record gone)", [l for l in log()[n_before:] if l.startswith("enqueue")] == [f"enqueue E7 --enqueue --root {root}"], log()[n_before:])
+        check("auto work on as well: the eager step enqueues the finished one (E7, its record gone)", [l for l in log()[n_before:] if l.startswith("enqueue")] == [f"enqueue E7 --enqueue --root {root} --by eager"], log()[n_before:])
         cmd_eager(root, "off"); sw = land_stub.settings_of(repo)
         check("eager-merge off leaves auto work and the scripted stub merge as they were", sw.get("eager_merge") is False and sw.get("auto_work") is True and sw.get("enabled") is True, sw)
         n_before = len(log()); tk()   # E7 still has no record: only the switch keeps it out
