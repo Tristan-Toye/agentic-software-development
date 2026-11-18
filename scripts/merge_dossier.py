@@ -177,10 +177,35 @@ def is_stub(branch: str) -> bool:
     return bool(re.match(r"(stub|release)/", branch))
 
 
-def chain_of(prs: list[dict], dossier: str) -> tuple[list[dict], str]:
-    """The dossier's open PRs as one bottom-to-top chain, or ([], why not)."""
+def dossier_prs(root: str) -> dict[int, str]:
+    """{PR number: dossier id} from the `pr:` front matter of the dossiers in ROOT. A dossier with no Jira key builds on a
+    branch named after its title (feat/engine-stop-rules), which names no id: its recorded PR is the only link."""
+    out: dict[int, str] = {}
+    for f in sorted(glob.glob(os.path.join(root, ".discovery", "dossiers", "*.md"))):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                head = fh.read(4000)
+        except OSError:
+            continue
+        m = re.match(r"---\n(.*?)\n---", head, re.S)
+        if not m:
+            continue
+        fm = m.group(1)
+        i = re.search(r"^id:\s*([A-Za-z][A-Za-z0-9]*-\d+)\s*$", fm, re.M)
+        pr = re.search(r"^pr:\s*\[?([0-9][0-9,\s]*)\]?\s*$", fm, re.M)
+        if i and pr:
+            for n in re.findall(r"\d+", pr.group(1)):
+                out.setdefault(int(n), i.group(1).upper())
+    return out
+
+
+def chain_of(prs: list[dict], dossier: str, owned: dict | None = None) -> tuple[list[dict], str]:
+    """The dossier's open PRs as one bottom-to-top chain, or ([], why not). OWNED ({PR number: dossier id}, from
+    `dossier_prs`) adds the PRs a dossier records whose branch names no id."""
     pat = re.compile(r"(^|[^A-Za-z0-9])" + re.escape(dossier) + r"(?![0-9])", re.I)
-    mine = [p for p in prs if pat.search(p.get("headRefName", "")) and not p.get("headRefName", "").startswith("plan/")]
+    owned = owned or {}
+    mine = [p for p in prs if (pat.search(p.get("headRefName", "")) or owned.get(p.get("number")) == dossier.upper())
+            and not p.get("headRefName", "").startswith("plan/")]
     if not mine:
         return [], f"no open pull request of {dossier}"
     # A PR stacked on one of them is part of the same stack whatever its branch is called: a repo that names its
@@ -224,7 +249,7 @@ def plan(root: str, dossier: str) -> tuple[list[dict], str]:
         prs = json.loads(out or "[]")
     except ValueError:
         return [], "gh pr list gave no JSON"
-    chain, why = chain_of(prs, dossier)
+    chain, why = chain_of(prs, dossier, dossier_prs(root))
     if not chain:
         return [], why
     for k in chain_keys(repo_name(root), dossier, chain)[1:]:   # a dossier id another branch of the stack names
@@ -1385,16 +1410,17 @@ def integrate_held(key: str) -> int:
     return holder or -1
 
 
-def stub_stacks(everything: list[dict], branch: str) -> tuple[list[tuple[str, dict]], list[dict]]:
+def stub_stacks(everything: list[dict], branch: str, owned: dict | None = None) -> tuple[list[tuple[str, dict]], list[dict]]:
     """The open PRs straight into the stub, as ([(dossier id, its bottom PR)], [PRs no dossier owns]). Only PRs still open
-    count, so a dossier already merged into the stub is not in it."""
+    count, so a dossier already merged into the stub is not in it. A PR whose branch names no id belongs to the dossier
+    whose `pr:` records it (OWNED, from `dossier_prs`)."""
     prs = sorted([p for p in everything if p.get("baseRefName") == branch and p["headRefName"] != branch], key=lambda p: p["number"])
     ids: list[tuple[str, dict]] = []
     others: list[dict] = []
     for p in prs:
         m = re.search(r"([A-Za-z][A-Za-z0-9]*-\d+)", p["headRefName"])
-        if m and not p["headRefName"].startswith(("plan/", "docs/")):
-            i = m.group(1).upper()
+        if not p["headRefName"].startswith(("plan/", "docs/")) and (m or (owned or {}).get(p["number"])):
+            i = m.group(1).upper() if m else owned[p["number"]]
             if i not in [x[0] for x in ids]:
                 ids.append((i, p))
         else:
@@ -1405,7 +1431,7 @@ def stub_dossiers(root: str, branch: str) -> list[str]:
     rc, out = gh(root, "pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,baseRefName,isDraft")
     if rc != 0:
         return []
-    return [i for i, _ in stub_stacks(json.loads(out or "[]"), branch)[0]]
+    return [i for i, _ in stub_stacks(json.loads(out or "[]"), branch, dossier_prs(root))[0]]
 def integrate(root: str, branch: str) -> int:
     repo = repo_name(root); slug = branch.replace("/", "-"); key = f"{repo}.{slug}"
     log = os.path.join(runs_dir(), key + ".jsonl")
@@ -1451,10 +1477,11 @@ def integrate(root: str, branch: str) -> int:
     if rc != 0:
         state(state="failed", error="gh pr list failed: " + out[:200]); return 1
     everything = json.loads(out or "[]")
-    ids, others = stub_stacks(everything, branch)   # others: no dossier's stack, never merged from here, only named, so the owner can decide about it
+    owned = dossier_prs(root)
+    ids, others = stub_stacks(everything, branch, owned)   # others: no dossier's stack, never merged from here, only named, so the owner can decide about it
     def ready(i: str, p: dict) -> bool:
         """Every PR of the dossier's stack is out of draft (the queue refuses a stack with a draft in it), and no run is live."""
-        chain, _ = chain_of(everything, i)
+        chain, _ = chain_of(everything, i, owned)
         return not any(x.get("isDraft") for x in (chain or [p])) and not any(still_building(k) for k in chain_keys(repo, i, chain or [p]))
     finished = picked_stacks(ids, ready, (read_json(st_path, {}) or {}).get("finished") or [])
     inflight = [i for i, p in ids if i not in finished]
@@ -1592,6 +1619,18 @@ def selftest() -> int:
     ids_, others_ = stub_stacks([P(5, "feat/W-9-b", "stub/s"), P(3, "feat/W-8-a", "stub/s"), P(4, "fix/W-8-deferred", "feat/W-8-a"), P(6, "plan/x", "stub/s"), P(7, "feat/W-10-c", "development"), P(8, "feat/W-8-again", "stub/s")], "stub/s")
     check("stub members: the dossiers with an open PR straight into the stub, once each, in PR order; stacked, plan and other-base PRs are not extra members",
           [i for i, _ in ids_] == ["W-8", "W-9"] and [p["number"] for p in others_] == [6], f"{ids_} {others_}")
+    own_ = {79: "W-029"}
+    ids_, others_ = stub_stacks([P(79, "feat/engine-stop-rules", "stub/s"), P(80, "fix/W-029-deferred", "feat/engine-stop-rules"), P(81, "chore/x", "stub/s")], "stub/s", own_)
+    check("stub members: a branch with no id belongs to the dossier whose pr: records it", [i for i, _ in ids_] == ["W-029"] and [p["number"] for p in others_] == [81], f"{ids_} {others_}")
+    c, why = chain_of([P(79, "feat/engine-stop-rules", "stub/s"), P(80, "fix/W-029-deferred", "feat/engine-stop-rules")], "W-029", own_)
+    check("chain: the recorded PR is the bottom, the fix-deferred PR on top", [p["number"] for p in c] == [79, 80], why)
+    check("chain: without the record the id-less branch is not found", chain_of([P(79, "feat/engine-stop-rules", "stub/s")], "W-029")[0] == [])
+    with tempfile.TemporaryDirectory() as td_:
+        os.makedirs(os.path.join(td_, ".discovery", "dossiers"))
+        for name, body in (("W-029-a.md", "---\nid: W-029\npr: 79\n---\n"), ("W-030-b.md", "---\nid: W-030\npr: [90, 91]\n---\n"), ("W-031-c.md", "---\nid: W-031\npr: null\n---\n")):
+            with open(os.path.join(td_, ".discovery", "dossiers", name), "w") as fh_:
+                fh_.write(body)
+        check("dossier_prs: pr numbers from the front matter, a list too, null skipped", dossier_prs(td_) == {79: "W-029", 90: "W-030", 91: "W-030"}, str(dossier_prs(td_)))
     check("stub members: a dossier already merged into the stub has no open PR, so integrate never meets it", stub_stacks([P(6, "plan/x", "stub/s")], "stub/s")[0] == [])
     c, why = chain_of([P(427, "feat/W-128-x", "stub/2026-11-03"), P(429, "fix/W-128-deferred", "feat/W-128-x"), P(500, "feat/w-130-y", "stub/2026-11-03")], "W-128")
     check("chain: the build PR then the stacked one, bottom to top; another dossier's PR is not in it", [p["number"] for p in c] == [427, 429])
