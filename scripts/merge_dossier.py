@@ -384,7 +384,16 @@ def mark_detector(repo: str, chain: list[dict], dossier: str) -> None:
     write_json(path, seen)
 
 
-def merge(root: str, dossier: str, method: str, dry: bool, no_cleanup: bool = False) -> int:
+# Who started a merge, for the dossier's timeline: the owner's Merge button, auto work's eager merge, or /stub's
+# integration. Unknown sources read as the button (the CLI default).
+SOURCES = {"button": "your Merge button", "eager": "eager merge: finished and on an open stub", "integrate": "the stub's integration"}
+
+
+def source_text(by: str | None) -> str:
+    return SOURCES.get(by or "button", SOURCES["button"])
+
+
+def merge(root: str, dossier: str, method: str, dry: bool, no_cleanup: bool = False, by: str = "button") -> int:
     repo = repo_name(root)
     key = f"{repo}.{dossier}"
     d = runs_dir()
@@ -422,7 +431,7 @@ def merge(root: str, dossier: str, method: str, dry: bool, no_cleanup: bool = Fa
         return fail(state_path, nums, base, "not merged afterwards: " + ", ".join(open_left))
     write_json(state_path, {"state": "merged", "prs": nums, "base": base, "error": "", "ts": now()})
     close_failure_questions(key)
-    append_line(os.path.join(d, key + ".jsonl"), {"ts": now(), "kind": "runner", "text": f"merged {label} into {base}" + (" as one stack" if len(nums) > 1 else "") + " (your Merge button)"})
+    append_line(os.path.join(d, key + ".jsonl"), {"ts": now(), "kind": "runner", "text": f"merged {label} into {base}" + (" as one stack" if len(nums) > 1 else "") + f" ({source_text(by)})"})
     mark_detector(repo, chain, dossier)
     if no_cleanup:
         print(f"merge_dossier: merged {label} into {base}")
@@ -463,21 +472,24 @@ def set_state(key: str, **kw) -> None:
         close_failure_questions(key)
 
 
-def enqueue(root: str, dossier: str) -> int:
-    """Add the dossier to its repository's merge queue (once) and make sure a worker runs it."""
+def enqueue(root: str, dossier: str, by: str = "button") -> int:
+    """Add the dossier to its repository's merge queue (once) and make sure a worker runs it. `by` names who asked
+    (`SOURCES`); it is kept on the queue item and written to the dossier's timeline, and the merge line repeats it."""
     repo = repo_name(root)
     with locked(repo):
         q = read_json(queue_path(repo), {}) or {}
         items = q.get("items") or []
         waiting = any(i["id"] == dossier for i in items)
         if not waiting:
-            items.append({"id": dossier, "ts": now()})
+            items.append({"id": dossier, "ts": now(), "by": by})
         q["items"], q["root"] = items, root
         write_json(queue_path(repo), q)
         pos = [i["id"] for i in items].index(dossier) + 1
         if not waiting:   # one already in the queue keeps its state: the worker may be busy with it
             # a new press is the owner's retry: it starts with fresh resolve-merge attempts (a restart keeps them)
-            set_state(f"{repo}.{dossier}", state="queued", position=pos, error="", prs=[], pid=None, resolve_attempts=None)
+            set_state(f"{repo}.{dossier}", state="queued", position=pos, error="", prs=[], pid=None, resolve_attempts=None, by=by)
+            append_line(os.path.join(runs_dir(), f"{repo}.{dossier}.jsonl"),
+                        {"ts": now(), "kind": "runner", "text": f"merge queue: queued at position {pos} ({source_text(by)})"})
         worker = q.get("worker")
         if not (worker and alive(worker)):
             log = os.path.join(runs_dir(), f"{repo}.merge-queue.log")
@@ -1055,7 +1067,7 @@ def work_one(root: str, dossier: str) -> None:
     import io, contextlib
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        rc = merge(root, dossier, "merge", False, no_cleanup=True)
+        rc = merge(root, dossier, "merge", False, no_cleanup=True, by=(read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}).get("by") or "button")
     if rc != 0:
         return  # merge() recorded "failed" and why
     st = read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}
@@ -1457,7 +1469,7 @@ def integrate(root: str, branch: str) -> int:
           + (" Not part of this integration, because no dossier owns them: " + ", ".join(f"#{p['number']} {p['headRefName']}" for p in others) + ". A PR that changes only documents can go straight to development; any other goes to the next stub." if others else "")), "update")
     for i in finished:
         with contextlib.redirect_stdout(io.StringIO()):
-            enqueue(root, i)
+            enqueue(root, i, by="integrate")
     poll = float(os.environ.get("ASD_MERGE_POLL") or 15)
     sts: dict = {}
     while True:   # as long as it takes: each stack ends merged or failed, and the queue survives outages and restarts
@@ -1760,7 +1772,7 @@ print("started")
         try:
             import io, contextlib
             with contextlib.redirect_stdout(io.StringIO()):
-                enqueue(root, "W-128"); enqueue(root, "W-130")
+                enqueue(root, "W-128"); enqueue(root, "W-130", by="eager")
             qp = queue_path("repo")
             done = False
             for _ in range(300):
@@ -1777,6 +1789,14 @@ print("started")
         m128 = [i for i, c in enumerate(calls) if c.startswith("stack merge 429")]
         m130 = [i for i, c in enumerate(calls) if c.startswith("pr merge 500")]
         check("queue: the script merges each, W-128 before W-130", bool(m128) and bool(m130) and m128[0] < m130[0], str(calls))
+        def queue_timeline(d):
+            f = os.path.join(rdir, f"repo.{d}.jsonl")
+            return [json.loads(l).get("text", "") for l in open(f)] if os.path.exists(f) else []
+        check("queue: the timeline names who queued it (the button for W-128, eager merge for W-130)",
+              any(t.startswith("merge queue: queued") and "(your Merge button)" in t for t in queue_timeline("W-128"))
+              and any(t.startswith("merge queue: queued") and "(eager merge" in t for t in queue_timeline("W-130")), str(queue_timeline("W-130"))[:400])
+        check("queue: the merge line repeats the source", any(t.startswith("merged ") and "(eager merge" in t for t in queue_timeline("W-130"))
+              and any(t.startswith("merged ") and "(your Merge button)" in t for t in queue_timeline("W-128")), str(queue_timeline("W-130"))[:400])
         # ---- migration numbers: a clash goes to the agent before any check is waited for ----
         mo = os.path.join(tmp, "mig.git"); mw = os.path.join(tmp, "mig")
         mg = lambda *x, cwd=mw: subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *x], cwd=cwd, capture_output=True, text=True)
@@ -2253,6 +2273,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--method", choices=["merge", "squash", "rebase"], default="merge")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--enqueue", action="store_true", help="add to the repository's merge queue (FIFO) and start its worker")
+    ap.add_argument("--by", choices=sorted(SOURCES), default="button", help="with --enqueue: who asked for the merge, for the dossier's timeline")
     ap.add_argument("--unqueue", action="store_true", help="take out of the merge queue")
     ap.add_argument("--worker", action="store_true", help="work the repository's merge queue to the end")
     ap.add_argument("--revive", action="store_true", help="restart any merge queue with work whose worker is gone")
@@ -2291,7 +2312,7 @@ def main(argv: list[str] | None = None) -> int:
         ap.print_usage(sys.stderr)
         return 2
     if a.enqueue:
-        return enqueue(os.path.abspath(a.root), a.id)
+        return enqueue(os.path.abspath(a.root), a.id, a.by)
     if a.unqueue:
         return unqueue(os.path.abspath(a.root), a.id)
     return merge(os.path.abspath(a.root), a.id, a.method, a.dry_run)
