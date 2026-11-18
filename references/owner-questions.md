@@ -362,8 +362,12 @@ restarted server answers at once from them while its first scan runs.
     development). A dossier still in flight (a draft PR or a live run) is left
     out; once the stub is in development, the merge queue moves its PR to the
     accepting stub (one that already holds the integrated batch; it cuts
-    `stub/<today>` from development when none exists) and merges it there.
-    Before that it waits, so its PR never carries the old batch. The stub page
+    `stub/<today>` from development when none exists, `stub/<today>-2` when a
+    stub of that name already merged) and merges it there. That includes a PR
+    GitHub moved to development when the merged stub's branch was deleted on
+    merge (its timeline names the old stub); with automatic work on, every such
+    leftover is moved once right after the stub merges (`merge_dossier.py
+    --carry-over`). Before that it waits, so its PR never carries the old batch. The stub page
     shows the run like a dossier's: state, Stop, Resume /stub, the Now panel,
     and its timeline with a "Merge the finished dossiers" section, then the
     /stub steps. The whole stub card opens that page. An integration that
@@ -390,7 +394,8 @@ restarted server answers at once from them while its first scan runs.
     for a late status write, as "plan round n", until it reads `ready`), plus
     every dossier already in flight (`building` or `review`, a live run, or `pr`
     or `done` with deferred items still open: its run is waited for, then it gets Fix all
-    deferred, so integrate never runs past it); only that snapshot is worked, what becomes eligible later waits for the next
+    deferred, so integrate never runs past it; such a blocker is not `done` for its
+    dependents, which start the cycle after); only that snapshot is worked, what becomes eligible later waits for the next
     start. Every member starts through `run_dossier.py`, so the slot cap, the
     `queued` state, the account routing and the owner questions apply unchanged.
     A member whose build finished (status `pr` or `done`) gets "Fix all

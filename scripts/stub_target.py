@@ -78,7 +78,11 @@ def target(root: str, dry: bool) -> tuple[int, str]:
             integrating = b
     if integrating:
         return 3, f"wait {integrating}"
-    new = "stub/" + datetime.date.today().isoformat()
+    new = day = "stub/" + datetime.date.today().isoformat()
+    n = 1
+    while into_dev(root, new) and n < 50:   # a stub cut and merged the same day: its name is taken (its PR stays), so the next build would land on a merged stub
+        n += 1
+        new = f"{day}-{n}"
     if dry:
         return 0, f"cut {new}"
     sh(["git", "-C", root, "fetch", "-q", "origin", "development"])
@@ -159,6 +163,14 @@ def selftest() -> int:
         heads = subprocess.run(["git", "-C", w, "ls-remote", "--heads", "origin", "stub/*"], capture_output=True, text=True).stdout
         check("once merged, a new stub is cut from development", rc == 0 and b == "stub/" + datetime.date.today().isoformat() and b in heads, b + heads)
         check("the new stub is then the accepting one", target(w, False) == (0, b))
+        # cut and merged the same day, its branch deleted on merge: the next cut takes a new name, never the merged one's
+        g("push", "-q", "origin", "--delete", b, cwd=w)
+        put({"stub/2026-11-03": "MERGED", b: "MERGED"})
+        rc2, b2 = target(w, False)
+        check("a name a merged stub used is not reused", rc2 == 0 and b2 == b + "-2", b2)
+        put({"stub/2026-11-03": "MERGED", b: "MERGED", b2: "MERGED"})
+        check("... nor the second one", target(w, True) == (0, f"cut {b}-3"), str(target(w, True)))
+        g("push", "-q", "origin", "--delete", b2, cwd=w); g("push", "-q", "origin", f"origin/development:refs/heads/{b}", cwd=w)
         # ls-remote fails (a lost user lookup): retried, then read through gh's HTTPS API; both failing is an error
         os.environ.update(ASD_STUB_RETRY_WAIT="0")
         put({})
