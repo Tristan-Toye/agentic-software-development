@@ -20,7 +20,7 @@ instead of a transcript.
                    [--forbid-id DOSSIER_ID]
     gate_commit.py --selftest
 
-`--paths` is a comma list of files or directories, relative to `--root` (or
+`--paths` is a comma list (a repeated flag adds to it) of files or directories, relative to `--root` (or
 absolute inside it). `.`, the root itself and a path outside the root are
 refused: there is no way to say "everything". Every named path must have a
 change (modified, deleted, or untracked) or the call is refused before any
@@ -198,7 +198,8 @@ def refuse(lines: list[str], reason: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--root", help="the worktree to commit in")
-    ap.add_argument("--paths", help="comma list of the files or directories to stage and commit")
+    ap.add_argument("--paths", action="append",
+                    help="comma list of the files or directories to stage and commit; a repeated flag adds to the list")
     ap.add_argument("-m", "--message", help="the commit message")
     ap.add_argument("--gates", help="a run_gates.py gates file; its gates run before anything is staged")
     ap.add_argument("--sign", action="store_true", help="commit with -S")
@@ -218,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"gate_commit: {root} is not a git work tree", file=sys.stderr)
         return 2
     try:
-        paths = normalise_paths(root, args.paths)
+        paths = normalise_paths(root, ",".join(args.paths))
     except ValueError as err:
         print(f"gate_commit: {err}", file=sys.stderr)
         return 2
@@ -361,6 +362,13 @@ def selftest() -> int:
         _, head = git(root, "rev-parse", "HEAD")
         rc, out = call(["--root", root, "--paths", "a.txt", "-m", "again"])
         check("an unchanged path is refused", rc == 1 and "a.txt is unchanged" in out and git(root, "rev-parse", "HEAD")[1] == head)
+        write(root, "a.txt", "a2b\n")
+        write(root, "b.txt", "b2b\n")
+        rc, out = call(["--root", root, "--paths", "a.txt", "--paths", "b.txt", "-m", "repeated paths"])
+        _, names = git(root, "show", "--name-only", "--format=", "HEAD")
+        check("a repeated --paths commits both paths, never only the last",
+              rc == 0 and sorted(names.splitlines()) == ["a.txt", "b.txt"])
+        _, head = git(root, "rev-parse", "HEAD")
 
         # A failing gate refuses; nothing is staged.
         write(root, "a.txt", "a3\n")

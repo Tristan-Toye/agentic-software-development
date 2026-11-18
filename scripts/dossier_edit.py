@@ -18,6 +18,7 @@ fixed order").
     dossier_edit.py log DOSSIER -  < lines.txt          append stdin's lines
     dossier_edit.py set DOSSIER KEY=VALUE [...] [--reason TEXT]   set front matter scalars
     dossier_edit.py set DOSSIER 'KEY=[a, b]' [...]       set a whole list field
+    dossier_edit.py unset DOSSIER KEY [...]              remove a scalar front matter key
     dossier_edit.py add DOSSIER KEY=ITEM [...]           append to a list field
     dossier_edit.py remove DOSSIER KEY=ITEM [...]        remove an item from a list field
     dossier_edit.py section DOSSIER 'HEADING'            print one section
@@ -412,6 +413,30 @@ def set_fields(text: str, pairs: list[tuple[str, str]], ctx: dict | None = None)
             raise Refused(f"`{key}` is a list; use add, remove, or set {key}=[a, b]")
         fm[index] = f"{key}: {value}" + (f"  #{comment}" if comment else "")
         changes.append(f"{key}: {old or '(empty)'} -> {value}")
+    return join_front_matter(fm, body), changes
+
+
+PROTECTED_KEYS = {"id", "status"}
+
+
+def unset_fields(text: str, keys: list[str]) -> tuple[str, list[str]]:
+    """Remove top-level scalar front matter keys. A list field, `id` and `status` are refused."""
+    fm, body = split_front_matter(text)
+    changes: list[str] = []
+    for key in keys:
+        key = key.split("=", 1)[0].strip()
+        if key in PROTECTED_KEYS:
+            raise Refused(f"`{key}` cannot be removed")
+        index = key_index(fm, key)
+        if index is None:
+            changes.append(f"{key}: not present")
+            continue
+        kind, _, _, _ = read_list(fm, index)
+        if kind != "scalar":
+            raise Refused(f"`{key}` is a list; use remove to take items out of it")
+        old = (KEY_RE.match(fm[index]).group("rest").partition(" #")[0]).strip()  # type: ignore[union-attr]
+        del fm[index]
+        changes.append(f"{key}: {old or '(empty)'} -> (removed)")
     return join_front_matter(fm, body), changes
 
 
@@ -900,6 +925,9 @@ def run(argv: list[str]) -> int:
         p.add_argument("pairs", nargs="+", help="KEY=VALUE")
         if name != "add":
             p.add_argument("--reason", metavar="TEXT", help="why a blocker that is not done leaves `blocked_by`; recorded, and enough on its own")
+    p_unset = sub.add_parser("unset", help="remove scalar front matter keys")
+    p_unset.add_argument("dossier")
+    p_unset.add_argument("keys", nargs="+", help="KEY")
     p_sec = sub.add_parser("section", help="print one section with line numbers")
     p_sec.add_argument("dossier")
     p_sec.add_argument("heading")
@@ -940,7 +968,12 @@ def run(argv: list[str]) -> int:
         print(f"dossier_edit: REFUSED — {err}", file=sys.stderr)
         return 1
     try:
-        if args.cmd in ("set", "add", "remove"):
+        if args.cmd == "unset":
+            new, changes = unset_fields(text, args.keys)
+            write_verified(args.dossier, new, f"unset {args.keys}")
+            for change in changes:
+                print(f"dossier_edit: {change}")
+        elif args.cmd in ("set", "add", "remove"):
             fn = {"set": set_fields, "add": add_items, "remove": remove_items}[args.cmd]
             ctx = {"dir": os.path.dirname(os.path.abspath(args.dossier)), "reason": getattr(args, "reason", None)}
             new, changes = (fn(text, pairs_of(args.pairs), ctx) if args.cmd != "add" else fn(text, pairs_of(args.pairs)))
@@ -1051,6 +1084,18 @@ def selftest() -> int:
         try:
             set_fields(SAMPLE, [bad])
             check(f"set refuses {bad[0]}", False)
+        except Refused:
+            pass
+
+    vsample = SAMPLE.replace("pr: null\n---", "pr: null\nvisual_review: required  # c\n---")
+    new, changes = unset_fields(vsample, ["visual_review"])
+    check("unset removes a scalar key and its comment", "visual_review" not in new and new.split("\n---\n", 1)[1] == vsample.split("\n---\n", 1)[1]
+          and "pr: null\n---" in new and changes == ["visual_review: required -> (removed)"])
+    check("unset of an absent key is a no-op", unset_fields(SAMPLE, ["visual_review"])[0] == SAMPLE)
+    for bad in ("adrs", "anchors", "id", "status"):
+        try:
+            unset_fields(vsample, [bad])
+            check(f"unset refuses {bad}", False)
         except Refused:
             pass
 

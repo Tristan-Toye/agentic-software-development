@@ -861,7 +861,8 @@ VISUAL_REVIEW_ARCH_RE = re.compile(r"\barch\s+([A-Za-z0-9][A-Za-z0-9_-]*)\s+(\d+
 VISUAL_REVIEW_CHANGES_RE = re.compile(r"^changes requested\b.*\S", re.I)
 # `skipped — <reason>`: the step does not apply (an unsupported repository) or the owner said go on without
 # diagrams. `skipped-error` has no whitespace after `skipped`, so it never matches.
-VISUAL_REVIEW_SKIPPED_RE = re.compile(r"^skipped\s+[—–-]+\s*\S", re.I)
+# `skipped-<kind> — <reason>` (e.g. `skipped-unsupported`, `skipped-language`) is the same record with a kind.
+VISUAL_REVIEW_SKIPPED_RE = re.compile(r"^skipped(?:-(?!error\b)[a-z]\w*\s*|\s+)[—–-]+\s*\S", re.I)
 VISUAL_REVIEW_SKIPPED_ERROR_RE = re.compile(r"^skipped-error\b", re.I)
 VISUAL_REVIEW_VIEWS = (("l0.json", "L0"), ("l1.json", "L1"), ("l2.json", "L2"))
 
@@ -3218,6 +3219,12 @@ def selftest_visual_review() -> bool:
         ("file with the wrong view: flagged", run(new_fm, approved, good, wrong_view), True),
         ("skipped last, no view files: clean",
          run(new_fm, "- VISUAL-REVIEW: skipped \u2014 unsupported repository (no Cargo.toml)\n", None), False),
+        ("skipped-<kind> last (language the extractor cannot read), visual_review set: clean",
+         run(new_fm, "- VISUAL-REVIEW: skipped-unsupported \u2014 python target, vr_extract reads Rust only\n", None), False),
+        ("skipped-language last, visual_review set: clean",
+         run(new_fm, "- VISUAL-REVIEW: skipped-language \u2014 C# target\n", None), False),
+        ("skipped-<kind> with no reason: flagged",
+         run(new_fm, "- VISUAL-REVIEW: skipped-unsupported\n", None), True),
         ("skipped-error last: flagged",
          run(new_fm, "- VISUAL-REVIEW: skipped-error \u2014 extract-before\n", None), True),
         ("front matter skipped, no line, no files: clean",
