@@ -313,6 +313,17 @@ service, the largest recorded deployment, chooses what to mutate by changed
 and covered lines, not by usage. So it widens the check, and never narrows
 it.
 
+**Every other surface gets a floor of one mutant.** A surface with checklist
+lines that is neither the primary nor the usage surface would otherwise get
+no mutant at all, and nothing would show whether its tests can fail on a
+fault. Give it one, on its riskiest line: a named-guard line (dropped guard)
+first, else a return-meaning line (wrong constant). One mutant cannot prove
+a test file strong; it catches the file that asserts nothing that matters,
+and tests that kill simple mutants kill almost all compound ones (Gopinath
+et al.). At most **4** floor surfaces per build, the ones with the most
+checklist lines; log the rest as `MUTATION: floor skipped <surfaces> — cap`,
+never silently. A floor mutant is routed like any other below.
+
 **Run it yourself, the moment the suite first goes green.** On a throwaway
 branch off `X` (`<branch>-MUT`, never merged, never pushed, removed when the
 table is in — mutants run locally under either suite runner, because a
@@ -361,5 +372,5 @@ the branch.** Nothing ever commits there, so a clean status is the whole
 check. A mutant left behind by an interrupted run silently corrupts whatever
 runs next — a red baseline read as a broken harness, or a kill table computed
 against an already-mutated body, with no mechanical trace. One `## Build log`
-line either way: mutants killed and survived (per surface, primary and
-usage), or skipped and the reason.
+line either way: mutants killed and survived (per surface: primary,
+usage and floor), or skipped and the reason.
