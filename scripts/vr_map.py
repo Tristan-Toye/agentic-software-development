@@ -142,6 +142,20 @@ def find_feature_book(repo: str) -> str:
 _DEF = re.compile(r"^[-*]\s+\**([A-Z]{1,3}-\d{2,3})\**\s*[:—-]\s*(.+)$")
 
 
+LABEL_MAX = 70
+
+
+def short_label(label: str, limit: int = LABEL_MAX) -> str:
+    """`label` cut to at most `limit` characters at a word boundary, with an ellipsis when cut: a hard cut leaves a
+    half word, which a spelling check in the target repository reads as a typo ("candidat")."""
+    if len(label) <= limit:
+        return label
+    head = label[:limit - 1]
+    if label[limit - 1] != " " and " " in head:
+        head = head.rsplit(" ", 1)[0]
+    return head.rstrip(" ,:;-") + "\u2026"
+
+
 def parse_feature_book(text: str) -> dict:
     """{ID: {"label", "line"}}: the first `- ID: text` list line of each ID is its definition."""
     out = {}
@@ -149,7 +163,7 @@ def parse_feature_book(text: str) -> dict:
         m = _DEF.match(raw.strip())
         if m and m.group(1) not in out:
             t = re.split(r"[;(.]", m.group(2), maxsplit=1)[0].strip().rstrip(",:")
-            out[m.group(1)] = {"label": ("%s %s" % (m.group(1), t))[:70], "line": i}
+            out[m.group(1)] = {"label": short_label("%s %s" % (m.group(1), t)), "line": i}
     return out
 
 
@@ -855,6 +869,11 @@ def _selftest() -> int:
         defs = parse_feature_book(book)
         ok("book ids", sorted(defs) == ["H-01", "H-02", "PF-01"], sorted(defs))
         ok("book label", defs["H-01"]["label"] == "H-01 tool layer core" and defs["H-01"]["line"] == 7, defs["H-01"])
+        long = "H-11 the skill and prompt optimisation loop that produces the candidate prompts"
+        ok("label cut at a word", short_label(long) == "H-11 the skill and prompt optimisation loop that produces the\u2026"
+           and len(short_label(long)) <= LABEL_MAX, short_label(long))
+        ok("label short kept", short_label("H-01 tool layer core") == "H-01 tool layer core")
+        ok("label one long word", len(short_label("x" * 100)) == LABEL_MAX and short_label("x" * 100).endswith("\u2026"))
 
         # OQ-09: a scope is required; --features builds only those
         mp = os.path.join(d, "map.json")
