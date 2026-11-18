@@ -543,13 +543,18 @@ export function listTranscripts(projects?: string): TInfo[] {
 
 // ---- roots ----
 export async function sh(cmd: string[], cwd: string | undefined, timeoutMs: number): Promise<string> {
+  return (await shOrNull(cmd, cwd, timeoutMs)) ?? ""
+}
+/** `sh`, but a failure (non-zero exit, timeout, spawn error) is null instead of "", for a caller that must not read
+ * a failed command as an empty answer. */
+export async function shOrNull(cmd: string[], cwd: string | undefined, timeoutMs: number): Promise<string | null> {
   try {
     const p = Bun.spawn(cmd, { cwd, stdout: "pipe", stderr: "ignore", stdin: "ignore" })
     const t = setTimeout(() => p.kill(), timeoutMs)
     const out = await new Response(p.stdout).text()
     clearTimeout(t)
-    return (await p.exited) === 0 ? out : ""
-  } catch { return "" }
+    return (await p.exited) === 0 ? out : null
+  } catch { return null }
 }
 
 export async function worktreesOf(root: string): Promise<string[]> {
