@@ -3897,8 +3897,81 @@ def dossier_diagrams(root: Path, dossier_id: str | None) -> tuple[list[str] | No
     return stems, ""
 
 
+def flow_coverage_gate(root: Path, base: str, dossier_id: str | None, mode: str | None = None,
+                       run=None) -> tuple[list[str], list[str]]:
+    """(problems, notes) of the flow-coverage part of the diagram gate (driver `flow_coverage_gate`, Phase 9).
+
+    `mode` is off | shadow | on (default: the ASD_DRIVER_FLOW_COVERAGE_GATE variable). off: nothing. A repository with
+    no docs/architecture/seq-*.json: one SKIP note in shadow and on. Otherwise ``flow_coverage.py --repo ROOT
+    --changed BASE --json`` runs; each new uncovered, non-exempt entry point in a changed file is, in shadow, a note
+    ``SHADOW flow-coverage: would fail: <entry> (<path>:<line>)`` (or one ``would pass`` note) and a shadow evidence
+    file for the dossier, never a problem; in on, a problem that says to anchor it in a seq diagram or exempt it
+    with a `why`. A run that fails (exit 2, a crash, unreadable JSON) is an ``error`` note in shadow and a problem in on.
+    ``run(root, base) -> (exit code, stdout)`` is the test seam."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import driver_common
+    mode = driver_common.read_mode("flow_coverage_gate", mode)
+    if mode == "off":
+        return [], []
+    tag = "SHADOW flow-coverage" if mode == "shadow" else "flow-coverage"
+    if not list((root / "docs" / "architecture").glob("seq-*.json")):
+        return [], ["SKIP flow-coverage: no docs/architecture/seq-*.json in this repository"]
+    if run is None:
+        def run(repo: Path, ref: str) -> tuple[int, str]:
+            script = Path(__file__).resolve().parent / "flow_coverage.py"
+            q = subprocess.run([sys.executable, str(script), "--repo", str(repo), "--changed", ref, "--json"],
+                               capture_output=True, text=True)
+            return q.returncode, q.stdout if q.returncode in (0, 1) else (q.stderr + q.stdout).strip()
+    problems: list[str] = []
+    notes: list[str] = []
+    verdict, exit_code, findings, facts = "clean", 0, [], {}
+    try:
+        rc, out = run(root, base)
+        if rc not in (0, 1):
+            raise RuntimeError(f"flow_coverage.py exit {rc}: {' '.join(out.split())[:200]}")
+        rep = json.loads(out)
+        entries = {e["entry"]: e for e in rep.get("entries", [])}
+        failing = [entries.get(k) or {"entry": k, "path": k.split("::")[0], "line": 0} for k in rep.get("failing", [])]
+        covered = sum(1 for k, e in entries.items() if k not in rep.get("failing", []) and (e.get("status") == "covered" or e.get("exempt")))
+        facts = {"entries_in_changed_files": len(entries), "covered_or_exempt": covered,
+                 "existing_uncovered_review": len(rep.get("review", []))}
+        for e in failing:
+            findings.append(f"{e['entry']} ({e['path']}:{e['line']})")
+        if failing:
+            verdict, exit_code = "findings", 1
+        if mode == "shadow":
+            notes += [f"{tag}: would fail: {f}" for f in findings]
+            if not findings:
+                notes.append(f"{tag}: would pass ({covered} entries in changed files covered or exempt)")
+        else:
+            problems += [f"diagram gate: new entry point {f} has no sequence diagram; add a docs/architecture/seq-*.json "
+                         "that anchors it (`path:line`), or exempt it with a `why` in docs/architecture/flow-coverage.json"
+                         for f in findings]
+    except (RuntimeError, ValueError, OSError, KeyError, TypeError) as exc:
+        verdict, exit_code = "needs-opus", 2
+        findings, facts = [], {"error": str(exc)[:300]}
+        if mode == "shadow":
+            notes.append(f"{tag}: error {str(exc)[:200]}")
+        else:
+            problems.append(f"diagram gate: flow-coverage could not run: {str(exc)[:200]}")
+    if mode == "shadow" and dossier_id:
+        try:
+            import datetime
+            stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            path = Path(driver_common.evidence_root(str(root))) / "driver-shadow" / dossier_id / f"flow_coverage_gate-{stamp}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({
+                "driver": "flow_coverage_gate", "mode": "shadow", "dossier": dossier_id, "verdict": verdict, "exit": exit_code,
+                "summary": f"{len(findings)} would-fail entries", "stopped_at": facts.get("error"), "steps": [],
+                "findings": findings, "facts": facts,
+                "time": datetime.datetime.now(datetime.timezone.utc).isoformat()}, indent=1, sort_keys=True))
+        except OSError as exc:
+            notes.append(f"{tag}: evidence file not written: {exc}")
+    return problems, notes
+
+
 def diagram_gate_run(root: Path, base: str, dossier_id: str | None = None, pr_text: str | None = None,
-                     check=None) -> tuple[list[str], list[str]]:
+                     check=None, fc_mode: str | None = None, fc_run=None) -> tuple[list[str], list[str]]:
     """(problems, notes) for the diagram gate. A problem (DEFECT) fails Phase 9; a note is printed as is
     (``REVIEW:`` lines are notes that ask for an action).
 
@@ -3911,7 +3984,9 @@ def diagram_gate_run(root: Path, base: str, dossier_id: str | None = None, pr_te
     when ``pr_text`` is given and does not mention it, else a REVIEW line.
     (d) A stem the dossier's ``Diagrams new:`` line lists with no ``docs/architecture/<stem>.json`` (or
     ``<stem>.N.json`` block) on the branch is a DEFECT once ``pr_text`` is given, unless it says
-    ``Diagram <stem> not added: <why>``; without ``pr_text`` it is a REVIEW line. ``check`` is the test seam."""
+    ``Diagram <stem> not added: <why>``; without ``pr_text`` it is a REVIEW line. ``check`` is the test seam.
+    (e) Driver ``flow_coverage_gate`` (``fc_mode`` / ASD_DRIVER_FLOW_COVERAGE_GATE, off by default): a new uncovered
+    entry point in a changed file is a SHADOW note (shadow) or a DEFECT (on); see ``flow_coverage_gate``."""
     problems: list[str] = []
     notes: list[str] = []
     arch = root / "docs" / "architecture"
@@ -3932,7 +4007,8 @@ def diagram_gate_run(root: Path, base: str, dossier_id: str | None = None, pr_te
 
     if not index:
         settle_new()
-        return problems, ["SKIP diagram gate: no docs/architecture/*.json in this repository"] + notes
+        fp, fn = flow_coverage_gate(root, base, dossier_id, fc_mode, fc_run)
+        return problems + fp, ["SKIP diagram gate: no docs/architecture/*.json in this repository"] + notes + fn
     if check is None:
         def check(repo: Path) -> tuple[int, str]:
             script = Path(__file__).resolve().parent / "vr_mermaid.py"
@@ -3973,6 +4049,9 @@ def diagram_gate_run(root: Path, base: str, dossier_id: str | None = None, pr_te
         else:
             notes.append(f"REVIEW: dossier lists diagram {stem} as affected and the branch did not modify it")
     settle_new()
+    fp, fn = flow_coverage_gate(root, base, dossier_id, fc_mode, fc_run)
+    problems += fp
+    notes += fn
     if not any(n.startswith("REVIEW") for n in notes) and not problems:
         notes.append("diagram gate: vr_mermaid.py check passes; no diagram anchors a changed file without being updated")
     return problems, notes
@@ -4011,6 +4090,7 @@ def selftest_diagram_gate() -> bool:
                                       "evidence": [{"tier": "source", "path": path, "line": 1}, {"tier": "inferred", "note": "x"}]}],
                            "edges": []})
 
+    os.environ.pop("ASD_DRIVER_FLOW_COVERAGE_GATE", None)   # the gate's own cases run with the driver off
     passes = lambda repo: (0, "")  # noqa: E731
     fails_check = lambda repo: (1, "c4-a.md: block differs from c4-a.json")  # noqa: E731
 
@@ -4094,6 +4174,57 @@ def selftest_diagram_gate() -> bool:
         with contextlib.redirect_stdout(buf):
             rc = run_diagram_gate(d, "no-such-ref")
         ok("run_diagram_gate exits 1 on a defect", rc == 1 and "DEFECT" in buf.getvalue(), buf.getvalue())
+
+        # the flow_coverage_gate driver (a fake flow_coverage run: the real one has its own selftest)
+        def fake(failing, rc=1, entries=None):
+            ents = entries if entries is not None else [
+                {"entry": "src/a.rs::main", "path": "src/a.rs", "line": 3, "status": "covered", "exempt": False},
+                {"entry": "src/b.rs::serve_x_requests", "path": "src/b.rs", "line": 9, "status": "uncovered", "exempt": False}]
+            return lambda repo, ref: (rc, json.dumps({"entries": ents, "failing": failing, "review": []}))
+        bad = fake(["src/b.rs::serve_x_requests"])
+        good = fake([], rc=0, entries=[{"entry": "src/a.rs::main", "path": "src/a.rs", "line": 3, "status": "covered", "exempt": False}])
+        crash = lambda repo, ref: (2, "flow-coverage: config error: exemption has no `why`")  # noqa: E731
+        (d / ".discovery" / "dossiers" / "W-003-f.md").write_text("Diagrams affected: none\n")
+        p, n = diagram_gate_run(d, "base", "W-003", "x", passes, "off", bad)
+        ok("flow gate off: nothing changes", not p and not any("flow-coverage" in x for x in n), (p, n))
+        p, n = diagram_gate_run(d, "base", "W-003", "x", passes, None, bad)
+        ok("flow gate unset in the environment is off", not p and not any("flow-coverage" in x for x in n), (p, n))
+        os.environ["ASD_DRIVER_FLOW_COVERAGE_GATE"] = "shadow"
+        try:
+            p, n = diagram_gate_run(d, "base", "W-003", "x", passes, None, bad)
+            ok("flow gate: the environment variable selects the mode", not p and any(x.startswith("SHADOW flow-coverage: would fail") for x in n), (p, n))
+        finally:
+            del os.environ["ASD_DRIVER_FLOW_COVERAGE_GATE"]
+        p, n = diagram_gate_run(d, "base", "W-003", "x", passes, "shadow", bad)
+        ok("flow gate shadow: a would-fail note, never a problem",
+           not p and "SHADOW flow-coverage: would fail: src/b.rs::serve_x_requests (src/b.rs:9)" in n, (p, n))
+        ev_dir = d / ".git" / "asd-drivers" / "driver-shadow" / "W-003"
+        evs = sorted(ev_dir.glob("flow_coverage_gate-*.json")) if ev_dir.is_dir() else []
+        evj = json.loads(evs[-1].read_text()) if evs else {}
+        ok("flow gate shadow: evidence file in the git common dir", evj.get("driver") == "flow_coverage_gate" and evj.get("mode") == "shadow"
+           and evj.get("exit") == 1 and evj.get("findings") == ["src/b.rs::serve_x_requests (src/b.rs:9)"], evj)
+        p, n = diagram_gate_run(d, "base", "W-003", "x", passes, "shadow", good)
+        ok("flow gate shadow: would pass with the covered count",
+           not p and "SHADOW flow-coverage: would pass (1 entries in changed files covered or exempt)" in n, (p, n))
+        before = len(list(ev_dir.glob("*.json")))
+        p, n = diagram_gate_run(d, "base", None, "x", passes, "shadow", bad)
+        ok("flow gate shadow without a dossier id writes no evidence", len(list(ev_dir.glob("*.json"))) == before and any("would fail" in x for x in n), (p, n))
+        p, n = diagram_gate_run(d, "base", "W-003", "x", passes, "shadow", crash)
+        ok("flow gate shadow: a crash is an error note", not p and any(x.startswith("SHADOW flow-coverage: error") for x in n), (p, n))
+        p, n = diagram_gate_run(d, "base", "W-003", "x", passes, "on", bad)
+        ok("flow gate on: an uncovered entry is a DEFECT that says what to do",
+           len(p) == 1 and "src/b.rs:9" in p[0] and "seq" in p[0] and "`why`" in p[0] and not any("SHADOW" in x for x in n), (p, n))
+        p, n = diagram_gate_run(d, "base", "W-003", "x", passes, "on", good)
+        ok("flow gate on: all covered is clean", not p, (p, n))
+        p, n = diagram_gate_run(d, "base", "W-003", "x", passes, "on", crash)
+        ok("flow gate on: a crash is a problem", len(p) == 1 and "could not run" in p[0], (p, n))
+        (d / "docs" / "architecture" / "seq-b.1.json").rename(d / "docs" / "architecture" / "b-1.json")
+        for nm in ("seq-b.2.json", "seq-c.json", "seq-new.json"):
+            (d / "docs" / "architecture" / nm).rename(d / "docs" / "architecture" / ("x-" + nm))
+        for m in ("shadow", "on"):
+            p, n = diagram_gate_run(d, "base", "W-003", "x", passes, m, bad)
+            ok(f"flow gate {m}: no seq diagram is a SKIP note", not [x for x in p if "flow-coverage" in x] and "SKIP flow-coverage: no docs/architecture/seq-*.json in this repository" in n
+               and not any("would fail" in x for x in n), (p, n))
 
     for f in fails:
         print("FAIL  " + f)

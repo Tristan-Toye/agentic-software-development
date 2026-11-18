@@ -363,6 +363,9 @@ payload holds no diagram file and no dossier text from this step.
    a tab of the fourth part, "Architecture impact", with the same verdicts as
    L0, L1 and L2. A non-zero exit is a defect in the draft or in `l1.json`:
    re-spawn the author with the output in `ERRORS`, same two-attempt limit.
+   When `ASD_DRIVER_VR_PROMOTE_PREVIEW` is `shadow`: run
+   `python3 "${PLUGIN_ROOT}/scripts/vr_promote.py" --shadow-all --dossier-id <ID> --repo <repo>`
+   once; read nothing from its output, it only records evidence.
    The owner's verdicts are recorded in `review.json` against the hash of the
    file they saw; any later edit of `l1.json` or of a draft (a contract
    revision that re-runs the author) changes that hash, and Phase 9's
