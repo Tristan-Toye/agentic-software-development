@@ -2063,13 +2063,15 @@ class Runner:
         """True when the session is wedged: mid-turn, running, and no stream-json output for ASD_STALL_MIN minutes
         (45; 0 disables). Not mid-turn (the runner's own waits on an owner's answer or a slot, a turn ended while
         background work runs) is never a stall, nor is a transcript that still shows background work in flight.
-        A Bash call has its own timeout (10 min at most) and a sub-agent's events are output, so neither is quiet this long."""
+        A Bash call has its own timeout (10 min at most) and a sub-agent's events are output, so neither is quiet this long.
+        The CLI's progress lines for a foreground Bash call are output too, so a call hung for good is caught by
+        `hung_bash` instead: older than the limit while the session did no work for as long."""
         lim = env_num("ASD_STALL_MIN", 45) * 60
         if lim <= 0 or not self.turn_open or self.stopping or self.state.get("state") not in ("running", "testing"):
             return False
         if self.proc is None or self.proc.poll() is not None:
             return False
-        if time.monotonic() - self.last_out < lim:
+        if time.monotonic() - self.last_out < lim and not self.hung_bash(lim):
             return False
         if time.monotonic() - self.stall_bg_at >= 60:
             self.stall_bg_at = time.monotonic()
@@ -2078,6 +2080,19 @@ class Runner:
             self.stall_bg_at = 0.0
             return True
         return False
+
+    def hung_bash(self, lim: float) -> str:
+        """The first line of a foreground Bash call running for `lim` seconds or more while the session did no work
+        (only the CLI's progress lines) for as long, else "". A Bash call cannot outlive its own 10 minute timeout, so
+        one far past it is hung: W-176 sat six hours on a `git pull` whose login shell never started the command,
+        with progress lines keeping `last_out` fresh the whole time."""
+        now = time.monotonic()
+        if lim <= 0 or not self.inflight_bash or now - self.last_work < lim:
+            return ""
+        for cmd, t0 in self.inflight_bash.values():
+            if now - t0 >= lim:
+                return cmd.strip().splitlines()[0][:80] if cmd.strip() else "a Bash call"
+        return ""
 
     def process_tree(self) -> str:
         """ps rows (pid, etime, stat, cpu, command[:120]) of the claude process group and its descendants."""
@@ -2108,8 +2123,14 @@ class Runner:
         mins = int((time.monotonic() - self.last_out) / 60)
         last = self.last_ev
         tool = last.split(" ", 1)[1] if last.count(" ") else last
+        lim = env_num("ASD_STALL_MIN", 45) * 60
+        hung = self.hung_bash(lim) if time.monotonic() - self.last_out < lim else ""   # silent: the plain stall below
         self.log(f"stall diagnostic: last stream event: {last}; process tree of claude pid {self.proc.pid}:\n" + self.process_tree())
-        detail = f"stalled: no output for {mins} min mid-turn (last: {tool})"
+        if hung:
+            work = int((time.monotonic() - self.last_work) / 60)
+            detail = f"stalled: Bash call `{hung}` hung, no work for {work} min mid-turn (last: Bash)"
+        else:
+            detail = f"stalled: no output for {mins} min mid-turn (last: {tool})"
         self.log(detail)
         kill_group(self.proc)
         for _ in range(50):
@@ -2158,6 +2179,9 @@ class Runner:
                 rc = self.proc.wait() if self.proc else -1
                 return "exit", rc
             self.note_event(ev)
+            # progress lines may come faster than the 1 s poll above, so a hung Bash call is checked on them too
+            if result is None and (ev.get("type") in PROGRESS_EVENTS or ev.get("type") == "system") and self.stalled():
+                return "stalled", None
             if self.split and self.split["ready"] and result is None:
                 return "split", None
             if ev.get("type") == "assistant":
@@ -3264,6 +3288,13 @@ for raw in sys.stdin:
     if script.get("stall"):   # a Bash tool_use, then silence: the 40 hour `git pull`
         out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "ts", "name": "Bash", "input": {"command": "git pull"}}]}})
         import time; time.sleep(600)
+    if script.get("stall_progress"):   # a Bash tool_use that never returns while the CLI keeps sending progress lines
+        out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "tp", "name": "Bash", "input": {"command": "git pull"}}]}})
+        out({"type": "system", "subtype": "task_started"})
+        import time
+        for _ in range(2000):
+            time.sleep(0.3)
+            out({"type": "tool_progress"})
     if script.get("hang"):
         out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t0", "name": "mcp__x__phase_checkpoint", "input": {"phase": "P-hang", "summary": "s"}}]}})
         import time; time.sleep(600)
@@ -4898,6 +4929,13 @@ def selftest() -> int:
         q321 = (state_of("W-321").get("questions") or [""])[0]
         owner_line(q321, "answer", "Stop", "B")
         p.wait(timeout=30)
+        scenario([{"stall_progress": True}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-323")
+        rc = p.wait(timeout=90)
+        t323 = texts("W-323")
+        check("stall: a Bash call hung past the limit is a stall even while progress lines keep coming",
+              rc == 0 and any(t.startswith("stalled: Bash call `git pull` hung") for t in t323)
+              and any("stage 1 again from its checkpoints (stall 1 of 2)" in t for t in t323))
         env["ASD_STALL_MIN"] = "0"
         scenario([{"turns": [], "hang": True}])
         p = start("W-322")
