@@ -101,15 +101,24 @@ authority below grants them), no "retry or stop" after a transient failure
 (the runner retries), no confirmation of a plan drift that changes nothing
 about what the feature does. Do the step and log it.
 
-**A reversible ruling goes with the recommendation.** A contract-review
-ambiguity or a plan revision for which a recommended reading exists and whose
-impact is low (it changes no behaviour the dossier promises and no public
-contract another dossier depends on): take the recommended reading, write it
-into the docstring or the dossier, log `PROVISIONAL-RULING: <what>, <why>,
-<how to reverse>` in `## Build log`, and list every provisional ruling in a
-"Rulings to review" section of the PR description, so the owner can overrule
-it after the fact. A high-impact or product-level ambiguity still goes to the
-owner.
+**A reversible ruling goes with the recommendation.** A plan revision for
+which a recommended reading exists and whose impact is low (it changes no
+behaviour the dossier promises and no public contract another dossier
+depends on): take the recommended reading, write it into the dossier, log
+`PROVISIONAL-RULING: <what>, <why>, <how to reverse>` in `## Build log`, and
+list every provisional ruling in a "Rulings to review" section of the PR
+description, so the owner can overrule it after the fact. A high-impact or
+product-level revision still goes to the owner.
+
+**Contract-review ambiguities are the run's to rule**, whatever the
+reviewer's `IMPACT:` mark: settle each by a dossier citation, or rule it
+provisionally the same way (`/work-on` Phase 3). `IMPACT: high` means a
+blind test author observes the difference, not that the owner must pick.
+Only a reading that changes what the product does for someone outside the
+code (a user-visible behaviour; an event, API, file or stored format another
+system or team consumes; a cost, security or data-retention choice), with no
+dossier sentence deciding it, goes to the owner. Never ask the owner to
+confirm a list of readings already ruled.
 
 **Merge conflicts:** resolve them, keeping both sides' intent, and prove the
 result with the tests and gates, as `/resolve-merge` does. Ask only when the
@@ -133,7 +142,8 @@ only what needs the owner's judgement:
 
 - **Technical, architectural or product design:** two defensible designs, a
   trade-off the dossier does not settle, a scope or behaviour change, a
-  contract ambiguity the plan leaves open (`AMBIGUITY:` with both readings).
+  contract ambiguity the plan leaves open whose readings differ in what the
+  product does for someone outside the code (see the ask policy above).
 - **Issues:** a blocker you cannot fix inside the dossier's scope, a failure
   you cannot attribute, evidence that the dossier is wrong or obsolete, a
   conflict between review lenses.
