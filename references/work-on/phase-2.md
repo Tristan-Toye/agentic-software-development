@@ -263,7 +263,13 @@ This is the step everything else depends on.
     one full run. This build owes green CI on its pull request, the new
     tests and the mutation check. A service-backed new test may hold the
     stack lease for one suite window when its criterion demands runtime
-    proof; log the window in the build log.
+    proof; log the window in the build log. A dossier run never rebuilds,
+    restarts or `up`s a shared stack service (the fake-llm fixture included)
+    from its worktree: that binds the shared compose project to a path that
+    vanishes and breaks every other run. A stale fixture is the runner's: tests
+    run through `run_tests.py --vm` rebuild it from the persistent checkout when
+    safe, else skip the DB-backed tests under `STACK-ENV: skipped` (runner.md,
+    "A stale shared fixture"). Never an owner question.
 
    Record the exact full-suite command separately from implementers' focused
    `TEST_COMMAND`s, plus its required coverage, before the fan-out.

@@ -28,6 +28,33 @@
         "-lc",
         "d=/tmp; [ -n \"$TMPDIR\" ] && d=$TMPDIR; f=$d/nightwatch-locks/stack-suite.lease; [ -e \"$f\" ] || exit 0; flock -n \"$f\" true"
       ],
+      "fixture_stamp": [
+        "limactl",
+        "shell",
+        "{vm}",
+        "--",
+        "bash",
+        "-lc",
+        "cd {stamp_dir} && bash deploy/fake-llm/source_stamp.sh"
+      ],
+      "fixture_probe": [
+        "limactl",
+        "shell",
+        "{vm}",
+        "--",
+        "bash",
+        "-lc",
+        "cd {root} && bash deploy/fake-llm/stamp_probe.sh http://127.0.0.1:8089/_stamp"
+      ],
+      "fixture_rebuild": [
+        "limactl",
+        "shell",
+        "{vm}",
+        "--",
+        "bash",
+        "-lc",
+        "d=/tmp; [ -n \"$TMPDIR\" ] && d=$TMPDIR; mkdir -p \"$d/nightwatch-locks\"; exec flock -E 75 -n \"$d/nightwatch-locks/stack-suite.lease\" bash -c 'cd {root}/{compose_dir} && docker compose build fake-llm && docker compose up -d --no-deps fake-llm'"
+      ],
       "skip_env": {
         "NIGHTWATCH_DB_TESTS": "skip",
         "NIGHTWATCH_NATS_TESTS": "skip",
