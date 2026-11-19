@@ -89,7 +89,9 @@ has no `Bash`.
 **The sealed files.** `compose_payloads.py` also writes
 `.agent-staging/sealed-paths.txt` beside the payload: the implementation paths
 of every work package in the dossier plus the `--contract-paths` files, one
-repo-relative path per line, rewritten on each compose. The plugin's hook
+repo-relative path per line, rewritten on each compose. A test file that a
+work package lists (a path in a test family, a test file name, or a .NET test
+project) is never sealed: it can be the file this author must extend. The plugin's hook
 refuses this author's Read, Edit and Write of those files, and a content-mode
 Grep over one, at any time, so after the Phase 4 merge (and in Phase 5/6
 correction runs) it still cannot see a body. It never needs to open them: the
