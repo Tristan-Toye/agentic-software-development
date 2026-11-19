@@ -4,7 +4,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { buildAnswer, diagramsOf, isReviewQuestion, MAX_ANSWER, MAX_COMMENT, readReview, reviewOptions, reviewState, setVerdict, ReviewError } from "../questions/vrreview.ts"
+import { approveAll, buildAnswer, diagramsOf, isReviewQuestion, MAX_ANSWER, MAX_COMMENT, readReview, reviewOptions, reviewState, setVerdict, ReviewError } from "../questions/vrreview.ts"
 import { questionBlocks } from "../questions/slack.ts"
 import { parseQuestion } from "../questions/store.ts"
 import { PAGE } from "../questions/page.ts"
@@ -211,6 +211,46 @@ describe("answer text", () => {
     const line = (extra: object) => JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "t", qkind: "product", repo: "r", dossier: "W-1", options: opts, ...extra })
     expect(parseQuestion("r.W-1.Q1", line({ topic: "visual-review" }))!.topic).toBe("visual-review")
     expect(parseQuestion("r.W-1.Q1", line({}))!.topic).toBe("")
+  })
+})
+
+describe("approve all (one click)", () => {
+  const total = () => nodes("l0").length + nodes("l1").length + nodes("l2").length
+  test("every element of every diagram becomes OK in one write, and the answer is A", () => {
+    const d = dirWith()
+    const st = approveAll(d, "W-145")
+    expect(st.summary.ok).toBe(total())
+    expect(st.summary.unchecked).toBe(0)
+    expect(buildAnswer(st, "W-145").option).toBe("A")
+    expect(JSON.parse(readFileSync(join(d, "review.json"), "utf8")).lines).toHaveLength(total())
+  })
+  test("an OK already given keeps its comment; an outdated verdict is replaced; a gone line is kept", () => {
+    const d = dirWith(), id = nodes("l1")[0]
+    setVerdict(d, "W-145", { diagram: "L1", element: id, verdict: "ok", comment: "nice" })
+    const f = JSON.parse(readFileSync(join(d, "review.json"), "utf8"))
+    f.lines.push({ anchor: { diagram: "L2", element: nodes("l2")[0], graph_hash: "0".repeat(64) }, verdict: "change", comment: "old", ts: "t" })
+    f.lines.push({ anchor: { diagram: "L2", element: "no-such-node", graph_hash: "0".repeat(64) }, verdict: "change", comment: "gone one", ts: "t" })
+    writeFileSync(join(d, "review.json"), JSON.stringify(f))
+    const st = approveAll(d, "W-145")
+    expect(st.summary.ok).toBe(total())
+    expect(st.lines.find((l) => l.anchor.element === id)!.comment).toBe("nice")
+    expect(st.lines.filter((l) => l.state === "gone").map((l) => l.comment)).toEqual(["gone one"])
+    expect(st.lines.some((l) => l.state === "outdated")).toBe(false)
+  })
+  test("refused, writing nothing, while an element is flagged, a file is unreadable, or the shown hash is stale", () => {
+    const d = dirWith()
+    setVerdict(d, "W-145", { diagram: "L2", element: nodes("l2")[0], verdict: "question", comment: "why?" })
+    const before = readFileSync(join(d, "review.json"), "utf8")
+    const e = fails(() => approveAll(d, "W-145"))
+    expect(e.status).toBe(409)
+    expect(e.message).toContain("marked question")
+    expect(readFileSync(join(d, "review.json"), "utf8")).toBe(before)
+    const d2 = dirWith()
+    expect(fails(() => approveAll(d2, "W-145", { L1: "f".repeat(64) })).status).toBe(409)
+    expect(existsSync(join(d2, "review.json"))).toBe(false)
+    writeFileSync(join(d2, "l2.json"), "{not json")
+    expect(fails(() => approveAll(d2, "W-145")).message).toContain("unreadable")
+    expect(fails(() => approveAll(mkdtempSync(join(tmpdir(), "vrr-")), "W-145")).status).toBe(404)
   })
 })
 
@@ -436,6 +476,23 @@ else:
     const r3 = await fetch(`${base}/api/questions/repoV.W-145.Q3/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "answer", option: "A", text: "y", review: true }) })
     expect(r3.status).toBe(400)
   })
+  const approve = (body: unknown) => fetch(`${base}/api/visual-review/approve-all`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+  test("approve all: refused while an element is flagged, and the question stays open", async () => {
+    await start()
+    const r = await approve({ dossier: "W-145", repo: "repoV" })
+    expect(r.status).toBe(409)
+    expect(((await r.json()) as any).error).toContain("marked")
+    expect((await question()).state).toBe("open")
+    expect((await fetch(`${base}/api/visual-review/approve-all`)).status).toBe(405)
+    expect((await approve({ dossier: "../x", repo: "repoV" })).status).toBe(400)
+  })
+  test("the card's own Approved option on a visual review is the same one-click approve: refused while flagged", async () => {
+    await start()
+    const r = await fetch(`${base}/api/questions/repoV.W-145.Q1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind: "answer", option: "A" }) })
+    expect(r.status).toBe(409)
+    expect(((await r.json()) as any).error).toContain("marked")
+    expect((await question()).state).toBe("open")
+  })
   test("the batch answer goes through the question card's path; the first answer is final (S4, S5, VC-03)", async () => {
     await start()
     const a: any = await (await fetch(`${base}/api/visual-review/answer?dossier=W-145&repo=repoV`)).json()
@@ -452,6 +509,9 @@ else:
     expect(q.lines.filter((l: any) => l.kind === "answer")).toHaveLength(1)
     const after: any = await (await fetch(`${base}/api/visual-review/answer?dossier=W-145&repo=repoV`)).json()
     expect(after.canSend).toBe(false)
+    const late = await approve({ dossier: "W-145", repo: "repoV" })
+    expect(late.status).toBe(409)
+    expect(((await late.json()) as any).error).toContain("no open visual-review question")
   })
   test("map: stale banner data (count and ids) from vr_map check, cached on the map's mtime", async () => {
     await start()
@@ -505,7 +565,7 @@ else:
     expect(m.message).toMatch(/timed out|could not be checked/)
   })
   test("the page code: verdict controls, Send review, banner and repo view exist and keep the no-markup rule", () => {
-    for (const w of ["Send review", "Save verdict", "Remove from scope", "Not yet looked at", "/api/visual-review/review", "/api/visual-review/answer", "Product map and diagrams", "vr-open", "review: true"]) expect(PAGE, w).toContain(w)
+    for (const w of ["Send review", "Save verdict", "Remove from scope", "Not yet looked at", "/api/visual-review/review", "/api/visual-review/answer", "Product map and diagrams", "vr-open", "review: true", "Approve all and send", "/api/visual-review/approve-all"]) expect(PAGE, w).toContain(w)
   })
 })
 

@@ -383,7 +383,10 @@ payload holds no diagram file and no dossier text from this step.
    default (OQ-08 = A). The owner reviews L0, L1, L2 and every architecture
    tab; the answer `A` needs every element of all of them OK. The owner gives a verdict per element on the
    dashboard canvas (OK, Question, Change, Remove from scope) and sends the
-   review in one action: the answer is `A` when every element is OK, else `B`
+   review in one action (or presses **Approve all**, which marks every element
+   OK and answers `A` in one click, refused while any element is flagged; the
+   question card's own Approved option does the same): the
+   answer is `A` when every element is OK, else `B`
    with one line per flagged element (verdict, diagram, element id, comment)
    and the elements not yet looked at. A Question verdict reaches you as a
    follow-up (`FOLLOWUP`, the question stays open; answer it with

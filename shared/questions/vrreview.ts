@@ -149,6 +149,44 @@ export function setVerdict(dir: string, dossier: string, b: VerdictInput): { sta
   return { state: reviewState(dir, dossier), followup }
 }
 
+/**
+ * The one-click approval: every element of every diagram (L0, L1, L2 and each architecture tab) gets an OK, in one write.
+ * An OK already made on the current graph keeps its comment; an outdated verdict is replaced (the owner approves the picture
+ * as it is now); a line whose element is gone is kept. Refused while an element carries a current Question, Change or
+ * Remove (that review says changes requested: clear those first), while a diagram file is unreadable, or when `shown`
+ * (the hashes of the graphs the owner saw) no longer matches a file on disk.
+ */
+export function approveAll(dir: string, dossier: string, shown?: unknown): ReviewState {
+  const { graphs, broken } = readGraphsFull(dir)
+  if (broken.length) throw new ReviewError(409, "unreadable diagram file: " + broken.join(", ") + "; it cannot be approved")
+  const views = Object.keys(graphs) as Diagram[]
+  if (!views.length) throw new ReviewError(404, "no diagrams for " + dossier)
+  if (shown !== undefined && shown !== null) {
+    if (typeof shown !== "object" || Array.isArray(shown)) throw new ReviewError(400, "hashes must be {diagram: hash}")
+    for (const [v, h] of Object.entries(shown as Record<string, unknown>)) if (graphs[v] && h !== graphs[v]!.hash) throw new ReviewError(409, "the diagram changed since you opened it; reload")
+  }
+  const cur = readReviewChecked(dir, dossier)
+  if (cur.unreadable) throw new ReviewError(409, cur.unreadable + "; verdicts were not saved so the file is not overwritten. Fix or remove " + reviewFile(dir) + " and reload")
+  const before = reviewState(dir, dossier)
+  const flagged = before.lines.filter((l) => l.state === "current" && l.verdict !== "ok")
+  if (flagged.length) throw new ReviewError(409, flagged.length + " element" + (flagged.length > 1 ? "s are" : " is") + " marked " + [...new Set(flagged.map((l) => l.verdict))].join("/") + " (" + flagged.slice(0, 5).map((l) => l.anchor.diagram + " " + l.anchor.element).join(", ") + (flagged.length > 5 ? ", …" : "") + "): clear those verdicts first, or send the review as it is")
+  const ts = new Date().toISOString()
+  const okNow = new Map(before.lines.filter((l) => l.state === "current").map((l) => [l.anchor.diagram + "\u0000" + l.anchor.element, l]))
+  const lines: ReviewLine[] = (cur.review?.lines ?? []).filter((l) => { const g = graphs[l.anchor.diagram]; return !g || !g.nodes.has(l.anchor.element) })
+  for (const v of views) for (const id of graphs[v]!.nodes) {
+    const keep = okNow.get(v + "\u0000" + id)
+    lines.push(keep ? { anchor: keep.anchor, verdict: "ok", comment: keep.comment, ts: keep.ts } : { anchor: { diagram: v, element: id, graph_hash: graphs[v]!.hash }, verdict: "ok", comment: "", ts })
+  }
+  if (lines.length > MAX_LINES) throw new ReviewError(413, "review.json would hold more than " + MAX_LINES + " verdicts")
+  const body = JSON.stringify({ schema_version: "1.0.0", dossier, updated: ts, lines }, null, 1) + "\n"
+  if (body.length > MAX_FILE) throw new ReviewError(413, "review.json would be larger than " + MAX_FILE + " bytes")
+  mkdirSync(dir, { recursive: true })
+  const tmp = reviewFile(dir) + "." + process.pid + ".tmp"
+  writeFileSync(tmp, body)
+  renameSync(tmp, reviewFile(dir))
+  return reviewState(dir, dossier)
+}
+
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s)
 /**
  * The answer for the visual-review question, as the Phase 3 step defines it. Option A (Approved) only when every element

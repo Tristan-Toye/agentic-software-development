@@ -351,7 +351,7 @@ function vrBuild(host, key, data) {
   const reviewing = !!data.review;
   const ban = vrDom('div', 'vrban', null, host); ban.hidden = true;
   const rbar = vrDom('div', 'vrrev', null, host); rbar.hidden = !reviewing;
-  const sumEl = vrDom('span', 'vrsum', '', rbar), sendB = vrDom('button', 'btn primary sm', 'Send review', rbar), sendNote = vrDom('span', 'small mut', '', rbar); sendB.type = 'button';
+  const sumEl = vrDom('span', 'vrsum', '', rbar), sendB = vrDom('button', 'btn primary sm', 'Send review', rbar), apB = vrDom('button', 'btn sm', 'Approve all', rbar), sendNote = vrDom('span', 'small mut', '', rbar); sendB.type = 'button'; apB.type = 'button'; apB.title = 'Mark every element of every diagram OK and answer Approved, in one go.';
   const prev = vrDom('div', 'vrprev', null, host); prev.hidden = true;
   const gone = vrDom('div', 'small mut', null, host);
   const mm = vrDom('div', 'vrmm', null, host); mm.hidden = true;
@@ -418,6 +418,8 @@ function vrBuild(host, key, data) {
     const s = st.review.summary; sumEl.textContent = s.text;
     const q = vrOpenQ(vrDossier, vrRepo);
     sendB.disabled = !q || !s.checked;
+    const flagged = s.question + s.change + s.remove;
+    apB.disabled = !q || flagged > 0; apB.title = !q ? 'No open visual-review question to answer.' : flagged ? 'Some elements are marked Question, Change or Remove: clear them first, or send the review.' : 'Mark every element of every diagram OK and answer Approved, in one go.';
     sendNote.textContent = !q ? 'No open visual-review question for this dossier; Send review is enabled when the run asks for the visual review.' : !s.checked ? 'Check at least one element first.' : '';
     const g = st.review.lines.filter(l => l.state === 'gone');
     gone.textContent = g.length ? 'Element gone from the diagram (the comment is kept in review.json): ' + g.map(l => l.anchor.diagram + ' ' + l.anchor.element + (l.comment ? ' — ' + l.comment : '')).join('; ') : '';
@@ -433,6 +435,24 @@ function vrBuild(host, key, data) {
     const row = vrDom('div', 'vrgrp', null, prev), ok = vrDom('button', 'btn primary sm', 'Confirm and send', row), no = vrDom('button', 'btn sm', 'Cancel', row), msg = vrDom('span', 'small mut', '', row); ok.type = no.type = 'button';
     no.onclick = () => { prev.hidden = true; };
     ok.onclick = async () => { ok.disabled = true; msg.textContent = 'Sending…'; await post(a.question, { kind: 'answer', option: a.option, text: a.text, review: true }); if (S.qerr[a.question]) { msg.textContent = S.qerr[a.question]; ok.disabled = false; } else { prev.hidden = true; } };
+  };
+  apB.onclick = () => {
+    const q = vrOpenQ(vrDossier, vrRepo); if (!q || !st.review) return;
+    prev.hidden = false; prev.replaceChildren();
+    const s = st.review.summary;
+    vrDom('p', 'small', 'Mark all ' + s.total + ' elements of every diagram OK' + (s.unchecked ? ' (' + s.unchecked + ' not looked at one by one)' : '') + ' and answer ' + q.id + ' Approved. This closes the question; the first answer is final.', prev);
+    const row = vrDom('div', 'vrgrp', null, prev), ok = vrDom('button', 'btn primary sm', 'Approve all and send', row), no = vrDom('button', 'btn sm', 'Cancel', row), msg = vrDom('span', 'small mut', '', row); ok.type = no.type = 'button';
+    no.onclick = () => { prev.hidden = true; };
+    ok.onclick = async () => {
+      ok.disabled = no.disabled = true; msg.textContent = 'Approving…';
+      try {
+        const r = await fetch('/api/visual-review/approve-all', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dossier: vrDossier, repo: vrRepo, hashes: data.shownHashes || {} }) });
+        const j = await r.json().catch(() => ({}));
+        if (j.review) { st.review = j.review; paintAll(); }
+        if (!r.ok) { msg.textContent = j.error || ('HTTP ' + r.status); ok.disabled = no.disabled = false; if (r.status === 409 && /changed/.test(j.error || '')) vrLoad(vrRepo, vrDossier); return; }
+        prev.hidden = true; load(['questions']);
+      } catch (e) { msg.textContent = 'request failed'; ok.disabled = no.disabled = false; }
+    };
   };
   function visible(status) { return VR_PASS[st.mode](status); }
   function applyMode() {
