@@ -719,6 +719,37 @@ def next_free_id(root: str, prefix: str) -> str:
     return f"{prefix}-{max(nums or [0]) + 1}"
 
 
+def new_id_for(root: str, head: str, old: str, handed: set[str]) -> str:
+    """A fresh id for `old`, never one already handed out in this call: from the id ledger (scripts/claim_id.py, the
+    asd/ids branch /plan claims from) for W ids, else, or when the ledger cannot be reached, the next free id on origin
+    above everything handed out so far."""
+    prefix = old.split("-")[0]
+    if prefix == "W":
+        try:
+            sys.path.insert(0, HERE)
+            import claim_id
+            for _ in range(5):
+                new = claim_id.claim(root, "origin", "W", f"{head} (renumbered from {old})")
+                if new not in handed:
+                    handed.add(new)
+                    return new
+        except Exception:   # the ledger is unreachable: fall back to scanning origin
+            pass
+    new = next_free_id(root, prefix)
+    while new in handed:
+        new = f"{prefix}-{int(new.split('-')[1]) + 1}"
+    handed.add(new)
+    return new
+
+
+def remap_ids(text: str, idmap: dict[str, str]) -> str:
+    """Replace every old id by its new one in one pass, so a chain (A to B, B to C) cannot be applied twice."""
+    if not idmap:
+        return text
+    alt = "|".join(re.escape(o) for o in sorted(idmap, key=len, reverse=True))
+    return re.sub(rf"(?<![A-Za-z0-9])(?:{alt})(?![0-9])", lambda m: idmap[m.group(0)], text)
+
+
 def fix_ids(root: str, base: str, head: str, renumber: list[tuple[str, str]], adr: bool) -> str:
     """Renumber colliding ids on the branch, mechanically; "" or why it could not."""
     wt = os.path.join(tempfile.mkdtemp(prefix="asd-ids-"), "w")
@@ -735,15 +766,30 @@ def fix_ids(root: str, base: str, head: str, renumber: list[tuple[str, str]], ad
             git(wt, "merge", "--abort")
             return "conflict"   # a content conflict: the agent's step
         notes = []
+        # Every new id first: from the central ledger (the same one /plan claims from), else the highest id on origin plus
+        # the ones this call already handed out. Then one simultaneous rewrite of the files the branch adds or changes.
+        handed: set[str] = set()
+        idmap: dict[str, str] = {}
         for old, f in renumber:
-            new = next_free_id(root, old.split("-")[0])
-            nf = f.replace(f"/{old}-", f"/{new}-", 1)
+            idmap[old] = new_id_for(root, head, old, handed)
+        rc, changed = git(wt, "diff", "--name-only", "--diff-filter=AMR", f"origin/{base}", "HEAD")
+        files = [l for l in changed.splitlines() if ID_FILE_RE.match(l)]
+        renamed = {}
+        for old, f in renumber:
+            nf = f.replace(f"/{old}-", f"/{idmap[old]}-", 1)
             git(wt, "mv", f, nf)
+            renamed[f] = nf
+        for f in files:
+            nf = renamed.get(f, f)
             path = os.path.join(wt, nf)
+            if not os.path.isfile(path):
+                continue
             text = open(path, encoding="utf-8").read()
-            open(path, "w", encoding="utf-8").write(re.sub(rf"(?<![A-Za-z0-9]){re.escape(old)}(?![0-9])", new, text))
+            out_text = remap_ids(text, idmap)
+            if out_text != text:
+                open(path, "w", encoding="utf-8").write(out_text)
             git(wt, "add", nf)
-            notes.append(f"{old} -> {new}")
+        notes = [f"{o} -> {n}" for o, n in idmap.items()]
         if adr:
             vp = os.path.join(HERE, "validate_pipeline.py")
             r = subprocess.run([sys.executable, vp, "--finalize-ids", "--base", f"origin/{base}"], cwd=wt, capture_output=True, text=True)
@@ -2223,6 +2269,31 @@ print("started")
         g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "moved on GitHub", cwd=pusher); g("push", "-q", "origin", "plan/stale", cwd=pusher)
         moved = fix_ids(clone, "development", "plan/stale", [("W-147", ".discovery/dossiers/W-147-stale.md")], False)
         check("ids: a branch that moved on GitHub is renumbered from where it is, not refused", moved == "", moved)
+        # ---- several collisions in one branch: distinct ids, the branch's own cross-references follow, the base's do not ----
+        dd = os.path.join(pusher, ".discovery", "dossiers")
+        g("checkout", "-q", "development", cwd=pusher); g("pull", "-q", "origin", "development", cwd=pusher)
+        open(os.path.join(dd, "W-149-held.md"), "w").write("---\nid: W-149\nblocked_by: [W-147]\n---\n# held, W-149\n")
+        g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "base holds W-149", cwd=pusher); g("push", "-q", "origin", "development", cwd=pusher)
+        g("checkout", "-q", "-b", "plan/multi", cwd=pusher)
+        open(os.path.join(dd, "W-147-mx.md"), "w").write("---\nid: W-147\n---\n# mx W-147\n")
+        open(os.path.join(dd, "W-149-my.md"), "w").write("---\nid: W-149\nblocked_by: [W-147]\n---\n# my\n")
+        open(os.path.join(dd, "W-171-sib.md"), "w").write("---\nid: W-171\nblocked_by: [W-147, W-149, W-1470]\n---\n# sib\n")
+        g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "plan multi", cwd=pusher); g("push", "-q", "origin", "plan/multi", cwd=pusher)
+        g("fetch", "-q", "origin", cwd=clone)
+        multi = fix_ids(clone, "development", "plan/multi", [("W-147", ".discovery/dossiers/W-147-mx.md"), ("W-149", ".discovery/dossiers/W-149-my.md")], False)
+        g("fetch", "-q", "origin", cwd=clone)
+        show = lambda f: subprocess.run(["git", "-C", clone, "show", f"origin/plan/multi:.discovery/dossiers/{f}"], capture_output=True, text=True).stdout
+        mtree = subprocess.run(["git", "-C", clone, "ls-tree", "--name-only", "origin/plan/multi", ".discovery/dossiers/"], capture_output=True, text=True).stdout
+        newids = re.findall(r"W-(\d+)-m[xy]\.md", mtree)
+        check("ids: two collisions in one branch get two distinct new ids, none the base holds", multi == "" and len(newids) == 2 and len(set(newids)) == 2 and not {"147", "149"} & set(newids), multi + mtree)
+        nx, ny = (re.search(r"W-(\d+)-mx", mtree), re.search(r"W-(\d+)-my", mtree))
+        sib = show("W-171-sib.md")
+        check("ids: a blocked_by in a sibling dossier on the branch follows the renumbering; a longer id is left alone",
+              nx and ny and f"blocked_by: [W-{nx.group(1)}, W-{ny.group(1)}, W-1470]" in sib, sib)
+        check("ids: a reference inside the renamed file follows too", ny and f"blocked_by: [W-{nx.group(1)}]" in show(f"W-{ny.group(1)}-my.md"), show("W-149-my.md"))
+        held = show("W-149-held.md")
+        check("ids: a file the branch leaves unchanged keeps its references to the base's dossiers", "id: W-149" in held and "blocked_by: [W-147]" in held and "# held, W-149" in held, held)
+        check("ids: a chain of renumberings is applied simultaneously", remap_ids("W-1 W-2 W-3", {"W-1": "W-2", "W-2": "W-3"}) == "W-2 W-3 W-3")
         sa, sb, cc, _ = batch_scenario("again", FAKE_BATCH_EXISTS="1")
         check("resume: a batch PR already open from before an interruption is carried on with", "pr merge 901 --merge" in cc and sa.get("state") == "merged" and sb.get("state") == "merged", cc + str(sa))
         saved_env = dict(os.environ)
