@@ -112,6 +112,10 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   nothing about the flow.
 - Take expected values from the acceptance criteria, not from a computation.
 - Match `STYLE_SAMPLE`, and reuse the project's existing fixtures and helpers.
+- A documentation comment that starts with `(inferred)` is a guess about the
+  code, not a promise. Take no expected value from it. Take it from the
+  acceptance criteria. When a criterion rests only on such a comment, return
+  `GAP:`.
 - A criterion you cannot observe through the flow is a `GAP:`, not a test.
   Return `GAP:` with the criterion and what blocks you, and stop on that
   criterion.
