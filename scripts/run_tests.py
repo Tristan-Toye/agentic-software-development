@@ -850,8 +850,20 @@ def stack_env_preflight(args: argparse.Namespace, command: list[str]) -> tuple[s
                 print(stack_env.line(res) if not suite or res["state"] == "synced" else
                       f"STACK-ENV: the full suite runs as asked, but the stack's settings are behind this tree "
                       f"({', '.join(res['missing'])} missing): {res['why']}")
-            return args.env_script, command
-        print(stack_env.line(res))
+            # The stack's settings are in step (or this is the suite): now the shared fake-llm fixture. A stale one
+            # is rebuilt from the persistent checkout when that is safe, else the DB tests are skipped; the suite
+            # gets the rebuild (from its own tree when needed) and is never skipped.
+            fres = stack_env.fixture(tree, cfg, suite, log=lambda t: print(t))
+            if fres["state"] == "ok":
+                return args.env_script, command
+            if fres["state"] == "rebuilt" or suite:
+                print(stack_env.fixture_line(fres) if fres["state"] == "rebuilt" else
+                      "STACK-ENV: the full suite runs as asked, but the fake-llm fixture is stale: " + fres["why"])
+                return args.env_script, command
+            res = fres
+            print(stack_env.fixture_line(res))
+        else:
+            print(stack_env.line(res))
         env_script, command = stack_env.strip_env_script(cfg, args.env_script, command)
         skips = [f"{k}={v}" for k, v in sorted((cfg.get("skip_env") or {}).items())]
         return env_script, (["env", *skips] if skips else []) + command
@@ -1436,6 +1448,23 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
               "STACK-ENV: skipped" in said and "B missing" in said and "never-printed" not in said)
         check("a run that does not source the env script is left as asked", plain == (None, ["cargo", "test", "-p", "x"]))
         check("the full suite is never run with tests skipped", suite == (None, ["scripts/run_all_tests.sh", "--stack"]))
+        # the fixture: settings in step (tree catalog satisfied), the fixture stale; fake VM commands only
+        for d in (main_c, tree_c):
+            open(os.path.join(d, "cat.json"), "w").write(json.dumps({"bootstrap": [{"variable": "A"}]}))
+        fcfg = json.loads(open(cfgp).read())
+        fcfg.update({"fixture_stamp": ["bash", "-c", "[ \"$0\" = \"" + tree_c + "\" ] && echo Sources:new || echo Sources:dev", "{stamp_dir}"],
+                     "fixture_probe": ["echo", "Sources:old"], "fixture_rebuild": ["false"], "lease_probe": ["true"]})
+        open(cfgp, "w").write(json.dumps(fcfg))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            fes, fcmd = stack_env_preflight(ns, ["cargo", "nextest", "run"])
+            fsuite = stack_env_preflight(ns_plain, ["scripts/run_all_tests.sh", "--stack"])
+        fsaid = buf.getvalue()
+        check("stale fixture the persistent checkout cannot fix: DB tests skipped, digest headed STACK-ENV: skipped — fake-llm fixture",
+              fes is None and fcmd == ["env", "X_DB_TESTS=skip", "cargo", "nextest", "run"]
+              and "STACK-ENV: skipped \u2014 fake-llm fixture" in fsaid)
+        check("a suite run on a stale fixture is never skipped", fsuite == (None, ["scripts/run_all_tests.sh", "--stack"])
+              and "full suite runs as asked, but the fake-llm fixture is stale" in fsaid)
         os.environ["ASD_STACK_ENV_CHECK"] = "0"
         check("ASD_STACK_ENV_CHECK=0 turns the preflight off",
               stack_env_preflight(ns, ["cargo", "nextest", "run"]) == ("deploy/host/test-env.sh", ["cargo", "nextest", "run"]))

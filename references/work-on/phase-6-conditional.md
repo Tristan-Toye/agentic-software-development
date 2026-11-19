@@ -201,7 +201,7 @@ that is down or a compose service that is unhealthy is reported as the single li
 `RUNNER: ENV <vm|stack|disk> <detail>`, not asked about (see runner.md). A digest
 headed `STACK-ENV: skipped` (the stack's settings are behind this branch and cannot
 be brought up yet) is not a red verdict and not an owner question: record the line
-in the build log and the PR note, and the stub's full suite runs those tests. An implementer's
+in the build log and the PR note, and the stub's full suite runs those tests. The same head with `fake-llm fixture` means the shared fixture was stale and could not be rebuilt safely: same handling. An implementer's
 focused `TEST_COMMAND` is not a substitute. Keep the complete output and
 record the candidate commit, target baseline, exact command, environment,
 counts and log path as `SUITE: local on <sha>, base <sha> — <counts>; <log>` —

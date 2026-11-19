@@ -27,11 +27,28 @@ Config: the repo's stack-repair config (scripts/stack_repair.py finds it), keys
   stack_up       argv, run from the persistent checkout {root} (stack_repair's key)
   skip_env       {NAME: value} set on a skipped run
   suite_markers  command words that mark the full stack suite (sync only: it is never run with tests skipped)
+  fixture_stamp  argv printing the tree's fake-llm source stamp (`Sources:<sha>`); {stamp_dir} is the checkout it runs in
+  fixture_probe  argv printing the stamp the RUNNING fixture serves (exit 1 = not answering, 2 = no stamp line)
+  fixture_rebuild argv that rebuilds and restarts the fixture from {root} (it takes the stack lease itself and exits 75
+                 when it is held)
 Placeholders as in stack_repair. Off with ASD_STACK_ENV_SYNC=0 (drift is then reported and skipped, never synced).
 One sync at a time across runners (stack_repair's lock); at most MAX_PER_HOUR syncs per VM per hour.
 
+Fixture freshness (`fixture()`, run after the env check): the repo's env script refuses every DB-backed test when the
+shared fake-llm fixture serves another stamp than the tree's. The stamp includes the root Cargo files, so a dossier
+that changes a dependency always differs from development. Handled the same way, never an owner question and never
+a rebuild from a worktree:
+  rebuild  stale + the PERSISTENT checkout stamps the same as the tree + the stack lease free: fixture_rebuild from the
+           persistent checkout, under stack_repair's lock, at most MAX_PER_HOUR per VM per hour (own key), holding the
+           stack lease. A full-suite run (suite_markers, /stub) whose tree stamps differently from the persistent
+           checkout rebuilds from the tree being integrated instead: it owns the stack for the whole run and never skips.
+  skip     otherwise (stamps differ, lease held, rebuild failed or still stale): `STACK-ENV: skipped — fake-llm
+           fixture ...`, the run goes ahead with skip_env, the stub's full suite covers those tests.
+Off with ASD_STACK_FIXTURE_REBUILD=0 (stale is then skipped, never rebuilt).
+
     stack_env.py check --tree T     prints `ok`, or the missing names; exit 1 on drift
     stack_env.py sync --tree T      prints the STACK-ENV line; exit 0 ok/synced, 1 skipped
+    stack_env.py fixture --tree T [--suite]   same for the fixture; exit 0 ok/rebuilt, 1 skipped
     stack_env.py --selftest
 Python 3 standard library only.
 """
@@ -123,8 +140,10 @@ def missing(tree: str, cfg: dict) -> list[str]:
     return [n for n in required(tree, cfg) if n not in have]
 
 
-def _argv(template, cfg: dict, tree: str) -> list[str]:
-    sub = {"vm": cfg["vm"], "root": main_root(tree), "tree": tree, "compose_dir": cfg.get("compose_dir") or "."}
+def _argv(template, cfg: dict, tree: str, root: str | None = None, stamp_dir: str | None = None) -> list[str]:
+    root = root or main_root(tree)
+    sub = {"vm": cfg["vm"], "root": root, "tree": tree, "compose_dir": cfg.get("compose_dir") or ".",
+           "stamp_dir": stamp_dir or tree}
     return [str(a).format(**sub) for a in template]
 
 
@@ -175,6 +194,88 @@ def sync(tree: str, cfg: dict, run=stack_repair._run, log=lambda _t: None) -> di
             return {"state": "synced", "missing": gone, "why": "up.sh from the persistent checkout"}
         tail = out.strip().splitlines()[-1][:160] if out.strip() else ""
         return {"state": "skipped", "missing": still or gone, "why": f"up.sh exit {rc}{': ' + tail if tail else ''}"}
+
+
+RC_LEASE_HELD = 75  # what fixture_rebuild exits with when flock finds the stack lease taken
+
+
+def _stamp(cfg: dict, tree: str, where: str, run) -> str | None:
+    """The `Sources:<sha>` line source_stamp.sh prints in checkout `where`, or None when it cannot say."""
+    rc, out = run(_argv(cfg["fixture_stamp"], cfg, tree, stamp_dir=where), 120)
+    lines = out.strip().splitlines()
+    return lines[-1].strip() if rc == 0 and lines else None
+
+
+def _served(cfg: dict, tree: str, run) -> str | None:
+    """What the running fixture serves: its stamp, "no stamp line" for a pre-stamp image (probe exit 2), None when
+    it does not answer (exit 1, or the VM is out of reach): not a fact about its stamp, so nothing to repair."""
+    rc, out = run(_argv(cfg["fixture_probe"], cfg, tree), 60)
+    if rc == 0 and out.strip():
+        return out.strip().splitlines()[-1].strip()
+    return "no stamp line" if rc == 2 else None
+
+
+def fixture(tree: str, cfg: dict, suite: bool = False, run=stack_repair._run, log=lambda _t: None) -> dict:
+    """{"state": ok|rebuilt|skipped, "tree": stamp, "served": stamp, "why": str}. Never raises."""
+    if not (cfg.get("fixture_stamp") and cfg.get("fixture_probe")):
+        return {"state": "ok", "tree": "", "served": "", "why": ""}
+    served = _served(cfg, tree, run)
+    if served is None:
+        return {"state": "ok", "tree": "", "served": "", "why": "fixture not answering"}
+    mine = _stamp(cfg, tree, tree, run)
+    if mine is None or mine == served:
+        return {"state": "ok", "tree": mine or "", "served": served, "why": ""}
+
+    def skipped(why: str) -> dict:
+        return {"state": "skipped", "tree": mine, "served": served, "why": why}
+
+    if os.environ.get("ASD_STACK_FIXTURE_REBUILD", "1") == "0":
+        return skipped("automatic rebuild is off (ASD_STACK_FIXTURE_REBUILD=0)")
+    if not cfg.get("fixture_rebuild"):
+        return skipped("the repo's config names no fixture_rebuild command")
+    root = main_root(tree)
+    base = root
+    if root != tree:
+        theirs = _stamp(cfg, tree, root, run)
+        if theirs != mine:
+            if not suite:
+                return skipped(f"the persistent checkout {root} is on {branch_of(root)} and stamps "
+                               f"{(theirs or 'nothing')[:20]}, so a rebuild would have to come from a worktree, "
+                               "which the shared fixture must never be bound to")
+            base = tree  # the full suite owns the stack for its whole run and is never skipped
+    with stack_repair._Lock(900) as got:
+        if not got:
+            return skipped("another stack repair or sync held the lock for 15 min")
+        again = _served(cfg, tree, run)  # the holder before us has usually rebuilt it
+        if again == mine:
+            return {"state": "ok", "tree": mine, "served": again, "why": "in step after waiting for the lock"}
+        if not lease_free(cfg, tree, run):
+            return skipped("another run holds the stack lease, so the fixture is not restarted under it")
+        now = time.time()
+        key = f"fixture:{cfg['vm']}"
+        if len(stack_repair._attempts(key, now)) >= MAX_PER_HOUR:
+            return skipped(f"{MAX_PER_HOUR} fixture rebuilds in the last hour, not trying again")
+        stack_repair._record(key, now)
+        argv = _argv(cfg["fixture_rebuild"], cfg, tree, root=base)
+        log(f"stack-env: fake-llm fixture stale; {' '.join(argv)}")
+        rc, out = run(argv, 1800)
+        if rc == RC_LEASE_HELD:
+            return skipped("another run holds the stack lease, so the fixture is not restarted under it")
+        now_served = _served(cfg, tree, run)
+        if rc == 0 and now_served == mine:
+            return {"state": "rebuilt", "tree": mine, "served": now_served,
+                    "why": f"rebuilt from {'the persistent checkout' if base == root else 'the tree being integrated'}"}
+        tail = out.strip().splitlines()[-1][:160] if out.strip() else ""
+        return skipped(f"the rebuild exited {rc} and the fixture still serves {(now_served or 'nothing')[:20]}"
+                       f"{': ' + tail if tail else ''}")
+
+
+def fixture_line(res: dict) -> str:
+    stamps = f"this tree stamps {res['tree'][:20]}, the running fixture served {res['served'][:20]}"
+    if res["state"] == "rebuilt":
+        return f"STACK-ENV: fake-llm fixture rebuilt ({stamps}; {res['why']})"
+    return (f"STACK-ENV: skipped — fake-llm fixture is stale ({stamps}) and {res['why']}. "
+            "The DB-backed stack tests did not run; say so in the PR note (they run in the stub's full suite). Not an owner question.")
 
 
 def line(res: dict) -> str:
@@ -299,6 +400,80 @@ def selftest() -> int:
               and not is_suite_run({"suite_markers": ["--stack"]}, ["cargo", "test"]))
         es, cmd = strip_env_script(cfg, "deploy/host/test-env.sh", [".", "deploy/host/test-env.sh", "&&", "cargo", "nextest", "run"])
         check("skip: the env script is dropped, inline and flag", es is None and cmd == ["cargo", "nextest", "run"])
+
+        # ---- the fake-llm fixture: stale handling, all through fakes (no VM, no ~/.agentic) ----
+        cfg.update({"fixture_stamp": ["stamp", "{stamp_dir}"], "fixture_probe": ["fprobe"],
+                    "fixture_rebuild": ["rebuild", "{root}"], "suite_markers": ["--stack"]})
+        os.environ.pop("ASD_STACK_FIXTURE_REBUILD", None)
+        main, tree = os.path.realpath(main), os.path.realpath(tree)  # tmp is a symlink on macOS
+        fx = {"served": "Sources:aaa", "stamps": {tree: "Sources:aaa", main: "Sources:aaa"}, "lease": 0,
+              "rebuild_rc": 0, "rebuilt_to": None}
+        fcalls: list[list[str]] = []
+
+        def ffake(argv, _t):
+            fcalls.append(argv)
+            if argv[0] == "fprobe":
+                return (0, fx["served"] + "\n") if fx["served"] else (1, "")
+            if argv[0] == "stamp":
+                return 0, fx["stamps"][argv[1]] + "\n"
+            if argv[0] == "probe":
+                return fx["lease"], ""
+            if argv[0] == "rebuild":
+                if fx["rebuild_rc"] == 0 and fx["rebuilt_to"]:
+                    fx["served"] = fx["rebuilt_to"]
+                return fx["rebuild_rc"], "build done"
+            return 127, ""
+
+        def rebuilds():
+            return [c for c in fcalls if c[0] == "rebuild"]
+
+        r = fixture(tree, cfg, False, ffake)
+        check("fixture fresh: ok, nothing rebuilt", r["state"] == "ok" and rebuilds() == [])
+        fx["served"] = None
+        check("fixture not answering: ok (not a fact about its stamp)", fixture(tree, cfg, False, ffake)["state"] == "ok" and rebuilds() == [])
+        fx.update(served="Sources:old", stamps={tree: "Sources:new", main: "Sources:new"}, rebuilt_to="Sources:new")
+        fcalls.clear()
+        r = fixture(tree, cfg, False, ffake)
+        check("fixture stale, persistent stamp matches, lease free: rebuilt from the persistent checkout",
+              r["state"] == "rebuilt" and rebuilds() == [["rebuild", main]] and "rebuilt" in fixture_line(r))
+        fx.update(served="Sources:old", stamps={tree: "Sources:new", main: "Sources:dev"})
+        fcalls.clear()
+        r = fixture(tree, cfg, False, ffake)
+        check("fixture stale, persistent stamp differs: skipped, never rebuilt from the worktree",
+              r["state"] == "skipped" and rebuilds() == [] and fixture_line(r).startswith("STACK-ENV: skipped — fake-llm fixture"))
+        fx.update(stamps={tree: "Sources:new", main: "Sources:new"}, lease=1)
+        fcalls.clear()
+        r = fixture(tree, cfg, False, ffake)
+        check("fixture stale, lease held: skipped, nothing rebuilt", r["state"] == "skipped" and "lease" in r["why"] and rebuilds() == [])
+        fx.update(stamps={tree: "Sources:new", main: "Sources:dev"}, lease=0, rebuilt_to="Sources:new")
+        fcalls.clear()
+        r = fixture(tree, cfg, True, ffake)
+        check("suite run with a differing persistent stamp: rebuilt from the tree being integrated, never skipped",
+              r["state"] == "rebuilt" and rebuilds() == [["rebuild", tree]])
+        fx.update(served="Sources:old", rebuild_rc=1)
+        fcalls.clear()
+        r = fixture(tree, cfg, True, ffake)
+        check("suite run whose rebuild fails: reported skipped for the caller to run it as asked anyway",
+              r["state"] == "skipped" and "exited 1" in r["why"])
+        fx.update(stamps={tree: "Sources:new", main: "Sources:new"}, rebuild_rc=75, served="Sources:old")
+        r = fixture(tree, cfg, False, ffake)
+        check("rebuild exit 75 (flock found the lease taken): skipped as lease held", r["state"] == "skipped" and "lease" in r["why"])
+        cfg["vm"] = "fake2"  # a fresh hourly budget
+        fx.update(rebuild_rc=0, rebuilt_to="Sources:old", served="Sources:old")
+        r = fixture(tree, cfg, False, ffake)
+        check("a rebuild that leaves it stale is a skip, not a pass", r["state"] == "skipped" and "still serves" in r["why"])
+        os.environ["ASD_STACK_FIXTURE_REBUILD"] = "0"
+        fcalls.clear()
+        check("ASD_STACK_FIXTURE_REBUILD=0: skipped, nothing rebuilt", fixture(tree, cfg, False, ffake)["state"] == "skipped" and rebuilds() == [])
+        os.environ.pop("ASD_STACK_FIXTURE_REBUILD")
+        cfg["vm"] = "fake3"
+        fx.update(rebuild_rc=0, rebuilt_to="Sources:new", served="Sources:old")
+        for _ in range(6):
+            fx["served"] = "Sources:old"
+            r = fixture(tree, cfg, False, ffake)
+        check("bounded: past the hourly cap it skips", r["state"] == "skipped" and "last hour" in r["why"])
+        del cfg["fixture_stamp"]
+        check("no fixture config: nothing checked", fixture(tree, cfg, False, ffake)["state"] == "ok")
     print(f"{'FAILED' if fails else 'passed'}: stack_env selftest")
     return 1 if fails else 0
 
@@ -306,8 +481,9 @@ def selftest() -> int:
 def cli(argv: list[str]) -> int:
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("action", nargs="?", choices=("check", "sync"))
+    ap.add_argument("action", nargs="?", choices=("check", "sync", "fixture"))
     ap.add_argument("--tree", default=".")
+    ap.add_argument("--suite", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if a.selftest:
@@ -321,6 +497,10 @@ def cli(argv: list[str]) -> int:
         gone = missing(tree, cfg)
         print("ok" if not gone else "missing: " + ", ".join(gone))
         return 1 if gone else 0
+    if a.action == "fixture":
+        fres = fixture(tree, cfg, a.suite, log=lambda t: print(t, file=sys.stderr))
+        print("STACK-ENV: fake-llm fixture in step" if fres["state"] == "ok" else fixture_line(fres))
+        return 1 if fres["state"] == "skipped" else 0
     res = sync(tree, cfg, log=lambda t: print(t, file=sys.stderr))
     print(line(res))
     return 1 if res["state"] == "skipped" else 0

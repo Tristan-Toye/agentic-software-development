@@ -104,7 +104,7 @@ You run under the dossier runner and nobody reads the terminal.
 - The owner's Start is standing authority (references/owner-questions.md, "What is worth asking"): pushing the dossier's own branch and opening or updating its draft PR into the base or the accepting stub is yes; so is a graduation issue in the plugin repository, and committing a repository rule from this build on the dossier's branch (the PR ratifies it). Carry out the readings, defaults and rulings the dossier already records; never ask to confirm them. Ask only technical, architectural or product design questions the dossier leaves open, issues you cannot resolve in scope, and actions outside that authority (a merge, a push to a protected branch, a force-push, Jira writes, deleting what is not the run's own). Do the authorized ones, log them, and name them in your next update.
 - The plugin's references (`references/work-on/phase-*.md`, `formats/*`, `runner.md`) are long and the same in every stage: read only the section your step needs (`ref_section` with the document's short name, `phase-4` or `formats/dossier`, and a heading or `--list`), not whole files; the phase file you start a phase with is the one you read whole, and never the same section twice in one stage.
 - Phase 2 takes its stub from `python3 scripts/stub_target.py --root R` (the plugin's scripts). Exit 3 (`wait <stub>`) means that stub is being integrated and no new one may be cut until it is in development: end the turn with the line `RUNNER: WAITING stub`; the runner waits without tokens and sends `STUB READY: <branch>` once the new stub is cut. Never cut a stub yourself.
-- A broken environment (the Lima VM stopped or unreachable, a shared docker compose service unhealthy, the disk low) is not an owner question: end the turn with the single line `RUNNER: ENV <vm|stack|disk> <short detail>` and nothing after it. The runner repairs vm and stack when the owner enabled that and answers `RUNNER ENV <kind>: repaired ...` (carry on) or `RUNNER ENV <kind>: not repaired ...` (then ask the owner as usual). A disk is never repaired automatically.
+- A broken environment (the Lima VM stopped or unreachable, a shared docker compose service unhealthy, the disk low) is not an owner question: end the turn with the single line `RUNNER: ENV <vm|stack|disk> <short detail>` and nothing after it. The runner repairs vm and stack when the owner enabled that and answers `RUNNER ENV <kind>: repaired ...` (carry on) or `RUNNER ENV <kind>: not repaired ...` (then ask the owner as usual). A disk is never repaired automatically. A stale shared fake-llm fixture is the runner's: run tests through `run_tests.py --vm` (it rebuilds from the persistent checkout or skips the DB tests under `STACK-ENV: skipped`); never rebuild or restart a shared stack service from your worktree, and never ask the owner about it.
 - End each stage with its phase_checkpoint call and then, as the last line of your reply, `RUNNER: STAGE-DONE <stage name>`, and stop. The next stage starts in a new process with your checkpoints as its hand-off.
 - `RUNNER KEEPALIVE: ...` is the runner keeping the prompt cache warm while you wait: reply with exactly `OK` and do nothing else (no tool call, no RUNNER: line, no change to your plan).
 {claude_md}- End with `RUNNER: DONE` when /work-on is finished, and with `RUNNER: FAILED <why>` when you cannot go on. When the owner rules the dossier back to /plan (or the build shows it must be re-planned and the owner agreed), record the ruling and the inputs for the re-plan in the dossier, leave nothing half-built behind, and end with `RUNNER: REPLAN <why>`: the runner sets the dossier to planned and starts /plan itself. Never end such a run with FAILED.
@@ -2298,6 +2298,17 @@ class Runner:
         ask = "Ask the owner about it as usual (ask_owner.py, then RUNNER: WAITING)."
         if kind not in ("vm", "stack"):
             return f"RUNNER ENV {kind or '?'}: the runner does not repair this; {ask}"
+        if re.search(r"fake-llm|fixture", detail, re.I):
+            # A stale shared fixture is the runner's to handle (scripts/stack_env.py, inside run_tests.py --vm): it is
+            # rebuilt from the persistent checkout when safe, else the DB tests are skipped. Never an owner question,
+            # and independent of ASD_STACK_REPAIR (that gate is for a stopped VM or a down stack).
+            if n > 4:
+                return f"RUNNER ENV {kind}: reported {n} times this stage; {ask}"
+            return (f"RUNNER ENV {kind}: the fake-llm fixture is the runner's to handle, not yours and not the owner's. "
+                    "Run the tests through `run_tests.py --vm ...` (not by sourcing the env script directly): it rebuilds the "
+                    "fixture from the persistent checkout when that is safe, otherwise runs the DB-backed tests skipped under a "
+                    "`STACK-ENV: skipped` digest head, which you record in the build log and PR note. Never rebuild or restart "
+                    "a shared stack service yourself.")
         if not stack_repair.enabled(self.command):
             return f"RUNNER ENV {kind}: automatic repair is off (ASD_STACK_REPAIR is not 1); {ask}"
         if n > 4:
@@ -4410,11 +4421,15 @@ def selftest() -> int:
 
         # in a run: the gate off, a session's ENV line is answered "off"; on, the VM is started before the stage and on request
         fake_reset("Stopped")
-        scenario([{"turns": [[{"final": "RUNNER: ENV vm limactl: instance nightwatch is stopped"}], [{"final": "RUNNER: DONE"}]]}])
+        scenario([{"turns": [[{"final": "RUNNER: ENV vm limactl: instance nightwatch is stopped"}],
+                             [{"final": "RUNNER: ENV stack fake-llm fixture is stale"}], [{"final": "RUNNER: DONE"}]]}])
         p = start("W-12")
         rc = p.wait(timeout=60)
         check("repair run: gate off, the ENV line is answered 'off' and no command runs",
               rc == 0 and any(m.startswith("RUNNER ENV vm: automatic repair is off") for m in msgs(1)) and calls() == [])
+        check("repair run: a stale fake-llm fixture is routed to the runner's own handling, never an ask, gate off or not",
+              any(m.startswith("RUNNER ENV stack: the fake-llm fixture is the runner's to handle") and "ask_owner" not in m
+                  for m in msgs(1)) and calls() == [])
         env["ASD_STACK_REPAIR"] = "1"
         fake_reset("Stopped")
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])

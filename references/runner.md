@@ -724,4 +724,21 @@ is read into output. On drift:
   pulled or written to.
 - the full stack suite (`suite_markers`, for /stub) gets the sync but never the skip.
 Config keys, beside `stack_up` in `config/stack-repair.json`: `env_script`, `env_catalog`, `env_file`,
-`lease_probe`, `skip_env`, `suite_markers`.
+`lease_probe`, `skip_env`, `suite_markers`, `fixture_stamp`, `fixture_probe`, `fixture_rebuild`.
+
+**A stale shared fixture** (`stack_env.fixture()`, same caller, after the settings check; `ASD_STACK_FIXTURE_REBUILD=0`
+keeps the check but never rebuilds). The repo's env script refuses every DB-backed test when the shared fake-llm
+fixture serves another source stamp than the tree's, and the stamp includes the root `Cargo.toml`/`Cargo.lock`, so a
+dossier that changes a dependency or workspace lint always differs from development. The runner compares the tree's
+stamp (`fixture_stamp`, run in the tree) with the running fixture's (`fixture_probe`; not answering is not stale). When stale:
+- rebuild (`fixture_rebuild`) from the PERSISTENT checkout when its stamp equals the tree's and no run holds the stack
+  lease; under the repair lock, at most 4 per hour per VM, holding the stack lease for the build itself (the config's
+  command takes `flock` and exits 75 when it is taken). Never from a worktree; the persistent checkout is never
+  switched, pulled or written to;
+- otherwise (the stamps differ, the lease is held, the rebuild failed or left it stale) the run goes ahead without the env
+  script and with `skip_env`, digest headed `STACK-ENV: skipped — fake-llm fixture ...`. It is never an owner
+  question, and a session that reports the fixture as `RUNNER: ENV stack ...` is told to use `run_tests.py --vm` and
+  never to rebuild it. This does not depend on `ASD_STACK_REPAIR`;
+- the full stack suite (`suite_markers`, /stub) gets the rebuild, never the skip: when its tree's stamp differs from the
+  persistent checkout's it rebuilds from the tree being integrated, as it owns the stack for the whole run; a failed
+  rebuild is reported and the suite runs as asked.
