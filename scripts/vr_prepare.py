@@ -53,6 +53,9 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import build_slots  # noqa: E402
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_REL = os.path.join(".discovery", "visual-review")
 FN_RE = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
@@ -92,7 +95,7 @@ class Failed(Exception):
 
 def run(step: str, cmd: list, cwd: str | None = None, timeout: int = 900) -> str:
     try:
-        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=build_slots.held_env())
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise Failed(step, "%s: %s" % (cmd[0], exc))
     if r.returncode != 0:
@@ -229,6 +232,17 @@ def prepare(repo: str, dossier_id: str, base: str, head: str, scripts: str,
     touched = touched_functions(repo, base, head, dossier_id, calls)
     if crates == "derive":
         crates = changed_crates(repo, base, head)
+    # The extraction indexes a fresh copy of the tree with rust-analyzer, a full build's worth of work: it holds
+    # a host build slot (build_slots.py) like a gate run, so it neither starves under fifteen concurrent builds
+    # nor adds to them. The step timeouts start once the slot is held.
+    with build_slots.slot("vr_prepare " + repo, log=lambda m: print("vr_prepare: " + m, file=sys.stderr, flush=True)):
+        before_s, total_s = _extract(repo, base, head, scripts, work, touched, crates, layers, timeout)
+    return _summarise(repo, dossier_id, base, head, work, touched, crates, before_s, total_s)
+
+
+def _extract(repo, base, head, scripts, work, touched, crates, layers, timeout):
+    extract = os.path.join(scripts, "vr_extract.py")
+    diff = os.path.join(scripts, "vr_diff.py")
     t_start = time.time()
     py = sys.executable or "python3"
 
@@ -258,7 +272,10 @@ def prepare(repo: str, dossier_id: str, base: str, head: str, scripts: str,
     run("merge", [py, diff, "merge", "--before", os.path.join(work, "before.json"),
                   "--after", os.path.join(work, "after.json"),
                   "-o", os.path.join(work, "merged.json")])
+    return t_before, time.time() - t_start
 
+
+def _summarise(repo, dossier_id, base, head, work, touched, crates, t_before, t_total):
     with open(os.path.join(work, "merged.json"), encoding="utf-8") as fh:
         merged = json.load(fh)
     cand = candidates(merged, touched)
@@ -279,7 +296,7 @@ def prepare(repo: str, dossier_id: str, base: str, head: str, scripts: str,
         "node_status": counts,
         "no_call_hierarchy": not cand["calls"],
         "crates": crates if crates is not None else "all",
-        "seconds": {"before": round(t_before, 1), "total": round(time.time() - t_start, 1)},
+        "seconds": {"before": round(t_before, 1), "total": round(t_total, 1)},
     }
     with open(os.path.join(work, "summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2, sort_keys=True)
@@ -326,6 +343,7 @@ def _git(cwd, *args):
 
 
 def selftest() -> int:
+    os.environ["ASD_BUILD_SLOTS"] = "0"  # a self-test never waits on, or takes, a real host build slot
     ok = True
 
     def check(name, cond):
