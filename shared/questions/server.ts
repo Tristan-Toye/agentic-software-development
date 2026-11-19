@@ -16,7 +16,7 @@ import { join } from "node:path"
 import { pendingSlack, readRunThreadAsync, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
 import { startLagWatch } from "./lagwatch.ts"
 import { archStemOf, collapsedView, hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
-import { approveAll, buildAnswer, diagramsOf, MAX_BODY, ReviewError, isReviewQuestion, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
+import { approveAll, buildAnswer, diagramsOf, dossierIntent, MAX_BODY, ReviewError, isReviewQuestion, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
 import { collapsedDiagram, DiagramError, mapStatus, openDiagram } from "./vrmap.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
@@ -477,7 +477,7 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && path === "/api/visual-review") {
     const f = await vrFind(url.searchParams.get("dossier") ?? "", url.searchParams.get("repo") ?? "")
     if (!f.ok) return json({ error: f.error }, f.status)
-    try { return json({ ...(await visualReview(vrDir(f.root, f.dossier), f.dossier)), review: reviewState(vrDir(f.root, f.dossier), f.dossier) }) } catch (e) { return json({ error: "visual review failed: " + (e as Error).message }, 500) }
+    try { return json({ ...(await visualReview(vrDir(f.root, f.dossier), f.dossier)), review: reviewState(vrDir(f.root, f.dossier), f.dossier), intent: dossierIntent(f.root, vrDir(f.root, f.dossier), f.dossier) }) } catch (e) { return json({ error: "visual review failed: " + (e as Error).message }, 500) }
   }
   // The same view with some groups collapsed to one box: the collapsed graph and its layout (the page only draws it).
   if (req.method === "GET" && path === "/api/visual-review/layout" && url.searchParams.has("path")) {

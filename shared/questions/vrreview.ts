@@ -1,7 +1,7 @@
 // Visual review (VR-04): the owner's verdict per diagram element, kept in .discovery/visual-review/<ID>/review.json
 // (shape: references/visual-review/review.schema.json), and the answer text built from them for the one product question.
 // Pure file work, no server state: the routes in server.ts call these.
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { archStemOf, archStems, graphHash, reviewViews, viewFile, VR_VIEWS } from "./vrlayout.ts"
 
@@ -238,4 +238,33 @@ export function diagramsOf(root: string, dossier: string): { dir: string; l0: st
   if (!l0 && !l1 && !l2) return null
   const st = reviewState(dir, dossier)
   return { dir: rel, l0, l1, l2, arch: archStems(dir), review: { ...st.summary, exists: st.exists } }
+}
+
+/** The Intent tab of the review canvas: what the dossier wants to accomplish, as context before the diagrams. */
+export type Intent = { title: string; text: string; file: string }
+export const MAX_INTENT = 4000
+
+/** The title in the front matter of the dossier file of `dossier` under `root` (`<ID>-<slug>.md` or `<ID>.md`); "" when none. */
+function dossierTitle(root: string, dossier: string): string {
+  const dir = join(root, ".discovery", "dossiers")
+  try {
+    const n = readdirSync(dir).filter((x) => x === dossier + ".md" || (x.startsWith(dossier + "-") && x.endsWith(".md"))).sort()[0]
+    if (!n) return ""
+    const fm = /^---\n([\s\S]*?)\n---/.exec(readFileSync(join(dir, n), "utf8"))
+    const t = fm && /^title:\s*(.+)$/m.exec(fm[1])
+    return t ? t[1].trim().replace(/^(["'])(.*)\1$/, "$2") : ""
+  } catch { return "" }
+}
+
+/**
+ * The intent of a dossier for the Intent tab: `.discovery/visual-review/<ID>/intent.md`, the short plain summary the run
+ * writes with the diagrams (what the change sets out to accomplish), with the dossier's title. null when the run wrote none.
+ */
+export function dossierIntent(root: string, dir: string, dossier: string): Intent | null {
+  const own = join(dir, "intent.md")
+  try {
+    if (!statSync(own).isFile() || statSync(own).size > 4 * MAX_INTENT) return null
+    const t = readFileSync(own, "utf8").trim()
+    return t ? { title: dossierTitle(root, dossier), text: clip(t, MAX_INTENT), file: "intent.md" } : null
+  } catch { return null }
 }
