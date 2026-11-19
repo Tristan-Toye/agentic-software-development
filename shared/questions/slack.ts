@@ -105,6 +105,11 @@ export function pageLink(port: number | string, id: string): string {
   return `http://127.0.0.1:${port}/#${id}`
 }
 
+/** The dossier page, where the visual-review canvas is: a visual-review question links it rather than the question list. */
+export function dossierLink(port: number | string, repo: string, dossier: string): string {
+  return `http://127.0.0.1:${port}/repo/${encodeURIComponent(repo)}/${encodeURIComponent(dossier)}`
+}
+
 export function questionBlocks(q: Question, port: number | string, answered = false): any[] {
   const opts = q.options
     .map((o) => `*${esc(o.key)}* ${esc(o.label)}${o.consequence ? ` — ${esc(o.consequence)}` : ""}`)
@@ -132,7 +137,7 @@ export function questionBlocks(q: Question, port: number | string, answered = fa
   }
   blocks.push({
     type: "context",
-    elements: [{ type: "mrkdwn", text: `${esc(q.repo)} / ${esc(q.dossier)} / \`${esc(q.id)}\` · <${pageLink(port, q.id)}|open page>` }],
+    elements: [{ type: "mrkdwn", text: `${esc(q.repo)} / ${esc(q.dossier)} / \`${esc(q.id)}\` · ${q.topic === "visual-review" ? `<${dossierLink(port, q.repo, q.dossier)}|open the diagrams>` : `<${pageLink(port, q.id)}|open page>`}` }],
   })
   return blocks
 }

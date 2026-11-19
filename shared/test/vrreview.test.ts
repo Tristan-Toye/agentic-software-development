@@ -238,6 +238,8 @@ describe("Slack gets the question text only", () => {
   test("the question blocks have no verdicts, and an answered review shows the option only", () => {
     const open = parseQuestion("r.W-145.Q1", JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "Does this picture match what the feature should do?", qkind: "product", topic: "visual-review", repo: "r", dossier: "W-145", options: [{ key: "A", label: "Approved" }, { key: "B", label: "Changes requested" }] }))!
     expect(JSON.stringify(questionBlocks(open, 7317))).toContain("Does this picture match")
+    // The canvas is on the dossier page: the Slack link goes there, not to the question list.
+    expect(JSON.stringify(questionBlocks(open, 7317))).toContain("http://127.0.0.1:7317/repo/r/W-145|open the diagrams")
     const ans = q({ ts: "3", from: "owner", kind: "answer", option: "B", text: "changes requested\n- change L1 s2: secret comment", review: true })
     expect(ans.state).toBe("answered")
     const blocks = JSON.stringify(questionBlocks(ans, 7317, true))
