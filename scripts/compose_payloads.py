@@ -1257,18 +1257,35 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
     return ordered(fields, order)
 
 
+# The test families of shared/blind-read.ts `BLIND_READ_DIRS` (without .agent-staging), plus the
+# usual test file names. A path in one of them is a test, never an implementation file.
+TEST_DIR_SEGMENTS = {"tests", "test", "__tests__", "spec", "test-support", "testing"}
+TEST_FILE_RE = re.compile(r"(^test_.*\.py$|_test\.[A-Za-z]+$|\.(test|spec)\.[A-Za-z]+$|Tests?\.cs$)")
+
+
+def is_test_path(rel: str, root: str | None = None) -> bool:
+    """True for a repo-relative path in a test family, with a test file name, or (when `root` is
+    given) inside a .NET test project (check_payload.py `in_test_project`)."""
+    parts = rel.replace("\\", "/").split("/")
+    if any(seg in TEST_DIR_SEGMENTS for seg in parts[:-1]) or TEST_FILE_RE.search(parts[-1]):
+        return True
+    return bool(root) and cp.in_test_project(os.path.join(root, rel))
+
+
 def write_sealed_paths(staging: str, dossier_text: str, contract_paths: list[str]) -> None:
     """The files the integration test author's hook refuses to Read or Edit
     (shared/blind-read.ts `sealedRead`): every work package's implementation
     paths plus the --contract-paths files, one repo-relative path per line.
-    Rewritten on each compose."""
+    A test file a work package lists is never sealed: it is the file the author
+    may have to extend (W-173.Q2). Rewritten on each compose."""
+    root = os.path.dirname(staging)
     sealed: list[str] = []
     for cells in work_packages(dossier_text):
         if len(cells) < 2:
             continue
         for p in cells[1].split(","):
             p = p.strip().strip("`")
-            if p and p not in sealed:
+            if p and p not in sealed and not is_test_path(p, root):
                 sealed.append(p)
     for p in contract_paths:
         if p not in sealed:
@@ -2487,6 +2504,19 @@ def selftest() -> int:
               bool(pkg_paths) and all(p in sealed_lines for p in pkg_paths), repr((pkg_paths, sealed_lines)))
         check("integration-test-author sealed-paths.txt has no duplicates",
               len(sealed_lines) == len(set(sealed_lines)))
+        check("is_test_path: test families and test file names are tests, source is not",
+              all(is_test_path(x) for x in ("crates/platform/tests/nats_auth_live_test.rs", "tests/unit/test_retry.py",
+                                            "src/a.test.ts", "web/__tests__/b.ts", "pkg/x_test.go", "App.Tests/FooTests.cs"))
+              and not any(is_test_path(x) for x in ("src/flush.py", "crates/platform/src/nats_auth.rs",
+                                                     "src/lib/x.rs")))
+        st = tempfile.mkdtemp()
+        os.makedirs(os.path.join(st, ".agent-staging"))
+        write_sealed_paths(os.path.join(st, ".agent-staging"),
+                           "## Work packages\n\n| Package | Owned paths | Depends on |\n|---|---|---|\n"
+                           "| WP1 | `src/impl.rs`, `tests/live_test.rs` | x |\n", ["src/api.rs"])
+        sl = read_text(os.path.join(st, ".agent-staging", "sealed-paths.txt")).splitlines()[1:]
+        check("W-173.Q2: a work package's test file is not sealed; its implementation file is",
+              sl == ["src/impl.rs", "src/api.rs"], repr(sl))
         check("integration-test-author DOSSIER names the generated excerpt",
               ("DOSSIER: %s" % excerpt_path) in it_text)
         import io, contextlib
