@@ -29,6 +29,9 @@ Config: the repo's stack-repair config (scripts/stack_repair.py finds it), keys
   suite_markers  command words that mark the full stack suite (sync only: it is never run with tests skipped)
   fixture_stamp  argv printing the tree's fake-llm source stamp (`Sources:<sha>`); {stamp_dir} is the checkout it runs in
   fixture_probe  argv printing the stamp the RUNNING fixture serves (exit 1 = not answering, 2 = no stamp line)
+  leftover_projects list of {"name", "owner_probe" (argv printing the checkout that owns the project, empty = no project),
+                 "window_probe" (argv printing the suite window file: root, then holder pid; exit 0 when absent),
+                 "pid_probe" (argv with {pid}; exit 0 = alive), "down" (argv, run from {root} = the persistent checkout)}
   fixture_rebuild argv that rebuilds and restarts the fixture from {root} (it takes the stack lease itself and exits 75
                  when it is held)
 Placeholders as in stack_repair. Off with ASD_STACK_ENV_SYNC=0 (drift is then reported and skipped, never synced).
@@ -45,6 +48,15 @@ a rebuild from a worktree:
   skip     otherwise (stamps differ, lease held, rebuild failed or still stale): `STACK-ENV: skipped — fake-llm
            fixture ...`, the run goes ahead with skip_env, the stub's full suite covers those tests.
 Off with ASD_STACK_FIXTURE_REBUILD=0 (stale is then skipped, never rebuilt).
+Leftover project (`leftover()`, for a session's `RUNNER: ENV stack foreign_project_state ...`): a compose project an
+earlier suite left up from the persistent checkout makes a worktree's bring-up refuse. The repo's config lists such
+projects (`leftover_projects`); the runner tears one down itself ONLY when it can prove it is dead:
+  safe     the suite window's holder pid (line 2 of the window file) is no longer alive in the VM (or there is no
+           window) AND the stack lease is free. Then `down` runs from the PERSISTENT checkout under stack_repair's lock,
+           at most LEFTOVER_MAX_PER_HOUR per VM per hour. The repo's own down takes the window guard and the lease itself.
+  skip     otherwise (live holder, unreadable pid, lease held, down failed or left it up, cap reached): `STACK-ENV:
+           skipped — leftover project ...`; the session skips its live stack tests, the stub's full suite covers them.
+Never an owner question. Independent of ASD_STACK_REPAIR; off with ASD_STACK_LEFTOVER_REPAIR=0.
 
     stack_env.py check --tree T     prints `ok`, or the missing names; exit 1 on drift
     stack_env.py sync --tree T      prints the STACK-ENV line; exit 0 ok/synced, 1 skipped
@@ -68,6 +80,7 @@ sys.path.insert(0, HERE)
 import stack_repair  # noqa: E402
 
 MAX_PER_HOUR = 4
+LEFTOVER_MAX_PER_HOUR = 3
 NAME_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=")
 
 
@@ -270,6 +283,94 @@ def fixture(tree: str, cfg: dict, suite: bool = False, run=stack_repair._run, lo
                        f"{': ' + tail if tail else ''}")
 
 
+def leftover_config(tree: str) -> dict | None:
+    cfg = stack_repair.load_config(main_root(tree))
+    return cfg if cfg and cfg.get("leftover_projects") else None
+def _sub(template, cfg: dict, root: str, **extra) -> list[str]:
+    """Placeholder substitution by plain replace: these argv hold shell and docker `{{...}}` / `${...}` braces."""
+    sub = {"vm": cfg["vm"], "root": root, "compose_dir": cfg.get("compose_dir") or ".", **extra}
+    out = []
+    for a in template:
+        a = str(a)
+        for k, v in sub.items():
+            a = a.replace("{" + k + "}", str(v))
+        out.append(a)
+    return out
+def _window(proj: dict, cfg: dict, root: str, run) -> tuple[str, str] | None:
+    """(holder root, holder pid) of the suite window file; ("", "") when there is none; None when unreadable."""
+    if not proj.get("window_probe"):
+        return ("", "")
+    rc, out = run(_sub(proj["window_probe"], cfg, root), 60)
+    if rc != 0:
+        return None
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    return (lines[0], lines[1] if len(lines) > 1 else "") if lines else ("", "")
+def _leftover_one(proj: dict, tree: str, cfg: dict, root: str, run, log) -> dict:
+    name = str(proj.get("name") or "?")
+    def res(state: str, why: str) -> dict:
+        return {"state": state, "name": name, "why": why}
+    if not (proj.get("owner_probe") and proj.get("down") and proj.get("pid_probe") and cfg.get("lease_probe")):
+        return res("skipped", "the repo's config does not name every probe and the down command")
+    rc, out = run(_sub(proj["owner_probe"], cfg, root), 60)
+    if rc != 0:
+        return res("skipped", f"could not read the project's owner (exit {rc})")
+    owner = out.strip().splitlines()[-1].strip() if out.strip() else ""
+    if not owner:
+        return res("none", "the project is not up")
+    win = _window(proj, cfg, root, run)
+    if win is None:
+        return res("skipped", "could not read the suite window, so it is not proven dead")
+    holder, pid = win
+    if holder and not pid.isdigit():
+        return res("skipped", f"the suite window names {holder} without a readable holder pid, so it is not proven dead")
+    if holder and run(_sub(proj["pid_probe"], cfg, root, pid=pid), 60)[0] == 0:
+        return res("skipped", f"the suite window holder pid {pid} ({holder}) is still alive")
+    if not lease_free(cfg, tree, run):
+        return res("skipped", "another run holds the stack lease")
+    with stack_repair._Lock(900) as got:
+        if not got:
+            return res("skipped", "another stack repair held the lock for 15 min")
+        if not lease_free(cfg, tree, run):  # the lock holder before us may have started something
+            return res("skipped", "another run holds the stack lease")
+        now = time.time()
+        key = f"leftover:{cfg['vm']}"
+        if len(stack_repair._attempts(key, now)) >= LEFTOVER_MAX_PER_HOUR:
+            return res("skipped", f"{LEFTOVER_MAX_PER_HOUR} leftover repairs in the last hour, not trying again")
+        stack_repair._record(key, now)
+        argv = _sub(proj["down"], cfg, root)
+        log(f"stack-env: leftover project {name} (owner {owner}, window holder "
+            f"{('pid ' + pid + ' dead') if holder else 'none'}, lease free); {' '.join(argv)}")
+        rc, out = run(argv, 900)
+        left = run(_sub(proj["owner_probe"], cfg, root), 60)
+        if rc == 0 and left[0] == 0 and not left[1].strip():
+            return res("repaired", f"torn down with the repo's own down from {root}")
+        tail = out.strip().splitlines()[-1][:160] if out.strip() else ""
+        return res("skipped", f"the down exited {rc}{': ' + tail if tail else ''}")
+def leftover(tree: str, cfg: dict, only: str = "", run=stack_repair._run, log=lambda _t: None) -> dict:
+    """{"state": none|repaired|skipped, "name": str, "why": str}. Tears a leftover compose project down only when
+    provably dead (see the module docstring). `only` limits it to the projects whose name it contains. Never raises."""
+    projects = [p for p in cfg.get("leftover_projects") or [] if isinstance(p, dict) and (not only or str(p.get("name")) in only)]
+    if not projects:
+        return {"state": "none", "name": "", "why": "no leftover project is configured for this"}
+    if os.environ.get("ASD_STACK_LEFTOVER_REPAIR", "1") == "0":
+        return {"state": "skipped", "name": str(projects[0].get("name")), "why": "automatic leftover repair is off (ASD_STACK_LEFTOVER_REPAIR=0)"}
+    root = main_root(tree)
+    last = {"state": "none", "name": "", "why": ""}
+    for proj in projects:
+        try:
+            r = _leftover_one(proj, tree, cfg, root, run, log)
+        except Exception as e:  # noqa: BLE001 - never ends a run
+            r = {"state": "skipped", "name": str(proj.get("name")), "why": f"the check crashed: {e!r}"}
+        if r["state"] == "skipped":
+            return r
+        if r["state"] == "repaired" or last["state"] == "none":
+            last = r
+    return last
+def leftover_line(res: dict) -> str:
+    if res["state"] == "repaired":
+        return f"STACK-ENV: leftover project {res['name']} repaired ({res['why']})"
+    return (f"STACK-ENV: skipped — leftover project {res['name']} was not torn down ({res['why']}). "
+            "The live stack tests did not run; say so in the PR note (they run in the stub's full suite). Not an owner question.")
 def fixture_line(res: dict) -> str:
     stamps = f"this tree stamps {res['tree'][:20]}, the running fixture served {res['served'][:20]}"
     if res["state"] == "rebuilt":
@@ -474,6 +575,85 @@ def selftest() -> int:
         check("bounded: past the hourly cap it skips", r["state"] == "skipped" and "last hour" in r["why"])
         del cfg["fixture_stamp"]
         check("no fixture config: nothing checked", fixture(tree, cfg, False, ffake)["state"] == "ok")
+        # ---- a leftover compose project: torn down only when provably dead (fakes only; no VM, no ~/.agentic) ----
+        lcfg = {"vm": "lfake", "lease_probe": ["probe"], "leftover_projects": [{
+            "name": "proj-w1", "owner_probe": ["owner"], "window_probe": ["window"], "pid_probe": ["alive", "{pid}"],
+            "down": ["down", "{root}"]}]}
+        lf = {"up": True, "window": (0, main + "\n4242\n"), "alive": 1, "lease": 0, "down_rc": 0, "down_clears": True}
+        lcalls: list[list[str]] = []
+        def lfake(argv, _t):
+            lcalls.append(argv)
+            if argv[0] == "owner":
+                return 0, (main + "\n") if lf["up"] else "\n"
+            if argv[0] == "window":
+                return lf["window"]
+            if argv[0] == "alive":
+                return lf["alive"], ""
+            if argv[0] == "probe":
+                return lf["lease"], ""
+            if argv[0] == "down":
+                if lf["down_clears"]:
+                    lf["up"] = False
+                return lf["down_rc"], "down output"
+            return 127, ""
+        def downs():
+            return [c for c in lcalls if c[0] == "down"]
+        os.environ.pop("ASD_STACK_LEFTOVER_REPAIR", None)
+        r = leftover(tree, lcfg, "foreign_project_state owner=x proj-w1", lfake)
+        check("leftover: holder pid dead, lease free: down runs from the persistent checkout",
+              r["state"] == "repaired" and downs() == [["down", main]] and "repaired" in leftover_line(r))
+        lf["up"] = True
+        lcalls.clear()
+        lf["window"] = (0, "")
+        r = leftover(tree, lcfg, "", lfake)
+        check("leftover: no window file at all counts as dead", r["state"] == "repaired" and len(downs()) == 1)
+        lf.update(up=True, window=(0, main + "\n4242\n"), alive=0)
+        lcalls.clear()
+        r = leftover(tree, lcfg, "", lfake)
+        check("leftover: live holder pid: skipped, nothing torn down",
+              r["state"] == "skipped" and "alive" in r["why"] and downs() == []
+              and leftover_line(r).startswith("STACK-ENV: skipped \u2014 leftover project proj-w1") and "Not an owner question" in leftover_line(r))
+        lf.update(alive=1, window=(0, main + "\nnot-a-pid\n"))
+        r = leftover(tree, lcfg, "", lfake)
+        check("leftover: an unreadable pid is not proven dead: skipped", r["state"] == "skipped" and downs() == [])
+        lf.update(window=(1, ""))
+        r = leftover(tree, lcfg, "", lfake)
+        check("leftover: window probe fails: skipped", r["state"] == "skipped" and downs() == [])
+        lf.update(window=(0, main + "\n4242\n"), lease=1)
+        r = leftover(tree, lcfg, "", lfake)
+        check("leftover: lease held: skipped, nothing torn down", r["state"] == "skipped" and "lease" in r["why"] and downs() == [])
+        lf.update(lease=0, down_rc=1, down_clears=False)
+        r = leftover(tree, lcfg, "", lfake)
+        check("leftover: down fails: skipped", r["state"] == "skipped" and "exited 1" in r["why"])
+        lf.update(down_rc=0, down_clears=False)
+        r = leftover(tree, lcfg, "", lfake)
+        check("leftover: a down that leaves the project up is a skip, not a pass", r["state"] == "skipped")
+        lf.update(up=False)
+        lcalls.clear()
+        check("leftover: project not up: nothing to do, nothing run", leftover(tree, lcfg, "", lfake)["state"] == "none" and downs() == [])
+        lcfg["vm"] = "lfake2"  # a fresh hourly budget
+        lf.update(up=True, down_rc=0, down_clears=False)
+        for _ in range(LEFTOVER_MAX_PER_HOUR):
+            leftover(tree, lcfg, "", lfake)
+        lcalls.clear()
+        lf["down_clears"] = True
+        r = leftover(tree, lcfg, "", lfake)
+        check("leftover: past the hourly cap it skips without running down", r["state"] == "skipped" and "last hour" in r["why"] and downs() == [])
+        lcfg["vm"] = "lfake3"
+        os.environ["ASD_STACK_LEFTOVER_REPAIR"] = "0"
+        lcalls.clear()
+        r = leftover(tree, lcfg, "", lfake)
+        check("leftover: ASD_STACK_LEFTOVER_REPAIR=0: skipped, nothing run", r["state"] == "skipped" and lcalls == [])
+        os.environ.pop("ASD_STACK_LEFTOVER_REPAIR")
+        r = leftover(tree, lcfg, "some-other-project", lfake)
+        check("leftover: a project the refusal does not name is left alone", r["state"] == "none")
+        incomplete = {"vm": "lfake4", "leftover_projects": [{"name": "p", "down": ["down"]}]}
+        check("leftover: an incomplete config never tears down", leftover(tree, incomplete, "", lfake)["state"] == "skipped")
+        shipped = stack_repair.load_config("/x/config-harness")
+        check("the shipped config-harness entry lists nightwatch-w108 with every key",
+              bool(shipped) and shipped["leftover_projects"][0]["name"] == "nightwatch-w108"
+              and all(shipped["leftover_projects"][0].get(k) for k in ("owner_probe", "window_probe", "pid_probe", "down"))
+              and "opmode-stack.sh down" in shipped["leftover_projects"][0]["down"][-1])
     print(f"{'FAILED' if fails else 'passed'}: stack_env selftest")
     return 1 if fails else 0
 

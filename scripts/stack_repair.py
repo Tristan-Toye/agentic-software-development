@@ -20,7 +20,8 @@ stack_ps (optional override). Placeholders in argv items: {vm} {root} {compose_d
 
 One repair at a time across runners: an flock on <dir>/stack-repair.lock, where waiting runners re-detect once they
 get it (the holder has usually fixed it). Bound: at most MAX_PER_HOUR repair attempts per resource per hour, kept in
-<dir>/stack-repair-state.json; past that the caller asks the owner as before. <dir> is $ASD_STACK_REPAIR_DIR or ~/.agentic.
+<dir>/stack-repair-state.json; past that a /stub run asks the owner as before and a dossier run skips its stack tests to the stub (never an owner question).
+A leftover compose project is handled by stack_env.leftover(), independent of ASD_STACK_REPAIR. <dir> is $ASD_STACK_REPAIR_DIR or ~/.agentic.
 
     stack_repair.py --root R [--check]      print the findings (read-only)
 Python 3 standard library only.
