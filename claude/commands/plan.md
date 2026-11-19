@@ -319,6 +319,9 @@ that will never see the tests. The contract is the only thing they share.
   contract into source files, so the id would land in the contract commit;
   validation reports it as a DEFECT. Describe the behaviour, or cite the Jira
   key.
+- **Never cite a comment that starts with `(inferred)` as the contract.** It is
+  a guess about the code. A member the contract relies on needs an authored
+  comment: you write it, and it replaces the marker.
 - **A new event or typed-payload variant states, in its own documentation,
   every member it carries and every member it leaves empty.**
 - Use the language's own documentation form — XML doc comments for C#, rustdoc

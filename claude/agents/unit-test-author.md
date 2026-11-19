@@ -222,6 +222,10 @@ fixes the contract or the payload and spawns you again.
   invented for coverage becomes a false failure the moment the body changes
   legitimately.
 - Do not write a test whose assertion cannot fail.
+- A documentation comment that starts with `(inferred)` is a guess about the
+  code, not a promise. Derive no assertion from it. Treat that member as
+  undocumented. When no authored comment is left for the member, return
+  `GAP:` naming it.
 - Match the tests at `STYLE_PATHS`, or in `STYLE_SAMPLE`. A test that looks
   foreign to this repository will be rewritten by a human, and then it is
   wasted work.

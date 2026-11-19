@@ -81,6 +81,10 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
    A stub that extends a base class not listed in `BASE_TEMPLATES` is itself
    a `DEFECT:` (the edge promises cannot be checked), unless its
    documentation says the base adds no behaviour of its own.
+7. Check the marker. A documentation comment that starts with `(inferred)` is
+   a guess about the code, not a promise. A member whose only documentation
+   comment is inferred is a `DEFECT:` naming the member. Do not derive a
+   checklist line from that comment.
 
 ## Report
 

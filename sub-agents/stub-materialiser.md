@@ -71,7 +71,8 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
 
 1. Read `OWNED_PATHS` and the code around them, so each stub lands in the
    file the repo expects, with the imports it needs.
-2. Write each contract member: documentation comment byte-identical,
+2. Write each contract member: documentation comment byte-identical (an
+   `(inferred)` marker stays exactly as written: never add it, never remove it),
    signature byte-identical, visibility exactly as the contract states it,
    body = `STUB_STYLE`.
 3. Run `BUILD_CHECK`. Fix placement and imports until it passes. A check that

@@ -130,6 +130,11 @@ This is the step everything else depends on.
     as unfinished work, so the failing-loud marker is the default unless this
     repo's rules file names another.
 
+    **Never cite an `(inferred)` comment as the contract.** A comment that
+    starts with `(inferred)` is a guess about the code. A member the contract
+    relies on needs an authored comment: write it here, and it replaces the
+    marker. The stub materialiser keeps any marker you leave byte-identical.
+
     **Carry the definitions.** Every term `### Definitions` (under `## Contract`)
     defines goes into the documentation of each type or member that uses it: a
     blind author and the contract reviewer read the stubs alone. A term meant

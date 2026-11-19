@@ -217,6 +217,8 @@ Read `${PLUGIN_ROOT}/references/work-on/phase-1.md` at the start of this phase.
 
 Read `${PLUGIN_ROOT}/references/work-on/phase-2.md` at the start of this phase.
 
+A documentation comment marked `(inferred)` is a guess, not a contract. Never cite it as the contract: write an authored comment for the member.
+
 ## Phase 3 — Mechanical check before the fan-out
 
 Read `${PLUGIN_ROOT}/references/work-on/phase-3.md` at the start of this phase.
