@@ -103,7 +103,7 @@ from merge_dossier import now, read_json, repo_name, runs_dir  # noqa: E402
 import land_stub  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LIVE = ("running", "testing", "waiting", "queued", "paused")
+LIVE = ("running", "testing", "waiting", "queued", "paused", "parked")   # parked: a /work-on waiting for its blockers; run_dossier unparks it
 STAGE_OF = {"planned": "plan", "ready": "build", "building": "build", "review": "build", "pr": "fix", "done": "fix"}
 LAG_TICKS = 2   # ticks a finished run's effect may take to show in the dashboard's facts before the cycle pauses
 
@@ -342,7 +342,8 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
         m.update(stage="finished", state="finished", error="dropped"); return
     if r.get("state") in LIVE:   # waiting = an owner question: never answered, skipped or timed out here
         m["stage"] = STAGE_OF.get(status, m["stage"])
-        m["state"] = {"queued": "queued for a slot", "waiting": "waiting for the owner", "paused": "paused (usage limit)"}.get(r["state"], "running")
+        m["state"] = {"queued": "queued for a slot", "waiting": "waiting for the owner", "paused": "paused (usage limit)",
+                      "parked": "waiting for its blockers"}.get(r["state"], "running")
         m["lag"], m["retried"] = 0, False
         return
     if L and not fresh(m, r):
@@ -932,6 +933,9 @@ def selftest() -> int:
             write_atomic(state_path(repo), s_)
             facts_runs[:] = [run_(id, "ready", runner=runner("done", "work-on", pid=9, started="s1"))]
         asks = lambda id: [l for l in log() if l.startswith(f"runner chat {id} ")]
+        stuck("XP"); facts_runs[:] = [run_("XP", "ready", runner=runner("parked", "work-on", pid=9, started="s1"))]; tk(); tk(); tk()
+        check("a parked /work-on (waiting for blockers in the same cycle) is live: never asked, the cycle does not pause",
+              not asks("XP") and not st()["paused"] and members()["XP"]["state"] == "waiting for its blockers", (asks("XP"), st().get("paused"), members()["XP"]))
         stuck("X1"); tk(); n_ask = len(asks("X1"))
         check("a /work-on that ended with the dossier still ready waits a tick before the agent is asked", n_ask == 0 and not st()["paused"])
         tk()
