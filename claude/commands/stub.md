@@ -375,15 +375,19 @@ STUB-RESULT: green
 STUB-HEAD: <the full SHA of the head the receipt describes>
 STUB-GAPS: <the number of GAP lines left in the Step 6 table, 0 when none>
 STUB-UNRESOLVED: <the number of unresolved attributions and change requests, 0 when none>
-ATTENTION: <one line per thing the user should see before this merges>
+ATTENTION: <one line per thing the user should see or do before this merges>
 ```
 
 `STUB-RESULT` is `green` only when the run ended green; otherwise write `red`.
 A waived `SKIP` the owner recorded as standing (`land_stub.py --waive`, the
 `standing_waivers` of `~/.agentic/stub-auto-merge.json`) is named in the
 report, not as an `ATTENTION:` line, and so is a receipt the repository does
-not need. Write an `ATTENTION:` line for any other waived `SKIP`, an ADR-worthy lesson, a
-contradiction you ruled on, or anything else the record calls surprising. Leave
+not need. Write an `ATTENTION:` line for any other waived `SKIP`, a check
+someone must do after deploying, a change other systems see (an event or API
+shape), a contradiction you ruled on, or anything else the record calls
+surprising. An ADR-worthy lesson is not one: it goes under the report's
+`Lessons` heading as a `/plan D-n` seed, and an `ATTENTION:` line holds the
+scripted merge. Leave
 them out only when there is nothing to say; a dossier in flight is named in the
 report and needs none.
 
