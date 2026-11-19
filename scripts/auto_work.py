@@ -497,7 +497,7 @@ def step_cycle(st: dict, facts: dict) -> bool:
         if sr.get("command") == "stub" and sr.get("state") in ("failed", "stopped"):
             pause(st, f"the /stub run of {it['branch']} ended {sr['state']}", "stub-run"); return False
         land = read_json(os.path.join(runs_dir(), key + ".land.json"), {}) or {}
-        st["note"] = "waiting to merge the stub: " + ("; ".join(land.get("reasons") or []) or "the /stub run is going")
+        st["note"] = f"waiting to merge {it['branch']}: " + ("; ".join(land.get("reasons") or []) or "the /stub run is going")
         return False
     return False
 
@@ -681,7 +681,9 @@ def cmd_resume(root: str) -> int:
         elif p["kind"] == "integrate":
             st["integrate"] = {**st["integrate"], "launched": ""}
         elif p["kind"] == "stub-run":
-            ok, out = start_runner(root, st["stub"] or st["integrate"].get("branch", ""), "stub", st["integrate"].get("branch", ""))
+            # The /stub run is keyed by the stub being integrated (the dashboard's slug), not the one the cycle started after.
+            b = st["integrate"].get("branch") or st["stub"]
+            ok, out = start_runner(root, b.replace("/", "-"), "stub", b)
             if not ok:
                 print("auto_work: could not resume /stub: " + out); return 1
         st["paused"], st["phase"], st["ts"] = None, "", now()
@@ -887,7 +889,13 @@ def selftest() -> int:
         check("integrate reached /stub: land_stub is triggered", st()["step"] == "land" and len(landed) >= 1 and st()["phase"] == "landing", (st()["step"], landed))
         json.dump({"command": "stub", "state": "failed"}, open(P(f"{repo}.stub-2026-11-24.runner.json"), "w")); tk()
         check("a failed /stub run pauses the cycle", st()["paused"] and st()["paused"]["kind"] == "stub-run", st().get("paused"))
-        os.remove(P(f"{repo}.stub-2026-11-24.runner.json")); st_ = st(); st_["paused"] = None; write_atomic(state_path(repo), st_)
+        check("the note names the stub being integrated", "stub/2026-11-24" in st()["note"] or st()["paused"], st()["note"])
+        os.remove(P(f"{repo}.stub-2026-11-24.runner.json")); n_before = len(log()); cmd_resume(root)
+        check("resume starts /stub on the stub being integrated, not the one the cycle started after",
+              log()[n_before:] == [f"runner stub-2026-11-24 --root {root} --command stub --items stub/2026-11-24"] and st()["paused"] is None, log()[n_before:])
+        json.dump({"command": "stub", "state": "running"}, open(P(f"{repo}.stub-2026-11-24.runner.json"), "w")); tk()
+        check("while /stub runs, the note names that stub", st()["note"].startswith("waiting to merge stub/2026-11-24: "), st()["note"])
+        os.remove(P(f"{repo}.stub-2026-11-24.runner.json"))
         # The stub merges: that is the next START, with a new snapshot.
         facts_runs[:] = [run_("N", "ready"), run_("A", "done"), run_("M", "ready", ["N"])]
         w(state="stub", note="/stub done", ts="2026-11-17T13:00:00Z")   # the owner merges the PR by hand: GitHub says merged, the file still says `stub`

@@ -25,9 +25,10 @@ reached `/stub`, in a repository that opted in, is looked at again until its pul
    overrides that. Without one, CI on the head is the verdict (the stub's full run is CI).
 4. The pull request body carries the block `/stub` writes last (`primary-agents/stub.md`, Step 8):
    `STUB-RESULT: green`, `STUB-HEAD: <this head>`, `STUB-GAPS: 0`, `STUB-UNRESOLVED: 0`, and no `ATTENTION:` line.
-   `none` counts as 0. Two kinds of `ATTENTION:` line do not hold it: one that names a standing waiver the owner
-   recorded (`--waive TEXT`, matched as a case-insensitive substring), and, in a repository that needs no receipt,
-   one that only says the receipt is absent (that absence is the rule there, not news).
+   `none` counts as 0. Three kinds of `ATTENTION:` line do not hold it: one that names a standing waiver the owner
+   recorded (`--waive TEXT`, matched as a case-insensitive substring); in a repository that needs no receipt, one
+   that only says the receipt is absent (that absence is the rule there, not news); and an ADR-worthy lesson seed,
+   which belongs under the report's Lessons and asks for a `/plan`, not for a look before the merge.
 5. No open owner question on the stub or on a dossier the integration merged.
 6. No open pull request into the stub that belongs to this integration: its own `fix/*-stub*` or a stack it merged.
    A dossier that was still in flight moves to the next stub, so it holds nothing back.
@@ -120,6 +121,9 @@ def check_failures(rollup: list, context: str | None) -> list[str]:
 
 
 RECEIPT_ABSENT = re.compile(r"\bno (?:local[- ]stack )?receipt\b", re.I)
+# A lesson seed is a `/plan D-n` proposal for later, not something to see before this merge (podcast stub 2026-11-18-2
+# was held by "ATTENTION: ADR-worthy lesson seed — ..."). `primary-agents/stub.md` now puts seeds under Lessons.
+LESSON_SEED = re.compile(r"^(?:an? )?(?:ADR-worthy )?lesson(?: seed)?\b|^ADR-worthy\b", re.I)
 
 
 def result_failures(body: str, head: str, standing: list[str] | tuple = (), receipt: bool = True) -> list[str]:
@@ -147,6 +151,8 @@ def result_failures(body: str, head: str, standing: list[str] | tuple = (), rece
         if any(k in text.lower() for k in keys):
             continue
         if not receipt and RECEIPT_ABSENT.search(text):
+            continue
+        if LESSON_SEED.search(text):
             continue
         out.append("attention: " + text[:200])
     return out
@@ -416,6 +422,10 @@ def selftest() -> int:
         check("without them both lines hold", len(result_failures(att, head)) == 2, result_failures(att, head))
         check("an absent receipt still holds where one is needed",
               len(result_failures(att, head, ["W-007 criterion 18"], receipt=True)) == 1)
+        seeds = block + "ATTENTION: ADR-worthy lesson seed — the plan check has no prod step in CI (see Lessons).\nATTENTION: Lesson: pin the SDK\n"
+        check("a lesson seed holds nothing", not result_failures(seeds, head), result_failures(seeds, head))
+        check("a line that only mentions a lesson later still holds",
+              len(result_failures(block + "ATTENTION: External event change — see the lesson in D-7\n", head)) == 1)
         check("an unrelated attention line still holds under a waiver",
               len(result_failures(block + "ATTENTION: a contradiction was ruled\n", head, ["W-007 criterion 18"], receipt=False)) == 1)
 
