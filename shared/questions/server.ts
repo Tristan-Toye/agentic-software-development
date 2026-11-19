@@ -16,7 +16,7 @@ import { join } from "node:path"
 import { pendingSlack, readRunThreadAsync, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
 import { startLagWatch } from "./lagwatch.ts"
 import { archStemOf, collapsedView, hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
-import { buildAnswer, diagramsOf, MAX_BODY, ReviewError, isReviewQuestion, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
+import { approveAll, buildAnswer, diagramsOf, MAX_BODY, ReviewError, isReviewQuestion, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
 import { collapsedDiagram, DiagramError, mapStatus, openDiagram } from "./vrmap.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
@@ -524,6 +524,35 @@ export async function handle(req: Request): Promise<Response> {
       return json({ error: (e as Error).message }, 500)
     }
   }
+  // One click: every element of every diagram OK, then the review question answered Approved, rebuilt from review.json
+  // like any review answer. Refused (nothing written) when there is no open review question to answer.
+  if (path === "/api/visual-review/approve-all") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const raw = await req.text()
+    if (raw.length > MAX_BODY) return json({ error: "body is larger than " + MAX_BODY + " bytes" }, 413)
+    let b: any
+    try { b = JSON.parse(raw) } catch { return json({ error: "body must be JSON" }, 400) }
+    if (!b || typeof b !== "object" || Array.isArray(b)) return json({ error: "body must be a JSON object" }, 400)
+    const f = await vrFind(typeof b.dossier === "string" ? b.dossier : "", typeof b.repo === "string" ? b.repo : "")
+    if (!f.ok) return json({ error: f.error }, f.status)
+    const q = await vrQuestion(f.dossier, f.repo, f.runs)
+    const keys = q ? reviewOptions(q.options) : null
+    if (!q || !keys) return json({ error: "no open visual-review question for " + f.dossier }, 409)
+    try {
+      const st = approveAll(vrDir(f.root, f.dossier), f.dossier, b.hashes)
+      const a = buildAnswer(st, f.dossier)
+      if (a.option !== "A") return json({ error: "the review does not read as approved: " + st.summary.text, review: st }, 409)
+      const after = appendOwner(DIR, q.id, { kind: "answer", text: a.text, option: keys.A, via: "page", review: true })
+      void scan()
+      return json({ ok: true, review: st, question: after }, 201)
+    } catch (e) {
+      if (e instanceof ReviewError) return json({ error: e.message }, e.status)
+      if (e instanceof AnsweredError) return json({ error: "already answered" }, 409)
+      return json({ error: (e as Error).message }, 500)
+    }
+  }
   if (req.method === "GET" && path === "/api/visual-review/answer") {
     const f = await vrFind(url.searchParams.get("dossier") ?? "", url.searchParams.get("repo") ?? "")
     if (!f.ok) return json({ error: f.error }, f.status)
@@ -976,8 +1005,25 @@ export async function handle(req: Request): Promise<Response> {
     }
     // A visual-review answer is only accepted on the dossier's visual-review question, and its option and text are rebuilt
     // here from review.json, so the client cannot send an answer the verdicts do not support.
-    const review = kind === "answer" && b.review === true
-    if (review) {
+    // The question card's own Approved button on the visual-review question is the one-click approval: every element
+    // is marked OK in review.json first (Phase 9 promotes only what review.json approves), so it is never a bare "A".
+    const vrKeys = kind === "answer" && b.review !== true && isReviewQuestion(q) && q.dossier ? reviewOptions(q.options) : null
+    const approveAllNow = !!vrKeys && option === vrKeys.A
+    const review = (kind === "answer" && b.review === true) || approveAllNow
+    if (approveAllNow) {
+      const runs = (await allRuns()).filter((r) => r.id === q.dossier)
+      const f = await vrFind(q.dossier, questionRepo(q, runs) ?? "")
+      if (!f.ok) return json({ error: f.error }, f.status)
+      try {
+        const st = approveAll(vrDir(f.root, f.dossier), f.dossier)
+        const a = buildAnswer(st, f.dossier)
+        if (a.option !== "A") return json({ error: "the review does not read as approved: " + st.summary.text }, 409)
+        text = a.text
+      } catch (e) {
+        if (e instanceof ReviewError) return json({ error: e.message }, e.status)
+        throw e
+      }
+    } else if (review) {
       const keys = reviewOptions(q.options)
       if (!keys || !isReviewQuestion(q) || !q.dossier) return json({ error: "not a visual-review question" }, 400)
       const runs = (await allRuns()).filter((r) => r.id === q.dossier)
