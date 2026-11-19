@@ -104,7 +104,7 @@ details>summary{cursor:pointer;color:var(--mut);font-size:12.5px;margin:4px 0}
 .qa{margin:6px 0;font-size:13px}.qa .a{color:var(--ok)}
 iframe.report{display:block;width:100%;height:900px;border:0;border-radius:12px;background:transparent}
 .btn.lg{font-size:14px;font-weight:600;padding:7px 18px;border-radius:10px}.btn.lg.go{background:var(--acc);border-color:var(--acc);color:#fff}.btn.lg.go:disabled{background:var(--chip);border-color:var(--bd);color:var(--mut)}
-.tabs{display:flex;gap:4px;margin:16px 0 8px;border-bottom:1px solid var(--bd)}.tab{font:inherit;font-size:13px;padding:6px 14px;border:0;border-bottom:2px solid transparent;background:none;color:var(--mut);cursor:pointer}.tab.on{color:var(--fg);border-bottom-color:var(--acc);font-weight:600}
+.vrintent{max-width:860px;padding:12px 4px;line-height:1.55}.vrintent h3{margin:0 0 8px}.vrintent p,.vrintent ul{margin:0 0 10px}.tabs{display:flex;gap:4px;margin:16px 0 8px;border-bottom:1px solid var(--bd)}.tab{font:inherit;font-size:13px;padding:6px 14px;border:0;border-bottom:2px solid transparent;background:none;color:var(--mut);cursor:pointer}.tab.on{color:var(--fg);border-bottom-color:var(--acc);font-weight:600}
 .strip{display:flex;gap:12px;flex-wrap:wrap;align-items:stretch}.strip .card{flex:1 1 280px;max-width:420px;padding:12px 14px;gap:5px}.strip .card .title{font-size:.95rem}
 .sub{margin:18px 0 6px;font-size:.78rem;letter-spacing:.07em;text-transform:uppercase;color:var(--mut);font-weight:700}
 .now{border:1px solid var(--bd);border-left:4px solid var(--acc);border-radius:12px;background:var(--card);padding:14px 18px;margin:14px 0;box-shadow:var(--shadow)}
@@ -312,7 +312,10 @@ function vrBuild(host, key, data) {
   const bar = vrDom('div', 'vrbar', null, host); vrDom('h2', 'vrh', (data.mapPath && data.views[have[0]] && data.views[have[0]].title) || 'Change diagram', bar);
   const tabs = vrDom('span', 'vrgrp', null, bar), modes = vrDom('span', 'vrgrp', null, bar);
   const tb = {}, mb = {}; modes.hidden = !!data.mapPath;
-  ['L0', 'L1', 'L2'].concat(have.filter(k => k.indexOf('arch:') === 0)).forEach(k => { const isArch = k.indexOf('arch:') === 0; const b = vrDom('button', 'btn sm', isArch ? k.slice(5) : data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); if (isArch) b.title = 'New architecture diagram ' + k.slice(5) + ' (Architecture impact)'; b.type = 'button'; b.disabled = !data.views[k]; b.hidden = !!data.mapPath && !data.views[k]; tb[k] = b; b.onclick = () => { st.view = k; wkOff(); draw(); }; });
+  /* The Intent tab (before L0): the run's short summary of what the change sets out to accomplish (intent.md), as context for the review. */
+  const intent = !data.mapPath && data.intent ? data.intent : null; let inB = null;
+  if (intent) { inB = vrDom('button', 'btn sm', 'Intent', tabs); inB.type = 'button'; inB.title = 'What this change sets out to accomplish'; inB.onclick = () => setIntent(true); }
+  ['L0', 'L1', 'L2'].concat(have.filter(k => k.indexOf('arch:') === 0)).forEach(k => { const isArch = k.indexOf('arch:') === 0; const b = vrDom('button', 'btn sm', isArch ? k.slice(5) : data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); if (isArch) b.title = 'New architecture diagram ' + k.slice(5) + ' (Architecture impact)'; b.type = 'button'; b.disabled = !data.views[k]; b.hidden = !!data.mapPath && !data.views[k]; tb[k] = b; b.onclick = () => { setIntent(false); st.view = k; wkOff(); draw(); }; });
   VR_MODES.forEach(m => { const b = vrDom('button', 'btn sm', m[1], modes); b.type = 'button'; mb[m[0]] = b; b.onclick = () => { st.mode = m[0]; applyMode(); }; });
   const fitB = vrDom('button', 'btn sm', 'Fit all', bar); fitB.title = 'Show the whole diagram (labels may get small)'; fitB.type = 'button';
   const zin = vrDom('button', 'btn sm', '+', bar), zout = vrDom('button', 'btn sm', '−', bar); zin.type = zout.type = 'button'; zin.title = 'Zoom in'; zout.title = 'Zoom out';
@@ -328,6 +331,11 @@ function vrBuild(host, key, data) {
   const wbar = vrDom('div', 'vrwalk', null, host); wbar.hidden = true; wbar.setAttribute('role', 'group'); wbar.setAttribute('aria-label', 'Walkthrough');
   const wkPrev = vrDom('button', 'btn sm', '◀ Previous', wbar), wkInd = vrDom('strong', 'vrwi', '', wbar), wkNext = vrDom('button', 'btn sm', 'Next ▶', wbar), wkExit = vrDom('button', 'btn sm', 'Exit', wbar), wkLab = vrDom('span', 'vrwl', '', wbar); vrDom('span', 'small mut', 'Arrow keys or n / p to move, Esc to leave', wbar);
   wkPrev.type = wkNext.type = wkExit.type = 'button'; wkInd.setAttribute('aria-live', 'polite');
+  const inBox = vrDom('div', 'vrintent', null, host); inBox.hidden = true;
+  if (intent) { if (intent.title) vrDom('h3', '', intent.title, inBox); let ul = null;
+    String(intent.text).split('\n').forEach(l => { const t = l.trim(); if (!t) { ul = null; return; } const m = /^([-*]|\d+\.)\s+(.*)$/.exec(t);
+      if (m) { ul = ul || vrDom('ul', '', null, inBox); vrDom('li', '', m[2], ul); } else { ul = null; vrDom(/^#+\s/.test(t) ? 'h4' : 'p', '', t.replace(/^#+\s*/, ''), inBox); } });
+    vrDom('p', 'small mut', 'Written by the run with the diagrams (' + intent.file + '). The L0, L1 and L2 tabs show the change itself.', inBox); }
   const body = vrDom('div', 'vrbody', null, host), svg = vrEl('svg', { class: 'vrsvg', role: 'img', 'aria-label': 'Change diagram' }); const cv = vrDom('div', 'vrcv', null, body); cv.tabIndex = -1; cv.appendChild(svg);
   /* The hover card: the full text of whatever element the pointer is on (box, group, edge), at every zoom, since box text is cut and gets small. */
   const hovIt = new WeakMap(), hc = vrDom('div', 'vrhc', null, cv); hc.hidden = true; hc.setAttribute('role', 'tooltip'); let hovOn = null;
@@ -615,7 +623,8 @@ function vrBuild(host, key, data) {
   cv.addEventListener('keydown', wkKey); wbar.addEventListener('keydown', wkKey);
   wkB.onclick = () => { if (wk.on) wkOff(); else wkOn(); }; wkPrev.onclick = () => wkStep(-1); wkNext.onclick = () => wkStep(1); wkExit.onclick = wkOff;
   if (reviewing && !st.review) st.review = data.review;
-  draw(); paintBar(); setFs(!!st.fs);
+  function setIntent(on) { on = !!on && !!intent; st.intent = on; inBox.hidden = !on; body.hidden = on; leg.hidden = on || !!data.mapPath; if (inB) inB.setAttribute('aria-pressed', String(on)); if (on) { wkOff(); Object.keys(tb).forEach(k => tb[k].setAttribute('aria-pressed', 'false')); } }
+  draw(); paintBar(); setFs(!!st.fs); setIntent(st.intent === undefined ? !!intent : st.intent);
 }
 
 // ---- state ----

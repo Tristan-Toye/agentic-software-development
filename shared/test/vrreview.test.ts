@@ -4,7 +4,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { approveAll, buildAnswer, diagramsOf, isReviewQuestion, MAX_ANSWER, MAX_COMMENT, readReview, reviewOptions, reviewState, setVerdict, ReviewError } from "../questions/vrreview.ts"
+import { approveAll, buildAnswer, diagramsOf, dossierIntent, isReviewQuestion, MAX_ANSWER, MAX_COMMENT, readReview, reviewOptions, reviewState, setVerdict, ReviewError } from "../questions/vrreview.ts"
 import { questionBlocks } from "../questions/slack.ts"
 import { parseQuestion } from "../questions/store.ts"
 import { PAGE } from "../questions/page.ts"
@@ -211,6 +211,25 @@ describe("answer text", () => {
     const line = (extra: object) => JSON.stringify({ ts: "1", from: "agent", kind: "question", text: "t", qkind: "product", repo: "r", dossier: "W-1", options: opts, ...extra })
     expect(parseQuestion("r.W-1.Q1", line({ topic: "visual-review" }))!.topic).toBe("visual-review")
     expect(parseQuestion("r.W-1.Q1", line({}))!.topic).toBe("")
+  })
+})
+
+describe("the Intent tab", () => {
+  test("intent.md with the dossier's title; none without intent.md; an empty or oversize file is none", () => {
+    const root = mkdtempSync(join(tmpdir(), "vrr-int-"))
+    const dir = join(root, ".discovery", "visual-review", "W-145")
+    mkdirSync(dir, { recursive: true }); mkdirSync(join(root, ".discovery", "dossiers"), { recursive: true })
+    writeFileSync(join(root, ".discovery", "dossiers", "W-145-a-thing.md"), "---\nid: W-145\ntitle: \"Do the thing\"\nstatus: building\n---\n## Approach\nX.\n")
+    expect(dossierIntent(root, dir, "W-145")).toBeNull()
+    writeFileSync(join(dir, "intent.md"), "  \n")
+    expect(dossierIntent(root, dir, "W-145")).toBeNull()
+    writeFileSync(join(dir, "intent.md"), "The change makes X faster.\n- callers unchanged\n")
+    expect(dossierIntent(root, dir, "W-145")).toEqual({ title: "Do the thing", text: "The change makes X faster.\n- callers unchanged", file: "intent.md" })
+    writeFileSync(join(dir, "intent.md"), "x".repeat(20000))
+    expect(dossierIntent(root, dir, "W-145")).toBeNull()
+    rmSync(join(root, ".discovery", "dossiers"), { recursive: true }); writeFileSync(join(dir, "intent.md"), "Short.")
+    expect(dossierIntent(root, dir, "W-145")!.title).toBe("")
+    rmSync(root, { recursive: true, force: true })
   })
 })
 
@@ -565,7 +584,7 @@ else:
     expect(m.message).toMatch(/timed out|could not be checked/)
   })
   test("the page code: verdict controls, Send review, banner and repo view exist and keep the no-markup rule", () => {
-    for (const w of ["Send review", "Save verdict", "Remove from scope", "Not yet looked at", "/api/visual-review/review", "/api/visual-review/answer", "Product map and diagrams", "vr-open", "review: true", "Approve all and send", "/api/visual-review/approve-all"]) expect(PAGE, w).toContain(w)
+    for (const w of ["Send review", "Save verdict", "Remove from scope", "Not yet looked at", "/api/visual-review/review", "/api/visual-review/answer", "Product map and diagrams", "vr-open", "review: true", "Approve all and send", "/api/visual-review/approve-all", "vrintent", "setIntent"]) expect(PAGE, w).toContain(w)
   })
 })
 

@@ -379,7 +379,16 @@ payload holds no diagram file and no dossier text from this step.
    file they saw; any later edit of `l1.json` or of a draft (a contract
    revision that re-runs the author) changes that hash, and Phase 9's
    promotion then requires the owner's fresh approval of the new file.
-4. Ask the owner ONE product question with
+4. Write `<OUT_DIR>/intent.md` yourself: the owner's context for the review,
+   shown on the canvas as the **Intent** tab before L0. 60 to 150 words of
+   plain prose from the dossier's Problem and Approach, for a reader who has
+   not read the dossier: what the change sets out to accomplish and why (the
+   problem in a sentence or two), what changes and for whom, and what stays
+   the same or is out of scope. Short `- ` bullets are fine; no code
+   identifiers unless the change is about one, no evidence anchors, no
+   contract detail. Rewrite it whenever a contract revision changes the
+   approach.
+5. Ask the owner ONE product question with
    `ask_owner.py ask --kind product --topic visual-review`
    (`references/owner-questions.md`). The `--topic` marker is what makes it
    the visual-review question: the dashboard canvas and the answer path
@@ -417,7 +426,7 @@ payload holds no diagram file and no dossier text from this step.
    later. On exit 1 do **not** record `VISUAL-REVIEW: approved`: ask the owner
    again (`ask_owner.py`, same topic) naming the element ids it printed, who
    `ok` them on the dashboard canvas; repeat until it exits 0.
-5. Record the outcome as a `## Build log` line, exactly one of:
+6. Record the outcome as a `## Build log` line, exactly one of:
 
    ```
    VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n>, arch <stem> <n>, arch <stem> <n> (<dashboard link>)
