@@ -100,6 +100,24 @@ Only a driver with `READY-FOR-ON`, and only with the owner's yes:
 summary; evidence moves to `driver-evidence/`. Enable the drivers READY at the same time in one command; if the A/B
 (g) turns bad with several on, go back to shadow for all of them and bisect, one at a time.
 
+### Switching a driver on = graduation
+
+The orchestrator must not know a driver, its modes or shadow once the driver is on: the driver's procedure is
+simply how the phase is done ("the new truth of working"). So switching on is a PR, not only a file edit:
+
+1. Rewrite the phase doc paragraph as the plain procedure, with the `on` behaviour and no mention of drivers,
+   modes, shadow, `ASD_DRIVER_<NAME>` or "when enabled". Do the same in every other place the agents read
+   (`references/`, `primary-agents/`, `sub-agents/`, `skills/`, and the generated `claude/` and `opencode/`).
+2. Remove the mode branch from the code: the `on` path becomes unconditional and the variable check is deleted.
+3. Retire the name from `driver_modes.py`: move it from `NAMES` to `GRADUATED` (with the date), and take it out of
+   the shadow and A/B reports. A stale key in an existing `drivers.json` is ignored without a warning.
+4. Rebuild the generated copies and add the decision-log row (graduated).
+
+`set NAME=on` in `drivers.json` is only a short bridge until that PR merges. Nothing may stay `on` for a driver that
+has not graduated. The `driver_modes.py --selftest` enforces the rule: it fails while a graduated name or its
+`ASD_DRIVER_<NAME>` still appears under `references/`, `primary-agents/`, `sub-agents/`, `skills/`, `claude/` or
+`opencode/`. A graduated driver is rolled back by reverting its graduation PR, not by `set NAME=off`.
+
 ## (g) The A/B
 
 Arm B: the next 6 dossiers that start after (f). Arm A (baseline): 6 dossiers from history, built since
@@ -156,4 +174,5 @@ One row per decision (shadow start, READY-FOR-ON, switch to on, KEEP, BACK-TO-SH
 | Date | Driver | Mode | Dossiers | Verdict |
 |------|--------|------|----------|---------|
 | 2026-11-20 | flow_coverage_gate | on | 9 shadow dossiers | Switched to `on` by the owner after a human read: no false blocks, CI enforces the same rule. |
+| 2026-11-20 | flow_coverage_gate | graduated | switched on today | Graduated: the phase-9 paragraph is now the plain procedure, the mode branch and the `NAMES` entry are gone, `driver_modes.GRADUATED` holds the name (this PR). |
 | 2026-11-20 | vr_promote_preview | shadow | 25 shadow runs | KEEP-SHADOW: 25/25 builds failed because the steps lacked `to`/`call_kind`; the shadow now collects real data (this PR). |

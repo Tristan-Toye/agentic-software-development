@@ -119,13 +119,12 @@
    `docs/architecture/*.json`) is a stated skip: copy it into the PR
    description.
 
-   When `ASD_DRIVER_FLOW_COVERAGE_GATE` is `shadow` the gate also runs
-   `flow_coverage.py --changed` and prints `SHADOW flow-coverage:` notes (one
-   `would fail` line per new entry point in a changed file with no seq diagram
-   and no exemption, or one `would pass` line); they are never defects, so
-   change nothing for them. When it is `on`, each such entry is a DEFECT:
-   anchor it in a `seq-*` diagram, or exempt it with a `why` in
-   `docs/architecture/flow-coverage.json`.
+   The gate also runs `flow_coverage.py --changed`: each new entry point in a
+   changed file with no seq diagram and no exemption is a DEFECT. Anchor it in
+   a `seq-*` diagram, or exempt it with a `why` in
+   `docs/architecture/flow-coverage.json`. A repository with no
+   `docs/architecture/seq-*.json` gets a `SKIP flow-coverage` line, stated in
+   the PR description like the other `SKIP` lines.
 
    Every `REVIEW` line is settled before the PR opens, one of two ways. Open
    the diagram with `arch_find` (`query` the path, `diagram` the stem), and if
