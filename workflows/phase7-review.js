@@ -97,7 +97,8 @@ function unreachedFromText(text) {
   for (let i = 0; i < lines.length; i++) {
     const m = /^\s*(?:[-*>]\s*)?[*_`]*UNREACHED[*_`]*\s*(?:locations)?\s*[:\-][*_`]*\s*(.*)$/i.exec(lines[i])
     if (!m) continue
-    const inline = m[1].trim()
+    // #442: `UNREACHED: none. NOTICED: none` on one line: the NOTICED field is not part of the list.
+    const inline = m[1].replace(/[\s.;,]*\b[*_`]*NOTICED[*_`]*\s*[:\-].*$/i, '').trim()
     if (inline !== '' && !isNone(inline)) {
       for (const part of inline.split(/\s*;\s*|\s*,\s+(?=[`\w./-]+[:/.])/)) {
         const loc = part.replace(/^[`*_\s]+|[`*_.\s]+$/g, '')

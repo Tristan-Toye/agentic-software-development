@@ -754,6 +754,16 @@ def contract_paths(contract: str) -> list[str]:
 CONTRACT_MEMBER_RE = re.compile(r"\b(?:def|fn|func|function)\s+([A-Za-z_]\w*)")
 
 
+CHECKLIST_ID_RE = re.compile(r"^(?:[A-Z]+\d+(?:\.\d+)*\s+)?(?:\[[^\]]*\]\s+)*")
+
+
+def checklist_member_name(member: str) -> str:
+    """The member a checklist line names, read after its `<PREFIX><n>.<m>` id and any `[tag]`
+    (`NU1.1 [whole-value] escaped_path_text` -> `escaped_path_text`), last `.`/`:`/`#` segment."""
+    bare = CHECKLIST_ID_RE.sub("", member.strip(), count=1) or member
+    return re.split(r"[.:#]", bare)[-1].strip().strip("()")
+
+
 def check_checklist(where: str, path: Path, fm: dict, contract: str, log: str, status: str, rep: Report) -> None:
     """The promise checklist is an artefact, `.discovery/checklists/<ID>.md`, not a log mention.
     It must exist once the build is past planning, and its members must be in the contract.
@@ -775,10 +785,10 @@ def check_checklist(where: str, path: Path, fm: dict, contract: str, log: str, s
     if not members:
         rep.defect(where, f"checklist {f.name} holds no `<member> — <category>: <promise>` line")
         return
-    phantom = [m for m in members if not re.search(r"(?<![\w])" + re.escape(re.split(r"[.:#]", m)[-1].strip("()")) + r"(?![\w])", contract)]
+    phantom = [m for m in members if not re.search(r"(?<![\w])" + re.escape(checklist_member_name(m)) + r"(?![\w])", contract)]
     if phantom:
         rep.defect(where, f"checklist {f.name} names members the contract does not: {', '.join(phantom)}")
-    tails = {re.split(r"[.:#]", m)[-1].strip("()") for m in members}
+    tails = {checklist_member_name(m) for m in members}
     uncovered = sorted({m for m in CONTRACT_MEMBER_RE.findall(contract) if m not in tails and m not in members})
     if uncovered:
         rep.warn(where, f"contract members with no checklist line (fine when the docs state no promise): "
@@ -1592,9 +1602,10 @@ def plan_lrn_renumber(
     """Plan fresh numbers for the branch's own colliding LRN headers.
 
     A header is this branch's own when its full text ('### LRN-NNNN: title')
-    sits in the branch tip ledger but not in the merge-base ledger — sibling
-    titles differ, so a same-numbered sibling section is never mistaken for
-    own. `merged` is the current working-tree text per ledger, `tips` and
+    sits in the branch tip ledger but not in the merge-base ledger and its
+    number is not in the merge base either (a same-id heading with changed text
+    is an amendment) — sibling titles differ, so a same-numbered sibling
+    section is never mistaken for own. `merged` is the current working-tree text per ledger, `tips` and
     `bases` come from git. Returns the id map and, per ledger, the set of
     own header lines.
     """
@@ -1603,10 +1614,13 @@ def plan_lrn_renumber(
     for rel, text in merged.items():
         merged_headers = {h for _, h in lrn_numbered_headers(text)}
         base_headers = {h for _, h in lrn_numbered_headers(bases.get(rel, ""))}
+        # #446: an id the merge base already holds is an amendment (heading text may
+        # have changed), never minted by this branch, so it is never renumbered.
+        base_nums = {n for n, _ in lrn_numbered_headers(bases.get(rel, ""))}
         own = {
             h
-            for _, h in lrn_numbered_headers(tips.get(rel, ""))
-            if h not in base_headers and h in merged_headers
+            for n, h in lrn_numbered_headers(tips.get(rel, ""))
+            if h not in base_headers and n not in base_nums and h in merged_headers
         }
         own_by_ledger[rel] = own
         for num, header in lrn_numbered_headers(text):
@@ -2031,6 +2045,15 @@ def selftest_finalize() -> bool:
         f"sibling section untouched"
     )
 
+    amend_lrn, _ = plan_lrn_renumber(
+        {"l": "### LRN-0001: new title\n\nx\n\n### LRN-0001: sibling\n\ny\n"},
+        {"l": "### LRN-0001: new title\n\nx\n"},
+        {"l": "### LRN-0001: old title\n\nx\n"},
+    )
+    case = amend_lrn == {}
+    ok &= case
+    print(f"{'PASS' if case else 'FAIL'} — LRN planner: an amended rule (same id, new heading text) is not renumbered (#446): {amend_lrn}")
+
     print("\n--- selftest: finalize end-to-end on a fixture repository ---")
     if not shutil.which("git"):
         print("SKIP  git not found; the repository scenario was not run")
@@ -2328,6 +2351,22 @@ def selftest() -> int:
             f"\n{'PASS' if caught_pcl else 'FAIL'} — missing checklist artefact "
             f"{'detected, a log mention is not one, phantom members refused' if caught_pcl else 'NOT detected'}"
         )
+
+        # #462 #459 #444: an id-prefixed (and tagged) checklist line names its member after the id, for a Python contract too
+        (ck / "W-017.md").write_text("FA1.1 [whole-value] flush — return meaning: gives 3\nIS1.2 flush — return: gives 4\n")
+        idp_rep = validate_dossier(d / "W-017-nocheck.md", root)
+        (ck / "W-017.md").write_text("FA1.1 ghost_member — return meaning: gives 3\n")
+        idg_rep = validate_dossier(d / "W-017-nocheck.md", root)
+        (ck / "W-017.md").write_text("flush — return meaning: gives 3\n")
+        py_contract = "def select_one_binary(x):\n    \"\"\"pick\"\"\"\n"
+        id_ok = (checklist_member_name("NU1.1 escaped_path_text") == "escaped_path_text"
+                 and checklist_member_name("FA1.11 [whole-value] select_one_binary") == "select_one_binary"
+                 and checklist_member_name("mod.flush") == "flush" and checklist_member_name("flush()") == "flush")
+        id_ok = id_ok and not any("checklist" in x for x in idp_rep.defects) \
+            and any("ghost_member" in x for x in idg_rep.defects) \
+            and "select_one_binary" in CONTRACT_MEMBER_RE.findall(py_contract)
+        print(f"{'PASS' if id_ok else 'FAIL'} — checklist id prefix and [tag] are not part of the member name")
+        caught_pcl = caught_pcl and id_ok
 
         print("\n--- selftest: a criterion with no owner/env is a DEFECT ---")
         noowner = GOOD_DOSSIER.replace(

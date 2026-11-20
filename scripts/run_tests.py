@@ -527,8 +527,11 @@ def suite_notes(text: str, root: str | None, max_items: int) -> list[str]:
 def parse_generic(text: str) -> tuple[Totals, list[Failure], bool]:
     # MSBuild's summary prints `0 Error(s)` / `0 Warning(s)` on a green build: a count, not a failure.
     zero_count = re.compile(r"^\s*0 (?:Error|Warning)\(s\)\s*$")
+    # A line is classified by its leading status: a `PASS`/`ok` line whose test name contains FAIL is a pass.
+    passed = re.compile(r"^\s*(?:PASS|PASSED|ok)\b", re.I)
     keep = [line for line in ANSI_RE.sub("", text).splitlines()
-            if re.search(r"\bFAIL(?:ED)?\b|\bError\b", line) and not zero_count.match(line)]
+            if re.search(r"\bFAIL(?:ED)?\b|\bError\b", line) and not zero_count.match(line)
+            and not passed.match(line)]
     if not keep:
         return Totals(), [], False
     return Totals(failed=len(keep)), [Failure(line.strip()) for line in keep], True
@@ -1133,6 +1136,11 @@ def selftest() -> int:
 
     parser, totals, fails = parse_log(GENERIC_LOG)
     check("generic fallback triggers", parser == "generic" and totals.failed == 2)
+
+    parser, totals, fails = parse_log("PASS: refuses FAIL (exit 1)\nPASS  rejects FAILED input\n2 passed, 0 failed\n")
+    check("generic: a PASS line whose name contains FAIL is no failure (#441)", totals.failed == 0 and not fails)
+    parser, totals, fails = parse_log("PASS: a FAIL (exit 1)\nFAIL: b\n")
+    check("generic: a leading FAIL still counts (#441)", totals.failed == 1)
 
     parser, totals, fails = parse_log(NO_PARSE_LOG)
     check("no-parse log parses to nothing", parser == "" and not fails)
