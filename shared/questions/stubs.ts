@@ -113,7 +113,7 @@ export function outsideStubPrs(
   }
   return [...out].map(([id, l]) => ({ id, prs: l.sort((a, b) => a.number - b.number) })).sort((a, b) => a.id.localeCompare(b.id))
 }
-export type StubsView = { scannedAt: string; repos: RepoStubs[]; openWork: { repo: string; updated: string }[] }
+export type StubsView = { scannedAt: string; repos: RepoStubs[]; openWork: { repo: string; updated: string }[]; refreshing?: boolean }
 
 // ---- pure parsers ----
 /** The PR number a first-parent merge subject stands for, or null. */
@@ -373,6 +373,8 @@ let cachedView: StubsView = readViewCache<StubsView>("stubs") ?? { scannedAt: ""
 let inflight: Promise<void> | null = null
 let lastScan = 0
 let lastSig = ""
+/** Whether a scan has finished in this process: until then the view is the one read from disk at start. */
+let scannedLive = false
 async function rescan(questions: Question[]): Promise<void> {
   const { view, groups } = await offThread("stubs", questions, () => buildStubsWithRoots(questions))
   const byMain = new Map<string, string[]>(groups)
@@ -395,6 +397,7 @@ async function rescan(questions: Question[]): Promise<void> {
   const next = { ...view, openWork: openWork.sort((a, b) => a.repo.localeCompare(b.repo)) }
   const sig = JSON.stringify([next.repos.map((r) => [r.repo, r.stubs.map((s) => [s.branch, s.state, s.stage, s.pr, s.dossiers.map((d) => d.id), s.members])]), next.openWork])
   cachedView = next
+  scannedLive = true
   writeViewCache("stubs", next)
   if (sig !== lastSig) { lastSig = sig; emitChange("stubs") }
   emitChange("scan")
@@ -405,14 +408,13 @@ export function refreshAfterControl(repo: string): void {
   lastScan = 0
 }
 /** Cached view; a rescan starts in the background when older than 30 s. Answered Q&A is refreshed on every call. */
-export async function getStubs(questions: () => Question[]): Promise<StubsView> {
-  if (!inflight && Date.now() - lastScan > 30_000) {
-    lastScan = Date.now()
-    inflight = rescan(questions()).catch(() => {}).finally(() => { inflight = null })
-  }
-  if (!cachedView.scannedAt && inflight) await inflight
+export async function getStubs(questions: () => Question[], opts: { fresh?: boolean } = {}): Promise<StubsView> {
+  const start = () => { lastScan = Date.now(); inflight = rescan(questions()).catch(() => { lastScan = 0 }).finally(() => { inflight = null }) }
+  if (!inflight && Date.now() - lastScan > 30_000) start()
+  if (inflight && (!cachedView.scannedAt || (opts.fresh && !scannedLive))) await inflight
+  if (opts.fresh && !scannedLive) { if (!inflight) start(); await inflight }
   const qs = questions()
-  return { ...cachedView, repos: cachedView.repos.map((r) => { const ans = answeredBy(qs, (q) => questionInRepo(q, r.repo, r.main)); return { ...r, stubs: r.stubs.map((s) => ({ ...s, dossiers: s.dossiers.map((d) => ({ ...d, answered: ans.get(d.id) ?? [] })) })) } }) }
+  return { ...cachedView, refreshing: !scannedLive || inflight !== null, repos: cachedView.repos.map((r) => { const ans = answeredBy(qs, (q) => questionInRepo(q, r.repo, r.main)); return { ...r, stubs: r.stubs.map((s) => ({ ...s, dossiers: s.dossiers.map((d) => ({ ...d, answered: ans.get(d.id) ?? [] })) })) } }) }
 }
 /** The generated report for a repo; generated on demand when missing. */
 export async function openWorkHtml(repo: string, questions: Question[]): Promise<string | null> {

@@ -184,7 +184,8 @@ export function withReport(items: DeferredItem[], report: string): DeferredItem[
 }
 /** An answered question, as shown under the dossier it came from. */
 export type QA = { id: string; text: string; answer: string; option: string; asked: string; answeredAt: string }
-export type RunsView = { scannedAt: string; runs: Run[] }
+/** `refreshing` is set on a served view while it is the last one read from disk (or a rebuild is running): the page notes it. */
+export type RunsView = { scannedAt: string; runs: Run[]; refreshing?: boolean }
 
 /** Statuses of a dossier that is in flight: not planned, ready, done or dropped. */
 export const RUNNING = ["building", "review", "pr"]
@@ -335,6 +336,14 @@ export function readDossier(file: string): string {
   const p = Bun.spawnSync(["git", "-C", m[1], "show", `${m[2]}:${m[3]}`], { stdout: "pipe", stderr: "ignore" })
   if (p.exitCode !== 0) throw new Error(`cannot read ${m[3]} on ${m[2]}`)
   return p.stdout.toString()
+}
+/** `readDossier` without blocking the event loop: a `git:` file's `git show` runs as an async child. */
+export async function readDossierAsync(file: string): Promise<string> {
+  const m = file.match(GIT_FILE)
+  if (!m) return (await readText(file)) ?? (() => { throw new Error(`cannot read ${file}`) })()
+  const r = await shRun(["git", "-C", m[1], "show", `${m[2]}:${m[3]}`], undefined, 30_000)
+  if (r.code !== 0) throw new Error(`cannot read ${m[3]} on ${m[2]}`)
+  return r.stdout
 }
 /**
  * Whether a branch name is the build branch of dossier `id`: the id as a whole token, any case, or the dossier's own
@@ -550,6 +559,17 @@ export function listTranscripts(projects?: string): TInfo[] {
 // ---- roots ----
 export async function sh(cmd: string[], cwd: string | undefined, timeoutMs: number): Promise<string> {
   return (await shOrNull(cmd, cwd, timeoutMs)) ?? ""
+}
+/** An async child with its exit code and both streams (a timeout kills it: code 124). The handlers' replacement for Bun.spawnSync, which freezes every other request while it runs. */
+export async function shRun(cmd: string[], cwd: string | undefined, timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> {
+  try {
+    const p = Bun.spawn(cmd, { cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore" })
+    let timedOut = false
+    const t = setTimeout(() => { timedOut = true; p.kill() }, timeoutMs)
+    const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited])
+    clearTimeout(t)
+    return { code: timedOut ? 124 : code, stdout, stderr }
+  } catch (e) { return { code: 127, stdout: "", stderr: String((e as Error)?.message ?? e) } }
 }
 /** `sh`, but a failure (non-zero exit, timeout, spawn error) is null instead of "", for a caller that must not read
  * a failed command as an empty answer. */
@@ -835,19 +855,29 @@ export function applyOwnerRulings(d: Deferred, text: string | null): Deferred {
     return i.keptOpen ? { ...i, keptOpen: false, ruling: "", ownerKept: false } : i
   }) }
 }
-/** Cached view; a rescan starts in the background when older than 30 s. */
-export async function getRuns(questions: () => Question[]): Promise<RunsView> {
-  if (!inflight && Date.now() - lastScan > 30_000) {
-    lastScan = Date.now()
-    inflight = offThread<RunsView>("runs", questions(), () => buildRuns(questions())).then((v) => {
-      const sig = JSON.stringify(v.runs.map((r) => [r.repo, r.id, r.status, r.phase, r.lastActivity, r.session.state, r.pr, r.session.activity?.doing ?? "", r.session.activity?.background.length ?? 0]))
-      cached = v
-      writeViewCache("runs", v)
-      if (sig !== lastSig) { lastSig = sig; emitChange("runs") }
-      emitChange("scan")
-    }).catch(() => {}).finally(() => { inflight = null })
-  }
-  if (!cached.scannedAt && inflight) await inflight
+/** Whether a scan has finished in this process: until then the view is the one read from disk at start. */
+let scannedLive = false
+function startScan(questions: () => Question[], build: (q: Question[]) => Promise<RunsView>): void {
+  lastScan = Date.now()
+  inflight = offThread<RunsView>("runs", questions(), () => build(questions())).then((v) => {
+    const sig = JSON.stringify(v.runs.map((r) => [r.repo, r.id, r.status, r.phase, r.lastActivity, r.session.state, r.pr, r.session.activity?.doing ?? "", r.session.activity?.background.length ?? 0]))
+    cached = v
+    scannedLive = true
+    writeViewCache("runs", v)
+    if (sig !== lastSig) { lastSig = sig; emitChange("runs") }
+    emitChange("scan")
+  }).catch(() => { lastScan = 0 }).finally(() => { inflight = null })
+}
+/**
+ * Cached view; a rescan starts in the background when older than 30 s, and every caller shares the one in flight.
+ * A restart serves the disk copy at once with `refreshing: true`. `fresh` is for a caller that acts on the view (run
+ * control, merge, routing): it waits for the first scan of this process, so it never acts on the disk copy.
+ */
+export async function getRuns(questions: () => Question[], opts: { fresh?: boolean; build?: (q: Question[]) => Promise<RunsView> } = {}): Promise<RunsView> {
+  const build = opts.build ?? buildRuns   // `build` is a test seam
+  if (!inflight && Date.now() - lastScan > 30_000) startScan(questions, build)
+  if (inflight && (!cached.scannedAt || (opts.fresh && !scannedLive))) await inflight
+  if (opts.fresh && !scannedLive) { if (!inflight) startScan(questions, build); await inflight }
   const linked = linkQuestions(cached.runs, questions())
   const lives = await mapLimit(cached.runs, IO_CONCURRENCY, liveStore)
   const live = cached.runs.map((r, i) => {
@@ -857,5 +887,5 @@ export async function getRuns(questions: () => Question[]): Promise<RunsView> {
   const statusOf = (repo: string) => (id: string) => live.find((x) => x.repo === repo && x.id === id)?.status
   // A pressed run button stays hidden while its run starts (pending.ts): the server-side marker outlives re-renders and tabs.
   const now = Date.now()
-  return { ...cached, runs: live.map((r) => applyPending({ ...r, controls: controlsFor(r, statusOf(r.repo)) }, now)) }
+  return { ...cached, refreshing: !scannedLive || inflight !== null, runs: live.map((r) => applyPending({ ...r, controls: controlsFor(r, statusOf(r.repo)) }, now)) }
 }
