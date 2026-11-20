@@ -2178,6 +2178,10 @@ print("started")
         g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "same", cwd=pusher); g("push", "-q", "origin", "plan/same-file", cwd=pusher); g("fetch", "-q", "origin", cwd=clone)
         same = collisions(clone, "development", "plan/same-file", [])[0]
         check("ids: a dossier already on the base under the same file is the same dossier; another file with its id is a collision", [f for _, f in same] == [".discovery/dossiers/W-147-other.md"], str(same))
+        g("checkout", "-q", "development", cwd=pusher); g("checkout", "-q", "-b", "plan/edit-only", cwd=pusher)
+        open(os.path.join(pusher, ".discovery", "dossiers", "W-147-first.md"), "w").write("---\nid: W-147\nblocked_by: [W-211]\n---\n# first, edited\n")
+        g("add", "-A", cwd=pusher); g("commit", "-q", "-m", "edit only", cwd=pusher); g("push", "-q", "origin", "plan/edit-only", cwd=pusher); g("fetch", "-q", "origin", cwd=clone)
+        check("ids: a branch that only edits a dossier already on the base adds no id and is never renumbered", collisions(clone, "development", "plan/edit-only", [])[0] == [] and added_ids(clone, "development", "plan/edit-only")[0] == [], str(collisions(clone, "development", "plan/edit-only", [])))
         check("non-code PR: one that changes code is refused with why, never merged", s434.get("state") == "failed" and "changes code" in s434.get("error", "") and "pr merge 434" not in calls)
         s438 = read_json(os.path.join(rdir, f"{rn}.pr-438.merge.json"), {})
         check("non-code PR: a branch behind its base is updated, then merged, not dropped", s438.get("state") == "merged" and "pr update-branch 438" in calls
