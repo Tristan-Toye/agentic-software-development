@@ -215,6 +215,14 @@ the recorded checkpoints.
   whose record says working and whose process is gone goes on from its
   checkpoints. A run dead for over `ASD_RUNNER_REVIVE_HOURS` (default 48) stays
   down, and one that dies 3 times within an hour is left stopped.
+  A session is resumed (`claude --resume`) only on the account whose config dir holds its
+  transcript (`projects/*/<session>.jsonl`): after a switch of account (a usage limit on
+  every other one) the stage starts fresh from the checkpoints, with one event saying so,
+  and a resume that comes back "No conversation found with session ID" (also as an error
+  result) is the same fresh start, never a failure or an owner question.
+  Auto-work treats a member whose facts read `stopped` but whose `runner.json` still holds
+  a live state as restarting for `ASD_AUTO_WORK_GRACE` (the revive is on its way), and a
+  paused cycle (member, relaunch) clears itself once that run is live again.
 - **Several accounts:** `scripts/setup_claude_account.sh NAME` adds a login
   in its own config dir (`CLAUDE_CONFIG_DIR`, sharing settings, plugins and
   hooks with `~/.claude` by symlink) and registers it in

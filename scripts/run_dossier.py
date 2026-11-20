@@ -1557,6 +1557,14 @@ class Runner:
         failure outside the model, where the transcript still holds all the work and the prompt cache may still be warm."""
         sid = str(self.state.get("session") or "")
         if sid and os.environ.get("ASD_RUNNER_RESUME", "1") != "0":
+            if not transcript_path(sid, (self.account or {}).get("dir")):
+                # The session was created under another account's config dir (the run switched accounts after a
+                # usage limit): `claude --resume` here would find nothing. Start fresh from the checkpoints.
+                if getattr(self, "_foreign_logged", "") != sid:
+                    self._foreign_logged = sid
+                    self.event(f"session {sid[:8]} belongs to another account or was not found under account "
+                               f"{self.account['name']}; starting fresh from the checkpoints", "running")
+                return
             self.resume_sid, self.resume_acct = sid, self.account["name"]
 
     def background(self) -> list[str]:
@@ -2453,6 +2461,11 @@ class Runner:
                 kill_group(self.proc)
                 self.end_process()
                 return "network", text.strip().splitlines()[-1][:300] if text.strip() else "network error"
+            if err and self.resumed and "No conversation found with session ID" in (text or ""):
+                # claude (2.1.x) reports an unknown session as a turn that ended in an error, not as an early exit
+                kill_group(self.proc)
+                self.end_process()
+                return "fresh", text.strip().splitlines()[-1][:200]
             if err:
                 kill_group(self.proc)
                 self.end_process()
@@ -3314,6 +3327,10 @@ ask = os.path.join(os.environ["ASD_ASK_OWNER"])
 def out(o):
     sys.stdout.write(json.dumps(o) + "\n"); sys.stdout.flush()
 argm = sys.argv[sys.argv.index("--model") + 1] if "--model" in sys.argv else ""
+if "--resume" in sys.argv and script.get("no_resume_result"):   # claude 2.1.x: no init, the error comes as a result event
+    out({"type": "result", "subtype": "error_during_execution", "is_error": True, "session_id": "",
+         "result": "No conversation found with session ID: " + sys.argv[sys.argv.index("--resume") + 1]})
+    import time; time.sleep(30)
 if "--resume" in sys.argv and script.get("no_resume"):   # claude finds no such session: it exits before any event
     sys.stderr.write("No conversation found with session ID: " + sys.argv[sys.argv.index("--resume") + 1] + "\n"); sys.exit(1)
 out({"type": "system", "subtype": "init", "session_id": f"sess-{n}", "model": script.get("init_model", argm)})
@@ -3491,6 +3508,12 @@ def selftest() -> int:
                    ASD_RUNNER_ADAPTIVE="0", ASD_ACCOUNTS=os.path.join(tmp, "no-accounts.json"), ASD_ACCOUNT_STATE=os.path.join(tmp, "e2e-state.json"),
                    ASD_USAGE_DIR=os.path.join(tmp, "usage-e2e"),
                    ASD_DRIVERS_FILE=os.path.join(tmp, "no-drivers.json"))   # never the owner's real ~/.agentic/drivers.json
+        # the transcripts the fake sessions "left": a run only resumes a session whose transcript its account holds
+        tproj0 = os.path.join(tmp, "tproj0")
+        os.makedirs(os.path.join(tproj0, "p"))
+        for i in range(1, 6):
+            open(os.path.join(tproj0, "p", f"sess-{i}.jsonl"), "w").write("{}\n")
+        env["ASD_TRANSCRIPTS_DIR"] = tproj0
         for k in [k for k in env if k.startswith("ASD_DRIVER_")]:
             del env[k]
 
@@ -3843,6 +3866,21 @@ def selftest() -> int:
               p.wait(timeout=60) == 0 and not os.path.exists(qfile("repo.W-92.Q1"))
               and any("could not be resumed (No conversation found" in t for t in texts("W-92"))
               and "--resume" not in open(os.path.join(fdir, "env.3")).read() and msgs(3)[0] == f"/{PLUGIN}:work-on W-92")
+        scenario([{"crash": 143}, {"no_resume_result": True}, {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-93")
+        check("outside kill: 'No conversation found' as an error result is a fresh stage too, no owner question",
+              p.wait(timeout=60) == 0 and state_of("W-93").get("state") == "done" and not os.path.exists(qfile("repo.W-93.Q1"))
+              and any("could not be resumed (No conversation found" in t for t in texts("W-93"))
+              and "--resume" not in open(os.path.join(fdir, "env.3")).read() and msgs(3)[0] == f"/{PLUGIN}:work-on W-93")
+        # the run's recorded session sits under another account's config dir: a restart of the same account starts fresh
+        write_json(os.path.join(rdir, "repo.W-95.runner.json"), {"pid": 2 ** 22 + 12347, "state": "running", "root": root, "command": "work-on",
+                                                              "session": "sess-elsewhere", "account": "default"})
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("W-95")
+        check("restart: a session whose transcript is not under the account's dir is not resumed; one event says so",
+              p.wait(timeout=60) == 0 and "--resume" not in open(os.path.join(fdir, "env.1")).read()
+              and msgs(1)[0] == f"/{PLUGIN}:work-on W-95"
+              and sum("belongs to another account or was not found" in t for t in texts("W-95")) == 1)
         scenario([{"crash": 143}, {"crash": 137}, {"crash": 143}])
         p = start("W-91")
         check("outside kill: past ASD_RUNNER_KILL_RETRIES the owner rules", bool(until(lambda: os.path.exists(qfile("repo.W-91.Q1")))))
@@ -4255,7 +4293,7 @@ def selftest() -> int:
         env.update(ASD_TRANSCRIPTS_DIR=os.path.join(tmp, "projects2"), ASD_RUNNER_FWD_EVERY="0.2", ASD_RUNNER_IDLE="60")
         p = start("W-38")
         rc = p.wait(timeout=60)
-        for k in ("ASD_TRANSCRIPTS_DIR", "ASD_RUNNER_FWD_EVERY"): env.pop(k)
+        env.pop("ASD_RUNNER_FWD_EVERY"); env["ASD_TRANSCRIPTS_DIR"] = tproj0
         env["ASD_RUNNER_IDLE"] = "1"
         check("dropped notice: sent on as a message, the session wakes and finishes, once",
               rc == 0 and sum(1 for m in msgs(1) if m.startswith("BACKGROUND TASK FINISHED") and "bxdrop1" in m) == 1
@@ -4277,7 +4315,7 @@ def selftest() -> int:
         threading.Thread(target=finish_wf, daemon=True).start()
         p = start("W-39")
         rc = p.wait(timeout=60)
-        env.pop("ASD_TRANSCRIPTS_DIR"); env["ASD_RUNNER_IDLE"] = "1"
+        env["ASD_TRANSCRIPTS_DIR"] = tproj0; env["ASD_RUNNER_IDLE"] = "1"
         tw = texts("W-39")
         check("quiet while a workflow runs: no nudge until it is done, then the run finishes",
               rc == 0 and any("background task(s) still running" in t for t in tw)
@@ -4359,7 +4397,7 @@ def selftest() -> int:
         env["ASD_TRANSCRIPTS_DIR"] = os.path.join(tmp, "projects")
         p = start("W-31")
         rc = p.wait(timeout=60)
-        env.pop("ASD_TRANSCRIPTS_DIR")
+        env["ASD_TRANSCRIPTS_DIR"] = tproj0
         held = [t for t in texts("W-31") if t.startswith("stage end held")]
         check("background: the stage end is held while it runs, then the run goes on", rc == 0 and len(held) == 1 and "Run the VM suite" in held[0]
               and any(m.startswith("RUNNER: the stage cannot end yet") for m in msgs(1)))
