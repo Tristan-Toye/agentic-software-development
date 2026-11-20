@@ -298,7 +298,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
             "DOSSIER_ID", "PROBLEM", "APPROACH", "CONTRACT", "WORK_DIR", "OUT_DIR",
             "SCRIPTS_DIR", "REPO", "DIAGRAMS_NEW",
         },
-        "optional": {"ERRORS"},
+        "optional": {"ERRORS", "STEP_ROUTING"},
     },
 }
 
@@ -2327,6 +2327,8 @@ def selftest() -> int:
                 ".discovery/visual-review/W-014/work/summary.json": "{}"}
     case("diagram author clean", da, "diagram-author", False, repo_files=da_files, must_warn="")
     case("diagram author: ERRORS is optional", da + "ERRORS: |\n  l1.json: x\n", "diagram-author", False,
+         repo_files=da_files)
+    case("diagram author: STEP_ROUTING is optional", da + "STEP_ROUTING: all\n", "diagram-author", False,
          repo_files=da_files)
     case("diagram author: missing field", da.replace("REPO: {REAL}\n", ""), "diagram-author", True,
          "REPO is missing", repo_files=da_files)

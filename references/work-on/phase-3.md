@@ -365,7 +365,10 @@ payload holds no diagram file and no dossier text from this step.
      `VISUAL-REVIEW: skipped — <reason>` and set the switch to `skipped — <reason>`.
 2. Spawn `diagram-author` (payload file in `.agent-staging/payloads/`): `DOSSIER_ID`,
    the dossier's `## Problem` and `## Approach`, the contract, `WORK_DIR`,
-   `OUT_DIR`, `SCRIPTS_DIR`, `REPO`, and `DIAGRAMS_NEW` (the stems of the
+   `OUT_DIR`, `SCRIPTS_DIR`, `REPO`, `STEP_ROUTING: all` only when
+   `ASD_DRIVER_VR_PROMOTE_PREVIEW` is `shadow` or `on` (omit the field otherwise: the author then
+   writes `to` and `call_kind` only for `Diagrams new:` flows; with it, on every added or changed
+   L1 step, so the shadow run below builds real drafts), and `DIAGRAMS_NEW` (the stems of the
    `Diagrams new:` line, one `<stem> — <what>` per line, verbatim; `none` when the dossier has no such
    line). Lint it first:
    `python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind diagram-author --host <claude|opencode> --live-dossier <live dossier>`
@@ -397,7 +400,9 @@ payload holds no diagram file and no dossier text from this step.
    re-spawn the author with the output in `ERRORS`, same two-attempt limit.
    When `ASD_DRIVER_VR_PROMOTE_PREVIEW` is `shadow`: run
    `python3 "${PLUGIN_ROOT}/scripts/vr_promote.py" --shadow-all --dossier-id <ID> --repo <repo>`
-   once; read nothing from its output, it only records evidence.
+   once; read nothing from its output, it only records evidence. (The author got `STEP_ROUTING: all`
+   for this reason: without `to` and `call_kind` on the steps of a flow with no `Diagrams new:` stem
+   every shadow build fails by construction.)
    The owner's verdicts are recorded in `review.json` against the hash of the
    file they saw; any later edit of `l1.json` or of a draft (a contract
    revision that re-runs the author) changes that hash, and Phase 9's
