@@ -108,6 +108,11 @@ of every existing type the contract reads, and each payload ends in a
 `PAYLOAD-END: <label> <hash>` sentinel line. `--no-stub-hints` leaves the
 `# stub locations` aid out of OWNED_PATHS.
 
+`--seal PAYLOAD` ends a hand-written payload of any kind (a document-drafter one,
+which this script cannot compose) with its `PAYLOAD-END` line, replacing a stale
+one. `--path-prepend DIR` / `--env-script FILE` (implementer, the values the run
+passes to run_tests.py) fill COMMIT_ENV, the lines run before `git commit`.
+
 `--hook-outputs STEP:GLOB` (implementer, repeatable) appends an
 `EXPECTED_HOOK_OUTPUTS:` sub-list to HOOKS: the paths a named commit-hook step
 rewrites on every commit, which the implementer commits through and lists under
@@ -417,6 +422,12 @@ def contract_text_for(ctx: dict) -> str:
     return text
 
 
+def keep_slash(raw: str, resolved: str) -> str:
+    """#419: a TEST_PATHS entry ending in `/` names an owned directory; normpath
+    drops the slash, so the author would write one file at that path instead."""
+    return resolved + "/" if raw.endswith("/") and not resolved.endswith("/") else resolved
+
+
 def absolutise_list_field(field: Field, root: str) -> None:
     """TEST_PATHS and its siblings leave absolute: each comma-or-line entry
     that is relative is joined under --root (#170), so check_payload.py and
@@ -431,7 +442,7 @@ def absolutise_list_field(field: Field, root: str) -> None:
             token if (not token.strip()
                       or token.strip().startswith(("#", "@@"))
                       or os.path.isabs(token.strip()))
-            else os.path.normpath(os.path.join(root, token.strip()))
+            else keep_slash(token.strip(), os.path.normpath(os.path.join(root, token.strip())))
             for token in tokens)
         out_lines.append(rebuilt)
     field.value = "\n".join(out_lines)
@@ -794,6 +805,10 @@ def ci_environment(root: str) -> str | None:
     return "\n".join(seen[k] for k in CI_ENV_KEYS)
 
 
+NO_KEY_SUBJECT = ("a conventional-commit subject with no ticket key and no dossier ID: `feat: <what>`, "
+                  "`fix: <what>` or `chore: <what>`; the dossier ID is local and never appears in a commit")
+
+
 def compose_implementer(ctx: dict) -> list[Field]:
     """WORKTREE_DIR/BRANCH: mechanical — build mode forks a per-package
     worktree and branch suffix (`references/payloads/implementer.md`,
@@ -895,10 +910,21 @@ def compose_implementer(ctx: dict) -> list[Field]:
             "HOOKS", "what this repo's commit hooks do to a partly migrated tree, or "
             "`none` when verified there are none"), block=True,
     )
+    commit_env = ['export PATH="%s:$PATH"' % d for d in getattr(args, "path_prepend", None) or []]
+    if getattr(args, "env_script", None):
+        commit_env.append('. "%s"' % args.env_script)
+    if commit_env:
+        # #458: the hook runs toolchain binaries; the agent's shell may not have them on PATH
+        fields["COMMIT_ENV"] = Field("COMMIT_ENV", "\n".join(commit_env), block=True)
     fields["STANDARDS"] = Field("STANDARDS", os.path.join(
         ctx["plugin_root"], "skills", "standards", "engineering-standards.md"))
-    fields["JIRA_KEY"] = Field("JIRA_KEY", fm.get("jira", placeholder(
-        "JIRA_KEY", "the dossier's jira: front-matter field")))
+    jira = fm.get("jira", placeholder("JIRA_KEY", "the dossier's jira: front-matter field"))
+    if jira.strip().lower() in ("null", "none", "~"):
+        # #431: no ticket by the owner's ruling; the subject form is stated, never left to a fallback
+        fields["JIRA_KEY"] = Field("JIRA_KEY", "none")
+        fields["COMMIT_SUBJECT"] = Field("COMMIT_SUBJECT", NO_KEY_SUBJECT)
+    else:
+        fields["JIRA_KEY"] = Field("JIRA_KEY", jira)
 
     apply_overrides(fields, sets, blocks={"CRS", "FAILURES", "SHARED_IDIOM", "VERIFY_EMBEDDED", "HOOKS", "CONTRACT"})
     if "FAILURES" in fields and not is_placeholder(fields["FAILURES"].value) \
@@ -916,7 +942,7 @@ def compose_implementer(ctx: dict) -> list[Field]:
     order = (["WORKTREE_DIR", "BRANCH", "MODE", "CONTRACT"]
              + (["PACKAGE", "SHARED_IDIOM", "OWNED_PATHS", "CRITERIA"] if mode == "build"
                 else ["CRS", "FAILURES", "OWNED_PATHS"])
-             + ["TEST_COMMAND", "HOOKS", "VERIFY_EMBEDDED", "STANDARDS", "JIRA_KEY"])
+             + ["TEST_COMMAND", "HOOKS", "COMMIT_ENV", "VERIFY_EMBEDDED", "STANDARDS", "JIRA_KEY", "COMMIT_SUBJECT"])
     return ordered(fields, order)
 
 
@@ -1272,12 +1298,32 @@ def is_test_path(rel: str, root: str | None = None) -> bool:
     return bool(root) and cp.in_test_project(os.path.join(root, rel))
 
 
-def write_sealed_paths(staging: str, dossier_text: str, contract_paths: list[str]) -> None:
+def own_test_paths(value: str, root: str) -> list[str]:
+    """#418: the repo-relative entries of a payload's own TEST_PATHS (a trailing
+    `/` marks a directory), for the seal to leave out."""
+    out = []
+    for token in re.split(r"[,\n]", value):
+        token = token.strip()
+        if not token or token.startswith(("#", "@@")):
+            continue
+        rel = os.path.relpath(token, root) if os.path.isabs(token) else os.path.normpath(token)
+        out.append(rel + "/" if token.endswith("/") else rel)
+    return out
+
+
+def is_own_path(path: str, own: list[str]) -> bool:
+    return any(path == o or (o.endswith("/") and path.startswith(o)) for o in own)
+
+
+def write_sealed_paths(staging: str, dossier_text: str, contract_paths: list[str],
+                       own_tests: list[str] = ()) -> None:
     """The files the integration test author's hook refuses to Read or Edit
     (shared/blind-read.ts `sealedRead`): every work package's implementation
     paths plus the --contract-paths files, one repo-relative path per line.
     A test file a work package lists is never sealed: it is the file the author
-    may have to extend (W-173.Q2). Rewritten on each compose."""
+    may have to extend (W-173.Q2), and neither is any path in the payload's own
+    TEST_PATHS (#418: `own_tests`, repo-relative, a trailing `/` a directory).
+    Rewritten on each compose."""
     root = os.path.dirname(staging)
     sealed: list[str] = []
     for cells in work_packages(dossier_text):
@@ -1285,10 +1331,10 @@ def write_sealed_paths(staging: str, dossier_text: str, contract_paths: list[str
             continue
         for p in cells[1].split(","):
             p = p.strip().strip("`")
-            if p and p not in sealed and not is_test_path(p, root):
+            if p and p not in sealed and not is_test_path(p, root) and not is_own_path(p, own_tests):
                 sealed.append(p)
     for p in contract_paths:
-        if p not in sealed:
+        if p not in sealed and not is_own_path(p, own_tests):
             sealed.append(p)
     with open(os.path.join(staging, "sealed-paths.txt"), "w", encoding="utf-8") as fh:
         fh.write("# sealed: implementation files the integration test author may not Read or Edit "
@@ -1328,7 +1374,8 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     with open(excerpt_path, "w", encoding="utf-8") as fh:
         fh.write(excerpt_text_)
 
-    write_sealed_paths(staging, dossier_text, ctx["args"].contract_paths)
+    write_sealed_paths(staging, dossier_text, ctx["args"].contract_paths,
+                       own_test_paths(sets.get("TEST_PATHS", ""), root))
     contract_text = contract_text_for(ctx)
     fields: dict[str, Field] = {
         "WORKTREE_DIR": Field("WORKTREE_DIR", root),
@@ -1768,6 +1815,21 @@ def payload_sentinel(path: str, body: str) -> str:
     return "%s %s %s" % (PAYLOAD_END, label, hashlib.sha256((label + "\n" + body).encode("utf-8")).hexdigest()[:8])
 
 
+def seal_payload(path: str) -> str:
+    """#460, #465: end a hand-written payload (any kind, e.g. a document-drafter
+    one) with its sentinel. A sentinel already last is replaced, so a payload
+    edited after sealing is sealed again. Returns the sentinel line."""
+    text = read_text(path)
+    lines = text.rstrip().split("\n")
+    if lines and lines[-1].startswith(PAYLOAD_END):
+        lines.pop()
+    body = "\n".join(lines).rstrip("\n") + "\n"
+    sentinel = payload_sentinel(path, body)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(body + sentinel + "\n")
+    return sentinel
+
+
 def write_payload(path: str, fields: list[Field], force: bool, verbatim: tuple[str, ...] = VERBATIM_FIELDS) -> None:
     if os.path.exists(path):
         with open(path, encoding="utf-8") as fh:
@@ -1945,6 +2007,16 @@ def route_crs(docs: list[tuple[str, str]], packages: list[list[str]], root: str,
     return routed, unrouted
 
 
+def unique_absolute(paths: list[str], root: str) -> list[str]:
+    """#432: each owned path once, resolved against --root (a trailing `/` kept)."""
+    out: list[str] = []
+    for raw in paths:
+        full = keep_slash(raw, os.path.normpath(raw if os.path.isabs(raw) else os.path.join(root, raw)))
+        if full not in out:
+            out.append(full)
+    return out
+
+
 def route_main(args: argparse.Namespace) -> int:
     """`--crs`: route, compose one fix payload per package, lint, write the wave args."""
     import copy
@@ -1986,6 +2058,13 @@ def route_main(args: argparse.Namespace) -> int:
             base = proc.stdout.strip()
             if proc.returncode or not base:
                 raise Refusal("no --base and `git rev-parse HEAD` failed in %s" % root)
+        branch = fm.get("branch", "").strip().strip("`")
+        if branch.lower() in ("", "null", "none", "~"):
+            # #432: the dossier has no branch yet, so the worktree's own is the wave's
+            rc, shown = git_out(root, "branch", "--show-current")
+            branch = shown.strip() if rc == 0 else ""
+            if not branch:
+                raise Refusal("the dossier has no `branch:` and `git branch --show-current` names none in %s" % root)
         outdir = os.path.dirname(os.path.abspath(args.out))
         titles = {stem: text[:cc.sections(text)[0][1]] if cc.sections(text) else "" for stem, text in docs}
         items, lines = [], []
@@ -2021,10 +2100,11 @@ def route_main(args: argparse.Namespace) -> int:
                 return 1
             with open(ns.out, "rb") as fh:
                 sha = hashlib.sha256(fh.read()).hexdigest()
-            owned = [e.strip() for e in find_package_row(dossier_text, pkg)[1].split(",") if e.strip()] + added.get(pkg, [])
+            owned = unique_absolute(
+                [e.strip() for e in find_package_row(dossier_text, pkg)[1].split(",") if e.strip()] + added.get(pkg, []), root)
             items.append({"agentType": "agentic-software-development:implementer", "label": "FIX-" + code,
                           "payloadPath": ns.out, "payloadSha256": sha, "root": root,
-                          "branch": fm.get("branch", ""), "base": base, "owned": owned,
+                          "branch": branch, "base": base, "owned": owned,
                           "kind": "implementer", "pluginRoot": os.path.abspath(args.plugin_root)})
             lines.append("%s %d CR -> %s sha %s%s" % (code, len(routed[pkg]), ns.out, sha[:12],
                                                      " (+owns %s)" % ", ".join(added[pkg]) if added.get(pkg) else ""))
@@ -2053,6 +2133,14 @@ def main(argv: list[str]) -> int:
                              "(default: the dossier's contract_review SHA once its build log has a MERGE line)")
     parser.add_argument("--test-command")
     parser.add_argument("--hooks")
+    parser.add_argument("--path-prepend", action="append", default=[], metavar="DIR",
+                        help="implementer: a toolchain dir the run passes to run_tests.py --path-prepend; "
+                        "the payload's COMMIT_ENV exports it before `git commit` (#458); repeatable")
+    parser.add_argument("--env-script", metavar="FILE",
+                        help="implementer: the run's run_tests.py --env-script; COMMIT_ENV sources it before `git commit`")
+    parser.add_argument("--seal", metavar="PAYLOAD",
+                        help="append the PAYLOAD-END sentinel to a hand-written payload (any kind) and exit; "
+                        "re-seals a payload whose sentinel is stale (#460, #465)")
     parser.add_argument("--set", action="append", default=[], metavar="FIELD=VALUE")
     parser.add_argument("--plugin-root", default=os.path.dirname(SCRIPTS_DIR))
     parser.add_argument("--manifest", help="append this spawn's prepare_wave.py manifest line")
@@ -2085,6 +2173,13 @@ def main(argv: list[str]) -> int:
 
     if args.selftest:
         return selftest()
+    if args.seal:
+        try:
+            print(seal_payload(args.seal))
+        except (Refusal, OSError) as err:
+            print("compose_payloads: REFUSED — %s" % err, file=sys.stderr)
+            return 1
+        return 0
     if args.emit_prompt:
         try:
             sys.stdout.write(emit_prompt(args.emit_prompt))
@@ -2451,6 +2546,7 @@ def selftest() -> int:
             filled_path = path + ".filled.md"
             with open(filled_path, "w", encoding="utf-8") as fh:
                 fh.write(filled)
+            seal_payload(filled_path)  # a hand-filled payload is re-sealed, as the orchestrator does
             rc2, out2 = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"),
                               filled_path, "--kind", "unit-test-author", "--host", host,
                               "--worktree", root])
@@ -2569,6 +2665,7 @@ def selftest() -> int:
         filled_it_path = it_path + ".filled.md"
         with open(filled_it_path, "w", encoding="utf-8") as fh:
             fh.write(filled_it)
+        seal_payload(filled_it_path)  # a hand-filled payload is re-sealed, as the orchestrator does
         rc2, out2 = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"),
                           filled_it_path, "--kind", "integration-test-author", "--host", "claude",
                           "--worktree", root, "--live-dossier", dossier_path])
@@ -2666,6 +2763,7 @@ def selftest() -> int:
         filled_rev_path = rev_path + ".filled.md"
         with open(filled_rev_path, "w", encoding="utf-8") as fh:
             fh.write(filled_rev)
+        seal_payload(filled_rev_path)  # a hand-filled payload is re-sealed, as the orchestrator does
         rc2, out2 = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"),
                           filled_rev_path, "--kind", "reviewer", "--host", "claude",
                           "--worktree", root])
@@ -2912,6 +3010,7 @@ def selftest() -> int:
         filled = _fill_placeholders(st_text, style_path, os.path.join(root, "tests/unit/test_new2.py"))
         with open(st_path, "w", encoding="utf-8") as fh:
             fh.write(filled)
+        seal_payload(st_path)  # a hand-filled payload is re-sealed, as the orchestrator does
         rc2, out2 = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"),
                           st_path, "--kind", "unit-test-author", "--host", "claude",
                           "--worktree", root])
@@ -3032,6 +3131,7 @@ def selftest() -> int:
                                        os.path.join(root, "tests/unit/test_new3.py"))
         with open(r2_path, "w", encoding="utf-8") as fh:
             fh.write(r2_filled)
+        seal_payload(r2_path)  # a hand-filled payload is re-sealed, as the orchestrator does
         rc2, out2 = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"),
                           r2_path, "--kind", "reviewer", "--host", "claude", "--worktree", root])
         check("the check-round payload lints clean with no SIGNALS", rc2 == 0, out2)
@@ -3198,14 +3298,98 @@ def selftest() -> int:
         check("the wave args carry hash, branch, base, owned, kind",
               bool(p1) and p1["payloadSha256"] == hashlib.sha256(open(p1["payloadPath"], "rb").read()).hexdigest()
               and p1["branch"] == "fix/PROJ-142-flush-coalescing" and p1["base"] == "abc1234"
-              and p1["owned"] == ["src/flush.py", "src/other.py"]
-              and p2.get("owned") == ["src/reload.py", "lib/consts.py", "lib/names.py"]
+              and p1["owned"] == [os.path.join(root, "src/flush.py"), os.path.join(root, "src/other.py")]
+              and p2.get("owned") == [os.path.join(root, q) for q in ("src/reload.py", "lib/consts.py", "lib/names.py")]
               and p1["kind"] == "implementer" and p1["root"] == root and p1["agentType"].endswith(":implementer"), str(p1))
         check("#217: the fix payload's OWNED_PATHS lists the CRs' other paths",
               "lib/consts.py" in t2 and "lib/names.py" in t2 and "src/other.py" in t1, t2[-600:])
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             rc = main(route_base + ["--assign", "CR-9=P1", "--assign", "CR-3=P1"])
         check("--assign naming no section is refused", rc == 1)
+
+        # --- #432: the wave args carry the worktree's real branch and each owned path once, absolute ---
+        nobranch = os.path.join(root, "W-014-nobranch.md")
+        with open(nobranch, "w", encoding="utf-8") as fh:
+            fh.write(read_text(dossier_path).replace("branch: fix/PROJ-142-flush-coalescing", "branch: null"))
+        want_branch = git_out(root, "branch", "--show-current")[1].strip()
+        wave2 = os.path.join(root, ".agent-staging", "fixwave2", "wave.json")
+        argv2 = [("--dossier" if a == "--dossier" else a) for a in route_base]
+        argv2[argv2.index("--dossier") + 1] = nobranch
+        argv2[argv2.index("--out") + 1] = wave2
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = main(argv2 + ["--assign", "CR-3=P1"])
+        items2 = json.load(open(wave2, encoding="utf-8")) if rc == 0 else []
+        check("#432: --crs with no dossier branch writes the worktree's branch, never null",
+              bool(items2) and bool(want_branch) and all(w["branch"] == want_branch for w in items2), str(items2)[:300])
+        check("#432: every owned path is absolute and listed once",
+              bool(items2) and all(os.path.isabs(o) and w["owned"].count(o) == 1 for w in items2 for o in w["owned"]))
+        check("#432: unique_absolute resolves a relative path and drops its absolute twin",
+              unique_absolute(["src/a.py", os.path.join(root, "src/a.py"), "d/"], root) == [os.path.join(root, "src/a.py"), os.path.join(root, "d") + "/"])
+
+        # --- #419: a TEST_PATHS directory entry keeps its trailing slash ---
+        dir_field = Field("TEST_PATHS", "tests/fakes/x/a/,tests/unit/test_a.py", block=False)
+        absolutise_list_field(dir_field, root)
+        check("#419: a TEST_PATHS directory entry keeps its trailing slash",
+              dir_field.value == os.path.join(root, "tests/fakes/x/a") + "/," + os.path.join(root, "tests/unit/test_a.py"), dir_field.value)
+        rc, ut_dir, out = run_with(dossier_path, "UTD.md", ["unit-test-author", "--host", "claude", "--contract-paths", "src/flush.py",
+                                                            "--set", "TEST_PATHS=tests/fakes/x/a/"])
+        check("#419: the composed payload carries the directory entry with its slash",
+              rc == 0 and ("TEST_PATHS: " + os.path.join(root, "tests/fakes/x/a") + "/\n") in read_text(ut_dir), out)
+
+        # --- #418: a test author's own TEST_PATHS are never sealed ---
+        sealed_dir = os.path.join(root, ".agent-staging")
+        write_sealed_paths(sealed_dir, read_text(dossier_path), ["src/flush.py"],
+                           own_test_paths(os.path.join(root, "src/flush.py") + ",lib/names.py,lib/fakes/", root))
+        sealed_now = read_text(os.path.join(sealed_dir, "sealed-paths.txt")).splitlines()
+        check("#418: an own TEST_PATHS file is left out of sealed-paths.txt, other packages' paths stay",
+              "src/flush.py" not in sealed_now and "lib/names.py" not in sealed_now and "src/reload.py" in sealed_now, str(sealed_now))
+        check("#418: a directory entry unseals everything under it",
+              is_own_path("lib/fakes/a.py", ["lib/fakes/"]) and not is_own_path("lib/fakes2/a.py", ["lib/fakes/"]))
+
+        # --- #431: no Jira key -> the subject rule, no key, no dossier ID ---
+        nojira = os.path.join(root, "W-014-nojira.md")
+        with open(nojira, "w", encoding="utf-8") as fh:
+            fh.write(read_text(dossier_path).replace("jira: PROJ-142", "jira: null"))
+        rc, nj_path, out = run_with(nojira, "NJ.md", ["implementer", "--host", "opencode", "--hooks", "none",
+                                                      "--test-command", "pytest -q", "--package", "P1", "--contract-paths", "src/flush.py"])
+        nj_text = read_text(nj_path) if rc == 0 else ""
+        check("#431: a dossier with no Jira key gets JIRA_KEY none and a COMMIT_SUBJECT rule",
+              "JIRA_KEY: none\n" in nj_text and "COMMIT_SUBJECT:" in nj_text and "feat: <what>" in nj_text, out)
+        rc, jk_path, out = run_with(dossier_path, "JK.md", ["implementer", "--host", "opencode", "--hooks", "none",
+                                                            "--test-command", "pytest -q", "--package", "P1", "--contract-paths", "src/flush.py"])
+        check("#431: a dossier with a Jira key carries no COMMIT_SUBJECT", rc == 0 and "COMMIT_SUBJECT" not in read_text(jk_path), out)
+
+        # --- #458: the run's --path-prepend / --env-script reach the commit step as COMMIT_ENV ---
+        rc, ce_path, out = run_with(dossier_path, "CE.md", ["implementer", "--host", "opencode", "--hooks", "the hook runs cargo fmt",
+                                                            "--test-command", "pytest -q", "--package", "P1", "--contract-paths", "src/flush.py",
+                                                            "--path-prepend", "$HOME/.cargo/bin", "--env-script", "/w/env.sh"])
+        ce_text = read_text(ce_path) if rc == 0 else ""
+        check("#458: COMMIT_ENV carries the PATH export and the env script",
+              'COMMIT_ENV: |\n  export PATH="$HOME/.cargo/bin:$PATH"\n  . "/w/env.sh"\n' in ce_text, ce_text[-500:])
+        rc, ne_path, out = run_with(dossier_path, "NE.md", ["implementer", "--host", "opencode", "--hooks", "none",
+                                                            "--test-command", "pytest -q", "--package", "P1", "--contract-paths", "src/flush.py"])
+        check("#458: no --path-prepend, no COMMIT_ENV", rc == 0 and "COMMIT_ENV" not in read_text(ne_path), out)
+
+        # --- #460, #465: --seal ends a hand-written payload with its sentinel; a stale one is replaced ---
+        hand = os.path.join(root, ".agent-staging", "DD-hand.md")
+        with open(hand, "w", encoding="utf-8") as fh:
+            fh.write("MODE: adr\nTARGET_PATHS: /x\n")
+        rc = main(["--seal", hand])
+        sealed_text = read_text(hand)
+        check("#460: --seal appends one PAYLOAD-END: <stem> <hash> last line",
+              rc == 0 and re.fullmatch(r"PAYLOAD-END: DD-hand [0-9a-f]{8}", sealed_text.rstrip().split("\n")[-1]) is not None
+              and sealed_text.count("PAYLOAD-END") == 1, sealed_text)
+        with open(hand, "a", encoding="utf-8") as fh:
+            fh.write("\n")
+        first = sealed_text.rstrip().split("\n")[-1]
+        with open(hand, "w", encoding="utf-8") as fh:
+            fh.write(sealed_text.replace("MODE: adr", "MODE: pr"))
+        main(["--seal", hand])
+        resealed = read_text(hand)
+        check("#460: --seal on an edited payload replaces the stale sentinel", resealed.count("PAYLOAD-END") == 1
+              and resealed.rstrip().split("\n")[-1] != first and "MODE: pr" in resealed, resealed)
+        rc2, out2 = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"), hand, "--kind", "document-drafter"])
+        check("#460: check_payload accepts the sealed payload's sentinel", "PAYLOAD-END" not in out2, out2)
 
     selftest_blind_inputs(failures)
 

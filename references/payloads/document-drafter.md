@@ -13,6 +13,7 @@ FORMAT: |
    front matter fields, validator rules>
 TARGET_PATHS: /abs/path/repo-W-014/docs/adr/0031-flush-drain-lock.md
 SCRUB: W-014, .discovery, repo-W-014
+PAYLOAD-END: <the payload file's stem> <8-hex hash>   # written by --seal, never by hand
 ```
 
 `MODE: pr`:
@@ -27,7 +28,15 @@ TARGET_PATHS: /abs/path/repo/.discovery/pr-draft-W-014.md
           # committed mode: under X — /abs/path/repo-W-014/.discovery/pr-draft-W-014.md
 SCRUB: W-014, .discovery/dossiers, repo-W-014
           # committed mode: repo-W-014 only — the dossier is inside the PR
+PAYLOAD-END: <the payload file's stem> <8-hex hash>   # written by --seal, never by hand
 ```
+
+**Seal a hand-written payload.** `compose_payloads.py` cannot compose this
+kind, so you write the file from the skeleton above and end it with
+`python3 ${PLUGIN_ROOT}/scripts/compose_payloads.py --seal <payload>`: it appends
+the `PAYLOAD-END` line (a stale one is replaced, so seal again after every edit).
+The drafter refuses a payload without that last line as `PAYLOAD-UNREAD` and
+writes nothing, and `check_payload.py` and `prepare_wave.py` refuse it too.
 
 The drafter writes `TARGET_PATHS` itself — its `Write` map admits
 `docs/adr/`, `.discovery/`, and `.agent-staging/` only, so the files land

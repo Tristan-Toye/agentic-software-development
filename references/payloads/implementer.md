@@ -36,6 +36,10 @@ HOOKS: |
    `<hook step name>: <path glob>` per line:
    EXPECTED_HOOK_OUTPUTS:
      anchor-fixer: docs/architecture/*.md>
+COMMIT_ENV: |
+  <only when the run passes --path-prepend / --env-script to run_tests.py: the
+   shell lines to run before `git commit`, e.g. export PATH="$HOME/.cargo/bin:$PATH".
+   compose_payloads.py fills it from --path-prepend / --env-script.>
 VERIFY_EMBEDDED: |
   <only when an owned path is a shell script that embeds a program in a
    heredoc, written to a file and executed — the embedded-program parse
@@ -44,6 +48,7 @@ VERIFY_EMBEDDED: |
    shape.>
 STANDARDS: ${PLUGIN_ROOT}/skills/standards/engineering-standards.md
 JIRA_KEY: PROJ-142
+COMMIT_SUBJECT: <only when JIRA_KEY is none: the subject form, e.g. `feat: <what>`>
 # the report must end with a TOUCHED_BEYOND section (see the field rules)
 ```
 
@@ -179,6 +184,16 @@ job.
 - **`TEST_COMMAND` emits progress inside the runtime's no-progress window,
   in a build directory that worktree owns**; a cold cross-platform or
   virtual-machine compile never appears in a payload (`work-on.md` Phase 4).
+- **`COMMIT_ENV` carries the hook's toolchain `PATH` (#458).** When the hook
+  runs toolchain binaries (`cargo fmt`, `cargo clippy --fix`) and the agent's
+  shell lacks them, every commit is refused with exit 127. The lines in
+  `COMMIT_ENV` run before `git commit`; it is an environment, not a bypass,
+  and the hook still runs and may still refuse. `check_payload.py` warns on a
+  toolchain `HOOKS` with no `COMMIT_ENV`.
+- **`JIRA_KEY: none` comes with `COMMIT_SUBJECT` (#431).** With no ticket by
+  the owner's ruling the subject is a conventional-commit line with no key
+  and never the dossier ID; `verify_return.py --dossier-id ID` flags a new
+  commit whose subject carries it as `COMMIT-ID-LEAK`.
 - **`HOOKS` is always present, `none` allowed, and the agent's rule under it
   changes only for `EXPECTED_HOOK_OUTPUTS`**: stop and report on a refusal,
   leave the work staged, never bypass and never edit a hook. A bypass flag in

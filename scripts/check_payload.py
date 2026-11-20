@@ -124,6 +124,21 @@ Twelve failure modes this catches, each of which cost a real build:
     property runs on trivial cases (QuickCheck's ordered-insert example: 19
     of 100 cases non-trivial); without a library the tag is a dead letter.
 
+12d. **A unit-author package past the size gate** (DEFECT, #433). A
+    `PROMISE_CHECKLIST` of more than 20 lines is split before the spawn: the
+    harness file first, then one author per further `TEST_PATHS` file, run
+    concurrently once they share no file. One package of 48 lines over three
+    files returned with fixture gaps, then wrote nothing (`GAP:` deliverable
+    too large), and cost two more waves.
+
+12e. **A payload with no `PAYLOAD-END` sentinel** (DEFECT, #460, #465, every
+    kind). The last non-empty line is `PAYLOAD-END: <file stem> <8-hex hash>`
+    (sha256 over `<stem>\n` and the text above it); a hand-written payload
+    gets it from `compose_payloads.py --seal PAYLOAD`. Without it the agent
+    refuses the payload as `PAYLOAD-UNREAD` and writes nothing. A commit step
+    without the hook's toolchain PATH is a WARNING for an implementer whose
+    `HOOKS` name a toolchain (#458).
+
 13. **A relative path in a path-valued field.** `CONTRACT` (when it names a
     path, never when it pastes text), `TEST_PATHS`, `STYLE_PATHS`,
     `SUPPORT_PATHS`, `WORKTREE_DIR`, `DOSSIER`, `STANDARDS`, `CONTEXT_DOCS`
@@ -198,8 +213,10 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import os
 import re
+import subprocess
 import sys
 import tempfile
 
@@ -248,7 +265,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         },
         "optional": {
             "PACKAGE", "CRITERIA", "CRS", "FAILURES", "SHARED_IDIOM",
-            "VERIFY_EMBEDDED", "BASELINE_COUNTS_FROM",
+            "VERIFY_EMBEDDED", "BASELINE_COUNTS_FROM", "COMMIT_ENV", "COMMIT_SUBJECT",
         },
     },
     "reviewer": {
@@ -1388,6 +1405,70 @@ def negative_input_findings(lines: list[str], kind: str | None) -> list[str]:
     return out
 
 
+# #433: the unit-author gate: a PROMISE_CHECKLIST past this many lines is split before the spawn.
+UNIT_CHECKLIST_MAX = 20
+
+
+def unit_size_findings(lines: list[str], kind: str | None) -> list[str]:
+    """#433: a unit-test-author package past the size gate is split before the
+    spawn, not after a GAP: the harness file first, then one author per further
+    file once they share no file."""
+    if kind != "unit-test-author":
+        return []
+    out: list[str] = []
+    checklist = [n for n in field_line_numbers(lines, "PROMISE_CHECKLIST") if lines[n - 1].strip() and lines[n - 1][:1] in (" ", "\t")]
+    files = [p for p in re.split(r"[,\s]+", field_body(lines, "TEST_PATHS")) if p and not p.endswith("/")]
+    if len(checklist) > UNIT_CHECKLIST_MAX:
+        split = ("split it by test file: the harness file first, then one author per further file, "
+                 "run concurrently once they share no file" if len(files) > 1
+                 else "split the package by behaviour into more test files")
+        out.append("PROMISE_CHECKLIST has %d lines, past the unit-author gate of %d (%d TEST_PATHS file(s)): %s."
+                   % (len(checklist), UNIT_CHECKLIST_MAX, len(files), split))
+    return out
+
+
+TOOLCHAIN_HOOK = re.compile(r"\b(cargo|clippy|rustfmt|npm|npx|yarn|pnpm|prettier|eslint|dotnet|gofmt|go (?:fmt|vet)|black|ruff|mypy)\b")
+
+
+def commit_env_findings(lines: list[str], kind: str | None) -> list[str]:
+    """#458: a hook that runs toolchain binaries refuses every commit with exit
+    127 when the agent's shell lacks them on PATH; the commit step carries the
+    run's `--path-prepend` as COMMIT_ENV."""
+    if kind != "implementer" or field_body(lines, "COMMIT_ENV").strip():
+        return []
+    hooks = field_body(lines, "HOOKS")
+    if hooks.strip().startswith("none") or not TOOLCHAIN_HOOK.search(hooks):
+        return []
+    return ["HOOKS names a toolchain step but the payload has no COMMIT_ENV: the hook exits 127 (command not "
+            "found) when the agent's shell lacks the toolchain on PATH. Add the run's `--path-prepend` as "
+            "COMMIT_ENV (compose_payloads.py --path-prepend DIR), e.g. export PATH=\"$HOME/.cargo/bin:$PATH\"."]
+
+
+def sentinel_findings(path: str) -> list[str]:
+    """#460/#465: every payload, of every kind, ends in `PAYLOAD-END: <file stem>
+    <8-hex hash>`; the hash is sha256 over `<stem>\n` + the text before that line,
+    as compose_payloads.payload_sentinel writes it."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return []
+    stripped = text.rstrip()
+    start = stripped.rfind("\n") + 1
+    last = stripped[start:].strip()
+    label = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.splitext(os.path.basename(path))[0]).strip("-") or "payload"
+    how = "seal it with `compose_payloads.py --seal %s`" % path
+    match = re.fullmatch(r"PAYLOAD-END: (\S+) ([0-9a-f]{8})", last)
+    if not match:
+        return ["the last non-empty line is not `PAYLOAD-END: %s <8-hex hash>`: the agent refuses a payload "
+                "without its sentinel as PAYLOAD-UNREAD and writes nothing; %s." % (label, how)]
+    want = hashlib.sha256((label + "\n" + text[:start]).encode("utf-8")).hexdigest()[:8]
+    if match.group(1) != label or match.group(2) != want:
+        return ["the PAYLOAD-END sentinel does not match this file (expected `PAYLOAD-END: %s %s`): the payload was "
+                "edited after sealing or sealed under another name; %s." % (label, want, how)]
+    return []
+
+
 def lint(lines: list[str], kind: str | None, worktree: str | None,
          allow_paths: list[str], host: str | None = None,
          tools: list[str] | None = None,
@@ -1615,6 +1696,8 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     warnings.extend(da_warnings)
 
     # 12. a whole-value checklist line with no assertion form
+    defects.extend(unit_size_findings(lines, kind))
+    warnings.extend(commit_env_findings(lines, kind))
     warnings.extend(assertion_form_findings(lines, kind))
     warnings.extend(negative_input_findings(lines, kind))
     # 12c. a property line the author cannot write as one
@@ -2333,6 +2416,51 @@ def selftest() -> int:
 
     case("no kind still checks paths", "X: /no/such/place/here\n", None, True, "does not exist")
 
+    # --- #458: a toolchain hook with no COMMIT_ENV warns; with one, or with no toolchain, it is quiet ---
+    cargo_hook = impl.replace("HOOKS: none\n", "HOOKS: |\n  the pre-commit hook runs cargo fmt and cargo clippy --fix\n")
+    case("#458: a cargo hook and no COMMIT_ENV warns", cargo_hook, "implementer", False, must_warn="COMMIT_ENV")
+    case("#458: a cargo hook with COMMIT_ENV is quiet", cargo_hook.replace(
+        "STANDARDS:", "COMMIT_ENV: |\n  export PATH=\"$HOME/.cargo/bin:$PATH\"\nSTANDARDS:"), "implementer", False, must_warn="")
+    case("#458: HOOKS none is quiet", impl, "implementer", False, must_warn="")
+
+    # --- #433: a unit-author checklist past the gate is refused with the split named ---
+    big = unit_ok.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
+                          "PROMISE_CHECKLIST: |\n" + "".join("  line %d — return meaning: count\n" % i for i in range(21)))
+    small = unit_ok.replace("PROMISE_CHECKLIST: |\n  flush — return meaning: count\n",
+                            "PROMISE_CHECKLIST: |\n" + "".join("  line %d — return meaning: count\n" % i for i in range(20)))
+    two = ("TEST_PATHS: {REAL}/tests/unit/test_flush.py,{REAL}/tests/unit/test_retry.py\n")
+    case("#433: 21 checklist lines are refused", big, "unit-test-author", True, "unit-author gate", host="opencode")
+    case("#433: the refusal names the split by test file", big.replace(
+        "TEST_PATHS: {REAL}/tests/unit/test_flush.py\n", two), "unit-test-author", True, "harness file first", host="opencode")
+    case("#433: 20 checklist lines pass the gate", small, "unit-test-author", False, host="opencode")
+
+    # --- #460, #465: every kind ends in a matching PAYLOAD-END sentinel ---
+    def seal_for(path: str, body: str) -> str:
+        label = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.splitext(os.path.basename(path))[0]).strip("-")
+        return "PAYLOAD-END: %s %s\n" % (label, hashlib.sha256((label + "\n" + body).encode("utf-8")).hexdigest()[:8])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        groups += 1
+        path = os.path.join(tmp, "DD-1.md")
+        body = "MODE: adr\nTARGET_PATHS: /x\n"
+        for name, text, want in (
+            ("no sentinel", body, True), ("a sealed payload", body + seal_for(path, body), False),
+            ("an edited sealed payload", body + "EXTRA: y\n" + seal_for(path, body), True),
+            ("trailing blank lines after the sentinel", body + seal_for(path, body) + "\n\n", False),
+            ("a sentinel under another name", body + seal_for(os.path.join(tmp, "other.md"), body), True),
+        ):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            got = sentinel_findings(path)
+            if bool(got) != want or (want and "PAYLOAD-END" not in got[0]):
+                failures.append("#460/#465: %s: expected defect=%s, got %s" % (name, want, got))
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        rc = subprocess.run([sys.executable, os.path.abspath(__file__), path, "--kind", "document-drafter"],
+                            capture_output=True, text=True, check=False)
+        if rc.returncode != 1 or "PAYLOAD-END" not in rc.stdout:
+            failures.append("#460/#465: the CLI does not refuse a payload without a sentinel: %s" % rc.stdout[-200:])
+
     for item in failures:
         print("SELFTEST FAIL  %s" % item)
     print("selftest: %d case group(s), %d failure(s)" % (groups, len(failures)))
@@ -2386,6 +2514,7 @@ def main() -> int:
         lines, args.kind, args.worktree, args.allow_path, args.host, tools, args.live_dossier,
         args.allow_token
     )
+    defects.extend(sentinel_findings(args.payload))
     return report(args.payload, args.kind, present, defects, warnings)
 
 

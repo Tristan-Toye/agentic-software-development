@@ -48,7 +48,9 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   `EXPECTED_HOOK_OUTPUTS:` sub-list (`<hook step>: <path glob>` per line),
   below: a refused commit is reported, never forced.
 - `STANDARDS` — path to the engineering standards. They bind your code.
-- `JIRA_KEY` — the commit message prefix.
+- `JIRA_KEY` — the commit message prefix; `none` means no ticket, and
+  `COMMIT_SUBJECT` then gives the subject form. `COMMIT_ENV` (optional) holds the
+  shell lines to run before `git commit`.
 - `MODE` — `build` (fill the bodies) or `fix` (apply change requests).
 - `CRS` — in `fix` mode, the change requests, verbatim.
 
@@ -120,7 +122,11 @@ Commit in reviewable units. Prefix each message with `JIRA_KEY`:
 PROJ-142: coalesce concurrent flush calls behind a single drain
 ```
 
-Fall back to the dossier ID only when the payload carries no `JIRA_KEY`.
+When `JIRA_KEY` is `none` the payload carries a `COMMIT_SUBJECT` rule: use that
+subject form (a conventional-commit line such as `feat: <what>`, no key). The
+dossier ID is local to the run and never appears in a commit subject. When the
+payload carries `COMMIT_ENV`, run those lines in the same shell before `git commit`
+(they put the hook's toolchain on `PATH`; the hook still runs and may still refuse).
 
 **When a commit hook refuses your commit, stop.** Leave the work staged, do
 not retry, do not pass a bypass flag, do not edit the hook or any file the

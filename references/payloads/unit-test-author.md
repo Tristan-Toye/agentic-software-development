@@ -205,6 +205,14 @@ different hash means the contract changed while the author was writing, its
 world is stale, and the re-spawn is unconditional (its `GAP:` analysis, if
 any, is still input to the contract fix).
 
+A `TEST_PATHS` entry that ends in `/` marks a directory the author owns and may
+create files under (#419); `compose_payloads.py` carries the slash through.
+
+**Size gate (#433).** A `PROMISE_CHECKLIST` of more than 20 lines is split
+before the spawn: the harness file first, then one author per further
+`TEST_PATHS` file, run concurrently once they share no file. `check_payload.py`
+refuses the payload and `prepare_wave.py` surfaces the refusal, naming the split.
+
 `TEST_PATHS` is validated before the spawn, never after an empty return.
 `scripts/check_permission_maps.py --agent <the file the host loads> --host
 <opencode|claude> --root <X> --test-paths ... [--read-paths ...]` reads the
