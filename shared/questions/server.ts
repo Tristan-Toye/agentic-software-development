@@ -4,9 +4,9 @@ import { appendFileSync, mkdirSync, openSync, readdirSync, statSync, watch, writ
 import { AnsweredError, appendOwner, idForThread, readAll, readAllAsync, readQuestion, readSidecarAsync, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
 import { addRuling, readRulings, removeRuling } from "./rulings.ts"
-import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, undecidedDeferred, type Run } from "./runs.ts"
+import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, readDossierAsync, shRun, undecidedDeferred, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile, refreshAfterControl } from "./stubs.ts"
-import { canIntegrate, checkRule, dossierPage, integrationPhase, integrationStopped, markIntegrating, readBlocks, readConversation, readIntegrate, readRunner, readUpdates, readUpdatesAsync, readUpdatesSig, renderMarkdown, runnerActive, runsDir } from "./runstore.ts"
+import { canIntegrate, checkRule, dossierPage, integrationPhase, integrationStopped, markIntegrating, readBlocks, readConversation, readIntegrate, readRunner, readUpdates, readUpdatesAsync, readUpdatesSig, renderMarkdown, readViewCache, runnerActive, runsDir, writeViewCache } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
 import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord, splitSections } from "./timeline.ts"
 import { runRunner, runTarget, runnerScript } from "./controls.ts"
@@ -364,10 +364,16 @@ async function onSlackAction(a: OwnerAction): Promise<void> {
 const json = (body: unknown, status = 200) => Response.json(body, { status })
 const html = (body: string) => new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } })
 /** getRuns/getStubs take a sync question list; read it async first so the handler never blocks on the disk. */
-const getRunsA = async () => { const qs = await readAllAsync(DIR); return getRuns(() => qs) }
-const getStubsA = async () => { const qs = await readAllAsync(DIR); return getStubs(() => qs) }
-const allRuns = async (): Promise<Run[]> => (await getRunsA()).runs
-const findRun = async (repo: string, id: string): Promise<Run | undefined> => (await allRuns()).find((r) => r.repo === repo && r.id === id)
+/**
+ * `fresh` is for a caller that acts on the view (run control, merge, routing, the automatic tick): it waits for the
+ * first scan of this process, so after a restart it never acts on the view read back from disk. Reads for display
+ * take the disk copy at once.
+ */
+const getRunsA = async (fresh = false) => { const qs = await readAllAsync(DIR); return getRuns(() => qs, { fresh }) }
+const getStubsA = async (fresh = false) => { const qs = await readAllAsync(DIR); return getStubs(() => qs, { fresh }) }
+const allRuns = async (fresh = false): Promise<Run[]> => (await getRunsA(fresh)).runs
+/** A run to act on: always from a live scan (see getRunsA). */
+const findRun = async (repo: string, id: string): Promise<Run | undefined> => (await allRuns(true)).find((r) => r.repo === repo && r.id === id)
 
 /** The repo roots of a repo's runs (runner root, worktree, main checkout), main first. */
 async function repoRoots(repo: string): Promise<string[]> {
@@ -381,7 +387,7 @@ async function repoRoots(repo: string): Promise<string[]> {
  */
 async function vrFind(dossier: string, repo: string): Promise<{ ok: true; root: string; dossier: string; repo: string; runs: Run[] } | { ok: false; status: number; error: string }> {
   if (!/^[\w.-]+$/.test(dossier) || dossier.startsWith(".") || (repo && !/^[\w.-]+$/.test(repo))) return { ok: false, status: 400, error: "dossier (and repo) must be plain names" }
-  const runs = (await allRuns()).filter((r) => r.id === dossier && (!repo || r.repo === repo))
+  const runs = (await allRuns(true)).filter((r) => r.id === dossier && (!repo || r.repo === repo))
   if (!runs.length) return { ok: false, status: 404, error: "no such dossier" + (repo ? " in " + repo : "") }
   const roots = [...new Set(runs.flatMap((r) => [r.worktree, r.runner?.root, r.main]).filter((x): x is string => !!x))]
   const root = roots.find((r) => hasVisualReview(r, dossier))
@@ -612,7 +618,7 @@ export async function handle(req: Request): Promise<Response> {
     const run = runs.find((r) => r.repo === tl[1] && r.id === tl[2])
     if (!run) return json({ error: "no such dossier" }, 404)
     let log: string[] = []
-    try { log = logEntries(buildLog(readDossier(run.file))) } catch { /* unreadable */ }
+    try { log = logEntries(buildLog(await readDossierAsync(run.file))) } catch { /* unreadable */ }
     const updates = await readUpdatesAsync(run.runKey || `${run.repo}.${run.id}`, runsDir(), 1000)
     const questions = (await readAllAsync(DIR)).filter((q) => q.dossier === run.id && questionRepo(q, runs) === run.repo)
     const entries = withHtml(mergeTimeline({ updates, questions, names: PHASE_NAMES }))
@@ -624,7 +630,7 @@ export async function handle(req: Request): Promise<Response> {
     const latest = sections.reduce((a, b) => (b.lastTs > a.lastTs ? b : a), sections[0])
     const now = nowPanel(entries, latest.groups, { runner: run.runner?.state, waiting: questions.filter((q) => q.state === "open").map((q) => q.id), fallbackPhase: run.phase === "plan" ? "" : run.phase })
     let html = ""
-    try { html = renderMarkdown(readDossier(run.file).replace(/^---\n[\s\S]*?\n---\n?/, "")) } catch { /* unreadable */ }
+    try { html = renderMarkdown((await readDossierAsync(run.file)).replace(/^---\n[\s\S]*?\n---\n?/, "")) } catch { /* unreadable */ }
     let summary: { html: string; ts: string } | null = null
     try {
       const sp = join(runsDir(), `${run.repo}.${run.id}.summary.md`)
@@ -641,7 +647,7 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && dd) {
     const run = await findRun(dd[1], dd[2])
     if (!run) return json({ error: "no such dossier" }, 404)
-    try { return json({ run, html: renderMarkdown(readDossier(run.file).replace(/^---\n[\s\S]*?\n---\n?/, "")) }) } catch { return json({ error: "dossier unreadable" }, 404) }
+    try { return json({ run, html: renderMarkdown((await readDossierAsync(run.file)).replace(/^---\n[\s\S]*?\n---\n?/, "")) }) } catch { return json({ error: "dossier unreadable" }, 404) }
   }
   if (req.method === "GET" && path === "/api/stub") {
     const repo = url.searchParams.get("repo") ?? "", branch = url.searchParams.get("branch") ?? ""
@@ -674,7 +680,7 @@ export async function handle(req: Request): Promise<Response> {
     const origin = req.headers.get("origin")
     if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
     const b = await req.json().catch(() => ({})) as { repo?: string; action?: string }
-    const v = viewsFor((await getRunsA()).runs).find((x) => x.repo === b.repo)
+    const v = viewsFor((await getRunsA(true)).runs).find((x) => x.repo === b.repo)
     const argv = v ? argvFor(String(b.action), v.root) : null
     if (!v || !argv) return json({ error: "no such repository, or the action is not enable, disable, start-now or resume" }, v ? 400 : 404)
     const r = await runAutoWork(argv)
@@ -685,7 +691,7 @@ export async function handle(req: Request): Promise<Response> {
     const origin = req.headers.get("origin")
     if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
     const b = await req.json().catch(() => ({})) as { repo?: string; branch?: string; action?: string }
-    const rs = (await getStubsA()).repos.find((r) => r.repo === b.repo)
+    const rs = (await getStubsA(true)).repos.find((r) => r.repo === b.repo)
     const stub = rs?.stubs.find((x) => x.branch === b.branch)
     if (!rs || !stub || !/^(stub|release)\/[\w.-]+$/.test(stub.branch)) return json({ error: "no such stub" }, 404)
     const slug = stub.branch.replace(/\//g, "-")
@@ -827,21 +833,21 @@ export async function handle(req: Request): Promise<Response> {
     const body = req.method === "POST" ? await req.json().catch(() => ({})) as { cancel?: unknown } : {}
     // Cancel: leave the queue (refused for the dossier being merged now).
     if (req.method === "POST" && body.cancel === true) {
-      const r = Bun.spawnSync([...args, "--unqueue"], { stdout: "pipe", stderr: "pipe" })
+      const r = await shRun([...args, "--unqueue"], undefined, MERGE_CALL_MS)
       emitChange("runs")
-      return json({ ok: r.exitCode === 0, text: r.stdout.toString().trim().replace(/^merge_dossier:\s*/, "") }, r.exitCode === 0 ? 200 : 409)
+      return json({ ok: r.code === 0, text: r.stdout.trim().replace(/^merge_dossier:\s*/, "") }, r.code === 0 ? 200 : 409)
     }
     if (req.method === "POST" && m && ["queued", "waiting", "resolving", "merging", "cleanup"].includes(m.state)) return json({ error: `already in the merge queue (${m.state})` }, 409)
     if (req.method === "GET") {
-      const r = Bun.spawnSync([...args, "--dry-run"], { stdout: "pipe", stderr: "pipe" })
-      const line = (r.stdout.toString() || r.stderr.toString()).trim().split("\n").pop()?.replace(/^merge_dossier:\s*/, "") ?? ""
-      return json({ ok: r.exitCode === 0, text: line })
+      const r = await shRun([...args, "--dry-run"], undefined, MERGE_CALL_MS)
+      const line = (r.stdout || r.stderr).trim().split("\n").pop()?.replace(/^merge_dossier:\s*/, "") ?? ""
+      return json({ ok: r.code === 0, text: line })
     }
     // Merge: join the repository's merge queue (first in, first out); its worker resolves conflicts through the
     // dossier's agent, merges by script and runs the cleanup, one dossier at a time.
-    const r = Bun.spawnSync([...args, "--enqueue"], { stdout: "pipe", stderr: "pipe" })
+    const r = await shRun([...args, "--enqueue"], undefined, MERGE_CALL_MS)
     emitChange("runs")
-    return json({ ok: r.exitCode === 0, text: (r.stdout.toString() || r.stderr.toString()).trim().replace(/^merge_dossier:\s*/, "") }, r.exitCode === 0 ? 200 : 500)
+    return json({ ok: r.code === 0, text: (r.stdout || r.stderr).trim().replace(/^merge_dossier:\s*/, "") }, r.code === 0 ? 200 : 500)
   }
   // Non-code PRs into development (plan/*, docs/*): the list with why each can or cannot merge, and "Merge all"
   // (scripts/merge_docs_prs.py, in the background; no agent merges). The list is cached a minute: it asks gh per PR.
@@ -863,18 +869,19 @@ export async function handle(req: Request): Promise<Response> {
       const fd = openSync(join(runsDir(), `${repo}.docmerge.log`), "w")
       const proc = Bun.spawn(["python3", join(import.meta.dir, "..", "..", "scripts", "merge_docs_prs.py"), "merge", "--root", main], { stdout: fd, stderr: fd, stdin: "ignore" })
       writeFileSync(stateFile, JSON.stringify({ pid: proc.pid, started: new Date().toISOString() }))
-      proc.exited.then(() => { docPrsCache.delete(repo); emitChange("runs") })
+      proc.exited.then(() => { emitChange("runs"); return refreshDocPrs(repo, main) }).then(() => emitChange("runs"), () => {})
       return json({ ok: true })
     }
     if (req.method !== "GET") return json({ error: "method not allowed" }, 405)
-    const c = docPrsCache.get(repo)
-    let prs: any = c && Date.now() - c.at < 60_000 && !url.searchParams.has("fresh") ? c.v : null
-    if (!prs) {
-      const r = Bun.spawnSync(["python3", join(import.meta.dir, "..", "..", "scripts", "merge_docs_prs.py"), "list", "--root", main], { stdout: "pipe", stderr: "pipe" })
-      try { prs = JSON.parse(r.stdout.toString()) } catch { prs = { error: (r.stderr.toString() || "list failed").slice(0, 300) } }
-      docPrsCache.set(repo, { at: Date.now(), v: prs })
-    }
-    return json({ ...prs, merging, log })
+    // Served from memory, else from the disk copy of the last list (stale: true), and refreshed in the background: after
+    // a restart the first call used to run the whole `gh` list (seconds per repo) in front of every other request.
+    const fresh = url.searchParams.has("fresh")
+    let c = docPrsCache.get(repo)
+    if (!c) { const d = readViewCache<any>(`docprs-${repo}`); if (d) { c = { at: 0, v: d }; docPrsCache.set(repo, c) } }
+    if (!c || fresh) { c = { at: Date.now(), v: await refreshDocPrs(repo, main) } }
+    else if (Date.now() - c.at >= 60_000) void refreshDocPrs(repo, main)
+    const prs = c.v
+    return json({ ...prs, merging, log, stale: c.at === 0 })
   }
   // Leave open / Reopen: the owner's own ruling on an open deferred item, kept beside the run (withOwnerRulings).
   const lo = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/deferred-keep$/)
@@ -965,9 +972,9 @@ export async function handle(req: Request): Promise<Response> {
   }
   const ds = path.match(/^\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && ds) {
-    const run = (await getRunsA()).runs.find((r) => r.repo === ds[1] && r.id === ds[2])
+    const run = (await getRunsA(true)).runs.find((r) => r.repo === ds[1] && r.id === ds[2])
     if (!run) return json({ error: "no such dossier" }, 404)
-    try { return new Response(dossierPage(run.id, run.repo, readDossier(run.file)), { headers: { "content-type": "text/html; charset=utf-8" } }) } catch { return json({ error: "dossier unreadable" }, 404) }
+    try { return new Response(dossierPage(run.id, run.repo, await readDossierAsync(run.file)), { headers: { "content-type": "text/html; charset=utf-8" } }) } catch { return json({ error: "dossier unreadable" }, 404) }
   }
   if (req.method === "GET" && path === "/api/questions") {
     const all = url.searchParams.get("state") === "open" ? (await readAllAsync(DIR)).filter((q) => q.state === "open") : await readAllAsync(DIR)
@@ -1011,7 +1018,7 @@ export async function handle(req: Request): Promise<Response> {
     const approveAllNow = !!vrKeys && option === vrKeys.A
     const review = (kind === "answer" && b.review === true) || approveAllNow
     if (approveAllNow) {
-      const runs = (await allRuns()).filter((r) => r.id === q.dossier)
+      const runs = (await allRuns(true)).filter((r) => r.id === q.dossier)
       const f = await vrFind(q.dossier, questionRepo(q, runs) ?? "")
       if (!f.ok) return json({ error: f.error }, f.status)
       try {
@@ -1026,7 +1033,7 @@ export async function handle(req: Request): Promise<Response> {
     } else if (review) {
       const keys = reviewOptions(q.options)
       if (!keys || !isReviewQuestion(q) || !q.dossier) return json({ error: "not a visual-review question" }, 400)
-      const runs = (await allRuns()).filter((r) => r.id === q.dossier)
+      const runs = (await allRuns(true)).filter((r) => r.id === q.dossier)
       const f = await vrFind(q.dossier, questionRepo(q, runs) ?? "")
       if (!f.ok) return json({ error: f.error }, f.status)
       const st = reviewState(vrDir(f.root, f.dossier), f.dossier)
@@ -1088,6 +1095,22 @@ function mergeState(key: string): { state: string; prs: number[]; base: string; 
   } catch { return null }
 }
 const docPrsCache = new Map<string, { at: number; v: any }>()
+const docPrsInflight = new Map<string, Promise<any>>()
+const MERGE_CALL_MS = 120_000
+/** `merge_docs_prs.py list` for a repo (async, one in flight per repo), cached in memory and on disk. */
+function refreshDocPrs(repo: string, main: string): Promise<any> {
+  let p = docPrsInflight.get(repo)
+  if (p) return p
+  p = (async () => {
+    const r = await shRun(["python3", join(import.meta.dir, "..", "..", "scripts", "merge_docs_prs.py"), "list", "--root", main], undefined, MERGE_CALL_MS)
+    let prs: any
+    try { prs = JSON.parse(r.stdout); writeViewCache(`docprs-${repo}`, prs) } catch { prs = { error: (r.stderr || "list failed").slice(0, 300) } }
+    docPrsCache.set(repo, { at: Date.now(), v: prs })
+    return prs
+  })().finally(() => docPrsInflight.delete(repo))
+  docPrsInflight.set(repo, p)
+  return p
+}
 const mergeScript = (): string => process.env.ASD_MERGE_BIN || join(import.meta.dir, "..", "..", "scripts", "merge_dossier.py")
 
 /**
@@ -1100,8 +1123,8 @@ async function checkMerges(): Promise<void> {
   if (mergeInflight || !mergeDetectorEnabled() || process.env.ASD_RUNS_NO_GH === "1") return
   mergeInflight = true
   try {
-    const st = await getStubsA()
-    const runs = (await getRunsA()).runs
+    const st = await getStubsA(true)
+    const runs = (await getRunsA(true)).runs
     for (const rr of st.repos) {
       if (!rr.open.length) continue
       // Only a main checkout: a scan that took a worktree for a repo (its `.git` is a file) must not baseline or start runs.
@@ -1162,6 +1185,8 @@ async function main(): Promise<void> {
   }
 
   startLagWatch(log)
+  // Start rebuilding the views at once (the disk copy serves meanwhile), not at the first page load.
+  void getRunsA(); void getStubsA()
   await scan()
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -1201,8 +1226,8 @@ async function main(): Promise<void> {
     void autoWorkTick() }
   // Automatic work: the facts go to the script, which decides (no agent) and takes at most one step per repository. Off unless a repository is switched on.
   const autoWorkTick = async () => { try {
-    const runs = (await getRunsA()).runs
-    const stubs = (await getStubsA()).repos.map((r) => ({ ...r, stubs: r.stubs.map((s) => {
+    const runs = (await getRunsA(true)).runs
+    const stubs = (await getStubsA(true)).repos.map((r) => ({ ...r, stubs: r.stubs.map((s) => {
       const key = `${r.repo}.${s.branch.replace(/\//g, "-")}`
       return { ...s, canIntegrate: canIntegrate(s.state, readIntegrate(key), readRunner(key)) }
     }) }))

@@ -1560,7 +1560,7 @@ function render() {
   const cr = document.createElement('div'); crumbs().forEach(c => cr.appendChild(c)); morph(document.getElementById('crumbs'), cr);
   const sl = document.createElement('div'); sl.appendChild(h('span', { class: 'dot ' + (S.slack ? 'ok' : '') })); sl.appendChild(h('span', {}, [S.slack ? 'Slack connected' : 'Slack off'])); morph(document.getElementById('slack'), sl);
   const up = document.createElement('div'); up.appendChild(h('span', { class: 'dot ' + (S.live ? 'ok' : 'warn'), title: S.live ? 'live updates' : 'polling every 60 s' }));
-  const t = new Date(S.changedAt || Date.now()).toISOString(); up.appendChild(when(t, 'updated ') || h('span')); morph(document.getElementById('upd'), up);
+  const t = new Date(S.changedAt || Date.now()).toISOString(); up.appendChild(when(t, 'updated ') || h('span')); if (S.refreshing || (S.stubs && S.stubs.refreshing)) up.appendChild(h('span', { class: 'muted', title: 'Showing the last saved view while the server rebuilds it' }, [' · refreshing…'])); morph(document.getElementById('upd'), up);
   document.title = (R.kind === 'chat' ? 'Ask the agent · ' : R.kind === 'item' ? R.id + ' · ' : R.kind === 'repo' ? R.repo + ' · ' : R.kind === 'arch' ? 'Architecture · ' + R.repo + ' · ' : '') + 'Pipeline · Owner questions';
   vrMount();
   if (scrollTarget) { const e = document.getElementById('q-' + scrollTarget); if (e) { e.scrollIntoView({ block: 'start' }); scrollTarget = ''; } }
@@ -1575,7 +1575,7 @@ async function loadDetail() {
 async function load(what) {
   const all = !what; const w = new Set(what || []); const jobs = [];
   if (all || w.has('questions')) jobs.push(fetchJ('/api/questions?state=all').then(d => { if (Array.isArray(d)) S.q = d; }));
-  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.accounts = d.accounts || []; S.disk = d.disk || null; S.plans = d.plans || []; S.usageBusy = !!d.usageBusy; } }));
+  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.refreshing = !!d.refreshing; S.accounts = d.accounts || []; S.disk = d.disk || null; S.plans = d.plans || []; S.usageBusy = !!d.usageBusy; } }));
   if (all || w.has('stubs') || w.has('scan')) jobs.push(fetchJ('/api/stubs').then(d => { if (d && d.repos) S.stubs = d; }));
   if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/autowork').then(d => { if (d && d.repos) { S.auto = {}; d.repos.forEach(v => { S.auto[v.repo] = v; }); } }));
   if ((all || w.has('chat')) && R.kind === 'chat') jobs.push(loadChat());
