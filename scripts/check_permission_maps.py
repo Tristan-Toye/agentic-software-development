@@ -105,7 +105,7 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
-from check_payload import HOOK_READ_SCOPE, REQUIRED_TOOLS, readable
+from check_payload import HOOK_READ_FILES, HOOK_READ_SCOPE, REQUIRED_TOOLS, readable
 
 PATH_TOOLS = ("read", "edit", "write")
 STAGING_MARKERS = (".agent-staging/",)
@@ -651,6 +651,20 @@ def spawn_validation(
                         f"read scope for {kind} ({', '.join(HOOK_READ_SCOPE[kind])}): "
                         "the Read is refused. Stage it under .agent-staging/ or paste it"
                     )
+        if ("Read" in tools or "Edit" in tools) and kind in HOOK_READ_SCOPE:
+            # The write side admits the path; the hook's read boundary (the same one an Edit is held
+            # to) refuses the Read or Edit of an EXISTING file outside it, so the author returns 0
+            # files written (#440). A new file needs no Read; the first Write is admitted.
+            for raw in test_paths:
+                rel = resolve(root, raw) or raw
+                if (root / rel).exists() and not readable("/" + str(rel), kind):
+                    findings.append(
+                        f"host claude: TEST_PATH '{rel}' exists but is outside the plugin hook's "
+                        f"read boundary for {kind} ({', '.join(HOOK_READ_SCOPE[kind])}, "
+                        f"{', '.join(HOOK_READ_FILES)}): the Read and the Edit of it are refused. "
+                        "Route it to the integration-test-author or stage its content under "
+                        ".agent-staging/ and have the author write a new file"
+                    )
         if test_paths and "Write" not in tools and "Edit" not in tools:
             findings.append(
                 f"host claude: frontmatter tools (line {tools_line}: {granted}) "
@@ -1074,6 +1088,20 @@ def selftest() -> int:
         check("host claude: the hook-confined Read admits a test-family read path", True, rc == 0)
         rc, out = spawn(confined, "claude", new, ["src/lib.rs"])
         check("host claude: the hook-confined Read refuses a source read path", True, rc == 1 and "read scope" in out)
+        # #440/#463: an existing TEST_PATH must be inside the hook's read boundary, not only the write side
+        (troot / "deploy" / "scripts").mkdir(parents=True)
+        (troot / "deploy" / "scripts" / "foo.sh").write_text("echo hi\n")
+        (troot / "deploy" / "scripts" / "foo_test.sh").write_text("echo test\n")
+        (troot / "deploy" / "scripts" / "check_it.sh").write_text("echo check\n")
+        rc, out = spawn(confined, "claude", ["deploy/scripts/foo_test.sh"], [])
+        check("host claude: an existing co-located *_test.sh TEST_PATH is admitted (#463)", True, rc == 0)
+        rc, out = spawn(confined, "claude", ["deploy/scripts/check_it.sh"], [])
+        check("host claude: an existing TEST_PATH outside the hook's read boundary is refused (#440)", True,
+              rc == 1 and "read boundary" in out and "check_it.sh" in out)
+        rc, out = spawn(confined, "claude", ["deploy/scripts/new_check.sh"], [])
+        check("host claude: a NEW TEST_PATH outside the read boundary is still admitted (first Write)", True, rc == 0)
+        rc, out = spawn(confined, "claude", [], ["deploy/scripts/foo.sh"])
+        check("host claude: the implementation beside a *_test.sh stays unreadable (#463)", True, rc == 1 and "read scope" in out)
 
     # Frontmatter/map disagreement is a defect in the agent file itself.
     def disagreement(text: str) -> list[str]:

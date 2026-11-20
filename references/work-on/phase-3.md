@@ -130,7 +130,18 @@ shape this contract changes? A contract that adds a worktree-detecting guard
 check behave differently in a secondary worktree than in the main checkout —
 and every package worktree IS a secondary worktree; each such case gets an
 owner and a fixture (a main-checkout copy) before the fan-out, or the wave
-prep will explain a failure the contract never predicted. Log
+prep will explain a failure the contract never predicted. **A shape change by rule gets a literal-search census, not only compile errors
+(#466).** When the contract changes the shape of a string-valued identifier by
+rule (work keys, stored names, labels), tests that assert the old literal still
+compile, so a build error never names them; they surface one test project at a
+time as re-spawns. Put one line in the dossier's `## Contract`,
+`SHAPE-CHANGE: <old-shape pattern> -> <new shape>`, grep the whole tree for the
+old pattern (`grep -rnE '<pattern>'`, tests, fixtures, scripts, registers), turn
+every hit into a `CENSUS:` row (a catch-all row per file for stale literals),
+and log `CENSUS-LITERAL: <pattern> — <N> hits, <M> census rows` (or `CENSUS-LITERAL:
+none — <pattern searched, zero hits>`). `validate_pipeline.py --pre-fanout`
+refuses a contract with a `SHAPE-CHANGE:` line and no `CENSUS-LITERAL:` line.
+Log
 `CENSUS: <path>:<line> — <owner>`, or `CENSUS: none — <what was grepped>`,
 into `## Build log` before you spawn. **A row whose path is an existing test
 file or shell check is a census package, spawned as a plugin agent, never a

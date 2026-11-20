@@ -130,6 +130,19 @@ This is the step everything else depends on.
     as unfinished work, so the failing-loud marker is the default unless this
     repo's rules file names another.
 
+    **A new test file's runner registration is contract wiring you own (#464).**
+    When the contract creates a test file that the target's gates require to be
+    registered (a nextest test group for a process-wide guard static, a CI
+    test-axis pin, a spec list a self-test compares), name the registration in
+    the contract and commit it in the contract commit, beside the empty test
+    file. The blind test author cannot edit the runner config and never runs the
+    gates, so a registration left to the merge fails as a row-4 (harness wiring)
+    arbitration in Phase 6. Run the registration gates in Phase 3 against a tree
+    where the guard idiom the payload's `FIXTURES` prescribe is assumed present,
+    not against the empty stub alone (an empty test file keeps them green). Log
+    `RUNNER-REG: <file> -> <group, pin or list> — <config file>` into
+    `## Build log`, or `RUNNER-REG: none — <why the target registers nothing>`.
+
     **Never cite an `(inferred)` comment as the contract.** A comment that
     starts with `(inferred)` is a guess about the code. A member the contract
     relies on needs an authored comment: write it here, and it replaces the

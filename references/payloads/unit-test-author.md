@@ -72,6 +72,10 @@ FIXTURES: |
   FlushQueue(store=FakeStore(), clock=FakeClock())
   FakeStore exposes .written -> list[Item] and .write_count -> int
   Build an Item with make_item(id: str) from tests/support/factories.py
+  REGISTERED: <only when a guard idiom is prescribed above: the runner-config
+    group, pin or spec list the orchestrator already registered for this test
+    file in the contract commit (phase-2.md, #464); the author never edits the
+    runner config>
 SHARED_IDIOM: |
   <only when a test must construct or invoke a concept two or more agents
    write — the same bytes as every other payload that carries it, test
