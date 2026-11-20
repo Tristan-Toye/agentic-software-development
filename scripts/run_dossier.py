@@ -3696,6 +3696,8 @@ def selftest() -> int:
     before_real = listing()
     rulings_tmp = tempfile.mkdtemp(prefix="asd-rulings-")
     os.environ["ASD_RULINGS_DIR"] = rulings_tmp
+    # The owner's active-repos file would reserve slots for real repos and starve the fixture runs (children inherit this).
+    os.environ["ASD_ACTIVE_REPOS_FILE"] = os.path.join(rulings_tmp, "no-active-repos.json")
 
     def check(name: str, ok: bool) -> None:
         print(("ok   " if ok else "FAIL ") + name, flush=True)
