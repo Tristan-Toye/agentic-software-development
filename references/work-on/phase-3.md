@@ -85,6 +85,18 @@ contract documents on that path, so a mutant that deletes or weakens the one
 guard under test turns that test red. `check_payload.py` warns on a negative
 line with no `input:` before the fan-out.
 
+**Word a "leaves state unchanged" promise as before-equals-after, never as an
+absolute value.** When the contract says sourcing or calling a member leaves
+the caller's state as it was (shell traps, shell options, umask, working
+directory, environment), the checklist line reads `<state> after equals
+<state> before [whole-value]`, both captured the same way in one process.
+Never `<state> is empty` or a fixed literal: a CI runner starts each step with
+inherited state (GitHub's ubuntu runner ignores SIGPIPE, which bash 5 lists in
+`trap -p`), so a test green on a local shell goes red there. Example:
+`source_lib — shell traps: trap -p after equals trap -p before [whole-value]`.
+No script checks this wording: an absolute "unchanged" claim has no reliable
+textual signature, so a validator warning would be noise.
+
 **Match the checklist's ids to the repo's own coverage script, before
 deriving it.** When the target repo owns a promise-coverage script, read its
 promise-line regex first and derive `PROMISE_CHECKLIST`'s ids in that

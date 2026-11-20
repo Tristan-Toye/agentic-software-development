@@ -89,6 +89,14 @@ CORRECTION: |
 CONTRACT_HASH: 3f2611f0a91c4d8e
 ```
 
+**A "leaves state unchanged" line is a before/after equality.** When a
+`PROMISE_CHECKLIST` line says a call or `source` leaves the caller's state as it
+was (traps, shell options, umask, working directory, environment), the test
+captures that state before and after in one process, through the same capture
+form (the same command, and the same `$(...)` or none, since a `$(...)` strips
+trailing newlines), and asserts the two are equal. It never compares against a
+literal or an empty value: CI runners start with state a local shell lacks.
+
 **The Claude Code form** — `Write` only, everything pasted, `TEST_PATHS` the
 one path in the payload:
 

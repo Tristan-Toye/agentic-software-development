@@ -211,6 +211,11 @@ def selftest() -> int:
             fh.write(DOC)
         rc = main([src, "--drop", "CR-2,DEFECT-1", "--out", dst])
         ok("--drop writes the filtered document", rc == 0 and open(dst).read() == kept)
+        full = os.path.join(tmp, "all.md")
+        rc = main([src, "--out", full])
+        ok("--out without --drop writes every input CR (#443)", rc == 0 and open(full).read() == DOC)
+        rc = main([src, "--drop", "", "--out", os.path.join(tmp, "none.md")])
+        ok("--drop dropping nothing still writes --out (#443)", rc == 0 and open(os.path.join(tmp, "none.md")).read() == DOC)
     print(f"selftest: {len(failures)} failure(s)")
     return 1 if failures else 0
 
@@ -219,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("document", nargs="?")
     ap.add_argument("--drop", help="comma-separated section ids to leave out")
-    ap.add_argument("--out", help="where --drop writes the filtered document")
+    ap.add_argument("--out", help="where the (filtered) document is written, on every run")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
@@ -242,6 +247,10 @@ def main(argv: list[str] | None = None) -> int:
             fh.write(kept)
         print(f"wrote {args.out}")
         return 0
+    if args.out:  # #443: --out always writes, so the next step can read it unconditionally
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(f"wrote {args.out}")
     print("\n".join(summary_lines(text)))
     return 0
 
