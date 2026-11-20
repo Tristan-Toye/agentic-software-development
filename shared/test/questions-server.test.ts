@@ -155,6 +155,21 @@ check("branches: a build branch names the id in any case; plan, stub and trunk b
   check("branches: a finished build's branch copy replaces the checkout's older one", picked.length === 1 && picked[0].front.status === "done" && picked[0].branch === "feat/w-5-x" && picked[0].file.startsWith("git:") && readDossier(picked[0].file).includes("status: done") && readDossier(f).includes("status: ready"))
   rmSync(g, { recursive: true, force: true })
 }
+check("branches: a declared branch: field makes a name without the id the build branch, with or without origin/", isBuildBranch("docs/harness2-ingest", "W-199", "docs/harness2-ingest") && isBuildBranch("origin/docs/harness2-ingest", "W-199", "docs/harness2-ingest") && isBuildBranch("docs/harness2-ingest", "W-199", "origin/docs/harness2-ingest") && !isBuildBranch("docs/other", "W-199", "docs/harness2-ingest") && !isBuildBranch("docs/harness2-ingest", "W-199") && !isBuildBranch("stub/x", "W-199", "stub/x") && isBuildBranch("feat/w-199-x", "W-199", "docs/harness2-ingest"))
+{
+  const g = mkdtempSync(join(tmpdir(), "brd-"))
+  const git = (...a: string[]) => execFileSync("git", ["-C", g, "-c", "user.email=t@x.invalid", "-c", "user.name=t", ...a], { stdio: "pipe" })
+  mkdirSync(join(g, ".discovery", "dossiers"), { recursive: true })
+  const f = join(g, ".discovery", "dossiers", "W-199-x.md")
+  writeFileSync(f, "---\nid: W-199\nstatus: ready\nbranch: docs/harness2-ingest\npr: null\n---\n# W-199\n")
+  git("init", "-q", "-b", "development"); git("add", "-A"); git("commit", "-q", "-m", "base")
+  git("checkout", "-q", "-b", "docs/harness2-ingest")
+  writeFileSync(f, "---\nid: W-199\nstatus: done\nbranch: docs/harness2-ingest\npr: https://github.com/o/r/pull/597\n---\n# W-199\n## Build log\n- one\n- two\n")
+  git("commit", "-q", "-am", "done"); git("checkout", "-q", "development")
+  const picked = await withBranchCopies(g, pickDossiers([g]))
+  check("branches: a dossier's declared branch: (no id in the name) supplies its finished copy", picked.length === 1 && picked[0].front.status === "done" && picked[0].branch === "docs/harness2-ingest" && picked[0].front.branch === "docs/harness2-ingest")
+  rmSync(g, { recursive: true, force: true })
+}
 {
   const cd = mkdtempSync(join(tmpdir(), "conv-"))
   const L = (o: any) => JSON.stringify(o)
@@ -609,6 +624,12 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
     const ds = [{ id: "W-1", status: "building", pr: "#41" }, { id: "W-2", status: "review", pr: "" }, { id: "W-3", status: "building" }, { id: "W-4", status: "ready" }, { id: "W-5", status: "planned", live: false }, { id: "W-6", status: "building", pr: "" }]
     const m = stubMembers(st, ds, { "stub/2026-10-24": [{ number: 41, headRefName: "feat/x" }, { number: 50, headRefName: "plan/W-6-plan" }, { number: 51, headRefName: "feat/W-2-thing" }, { number: 52, headRefName: "feat/W-4-r" }], "stub/2026-10-31": [] })
     check("stubMembers: a PR into the stub places its dossier (pr: field or id in head)", m["stub/2026-10-24"]?.map((x) => x.id).sort().join() === "W-1,W-2" && m["stub/2026-10-24"].every((x) => !x.noPr))
+    {
+      const mb = stubMembers([{ branch: "stub/2026-11-18", cut: "2026-11-18", state: "accepting" as const, pr: null }], [{ id: "W-199", status: "done", pr: "null", branch: "docs/harness2-ingest" }, { id: "W-200", status: "done", pr: "null" }], { "stub/2026-11-18": [{ number: 597, headRefName: "docs/harness2-ingest" }] })
+      check("stubMembers: a PR whose head is the dossier's branch: field places it (and only it)", mb["stub/2026-11-18"]?.map((x) => x.id + ":" + x.noPr).join() === "W-199:false")
+      const ob = outsideStubPrs(["stub/2026-11-18"], [{ id: "W-199", status: "done", pr: "null", branch: "docs/harness2-ingest" }], [{ number: 598, headRefName: "docs/harness2-ingest", baseRefName: "development", url: "u" }])
+      check("outsideStubPrs: a PR into development whose head is the dossier's branch: field is that dossier's", ob.length === 1 && ob[0].id === "W-199")
+    }
     check("stubMembers: building without a PR goes under the accepting stub with noPr", m["stub/2026-10-31"]?.map((x) => x.id + ":" + x.noPr).sort().join() === "W-3:true,W-6:true")
     check("stubMembers: plan merges never count and ready/planned never appear", !JSON.stringify(m).includes("W-4") && !JSON.stringify(m).includes("W-5") && !m["stub/2026-10-24"].some((x) => x.id === "W-6") && !m["stub/2026-09-01"])
     {

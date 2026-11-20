@@ -610,7 +610,7 @@ restarted server answers at once from them while its first scan runs.
     message POSTs to `/api/runs/<repo>/<ID>/chat`, which runs
     `run_dossier.py chat <ID> --text …`, resuming that session on its account;
     the reply appears as it lands. **A finished build's dossier** is read from
-    its build branch (the id in the branch name, any case; local or `origin/`)
+    its build branch (the id in the branch name, any case, or the dossier's `branch:` front-matter field; local or `origin/`)
     when that copy's build log is longer, since `/work-on` removes the worktree
     and the checked-out branch has the pre-build copy until the PR merges; the
     open-work report overlays the same copy. A done dossier stays under its
@@ -627,7 +627,7 @@ restarted server answers at once from them while its first scan runs.
     **Which in-progress dossiers sit under a stub** (`stubMembers`): one whose
     open PR targets that stub branch (`gh pr list --base <branch> --state open
     --json number,headRefName`, cached 2 min, 10 s timeout; matched by the
-    dossier's `pr:` number or by its id in the head branch, repo-scoped;
+    dossier's `pr:` number, its `branch:` field as the head, or its id in the head branch, repo-scoped;
     `plan/...` heads never count); plus a dossier in `building`/`review` (or
     with a live runner) that has no PR yet, under the **accepting** stub (the
     newest open stub with no PR into development, else the newest open stub).

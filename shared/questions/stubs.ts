@@ -31,9 +31,13 @@ export function openStubs(stubs: Stub[]): Stub[] {
 }
 /** An open PR whose base is a stub branch. */
 export type BasePr = { number: number; headRefName: string }
+/** Whether open PR `p` is dossier `d`'s: its `pr:` number, its `branch:` field as the head, or its id in the head name (any case). */
+const ownsHead = (d: { id: string; pr?: string; branch?: string }, p: { number: number; headRefName: string }): boolean =>
+  prFieldNumbers(d.pr).includes(p.number) || (!!d.branch && p.headRefName === d.branch.trim().replace(/^origin\//, "")) ||
+  new RegExp(`(^|[^A-Za-z0-9])${d.id.replace(/[^\w-]/g, "")}(?![\w])`, "i").test(p.headRefName)
 /**
  * Which in-progress dossiers belong under which open stub. A dossier belongs to a stub when an open PR into
- * that stub is its own (the `pr:` number, or its id in the head branch); `plan/...` heads never count. A dossier
+ * that stub is its own (the `pr:` number, its `branch:` field, or its id in the head branch); `plan/...` heads never count. A dossier
  * in building/review, or with a live runner (queued, running, waiting or paused: a follow-up `/fix-deferred` or
  * `/plan` on a done dossier counts), and no open PR into any open stub yet goes under the accepting stub (the
  * newest open stub with no PR into development; else the newest open stub) with `noPr`, until its new PR into the
@@ -44,7 +48,7 @@ export type BasePr = { number: number; headRefName: string }
  */
 export function stubMembers(
   stubs: { branch: string; cut: string; refAge?: string; state: Stub["state"]; pr: unknown | null }[],
-  dossiers: { id: string; status: string; pr?: string; live?: boolean; halted?: boolean }[],
+  dossiers: { id: string; status: string; pr?: string; branch?: string; live?: boolean; halted?: boolean }[],
   prsByBase: Record<string, BasePr[]>,
 ): Record<string, StubMember[]> {
   const out: Record<string, StubMember[]> = {}
@@ -58,7 +62,7 @@ export function stubMembers(
     for (const p of prsByBase[b] ?? []) {
       if (/^plan\//.test(p.headRefName)) continue
       // Head branches name the id in any case: feat/w-130-… is W-130's.
-      const hit = withPr.find((d) => prFieldNumbers(d.pr).includes(p.number) || new RegExp(`(^|[^A-Za-z0-9])${d.id.replace(/[^\w-]/g, "")}(?![\w])`, "i").test(p.headRefName))
+      const hit = withPr.find((d) => ownsHead(d, p))
       if (hit) { add(b, { id: hit.id, noPr: false }); placed.add(hit.id) }
     }
   }
@@ -72,20 +76,20 @@ export function stubMembers(
   return out
 }
 /**
- * The open PRs that belong to a dossier (its `pr:` number, or its id in the head branch; `plan/` heads never count)
+ * The open PRs that belong to a dossier (its `pr:` number, its `branch:` field, or its id in the head branch; `plan/` heads never count)
  * but do not go into an open stub: a PR into development or a release branch from before stubs existed, and any PR
  * stacked on one (its base is the head of an outside PR; it takes that PR's dossier). A PR whose base chain reaches
  * an open stub is on that stub, not outside. Returns one entry per dossier, PRs by number.
  */
 export function outsideStubPrs(
   openStubBranches: string[],
-  dossiers: { id: string; status: string; pr?: string; live?: boolean }[],
+  dossiers: { id: string; status: string; pr?: string; branch?: string; live?: boolean }[],
   prs: OpenPr[],
 ): OutsideDossier[] {
   const stubSet = new Set(openStubBranches)
   const withPr = dossiers.filter((d) => ["building", "review", "pr", "done"].includes(d.status) || d.live === true)
   const byHead = new Map(prs.map((p) => [p.headRefName, p]))
-  const match = (p: OpenPr) => withPr.find((d) => prFieldNumbers(d.pr).includes(p.number) || new RegExp(`(^|[^A-Za-z0-9])${d.id.replace(/[^\w-]/g, "")}(?![\w])`, "i").test(p.headRefName))?.id
+  const match = (p: OpenPr) => withPr.find((d) => ownsHead(d, p))?.id
   const onStub = (p: OpenPr, seen: Set<number>): boolean => {
     if (stubSet.has(p.baseRefName)) return true
     const parent = byHead.get(p.baseRefName)
@@ -298,7 +302,7 @@ export async function buildStubsWithRoots(questions: Question[], now = Date.now(
         refAge: date, pr, dossiers, members: [],
       })
     }
-    const dinfo = docs.map((d) => ({ id: d.front.id!, status: d.front.status ?? "", pr: d.front.pr, live: runnerActive(runnerOf(baseName(main), d.front.id!, buildLog(d.text)).runner), halted: ["stopped", "failed"].includes(runnerOf(baseName(main), d.front.id!, buildLog(d.text)).runner?.state ?? "") }))
+    const dinfo = docs.map((d) => ({ id: d.front.id!, status: d.front.status ?? "", pr: d.front.pr, branch: d.front.branch, live: runnerActive(runnerOf(baseName(main), d.front.id!, buildLog(d.text)).runner), halted: ["stopped", "failed"].includes(runnerOf(baseName(main), d.front.id!, buildLog(d.text)).runner?.state ?? "") }))
     if (stubs.length) {
       const prsByBase: Record<string, BasePr[]> = {}
       for (const s of openStubs(stubs)) prsByBase[s.branch] = await prsBase(main, s.branch)
