@@ -130,6 +130,22 @@ the recorded checkpoints.
   frees. A run waiting on the owner holds no slot. The dashboard
   shows "queued · waiting for a slot". So a usage-limit reset, or many Start
   presses, no longer sets ten sessions going in the same minute.
+  **One reserved slot per active repo, the rest shared:** `~/.agentic/active-repos.json`
+  (`ASD_ACTIVE_REPOS_FILE`) is `{"repos": {"<repo>": "<main checkout root>"}}`, keyed by the repo
+  name the run keys use; `run_dossier.py active` shows it, `active --add [NAME] [--root R]` and
+  `active --remove NAME` edit it. Without the file nothing is reserved and the dashboard shows
+  every repo. An active repo holds a reservation while a dossier in
+  `<root>/.discovery/dossiers/*.md` has a front-matter `status` other than `done` (draft, blocked and
+  dropped count as buildable; read every ~60 s, `ASD_RESERVE_TTL`), also when none of its runs is queued;
+  with no such dossier it gives the slot up. A run of a reserved repo that holds no slot is admitted
+  when `held < cap`, skipping the shared queue, but only its repo's first queued run takes it. Any
+  other run is admitted when `held + (other reserved repos holding no slot) < cap` and nobody is
+  ahead of it: today's first-in-first-out with the reservations deducted. A cap not above the number
+  of reservations still lets each reserved repo run one (the shared pool is empty). Cap 0 stays
+  unlimited; the disk floor and `rehome` are unchanged. The `queued` event says "waiting for a shared
+  slot (N reserved for a, b)" or "waiting for the reserved slot of X", and the start event "using
+  the reserved slot of X". With the file the dashboard (runs, stubs and, through them, the auto-work
+  facts) lists only the active repos: `shared/questions/activerepos.ts`, applied in `candidateRoots`.
   **`testing` releases the slot:** while the session is blocked on a long wait
   the runner records `testing` and `slot_census` does not count it, so queued
   runs may start (podcast W-007 once sat 35 min in the foreground on
