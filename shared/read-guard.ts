@@ -18,7 +18,9 @@ const SOURCE_EXT = new Set([
 // limactl as the command run: at the start, or after a separator, `then`, `do`, `exec`,
 // `time` or `rtk` — not inside a quoted argument of another command (compose_payloads.py
 // carries a TEST_COMMAND that names limactl; refusing it cost the recorded runs a step).
-const LIMACTL_RUN_RE = /(?:^|[;&|(]\s*|\b(?:then|do|exec|time)\s+)(?:rtk\s+)?limactl\s+shell\b/m
+// The cargo test must be in that limactl call's own line:
+// a heredoc that writes a script running cargo, followed by an unrelated `limactl shell vm -- ls`, is not a VM test run.
+const LIMACTL_CARGO_RE = /(?:^|[;&|(]\s*|\b(?:then|do|exec|time)\s+)(?:rtk\s+)?limactl\s+shell\b[^\n]*\bcargo\s+(?:test|nextest)\b/m
 const CAT_RE = /^\s*cat\s+(?:--\s+)?("[^"]+"|'[^']+'|[^\s|;&<>$`()*?]+)\s*$/
 
 function sizeOf(file: string, cwd: string): { bytes: number; lines: number } | undefined {
@@ -177,7 +179,7 @@ export function readGuard(call: ReadGuardCall, cwd: string, cfg: Config, pipelin
     return undefined
   }
   const command = call.command
-  if (LIMACTL_RUN_RE.test(command) && /cargo\s+(test|nextest)\b/.test(command) && !command.includes("run_tests.py"))
+  if (LIMACTL_CARGO_RE.test(command) && !command.includes("run_tests.py"))
     return `use python3 ${pipelineRoot}/scripts/run_tests.py --vm nightwatch --workdir <X> --env-script deploy/host/test-env.sh -- <command>`
   if (cfg.nav_redirect) {
     const nav = navRedirect(command, cwd, cfg, pipelineRoot)

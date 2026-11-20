@@ -47,6 +47,8 @@ check("guard: small file", g({ kind: "read", path: small }) === undefined)
 check("guard: protected phase file", g({ kind: "read", path: "/r/references/work-on/phase-2.md" }) === undefined)
 check("guard: cargo via limactl", g({ kind: "bash", command: "limactl shell vm -- cargo test" })?.includes("/pipe/scripts/run_tests.py") === true)
 check("guard: limactl in an argument", g({ kind: "bash", command: 'x.py --f "limactl shell vm cargo test"' }) === undefined)
+check("guard: cargo in a heredoc, limactl elsewhere", g({ kind: "bash", command: "cat > r.sh <<'EOF'\nexec cargo test -p x\nEOF\nlimactl shell vm -- ls /w" }) === undefined)
+check("guard: cargo after limactl on its own line", g({ kind: "bash", command: "X=/w\nlimactl shell vm -- bash -lc 'cd /w && cargo nextest run'" }) !== undefined)
 check("guard: cat big", g({ kind: "bash", command: `cat ${big}` }) !== undefined)
 check("guard: cat piped into head is still a read window", g({ kind: "bash", command: `cat ${big} | head` })?.includes("code_item") === true)
 // Bash reading windows on source and markdown point at the nav tools.
