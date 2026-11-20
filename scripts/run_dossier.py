@@ -2673,6 +2673,12 @@ class Runner:
         signal.signal(signal.SIGINT, self.on_term)
         self.state.pop("parked", None)
         resuming = prev.get("state") in ("running", "testing", "waiting", "queued", "paused") and bool(prev.get("session"))
+        if self.command == "work-on" and not self.items and not resuming:
+            built = merged_build(self.root, self.dossier)
+            if built:
+                # Never a second build of a merged change, whoever started it (auto_work, a button, revive): no session,
+                # no slot, no question to the owner.
+                return self.finish("done", built, 0)
         if self.command == "work-on" and not self.items and not resuming and os.environ.get("ASD_RUNNER_PARK", "1") != "0":
             waits = open_blockers(self.root, self.dossier)
             if waits:
@@ -3068,6 +3074,33 @@ def open_blockers(root: str, dossier: str) -> list[str]:
         if st != "done":
             out.append(f"{b} ({st or 'no status'})")
     return out
+
+
+def merged_build(root: str, dossier: str) -> str:
+    """Why a /work-on would rebuild a change already merged, or "" when a build is due. The dossier's PR merged
+    (`<key>.merge.json` state merged, written by merge_dossier.py) and the dossier file has not changed since: a copy
+    that still reads `ready` on development only means its stub is not integrated yet (W-173). A re-plan commits the
+    dossier again, after the merge, and lifts this."""
+    rec = read_json(os.path.join(runs_dir(), key_of(root, dossier) + ".merge.json"), {}) or {}
+    if rec.get("state") != "merged" or not rec.get("ts"):
+        return ""
+    d = os.path.join(root, ".discovery", "dossiers")
+    try:
+        names = sorted(n for n in os.listdir(d) if re.match(re.escape(dossier) + r"(-.*)?\.md$", n))
+    except OSError:
+        names = []
+    if names:
+        r = subprocess.run(["git", "-C", root, "log", "-1", "--format=%cI", "--", os.path.join(".discovery", "dossiers", names[0])],
+                           capture_output=True, text=True)
+        changed = r.stdout.strip()
+        try:
+            if changed and datetime.datetime.fromisoformat(changed) > datetime.datetime.fromisoformat(str(rec["ts"]).replace("Z", "+00:00")):
+                return ""
+        except ValueError:
+            pass
+    prs = ", ".join(f"#{n}" for n in rec.get("prs") or []) or "its PR"
+    return (f"already built: {prs} merged into {rec.get('base') or 'its base'} at {rec['ts']}; nothing to build "
+            f"(a copy reading ready on development only waits for the stub's integration)")
 
 
 def front_status(text: str) -> str:
@@ -3808,6 +3841,36 @@ def selftest() -> int:
         open(os.path.join(ddir, "W-96-x.md"), "w").write("---\nid: W-96\nstatus: ready\nblocked_by: [W-97]\n---\n")
         check("open_blockers: a blocker with no dossier file counts as missing", open_blockers(root, "W-96") == ["W-97 (missing)"])
         os.remove(os.path.join(ddir, "W-96-x.md"))
+        # ---- a /work-on of a dossier whose PR already merged builds nothing and asks nothing (W-173) ----
+        open(os.path.join(ddir, "W-188-x.md"), "w").write("---\nid: W-188\nstatus: ready\n---\n# W-188\n")
+        write_json(os.path.join(rdir, "repo.W-188.merge.json"), {"state": "merged", "prs": [594], "base": "stub/2026-11-18", "ts": now()})
+        p = start("W-188")
+        check("merged: /work-on of a merged dossier ends done at once, no session, no question, reason named",
+              p.wait(timeout=60) == 0 and state_of("W-188").get("state") == "done" and not state_of("W-188").get("session")
+              and not state_of("W-188").get("questions") and any("already built: #594 merged into stub/2026-11-18" in t for t in texts("W-188")))
+        os.remove(os.path.join(rdir, "repo.W-188.merge.json"))
+        mroot = os.path.join(tmp, "mrepo")
+        mdd = os.path.join(mroot, ".discovery", "dossiers")
+        os.makedirs(mdd)
+        subprocess.run(["git", "init", "-q", mroot], capture_output=True)
+        open(os.path.join(mdd, "W-99-x.md"), "w").write("---\nid: W-99\nstatus: ready\n---\n")
+        subprocess.run(["git", "-C", mroot, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", mroot, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "plan"], capture_output=True)
+        mkey = os.path.join(rdir, key_of(mroot, "W-99") + ".merge.json")
+
+        def mb():
+            was = os.environ.get("ASD_RUNS_DIR")
+            os.environ["ASD_RUNS_DIR"] = rdir
+            try:
+                return merged_build(mroot, "W-99")
+            finally:
+                os.environ.pop("ASD_RUNS_DIR") if was is None else os.environ.update(ASD_RUNS_DIR=was)
+        write_json(mkey, {"state": "merged", "prs": [7], "base": "stub/x", "ts": "2000-01-01T00:00:00Z"})
+        check("merged: a dossier committed again after the merge (a re-plan) is built again", mb() == "")
+        write_json(mkey, {"state": "merged", "prs": [7], "base": "stub/x", "ts": "2999-01-01T00:00:00Z"})
+        check("merged: a dossier unchanged since its merge is not built again", mb().startswith("already built: #7"))
+        write_json(mkey, {"state": "failed", "prs": [7], "ts": "2999-01-01T00:00:00Z"})
+        check("merged: a failed merge record does not block a build", mb() == "")
 
         def in_env(fn):
             saved = dict(os.environ)
