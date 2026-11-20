@@ -136,6 +136,10 @@ NETWORK_RE = re.compile(r"ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|
 AUTH_OUTAGE_RE = re.compile(r"Attention Required|cloudflare|Failed to authenticate|API Error: 40[13]\b|authentication_error"
                             r"|OAuth token has expired|invalid x-api-key", re.I)
 AUTH_RETRIES = 16
+# An account whose login is gone ("Not logged in · Please run /login", "Invalid API key · Please run /login"): not a
+# Cloudflare block and not a failure of the run. A run that can start a fresh session moves to a signed-in account; one that
+# must resume its session waits for the owner to sign the account in again (see Runner.logged_out_wait).
+LOGGED_OUT_RE = re.compile(r"Not logged in|run /login|Invalid API key", re.I)
 # Waits between network retries, seconds; the last one repeats for as long as the outage lasts (ASD_RUNNER_NET_RETRIES
 # sets a limit; the default, 0, is none).
 GIT_SSH_HARDENED = "ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
@@ -185,13 +189,18 @@ def script_stamp(path: str) -> tuple[str, float]:
 
 def network_error(text: str) -> bool:
     """Whether a failed turn is a transient network or server error (wait and retry the stage), not a real failure."""
-    return bool(NETWORK_RE.search(text or "") or AUTH_OUTAGE_RE.search(text or "")) and not usage_limit(text)
+    return bool(NETWORK_RE.search(text or "") or AUTH_OUTAGE_RE.search(text or "")) and not usage_limit(text) and not logged_out(text)
 
 
 def auth_outage(text: str) -> bool:
     """Whether a failed turn is a refused sign-in (a Cloudflare block of this network, an expired token): retried a
     bounded number of times, then asked."""
-    return bool(AUTH_OUTAGE_RE.search(text or "")) and not usage_limit(text)
+    return bool(AUTH_OUTAGE_RE.search(text or "")) and not usage_limit(text) and not logged_out(text)
+
+
+def logged_out(text: str) -> bool:
+    """Whether a failed turn says the account is signed out (the owner must run /login), not an outage or a limit."""
+    return bool(LOGGED_OUT_RE.search(text or "")) and not usage_limit(text)
 
 
 def usage_limit(text: str) -> bool:
@@ -283,6 +292,53 @@ def pick_account(now_s: float | None = None, prefer: str = "") -> tuple[dict, fl
             return a, now_s
     a = min(accs, key=free_at)
     return a, free_at(a)
+
+
+# ---- a signed-out account: `claude auth status` (its `loggedIn` only), cached ~60 s per account in runs_dir() ----
+# $ASD_AUTH_STATUS_CMD replaces the command (tests); it runs with the account's CLAUDE_CONFIG_DIR. Anything but a clear
+# `"loggedIn": false` counts as signed in, so a broken check never blocks an account. Nothing it prints is kept.
+
+
+def auth_path(name: str) -> str:
+    return os.path.join(runs_dir(), f"auth-{name}.json")
+
+
+def auth_question_path(name: str) -> str:
+    return os.path.join(runs_dir(), f"loggedout-q-{name}.json")
+
+
+def auth_status(acc: dict, force: bool = False) -> bool:
+    """Whether the account is signed in; the answer is cached ASD_AUTH_TTL (60) s, `force` asks again."""
+    path, t = auth_path(acc["name"]), now_s()
+    c = read_json(path, {}) or {}
+    if not force and isinstance(c.get("loggedIn"), bool) and isinstance(c.get("ts"), (int, float)) and abs(t - c["ts"]) < env_num("ASD_AUTH_TTL", 60):
+        return c["loggedIn"]
+    cmd = shlex.split(os.environ.get("ASD_AUTH_STATUS_CMD") or "") or shlex.split(os.environ.get("ASD_CLAUDE_BIN") or "claude") + ["auth", "status"]
+    ok = True
+    try:
+        r = subprocess.run(cmd, env=dict(os.environ, CLAUDE_CONFIG_DIR=acc["dir"]), capture_output=True, text=True, timeout=30)
+        m = re.search(r'"loggedIn"\s*:\s*(true|false)', r.stdout or "")
+        ok = not (m and m.group(1) == "false")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if ok != c.get("loggedIn", True):
+        try:   # the paced cap's rows follow the change at once
+            os.remove(os.path.join(runs_dir(), "slots-cap.json"))
+        except OSError:
+            pass
+    try:
+        write_json(path, {"loggedIn": ok, "ts": t})
+        if ok:
+            os.remove(auth_question_path(acc["name"]))   # signed in again: the next sign-out asks once more
+    except OSError:
+        pass
+    return ok
+
+
+def account_signed_out(acc: dict) -> bool:
+    """Whether an account is known to be signed out: only an account a run saw refuse is checked (no spawn for the rest)."""
+    c = read_json(auth_path(acc["name"]), {}) or {}
+    return c.get("loggedIn") is False and not auth_status(acc)
 
 
 USAGE_DIR = lambda: os.environ.get("ASD_USAGE_DIR") or os.path.expanduser("~/.agentic/usage")
@@ -1051,6 +1107,11 @@ def compute_cap(t: float | None = None) -> dict:
             rows.append({"account": name, "limited": True, "runs": 0})
             parts.append(f"{name} limit-marked → 0")
             continue
+        if account_signed_out(a):
+            limited += 1
+            rows.append({"account": name, "limited": True, "signedout": True, "runs": 0})
+            parts.append(f"{name} signed out → 0")
+            continue
         ts = epoch_of(use.get("ts"))
         if (ts is None or t - ts > 1800) and not running.get(name):
             if refresh_gate(a, t):
@@ -1123,7 +1184,7 @@ def headroom_pick(rows: list, running: dict, current: str) -> tuple[str, str]:
     `runs` of compute_cap's rows minus the runs already working on it. Limited accounts and accounts with no reading are
     never chosen; a tie, or no reading on the current account, keeps `current`; a limited current account moves to the best."""
     score = {r["account"]: float(r.get("runs") or 0) - running.get(r["account"], 0) for r in rows or []
-             if isinstance(r, dict) and r.get("account") and not r.get("limited") and not r.get("unknown")}
+             if isinstance(r, dict) and r.get("account") and not r.get("limited") and not r.get("signedout") and not r.get("unknown")}
     if not score:
         return current, ""
     cur_row = next((r for r in rows if isinstance(r, dict) and r.get("account") == current), None)
@@ -2360,6 +2421,69 @@ class Runner:
                     p.kill()
                     p.wait()
 
+    def logged_out_stage(self, started: int, detail: str, n: int) -> bool:
+        """A stage ended because its account is signed out. True: run the stage again (on a signed-in account, or once
+        this one is signed in again); False: the sign-out is not confirmed after several tries, so the normal failure path."""
+        cur = self.account
+        if auth_status(cur, force=n > 1):
+            if n > 3:
+                return False
+            self.mark_resume()
+            self.event(f"stage {started} said the account was signed out ({detail[:100]}), but account {cur['name']} is signed in; stage {started} again", "running")
+            return True
+        self.mark_resume()
+        if not (self.resume_sid and self.resume_acct == cur["name"]):   # nothing to resume: any signed-in account will do
+            st = account_state()
+            for a in load_accounts():
+                mark = st.get(a["name"]) or {}
+                if a["name"] != cur["name"] and not account_problem(a, load_accounts()) and auth_status(a) \
+                        and not (float(mark.get("limited_until") or 0) > now_s()):
+                    self.account = a
+                    self.save(account=a["name"])
+                    self.event(f"switched to account {a['name']}: account {cur['name']} is signed out; stage {started} again", "running")
+                    return True
+        name = cur["name"]
+        msg = (f"account {name} is signed out; run `CLAUDE_CONFIG_DIR={shlex.quote(cur['dir'])} claude` then /login; "
+               "this run resumes by itself once it is signed in")
+        self.ask_logged_out(cur)
+        self.save(state="waiting", questions=[])
+        self.event(msg, "waiting")
+        poll = float(os.environ.get("ASD_AUTH_POLL") or 60)
+        while not self.stopping:
+            until = time.time() + poll
+            while time.time() < until and not self.stopping:
+                time.sleep(min(1.0, max(0.05, until - time.time())))
+            if not self.stopping and auth_status(cur, force=True):
+                break
+        if self.stopping:
+            return True
+        self.event(f"account {name} is signed in again; stage {started} again", "running")
+        return True
+
+    def ask_logged_out(self, acc: dict) -> None:
+        """Ask the owner to sign an account in: once per account until it is signed in again, however many runs wait."""
+        try:
+            fd = os.open(auth_question_path(acc["name"]), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+        except OSError:
+            return
+        p = self.ask_cmd(
+            "ask", "--root", self.root, "--dossier", self.dossier,
+            "--question", f"Claude account {acc['name']} is signed out: runs on it wait (new runs go to a signed-in account). "
+                          f"Run `CLAUDE_CONFIG_DIR={shlex.quote(acc['dir'])} claude` and /login; waiting runs resume by themselves.",
+            "--option", "A|Signed in|nothing to do, the runs notice within a minute",
+            "--option", "B|Leave it signed out|runs that can start fresh keep using the other accounts",
+            "--recommend", "A", "--blocks", f"the runs on account {acc['name']}", "--topic", "run-failure")
+        out, err = p.communicate()
+        if p.returncode != 0 or not out.strip():
+            self.event(f"could not ask the owner about account {acc['name']}: {err.strip()[:200]}")
+            try:
+                os.remove(auth_question_path(acc["name"]))
+            except OSError:
+                pass
+            return
+        write_json(auth_question_path(acc["name"]), {"question": out.strip()})
+
     def ask_failure(self, reason: str) -> str:
         """Question the owner about a failed stage; 'retry' or 'stop'."""
         p = self.ask_cmd(
@@ -2555,6 +2679,8 @@ class Runner:
                     return "fresh", (tail.strip().splitlines()[-1][:200] if tail.strip() else f"exit {val}")
                 if usage_limit(tail):
                     return "limit", tail.strip()
+                if logged_out(tail):
+                    return "loggedout", tail.strip().splitlines()[-1][:300] if tail.strip() else "not logged in"
                 if network_error(tail):
                     return "network", tail.strip().splitlines()[-1][:300] if tail.strip() else "network error"
                 if val in KILLED_CODES and (self.stopping or os.path.exists(self.stop_marker)):
@@ -2577,6 +2703,10 @@ class Runner:
                 # an empty error result: the reason is on stderr (claude could not load the organisation's settings
                 # at start, for one, which happens right after the Mac wakes with no network yet)
                 text = self.stderr_tail()
+            if err and logged_out(text):
+                kill_group(self.proc)
+                self.end_process()
+                return "loggedout", text.strip().splitlines()[-1][:300]
             if err and network_error(text):
                 kill_group(self.proc)
                 self.end_process()
@@ -2786,6 +2916,7 @@ class Runner:
         net_tries = 0   # network errors in a row; a stage that ends well resets it
         kill_tries = 0  # outside kills in a row; likewise
         stall_tries = 0  # stalls of one stage in a row; the third goes to the owner
+        lo_n = 0         # sign-out failures in a row that the auth check did not confirm
         while True:
             if self.stopping:
                 return self.finish("stopped", "stopped", 3)
@@ -2861,6 +2992,16 @@ class Runner:
             if outcome == "stopped":
                 self.end_process()
                 return self.finish("stopped", "stopped", 3)
+            if outcome == "loggedout":
+                lo_n += 1
+                if self.logged_out_stage(started, detail, lo_n):
+                    if self.stopping:
+                        return self.finish("stopped", "stopped", 3)
+                    started -= 1
+                    continue
+                detail = f"the account's sign-in is refused: {detail}"
+            else:
+                lo_n = 0
             if outcome == "network":
                 # A transient network or API-server error: pause, then run the same stage again from its checkpoints,
                 # backing off, however long it lasts: an outage says nothing about the work. Only with
@@ -5011,6 +5152,81 @@ def selftest() -> int:
         check("headroom: ... keeps the current account when it has no reading, and leaves a limited one",
               headroom_pick([{"account": "a", "unknown": True, "runs": 2.0}, {"account": "b", "runs": 3.0}], {}, "a")[0] == "a"
               and headroom_pick([{"account": "a", "limited": True, "runs": 0}, {"account": "b", "runs": 0.5}], {}, "a")[0] == "b")
+        # ---- a signed-out account: recognised, moved away from or waited out, asked about once ----
+        check("logged out: 'Not logged in · Please run /login' matches", logged_out("Not logged in · Please run /login"))
+        check("logged out: 'Invalid API key · Please run /login' matches", logged_out("Invalid API key · Please run /login"))
+        check("logged out: it is not a network error or an auth outage",
+              not network_error("Not logged in · Please run /login") and not auth_outage("Invalid API key · Please run /login"))
+        check("logged out: Cloudflare, 503 and usage-limit messages do not match",
+              not any(logged_out(x) for x in ("403 Attention Required! | Cloudflare", "API Error: 503 service unavailable", "Failed to authenticate",
+                                              "You've hit your usage limit", "Claude AI usage limit reached|1700000000"))
+              and auth_outage("Attention Required! | Cloudflare") and network_error("API Error: 503"))
+        lo_dir = os.path.join(pdir, "lo"); os.makedirs(lo_dir, exist_ok=True)
+        lo_cnt = os.path.join(lo_dir, "calls")
+        lo_stub = os.path.join(lo_dir, "status.py")
+        open(lo_stub, "w").write(
+            "import os,sys\nd=os.environ['CLAUDE_CONFIG_DIR']\nopen(%r,'a').write(os.path.basename(d)+'\\n')\n"
+            "print('{\"loggedIn\": %%s, \"authMethod\": \"x\"}' %% ('false' if os.path.exists(os.path.join(d,'out')) else 'true'))\n" % lo_cnt)
+        for d in ("cm", "cg"):
+            os.makedirs(os.path.join(pdir, d), exist_ok=True)
+        flag = os.path.join(pdir, "cm", "out")
+        open(flag, "w").close()
+        os.environ["ASD_AUTH_STATUS_CMD"] = f"{shlex.quote(sys.executable)} {shlex.quote(lo_stub)}"
+        os.environ["ASD_AUTH_TTL"] = "60"
+        accs = {a["name"]: a for a in load_accounts()}
+        fresh()
+        check("logged out: auth status reads loggedIn false for the signed-out account only", auth_status(accs["main"]) is False and auth_status(accs["gmail"]) is True)
+        n_calls = len(open(lo_cnt).read().split())
+        auth_status(accs["main"]); auth_status(accs["main"])
+        check("logged out: the result is cached per account (no new calls inside the TTL)", len(open(lo_cnt).read().split()) == n_calls)
+        put("main", 20, 3, 0, 30); put("gmail", 20, 3, 0, 30)
+        rows = {r["account"]: r for r in compute_cap()["accounts"]}
+        check("logged out: compute_cap marks the account limited and signed out, with no runs",
+              rows["main"].get("limited") and rows["main"].get("signedout") and rows["main"]["runs"] == 0 and not rows["gmail"].get("limited"))
+        check("logged out: headroom_pick never picks a signed-out account and leaves it",
+              headroom_pick([{"account": "main", "limited": True, "signedout": True, "runs": 0}, {"account": "gmail", "runs": 0.5}], {}, "main")[0] == "gmail"
+              and headroom_pick([{"account": "main", "signedout": True, "runs": 9.0}, {"account": "gmail", "runs": 0.5}], {}, "gmail")[0] == "gmail")
+        # a fresh-stage run moves to the signed-in account
+        asked = []
+
+        class FakeAsk:
+            returncode = 0
+            def communicate(self):
+                return "Q-1\n", ""
+
+        def fake_ask(runner):
+            runner.ask_cmd = lambda *a: (asked.append(a), FakeAsk())[1]
+        lf = Runner(pdir, "W-L1", "work-on", None, "auto", 1)
+        fake_ask(lf)
+        ok_f = lf.logged_out_stage(1, "Not logged in · Please run /login", 1)
+        check("logged out: a run with nothing to resume moves to the signed-in account and retries",
+              ok_f is True and lf.account["name"] == "gmail" and read_json(lf.state_path, {}).get("account") == "gmail" and not asked
+              and any("switched to account gmail: account main is signed out" in str(x) for x in lines_of(lf.updates)))
+        # a resume run waits, asks once for two runs, then resumes by itself
+        os.environ["ASD_AUTH_POLL"] = "0.3"
+        runs, threads, res = [], [], {}
+        for nm in ("W-L2", "W-L3"):
+            rr = Runner(pdir, nm, "work-on", None, "auto", 1)
+            fake_ask(rr)
+            rr.resume_sid, rr.resume_acct = "sess-" + nm, "main"
+            runs.append(rr)
+            th = threading.Thread(target=lambda r=rr: res.update({r.key: r.logged_out_stage(1, "Not logged in · Please run /login", 1)}))
+            th.start(); threads.append(th)
+        time.sleep(1.0)
+        check("logged out: a run that must resume waits (state waiting, not failed) with the sign-in instruction",
+              all(read_json(r.state_path, {}).get("state") == "waiting" for r in runs) and not res
+              and all(any("account main is signed out; run `CLAUDE_CONFIG_DIR=" in str(x) and "resumes by itself" in str(x) for x in lines_of(r.updates)) for r in runs))
+        check("logged out: two runs on one account ask the owner once", len(asked) == 1 and os.path.exists(auth_question_path("main")))
+        os.remove(flag)
+        for th in threads:
+            th.join(10)
+        check("logged out: the waiting runs resume once the account is signed in, on the same account",
+              sorted(res) == sorted(r.key for r in runs) and all(res.values()) and all(r.account["name"] == "main" and r.resume_sid for r in runs)
+              and all(any("account main is signed in again" in str(x) for x in lines_of(r.updates)) for r in runs))
+        check("logged out: signing in clears the once-per-account marker and the cap row", not os.path.exists(auth_question_path("main"))
+              and not {r["account"]: r for r in compute_cap()["accounts"]}["main"].get("signedout"))
+        for k in ("ASD_AUTH_STATUS_CMD", "ASD_AUTH_TTL", "ASD_AUTH_POLL"):
+            os.environ.pop(k, None)
         for i in range(3):
             os.remove(os.path.join(pruns, f"busy{i}.runner.json"))
         fresh()
