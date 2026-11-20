@@ -1214,6 +1214,16 @@ def diagram_author_findings(lines: list[str], kind: str | None,
                     "letters, digits, `_` and `-` only (vr_promote refuses any other)." % stem)
     else:
         stems = []
+    mode = os.environ.get("ASD_DRIVER_VR_PROMOTE_PREVIEW", "").strip().lower()
+    routing = (field_value(lines, "STEP_ROUTING") or "").strip().strip("`").lower()
+    if mode in ("shadow", "on") and routing != "all":
+        defects.append(
+            "ASD_DRIVER_VR_PROMOTE_PREVIEW is %s but the payload has no `STEP_ROUTING: all`: add the field, "
+            "or the author omits to/call_kind on flows without a `Diagrams new:` stem and every shadow build fails." % mode)
+    elif mode not in ("shadow", "on") and routing:
+        defects.append(
+            "STEP_ROUTING is set but ASD_DRIVER_VR_PROMOTE_PREVIEW is %s: remove the field, the author would "
+            "do unneeded work." % (mode or "unset"))
     repo, out_dir, work_dir = (field_value(lines, n) for n in ("REPO", "OUT_DIR", "WORK_DIR"))
     if repo and out_dir and out_dir.startswith("/") and not _under(out_dir, repo):
         defects.append("OUT_DIR %s is not under REPO %s: the agent writes only inside the repo's "
@@ -1744,6 +1754,18 @@ def report(payload: str, kind: str | None, present: list[str],
 
 
 def selftest() -> int:
+    """Run the cases with ASD_DRIVER_VR_PROMOTE_PREVIEW unset (restored after): the diagram-author lint reads it."""
+    key = "ASD_DRIVER_VR_PROMOTE_PREVIEW"
+    saved = os.environ.pop(key, None)
+    try:
+        return _selftest_cases()
+    finally:
+        os.environ.pop(key, None)
+        if saved is not None:
+            os.environ[key] = saved
+
+
+def _selftest_cases() -> int:
     failures: list[str] = []
     groups = 0
 
@@ -2325,10 +2347,24 @@ def selftest() -> int:
     )
     da_files = {".discovery/dossiers/W-014-x.md": da_dossier,
                 ".discovery/visual-review/W-014/work/summary.json": "{}"}
+    _env = "ASD_DRIVER_VR_PROMOTE_PREVIEW"
+    _saved = os.environ.pop(_env, None)
+    try:
+        for _m, _field, _bad in (("shadow", False, True), ("on", False, True), ("shadow", True, False),
+                                 ("off", True, True), (None, True, True), (None, False, False), ("off", False, False)):
+            if _m is None:
+                os.environ.pop(_env, None)
+            else:
+                os.environ[_env] = _m
+            case("diagram author: env=%s, STEP_ROUTING %s" % (_m, "present" if _field else "absent"),
+                 da + ("STEP_ROUTING: all\n" if _field else ""), "diagram-author", _bad,
+                 (_env if not _field else "STEP_ROUTING") if _bad else "", repo_files=da_files)
+    finally:
+        os.environ.pop(_env, None)
+        if _saved is not None:
+            os.environ[_env] = _saved
     case("diagram author clean", da, "diagram-author", False, repo_files=da_files, must_warn="")
     case("diagram author: ERRORS is optional", da + "ERRORS: |\n  l1.json: x\n", "diagram-author", False,
-         repo_files=da_files)
-    case("diagram author: STEP_ROUTING is optional", da + "STEP_ROUTING: all\n", "diagram-author", False,
          repo_files=da_files)
     case("diagram author: missing field", da.replace("REPO: {REAL}\n", ""), "diagram-author", True,
          "REPO is missing", repo_files=da_files)
