@@ -215,6 +215,9 @@ the recorded checkpoints.
   whose record says working and whose process is gone goes on from its
   checkpoints. A run dead for over `ASD_RUNNER_REVIVE_HOURS` (default 48) stays
   down, and one that dies 3 times within an hour is left stopped.
+  One runner per run key: every runner takes an exclusive flock on `<key>.runner.lock` for its
+  whole life; a second start for the key (revive, Resume, an answered failure question) logs one
+  line and exits 0, and `revive` skips a key whose lock is held. The pid in the record is not the guard.
   A session is resumed (`claude --resume`) only on the account whose config dir holds its
   transcript (`projects/*/<session>.jsonl`): after a switch of account (a usage limit on
   every other one) the stage starts fresh from the checkpoints, with one event saying so,

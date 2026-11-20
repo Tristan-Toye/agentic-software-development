@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import fcntl
 import glob
 import json
 import os
@@ -461,6 +462,37 @@ def runner_alive(pid) -> bool:
         return False
     cmd = proc_command(pid)
     return not cmd or "run_dossier" in cmd   # ps unable to say: believe the pid
+
+
+def lock_path(key: str) -> str:
+    return os.path.join(runs_dir(), key + ".runner.lock")
+
+
+def try_lock(key: str):
+    """The per-key runner lock: an exclusive flock on `<key>.runner.lock`, held by the runner process for its whole life
+    (the kernel drops it when the process dies, however it dies). Returns the open file (keep it) or None when another
+    runner holds it. The pid in the run record cannot guarantee one runner per key: two starts in the same moment both
+    read a dead or absent pid. The lock can."""
+    fh = open(lock_path(key), "a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    fh.seek(0)
+    fh.truncate()
+    fh.write(str(os.getpid()))
+    fh.flush()
+    return fh
+
+
+def lock_held(key: str) -> bool:
+    """Whether a runner holds the key's lock right now (a probe: the lock is released again at once)."""
+    fh = try_lock(key)
+    if fh is None:
+        return True
+    fh.close()
+    return False
 
 
 def say(msg: str) -> None:
@@ -2619,8 +2651,13 @@ class Runner:
                 p.kill()
 
     def run(self) -> int:
+        self.lock = try_lock(self.key)   # held until this process ends
+        if self.lock is None:
+            say(f"{self.key} already has a runner (it holds the lock); this one exits")
+            return 0
         prev = read_json(self.state_path, {})
-        if prev.get("state") in LIVE_STATES and runner_alive(prev.get("pid")) and prev.get("pid") != os.getpid():
+        # a failed run's runner is alive while it waits on the failure question: Resume must not start a second one
+        if prev.get("state") in LIVE_STATES + ("failed", "paused") and runner_alive(prev.get("pid")) and prev.get("pid") != os.getpid():
             say(f"{self.key} is already run by pid {prev['pid']}")
             return 2
         try:
@@ -2899,6 +2936,8 @@ def cmd_revive() -> int:
             continue
         if time.time() - os.path.getmtime(path) > hours * 3600:
             continue
+        if lock_held(os.path.basename(path)[:-len(".runner.json")]):
+            continue   # a live runner holds the key (its record's pid is stale or reused): never a second one, never kill its child
         cpid = st.get("claude_pid")
         if alive(cpid) and "claude" in proc_command(cpid):
             # the runner died but its claude child lives on, orphaned: the restart resumes that session, so end the orphan first
@@ -5092,6 +5131,28 @@ def selftest() -> int:
         sleeper.kill(); sleeper.wait()
         check("revive: queued, waiting, paused runs whose runner died are restarted", all(f"restarted repo.{d}" in r.stdout for d in ("W-310", "W-311", "W-312")) and bool(ok))
         check("revive: a dead runner whose pid now belongs to an unrelated process is restarted too", "restarted repo.W-313" in r.stdout)
+
+        # ---- one runner per key: the per-key lock ----
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}] * 2)
+        sleeper = subprocess.Popen(["sleep", "120"])
+        held = try_lock("repo.W-330")
+        check("lock: the first taker gets it, a second is refused, and a probe sees it held", held is not None and try_lock("repo.W-330") is None and lock_held("repo.W-330"))
+        # a record whose pid is dead (revive would restart it) while a live runner holds the key's lock
+        write_json(os.path.join(rdir, "repo.W-330.runner.json"), {"pid": 2 ** 22 + 12399, "state": "running", "root": root, "command": "work-on", "stage": 1, "claude_pid": sleeper.pid})
+        r = subprocess.run([sys.executable, me, "revive"], env=env, capture_output=True, text=True, timeout=90)
+        check("lock: revive starts no second runner for a key whose lock is held, and leaves the holder's claude child alone",
+              "repo.W-330" not in r.stdout and alive(sleeper.pid) and state_of("W-330").get("pid") == 2 ** 22 + 12399)
+        r = subprocess.run([sys.executable, me, "--root", root, "--dossier", "W-330", "--foreground"], env=env, capture_output=True, text=True, timeout=60)
+        check("lock: a second runner for the key logs one line and exits 0, the record untouched",
+              r.returncode == 0 and "already has a runner" in r.stdout and len(r.stdout.strip().splitlines()) == 1 and state_of("W-330").get("pid") == 2 ** 22 + 12399)
+        # the Resume of a failed run (its runner alive, waiting on the failure question) is the same refusal
+        write_json(os.path.join(rdir, "repo.W-330.runner.json"), {"pid": os.getpid(), "state": "failed", "root": root, "command": "work-on", "stage": 1})
+        r = subprocess.run([sys.executable, me, "--root", root, "--dossier", "W-330", "--foreground"], env=env, capture_output=True, text=True, timeout=60)
+        check("lock: Resume on a failed run whose runner still waits starts no second runner", r.returncode == 0 and "already has a runner" in r.stdout and state_of("W-330").get("state") == "failed")
+        held.close()
+        check("lock: released when its holder ends (a dead runner never blocks the key)", not lock_held("repo.W-330"))
+        os.remove(os.path.join(rdir, "repo.W-330.runner.json"))
+        sleeper.kill(); sleeper.wait()
 
         # Before the temp dir goes: every fake claude process and runner child this test started must be gone.
         for _ in range(100):
