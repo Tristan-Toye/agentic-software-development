@@ -63,6 +63,7 @@ log`**.
 | Place the contract as stubs | `stub-materialiser` | `## Contract` carries **more than four members** | type the stubs yourself |
 | List the blast radius | `blast-radius-scout` | `ocr delegate preview` returns **more than five reviewable files** | run `preview` and narrow it from `--stat` yourself |
 | Draft ADRs / the PR description | `document-drafter` | ADRs are due, or the PR description is being written | write them yourself |
+| Write the unit tests of one package | `unit-test-author` | **no gate to delegate — but a package past 20 `PROMISE_CHECKLIST` lines is split before the spawn**: the harness file first, then one author per further `TEST_PATHS` file, concurrently once they share no file (`check_payload.py` refuses it) | — |
 | Review the materialised contract | `contract-reviewer` | **no gate — it runs on every build** (below) | — |
 
 This is the step everything else depends on.

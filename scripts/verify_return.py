@@ -478,6 +478,13 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
 
     rc, log = git(root, "log", "--format=%h %s", f"{args.base}..HEAD")
     commits = log.splitlines() if rc == 0 else []
+    if getattr(args, "dossier_id", None):
+        # #431: the dossier ID is local to the run; no commit subject may carry it
+        leak = [c for c in commits if re.search(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(args.dossier_id), c.split(" ", 1)[-1])]
+        for c in leak:
+            out.append(f"COMMIT-ID-LEAK: subject carries the dossier ID {args.dossier_id}: {c[:100]}")
+        if leak:
+            flags.append("commit-id-leak")
     _, sha = git(root, "rev-parse", "--short", "HEAD")
     paths, rows, dirty = changed_files(root, args.base)
     owned = relative_owned(root, args.owned) if args.owned else []
@@ -717,6 +724,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--payload-last", metavar="TEXT", help="with --payload only: check a reviewer's payload_last against the "
                     "payload's real last line, print whole or UNREAD, exit 0 or 1, and nothing else")
     ap.add_argument("--payload-sha256", metavar="H", help="with --payload: the hash it was linted at (all 64 hex characters)")
+    ap.add_argument("--dossier-id", help="the dossier ID; a new commit whose subject carries it is flagged COMMIT-ID-LEAK")
     ap.add_argument("--release", metavar="HOLDER", help="release this holder's admission slot")
     ap.add_argument("--provider")
     ap.add_argument("--model")
@@ -870,6 +878,10 @@ def selftest() -> int:
             check("the new commit and its +/- are listed", "commits: 1 since" in out and "src/lib.rs +2/-2" in out)
             check("stubs left are counted without the comment line", "STUBS_LEFT: 1 (src/lib.rs:1) in 1 owned .rs" in out)
             check("a stable contract hash is reported", f"contract hash: stable ({digest[:8]})" in out)
+            rc, out = call(base_args + ["--dossier-id", "P1"])
+            check("#431: a commit subject carrying the dossier ID is flagged COMMIT-ID-LEAK", "COMMIT-ID-LEAK" in out and "commit-id-leak" in out.splitlines()[0])
+            rc, out = call(base_args + ["--dossier-id", "W-999"])
+            check("#431: a subject without the dossier ID is not flagged", "COMMIT-ID-LEAK" not in out)
             check("stubs left flag the return (an implementer must leave none)", rc == 1 and "FLAGGED stubs" in out)
             check("output is bounded", len(out.splitlines()) <= MAX_LINES)
 

@@ -74,7 +74,9 @@ No third-party imports: this runs wherever python3 does.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import os
 import re
 import shlex
@@ -334,6 +336,24 @@ def selftest() -> int:
         rc = main([manifest, "--host", "opencode", "--root", tmp])
         check("a defective payload fails the wave", rc == 1)
         check("a defective payload records no hash", not os.path.exists(hashes_path(tmp, None)))
+
+        # #465: a hand-written payload of any kind (here a document-drafter) without its sentinel fails the wave.
+        draft = os.path.join(tmp, "DD1.md")
+        body = f"MODE: adr\nTARGET_PATHS: {tmp}/docs/adr-1.md\nFORMAT: |\n  adr\nSCRUB: |\n  ids\nDECISIONS: |\n  d1\n"
+        with open(draft, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        manifest_dd = os.path.join(tmp, "wave-dd.txt")
+        with open(manifest_dd, "w", encoding="utf-8") as fh:
+            fh.write(f"kind=document-drafter payload={draft}\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc_unsealed = main([manifest_dd, "--host", "claude", "--root", tmp, "--lint-only"])
+        check("#465: a payload with no PAYLOAD-END sentinel fails --lint-only, naming it", rc_unsealed == 1 and "PAYLOAD-END" in buf.getvalue())
+        subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "compose_payloads.py"), "--seal", draft],
+                       capture_output=True, text=True, check=True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc_sealed = main([manifest_dd, "--host", "claude", "--root", tmp, "--lint-only"])
+        check("#465: the same payload sealed with compose_payloads.py --seal passes --lint-only", rc_sealed == 0)
 
         # sha256 ledger: recorded, merged across calls, replaced on re-lint.
         other = os.path.join(tmp, "P2.md")
