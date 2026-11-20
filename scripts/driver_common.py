@@ -125,6 +125,12 @@ def cap(text: str, lines: int = 12, chars: int = LINE_CAP) -> list[str]:
     return out
 
 
+def toplevel(start: str) -> str | None:
+    """The working tree root containing `start` (a linked worktree's own root), or None outside git."""
+    rc, out = sh([GIT, "rev-parse", "--show-toplevel"], cwd=start)
+    return out.strip().splitlines()[-1] if rc == 0 and out.strip() else None
+
+
 def main_checkout(start: str) -> str:
     """The repository's main checkout for any directory inside it."""
     rc, out = sh([GIT, "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=start)
@@ -365,6 +371,7 @@ def fixture_commit(root: str, rel: str, text: str, msg: str) -> str:
 def run_self(name: str, *args: str, env: dict | None = None, cwd: str | None = None) -> tuple[int, str]:
     """Run a driver script as a subprocess for selftests."""
     e = dict(os.environ)
+    e["ASD_BUILD_SLOTS"] = "0"   # a selftest never waits on, or takes, a real host build slot (0 turns the limit off)
     e.update(env or {})
     proc = subprocess.run([sys.executable, os.path.join(SCRIPTS, name), *args], capture_output=True, text=True, env=e, cwd=cwd)
     return proc.returncode, proc.stdout + proc.stderr

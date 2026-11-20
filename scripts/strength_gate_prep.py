@@ -197,8 +197,9 @@ def step_red_run(d: dc.Driver, args, wt: str, files: list[str]) -> None:
 
 
 def run(d: dc.Driver, args) -> int:
+    args.worktree = args.worktree or dc.toplevel(os.getcwd())   # run from X, the build worktree, it is the default
     if not args.worktree or not args.test_path or not args.dossier:
-        raise dc.Surprise("--worktree, --dossier and at least one --test-path are required")
+        raise dc.Surprise("--worktree (default: the working directory's git root), --dossier and at least one --test-path are required")
     wt = os.path.abspath(args.worktree)
     files = test_files(wt, args.test_path)
     if not files:
@@ -264,6 +265,8 @@ def selftest() -> int:
         c("an uncommitted path outside TEST_PATHS is a scope finding", "outside the named TEST_PATHS" in out)
         rc, out = dc.run_self("strength_gate_prep.py", "--dossier", "W-1", "--root", main, "--worktree", wt, "--test-path", "nope/", env=env)
         c("no such test path is a surprise", rc == 2)
+        rc, out = dc.run_self("strength_gate_prep.py", "--dossier", "W-1", "--root", main, "--test-path", "nope/", env=env, cwd=wt)
+        c("no --worktree: the working directory's git root is X", rc == 2 and "none of the --test-path entries exists" in out)
     return c.report()
 
 
