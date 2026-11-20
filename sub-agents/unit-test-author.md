@@ -50,6 +50,14 @@ permission:
     "*/test-support/*": allow
     "testing/*": allow
     "*/testing/*": allow
+    "*_test.sh": allow
+    "*_test.py": allow
+    "*_test.go": allow
+    "*.test.ts": allow
+    "*.test.tsx": allow
+    "*.test.js": allow
+    "*.spec.ts": allow
+    "*.spec.js": allow
   edit:
     "*": deny
     "tests/*": allow
@@ -64,6 +72,14 @@ permission:
     "*/test-support/*": allow
     "testing/*": allow
     "*/testing/*": allow
+    "*_test.sh": allow
+    "*_test.py": allow
+    "*_test.go": allow
+    "*.test.ts": allow
+    "*.test.tsx": allow
+    "*.test.js": allow
+    "*.spec.ts": allow
+    "*.spec.js": allow
     "scripts/*": allow
     "*/scripts/*": allow
     "fixtures/*": allow

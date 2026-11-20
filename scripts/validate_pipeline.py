@@ -2631,6 +2631,13 @@ SUITE_RUNNER_RE = re.compile(
 # file change shifts (a table-name census, a `(1..=N)` migration count, an
 # inventory row count), each given an owner before the fan-out.
 CENSUS_RE = re.compile(r"^\s*[-*]?\s*CENSUS:\s*(none|\S.*)$", re.MULTILINE)
+# `SHAPE-CHANGE: <old-shape pattern> -> <new shape>` in the dossier (## Contract) marks a contract that changes
+# the shape of a string-valued identifier BY RULE (work keys, stored names, labels). The census of such a
+# contract is built from a literal search of the old shape, not only from compile errors (compiled-but-stale
+# test literals): the build log then carries `CENSUS-LITERAL: <pattern> — <N> hits, <M> rows` (#466).
+SHAPE_CHANGE_RE = re.compile(r"^\s*[-*]?\s*SHAPE-CHANGE:\s*(\S.*)$", re.MULTILINE)
+CENSUS_LITERAL_RE = re.compile(r"^\s*[-*]?\s*CENSUS-LITERAL:\s*(none\s+[—–-]+\s*\S.*|\S.*\b\d+\s+hits?\b.*)$",
+                               re.MULTILINE | re.IGNORECASE)
 # `CHECKLIST-IDS: <script> parsed <N>/<N> lines` or `CHECKLIST-IDS: none — no
 # coverage script`: the draft PROMISE_CHECKLIST ran through the repo's own
 # promise-coverage script, in its own id grammar, before the fan-out.
@@ -2994,6 +3001,20 @@ def check_pre_fanout(
             continue
         print(f"ok      {path.name}: {token} recorded ({match.group(1)})")
 
+    shape = SHAPE_CHANGE_RE.search(body[0])
+    if shape and not CENSUS_LITERAL_RE.search(body[1]):
+        print(
+            f"DEFECT  {path.name}: the contract changes an identifier shape by rule "
+            f"(SHAPE-CHANGE: {shape.group(1)[:80]}) but the build log has no CENSUS-LITERAL: line. "
+            "The census must include every file holding a literal of the old shape (a pattern search), "
+            "not only the files a build error names. Record one of:\n"
+            "          CENSUS-LITERAL: <old-shape pattern> — <N> hits, <M> census rows\n"
+            "          CENSUS-LITERAL: none — <pattern searched, zero hits>"
+        )
+        rc = 1
+    elif shape:
+        print(f"ok      {path.name}: CENSUS-LITERAL recorded for the by-rule shape change")
+
     granted = ADMISSION_RE.search(body[1])
     key = (
         re.search(r"([\w.-]+)/([\w.-]+)", granted.group("rest"))
@@ -3125,6 +3146,21 @@ def selftest_pre_fanout_local() -> bool:
         with contextlib.redirect_stdout(io.StringIO()) as nobuf:
             no_rc = check_pre_fanout(root / "def-wt.md", root)
         ok &= no_rc == 1
+
+        # #466: a by-rule shape change needs a literal-search census line
+        shaped = dossier + "SHAPE-CHANGE: `^work-\\d+$` -> `^w/\\d+$`\n\n"
+        (root / "shape-no.md").write_text(RECEIPTS_FM + shaped + full, encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as sbuf:
+            shape_rc = check_pre_fanout(root / "shape-no.md", root, x)
+        ok &= shape_rc == 1 and "no CENSUS-LITERAL: line" in sbuf.getvalue()
+        (root / "shape-yes.md").write_text(
+            RECEIPTS_FM + shaped + full + "- CENSUS-LITERAL: `work-[0-9]+` — 14 hits, 6 census rows\n", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as sbuf2:
+            ok &= check_pre_fanout(root / "shape-yes.md", root, x) == 0
+        (root / "shape-none.md").write_text(
+            RECEIPTS_FM + shaped + full + "- CENSUS-LITERAL: none — grepped `work-[0-9]+`, zero hits\n", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            ok &= check_pre_fanout(root / "shape-none.md", root, x) == 0
 
         # #169: a DOSSIER-ONLY-TERMS line may carry its reason after an em dash.
         (root / "def-dash.md").write_text(

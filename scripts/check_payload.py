@@ -1003,6 +1003,10 @@ HOOK_READ_SCOPE = {
 }
 
 
+# Co-located test files the hook admits by basename (mirrors BLIND_READ_FILES in shared/blind-read.ts).
+HOOK_READ_FILES = ("*_test.sh", "*_test.py", "*_test.go", "*.test.ts", "*.test.tsx", "*.test.js", "*.spec.ts", "*.spec.js")
+
+
 def round_relaxes_signals(kind: str | None, round_value: str | None, prior_crs: bool) -> bool:
     """True for a Phase 7 check round: ROUND > 1 with PRIOR_CRS carries no
     SIGNALS (round 1 established them; later rounds review change requests
@@ -1039,7 +1043,12 @@ def in_test_project(path: str) -> bool:
 def readable(path: str, kind: str | None) -> bool:
     """Whether a Read-granted agent may open the path under Claude Code."""
     scope = HOOK_READ_SCOPE.get(kind or "")
-    return scope is None or any(seg in scope for seg in path.split("/")[:-1]) or in_test_project(path)
+    if scope is None or any(seg in scope for seg in path.split("/")[:-1]):
+        return True
+    base = path.rsplit("/", 1)[-1]
+    if kind in HOOK_READ_SCOPE and any(len(base) > len(g) - 1 and base.endswith(g[1:]) for g in HOOK_READ_FILES):
+        return True
+    return in_test_project(path)
 
 
 def dead_letter_findings(lines: list[str], kind: str | None,
@@ -1833,6 +1842,11 @@ def selftest() -> int:
         with open(os.path.join(sproj, "Runtime.csproj"), "w") as fh:
             fh.write("<Project></Project>")
         groups += 1
+        if not (readable("/r/deploy/scripts/foo_test.sh", "unit-test-author")
+                and readable("/r/web/a.test.ts", "unit-test-author")
+                and not readable("/r/deploy/scripts/foo.sh", "unit-test-author")
+                and not readable("/r/deploy/scripts/_test.sh", "unit-test-author")):
+            failures.append("a co-located *_test.sh is readable, the script beside it is not (#463)")
         if not readable(os.path.join(tproj, "FooTests.cs"), "unit-test-author"):
             failures.append("a file in a test project named by no family must be readable")
         groups += 1

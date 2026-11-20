@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DEFAULTS, configLoader, protectRegexes } from "../config"
 import { MAX_SUMMARY_CHARS, nextLine, nudgeEvery, phaseNumber, reminderText, summaryText, validateCheckpoint } from "../checkpoint"
-import { BLIND_READ_DIRS, blindRead } from "../blind-read"
+import { BLIND_READ_DIRS, BLIND_READ_FILES, blindRead } from "../blind-read"
 import { readGuard } from "../read-guard"
 import { TOOLS, describeTool, inputSchema } from "../tools"
 
@@ -137,6 +137,10 @@ if (!out.startsWith("refused")) console.error("probe:", out, run.stderr.toString
   check("blind read: the lint's scope equals the hook's", lintDirs.sort().join() === [...BLIND_READ_DIRS].sort().join())
   check("blind read: relative path resolved against cwd", blindRead("src/lib.rs", "/wt") !== undefined && blindRead("tests/a.rs", "/wt") === undefined)
   check("blind read: a dir name only counts as a whole segment", blindRead("/wt/contests/x.rs", "/") !== undefined)
+  check("blind read: a co-located foo_test.sh is admitted (#463)", blindRead("a/b/foo_test.sh", "/wt") === undefined && blindRead("/wt/web/x.test.ts", "/") === undefined)
+  check("blind read: the script beside it stays refused (#463)", blindRead("a/b/foo.sh", "/wt") !== undefined && blindRead("a/b/_test.sh", "/wt") !== undefined)
+  const pyFiles = /HOOK_READ_FILES = \(([^)]*)\)/.exec(py)?.[1] ?? ""
+  check("blind read: the lint's basename globs equal the hook's", [...pyFiles.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort().join() === [...BLIND_READ_FILES].sort().join())
 }
 
 console.log(fails.length ? "FAIL " + fails.join(" | ") : "PASS (all cases)")

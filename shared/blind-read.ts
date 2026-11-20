@@ -14,6 +14,15 @@ export const BLIND_READ_DIRS = [".agent-staging", "tests", "test", "__tests__", 
 
 const ADMITTED = new RegExp(`(?:^|/)(?:${BLIND_READ_DIRS.map((d) => d.replace(/[.]/g, "\\.")).join("|")})/`)
 
+// A co-located test file: its basename says it is a test, wherever it sits (`deploy/scripts/foo_test.sh`
+// beside `foo.sh`). Mirrored by `HOOK_READ_FILES` in scripts/check_payload.py and by the `*_test.sh`
+// style lines of the unit test author's read and edit maps. The implementation beside it stays sealed.
+export const BLIND_READ_FILES = ["*_test.sh", "*_test.py", "*_test.go", "*.test.ts", "*.test.tsx", "*.test.js", "*.spec.ts", "*.spec.js"]
+
+const ADMITTED_FILE = new RegExp(
+  `(?:^|/)[^/]+(?:${BLIND_READ_FILES.map((g) => g.slice(1).replace(/[.]/g, "\\.")).join("|")})$`,
+)
+
 // A test project of the target repository, whatever its directory is called: the nearest
 // ancestor directory holding a csproj that references a test framework (a .NET `*.Tests`
 // project or any other). Mirrored by `in_test_project` in scripts/check_payload.py.
@@ -35,10 +44,10 @@ function inTestProject(abs: string): boolean {
 export function blindRead(path: string, cwd: string): string | undefined {
   if (!path) return "a Read with no path"
   const abs = isAbsolute(path) ? resolve(path) : resolve(cwd, path)
-  if (ADMITTED.test(abs) || inTestProject(abs)) return undefined
+  if (ADMITTED.test(abs) || ADMITTED_FILE.test(abs) || inTestProject(abs)) return undefined
   return (
     `${abs} is outside your read boundary: you read only your payload under .agent-staging/ ` +
-    `and the test families and test projects (${BLIND_READ_DIRS.filter((d) => d !== ".agent-staging").join(", ")}). ` +
+    `and the test families and test projects (${BLIND_READ_DIRS.filter((d) => d !== ".agent-staging").join(", ")}, ${BLIND_READ_FILES.join(", ")}). ` +
     `Report what you are missing in one GAP: line instead.`
   )
 }
