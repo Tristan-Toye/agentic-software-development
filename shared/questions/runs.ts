@@ -14,7 +14,7 @@ export const STATUSES = ["planned", "ready", "building", "review", "pr", "done",
 const TAIL = 256 * 1024
 const HEAD = 64 * 1024
 
-export type Front = { pr?: string; id?: string; title?: string; status?: string; jira?: string; updated?: string; created?: string; blocked_by?: string }
+export type Front = { pr?: string; id?: string; title?: string; status?: string; branch?: string; jira?: string; updated?: string; created?: string; blocked_by?: string }
 export type Session = { state: "active" | "idle" | "none"; lastTs: string; context: number; requests: number; requestsExact: boolean; activity?: Activity }
 /**
  * What the orchestrator is doing right now, from its transcript: the tool call still in flight (`doing`, with the
@@ -336,9 +336,15 @@ export function readDossier(file: string): string {
   if (p.exitCode !== 0) throw new Error(`cannot read ${m[3]} on ${m[2]}`)
   return p.stdout.toString()
 }
-/** Whether a branch name is the build branch of dossier `id`: the id as a whole token, any case; plan and stub branches never are. */
-export function isBuildBranch(ref: string, id: string): boolean {
-  return !NOT_BUILD.test(ref) && new RegExp(`(?:^|[/_-])${id.replace(/[^\w-]/g, "")}(?:$|[-_/])`, "i").test(ref)
+/**
+ * Whether a branch name is the build branch of dossier `id`: the id as a whole token, any case, or the dossier's own
+ * `branch:` front-matter field (`declared`), with or without `origin/`. Plan and stub branches never are.
+ */
+export function isBuildBranch(ref: string, id: string, declared?: string): boolean {
+  if (NOT_BUILD.test(ref)) return false
+  const want = declared?.trim().replace(/^origin\//, "")
+  if (want && ref.replace(/^origin\//, "") === want) return true
+  return new RegExp(`(?:^|[/_-])${id.replace(/[^\w-]/g, "")}(?:$|[-_/])`, "i").test(ref)
 }
 /**
  * Each picked dossier, replaced by its copy on its own build branch (local or `origin/`) when that copy's build log is
@@ -355,7 +361,7 @@ export async function withBranchCopies<T extends { front: Front; text: string; f
     let bestLen = logLength(d.text)
     const rel = relative(main, d.file).startsWith("..") ? join(".discovery", "dossiers", basename(d.file)) : relative(main, d.file)
     for (const [sha, ref] of refs) {
-      if (!isBuildBranch(ref, d.front.id!)) continue
+      if (!isBuildBranch(ref, d.front.id!, d.front.branch)) continue
       const k = `${sha}:${rel}`
       let text = blobs.get(k)
       if (text === undefined) {
