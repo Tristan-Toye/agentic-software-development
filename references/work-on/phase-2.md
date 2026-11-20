@@ -270,6 +270,13 @@ This is the step everything else depends on.
     run through `run_tests.py --vm` rebuild it from the persistent checkout when
     safe, else skip the DB-backed tests under `STACK-ENV: skipped` (runner.md,
     "A stale shared fixture"). Never an owner question.
+    A bring-up that a foreign or leftover compose project refuses
+    (`foreign_project_state owner=...`, `suite_window_active holder=...`) is
+    reported as `RUNNER: ENV stack <the refusal line>`; never tear down, bring
+    up or restart that project yourself and never ask the owner. The runner
+    tears a provably dead leftover down and answers `repaired`, or answers to
+    skip the live stack tests under `STACK-ENV: skipped — ...` and leave those
+    criteria to the /stub full suite (runner.md, "A leftover compose project").
 
    Record the exact full-suite command separately from implementers' focused
    `TEST_COMMAND`s, plus its required coverage, before the fan-out.

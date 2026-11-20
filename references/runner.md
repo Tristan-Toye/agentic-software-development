@@ -707,6 +707,10 @@ stage, and again on a `RUNNER: ENV vm|stack ...` line:
 - At most 2 attempts per hour per resource (`stack-repair-state.json`); after
   that the session is told `not repaired` and asks the owner.
 - Every action goes to the runner log and the run's events.
+- A dossier run is never answered with an owner question about the shared stack (owner ruling 2026-11-19, "if it is
+  safe it should run it without asking me"). When the repair is off, bounded or fails, the session is told to skip its
+  live stack tests, defer those criteria to the /stub full suite and head the PR note with `STACK-ENV: skipped — ...`.
+  A /stub run owns the stack and keeps its behaviour; a disk and a stopped VM keep theirs.
 
 **Stack settings behind a branch** (`scripts/stack_env.py`, called by `run_tests.py --vm`; on by default,
 `ASD_STACK_ENV_CHECK=0` turns the check off, `ASD_STACK_ENV_SYNC=0` keeps the check but never restarts).
@@ -724,8 +728,23 @@ is read into output. On drift:
   pulled or written to.
 - the full stack suite (`suite_markers`, for /stub) gets the sync but never the skip.
 Config keys, beside `stack_up` in `config/stack-repair.json`: `env_script`, `env_catalog`, `env_file`,
-`lease_probe`, `skip_env`, `suite_markers`, `fixture_stamp`, `fixture_probe`, `fixture_rebuild`.
+`lease_probe`, `skip_env`, `suite_markers`, `fixture_stamp`, `fixture_probe`, `fixture_rebuild`, `leftover_projects`.
 
+**A leftover compose project** (`stack_env.leftover()`, on a session's `RUNNER: ENV stack foreign_project_state ...`;
+`ASD_STACK_LEFTOVER_REPAIR=0` turns the repair off). A run's op-mode bring-up refuses with `foreign_project_state
+owner=<checkout>` when an earlier suite left the compose project up from another checkout. The session never tears it
+down; it reports the refusal line and the runner decides. Config: `leftover_projects`, a list per repo, each
+`{name, owner_probe, window_probe, pid_probe, down}` (config-harness: `nightwatch-w108`; the window file is
+`${TMPDIR:-/tmp}/nightwatch-locks/stack-suite.window`, line 1 the holder's checkout, line 2 its pid). Safe means the
+window's holder pid is no longer alive in the VM (or there is no window) AND the stack lease (`lease_probe`) is free. Then:
+- `down` (config-harness: `cd {root} && bash deploy/host/opmode-stack.sh down`, which takes the suite-window guard and the
+  stack lease itself and is not guarded by the foreign-state refusal) runs from the PERSISTENT checkout under the repair
+  lock, at most 3 per hour per VM; the project must be gone afterwards. The session is answered `RUNNER ENV stack:
+  repaired ...` and brings its own stack up again. This does not depend on `ASD_STACK_REPAIR`;
+- otherwise (a live holder, an unreadable pid or window, the lease held, `down` failed or left it up, the hourly cap, the
+  switch off) the session is answered to skip its live stack tests, defer those criteria to the stub's full suite and head
+  the PR note with `STACK-ENV: skipped — leftover project ...`. Never an owner question. A `suite_window_active` or
+  `stack_lease_refused` refusal (another run's suite is live) gets the same skip without any repair.
 **A stale shared fixture** (`stack_env.fixture()`, same caller, after the settings check; `ASD_STACK_FIXTURE_REBUILD=0`
 keeps the check but never rebuilds). The repo's env script refuses every DB-backed test when the shared fake-llm
 fixture serves another source stamp than the tree's, and the stamp includes the root `Cargo.toml`/`Cargo.lock`, so a

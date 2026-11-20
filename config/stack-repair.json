@@ -64,6 +64,47 @@
       },
       "suite_markers": [
         "--stack"
+      ],
+      "leftover_projects": [
+        {
+          "name": "nightwatch-w108",
+          "owner_probe": [
+            "limactl",
+            "shell",
+            "{vm}",
+            "--",
+            "bash",
+            "-lc",
+            "l=$(docker inspect -f '{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}' $(docker ps -aq --filter label=com.docker.compose.project=nightwatch-w108 | head -n 1) 2>/dev/null); printf '%s\\n' \"${l%/deploy/compose}\"; true"
+          ],
+          "window_probe": [
+            "limactl",
+            "shell",
+            "{vm}",
+            "--",
+            "bash",
+            "-lc",
+            "d=/tmp; [ -n \"$TMPDIR\" ] && d=$TMPDIR; f=$d/nightwatch-locks/stack-suite.window; [ -s \"$f\" ] && head -n 2 \"$f\"; true"
+          ],
+          "pid_probe": [
+            "limactl",
+            "shell",
+            "{vm}",
+            "--",
+            "bash",
+            "-lc",
+            "ps -p {pid} >/dev/null 2>&1"
+          ],
+          "down": [
+            "limactl",
+            "shell",
+            "{vm}",
+            "--",
+            "bash",
+            "-lc",
+            "cd {root} && bash deploy/host/opmode-stack.sh down"
+          ]
+        }
       ]
     }
   }
