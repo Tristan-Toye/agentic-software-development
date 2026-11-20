@@ -44,8 +44,8 @@ mechanically for every L1 flow with an added or changed step, not only the stems
 builds the draft exactly as `--preview` does (a flow with no `new_stem` gets the stem `seq-shadow-<flow id>`),
 validates it the same way, and writes nothing under the dossier's visual-review directory: the drafts and one
 `vr_promote_preview-<ts>.json` (per flow: steps, built ok or the errors, lanes, steps missing `to` / `call_kind`) go
-into `<git common dir>/asd-drivers/driver-shadow/<ID>/`. l1.json and review.json are only read. Exit 0 always, 2
-when l1.json is missing or unusable.
+into `<git common dir>/asd-drivers/driver-shadow/<ID>/`. l1.json and review.json are only read. Exit 0 when every flow
+built, 1 when any flow failed to build (the shadow evidence says which), 2 when l1.json is missing or unusable.
 
 Exit: 0 done, 1 a stale anchor, an unresolved `change` verdict or a validation failure, 2 usage / input error,
 3 (`--shadow-all` only) the driver is off.

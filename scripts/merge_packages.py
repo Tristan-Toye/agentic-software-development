@@ -149,8 +149,9 @@ def do_merges(d: dc.Driver, wt: str, order: list[dict], branches: dict, args) ->
 
 
 def run(d: dc.Driver, args) -> int:
+    args.worktree = args.worktree or dc.toplevel(os.getcwd())   # run from X, the build worktree, it is the default
     if not args.worktree or not args.branch:
-        raise dc.Surprise("--worktree and at least one --branch PKG=BRANCH are required")
+        raise dc.Surprise("--worktree (default: the working directory's git root) and at least one --branch PKG=BRANCH are required")
     wt = os.path.abspath(args.worktree)
     dossier_file = dc.resolve_dossier(args.root, args.dossier, args.log)
     if not os.path.isfile(dossier_file):
@@ -254,6 +255,10 @@ def selftest() -> int:
         before = dc.fixture_git(x, "rev-parse", "HEAD").strip()
         rc, out = dc.run_self("merge_packages.py", "--worktree", x, "--dossier", "W-3", "--root", main, "--branch", "P3=pkg-p3", env=env)
         c("a conflict exits 2, names the path, aborts", rc == 2 and "src/flush.py" in out and dc.worktree_state(x)["operation"] == [])
+        rc, out = dc.run_self("merge_packages.py", "--dossier", "W-3", "--root", main, "--branch", "P3=pkg-p3", env=env, cwd=x)
+        c("no --worktree: the working directory's git root is X (the shadow call that exited 2 had no arguments)", rc == 2 and "src/flush.py" in out)
+        rc, out = dc.run_self("merge_packages.py", "--dossier", "W-3", "--root", main, env=env, cwd=x)
+        c("no --branch still names what is missing", rc == 2 and "--branch" in out)
         c("X unchanged after the aborted merge", dc.fixture_git(x, "rev-parse", "HEAD").strip() == before)
         rc, out = dc.run_self("merge_packages.py", "--worktree", x, "--dossier", "W-3", "--root", main, "--branch", "ZZ=pkg-p3", env=env)
         c("an unknown package is a surprise", rc == 2 and "not a row" in out)

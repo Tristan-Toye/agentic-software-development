@@ -28,7 +28,9 @@ and one verdict line per driver:
 
     READY-FOR-ON  at least 3 dossiers with shadow runs, no surprise exit, no disagreement
                   (dossiers marked `needs human read` do not block; read them)
-    NOT-YET       with the reason (fewer than 3 dossiers, a surprise exit, a disagreement)
+    NOT-YET       with the reason (fewer than 3 dossiers, a surprise exit, a disagreement,
+                  shadow runs whose facts report failed builds: built_ok / failed)
+    NO-ON         the driver has no on mode (driver_modes.NO_ON): shadow only, never READY-FOR-ON
     NO-DATA       no shadow evidence at all
 
 Usage:
@@ -205,6 +207,8 @@ def report(evidence: str, dossiers_dir: str, ids: list[str], only: list[str]) ->
                 "runs": len(runs),
                 "exits": [r.get("exit") for r in runs],
                 "surprises": sum(1 for r in runs if r.get("exit") == 2),
+                "built_ok": sum(int((r.get("facts") or {}).get("built_ok") or 0) for r in runs),
+                "built_failed": sum(int((r.get("facts") or {}).get("failed") or 0) for r in runs if "built_ok" in (r.get("facts") or {})),
                 "findings": [f for r in runs for f in r.get("findings", [])],
                 "stopped_at": [r["stopped_at"] for r in runs if r.get("stopped_at")],
                 "build_log": [ln for ln in log if pat.search(ln)],
@@ -225,6 +229,13 @@ def report(evidence: str, dossiers_dir: str, ids: list[str], only: list[str]) ->
             p["verdict"], p["reason"] = "NOT-YET", "surprise exit (2) in " + ", ".join(surprises)
         elif disagree:
             p["verdict"], p["reason"] = "NOT-YET", "driver and orchestrator disagree in " + ", ".join(disagree)
+        elif sum(d["built_failed"] for d in ds) and name not in driver_modes.NO_ON:
+            ok, bad = sum(d["built_ok"] for d in ds), sum(d["built_failed"] for d in ds)
+            p["verdict"], p["reason"] = "NOT-YET", f"shadow runs report failed builds: {ok} built ok, {bad} failed"
+        elif name in driver_modes.NO_ON:
+            ok, bad = sum(d["built_ok"] for d in ds), sum(d["built_failed"] for d in ds)
+            p["verdict"] = "NO-ON"
+            p["reason"] = f"shadow only: {driver_modes.NO_ON[name]}" + (f"; {ok} built ok, {bad} failed" if ok or bad else "")
         else:
             p["verdict"] = "READY-FOR-ON"
             p["reason"] = f"{len(ds)} dossiers, no surprise exit, no disagreement" + (f"; {len(human)} need a human read: {', '.join(human)}" if human else "")
@@ -370,6 +381,18 @@ def selftest() -> int:
         vp = rep["drivers"]["vr_promote_preview"]["dossiers"][0]
         check("vr_promote_preview: needs human read, built ok vs failed in the detail",
               vp["agreement"] == "needs human read" and "3 flows built ok, 1 failed" in vp["agreement_detail"] and vp["findings"] == ["flow f1: step s1 has no call_kind"])
+        # rule tests on their own evidence: failed builds block a driver that has an on mode; a no-on driver is NO-ON
+        evd2 = os.path.join(tmp, "evidence2")
+        for d in ("W-1", "W-2", "W-3"):
+            ev(evd2, d, "merge_packages", 1, 0, [], {"built_ok": 0, "failed": 4})
+            ev(evd2, d, "vr_promote_preview", 1, 0, [], {"built_ok": 5, "failed": 0})
+        dd2 = os.path.join(tmp, "dossiers2")
+        for d in ("W-1", "W-2", "W-3"):
+            dossier(dd2, d, ["Phase 5: merged A"])
+        rep2 = report(evd2, dd2, [], ["merge_packages", "vr_promote_preview"])
+        mp2, vp2 = rep2["drivers"]["merge_packages"], rep2["drivers"]["vr_promote_preview"]
+        check("failed builds in the shadow facts -> NOT-YET with the counts", mp2["verdict"] == "NOT-YET" and "0 built ok, 12 failed" in mp2["reason"])
+        check("a driver with no on mode is NO-ON, never READY-FOR-ON", vp2["verdict"] == "NO-ON" and "shadow only" in vp2["reason"])
         check("the text names a verdict line per driver", all(f"VERDICT {n}:" in text for n in DRIVERS))
         check("--json round-trips", json.loads(json.dumps(rep))["drivers"]["merge_packages"]["verdict"] == "READY-FOR-ON")
         check("an empty evidence directory is NO-DATA for all", all(p["verdict"] == "NO-DATA" for p in report(os.path.join(tmp, "none"), dd, [], [])["drivers"].values()))
