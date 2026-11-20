@@ -81,6 +81,10 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
 - `DIAGRAMS_NEW` — the stems of the dossier's `Diagrams new:` line, one
   `<stem> — <what>` per line, verbatim from `APPROACH`; `none` when it has no
   such line. `check_payload.py --kind diagram-author` compares it with the dossier.
+- `STEP_ROUTING` — optional. `all` when the orchestrator saw the driver
+  `vr_promote_preview` in `shadow` (or `on`): every added or changed L1 step
+  then carries `to` and `call_kind`, not only those of a `Diagrams new:` flow
+  (see L1 below). Absent or `off`: the rule below is unchanged.
 - `ERRORS` — only on a repair attempt: the validator's issue list from the
   last attempt.
 
@@ -147,7 +151,12 @@ Shapes the schema requires, which the fixtures also show:
   `note` of the evidence entry that holds the function name in backticks
   (`"note": "`run_calls`"`): the promotion re-finds the line by that name once
   the bodies exist. `validate` rejects a `new_stem` flow whose steps lack `to`
-  or `call_kind`. No `Diagrams new:` flow, no extra fields.
+  or `call_kind`. No `Diagrams new:` flow and no `STEP_ROUTING: all`, no extra
+  fields. With `STEP_ROUTING: all`, every step with status `added` or `changed`
+  in every L1 flow carries `to` and `call_kind` the same way (fields only: no
+  `new_stem` on a flow the dossier did not name, no new diagram, no
+  `arch/` draft); the driver's shadow run builds a draft from each such flow
+  and needs both on every step.
 - L2: `groups` is a list of `{id, label, status, label_source, evidence}`; a
   node names its group with `group`. Copy `edges` from `merged.json` between
   the nodes you keep.
@@ -173,7 +182,8 @@ Shapes the schema requires, which the fixtures also show:
    the `fn:` node it names, or, when there is none, the `source` line of the
    function in `REPO`. Give each step a `lane` (its crate or module), an
    `order`, and a one-line `detail.before` and `detail.after`. For a
-   `Diagrams new:` flow also `to` and `call_kind` on every step (above).
+   `Diagrams new:` flow, and every added or changed step when `STEP_ROUTING` is
+   `all`, also `to` and `call_kind` (above).
 4. **L0.** One feature per owner-visible capability the dossier's `PROBLEM`
    and `APPROACH` name, each cited by the L2 node or L1 step that implements
    it.

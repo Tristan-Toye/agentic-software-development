@@ -940,6 +940,14 @@ def _selftest() -> int:
           and recs["f-bad"]["missing_call_kind"] == 1 and recs["f-bad"]["errors"])
     check("shadow-all:built-count", ev.get("facts", {}).get("built_ok") == 2 and ev["facts"]["failed"] == 1)
     check("shadow-all:findings", len(ev.get("findings", [])) == 1 and ev["findings"][0].startswith("flow f-bad") and ev.get("exit") == 1)
+    # a flow with no new_stem whose steps all carry to/call_kind (STEP_ROUTING: all) builds and validates
+    ns_flow = {"id": "f-routed", "label": "routed", "status": "changed", "after": [n["id"] for n in l1s["nodes"][:2]],
+               "evidence": copy.deepcopy(l1s["flows"][0]["evidence"])}
+    check("shadow-flow:no-new_stem-with-routing-builds", "new_stem" not in ns_flow
+          and all(l1s["nodes"][i].get("to") and l1s["nodes"][i].get("call_kind") for i in (0, 1))
+          and shadow_flow(l1s, ns_flow, set())[0]["built_ok"] is True)
+    ns_bad = dict(ns_flow, after=["sx1"])
+    check("shadow-flow:no-new_stem-without-routing-fails", shadow_flow(l1s, ns_bad, set())[0]["built_ok"] is False)
     drafts = glob.glob(os.path.join(ds, ".git", "asd-drivers", "driver-shadow", "W-9", "*-drafts", "*.json"))
     check("shadow-all:drafts-in-common-dir", sorted(os.path.basename(x) for x in drafts) == ["seq-new.json", "seq-shadow-f-extra.json"], drafts)
     check("shadow-all:no-driver-evidence-leak", not os.path.exists(os.path.join(ds, ".git", "asd-drivers", "driver-evidence")))

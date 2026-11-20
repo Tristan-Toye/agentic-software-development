@@ -155,4 +155,5 @@ One row per decision (shadow start, READY-FOR-ON, switch to on, KEEP, BACK-TO-SH
 
 | Date | Driver | Mode | Dossiers | Verdict |
 |------|--------|------|----------|---------|
-|      |        |      |          |         |
+| 2026-11-20 | flow_coverage_gate | on | 9 shadow dossiers | Switched to `on` by the owner after a human read: no false blocks, CI enforces the same rule. |
+| 2026-11-20 | vr_promote_preview | shadow | 25 shadow runs | KEEP-SHADOW: 25/25 builds failed because the steps lacked `to`/`call_kind`; the shadow now collects real data (this PR). |
