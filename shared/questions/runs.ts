@@ -1,4 +1,5 @@
 // Pipeline discovery: dossiers, stage, session activity, PR/CI. Contract: references/owner-questions.md (Dashboard).
+import { activeRepos, repoShown } from "./activerepos.ts"
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join, relative } from "node:path"
@@ -611,7 +612,10 @@ export async function candidateRoots(questions: Question[], transcripts: TInfo[]
   for (const q of questions) if (q.root) set.add(q.root)
   const all = new Set<string>()
   for (const r of set) for (const w of await worktreesOf(r)) all.add(w)
-  return [...all].filter((w) => existsSync(join(w, ".discovery", "dossiers")))
+  const active = activeRepos()   // the active-repos file, when there is one, lists the only repos shown (and ticked by auto work)
+  const out: string[] = []
+  for (const w of all) if (existsSync(join(w, ".discovery", "dossiers")) && (active === null || repoShown(baseName(await mainOf(w)), active))) out.push(w)
+  return out
 }
 
 export const baseName = (p: string): string => p.split("/").filter(Boolean).pop() ?? p

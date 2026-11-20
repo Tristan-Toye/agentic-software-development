@@ -1140,13 +1140,19 @@ def queue_order(st: dict) -> tuple[int, str]:
     return (0 if st.get("queued_first") else 1, str(st.get("queued_since") or ""))
 
 
-def slot_census(me: str) -> tuple[int, list[tuple[tuple[int, str], str]]]:
-    """(runs holding a slot, [(queue_order, key)] of runs waiting for one), other than `me`, live pids only."""
-    held, queued = 0, []
+def repo_of_key(key: str) -> str:
+    """The repo name of a run key `<repo>.<ID>` (or `<repo>.<ID>.plan-<D-n>`): what key_of/run_key put in front of the ID."""
+    return re.sub(r"\.plan-[^.]+$", "", key).rpartition(".")[0] or key
+
+
+def slot_census_by_repo(me: str) -> tuple[dict[str, int], list[tuple[tuple[int, str], str]]]:
+    """({repo: runs holding a slot}, [(queue_order, key)] of runs waiting for one), other than `me`, live pids only."""
+    held: dict[str, int] = {}
+    queued = []
     try:
         names = [n for n in os.listdir(runs_dir()) if n.endswith(".runner.json")]
     except OSError:
-        return 0, []
+        return {}, []
     for n in names:
         key = n[: -len(".runner.json")]
         if key == me:
@@ -1155,10 +1161,88 @@ def slot_census(me: str) -> tuple[int, list[tuple[tuple[int, str], str]]]:
         if not alive(st.get("pid")):
             continue
         if st.get("state") == "running":   # `testing` is alive but holds no slot
-            held += 1
+            r = repo_of_key(key)
+            held[r] = held.get(r, 0) + 1
         elif st.get("state") == "queued":
             queued.append((queue_order(st), key))
     return held, sorted(queued)
+
+
+def slot_census(me: str) -> tuple[int, list[tuple[tuple[int, str], str]]]:
+    """(runs holding a slot, [(queue_order, key)] of runs waiting for one), other than `me`, live pids only."""
+    held, queued = slot_census_by_repo(me)
+    return sum(held.values()), queued
+
+
+# ---- one reserved slot per active repo, the rest shared ----
+# `~/.agentic/active-repos.json` (ASD_ACTIVE_REPOS_FILE) is `{"repos": {"<repo>": "<main checkout root>"}}`, keyed by the
+# name the run keys use. Without the file nothing is reserved and every repo is shown. An active repo holds a reservation
+# while it has a dossier whose front-matter status is not `done`; the reservation holds with no run queued. A repo
+# gives it up when nothing is buildable. The dashboard shows only the active repos (shared/questions/activerepos.ts).
+
+
+def active_repos_file() -> str:
+    return os.environ.get("ASD_ACTIVE_REPOS_FILE") or os.path.expanduser("~/.agentic/active-repos.json")
+
+
+def read_active_repos() -> dict[str, str] | None:
+    """{repo: root} from the active-repos file; None when the file is missing or unreadable (today's behaviour)."""
+    d = read_json(active_repos_file(), None)
+    if not isinstance(d, dict) or not isinstance(d.get("repos"), dict):
+        return None
+    return {str(k): str(v) for k, v in d["repos"].items() if k}
+
+
+def has_buildable_dossier(root: str) -> bool:
+    """True when `<root>/.discovery/dossiers/*.md` holds a dossier (front matter) whose status is not `done`."""
+    d = os.path.join(root, ".discovery", "dossiers")
+    try:
+        names = [n for n in os.listdir(d) if n.endswith(".md")]
+    except OSError:
+        return False
+    for n in names:
+        try:
+            text = open(os.path.join(d, n), encoding="utf-8").read()
+        except OSError:
+            continue
+        if text.startswith("---\n") and front_status(text) != "done":
+            return True
+    return False
+
+
+_RESERVED_CACHE: dict = {"at": 0.0, "key": None, "val": set()}
+
+
+def reserved_repos() -> set[str]:
+    """The active repos that hold a reservation now (a not-done dossier), cached ~60 s (ASD_RESERVE_TTL)."""
+    active = read_active_repos()
+    if not active:
+        return set()
+    key, t = json.dumps(sorted(active.items())), time.time()
+    if _RESERVED_CACHE["key"] == key and abs(t - _RESERVED_CACHE["at"]) < env_num("ASD_RESERVE_TTL", 60):
+        return set(_RESERVED_CACHE["val"])
+    val = {r for r, root in active.items() if has_buildable_dossier(root)}
+    _RESERVED_CACHE.update(at=t, key=key, val=val)
+    return set(val)
+
+
+def slot_admission(repo: str, cap: int, held_by_repo: dict[str, int], queued: list[tuple[tuple[int, str], str]],
+                   mine: tuple[int, str] | None, reserved: set[str]) -> tuple[bool, str]:
+    """(admit, how) for a run of `repo`; `how` is "reserved", "shared" or the reason it waits. `queued` excludes the run.
+    - repo reserved and holding no slot: admitted when held < cap (at least `len(reserved)` slots count, so with a cap not
+      above the reservations each reserved repo still runs one); only the repo's first queued run takes it;
+    - otherwise admitted when held + (other reserved repos holding no slot) < cap and nobody is ahead in the shared queue."""
+    held = sum(held_by_repo.values())
+    idle = sorted(r for r in reserved if r != repo and not held_by_repo.get(r))
+    if repo in reserved and not held_by_repo.get(repo):
+        ahead_own = [k for o, k in queued if mine and o < mine and repo_of_key(k) == repo]
+        if held < max(cap, len(reserved)) and not ahead_own:
+            return True, "reserved"
+        return False, f"waiting for the reserved slot of {repo}" + (" (an earlier run of this repo goes first)" if ahead_own else "")
+    ahead = [k for o, k in queued if mine and o < mine]
+    if held + len(idle) < cap and not ahead:
+        return True, "shared"
+    return False, "waiting for a shared slot" + (f" ({len(idle)} reserved for {', '.join(idle)})" if idle else "")
 
 
 # ---- the disk floor: no stage starts below ASD_DISK_FLOOR_GIB free (default 30) ----
@@ -1649,11 +1733,15 @@ class Runner:
                 self.save(state="running", queued_since=None, queued_first=None)
                 self.ka_since = None
                 return True
-            held, queued = slot_census(self.key)
-            ahead = [k for o, k in queued if mine and o < mine]
-            if held < cap and (not mine or not ahead):
+            held_by, queued = slot_census_by_repo(self.key)
+            held = sum(held_by.values())
+            reserved = reserved_repos()
+            repo = repo_of_key(self.key)
+            ok, how = slot_admission(repo, cap, held_by, queued, mine, reserved)
+            if ok:
                 if mine:
-                    self.event(f"{'disk has room' if low_said else 'slot free'}; {held + 1} of {cap} runs working", "running")
+                    self.event(f"{'disk has room' if low_said else 'slot free'}; {held + 1} of {cap} runs working"
+                               + (f"; using the reserved slot of {repo}" if how == "reserved" else ""), "running")
                 if rehome:
                     self.rehome_account()
                 self.save(state="running", queued_since=None, queued_first=None)
@@ -1664,7 +1752,7 @@ class Runner:
                 mine = queue_order({"queued_since": since, "queued_first": first})
                 self.save(state="queued", queued_since=since, queued_first=first or None)
                 self.event(f"queued{' first (answered)' if first else ''}: {held} of {cap} runs are working ({why}); "
-                           "this one starts when a slot frees", "queued")
+                           f"{how}; this one starts when a slot frees", "queued")
             self.keepalive_tick()
             time.sleep(float(os.environ.get("ASD_RUNNER_SLOT_POLL") or 10))
         return False
@@ -3535,6 +3623,70 @@ def already_built_for_test(root: str, dossier: str, env: dict) -> str:
         os.environ.clear(); os.environ.update(saved)
 
 
+def selftest_reserved(check) -> None:
+    """One reserved slot per active repo: temp dirs only, never the owner's ~/.agentic."""
+    tmp = tempfile.mkdtemp(prefix="asd-reserved-")
+    keep = {k: os.environ.get(k) for k in ("ASD_ACTIVE_REPOS_FILE", "ASD_RESERVE_TTL")}
+    os.environ["ASD_RESERVE_TTL"] = "0"
+    try:
+        def dossier(root: str, name: str, status: str) -> None:
+            d = os.path.join(root, ".discovery", "dossiers")
+            os.makedirs(d, exist_ok=True)
+            open(os.path.join(d, name), "w").write(f"---\nid: {name[:-3]}\nstatus: {status}\n---\nbody\n")
+        ra, rb = os.path.join(tmp, "a"), os.path.join(tmp, "b")
+        dossier(ra, "A-1.md", "ready")
+        dossier(rb, "B-1.md", "done")
+        os.environ["ASD_ACTIVE_REPOS_FILE"] = os.path.join(tmp, "missing.json")
+        check("reserved: a missing file reserves nothing and reads as None", read_active_repos() is None and reserved_repos() == set())
+        q = lambda *ks: [(queue_order({"queued_since": f"2026-11-20T10:0{i}:00Z"}), k) for i, k in enumerate(ks)]
+        # today's rule without a file: held < cap, nobody ahead
+        check("reserved: no reservations: admitted below the cap", slot_admission("x", 4, {"x": 1, "y": 2}, [], None, set()) == (True, "shared"))
+        check("reserved: no reservations: full at the cap", not slot_admission("x", 3, {"x": 1, "y": 2}, [], None, set())[0])
+        check("reserved: no reservations: nobody ahead in the FIFO", not slot_admission("x", 4, {"y": 1}, q("x.W-1", "x.W-2"), queue_order({"queued_since": "2026-11-20T10:09:00Z"}), set())[0])
+        write_json(os.environ["ASD_ACTIVE_REPOS_FILE"], {"repos": {"a": ra, "b": rb}})
+        check("reserved: a repo with a not-done dossier reserves", reserved_repos() == {"a"})
+        check("reserved: a repo with only done dossiers releases its slot", "b" not in reserved_repos())
+        dossier(rb, "B-2.md", "blocked")
+        check("reserved: any status but done counts (blocked)", reserved_repos() == {"a", "b"})
+        write_json(os.environ["ASD_ACTIVE_REPOS_FILE"], {"repos": {"a": ra}})
+        check("reserved: a repo that is not active reserves nothing", reserved_repos() == {"a"})
+        # a idle and reserved: a shared run of repo x may not take the last slot
+        ok, why = slot_admission("x", 4, {"x": 1, "y": 2}, [], None, {"a"})
+        check("reserved: an idle reserved repo blocks the last shared slot", not ok and "shared slot (1 reserved for a)" in why)
+        check("reserved: ...while one slot fewer in use is still shared", slot_admission("x", 4, {"x": 1, "y": 1}, [], None, {"a"})[0])
+        check("reserved: ...and once the reserved repo runs, its slot is no longer deducted", slot_admission("x", 4, {"a": 1, "x": 1, "y": 1}, [], None, {"a"}) == (True, "shared"))
+        # the reserved repo's first queued run jumps the shared FIFO, the second does not
+        qq = [(queue_order({"queued_since": "2026-11-20T10:00:00Z"}), "x.W-1"), (queue_order({"queued_since": "2026-11-20T10:01:00Z"}), "a.A-1")]
+        mine_a1 = queue_order({"queued_since": "2026-11-20T10:01:00Z"})
+        ok, how = slot_admission("a", 4, {"x": 2, "y": 1}, qq[:1], mine_a1, {"a"})
+        check("reserved: the first queued run of a reserved repo jumps the shared FIFO", ok and how == "reserved")
+        mine_a2 = queue_order({"queued_since": "2026-11-20T10:02:00Z"})
+        ok, why = slot_admission("a", 4, {"x": 2, "y": 1}, qq, mine_a2, {"a"})
+        check("reserved: its second queued run does not (the first of its repo is ahead)", not ok and "earlier run of this repo" in why)
+        check("reserved: a reserved repo still waits when every slot is in use", not slot_admission("a", 3, {"x": 2, "y": 1}, [], None, {"a"})[0])
+        check("reserved: a reserved repo already running goes through the shared rule", not slot_admission("a", 4, {"a": 1, "x": 2}, [], None, {"a", "b"})[0]
+              and slot_admission("a", 5, {"a": 1, "x": 2}, [], None, {"a", "b"})[0])
+        # cap at or below the reservations: each reserved repo runs one, the shared pool is empty
+        res = {"a", "b", "c"}
+        check("reserved: cap below the reservations: each reserved repo runs one", all(slot_admission(r, 2, {}, [], None, res)[0] for r in res)
+              and slot_admission("c", 2, {"a": 1, "b": 1}, [], None, res)[0])
+        check("reserved: ...the shared pool is empty", not slot_admission("x", 3, {"a": 1, "b": 1, "c": 1}, [], None, res)[0]
+              and not slot_admission("x", 2, {"a": 1}, [], None, res)[0])
+        check("reserved: ...and a second run of a running reserved repo does not take a reserved slot", not slot_admission("a", 2, {"a": 1, "b": 1}, [], None, res)[0])
+        check("reserved: repo_of_key reads the repo off a run key", repo_of_key("my.repo.W-9") == "my.repo" and repo_of_key("r.W-9.plan-D-2") == "r")
+        # the CLI writes the file (a temp one)
+        os.environ["ASD_ACTIVE_REPOS_FILE"] = os.path.join(tmp, "cli.json")
+        rc = cmd_active(["--add", "zed", "--root", ra]) | cmd_active(["--add", "yak", "--root", rb]) | cmd_active(["--remove", "zed"])
+        check("reserved: the CLI adds and removes a repo", rc == 0 and read_active_repos() == {"yak": rb} and cmd_active(["--remove", "nope"]) == 1)
+    finally:
+        for k, v in keep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def selftest() -> int:
     me = os.path.abspath(__file__)
     failures: list[str] = []
@@ -3549,6 +3701,8 @@ def selftest() -> int:
         print(("ok   " if ok else "FAIL ") + name, flush=True)
         if not ok:
             failures.append(name)
+
+    selftest_reserved(check)
 
     def lines_of(path: str) -> list[dict]:
         try:
@@ -5268,8 +5422,49 @@ def resolve(a: argparse.Namespace, ap: argparse.ArgumentParser) -> bool:
     return True
 
 
+def cmd_active(argv: list[str]) -> int:
+    """`active`: show ~/.agentic/active-repos.json (ASD_ACTIVE_REPOS_FILE); `--add [NAME] [--root R]`, `--remove NAME`."""
+    ap = argparse.ArgumentParser(prog="run_dossier.py active", description="The active repos: one reserved run slot each, and the only repos the dashboard shows.")
+    ap.add_argument("--add", nargs="?", const="", metavar="NAME", help="add a repo (NAME defaults to the repository of --root or the current directory)")
+    ap.add_argument("--root", help="with --add: the repository's main checkout (default: the current directory's repository)")
+    ap.add_argument("--remove", metavar="NAME")
+    a = ap.parse_args(argv)
+    path, cur = active_repos_file(), read_active_repos()
+    if a.add is None and a.remove is None:
+        if cur is None:
+            print(f"{path}: missing; no repo is reserved and the dashboard shows every repo")
+            return 0
+        res = reserved_repos()
+        print(f"{path}:")
+        for r, root in sorted(cur.items()):
+            print(f"  {r}  {root}  {'reserved (has a dossier not done)' if r in res else 'no reservation (nothing buildable)'}")
+        return 0
+    repos = dict(cur or {})
+    if a.add is not None:
+        root = os.path.abspath(a.root) if a.root else repo_of(os.getcwd())
+        if not root:
+            print("run_dossier.py active: not inside a git repository; pass --root", file=sys.stderr)
+            return 2
+        if os.path.exists(os.path.join(root, ".git")):
+            name = a.add or main_repo_name(root)
+        else:
+            name = a.add or os.path.basename(root.rstrip("/"))
+        repos[name] = root
+    if a.remove is not None:
+        if a.remove not in repos:
+            print(f"run_dossier.py active: {a.remove} is not in {path}", file=sys.stderr)
+            return 1
+        del repos[a.remove]
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    write_json(path, {"repos": repos})
+    print(f"{path}: {', '.join(sorted(repos)) or 'no repos'}")
+    return 0
+
+
 def main() -> int:
     argv = sys.argv[1:]
+    if argv and argv[0] == "active":
+        return cmd_active(argv[1:])
     if argv and argv[0] == "chat":
         ap = argparse.ArgumentParser(prog="run_dossier.py chat")
         ap.add_argument("id", nargs="?", help="dossier id, e.g. W-123")
