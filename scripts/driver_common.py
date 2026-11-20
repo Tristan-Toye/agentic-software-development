@@ -371,6 +371,7 @@ def fixture_commit(root: str, rel: str, text: str, msg: str) -> str:
 def run_self(name: str, *args: str, env: dict | None = None, cwd: str | None = None) -> tuple[int, str]:
     """Run a driver script as a subprocess for selftests."""
     e = dict(os.environ)
+    e["ASD_BUILD_SLOTS"] = "0"   # a selftest never waits on, or takes, a real host build slot (0 turns the limit off)
     e.update(env or {})
     proc = subprocess.run([sys.executable, os.path.join(SCRIPTS, name), *args], capture_output=True, text=True, env=e, cwd=cwd)
     return proc.returncode, proc.stdout + proc.stderr
