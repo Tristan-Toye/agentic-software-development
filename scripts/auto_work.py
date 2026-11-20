@@ -374,6 +374,15 @@ def heal(st: dict, facts: dict) -> None:
     st["paused"], st["phase"] = None, ""
 
 
+def built_already(m: dict, r: dict) -> bool:
+    """The member's /work-on already ran to its end (its run record: command work-on, state done) although the dossier
+    on development does not read pr or done: the live status sits on the build branch (`branch:`), or the agent reported
+    the ready status as intended. A second /work-on would start a second build of a finished change: only /fix-deferred
+    (open items) or nothing follows. A /work-on launched this cycle that is still being judged keeps its own path."""
+    L = m.get("launch")
+    return r.get("command") == "work-on" and r.get("state") == "done" and not (L and L["command"] == "work-on")
+
+
 def step_member(st: dict, m: dict, run: dict | None) -> None:
     if m["stage"] == "finished":
         return
@@ -413,7 +422,7 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
     if L and r.get("state") in ("failed", "stopped"):
         pause(st, f"{m['id']}: the /{L['command']} run ended {r['state']}", "member", m["id"]); return
     m["stage"] = STAGE_OF.get(status, m["stage"])
-    if status in ("pr", "done"):
+    if status in ("pr", "done") or built_already(m, r):
         m["asked"] = None   # the agent fixed it (or it was intended after all and the dossier moved): the normal path takes over
         todo = open_items(run)
         if L and L["command"] == "fix-deferred":
@@ -773,6 +782,27 @@ def selftest() -> int:
     st0 = {"root": "/nonexistent", "repo": "x", "members": [m_], "paused": None}
     step_member(st0, m_, {"id": "R", "status": "review", "runner": {"state": "running", "command": "work-on"}})
     check("an adopted live /work-on is waited for: no launch, the member is not finished", m_["launch"] is None and m_["stage"] == "build" and m_["state"] == "running", m_)
+
+    # A /work-on that already ran to its end is never launched again (the live status may sit on the build branch).
+    calls_ = []
+    real_start = globals().get("start_runner")
+    globals()["start_runner"] = lambda root_, id_, command_, items_="": calls_.append((id_, command_, items_)) or (True, "started")
+    try:
+        fin = {"state": "done", "command": "work-on", "pid": 7, "started": "t"}
+        mk = lambda: {"id": "R", "stage": "build", "state": "pending", "error": "", "launch": None, "lag": 0, "asked": None, "accepted": False, "rounds": 0, "retried": False}
+        stx = lambda: {"root": "/nonexistent", "repo": "x", "members": [], "paused": None}
+        m1 = mk()
+        step_member(stx(), m1, {"id": "R", "status": "ready", "runner": fin, "deferred": []})
+        check("a finished /work-on whose dossier still reads ready, no open items: no /work-on, the member is finished", calls_ == [] and m1["stage"] == "finished", (calls_, m1))
+        m2 = mk()
+        step_member(stx(), m2, {"id": "R", "status": "building", "runner": fin, "deferred": [{"id": "D-1", "state": "open"}]})
+        check("a finished /work-on with an open deferred item: only /fix-deferred", calls_ == [("R", "fix-deferred", "D-1")], calls_)
+        calls_.clear()
+        m3 = mk()
+        step_member(stx(), m3, {"id": "R", "status": "ready", "runner": {"state": "stopped", "command": "work-on", "pid": 7, "started": "t"}, "deferred": []})
+        check("a stopped /work-on that never finished still starts /work-on", calls_ == [("R", "work-on", "")], calls_)
+    finally:
+        globals()["start_runner"] = real_start
 
     global LAND
     real_land = LAND
