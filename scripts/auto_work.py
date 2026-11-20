@@ -81,6 +81,16 @@ Exit 0 done, 1 refused (resume of a cycle that is not paused...), 2 bad usage. `
 `ASD_DOCS_MERGE_BIN` replace the scripts it starts (tests); `ASD_AUTO_WORK_GRACE` (seconds, default 600) is how long a
 started run may take to show its state before the cycle pauses; `ASD_AUTO_WORK_ASK_WAIT` (default 1800) how long the
 asked agent may take to reply.
+
+# A runner that was killed, not stopped
+
+The facts report a live-state runner record whose process is dead as `stopped`. When every runner dies at once (a
+logout), `run_dossier.py revive` restarts them within moments, so a member whose runner.json still holds a live state
+(running, testing, waiting, paused, queued, parked) is shown as "restarting" for up to the same grace
+(`ASD_AUTO_WORK_GRACE`, tracked in the member's `restarting`) and the cycle pauses only when it is still dead after that.
+A pause of kind `member` with action `relaunch` heals itself on a later tick: when that member's run is live again, or its
+/work-on dossier reached `pr`/`done`, the pause is cleared and the cycle goes on; the state keeps a `healed` note with the former
+reason. Other pause kinds are never cleared here.
 """
 from __future__ import annotations
 
@@ -332,6 +342,38 @@ def fresh(m: dict, r: dict) -> bool:
     return r.get("command") == L["command"] and (r.get("state") in LIVE or r.get("pid") != L.get("pid") or r.get("started") != L.get("started"))
 
 
+def killed_not_stopped(st: dict, m: dict) -> bool:
+    """Whether the member's runner.json still holds a live state (running, queued...): the process was killed, the
+    owner did not stop the run, and `revive` will start it again."""
+    rj = read_json(os.path.join(runs_dir(), f"{st['repo']}.{m['id']}.runner.json"), {}) or {}
+    return rj.get("state") in LIVE
+
+
+def heal(st: dict, facts: dict) -> None:
+    """Clear a pause of kind member / action relaunch once that member's run is live again (revive restarted it) or its
+    dossier reached pr/done. Every other pause kind waits for the owner."""
+    p = st.get("paused")
+    if not p or p.get("kind") != "member" or p.get("action") != "relaunch" or not p.get("member"):
+        return
+    run = next((r for r in facts.get("runs") or [] if r.get("id") == p["member"]), None)
+    if not run:
+        return
+    rs = (run.get("runner") or {}).get("state")
+    live = rs in LIVE
+    mem = next((m for m in st["members"] if m["id"] == p["member"]), {})
+    # pr/done only counts for a /work-on: a /fix-deferred starts from a dossier that is already at pr
+    built = run.get("status") in ("pr", "done") and (mem.get("launch") or {}).get("command", "work-on") == "work-on" and rs != "failed"
+    if not live and not built:
+        return
+    for m in st["members"]:
+        if m["id"] == p["member"]:
+            m["error"], m["state"], m["lag"] = "", "running" if live else "pending", 0
+            m.pop("restarting", None)
+    st["healed"] = {"at": now(), "member": p["member"], "was": p.get("reason", ""),
+                    "because": "its run is live again" if live else f"its dossier reads {run.get('status')}"}
+    st["paused"], st["phase"] = None, ""
+
+
 def step_member(st: dict, m: dict, run: dict | None) -> None:
     if m["stage"] == "finished":
         return
@@ -345,6 +387,7 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
         m["state"] = {"queued": "queued for a slot", "waiting": "waiting for the owner", "paused": "paused (usage limit)",
                       "parked": "waiting for its blockers"}.get(r["state"], "running")
         m["lag"], m["retried"] = 0, False
+        m.pop("restarting", None)
         return
     if L and not fresh(m, r):
         if age(L["ts"]) > grace():
@@ -360,6 +403,13 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
         return
     if L:
         m["retried"] = False
+    if L and r.get("state") == "stopped" and killed_not_stopped(st, m):
+        # The facts read a live-state record whose process is dead as "stopped" (all runners died in a logout):
+        # `run_dossier.py revive` restarts it within moments. Wait for that, up to the grace, before pausing.
+        since = m.setdefault("restarting", now())
+        if age(since) <= grace():
+            m["state"] = "restarting"
+            return
     if L and r.get("state") in ("failed", "stopped"):
         pause(st, f"{m['id']}: the /{L['command']} run ended {r['state']}", "member", m["id"]); return
     m["stage"] = STAGE_OF.get(status, m["stage"])
@@ -589,6 +639,7 @@ def tick_repo(repo: str, facts: dict) -> None:
         before = json.dumps(st, sort_keys=True)
         st["root"] = root
         carry_step(st, facts)
+        heal(st, facts)
         if not st["paused"]:
             for _ in range(8):
                 if not step_cycle(st, facts):
@@ -860,6 +911,32 @@ def selftest() -> int:
         cmd_resume(root)
         tk()
         check("resume: the failed run is started again, as the Resume button would", log()[-1] == f"runner F --root {root} --command fix-deferred --items D-1" and st()["paused"] is None, log()[-2:])
+        # A logout kills every runner: the facts say "stopped", runner.json still says running, `revive` restarts it.
+        os.environ["ASD_AUTO_WORK_GRACE"] = "600"
+        setrun("F", runner=runner("stopped", "fix-deferred", pid=304, started="2026-11-17T11:05:00Z"))
+        json.dump({"state": "running", "command": "fix-deferred"}, open(P(f"{repo}.F.runner.json"), "w"))
+        tk()
+        check("a killed runner (facts stopped, runner.json live) is restarting, not a pause, within the grace",
+              not st()["paused"] and members()["F"]["state"] == "restarting" and members()["F"].get("restarting"), (st().get("paused"), members()["F"]))
+        s = st(); s["members"][[m_["id"] for m_ in s["members"]].index("F")]["restarting"] = "2020-01-01T00:00:00Z"; write_atomic(state_path(repo), s)
+        tk()
+        check("still dead after the grace: the cycle pauses as before", bool(st()["paused"]) and "ended stopped" in st()["paused"]["reason"], st().get("paused"))
+        setrun("F", runner=runner("running", "fix-deferred", pid=305, started="2026-11-17T11:06:00Z"))
+        tk()
+        check("revive restarted it: the pause heals itself, with a note, and the member runs again",
+              st()["paused"] is None and st()["healed"]["member"] == "F" and "ended stopped" in st()["healed"]["was"] and members()["F"]["state"] == "running"
+              and not members()["F"].get("restarting"), (st().get("paused"), st().get("healed")))
+        os.remove(P(f"{repo}.F.runner.json"))
+        setrun("F", runner=runner("stopped", "fix-deferred", pid=306, started="2026-11-17T11:07:00Z")); tk()
+        check("a run the owner stopped (runner.json stopped) still pauses at once", bool(st()["paused"]) and "ended stopped" in st()["paused"]["reason"], st().get("paused"))
+        cmd_resume(root)
+        h = lambda pz, run: (lambda s_: (heal(s_, {"runs": [run]}), s_)[1])({"members": [{"id": "Z", "state": "failed", "error": "x", "lag": 0}], "paused": pz, "phase": "paused"})
+        pz = {"reason": "Z: ended stopped", "kind": "member", "member": "Z", "action": "relaunch", "at": now()}
+        check("heal: a dossier that reached pr clears a member/relaunch pause", h(pz, {"id": "Z", "status": "pr", "runner": None})["paused"] is None)
+        check("heal: still dead and not done keeps the pause", h(pz, {"id": "Z", "status": "building", "runner": {"state": "stopped"}})["paused"] is not None)
+        check("heal: other pause kinds and actions are never cleared",
+              all(h({**pz, **o}, {"id": "Z", "status": "done", "runner": {"state": "running"}})["paused"] is not None
+                  for o in ({"kind": "docs"}, {"kind": "stub-run"}, {"action": "accept"}, {"action": "recheck"})))
         # F's rerun finishes; D's fix-deferred is done with only a kept-open item.
         setrun("F", status="done", runner=runner("done", "fix-deferred", pid=303, started="2026-11-17T11:10:00Z"), deferred=[{"id": "D-1", "state": "fixed"}])
         n_before = len(log()); tk()
