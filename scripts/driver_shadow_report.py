@@ -19,8 +19,6 @@ This report puts, per driver:
                 test_round     the driver's failed-test count vs the failed counts of the
                                `SUITE:` lines
                 pre_fanout_check, strength_gate_prep: always `needs human read`
-                flow_coverage_gate: always `needs human read`; its findings are the would-fail
-                               entries (new entry points with no seq diagram), the detail their count
                 vr_promote_preview: always `needs human read`; its findings are the flows whose
                                seq draft could not be built (the detail: flows built ok vs failed)
 
@@ -65,7 +63,6 @@ PHASE_LINES = {
     "strength_gate_prep": r"(?i)strength|coverage|weak|stub|red[- ]run",
     "test_round": r"SUITE|(?i:arbitrat|round|failing|failed)",
     "finalize_pr": r"(?i)finaliz|conflict marker|duplicate|\bADR\b|sync|merge of",
-    "flow_coverage_gate": r"(?i)flow[- ]coverage|diagram gate|seq diagram|entry point",
     "vr_promote_preview": r"(?i)vr_promote|Diagrams new|seq draft|visual review|promot",
 }
 FINALIZE_FOUND = re.compile(r"(?i)conflict marker|duplicat\w* ADR|^DEFECT|\bDEFECT\b")
@@ -175,10 +172,6 @@ def agreement(driver: str, runs: list[dict], log: list[str], have_log: bool) -> 
         if not missing:
             return "agree", f"driver failed counts {counts} all appear in SUITE: lines {sorted(logged)}"
         return "disagree", f"driver counted {missing} failed; the SUITE: lines say {sorted(logged)}"
-    if driver == "flow_coverage_gate":
-        would = [f for r in runs for f in r.get("findings", [])]
-        return human[0], (f"{len(would)} would-fail entries (new entry points with no seq diagram): " + "; ".join(w[:80] for w in would[:3])
-                          if would else "would pass: every new entry point in the changed files is covered or exempt")
     if driver == "vr_promote_preview":
         ok = sum(int((r.get("facts") or {}).get("built_ok") or 0) for r in runs)
         failed = sum(int((r.get("facts") or {}).get("failed") or 0) for r in runs)
@@ -323,8 +316,7 @@ def selftest() -> int:
         # pre_fanout_check: only two dossiers
         for d in ("W-1", "W-2"):
             ev(evd, d, "pre_fanout_check", 1, 0)
-        # the two diagram drivers: always a human read, findings carried through
-        ev(evd, "W-1", "flow_coverage_gate", 1, 1, ["crates/a/src/x.rs::serve_x_requests (crates/a/src/x.rs:9)"])
+        # the diagram driver: always a human read, findings carried through
         ev(evd, "W-2", "vr_promote_preview", 1, 1, ["flow f1: step s1 has no call_kind"], {"built_ok": 3, "failed": 1})
         # a corrupt evidence file is noted, not fatal
         with open(os.path.join(evd, "driver-shadow", "W-3", "strength_gate_prep-1.json"), "w") as fh:
@@ -364,9 +356,6 @@ def selftest() -> int:
         check("the worktree copy of the dossier is read when its log is longer", len(dossier_log(dd, "W-9")[0]) == 3)
         check("a missing dossier is not fatal", dossier_log(dd, "W-404") == ([], ""))
         text = render(rep)
-        fc = rep["drivers"]["flow_coverage_gate"]["dossiers"][0]
-        check("flow_coverage_gate: needs human read, would-fail entries are the findings",
-              fc["agreement"] == "needs human read" and "1 would-fail" in fc["agreement_detail"] and "serve_x_requests" in fc["findings"][0])
         vp = rep["drivers"]["vr_promote_preview"]["dossiers"][0]
         check("vr_promote_preview: needs human read, built ok vs failed in the detail",
               vp["agreement"] == "needs human read" and "3 flows built ok, 1 failed" in vp["agreement_detail"] and vp["findings"] == ["flow f1: step s1 has no call_kind"])

@@ -23,10 +23,15 @@ stay in the file, so `show` still tells the story. A claimed run keeps its modes
 for its whole life, even after the quota is full; only an explicit `off` takes
 them away. No quota means every run carries the modes, as before.
 
-Two drivers are script-only and cost no tokens (FREE: flow_coverage_gate, vr_promote_preview). They are
-exempt from the quota: a run that finds the quota full, and a run that is not /work-on, still gets them
-exported with the mode in the file, and they never claim a place. `show` marks them "(no quota)".
-vr_promote_preview has no `on` mode (`set` refuses it).
+One driver is script-only and costs no tokens (FREE: vr_promote_preview). It is exempt from the quota: a run
+that finds the quota full, and a run that is not /work-on, still gets it exported with the mode in the file,
+and it never claims a place. `show` marks it "(no quota)". vr_promote_preview has no `on` mode (`set` refuses it).
+
+Switching a driver on is graduation: the PR that does it rewrites the phase doc as the plain procedure, removes
+the mode branch from the code and moves the name from NAMES to GRADUATED. A graduated name is always on and part
+of the procedure: `set` and `show` say so, the runner exports nothing for it, and a stale key for it in an
+existing drivers file is ignored without a warning. The selftest fails when a graduated name, or its
+ASD_DRIVER_<NAME>, still appears in the docs the agents read (see GRADUATED_SCAN).
 
 Usage:
     driver_modes.py show                      effective modes from the file
@@ -40,7 +45,7 @@ Usage:
     driver_modes.py --selftest
 
 NAME is one of finalize_pr, merge_packages, pre_fanout_check, strength_gate_prep,
-test_round, flow_coverage_gate, vr_promote_preview; MODE is off, shadow or on. The file is written atomically.
+test_round, vr_promote_preview; MODE is off, shadow or on. The file is written atomically.
 Exit 0 done, 2 bad arguments or an unreadable file.
 
 No third-party imports.
@@ -60,8 +65,11 @@ import tempfile
 import time
 
 NAMES = ("finalize_pr", "merge_packages", "pre_fanout_check", "strength_gate_prep", "test_round",
-         "flow_coverage_gate", "vr_promote_preview")
-FREE = ("flow_coverage_gate", "vr_promote_preview")   # script-only, no tokens: exempt from the run quota
+         "vr_promote_preview")
+FREE = ("vr_promote_preview",)   # script-only, no tokens: exempt from the run quota
+# Drivers that were switched on and are now just the procedure. name -> graduation date. Never a mode, never exported.
+GRADUATED = {"flow_coverage_gate": "2026-11-20"}
+GRADUATED_SCAN = ("references", "primary-agents", "sub-agents", "skills", "claude", "opencode")   # dirs the agents read
 NO_ON = {"vr_promote_preview": "no on mode yet: promotion stays tied to `Diagrams new:`"}   # modes a driver refuses
 MODES = ("off", "shadow", "on")
 QUOTA_KEY = "_quota"   # in the drivers file next to the driver names: {"limit": N, "claimed": [{"run", "at"}]}
@@ -101,6 +109,8 @@ def load(path: str | None = None) -> tuple[dict[str, str], list[str]]:
             continue
         name = str(key).strip().lower()
         mode = str(value).strip().lower() if isinstance(value, str) else ""
+        if name in GRADUATED:
+            continue
         if name not in NAMES:
             warnings.append(f"drivers file: unknown driver {key!r} ignored (known: {', '.join(NAMES)})")
         elif mode not in MODES:
@@ -199,11 +209,37 @@ def claim(run_key: str, path: str | None = None) -> bool:
         return True
 
 
+def graduated_text(name: str) -> str:
+    return f"graduated (always on, part of the procedure) since {GRADUATED[name]}"
+
+
+def graduated_leaks(root: str) -> list[str]:
+    """`path:line` of every place under GRADUATED_SCAN (in repo `root`) that still names a graduated driver or its
+    ASD_DRIVER_<NAME> variable: once graduated, the agents must not know the driver, its modes or shadow."""
+    needles = [n for n in GRADUATED] + [env_name(n) for n in GRADUATED]
+    found: list[str] = []
+    for top in GRADUATED_SCAN:
+        for dirpath, _dirs, files in os.walk(os.path.join(root, top)):
+            for fn in sorted(files):
+                full = os.path.join(dirpath, fn)
+                try:
+                    with open(full, encoding="utf-8") as fh:
+                        for i, line in enumerate(fh, 1):
+                            low = line.lower()
+                            if any(n.lower() in low for n in needles):
+                                found.append(f"{os.path.relpath(full, root)}:{i}")
+                except (OSError, UnicodeDecodeError):
+                    continue
+    return found
+
+
 def show(path: str) -> str:
     modes, warnings = load(path)
     rows = [f"drivers file: {path}" + ("" if os.path.exists(path) else " (absent: every driver off)")]
     for name in NAMES:
         rows.append(f"  {name:<20} {modes.get(name, 'off')}" + ("  (no quota)" if name in FREE else ""))
+    for name in GRADUATED:
+        rows.append(f"  {name:<20} {graduated_text(name)}")
     quota = load_quota(path)
     if quota is None:
         rows.append("  quota: none (every run carries the modes)")
@@ -270,6 +306,9 @@ def _change(a: argparse.Namespace, path: str) -> int:
         for pair in a.pairs:
             name, _, mode = pair.partition("=")
             name, mode = name.strip().lower(), mode.strip().lower()
+            if name in GRADUATED:
+                print(f"driver_modes.py: {name}: {graduated_text(name)}; nothing to set")
+                continue
             if name not in NAMES or mode not in MODES:
                 print(f"driver_modes.py: bad pair {pair!r}: NAME is one of {', '.join(NAMES)}; MODE is one of {', '.join(MODES)}", file=sys.stderr)
                 return 2
@@ -344,12 +383,29 @@ def _run_selftest() -> list[str]:
             del os.environ["ASD_DRIVERS_FILE"]
             check("show lists every driver and marks the script-only ones", all(n in show(f) for n in NAMES)
                   and show(f).count("(no quota)") == len(FREE))
-            check("flow_coverage_gate can be set to shadow", main(["--file", f, "set", "flow_coverage_gate=shadow"]) == 0 and load(f)[0]["flow_coverage_gate"] == "shadow")
+            check("a graduated driver: set says so, writes nothing, exits 0", main(["--file", f, "set", "flow_coverage_gate=shadow"]) == 0
+                  and "flow_coverage_gate" not in load(f)[0] and "flow_coverage_gate" not in open(f).read())
+            check("show says graduated and not a mode", "flow_coverage_gate" in show(f) and "graduated (always on, part of the procedure)" in show(f))
+            with open(f, "w") as fh:
+                fh.write('{"test_round": "shadow", "flow_coverage_gate": "shadow", "_quota": {"limit": 1, "claimed": []}}')
+            eff, exp, warns = resolve({}, f)
+            check("a stale graduated key is ignored without a warning or an export", load(f) == ({"test_round": "shadow"}, []) and warns == []
+                  and exp == {"ASD_DRIVER_TEST_ROUND": "shadow"} and "flow_coverage_gate" not in eff)
+            check("writing the file drops the stale key", (write(f, load(f)[0], load_quota(f)), "flow_coverage_gate" not in open(f).read())[1])
+            write(f, {"test_round": "shadow", "pre_fanout_check": "on"})
+            check("no graduated driver is still a driver name", not (set(GRADUATED) & set(NAMES)))
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            check("a graduated driver is named nowhere the agents read: " + ", ".join(graduated_leaks(root)[:5]), graduated_leaks(root) == [])
+            leak = os.path.join(tmp, "leakrepo")
+            os.makedirs(os.path.join(leak, "references"))
+            with open(os.path.join(leak, "references", "x.md"), "w") as fh:
+                fh.write("ok\nWhen ASD_DRIVER_FLOW_COVERAGE_GATE is shadow\n")
+            check("the leak scan finds a graduated name or variable", graduated_leaks(leak) == ["references/x.md:2"])
             check("vr_promote_preview=on is refused and writes nothing", main(["--file", f, "set", "vr_promote_preview=on"]) == 2
                   and "vr_promote_preview" not in load(f)[0] and main(["--file", f, "set", "vr_promote_preview=shadow"]) == 0)
             check("all on keeps vr_promote_preview at shadow", main(["--file", f, "all", "on"]) == 0 and load(f)[0]["vr_promote_preview"] == "shadow"
                   and load(f)[0]["test_round"] == "on")
-            check("the free drivers are known names", set(FREE) <= set(NAMES) and name_of(env_name("flow_coverage_gate")) == "flow_coverage_gate")
+            check("the free drivers are known names", set(FREE) <= set(NAMES) and name_of(env_name("vr_promote_preview")) == "vr_promote_preview")
             # ---- the run quota
             q = os.path.join(tmp, "quota", "drivers.json")
             check("no quota: claim is always true and records nothing", claim("r0", q) is True and not os.path.exists(q))

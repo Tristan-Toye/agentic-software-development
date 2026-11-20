@@ -4216,7 +4216,7 @@ def selftest() -> int:
               done96 and drv(1) == {"ASD_DRIVER_PRE_FANOUT_CHECK": "shadow", "ASD_DRIVER_TEST_ROUND": "on"})
         check("drivers: the modes used are recorded in the runner metadata",
               state_of("W-96").get("drivers") == {"finalize_pr": "off", "merge_packages": "off", "pre_fanout_check": "shadow", "strength_gate_prep": "off", "test_round": "on",
-                                                      "flow_coverage_gate": "off", "vr_promote_preview": "off"})
+                                                      "vr_promote_preview": "off"})
         t96 = texts("W-96")
         check("drivers: an unknown name and an unknown mode are warned about in the runner log",
               any("unknown driver 'bogus'" in t for t in t96) and any("finalize_pr: unknown mode 'maybe'" in t for t in t96))
@@ -4267,21 +4267,21 @@ def selftest() -> int:
         check("quota: a restarted, claimed run keeps its modes after the quota is full, and does not claim again",
               qmodes("W-q1") == qshadow and len((driver_modes.load_quota(qfile_) or {})["claimed"]) == 2)
         # the script-only drivers are exempt from the quota (full quota, non-/work-on run) and never claim a place
-        write_json(qfile_, {"test_round": "shadow", "flow_coverage_gate": "shadow", "vr_promote_preview": "shadow", "_quota": {"limit": 2, "claimed": [{"run": "x"}, {"run": "y"}]}})
+        write_json(qfile_, {"test_round": "shadow", "vr_promote_preview": "shadow", "_quota": {"limit": 2, "claimed": [{"run": "x"}, {"run": "y"}]}})
         qfree = {n: "off" for n in driver_modes.NAMES}
-        qfree.update(flow_coverage_gate="shadow", vr_promote_preview="shadow")
+        qfree.update(vr_promote_preview="shadow")
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
         start("W-q5").wait(timeout=60)
         check("quota full: the script-only drivers still get their file mode, the token ones are off",
-              qmodes("W-q5") == qfree and drv(1) == {"ASD_DRIVER_FLOW_COVERAGE_GATE": "shadow", "ASD_DRIVER_VR_PROMOTE_PREVIEW": "shadow"})
+              qmodes("W-q5") == qfree and drv(1) == {"ASD_DRIVER_VR_PROMOTE_PREVIEW": "shadow"})
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
         start("W-q6", "--command", "plan").wait(timeout=60)
         check("a plan run gets the script-only drivers too", qmodes("W-q6") == qfree)
-        write_json(qfile_, {"flow_coverage_gate": "shadow", "_quota": {"limit": 2, "claimed": []}})
+        write_json(qfile_, {"vr_promote_preview": "shadow", "_quota": {"limit": 2, "claimed": []}})
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
         start("W-q7").wait(timeout=60)
         check("a run carrying only script-only drivers claims no quota place",
-              len((driver_modes.load_quota(qfile_) or {})["claimed"]) == 0 and drv(1) == {"ASD_DRIVER_FLOW_COVERAGE_GATE": "shadow"})
+              len((driver_modes.load_quota(qfile_) or {})["claimed"]) == 0 and drv(1) == {"ASD_DRIVER_VR_PROMOTE_PREVIEW": "shadow"})
         # (several processes claiming at once is proved in driver_modes.py --selftest)
         env["ASD_DRIVERS_FILE"] = os.path.join(tmp, "no-drivers.json")
 
