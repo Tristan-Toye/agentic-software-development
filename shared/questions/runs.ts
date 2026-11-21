@@ -63,10 +63,17 @@ export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; bra
  * The structured record `.discovery/deferred/<ID>.yaml` (JSON in a YAML file, written by `scripts/build_records.py`):
  * `{items: [{id, evidence, fix, boundary, blast_radius, state, title?, kind?, loc?, note?}], sources: []}`. Null when absent or
  * unreadable, which sends the caller back to the build-log parse.
+ * The record sits beside the dossier (a worktree's `.discovery/`) or in the main checkout `main`, where `/fix-deferred`
+ * writes it; the dossier itself is often read from another worktree or from a branch (a `git:` path), so both places
+ * are tried and the newer copy wins.
  */
-export function readDeferredRecord(dossierFile: string, id: string): DeferredItem[] | null {
+export function readDeferredRecord(dossierFile: string, id: string, main = ""): DeferredItem[] | null {
+  const places = [...(dossierFile.startsWith("git:") ? [] : [join(dirname(dossierFile), "..", "deferred", `${id}.yaml`)]),
+    ...(main ? [join(main, ".discovery", "deferred", `${id}.yaml`)] : [])]
+  const found = places.flatMap((p) => { try { return [{ p, t: statSync(p).mtimeMs }] } catch { return [] } }).sort((a, b) => b.t - a.t)
+  if (!found.length) return null
   let rec: any
-  try { rec = JSON.parse(readFileSync(join(dirname(dossierFile), "..", "deferred", `${id}.yaml`), "utf8")) } catch { return null }
+  try { rec = JSON.parse(readFileSync(found[0].p, "utf8")) } catch { return null }
   if (!rec || !Array.isArray(rec.items)) return null
   const states: Record<string, DeferredItem["state"]> = { open: "open", fixing: "fixing", fixed: "fixed", dossier: "dossier", wontfix: "deprecated" }
   return rec.items.filter((i: any) => i && /^D-\d+$/.test(String(i.id))).map((i: any): DeferredItem => {
@@ -719,7 +726,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       runnerLog: runner ? join(runsDir(), `${runKey}.runner.log`) : "",
       ...(() => {
         for (const x of deferredSources(log)) sources.set(`${repoName}/${x.src}/${x.item}`, f.id!)
-        const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log, readDeferredRecord(d.file, f.id!)) : { items: [], pr: "", branch: "" }
+        const pd = deferredSince(f.updated ?? "", runner) ? parseDeferred(log, readDeferredRecord(d.file, f.id!, d.main)) : { items: [], pr: "", branch: "" }
         let report = ""
         try { report = readFileSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`), "utf8") } catch { /* none */ }
         const deferred: Deferred = { items: withReport(pd.items, report), pr: pd.pr, report: report !== "", branch: pd.branch }
