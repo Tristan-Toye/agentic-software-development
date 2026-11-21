@@ -54,7 +54,7 @@ on or off; with the switch off nothing of this runs.
 
 For a repository whose kanban switch is on, every tick (auto work on or off) pulls work in plain queue order, no
 classes: a `planned` dossier whose `blocked_by` are all `done` gets /plan, a `ready` one with `delivery: kanban` (read
-from its front matter; absent = stub, except with the stub switch off, where every dossier is kanban) and all blockers
+from its front matter; absent = stub, also with the stub switch off: /plan labels every dossier kanban then) and all blockers
 `done` gets /work-on, each through the normal runner when no run of it is live. A started (dossier, command) is recorded in
 `<runs dir>/<repo>.kanban.json` and never started again by the pull (a failed run waits for the owner, no loop). Dossiers
 in the auto work cycle are left to it, and the cycle's frontier snapshot skips `delivery: kanban` dossiers. Finished
@@ -204,8 +204,9 @@ def kanban_ids(repo: str, root: str) -> set[str]:
     """The kanban dossiers of a repository whose kanban switch is on (empty otherwise: nothing changes by default)."""
     if not kanban_on(repo):
         return set()
-    every = not flows_of(repo)[0]   # stub off: every dossier is kanban
-    return {i for i, d in delivery_of(root).items() if every or d == "kanban"}
+    # Only a labelled dossier: /work-on and merge_dossier.py read `delivery: kanban` alone, so an unlabelled one pulled as
+    # kanban would be built and merged as stub, onto a stub no cycle integrates. /plan labels every dossier with only kanban on.
+    return {i for i, d in delivery_of(root).items() if d == "kanban"}
 
 
 def kanban_pull(repo: str, root: str, facts: dict) -> list[str]:
@@ -1324,8 +1325,8 @@ def kanban_selftest(check) -> None:
             check("a plan that made the dossier ready kanban is pulled into /work-on next", calls()[n:] == [f"runner K-3 --root {root} --command work-on"], calls()[n:])
             json.dump({repo: {"stub": False, "kanban": True}}, open(os.environ["ASD_DELIVERY_FLOWS"], "w"))
             n = len(calls()); tick_repo(repo, facts)
-            check("kanban only: a ready dossier without `delivery:` is kanban too (K-2, K-4 unblocked? no: K-4 is planned, blocked)",
-                  [l for l in calls()[n:] if l.startswith("runner")] == [f"runner K-2 --root {root} --command work-on"], calls()[n:])
+            check("kanban only: a ready dossier without `delivery:` is not pulled (/work-on and merge_dossier.py would treat it as stub)",
+                  not [l for l in calls()[n:] if l.startswith("runner")] and "K-2" not in kanban_ids(repo, root), calls()[n:])
             # the frontier snapshot
             runs_f = [run_("K-1", "ready"), run_("K-2", "ready"), run_("K-5", "building", runner={"state": "running", "command": "work-on"})]
             check("frontier: kanban dossiers are skipped (in flight too), others kept; default skips nothing",
