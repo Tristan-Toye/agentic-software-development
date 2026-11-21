@@ -83,6 +83,12 @@ check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "
   check("deferred record: the record wins over a ledger line, and log events still apply", layered.items.length === 2 && layered.items[0].title === "a.py:4 ignores 429" && layered.items[0].state === "fixed" && layered.items[0].note === "abc1234")
   check("deferred record: no record is null, and the log parse is the fallback", readDeferredRecord(join(dir, "dossiers", "W-8.md"), "W-8") === null && parseDeferred("- D-1 bug a — f:1 — low — x", null).items.length === 1)
   writeFileSync(join(dir, "deferred", "W-9.yaml"), JSON.stringify({ items: [], sources: ["own reads"] }))
+  {
+    const tri = parseDeferred(["- D-5 flake C.21 fails under load — f:1 — low — x", "- DEFERRED-TRIAGE: D-5 → direct — remove the timing dependence",
+      "- DEFERRED-ASKED: D-5 repo.W-162.Q2", "- DEFERRED-RULING: D-5 — owner chose C, leave open (no timing dependence found)",
+      "- DEFERRED-FIX: PR https://github.com/o/r/pull/614 — fixed 8, to dossier 0"].join("\n"), null).items[0]
+    check("deferred: a leave-open ruling after a direct triage puts the item back to open, kept open", tri.state === "open" && tri.keptOpen === true && /leave open/.test(tri.ruling ?? ""), tri)
+  }
   check("deferred record: items [] is an empty list, not a fallback", readDeferredRecord(join(dir, "dossiers", "W-9.md"), "W-9")?.length === 0)
   // The dossier read from a branch or another worktree: the record in the main checkout still counts (W-174, W-119).
   const mainCo = mkdtempSync(join(tmpdir(), "drmain-")); mkdirSync(join(mainCo, ".discovery", "deferred"), { recursive: true })
