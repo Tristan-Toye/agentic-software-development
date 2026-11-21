@@ -33,7 +33,6 @@ _URL_NUM = re.compile(r"https?://[^\s,\[\]]+?/pull/(\d+)")
 _URL = re.compile(r"https?://[^\s,\[\]]+?/pull/\d+")
 _BARE = re.compile(r"(?<![\w./])\d+(?![\w.])")
 _CANON = re.compile(r"\[\s*(?:https?://[^\s,\[\]]+/pull/\d+)(?:\s*,\s*https?://[^\s,\[\]]+/pull/\d+)*\s*\]")
-_PR_LINE = re.compile(r"^pr:[ \t]*(.*)$", re.M)
 
 
 def _strip_comment(value: str) -> str:
