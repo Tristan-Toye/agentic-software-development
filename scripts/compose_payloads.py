@@ -805,6 +805,14 @@ def ci_environment(root: str) -> str | None:
     return "\n".join(seen[k] for k in CI_ENV_KEYS)
 
 
+def checked_out_branch(root: str) -> str:
+    """The branch checked out in ROOT, or "" (not a git worktree, detached HEAD, git missing)."""
+    try:
+        out = subprocess.run(["git", "-C", root, "branch", "--show-current"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
 NO_KEY_SUBJECT = ("a conventional-commit subject with no ticket key and no dossier ID: `feat: <what>`, "
                   "`fix: <what>` or `chore: <what>`; the dossier ID is local and never appears in a commit")
 
@@ -859,7 +867,9 @@ def compose_implementer(ctx: dict) -> list[Field]:
         fields["CRITERIA"] = Field("CRITERIA", criteria, block=True)
     else:
         fields["WORKTREE_DIR"] = Field("WORKTREE_DIR", root)
-        fields["BRANCH"] = Field("BRANCH", branch)
+        # Fix mode works in the worktree as it is: its checked-out branch, which differs from the
+        # dossier's `branch:` in a /fix-deferred stack (fix/<ID>-deferred) — the implementer checks it.
+        fields["BRANCH"] = Field("BRANCH", checked_out_branch(root) or branch)
         if args.package:
             row = find_package_row(dossier_text, args.package)
             owned_paths = [p.strip() for p in row[1].split(",") if p.strip()]
@@ -2822,6 +2832,13 @@ def selftest() -> int:
         fx_text = read_text(fx_path) if rc == 0 else ""
         check("a --set field outside the kind's order is appended, not dropped",
               rc == 0 and fx_text.count("CRITERIA: one") == 1 and fx_text.count("SUPPORT: s") == 1, out)
+        # fix mode: BRANCH is the worktree's checked-out branch (a /fix-deferred stack), else `branch:`
+        gwt = tempfile.mkdtemp(prefix="cp-branch-")
+        subprocess.run(["git", "init", "-q", "-b", "fix/W-014-deferred", gwt], capture_output=True)
+        check("fix mode reads BRANCH from the checked-out branch; no repo falls back to `branch:`",
+              checked_out_branch(gwt) == "fix/W-014-deferred" and checked_out_branch(tempfile.gettempdir()) in ("",)
+              and "BRANCH: " in fx_text, fx_text[:300])
+        shutil.rmtree(gwt, ignore_errors=True)
         # --- #129: MODE fix TEST_COMMAND from the gates file ---
         fix_args = ["implementer", "--host", "opencode", "--hooks", "none", "--set", "MODE=fix", "--set", "CRS=CR-1: x"]
         rc, g0, out = run_compose("G0.md", fix_args)

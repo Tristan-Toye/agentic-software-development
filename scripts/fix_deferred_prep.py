@@ -511,6 +511,10 @@ def selftest() -> int:
         check("prep names the direct and ask items", "DIRECT: D-1" in text and "ASK: D-2 —" in text and "ASK: D-3 —" in text
               and "D-6" not in text, text)
         check("prep composed one payload", rc == 0 and "PAYLOADS:" in text and os.path.isfile(os.path.join(wt, ".agent-staging", "payloads", "fix-wave.json")), text)
+        pdir = os.path.join(wt, ".agent-staging", "payloads")
+        ptext = "".join(open(os.path.join(pdir, f)).read() for f in os.listdir(pdir) if not f.endswith(".json"))
+        check("the payload names the stacked branch, not the dossier's `branch:`",
+              "BRANCH: fix/W-9-deferred" in ptext and "BRANCH: feat/W-9" not in ptext, ptext[:400])
         log = open(find_dossier(wt, "W-9")).read()
         check("triage and branch lines are in the worktree's dossier log",
               "DEFERRED-TRIAGE: D-1 → direct — honour 429" in log and "DEFERRED-FIX: branch fix/W-9-deferred on stub @" in log, log)
