@@ -3418,7 +3418,9 @@ def already_built(root: str, dossier: str) -> str:
     """Why /work-on must not start: the dossier is in the merge queue, or has an open pull request and no build of its
     own to resume. Its status on development can still read `ready`: the record that says done is on its branch, not
     merged yet. Starting it anyway deadlocks an integration: the run waits for the stub, the stub waits for the merge,
-    and the merge waits for the run. "" when it may start, also when GitHub cannot be asked."""
+    and the merge waits for the run. Not built: a draft left by a build that RUNNER: REPLAN sent back, once its re-plan
+    finished (the newest record is that /plan run): the build was never finished, and /work-on picks it up again. "" when
+    it may start, also when GitHub cannot be asked."""
     repo = main_repo_name(root)
     queue = read_json(os.path.join(runs_dir(), f"{repo}.merge-queue.json"), {}) or {}
     if any(i.get("id") == dossier for i in queue.get("items") or []):
@@ -3426,14 +3428,18 @@ def already_built(root: str, dossier: str) -> str:
     prev = read_json(os.path.join(runs_dir(), f"{repo}.{dossier}.runner.json"), {}) or {}
     if prev.get("command") == "work-on" and prev.get("state") in ("running", "testing", "waiting", "paused", "queued", "stopped", "failed"):
         return ""
+    replanned = prev.get("command") == "plan" and was_built_before(os.path.join(runs_dir(), f"{repo}.{dossier}.jsonl"))
     try:
-        p = subprocess.run(shlex.split(os.environ.get("ASD_GH_BIN") or "gh") + ["pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName"],
+        p = subprocess.run(shlex.split(os.environ.get("ASD_GH_BIN") or "gh") + ["pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,isDraft"],
                            cwd=root, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
         prs = json.loads(p.stdout or "[]") if p.returncode == 0 else []
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return ""
     pat = re.compile(r"(^|[^A-Za-z0-9])" + re.escape(dossier) + r"(?![0-9])", re.I)
-    mine = [x["number"] for x in prs if pat.search(x.get("headRefName", "")) and not x["headRefName"].startswith(("plan/", "docs/"))]
+    mine = [x for x in prs if pat.search(x.get("headRefName", "")) and not x["headRefName"].startswith(("plan/", "docs/"))]
+    if replanned and all(x.get("isDraft") for x in mine):
+        return ""
+    mine = [x["number"] for x in mine]
     return f"{dossier} is already built: pull request " + ", ".join(f"#{n}" for n in mine) + " is open" if mine else ""
 
 
@@ -4425,6 +4431,18 @@ def selftest() -> int:
         write_json(os.path.join(rdir, "repo.W-78.runner.json"), {"state": "stopped", "command": "work-on", "pid": 0})
         check("work-on: its own stopped build can still be resumed", already_built_for_test(root, "W-78", env) == "")
         os.remove(os.path.join(rdir, "repo.W-78.runner.json"))
+        write_json(os.path.join(rdir, "repo.W-78.runner.json"), {"state": "done", "command": "plan", "pid": 0})
+        with open(os.path.join(rdir, "repo.W-78.jsonl"), "w") as fh:
+            fh.write("".join(json.dumps({"kind": "runner", "text": f"start /{c} W-78 in {root}"}) + "\n" for c in ("work-on", "plan")))
+        check("work-on: a ready (not draft) PR still refuses after a re-plan", "#427" in already_built_for_test(root, "W-78", env))
+        with open(os.path.join(fdir, "gh_prs.py"), "w") as fh:
+            fh.write("import json\nprint(json.dumps([{'number': 427, 'headRefName': 'feat/W-78-x', 'isDraft': True}]))\n")
+        check("work-on: the draft of a build sent back to /plan does not refuse its requeue", already_built_for_test(root, "W-78", env) == "")
+        with open(os.path.join(rdir, "repo.W-78.jsonl"), "w") as fh:
+            fh.write(json.dumps({"kind": "runner", "text": f"start /plan W-78 in {root}"}) + "\n")
+        check("work-on: a draft PR refuses after a plain /plan run", "#427" in already_built_for_test(root, "W-78", env))
+        for f in ("repo.W-78.runner.json", "repo.W-78.jsonl"):
+            os.remove(os.path.join(rdir, f))
         env.pop("ASD_GH_BIN")
         scenario([{"hang": True, "turns": []}])
         p = start("W-71")
