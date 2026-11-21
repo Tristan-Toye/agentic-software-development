@@ -130,10 +130,12 @@ export function parseDeferred(log: string, record: DeferredItem[] | null = null)
       const did = ru[1] ?? asked.get(ru[3] ?? "") ?? (ru[4] ?? "").match(/\bD-\d+\b/)?.[0]
       const text = (ru[2] ?? ru[4] ?? "").replace(/^D-\d+\s*/, "").trim()
       const it = did ? items.get(did) : undefined
-      if (it && it.state === "open") {
+      // An item the run already triaged as a direct fix (`fixing`) can still be ruled on: /fix-deferred asks when it
+      // cannot prove a fix, and a "leave it open" ruling then puts it back to open (W-162 D-5 read fixing for good).
+      if (it && (it.state === "open" || it.state === "fixing")) {
         it.ruling = text
         // "stays open" / "leave it open" keeps the item for later; any other ruling sets the run to work on it.
-        if (/\b(stays? open|leave (?:it )?open|left open|keep (?:it )?open|not now|later)\b/i.test(text)) it.keptOpen = true
+        if (/\b(stays? open|leave (?:it )?open|left open|keep (?:it )?open|not now|later)\b/i.test(text)) { it.keptOpen = true; it.state = "open"; it.note = "" }
         else { it.state = "fixing"; it.note = `your ruling: ${text}` }
       }
       continue
