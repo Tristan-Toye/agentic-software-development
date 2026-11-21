@@ -1229,6 +1229,23 @@ def slot_census_by_repo(me: str) -> tuple[dict[str, int], list[tuple[tuple[int, 
     return held, sorted(queued)
 
 
+def slot_overflow(me: str) -> int:
+    """Live runs other than `me` that went back to work over the cap (`over_cap`, set by refresh_testing): they took a
+    slot a reserved repo was owed, so that repo's first run does not wait on them (slot_admission's `over`)."""
+    try:
+        names = [n for n in os.listdir(runs_dir()) if n.endswith(".runner.json")]
+    except OSError:
+        return 0
+    n_over = 0
+    for n in names:
+        if n[: -len(".runner.json")] == me:
+            continue
+        st = read_json(os.path.join(runs_dir(), n), {}) or {}
+        if st.get("state") == "running" and st.get("over_cap") and alive(st.get("pid")):
+            n_over += 1
+    return n_over
+
+
 def slot_census(me: str) -> tuple[int, list[tuple[tuple[int, str], str]]]:
     """(runs holding a slot, [(queue_order, key)] of runs waiting for one), other than `me`, live pids only."""
     held, queued = slot_census_by_repo(me)
@@ -1288,16 +1305,18 @@ def reserved_repos() -> set[str]:
 
 
 def slot_admission(repo: str, cap: int, held_by_repo: dict[str, int], queued: list[tuple[tuple[int, str], str]],
-                   mine: tuple[int, str] | None, reserved: set[str]) -> tuple[bool, str]:
+                   mine: tuple[int, str] | None, reserved: set[str], over: int = 0) -> tuple[bool, str]:
     """(admit, how) for a run of `repo`; `how` is "reserved", "shared" or the reason it waits. `queued` excludes the run.
-    - repo reserved and holding no slot: admitted when held < cap (at least `len(reserved)` slots count, so with a cap not
-      above the reservations each reserved repo still runs one); only the repo's first queued run takes it;
+    - repo reserved and holding no slot: admitted when held - over < cap (at least `len(reserved)` slots count, so with a
+      cap not above the reservations each reserved repo still runs one); only the repo's first queued run takes it.
+      `over` counts the runs that came back from testing over the cap (slot_overflow): a returning run cannot queue (its
+      session is mid-turn), so it borrows the slot, and the reserved repo it was owed to still starts;
     - otherwise admitted when held + (other reserved repos holding no slot) < cap and nobody is ahead in the shared queue."""
     held = sum(held_by_repo.values())
     idle = sorted(r for r in reserved if r != repo and not held_by_repo.get(r))
     if repo in reserved and not held_by_repo.get(repo):
         ahead_own = [k for o, k in queued if mine and o < mine and repo_of_key(k) == repo]
-        if held < max(cap, len(reserved)) and not ahead_own:
+        if held - over < max(cap, len(reserved)) and not ahead_own:
             return True, "reserved"
         return False, f"waiting for the reserved slot of {repo}" + (" (an earlier run of this repo goes first)" if ahead_own else "")
     ahead = [k for o, k in queued if mine and o < mine]
@@ -1798,14 +1817,14 @@ class Runner:
             held = sum(held_by.values())
             reserved = reserved_repos()
             repo = repo_of_key(self.key)
-            ok, how = slot_admission(repo, cap, held_by, queued, mine, reserved)
+            ok, how = slot_admission(repo, cap, held_by, queued, mine, reserved, slot_overflow(self.key))
             if ok:
                 if mine:
                     self.event(f"{'disk has room' if low_said else 'slot free'}; {held + 1} of {cap} runs working"
                                + (f"; using the reserved slot of {repo}" if how == "reserved" else ""), "running")
                 if rehome:
                     self.rehome_account()
-                self.save(state="running", queued_since=None, queued_first=None)
+                self.save(state="running", queued_since=None, queued_first=None, over_cap=None)
                 self.ka_since = None
                 return True
             if not mine:
@@ -2243,11 +2262,28 @@ class Runner:
             return
         why = self.blocked_on()
         if why and cur == "running":
-            self.save(state="testing")
+            self.save(state="testing", over_cap=None)
             self.event(f"session waits on `{why}`; slot released while it tests", "testing")
         elif not why and cur == "testing":
-            self.save(state="running")
-            self.event("the wait ended; the run works again (no queue; the cap may be briefly exceeded)", "running")
+            owed = self.return_over_cap()
+            self.save(state="running", over_cap=bool(owed) or None)
+            self.event("the wait ended; the run works again" + (
+                f" over the cap, on a slot reserved for {', '.join(owed)}; a run of that repo still starts"
+                if owed else " (no queue; the cap may be briefly exceeded)"), "running")
+
+    def return_over_cap(self) -> list[str]:
+        """The reserved repos (other than this run's) holding no slot, when this run coming back from testing takes a
+        slot they are owed: the others' held slots plus those reservations already reach the cap. [] otherwise."""
+        try:
+            cap, _ = slot_cap()
+            if cap == 0:
+                return []
+            held_by, _ = slot_census_by_repo(self.key)
+            repo = repo_of_key(self.key)
+            idle = sorted(r for r in reserved_repos() if r != repo and not held_by.get(r))
+            return idle if idle and sum(held_by.values()) + len(idle) >= cap else []
+        except Exception:
+            return []
 
     def stalled(self) -> bool:
         """True when the session is wedged: mid-turn, running, and no stream-json output for ASD_STALL_MIN minutes
@@ -3814,6 +3850,10 @@ def selftest_reserved(check) -> None:
         check("reserved: ...the shared pool is empty", not slot_admission("x", 3, {"a": 1, "b": 1, "c": 1}, [], None, res)[0]
               and not slot_admission("x", 2, {"a": 1}, [], None, res)[0])
         check("reserved: ...and a second run of a running reserved repo does not take a reserved slot", not slot_admission("a", 2, {"a": 1, "b": 1}, [], None, res)[0])
+        check("reserved: a run back from testing over the cap does not keep the reserved repo waiting",
+              slot_admission("a", 3, {"x": 3}, [], None, {"a"}, over=1) == (True, "reserved")
+              and not slot_admission("a", 3, {"x": 3}, [], None, {"a"})[0])
+        check("reserved: ...but the over-cap run still counts for the shared pool", not slot_admission("x", 3, {"x": 3}, [], None, {"a"}, over=1)[0])
         check("reserved: repo_of_key reads the repo off a run key", repo_of_key("my.repo.W-9") == "my.repo" and repo_of_key("r.W-9.plan-D-2") == "r")
         # the CLI writes the file (a temp one)
         os.environ["ASD_ACTIVE_REPOS_FILE"] = os.path.join(tmp, "cli.json")
