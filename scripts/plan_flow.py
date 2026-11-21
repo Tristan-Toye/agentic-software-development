@@ -56,7 +56,7 @@ blocks into members and keeps one sha256 per member (whitespace normalised).
 `re-review: <list>` or `re-review: none` (`re-review: all (no stored hashes)`
 when nothing was stored).
 
-refresh (P8 and the start of /work-on). Compares the front-matter
+refresh (P8, and the start of /work-on for a `flow: 2` dossier). Compares the front-matter
 `baseline_commit` with REF (default HEAD): `anchor gone <path:line>`,
 `anchor moved? <path:line>`, `contract target changed <path>: <names>`
 (exit 3), else `refresh: clean`; `refresh: no baseline_commit` (exit 0) when

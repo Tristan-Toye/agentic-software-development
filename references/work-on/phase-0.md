@@ -64,8 +64,8 @@ returning `/plan` run finds the note and no later `/work-on` run resumes a
 dossier whose plan was found wrong — never a reason to silently re-plan
 inline.
 
-**Refresh the contract target — a `ready` dossier, before the claim.** The
-code may have moved since `/plan` checked it. Run, in this checkout (a
+**Refresh the contract target — a `ready` dossier with `flow: 2`, before the
+claim.** The code may have moved since `/plan` checked it. Run, in this checkout (a
 `plan-branch=` build: pass the path of the copy you read from that branch,
 written to a scratch file, in place of the ID):
 
@@ -86,8 +86,9 @@ python3 ${PLUGIN_ROOT}/scripts/plan_flow.py refresh --root <this checkout> \
   `RUNNER: REPLAN contract target changed — <paths>`: the runner starts the
   re-plan itself. Interactively, tell the user to run `/plan W-NNN`.
 
-The refresh runs only on a `ready` dossier (a fresh build); a resume
-(`building`, `review`) is past it.
+The refresh runs only on a `ready` dossier with `flow: 2` in its front matter
+(a fresh build planned by the v9 flow). A dossier without `flow: 2` skips it
+and builds as before; a resume (`building`, `review`) is past it.
 
 **Claim it.** Write `updated` and set `status: building` now, before any other
 write. Check `worktree` and `branch` in the front matter: if they are already
