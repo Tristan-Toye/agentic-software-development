@@ -190,6 +190,7 @@ function when(ts, prefix) { if (!ts || !Date.parse(ts)) return null; return h('t
 const kfmt = (n) => n >= 1000 ? Math.round(n / 1000) + 'k' : String(n);
 const TONE = { planned: 'neutral', ready: 'info', building: 'info', review: 'warn', pr: 'warn', done: 'ok', dropped: 'neutral', running: 'info', testing: 'info', waiting: 'warn', queued: 'neutral', failed: 'bad', stopped: 'bad', gap: 'warn', 'contract-change': 'warn', unknown: 'neutral',
   accepting: 'info', integrating: 'warn', merged: 'ok', blocked: 'bad', green: 'ok', red: 'bad', pending: 'warn', open: 'warn' };
+function laneChip(r) { return r && r.delivery === 'kanban' ? h('span', { class: 'chip info', title: 'Kanban lane: small fix, proven by CI only' }, ['kanban']) : null; }
 function chip(text, kind, extra) { return h('span', { class: 'chip ' + (TONE[kind || text] || '') + (extra ? ' ' + extra : '') }, [text]); }
 /* A stub's PR being open says nothing about whether anything is working on it. */
 function stubChip(s) { return s.stopped ? h('span', { title: s.stoppedWhy || 'Nothing is working on it. Integrate or Resume /stub picks it up again.' }, [chip('integration stopped', 'blocked')]) : chip(s.phase || s.state, s.state); }
@@ -628,7 +629,7 @@ function vrBuild(host, key, data) {
 }
 
 // ---- state ----
-const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {}, auto: {} };
+const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {}, auto: {}, flows: {} };
 let R = { kind: 'home' };
 let routeSig = '';
 let scrollTarget = '';
@@ -828,6 +829,7 @@ function runningView() {
     if (r.agents && r.agents.running) right.push(h('span', { class: 'chip fixing' }, [h('span', { class: 'dot info live' }), r.agents.running + ' agent' + (r.agents.running === 1 ? '' : 's')]));
     if (r.session && r.session.context && r.runner.state === 'running') right.push(chip('context ' + kfmt(r.session.context), 'neutral'));
     if (nq) right.push(h('span', { class: 'qb' }, ['? ' + nq]));
+    if (laneChip(r)) right.push(laneChip(r));
     if (r.blocked) right.push(chip('⛔ ' + r.blocked + ' blocked', 'blocked'));
     return h('a', { class: 'srow', href: hrefItem(r.repo, r.id), 'data-k': 'run:' + r.repo + '/' + r.id }, [h('span', { class: 'sid mono' }, [r.id]),
       h('span', { class: 'sname' }, [h('span', {}, [r.title]), h('span', { class: 'small mut rsub' }, [rlabel(r.repo) + ' · ' + (stageText(r) || 'starting') + (last ? ' · ' : ''), last ? when(last.ts, 'last update ') : null]), nowLine(r)]),
@@ -893,6 +895,7 @@ function subItem(repo, id, noPr, done, ttl) {
   if (st) kids.push(chip(st, done ? 'done' : 'neutral'));
   if (!done && isLive(r)) kids.push(h('span', { class: 'dot info live', title: 'running' }));
   if (noPr) kids.push(chip('no PR yet', 'neutral'));
+  if (laneChip(r)) kids.push(laneChip(r));
   if (nq.length) kids.push(h('span', { class: 'qb', title: nq.length + ' open question(s)' }, ['? ' + nq.length]));
   return h('li', { 'data-k': 'sub:' + repo + '/' + id }, [h('a', { class: 'sub-item' + (done ? ' done' : ''), href: hrefItem(repo, id) }, kids)]);
 }
@@ -959,6 +962,7 @@ function stubRow(repo, id, o) {
   if (o.noPr && !(r && !o.working && (r.status === 'done' || r.status === 'pr'))) right.push(chip('no PR yet', 'neutral'));
   if (r && r.deferredUndecided) right.push(h('span', { class: 'chip', title: r.deferredUndecided + ' deferred item(s) waiting on your decision' }, [r.deferredUndecided + ' deferred']));
   if (nq.length) right.push(h('span', { class: 'qb', title: nq.length + ' open question(s)' }, ['? ' + nq.length]));
+  if (laneChip(r)) right.push(laneChip(r));
   return h('a', { class: 'srow' + (o.merged ? ' done' : ''), href: hrefItem(repo, id), 'data-k': 'srow:' + repo + '/' + id, title: id + (title ? ' · ' + title : '') },
     [h('span', { class: 'sid mono' }, [id]), h('span', { class: 'sname' }, [title || '—']), h('span', { class: 'sright' }, right)]);
 }
@@ -1097,6 +1101,24 @@ async function autoWorkAct(btn) {
   const d = await fetchJ('/api/autowork'); if (d && d.repos) { S.auto = {}; d.repos.forEach(v => { S.auto[v.repo] = v; }); }
   render();
 }
+/* Delivery flows: per repository two switches, stub and kanban (never both off). Written by the dashboard to ~/.agentic/delivery-flows.json. */
+function flowsView(repo) {
+  const v = S.flows[repo]; if (!v) return null;
+  const busy = S.ctl['fl:' + repo] && S.ctl['fl:' + repo].busy;
+  const btn = (flow, label, title) => h('button', { class: 'btn sm' + (v[flow] ? '' : ' primary'), type: 'button', 'data-act': 'fl-act', 'data-flow': flow, 'data-on': v[flow] ? '0' : '1', 'data-repo': repo, disabled: busy ? true : null, title }, [label + ': ' + (v[flow] ? 'on, turn off' : 'off, turn on')]);
+  const kids = [h('div', { class: 'sechd' }, [h('h2', {}, ['Delivery flows']), h('span', { class: 'small mut' }, [v.stub && v.kanban ? 'stub and kanban' : v.kanban ? 'kanban only' : 'stub only']), h('span', { class: 'grow' }),
+    btn('stub', 'Stub flow', 'The weekly stub with the full local-stack proof. At least one flow stays on.'),
+    btn('kanban', 'Kanban flow', 'Small fixes proven by CI only, no stub. With both on, /plan decides per dossier. At least one flow stays on.')])];
+  if (S.ctl['fl:' + repo] && S.ctl['fl:' + repo].msg) kids.push(h('div', { class: 'err' }, [S.ctl['fl:' + repo].msg]));
+  return h('section', { class: 'sec', 'data-k': 'sec:flows' }, kids);
+}
+async function flowsAct(btn) {
+  const repo = btn.dataset.repo, key = 'fl:' + repo; S.ctl[key] = { busy: true }; render();
+  const r = await fetch('/api/delivery-flows', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ repo, flow: btn.dataset.flow, on: btn.dataset.on === '1' }) }).then(x => x.json()).catch(() => ({ error: 'request failed' }));
+  S.ctl[key] = (r && (r.error || r.ok === false)) ? { msg: r.error || 'failed' } : {};
+  const d = await fetchJ('/api/delivery-flows'); if (d && d.repos) { S.flows = {}; d.repos.forEach(v => { S.flows[v.repo] = v; }); }
+  render();
+}
 function repoView(repo) {
   const rs = S.runs.filter(r => r.repo === repo); const prog = rs.filter(inProgress); const os = openStubs(repo);
   const ow = (S.stubs.openWork || []).find(o => o.repo === repo); const oq = S.q.filter(q => q.state === 'open' && qRepo(q) === repo).sort((a, b) => a.ts.localeCompare(b.ts));
@@ -1106,6 +1128,7 @@ function repoView(repo) {
   // The stubs (the current one and the next) first, then Open work, each full width, one under the other.
   kids.push(sideColumn(repo));
   const aw = autoWorkView(repo); if (aw) kids.push(aw);
+  const fv = flowsView(repo); if (fv) kids.push(fv);
   const dp = docPrsView(repo); if (dp) kids.push(dp);
   const vm = vrRepoLink(repo); if (vm) kids.push(vm);
   kids.push(h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]));
@@ -1578,6 +1601,7 @@ async function load(what) {
   if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.refreshing = !!d.refreshing; S.accounts = d.accounts || []; S.disk = d.disk || null; S.plans = d.plans || []; S.usageBusy = !!d.usageBusy; } }));
   if (all || w.has('stubs') || w.has('scan')) jobs.push(fetchJ('/api/stubs').then(d => { if (d && d.repos) S.stubs = d; }));
   if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/autowork').then(d => { if (d && d.repos) { S.auto = {}; d.repos.forEach(v => { S.auto[v.repo] = v; }); } }));
+  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/delivery-flows').then(d => { if (d && d.repos) { S.flows = {}; d.repos.forEach(v => { S.flows[v.repo] = v; }); } }));
   if ((all || w.has('chat')) && R.kind === 'chat') jobs.push(loadChat());
   await Promise.all(jobs);
   await loadDetail();
@@ -1717,6 +1741,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'stub-ctl') stubCtl(t);
     else if (act === 'docprs-merge' || act === 'docprs-refresh') docPrsAct(t, act);
     else if (act === 'aw-act') autoWorkAct(t);
+    else if (act === 'fl-act') flowsAct(t);
     else if (act === 'merge-plan' || act === 'merge-go' || act === 'merge-cancel' || act === 'merge-unqueue') mergeAct(t, act);
     else if (act === 'summary') writeSummary(t);
     else if (act === 'blk') ruleBlock(t);

@@ -29,6 +29,7 @@ import { readAccounts, usageDir } from "./accounts.ts"
 import { mergeDetectorEnabled, nextMerges, readMergeSeen, writeMergeSeen, type MergedPr } from "./merges.ts"
 import { sh } from "./runs.ts"
 import { enableScanWorker } from "./scanpool.ts"
+import { flowViews, setFlow } from "./deliveryflows.ts"
 import { argvFor, buildFacts, markMerged, runAutoWork, tickAutoWork, viewsFor } from "./autowork.ts"
 import { logBlock } from "../claude/permission-denied.ts"
 
@@ -686,6 +687,16 @@ export async function handle(req: Request): Promise<Response> {
     const r = await runAutoWork(argv)
     emitChange("runs")
     return json({ ok: r.ok, output: r.output }, r.ok ? 200 : 409)
+  }
+  if (req.method === "GET" && path === "/api/delivery-flows") return json({ repos: flowViews(viewsFor((await getRunsA()).runs).map((v) => v.repo)) })
+  if (req.method === "POST" && path === "/api/delivery-flows") {
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const b = await req.json().catch(() => ({})) as { repo?: string; flow?: string; on?: boolean }
+    if (!viewsFor((await getRunsA(true)).runs).some((x) => x.repo === b.repo)) return json({ error: "no such repository" }, 404)
+    const r = setFlow(String(b.repo), String(b.flow), b.on === true)
+    if (r.ok) emitChange("runs")
+    return json(r, r.ok ? 200 : 409)
   }
   if (req.method === "POST" && path === "/api/stub/control") {
     const origin = req.headers.get("origin")
