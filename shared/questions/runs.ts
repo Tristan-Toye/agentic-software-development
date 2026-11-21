@@ -15,7 +15,7 @@ export const STATUSES = ["planned", "ready", "building", "review", "pr", "done",
 const TAIL = 256 * 1024
 const HEAD = 64 * 1024
 
-export type Front = { pr?: string; id?: string; title?: string; status?: string; branch?: string; jira?: string; updated?: string; created?: string; blocked_by?: string }
+export type Front = { pr?: string; id?: string; title?: string; status?: string; branch?: string; jira?: string; updated?: string; created?: string; blocked_by?: string; delivery?: string }
 export type Session = { state: "active" | "idle" | "none"; lastTs: string; context: number; requests: number; requestsExact: boolean; activity?: Activity }
 /**
  * What the orchestrator is doing right now, from its transcript: the tool call still in flight (`doing`, with the
@@ -32,6 +32,8 @@ export type Run = {
   session: Session; pr: Pr | null; questions: string[]; answered: QA[]
   running: boolean; summary: string; updates: Update[]; runner: RunnerState | null
   main: string; blockedBy: string[]; controls: Controls; view: "run" | "dossier"
+  /** Delivery lane from the dossier front matter (`kanban`); empty for the stub flow. */
+  delivery?: string
   deferred: Deferred; deferredOpen: number; runnerLog: string
   /** The key of the run shown for this dossier: `<repo>.<ID>`, or the /plan run of the deferred item it comes from. */
   runKey?: string
@@ -724,7 +726,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
       repo: repoName, repoLabel: repoLabel(d.main), root: d.worktree, worktree: wt, file: d.file,
       phase, phaseName: phaseNameOf(PHASE_NAMES, phase), lastActivity: lastLine(log), logLines: Math.max(0, logLength(d.text)), session, pr, questions: qs, answered: [],
       running: isRunning(status) || runnerActive(runner), summary: summaryOf(d.text), updates: readUpdates(runKey), runner, runKey,
-      main, blockedBy: blockedByOf(f.blocked_by), controls: controlsFor({ status, blockedBy: blockedByOf(f.blocked_by), runner }, () => undefined), view: "dossier",
+      main, delivery: f.delivery === "kanban" ? "kanban" : "", blockedBy: blockedByOf(f.blocked_by), controls: controlsFor({ status, blockedBy: blockedByOf(f.blocked_by), runner }, () => undefined), view: "dossier",
       runnerLog: runner ? join(runsDir(), `${runKey}.runner.log`) : "",
       ...(() => {
         for (const x of deferredSources(log)) sources.set(`${repoName}/${x.src}/${x.item}`, f.id!)

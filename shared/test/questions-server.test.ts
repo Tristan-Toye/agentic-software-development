@@ -1,6 +1,6 @@
 // Owner-questions server: store, API, page and the Slack envelope handlers (no network, no Slack).
 // Run: bun --no-install shared/test/questions-server.test.ts
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, realpathSync, utimesSync } from "node:fs"
+import { mkdtempSync, existsSync, readdirSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, realpathSync, utimesSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
@@ -18,6 +18,7 @@ import { mergeTimeline, parseRecord, logEntries, classify, groupByPhase, nowPane
 import { blockedByOf, controlsFor, runTarget } from "../questions/controls.ts"
 import { readAccounts } from "../questions/accounts.ts"
 import { execFileSync } from "node:child_process"
+import { flowsOf, flowViews, setFlow } from "../questions/deliveryflows.ts"
 import { argvFor, autoWorkOn, buildFacts, eagerMergeOn, factsOn, markMerged, readAutoState, viewsFor } from "../questions/autowork.ts"
 
 let failed = 0
@@ -773,7 +774,7 @@ const cdir = mkdtempSync(join(tmpdir(), "chat-"))
 const fakeClaude = join(cdir, "claude.sh")
 writeFileSync(fakeClaude, `#!/bin/sh\necho "$*" >> ${cdir}/argv\nq=$(cat)\nprintf '{"result":"**echo:** %s"}\\n' "$q"\n`, { mode: 0o755 })
 const proc = Bun.spawn(["/opt/homebrew/bin/bun", "--no-install", join(import.meta.dir, "..", "questions", "server.ts")], {
-  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_DISK_WATCH: "0", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: `${repoA}:${repoB}:${repoC}`, ASD_OPEN_WORK_DIR: odir, ASD_RUNS_DIR: runsDir, ASD_CLAUDE_PROJECTS: projects, ASD_RUNS_NO_GH: "1", ASD_RUNNER_BIN: fakeRunner, ASD_FAKE_ARGV: argvLog, ASD_BLOCK_LOG: blockLog, ASD_CLAUDE_BIN: fakeClaude, ASD_CHAT_DIR: join(cdir, "chats"), ASD_DM_AGENT_FILE: join(cdir, "dm-agent.json") },
+  env: { ...process.env, ASD_QUESTIONS_DIR: sdir, ASD_QUESTIONS_PORT: "0", ASD_QUESTIONS_NO_NOTIFY: "1", ASD_DISK_WATCH: "0", ASD_QUESTIONS_NO_SLACK: "1", ASD_SLACK_USER: "", ASD_RUNS_ROOTS: `${repoA}:${repoB}:${repoC}`, ASD_OPEN_WORK_DIR: odir, ASD_RUNS_DIR: runsDir, ASD_CLAUDE_PROJECTS: projects, ASD_RUNS_NO_GH: "1", ASD_RUNNER_BIN: fakeRunner, ASD_FAKE_ARGV: argvLog, ASD_BLOCK_LOG: blockLog, ASD_CLAUDE_BIN: fakeClaude, ASD_CHAT_DIR: join(cdir, "chats"), ASD_DM_AGENT_FILE: join(cdir, "dm-agent.json"), ASD_DELIVERY_FLOWS: join(cdir, "flows.json"), ASD_ACTIVE_REPOS_FILE: join(cdir, "no-active-repos.json") },
   stdout: "pipe", stderr: "pipe",
 })
 const reader = proc.stdout.getReader()
@@ -814,6 +815,15 @@ try {
   const r10 = rv.runs.find((r: any) => r.id === "W-10"), r9 = rv.runs.find((r: any) => r.id === "W-9")
   check("server: a ready dossier with a waiting runner is running, with its updates and summary", r10?.running === true && r10.runner?.state === "waiting" && r10.updates[0]?.text === "ten started" && r10.summary === "Ten paragraph." && r7.running === true && r9.running === false && r9.repo === "repoC", JSON.stringify(r10).slice(0, 300))
   check("server: stage carries the phase name", r7.phaseName === pn["4"])
+  const fp = (body: unknown) => fetch(`${base}/api/delivery-flows`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+  const f0: any = await (await fetch(`${base}/api/delivery-flows`)).json()
+  check("server: GET /api/delivery-flows lists the repos, stub on and kanban off by default", f0.repos?.length >= 2 && f0.repos.every((v: any) => v.stub === true && v.kanban === false), JSON.stringify(f0))
+  const f1 = await fp({ repo: "repoB", flow: "kanban", on: true })
+  const f2: any = await (await fetch(`${base}/api/delivery-flows`)).json()
+  check("server: POST turns kanban on for that repo only", f1.status === 200 && f2.repos.find((v: any) => v.repo === "repoB").kanban === true && f2.repos.filter((v: any) => v.kanban).length === 1, JSON.stringify(f2))
+  const f3 = await fp({ repo: "repoA", flow: "stub", on: false })
+  check("server: the last flow off is 409 with a message; an unknown repo is 404", f3.status === 409 && /at least one flow/.test(((await f3.json()) as any).error) && (await fp({ repo: "nope", flow: "stub", on: true })).status === 404)
+  check("server: a foreign origin is refused", (await fetch(`${base}/api/delivery-flows`, { method: "POST", headers: { "content-type": "application/json", origin: "http://evil.example" }, body: JSON.stringify({ repo: "repoA", flow: "kanban", on: true }) })).status === 403)
   check("server: answered questions link to their dossier in /api/runs", rv.runs.find((r: any) => r.id === "W-1") === undefined)
   const sv: any = await (await fetch(`${base}/api/stubs`)).json()
   const c = sv.repos?.find((x: any) => x.repo === "repoC")?.stubs?.[0]
@@ -1038,7 +1048,10 @@ try {
   check("auto work: only auto_work turns it on (the scripted stub merge alone does not)", !autoWorkOn("r", sw) && autoWorkOn("on", sw))
   writeFileSync(sw, JSON.stringify({ e: { eager_merge: true }, on: { auto_work: true, enabled: true }, off: { eager_merge: false } }))
   check("eager merge: its own switch, on unless turned off; it sends the repository's facts to the script with auto work off, and does not turn auto work on",
-    eagerMergeOn("e", sw) && !autoWorkOn("e", sw) && factsOn("e", sw) && factsOn("on", sw) && !eagerMergeOn("off", sw) && !factsOn("off", sw) && eagerMergeOn("none", sw) && factsOn("none", sw))
+    eagerMergeOn("e", sw) && !autoWorkOn("e", sw) && factsOn("e", sw) && factsOn("on", sw) && !eagerMergeOn("off", sw) && !factsOn("off", sw, join(dir, "no-flows.json")) && eagerMergeOn("none", sw) && factsOn("none", sw))
+  writeFileSync(join(dir, "kflows.json"), JSON.stringify({ off: { stub: true, kanban: true } }))
+  check("kanban: a repository with only its kanban flow on still sends its facts (the kanban pull runs on that switch alone)",
+    factsOn("off", sw, join(dir, "kflows.json")) && !factsOn("off", sw, join(dir, "no-flows.json")) && !eagerMergeOn("off", sw) && !autoWorkOn("off", sw))
   writeFileSync(sw, JSON.stringify({ r: { enabled: true }, on: { auto_work: true, enabled: true } }))
   const run = (repo: string, id: string, status: string, extra: any = {}) => ({ repo, root: "/x/" + repo, id, status, blockedBy: [], runner: null, deferred: { items: [] }, ...extra })
   const facts = buildFacts(
@@ -1066,6 +1079,20 @@ try {
   const views = viewsFor([run("on", "A", "ready"), run("on", "B", "ready"), run("off", "C", "ready")], (r) => r === "on", (r) => readAutoState(r, dir))
   check("auto work: one view per repository with its switch and state", views.length === 2 && views[0].on && views[0].state?.cycle === 2 && !views[1].on && views[1].state === null)
   check("auto work: the route's actions are the four buttons and nothing else", argvFor("enable", "/r")?.slice(-3).join(" ") === "--enable --root /r" && argvFor("resume", "/r") !== null && argvFor("start-now", "/r") !== null && argvFor("disable", "/r") !== null && argvFor("rm -rf", "/r") === null)
+  const fl = join(dir, "flows.json"), prev = process.env.ASD_DELIVERY_FLOWS
+  process.env.ASD_DELIVERY_FLOWS = fl
+  check("flows: a missing file or repo is stub on, kanban off; ASD_DELIVERY_FLOWS names the file", JSON.stringify(flowsOf("r")) === '{"stub":true,"kanban":false}' && !existsSync(fl))
+  const k = setFlow("r", "kanban", true)
+  check("flows: turning kanban on writes only that repo, stub stays on", k.ok && JSON.stringify(flowsOf("r")) === '{"stub":true,"kanban":true}' && Object.keys(JSON.parse(readFileSync(fl, "utf8"))).join() === "r" && flowsOf("other").kanban === false)
+  check("flows: stub off with kanban on is kanban only", setFlow("r", "stub", false).ok && JSON.stringify(flowsOf("r")) === '{"stub":false,"kanban":true}')
+  const bad = setFlow("r", "kanban", false)
+  check("flows: turning the last flow off is refused and the file is unchanged", !bad.ok && /at least one flow/.test(bad.error!) && JSON.stringify(flowsOf("r")) === '{"stub":false,"kanban":true}')
+  check("flows: both off in the file reads as stub on; an unknown flow is refused", (writeFileSync(fl, JSON.stringify({ r: { stub: false, kanban: false }, keep: { stub: true, kanban: true } })), flowsOf("r").stub && !flowsOf("r").kanban) && !setFlow("r", "x", true).ok)
+  setFlow("r", "kanban", true)
+  check("flows: other repos' entries survive a write, no tmp file stays", JSON.parse(readFileSync(fl, "utf8")).keep.kanban === true && readdirSync(dir).every((n) => !n.endsWith(".tmp")) && flowViews(["r", "z"]).length === 2)
+  writeFileSync(fl, "{torn")
+  check("flows: an unreadable file reads as the defaults and is never overwritten", flowsOf("r").stub && !setFlow("r", "kanban", true).ok && readFileSync(fl, "utf8") === "{torn")
+  if (prev === undefined) delete process.env.ASD_DELIVERY_FLOWS; else process.env.ASD_DELIVERY_FLOWS = prev
   rmSync(dir, { recursive: true, force: true })
 }
 console.log(failed ? `FAIL (${failed})` : "PASS (all cases)")

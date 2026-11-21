@@ -54,7 +54,7 @@ function brief(r: any): any {
   const rn = r.runner || {}
   const note = (r.updates || []).find((u: any) => !u.auto && u.kind === "update" && u.event !== "owner-message")
   return {
-    repo: r.repo, id: r.id, title: clip(r.title, 90), status: r.status,
+    repo: r.repo, id: r.id, title: clip(r.title, 90), status: r.status, delivery: r.delivery || undefined,
     run: rn.state ? `${rn.state}${rn.command ? " · " + rn.command : ""}${rn.account ? " · account " + rn.account : ""}` : undefined,
     phase: r.phase && r.phase !== "plan" ? `${r.phase}${r.phaseName ? " · " + r.phaseName : ""}` : undefined,
     pr: r.pr ? `#${r.pr.number} ${r.pr.state}` : undefined,
