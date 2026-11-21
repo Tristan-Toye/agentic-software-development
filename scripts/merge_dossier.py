@@ -21,6 +21,12 @@ The owner's Merge button on the dashboard runs this; no agent does the merge.
    start a second cleanup), writes a `runner` line on the run, and starts `run_dossier.py ID --command after-merge
    --items <PRs>` in the background.
 
+**Kanban.** A dossier whose front matter says `delivery: kanban` (absent = stub) may have its bottom PR into `development`:
+that chain merges as is (no stub, no carry-over); the queue first waits while development's latest CI (`--dev-ci`) is red
+or pending (stop the line). `development` requires `local-stack` today; if GitHub refuses the merge for that, the state
+reads "development requires local-stack; the owner must relax it for kanban PRs", with no retry. Never faked, no ruleset
+is touched. `--kanban-dossiers --root R` lists the kanban dossiers with an open PR into development (eager merge).
+
 State: `<key>.merge.json` `{state: merging|merged|failed, prs, base, error, ts}`, read by the dashboard. Prints one
 line. Exit 0 merged, 1 refused or failed, 2 bad usage. `--dry-run` resolves and checks, and changes nothing.
 `ASD_GH_BIN` replaces `gh` (tests).
@@ -177,6 +183,25 @@ def is_stub(branch: str) -> bool:
     return bool(re.match(r"(stub|release)/", branch))
 
 
+def kanban_ids(root: str) -> set[str]:
+    """The ids of the dossiers in ROOT whose front matter says `delivery: kanban` (absent = stub). Only these may merge
+    straight into development."""
+    out: set[str] = set()
+    for f in sorted(glob.glob(os.path.join(root, ".discovery", "dossiers", "*.md"))):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                head = fh.read(4000)
+        except OSError:
+            continue
+        m = re.match(r"---\n(.*?)\n---", head, re.S)
+        if not m:
+            continue
+        i = re.search(r"^id:\s*([A-Za-z][A-Za-z0-9]*-\d+)\s*$", m.group(1), re.M)
+        if i and re.search(r"^delivery:\s*[\"']?kanban[\"']?\s*(#.*)?$", m.group(1), re.M):
+            out.add(i.group(1).upper())
+    return out
+
+
 def dossier_prs(root: str) -> dict[int, str]:
     """{PR number: dossier id} from the `pr:` front matter of the dossiers in ROOT. A dossier with no Jira key builds on a
     branch named after its title (feat/engine-stop-rules), which names no id: its recorded PR is the only link."""
@@ -258,6 +283,10 @@ def plan(root: str, dossier: str) -> tuple[list[dict], str]:
         if o.get("state") in ("running", "testing", "waiting", "paused", "queued") and alive(o.get("pid")):
             return [], f"a {o.get('command') or 'run'} run of {k.split('.', 1)[1]} on this stack is still live; merge when it is finished"
     base = chain[0].get("baseRefName", "")
+    kanban = base == "development" and dossier.upper() in kanban_ids(root)   # a kanban dossier goes straight into development
+    if kanban:
+        drafts = [p for p in chain if p.get("isDraft")]
+        return ([], "still a draft: " + ", ".join(f"#{p['number']}" for p in drafts) + "; mark it ready for review first") if drafts else (chain, "")
     if not is_stub(base):
         # Deleting a merged stub's branch (delete-on-merge) makes GitHub move its open PRs to development: such a PR
         # still belongs on a stub and moves to the accepting one below, like a PR whose old stub branch is kept.
@@ -284,6 +313,32 @@ def plan(root: str, dossier: str) -> tuple[list[dict], str]:
     if drafts:
         return [], "still a draft: " + ", ".join(f"#{p['number']}" for p in drafts) + "; mark it ready for review first"
     return chain, ""
+
+
+def dev_ci(root: str) -> str:
+    """green | pending | red | unknown: the checks of development's head commit. Kanban merges stop the line on red."""
+    rc, out = gh(root, "api", "repos/{owner}/{repo}/commits/development/check-runs?per_page=100", "--jq", '[.check_runs[] | (.conclusion // "pending")] | join(",")')
+    if rc != 0:
+        return "unknown"
+    b = [x for x in out.split(",") if x]
+    return "red" if any(x in ("failure", "timed_out", "cancelled", "action_required") for x in b) else "pending" if "pending" in b else "green"
+
+
+def wait_development(root: str, note) -> str:
+    """Stop the line: "" once development's CI is green (or unreadable), else why a kanban merge gave up waiting."""
+    poll = float(os.environ.get("ASD_MERGE_POLL") or 15)
+    end = time.time() + float(os.environ.get("ASD_MERGE_CHECK_TIMEOUT") or 3600)
+    said = ""
+    while True:
+        st = dev_ci(root)
+        if st in ("green", "unknown"):
+            return ""
+        if st != said:
+            note("waiting", f"development's CI is {st}; kanban merges wait until it is green")
+            said = st
+        if time.time() > end:
+            return f"development's CI stayed {st}; kanban merges wait until it is green (fix development, then merge again)"
+        time.sleep(poll)
 
 
 def stub_into_dev(root: str, stub: str) -> str:
@@ -447,6 +502,8 @@ def merge(root: str, dossier: str, method: str, dry: bool, no_cleanup: bool = Fa
     else:
         rc, out = gh(root, "pr", "merge", str(nums[0]), f"--{method}", timeout=600)
     if rc != 0:
+        if base == "development" and "local-stack" in out:   # the ruleset wants the stub's receipt; never faked, never retried
+            return fail(state_path, nums, base, "development requires local-stack; the owner must relax it for kanban PRs")
         return fail(state_path, nums, base, out[-400:] or f"exit {rc}")
     open_left = []
     for n in nums:
@@ -1132,6 +1189,10 @@ def work_one(root: str, dossier: str) -> None:
         set_state(key, state=state, prs=nums, error="", pid=os.getpid(), note=text)
         append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "runner", "text": "merge queue: " + text})
     agent = dossier_id(root, dossier, chain)   # the dossier's own id: its agent resolves, its timeline gets the cleanup
+    if chain[0]["baseRefName"] == "development":   # only a kanban dossier gets here (plan)
+        why = wait_development(root, note)
+        if why:
+            set_state(key, state="failed", prs=nums, error=why, pid=None); return
     why = settle(root, key, agent, chain, chain[0]["baseRefName"], [], note)
     if why:
         set_state(key, state="failed", prs=nums, error=why, pid=None); return
@@ -1479,6 +1540,11 @@ def stub_dossiers(root: str, branch: str) -> list[str]:
     if rc != 0:
         return []
     return [i for i, _ in stub_stacks(json.loads(out or "[]"), branch, dossier_prs(root))[0]]
+def kanban_dossiers(root: str) -> list[str]:
+    """The kanban dossiers with an open pull request into development (the ones eager merging may queue)."""
+    return [i for i in stub_dossiers(root, "development") if i in kanban_ids(root)]
+
+
 def integrate(root: str, branch: str) -> int:
     repo = repo_name(root); slug = branch.replace("/", "-"); key = f"{repo}.{slug}"
     log = os.path.join(runs_dir(), key + ".jsonl")
@@ -1611,7 +1677,7 @@ if a[:2] == ["stack", "link"]:
     open(os.path.join(d, "linked.txt"), "w").write(" ".join(a[a.index("--base") + 2:]))
     sys.exit(int(os.environ.get("FAKE_LINK_RC", "0")))
 if a[:2] in (["stack", "merge"], ["pr", "merge"]):
-    if os.environ.get("FAKE_MERGE_RC", "0") != "0": print("merge blocked by branch protection"); sys.exit(1)
+    if os.environ.get("FAKE_MERGE_RC", "0") != "0": print(os.environ.get("FAKE_MERGE_MSG") or "merge blocked by branch protection"); sys.exit(1)
     if a[0] == "pr" and next((p for p in prs if str(p["number"]) == a[2]), {}).get("mss") == "BEHIND": print("the head branch is not up to date with the base branch"); sys.exit(1)
     nums = open(os.path.join(d, "linked.txt")).read().split() if a[0] == "stack" else [a[2]]
     for p in prs:
@@ -1621,6 +1687,9 @@ if a[:2] in (["stack", "merge"], ["pr", "merge"]):
         for p in prs:
             if p["headRefName"].startswith(("plan/", "docs/")) and p.get("state", "OPEN") == "OPEN": p["state"] = "MERGED"
     json.dump(prs, open(os.path.join(d, "prs.json"), "w")); sys.exit(0)
+if a[:1] == ["api"] and "check-runs" in a[1]:
+    if os.environ.get("FAKE_DEV_RC"): print("api failed"); sys.exit(1)
+    print(os.environ.get("FAKE_DEV_CHECKS", "success")); sys.exit(0)
 if a[:2] == ["pr", "checks"]:
     p = next(p for p in prs if str(p["number"]) == a[2]); print(p.get("bucket", "pass")); sys.exit(0)
 if a[:2] == ["run", "list"]: print("[]"); sys.exit(0)
@@ -1824,6 +1893,50 @@ def selftest() -> int:
         check("merge: a refused merge is reported, nothing claims merged", rc == 1 and read_json(os.path.join(rdir, key + ".merge.json"), {}).get("state") == "failed" and "branch protection" in out)
         rc, out, calls = go([P(427, "feat/W-128-x", "development")])
         check("refuse: a PR into anything but a stub", rc == 1 and "not a stub" in out)
+        # ---- kanban: a dossier whose front matter says `delivery: kanban` may merge straight into development ----
+        kfile = os.path.join(root, ".discovery", "dossiers", "W-128-x.md")
+        os.makedirs(os.path.dirname(kfile), exist_ok=True)
+        open(kfile, "w").write("---\nid: W-128\nstatus: pr\ndelivery: kanban\n---\n# k\n")
+        check("kanban_ids: only `delivery: kanban` counts (absent and stub do not)", kanban_ids(root) == {"W-128"})
+        rc, out, calls = go([P(427, "feat/W-128-x", "development")])
+        check("kanban: a PR into development merges as is, no stub is looked up",
+              rc == 0 and "pr merge 427 --merge" in calls and not any("--head" in c for c in calls)
+              and read_json(os.path.join(rdir, key + ".merge.json"), {}).get("base") == "development", str((rc, out, calls)))
+        rc, out, calls = go([P(427, "feat/W-128-x", "development", True)])
+        check("kanban: a draft is still refused", rc == 1 and "draft" in out and not any(c.startswith("pr merge") for c in calls), out)
+        rc, out, calls = go([P(427, "feat/W-128-x", "development")], FAKE_MERGE_RC="1", FAKE_MERGE_MSG="Repository rule violations found: Required status check local-stack is expected")
+        st_ = read_json(os.path.join(rdir, key + ".merge.json"), {})
+        check("kanban: GitHub refusing for local-stack records the clear note, one try, no retry",
+              rc == 1 and st_.get("state") == "failed" and st_.get("error") == "development requires local-stack; the owner must relax it for kanban PRs"
+              and sum(c.startswith("pr merge") for c in calls) == 1, str((st_, calls)))
+        rc, out, calls = go([P(427, "feat/W-128-x", "stub/2026-11-03")])
+        check("kanban: a PR into a stub goes the stub way unchanged", rc == 0 and "pr merge 427 --merge" in calls and any("--head" in c for c in calls), str(calls))
+        os.remove(kfile)
+        rc, out, calls = go([P(427, "feat/W-128-x", "development")])
+        check("a dossier without `delivery: kanban` into development is refused as before", rc == 1 and "not a stub" in out)
+        # stop the line: development's red CI holds kanban merges
+        saved_e = {k: os.environ.get(k) for k in ("ASD_GH_BIN", "FAKE_GH_DIR", "FAKE_DEV_CHECKS", "FAKE_DEV_RC", "ASD_MERGE_POLL", "ASD_MERGE_CHECK_TIMEOUT")}
+        os.environ.update(env, ASD_MERGE_POLL="0.05", ASD_MERGE_CHECK_TIMEOUT="0.3")
+        try:
+            notes: list = []
+            got = {}
+            for name, checks_, rcx in (("green", "success,skipped,neutral", ""), ("pending", "success,pending", ""), ("red", "success,failure", ""), ("unknown", "", "1")):
+                os.environ["FAKE_DEV_CHECKS"] = checks_
+                if rcx: os.environ["FAKE_DEV_RC"] = rcx
+                else: os.environ.pop("FAKE_DEV_RC", None)
+                got[name] = dev_ci(root)
+            check("dev_ci: green, pending, red, unknown (unreadable)", got == {"green": "green", "pending": "pending", "red": "red", "unknown": "unknown"}, str(got))
+            os.environ.pop("FAKE_DEV_RC", None)
+            os.environ["FAKE_DEV_CHECKS"] = "success,failure"
+            why = wait_development(root, lambda s_, t_: notes.append((s_, t_)))
+            check("stop the line: a red development holds the merge, the note says why, then it gives up with the reason",
+                  "stayed red" in why and notes == [("waiting", "development's CI is red; kanban merges wait until it is green")], str((why, notes)))
+            os.environ["FAKE_DEV_CHECKS"] = "success"
+            check("stop the line: green development lets it through", wait_development(root, lambda *a_: None) == "")
+        finally:
+            for k, v in saved_e.items():
+                if v is None: os.environ.pop(k, None)
+                else: os.environ[k] = v
         rc, out, calls = go([P(427, "feat/W-128-x", "stub/x", True)])
         check("refuse: a draft", rc == 1 and "draft" in out)
         write_json(os.path.join(rdir, key + ".runner.json"), {"pid": os.getpid(), "state": "running", "command": "fix-deferred"})
@@ -2395,6 +2508,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--enqueue-pr", metavar="N", type=int, help="add a non-code PR into development to the merge queue")
     ap.add_argument("--integrate", metavar="STUB", help="merge every finished dossier on the stub through the queue, then start /stub")
     ap.add_argument("--stub-dossiers", metavar="STUB", help="print the dossiers with an open pull request into the stub, one per line")
+    ap.add_argument("--kanban-dossiers", action="store_true", help="print the kanban dossiers with an open pull request into development, one per line")
+    ap.add_argument("--dev-ci", action="store_true", help="print the state of development's CI (green|pending|red|unknown)")
     ap.add_argument("--carry-over", metavar="STUB", help="after STUB merged: move its leftover open PRs to the accepting stub (exit 1: try again later)")
     ap.add_argument("--migration-clashes", metavar="HEAD", help="print the migrations this branch adds under a number already taken (needs --base)")
     ap.add_argument("--base", help="the branch --migration-clashes compares with")
@@ -2414,6 +2529,12 @@ def main(argv: list[str] | None = None) -> int:
         return enqueue_pr(os.path.abspath(a.root), a.enqueue_pr)
     if a.stub_dossiers and a.root:
         print("\n".join(stub_dossiers(os.path.abspath(a.root), a.stub_dossiers)))
+        return 0
+    if a.kanban_dossiers and a.root:
+        print("\n".join(kanban_dossiers(os.path.abspath(a.root))))
+        return 0
+    if a.dev_ci and a.root:
+        print(dev_ci(os.path.abspath(a.root)))
         return 0
     if a.carry_over and a.root:
         done, lines = carry_over(os.path.abspath(a.root), a.carry_over)
