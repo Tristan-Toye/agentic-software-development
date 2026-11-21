@@ -192,9 +192,11 @@ def dossier_prs(root: str) -> dict[int, str]:
             continue
         fm = m.group(1)
         i = re.search(r"^id:\s*([A-Za-z][A-Za-z0-9]*-\d+)\s*$", fm, re.M)
-        pr = re.search(r"^pr:\s*\[?([0-9][0-9,\s]*)\]?\s*$", fm, re.M)
-        if i and pr:
-            for n in re.findall(r"\d+", pr.group(1)):
+        pr = re.search(r"^pr:[ \t]*(.*)$", fm, re.M)
+        if i and pr:   # 79, [79, 80], or the PR's URL (…/pull/79), as /work-on Phase 9 records it
+            val = pr.group(1)
+            nums = re.findall(r"/pull/(\d+)", val) if "/pull/" in val else re.findall(r"(?<![\w.])\d+(?![\w.])", val)
+            for n in nums:
                 out.setdefault(int(n), i.group(1).upper())
     return out
 
@@ -1673,10 +1675,10 @@ def selftest() -> int:
     check("chain: without the record the id-less branch is not found", chain_of([P(79, "feat/engine-stop-rules", "stub/s")], "W-029")[0] == [])
     with tempfile.TemporaryDirectory() as td_:
         os.makedirs(os.path.join(td_, ".discovery", "dossiers"))
-        for name, body in (("W-029-a.md", "---\nid: W-029\npr: 79\n---\n"), ("W-030-b.md", "---\nid: W-030\npr: [90, 91]\n---\n"), ("W-031-c.md", "---\nid: W-031\npr: null\n---\n")):
+        for name, body in (("W-029-a.md", "---\nid: W-029\npr: 79\n---\n"), ("W-030-b.md", "---\nid: W-030\npr: [90, 91]\n---\n"), ("W-031-c.md", "---\nid: W-031\npr: null\n---\n"), ("W-032-d.md", "---\nid: W-032\npr: https://github.com/o/r/pull/83\n---\n")):
             with open(os.path.join(td_, ".discovery", "dossiers", name), "w") as fh_:
                 fh_.write(body)
-        check("dossier_prs: pr numbers from the front matter, a list too, null skipped", dossier_prs(td_) == {79: "W-029", 90: "W-030", 91: "W-030"}, str(dossier_prs(td_)))
+        check("dossier_prs: pr numbers from the front matter, a list too, a PR URL too, null skipped", dossier_prs(td_) == {79: "W-029", 90: "W-030", 91: "W-030", 83: "W-032"}, str(dossier_prs(td_)))
     check("stub members: a dossier already merged into the stub has no open PR, so integrate never meets it", stub_stacks([P(6, "plan/x", "stub/s")], "stub/s")[0] == [])
     c, why = chain_of([P(427, "feat/W-128-x", "stub/2026-11-03"), P(429, "fix/W-128-deferred", "feat/W-128-x"), P(500, "feat/w-130-y", "stub/2026-11-03")], "W-128")
     check("chain: the build PR then the stacked one, bottom to top; another dossier's PR is not in it", [p["number"] for p in c] == [427, 429])
