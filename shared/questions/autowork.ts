@@ -4,6 +4,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { runsDir } from "./runstore.ts"
+import { flowsFile, flowsOf } from "./deliveryflows.ts"
 
 export type AutoMember = { id: string; stage: string; state: string; error: string; rounds: number }
 export type AutoPaused = { reason: string; kind: string; member: string; action: string; at: string }
@@ -26,7 +27,8 @@ export const autoWorkOn = (repo: string, file = switchFile()): boolean => !!read
 /** The eager-merge switch of a repository (each finished dossier joins the merge queue for the open stub), on unless set to false. It works with automatic work off. */
 export const eagerMergeOn = (repo: string, file = switchFile()): boolean => readJson(file)?.[repo]?.eager_merge !== false
 /** Whether a repository's facts go to the script: automatic work or eager merge is on. */
-export const factsOn = (repo: string, file = switchFile()): boolean => autoWorkOn(repo, file) || eagerMergeOn(repo, file)
+// The kanban pull (auto_work.py) runs on the kanban flow switch alone, so a kanban-on repository sends its facts too.
+export const factsOn = (repo: string, file = switchFile(), flows = flowsFile()): boolean => autoWorkOn(repo, file) || eagerMergeOn(repo, file) || flowsOf(repo, flows).kanban
 export function readAutoState(repo: string, dir = runsDir()): AutoState | null {
   const s = readJson(join(dir, `${repo}.auto-work.json`))
   if (!s || typeof s !== "object" || !Array.isArray(s.members)) return null

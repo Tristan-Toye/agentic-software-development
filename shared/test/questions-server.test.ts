@@ -1048,7 +1048,10 @@ try {
   check("auto work: only auto_work turns it on (the scripted stub merge alone does not)", !autoWorkOn("r", sw) && autoWorkOn("on", sw))
   writeFileSync(sw, JSON.stringify({ e: { eager_merge: true }, on: { auto_work: true, enabled: true }, off: { eager_merge: false } }))
   check("eager merge: its own switch, on unless turned off; it sends the repository's facts to the script with auto work off, and does not turn auto work on",
-    eagerMergeOn("e", sw) && !autoWorkOn("e", sw) && factsOn("e", sw) && factsOn("on", sw) && !eagerMergeOn("off", sw) && !factsOn("off", sw) && eagerMergeOn("none", sw) && factsOn("none", sw))
+    eagerMergeOn("e", sw) && !autoWorkOn("e", sw) && factsOn("e", sw) && factsOn("on", sw) && !eagerMergeOn("off", sw) && !factsOn("off", sw, join(dir, "no-flows.json")) && eagerMergeOn("none", sw) && factsOn("none", sw))
+  writeFileSync(join(dir, "kflows.json"), JSON.stringify({ off: { stub: true, kanban: true } }))
+  check("kanban: a repository with only its kanban flow on still sends its facts (the kanban pull runs on that switch alone)",
+    factsOn("off", sw, join(dir, "kflows.json")) && !factsOn("off", sw, join(dir, "no-flows.json")) && !eagerMergeOn("off", sw) && !autoWorkOn("off", sw))
   writeFileSync(sw, JSON.stringify({ r: { enabled: true }, on: { auto_work: true, enabled: true } }))
   const run = (repo: string, id: string, status: string, extra: any = {}) => ({ repo, root: "/x/" + repo, id, status, blockedBy: [], runner: null, deferred: { items: [] }, ...extra })
   const facts = buildFacts(
