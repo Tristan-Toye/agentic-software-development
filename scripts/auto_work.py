@@ -380,6 +380,8 @@ def built_already(m: dict, r: dict) -> bool:
     the ready status as intended. A second /work-on would start a second build of a finished change: only /fix-deferred
     (open items) or nothing follows. A /work-on launched this cycle that is still being judged keeps its own path."""
     L = m.get("launch")
+    if r.get("command") == "fix-deferred" and r.get("state") == "done":
+        return True   # /fix-deferred only runs on a built dossier, so its finished run proves the build too
     return r.get("command") == "work-on" and r.get("state") == "done" and not (L and L["command"] == "work-on")
 
 
@@ -426,7 +428,7 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
         m["asked"] = None   # the agent fixed it (or it was intended after all and the dossier moved): the normal path takes over
         todo = open_items(run)
         if L and L["command"] == "fix-deferred":
-            if not todo:
+            if not todo or m["accepted"]:   # accepted: the owner took the items still open
                 m.update(stage="finished", state="finished", error=""); return
             m["lag"] += 1
             if m["lag"] >= LAG_TICKS and not m["accepted"]:
@@ -801,6 +803,16 @@ def selftest() -> int:
         m3 = mk()
         step_member(stx(), m3, {"id": "R", "status": "ready", "runner": {"state": "stopped", "command": "work-on", "pid": 7, "started": "t"}, "deferred": []})
         check("a stopped /work-on that never finished still starts /work-on", calls_ == [("R", "work-on", "")], calls_)
+        calls_.clear()
+        fd = {"state": "done", "command": "fix-deferred", "pid": 10, "started": "v"}
+        m4 = dict(mk(), launch={"command": "fix-deferred", "items": "D-1,D-2", "ts": "2026-01-01T00:00:00Z", "pid": 9, "started": "u"})
+        step_member(stx(), m4, {"id": "R", "status": "ready", "runner": fd, "deferred": []})
+        check("a finished /fix-deferred whose dossier still reads ready (status on the build branch): no /work-on, finished",
+              calls_ == [] and m4["stage"] == "finished", (calls_, m4))
+        m5 = dict(mk(), accepted=True, launch=dict(m4["launch"]))
+        step_member(stx(), m5, {"id": "R", "status": "ready", "runner": fd, "deferred": [{"id": "D-2", "state": "open"}]})
+        check("a finished /fix-deferred with items the owner accepted as open: finished, nothing launched",
+              calls_ == [] and m5["stage"] == "finished", (calls_, m5))
     finally:
         globals()["start_runner"] = real_start
 
