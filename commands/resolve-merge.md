@@ -33,7 +33,15 @@ uncertainty, each ask passing `--kind`. Call `phase_checkpoint` at each step, na
 ## Step 1 — The branches
 
 `git fetch origin --prune`. For each pull request, bottom first: its head
-branch, its base, and whether it conflicts. Work in one fresh worktree per
+branch, its base, and whether it conflicts. GitHub's `mergeable` compares each
+pull request only with its own base, so a stack can read `MERGEABLE` on every
+pull request and still conflict once the base reaches the top: the queue
+merges the whole stack. The test that counts is the queue's own, run on the
+top of the stack: `git merge-tree --write-tree --name-only origin/<stub>
+origin/<top head>`. Only when it exits 0 is there nothing to resolve; otherwise
+do Step 2 for every pull request, bottom first, even those GitHub calls
+mergeable, and the conflict surfaces in the merge of an updated head into the
+one above it. Work in one fresh worktree per
 head branch, `../<repo>-<ID>-merge`, made from `origin/<head>`
 (`.worktree-setup.sh` when the repository has one). Never reuse a worktree
 that holds uncommitted work.
