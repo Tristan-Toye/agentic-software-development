@@ -874,6 +874,20 @@ TESTING_QUIET_SECS = 300    # an in-flight Bash call with no output for longer t
 # state directory, and CI (wait_ci.py, `gh pr checks --watch`, `gh run watch`; a fix-deferred session held its slot for
 # the whole of a Rust CI job in wait_ci.py)
 TESTING_CMD = re.compile(r"\brun_(?:tests|gates)(?:\.py\b|-detach/)|\bwait_ci\.py\b|\bgh\s+(?:pr\s+checks\b[^\n]*--watch|run\s+watch)\b")
+
+
+def wait_label(cmd: str) -> str:
+    """A readable label for a long Bash call: the `;`/`&&` segment that runs the test or CI wait (else the first segment
+    that is not a bare `VAR=value` assignment or a `cd`), at most 80 characters. Runner sessions open most commands with
+    `P=<plugin cache path>; ...`, so the first line alone names only that path."""
+    text = cmd.strip()
+    if not text:
+        return "a Bash call"
+    segs = [x.strip() for x in re.split(r"&&|;|\n", text) if x.strip()]
+    hit = next((x for x in segs if TESTING_CMD.search(x)), None)
+    if hit is None:
+        hit = next((x for x in segs if not re.fullmatch(r"(?:\w+=\S*\s*)+", x) and not re.match(r"cd\s", x)), segs[0])
+    return re.sub(r"\$P/scripts/|\S*/scripts/", "", hit)[:80]
 # Stream lines the CLI emits while a foreground tool call is still running (a Bash call turns into a task after a few
 # seconds and reports progress). They say the call is alive, not that the session works: they keep a call from looking
 # stalled, but never from looking like a long wait.
@@ -2257,7 +2271,7 @@ class Runner:
         quiet = time.monotonic() - self.last_work > env_num("ASD_TESTING_QUIET_SECS", TESTING_QUIET_SECS)
         for cmd, _ in self.inflight_bash.values():
             if TESTING_CMD.search(cmd) or quiet:
-                return cmd.strip().splitlines()[0][:80] if cmd.strip() else "a Bash call"
+                return wait_label(cmd)
         return ""
 
     def refresh_testing(self) -> None:
@@ -4931,6 +4945,10 @@ def selftest() -> int:
         check("background wait: a closed turn waiting only on background commands is blocked (slot released)", rb.blocked_on() == "background: Wait for PR 518 CI")
         rb.bg_wait = ""
         check("background wait: a closed turn with no background command wait is not blocked", rb.blocked_on() == "")
+        check("wait label: names the CI wait, not the leading plugin-path assignment",
+              wait_label("P=/Users/x/.claude/plugins/cache/a/b/4adf; cd /w && python3 $P/scripts/wait_ci.py --pr 640 --timeout 580") == "python3 wait_ci.py --pr 640 --timeout 580")
+        check("wait label: a quiet call with no test command skips assignments and cd",
+              wait_label("P=/p; W=/w; cd $W && make long-thing") == "make long-thing" and wait_label("") == "a Bash call")
         rb.turn_open, rb.bg_wait, rb.last_out, rb.state, rb.stopping = False, "x", 0.0, {}, False
         rb.track_event({"type": "assistant", "message": {"content": []}})
         check("background wait: the session's next event ends the background wait", rb.turn_open and rb.bg_wait == "")
