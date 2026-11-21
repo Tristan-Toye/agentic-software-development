@@ -74,7 +74,7 @@ FIXTURES: |
   Build an Item with make_item(id: str) from tests/support/factories.py
   REGISTERED: <only when a guard idiom is prescribed above: the runner-config
     group, pin or spec list the orchestrator already registered for this test
-    file in the contract commit (phase-2.md, #464); the author never edits the
+    file in the contract commit (phase-2-conditional.md, #464); the author never edits the
     runner config>
 SHARED_IDIOM: |
   <only when a test must construct or invoke a concept two or more agents

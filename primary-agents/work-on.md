@@ -332,3 +332,6 @@ disagreement between a list and a phase is a defect in the list.
 The delegation rules and the size gates are in `phase-2.md`; spawning and the
 two workflows are in `phase-4-conditional.md`; the gates, the mode and the time-logging
 gate are in `phase-0.md`. Each phase file says which of them it needs.
+The rarer branches of phases 2, 3, 4, 6, 7 and 9 sit in a `phase-N-conditional.md` beside
+their phase file, which names each trigger: read one section with `ref_section`, never the
+whole file.

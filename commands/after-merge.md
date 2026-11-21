@@ -20,7 +20,7 @@ nothing to settle.
 `${PLUGIN_ROOT}` is this plugin's checkout; under Claude Code take it from
 `${CLAUDE_PLUGIN_ROOT}`. The repository's own rules file and `AGENTS.md`
 outrank this file's defaults. This is Phase 9's post-merge cleanup
-(`references/work-on/phase-9.md`), run on the merge instead of on request.
+(`references/work-on/phase-9-conditional.md`, "Post-merge cleanup"), run on the merge instead of on request.
 
 Ask the owner only through `scripts/ask_owner.py`, under
 `references/owner-questions.md` "The ask policy": design, product or real

@@ -66,7 +66,7 @@ the recorded checkpoints.
       `/work-on <ID> plan-branch=plan/<KEY>` (`--plan-branch`): the newest
       `origin/plan/*` branch committed since the re-plan started whose copy
       reads `ready`. The build forks from the stub as always and
-      cherry-picks the plan commits (`work-on/phase-2.md`). A plan that did
+      cherry-picks the plan commits (`work-on/phase-2-conditional.md`). A plan that did
       not reach `ready` is logged ("/work-on not requeued") and left to the
       owner. `ASD_RUNNER_REQUEUE=0` turns this off.
       **Parking.** A `/work-on` started fresh (requeued, pressed, or started
