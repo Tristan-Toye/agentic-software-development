@@ -29,6 +29,9 @@ reached `/stub`, in a repository that opted in, is looked at again until its pul
    recorded (`--waive TEXT`, matched as a case-insensitive substring); in a repository that needs no receipt, one
    that only says the receipt is absent (that absence is the rule there, not news); and an ADR-worthy lesson seed,
    which belongs under the report's Lessons and asks for a `/plan`, not for a look before the merge.
+   With the setting `"attention": "notify"` no `ATTENTION:` line holds the merge: the lines go into the land state
+   (`attention`) and onto the stub's timeline as things to look at after the merge (a post-deploy check, a shape
+   other systems see). The default, `"hold"`, leaves the pull request for the owner as above.
 5. No open owner question on the stub or on a dossier the integration merged.
 6. No open pull request into the stub that belongs to this integration: its own `fix/*-stub*` or a stack it merged.
    A dossier that was still in flight moves to the next stub, so it holds nothing back.
@@ -41,8 +44,8 @@ Anything else, or anything unreadable, leaves the pull request for the owner. Th
 
 Settings: `$ASD_STUB_AUTOMERGE_FILE` (default `~/.agentic/stub-auto-merge.json`),
 `{"<repo>": {"enabled": true, "receipt": true, "receipt_context": "local-stack", "guarded_paths": ["..."],
-"standing_waivers": ["W-007 criterion 18"]}}`.
-State: `<key>.land.json` `{state: waiting|merged, pr, head, reasons, ts}`, read by the dashboard. A change of reasons
+"standing_waivers": ["W-007 criterion 18"], "attention": "hold" | "notify"}}`.
+State: `<key>.land.json` `{state: waiting|merged, pr, head, reasons, attention, ts}`, read by the dashboard. A change of reasons
 writes one line on the stub's timeline.
 
 Exit 0 merged or nothing to do, 1 held back, 2 bad usage. `ASD_GH_BIN` replaces `gh` (tests).
@@ -126,10 +129,29 @@ RECEIPT_ABSENT = re.compile(r"\bno (?:local[- ]stack )?receipt\b", re.I)
 LESSON_SEED = re.compile(r"^(?:an? )?(?:ADR-worthy )?lesson(?: seed)?\b|^ADR-worthy\b", re.I)
 
 
-def result_failures(body: str, head: str, standing: list[str] | tuple = (), receipt: bool = True) -> list[str]:
+def attention_lines(body: str, standing: list[str] | tuple = (), receipt: bool = True) -> list[str]:
+    """The `ATTENTION:` lines that would hold the merge: not a standing waiver, not a receipt absence where none is
+    needed, not a lesson seed."""
+    keys = [w.strip().lower() for w in standing if isinstance(w, str) and w.strip()]
+    out = []
+    for m in re.finditer(r"^ATTENTION:[ \t]*(.*)$", body or "", re.M):
+        text = m.group(1).strip()
+        if any(k in text.lower() for k in keys):
+            continue
+        if not receipt and RECEIPT_ABSENT.search(text):
+            continue
+        if LESSON_SEED.search(text):
+            continue
+        out.append(text)
+    return out
+
+
+def result_failures(body: str, head: str, standing: list[str] | tuple = (), receipt: bool = True,
+                    notify: bool = False) -> list[str]:
     """What the result block in the pull request body holds back. No block, no merge.
 
-    An ATTENTION line naming a standing waiver, or (when no receipt is needed) only reporting its absence, holds nothing."""
+    An ATTENTION line naming a standing waiver, or (when no receipt is needed) only reporting its absence, holds nothing;
+    with `notify` no ATTENTION line holds (attention_lines lists them for after the merge)."""
     def field(name: str) -> str:
         m = re.search(rf"^{name}:[ \t]*(\S*)[ \t]*$", body or "", re.M)
         return m.group(1) if m else ""
@@ -145,16 +167,8 @@ def result_failures(body: str, head: str, standing: list[str] | tuple = (), rece
         out.append("the audit does not report STUB-GAPS: 0")
     if not zero("STUB-UNRESOLVED"):
         out.append("the run does not report STUB-UNRESOLVED: 0")
-    keys = [w.strip().lower() for w in standing if isinstance(w, str) and w.strip()]
-    for m in re.finditer(r"^ATTENTION:[ \t]*(.*)$", body or "", re.M):
-        text = m.group(1).strip()
-        if any(k in text.lower() for k in keys):
-            continue
-        if not receipt and RECEIPT_ABSENT.search(text):
-            continue
-        if LESSON_SEED.search(text):
-            continue
-        out.append("attention: " + text[:200])
+    if not notify:
+        out += ["attention: " + t[:200] for t in attention_lines(body, standing, receipt)]
     return out
 
 
@@ -224,7 +238,8 @@ def assess(root: str, repo: str, branch: str, finished: list[str], cfg: dict) ->
     receipt = needs_receipt(root, cfg)
     context = (cfg.get("receipt_context") or DEFAULT_CONTEXT) if receipt else None
     reasons += check_failures(pr.get("statusCheckRollup") or [], context)
-    reasons += result_failures(pr.get("body") or "", head, cfg.get("standing_waivers") or [], receipt)
+    reasons += result_failures(pr.get("body") or "", head, cfg.get("standing_waivers") or [], receipt,
+                               notify=cfg.get("attention") == "notify")
     q = open_questions(repo, [slug] + finished)
     if q:
         reasons.append("open questions: " + ", ".join(q))
@@ -260,16 +275,19 @@ def land(root: str, branch: str, finished: list[str] | None = None, dry: bool = 
         return 0 if verdict != "waiting" else 1
     number, head = pr.get("number"), pr.get("headRefOid") or ""
     log = os.path.join(runs_dir(), key + ".jsonl")
+    notes = attention_lines(pr.get("body") or "", cfg.get("standing_waivers") or [], needs_receipt(root, cfg)) \
+        if verdict == "ready" and cfg.get("attention") == "notify" else []
     if verdict == "ready":
         rc, out = gh(root, "pr", "merge", str(number), "--merge", "--match-head-commit", head)
         if rc == 0:
             verdict = "merged"
-            append_line(log, {"ts": now(), "kind": "update", "text": f"Every check held on {head[:8]}, so the script merged the stub's pull request #{number} into development."})
+            append_line(log, {"ts": now(), "kind": "update", "text": f"Every check held on {head[:8]}, so the script merged the stub's pull request #{number} into development."
+                              + ("".join("\n- after the merge, look at: " + t for t in notes) if notes else "")})
         else:
             verdict, reasons = "waiting", ["GitHub refused the merge: " + out[-200:]]
     before = read_json(state_path, {}) or {}
     if verdict == "merged":
-        write_json(state_path, {"state": "merged", "pr": number, "head": head, "reasons": [], "ts": now()})
+        write_json(state_path, {"state": "merged", "pr": number, "head": head, "reasons": [], "attention": notes, "ts": now()})
         cur = read_json(integrate_path, {}) or {}
         if cur:
             write_json(integrate_path, {**cur, "state": "merged", "note": "merged into development", "ts": now()})
@@ -428,6 +446,10 @@ def selftest() -> int:
               len(result_failures(block + "ATTENTION: External event change — see the lesson in D-7\n", head)) == 1)
         check("an unrelated attention line still holds under a waiver",
               len(result_failures(block + "ATTENTION: a contradiction was ruled\n", head, ["W-007 criterion 18"], receipt=False)) == 1)
+        post = block + "ATTENTION: criterion 19 is unverifiable locally; run the UAT smoke after deploying\n"
+        check("with attention=notify an attention line holds nothing", not result_failures(post, head, notify=True), result_failures(post, head, notify=True))
+        check("...but the result block itself still holds", bool(result_failures(post.replace("STUB-GAPS: 0", "STUB-GAPS: 1"), head, notify=True)))
+        check("...and the line is listed for after the merge", attention_lines(post) == ["criterion 19 is unverifiable locally; run the UAT smoke after deploying"])
 
         setup(); open(os.path.join(qs, f"{repo}.stub-x.Q1.jsonl"), "w").write('{"from": "agent", "kind": "question"}\n')
         rc, st = run_land(); check("held: an open question on the stub", rc == 1 and "stub-x.Q1" in " ".join(st["reasons"]), st)
