@@ -89,6 +89,18 @@ HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 KEY_RE = re.compile(r"^(?P<key>[A-Za-z_][\w-]*):(?P<rest>.*)$")
 
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from dossier_pr import canonical as _canonical_pr  # noqa: E402
+
+
+def canonical_pr(value: str) -> str | None:
+    """The canonical `pr:` text for VALUE (URLs, a list of URLs, null), or None for anything else (set as given)."""
+    v = value.strip()
+    if v == "null" or "/pull/" in v:
+        return _canonical_pr(v)
+    return None
+
+
 class Refused(Exception):
     pass
 
@@ -388,6 +400,15 @@ def set_fields(text: str, pairs: list[tuple[str, str]], ctx: dict | None = None)
     changes: list[str] = []
     for key, value in pairs:
         index = key_index(fm, key)
+        if key == "pr" and index is not None:  # one canonical form: null, or a list of full PR URLs (dossier_pr.py)
+            canon = canonical_pr(value)
+            if canon is not None:
+                rest = KEY_RE.match(fm[index]).group("rest")  # type: ignore[union-attr]
+                _, _, comment = rest.partition(" #")
+                _, _, end, _ = read_list(fm, index)
+                fm[index:end] = [f"pr: {canon}" + (f"  #{comment}" if comment else "")]
+                changes.append(f"pr: {rest.partition(' #')[0].strip() or '(empty)'} -> {canon}")
+                continue
         if index is None and key in CREATABLE_KEYS and not value.startswith("["):
             fm.append(f"{key}: {value}")
             changes.append(f"{key}: (new) -> {value}")
@@ -1077,6 +1098,11 @@ def selftest() -> int:
         check("the dossier is still whole after the race", got.startswith("---\n") and got.count("## Build log") == 1)
 
     new, changes = set_fields(SAMPLE, [("status", "building"), ("pr", "https://x/1")])
+    pnew, pch = set_fields(SAMPLE, [("pr", "https://github.com/o/r/pull/83")])
+    check("set pr writes the canonical URL list", "\npr: [https://github.com/o/r/pull/83]\n" in pnew and pch == ["pr: null -> [https://github.com/o/r/pull/83]"])
+    pnew2, _ = set_fields(pnew, [("pr", "[https://github.com/o/r/pull/83, https://github.com/o/r/pull/84]")])
+    check("set pr keeps a stack list", "\npr: [https://github.com/o/r/pull/83, https://github.com/o/r/pull/84]\n" in pnew2)
+    check("set pr null stays null", "\npr: null\n" in set_fields(pnew, [("pr", "null")])[0])
     check("set keeps the comment", "status: building  # planned | ready" in new)
     check("set reports old and new", changes[0] == "status: ready -> building")
     check("set leaves the body alone", new.split("\n---\n", 1)[1] == SAMPLE.split("\n---\n", 1)[1])

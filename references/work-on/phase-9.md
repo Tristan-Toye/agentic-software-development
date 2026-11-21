@@ -249,7 +249,7 @@
    on the base too): log it as `CI: red <check> — not this change: <evidence>`,
    note it in the PR description, and rerun it once with `--rerun-failed`.
 5. **Record the URL and remove the worktree.** Once the URL is in hand, write it
-   to the front matter and set `status: done`. Committed mode: commit that
+   to the front matter as `pr: [<url>]` (the canonical form: a list of full PR URLs, `dossier_edit.py set <dossier> pr=<url>` writes it) and set `status: done`. Committed mode: commit that
    final state on `X` and push it — the branch is yours, the PR picks the
    commit up, and the record would otherwise die with the worktree. Then
    remove the base worktree, and every fan-out worktree of this run, with

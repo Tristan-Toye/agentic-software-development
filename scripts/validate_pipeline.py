@@ -42,6 +42,9 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from dossier_pr import is_canonical as pr_is_canonical, normalize_repo as normalize_pr_repo  # noqa: E402
+
 # --------------------------------------------------------------------------
 # format constants (references/formats/dossier.md, references/formats/adr.md)
 # --------------------------------------------------------------------------
@@ -1028,6 +1031,15 @@ def check_contract_id(where: str, dossier_id: str, contract: str, rep: Report) -
             return
 
 
+def check_pr_field(where: str, text: str, rep: Report) -> None:
+    """`pr:` is `null` or a flow list of full PR URLs (scripts/dossier_pr.py); legacy shapes still read, but are found."""
+    m = re.search(r"^pr:[ \t]*(.*)$", text.split("\n---\n", 1)[0], re.M)
+    if m and not pr_is_canonical(m.group(1)):
+        rep.warn(where, f"`pr: {m.group(1).strip()}` is not canonical; write `pr: null`, or a list of full PR URLs "
+                 "like `pr: [https://github.com/o/r/pull/83]` (bottom of a stack first). "
+                 "`validate_pipeline.py --normalize-pr` rewrites it")
+
+
 def validate_dossier(path: Path, repo_root: Path) -> Report:
     rep = Report()
     where = path.name
@@ -1050,6 +1062,7 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
 
     check_headings(where, body, DOSSIER_SECTIONS, rep)
     check_anchors(where, fm, repo_root, rep)
+    check_pr_field(where, path.read_text(), rep)
 
     sec = sections(body)
     if "## Problem" in sec:
@@ -2251,6 +2264,40 @@ def selftest() -> int:
         for name, passed in checks_164.items():
             print(f"{'PASS' if passed else 'FAIL'} — {name}")
         if not all(checks_164.values()):
+            return 1
+        # `pr:` is null or a list of full PR URLs; every legacy shape is a warning naming the canonical form
+        pr_url = "https://github.com/o/r/pull/83"
+        pr_checks = {}
+        for label, val, canon in [
+            ("null", "null", True),
+            ("one URL list", f"[{pr_url}]", True),
+            ("two URL list", f"[{pr_url}, https://github.com/o/r/pull/84]", True),
+            ("bare URL", pr_url, False),
+            ("number", "79", False),
+            ("number list", "[79, 80]", False),
+            ("comma-joined URLs", f"{pr_url}, https://github.com/o/r/pull/84", False),
+            ("empty", "", False),
+        ]:
+            r_pr = Report()
+            check_pr_field("W-014", GOOD_DOSSIER.replace("pr: null", f"pr: {val}".rstrip()), r_pr)
+            pr_checks[f"pr field {label}: {'accepted' if canon else 'warns with the canonical form'}"] = (
+                not r_pr.warnings if canon else any("pr: [https://" in w for w in r_pr.warnings)
+            ) and not r_pr.defects
+        with tempfile.TemporaryDirectory() as ntmp:
+            nd = Path(ntmp) / ".discovery" / "dossiers"
+            nd.mkdir(parents=True)
+            subprocess.run(["git", "-C", ntmp, "init", "-q"], check=True, capture_output=True)
+            subprocess.run(["git", "-C", ntmp, "remote", "add", "origin", "https://github.com/o/r.git"], check=True, capture_output=True)
+            (nd / "W-014-x.md").write_text(GOOD_DOSSIER.replace("pr: null", "pr: 79"))
+            proc = subprocess.run([sys.executable, os.path.abspath(__file__), "--normalize-pr", "--root", ntmp],
+                                  capture_output=True, text=True)
+            pr_checks["--normalize-pr rewrites a number to its URL list through origin, in place"] = (
+                proc.returncode == 0
+                and (nd / "W-014-x.md").read_text() == GOOD_DOSSIER.replace("pr: null", "pr: [https://github.com/o/r/pull/79]")
+            )
+        for name, passed in pr_checks.items():
+            print(f"{'PASS' if passed else 'FAIL'} — {name}")
+        if not all(pr_checks.values()):
             return 1
         (d / "W-015-planned.md").unlink()
         (d / "W-016-noplanning.md").unlink()
@@ -4303,6 +4350,12 @@ def main() -> int:
         "or conflict (exit 1) — and the gitignore checks that mode relies on",
     )
     ap.add_argument(
+        "--normalize-pr",
+        action="store_true",
+        help="rewrite legacy `pr:` values in --root's .discovery/dossiers/*.md to the canonical URL list, in place "
+        "(only the `pr:` line; numbers become URLs through the origin remote)",
+    )
+    ap.add_argument(
         "--selftest",
         action="store_true",
         help="check this script against a reference pair",
@@ -4318,6 +4371,9 @@ def main() -> int:
 
     if args.mode:
         return run_mode(root)
+
+    if args.normalize_pr:
+        return normalize_pr_repo(str(root))
 
     if args.write_index:
         adr_dir.mkdir(parents=True, exist_ok=True)
