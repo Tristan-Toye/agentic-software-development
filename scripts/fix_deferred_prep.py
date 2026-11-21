@@ -255,14 +255,62 @@ def fork_point(wt: str, base: str) -> str:
     return git(wt, "rev-parse", "--short=12", "HEAD")[1]
 
 
-def commit_log(wt: str, did: str, what: str) -> None:
-    """Commit the dossier log lines just written, so the tree is clean when the wave starts."""
-    git(wt, "add", "--", ".discovery/dossiers")
-    if git(wt, "diff", "--cached", "--quiet")[0] == 0:
-        return
-    rc, out = git(wt, "commit", "-q", "--no-verify", "-m", f"chore({did}): {what}")
-    if rc != 0:
-        print(f"fix_deferred_prep: log commit failed — {one_line(out)}", file=sys.stderr)
+def signing(wt: str, flag: bool) -> bool:
+    """work-on states no signing rule of its own: the repository's `commit.gpgsign` decides. `-S` is passed
+    explicitly when the flag asks for it or that config is true (the same commit either way)."""
+    return flag or git(wt, "config", "--get", "commit.gpgsign")[1].strip().lower() == "true"
+
+
+def commit_log(wt: str, did: str, what: str, sign: bool = False) -> tuple[bool, str]:
+    """Commit the dossier log lines just written, through gate_commit.py (the one commit path of the flow),
+    so the tree is clean when the wave starts. Hooks are never bypassed: a log-only commit touches one
+    markdown file on a finished build, not a tree mid-migration (the only case Phase 2 lets a bypass for),
+    and the dossier's `hooks:` policy is about implementer commits. A refusal is returned, never worked
+    around: the lines stay uncommitted in the worktree and the caller reports it."""
+    rc, out = git(wt, "status", "--porcelain", "--", ".discovery/dossiers")
+    paths = [l.split(None, 1)[1].strip() for l in out.splitlines() if len(l.split(None, 1)) == 2]
+    if not paths:
+        return True, "nothing to commit"
+    jira = ""
+    d = find_dossier(wt, did)
+    if d:
+        jira = front(open(d, encoding="utf-8").read()).get("jira", "")
+    prefix = f"{jira} " if jira and jira.lower() not in ("null", "none", "~") else ""
+    cmd = [sys.executable, os.path.join(HERE, "gate_commit.py"), "--root", wt, "--paths", ",".join(paths),
+           "-m", f"{prefix}chore({did}): {what}"]
+    if signing(wt, sign):
+        cmd.append("--sign")
+    rc, out = run(cmd)
+    return rc == 0, one_line(out, 400)
+
+
+def load_report(path: str | None) -> dict[str, dict[str, str]]:
+    """Per D-item fields of the `/deferred` report (`### D-n — title` blocks with `- **Field** — value`
+    bullets): boundary, blast_radius, confidence, effort. {} when the file is absent or unreadable."""
+    if not path or not os.path.isfile(path):
+        return {}
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for m in re.finditer(r"^### (D-\d+)\b.*?(?=^### |^## |\Z)", text, re.M | re.S):
+        got: dict[str, str] = {}
+        for f in re.finditer(r"^- \*\*([A-Za-z ]+)\*\*\s*[—-]\s*(.+)$", m.group(0), re.M):
+            key = {"contract boundary": "boundary", "blast radius": "blast_radius", "confidence": "confidence",
+                   "effort": "effort"}.get(f.group(1).strip().lower())
+            if key:
+                got[key] = f.group(2).strip()
+        if "effort" in got:
+            e = re.match(r"`?([SML])\b", got["effort"])
+            got["effort"] = e.group(1) if e else ""
+        out[m.group(1)] = got
+    return out
+
+
+def default_report(root: str, did: str) -> str:
+    base = os.environ.get("ASD_RUNS_DIR") or os.path.expanduser("~/.agentic/runs")
+    return os.path.join(base, f"{os.path.basename(os.path.realpath(root))}.{did}.deferred.md")
 
 
 # -- main -------------------------------------------------------------------
@@ -295,6 +343,12 @@ def prepare(args) -> int:
     if not wt_dossier:
         raise Refused(f"the worktree {wt} holds no dossier {did}-*.md: the stack base {base['base']} lacks the build copy")
 
+    # The /deferred report (read-only) is the richer source of boundary, blast radius, confidence and effort;
+    # the record's own fields are the fallback for an item the report does not cover.
+    report_path = args.report or default_report(root, did)
+    report = load_report(report_path)
+    items = [dict(i, **{k: v for k, v in report.get(i.get("id"), {}).items() if v}) for i in items]
+    log_failed = ""
     forced = {x for x in (args.direct or "").split(",") if x}
     todo = [i for i in items if (not scope or i["id"] in scope) and i.get("state") not in CLOSED]
     direct: list[dict] = []
@@ -314,18 +368,23 @@ def prepare(args) -> int:
     lines += [f"- DEFERRED-TRIAGE: {it['id']} → direct — {one_line(it.get('fix'), 140)}" for it in direct]
     if lines:
         print(dossier_edit.log_or_say(wt_dossier, lines))
-        commit_log(wt, did, "deferred triage log")
+        okc, msg = commit_log(wt, did, "deferred triage log", args.sign)
+        if not okc:
+            log_failed = msg
     for it in direct:
         if it.get("state") != "fixing":
             build_records.deferred_set(path, it["id"], "fixing", None)
 
-    out = [f"WORKTREE: {wt}",
+    out = [f"REPORT: {report_path if report else 'none — the record fields decide'}",
+           f"WORKTREE: {wt}",
            f"BRANCH: {branch} base {base['base']} fork {fork} ({kind}); dossier PR "
            f"{'#%s' % base['pr'] if base['pr'] else 'none'} {base['pr_state']}; stack base {base['stack_base']}",
            "DIRECT: " + (", ".join(i["id"] for i in direct) or "none")]
     out += [f"ASK: {k} — {v}" for k, v in asked.items()]
     if not asked:
         out.append("ASK: none")
+    if log_failed:
+        out.append(f"LOG-COMMIT REFUSED (not bypassed; the lines stay uncommitted in the worktree): {log_failed}")
     st = {"id": did, "root": root, "worktree": wt, "branch": branch, "base": base["base"], "kind": base["kind"],
           "stack_base": base["stack_base"], "dossier_pr": base["pr"], "fork": fork, "dossier": wt_dossier,
           "direct": sorted({*(i["id"] for i in direct), *_old(state_path(root, did))}), "asked": asked}
@@ -393,6 +452,7 @@ def selftest() -> int:
         subprocess.run(["git", "clone", "-q", origin, main], check=True, capture_output=True)
         for k, v in (("user.email", "t@example.invalid"), ("user.name", "t")):
             sh(main, "config", k, v)
+        sh(main, "config", "commit.gpgsign", "false")
         os.makedirs(os.path.join(main, "src"))
         with open(os.path.join(main, "src", "a.py"), "w") as fh:
             fh.write("".join(f"line {i}\n" for i in range(1, 21)))
@@ -437,7 +497,8 @@ def selftest() -> int:
         check("the change-request document passes check_crs.py", rc == 0 and "CR-1 ok" in chk, chk)
 
         ns = argparse.Namespace(root=main, dossier="W-9", items=None, direct=None, test_command="python3 -m pytest -q", hooks=None,
-                                env_script=None, path_prepend=None, pr_json=pj, no_compose=False)
+                                env_script=None, path_prepend=None, pr_json=pj, no_compose=False,
+                                report=os.path.join(tmp, "absent.deferred.md"), sign=False)
         import io
         import contextlib
         buf = io.StringIO()
@@ -462,7 +523,61 @@ def selftest() -> int:
         check("a second run reuses the branch, adds no commit and no duplicate log line",
               "(reused)" in buf.getvalue() and sh(wt, "rev-parse", "HEAD") == head
               and open(find_dossier(wt, "W-9")).read().count("DEFERRED-TRIAGE: D-1") == 1, buf.getvalue())
+        ns.items = ns.direct = None
+        ns.no_compose = True
+        # source 1: the record only (the report file is absent) — the checks above already ran on it
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            prepare(ns)
+        check("record-only source: no report, the record's boundary and effort decide",
+              "REPORT: none" in buf.getvalue() and "ASK: D-2 — external contract" in buf.getvalue()
+              and "DIRECT: D-1" in buf.getvalue(), buf.getvalue())
+        # source 2: the /deferred report overrides the record per item
+        report = os.path.join(tmp, "W-9.deferred.md")
+        with open(report, "w") as fh:
+            fh.write("# Deferred issues of W-9\n\n| ID | Kind | Title | Risk | Origin | Contract | Effort |\n|---|---|---|---|---|---|---|\n"
+                     "| D-1 | bug | a | low | s | external | S |\n\n"
+                     "### D-1 — retry ignores 429\n- **Contract boundary** — external: the vendor SDK signature\n"
+                     "- **Blast radius** — one package\n- **Confidence** — high\n- **Effort** — S\n\n"
+                     "### D-2 — route changes\n- **Contract boundary** — none: internal helper\n"
+                     "- **Blast radius** — callers\n- **Confidence** — medium\n- **Effort** — `M` (half a day)\n\n"
+                     "### D-3 — big\n- **Contract boundary** — none\n- **Blast radius** — x\n- **Confidence** — low\n- **Effort** — L\n")
+        got = load_report(report)
+        check("load_report parses boundary, blast radius, confidence and effort per D-item",
+              got["D-1"]["boundary"].startswith("external") and got["D-2"]["effort"] == "M" and got["D-3"]["effort"] == "L"
+              and got["D-2"]["confidence"] == "medium" and got["D-1"]["blast_radius"] == "one package", got)
+        check("load_report is {} for an absent file", load_report(os.path.join(tmp, "nope.md")) == {} and load_report(None) == {})
+        ns.report = report
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            prepare(ns)
+        out2 = buf.getvalue()
+        check("report source: its boundary and effort win over the record (D-1 external, D-2 internal, D-3 still L)",
+              f"REPORT: {report}" in out2 and "ASK: D-1 — external contract" in out2 and "DIRECT: D-2" in out2
+              and "ASK: D-3 — effort L" in out2, out2)
+        before = open(report).read()
+        check("the report is read-only", before == open(report).read() and os.path.getmtime(report) <= os.path.getmtime(rec) + 5)
+        # a hook that refuses is never bypassed: the log commit reports it and leaves the lines uncommitted
+        hook = os.path.join(main, ".git", "hooks", "pre-commit")
+        with open(hook, "w") as fh:
+            fh.write("#!/bin/sh\necho hook says no >&2\nexit 1\n")
+        os.chmod(hook, 0o755)
+        head2 = sh(wt, "rev-parse", "HEAD")
+        ns.direct = "D-3"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            prepare(ns)
+        out3 = buf.getvalue()
+        check("a refusing hook is not bypassed: LOG-COMMIT REFUSED, no new commit, lines left in the worktree",
+              "LOG-COMMIT REFUSED" in out3 and sh(wt, "rev-parse", "HEAD") == head2
+              and "DEFERRED-TRIAGE: D-3" in open(find_dossier(wt, "W-9")).read()
+              and sh(wt, "status", "--porcelain", "--untracked-files=no") != "", out3)
+        os.remove(hook)
+        sh(wt, "checkout", "--", ".discovery")
+        ns.direct = None
+        ns.no_compose = False
         ns.items, ns.direct = "D-2", "D-2"
+        ns.report = os.path.join(tmp, "absent.deferred.md")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             prepare(ns)
@@ -489,6 +604,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--env-script")
     ap.add_argument("--path-prepend", action="append")
     ap.add_argument("--pr-json", help="a JSON file standing in for `gh pr view` (tests)")
+    ap.add_argument("--report", help="the /deferred report (default ~/.agentic/runs/<repo>.<ID>.deferred.md), read-only")
+    ap.add_argument("--sign", action="store_true", help="sign the log commit (also on when commit.gpgsign is true)")
     ap.add_argument("--no-compose", action="store_true", help="stop after the branch, triage and log")
     args = ap.parse_args(argv)
     if args.selftest:

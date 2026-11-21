@@ -47,7 +47,7 @@ dossier file it names (`.discovery/dossiers/<ID>-*.md` in `<WT>`), `<S>` is
 
 | Work | One call |
 |---|---|
-| Triage, stacked branch and worktree, change requests, payloads (Steps 1 to 3) | `python3 <S>/fix_deferred_prep.py --root <R> --dossier <ID> [--items D-1,D-3] [--direct D-4] [--test-command '<cmd>'] [--env-script <file>]` |
+| Triage, stacked branch and worktree, change requests, payloads (Steps 1 to 3) | `python3 <S>/fix_deferred_prep.py --root <R> --dossier <ID> [--items D-1,D-3] [--direct D-4] [--report <path>] [--test-command '<cmd>'] [--env-script <file>]` |
 | Ask the owner about one `ask` item | `python3 <S>/ask_owner.py ask --root <R> --dossier <ID> --kind design --question '<text>' --option 'A|<label>|<consequence>' --option 'B|…|…' --option 'C|…|…' --recommend A --blocks '<what waits>' --build-log <DOSSIER>` (prints the question id) |
 | Wait for the answer, only when nothing else can proceed | `python3 <S>/ask_owner.py wait <question id> --build-log <DOSSIER>` |
 | Log a line to the dossier's `## Build log` | `python3 <S>/dossier_edit.py log <DOSSIER> '- DEFERRED-RULING: D-n — <ruling>' '- …'` |
@@ -78,7 +78,15 @@ python3 ${PLUGIN_ROOT}/scripts/fix_deferred_prep.py --root <R> --dossier <ID> [-
 It reads the record (`.discovery/deferred/<ID>.yaml`), triages, makes the
 stacked branch and worktree, logs the lines the dashboard reads
 (`DEFERRED-FIX: branch …`, one `DEFERRED-TRIAGE: D-n → direct — …` per direct
-item), writes the change-request document and routes it to payloads. Pass
+item), writes the change-request document and routes it to payloads. Boundary,
+blast radius, confidence and effort come from the `/deferred` report when the
+runner stored one (`~/.agentic/runs/<repo>.<ID>.deferred.md`, read-only,
+`--report <path>` overrides it) and from the record's own fields for an item the
+report does not cover; its first line says which (`REPORT: …`). The log lines are
+committed through `gate_commit.py` (signed when the repository signs, hooks never
+bypassed): a `LOG-COMMIT REFUSED` line means a hook refused, the lines stay
+uncommitted in the worktree, and you report it instead of retrying with a bypass.
+Pass
 `--test-command` unless the dossier's `GATES:` line names the gates file (the
 payload's `TEST_COMMAND`); it refuses when there is no record, no dossier or an
 unknown D-id: then there is nothing to fix (a run older than the record keeps a

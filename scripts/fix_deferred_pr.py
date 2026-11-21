@@ -168,7 +168,12 @@ def execute(args, say=print) -> int:
             build_records.deferred_set(path, k, "wontfix", None)
         log.append(f"- DEFERRED-FIX: PR {url} — fixed {len(fixed)}, to dossier {len(to_dossier)}")
         say(dossier_edit.log_or_say(wt_dossier, log))
-        prep.commit_log(wt, did, "deferred fix log")
+        okc, why = prep.commit_log(wt, did, "deferred fix log", args.sign)
+        if not okc:
+            # Never bypass a hook: the PR is open and the records are set; only the log lines are uncommitted.
+            say(f"fix_deferred_pr: LOG-COMMIT REFUSED — {why}\n  the lines stay uncommitted in {wt}, which is kept; "
+                f"report it to the owner (the PR {url} is open and complete without them)")
+            return 1
         sh(["git", "-C", wt, "push", "-q", "origin", branch], wt, "push")
         step = "remove"
         sh([sys.executable, os.path.join(HERE, "remove_worktree.py"), "--root", root, wt, "--save"], root, step)
@@ -208,6 +213,7 @@ def selftest() -> int:
         subprocess.run(["git", "clone", "-q", origin, main], check=True, capture_output=True)
         for k, v in (("user.email", "t@example.invalid"), ("user.name", "t")):
             sh(main, "config", k, v)
+        sh(main, "config", "commit.gpgsign", "false")
         os.makedirs(os.path.join(main, ".discovery", "dossiers"))
         with open(os.path.join(main, ".discovery", "dossiers", "W-9-x.md"), "w") as fh:
             fh.write("---\nid: W-9\nbranch: feat/W-9\npr: null\n---\n\n## Build log\n\n- start\n")
@@ -231,7 +237,7 @@ def selftest() -> int:
         with open(prep.state_path(main, "W-9"), "w") as fh:
             json.dump(st, fh)
         ns = argparse.Namespace(root=main, dossier="W-9", fixed=None, test=["D-1=tests/a.py::t"], to_dossier="D-2",
-                                dropped="D-3", suite="suite: ok", gates="gates: ok", dry_run=True)
+                                dropped="D-3", suite="suite: ok", gates="gates: ok", dry_run=True, sign=False)
         buf = io.StringIO()
         rc = execute(ns, say=lambda s: buf.write(s + "\n"))
         text = buf.getvalue()
@@ -268,7 +274,7 @@ def selftest() -> int:
               prep.git(main, "show", "origin/fix/W-9-deferred:.discovery/dossiers/W-9-x.md")[1])
         stack = dict(st, kind="open", stack_base="stub", dossier_pr=7)
         ns2 = argparse.Namespace(root=main, dossier="W-9", fixed="D-1=abc", test=[], to_dossier=None, dropped=None,
-                                 suite="", gates="", dry_run=True)
+                                 suite="", gates="", dry_run=True, sign=False)
         with open(prep.state_path(main, "W-9"), "w") as fh:
             json.dump(stack, fh)
         buf = io.StringIO()
@@ -289,6 +295,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--dropped", help="D-5: items ruled wontfix")
     ap.add_argument("--suite", default="")
     ap.add_argument("--gates", default="")
+    ap.add_argument("--sign", action="store_true", help="sign the log commit (also on when commit.gpgsign is true)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
     if args.selftest:
