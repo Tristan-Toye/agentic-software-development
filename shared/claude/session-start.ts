@@ -5,6 +5,7 @@
 // Agent/Task spawn and Workflow launch since the last checkpoint with its agent or run ID
 // and whether its result arrived, and the tail of the dossier's `## Build log`. Fails open.
 import { summaryText } from "../checkpoint"
+import { learnedRulesFor } from "../ledger"
 import { buildLogTail, loadState, log, readCheckpoints, readInFlight, readInput, runHook, saveState } from "./common"
 import type { InFlight } from "./common"
 
@@ -68,6 +69,11 @@ await runHook(async () => {
   if (checkpoints.length === 0 && (flight?.items.length ?? 0) === 0) return undefined
   const original = task.length > MAX_TASK_CHARS ? task.slice(0, MAX_TASK_CHARS) + " …" : task
   const last = checkpoints.length > 0 ? checkpoints[checkpoints.length - 1].phase.slice(0, 80) : "-"
+  // The learned rules of the phase the run is in: checkpoint results after the compaction say "unchanged"
+  // for this block, so it has to be back in context.
+  const lastCp = checkpoints[checkpoints.length - 1]
+  const rules = lastCp ? learnedRulesFor(process.env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd(), lastCp.phase, lastCp.summary).trim() : ""
+  if (rules) extra += (extra ? "\n\n" : "") + "## " + rules + "\n\n"
   log("restored", input.session_id ?? "-", `${checkpoints.length} checkpoint(s), last "${last}", ${flight?.items.length ?? 0} in flight, ${extra.length} extra chars`)
   return {
     hookSpecificOutput: {

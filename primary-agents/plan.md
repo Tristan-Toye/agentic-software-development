@@ -77,6 +77,8 @@ ends with "Learned rules for plan": the ids and one-line titles of the rules in
 after Phase 0 (`Phase 0 — plan: mode`) so the list reaches you before intake, and
 open the rules that bear on the dossier with `doc_section docs/learned-rules.md
 <id>` instead of reading the ledger whole. The ledger stays the source of truth.
+Later checkpoints with the same list say "unchanged since the previous
+checkpoint" instead of repeating it.
 
 **A question only the owner can settle goes through `ask_owner.py`.** Only
 questions with real product or design impact reach the owner — never a

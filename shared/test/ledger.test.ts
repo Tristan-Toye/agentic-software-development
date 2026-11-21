@@ -4,7 +4,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { MAX_LINE_CHARS, nextPhaseKey, parseLedger, rulesBlock } from "../ledger"
+import { MAX_LINE_CHARS, nextPhaseKey, parseLedger, rulesBlock, rulesOnce } from "../ledger"
 
 const root = join(import.meta.dir, "..", "..")
 const fails: string[] = []
@@ -91,6 +91,32 @@ check("mcp: untagged ledger behaves as before", (await checkpoint(untagged, "Pha
 check("mcp: tagged ledger appends the next phase's rules", tagged.startsWith(plain) && tagged.includes("Learned rules for Phase 4") && tagged.includes("LRN-0011 ") && !tagged.includes("LRN-0013"))
 check("mcp: plan checkpoint lists plan rules", (await checkpoint(withLedger, "Phase 1 — plan: intake", "x\nNEXT: investigate")).includes("LRN-0013 Plan-time rule"))
 check("mcp: `all` rules list at any phase", (await checkpoint(withLedger, "Phase 8 — adrs", "x\nNEXT: Phase 8 continues")).includes("LRN-0012 "))
+
+// rulesOnce: the same block twice in one session is sent once, then a one-line pointer; a new block is sent
+const seen: { block?: string } = {}
+const b4 = rulesBlock(LEDGER, "4"), b9 = rulesBlock(LEDGER, "9")
+check("once: first block is sent", rulesOnce(b4, seen) === b4)
+check("once: same block again is a pointer", rulesOnce(b4, seen).includes("unchanged since the previous checkpoint"))
+check("once: a different block is sent", rulesOnce(b9, seen) === b9)
+check("once: back to the first block is sent again", rulesOnce(b4, seen) === b4)
+check("once: no block, nothing", rulesOnce("", seen) === "")
+
+// one MCP server process = one session: three checkpoints, the rules list and the compaction note only once
+async function checkpoints(dir: string, calls: [string, string][]): Promise<string[]> {
+  const proc = Bun.spawn(["bun", "--no-install", join(root, "shared", "claude", "mcp.ts")], {
+    stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...process.env, CLAUDE_PROJECT_DIR: dir },
+  })
+  calls.forEach(([phase, summary], i) =>
+    proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: i + 1, method: "tools/call", params: { name: "phase_checkpoint", arguments: { phase, summary } } }) + "\n"))
+  proc.stdin.end()
+  const out = await new Response(proc.stdout).text()
+  await proc.exited
+  return out.split("\n").filter(Boolean).map((l) => JSON.parse(l).result.content[0].text)
+}
+const three = await checkpoints(withLedger, [["Phase 4 — wave 1", "x\nNEXT: wave 2"], ["Phase 4 — wave 2", "x\nNEXT: wave 3"], ["Phase 4 — wave 3", "x\nNEXT: Phase 5"]])
+check("session: first checkpoint lists the rules and explains compaction", three[0]?.includes("LRN-0012 ") && three[0].includes("compacts on its own"))
+check("session: same phase again says unchanged, no compaction note", three[1]?.includes("unchanged since the previous checkpoint") && !three[1].includes("LRN-0012 ") && !three[1].includes("compacts on its own"))
+check("session: entering a new phase lists its rules", three[2]?.includes("Learned rules for Phase 5"))
 
 console.log(fails.length ? "FAIL " + fails.join(" | ") : "PASS (all cases)")
 process.exit(fails.length ? 1 : 0)

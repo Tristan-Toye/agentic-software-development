@@ -93,6 +93,9 @@ the ones that bear on your step with `doc_section docs/learned-rules.md <id>`
 (several with `LRN-0073 | LRN-0081`); do not read the ledger whole. No list means
 no rule is tagged for that phase. The ledger stays the source of truth: the rule
 text there binds, and a list line is only a pointer to it.
+The list comes once per phase: a later checkpoint whose list would be the same
+says "Learned rules: unchanged since the previous checkpoint" (the earlier list
+still applies; after a compaction the restore brings it back).
 
 <!-- opencode-only -->
 **Old output fades on its own, under opencode.** The context-guard plugin

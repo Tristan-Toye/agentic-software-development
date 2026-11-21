@@ -75,3 +75,14 @@ export function learnedRulesFor(dir: string, phase: string, summary: string): st
     return ""
   }
 }
+
+// The rules block a checkpoint result carries, once: a block equal to the one this session last saw is
+// replaced by a one-line pointer, so a phase with many checkpoints (rounds, waves) does not re-send the
+// same list each time. `seen` lives as long as the session's MCP server; after a compaction the
+// SessionStart hook restores the current block, so "unchanged" stays true of what is in context.
+export function rulesOnce(block: string, seen: { block?: string }): string {
+  if (!block) return ""
+  if (block === seen.block) return "\n\nLearned rules: unchanged since the previous checkpoint."
+  seen.block = block
+  return block
+}

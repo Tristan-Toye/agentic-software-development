@@ -10,6 +10,7 @@ const tmp = mkdtempSync(join(tmpdir(), "hooks-"))
 // HOME is the temp dir too: the pressure nudge reads ~/.claude/settings.json, which must not be the real one.
 const env = { ...process.env, XDG_DATA_HOME: tmp, HOME: tmp, PHASE_CHECKPOINT_NUDGE_CALLS: "3" }
 delete (env as any).CLAUDE_CONTEXT_GUARD_CONFIG
+delete (env as any).CLAUDE_PROJECT_DIR // the session's own project would win over each case's cwd
 // A CLAUDE_PLUGIN_ROOT inherited from the shell (another plugin's, when run from a Claude Code session) wins over the
 // repo root in pipelineRoot() and broke "reason uses the plugin root".
 delete (env as any).CLAUDE_PLUGIN_ROOT
@@ -323,6 +324,15 @@ check("start: summaries in order", ctx.indexOf("### Phase 1") !== -1 && ctx.inde
 check("start: a refused call is not restored", !ctx.includes("bad phase name"))
 check("start: shared summary text", ctx.includes("## Completed phases (phase_checkpoint)"))
 check("start: only on compact", hook("session-start.ts", start({ source: "startup" })).out === "")
+{
+  // later checkpoint results say "unchanged" for the phase's learned rules, so the restore brings the block back
+  const proj = join(tmp, "rules-proj")
+  mkdirSync(join(proj, "docs"), { recursive: true })
+  writeFileSync(join(proj, "docs", "learned-rules.md"), "### LRN-0101: Wave rule\n<!-- phases: 4 -->\nbody\n\n### LRN-0102: Phase 7 rule\n<!-- phases: 7 -->\nbody\n")
+  const c = json(hook("session-start.ts", start({ cwd: proj })).out)?.hookSpecificOutput?.additionalContext ?? ""
+  check("start: restores the current phase's learned rules", c.includes("## Learned rules for Phase 4") && c.includes("LRN-0101 Wave rule") && !c.includes("LRN-0102"))
+  check("start: no ledger, no rules block", !ctx.includes("Learned rules"))
+}
 check("start: no checkpoints, no output", hook("session-start.ts", start({ transcript_path: workOn })).out === "")
 check("start: subagent no-op", hook("session-start.ts", start({ agent_id: "a1" })).out === "")
 check("start: missing transcript fails open", (() => { const x = hook("session-start.ts", start({ transcript_path: join(tmp, "nope.jsonl") })); return x.code === 0 && x.out === "" })())
@@ -415,7 +425,7 @@ const count = (e: string) => lines.filter((l) => l.split(" ")[1] === e).length
 check("log: timestamped, one line per event", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z (refused|nudge|recorded|restored) \S+ /.test(l)))
 check("log: refusals (six orchestrator, one a runner-style /plan session; six blind-read; eight integration seal; three stateful reads)", count("refused") === 23)
 check("log: nudges (two call-count, two pressure, one call-count in the pressure session)", count("nudge") === 5)
-check("log: restores", count("restored") === 2 + restores)
+check("log: restores (the rules case adds one)", count("restored") === 3 + restores)
 check("log: checkpoints recorded (the interactive one, and the runner stage's two: a runner stage is an orchestrator now)", count("recorded") === 3)
 
 console.log(fails.length ? "FAIL " + fails.join(" | ") : "PASS (all cases)")
