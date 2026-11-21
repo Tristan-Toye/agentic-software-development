@@ -39,10 +39,11 @@ The dossier's own copy merged with the pull request (committed mode), so the
 stub's copy is the record. Read it from the stub
 (`git show origin/<stub>:.discovery/dossiers/<file>`):
 
-- `status: done` and `pr:` set: nothing to write.
+- `status: done` and `pr:` set (a list of PR URLs, matched by the number
+  taken from each URL): nothing to write.
 - A stacked `/fix-deferred` pull request: its `DEFERRED-FIXED:` lines came
   with it; nothing to write.
-- A discrepancy (status not `done`, `pr:` missing or another number): never
+- A discrepancy (status not `done`, `pr:` missing or listing another PR number): never
   write on the stub. Report it in the note; the owner decides.
 
 Local mode (dossiers not committed): settle the front matter in the local

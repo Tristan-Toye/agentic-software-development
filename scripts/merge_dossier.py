@@ -192,12 +192,11 @@ def dossier_prs(root: str) -> dict[int, str]:
             continue
         fm = m.group(1)
         i = re.search(r"^id:\s*([A-Za-z][A-Za-z0-9]*-\d+)\s*$", fm, re.M)
-        pr = re.search(r"^pr:[ \t]*(.*)$", fm, re.M)
-        if i and pr:   # 79, [79, 80], or the PR's URL (…/pull/79), as /work-on Phase 9 records it
-            val = pr.group(1)
-            nums = re.findall(r"/pull/(\d+)", val) if "/pull/" in val else re.findall(r"(?<![\w.])\d+(?![\w.])", val)
-            for n in nums:
-                out.setdefault(int(n), i.group(1).upper())
+        if i:   # 79, [79, 80], or the PR's URL (…/pull/79), as /work-on Phase 9 records it: dossier_pr reads them all
+            sys.path.insert(0, HERE)
+            from dossier_pr import pr_field
+            for n in pr_field(fm):
+                out.setdefault(n, i.group(1).upper())
     return out
 
 

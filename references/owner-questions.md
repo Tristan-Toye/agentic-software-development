@@ -333,7 +333,7 @@ restarted server answers at once from them while its first scan runs.
     fetches the `stub/*`, `release/*` and `development` remote-tracking refs
     of each main checkout itself, every `ASD_STUB_FETCH_SECS`, default 180,
     0 = off; nothing else moves), mapped by PR
-    number to the dossiers' `pr:` field (or by a fix-branch name). An open PR
+    number to the PR numbers taken from the URLs in the dossiers' `pr:` field (or by a fix-branch name). An open PR
     into the stub does not count. State: `accepting`, `integrating` (stage =
     last `## Step N`/`Round` heading of `.discovery/analysis/stub-*.md`),
     `merged`. Cached 2 min, failures omitted;
@@ -491,7 +491,7 @@ restarted server answers at once from them while its first scan runs.
     logout, a reboot) restarts within two minutes of the dashboard running.
   - **the merge detector** (`merges.ts`): every 2 min, `gh pr list --base <stub>
     --state merged` per open stub. A PR merged since the last look, mapped to
-    its dossier by `pr:` number or the id in its head branch, starts
+    its dossier by the PR number in `pr:` (taken from its URL) or the id in its head branch, starts
     `run_dossier.py <ID> --command after-merge --items <PRs>` once (sonnet);
     a dossier with a live runner waits for the next poll. The first look only
     records a baseline in `<repo>.merges.json`. Only a main checkout counts
@@ -627,7 +627,7 @@ restarted server answers at once from them while its first scan runs.
     **Which in-progress dossiers sit under a stub** (`stubMembers`): one whose
     open PR targets that stub branch (`gh pr list --base <branch> --state open
     --json number,headRefName`, cached 2 min, 10 s timeout; matched by the
-    dossier's `pr:` number, its `branch:` field as the head, or its id in the head branch, repo-scoped;
+    dossier's `pr:` PR numbers (taken from its URLs), its `branch:` field as the head, or its id in the head branch, repo-scoped;
     `plan/...` heads never count); plus a dossier in `building`/`review` (or
     with a live runner) that has no PR yet, under the **accepting** stub (the
     newest open stub with no PR into development, else the newest open stub).

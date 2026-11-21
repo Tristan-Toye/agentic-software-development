@@ -20,7 +20,8 @@ baseline_commit: 3f2611f   # HEAD when the anchors were last checked
 jira: PROJ-142         # null when no ticket exists
 branch: fix/PROJ-142-flush-coalescing
 worktree: ../repo-W-014
-pr: null
+pr: null               # null until a PR exists, then a list of full PR URLs, bottom of a stack
+                       # first: [https://github.com/o/r/pull/83]; readers match by the number in the URL
 blocked_by: []         # dossier IDs that must reach `done` first; a done
                        # blocker stays (removal: blocker done, or `--reason`)
 adrs: []               # ADR IDs this build produced; /work-on fills it
