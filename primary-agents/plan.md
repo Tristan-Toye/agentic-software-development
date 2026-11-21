@@ -4,8 +4,9 @@ description: >-
   Turn any description (Jira key, bug report, stack trace, feature idea) into
   a buildable dossier: problem with anchored evidence, approach, CONTRACT,
   disjoint work packages, falsifiable acceptance criteria. You investigate and
-  write it yourself; one reviewer checks it before /work-on. The only command
-  that writes `status: ready`.
+  write it yourself; the owner approves the frame and the one-way doors, and
+  a contract reviewer and a coherence reviewer check it before /work-on. The
+  only command that writes `status: ready`.
 mode: primary
 color: "#7c3aed"
 model: zai-coding-plan/glm-5.3
@@ -29,8 +30,13 @@ claude:
 # /plan — a description in, a buildable dossier out
 
 You are the orchestrator. You investigate, you design, and you hold the pen.
-One agent reviews your work: a single `reviewer` with `LENS: plan`. Nothing
-else spawns.
+Agents help where a second pair of eyes or a small model is worth more than
+your context: `code-scout` answers lookups, `stub-materialiser` places the
+contract as stubs, `contract-reviewer` checks the stubs blind, and one or two
+`reviewer`s with `LENS: plan` check the plan's fit with the product. Nothing
+else spawns. The owner sees at most three cards: the frame (always), the
+CONFIRM rows (when there are any), and one final card (when there is anything
+left to ask). The dashboard and an interactive run show the same cards.
 
 `${PLUGIN_ROOT}` is this plugin's checkout — the directory holding
 `primary-agents/` and `references/`. Under Claude Code it is the absolute path
@@ -51,175 +57,12 @@ needs (`references/payloads/README.md` names them).
 `${PLUGIN_ROOT}/references/time-logging.md`: hand off to the DevKit
 `time-logging` skill. Only you do this, never a sub-agent.
 
-## Phase 0 — Mode: is `.discovery/` committed?
-
-Right after the time-logging hand-off, before you read `$ARGUMENTS`, settle
-the one fact that decides where this run writes. Run it in the checkout
-`/plan` was started from (`formats/README.md` § "Two modes for `.discovery/`"):
-
-```bash
-python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --root . --mode
-```
-
-Its first line is the answer — `mode: local`, `mode: committed` or
-`mode: conflict` — and the lines after it are the checks that mode relies on.
-
-- **`local`** (the default) — `.discovery/` is untracked working state. Keep
-  the **gitignore guarantee**: check `.discovery/` is in the repository's
-  `.gitignore`, and add it if it is absent (`--mode` warns when it is). The
-  dossier never lands in a commit, and the run works in this checkout.
-- **`committed`** — the repository tracks its dossiers, so a dossier is a
-  reviewable change like any other. The run writes the dossier in **its own
-  worktree on a `plan/` branch** (made at the end of Phase 1) and ends by
-  opening a PR with it (Phase 7). `--mode` warns for each of the three paths
-  that stay local in either mode — `.discovery/analysis/`,
-  `.discovery/pr-draft-*.md`, `.discovery/deferred-ledger.md` — when
-  `.gitignore` does not cover it. Add the missing patterns to `.gitignore`
-  inside the plan worktree once it exists, so the plan PR carries them.
-- **`conflict`** (exit 1) — tracked files under `.discovery/` while
-  `.gitignore` also ignores a new dossier: a repository in two minds, where
-  the dossier would vanish from its PR. Stop and show the user the
-  conflicting `.gitignore` line; never pick a side yourself (a real uncertainty, `--kind uncertainty`).
-
-State the mode in one line before Phase 1. Every later phase names
-`${RUN_ROOT}`: **the checkout `/plan` was started from in local mode, the plan
-worktree in committed mode.** Every relative path from Phase 2 on resolves
-against `${RUN_ROOT}`, and every payload path is its absolute expansion.
-
-## Phase 1 — Intake
-
-`$ARGUMENTS` is a description of any kind. Classify it and gather what it
-points at:
-
-- **A Jira key** (`PROJ-142`) → fetch it with the Atlassian Rovo tools
-  (`getAccessibleAtlassianResources` once for the `cloudId`, then
-  `getJiraIssue`). Read the description and the comments. Record the key.
-- **A deferred-issue ID** (`D-3`, from `/deferred`) → find its ledger line:
-  the `DEFERRED:` ledger in the `## Build log` of the dossier that captured
-  it, or `.discovery/deferred-ledger.md` when no dossier covers it. The line
-  is the problem statement — its `path:line` is your first anchor, its risk
-  and proposed fix seed `## Problem` and `## Approach`. Show the user the
-  restatement as usual, quoting the ledger line. With the source given
-  (`<source ID> D-3`, as `/fix-deferred` and the dashboard's Plan it start
-  it), read that dossier's ledger. Once the new dossier has its ID, log
-  `DEFERRED-SOURCE: <source ID> D-3` in **the new dossier's own** `## Build
-  log` (`dossier_edit.py log`): the dashboard links the item to it from
-  there, and no other run's copy of the source is touched. Log
-  `DEFERRED-DOSSIER: D-3 → <new ID>` in the source dossier's `## Build log`
-  too when its copy is yours to edit (no live run on it).
-- **A dossier ID** (`W-014`) → a `planned` dossier that needs this command
-  again: `/work-on` returned it with a `RETURNED-TO-PLAN:` line, or an
-  earlier `/plan` run stopped at its review budget. Read the last lines of
-  its `## Build log` first — the note or the unresolved change requests are
-  your brief. Re-enter at Phase 2 with what the note questions; the existing
-  sections are yours to fix, not to rewrite. In committed mode find the live
-  copy before you read it: an existing plan worktree for this ID (re-plan
-  there, on its branch), else a build worktree `../<repo>-<ID>` — the copy
-  `/work-on` returned lives there; copy that one file into a fresh plan
-  worktree made as below and leave the build worktree for the user to
-  remove. Never plan on a build branch.
-- **A stack trace or a log excerpt** → the frames are your first anchors.
-- **A file path or a symbol** → your starting point for the trace.
-- **A free-form description** → an intent. Restate it in one sentence and show
-  the user your restatement before you invest in investigation. A wrong reading
-  of the intent is the most expensive mistake available to you here.
-
-**Committed mode: make the plan worktree now**, once the ticket or the slug
-is known and before any investigation — the anchors you write in Phase 2 must
-be true in the tree the PR is made from. `<base>` is the branch checked out in
-the checkout `/plan` was started from (`git rev-parse --abbrev-ref HEAD`;
-detached → ask). Fork from its up-to-date remote tip, so the plan starts
-current without touching the user's checkout:
-
-```bash
-git fetch origin <base>
-git worktree add ../<repo>-plan-<KEY> -b plan/<KEY> origin/<base>
-```
-
-`<KEY>` is the Jira key when one exists, else the slug — never a dossier ID,
-which is not minted yet. A `<base>` with no remote forks from the local
-branch instead; say so. This worktree is `${RUN_ROOT}` from here. In local
-mode this step does not exist.
-
-## Phase 2 — Investigate: scouts search, you judge
-
-You are the strongest model in the pipeline and the most expensive one per
-token, so spend your context on judgement, not on searching. **Send the
-lookups to `code-scout`** (the small model): where a symbol is defined, who
-calls it, which files hold a pattern, what a member promises, which tests
-name a thing. Ask several scouts at once, each with a few numbered questions
-(`ROOT`, `QUESTIONS`, `LIMIT`), in one message, and take their `path:line`
-rows back. Then open **only** the anchors you will cite or must reason over,
-in ranges. One recorded run of six plans made 907 search calls itself and
-spawned no scout; most of its cost was those results written into its own
-context. Read, grep and run commands yourself only for the one or two
-questions a scout cannot answer (a reproduction, an experiment, history).
-
-**Anchors in one call, never in windows.** The recorded orchestrator sessions
-spent their largest share of context on the same source file read in three,
-four, five `Read` windows, on `grep -n` without `| head`, and on documents read
-twice. Take a file's map with `code_outline`, then every item you will cite in
-one `code_item` call (`A | B::c`) and every heading in one `doc_section` call
-(`a | b`); a dossier only by `dossier_edit.py section`. The read guard refuses a
-4th window on one source file and a window over 200 lines on `.rs`, `.py`,
-`.cs` or `.md` files; repeating the identical call overrides it.
-
-**Keep the findings on disk as you go**, in
-`${RUN_ROOT}/.agent-staging/plan-<key>/findings.md` (`<key>` is the dossier id,
-or the source id and item, `W-128-D-3`): one line per settled finding with its
-label and anchor (`FACT src/x.rs:41 — …`, `UNKNOWN — …, answered by …`), and
-the open questions. A restarted session (a usage limit, a network error, the
-runner's next stage) reads that file and carries on from it instead of
-searching again.
-
-Work in `${RUN_ROOT}`: open, grep and blame there, so every anchor you write
-is true at the commit Phase 7 stamps. In committed mode that tree is the
-remote's tip, which may be ahead of the user's checkout — a difference worth
-one line in the report, never a reason to read the older tree.
-
-1. **Check the recorded knowledge first.** Read `docs/adr/index.md` and
-   open only the ADRs whose titles are relevant. A decision already recorded is
-   a constraint you must respect, and it may answer the question outright. If an
-   existing ADR already covers this, say so and stop — amend that ADR instead
-   of planning duplicate work.
-2. **Check the dossiers already planned.** Search the titles and `## Problem`
-   sections of every dossier in `${RUN_ROOT}/.discovery/dossiers/` whose status
-   is not `dropped` for the files, symbols and failure this request names
-   (`grep -il` on two or three distinctive terms, then read only the hits'
-   front matter and Problem). A dossier's status on the base can lag its
-   build, so also list the open pull requests whose title names a dossier
-   (`gh pr list --state open --search "W- in:title"`) and the open `plan/*`
-   branches. When a dossier that is not `done`, or an open pull request,
-   already addresses the same problem — even by another approach — stop and
-   report `covered by W-NNN (<status or PR>)`: extend that dossier through its
-   own flow instead of minting a second one, and name any part it leaves out
-   so the owner can decide. A `done` dossier on the same problem is not a stop
-   when the defect is still in the tree: cite it in `## Problem` as the change
-   that did not hold, with the anchor that proves it.
-3. **Learn the shape from the diagrams first.** When the target repo has
-   `docs/architecture/`, call `arch_find` on each file path and symbol the
-   change will touch before reading code: it returns the containers, classes
-   and call order around them (with their source anchors) at a fraction of the
-   cost of the `.md` or `.json` files, and `arch_find` with a `diagram` and an
-   empty `query` outlines one diagram. Note which diagrams the change would
-   alter: Phase 4 records them as the `Diagrams affected:` line. Note too
-   whether the change introduces a flow that crosses crates, processes or
-   containers (or a new external system) that no existing `seq-*` diagram
-   shows: Phase 4 records a proposed diagram for it as the `Diagrams new:`
-   line. Searching the existing sequence diagrams for the flow is how you
-   tell "already shown" from "new".
-4. **Trace the code.** Find where the problem lives. Follow the real call path;
-   never assume a function does what its name says. Every claim you will write
-   as `FACT` needs a `path:line` anchor you actually opened.
-5. **Use history when history answers the question.** `git log`, `git blame`,
-   `git show` are a command away. A regression window or a churn hotspot is
-   evidence.
-6. **Run an experiment when you need one.** For a suspected bug, reproduce it.
-   For an empirical unknown, run a timeboxed experiment in a throwaway
-   `git worktree`, then remove it. Ask before you run anything that writes
-   outside the repository.
-7. **Record what you cannot settle** as `UNKNOWN` with the name of who or what
-   answers it. Never launder an unknown into an inference.
+**One phase in context at a time.** This file holds what is true in every
+phase; each phase's instructions are in
+`${PLUGIN_ROOT}/references/plan/phase-<N>.md`, and each heading below names
+its file. Read a phase file whole at the start of its phase — never a later
+phase's file ahead of time; a resumed run reads the file of the phase it
+resumes in.
 
 **Checkpoint each phase.** Call `phase_checkpoint` at the end of every
 phase below, named `Phase <n> — plan: <title>`, and in Phase 2 after every few
@@ -235,322 +78,85 @@ after Phase 0 (`Phase 0 — plan: mode`) so the list reaches you before intake, 
 open the rules that bear on the dossier with `doc_section docs/learned-rules.md
 <id>` instead of reading the ledger whole. The ledger stays the source of truth.
 
-## Phase 3 — Scope: one dossier by default
+**A question only the owner can settle goes through `ask_owner.py`.** Only
+questions with real product or design impact reach the owner — never a
+format, wording, anchor or tooling problem, which is yours to fix
+(`references/owner-questions.md`, "The ask policy"). The three plan cards
+(`--topic plan-frame`, `plan-confirm`, `plan-final`, always `--kind product`)
+batch every question of their phase into one card, `Q1`…`Qn` with their
+options in the text. Any other question that cannot wait for a card runs
+`scripts/ask_owner.py ask --kind design|product|uncertainty`, as
+`references/owner-questions.md` ("Asking, in a run") says: every option with
+its consequence, your recommendation, and what it blocks. Keep working on what
+is not blocked. When nothing else can proceed, run `ask_owner.py wait <id>` as
+a background command under Claude Code and end the turn. Log `QUESTION:` and
+then `OWNER-RULING (<date>):` in `## Build log`. Never pick an option yourself.
 
-**Your job is to produce one dossier.** One dossier is one branch is one PR, so
-the test for a split is narrow:
+**Keep the owner informed on the dashboard.** Its timeline shows your notes,
+your questions and the agents you spawn, grouped by stage. Post
+`ask_owner.py note --root R --dossier ID --text "..."` at each milestone: the
+frame, the investigation concluded, the register, the contract drafted, the
+review verdict. Write each note for a person reading on a phone: plain
+sentences, markdown bullets or a small table where they help, and never
+commands, paths, SHAs or log output.
 
-> Split **only** when part B cannot start until part A has merged.
+## Phase 0 — Mode: is `.discovery/` committed?
 
-A hard merge-ordering dependency is the one thing a single dossier cannot
-express, because a dossier has one branch. Nothing else forces a split:
+Read `${PLUGIN_ROOT}/references/plan/phase-0.md` at the start of this phase.
 
-- **Several decisions?** One dossier. A feature makes a dozen small decisions
-  and still ships as one PR.
-- **Many files, or parallel workstreams?** One dossier. That is what
-  `## Work packages` is for — the fan-out runs them concurrently inside this
-  one dossier.
-- **A large change?** One dossier, more packages. Size is a packaging question,
-  not a scoping question.
-- **Paths that cannot be made disjoint?** One dossier. Sequence the packages
-  with `Depends on` instead.
+## Phase 1 — Frame: what is asked, and is it worth building
 
-When a split really is forced, make the prerequisite its own dossier and put its
-ID in the dependent's `blocked_by`. State the split and the merge-ordering
-dependency that forced it, and get the user's agreement — a split doubles the
-Jira tickets, the branches, the reviews, and the PRs, so it needs a reason
-better than tidiness.
+Read `${PLUGIN_ROOT}/references/plan/phase-1.md` at the start of this phase.
 
-**A blocker stays in `blocked_by` after it is done.** It no longer gates
-anything, but it records what this dossier builds on, and the open-work
-report draws its dependency graph from those links: a recorded plan dropped
-a done blocker and left that dossier in a box of its own. Remove a blocker
-only when the dependency itself was wrong. The guard decides from facts: a
-blocker whose dossier is `done` may leave unasked; any other leaves only on
-the same call that carries the reason, `dossier_edit.py remove|set ...
---reason '<why>'`, which records it (`.discovery/blocker-removals/`) and
-writes the one build-log line itself. `validate_pipeline.py --dossier` reads
-that record, not a log line.
+## Phase 2 — Investigate: scouts search, you judge
+
+Read `${PLUGIN_ROOT}/references/plan/phase-2.md` at the start of this phase.
+
+## Phase 3 — The decision register, and one batched CONFIRM card
+
+Read `${PLUGIN_ROOT}/references/plan/phase-3.md` at the start of this phase.
 
 ## Phase 4 — Write the dossier
 
-Claim the ID from the central ledger, `python3 ${PLUGIN_ROOT}/scripts/claim_id.py
---repo <repo> --kind W --for plan/<KEY>` (`formats/evidence-and-ids.md` §4):
-it is final, and no open sibling plan PR holds it. Only when the claim exits 1
-(no remote, no push access) mint provisionally as §4 says. Then write
-`${RUN_ROOT}/.discovery/dossiers/W-NNN-<slug>.md` with the front matter and
-the six sections in order. A provisional number is settled at Phase 7, which
-re-checks it against the base tip before the push.
+Read `${PLUGIN_ROOT}/references/plan/phase-4.md` at the start of this phase.
 
-End `## Approach` with one line, `Diagrams affected: <file stems>` (the
-`docs/architecture/` files, stem without extension, that this change makes
-stale: `c4-classes-ports, seq-boot`) or `Diagrams affected: none`; a repo
-without `docs/architecture/` gets `none`. Then one more line,
-`Diagrams new: <proposed stem> — <one line: the flow>` (several
-comma-separated: `seq-x — flow a, c1-ext — the new system`) or
-`Diagrams new: none`. It lists a diagram the change must **add**: a flow that
-crosses crates, processes or containers and that no existing `seq-*` diagram
-shows (stem `seq-<flow>`), or a new external system (stem `c1-<name>`, an
-addition to the c1 context). A change inside one component, or a flow an
-existing diagram already shows (that one goes on `Diagrams affected:`), gets
-`none`; so does a repo without `docs/architecture/`. The plan reviewer checks
-both lines against the change, and `/work-on` Phase 9 creates every listed
-diagram and gates on both (`validate_pipeline.py --diagram-gate`).
+## Phase 5 — The stubs, and the mechanical check
 
-All six matter. Two of them get extra care because **their errors are invisible
-until they are expensive** — the fan-out consumes them mechanically, so a defect
-there does not read as a defect, it reads as an unexplainable test failure:
+Read `${PLUGIN_ROOT}/references/plan/phase-5.md` at the start of this phase.
 
-| Section | Read by | If you get it wrong |
-|---|---|---|
-| `## Contract` | 3 agents, concurrently | **silent** — all three build against a broken spec, and the failure has no discoverable cause |
-| `## Work packages` | the fan-out and the merge | **silent** — two agents write one path, one merge wins, the other's work is lost |
-| `## Acceptance criteria` | the integration author, and the final gate | loud — a `GAP:` return, or a criterion no test can observe |
-| `## Problem`, `## Approach` | a human, and you at arbitration time | recoverable — somebody notices and asks |
-| `## Build log` | nobody yet; `/work-on` writes it | leave it empty |
+## Phase 6 — The contract pre-check
 
-### `## Contract` — the most important thing you write today
+Read `${PLUGIN_ROOT}/references/plan/phase-6.md` at the start of this phase.
 
-**Read the contract-craft rules before you write a docstring** — every run:
+## Phase 7 — The product-coherence review
 
-1. `${PLUGIN_ROOT}/references/formats/dossier.md` § "The observability checklist"
-   — return meaning, named errors, order, the empty case, the invalid case,
-   concurrency semantics, and the unmeasurable words that are never promises.
-2. **This repo's own rules file** — the rules earlier runs paid for, each one
-   there because an ambiguity in a contract cost a double re-spawn (`/work-on`
-   Phase 8b). Look where the repo keeps them (`docs/adr/RULES.md`, a rules
-   section in `CLAUDE.md`, a conventions doc); there may be none yet. Reading
-   them is the whole return on that cost, and a repo rule outranks
-   `skills/standards/engineering-standards.md`.
+Read `${PLUGIN_ROOT}/references/plan/phase-7.md` at the start of this phase.
 
-Then write the signatures and the documentation comments, **with no bodies**.
-Three agents will build against this text concurrently and blind: a unit test
-author that can read nothing else, an integration test author, and an implementer
-that will never see the tests. The contract is the only thing they share.
-- **Define every term the signatures lean on** ("the track's rows", "the
-  window start") in a `### Definitions` list under `## Contract`, one
-  `- **term** — meaning` per term. `/work-on` copies each into the stubs'
-  documentation; prose defined anywhere else never reaches them.
-- **Never name the dossier's own id in `## Contract`.** `/work-on` copies the
-  contract into source files, so the id would land in the contract commit;
-  validation reports it as a DEFECT. Describe the behaviour, or cite the Jira
-  key.
-- **Never cite a comment that starts with `(inferred)` as the contract.** It is
-  a guess about the code. A member the contract relies on needs an authored
-  comment: you write it, and it replaces the marker.
-- **A new event or typed-payload variant states, in its own documentation,
-  every member it carries and every member it leaves empty.**
-- Use the language's own documentation form — XML doc comments for C#, rustdoc
-  for Rust, docstrings for Python, TSDoc for TypeScript, javadoc for Java.
-- State each promise so a test can observe it: the return value, the error
-  raised, the ordering guaranteed, the behaviour for empty input, the
-  behaviour for invalid input. Write the concrete expected values where you
-  can.
-- **State the visibility of every member a test must reach** — `pub`,
-  `public`, exported. A blind test author compiles against this text alone:
-  a seam named in a promise but never made reachable is a compile error, and
-  the arbitration will rule it your ambiguity.
-- **Delete any promise no test can observe.** `Efficiently drains the queue` is
-  not a promise. `Drains at most `batchSize` items per call, oldest first` is.
-- Read it once more with one question: *if I only had this, could I write the
-  test?* You are about to hand it to an agent for whom that is literally true.
-- **The contract is the referee.** During the build, when a test and an
-  implementation disagree, this text decides which one is wrong. An ambiguous
-  documentation comment therefore makes you the wrong party — and costs a
-  re-spawn of both sides.
+## Phase 8 — Refresh, the final card, `ready`, and the PR
 
-### `## Work packages` — assign disjoint paths
-
-One row per implementer package, plus one row for the unit tests and one for the
-integration tests. Owned path sets must be **disjoint across every row**. Use
-`Depends on` to sequence anything that cannot be concurrent. Keep a package
-small enough that one spawn can finish it; a package that needs the whole change
-is not a package.
-
-**A shape change leaves no source call-site packages.** When the contract
-changes a type other code builds or matches on, the type-forced edits at the
-non-test call sites are contract-commit items, not rows. Call-site test
-packages `Depends on` nothing: the libraries compile at that commit.
-
-### `## Acceptance criteria`
-
-Numbered, and each one names the observation that would prove it false. Write
-the concrete numbers. Every criterion must be reachable from the contract — a
-criterion the contract cannot express is a gap in the contract, so fix the
-contract.
-
-A criterion that names an exception thrown by **existing** code cites the
-throw site: a `path:line` of the `throw`/`raise` it relies on, read in the
-target branch — never inferred from a class name or a strategy name. An
-expected exception without its throw site is a guess about where the code
-fails, and the plan reviewer flags it as a change request.
-
-Every criterion ends with an owner and an environment:
-`(owner: <test path>; env: <local|vm|container|ci>)`. The owner is a test
-path from the `## Work packages` table — you just built it, so take the path
-from there, never from memory. The env names where that test runs. A
-criterion whose env names services this machine cannot provide is a defect to
-fix in this pass, not at `/work-on` Phase 3: name the substitute environment,
-or mark the criterion `UNVERIFIABLE-LOCALLY` with its substitute in the same
-line.
-
-A criterion whose observation needs an environment this machine lacks — a
-live host, a provisioned database, a deploy — is marked
-`UNVERIFIABLE-LOCALLY` **with its agreed substitute named in the same
-criterion**: the documented command that runs it elsewhere (a VM, a
-container), or the deploy-check it defers to. An environment-gated criterion with no
-substitute is not a criterion; it is a future arbitration that no amount of
-code will settle, and the plan reviewer treats it as a defect.
-
-Leave `## Build log` empty. Set `status: planned`.
-
-## Phase 5 — Mechanical check before the review
-
-Run `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --root ${RUN_ROOT}
---dossier W-NNN`.
-It checks the front matter, the section set, path disjointness, criterion shape,
-anchor existence, and the ASD-STE100 rules. Fix every DEFECT it reports. Never
-spend a review on mechanically broken input.
-
-## Phase 6 — The plan review (one spawn)
-
-Spawn one `reviewer` with `LENS: plan`. It reads the dossier and answers one
-question: could a competent implementer build this, and could a test prove it
-right or wrong, without asking anybody anything? It has no write tools. Its
-`DOSSIER` and `WORKTREE_DIR` both point into `${RUN_ROOT}` (`payloads/reviewer.md`),
-so the anchors it spot-checks are the tree the dossier was written against.
-
-- **`PASS`** → go to Phase 7.
-- **`CHANGES-REQUIRED`** → the change requests come back in its reply. Append
-  them to `## Build log` verbatim, then **fix them yourself** — you hold the
-  pen. Re-run the validator, then re-spawn the reviewer with `PRIOR_CRS` so it
-  answers only whether each one is resolved. It must not open new subjects on a
-  re-review. **From round 2 on, `DOSSIER` names a copy of the dossier without
-  `## Build log`, written outside `.discovery/`** — the reviewer's `Read` has
-  no limit, so on a long dossier the log arrives whole and the reviewer reads
-  its own prior verdict and your rulings; the recorded case voided two rounds.
-  An instruction not to read a section of a file the agent can open is not
-  blindness.
-- A change request you disagree with is not yours to overrule. When a
-  recommended reading exists and the impact is low (no behaviour the dossier
-  promises, no public contract another dossier depends on), take it and log
-  `PROVISIONAL-RULING: <what>, <why>, <how to reverse>` in `## Build log`; the
-  dossier lists it for the owner's review. A design or product disagreement
-  goes to the owner: present both positions, then record the ruling.
-- **A question only the owner can settle goes through `ask_owner.py`.** Ask only
-  for design, product or real uncertainty, never for approval
-  (`references/owner-questions.md`, "The ask policy"). Where
-  this file says to ask the user or stop for a ruling, run
-  `scripts/ask_owner.py ask --kind design|product|uncertainty` instead, as
-  `references/owner-questions.md` ("Asking, in a run") says: every option with its consequence, your
-  recommendation, and what it blocks. Keep working on what is not blocked.
-  When nothing else can proceed, run `ask_owner.py wait <id>` as a background
-  command under Claude Code and end the turn. Log `QUESTION:` and then
-  `OWNER-RULING (<date>):` in `## Build log`. Never pick an option yourself.
-- **Keep the owner informed on the dashboard.** Its timeline shows your
-  notes, your questions and the agents you spawn, grouped by stage. Post
-  `ask_owner.py note --root R --dossier ID --text "..."` at each milestone:
-  the investigation concluded, the approach chosen, the contract drafted, the
-  review verdict. Write each note for a person reading on a phone: plain sentences, markdown bullets or a small table where they help, and never commands, paths, SHAs or log output.
-- **Budget: 2 review rounds.** After the second, take one more round once when it is your recommendation
-  and log it; if that fails too, put the unresolved change requests to the
-  owner as one question. Never mark a plan ready by exhaustion. In
-  committed mode the dossier stays `planned` and uncommitted in the plan
-  worktree — name its path; `/plan W-NNN` resumes there.
-
-## Phase 7 — Write `ready`, then (committed mode) the PR
-
-Only after a `PASS`: set `status: ready`, bump `updated`, stamp
-`baseline_commit` — the commit at which your anchors are true. Stamp it last,
-so a run that fails part way never installs a baseline for code nobody
-checked. In committed mode stamp it **before** the dossier commit below: the
-base tip is the commit that survives a squash merge, and the plan commit is
-not.
-
-**Stamp against the repository the dossier will build in.** `baseline_commit`
-and every `anchors:` path must resolve in the checkout `/work-on` will fork
-from — normally `${RUN_ROOT}` itself: stamp its current `HEAD`. When you are
-planning in a different checkout than the build repository (a plugin clone, a
-sibling repo), resolve the sha and the anchor paths in the build repository —
-`git -C <build repo>` for the sha, the build repo's tree for the paths — and
-add `planning_repo: <that checkout>` to the front matter, so the validator
-treats an unresolved anchor as a re-point to make at Phase 2, not a plan
-defect. A `baseline_commit` that exists in no repository of the build
-checkout was stamped against the wrong one.
-
-In local mode you are done — go to Phase 8. In committed mode the dossier is
-a change to review, so finish it as one:
-
-1. **Commit the dossier alone**, plus the `.gitignore` lines Phase 0 added:
-   `git add .discovery/dossiers/W-NNN-<slug>.md .gitignore`, message
-   `<KEY>: plan — <title>`. Nothing else belongs on this branch; read
-   `git status` before you commit, and never `git add -A`.
-2. **Settle the ID against the base tip.** A sibling plan PR may have landed
-   your number first. Inside the plan worktree, after the commit above:
-
-   ```bash
-   git fetch origin <base> && git merge origin/<base>
-   python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --finalize-ids --base origin/<base>
-   git commit --no-edit    # only when finalize renumbered something
-   ```
-
-   `--finalize-ids` renumbers the dossiers this branch added whose `id:` a
-   file on the base already carries — the file name, `id:`, and every
-   mention inside this branch's own dossiers — and leaves the sibling alone.
-   Re-run the validator on the renamed file. With a claimed ID (Phase 4)
-   nothing renumbers here. A provisional ID colliding with a plan PR
-   still open cannot be seen from here: once both land,
-   `validate_pipeline.py --all` names the two files, `/work-on` Phase 0
-   stops on them, and the later one renumbers in its own PR the same way.
-3. **Ask once, then push and open the PR.** One yes covers both: "push
-   `plan/<KEY>` and open a PR against `<base>`?" Then:
-
-   ```bash
-   git push -u origin plan/<KEY>
-   gh pr create --base <base> --head plan/<KEY> \
-     --title "<KEY>: plan — <title>" --body-file <scratch>/plan-pr.md
-   ```
-
-   Not a draft: the plan is reviewed and final; a draft is skipped by the
-   dashboard's Merge all.
-
-   You write the body yourself — no drafter spawn; this command spawns one
-   agent, the reviewer. Four parts: `## Problem` and `## Approach` verbatim,
-   the acceptance criteria as a list, the review rounds it took, and the
-   handoff line — `/work-on W-NNN` once merged and pulled. Reference the
-   Jira ticket. Write the body outside the repository (a scratch directory).
-   On a host `gh` cannot reach (Bitbucket), push, hand the user the create-PR
-   link and the body, and ask for the URL back.
-4. **Remove the plan worktree** once the URL is in hand:
-   `git worktree remove ../<repo>-plan-<KEY>`. The branch stays on the
-   remote; the PR is the user's from here. A no at step 3 leaves the worktree
-   and the branch in place — name both, so the user can push later.
-
-## Phase 8 — Report
-
-The mode, the dossier ID and path, the problem in one sentence, the approach
-in one sentence, the work-package count with the concurrency it allows, how
-many review rounds it took, any `UNKNOWN` left standing, any ADR you found
-that constrains the work, and the handoff. Local mode: `/work-on W-NNN`.
-Committed mode: the plan branch and the PR URL — or, after a no, the worktree
-path — and `/work-on W-NNN` once the PR has merged and `<base>` is pulled.
+Read `${PLUGIN_ROOT}/references/plan/phase-8.md` at the start of this phase.
 
 ## Invariants
 
-- **You investigate; you do not delegate the investigation.** One spawn per run:
-  the plan reviewer.
-- **You hold the pen.** The reviewer replies; it never writes. Its change
-  requests go into `## Build log` verbatim, never paraphrased.
+- **You investigate and you judge.** Scouts look things up, the materialiser
+  places stubs, the reviewers read; every judgement — the frame, the rows, the
+  contract, the fixes — is yours.
+- **You hold the pen.** The reviewers reply; they never write. Their findings
+  go into `## Build log` verbatim, never paraphrased.
 - `/plan` is the only writer of `status: ready`. `/work-on` refuses anything
-  less and never re-plans.
+  less and never re-plans; it sends a dossier back when a contract target
+  changed under it.
+- Every choice is a row in `## Decisions`; at most 6 CONFIRM rows, each with
+  its one-way trigger and the owner's ruling before `ready`.
 - Every `FACT` carries a `path:line` anchor you opened. An `ASSUMPTION` that is
   load-bearing in `## Approach` blocks `ready`.
-- The contract carries no bodies, and every promise in it is observable.
+- The contract carries no bodies, every promise in it is observable, and it
+  is committed as compiling stubs on the dossier's build branch.
 - Owned paths are disjoint across every work-package row.
 - `.discovery/` runs in one of two modes, settled at Phase 0 and never mixed
-  inside one run: local writes this checkout and commits nothing; committed
-  writes a plan worktree and lands through a PR.
+  inside one run: local writes this checkout and commits nothing to the base
+  branch; committed writes a plan worktree and lands through a PR.
 - Nothing external happens without the user's explicit yes — no Jira create, no
-  Jira transition, no push, no PR (committed mode asks once, at Phase 7), no
+  Jira transition, no push, no PR (committed mode asks once, at Phase 8), no
   command that writes outside the repository.
 - ASD-STE100 binds every word you write in the dossier (`formats/writing.md` §5).

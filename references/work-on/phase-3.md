@@ -243,6 +243,28 @@ be constructible without invoking the subject.
    its concrete example. With no library, tag nothing. `check_payload.py`
    warns on an unknown kind, a missing `domain:`, or a tag with no library.
 
+**A contract `/plan` already reviewed — re-review only what changed.** When
+`.discovery/contract-review/<ID>.json` exists beside the live dossier (`/plan`
+Phase 6 wrote it, with one hash per contract member), compare first:
+
+```bash
+python3 ${PLUGIN_ROOT}/scripts/plan_flow.py hashes --root <live dossier's root> --dossier <ID> --diff
+```
+
+- `re-review: none` → no member changed since the plan's review. Do not
+  spawn; record the current contract commit as reviewed
+  (`dossier_edit.py set <dossier> 'contract_review=<contract commit SHA>'`)
+  and log `CONTRACT-REVIEW: none changed since the plan review — <the
+  json's sha> (plan_flow.py hashes)`, so the skip stays auditable.
+- `re-review: <members>` → spawn `contract-reviewer` as below with
+  `CONTRACT_PATHS` limited to the files that hold those members and the
+  members that use them; the unchanged rest keeps the plan's verdict. Log
+  `CONTRACT-REVIEW: partial — <members>`.
+- `re-review: all (no stored hashes)`, or no json → the full review below.
+
+After the review, run `plan_flow.py hashes … --write` so the next change is
+compared against this one.
+
 **The independent contract review — spawn `contract-reviewer` now, before the
 fan-out.** You wrote the contract and derived the checklist; a defect in
 either is invisible to you for the same reason. `contract-reviewer` never

@@ -64,6 +64,31 @@ returning `/plan` run finds the note and no later `/work-on` run resumes a
 dossier whose plan was found wrong — never a reason to silently re-plan
 inline.
 
+**Refresh the contract target — a `ready` dossier, before the claim.** The
+code may have moved since `/plan` checked it. Run, in this checkout (a
+`plan-branch=` build: pass the path of the copy you read from that branch,
+written to a scratch file, in place of the ID):
+
+```bash
+git fetch origin <target>
+python3 ${PLUGIN_ROOT}/scripts/plan_flow.py refresh --root <this checkout> \
+  --dossier W-NNN --ref origin/<target>
+```
+
+- `refresh: clean`, or `refresh: no baseline_commit` → continue.
+- `anchor gone …` or `anchor moved? …` lines with exit 0 → the contract
+  target holds; log them as `REFRESH: <lines>` and re-check those anchors in
+  Phase 1.
+- **Exit 3, `contract target changed <path>: <members>`** → code the contract
+  names changed after the plan, so the plan is stale: do not build it. Set
+  `status: planned`, append `RETURNED-TO-PLAN: contract target changed —
+  <the lines>` to `## Build log`, and stop. Under the runner end with
+  `RUNNER: REPLAN contract target changed — <paths>`: the runner starts the
+  re-plan itself. Interactively, tell the user to run `/plan W-NNN`.
+
+The refresh runs only on a `ready` dossier (a fresh build); a resume
+(`building`, `review`) is past it.
+
 **Claim it.** Write `updated` and set `status: building` now, before any other
 write. Check `worktree` and `branch` in the front matter: if they are already
 set and the paths exist, this is a resume, so never delete or force-recreate

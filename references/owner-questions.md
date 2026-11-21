@@ -95,6 +95,8 @@ uncertainty` to say which; a question that fits none of them is not asked.
 
 The visual review of a change (`/work-on` Phase 3, the diagram step) is one product question, `--kind product --topic visual-review` (the marker the dashboard canvas requires): does this picture of the change match what the feature should do? The run waits for the answer.
 
+`/plan` asks at most three product questions per plan, each one card on the dashboard and in an interactive run alike, each `--kind product` with its topic: `--topic plan-frame` (Phase 1: go, change or no-go on the frame, plus the product-model draft when the plan bootstrapped one), `--topic plan-confirm` (Phase 3: every CONFIRM row of the decision register on one batched card) and `--topic plan-final` (Phase 8: the product ambiguities, review questions, open BLOCKING findings, new concept overlaps and product-rule proposals; skipped when there are none). These three are the owner's rulings on one-way doors, not approvals, so the approval lint below does not apply to them; format, anchor and validator problems never reach any of them.
+
 **Never ask for approval.** No "approve the plan" or "approve all six
 revisions", no "may I push, open the draft PR or mark it ready" (the standing
 authority below grants them), no "retry or stop" after a transient failure

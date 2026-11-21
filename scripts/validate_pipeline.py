@@ -57,6 +57,16 @@ DOSSIER_SECTIONS = [
     "## Acceptance criteria",
     "## Build log",
 ]
+# Dossiers planned by the /plan v9 flow carry `flow: 2`; `## Decisions` is new there.
+DOSSIER_SECTIONS_FLOW2 = [
+    "## Problem",
+    "## Approach",
+    "## Decisions",
+    "## Contract",
+    "## Work packages",
+    "## Acceptance criteria",
+    "## Build log",
+]
 ADR_SECTIONS = ["## Context", "## Decision", "## Consequences", "## Alternatives"]
 
 DOSSIER_STATUSES = {
@@ -85,8 +95,10 @@ DOSSIER_KEYS = [
     "pr",
     "blocked_by",
     "adrs",
+    "flow",
+    "contract_commit",
 ]
-DOSSIER_OPTIONAL_KEYS = ["planning_repo"]
+DOSSIER_OPTIONAL_KEYS = ["planning_repo", "flow", "contract_commit"]
 ADR_KEYS = [
     "id",
     "title",
@@ -700,13 +712,53 @@ def check_contract(where: str, text: str, rep: Report) -> None:
 CRITERION_OWNER_RE = re.compile(r"\(owner:\s*[\w./-]+\s*;\s*env:\s*[\w-]+\s*\)")
 
 
-def check_criteria(where: str, text: str, rep: Report) -> None:
+EARS_START_RE = re.compile(r"^(?:\*\*[^*]+\*\*:?\s*)?(When|While|If|Where|The)\s")
+FLOW2_FORMS = (
+    "EARS behaviour ('When/While/If..then/Where/The ... shall ...') or "
+    "'Quality scenario:' naming stimulus, response and measure"
+)
+CHECK_LINE_RE = re.compile(r"\bCheck:(?P<rest>.*?)(?:\(owner:|$)")
+
+
+def flow2_criterion_defect(item: str) -> str | None:
+    """The DEFECT text for one flow-2 criterion, or None. EARS or quality scenario;
+    an optional `Check: `<command>`` fitness function must name a command."""
+    m = re.match(r"^\d+[.)]\s+(.*)$", item)
+    body = m.group(1) if m else item
+    num = re.match(r"^(\d+)", item)
+    label = f"criterion {num.group(1)}" if num else "criterion"
+    low = body.lower()
+    ears = EARS_START_RE.match(body)
+    if ears:
+        keyword = ears.group(1)
+        ok = " shall " in f" {low} " and (keyword != "If" or " then " in low)
+    else:
+        stripped = re.sub(r"^\*\*[^*]+\*\*:?\s*", "", body)
+        ok = stripped.startswith("Quality scenario:") and all(
+            re.search(rf"\b{w}\b", low) for w in ("stimulus", "response", "measure")
+        )
+    if not ok:
+        return (
+            f"{label} is neither shape a flow-2 criterion takes: {FLOW2_FORMS}: "
+            f"{item[:70]}"
+        )
+    chk = CHECK_LINE_RE.search(body)
+    if chk and not re.search(r"`[^`\s][^`]*`", chk.group("rest")):
+        return f"{label} has 'Check:' with no command; write Check: `<command>`: {item[:70]}"
+    return None
+
+
+def check_criteria(where: str, text: str, rep: Report, flow2: bool = False) -> None:
     items = [ln.strip() for ln in text.split("\n") if re.match(r"^\s*\d+[.)]\s+\S", ln)]
     if not items:
         rep.defect(where, "## Acceptance criteria has no numbered items")
         return
     for item in items:
         low = item.lower()
+        if flow2:
+            problem = flow2_criterion_defect(item)
+            if problem:
+                rep.defect(where, problem)
         vague = sorted(w for w in VAGUE_CRITERION_WORDS if re.search(rf"\b{w}\b", low))
         concrete = bool(re.search(r"\d", item) or "`" in item)
         if vague and not concrete:
@@ -1060,7 +1112,15 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
     if len(str(fm.get("title", "")).split()) < 4:
         rep.warn(where, "title is very short; state the subject and the change")
 
-    check_headings(where, body, DOSSIER_SECTIONS, rep)
+    flow2 = str(fm.get("flow")) == "2"
+    if "flow" in fm and not flow2:
+        rep.defect(where, f"flow '{fm.get('flow')}' must be the integer 2 (or absent)")
+    cc = fm.get("contract_commit")
+    if cc is not None and not re.fullmatch(r"[0-9a-fA-F]{7,40}", str(cc)):
+        rep.defect(where, f"contract_commit '{cc}' must be a git sha (7-40 hex) or null")
+    check_headings(
+        where, body, DOSSIER_SECTIONS_FLOW2 if flow2 else DOSSIER_SECTIONS, rep
+    )
     check_anchors(where, fm, repo_root, rep)
     check_pr_field(where, path.read_text(), rep)
 
@@ -1086,7 +1146,7 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
         )
     if "## Acceptance criteria" in sec:
         check_criteria(
-            f"{where} ## Acceptance criteria", sec["## Acceptance criteria"], rep
+            f"{where} ## Acceptance criteria", sec["## Acceptance criteria"], rep, flow2
         )
     if "## Build log" in sec:
         check_build_log(f"{where} ## Build log", sec["## Build log"], str(status), rep,
@@ -2212,6 +2272,80 @@ def selftest_finalize() -> bool:
     return ok
 
 
+def selftest_flow2() -> bool:
+    print("\n--- selftest: flow-2 dossiers (sections, front matter, criteria) ---")
+    ok = True
+    own = " (owner: tests/unit/test_flush.py; env: local)"
+    crit_start = GOOD_DOSSIER.index("1. With 3 parallel")
+    crit_end = GOOD_DOSSIER.index("## Build log")
+    base = GOOD_DOSSIER[:crit_start] + "{CRIT}\n\n" + GOOD_DOSSIER[crit_end:]
+    base = base.replace("adrs: []\n---", "adrs: []\nflow: 2\ncontract_commit: null\n---")
+    base = base.replace(
+        "## Contract\n", "## Decisions\n\nD1: one lock guards the drain.\n\n## Contract\n", 1
+    )
+    qs = (
+        "Quality scenario: stimulus 3 parallel flush calls; response one drain; "
+        "measure 0 duplicate writes."
+    )
+    cases = [
+        ("flow-2 with Decisions passes", base, f"1. The queue shall drain once per batch of 10.{own}", True),
+        ("EARS When", base, f"1. When `flush` is called, the queue shall drain.{own}", True),
+        ("EARS While", base, f"1. While a drain runs, the queue shall hold new items.{own}", True),
+        ("EARS If..then", base, f"1. If `batch_size` is 0, then `flush` shall raise ValueError.{own}", True),
+        ("EARS If without then fails", base, f"1. If `batch_size` is 0, `flush` shall raise ValueError.{own}", False),
+        ("EARS Where", base, f"1. Where the store is remote, `flush` shall retry 3 times.{own}", True),
+        ("EARS bold label", base, f"1. **Drain:** The queue shall drain 10 items.{own}", True),
+        ("EARS without shall fails", base, f"1. When `flush` runs, the queue drains.{own}", False),
+        ("EARS bad opener fails", base, f"1. With 3 calls, the queue shall drain 1 time.{own}", False),
+        ("quality scenario passes", base, f"1. {qs}{own}", True),
+        (
+            "quality scenario without measure fails",
+            base,
+            f"1. Quality scenario: stimulus 3 calls; response one drain `x`.{own}",
+            False,
+        ),
+        ("contract_commit sha accepted", base.replace("contract_commit: null", "contract_commit: 3f2611f"),
+         f"1. The queue shall drain 10 items.{own}", True),
+        ("contract_commit junk fails", base.replace("contract_commit: null", "contract_commit: zzz"),
+         f"1. The queue shall drain 10 items.{own}", False),
+        ("Check with command passes", base, f"1. The queue shall drain 10 items. Check: `pytest -q`{own}", True),
+        ("Check with empty command fails", base, f"1. The queue shall drain 10 items. Check: ``{own}", False),
+        ("Check with no command fails", base, f"1. The queue shall drain 10 items. Check:{own}", False),
+        ("flow-2 criterion without owner still fails", base, "1. The queue shall drain 10 items.", False),
+    ]
+    no_decisions = base.replace("## Decisions\n\nD1: one lock guards the drain.\n\n", "")
+    cases.append(
+        ("flow-2 missing Decisions fails", no_decisions,
+         f"1. The queue shall drain 10 items.{own}", False)
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "src").mkdir()
+        (root / "src" / "flush.py").write_text("a\nb\nc\nd\n")
+        dd = root / ".discovery" / "dossiers"
+        dd.mkdir(parents=True)
+        for name, text, crit, want_pass in cases:
+            f = dd / "W-014-flow2.md"
+            f.write_text(text.replace("{CRIT}", crit))
+            rep = validate_dossier(f, root)
+            passed = (not rep.defects) == want_pass
+            ok = ok and passed
+            print(f"{'ok  ' if passed else 'FAIL'}  flow-2: {name}")
+            if not passed:
+                print("      " + "; ".join(rep.defects))
+        f = dd / "W-014-old.md"
+        f.write_text(GOOD_DOSSIER)
+        rep = validate_dossier(f, root)
+        passed = not rep.defects
+        ok = ok and passed
+        print(f"{'ok  ' if passed else 'FAIL'}  flow-2: old dossier without Decisions still passes")
+        f.write_text(GOOD_DOSSIER.replace("adrs: []\n---", "adrs: []\nflow: 3\n---"))
+        passed = bool(validate_dossier(f, root).defects)
+        ok = ok and passed
+        print(f"{'ok  ' if passed else 'FAIL'}  flow-2: flow other than 2 fails")
+    return ok
+
+
 def selftest() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -2483,6 +2617,7 @@ def selftest() -> int:
         )
 
         finalize_ok = selftest_finalize()
+        flow2_ok = selftest_flow2()
         pre_fanout_ok = selftest_pre_fanout()
         pre_fanout_local_ok = selftest_pre_fanout_local()
         visual_ok = selftest_visual_review()
@@ -2503,6 +2638,7 @@ def selftest() -> int:
                 and deferred_clean
                 and caught_dup
                 and finalize_ok
+                and flow2_ok
                 and pre_fanout_ok
                 and pre_fanout_local_ok
                 and visual_ok

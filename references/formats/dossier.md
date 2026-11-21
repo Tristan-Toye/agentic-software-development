@@ -25,6 +25,10 @@ pr: null               # null until a PR exists, then a list of full PR URLs, bo
 blocked_by: []         # dossier IDs that must reach `done` first; a done
                        # blocker stays (removal: blocker done, or `--reason`)
 adrs: []               # ADR IDs this build produced; /work-on fills it
+flow: 2                # the /plan v9 flow wrote it: `## Decisions` present, criterion
+                       # shapes enforced; absent on older dossiers
+contract_commit: 9c1e0d4   # the stubs commit on `branch:`; /plan Phase 5 sets it,
+                       # /work-on Phase 2 cherry-picks it; null when there is none
 ---
 ```
 
@@ -57,12 +61,47 @@ whole documents never land in the dossier, only their outcomes as lines.
 |---|---|---|---|
 | 1 | `## Problem` | What is wrong or missing, with evidence labels. | `/plan` |
 | 2 | `## Approach` | One sentence, then the reasons. Then the rejected options. Last lines: `Diagrams affected: <file stems of docs/architecture/, comma-separated>` or `Diagrams affected: none`. Then `Diagrams new: <proposed stem> — <one line: the flow>` (comma-separated for several) or `Diagrams new: none`: a diagram the change must add (a flow across crates, processes or containers that no existing sequence diagram shows, or a new external system). | `/plan` |
-| 3 | `## Contract` | Signatures and documentation comments. No bodies. | `/plan`, then `/work-on` until the fan-out |
-| 4 | `## Work packages` | Table: package, owned paths, depends on. | `/plan`, then `/work-on` until the fan-out |
-| 5 | `## Acceptance criteria` | Numbered. Each one falsifiable. | `/plan` |
-| 6 | `## Build log` | Append-only: spawns, merges, arbitrations, rounds, SHAs. | `/work-on` |
+| 3 | `## Decisions` | The decision register: one row per choice the plan makes (`flow: 2` only). | `/plan`; the owner's rulings land in its `Ruling` column |
+| 4 | `## Contract` | Signatures and documentation comments. No bodies. | `/plan`, then `/work-on` until the fan-out |
+| 5 | `## Work packages` | Table: package, owned paths, depends on. | `/plan`, then `/work-on` until the fan-out |
+| 6 | `## Acceptance criteria` | Numbered. Each one falsifiable. | `/plan` |
+| 7 | `## Build log` | Append-only: spawns, merges, arbitrations, rounds, SHAs. | `/work-on` |
 
-### Who owns sections 3 and 4, and when
+A dossier without `flow: 2` (planned before the v9 flow) has no `## Decisions`
+section; the validator accepts both layouts and keys the check on `flow`.
+
+### `## Decisions` — the decision register
+
+Every choice the plan makes is a row, written before the contract
+(`/plan` Phase 3), so each one-way door is visible before anything is built on
+it:
+
+```markdown
+| ID | Kind | Choice | Why | Trigger or where | Ruling |
+|---|---|---|---|---|---|
+| R-PINS | DECIDE | postgres:16.4 pinned in compose | matches ADR-0007 | ADR-0007 | — |
+| R-BOUNDS | CONFIRM | max 64 queued items per tenant; total = tenants x 64 | the flush buffer is in memory | one-way once tenants rely on the cap | approved 2026-11-21 |
+| D-03 | FIX | the reload path bypassed the guard; routed through it | one right fix | WP P2 | — |
+| D-04 | FYI | the old helper stays for the CLI | — | — | — |
+```
+
+- **Kind** is one of `CONFIRM` (a one-way door: the owner rules on it on the
+  plan's CONFIRM card), `DECIDE` (a two-way door the planner picks and records;
+  the owner may overturn it until `/work-on` starts), `FIX` (a defect with one
+  right fix: the dossier applies it) or `FYI` (recorded only).
+- **Trigger or where**: a `CONFIRM` names its one-way trigger (the event after
+  which undoing it costs a migration, a breaking change, money, or an
+  owner-visible behaviour change); a `FIX` names where the dossier applies it
+  (a contract member or a work package); a `DECIDE` deferral names who decides
+  and when.
+- **Ruling** is the owner's answer to a `CONFIRM` (or an overturned `DECIDE`),
+  copied from the card; `—` until then.
+- Seven rows are mandatory, `n/a, because …` being a valid choice: `R-PINS`,
+  `R-BOUNDS`, `R-STAGES`, `R-NAMES`, `R-WRITERS`, `R-TRUST`, `R-FAILS`. At most
+  six rows are `CONFIRM`. `plan_flow.py register` checks the shape; with
+  `--ready` it also requires a ruling on every `CONFIRM`.
+
+### Who owns the contract and the work packages, and when
 
 `## Contract` and `## Work packages` are the fan-out's two inputs, so they share
 one lifecycle:
@@ -268,6 +307,24 @@ same file are one row, or they are sequenced with `Depends on`.
 Each criterion names the observation that would prove it false. `The flush is
 efficient` is not a criterion. `With 3 parallel FlushAsync calls and 5 queued
 items, the store receives each item one time` is a criterion.
+
+#### Criterion shapes
+
+In a `flow: 2` dossier every criterion takes one of two shapes, and the
+validator rejects any other:
+
+- **EARS**, for behaviour: it starts with `When`, `While`, `If`, `Where` or
+  `The`, and says `shall`; an `If` criterion (unwanted behaviour) also says
+  `then`. `When two flush calls overlap, the queue shall send each item to the
+  store one time.`
+- **Quality scenario**, for performance and reliability: it starts with
+  `Quality scenario:` and names the stimulus, the response and the measure.
+  `Quality scenario: stimulus 1 000 queued items; response one flush; measure
+  under 200 ms at p95 on the CI runner.`
+
+A fitness function is written as a concrete check command on a `Check:` line
+with a non-empty backticked command (`` Check: `cargo test -p flush --
+coalesce` ``): `/work-on` implements it and the gate runs it.
 
 **Every criterion ends with an owner and an environment**, in this shape:
 

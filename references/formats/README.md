@@ -64,7 +64,7 @@ dossier inside a tracked `.discovery/`, and a warning per local-only path
 | `/work-on` writes | This checkout's dossier, by absolute path. | `X`'s copy only, committed on the build branch before every merge and push, so the build record ships inside the build PR. This checkout's copy changes only when a PR merges. |
 | `/overview-dossiers` sees | Every dossier, live. | What has merged; an in-flight dossier lives in `../<repo>-<ID>` or `../<repo>-plan-<KEY>`, and both the chat report and the HTML (`--worktrees`) read it there. |
 | `/deferred` appends | To the dossier; git sees nothing. | To the dossier — an uncommitted change on the checked-out branch, named in the report and left to the user. |
-| Dossier IDs | Minted per working copy; final. | Provisional until the plan PR merges; `/plan` Phase 7 re-checks against the base tip (`formats/evidence-and-ids.md` §4). |
+| Dossier IDs | Minted per working copy; final. | Provisional until the plan PR merges; `/plan` Phase 8 re-checks against the base tip (`formats/evidence-and-ids.md` §4). |
 
 Three paths stay local in **both** modes: `.discovery/analysis/` (the rendered
 overview), `.discovery/pr-draft-*.md` (the drafter's scratch), and
@@ -85,6 +85,7 @@ Modes never mix inside one run.
 | `adr.md` | § 2 — the ADR: front matter, body, the index contract |
 | `evidence-and-ids.md` | § 3 — evidence labels; § 4 — ID minting |
 | `writing.md` | § 5 — ASD-STE100, the validator's prose subset |
+| `product-model.md` | § 6 — the product model `docs/product/model.md`: concepts, scenarios, product rules |
 
 A section reference elsewhere in this repo now names the file that carries
 that section — e.g. `formats/dossier.md` §1, `formats/evidence-and-ids.md`

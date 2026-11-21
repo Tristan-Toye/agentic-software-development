@@ -109,6 +109,30 @@ This is the step everything else depends on.
    dossier change, which merges cleanly into development whichever lands
    first. The live copy is `X`'s from here, as above.
 
+   **The plan already committed the stubs (`flow: 2` with `contract_commit`
+   set).** `/plan` Phase 5 materialised the contract on the dossier's own
+   `branch:` and recorded that commit; the contract-reviewer checked it
+   there. Reuse it — never materialise a second time. Keep the branch name
+   the dossier records (do not derive a new one):
+
+   - **Local mode:** the branch is in this checkout with the stubs commit on
+     top. Check it out as `X`: `git worktree add ../<repo>-<ID> <branch>`.
+   - **Committed mode:** the plan PR pushed the branch. Fork from the target
+     and bring in the stubs commit (after the plan commits, when stacked):
+
+     ```
+     git fetch origin <target> <branch>
+     git worktree add ../<repo>-<ID> -B <branch> origin/<target>
+     git -C <X> cherry-pick -x <contract_commit>
+     ```
+
+   Log `CONTRACT-REUSED: <contract_commit> from /plan`. A cherry-pick
+   conflict means the target changed a stub file after the plan (the Phase 0
+   refresh did not see it as a contract change): `git cherry-pick --abort`,
+   log `CONTRACT-REUSED: conflict — materialised again`, and materialise
+   from `## Contract` as below. When `contract_commit` is `null` or the
+   dossier has no `flow: 2`, make `X` as above and materialise.
+
 2. **Write the contract into real files.** You write the docstrings that every
    downstream agent builds against, so **read the contract-craft rules first** —
    every run, before you type a documentation comment:
@@ -122,6 +146,12 @@ This is the step everything else depends on.
      earlier runs paid for, each one bought with a row-3 arbitration or a
      `GAP:` return. **This is the read side of Phase 8b.** A repo rule
      outranks `skills/standards/engineering-standards.md`.
+
+    **With the plan's stubs reused (`CONTRACT-REUSED:` above)**, the files
+    already hold the contract: run the build check (`BUILD_CHECK`) on `X`,
+    diff the stubs against `## Contract` for any drift since the plan, and go
+    on to step 3. Everything below about materialising applies only when
+    nothing was reused.
 
     Then materialise `## Contract` in `X` as actual source: the types, the
     signatures, and the documentation comments, in the language's own
@@ -248,7 +278,10 @@ This is the step everything else depends on.
    fan-out: `dossier_edit.py set <dossier> 'hooks=none'` or
    `'hooks=<hook> — <policy>'`; `validate_pipeline.py --pre-fanout` refuses
    without it. Right after the contract commit, record
-   `contract_commit=$(git rev-parse HEAD)` the same way.
+   `contract_commit=$(git rev-parse HEAD)` the same way. With the plan's
+   stubs reused, the cherry-picked commit (plus any step-3 revision, as a
+   commit on top) is the contract commit: record its new sha, so
+   `contract_commit` names the commit on `X` the fan-out forks from.
 
    **Decide the suite runner by coverage, beside the hook policy.** Inspect
    the target's repository instructions, full-suite entry point and CI
