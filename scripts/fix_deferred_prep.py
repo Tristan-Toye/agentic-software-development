@@ -64,6 +64,7 @@ sys.path.insert(0, HERE)
 
 import build_records  # noqa: E402
 import dossier_edit  # noqa: E402
+import dossier_pr  # noqa: E402
 
 CLOSED = ("fixed", "wontfix", "dossier")
 LOC_RE = re.compile(r"([\w./+-]+\.\w+):(\d+)")
@@ -109,7 +110,30 @@ def front(text: str) -> dict[str, str]:
 
 
 def pr_numbers(value: str) -> list[int]:
-    return [int(n) for n in re.findall(r"/pull/(\d+)", value or "")]
+    """Every `pr:` shape (URL list, single URL, bare number, number list, null), through the one parser."""
+    return dossier_pr.pr_numbers(re.sub(r"^\s*-\s*", "", value or "", flags=re.M).replace("\n", ", "))
+
+
+def _names_base(fm: dict[str, str]) -> bool:
+    branch = fm.get("branch", "").strip().strip("`")
+    return bool(pr_numbers(fm.get("pr", ""))) or bool(branch and branch.lower() not in ("null", "none", "~"))
+
+
+def build_copy(root: str, dossier: str, fm: dict[str, str]) -> tuple[dict[str, str], str]:
+    """The front matter to stack on, and where it came from. The main checkout's copy is often the pre-build one
+    (no branch, no PR: the build wrote both on its own branch, which merges into a stub, not into the checkout's
+    branch); then the newest copy on any ref that names a PR or a branch is the build's own."""
+    if _names_base(fm):
+        return fm, "checkout"
+    rel = os.path.relpath(dossier, root)
+    rc, out = git(root, "log", "--all", "--format=%H", "-n", "60", "--", rel)
+    for sha in (out.split() if rc == 0 else []):
+        rc2, text = git(root, "show", f"{sha}:{rel}")
+        if rc2 == 0:
+            cand = front(text)
+            if _names_base(cand):
+                return cand, f"build copy @ {sha[:9]}"
+    return fm, "checkout"
 
 
 def pr_state(root: str, number: int, pr_json: str | None) -> dict:
@@ -335,7 +359,9 @@ def prepare(args) -> int:
     dossier = find_dossier(root, did)
     if not dossier:
         raise Refused(f"no dossier {did}-*.md under {root}/.discovery/dossiers")
-    fm = front(open(dossier, encoding="utf-8").read())
+    fm, source = build_copy(root, dossier, front(open(dossier, encoding="utf-8").read()))
+    if source != "checkout":
+        print(f"fix_deferred_prep: {did}: the checkout's dossier is the pre-build copy; stacking from the {source}")
     base = resolve_base(fm, root, args.pr_json)
     wt, kind, fork = ensure_branch(root, did, base["base"])
     branch = f"fix/{did}-deferred"
@@ -613,6 +639,33 @@ def selftest() -> int:
         check("kanban dossier merged into development: fix branch forks from and targets development",
               rc == 0 and "base development" in buf.getvalue() and "stack base development" in buf.getvalue() and sh(wt2, "branch", "--show-current") == "fix/W-10-deferred"
               and "delivery: kanban" in open(find_dossier(wt2, "W-10")).read(), buf.getvalue())
+        check("pr: every shape gives its numbers (bare, list, URL, block list, null)",
+              pr_numbers("621") == [621] and pr_numbers("[79, 80]") == [79, 80] and pr_numbers("[https://github.com/o/r/pull/7]") == [7]
+              and pr_numbers("  - https://github.com/o/r/pull/5\n  - https://github.com/o/r/pull/6\n") == [5, 6] and pr_numbers("null") == [])
+        # the checkout holds the pre-build copy (no branch, no PR); the build branch's copy names its PR as a bare number
+        sh(main, "checkout", "-q", "stub")
+        pre = "---\nid: W-11\nstatus: ready\nbranch: null\npr: null\n---\n\n## Build log\n\n- planned\n"
+        with open(os.path.join(main, ".discovery", "dossiers", "W-11-pre.md"), "w") as fh:
+            fh.write(pre)
+        sh(main, "add", "-A"); sh(main, "commit", "-q", "-m", "plan W-11"); sh(main, "push", "-q", "origin", "stub")
+        sh(main, "checkout", "-q", "-b", "feat/W-11")
+        with open(os.path.join(main, ".discovery", "dossiers", "W-11-pre.md"), "w") as fh:
+            fh.write(pre.replace("status: ready", "status: done").replace("branch: null", "branch: feat/W-11").replace("pr: null", "pr: 11"))
+        sh(main, "add", "-A"); sh(main, "commit", "-q", "-m", "build W-11"); sh(main, "push", "-q", "origin", "feat/W-11")
+        sh(main, "checkout", "-q", "stub")
+        build_records.atomic_write(build_records.record_path(os.path.join(main, ".discovery"), "deferred", "W-11"),
+                                   json.dumps({"items": [recs[0]], "sources": ["selftest"]}))
+        pj3 = os.path.join(tmp, "pr3.json")
+        with open(pj3, "w") as fh:
+            json.dump({"state": "OPEN", "baseRefName": "stub", "headRefName": "feat/W-11", "url": "u"}, fh)
+        ns3 = argparse.Namespace(**{**vars(ns), "dossier": "W-11", "items": None, "direct": None, "pr_json": pj3, "no_compose": True})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = prepare(ns3)
+        wt3 = worktree_path(main, "W-11")
+        check("pre-build copy in the checkout: the build branch's copy (bare PR number) gives the stack base",
+              rc == 0 and "pre-build copy" in buf.getvalue() and sh(wt3, "branch", "--show-current") == "fix/W-11-deferred"
+              and "pr: 11" in open(find_dossier(wt3, "W-11")).read(), buf.getvalue())
     print("selftest:", "ok" if ok else "FAILED")
     return 0 if ok else 1
 
