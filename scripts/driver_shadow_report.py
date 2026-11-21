@@ -101,6 +101,9 @@ def dossier_log(dossiers_dir: str, dossier: str) -> tuple[list[str], str]:
     """(Build log lines, the file they came from). The worktree copy of a dossier in flight
     can hold lines the main copy has not; the longer log wins."""
     main = os.path.join(dossiers_dir, f"{dossier}.md")
+    if not os.path.isfile(main):   # dossier files are named `<ID>-<slug>.md`; the bare `<ID>.md` is the old layout
+        named = sorted(glob.glob(os.path.join(dossiers_dir, f"{dossier}-*.md")))
+        main = named[0] if named else main
     best: tuple[list[str], str] = ([], "")
     paths = [main]
     try:
@@ -366,6 +369,9 @@ def selftest() -> int:
         dossier(dd, "W-9", ["a"], worktree=wt)
         check("the worktree copy of the dossier is read when its log is longer", len(dossier_log(dd, "W-9")[0]) == 3)
         check("a missing dossier is not fatal", dossier_log(dd, "W-404") == ([], ""))
+        with open(os.path.join(dd, "W-77-some-slug.md"), "w") as fh:
+            fh.write("---\nid: W-77\n---\n## Build log\n- one\n- two\n")
+        check("a dossier named <ID>-<slug>.md is found", dossier_log(dd, "W-77")[1].endswith("W-77-some-slug.md"))
         text = render(rep)
         vp = rep["drivers"]["vr_promote_preview"]["dossiers"][0]
         check("vr_promote_preview: needs human read, built ok vs failed in the detail",
