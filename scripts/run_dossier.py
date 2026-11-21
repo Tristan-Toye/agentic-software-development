@@ -18,6 +18,9 @@ the `result` event ends a turn and the turn's RUNNER: line decides:
     RUNNER: WAITING <id>[,..]   `ask_owner.py wait` runs here (no tokens
                                 spent); the owner's line goes into the same
                                 live process as `OWNER ANSWER|FOLLOWUP <id>: ..`
+    RUNNER: WAITING ci:<pr>[,ci:<pr>..]
+                                `wait_ci.py` runs here (no tokens spent, the slot is free meanwhile); the verdict goes into
+                                the same live process as `CI RESULT <pr>: green|red|timeout <failing checks + log tail>`
     RUNNER: ENV <vm|stack|disk> <detail>
                                 a broken environment (the Lima VM down, a compose service unhealthy, the disk low),
                                 reported instead of asked about; with ASD_STACK_REPAIR=1 (or a /stub run) the runner repairs vm and
@@ -98,6 +101,7 @@ CLAUDE_MD_POINTER = ("- The target repo's own CLAUDE.md is not loaded in this se
 RUNNER_RULES = """\
 You run under the dossier runner and nobody reads the terminal.
 - Ask the owner only through scripts/ask_owner.py, and never wait in the background: keep working on whatever is not blocked; when nothing can proceed, end the turn with the line `RUNNER: WAITING <id>[,<id>...]` and stop. The ids are question ids from ask_owner.py only; a wait on a background command or workflow is not a WAITING line: just end the turn, and Claude Code re-invokes you when it finishes. The runner waits for you and sends the owner's message into this session as `OWNER ANSWER <id>: ...` or `OWNER FOLLOWUP <id>: ...`. A follow-up is the owner's typed message and the question stays open, as a chat, until the owner presses a button: if it is a question, answer it with `ask_owner.py reply <id> --text "..."`; if it reads as an answer or an instruction, reply with your reading and add it as a button, `ask_owner.py reply <id> --text "<what you take it to mean, and what you will do>" --option "D|Confirm: <your reading in a few words>|<what happens>"` (a key the question does not have yet); if it is unclear, reply with your question. When what you recommend changes (a measurement, the owner's point), say so and move the highlighted button with `--recommend <key>` on that reply. Then end the turn with `RUNNER: WAITING <id>` again. Never close a question yourself: only the owner's button does, and every question ends with one.
+- To wait for CI never run `wait_ci.py` yourself in a loop (every call is a full turn): push, then end the turn with `RUNNER: WAITING ci:<pr number>` (several: `RUNNER: WAITING ci:12,ci:13`, one line per PR comes back together; never mix with question ids). The runner runs `wait_ci.py` for you (up to hours, no tokens) and sends `CI RESULT <pr>: green|red|timeout <failing check names and the log tail>` into this session. On `red`, fix and push, then wait again the same way; on `timeout`, wait once more, then ask the owner. Use `wait_ci.py --job-log` / `--rerun-failed` directly only for a one-off read of a log.
 - Never end a turn to wait for a command: run commands in the foreground (raise the Bash timeout up to 10 minutes) or wait for them inside the same turn. A workflow or background task that notifies you later is fine, but say `waiting for <what>` in plain text in that turn (never as a `RUNNER:` line); the runner keeps the session open for its notification.
 - When the auto-mode safety check blocks a call you need, never work around it: ask the owner with `ask_owner.py ask`, quoting the exact command (or path) and what it is for, with options to allow it once, to allow it as a standing rule, or to go without it; carry on with what is not blocked. The dashboard's Blocked card answers that question; an approval names the exact command, so retry it as written.
 - Run every test through scripts/run_tests.py and every gate list through scripts/run_gates.py (`--path-prepend DIR` / `--env-script FILE` for a toolchain off the shell PATH, `--detach` then `--wait ID` for a long run), never through a script or command of your own: their result lines are how the owner's timeline shows a suite going green or red. Run only the tests the command's step names: under /work-on and /fix-deferred with SUITE-MODE `stub`, that is the new and affected tests and the pull request's CI, never the full workspace or `--stack` suite, which only /stub runs.
@@ -418,6 +422,8 @@ NUDGE = ("RUNNER: your last turn ended without a RUNNER: line and nothing has ha
 
 # A question id from ask_owner.py: `<repo>.<ID>.Qn` (or a bare `Qn`).
 QUESTION_ID = re.compile(r"(?:^|\.)Q\d+$")
+# A CI wait: `ci:<pr number>`.
+CI_ID = re.compile(r"^ci:\d+$")
 MARKER = re.compile(r"^RUNNER:\s*(STAGE-DONE|WAITING|DONE|REPLAN|FAILED|ENV)\b[ \t]*(.*)$")
 # A FAILED whose reason says the owner sent the dossier back to /plan is a REPLAN under an older wording.
 REPLAN_WORDS = re.compile(r"\b(sent|send|sending|go(?:es|ing)?)\s+back\s+to\s+/?plan\b|\bre-?plan(?:ned|ning)?\b.*\b(ruling|ruled|owner)\b", re.I)
@@ -2435,6 +2441,58 @@ class Runner:
         self.children.append(p)
         return p
 
+    def dossier_file(self) -> str | None:
+        """The dossier's file (for wait_ci --log), when this run has one."""
+        d = os.path.join(self.root, ".discovery", "dossiers")
+        try:
+            names = sorted(n for n in os.listdir(d) if re.match(re.escape(str(self.dossier)) + r"(-.*)?\.md$", n))
+        except OSError:
+            return None
+        return os.path.join(d, names[0]) if names else None
+
+    def ci_wait(self, prs: list[int]) -> list[tuple[int, str, str]] | str | None:
+        """`RUNNER: WAITING ci:<pr>`: run scripts/wait_ci.py for each PR here, in parallel, without a token spent, and
+        return [(pr, green|red|timeout, compact summary)] once every PR has a verdict (None: the run was stopped; "message": the owner wrote to the run, nothing is lost: the wait restarts).
+        The run's state is `waiting` meanwhile, so the slot is free and the keepalive ping runs, as in an owner wait.
+        wait_ci has no 10-minute cap of its own (that is the agent's Bash limit), so one call waits ASD_CI_TIMEOUT s."""
+        script = os.environ.get("ASD_WAIT_CI_BIN") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "wait_ci.py")
+        timeout = env_num("ASD_CI_TIMEOUT", 5400)
+        log = self.dossier_file()
+        self.save(state="waiting", questions=[], ci=prs)
+        self.event("waiting on CI " + ", ".join(f"#{n}" for n in prs), "waiting")
+        procs: dict[int, subprocess.Popen] = {}
+        for n in prs:
+            cmd = [sys.executable, script, "--pr", str(n), "--timeout", str(timeout)] + (["--log", log] if log else [])
+            procs[n] = subprocess.Popen(cmd, cwd=self.root, env=self.child_env(), stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True)
+            self.children.append(procs[n])
+        out: dict[int, tuple[str, str]] = {}
+        try:
+            while len(out) < len(procs):
+                for n, p in procs.items():
+                    if n not in out and p.poll() is not None:
+                        text = (p.communicate()[0] or "").strip()
+                        verdict = {0: "green", 3: "timeout"}.get(p.returncode, "red")
+                        lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
+                        tail = " | ".join(lines[-int(env_num("ASD_CI_TAIL_LINES", 30)):])[-3000:]
+                        if p.returncode not in (0, 1, 3):
+                            tail = f"(wait_ci exit {p.returncode}) " + tail
+                        out[n] = (verdict, tail)
+                if self.stopping:
+                    return None
+                if read_inbox(self.key, int(self.state.get("inbox_seen") or 0)):
+                    return "message"   # the owner wrote to the run: the caller delivers it, the agent answers and waits again
+                self.keepalive_tick()
+                time.sleep(0.1)
+        finally:
+            self.ka_since = None
+            self.save(ci=[])
+            for p in procs.values():
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
+        return [(n, *out[n]) for n in prs]
+
     def owner_wait(self, ids: list[str]) -> tuple[str, int, str]:
         """Blocks until the first of the questions has an owner line: (id, rc, stdout)."""
         procs = {i: self.ask_cmd("wait", i) for i in ids}
@@ -2814,6 +2872,25 @@ class Runner:
                     return "stopped", ""
                 self.send(f"STUB READY: {branch}. The integrated stub is in development and {branch} is cut from it: "
                           "fork from it and carry on with the step you stopped at.")
+                continue
+            cis = [i for i in ids if CI_ID.match(i)]
+            if cis:
+                if len(cis) != len(ids):
+                    self.send("RUNNER: WAITING mixes ci:<pr> with question ids; wait on one kind per line. "
+                              "End the turn again with only the ids you need first.")
+                    quiet = True
+                    continue
+                res = self.ci_wait([int(i[3:]) for i in cis])
+                if res is None:
+                    return "stopped", ""
+                if res == "message":
+                    self.save(state="running")
+                    self.deliver_inbox()
+                    continue
+                if not self.take_slot(first=True):
+                    return "stopped", ""
+                self.event("CI result: " + ", ".join(f"#{n} {v}" for n, v, _ in res), "running")
+                self.send("\n".join(f"CI RESULT {n}: {v} {t}".rstrip() for n, v, t in res))
                 continue
             qids = [i for i in ids if QUESTION_ID.search(i)]
             if not qids:
@@ -4739,6 +4816,37 @@ def selftest() -> int:
         check("stub breakpoint: waits without a question, then sends STUB READY with the new stub",
               rc == 0 and any(t.startswith("waiting for the stub being integrated") for t in texts("W-39"))
               and any(m.startswith("STUB READY: stub/2026-11-09") for m in msgs(1)) and not any("asked" in t for t in texts("W-39")))
+
+        # ---- the CI breakpoint: the runner runs wait_ci (a fake here), the verdict goes into the live session ----
+        ci_fake = os.path.join(tmp, "wait_ci_fake.py")
+        open(ci_fake, "w").write(
+            "import os,sys\na=sys.argv[1:]\nopen(os.path.join(os.path.dirname(__file__),'ci.args'),'a').write(' '.join(a)+'\\n')\n"
+            "n=int(a[a.index('--pr')+1])\n"
+            "if n==71: print('all green'); sys.exit(0)\n"
+            "if n==72: print('FAIL unit-tests'); print('assert 1 == 2'); sys.exit(1)\n"
+            "if n==74: print('conflicting'); sys.exit(5)\n"
+            "print('still pending'); sys.exit(3)\n")
+        dos_dir = os.path.join(root, ".discovery", "dossiers"); os.makedirs(dos_dir, exist_ok=True)
+        open(os.path.join(dos_dir, "W-43-ci.md"), "w").write("---\nid: W-43\nstatus: ready\n---\n")
+        for dos, prs, want in (("W-43", "ci:71", ["CI RESULT 71: green all green"]),
+                               ("W-44", "ci:72", ["CI RESULT 72: red FAIL unit-tests | assert 1 == 2"]),
+                               ("W-45", "ci:73", ["CI RESULT 73: timeout still pending"]),
+                               ("W-46", "ci:71,ci:72,ci:74", ["CI RESULT 71: green", "CI RESULT 72: red", "CI RESULT 74: red (wait_ci exit 5) conflicting"])):
+            scenario([{"turns": [[{"final": f"pushed\nRUNNER: WAITING {prs}"}], [{"final": "RUNNER: DONE"}]]}])
+            env.update(ASD_WAIT_CI_BIN=ci_fake, ASD_CI_TIMEOUT="123")
+            p = start(dos)
+            rc = p.wait(timeout=60)
+            env.pop("ASD_WAIT_CI_BIN"); env.pop("ASD_CI_TIMEOUT")
+            sent = "\n".join(m for m in msgs(1) if m.startswith("CI RESULT"))
+            check(f"ci breakpoint {prs}: waits without a question and sends {' / '.join(w.split(':')[0] + ':' + w.split(':')[1] for w in want)}",
+                  rc == 0 and all(w in sent for w in want) and any(t.startswith("waiting on CI #") for t in texts(dos))
+                  and not any("asked" in t for t in texts(dos)))
+        ci_args = open(os.path.join(tmp, "ci.args")).read()
+        check("ci breakpoint: wait_ci gets --pr, the long --timeout and the dossier as --log",
+              "--pr 71 --timeout 123.0 --log " + os.path.join(dos_dir, "W-43-ci.md") in ci_args)
+        check("ci breakpoint: mixing ci: with a question id is refused, the session carries on",
+              (scenario([{"turns": [[{"final": "RUNNER: WAITING ci:71,repo.W-47.Q1"}], [{"final": "RUNNER: DONE"}]]}]) or True)
+              and start("W-47").wait(timeout=60) == 0 and any("mixes ci:" in m for m in msgs(1)))
 
         # ---- a completion notice the CLI dropped is sent on, so a waiting session wakes ----
         tdir2 = os.path.join(tmp, "projects2", "-repo"); os.makedirs(tdir2, exist_ok=True)

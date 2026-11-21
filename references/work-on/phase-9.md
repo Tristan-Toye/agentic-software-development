@@ -148,7 +148,9 @@
    resumable from exactly this point. Committed mode: commit the dossier
    before the push, so the PR opens with the build record in it.
    **Under `local`, wait for the PR's own CI before step 5** when the host
-   runs CI on it: `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N> --log <dossier>`.
+   runs CI on it: `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N> --log <dossier>`
+   (under the runner: end the turn with `RUNNER: WAITING ci:<N>` and read the
+   `CI RESULT <N>: ...` it sends back; no loop of waiting calls).
    The local suite does not run in CI's environment (a tool installed here
    but not on the runner, another OS), so a green local run does not prove
    the PR is green. Green: log `CI: green on <sha> (<run URL>)`. Red because

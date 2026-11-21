@@ -43,6 +43,19 @@ the recorded checkpoints.
       message: `OWNER ANSWER <id>: …` or `OWNER FOLLOWUP <id>: …`. On a
       follow-up the agent answers with `ask_owner.py reply` and ends the turn
       with `RUNNER: WAITING <id>` again.
+    - `RUNNER: WAITING ci:<pr>[,ci:<pr>...]` — the CI breakpoint: the runner
+      runs `wait_ci.py --pr <pr> --timeout <ASD_CI_TIMEOUT, 5400>` itself
+      (with `--log <dossier>` when the run has a dossier file), so no tokens are
+      spent while CI runs, and sends the verdict into the same live process:
+      `CI RESULT <pr>: green|red|timeout <failing checks + log tail>`.
+      Several PRs wait in parallel and come back together, one line each;
+      `ci:` ids are never mixed with question ids. While it waits the run's state is
+      `waiting` (event `waiting on CI #<pr>`, state field `ci`), so the slot
+      is free and the keep-alive ping runs exactly as in an owner wait; the
+      next step takes a slot again, ahead of runs not yet started. A `wait_ci`
+      exit other than 0 and 3 (1 failed; 2, 4, 5 error, stale green, conflict)
+      is `red` with the exit code and its output in the summary. An owner
+      message ends the wait early and is delivered; the agent waits again.
     - `RUNNER: ENV <vm|stack|disk> <detail>` — a broken environment (the
       Lima VM down, a compose service unhealthy, the disk low), reported
       instead of asked about. The session stays open; the runner answers with
@@ -332,6 +345,11 @@ the recorded checkpoints.
   `ASD_STUB_POLL` seconds (default 300) without spending tokens, and once the
   integrated stub has merged and the new stub is cut, takes a run slot and
   sends `STUB READY: <branch>` into the same session.
+- **The CI breakpoint, `RUNNER: WAITING ci:<pr>`:** a headless agent never
+  calls `wait_ci.py` in a loop (each call is a full turn that re-reads the
+  whole context: 88 `--timeout 580` calls in 7 days of `/fix-deferred`). It
+  pushes, ends the turn with the line, and the runner waits (see the turn
+  lines above). In an interactive session, call `wait_ci.py` directly.
 - **`--command stub --items stub/<date>`:** runs `/stub <branch>` under the
   key `<repo>.stub-<date>` (the branch with `/` as `-`), so the stub page and
   the hooks' stub records share one timeline. The dashboard's Integrate starts
