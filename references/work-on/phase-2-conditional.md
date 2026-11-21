@@ -120,50 +120,6 @@ stubs reused, the cherry-picked commit (plus any step-3 revision, as a
 commit on top) is the contract commit: record its new sha, so
 `contract_commit` names the commit on `X` the fan-out forks from.
 
-### Decide the suite runner by coverage, beside the hook policy
-
-**Decide the suite runner by coverage, beside the hook policy.** Inspect
-the target's repository instructions, full-suite entry point and CI
-commands. Check the feature axes, service and host requirements, and
-explicit skips; the presence of a workflow alone establishes nothing.
-Choose **CI** only when its run covers the required integrated suite.
-Push and open the draft PR at Phase 6 with the authorization taken at the
-gates. Choose **local** when repository policy requires it, CI covers only
-part of the suite, CI is absent, or the user constrains its minutes.
- Keep partial CI gates running, but take the integrated verdict from the
- full local command. For example, a repository whose CI opts out of
- services can require its local full command with `--stack` instead.
- Choose **stub** when the repository defers its integrated verdict to a
- weekly release stub: the pull request then merges into the accepting
- stub. Take it from `python3 ${PLUGIN_ROOT}/scripts/stub_target.py --root
- <repo>`: the newest `stub/<date>` with no pull request into
- `development`, or a new one it cuts from `origin/development`, but only
- when no stub is being integrated. Exit 3 (`wait <stub>`) means that stub's
- pull request into development is open: a new stub must start with its
- batch, so it is cut only once that one has merged. This is a breakpoint:
- under the runner end the turn with `RUNNER: WAITING stub` (the runner
- waits without tokens and sends `STUB READY: <branch>`); in a terminal run
- `stub_target.py --wait`, or stop and tell the user. Never cut a stub by
- hand. The worktree forks
- from the accepting stub, and `/stub` proves the whole batch later with
- one full run. This build owes green CI on its pull request, the new
- tests and the mutation check. A service-backed new test may hold the
- stack lease for one suite window when its criterion demands runtime
- proof; log the window in the build log. A dossier run never rebuilds,
- restarts or `up`s a shared stack service (the fake-llm fixture included)
- from its worktree: that binds the shared compose project to a path that
- vanishes and breaks every other run. A stale fixture is the runner's: tests
- run through `run_tests.py --vm` rebuild it from the persistent checkout when
- safe, else skip the DB-backed tests under `STACK-ENV: skipped` (runner.md,
- "A stale shared fixture"). Never an owner question.
- A bring-up that a foreign or leftover compose project refuses
- (`foreign_project_state owner=...`, `suite_window_active holder=...`) is
- reported as `RUNNER: ENV stack <the refusal line>`; never tear down, bring
- up or restart that project yourself and never ask the owner. The runner
- tears a provably dead leftover down and answers `repaired`, or answers to
- skip the live stack tests under `STACK-ENV: skipped — ...` and leave those
- criteria to the /stub full suite (runner.md, "A leftover compose project").
-
 ### The repository's PATH needs on a gates run
 
 Put the repository's PATH needs on the run, never inside each line: when
