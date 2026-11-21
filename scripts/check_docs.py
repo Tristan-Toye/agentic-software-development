@@ -279,7 +279,10 @@ def phase_headings(path: Path) -> list[str]:
 
 # A command whose phases live one file per phase: a phase file names the other
 # phases of its command bare, so its bare references resolve against the owner.
-PHASE_FILE_OWNERS = {"references/work-on/": "primary-agents/work-on.md"}
+PHASE_FILE_OWNERS = {
+    "references/work-on/": "primary-agents/work-on.md",
+    "references/plan/": "primary-agents/plan.md",
+}
 
 
 def check_phases(rel: str, text: str, repo: Path, rep: Report) -> None:

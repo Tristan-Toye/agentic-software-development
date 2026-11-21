@@ -44,7 +44,7 @@ Never scan for the highest number and then write.
 
 Dossier IDs follow the ADR rule when `.discovery/` is committed: the plan
 branch mints against the base tip its worktree forked from, so a sibling plan
-PR can hold the same number. `/plan` Phase 7 merges the base and runs
+PR can hold the same number. `/plan` Phase 8 merges the base and runs
 `--finalize-ids`, which renumbers the dossiers this branch added exactly as
 it renumbers ADRs and LRNs — file name, `id:`, and every mention in the
 branch's own dossiers. Two dossiers that land with one ID are a DEFECT from

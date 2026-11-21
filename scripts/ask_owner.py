@@ -146,7 +146,9 @@ def parse_option(spec: str) -> dict:
 # purpose, and applies only to a run the runner started: phrase patterns checked against the question texts of past runs, so a design question that mentions a push
 # in passing goes through. ASD_ASK_LINT=0 turns it off.
 KINDS = ("design", "product", "uncertainty")
-TOPICS = ("visual-review", "run-failure")
+# The /plan stops the owner chose explicitly: exempt from the approval lint, product questions only.
+PLAN_TOPICS = ("plan-frame", "plan-confirm", "plan-final")
+TOPICS = ("visual-review", "run-failure") + PLAN_TOPICS
 _PR = r"(?:the |a |its |this |my )?(?:draft |plan |pull )?(?:PR|pull request)"
 APPROVAL_PATTERNS = [
     ("push the branch", re.compile(r"\b(?:may|can|shall|should) I (?:now )?push\b[^?]{0,40}\bbranch\b"
@@ -183,8 +185,11 @@ def cmd_ask(a: argparse.Namespace) -> int:
         labels = [o["label"].lower() for o in options]
         if a.kind != "product" or len(options) != 2 or labels != ["approved", "changes requested"]:
             raise SystemExit("--topic visual-review needs --kind product and exactly the options A|Approved|... and B|Changes requested|...")
+    if a.topic in PLAN_TOPICS and a.kind != "product":
+        raise SystemExit(f"--topic {a.topic} needs --kind product")
     # Only a run the runner started (ASD_RUN_KEY) has the standing authority; a terminal run's start gate still asks.
-    if os.environ.get("ASD_RUN_KEY") and (os.environ.get("ASD_ASK_LINT") or "1").strip() != "0":
+    # The plan-* topics are stops the owner chose, so they skip the lint.
+    if a.topic not in PLAN_TOPICS and os.environ.get("ASD_RUN_KEY") and (os.environ.get("ASD_ASK_LINT") or "1").strip() != "0":
         hit = approval_kind(a.question, options)
         if hit:
             print(f"REFUSED: this asks leave for a step the run already has authority for ({hit}). Do the step, record it in "
@@ -425,6 +430,14 @@ def selftest() -> int:
         check("--topic visual-review is stored and passes the approval lint", v.returncode == 0 and vq.get("topic") == "visual-review" and vq.get("qkind") == "product")
         check("--topic visual-review needs --kind product", ask_q("Does this match?", ["--topic", "visual-review"], dossier="W-93", opts=vr_opts).returncode != 0)
         check("--topic visual-review needs the two review labels", ask_q("Does this match?", ["--kind", "product", "--topic", "visual-review"], dossier="W-93").returncode != 0)
+        for pt, pq in (("plan-frame", "Approve the frame?"), ("plan-confirm", "Approve the plan?"), ("plan-final", "Approve the plan description?")):
+            po = ("A|Approve|go on", "B|Change|rework it")
+            r = ask_q(pq, ["--kind", "product", "--topic", pt], dossier="W-9" + pt[-1], opts=po)
+            qf = os.path.join(env["ASD_QUESTIONS_DIR"], "myrepo.W-9" + pt[-1] + ".Q1.jsonl")
+            stored = json.loads(open(qf).readline()) if os.path.exists(qf) else {}
+            check(f"--topic {pt} is stored and passes the approval lint", r.returncode == 0 and stored.get("topic") == pt)
+            check(f"--topic {pt} is refused without --kind product", ask_q(pq, ["--topic", pt], dossier="W-8" + pt[-1], opts=po).returncode != 0)
+        check("approval wording without a plan topic is still linted", ask_q("Approve the plan?", ["--kind", "product"], dossier="W-70", opts=("A|Approve|go on", "B|Change|rework it")).returncode == 2)
         check("--topic outside visual-review is refused", ask_q("Which?", ["--topic", "other"]).returncode != 0)
         check("no --topic stores none", "topic" not in kq)
         rf = ask_q("The run of W-94 failed at stage 2: x", ["--topic", "run-failure"], dossier="W-94")
@@ -579,7 +592,7 @@ def main() -> int:
     p.add_argument("--recommend")
     p.add_argument("--blocks", required=True)
     p.add_argument("--kind", choices=KINDS, help="design, product or uncertainty: what the owner is asked to decide (optional)")
-    p.add_argument("--topic", choices=TOPICS, help="visual-review: marks the Phase 3 visual-review question the dashboard canvas answers (needs --kind product); run-failure: marks the runner's \"the run failed\" question, which the merge queue closes once the dossier is merged")
+    p.add_argument("--topic", choices=TOPICS, help="visual-review: marks the Phase 3 visual-review question the dashboard canvas answers (needs --kind product); run-failure: marks the runner's \"the run failed\" question, which the merge queue closes once the dossier is merged; plan-frame: the /plan P1 frame-approval card; plan-confirm: the batched CONFIRM card at the end of P3; plan-final: the one final owner card after P7 (the three plan-* topics need --kind product, take 2 to 4 options with any labels, and skip the approval lint)")
     p.add_argument("--build-log", metavar="DOSSIER", help="also append `QUESTION: <id> — <question>` to this dossier's Build log")
     p = sub.add_parser("reply")
     p.add_argument("id")

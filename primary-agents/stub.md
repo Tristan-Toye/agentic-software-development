@@ -210,7 +210,8 @@ The census is the attribution table every later step rules by. For every
 merge in `git log --merges --reverse origin/development..<stub>`:
 
 - the pull request number, from the merge message;
-- the dossier, by matching that number against the `pr:` front matter of
+- the dossier, by matching that number against the PR numbers in the `pr:` front
+  matter (a list of PR URLs; the number is the end of each URL) of
   `.discovery/dossiers/*.md` — read front matter only, never a dossier
   whole (`dossier_edit.py section` when a section is needed);
 - the paths the merge touched — `git diff --name-only <merge>^ <merge>`,

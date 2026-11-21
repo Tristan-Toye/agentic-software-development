@@ -273,6 +273,8 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         "optional": {
             "DOSSIER", "SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA",
             "CONTEXT_DOCS", "ARBITRATIONS", "PRIOR_CRS", "RULES", "SIGNALS",
+            # LENS: plan, the /plan Phase 7 product-coherence review
+            "PRODUCT_MODEL", "ADR_INDEX", "RELATED_DOSSIERS", "READER",
         },
     },
     "contract-reviewer": {
@@ -2303,6 +2305,9 @@ def _selftest_cases() -> int:
          "reviewer", True, "'RULE' is not a field")
     case("reviewer plan takes no rules",
          plan + "RULES: none\n", "reviewer", False)
+    case("reviewer plan takes the product-coherence fields",
+         plan + "PRODUCT_MODEL: none\nADR_INDEX: {REAL}/tests/unit/test_retry.py\n"
+         "RELATED_DOSSIERS: none\nREADER: second\n", "reviewer", False)
     live = plan.replace("DOSSIER: {REAL}/tests/unit/test_retry.py",
                         "DOSSIER: {REAL}/.discovery/dossiers/W-014-x.md")
     case("reviewer plan dossier inside its worktree", live, "reviewer", False)

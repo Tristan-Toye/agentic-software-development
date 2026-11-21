@@ -14,8 +14,18 @@ CRITERIA: |
   <the acceptance criteria, verbatim>
 STANDARDS: ${PLUGIN_ROOT}/skills/standards/engineering-standards.md
 CONTEXT_DOCS: /abs/path/repo/docs/adr/0003-session-store.md
+PRODUCT_MODEL: /abs/path/repo/docs/product/model.md   # or `none`
+ADR_INDEX: /abs/path/repo/docs/adr/index.md
+RELATED_DOSSIERS: |            # from `plan_flow.py overlap`, or `none`
+  /abs/path/repo/.discovery/dossiers/W-009-flush-metrics.md
+READER: first                  # `second` for the independent second reader
 ROUND: 1
 ```
+
+The four product fields come from `/plan` Phase 7: the product model, the ADR
+index, the dossiers that overlap this one (in flight, done, and the sources of
+deferred items) and which reader this is. A dossier planned before the v9 flow
+may omit them; the reviewer then runs the eight buildability checks only.
 
 `LENS: style | architecture | performance` — after the suite is green. Spawn
 them in one message, with `tests` when it is due, so they run concurrently:
