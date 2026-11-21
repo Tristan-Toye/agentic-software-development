@@ -132,3 +132,25 @@ red. A list too long for one tool call (the Bash cap is 10 minutes) runs
 with `--detach` (prints a run id, returns at once) and then
 `--wait <id>` (prints the foreground summary; exit 6 means still running,
 call it again).
+
+### Kanban delivery
+
+A dossier with front matter `delivery: kanban` ships through `development` with CI as its only proof; the
+integrated stack proof waits for the next `/stub` run (which lists this PR as a suspect). The rest of the flow
+is unchanged: contract commit, fan-out, merge, review, ADRs, PR.
+
+- **Base.** Fork `X` from `origin/development`; never run `stub_target.py`. Phase 6 opens the draft PR with
+  `--base development` and Phase 9 syncs `origin/development` (`<target>` = `development`).
+- **Runner.** Record `SUITE-RUNNER: ci — <workflow file>, <trigger>; base development (kanban delivery); push and
+  draft PR: yes` whatever the CI coverage is, and `SUITE-COMMAND:` as the focused command the dossier's criteria
+  own. Take no stack lease, run no `--stack` or `--vm` suite, record no `STACK-ENV:` run: a criterion that needs the
+  live stack is a reclassification (below), not a skip.
+- **Reviews.** `dossier_edit.py set <dossier> 'visual_review=skipped — kanban delivery'`. When the contract adds no
+  member used outside its package, `dossier_edit.py set <dossier> 'contract_review=skipped — kanban delivery,
+  package-internal contract'`; otherwise run the contract review as usual.
+- **Reclassification.** A `CONTRACT-CHANGE:` on a member used outside its package, or a diff past 400 changed
+  lines of product code (tests, docs and `.discovery/` excluded), stops the build: log
+  `RECLASSIFY: stub — <reason>` in `## Build log` and ask the owner once with `ask_owner.py ask --kind product
+  --topic reclassify --blocks "build"` (options: A move to stub, B continue as kanban anyway), then end the turn with
+  `RUNNER: WAITING <id>`. Never continue on your own. On A, `classify_delivery.py --override stub --write` and
+  re-plan the missing sections; the build restarts as a stub build.

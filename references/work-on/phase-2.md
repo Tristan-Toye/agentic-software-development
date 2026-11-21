@@ -188,6 +188,8 @@ This is the step everything else depends on.
 
    Detail: `ref_section` with `phase-2-conditional` and the heading "Read the repository's commit hooks before the contract commit, and decide the hook policy". (every run records `hooks=none` or `hooks=<hook> — <policy>` before the fan-out (`--pre-fanout` refuses without it) and `contract_commit=$(git rev-parse HEAD)` right after the contract commit; read it when the repository has commit hooks.)
 
+   Kanban: a dossier with `delivery: kanban` takes `SUITE-RUNNER: ci` on base `development`, no stub or stack run; read `ref_section` `phase-2-conditional`, heading "Kanban delivery", instead of choosing below.
+
    **Decide the suite runner by coverage, beside the hook policy.** Inspect
    the target's repository instructions, full-suite entry point and CI
    commands. Check the feature axes, service and host requirements, and

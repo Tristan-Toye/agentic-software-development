@@ -97,8 +97,14 @@ DOSSIER_KEYS = [
     "adrs",
     "flow",
     "contract_commit",
+    "delivery",
+    "delivery_gates",
 ]
-DOSSIER_OPTIONAL_KEYS = ["planning_repo", "flow", "contract_commit"]
+DOSSIER_OPTIONAL_KEYS = ["planning_repo", "flow", "contract_commit", "delivery", "delivery_gates"]
+# `delivery:` names the flow a dossier ships through (absent = stub); `delivery_gates:` is the planner's block
+# list of one `G2|G3|G4 pass|fail: <evidence>` line per gate that classify_delivery.py cannot count itself.
+DELIVERY_VALUES = ("stub", "kanban")
+DELIVERY_GATE_RE = re.compile(r"G[234] (?:pass|fail): \S.*")
 ADR_KEYS = [
     "id",
     "title",
@@ -637,6 +643,11 @@ def parse_packages(text: str) -> list[tuple[str, list[str]]]:
     return rows
 
 
+def implementer_packages(rows: list[tuple[str, list[str]]]) -> list[str]:
+    """Names of the implementer rows: every row but the `UT` and `IT` test rows (G1 counts these)."""
+    return [n for n, _ in rows if n.split(" ", 1)[0] not in ("UT", "IT")]
+
+
 def check_disjoint(where: str, rows: list[tuple[str, list[str]]], rep: Report) -> None:
     if not rows:
         rep.defect(where, "## Work packages has no rows")
@@ -1118,9 +1129,23 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
     cc = fm.get("contract_commit")
     if cc is not None and not re.fullmatch(r"[0-9a-fA-F]{7,40}", str(cc)):
         rep.defect(where, f"contract_commit '{cc}' must be a git sha (7-40 hex) or null")
-    check_headings(
-        where, body, DOSSIER_SECTIONS_FLOW2 if flow2 else DOSSIER_SECTIONS, rep
-    )
+    delivery = fm.get("delivery")
+    if delivery is not None and delivery not in DELIVERY_VALUES:
+        rep.defect(where, f"delivery '{delivery}' must be one of {list(DELIVERY_VALUES)} (or absent)")
+    kanban = delivery == "kanban"
+    gates = fm.get("delivery_gates") or []
+    if not isinstance(gates, list):
+        gates = []
+    for g in gates:
+        if not DELIVERY_GATE_RE.fullmatch(str(g)):
+            rep.defect(where, f"delivery_gates line must read 'G2|G3|G4 pass|fail: <evidence>': {str(g)[:60]}")
+        elif kanban and " fail:" in str(g):
+            rep.defect(where, f"delivery is kanban but a gate failed: {str(g)[:60]}")
+    expected = DOSSIER_SECTIONS_FLOW2 if flow2 else DOSSIER_SECTIONS
+    if kanban and "## Decisions" not in heading_order(body):
+        # K5: a kanban dossier is sized to the change; `## Decisions` is optional (none to record).
+        expected = DOSSIER_SECTIONS
+    check_headings(where, body, expected, rep)
     check_anchors(where, fm, repo_root, rep)
     check_pr_field(where, path.read_text(), rep)
 
@@ -1141,9 +1166,11 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
         if discovery_mode(repo_root)[0] != "committed":
             check_contract_id(f"{where} ## Contract", str(fm.get("id", "")), sec["## Contract"], rep)
     if "## Work packages" in sec:
-        check_disjoint(
-            f"{where} ## Work packages", parse_packages(sec["## Work packages"]), rep
-        )
+        rows = parse_packages(sec["## Work packages"])
+        check_disjoint(f"{where} ## Work packages", rows, rep)
+        n = len(implementer_packages(rows))
+        if kanban and n != 1:
+            rep.defect(f"{where} ## Work packages", f"a kanban dossier has exactly one implementer package, found {n}")
     if "## Acceptance criteria" in sec:
         check_criteria(
             f"{where} ## Acceptance criteria", sec["## Acceptance criteria"], rep, flow2
@@ -2318,6 +2345,25 @@ def selftest_flow2() -> bool:
         ("flow-2 missing Decisions fails", no_decisions,
          f"1. The queue shall drain 10 items.{own}", False)
     )
+    okcrit = f"1. The queue shall drain 10 items.{own}"
+    one = "| UT unit tests | tests/unit/test_flush.py | — |\n| IT flow tests | tests/integration/test_flush_flow.py | — |\n"
+    base1 = base.replace(one, "")
+    kan = base1.replace("## Decisions\n\nD1: one lock guards the drain.\n\n", "").replace("flow: 2\n", "flow: 2\ndelivery: kanban\n")
+    gate = "delivery_gates:\n  - G2 pass: no member used outside the package\n"
+    cases += [
+        ("kanban without Decisions passes", kan, okcrit, True),
+        ("kanban with Decisions passes", base1.replace("flow: 2\n", "flow: 2\ndelivery: kanban\n"), okcrit, True),
+        ("delivery stub without Decisions still fails", no_decisions.replace("flow: 2\n", "flow: 2\ndelivery: stub\n"), okcrit, False),
+        ("delivery other than stub|kanban fails", base.replace("flow: 2\n", "flow: 2\ndelivery: fast\n"), okcrit, False),
+        ("kanban with two implementer packages fails",
+         kan.replace("## Acceptance criteria", "| second | src/other.py |\n\n## Acceptance criteria"), okcrit, False),
+        ("kanban with P1 only plus UT/IT rows passes", base.replace("flow: 2\n", "flow: 2\ndelivery: kanban\n"), okcrit, True),
+        ("passing delivery_gates line accepted", base.replace("adrs: []\n", "adrs: []\n" + gate), okcrit, True),
+        ("malformed delivery_gates line fails",
+         base.replace("adrs: []\n", "adrs: []\ndelivery_gates:\n  - G2 maybe\n"), okcrit, False),
+        ("kanban with a failed gate fails",
+         kan.replace("adrs: []\n", "adrs: []\ndelivery_gates:\n  - G3 fail: drops a table\n"), okcrit, False),
+    ]
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / "src").mkdir()

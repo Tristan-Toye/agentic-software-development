@@ -29,6 +29,10 @@ flow: 2                # the /plan v9 flow wrote it: `## Decisions` present, cri
                        # shapes enforced; absent on older dossiers
 contract_commit: 9c1e0d4   # the stubs commit on `branch:`; /plan Phase 5 sets it,
                        # /work-on Phase 2 cherry-picks it; null when there is none
+delivery: kanban       # optional, stub (absent) | kanban; classify_delivery.py sets it. A kanban
+                       # dossier may omit `## Decisions` and has one implementer package
+delivery_gates:        # optional block list, `G2|G3|G4 pass|fail: <evidence>`, the planner's
+  - G2 pass: no member used outside src/flush.py   # lines for classify_delivery.py
 ---
 ```
 

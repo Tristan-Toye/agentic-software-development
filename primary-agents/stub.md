@@ -204,6 +204,11 @@ into the stub**, never a direct push, before anything else runs. A conflicted
 sync is resolved as `/resolve-merge` Step 2 says, and `python3 ${PLUGIN_ROOT}/scripts/merge_guard.py`
 must exit 0 before the merge is committed.
 
+Kanban pull requests merged into development since the cut never passed a stack run. List them with
+`python3 ${PLUGIN_ROOT}/scripts/classify_delivery.py --landed --root <repo> --since $(git merge-base origin/development <stub>)`
+(prints `none` when there are none), name them in the record and the report, and treat each as an extra suspect
+when Step 5 attributes a suite failure: a failure no stub dossier explains may belong to one of them.
+
 ## Step 2 — The dossier census
 
 The census is the attribution table every later step rules by. For every
