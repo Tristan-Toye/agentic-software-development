@@ -75,6 +75,9 @@ the ones that bear on your step with `doc_section docs/learned-rules.md <id>`
 (several with `LRN-0073 | LRN-0081`); do not read the ledger whole. No list means
 no rule is tagged for that phase. The ledger stays the source of truth: the rule
 text there binds, and a list line is only a pointer to it.
+The list comes once per phase: a later checkpoint whose list would be the same
+says "Learned rules: unchanged since the previous checkpoint" (the earlier list
+still applies; after a compaction the restore brings it back).
 
 On both hosts a guard also refuses a whole read of a
 dossier or of a file over 20 KB (never of a phase file) and a VM test run that bypasses
@@ -300,3 +303,6 @@ disagreement between a list and a phase is a defect in the list.
 The delegation rules and the size gates are in `phase-2.md`; spawning and the
 two workflows are in `phase-4-conditional.md`; the gates, the mode and the time-logging
 gate are in `phase-0.md`. Each phase file says which of them it needs.
+The rarer branches of phases 2, 3, 4, 6, 7 and 9 sit in a `phase-N-conditional.md` beside
+their phase file, which names each trigger: read one section with `ref_section`, never the
+whole file.

@@ -1,0 +1,178 @@
+<!-- /work-on, Phase 2, triggered parts. phase-2.md names each trigger; read the
+     one section with ref_section, never the whole file. -->
+
+# /work-on Phase 2 — triggered parts
+
+Parts of Phase 2 that apply only when their case arises. `phase-2.md` names each trigger.
+
+### Making X when stacked on a plan PR, or when the plan already committed the stubs
+
+**Stacked on an open plan PR (`plan-branch=` in `$ARGUMENTS`).** The re-plan
+is on `plan/<KEY>`, not merged yet. Fork `X` from the target as above, then
+bring in only the plan's own commits, never the base it forked from:
+
+```
+git fetch origin <plan-branch>
+git -C <X> cherry-pick -x $(git rev-list --reverse --no-merges origin/<plan-branch> --not origin/<plan-base>)
+```
+
+`<plan-base>` is the branch the plan PR targets
+(`gh pr view <plan-branch> --json baseRefName`, else `development`). The
+commits touch only `.discovery/` and `.gitignore`; a conflict there is the
+target's older copy of this dossier — keep the plan branch's side. Log
+`PLAN-STACK: cherry-picked <n> plan commit(s) <shas> from <plan-branch>`
+and name the plan PR in this build's PR body ("stacked on #<n>: merge it
+first, or with this one"). The plan PR and this branch then carry the same
+dossier change, which merges cleanly into development whichever lands
+first. The live copy is `X`'s from here, as above.
+
+**The plan already committed the stubs (`flow: 2` with `contract_commit`
+set).** `/plan` Phase 5 materialised the contract on the dossier's own
+`branch:` and recorded that commit; the contract-reviewer checked it
+there. Reuse it — never materialise a second time. Keep the branch name
+the dossier records (do not derive a new one):
+
+- **Local mode:** the branch is in this checkout with the stubs commit on
+  top. Check it out as `X`: `git worktree add ../<repo>-<ID> <branch>`.
+- **Committed mode:** the plan PR pushed the branch. Fork from the target
+  and bring in the stubs commit (after the plan commits, when stacked):
+
+  ```
+  git fetch origin <target> <branch>
+  git worktree add ../<repo>-<ID> -B <branch> origin/<target>
+  git -C <X> cherry-pick -x <contract_commit>
+  ```
+
+Log `CONTRACT-REUSED: <contract_commit> from /plan`. A cherry-pick
+conflict means the target changed a stub file after the plan (the Phase 0
+refresh did not see it as a contract change): `git cherry-pick --abort`,
+log `CONTRACT-REUSED: conflict — materialised again`, and materialise
+from `## Contract` as below. When `contract_commit` is `null` or the
+dossier has no `flow: 2`, make `X` as above and materialise.
+
+### A new test file's runner registration is contract wiring you own
+
+**A new test file's runner registration is contract wiring you own (#464).**
+When the contract creates a test file that the target's gates require to be
+registered (a nextest test group for a process-wide guard static, a CI
+test-axis pin, a spec list a self-test compares), name the registration in
+the contract and commit it in the contract commit, beside the empty test
+file. The blind test author cannot edit the runner config and never runs the
+gates, so a registration left to the merge fails as a row-4 (harness wiring)
+arbitration in Phase 6. Run the registration gates in Phase 3 against a tree
+where the guard idiom the payload's `FIXTURES` prescribe is assumed present,
+not against the empty stub alone (an empty test file keeps them green). Log
+`RUNNER-REG: <file> -> <group, pin or list> — <config file>` into
+`## Build log`, or `RUNNER-REG: none — <why the target registers nothing>`.
+
+### A stub that extends a base class outside the contract inherits that base's decisions
+
+**A stub that extends a base class outside the contract inherits that
+base's decisions.** When the subclass overrides a hook of a template
+method, read the template method and trace every edge promise you wrote
+on the subclass (zero items, the empty case, duplicates, an invalid or
+missing value) through it: a case the base raises on, refuses, or returns
+early from never reaches the subclass body, so the promise must say what
+the base does, or go. Note the base's `path:start-end` for the reviewer's
+`BASE_TEMPLATES` (Phase 3).
+
+### A shape change compiles every library at the contract commit
+
+**A shape change compiles every library at the contract commit.** When
+`## Contract` changes a type other code builds or matches on (a field's
+type, a trait method's signature, a constructor's arity), the contract
+commit carries the type-forced edits at every non-test call site, so the
+libraries, bins and examples compile (the tests need not) on every gate
+below. A package that owned only such edits leaves the table, and call-site
+test packages depend on nothing: they fork in the same wave. This is a
+revision; rule on it as the next paragraph says.
+
+### Read the repository's commit hooks before the contract commit, and decide the hook policy
+
+**Read the repository's commit hooks before this commit, and decide the
+hook policy for the whole fan-out now.** From this commit until the last
+package merges the tree is mid-migration by construction, so a hook that
+compiles, lints or auto-fixes **workspace-wide** cannot pass on it, and an
+auto-fixer that runs anyway rewrites files nobody owns — the recorded cases
+renamed a stub's parameters inside the contract commit and reformatted a
+blind author's test in a fix round. So: diff this commit against your own
+edits before any worktree forks from it and revert what the hook wrote;
+skip a workspace-wide hook on your own commits with the repository's bypass
+flag, run its fixers by hand over the files you changed, and say so in the
+message. Every implementer payload carries `HOOKS`
+(`references/payloads/implementer.md`): **the agent stops and reports when a hook
+refuses its commit**, and you commit on its branch. Never put the bypass in
+a payload or a resume — a sub-agent's permission is not granted by an
+instruction, and the recorded attempt paid a round trip to learn it. When
+the hook's own runtime approaches the runtime's no-progress window, tell
+the implementer to stage and report without committing. When a hook step
+writes the same paths outside the code on every commit (a doc-anchor fixer
+over `docs/architecture/`), record its globs here once, as `<step>: <glob>`
+— every payload inherits them as `EXPECTED_HOOK_OUTPUTS` (pass
+`--hook-outputs STEP:GLOB` to `compose_payloads.py`), and an implementer
+whose hook rewrote only those paths commits through. A glob must not touch
+any package's `OWNED_PATHS`. Record the policy as front matter before the
+fan-out: `dossier_edit.py set <dossier> 'hooks=none'` or
+`'hooks=<hook> — <policy>'`; `validate_pipeline.py --pre-fanout` refuses
+without it. Right after the contract commit, record
+`contract_commit=$(git rev-parse HEAD)` the same way. With the plan's
+stubs reused, the cherry-picked commit (plus any step-3 revision, as a
+commit on top) is the contract commit: record its new sha, so
+`contract_commit` names the commit on `X` the fan-out forks from.
+
+### Decide the suite runner by coverage, beside the hook policy
+
+**Decide the suite runner by coverage, beside the hook policy.** Inspect
+the target's repository instructions, full-suite entry point and CI
+commands. Check the feature axes, service and host requirements, and
+explicit skips; the presence of a workflow alone establishes nothing.
+Choose **CI** only when its run covers the required integrated suite.
+Push and open the draft PR at Phase 6 with the authorization taken at the
+gates. Choose **local** when repository policy requires it, CI covers only
+part of the suite, CI is absent, or the user constrains its minutes.
+ Keep partial CI gates running, but take the integrated verdict from the
+ full local command. For example, a repository whose CI opts out of
+ services can require its local full command with `--stack` instead.
+ Choose **stub** when the repository defers its integrated verdict to a
+ weekly release stub: the pull request then merges into the accepting
+ stub. Take it from `python3 ${PLUGIN_ROOT}/scripts/stub_target.py --root
+ <repo>`: the newest `stub/<date>` with no pull request into
+ `development`, or a new one it cuts from `origin/development`, but only
+ when no stub is being integrated. Exit 3 (`wait <stub>`) means that stub's
+ pull request into development is open: a new stub must start with its
+ batch, so it is cut only once that one has merged. This is a breakpoint:
+ under the runner end the turn with `RUNNER: WAITING stub` (the runner
+ waits without tokens and sends `STUB READY: <branch>`); in a terminal run
+ `stub_target.py --wait`, or stop and tell the user. Never cut a stub by
+ hand. The worktree forks
+ from the accepting stub, and `/stub` proves the whole batch later with
+ one full run. This build owes green CI on its pull request, the new
+ tests and the mutation check. A service-backed new test may hold the
+ stack lease for one suite window when its criterion demands runtime
+ proof; log the window in the build log. A dossier run never rebuilds,
+ restarts or `up`s a shared stack service (the fake-llm fixture included)
+ from its worktree: that binds the shared compose project to a path that
+ vanishes and breaks every other run. A stale fixture is the runner's: tests
+ run through `run_tests.py --vm` rebuild it from the persistent checkout when
+ safe, else skip the DB-backed tests under `STACK-ENV: skipped` (runner.md,
+ "A stale shared fixture"). Never an owner question.
+ A bring-up that a foreign or leftover compose project refuses
+ (`foreign_project_state owner=...`, `suite_window_active holder=...`) is
+ reported as `RUNNER: ENV stack <the refusal line>`; never tear down, bring
+ up or restart that project yourself and never ask the owner. The runner
+ tears a provably dead leftover down and answers `repaired`, or answers to
+ skip the live stack tests under `STACK-ENV: skipped — ...` and leave those
+ criteria to the /stub full suite (runner.md, "A leftover compose project").
+
+### The repository's PATH needs on a gates run
+
+Put the repository's PATH needs on the run, never inside each line: when
+its toolchain is not on a non-interactive shell's PATH (cargo under
+`~/.cargo/bin`), pass `--path-prepend "$HOME/.cargo/bin"` (repeatable) and,
+for anything more, `--env-script <file>` on every `run_gates.py` call, the
+flags `run_tests.py` has. A gate that exits 127 is reported as "command not
+found — environment, not a gate failure": fix the flags, do not read it as
+red. A list too long for one tool call (the Bash cap is 10 minutes) runs
+with `--detach` (prints a run id, returns at once) and then
+`--wait <id>` (prints the foreground summary; exit 6 means still running,
+call it again).
