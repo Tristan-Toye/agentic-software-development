@@ -10,8 +10,11 @@
 // reads back after a compaction.
 import { MAX_SUMMARY_CHARS, TOOL, validateCheckpoint } from "../checkpoint"
 import { applyCheckpointWrites } from "./checkpoint-writes"
-import { learnedRulesFor } from "../ledger"
+import { learnedRulesFor, rulesOnce } from "../ledger"
 import { TOOLS, describeTool, inputSchema, toolByName, type ToolDef } from "../tools"
+
+// One stdio server per Claude Code session: what this session's checkpoint results already said.
+const session: { block?: string; explained?: boolean } = {}
 
 const SERVER = { name: "agentic-software-development-nav", version: "1.8.0" }
 const SUPPORTED = ["2025-06-18", "2025-03-26", "2024-11-05"]
@@ -54,12 +57,16 @@ async function callTool(name: string, args: unknown) {
     if (why) return text(`${TOOL}: refused — ${why}`, true)
     const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd()
     const wrote = applyCheckpointWrites(a, a.phase, a.summary, dir)
+    const first = !session.explained
+    session.explained = true
     return text(
-      `${TOOL}: recorded after ${a.phase} (summary ${a.summary.length} of ${MAX_SUMMARY_CHARS} characters). ` +
-        "Claude Code compacts on its own and cannot be cut from here; after the next compaction this checkpoint " +
-        "and every earlier one are restored into your context with the original task." +
+      `${TOOL}: recorded after ${a.phase} (summary ${a.summary.length} of ${MAX_SUMMARY_CHARS} characters).` +
+        (first
+          ? " Claude Code compacts on its own and cannot be cut from here; after the next compaction this checkpoint " +
+            "and every earlier one are restored into your context with the original task."
+          : "") +
         wrote +
-        learnedRulesFor(dir, a.phase, a.summary),
+        rulesOnce(learnedRulesFor(dir, a.phase, a.summary), session),
     )
   }
   const out = await def.execute!(a, { directory: process.env.CLAUDE_PROJECT_DIR || process.cwd() })
