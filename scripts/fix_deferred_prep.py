@@ -592,6 +592,27 @@ def selftest() -> int:
             check("an unknown D-id is refused", False)
         except Refused:
             check("an unknown D-id is refused", True)
+        # a kanban dossier merged into development: the fix forks from and targets development, not a stub
+        sh(main, "checkout", "-q", "-b", "development")
+        with open(os.path.join(main, ".discovery", "dossiers", "W-10-small-fix.md"), "w") as fh:
+            fh.write("---\nid: W-10\nstatus: done\ndelivery: kanban\nbranch: fix/W-10\npr: [https://github.com/o/r/pull/8]\n---\n\n## Build log\n\n- start\n")
+        sh(main, "add", "-A"); sh(main, "commit", "-q", "-m", "kanban dossier"); sh(main, "push", "-q", "origin", "development")
+        sh(main, "checkout", "-q", "stub")
+        with open(os.path.join(main, ".discovery", "dossiers", "W-10-small-fix.md"), "w") as fh:   # the owner's checkout holds the dossier file
+            fh.write(sh(main, "show", "development:.discovery/dossiers/W-10-small-fix.md") + "\n")
+        build_records.atomic_write(build_records.record_path(os.path.join(main, ".discovery"), "deferred", "W-10"),
+                                   json.dumps({"items": [recs[0]], "sources": ["selftest"]}))
+        pj2 = os.path.join(tmp, "pr2.json")
+        with open(pj2, "w") as fh:
+            json.dump({"state": "MERGED", "baseRefName": "development", "headRefName": "fix/W-10", "url": "u"}, fh)
+        ns2 = argparse.Namespace(**{**vars(ns), "dossier": "W-10", "items": None, "direct": None, "pr_json": pj2, "no_compose": True})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = prepare(ns2)
+        wt2 = worktree_path(main, "W-10")
+        check("kanban dossier merged into development: fix branch forks from and targets development",
+              rc == 0 and "base development" in buf.getvalue() and "stack base development" in buf.getvalue() and sh(wt2, "branch", "--show-current") == "fix/W-10-deferred"
+              and "delivery: kanban" in open(find_dossier(wt2, "W-10")).read(), buf.getvalue())
     print("selftest:", "ok" if ok else "FAILED")
     return 0 if ok else 1
 

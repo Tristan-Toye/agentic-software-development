@@ -50,6 +50,16 @@ must have an open pull request into an open stub. A dossier whose `<repo>.<dossi
 again (queued, running, waiting, merged, failed or cancelled: a failed one waits for the owner). It works with auto work
 on or off; with the switch off nothing of this runs.
 
+# Kanban pull (its own switch: `kanban` in `~/.agentic/delivery-flows.json`, `$ASD_DELIVERY_FLOWS`; default off)
+
+For a repository whose kanban switch is on, every tick (auto work on or off) pulls work in plain queue order, no
+classes: a `planned` dossier whose `blocked_by` are all `done` gets /plan, a `ready` one with `delivery: kanban` (read
+from its front matter; absent = stub, except with the stub switch off, where every dossier is kanban) and all blockers
+`done` gets /work-on, each through the normal runner when no run of it is live. A started (dossier, command) is recorded in
+`<runs dir>/<repo>.kanban.json` and never started again by the pull (a failed run waits for the owner, no loop). Dossiers
+in the auto work cycle are left to it, and the cycle's frontier snapshot skips `delivery: kanban` dossiers. Finished
+kanban dossiers with an open PR into development join the merge queue (eager merge) while development's CI is green.
+
 # The rules it never bends
 
 Every owner question and every diagram review still waits for the owner: a live run in `waiting` is waited for, never
@@ -154,6 +164,76 @@ def set_switch(repo: str, on: bool) -> None:
     """The one switch: automatic work and the scripted stub merge (land_stub.py's `enabled`) go on and off together."""
     all_ = read_json(land_stub.settings_path(), {}) or {}
     write_atomic(land_stub.settings_path(), {**all_, repo: {**(all_.get(repo) or {}), "auto_work": on, "enabled": on}})
+
+
+# ---------------------------------------------------------------- kanban (delivery flows)
+def flows_path() -> str:
+    return os.environ.get("ASD_DELIVERY_FLOWS") or os.path.expanduser("~/.agentic/delivery-flows.json")
+
+
+def flows_of(repo: str) -> tuple[bool, bool]:
+    """(stub, kanban) for the repository: missing file, entry or key = stub on, kanban off; both off is invalid = stub on."""
+    ent = (read_json(flows_path(), {}) or {}).get(repo)
+    ent = ent if isinstance(ent, dict) else {}
+    stub, kanban = ent.get("stub") is not False, ent.get("kanban") is True
+    return (True, kanban) if not stub and not kanban else (stub, kanban)
+
+
+def kanban_on(repo: str) -> bool:
+    return flows_of(repo)[1]
+
+
+def delivery_of(root: str) -> dict[str, str]:
+    """{dossier id (upper): delivery} read from the front matter of the dossiers on disk: `delivery: kanban`, else stub."""
+    out: dict[str, str] = {}
+    for f in glob.glob(os.path.join(root, ".discovery", "dossiers", "*.md")):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                head = fh.read(4000)
+        except OSError:
+            continue
+        m = re.match(r"---\n(.*?)\n---", head, re.S)
+        i = re.search(r"^id:\s*([A-Za-z][A-Za-z0-9]*-\d+)\s*$", m.group(1), re.M) if m else None
+        if i:
+            d = re.search(r"^delivery:\s*[\"']?(\w+)", m.group(1), re.M)
+            out[i.group(1).upper()] = "kanban" if d and d.group(1) == "kanban" else "stub"
+    return out
+
+
+def kanban_ids(repo: str, root: str) -> set[str]:
+    """The kanban dossiers of a repository whose kanban switch is on (empty otherwise: nothing changes by default)."""
+    if not kanban_on(repo):
+        return set()
+    every = not flows_of(repo)[0]   # stub off: every dossier is kanban
+    return {i for i, d in delivery_of(root).items() if every or d == "kanban"}
+
+
+def kanban_pull(repo: str, root: str, facts: dict) -> list[str]:
+    """Continuous pull, plain queue order (by id): /plan for a planned dossier, /work-on for a ready kanban one, every
+    blocker done, no live run. Starts go through the runner (slot cap, queue, account, owner questions). Returns "ID:command"."""
+    runs = facts.get("runs") or []
+    done = {r["id"] for r in runs if r.get("status") == "done"}
+    kan = kanban_ids(repo, root)
+    path = os.path.join(runs_dir(), f"{repo}.kanban.json")
+    state = read_json(path, {}) or {}
+    started = state.setdefault("started", {})
+    aw = read_json(state_path(repo), {}) or {}
+    cycle = {m["id"] for m in aw.get("members") or []} if aw.get("step") == "work" else set()   # the auto work cycle's own members
+    out = []
+    for r in sorted(runs, key=lambda r: r["id"]):
+        cmd = "plan" if r.get("status") == "planned" else "work-on" if r.get("status") == "ready" and r["id"].upper() in kan else ""
+        key = f"{r['id']}:{cmd}"
+        if not cmd or key in started or r["id"] in cycle or (r.get("runner") or {}).get("state") in LIVE \
+                or not all(b in done for b in r.get("blockedBy") or []):
+            continue
+        ok, msg = start_runner(root, r["id"], cmd)
+        print(f"auto_work: {repo}: kanban pull {key}: " + (msg if ok else "not started: " + msg))
+        if ok:
+            started[key] = now()
+            out.append(key)
+    if out:
+        write_atomic(path, state)
+    return out
 
 
 def secs(iso: str) -> float:
@@ -289,13 +369,15 @@ def in_flight(r: dict) -> bool:
     return status in ("pr", "done") and bool(open_items(r))
 
 
-def frontier(runs: list[dict]) -> list[dict]:
+def frontier(runs: list[dict], skip: frozenset | set = frozenset()) -> list[dict]:
     """Who is worked this cycle: `ready` and `planned` dossiers whose blockers are all `done`, plus every dossier already
     in flight (`in_flight`). A blocker not known is not done, and neither is one adopted this cycle (a `done` build whose
     deferred items are still open): the dependent waits for the cycle after, when the blocker's fixes are in development."""
     done = {r["id"] for r in runs if r.get("status") == "done" and not in_flight(r)}
     out = []
     for r in sorted(runs, key=lambda r: r["id"]):
+        if r["id"].upper() in skip:   # a kanban dossier belongs to the pull
+            continue
         if in_flight(r) or r.get("status") in ("ready", "planned") and all(b in done for b in r.get("blockedBy") or []):
             out.append({"id": r["id"], "stage": STAGE_OF[r["status"]], "state": "pending", "error": "", "launch": None, "lag": 0, "asked": None, "accepted": False, "rounds": 0, "retried": False})
     return out
@@ -474,7 +556,7 @@ ASK_TEXT = ("The runner's check: /work-on ended, but the dossier front matter re
 
 def start_cycle(st: dict, facts: dict, trigger: str, stub: str) -> None:
     st.update(cycle=st["cycle"] + 1, step="work", started=now(), stub=stub, trigger=trigger, paused=None, docs={}, integrate={}, note="", request=None,
-              members=frontier(facts.get("runs") or []))
+              members=frontier(facts.get("runs") or [], kanban_ids(st["repo"], st["root"])))
     st["seen"] = sorted(set(st["seen"]) | set(merged_triggers(st["root"], facts)))
 
 
@@ -589,15 +671,26 @@ def enqueue_merge(root: str, dossier: str, by: str = "button") -> tuple[bool, st
 
 
 def eager_step(repo: str, root: str, facts: dict) -> list[str]:
-    """Eager merge: every finished dossier on an open stub joins the merge queue, once. Returns the ones enqueued."""
+    """Eager merge: every finished dossier on an open stub joins the merge queue, once; with kanban on, so does every finished
+    kanban dossier with an open PR into development, while development's CI is green. Returns the ones enqueued."""
     stubs = [s["branch"] for s in facts.get("stubs") or [] if s.get("branch")]
     todo = [r for r in facts.get("runs") or [] if finished_run(r)
             and not os.path.exists(os.path.join(runs_dir(), f"{repo}.{r['id']}.merge.json"))]   # any record: queued, running, merged, waiting, failed, cancelled
-    if not stubs or not todo:
+    if not todo:
         return []
     on_stub: set[str] = set()
     for b in stubs:
         on_stub.update(stub_dossiers(root, b))
+    kan = kanban_ids(repo, root)
+    ready_kan = {r["id"] for r in todo if r["id"].upper() in kan and r.get("status") == "pr"}   # `done` ones are merged: no gh call per tick for them
+    if ready_kan:
+        if merge_script_out(root, "--dev-ci") == "green":
+            on_stub.update(x.strip().upper() for x in merge_script_out(root, "--kanban-dossiers").splitlines() if x.strip())
+        else:   # stop the line: development's CI is not green; the next tick looks again
+            print(f"auto_work: {repo}: kanban merge of {', '.join(sorted(ready_kan))}: waits for development's CI to be green")
+            todo = [r for r in todo if r["id"] not in ready_kan]
+    if not on_stub or not todo:
+        return []
     out = []
     for r in sorted(todo, key=lambda r: r["id"]):
         if r["id"].upper() in on_stub:
@@ -609,6 +702,16 @@ def eager_step(repo: str, root: str, facts: dict) -> list[str]:
             if ok:
                 out.append(r["id"])
     return out
+
+
+def merge_script_out(root: str, flag: str) -> str:
+    """The stdout of `merge_dossier.py FLAG --root R` ("" when it failed)."""
+    script = os.environ.get("ASD_MERGE_BIN") or os.path.join(HERE, "merge_dossier.py")
+    try:
+        p = subprocess.run([sys.executable, script, flag, "--root", root], capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return (p.stdout or "").strip() if p.returncode == 0 else ""
 
 
 def carry_step(st: dict, facts: dict) -> list[str]:
@@ -631,6 +734,13 @@ def carry_step(st: dict, facts: dict) -> list[str]:
 
 def tick_repo(repo: str, facts: dict) -> None:
     root = facts.get("root") or ""
+    if root and os.path.isdir(runs_dir()) and kanban_on(repo):   # governed by the kanban switch alone, not by auto work
+        lk = lock_try(repo)
+        if lk is not None:
+            try:
+                kanban_pull(repo, root, facts)
+            finally:
+                lk.close()
     if not root or not os.path.isdir(runs_dir()) or not (enabled(repo) or eager_on(repo)):
         return
     if eager_on(repo):
@@ -1157,10 +1267,90 @@ def selftest() -> int:
         cmd_disable(root)
         check("status shows the eager-merge switch", cmd_status(root) == 0)
     LAND = real_land
+    kanban_selftest(check)
     land_dirs_ok = [land_stub.settings_path(), runs_dir()] != real_dirs
     check("the selftest used its own settings and runs directory", land_dirs_ok)
     print("FAILED: " + ", ".join(fails) if fails else "all ok")
     return 1 if fails else 0
+
+
+def kanban_selftest(check) -> None:
+    """The kanban pull, the frontier skip and the kanban eager merge, in a temp dir with fake runner and merge scripts."""
+    keys = ("ASD_RUNS_DIR", "ASD_STUB_AUTOMERGE_FILE", "ASD_RUNNER_BIN", "ASD_MERGE_BIN", "ASD_DELIVERY_FLOWS", "FAKE_DEV_CI")
+    saved = {k: os.environ.get(k) for k in keys}
+    with tempfile.TemporaryDirectory() as tmp:
+        runs, root, log_ = os.path.join(tmp, "runs"), os.path.join(tmp, "kan-repo"), os.path.join(tmp, "calls.txt")
+        os.makedirs(runs); os.makedirs(os.path.join(root, ".discovery", "dossiers"))
+        repo = repo_name(root)
+        open(os.path.join(tmp, "runner.py"), "w").write("import sys\nopen(%r,'a').write('runner '+' '.join(sys.argv[1:])+'\\n')\nprint('started')\n" % log_)
+        open(os.path.join(tmp, "merge.py"), "w").write(
+            "import sys, os\nopen(%r,'a').write('merge '+' '.join(sys.argv[1:])+'\\n')\n"
+            "if '--dev-ci' in sys.argv: print(os.environ.get('FAKE_DEV_CI', 'green'))\n"
+            "elif '--kanban-dossiers' in sys.argv: print(os.environ.get('FAKE_KANBAN_DOSSIERS', ''))\n"
+            "elif '--enqueue' in sys.argv: print('queued')\n" % log_)
+        os.environ.update(ASD_RUNS_DIR=runs, ASD_STUB_AUTOMERGE_FILE=os.path.join(tmp, "settings.json"), ASD_RUNNER_BIN=os.path.join(tmp, "runner.py"),
+                          ASD_MERGE_BIN=os.path.join(tmp, "merge.py"), ASD_DELIVERY_FLOWS=os.path.join(tmp, "flows.json"), FAKE_DEV_CI="green")
+        os.environ["FAKE_KANBAN_DOSSIERS"] = ""
+        try:
+            def dossier(id_, delivery=None):
+                with open(os.path.join(root, ".discovery", "dossiers", f"{id_}-x.md"), "w") as fh:
+                    fh.write(f"---\nid: {id_}\nstatus: ready\n" + (f"delivery: {delivery}\n" if delivery else "") + "---\n# t\n")
+            for i, d in (("K-1", "kanban"), ("K-2", None), ("K-3", None), ("K-4", None), ("K-5", "kanban"), ("K-6", "kanban"), ("K-7", "kanban"),
+                         ("K-8", "kanban"), ("K-9", "kanban"), ("K-10", "kanban"), ("K-11", "stub")):
+                dossier(i, d)
+            run_ = lambda id_, status, blocked=(), runner=None: {"id": id_, "status": status, "blockedBy": list(blocked), "runner": runner, "deferred": []}
+            fin = {"state": "done", "command": "work-on", "pid": 1, "started": "t"}
+            facts = {"root": root, "stubs": [], "runs": [
+                run_("K-1", "ready"), run_("K-2", "ready"), run_("K-3", "planned"), run_("K-4", "planned", ["K-5"]), run_("K-5", "building"),
+                run_("K-6", "ready", ["K-7"]), run_("K-7", "done"), run_("K-8", "ready", runner={"state": "running", "command": "work-on", "pid": 2, "started": "t"}),
+                run_("K-9", "ready", ["K-5"]), run_("K-10", "pr", runner=fin), run_("K-11", "pr", runner=fin)]}
+            calls = lambda: open(log_).read().splitlines() if os.path.exists(log_) else []
+            check("kanban settings: missing file, entry or key = stub on, kanban off; both off is invalid = stub on",
+                  flows_of(repo) == (True, False) and not kanban_on(repo) and not kanban_ids(repo, root))
+            json.dump({repo: {"stub": False, "kanban": True}, "other": {"stub": False, "kanban": False}, "mix": {"kanban": True}}, open(os.environ["ASD_DELIVERY_FLOWS"], "w"))
+            check("kanban settings: kanban only, both on, both off", flows_of(repo) == (False, True) and flows_of("mix") == (True, True) and flows_of("other") == (True, False))
+            json.dump({}, open(os.environ["ASD_DELIVERY_FLOWS"], "w"))
+            tick_repo(repo, facts)
+            check("default settings: no kanban pull, no state file, nothing started", not any(l.startswith("runner") for l in calls()) and not os.path.exists(os.path.join(runs, f"{repo}.kanban.json")), calls())
+            json.dump({repo: {"stub": True, "kanban": True}}, open(os.environ["ASD_DELIVERY_FLOWS"], "w"))
+            set_eager(repo, False)
+            tick_repo(repo, facts)
+            check("kanban on, auto work off: a planned dossier gets /plan, a ready kanban one /work-on, in id order, blockers done, no live run; stub-classified, blocked and live ones are left",
+                  [l for l in calls() if l.startswith("runner")] == [f"runner {i} --root {root} --command {c}" for i, c in (("K-1", "work-on"), ("K-3", "plan"), ("K-6", "work-on"))], calls())
+            n = len(calls()); tick_repo(repo, facts)
+            check("a started (dossier, command) is not started again by the pull", len(calls()) == n, calls()[n:])
+            facts["runs"][2]["status"] = "ready"   # K-3 planned -> ready; its dossier says kanban only once /plan wrote it
+            dossier("K-3", "kanban"); tick_repo(repo, facts)
+            check("a plan that made the dossier ready kanban is pulled into /work-on next", calls()[n:] == [f"runner K-3 --root {root} --command work-on"], calls()[n:])
+            json.dump({repo: {"stub": False, "kanban": True}}, open(os.environ["ASD_DELIVERY_FLOWS"], "w"))
+            n = len(calls()); tick_repo(repo, facts)
+            check("kanban only: a ready dossier without `delivery:` is kanban too (K-2, K-4 unblocked? no: K-4 is planned, blocked)",
+                  [l for l in calls()[n:] if l.startswith("runner")] == [f"runner K-2 --root {root} --command work-on"], calls()[n:])
+            # the frontier snapshot
+            runs_f = [run_("K-1", "ready"), run_("K-2", "ready"), run_("K-5", "building", runner={"state": "running", "command": "work-on"})]
+            check("frontier: kanban dossiers are skipped (in flight too), others kept; default skips nothing",
+                  [m["id"] for m in frontier(runs_f, {"K-1", "K-5"})] == ["K-2"] and [m["id"] for m in frontier(runs_f)] == ["K-1", "K-2", "K-5"])
+            json.dump({repo: {"stub": True, "kanban": True}}, open(os.environ["ASD_DELIVERY_FLOWS"], "w"))
+            st_ = blank(repo, root); start_cycle(st_, {"runs": runs_f}, "t", "stub/x")
+            check("start_cycle: with kanban on the snapshot leaves `delivery: kanban` dossiers to the pull", [m["id"] for m in st_["members"]] == ["K-2"], st_["members"])
+            # eager merge of finished kanban dossiers
+            os.environ["FAKE_KANBAN_DOSSIERS"] = "K-10"
+            os.remove(log_) if os.path.exists(log_) else None
+            set_eager(repo, True)
+            eager_step(repo, root, facts)
+            check("eager: a finished kanban dossier with an open PR into development is enqueued, a stub-classified one is not",
+                  [l for l in calls() if l.startswith("merge") and "--enqueue" in l] == [f"merge K-10 --enqueue --root {root} --by eager"], calls())
+            os.remove(log_); os.environ["FAKE_DEV_CI"] = "red"
+            eager_step(repo, root, facts)
+            check("stop the line: development's CI red, no kanban merge is enqueued", not any("--enqueue" in l for l in calls()) and "--dev-ci --root " + root in " ".join(calls()), calls())
+            os.environ["FAKE_DEV_CI"] = "green"; os.remove(log_)
+            json.dump({}, open(os.environ["ASD_DELIVERY_FLOWS"], "w"))
+            eager_step(repo, root, facts)
+            check("default settings: eager merge asks nothing about development and enqueues nothing", calls() == [], calls())
+        finally:
+            for k, v in saved.items():
+                if v is None: os.environ.pop(k, None)
+                else: os.environ[k] = v
 
 
 def main(argv: list[str] | None = None) -> int:
