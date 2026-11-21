@@ -1,6 +1,6 @@
 // Owner-questions server: store, API, page and the Slack envelope handlers (no network, no Slack).
 // Run: bun --no-install shared/test/questions-server.test.ts
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, realpathSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, realpathSync, utimesSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { appendOwner, cut, parseQuestion, readAll, writeSidecar, idForThread, AnsweredError } from "../questions/store.ts"
@@ -84,6 +84,16 @@ check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "
   check("deferred record: no record is null, and the log parse is the fallback", readDeferredRecord(join(dir, "dossiers", "W-8.md"), "W-8") === null && parseDeferred("- D-1 bug a — f:1 — low — x", null).items.length === 1)
   writeFileSync(join(dir, "deferred", "W-9.yaml"), JSON.stringify({ items: [], sources: ["own reads"] }))
   check("deferred record: items [] is an empty list, not a fallback", readDeferredRecord(join(dir, "dossiers", "W-9.md"), "W-9")?.length === 0)
+  // The dossier read from a branch or another worktree: the record in the main checkout still counts (W-174, W-119).
+  const mainCo = mkdtempSync(join(tmpdir(), "drmain-")); mkdirSync(join(mainCo, ".discovery", "deferred"), { recursive: true })
+  writeFileSync(join(mainCo, ".discovery", "deferred", "W-7.yaml"), JSON.stringify({ items: [{ id: "D-1", evidence: "e", fix: "f", boundary: "none", blast_radius: "low", state: "fixed" }, { id: "D-3", evidence: "e3", fix: "f3", boundary: "none", blast_radius: "low", state: "open" }], sources: [] }))
+  const viaGit = readDeferredRecord(`git:${mainCo}::fix/W-7-deferred::.discovery/dossiers/W-7.md`, "W-7", mainCo)
+  check("deferred record: a git: dossier path reads the main checkout's record", viaGit?.length === 2 && viaGit[0].state === "fixed" && viaGit[1].id === "D-3")
+  check("deferred record: a worktree without a record falls back to the main checkout's", readDeferredRecord(join(mainCo, "elsewhere", "dossiers", "W-7.md"), "W-7", mainCo)?.length === 2)
+  utimesSync(join(dir, "deferred", "W-7.yaml"), new Date(1e12), new Date(1e12))
+  const both = readDeferredRecord(dossier, "W-7", mainCo)
+  check("deferred record: with a copy in both places the newer one wins", both?.length === 2 && both[1].id === "D-3")
+  rmSync(mainCo, { recursive: true, force: true })
   rmSync(dir, { recursive: true, force: true })
 }
 {
