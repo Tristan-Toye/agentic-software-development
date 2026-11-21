@@ -46,7 +46,7 @@ own front matter says `status: done`; otherwise the same call must carry
 (the fact the validator reads) and as one `BLOCKER-REMOVED:` build-log line
 (the human view). No separate pre-written log line is needed. `set` also
 creates three build-record keys on first use: `hooks`, `contract_commit`,
-`contract_review`. `replace-section` swaps one section's body — everything under its
+`contract_review`, `delivery`. `replace-section` swaps one section's body — everything under its
 heading up to the next heading of the same or a higher level, sub-sections
 included — for the file's text, keeping the heading line. It refuses `## Build
 log` (append-only, `log` only) and any section that contains it, and a new body
@@ -300,8 +300,9 @@ def log_or_say(path: str, entries: list[str]) -> str:
 BLOCKER_KEY = "blocked_by"
 # Facts the build records in front matter, created on first `set`: the hook policy decided at the contract
 # commit (`none` or `<hook> — <policy>`), the contract commit's SHA, the SHA the contract review read, and
-# `visual_review: required`, which Phase 3's visual-review step sets to switch its gate on for the dossier.
-CREATABLE_KEYS = {"hooks", "contract_commit", "contract_review", "visual_review"}
+# `visual_review: required`, which Phase 3's visual-review step sets to switch its gate on for the dossier, and
+# `delivery: stub|kanban`, which classify_delivery.py --write sets.
+CREATABLE_KEYS = {"hooks", "contract_commit", "contract_review", "visual_review", "delivery"}
 
 
 def key_index(fm: list[str], key: str) -> int | None:
@@ -1180,6 +1181,8 @@ def selftest() -> int:
     check("set creates the build-record keys", "hooks: none" in new and "contract_commit: abc1234" in new)
     new, _ = set_fields(blk, [("visual_review", "required")])
     check("set creates visual_review (Phase 3 switches the visual-review gate on)", "visual_review: required" in new)
+    new, _ = set_fields(blk, [("delivery", "kanban")])
+    check("set creates delivery (classify_delivery.py --write)", "delivery: kanban" in new)
     check("set still never invents other keys", refused(set_fields, blk, [("invented", "x")]))
     with tempfile.TemporaryDirectory() as td:
         os.makedirs(os.path.join(td, "dossiers"))

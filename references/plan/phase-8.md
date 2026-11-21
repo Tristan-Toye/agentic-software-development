@@ -71,6 +71,10 @@ approved product rule into `docs/product/model.md` with the dossier ID as its
 source. A changed contract or approach re-runs the Phase 5 check; it does not
 re-open the review unless a change is a new subject.
 
+Kanban: when the repo has kanban on (`delivery_flows.py --root ${RUN_ROOT}`),
+read `${PLUGIN_ROOT}/references/plan/kanban.md` ("Phase 8") now: it classifies
+the dossier and puts the verdict and gate evidence on this card.
+
 ### 5. Write `ready`
 
 Run the last check, then write the state:

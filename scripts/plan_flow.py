@@ -247,8 +247,16 @@ def empty(v):
     return v.strip().lower() in EMPTY
 
 
+def is_kanban(text):
+    """True when the front matter says `delivery: kanban` (K5: its `## Decisions` is optional)."""
+    head = text.split("\n---\n", 1)[0]
+    return re.search(r"^delivery:\s*kanban\b", head, re.M) is not None
+
+
 def lint_register(text, ready):
     defects = []
+    if is_kanban(text) and section(text, "Decisions") is None:
+        return [], 0, 0
     try:
         rows, subs = parse_register(text)
     except Fail as e:
@@ -1044,6 +1052,14 @@ def selftest():
         check("register: dossier resolved by full stem", rc == 0)
         rows = {m: f"| {m} | FYI | {NA} | - | - | |" for m in MANDATORY}
         del rows["R-TRUST"]
+        kt = read(os.path.join(root, ".discovery/dossiers/W-001-flush.md"))
+        kt = kt.replace("\n---\n", "\ndelivery: kanban\n---\n", 1)
+        kt = re.sub(r"## Decisions\n.*?(?=\n## )", "", kt, count=1, flags=re.S)
+        open(os.path.join(root, ".discovery/dossiers/W-002-kan.md"), "w").write(kt)
+        rc, out = run(root, "register", "--dossier", "W-002")
+        check("register: kanban without Decisions passes", rc == 0 and "register: ok (0 rows" in out)
+        rc, out = run(root, "register", "--dossier", "W-001")
+        check("register: stub keeps its register", rc == 0 and "7 rows" in out)
         mk(root, "W-010", slug="a")
         t = read(os.path.join(root, ".discovery/dossiers/W-010-a.md")).replace("| R-TRUST | FYI | " + NA + " | - | - | |\n", "")
         open(os.path.join(root, ".discovery/dossiers/W-010-a.md"), "w").write(t)

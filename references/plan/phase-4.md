@@ -7,8 +7,12 @@ Write `${RUN_ROOT}/.discovery/dossiers/W-NNN-<slug>.md` with the ID claimed in
 Phase 1, the front matter, `flow: 2`, and the seven sections in order:
 `## Problem`, `## Approach`, `## Decisions`, `## Contract`, `## Work packages`,
 `## Acceptance criteria`, `## Build log`. **Every section is mandatory for
-every plan**, whatever its size. A provisional number is settled at Phase 8,
+every plan**, whatever its size (a kanban dossier omits `## Decisions` when it has no choice to record). A provisional number is settled at Phase 8,
 which re-checks it against the base tip before the push.
+
+Kanban: when `python3 ${PLUGIN_ROOT}/scripts/delivery_flows.py --root ${RUN_ROOT}`
+prints `"kanban": true`, read `${PLUGIN_ROOT}/references/plan/kanban.md`
+("Phase 4") first: a small change gets a dossier sized to it.
 
 `## Decisions` is the Phase 3 register, copied with its rulings. **Apply every
 FIX row** before you write the contract: the fix lands in `## Contract` or
