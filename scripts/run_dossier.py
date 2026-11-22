@@ -1221,6 +1221,42 @@ def queue_order(st: dict) -> tuple[int, str]:
     return (0 if st.get("queued_first") else 1, str(st.get("queued_since") or ""))
 
 
+def owner_replied_since(key: str, since: str) -> bool:
+    """True when the owner wrote on one of run `key`'s questions (an answer or a follow-up), or sent the run a message,
+    after `since`: a queued run with fresh owner input queues first, as an answered waiting run does."""
+    try:
+        t0 = datetime.datetime.fromisoformat(str(since).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    qdir = os.environ.get("ASD_QUESTIONS_DIR") or os.path.expanduser("~/.agentic/questions")
+    pat = re.compile(re.escape(key) + r"\.Q\d+\.jsonl")
+    try:
+        names = [n for n in os.listdir(qdir) if pat.fullmatch(n)]
+    except OSError:
+        names = []
+    lines: list[dict] = []
+    for n in names:
+        try:
+            with open(os.path.join(qdir, n)) as fh:
+                lines += [json.loads(l) for l in fh if l.strip()]
+        except (OSError, ValueError):
+            continue
+    try:
+        with open(inbox_path(key)) as fh:
+            lines += [{**d, "from": "owner"} for d in (json.loads(l) for l in fh if l.strip()) if isinstance(d, dict)]
+    except (OSError, ValueError):
+        pass
+    for l in lines:
+        if l.get("from") != "owner":
+            continue
+        try:
+            if datetime.datetime.fromisoformat(str(l.get("ts") or "").replace("Z", "+00:00")) > t0:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def repo_of_key(key: str) -> str:
     """The repo name of a run key `<repo>.<ID>` (or `<repo>.<ID>.plan-<D-n>`): what key_of/run_key put in front of the ID."""
     return re.sub(r"\.plan-[^.]+$", "", key).rpartition(".")[0] or key
@@ -1833,6 +1869,11 @@ class Runner:
                 self.save(state="running", queued_since=None, queued_first=None)
                 self.ka_since = None
                 return True
+            if mine and not first and owner_replied_since(self.key, str(self.state.get("queued_since") or "")):
+                first = True
+                mine = queue_order({"queued_since": self.state.get("queued_since"), "queued_first": True})
+                self.save(queued_first=True)
+                self.event("queued first: the owner replied while this run waited for a slot", "queued")
             held_by, queued = slot_census_by_repo(self.key)
             held = sum(held_by.values())
             reserved = reserved_repos()
@@ -1953,8 +1994,9 @@ class Runner:
         return bool(sent)
 
     def key_q_prefix(self) -> str:
-        """Question ids of this run's dossier: `<repo>.<ID>.Q`."""
-        return key_of(self.root, self.dossier) + ".Q"
+        """Question ids of this run: `<repo>.<ID>.Q`, and for a plan run of a deferred item `<repo>.<ID>.plan-<D-n>.Q`
+        (ask_owner.py names a question after the run key, so the dossier key alone missed every plan run's questions)."""
+        return self.key + ".Q"
 
     def forward_dropped(self) -> bool:
         """Send on the completion notices the CLI dropped. A background command or workflow that finishes while no turn
@@ -4590,6 +4632,30 @@ def selftest() -> int:
                         (queue_order({"queued_since": "2026-11-09T10:30:00Z", "queued_first": True}), "answered-earlier")])
         check("slots: an answered run queues ahead of runs queued before it, answered runs among themselves by time",
               [k for _, k in order] == ["answered-earlier", "answered", "old"])
+        # ---- an owner reply on a queued run's question (answer or follow-up), or a message, queues it first ----
+        oq, ork = os.environ.get("ASD_QUESTIONS_DIR"), os.environ.get("ASD_RUNS_DIR")
+        os.environ["ASD_QUESTIONS_DIR"], os.environ["ASD_RUNS_DIR"] = qdir, rdir
+        try:
+            def qline(name: str, *ls: dict) -> None:
+                with open(os.path.join(qdir, name), "w") as fh:
+                    fh.write("".join(json.dumps(l) + "\n" for l in ls))
+            ask = {"ts": "2026-11-21T15:22:29Z", "from": "agent", "kind": "question", "text": "q"}
+            qline("repo.W-80.plan-D-1.Q3.jsonl", ask, {"ts": "2026-11-21T15:49:42.292Z", "from": "owner", "kind": "followup", "text": "f"})
+            check("queue: an owner follow-up on a plan run's question after it queued counts as a reply",
+                  owner_replied_since("repo.W-80.plan-D-1", "2026-11-21T15:32:16Z"))
+            check("queue: ...one from before it queued does not, nor does it count for the source dossier's run",
+                  not owner_replied_since("repo.W-80.plan-D-1", "2026-11-21T16:00:00Z") and not owner_replied_since("repo.W-80", "2026-11-21T15:32:16Z"))
+            check("queue: sub-second owner times compare as times, not strings",
+                  owner_replied_since("repo.W-80.plan-D-1", "2026-11-21T15:49:42Z"))
+            qline("repo.W-81.Q1.jsonl", ask)
+            check("queue: only the agent's own lines are no reply", not owner_replied_since("repo.W-81", "2026-11-21T15:00:00Z"))
+            with open(inbox_path("repo.W-81"), "w") as fh:
+                fh.write(json.dumps({"ts": "2026-11-21T16:00:00Z", "text": "go on"}) + "\n")
+            check("queue: a dashboard message to the run counts as a reply", owner_replied_since("repo.W-81", "2026-11-21T15:00:00Z"))
+            os.remove(inbox_path("repo.W-81"))
+        finally:
+            for k, v in (("ASD_QUESTIONS_DIR", oq), ("ASD_RUNS_DIR", ork)):
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
         # ---- a long test wait releases the slot: `testing` is live but holds none ----
         bsy = {"pid": os.getpid(), "state": "testing"}
         before = slot_census("x")[0]
