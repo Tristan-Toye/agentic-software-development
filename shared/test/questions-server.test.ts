@@ -812,6 +812,16 @@ try {
   const qo = html.match(/function queueOpen\(\) \{[^\n]*\}/)?.[0] ?? ""
   const order = qo ? new Function("S", qo + "; return queueOpen().map(q => q.id)")({ q: [{ id: "c", state: "open", ts: "2026-11-02T10:03:00Z" }, { id: "a", state: "open", ts: "2026-11-02T10:01:00Z" }, { id: "x", state: "answered", ts: "2026-11-02T10:00:00Z" }, { id: "b", state: "open", ts: "2026-11-02T10:02:00Z" }] }) : []
   check("home: the open questions are a queue, oldest first, and no longer a card", JSON.stringify(order) === '["a","b","c"]' && !html.includes("home:questions") && html.includes("No open questions.") && html.includes("waiting "), JSON.stringify(order))
+  const mdSrc = html.slice(html.indexOf("function mdInline"), html.indexOf("function qCard"))
+  const fakeH = (tag: string, _a: unknown, kids: any[]) => { const e: any = { tag, kids: [...(kids || [])] }; e.appendChild = (k: any) => e.kids.push(k); return e }
+  const md = (t: string) => new Function("h", "document", mdSrc + "; return mdLite")(fakeH, { createTextNode: (x: string) => x })(t)
+  const flat = (n: any): string => typeof n === "string" ? n : n.tag === "br" ? "|" : `<${n.tag}>${n.kids.map(flat).join("")}</${n.tag}>`
+  const q1 = md("**Frame: x**\n\n**Intent.** Two\nlines.\n\n**Scope.**\n- In: a `b`\n- Out: c\n1. one\n2. two\n\n---\n\n# Q2\nend").map(flat).join("")
+  check("question card: light markdown keeps paragraphs, bold, line breaks, lists, rules and headings, no raw **",
+    q1 === "<p><strong>Frame: x</strong></p><p><strong>Intent.</strong> Two|lines.</p><p><strong>Scope.</strong></p><ul><li>In: a <code>b</code></li><li>Out: c</li></ul><ol><li>one</li><li>two</li></ol><hr></hr><h4>Q2</h4><p>end</p>", q1)
+  check("question card: text is never parsed as HTML", md("<b>x</b> & y").map(flat).join("") === "<p><b>x</b> & y</p>" && !mdSrc.includes("innerHTML"))
+  const sq = questionBlocks({ id: "r.W-1.Q1", repo: "r", dossier: "W-1", text: "**Frame.** a <b>\n# Q2\n---\nz", options: [], lines: [] } as any, 7317)[0].text.text
+  check("slack: question markdown becomes mrkdwn (single-star bold, heading bold, a rule), still escaped", sq.includes("*Frame.* a &lt;b&gt;\n*Q2*\n────────\nz") && !sq.includes("**"), sq)
   const r10 = rv.runs.find((r: any) => r.id === "W-10"), r9 = rv.runs.find((r: any) => r.id === "W-9")
   check("server: a ready dossier with a waiting runner is running, with its updates and summary", r10?.running === true && r10.runner?.state === "waiting" && r10.updates[0]?.text === "ten started" && r10.summary === "Ten paragraph." && r7.running === true && r9.running === false && r9.repo === "repoC", JSON.stringify(r10).slice(0, 300))
   check("server: stage carries the phase name", r7.phaseName === pn["4"])
