@@ -110,11 +110,20 @@ export function dossierLink(port: number | string, repo: string, dossier: string
   return `http://127.0.0.1:${port}/repo/${encodeURIComponent(repo)}/${encodeURIComponent(dossier)}`
 }
 
+/** Question text (light markdown from the agents) as Slack mrkdwn: **bold** and `# heading` become *bold*, a `---`
+ *  rule a line; Slack shows a doubled ** literally. */
+export function mrkdwnOf(text: string): string {
+  return esc(text || "")
+    .replace(/\*\*([^*\n]+)\*\*/g, "*$1*")
+    .replace(/^#{1,6}[ \t]+(.+)$/gm, "*$1*")
+    .replace(/^[ \t]*-{3,}[ \t]*$/gm, "────────")
+}
+
 export function questionBlocks(q: Question, port: number | string, answered = false): any[] {
   const opts = q.options
     .map((o) => `*${esc(o.key)}* ${esc(o.label)}${o.consequence ? ` — ${esc(o.consequence)}` : ""}`)
     .join("\n")
-  let body = `*${esc(q.repo)} · ${esc(q.dossier)}*\n${esc(q.text)}`
+  let body = `*${esc(q.repo)} · ${esc(q.dossier)}*\n${mrkdwnOf(q.text)}`
   if (q.blocks) body += `\n_Blocks:_ ${esc(q.blocks)}`
   if (opts) body += `\n\n${opts}`
   if (q.recommendation) body += `\n\n_Recommended:_ *${esc(q.recommendation)}*`
