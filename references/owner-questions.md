@@ -95,7 +95,7 @@ uncertainty` to say which; a question that fits none of them is not asked.
 
 The visual review of a change (`/work-on` Phase 3, the diagram step) is one product question, `--kind product --topic visual-review` (the marker the dashboard canvas requires): does this picture of the change match what the feature should do? The run waits for the answer.
 
-`/plan` asks at most three product questions per plan, each one card on the dashboard and in an interactive run alike, each `--kind product` with its topic: `--topic plan-frame` (Phase 1: go, change or no-go on the frame, plus the product-model draft when the plan bootstrapped one), `--topic plan-confirm` (Phase 3: every CONFIRM row of the decision register on one batched card) and `--topic plan-final` (Phase 8: the product ambiguities, review questions, open BLOCKING findings, new concept overlaps and product-rule proposals; skipped when there are none). These three are the owner's rulings on one-way doors, not approvals, so the approval lint below does not apply to them; format, anchor and validator problems never reach any of them.
+`/plan` asks at most three product questions per plan, each one card on the dashboard and in an interactive run alike, each `--kind product` with its topic: `--topic plan-frame` (Phase 1: go, change or no-go on the frame; the product-model draft, when the plan bootstrapped one, is a second `plan-frame` card of its own), `--topic plan-confirm` (Phase 3: every CONFIRM row of the decision register on one batched card) and `--topic plan-final` (Phase 8: the product ambiguities, review questions, open BLOCKING findings, new concept overlaps and product-rule proposals; skipped when there are none). These three are the owner's rulings on one-way doors, not approvals, so the approval lint below does not apply to them; format, anchor and validator problems never reach any of them.
 
 **Never ask for approval.** No "approve the plan" or "approve all six
 revisions", no "may I push, open the draft PR or mark it ready" (the standing
@@ -179,10 +179,46 @@ draft PR", "may I open the issue", "retry or stop") is a sign the answer is alre
 check the dossier and this list before asking. Under a terminal run without
 the runner, the gates of the command still ask, once, at its start.
 
+### The card layout
+
+Every card follows one layout, bottom line up front: the owner reads the
+first two lines on a phone and can answer from them.
+
+```text
+<the decision, one line, ending in ?>
+**Recommendation:** <key> — <why, in one line>
+- <context: at most 6 bullets — the evidence, what each option costs, which one is hard to reverse>
+**Details**
+<scope, unknowns, overlap, the long evidence>
+```
+
+- **The decision comes first**, as the question the owner answers. Not a
+  title, not the background: a reader who stops after line one knows what is
+  being asked.
+- **The recommendation is right under it**, with its reason in one line.
+  Every `--recommend` needs that line.
+- **One decision per card.** A second decision (a `Q2`, a product-model
+  draft to approve beside a frame) is its own card. Only the batched
+  `plan-confirm` and `plan-final` cards hold several parts (`Q1`, `Q2`, …,
+  one line each) by design, and only they skip the context limits below.
+- **Context is short:** at most 6 bullets and 1,500 characters before
+  `**Details**`. Each option's consequence says what happens and what it
+  costs; mark the one that is hard to reverse (one-way).
+- **Everything else goes under a `**Details**` line.** The dashboard folds
+  it, and Slack shows only the front with a pointer to the dashboard.
+- A one-line question is already the layout when the question comes first
+  (within 240 characters) and the line stays under 700.
+
+`ask_owner.py ask` checks this in a run the runner started and refuses a
+card that does not follow it (exit 2, `REFUSED:` with what is wrong and the
+layout); reword it and ask again. A `run-failure` card is a report the
+runner writes and is exempt; `ASD_ASK_LINT=0` turns the check off together
+with the approval lint.
+
 ### Steps
 
-1. Ask as soon as the question is known, with every option's consequence and
-   your recommendation, then go on with whatever does not depend on it.
+1. Ask as soon as the question is known, in the card layout above, with every
+   option's consequence and your recommendation, then go on with whatever does not depend on it.
 2. Record `QUESTION: <id> — <question>` in the dossier's build log.
 3. When nothing else can proceed, wait. Under Claude Code run
    `ask_owner.py wait <id>` as a background command and end the turn: the

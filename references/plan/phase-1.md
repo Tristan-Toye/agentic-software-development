@@ -80,7 +80,7 @@ a draft from what the repository already records: the ADRs
 `.discovery/analysis/`, and the owner's earlier rulings (`OWNER-RULING` lines
 in the dossiers' `## Build log`). Every concept and rule cites its source;
 mark the file `status: draft` on its first line. The draft goes on this
-phase's frame card as one more part to review. After the owner approves it,
+phase's frame step as a card of its own (below). After the owner approves it,
 change the first line to `status: confirmed`. Later plans do not rewrite it:
 Phase 8 proposes each new product rule on the final card and adds it only
 after the owner approves it there. In committed mode the file goes in the plan
@@ -128,21 +128,40 @@ Phase 2): at most one page, for a person reading on a phone.
 
 ### The frame card — the owner approves before you continue
 
-Put the frame to the owner as one card. The dashboard and an interactive run
-show the same card; only where the owner clicks differs:
+Put the frame to the owner as one card, in the card layout
+(`owner-questions.md`, "The card layout"): the decision first, the
+recommendation and its reason under it, the frame's strongest points as at
+most six bullets, and the rest of the frame under `**Details**`, which the
+dashboard folds. The dashboard and an interactive run show the same card;
+only where the owner clicks differs:
 
 ```bash
 python3 ${PLUGIN_ROOT}/scripts/ask_owner.py ask --root ${RUN_ROOT} --dossier <key> \
   --kind product --topic plan-frame --blocks "the whole plan" \
-  --question "<the frame, as written above>" \
+  --question "$(cat <<'CARD'
+Plan <the intent, in a few words> as framed?
+**Recommendation:** A — <why go, or C — why no-go, in one line>
+- **Intent:** <one sentence>
+- **Scope:** in <…>; out <…>
+- **Overlap:** <W-NNN and how it relates, or none>
+- **Spike:** <name, question, timebox, or none>
+**Details**
+**Concepts.** <…>
+**Scenarios.** <…>
+**Unknowns.** <…>
+CARD
+)" \
   --option "A|Go|plan it as framed" --option "B|Change|<what the owner may correct>" \
   --option "C|No-go|<the no-go and its reason>" --recommend A
 ```
 
-Put the product-model draft in the same question when Phase 1 bootstrapped it
-(a second part, `Q2`, with its own options in the text). Then run
-`ask_owner.py wait <id>` as a background command and end the turn; nothing in
-this run is unblocked before the answer.
+When Phase 1 bootstrapped the product-model draft, ask its approval as a
+second `plan-frame` card of its own (one decision per card), with the same
+layout: "Adopt this product model as the repository's draft?", the
+recommendation, the concepts and rules it adds as bullets, the full draft
+under `**Details**`. Then run `ask_owner.py wait <id>` for each card as a
+background command and end the turn; nothing in this run is unblocked before
+the answers.
 
 - **Go** → claim the dossier ID now (Phase 4 writes it):
   `python3 ${PLUGIN_ROOT}/scripts/claim_id.py --repo <repo> --kind W --for plan/<KEY>`
