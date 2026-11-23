@@ -300,7 +300,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
             "DOSSIER_ID", "PROBLEM", "APPROACH", "CONTRACT", "WORK_DIR", "OUT_DIR",
             "SCRIPTS_DIR", "REPO", "DIAGRAMS_NEW",
         },
-        "optional": {"ERRORS", "STEP_ROUTING"},
+        "optional": {"ERRORS", "STEP_ROUTING", "DECISION"},
     },
 }
 
@@ -1301,7 +1301,7 @@ def diagram_author_findings(lines: list[str], kind: str | None,
     if kind != "diagram-author":
         return [], []
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from validate_pipeline import DIAGRAMS_NEW_RE, parse_diagrams_new
+    from validate_pipeline import DIAGRAMS_NEW_RE, branch_markers, parse_diagrams_new
     defects: list[str] = []
     warnings: list[str] = []
     body = field_body(lines, "DIAGRAMS_NEW")
@@ -1347,11 +1347,25 @@ def diagram_author_findings(lines: list[str], kind: str | None,
     if dossier and os.path.isfile(dossier):
         try:
             with open(dossier, encoding="utf-8") as handle:
-                match = DIAGRAMS_NEW_RE.search(handle.read())
+                dossier_text = handle.read()
+                match = DIAGRAMS_NEW_RE.search(dossier_text)
         except OSError as err:
             print("check_payload: cannot read %s" % err, file=sys.stderr)
             raise SystemExit(2)
         expected = parse_diagrams_new(match.group(1)) if match else []
+        # DECISION: the branch rule (validate_pipeline.py --branch-rule) over the criteria; yes means decision.json is written
+        words = branch_markers(dossier_text)
+        decision = (field_value(lines, "DECISION") or "").strip().strip("`").lower().split(" ")[0]
+        if decision not in ("", "yes", "no"):
+            defects.append("DECISION %r is not `yes` or `no`: copy the branch rule's answer "
+                           "(`validate_pipeline.py --dossier <ID> --branch-rule`)." % decision)
+        elif words and decision != "yes":
+            defects.append(
+                "the dossier's acceptance criteria name branches (%s) but the payload has DECISION %s: a change "
+                "with branches needs decision.json, so write `DECISION: yes`." % (", ".join(words[:5]), decision or "(absent)"))
+        elif not words and decision == "yes":
+            defects.append("DECISION: yes but the branch rule finds no branch word in the dossier's acceptance criteria: "
+                           "write `DECISION: no` (the author would draw a decision flow nothing asks for).")
         if stems != expected:
             defects.append(
                 "DIAGRAMS_NEW names %s, the dossier's `Diagrams new:` line lists %s. The author writes "
@@ -2515,6 +2529,18 @@ def _selftest_cases() -> int:
     case("diagram author: OUT_DIR outside the repo",
          da.replace("OUT_DIR: {REAL}/.discovery/visual-review/W-014", "OUT_DIR: {REAL}/../elsewhere"),
          "diagram-author", True, "not under REPO", repo_files=da_files)
+    # the branch rule: DECISION is the rule's answer over the criteria
+    da_branch = {".discovery/dossiers/W-014-x.md": da_dossier + "## Acceptance criteria\n\n1. If the flush fails, retry 3 times.\n",
+                 ".discovery/visual-review/W-014/work/summary.json": "{}"}
+    case("diagram author: criteria with branches, DECISION: yes is clean", da + "DECISION: yes\n", "diagram-author", False,
+         repo_files=da_branch)
+    case("diagram author: criteria with branches, no DECISION field", da, "diagram-author", True, "DECISION", repo_files=da_branch)
+    case("diagram author: criteria with branches, DECISION: no", da + "DECISION: no\n", "diagram-author", True,
+         "name branches", repo_files=da_branch)
+    case("diagram author: no branches, DECISION: yes", da + "DECISION: yes\n", "diagram-author", True,
+         "no branch word", repo_files=da_files)
+    case("diagram author: DECISION: no without branches is clean", da + "DECISION: no\n", "diagram-author", False, repo_files=da_files)
+    case("diagram author: DECISION must be yes or no", da + "DECISION: maybe\n", "diagram-author", True, "yes` or `no", repo_files=da_files)
     # a field that appears twice (issue #107)
     delivery = "DELIVERY_CHANGE: |\n  one Write, then Edits\n"
     case("one DELIVERY_CHANGE block is clean", unit_ok + delivery, "unit-test-author", False)

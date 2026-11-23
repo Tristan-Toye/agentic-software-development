@@ -3,13 +3,13 @@
 // Pure file work, no server state: the routes in server.ts call these.
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { archStemOf, archStems, graphHash, reviewViews, viewFile, VR_VIEWS } from "./vrlayout.ts"
+import { archStemOf, archStems, DECISION_VIEW, graphHash, reviewViews, viewFile, VR_VIEWS } from "./vrlayout.ts"
 
 export const VERDICTS = ["ok", "question", "change", "remove"] as const
 export type Verdict = (typeof VERDICTS)[number]
-/** A diagram of the review: L0, L1, L2, or `arch:<stem>` for a new architecture diagram drafted in arch/<stem>.json. */
-export type Diagram = (typeof VR_VIEWS)[number] | `arch:${string}`
-const isDiagramName = (d: unknown): d is Diagram => (VR_VIEWS as readonly unknown[]).includes(d) || archStemOf(d) !== null
+/** A diagram of the review: L0, L1, L2, `decision` (decision.json, when it exists), or `arch:<stem>` for a new architecture diagram drafted in arch/<stem>.json. */
+export type Diagram = (typeof VR_VIEWS)[number] | typeof DECISION_VIEW | `arch:${string}`
+const isDiagramName = (d: unknown): d is Diagram => (VR_VIEWS as readonly unknown[]).includes(d) || d === DECISION_VIEW || archStemOf(d) !== null
 export type Anchor = { diagram: Diagram; element: string; graph_hash: string }
 export type ReviewLine = { anchor: Anchor; verdict: Verdict; comment: string; ts: string }
 export type Review = { schema_version: "1.0.0"; dossier: string; updated: string; lines: ReviewLine[] }
@@ -112,7 +112,7 @@ export type VerdictInput = { diagram: unknown; element: unknown; verdict: unknow
  * the route sends it to the agent as a follow-up that carries the same anchor.
  */
 export function setVerdict(dir: string, dossier: string, b: VerdictInput): { state: ReviewState; followup: { anchor: Anchor; text: string } | null } {
-  if (!isDiagramName(b.diagram)) throw new ReviewError(400, "diagram must be L0, L1, L2 or arch:<stem>")
+  if (!isDiagramName(b.diagram)) throw new ReviewError(400, "diagram must be L0, L1, L2, decision or arch:<stem>")
   const diagram = b.diagram as Diagram
   if (typeof b.element !== "string" || !b.element || b.element.length > MAX_ID) throw new ReviewError(400, "element must be an id of at most " + MAX_ID + " characters")
   const unset = b.verdict === "unset"
@@ -150,7 +150,7 @@ export function setVerdict(dir: string, dossier: string, b: VerdictInput): { sta
 }
 
 /**
- * The one-click approval: every element of every diagram (L0, L1, L2 and each architecture tab) gets an OK, in one write.
+ * The one-click approval: every element of every diagram (L0, L1, L2, the decision flow when it exists and each architecture tab) gets an OK, in one write.
  * An OK already made on the current graph keeps its comment; an outdated verdict is replaced (the owner approves the picture
  * as it is now); a line whose element is gone is kept. Refused while an element carries a current Question, Change or
  * Remove (that review says changes requested: clear those first), while a diagram file is unreadable, or when `shown`

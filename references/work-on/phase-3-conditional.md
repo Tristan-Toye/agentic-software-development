@@ -175,17 +175,20 @@ compared against this one.
    writes `to` and `call_kind` only for `Diagrams new:` flows; with it, on every added or changed
    L1 step, so the shadow run below builds real drafts), and `DIAGRAMS_NEW` (the stems of the
    `Diagrams new:` line, one `<stem> — <what>` per line, verbatim; `none` when the dossier has no such
-   line). Lint it first:
+   line), and `DECISION: yes|no`, the branch rule's answer
+   (`python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --root <repo> --dossier <ID> --branch-rule`: yes when the
+   dossier's `## Acceptance criteria` name a condition, an error end or a retry; the lint compares it). Lint it first:
    `python3 ${PLUGIN_ROOT}/scripts/check_payload.py <file> --kind diagram-author --host <claude|opencode> --live-dossier <live dossier>`
    (it refuses a missing field, a `DIAGRAMS_NEW` that differs from the dossier's `Diagrams new:` stems or
    names a stem not starting `seq-`, `c1-` or `c4-`, an `OUT_DIR` outside `REPO`, and a path that does not
    exist); a repair re-spawn adds `ERRORS` and is linted the same way. It writes `l0.json`,
-   `l1.json` and `l2.json` in `OUT_DIR`, and for every `c1-*` and `c4-*` stem a
+   `l1.json` and `l2.json` in `OUT_DIR`, with `DECISION: yes` also `decision.json` (the decision flow: start,
+   steps, diamonds, ends; validated like the others; never promoted), and for every `c1-*` and `c4-*` stem a
    draft `OUT_DIR/arch/<stem>.json`; it only names and groups, and marks what
    no stub proves `inferred`.
 3. Validate each file yourself:
    `python3 scripts/vr_graph.py validate <OUT_DIR>/l<N>.json --root <repo>`
-   (budgets L0 15, L1 12, L2 12). On a defect re-spawn the agent with the
+   (budgets L0 15, L1 12, L2 12; `decision.json` with `--l1 <OUT_DIR>/l1.json`, 14 nodes and 5 decisions). On a defect re-spawn the agent with the
    issue list in `ERRORS`; **at most 2 repair attempts**, then stop, log the
    open issues in `## Build log` and report. A graph that fails validation
    creates **no** owner question.
@@ -229,9 +232,9 @@ compared against this one.
    secondary guard), so a question without it gets the ordinary buttons: "Does this picture match what the
    feature should do?", options `A|Approved|fan-out starts` and
    `B|Changes requested|back to the contract`, the dashboard view of the
-   three files linked in the question text, `--blocks` the Phase 4 fan-out.
+   three files (and the Decisions tab when `decision.json` exists) linked in the question text, `--blocks` the Phase 4 fan-out.
    Then `ask_owner.py wait`; the run waits for the answer, with no time-boxed
-   default (OQ-08 = A). The owner reviews L0, L1, L2 and every architecture
+   default (OQ-08 = A). The owner reviews L0, L1, L2, the Decisions tab when `decision.json` exists, and every architecture
    tab; the answer `A` needs every element of all of them OK. The owner gives a verdict per element on the
    dashboard canvas (OK, Question, Change, Remove from scope) and sends the
    review in one action (or presses **Approve all**, which marks every element
@@ -262,16 +265,20 @@ compared against this one.
 6. Record the outcome as a `## Build log` line, exactly one of:
 
    ```
-   VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n>, arch <stem> <n>, arch <stem> <n> (<dashboard link>)
+   VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n>, decision <n>, arch <stem> <n>, arch <stem> <n> (<dashboard link>)
    VISUAL-REVIEW: changes requested — <element ids of the review.json lines with verdict change or remove>
    VISUAL-REVIEW: skipped — <reason>   (step 1 only: unsupported repository, that is a language with no extractor, or the owner said go on)
    ```
 
-   The counts are the node counts of the three files, then one
+   The counts are the node counts of the three files, then `decision <n>` when `decision.json` exists
+   (required whenever the branch rule says yes; when its words are no condition of the changed behaviour and the
+   author drew none, record `decision none — <reason>` instead), then one
    `arch <stem> <n>` entry per architecture draft in `arch/` (its node count;
    none, and no comma, when the dossier lists no `Diagrams new:` stems).
    `validate_pipeline.py --dossier <ID> --pre-fanout` checks them, the three
-   files, every draft (each `Diagrams new:` stem needs its draft, each draft
+   files, `decision.json` (valid, its count equal to the `decision <n>` entry, every node `ok` in `review.json` on
+   its current hash; missing while the branch rule says yes is a defect unless the line records `decision none — <reason>`;
+   no file and no branches: unchanged), every draft (each `Diagrams new:` stem needs its draft, each draft
    its entry; the PR's `Diagram <stem> not added:` escape does not excuse a
    missing draft) and the last line (the gate holds for a dossier with the `visual_review:` field that
    step 1 sets; a build that never ran this step is not flagged; a `skipped — <reason>` last line, or a
