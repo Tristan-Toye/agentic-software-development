@@ -10,8 +10,14 @@ kanban on: kanban, no gates. Both on: kanban only when every gate passes, one ev
 
     G1 exactly one implementer package   counted from `## Work packages` (the UT and IT test rows do not count)
     G2 no shared/public interface change  the planner's line in front matter `delivery_gates:`
-    G3 no irreversible migration          the planner's line in front matter `delivery_gates:`
-    G4 provable without the full stack    the planner's line in front matter `delivery_gates:`
+    G3 no irreversible migration          the planner's line in front matter `delivery_gates:`; a migration file among the
+                                          owned paths is named in the evidence (additive ones may pass: "irreversible"
+                                          cannot be read from a path, so the planner's line stays the judge)
+    G4 provable without the full stack    CHECKED MECHANICALLY; the planner's line can only add a fail. A criterion's
+                                          `(owner: <test>; env: E)` fails it when E is not local/ci (vm, container...),
+                                          when its owner test also owns a stack criterion, when the owner path matches
+                                          the repo's `stack_tests` globs (stack-repair config), or, as a fallback, when
+                                          the criterion text says VM / Lima / live stack / stack database / --stack
     G5 every blocker is done or kanban    read from the blockers' own front matter in .discovery/dossiers
 
 The planner states G2-G4 as a block list, one line each, `G2|G3|G4 pass|fail: <evidence>` (validate_pipeline.py checks
@@ -28,8 +34,11 @@ stub's cut point): one `#<pr> <dossier> <title>` line each, found by matching th
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import glob
+import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -46,6 +55,64 @@ GATE_NAMES = {
     "G4": "provable without the full stack",
     "G5": "blockers done or kanban",
 }
+
+
+OWNER_RE = re.compile(r"\(owner:\s*([^;)]*?)\s*;\s*env:\s*([^)]*?)\s*\)")
+STACK_WORDS_RE = re.compile(r"\b(VM|Lima|live[- ]stack|full[- ]stack|stack database|shared stack|LiveGraph|NIGHTWATCH_\w+_TESTS)\b|--stack|docker compose", re.I)
+LOCAL_ENVS = ("local", "ci")
+MIGRATION_RE = re.compile(r"(^|/)(migrations?|alembic/versions|db/migrate)/|\.sql$", re.I)
+
+
+def criteria(body: str) -> list[tuple[int, str]]:
+    sec = vp.sections(body).get("## Acceptance criteria", "")
+    items: list[tuple[int, str]] = []
+    for line in sec.splitlines():
+        n = re.match(r"^\s*(\d+)[.)]\s+(.*)", line)
+        if n:
+            items.append((int(n.group(1)), n.group(2)))
+        elif items and line.strip():
+            items[-1] = (items[-1][0], items[-1][1] + " " + line.strip())
+    return items
+
+
+def stack_globs(root: str) -> list[str]:
+    """The repo's own list of stack-only test paths (`stack_tests` in its stack-repair config), if it has one."""
+    try:
+        import stack_repair
+        cfg = stack_repair.load_config(root) or {}
+    except Exception:  # noqa: BLE001 - no config is the common case
+        return []
+    g = cfg.get("stack_tests") or []
+    return [str(x) for x in g] if isinstance(g, list) else []
+
+
+def stack_needs(body: str, root: str) -> list[str]:
+    """One finding per criterion whose proof needs the full stack, naming the criterion and its test. Empty = none."""
+    globs = stack_globs(root)
+    parsed = []
+    for n, text in criteria(body):
+        m = OWNER_RE.search(text)
+        parsed.append((n, text, m.group(1).strip() if m else "", m.group(2).strip().lower() if m else ""))
+    stack_owners = {o for _, _, o, e in parsed if o and e and e not in LOCAL_ENVS}
+    out = []
+    for n, text, owner, env in parsed:
+        why = None
+        words = STACK_WORDS_RE.search(OWNER_RE.sub("", text))
+        if env and env not in LOCAL_ENVS:
+            why = f"env: {env}"
+        elif owner and any(fnmatch.fnmatch(owner, g) for g in globs):
+            why = "its test is in the repo's stack_tests"
+        elif owner in stack_owners:
+            why = "its test file also proves another criterion on the stack"
+        elif words:
+            why = f"wording names the stack ({words.group(0)})"
+        if why:
+            out.append(f"criterion {n} ({owner or 'no owner'}): {why}")
+    return out
+
+
+def migrations(rows: list[tuple[str, list[str]]]) -> list[str]:
+    return sorted({p for _, ps in rows for p in ps if MIGRATION_RE.search(p)})
 
 
 def parse(path: str) -> tuple[dict, str]:
@@ -78,6 +145,13 @@ def gates(fm: dict, body: str, root: str) -> dict[str, tuple[bool, str]]:
             out[g] = (False, "not stated in front matter `delivery_gates:` (an unstated gate fails)")
         else:
             out[g] = (line.split(":", 1)[0].endswith(" pass"), line.split(":", 1)[1].strip())
+    mig = migrations(vp.parse_packages(vp.sections(body).get("## Work packages", "")))
+    if mig:
+        out["G3"] = (out["G3"][0], out["G3"][1] + f" [migration file(s) in owned paths: {', '.join(mig)}]")
+    need = stack_needs(body, root)
+    if need:
+        shown = "; ".join(need[:4]) + (f"; and {len(need) - 4} more" if len(need) > 4 else "")
+        out["G4"] = (False, f"mechanical: {shown}. The stack proof waits for /stub (planner said: {out['G4'][1]})")
     bad = []
     blockers = fm.get("blocked_by") or []
     for b in blockers if isinstance(blockers, list) else []:
@@ -169,7 +243,6 @@ def selftest() -> int:
                 bad.append(name)
 
         def setflows(stub: bool, kanban: bool) -> None:
-            import json
             json.dump({os.path.basename(root): {"stub": stub, "kanban": kanban}}, open(os.environ["ASD_DELIVERY_FLOWS"], "w"))
 
         good = dossier("W-001.md", "W-001", extra=gl + "blocked_by: []\n")
@@ -193,6 +266,29 @@ def selftest() -> int:
             check(f"G5 {nm}", classify(d, root)[0] == want)
         check("override stub always allowed", classify(good, root, "stub")[0] == "stub" and classify(good, root, "stub")[2] is None)
         check("override kanban past a failed gate refused", classify(two, root, "kanban")[2] is not None and classify(two, root, "kanban")[0] == "stub")
+        def swap_crit(d: str, crit: str) -> str:
+            head = open(d).read().split("## Acceptance criteria")[0]
+            open(d, "w").write(head + "## Acceptance criteria\n" + crit)
+            return d
+        vm = swap_crit(dossier("W-020.md", "W-020", extra=gl), "1. a (owner: tests/u.py; env: local)\n2. b (owner: tests/i.py; env: vm)\n")
+        v, lines, _ = classify(vm, root)
+        check("G4 mechanical fail on env: vm despite a stated pass", v == "stub" and any(
+            l.startswith("G4 FAIL") and "criterion 2 (tests/i.py): env: vm" in l and "planner said: unit tests only" in l for l in lines))
+        check("G4 mechanical fail cannot be overridden to kanban", classify(vm, root, "kanban")[2] is not None)
+        check("G4 unit-only criteria stay kanban", classify(swap_crit(dossier("W-024.md", "W-024", extra=gl),
+              "1. a (owner: tests/u.py; env: local)\n2. b (owner: tests/i.py; env: ci)\n"), root)[0] == "kanban")
+        words = swap_crit(dossier("W-021.md", "W-021", extra=gl), "1. Runs against the stack database. (owner: tests/u.py; env: local)\n")
+        check("G4 keyword fallback", classify(words, root)[0] == "stub")
+        check("G4 a test file shared with a stack criterion", len(stack_needs(
+            "## Acceptance criteria\n1. a (owner: tests/i.py; env: vm)\n2. b (owner: tests/i.py; env: local)\n", root)) == 2)
+        cfgp = os.path.join(td, "sr.json")
+        json.dump({"vm": "v", "stack_tests": ["tests/db_*.py"]}, open(cfgp, "w"))
+        os.environ["ASD_STACK_REPAIR_CONFIG"] = cfgp
+        check("G4 repo stack_tests glob", stack_needs("## Acceptance criteria\n1. a (owner: tests/db_x.py; env: local)\n", root) != []
+              and stack_needs("## Acceptance criteria\n1. a (owner: tests/u.py; env: ci)\n", root) == [])
+        os.environ.pop("ASD_STACK_REPAIR_CONFIG")
+        migd = dossier("W-023.md", "W-023", extra=gl, rows=pk.replace("src/a.py", "src/a.py, db/migrations/0072_x.sql"))
+        check("G3 evidence names a migration file", any(l.startswith("G3 pass") and "0072_x.sql" in l for l in classify(migd, root)[1]))
         check("override kanban on passing gates fine", classify(good, root, "kanban")[:1] == ("kanban",))
         setflows(True, False)
         check("override kanban with kanban off refused", classify(good, root, "kanban")[2] is not None)

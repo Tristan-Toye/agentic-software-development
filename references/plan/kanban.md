@@ -34,6 +34,18 @@ G2: the contract adds or changes no member consumed outside its package. G3: no
 irreversible migration (schema, data, infra destroy). G4: every criterion is
 provable without the full stack. Evidence is a path or a fact, not "looks fine".
 
+**G4 is checked by the script, not trusted.** Kanban's only proof is CI, so a
+criterion whose test needs the shared stack (a VM, a database fixture, `--stack`)
+cannot be kanban. The script reads each criterion's `(owner: <test>; env: E)`: G4
+fails when `E` is anything but `local` or `ci`, when the owner test also owns a
+stack criterion, when the owner path matches the repo's `stack_tests` globs (an
+optional list in its stack-repair config), or when the criterion text names the
+VM, Lima, the live stack, the stack database or `--stack`. Your line can add a
+fail, never remove one: a stack criterion makes the dossier `stub`. So set `env:`
+truthfully (`ci` only for a test CI runs), and write G4 as the criteria-to-test
+facts. G3 stays your judgement: the script cannot read SQL, it only names any
+migration file among the owned paths in the evidence.
+
 ### Phase 8 — classify, show it on the final card
 
 Run it once the packages and criteria are final, before the final card:
