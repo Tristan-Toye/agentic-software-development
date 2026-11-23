@@ -7,6 +7,7 @@ import type { Question } from "./store.ts"
 import { emitChange } from "./events.ts"
 import { blockedByOf, controlsFor, type Controls } from "./controls.ts"
 import { applyPending } from "./pending.ts"
+import { planningRuns } from "./planning.ts"
 import { IO_CONCURRENCY, mapLimit, readText } from "./asyncio.ts"
 import { offThread } from "./scanpool.ts"
 import { readRunner, readRunnerAsync, readUpdates, readUpdatesAsync, readViewCache, runnerActive, runsDir, summaryOf, writeViewCache, type RunnerState, type Update } from "./runstore.ts"
@@ -31,7 +32,7 @@ export type Run = {
   phase: string; phaseName: string; lastActivity: string; logLines: number
   session: Session; pr: Pr | null; questions: string[]; answered: QA[]
   running: boolean; summary: string; updates: Update[]; runner: RunnerState | null
-  main: string; blockedBy: string[]; controls: Controls; view: "run" | "dossier"
+  main: string; blockedBy: string[]; controls: Controls; planningRun?: { key: string; state: string } | null; view: "run" | "dossier"
   /** Delivery lane from the dossier front matter (`kanban`); empty for the stub flow. */
   delivery?: string
   deferred: Deferred; deferredOpen: number; runnerLog: string
@@ -964,5 +965,12 @@ export async function getRuns(questions: () => Question[], opts: { fresh?: boole
   const statusOf = (repo: string) => (id: string) => live.find((x) => x.repo === repo && x.id === id)?.status
   // A pressed run button stays hidden while its run starts (pending.ts): the server-side marker outlives re-renders and tabs.
   const now = Date.now()
-  return { ...cached, refreshing: !scannedLive || inflight !== null, runs: live.map((r) => applyPending({ ...r, controls: controlsFor(r, statusOf(r.repo)) }, now)) }
+  // A dossier a live seed / plan-from-deferred run claimed is being planned there: no Start, the card names that run.
+  const planByRepo = new Map<string, ReturnType<typeof planningRuns>>()
+  const planningOf = (r: { repo: string; id: string; runKey: string }) => {
+    if (!planByRepo.has(r.repo)) planByRepo.set(r.repo, planningRuns(r.repo))
+    const p = planByRepo.get(r.repo)![r.id.toUpperCase()]
+    return p && p.key !== r.runKey ? p : null
+  }
+  return { ...cached, refreshing: !scannedLive || inflight !== null, runs: live.map((r) => { const planningRun = planningOf(r); return applyPending({ ...r, planningRun, controls: controlsFor({ ...r, planning: planningRun }, statusOf(r.repo)) }, now) }) }
 }
