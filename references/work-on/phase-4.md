@@ -142,6 +142,14 @@ and doc comments of the test support the author may read, named in the payload a
 it, and `check_payload.py` refuses one that covers a sealed path. Spawns of one wave
 read it once each instead of each re-reading the harness files (recorded: 41% of this
 author's read bytes were already read by a sibling spawn).
+**Seam facts (optional, both test authors).** A blind author knows an existing function it must
+use only by what its doc comment says. Both test authors can look an existing function's contract up
+themselves (`code_item` in `mode: contract`, `code_outline`; bodies stay refused by the hook), so
+look a function the tests must use up the same way first. Only when its docs say nothing about what
+it refuses or requires, give `--set SEAM_FACTS=...`: one line each, `<function> refuses|requires <X>
+(path:line)`, at most 8, plus at most one `EXAMPLE_TEST: <absolute path>` of an existing test to copy
+the setup from (a path, never its text). A rule, never a body: `check_payload.py` refuses a code
+block or a line that looks like code. When the docs state it, add nothing: the author finds it.
 Do not batch flows into fewer integration spawns to save reads: `TEST_PATHS` stays one path per
 flow (blindness and GAP re-spawn cost are per flow, and one long Write once returned empty);
 the digest removes the duplicated reads without merging spawns.

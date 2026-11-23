@@ -206,6 +206,12 @@ or no specific field at all.
   the concept — test authors included.** Two implementers inventing the same
   helper produce two helpers; an integration author whose payload lacked the
   idiom every implementer had picked the other variant and did not compile.
+- **`SEAM_FACTS` is a rule, never a body.** Optional on both test authors: the
+  facts of existing code the tests must use that its doc comment says nothing
+  about (`<function> refuses|requires <X> (path:line)`, at most 8, plus at most
+  one `EXAMPLE_TEST: <path>`). Both authors can look a documented contract up
+  with `code_item` in contract mode, so a fact the docs state is not repeated
+  here. The hook refuses every other nav mode, so a body never reaches them.
 - **Every fact you read from a tool, you read whole.** Never a verdict or a
   count through `tail`, `head` or `grep` — the exit status is then the
   filter's and the window reads like the whole answer; output to a file,

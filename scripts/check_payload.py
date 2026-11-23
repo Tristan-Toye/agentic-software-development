@@ -235,7 +235,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         # one for a Read-less host. One of the two is required (GROUPS below).
         # SUPPORT is the pasted form of SUPPORT_PATHS.
         "optional": {
-            "SHARED_IDIOM", "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS",
+            "SHARED_IDIOM", "SEAM_FACTS", "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS",
             "SUPPORT", "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "CENSUS",
             "BASELINE_COUNTS_FROM", "TEST_FORM_RULES", "PROPERTY_LIBRARY",
         },
@@ -252,7 +252,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
         # / CORRECTION are the corrective-round pair for a Phase 6 row-1 ruling
         # on a pre-existing test (issue #82) — never folded into DELIVERY_CHANGE.
         "optional": {
-            "SHARED_IDIOM", "DELIVERY_CHANGE", "PROMISE_CHECKLIST",
+            "SHARED_IDIOM", "SEAM_FACTS", "DELIVERY_CHANGE", "PROMISE_CHECKLIST",
             "SUPPORT_PATHS", "SUPPORT", "FAILURES", "CORRECTION", "CENSUS",
             "BASELINE_COUNTS_FROM", "CITATION", "CI_ENVIRONMENT", "TEST_FORM_RULES",
             "PROPERTY_LIBRARY", "SUPPORT_DIGEST",
@@ -992,6 +992,52 @@ def surface_findings(lines: list[str], kind: str | None, worktree: str | None) -
                 "host — or the spawn returns GAP:."
                 % (number, name, line.strip()[:80])
             )
+    return out
+
+
+SEAM_FACTS_MAX = 8
+# `<function> refuses|requires <X> (path:line)`: a rule about code the tests must use, never its body.
+SEAM_FACT = re.compile(r"^[A-Za-z_][\w.:#<>]*(?:\(\))?\s+(?:refuses|requires)\s+\S.*\s\((?:[\w.\-]+/)*[\w.\-]+:\d+\)$")
+SEAM_EXAMPLE = re.compile(r"^EXAMPLE_TEST:\s+(\S+)$")
+# What a line of code looks like and a rule never does.
+SEAM_CODE = re.compile(
+    r"```|[{};]|=>|\s=\s|:=|^(?:fn|def|let|const|var|return|if|else|for|while|class|struct|impl|pub|public|private|"
+    r"import|using|from|assert\w*|await|new)\b"
+)
+
+
+def seam_facts_findings(lines: list[str], kind: str | None) -> list[str]:
+    """Optional SEAM_FACTS of a test author: a rule about existing code the tests must use, whose doc
+    comment says nothing about it. Each line is `<function> refuses|requires <X> (path:line)`, at most
+    one more line is `EXAMPLE_TEST: <path>` (a path only, to copy the setup from). A code block, a
+    line that looks like code, a line past the cap or one that matches neither shape is a DEFECT:
+    the blind author is handed a rule, never a body."""
+    if kind not in ("unit-test-author", "integration-test-author"):
+        return []
+    body = field_body(lines, "SEAM_FACTS")
+    if not body.strip():
+        return []
+    out: list[str] = []
+    facts = examples = 0
+    for raw in body.split("\n"):
+        line = raw.strip()
+        if not line or line == "|" or line.startswith("#"):
+            continue
+        shown = line[:80]
+        if SEAM_CODE.search(line):
+            out.append("SEAM_FACTS: %r looks like code (a block, a statement or a body); a seam fact is one rule, "
+                       "`<function> refuses|requires <X> (path:line)`, never a body." % shown)
+        elif SEAM_EXAMPLE.match(line):
+            examples += 1
+            if examples > 1:
+                out.append("SEAM_FACTS: more than one EXAMPLE_TEST; name the one existing test to copy the setup from.")
+        elif len(line) > 200 or not SEAM_FACT.match(line):
+            out.append("SEAM_FACTS: %r is not `<function> refuses|requires <X> (path:line)` (at most 200 characters) "
+                       "or `EXAMPLE_TEST: <path>`." % shown)
+        else:
+            facts += 1
+    if facts > SEAM_FACTS_MAX:
+        out.append("SEAM_FACTS has %d fact lines, past the cap of %d: keep only what the contract docs leave silent." % (facts, SEAM_FACTS_MAX))
     return out
 
 
@@ -1874,6 +1920,7 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
 
     # 12. a whole-value checklist line with no assertion form
     defects.extend(unit_size_findings(lines, kind))
+    defects.extend(seam_facts_findings(lines, kind))
     warnings.extend(commit_env_findings(lines, kind))
     warnings.extend(assertion_form_findings(lines, kind))
     warnings.extend(negative_input_findings(lines, kind))
@@ -2209,6 +2256,20 @@ def _selftest_cases() -> int:
          "unit-test-author", True, "PROMISE_CHECKLIST is missing")
     case("unit author optional shared idiom",
          unit_ok + "SHARED_IDIOM: |\n  fn make() -> Item\n", "unit-test-author", False)
+    seam_ok = "SEAM_FACTS: |\n  Queue::flush refuses an empty batch with `Err(Empty)` (src/flush.py:12)\n  EXAMPLE_TEST: {REAL}/tests/unit/test_retry.py\n"
+    case("seam facts: a rule line and one example test pass", unit_ok + seam_ok, "unit-test-author", False)
+    case("seam facts: a code block is a defect",
+         unit_ok + "SEAM_FACTS: |\n  ```rust\n  Queue::flush refuses an empty batch (src/flush.py:12)\n", "unit-test-author", True, "looks like code")
+    case("seam facts: a body-looking line is a defect",
+         unit_ok + "SEAM_FACTS: |\n  if batch.is_empty() { return Err(Empty); }\n", "unit-test-author", True, "looks like code")
+    case("seam facts: an assignment is a defect",
+         unit_ok + "SEAM_FACTS: |\n  Queue::flush requires limit = 5 (src/flush.py:12)\n", "unit-test-author", True, "looks like code")
+    case("seam facts: a line without its path:line is a defect",
+         unit_ok + "SEAM_FACTS: |\n  Queue::flush refuses an empty batch\n", "unit-test-author", True, "is not `<function>")
+    case("seam facts: two example tests are a defect",
+         unit_ok + seam_ok + "  EXAMPLE_TEST: {REAL}/tests/unit/other_test.py\n", "unit-test-author", True, "more than one EXAMPLE_TEST")
+    case("seam facts: past the cap is a defect",
+         unit_ok + "SEAM_FACTS: |\n" + "".join("  F%d refuses x (src/a.py:%d)\n" % (i, i) for i in range(1, 10)), "unit-test-author", True, "past the cap")
     case("misnamed field",
          unit_ok.replace("TEST_PATHS:", "TEST_PATH:"), "unit-test-author", True,
          "'TEST_PATH' is not a field")
