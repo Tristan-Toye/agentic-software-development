@@ -271,8 +271,9 @@ This is the step everything else depends on.
    commits made with `LEFTHOOK=0` skip the repo's hooks, so the gate list is the
    only local cover of a hook check),
    or write them by hand in `run_gates.py`'s format to `.discovery/analysis/gates-<ID>.txt`, run
-   `python3 ${PLUGIN_ROOT}/scripts/run_gates.py <file> --root <X>` before the
-   contract commit, and log one line; `--pre-fanout` refuses without it (the
+   `python3 ${PLUGIN_ROOT}/scripts/run_gates.py <file> --root <X> --compile-lint-only`
+   before the contract commit (stubs fail loudly, so only compile and lint can
+   be judged there; the other gates print `skipped`), and log one line; `--pre-fanout` refuses without it (the
    failure lines it prints are the parsed first errors with `file:line`; open the
    gate's log only when the last line says `truncated`):
 
@@ -281,12 +282,20 @@ This is the step everything else depends on.
    GATES: none — <why CI builds nothing to gate>
    ```
 
-   The list is fixed for the branch. The first push (Phase 6), every
-   arbitration fix and every review fix round (Phase 7) run this same list,
-   docs-only commits included; none gets a narrower one. A green run leaves
-   a receipt keyed by the gates file and the working tree (build log
-   excluded); the next call on the same tree reuses it (`REUSED`) instead of
-   running the list twice.
+   The list is fixed for the branch; the mode is not. The contract commit runs
+   `--compile-lint-only`. The first push of the branch (Phase 6) and the final
+   head before the PR (Phase 7 exit, `finalize_pr.py`) run the FULL list: no
+   flag. Every arbitration fix and review fix round in between runs
+   `--affected-since <sha of the last head the full list passed on>`: only the
+   gates a changed path touches run, each skipped gate prints `skipped: no
+   changed paths`, and a gate already green on the same inputs prints `REUSED`.
+   Never silent and fail safe: a changed path no gate claims (docs, assets,
+   a new language) runs every gate. Annotate a gate ` [paths: glob,glob]` when
+   its command is not one plain tool (`cargo`, `ruff`, `mypy`, `tsc`, `eslint`,
+   `go` ... are inferred; a script or `make` target always runs). A green
+   full run leaves a whole-list receipt keyed by the gates file and the
+   working tree (build log excluded); the next full call on the same tree
+   reuses it (`REUSED`) instead of running the list twice.
 
    Detail: `ref_section` with `phase-2-conditional` and the heading "The repository's PATH needs on a gates run". (when the repository's toolchain is not on a non-interactive shell's PATH, a gate exits 127, or the gate list is too long for one tool call.)
 

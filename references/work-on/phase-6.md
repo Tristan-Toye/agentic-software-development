@@ -73,8 +73,11 @@ CI wiring on your branch, or fall back to `local` for this head and log why.
 Detail: `ref_section` with `phase-6-conditional` and the heading "Under local and stub, and the coverage check on every verdict". (read it for the runner you are under.)
 
 **Every head that leaves this machine passes the `GATES:` list first**
-(Phase 2, `run_gates.py`): the first push and each arbitration fix. Call
-`run_gates.py` every time: a green run on the same gates file and the same
+(Phase 2, `run_gates.py`). The first push of the branch runs the full list
+(no flag); each later arbitration fix runs `--affected-since <sha of the head
+the full list last passed on>`, which skips the gates no changed path touches
+(printed `skipped: no changed paths`) and reuses a gate already green on the
+same inputs. Call `run_gates.py` every time: a green run on the same gates file and the same
 tree — a fix-mode implementer's, on the commit you are about to push —
 left a receipt, and the call prints `REUSED` and runs nothing. Any edit,
 commit, merge or new file outside `.discovery/dossiers/` changes the tree,

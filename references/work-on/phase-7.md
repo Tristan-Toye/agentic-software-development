@@ -107,10 +107,13 @@ Detail: `ref_section` with `phase-7-conditional` and the heading "Spawn the impl
 Detail: `ref_section` with `phase-7-conditional` and the heading "One fix spawn per package per round, with the place to start". (every fix round: one spawn per package, the CR excerpts.)
 Detail: `ref_section` with `phase-7-conditional` and the heading "The style lens may start early, beside the Phase 6 suite run". (the cheap lens runs with Phase 6.)
 
-- **Run the whole `GATES:` list (Phase 2) on the fixed head before you push**,
-  including gates no local aggregator covers. A fix round never gets a
-  narrower list than the contract commit; a doc link or a feature-gated
-  compile is what a small fix breaks.
+- **Run the `GATES:` list (Phase 2) on the fixed head before you push**,
+  including gates no local aggregator covers: `run_gates.py --affected-since
+  <sha of the head the full list last passed on>` for a review fix round (only
+  the gates its changed paths touch run, the rest print `skipped`, a path no
+  gate claims runs them all), and the FULL list (no flag) on the final head
+  before the PR. A doc link or a feature-gated compile is what a small fix
+  breaks; the final full run is what catches what a path map missed.
 - Get the runner's verdict on the fixed head (Phase 6: under `ci`, push the
   fix commit and read CI's run; under `local`, run it). Any test that turns
   red means the fix was not behaviour-preserving: return it to the

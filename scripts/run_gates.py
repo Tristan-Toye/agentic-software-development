@@ -16,7 +16,10 @@ failure — not the other 4,995 lines around it.
 One gate per line, `name: command`; `command` runs with `bash -c` in --root.
 `#` starts a whole-line comment; blank lines are ignored. A line may end with
 ` [needs: <tool>]` — the gate is reported SKIP, never run, when <tool> is not
-found on PATH. Gate names must be unique and match `[A-Za-z0-9_.-]+`.
+found on PATH. Two more optional trailing annotations, in any order with it:
+` [paths: glob,glob]` names the files whose change can alter the gate (see "Path-affected
+gates") and ` [kind: compile|lint|format|test]` classifies it (see "The contract commit").
+Gate names must be unique and match `[A-Za-z0-9_.-]+`.
 
     lint: ruff check .
     unit: pytest -q tests/unit
@@ -30,6 +33,7 @@ found on PATH. Gate names must be unique and match `[A-Za-z0-9_.-]+`.
                  [--log-dir DIR] [--jobs N=1] [--lines N=15]
                  [--line-chars N=300] [--timeout SECONDS]
                  [--path-prepend DIR ...] [--env-script FILE] [--detach]
+                 [--affected-since REV] [--compile-lint-only] [--fresh]
     run_gates.py --wait ID [--wait-cap SECONDS=540]
     run_gates.py --from-workflow FILE [FILE...]
     run_gates.py --selftest
@@ -70,6 +74,32 @@ gate that exits 127 is still a failure, but the summary counts it apart:
 There is no `--vm`: a gate that must run in the VM carries its own
 `limactl shell NAME -- ...` in its line, or the list runs inside the VM.
 
+# Path-affected gates: --affected-since REV
+Every push used to run the whole list. `--affected-since REV` diffs the working tree
+(tracked, staged, unstaged and untracked files, the dossier build log excluded)
+against commit REV and runs only the gates a changed path touches. A gate knows its
+paths from its `[paths: glob,glob]` annotation (a glob without `/` matches a basename
+at any depth, a trailing `/` is a directory, `**` crosses directories), else from its
+command when that is one well-known tool (`cargo`, `ruff`, `mypy`, `pytest`, `tsc`,
+`eslint`, `go` ... in `a && b` chains; scripts, pipes and `make` are not). Every gate
+left out prints `SKIP name — skipped: no changed paths`, never silently. Fail safe: a
+changed path no path-known gate claims, or a REV git cannot resolve, runs EVERY gate
+(a line says so); a gate with no known paths always runs. `--list` shows each gate's
+paths and kind. REV is the last head the full list passed on (the first push's head).
+In this mode a gate that already passed on the same inputs is not rerun: it prints
+`REUSED name — green receipt ...`. Per-gate receipts sit beside the whole-list ones in
+the worktree's git dir (`run_gates-receipts/gates/`), keyed by gate name, command and a
+hash of the tree entries its paths claim (the whole tree for a gate with no paths); a
+pass writes one only when the tree is unchanged after the run. `--fresh` ignores them.
+Without `--affected-since` the list runs in full and per-gate receipts are not read:
+that is the mode for the first push of a branch and the final head before the PR.
+# The contract commit: --compile-lint-only
+A stub commit has bodies that fail loudly, so only compile and lint can be judged.
+`--compile-lint-only` runs the gates whose kind is compile or lint and reports the rest
+as `SKIP name — skipped: <kind> gate, the contract commit compiles and lints only`. The
+kind comes from `[kind:]`, else the tool and subcommand (`cargo clippy` lint, `cargo
+check` compile, `cargo fmt` format, `cargo test` test), else the gate's name; a gate
+whose kind is still unknown runs. Neither flag writes the whole-list receipt.
 # Long runs: --detach, then --wait
 
 `--detach` starts the same run (every other flag kept) in its own session,
@@ -88,7 +118,7 @@ died without writing an exit code. 2: no such run.
 
 # Receipts: a green run is never repeated on the same tree
 
-A full run (no `--only`) that passes writes a receipt into the worktree's own
+A full run (no `--only`, `--affected-since` or `--compile-lint-only`) that passes writes a receipt into the worktree's own
 git dir (`git rev-parse --git-path run_gates-receipts/<gates-sha>.json`): the
 gates file's sha256, a fingerprint of the working tree, HEAD, the passed and
 skipped gate names, and the time. The next run of the same gates file on the
@@ -274,6 +304,241 @@ def write_receipt(root: str, gates_sha: str, fingerprint: tuple[str, str], passe
     except OSError:
         return None
     return path
+
+
+# ---------------------------------------------------------------------------
+# Path-affected gates and per-gate receipts.
+#
+# A gate is `path-known` when its line carries `[paths: glob,glob]` or its command is one
+# well-known tool invocation (INFERRED_PATHS); every other gate is `path-unknown` and always
+# runs. A changed path no path-known gate claims makes EVERY gate run (fail safe).
+RUST_PATHS = ["*.rs", "Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain*", ".cargo/**", "clippy.toml", ".clippy.toml", "rustfmt.toml", ".rustfmt.toml", "deny.toml"]
+PY_PATHS = ["*.py", "*.pyi", "pyproject.toml", "setup.cfg", "setup.py", "tox.ini", "ruff.toml", ".ruff.toml", "mypy.ini", ".mypy.ini", "pyrightconfig.json", ".flake8", "requirements*.txt", "uv.lock", "poetry.lock"]
+JS_PATHS = ["*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs", "*.mts", "*.cts", "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock*", "tsconfig*.json", ".eslintrc*", "eslint.config.*", ".prettierrc*", "prettier.config.*", "biome.json*"]
+GO_PATHS = ["*.go", "go.mod", "go.sum", "go.work", ".golangci*"]
+INFERRED_PATHS = {
+    "cargo": RUST_PATHS, "rustfmt": RUST_PATHS, "rustc": RUST_PATHS,
+    "ruff": PY_PATHS, "mypy": PY_PATHS, "pyright": PY_PATHS, "black": PY_PATHS, "isort": PY_PATHS,
+    "flake8": PY_PATHS, "pylint": PY_PATHS, "pytest": PY_PATHS,
+    "tsc": JS_PATHS, "eslint": JS_PATHS, "prettier": JS_PATHS, "biome": JS_PATHS,
+    "go": GO_PATHS, "gofmt": GO_PATHS, "golangci-lint": GO_PATHS,
+}
+INFERRED_KINDS = {"clippy": "lint", "check": "compile", "build": "compile", "doc": "compile", "fmt": "format",
+                  "test": "test", "nextest": "test", "vet": "lint"}
+TOOL_KINDS = {"ruff": "lint", "mypy": "compile", "pyright": "compile", "tsc": "compile", "eslint": "lint",
+              "flake8": "lint", "pylint": "lint", "golangci-lint": "lint", "black": "format", "isort": "format",
+              "prettier": "format", "gofmt": "format", "rustfmt": "format", "pytest": "test"}
+NAME_KIND_RE = (("test", re.compile(r"(^|[-_.])(test|tests|unit|e2e|spec|integration|bats|nextest)([-_.]|$)")),
+                ("format", re.compile(r"(^|[-_.])(fmt|format|prettier|black)([-_.]|$)")),
+                ("lint", re.compile(r"(^|[-_.])(lint|clippy|eslint|ruff|vet)([-_.]|$)")),
+                ("compile", re.compile(r"(^|[-_.])(build|check|compile|typecheck|types|tsc|mypy|doc|docs)([-_.]|$)")))
+
+
+def _segments(command: str) -> list[list[str]] | None:
+    """Token lists of a plain `a && b` command, None when it holds other shell syntax."""
+    if re.search(r"[|;<>`$()\n]|\|\|", command):
+        return None
+    try:
+        return [shlex.split(seg) for seg in command.split("&&")]
+    except ValueError:
+        return None
+
+
+def _tool_words(tokens: list[str]) -> list[str]:
+    while tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+        tokens = tokens[1:]  # leading VAR=value
+    if tokens and os.path.basename(tokens[0]) in ("python", "python3") and tokens[1:2] == ["-m"]:
+        tokens = tokens[2:]
+    elif tokens and tokens[0] in ("npx", "bunx", "pnpx"):
+        tokens = [t for t in tokens[1:] if t != "--"]
+    elif tokens[:2] in (["pnpm", "exec"], ["yarn", "exec"], ["npm", "exec"]):
+        tokens = [t for t in tokens[2:] if t != "--"]
+    return tokens
+
+
+def infer_paths(command: str) -> list[str] | None:
+    """Globs a well-known single-tool command reads, else None (path-unknown: always runs)."""
+    segs = _segments(command)
+    if not segs:
+        return None
+    out: list[str] = []
+    for tokens in segs:
+        words = _tool_words(tokens)
+        if not words or os.path.basename(words[0]) not in INFERRED_PATHS:
+            return None
+        if any("/" in w and not w.startswith("-") and w.endswith((".sh", ".py")) for w in words[1:]):
+            return None
+        out += [g for g in INFERRED_PATHS[os.path.basename(words[0])] if g not in out]
+    return out
+
+
+def infer_kind(gate: dict) -> str | None:
+    """compile / lint / format / test, from `[kind:]`, else the command's tool and subcommand, else the name."""
+    if gate.get("kind"):
+        return gate["kind"]
+    segs = _segments(gate["command"])
+    kinds: set[str] = set()
+    for tokens in segs or []:
+        words = _tool_words(tokens)
+        if not words:
+            continue
+        tool = os.path.basename(words[0])
+        if tool in ("cargo", "go"):
+            sub = next((w for w in words[1:] if not w.startswith(("-", "+"))), "")
+            k = INFERRED_KINDS.get(sub)
+            if tool == "go" and sub == "test":
+                k = "test"
+        else:
+            k = TOOL_KINDS.get(tool)
+        if k is None:
+            kinds = set()
+            break
+        kinds.add(k)
+    if len(kinds) == 1:
+        return next(iter(kinds))
+    for k, rx in NAME_KIND_RE:
+        if rx.search(gate["name"]):
+            return k
+    return None
+
+
+def glob_regex(pat: str) -> re.Pattern:
+    """gitignore-flavoured: no `/` matches a basename anywhere; trailing `/` a directory; `**` crosses `/`."""
+    pat = pat.strip().lstrip("/")
+    if pat.startswith("./"):
+        pat = pat[2:]
+    if pat.endswith("/"):
+        pat += "**"
+    anywhere = "/" not in pat
+    out, i = "", 0
+    while i < len(pat):
+        if pat.startswith("**/", i):
+            out += "(?:.*/)?"
+            i += 3
+        elif pat.startswith("**", i):
+            out += ".*"
+            i += 2
+        elif pat[i] == "*":
+            out += "[^/]*"
+            i += 1
+        elif pat[i] == "?":
+            out += "[^/]"
+            i += 1
+        else:
+            out += re.escape(pat[i])
+            i += 1
+    return re.compile(("(?:.*/)?" if anywhere else "") + out + r"\Z")
+
+
+def path_matches(path: str, globs: list[str]) -> bool:
+    return any(glob_regex(g).match(path) for g in globs)
+
+
+def resolve_gate_paths(gates: list[dict]) -> None:
+    """Fill each gate's `paths` from its command when the line declares none."""
+    for g in gates:
+        if g.get("paths") is None:
+            inferred = infer_paths(g["command"])
+            if inferred:
+                g["paths"], g["paths_src"] = inferred, "inferred"
+
+
+def _git_raw(root: str, *args: str) -> str | None:
+    try:
+        proc = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def changed_paths(root: str, rev: str, tree: str) -> list[str] | None:
+    """Paths whose content differs between commit `rev` and the working-tree `tree` (untracked included,
+    the dossier build log excluded), None when git cannot say."""
+    if _git(root, "rev-parse", "--verify", "--quiet", rev + "^{commit}")[0] != 0:
+        return None
+    raw = _git_raw(root, "diff-tree", "-r", "--name-only", "-z", "--no-renames", rev, tree)
+    if raw is None:
+        return None
+    return sorted(p for p in raw.split("\0") if p and not p.startswith(RECEIPT_IGNORED + "/"))
+
+
+def select_affected(gates: list[dict], changed: list[str]) -> tuple[dict[str, str], str]:
+    """({gate name: skip reason} for every gate no changed path touches, note).
+    A changed path claimed by no path-known gate runs everything: empty skip map."""
+    known = [g for g in gates if g.get("paths")]
+    unclaimed = [p for p in changed if not any(path_matches(p, g["paths"]) for g in known)]
+    if unclaimed:
+        more = f" (+{len(unclaimed) - 1} more)" if len(unclaimed) > 1 else ""
+        return {}, f"changed path {unclaimed[0]!r}{more} maps to no gate; running every gate"
+    skips = {g["name"]: "skipped: no changed paths" for g in known
+             if not any(path_matches(p, g["paths"]) for p in changed)}
+    return skips, f"{len(changed)} changed path(s)"
+
+
+def select_contract(gates: list[dict]) -> tuple[dict[str, str], list[str]]:
+    """The contract (stub) commit compiles and lints only: ({gate name: skip reason}, names of gates run
+    because their kind is unknown, which fails safe to running)."""
+    skips: dict[str, str] = {}
+    unknown: list[str] = []
+    for g in gates:
+        kind = infer_kind(g)
+        if kind is None:
+            unknown.append(g["name"])
+        elif kind not in ("compile", "lint"):
+            skips[g["name"]] = f"skipped: {kind} gate, the contract commit compiles and lints only"
+    return skips, unknown
+
+
+def gate_inputs_hash(gate: dict, fingerprint: tuple[str, str], entries: list[tuple[str, str]]) -> str:
+    """What a gate's pass depends on: the tree entries its paths claim, else the whole tree."""
+    if not gate.get("paths"):
+        return "tree:" + fingerprint[0]
+    h = hashlib.sha256()
+    for path, ident in entries:
+        if path_matches(path, gate["paths"]):
+            h.update(f"{ident} {path}\n".encode())
+    return "paths:" + h.hexdigest()
+
+
+def tree_entries(root: str, tree: str) -> list[tuple[str, str]]:
+    raw = _git_raw(root, "ls-tree", "-r", "-z", tree)
+    out = []
+    for rec in (raw or "").split("\0"):
+        meta, _, path = rec.partition("\t")
+        if path and not path.startswith(RECEIPT_IGNORED + "/"):
+            out.append((path, meta))
+    return out
+
+
+def gate_receipt_file(root: str, gate: dict, inputs: str) -> str | None:
+    key = hashlib.sha256(json.dumps([gate["name"], gate["command"], inputs]).encode()).hexdigest()[:24]
+    rc, path = _git(root, "rev-parse", "--git-path", f"run_gates-receipts/gates/{key}.json")
+    if rc != 0 or not path:
+        return None
+    return path if os.path.isabs(path) else os.path.join(root, path)
+
+
+def gate_receipt(root: str, gate: dict, inputs: str) -> dict | None:
+    path = gate_receipt_file(root, gate, inputs)
+    try:
+        with open(path or "", encoding="utf-8") as fh:
+            rec = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    ok = rec.get("gate") == gate["name"] and rec.get("command") == gate["command"] and rec.get("inputs") == inputs
+    return rec if ok else None
+
+
+def write_gate_receipt(root: str, gate: dict, inputs: str, head: str) -> None:
+    path = gate_receipt_file(root, gate, inputs)
+    if not path:
+        return
+    rec = {"gate": gate["name"], "command": gate["command"], "inputs": inputs, "head": head,
+           "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    with contextlib.suppress(OSError):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(rec, fh)
 
 
 class WorkflowError(Exception):
@@ -650,6 +915,10 @@ class GateFileError(Exception):
     pass
 
 
+ANNOT_RE = re.compile(r"^(?P<rest>.*)\[(?P<key>needs|paths|kind):\s*(?P<val>[^\]]+)\]\s*$")
+KINDS = ("compile", "lint", "format", "test")
+
+
 def parse_gates(text: str) -> list[dict]:
     gates: list[dict] = []
     seen: set[str] = set()
@@ -657,11 +926,14 @@ def parse_gates(text: str) -> list[dict]:
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        needs = None
-        m = NEEDS_RE.match(stripped)
-        if m:
+        annot: dict[str, str] = {}
+        while True:  # trailing `[needs: T]`, `[paths: G,G]`, `[kind: K]`, in any order
+            m = ANNOT_RE.match(stripped)
+            if not m or m.group("key") in annot:
+                break
+            annot[m.group("key")] = m.group("val").strip()
             stripped = m.group("rest").strip()
-            needs = m.group("tool").strip()
+        needs = annot.get("needs")
         name, sep, command = stripped.partition(":")
         name = name.strip()
         command = command.strip()
@@ -669,8 +941,15 @@ def parse_gates(text: str) -> list[dict]:
             raise GateFileError(f"line {lineno}: malformed gate line: {raw!r}")
         if name in seen:
             raise GateFileError(f"line {lineno}: duplicate gate name {name!r}")
+        kind = annot.get("kind")
+        if kind is not None and kind not in KINDS:
+            raise GateFileError(f"line {lineno}: [kind: {kind}] is not one of {', '.join(KINDS)}")
+        paths = [x.strip() for x in annot["paths"].split(",") if x.strip()] if "paths" in annot else None
+        if "paths" in annot and not paths:
+            raise GateFileError(f"line {lineno}: empty [paths: ] list")
         seen.add(name)
-        gates.append({"name": name, "command": command, "needs": needs, "line": lineno})
+        gates.append({"name": name, "command": command, "needs": needs, "line": lineno,
+                      "paths": paths, "paths_src": "declared" if paths else None, "kind": kind})
     if not gates:
         raise GateFileError("the gates file names no gate")
     return gates
@@ -925,6 +1204,12 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--skip-step", action="append", default=[], metavar="GLOB",
                     help="--from-workflow: list a derived gate whose name matches GLOB as skipped")
     ap.add_argument("--fresh", action="store_true", help="run every gate even when a green receipt matches this tree")
+    ap.add_argument("--affected-since", metavar="REV",
+                    help="run only the gates a path changed since REV touches (diff of the working tree against REV); "
+                         "a gate green on the same inputs is reused, every other gate is reported skipped, "
+                         "and a changed path no gate claims runs them all")
+    ap.add_argument("--compile-lint-only", action="store_true",
+                    help="the contract (stub) commit: run only compile and lint gates; the rest are reported skipped")
     ap.add_argument("--receipt", action="store_true", help="exit 0 when a green receipt matches this tree, 4 when none; run nothing")
     ap.add_argument("--path-prepend", action="append", default=[], metavar="DIR",
                     help="prepend DIR to every gate's PATH (repeatable; $HOME and ~/ expand)")
@@ -964,10 +1249,13 @@ def main(argv: list[str]) -> int:
             return 2
         gates = [g for g in gates if g["name"] in wanted]
 
+    resolve_gate_paths(gates)
     if args.list:
         for g in gates:
             needs = f"  [needs: {g['needs']}]" if g["needs"] else ""
-            print(f"{g['name']}: {g['command']}{needs}")
+            paths = f"  [paths: {','.join(g['paths'])}] ({g['paths_src']})" if g["paths"] else ""
+            kind = f"  [kind: {infer_kind(g) or 'unknown'}]"
+            print(f"{g['name']}: {g['command']}{needs}{paths}{kind}")
         return 0
 
     state = git_state_in_progress(os.path.abspath(args.root))
@@ -978,9 +1266,12 @@ def main(argv: list[str]) -> int:
 
     root = os.path.abspath(args.root)
     gates_sha = hashlib.sha256(gates_text.encode("utf-8")).hexdigest()
-    full = not args.only
-    fingerprint = tree_fingerprint(root) if full else None
+    full = not (args.only or args.affected_since or args.compile_lint_only)
+    fingerprint = tree_fingerprint(root) if not args.only else None
     rec = matching_receipt(root, gates_sha, fingerprint) if fingerprint and not args.fresh else None
+    if args.receipt and not full:
+        print("run_gates: --receipt checks the full list; drop --only, --affected-since and --compile-lint-only")
+        return EXIT_NO_RECEIPT
     if args.receipt:
         if rec:
             print(f"run_gates: green receipt {rec['at']} on {rec['head'][:12]} matches this tree")
@@ -993,15 +1284,46 @@ def main(argv: list[str]) -> int:
         print(f"run_gates: {len(rec['passed'])} passed, 0 failed, {len(rec['skipped'])} skipped (reused)")
         return 0
 
+    # Selection: which gates this call leaves out, each with a printed reason (never silent).
+    skip_reason: dict[str, str] = {}
+    if args.compile_lint_only:
+        cl_skips, unknown_kind = select_contract(gates)
+        skip_reason.update(cl_skips)
+        print("run_gates: contract commit: compile and lint gates only"
+              + (f"; kind unknown, running anyway: {', '.join(unknown_kind)}" if unknown_kind else ""))
+    entries: list[tuple[str, str]] = []
+    if args.affected_since:
+        changed = changed_paths(root, args.affected_since, fingerprint[0]) if fingerprint else None
+        if changed is None:
+            print(f"run_gates: affected: cannot diff against {args.affected_since!r} here; running every selected gate")
+        else:
+            af_skips, note = select_affected(gates, changed)
+            for name, why in af_skips.items():
+                skip_reason.setdefault(name, why)
+            print(f"run_gates: affected since {args.affected_since}: {note}; "
+                  f"{len(gates) - len(skip_reason)} of {len(gates)} gates selected")
+    if fingerprint:
+        entries = tree_entries(root, fingerprint[0])
+
     log_dir = args.log_dir or tempfile.mkdtemp(prefix="run_gates-")
     os.makedirs(log_dir, exist_ok=True)
     print(f"run_gates: logging to {log_dir}")
 
     to_run = []
     results: list[tuple[str, dict, dict | None]] = [None] * len(gates)  # type: ignore[list-item]
+    reused: dict[int, dict] = {}
     for i, g in enumerate(gates):
+        if g["name"] in skip_reason:
+            results[i] = ("skip", g, skip_reason[g["name"]])
+            continue
+        if args.affected_since and fingerprint and not args.fresh and not (
+                g["needs"] and shutil.which(g["needs"], path=gate_env(args.path_prepend).get("PATH")) is None):
+            hit = gate_receipt(root, g, gate_inputs_hash(g, fingerprint, entries))
+            if hit:
+                results[i] = ("reused", g, hit)
+                continue
         if g["needs"] and shutil.which(g["needs"], path=gate_env(args.path_prepend).get("PATH")) is None:
-            results[i] = ("skip", g, None)
+            results[i] = ("skip", g, f"needs {g['needs']!r}, not on PATH")
         else:
             to_run.append(i)
 
@@ -1029,11 +1351,16 @@ def main(argv: list[str]) -> int:
                 i, res = work(i)
                 results[i] = ("ran", gates[i], res)
 
-    passed = failed = skipped = notfound = 0
+    passed = failed = skipped = notfound = nreused = 0
     for kind, g, res in results:
         if kind == "skip":
             skipped += 1
-            print(f"SKIP {g['name']} — needs {g['needs']!r}, not on PATH")
+            print(f"SKIP {g['name']} — {res}")
+            continue
+        if kind == "reused":
+            nreused += 1
+            print(f"REUSED {g['name']} — green receipt {res['at']} on {res['head'][:12]}, same inputs "
+                  f"({'its paths' if g['paths'] else 'whole tree'}); --fresh runs it again")
             continue
         assert res is not None
         path = write_log(log_dir, g["name"], res["output"])
@@ -1055,17 +1382,21 @@ def main(argv: list[str]) -> int:
             for line in digest_lines(res["output"], args.lines, args.line_chars):
                 print(f"    {line}")
 
-    print(f"run_gates: {passed} passed, {failed} failed, {skipped} skipped")
+    print(f"run_gates: {passed + nreused} passed, {failed} failed, {skipped} skipped"
+          + (f" ({nreused} reused from per-gate receipts)" if nreused else ""))
     if notfound:
         print(f"run_gates: {notfound} of the {failed} failed gate(s) exited 127 — command not found — "
               "environment, not a gate failure; put the toolchain on PATH with --path-prepend DIR "
               "or --env-script FILE, then rerun")
-    if fingerprint and not failed:
+    if fingerprint and not args.only and tree_fingerprint(root) == fingerprint:
         # Fingerprint again: a gate that rewrote the tree (a formatter) leaves no receipt.
-        if tree_fingerprint(root) == fingerprint:
+        for kind, g, res in results:
+            if kind == "ran" and res["rc"] == 0 and not res["timed_out"]:
+                write_gate_receipt(root, g, gate_inputs_hash(g, fingerprint, entries), fingerprint[1])
+        if full and not failed:
             write_receipt(root, gates_sha, fingerprint,
                           [g["name"] for kind, g, _ in results if kind == "ran"],
-                          [g for kind, g, _ in results if kind == "skip"])
+                          [{"name": g["name"], "needs": g["needs"]} for kind, g, _ in results if kind == "skip"])
     return 1 if failed else 0
 
 
@@ -1446,6 +1777,124 @@ def selftest() -> int:
             check("a red run writes no receipt", rc_bad == 1 and runs() == 9)
             check("the real index is untouched", "A " not in subprocess.run(
                 ["git", "-C", rrepo, "status", "--porcelain"], capture_output=True, text=True).stdout)
+
+        # --- path-affected selection, per-gate receipts, full vs contract modes ---
+        parsed = parse_gates("a: x [kind: lint] [paths: *.py,docs/] [needs: sometool]\nb: y [paths: **/*.rs]\nc: z\n")
+        check("annotations parse in any order", parsed[0]["needs"] == "sometool" and parsed[0]["kind"] == "lint"
+              and parsed[0]["paths"] == ["*.py", "docs/"] and parsed[1]["paths"] == ["**/*.rs"] and parsed[2]["paths"] is None)
+        try:
+            parse_gates("a: x [kind: nonsense]\n")
+            bad_kind = False
+        except GateFileError:
+            bad_kind = True
+        check("an unknown [kind:] is refused", bad_kind)
+        check("glob: basename pattern matches at any depth", path_matches("a/b/c.py", ["*.py"]) and not path_matches("c.pyc", ["*.py"]))
+        check("glob: ** and directory patterns", path_matches("x/y/z.rs", ["**/*.rs"]) and path_matches("docs/a/b.md", ["docs/"])
+              and not path_matches("xdocs/a.md", ["docs/"]) and path_matches("Cargo.toml", ["Cargo.toml"])
+              and path_matches("crates/a/Cargo.toml", ["Cargo.toml"]) and not path_matches("src/a/b.rs", ["src/*.rs"]))
+        check("infer: cargo and ruff chains are path-known, scripts and pipes are not",
+              infer_paths("cargo clippy --all-targets -- -D warnings") == RUST_PATHS
+              and infer_paths("ruff check . && ruff format --check .") == PY_PATHS
+              and infer_paths("python3 -m mypy src") == PY_PATHS and infer_paths("npx tsc --noEmit") == JS_PATHS
+              and infer_paths("./scripts/check.sh") is None and infer_paths("cargo fmt --check | tee x") is None
+              and infer_paths("cargo check && ./x.sh") is None and infer_paths("make lint") is None)
+        kinds = {n: infer_kind({"name": n, "command": c, "kind": None}) for n, c in (
+            ("a", "cargo clippy --workspace"), ("b", "cargo fmt --check"), ("c", "cargo nextest run"),
+            ("d", "ruff check ."), ("e", "cargo check --locked"), ("lint-all", "make everything"), ("z", "make everything"))}
+        check("infer kind: tool and subcommand, then the gate name, else unknown",
+              kinds == {"a": "lint", "b": "format", "c": "test", "d": "lint", "e": "compile", "lint-all": "lint", "z": None})
+        gs = [{"name": "rust", "paths": ["*.rs"]}, {"name": "py", "paths": ["*.py"]}, {"name": "any", "paths": None}]
+        sk, _ = select_affected(gs, ["x/a.rs"])
+        check("select_affected: only gates a changed path touches stay", sk == {"py": "skipped: no changed paths"})
+        sk, note = select_affected(gs, ["x/a.rs", "docs/readme.md"])
+        check("select_affected: a changed path no gate claims runs everything", sk == {} and "maps to no gate" in note)
+        sk, _ = select_affected(gs, [])
+        check("select_affected: no changed path skips every path-known gate, never the unknown one",
+              set(sk) == {"rust", "py"})
+
+        arepo = os.path.join(tmp, "arepo")
+        os.makedirs(os.path.join(arepo, "src"))
+        os.makedirs(os.path.join(arepo, "app"))
+        agit = lambda *a: subprocess.run(["git", "-C", arepo, "-c", "user.email=t@t", "-c", "user.name=t", *a],
+                                         capture_output=True, text=True)
+        if agit("init", "-q").returncode == 0:
+            cnt = {n: os.path.join(tmp, f"cnt-{n}") for n in ("rust", "py", "fmt", "unk")}
+            ag = os.path.join(tmp, "agates.txt")
+            with open(ag, "w", encoding="utf-8") as fh:
+                fh.write(f"rust: echo r >> {cnt['rust']} [paths: *.rs,Cargo.toml] [kind: compile]\n"
+                         f"py: echo p >> {cnt['py']} [paths: *.py] [kind: lint]\n"
+                         f"fmt: echo f >> {cnt['fmt']} [paths: *.py,*.rs] [kind: format]\n")
+            for rel in ("src/a.rs", "app/b.py", "README.md"):
+                with open(os.path.join(arepo, rel), "w") as fh:
+                    fh.write("1\n")
+            agit("add", "-A")
+            agit("commit", "-qm", "base")
+
+            def arun(*extra: str, gates_file: str = ag) -> tuple[int, str]:
+                o = io.StringIO()
+                with contextlib.redirect_stdout(o), contextlib.redirect_stderr(o):
+                    code = main([gates_file, "--root", arepo, "--log-dir", os.path.join(tmp, "al"), *extra])
+                return code, o.getvalue()
+
+            def n(name: str) -> int:
+                return sum(1 for _ in open(cnt[name])) if os.path.exists(cnt[name]) else 0
+
+            def edit(rel: str) -> None:
+                with open(os.path.join(arepo, rel), "a") as fh:
+                    fh.write("x\n")
+
+            rc, out = arun("--affected-since", "HEAD")
+            check("affected: a clean tree skips every path-known gate with an explicit line",
+                  rc == 0 and out.count("skipped: no changed paths") == 3 and (n("rust"), n("py"), n("fmt")) == (0, 0, 0))
+            edit("app/b.py")
+            rc, out = arun("--affected-since", "HEAD")
+            check("affected: a python edit runs py and fmt, skips rust with the skip line",
+                  rc == 0 and (n("rust"), n("py"), n("fmt")) == (0, 1, 1)
+                  and "SKIP rust — skipped: no changed paths" in out and "PASS py" in out)
+            rc, out = arun("--affected-since", "HEAD")
+            check("receipt hit: the same inputs are not rerun", rc == 0 and (n("py"), n("fmt")) == (1, 1)
+                  and "REUSED py" in out and "REUSED fmt" in out and "2 reused from per-gate receipts" in out)
+            edit("app/b.py")
+            arun("--affected-since", "HEAD")
+            check("receipt miss: changed inputs rerun the gate", (n("py"), n("fmt")) == (2, 2))
+            edit("src/a.rs")
+            rc, out = arun("--affected-since", "HEAD")
+            check("affected: a rust edit runs rust, reuses py (its paths are unchanged), reruns fmt",
+                  (n("rust"), n("py"), n("fmt")) == (1, 2, 3) and "REUSED py" in out)
+            arun("--affected-since", "HEAD", "--fresh")
+            check("--fresh ignores per-gate receipts", (n("rust"), n("py"), n("fmt")) == (2, 3, 4))
+            edit("README.md")
+            rc, out = arun("--affected-since", "HEAD", "--fresh")
+            check("fail safe: a changed path no gate claims runs every gate",
+                  "maps to no gate" in out and (n("rust"), n("py"), n("fmt")) == (3, 4, 5) and "skipped: no changed" not in out)
+            rc, out = arun("--affected-since", "no-such-rev", "--fresh")
+            check("fail safe: an unusable base rev runs every gate, says so",
+                  rc == 0 and "cannot diff against" in out and (n("rust"), n("py"), n("fmt")) == (4, 5, 6))
+            rc, out = arun()
+            check("full mode (first push, final head) runs the whole list despite per-gate receipts",
+                  rc == 0 and (n("rust"), n("py"), n("fmt")) == (5, 6, 7) and "SKIP" not in out and "per-gate" not in out)
+            rc, out = arun("--compile-lint-only", "--fresh")
+            check("contract commit: compile and lint run, format is skipped with a reason",
+                  rc == 0 and (n("rust"), n("py"), n("fmt")) == (6, 7, 7)
+                  and "SKIP fmt — skipped: format gate" in out and "contract commit" in out)
+            with open(ag, "a", encoding="utf-8") as fh:
+                fh.write(f"unk: echo u >> {cnt['unk']}\n")
+            arun("--compile-lint-only", "--fresh")
+            check("contract commit: a gate of unknown kind still runs (fail safe)", n("unk") == 1)
+            arun("--affected-since", "HEAD")
+            arun("--affected-since", "HEAD")
+            check("a path-unknown gate keys its receipt on the whole tree: reused when nothing changed, never skipped",
+                  n("unk") == 1)
+            edit("README.md")
+            arun("--affected-since", "HEAD")
+            check("a path-unknown gate reruns once the tree changes", n("unk") == 2)
+            check("per-gate receipts live in the repo's git dir, not in ~/.agentic",
+                  os.path.isdir(os.path.join(arepo, ".git", "run_gates-receipts", "gates")))
+            with open(ag, "w", encoding="utf-8") as fh:
+                fh.write(f"bad: exit 3 [paths: *.py]\n")
+            rc, out = arun("--affected-since", "HEAD", "--fresh")
+            rc2, out2 = arun("--affected-since", "HEAD")
+            check("a red gate leaves no receipt and reruns", rc == 1 and rc2 == 1 and "REUSED" not in out2)
 
         # --- #142: --from-workflow ---
         wf = os.path.join(tmp, "ci.yml")
