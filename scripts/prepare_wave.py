@@ -32,6 +32,8 @@ integration author).
         [--provider zai --model glm-5.3-flash --holder W-014-wave1]
         [--lint-only | --admit-only] [--wait-slot SECONDS [--slot-poll S=15]]
         [--log LIVE_DOSSIER]
+    prepare_wave.py --admit-next --root X --provider P --model M --holder H
+        [--max K] [--wait-slot SECONDS]
     prepare_wave.py --selftest
 
 Without `--provider/--model/--holder` it only lints (a re-check after a fix).
@@ -44,6 +46,33 @@ and prints the `ADMISSION:` line. `--log` appends `PAYLOAD-LINT:` (and
 even when `--provider/--model/--holder` are also given — so a fix round can
 re-run the exact command that admitted the wave. It is the one door for
 re-checking a payload; there is no reason to run `check_payload.py` alone.
+
+# Partial waves: admit what is free now, the rest queued
+
+Admission takes `min(N, free)` slots (`spawn_admission.py acquire --partial`),
+never waits for all N. The first k payloads of the manifest are ADMITTED, one
+slot each; the rest are QUEUED. The call prints one line the orchestrator (and
+the phase4-wave workflow) reads:
+
+    ADMITTED {"holder": H, "admitted": [{"payload": P, "slot": 3}, ...], "queued": [P, ...]}
+
+and records the same in `<root>/.agent-staging/wave-<holder>.slots.json`, the
+slot-to-payload map: `verify_return.py --release H --slot N` frees exactly the
+slot of the agent it verifies. Only zero free slots (or a deferral) refuses, and
+only that case blocks on `--wait-slot`. A request for more than the cap is split
+the same way: at most the cap is ever held, the rest queues.
+
+`--admit-next` admits the next queued payloads when a return freed a slot: one
+command, no manifest, prints
+
+    ADMIT-NEXT {"status": "ok", "admitted": [{"payload": P, "slot": 2}], "queued": [P, ...]}
+
+`status` is `refused` (exit 1, nothing admitted, the queue kept) while a
+recorded reset deadline lies ahead or, after `--wait-slot`, while no slot is
+free: never spawn into a deferral. `--max K` caps how many it admits. A payload
+already issued once and re-run (a re-spawn) is re-admitted by `--admit-only`
+with a manifest of just that payload. Same holder throughout: the ledger keeps
+one wave per holder, and the learned ceiling rises when its LAST slot goes.
 
 Admission waits on the machine, not on the orchestrator: with `--provider/
 --model/--holder` the call blocks, quietly, up to `--wait-slot SECONDS`
@@ -93,6 +122,7 @@ import argparse
 import contextlib
 import hashlib
 import io
+import json
 import os
 import re
 import shlex
@@ -254,13 +284,13 @@ def deferral_seconds(lines: list[str], now: float) -> float | None:
 
 
 def acquire(args: argparse.Namespace, n: int, runner=run, sleep=time.sleep, clock=time.monotonic,
-            wall=time.time) -> tuple[int, list[str]]:
+            wall=time.time, partial: bool = False) -> tuple[int, list[str]]:
     """spawn_admission.py acquire, polled while it refuses only for lack of
     slots (or defers to a reset inside the bound) and --wait-slot seconds
     remain. Returns (exit, output lines)."""
     cmd = [sys.executable, os.path.join(args.plugin_root, "scripts", "spawn_admission.py"),
            "acquire", "--provider", args.provider, "--model", args.model,
-           "--n", str(n), "--holder", args.holder]
+           "--n", str(n), "--holder", args.holder] + (["--partial"] if partial else [])
     deadline = clock() + (args.wait_slot or 0)
     announced = False
     while True:
@@ -269,7 +299,7 @@ def acquire(args: argparse.Namespace, n: int, runner=run, sleep=time.sleep, cloc
             return rc, lines
         refused = next((l for l in lines if l.startswith("refused:")), "")
         m = re.search(r"(\d+) free of cap (\d+).*asked (\d+)", refused)
-        curable = bool(m) and int(m.group(3)) <= int(m.group(2))
+        curable = bool(m) and (partial or int(m.group(3)) <= int(m.group(2)))
         pause = max(min(args.slot_poll, deadline - clock()), 0.001)
         reason = refused
         if not curable:
@@ -289,6 +319,94 @@ def admitted_path(root: str, holder: str | None) -> str:
     return os.path.join(root, ".agent-staging", f"wave-{holder}.admitted" if holder else "wave.admitted")
 
 
+def slots_path(root: str, holder: str | None) -> str:
+    return os.path.join(root, ".agent-staging", f"wave-{holder}.slots.json" if holder else "wave.slots.json")
+
+
+def load_state(root: str, holder: str | None) -> dict | None:
+    try:
+        with open(slots_path(root, holder), encoding="utf-8") as fh:
+            state = json.load(fh)
+        return state if isinstance(state, dict) and "payloads" in state else None
+    except (OSError, ValueError):
+        return None
+
+
+def granted_slots(lines: list[str]) -> list[int]:
+    text = next((l for l in lines if l.startswith("granted:")), "")
+    m = re.search(r"slots ([\d,]+)", text)
+    return [int(x) for x in m.group(1).split(",") if x] if m else []
+
+
+def register_grant(args: argparse.Namespace, payloads: list[str], granted: list[int]) -> dict:
+    """Record which payload got which slot, and which still wait: the first len(granted)
+    of `payloads` take the slots in order, the rest queue. Merges into the holder's state."""
+    state = load_state(args.root, args.holder) or {
+        "holder": args.holder, "provider": args.provider, "model": args.model,
+        "payloads": list(payloads), "slots": {}, "queue": [],
+    }
+    for payload in payloads:
+        if payload not in state["payloads"]:
+            state["payloads"].append(payload)
+    taken = dict(zip(payloads, granted))
+    state["slots"].update({p: n for p, n in taken.items()})
+    waiting = [p for p in payloads if p not in taken]
+    state["queue"] = [q for q in state["queue"] if q not in taken] + [p for p in waiting if p not in state["queue"]]
+    save_state(args, state)
+    return state
+
+
+def save_state(args: argparse.Namespace, state: dict) -> None:
+    path = slots_path(args.root, args.holder)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=1)
+        fh.write("\n")
+    os.replace(tmp, path)
+
+
+def admitted_json(state: dict, payloads: list[str], granted: list[int], tag: str = "ADMITTED") -> str:
+    body = {"holder": state["holder"], "admitted": [{"payload": p, "slot": n} for p, n in zip(payloads, granted)],
+            "queued": list(state["queue"])}
+    if tag == "ADMIT-NEXT":
+        body = {"status": "ok", **{k: v for k, v in body.items() if k != "holder"}}
+    return tag + " " + json.dumps(body)
+
+
+def current_admitted(state: dict) -> str:
+    live = [p for p in state["payloads"] if p in state["slots"] and p not in state["queue"]]
+    return admitted_json(state, live, [state["slots"][p] for p in live])
+
+
+def admit_next(args: argparse.Namespace, acquirer=None) -> int:
+    """--admit-next: a return freed a slot; admit the next queued payloads (min(queued, free,
+    --max)), waiting only while zero are free. Serialised per holder by a file lock."""
+    import fcntl
+    path = slots_path(args.root, args.holder)
+    if load_state(args.root, args.holder) is None:
+        print(f"prepare_wave: no admission state at {path}; run --admit-only first", file=sys.stderr)
+        return 2
+    with open(path + ".lock", "w", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = load_state(args.root, args.holder) or {}
+        queue = list(state.get("queue", []))
+        if not queue:
+            print("ADMIT-NEXT " + json.dumps({"status": "ok", "admitted": [], "queued": []}))
+            return 0
+        n = min(len(queue), args.max) if args.max else len(queue)
+        rc, lines = (acquirer or acquire)(args, n, partial=True)
+        if rc != 0:
+            reason = next((l for l in lines if l.startswith(("deferred:", "refused:"))), "refused")
+            print("ADMIT-NEXT " + json.dumps({"status": "refused", "admitted": [], "queued": queue, "reason": reason[:200]}))
+            return 1
+        granted = granted_slots(lines)
+        taken = queue[:len(granted)]
+        state = register_grant(args, taken, granted)
+        print(admitted_json(state, taken, granted, "ADMIT-NEXT"))
+        return 0
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("manifest", nargs="?")
@@ -302,6 +420,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--lint-only", action="store_true", help="lint and gate; never acquire")
     ap.add_argument("--admit-only", action="store_true",
                     help="take the slots now (no lint); the next normal call lints and reuses the grant")
+    ap.add_argument("--admit-next", action="store_true",
+                    help="admit the next queued payloads of this holder's partial wave (no manifest)")
+    ap.add_argument("--max", type=int, default=0, metavar="K", help="with --admit-next: admit at most K")
     ap.add_argument("--wait-slot", type=float, default=None, metavar="SECONDS",
                     help="when admission is refused for lack of slots, block until free or this long "
                          "(default %d; 0 returns at once)" % DEFAULT_WAIT)
@@ -310,6 +431,12 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
+    if args.admit_next:
+        if not (args.root and all([args.provider, args.model, args.holder])):
+            ap.error("--admit-next needs --root, --provider, --model and --holder")
+        if args.wait_slot is None:
+            args.wait_slot = DEFAULT_WAIT
+        return admit_next(args)
     if not (args.manifest and args.host and args.root):
         ap.error("MANIFEST, --host and --root are required unless --selftest")
     admit = [args.provider, args.model, args.holder]
@@ -360,13 +487,22 @@ def main(argv: list[str]) -> int:
     log_lines = [f"PAYLOAD-LINT: {len(rows)} payloads, {fixed} defects fixed — {ids}"]
     if all(admit) and not args.lint_only:
         held = read_admitted(args.root, args.holder)
-        if held is not None and held[0] != len(rows):
-            print(f"prepare_wave: --admit-only took {held[0]} slot(s) for this holder, the manifest names {len(rows)}; "
+        state = load_state(args.root, args.holder)
+        payloads = [r["payload"] for r in rows]
+        if held is not None and (set(state["payloads"]) != set(payloads) if state else held[0] != len(rows)):
+            print(f"prepare_wave: --admit-only admitted a different wave for this holder than the manifest names ({len(rows)} spawn(s)); "
                   "release the holder with spawn_admission.py release and admit again")
             return 1
-        rc, lines = (0, [held[1]]) if held is not None else acquire(args, len(rows))
+        rc, lines = (0, [held[1]]) if held is not None else acquire(args, len(rows), partial=True)
         if held is not None:
             print(f"      admission already held from --admit-only ({held[0]} slot(s))")
+            if state:
+                print("      " + current_admitted(state))
+        if rc == 0 and held is None:
+            granted = granted_slots(lines)
+            if granted:
+                state = register_grant(args, payloads, granted)
+                lines.append(admitted_json(state, payloads[:len(granted)], granted))
         for line in lines:
             print(f"      {line}")
         if rc != 0:
@@ -376,7 +512,8 @@ def main(argv: list[str]) -> int:
             for line in log_lines:
                 print(line)
             return 1
-        log_lines.append(admission_line(len(rows), args.provider, args.model, lines))
+        log_lines.append(admission_line(len(state["slots"]) if state else len(rows), args.provider, args.model, lines,
+                                        total=len(rows)))
     if args.log:
         append(args, log_lines)
     for line in log_lines:
@@ -396,31 +533,42 @@ def read_admitted(root: str, holder: str | None) -> tuple[int, str] | None:
 def admit_now(args: argparse.Namespace, rows: list[dict[str, str]]) -> int:
     """--admit-only: take len(rows) slots before the payloads are finished; no lint."""
     held = read_admitted(args.root, args.holder)
-    if held is not None:
+    payloads = [r["payload"] for r in rows]
+    state = load_state(args.root, args.holder)
+    # A manifest of payloads this holder was already issued is a re-spawn: admit them again.
+    respawn = bool(state) and payloads != state["payloads"] and set(payloads) <= set(state["payloads"])
+    if held is not None and not respawn:
+        same = set(state["payloads"]) == set(payloads) if state else held[0] == len(rows)
         print(f"prepare_wave: {args.holder} already holds {held[0]} slot(s) from an earlier --admit-only")
-        return 0 if held[0] == len(rows) else 1
-    rc, lines = acquire(args, len(rows))
+        if state:
+            print(current_admitted(state))
+        return 0 if same else 1
+    rc, lines = acquire(args, len(rows), partial=True)
     for line in lines:
         print(f"      {line}")
     if rc != 0:
         print("prepare_wave: admission refused or deferred — see the Phase 4 ladder; nothing spawned")
         return 1
-    granted = next((l for l in lines if l.startswith("granted:")), "granted: ?")
+    granted_line = next((l for l in lines if l.startswith("granted:")), "granted: ?")
+    slots = granted_slots(lines)
+    state = register_grant(args, payloads, slots)
     os.makedirs(os.path.dirname(admitted_path(args.root, args.holder)), exist_ok=True)
     with open(admitted_path(args.root, args.holder), "w", encoding="utf-8") as fh:
-        fh.write(f"{len(rows)} {granted}\n")
-    print(admission_line(len(rows), args.provider, args.model, lines))
+        fh.write(f"{len(slots)} {granted_line}\n")
+    print(admission_line(len(slots), args.provider, args.model, lines, total=len(rows)))
+    print(admitted_json(state, payloads[:len(slots)], slots))
     print("prepare_wave: slots held; write the judgement fields, then run this command again without --admit-only")
     return 0
 
 
-def admission_line(n: int, provider: str, model: str, lines: list[str]) -> str:
+def admission_line(n: int, provider: str, model: str, lines: list[str], total: int | None = None) -> str:
     """Phase 4's `ADMISSION: granted <N> slots — <provider>/<model>, cap <C>, ceiling <K>`,
     with C and K read from spawn_admission.py's `granted:` line."""
     granted = next((l for l in lines if l.startswith("granted:")), "")
     cap = re.search(r"of cap (\d+)", granted)
     ceiling = re.search(r"ceiling ([^)]+)\)", granted)
-    return (f"ADMISSION: granted {n} slots — {provider}/{model}, "
+    of = f" of {total}" if total and total != n else ""
+    return (f"ADMISSION: granted {n}{of} slots — {provider}/{model}, "
             f"cap {cap.group(1) if cap else '?'}, ceiling {ceiling.group(1) if ceiling else '?'}")
 
 
@@ -432,9 +580,9 @@ def append(args: argparse.Namespace, lines: list[str]) -> None:
 def selftest() -> int:
     failures: list[str] = []
 
-    def check(name: str, ok: bool) -> None:
+    def check(name: str, ok: bool, detail: str = "") -> None:
         if not ok:
-            failures.append(name)
+            failures.append(name + (": " + detail.strip()[-300:] if detail else ""))
 
     rows = parse_manifest("# wave 1\nkind=implementer payload=/a/P1.md\n"
                           "kind=unit-test-author payload='/a/U T.md' test-paths=t/a.rs,t/b.rs allow-path=/vm/x allow-path=/vm/y\n")
@@ -580,6 +728,88 @@ def selftest() -> int:
             check("a second --admit-only for the same holder does not acquire", calls == [1])
         finally:
             module.lint_row, module.acquire = real_lint, real_acquire
+
+        # Partial admission, --admit-next and a deferral, against a real temporary admission dir.
+        saved_dir = os.environ.get("ASD_ADMISSION_DIR")
+        os.environ["ASD_ADMISSION_DIR"] = os.path.join(tmp, "admission")
+        try:
+            sa_cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "spawn_admission.py")]
+
+            def sa(*a: str) -> tuple[int, str]:
+                r = subprocess.run(sa_cmd + list(a), capture_output=True, text=True)
+                return r.returncode, r.stdout
+
+            def go(argv: list[str]) -> tuple[int, str, dict]:
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    code = main(argv)
+                text = buf.getvalue()
+                found = {}
+                for line in text.splitlines():
+                    for tag in ("ADMITTED ", "ADMIT-NEXT "):
+                        if line.strip().startswith(tag):
+                            found = json.loads(line.strip()[len(tag):])
+                return code, text, found
+
+            pm = ["--provider", "pp", "--model", "mm"]
+            four = os.path.join(tmp, "four.manifest")
+            pls = [os.path.join(tmp, f"Q{i}.md") for i in range(1, 5)]
+            with open(four, "w", encoding="utf-8") as fh:
+                fh.write("".join(f"kind=implementer payload={q}\n" for q in pls))
+            sa("acquire", *pm, "--n", "2", "--holder", "other")
+            base = [four, "--host", "opencode", "--root", tmp, *pm, "--holder", "W-4-wave1", "--wait-slot", "0"]
+            rc, text, got = go(base + ["--admit-only"])
+            check("partial: 2 of 4 admitted now, the rest queued",
+                  rc == 0 and [a["payload"] for a in got.get("admitted", [])] == pls[:2] and got.get("queued") == pls[2:], text)
+            check("partial: one distinct slot per admitted payload", len({a["slot"] for a in got.get("admitted", [])}) == 2)
+            check("partial: the ADMISSION line says 2 of 4", "granted 2 of 4 slots" in text, text)
+            state = load_state(tmp, "W-4-wave1") or {}
+            check("the slot map is recorded on disk", sorted(state.get("slots", {}).values()) == sorted(a["slot"] for a in got.get("admitted", [])) and state.get("queue") == pls[2:])
+            rc, text, got2 = go(base + ["--admit-only"])
+            check("a repeated --admit-only is idempotent and acquires nothing", rc == 0 and len(os.listdir(os.path.join(tmp, "admission", "pp__mm", "slots"))) == 4 and got2.get("queued") == pls[2:], text)
+            nxt = ["--admit-next", "--root", tmp, *pm, "--holder", "W-4-wave1", "--wait-slot", "0"]
+            rc, text, got3 = go(nxt)
+            check("admit-next with zero free slots refuses and keeps the queue", rc == 1 and got3.get("status") == "refused" and got3.get("queued") == pls[2:], text)
+            freed = sorted(state["slots"].values())[0]
+            sa("release", *pm, "--holder", "W-4-wave1", "--slots", str(freed))
+            rc, text, got3 = go(nxt)
+            check("admit-next admits the next payload into the freed slot",
+                  rc == 0 and got3.get("admitted") == [{"payload": pls[2], "slot": freed}] and got3.get("queued") == pls[3:], text)
+            sa("release", *pm, "--holder", "other")
+            rc, text, got3 = go(nxt + ["--max", "5"])
+            check("admit-next drains the rest, never beyond the queue", rc == 0 and [a["payload"] for a in got3.get("admitted", [])] == [pls[3]] and got3.get("queued") == [], text)
+            rc, text, got3 = go(nxt)
+            check("admit-next on an empty queue is a no-op", rc == 0 and got3 == {"status": "ok", "admitted": [], "queued": []}, text)
+            sa("release", *pm, "--holder", "W-4-wave1")
+            # a deferral blocks admit-next: never spawn into a recorded reset window
+            pd = ["--provider", "pd", "--model", "md"]
+            sa("acquire", *pd, "--n", "3", "--holder", "other")
+            rc, text, got = go([four, "--host", "opencode", "--root", tmp, *pd, "--holder", "W-5-wave1", "--wait-slot", "0", "--admit-only"])
+            check("deferral setup: 1 admitted, 3 queued", rc == 0 and len(got.get("admitted", [])) == 1 and len(got.get("queued", [])) == 3, text)
+            sa("record-error", *pd, "Limit Exhausted. Your limit will reset in 3 hours")
+            sa("release", *pd, "--holder", "other")
+            rc, text, got = go(["--admit-next", "--root", tmp, *pd, "--holder", "W-5-wave1", "--wait-slot", "0"])
+            check("a deferral blocks admit-next even with free slots", rc == 1 and got.get("status") == "refused" and "deferred" in got.get("reason", "") and len(got.get("queued", [])) == 3, text)
+            check("nothing was acquired by the blocked admit-next", len(os.listdir(os.path.join(tmp, "admission", "pd__md", "slots"))) == 1)
+            # a request above the cap splits: never more than the cap is held
+            pc = ["--provider", "pc", "--model", "mc"]
+            six = os.path.join(tmp, "six.manifest")
+            with open(six, "w", encoding="utf-8") as fh:
+                fh.write("".join(f"kind=implementer payload={os.path.join(tmp, f'S{i}.md')}\n" for i in range(6)))
+            rc, text, got = go([six, "--host", "opencode", "--root", tmp, *pc, "--holder", "W-6-wave1", "--wait-slot", "0", "--admit-only"])
+            check("six asked above the cap of 4: 4 admitted, 2 queued", rc == 0 and len(got.get("admitted", [])) == 4 and len(got.get("queued", [])) == 2, text)
+            # a re-spawn re-admits just that payload
+            sa("release", *pc, "--holder", "W-6-wave1", "--slots", str(got["admitted"][0]["slot"]))
+            one = os.path.join(tmp, "one.manifest")
+            with open(one, "w", encoding="utf-8") as fh:
+                fh.write(f"kind=implementer payload={got['admitted'][0]['payload']}\n")
+            rc, text, got4 = go([one, "--host", "opencode", "--root", tmp, *pc, "--holder", "W-6-wave1", "--wait-slot", "0", "--admit-only"])
+            check("a re-spawn is re-admitted into a free slot", rc == 0 and [a["payload"] for a in got4.get("admitted", [])] == [got["admitted"][0]["payload"]], text)
+        finally:
+            if saved_dir is None:
+                os.environ.pop("ASD_ADMISSION_DIR", None)
+            else:
+                os.environ["ASD_ADMISSION_DIR"] = saved_dir
 
         # A failed wave prints one FIX LIST naming every defect, the seal step last.
         fl = fix_list([("/w/P1.md", ["DEFECT   the last non-empty line is not `PAYLOAD-END: P1 <8-hex hash>`: x; seal it with `compose_payloads.py --seal /w/P1.md`.",

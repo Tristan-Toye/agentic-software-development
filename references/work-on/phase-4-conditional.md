@@ -157,16 +157,25 @@ python3 "${PLUGIN_ROOT}/scripts/spawn_admission.py" acquire \
 
 Exit 0 grants the slots and prints the cap in force and the ceiling the
 ledger has learned; log `ADMISSION: granted <N> slots — <provider>/<model>,
-cap <C>, ceiling <K>` and spawn. Exit 1 is a refusal or a deferral, and the
+cap <C>, ceiling <K>` and spawn. `prepare_wave.py` calls it with `--partial`:
+when fewer than N slots are free it holds `min(N, free)` and names the rest as
+queued (`ADMISSION: granted <k> of <N> slots`), refusing only at zero free or in
+a deferral; the queued payloads are admitted one command at a time, as returns
+free slots, by `prepare_wave.py --admit-next` (same holder, same wave in the
+ledger; it never admits into a recorded reset window and never past the cap). Exit 1 is a refusal or a deferral, and the
 ladder below governs what it degrades into: a **deferral** names a recorded
 reset deadline — wait it out (step 1), and never spawn into a closed window
 from any checkout; a **refusal** names the free slots — split the wave to fit
 them (step 2), or serialise the cheapest kind (step 3). Never send the whole
-wave past a refusal. When the agents return, `release --holder <ID>-wave<k>`
-— a wave released with no error recorded raises the learned ceiling, which is
-the cap the next run starts from. To free one agent's slot early, add
-`--slots <n>`: only that slot of the holder is freed, a slot the holder does
-not hold refuses, and the wave stays open until its last slot goes. When a
+wave past a refusal. Each agent's slot is freed when its return is verified:
+`verify_return.py --release <ID>-wave<k> --slot <n>` runs `release --holder
+<ID>-wave<k> --slots <n>`, so the slot of a finished agent never idles behind
+the slowest one. Only that slot of the holder is freed, a slot the holder does
+not hold refuses, and the wave stays open until its last slot goes: that last
+release, with no error recorded since the wave was admitted, raises the learned
+ceiling, which is the cap the next run starts from. A final `release --holder
+<ID>-wave<k> --if-held` is the idempotent safety net (a no-op when nothing is
+held); it is not the release. When a
 provider limit kills an agent, `record-error "<the error, verbatim>"` before
 anything else, so every other session on the machine defers too. The two recorded failures: an 8-spawn
 wave with 4 corpses at their first API call while three sibling sessions
@@ -343,11 +352,23 @@ whose world the hash stamps. When several authors share one worktree (`root`),
 pass nothing extra: the workflow hands each item its siblings' `owned` paths as
 `--shared-tree`, so an author is never flagged for a sibling's files.
 `reportDir` defaults to `<root>/.agent-staging/reports`. Verification is
-mechanical and per wave: once every agent has returned, one cheap spawn pipes
-all the returns to `scripts/verify_wave.py`, which writes each report file and
-runs `verify_return.py` for each in one call (a return it cannot settle falls
-back to a per-item wrapper; implementers sharing one worktree are still
-verified one after another). A workflow
+mechanical: an item with no `slot` waits for the whole wave, then one cheap
+spawn pipes all the returns to `scripts/verify_wave.py`, which writes each report
+file and runs `verify_return.py` for each in one call (a return it cannot settle
+falls back to a per-item wrapper; implementers sharing one worktree are still
+verified one after another). An item that carries a `slot` is verified alone, the
+moment it returns, with `--release <holder> --slot <n>` in its argv, so its slot
+is free at once. Admission comes in `args` as the object form `{ pluginRoot,
+admission: { provider, model, holder, root }, items }`: `holder` is the wave's,
+`root` the orchestrator's tree X, `slot` each admitted item's number from
+`prepare_wave.py`'s `ADMITTED` line, and `queued: true` marks a payload it listed
+as queued. The workflow spawns the admitted ones, and each time a return frees a
+slot it runs `prepare_wave.py --admit-next` in one cheap wrapper and spawns the
+payloads that admits; a refusal (a recorded reset window, or no free slot within
+the wait) spawns nothing and leaves the payload queued, and one still queued at
+the end returns flagged `not-admitted` (never spawned): admit it again and
+call the workflow for it. A queued implementer never shares its tree with
+another implementer (those chains run serially; admit them whole). A workflow
 spawn is the one place the payload travels as a file, not pasted: each agent
 gets the two-line `PAYLOAD_FILE` / `PAYLOAD_SHA256` intake its file names and
 reads the final itself. The paste rule is about the per-spawn classifier, and
@@ -378,9 +399,9 @@ table row stays as before. The result is one object per spawn, in args order:
 
 Each agent is followed by a cheap verifier (`haiku`, low effort) that runs
 `verify_return.py --print-line` with the agent's report written to
-`report_path` for `--report`. The workflow never releases slots (the script's
-`--release` frees the holder's whole wave on the first return) and never
-writes the build log (concurrent appends): you do both from the array. Then:
+`report_path` for `--report`. The workflow frees each agent's own slot through
+that verification (`--release <holder> --slot <n>`) and never writes the build
+log (concurrent appends): you log from the array. Then:
 
 1. Count the results against the wave table. A `died` verdict is a spawn that
    returned nothing, was skipped, or lost its verifier: look at the tree before
@@ -390,8 +411,9 @@ writes the build log (concurrent appends): you do both from the array. Then:
    call, with the agent's ID in it where you hold one (`P1 (agent a1b2c3)
    RETURNED: …`); an agent a workflow spawned has no ID in the compact result,
    so its line carries `(workflow run <runId>)` instead.
-3. Release the wave's slots once: `spawn_admission.py release --holder
-   <ID>-wave<k>`.
+3. Safety net, nothing more: `spawn_admission.py release --holder
+   <ID>-wave<k> --if-held` (every verified agent already freed its slot; this is
+   a no-op when nothing is held).
 4. Rule from the compact result. Read a full report (`report_path`) only for an
    item whose verdict is not `clean`, and only the part you need: a `GAP:` or
    `CONTRACT-CHANGE:` line is already in the excerpt, so handle it from there.
