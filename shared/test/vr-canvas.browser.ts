@@ -61,6 +61,14 @@ seed({ ...OVERLAP, files: badFiles }, (v, g) => {
   g.nodes[0].members = ["m1", "m2", "m3"].map((m) => ({ id: m, label: m, kind: "function", status: "changed", evidence: [] }))
 })
 
+// The shapes fixture: the real L2 with its first nodes drawn as each shape; every shape must keep its label inside its box and not overlap.
+const SHAPED: Fix = { id: "W-149", expect: "pass", files: real[0].files }
+seed(SHAPED, (v, g) => {
+  if (v !== "l2") return
+  ;["diamond", "terminal", "io", "circle", "cylinder", "round", "subroutine", "asymmetric", "junction"].forEach((sh, i) => { if (g.nodes[i]) g.nodes[i].shape = sh })
+})
+real.push(SHAPED)
+
 let proc: ReturnType<typeof Bun.spawn> | undefined
 let browser: any
 const cleanup = async (): Promise<void> => { try { await browser?.close() } catch {} ; proc?.kill(); rmSync(work, { recursive: true, force: true }) }
