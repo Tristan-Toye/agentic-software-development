@@ -268,6 +268,9 @@ def _extract(repo, base, head, scripts, work, touched, crates, layers, timeout):
     after_cmd = [py, diff, "after-from-git", repo, "--base", base, "--head", head, "-o", os.path.join(work, "after.json")]
     if crates is not None:
         after_cmd += ["--crates", ",".join(crates)]
+    if touched:
+        # the same call layer as the before graph: otherwise its fn nodes are all "removed" in the merge
+        after_cmd += ["--calls", ",".join(touched)]
     run("after", after_cmd)
     run("merge", [py, diff, "merge", "--before", os.path.join(work, "before.json"),
                   "--after", os.path.join(work, "after.json"),
@@ -427,6 +430,9 @@ def selftest() -> int:
         aa = open(os.path.join(w2, "after.json.argv")).read()
         check("prepare: before and after get the same derived --crates", "--crates alpha,beta-two" in ab and "--crates alpha,beta-two" in aa)
         check("summary: names the crate set", s2["crates"] == ["alpha", "beta-two"])
+        # #476: the after graph needs the same call layer as the before graph, or its fn nodes (pub(crate), async)
+        # are missing there and merge() shows functions that still exist as removed
+        check("prepare: before and after get the same --calls", "d2" in ab.split("--calls")[1].split()[0] and "d2" in aa.split("--calls")[1].split()[0])
         prepare(wsr, "W-3", b2, "HEAD", scripts, [], "1,2", 5, crates=None)
         check("prepare: crates=None (--crates all) passes no limit",
               "--crates" not in open(os.path.join(wsr, OUT_REL, "W-3", "work", "before.json.argv")).read())
