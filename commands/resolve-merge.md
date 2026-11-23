@@ -61,6 +61,16 @@ way, after that one is pushed. Then resolve each conflict:
   hand-merged: `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py
   --finalize-ids --base origin/<base>` renumbers ids that collide with ones the
   base took first.
+- Architecture diagrams (`docs/architecture/*.json` beside their `.md`): the
+  JSON is the source, the Mermaid block is generated. A conflict in a block is
+  resolved in the JSON, then `vr_mermaid.py sync docs/architecture`. After the
+  merge and after any re-anchor (`check_diagram_anchors.py --fix`, which moves
+  `path:NNN` line numbers in the blocks), run `python3
+  ${PLUGIN_ROOT}/scripts/vr_mermaid.py adopt-anchors docs/architecture` so the
+  JSON takes the new line numbers, and commit what it changed with the merge;
+  a `sync` before it would revert the re-anchor. A file it leaves alone holds
+  a real edit: fix that JSON, then `sync`. `vr_mermaid.py check
+  docs/architecture` passes before you push.
 - **Check that nothing was lost**, mechanically, before committing: run
   `python3 ${PLUGIN_ROOT}/scripts/merge_guard.py` in the worktree while the merge is still
   pending. It compares every changed file's lines across base, both sides and

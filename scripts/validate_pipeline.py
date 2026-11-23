@@ -4278,7 +4278,8 @@ def diagram_gate_run(root: Path, base: str, dossier_id: str | None = None, pr_te
     if rc != 0:
         first = "; ".join(out.splitlines()[:3]) if out else f"exit {rc}"
         problems.append(f"diagram gate: vr_mermaid.py check docs/architecture failed ({first}). "
-                        "Fix: edit the diagram's JSON, run `vr_mermaid.py sync docs/architecture`, commit")
+                        "Fix: a block that differs only in anchor line numbers: `vr_mermaid.py adopt-anchors docs/architecture`; "
+                        "any other difference: edit the diagram's JSON, run `vr_mermaid.py sync docs/architecture`; commit")
     try:
         changed = set(git_out(root, "diff", "--name-only", f"{base}...HEAD").splitlines())
     except RuntimeError as exc:
