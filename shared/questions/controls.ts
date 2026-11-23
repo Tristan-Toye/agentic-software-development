@@ -35,7 +35,7 @@ export function controlsFor(d: { status: string; blockedBy: string[]; runner: Ru
   const start: Ctl = { show: !planned && startable && !active(d.runner) && (!stopped || stale), ok: d.status === "planned" || open.length === 0, reason: d.status === "ready" && open.length ? `blocked by ${open.join(", ")}` : "", command: next }
   // Resume picks up the flow that stopped, whichever it was.
   const resume: Ctl = { show: !planned && d.status !== "done" && d.status !== "dropped" && stopped && !stale, ok: !!d.runner?.root, reason: d.runner?.root ? "" : "no root recorded in the runner state", command: d.runner?.command || "work-on" }
-  const stop: Ctl = { show: active(d.runner) && !planned, ok: true, reason: "" }
+  const stop: Ctl = { show: active(d.runner), ok: true, reason: "" }
   /* Fix all deferred: a finished build (pr or done) with open ledger items and no live runner. */
   const fix: Ctl = { show: (d.status === "pr" || d.status === "done") && (d.deferredOpen ?? 0) > 0 && !active(d.runner), ok: true, reason: "" }
   return { start, resume, stop, "fix-deferred": fix }

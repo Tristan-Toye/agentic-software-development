@@ -710,7 +710,9 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
     check("planning: live seed / plan-D runs name their claimed ids; finished, stopped and work-on runs do not (same fixture as planning_runs.py --selftest)",
       Object.keys(pl).sort().join() === "K-13,W-218" && pl["W-218"].key === "r.seed-webhook-rate-limit" && pl["K-13"].key === "r.K-2.plan-D-1" && pl["W-218"].state === "running" && pl["K-13"].state === "queued", JSON.stringify(pl))
     const live = controlsFor({ status: "planned", blockedBy: [], runner: null, planning: pl["W-218"] }, st({}))
-    check("planning: a planned dossier claimed by a live seed run offers no Start, Resume or Stop", !live.start.show && !live.resume.show && !live.stop.show)
+    check("planning: a planned dossier claimed by a live seed run offers no Start or Resume", !live.start.show && !live.resume.show)
+    const dup = controlsFor({ status: "planned", blockedBy: [], runner: { state: "running", command: "plan" } as any, planning: pl["W-218"] }, st({}))
+    check("planning: claimed by a live seed run AND its own duplicate runner active: Stop shown, Start and Resume hidden", dup.stop.show && !dup.start.show && !dup.resume.show)
     check("planning: the seed run finished or dead, Start (plan) is back", controlsFor({ status: "planned", blockedBy: [], runner: null, planning: null }, st({})).start.show && !planningRuns("r", fx)["W-77"] && !planningRuns("r", fx)["W-78"])
   }
   check("controls: blocked_by ids are read from a list value", JSON.stringify(blockedByOf("[W-1, W-22]")) === '["W-1","W-22"]' && blockedByOf("[]").length === 0 && blockedByOf(undefined).length === 0)
