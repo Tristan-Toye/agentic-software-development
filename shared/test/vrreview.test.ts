@@ -195,7 +195,7 @@ describe("answer text", () => {
     const opts = [{ key: "A", label: "Approved" }, { key: "B", label: "Changes requested" }]
     expect(reviewOptions(opts)).toEqual({ A: "A", B: "B" })
     expect(reviewOptions([{ key: "A", label: "Yes" }, { key: "B", label: "No" }])).toBeNull()
-    const ph = readFileSync(join(import.meta.dir, "..", "..", "references", "work-on", "phase-3.md"), "utf8")
+    const ph = ["phase-3.md", "phase-3-conditional.md"].map((f) => readFileSync(join(import.meta.dir, "..", "..", "references", "work-on", f), "utf8")).join("\n")
     expect(ph).toContain("`A|Approved|fan-out starts`")
     expect(ph).toContain("`B|Changes requested|back to the contract`")
     expect(ph).toContain("review.json")
