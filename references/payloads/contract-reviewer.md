@@ -33,6 +33,8 @@ body runs, and a reviewer that sees only the subclass stubs cannot see that.
 It returns its own full checklist plus `AMBIGUITY:` and `DEFECT:` lines. The
 orchestrator diffs the two checklists: every disagreement is a contract
 defect caught pre-fan-out. An `AMBIGUITY:` line carries both readings
-verbatim. One the dossier settles is settled by citing it, logged
+verbatim, its `SITE: <path>::<member>` and the assertion each reading would produce
+(`ASSERT-A:` / `ASSERT-B:`), and the return ends its report with `SETTLE-MAP:`, every
+site once, so the log can carry `AMBIGUITY-SETTLED site=<same key>`. One the dossier settles is settled by citing it, logged
 (`AMBIGUITY-SETTLED:`, Phase 3); the rest go to the user as one question.
 Never pick a side silently.

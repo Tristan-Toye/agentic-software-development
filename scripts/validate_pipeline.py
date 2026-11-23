@@ -922,6 +922,46 @@ def check_contract_fix_lessons(where: str, fm: dict, contract: str, repo_root: P
         )
 
 
+SETTLED_SITE_RE = re.compile(
+    r"^\W*(?:AMBIGUITY-SETTLED|PROVISIONAL-RULING)\b[^\n]*?\bsite=([^\s:]+)::(\S+?)(?=[\s,;)]|$)", re.M)
+
+
+def check_settled_sites(where: str, fm: dict, repo_root: Path, status: str, rep: Report, log: str = "") -> None:
+    """Every settled ambiguity writes its reading into the doc comment, so the stub diff after the
+    contract review (`contract_review: <sha>` to HEAD) must touch the settled SITE: a changed hunk of
+    `<path>` whose lines (changed, or the one line beside them) name the member. A `site=<path>::<member>` on an
+    `AMBIGUITY-SETTLED` or `PROVISIONAL-RULING` line is the key; a log line with no `site=` (an older
+    dossier) is not checked. Silent without git, a worktree or a recorded review sha."""
+    if status not in {"building", "review", "pr", "done"}:
+        return
+    sites = sorted({(m.group(1), m.group(2)) for m in SETTLED_SITE_RE.finditer(log)})
+    base = str(fm.get("contract_review") or "").strip()
+    wt = str(fm.get("worktree") or "").strip()
+    cwd = (repo_root / wt).resolve() if wt else repo_root
+    if not sites or not re.fullmatch(r"[0-9a-f]{7,40}", base) or not cwd.is_dir():
+        return
+    for path, member in sites:
+        name = re.split(r"[.#:]+", member)[-1].strip("()")
+        try:
+            diff = git_out(cwd, "diff", "-U1", f"{base}..HEAD", "--", path)
+        except RuntimeError:
+            return
+        touched = False
+        for hunk in re.split(r"^@@", diff, flags=re.M)[1:]:
+            lines = hunk.splitlines()
+            changed = any(ln[:1] in "+-" for ln in lines[1:])
+            if changed and re.search(rf"\b{re.escape(name)}\b", hunk):
+                touched = True
+                break
+        if not touched:
+            rep.defect(
+                where,
+                f"settled site {path}::{member} but the stub diff {base[:8]}..HEAD of {path} touches no "
+                f"documentation comment of `{name}`; a settled ambiguity writes the chosen reading into the "
+                "doc comment as a statement (a ruling that only cites the dossier does not count)",
+            )
+
+
 # --------------------------------------------------------------------------
 # visual review gate (VR-05)
 # --------------------------------------------------------------------------
@@ -1266,6 +1306,7 @@ def validate_dossier(path: Path, repo_root: Path) -> Report:
                         path, fm, sec.get("## Contract", ""))
     check_contract_fix_lessons(where, fm, sec.get("## Contract", ""), repo_root, str(status), rep,
                                sec.get("## Build log", ""))
+    check_settled_sites(where, fm, repo_root, str(status), rep, sec.get("## Build log", ""))
 
     if status == "ready" and not fm.get("baseline_commit"):
         rep.defect(
@@ -2699,6 +2740,7 @@ def selftest() -> int:
         print("\n--- selftest: a contract-fix commit without a Lesson trailer is a DEFECT ---")
         caught_lesson = selftest_contract_lessons()
         caught_receipts = selftest_receipts()
+        caught_sites = selftest_settled_sites()
 
         print("\n--- selftest: done without a deferred record is a DEFECT ---")
         nodeferred = GOOD_DOSSIER.replace("status: ready", "status: done")
@@ -2765,6 +2807,7 @@ def selftest() -> int:
                 and caught_pcl
                 and caught_lesson
                 and caught_receipts
+                and caught_sites
                 and caught_owner
                 and caught_deferred
                 and deferred_clean
@@ -2873,6 +2916,57 @@ def selftest_contract_lessons() -> bool:
         ("a row 3 with no Lesson commit is refused", len(bad.defects) == 1 and "Lesson" in bad.defects[0]),
         ("a Lesson commit covers one row 3", not good.defects),
         ("two row 3s need two Lesson commits", len(short.defects) == 1),
+        ("a ready dossier is not checked", not planned.defects),
+    ]
+    for name, passed in cases:
+        print(f"{'PASS' if passed else 'FAIL'}  {name}")
+    return all(p for _, p in cases)
+
+
+def selftest_settled_sites() -> bool:
+    """A settled ambiguity's SITE must be touched by the stub diff after the contract review."""
+    if not shutil.which("git"):
+        print("SKIP  git not found; the settled-site scenario was not run")
+        return True
+    log = ("- AMBIGUITY-SETTLED site=src/flush.py::flush — returns the count (dossier § Approach)\n"
+           "- PROVISIONAL-RULING site=src/flush.py::drain, simpler reading, reverse by editing the doc\n")
+    fm: dict = {"worktree": "", "contract_review": ""}
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        try:
+            git_out(root, "init", "-q", "-b", "main")
+            git_out(root, "config", "user.email", "selftest@example.invalid")
+            git_out(root, "config", "user.name", "selftest")
+            (root / "src").mkdir()
+            src = ("def flush():\n    \"\"\"Drains the queue.\"\"\"\n    ...\n\n\n"
+                   "def drain():\n    \"\"\"Empties it.\"\"\"\n    ...\n")
+            (root / "src" / "flush.py").write_text(src)
+            git_out(root, "add", "-A")
+            git_out(root, "commit", "-q", "-m", "contract")
+            fm["contract_review"] = git_out(root, "rev-parse", "HEAD").strip()
+            none = Report()
+            check_settled_sites("w", fm, root, "building", none, log)
+            (root / "src" / "flush.py").write_text(src.replace("Drains the queue.", "Drains the queue and returns the count."))
+            git_out(root, "commit", "-q", "-am", "settle flush")
+            half = Report()
+            check_settled_sites("w", fm, root, "building", half, log)
+            (root / "src" / "flush.py").write_text(
+                src.replace("Drains the queue.", "Drains the queue and returns the count.").replace("Empties it.", "Empties it, oldest first."))
+            git_out(root, "commit", "-q", "-am", "settle drain")
+            full = Report()
+            check_settled_sites("w", fm, root, "building", full, log)
+            legacy = Report()
+            check_settled_sites("w", fm, root, "building", legacy, "- AMBIGUITY-SETTLED: flush — returns the count\n")
+            planned = Report()
+            check_settled_sites("w", fm, root, "ready", planned, log)
+        except RuntimeError as exc:
+            print(f"FAIL  fixture: {exc}")
+            return False
+    cases = [
+        ("two settled sites with no stub change are two defects", len(none.defects) == 2),
+        ("only the touched site passes, the other is refused", len(half.defects) == 1 and "drain" in half.defects[0]),
+        ("both sites touched passes", not full.defects),
+        ("a log line with no site= is not checked", not legacy.defects),
         ("a ready dossier is not checked", not planned.defects),
     ]
     for name, passed in cases:

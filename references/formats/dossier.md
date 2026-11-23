@@ -181,6 +181,9 @@ the fan-out:
 | Does a new event or typed-payload variant name **every member it carries and every member it leaves empty**? | `EventKind::Resumed` leaning on `track`'s general docstring ("the track, when the event is about one") — the implementer reads it narrow, the test author wide |
 | Does a member that **normalises** a value to find, key or deduplicate it (strip, rstrip, case fold, path cleanup) say, in the same sentence, which form the later comparison or output uses — normalised or as written? | `"the first line equal to it after rstrip"` beside a block compared "line by line" — the blind test pins the normalised reading, the implementation compares the line as written |
 | Are the trait bounds an assertion needs **derived**? | `expect_err` on a type without `Debug`, `assert_eq!` without `PartialEq`, a second move without `Clone` — the stub compiles, the test does not, and a blind author cannot see the derive set |
+| When two refusals can both apply, is the **precedence ladder** stated? | `"rejects an empty name and an unknown kind"` with both true in one call — which error comes back first? |
+| When the result passes through a **pre-existing seam** that reorders, dedupes, refuses or clamps, does the doc state the post-seam form and **name the seam**? | `"returns the ids"` where the store's `save` sorts and dedupes — the blind author asserts insertion order |
+| Does a **composed member** name the precondition its callee enforces, and what happens when the callee refuses? | `register` calls `Registry.add`, which refuses a duplicate name, and the docstring says nothing about the duplicate case |
 
 A promise that survives this list is one a blind test author can turn into an
 assertion. A promise that does not is a row-3 arbitration waiting to happen
@@ -212,6 +215,14 @@ flush — empty case: returns 0 → assert the return value equals 0 and the
 flush — derives: Result<Written, FlushError> → expect_err needs Written:
         Debug, assert_eq on Written needs PartialEq — the stub derives both
 ```
+
+**A line quotes its doc comment.** Each `PROMISE_CHECKLIST` line carries
+`doc: "<verbatim phrase>"` copied from the stub's documentation comment, so the
+line is the contract's promise and not the orchestrator's reading of it. A
+line whose strong form names a value or type that neither the quote nor a
+criterion names (a "no span" or a "half-up" the comment never said) is a
+defect of the checklist: fix the comment first, then re-derive the line.
+`check_payload.py` fails a quote that is not a substring of the stub.
 
 **Derive-sets are part of the checklist.** For every line whose strong form
 asserts through `expect_err`/`unwrap_err` (`Debug` on the Ok type),

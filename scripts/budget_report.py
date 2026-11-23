@@ -389,6 +389,48 @@ QUALITY_MARKERS = {
     "corrections": re.compile(r"\b(?:CORRECTION|DELIVERY_CHANGE)\b|\bre-?spawn|\bresum(?:e|ed)\b", re.I),
     "workflow_runs": re.compile(r"\bWORKFLOW:"),
 }
+# Contract-quality signal from the arbitration lines. Row 1 is split: 1a (the test asserts beyond the
+# contract) is a contract-quality signal with row 3; 1h (fixture, environment or stale expectation the
+# orchestrator may not edit because it feeds an assertion) is harness craft. A bare `row 1` is legacy.
+# A row-3 line carries `site=<path>::<member>`; it joins to a reviewer flag when the log holds an
+# `AMBIGUITY-SETTLED site=<same key>` (or `PROVISIONAL-RULING site=...`): "ruled wrong" when it does,
+# "reviewer miss" when it does not.
+ARB_ROW_RE = re.compile(r"\brows?\s*([1-6])([ah])?\b", re.I)
+SITE_RE = re.compile(r"\bsite=(\S+?::\S+?)(?=[\s,;)]|$)")
+SETTLED_SITE_RE = re.compile(r"^\W*(?:AMBIGUITY-SETTLED|PROVISIONAL-RULING)\b[^\n]*?\bsite=(\S+?::\S+?)(?=[\s,;)]|$)")
+
+
+def arbitration_rows(log: list[str]) -> dict:
+    """Counts of the arbitration rows 1a, 1h, a legacy bare 1, and row 3 split into `ruled_wrong` (its site
+    was flagged by the reviewer) and `reviewer_miss` (it was not); `row3_unkeyed` lacks a `site=`."""
+    flagged = set()
+    for line in log:
+        m = SETTLED_SITE_RE.search(line)
+        if m:
+            flagged.add(m.group(1))
+    out = {"row1a": 0, "row1h": 0, "row1_unlabelled": 0, "row3": 0,
+           "row3_ruled_wrong": 0, "row3_reviewer_miss": 0, "row3_unkeyed": 0}
+    for line in log:
+        if not QUALITY_MARKERS["arbitrations"].search(line):
+            continue
+        m = ARB_ROW_RE.search(line)
+        if not m:
+            continue
+        row, sub = m.group(1), (m.group(2) or "").lower()
+        if row == "1":
+            out["row1" + sub if sub else "row1_unlabelled"] += 1
+        elif row == "3":
+            out["row3"] += 1
+            site = SITE_RE.search(line)
+            if not site:
+                out["row3_unkeyed"] += 1
+            elif site.group(1) in flagged:
+                out["row3_ruled_wrong"] += 1
+            else:
+                out["row3_reviewer_miss"] += 1
+    return out
+
+
 GAP_RE = re.compile(r"(?<![\w-])GAP:")
 GAP_NEG = re.compile(NEGATED + r"GAP:")
 CC_RE = re.compile(r"\bCONTRACT-CHANGE:")
@@ -438,6 +480,7 @@ def quality(path: str) -> dict:
     # of its own, and stopping at the first `## ` dropped every line after one.
     log = text[start:].splitlines()
     out = {name: sum(1 for line in log if rx.search(line)) for name, rx in QUALITY_MARKERS.items()}
+    out.update(arbitration_rows(log))
     body = "\n".join(log)
     out["gaps"] = max(0, len(GAP_RE.findall(body)) - len(GAP_NEG.findall(body)))
     out["contract_changes"] = max(0, len(CC_RE.findall(body)) - len(CC_NEG.findall(body)))
@@ -681,6 +724,20 @@ def selftest() -> int:
         check("a negated GAP is not a gap", q["gaps"] == 1, q)
         check("arbitrations, corrections, distinct CRs, workflow runs",
               (q["arbitrations"], q["corrections"], q["change_requests"], q["workflow_runs"]) == (1, 1, 3, 1), q)
+        rows = arbitration_rows([
+            "- ARBITRATION: t1 red — row 1a (asserts the whole set)",
+            "- ARBITRATION: t2 red — row 1h (fixture refused by the park fence)",
+            "- ARBITRATION: t3 red — row 1 (legacy)",
+            "- ARBITRATION: t4 red — row 3 site=src/a.py::flush (two readings)",
+            "- ARBITRATION: t5 red — row 3 site=src/a.py::drain (never flagged)",
+            "- ARBITRATION: t6 red — row 3 (no site)",
+            "- AMBIGUITY-SETTLED site=src/a.py::flush — returns the count (dossier § Approach)",
+            "- PROVISIONAL-RULING site=src/b.py::x, simpler reading",
+            "- ARBITRATION: t7 red — row 2"])
+        check("row 1 splits into 1a and 1h, a bare row 1 is legacy",
+              (rows["row1a"], rows["row1h"], rows["row1_unlabelled"]) == (1, 1, 1), str(rows))
+        check("a row 3 joins a prior flag by site: ruled wrong, reviewer miss, unkeyed",
+              (rows["row3"], rows["row3_ruled_wrong"], rows["row3_reviewer_miss"], rows["row3_unkeyed"]) == (3, 1, 1, 1), str(rows))
         check("the dossier is found from the run's directory",
               dossier_path("W-777", [os.path.join(tmp, "repo")]) == os.path.join(dossier, "W-777-x.md"))
 
