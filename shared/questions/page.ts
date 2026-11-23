@@ -2,6 +2,7 @@
 // or createTextNode; the only innerHTML is the server's escaped markdown render of a dossier. Contract: references/owner-questions.md (Dashboard).
 // The script avoids backticks and dollar-brace so it can live in this raw template.
 import { vrWalkOrder } from "./vrwalk.ts"
+import { VR_TEXT, vrFitLabel } from "./vrtext.ts"
 
 export const PAGE = String.raw`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -295,7 +296,8 @@ function vrEv(ev, hand) { return ev.tier === 'source' ? (ev.path || '?') + (ev.l
 /* A hand-authored graph (meta.generated_by "hand", e.g. imported from Mermaid) carries tier "inferred" evidence only because no tool proved it; there the dashed style follows the authored arrow instead, and no "? inferred" badge is drawn. */
 function vrHand(g) { return !!(g && g.meta && g.meta.generated_by === 'hand'); }
 function vrInferred(e, g) { if (vrHand(g)) return /\./.test(e.arrow || ''); return e.resolution ? e.resolution === 'inferred' : (e.evidence || []).length > 0 && e.evidence.every(x => x.tier === 'inferred'); }
-function vrWrap(s, w) { const out = []; let l = ''; String(s).split(' ').forEach(t => { if ((l + ' ' + t).trim().length > w && l) { out.push(l); l = t; } else l = (l + ' ' + t).trim(); }); if (l) out.push(l); return out; }
+const VR_TEXT = ${JSON.stringify(VR_TEXT)};
+${vrFitLabel.toString()}
 /* Sequence view: the arrow of one message from its sender to its receiver, styled by kind (call solid + filled head, reply dashed + open head, async solid + half head), coloured by status. Markers are per tone because a marker cannot take the line colour everywhere. */
 function vrSeqTone(s) { return s === 'added' ? 'ok' : s === 'changed' ? 'warn' : s === 'removed' ? 'bad' : 'mut'; }
 function vrSeqMarkers(defs) {
@@ -524,8 +526,9 @@ function vrBuild(host, key, data) {
     g.nodes.forEach(n => { const b = L.boxes[n.id]; if (!b) return; const gg = vrEl('g', { 'data-id': n.id, 'data-status': n.status, class: 'vrn', tabindex: 0, role: 'button' }, root); els[n.id] = { g: gg, status: n.status, col: !!n.collapsed };
       if (n.collapsed) { gg.setAttribute('data-collapsed', '1'); vrEl('rect', { x: b.x + 5, y: b.y + 5, width: b.w, height: b.h, rx: 6, fill: 'var(--card)', stroke: 'var(--mut)', 'stroke-width': 1.5 }, gg); }
       vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 6, fill: 'var(--' + vrBg(n.status) + ')', stroke: 'var(--' + vrTone(n.status) + ')', 'stroke-width': n.status === 'context' ? 1 : 2.5, 'stroke-dasharray': n.status === 'removed' ? '3 3' : '0' }, gg);
-      const wl = vrWrap(n.label, Math.floor((b.w - 24) / 6.4)); const lines = wl.slice(0, 3); if (wl.length > 3) lines[2] = lines[2].replace(/.?$/, '…');
-      if (n.stereotype) lines.unshift('<<' + n.stereotype + '>>'); if (lines.length > 3) lines.length = 3;
+      const fit = vrFitLabel(n.label, b.w, !!n.stereotype); const lines = fit.lines.slice();
+      if (n.stereotype) lines.unshift('<<' + n.stereotype + '>>');
+      if (fit.clipped) { const w = vrEl('text', { x: b.x + b.w - 10, y: b.y + b.h - 6, 'font-size': 12, 'font-weight': 700, fill: 'var(--bad)', 'text-anchor': 'middle' }, gg); w.textContent = '⚠'; const tt = vrEl('title', {}, w); tt.textContent = 'This label does not fit the box (' + fit.needed + ' lines needed): the text is cut off.'; }
       lines.forEach((t, i) => { const x = vrEl('text', { x: b.x + 12, y: b.y + 19 + i * 15, 'font-size': 12, fill: 'var(--fg)', 'text-decoration': n.status === 'removed' ? 'line-through' : 'none' }, gg); x.textContent = (n.collapsed && i === 0 ? '▸ ' : '') + t; });
       vrMark(gg, n.status, b.x + b.w - 12, b.y + 12);
       if (L.arrows && L.arrows[n.id]) vrSeqArrow(gg, L.arrows[n.id], n.status);

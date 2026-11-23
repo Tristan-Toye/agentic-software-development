@@ -5,6 +5,8 @@
 import { createHash } from "node:crypto"
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
+import { checkLayout } from "./vrcheck.ts"
+import { vrNodeWidth } from "./vrtext.ts"
 // @ts-ignore: vendored CommonJS build, no types
 import ElkModule from "./vendor/elk/elk-api.js"
 
@@ -122,12 +124,9 @@ export function closeLayout(): void {
   try { e?.terminateWorker() } catch { /* already gone */ }
 }
 
-/** A folded box draws a ▸ before its label and a fold button after it: room for both. */
-const FOLDED_EXTRA = 36
-const size = (g: any, label: string, folded = false): { width: number; height: number } => {
-  const t = String(label ?? "").length
-  return { width: Math.max(130, Math.min(250 + (folded ? FOLDED_EXTRA : 0), Math.round(t * 6.6 + 28 + (folded ? FOLDED_EXTRA : 0)))), height: isLaneView(g.view) ? 62 : 50 }
-}
+/** A folded box draws a ▸ before its label and a fold button after it: room for both (vrNodeWidth). */
+const size = (g: any, label: string, folded = false): { width: number; height: number } =>
+  ({ width: vrNodeWidth(label, folded), height: isLaneView(g.view) ? 62 : 50 })
 
 /** The size of an edge label as the page draws it (11 px text on a backing rect). */
 export const edgeLabelSize = (label: string): { width: number; height: number } => ({ width: Math.ceil(label.length * 6.1) + 8, height: 15 })
@@ -614,7 +613,7 @@ export async function visualReview(dir: string, dossier: string): Promise<Visual
     clean.edges = clean.edges.filter((e: any) => known.has(e.source) && known.has(e.target))
     out.view = clean.view
     out.graph = withFlowEdges(clean)
-    try { out.layout = await layoutGraph(out.graph) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
+    try { out.layout = await layoutGraph(out.graph); out.issues.push(...checkLayout(out.graph, out.layout)) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
   }
   res.rev = h.digest("hex").slice(0, 16)
   res.issues = Object.keys(res.views).flatMap((v) => (res.views[v]?.issues ?? []).map((i) => ({ ...i, where: v + (i.where ? "." + i.where : "") })))

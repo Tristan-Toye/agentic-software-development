@@ -1,0 +1,124 @@
+{
+ "_comment": "Pinned by shared/test/vrtext.test.ts (TypeScript) and scripts/vr_graph.py --selftest (Python): both must give the same width, lines, clipped and needed. Generated from shared/questions/vrtext.ts; regenerate, never edit by hand.",
+ "cases": [
+  {
+   "label": "",
+   "width": 130,
+   "lines": [],
+   "clipped": false,
+   "needed": 0
+  },
+  {
+   "label": "Parse",
+   "width": 130,
+   "lines": [
+    "Parse"
+   ],
+   "clipped": false,
+   "needed": 1
+  },
+  {
+   "label": "Render the walkthrough",
+   "width": 173,
+   "lines": [
+    "Render the walkthrough"
+   ],
+   "clipped": false,
+   "needed": 1
+  },
+  {
+   "label": "Validate the incoming webhook payload against the schema",
+   "width": 250,
+   "lines": [
+    "Validate the incoming webhook",
+    "payload against the schema"
+   ],
+   "clipped": false,
+   "needed": 2
+  },
+  {
+   "label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "width": 250,
+   "lines": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ],
+   "clipped": true,
+   "needed": 1
+  },
+  {
+   "label": "Lay out the graph, route every edge and keep each label clear of the boxes around it",
+   "width": 250,
+   "lines": [
+    "Lay out the graph, route every",
+    "edge and keep each label clear of",
+    "the boxes around it"
+   ],
+   "clipped": false,
+   "needed": 3
+  },
+  {
+   "label": "Validate the incoming webhook payload against the schema",
+   "stereotype": true,
+   "width": 250,
+   "lines": [
+    "Validate the incoming webhook",
+    "payload against the schema"
+   ],
+   "clipped": false,
+   "needed": 3
+  },
+  {
+   "label": "Compute the review rev hash then store the walkthrough cursor in the run record",
+   "stereotype": true,
+   "width": 250,
+   "lines": [
+    "Compute the review rev hash then",
+    "store the walkthrough cursor i…"
+   ],
+   "clipped": true,
+   "needed": 4
+  },
+  {
+   "label": "Short label",
+   "folded": true,
+   "width": 137,
+   "lines": [
+    "Short label"
+   ],
+   "clipped": false,
+   "needed": 1
+  },
+  {
+   "label": "Lay out the graph, route every edge and keep each label clear of the boxes",
+   "folded": true,
+   "width": 286,
+   "lines": [
+    "Lay out the graph, route every edge and",
+    "keep each label clear of the boxes"
+   ],
+   "clipped": false,
+   "needed": 2
+  },
+  {
+   "label": "supercalifragilisticexpialidocious_and_more_characters_in_one_word ok",
+   "width": 250,
+   "lines": [
+    "supercalifragilisticexpialidocious_and_more_characters_in_one_word",
+    "ok"
+   ],
+   "clipped": true,
+   "needed": 2
+  },
+  {
+   "label": "one two three four five six seven eight nine ten eleven twelve thirteen fourteen",
+   "width": 250,
+   "lines": [
+    "one two three four five six seven",
+    "eight nine ten eleven twelve",
+    "thirteen fourteen"
+   ],
+   "clipped": false,
+   "needed": 3
+  }
+ ]
+}

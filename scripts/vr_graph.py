@@ -23,9 +23,10 @@ missing_evidence_path, bad_evidence, missing_repository_path,
 line_range_outside_file, over_budget, label_too_long, unknown_frame_step.
 unknown_frame_step: a frame (view seq) whose first, last or a branch's first is not a node id.
 
-label_too_long: a node label over 80 characters (the canvas shows 3 lines of at
-most 35 characters in the widest node, 250 px at 6.4 px per character, and
-wraps on spaces, so 80 is what fits without a clip), an edge or lane label over
+label_too_long: a node label over 80 characters, or one that would be clipped on
+the canvas (it needs more than 3 lines, 2 with a stereotype, in the widest node
+box, or has a word wider than a line: the shared text-fit rule, `text_fit`
+below, ported from shared/questions/vrtext.ts), an edge or lane label over
 40, a group or flow label over 60, a title over 100. The limits live in
 graph.schema.json as maxLength; this reader maps that error to its own code.
 """
@@ -62,6 +63,44 @@ MAP_GROUP = 15
 
 
 # ---------------------------------------------------------------- loading
+
+# ------------------------------------------------------- text fit (port of shared/questions/vrtext.ts)
+
+# The canvas's one text-fit rule: the same numbers and algorithm as VR_TEXT, vrNodeWidth and vrFitLabel in vrtext.ts.
+# references/visual-review/text-fit.fixtures.json pins the two together (selftest here, shared/test/vrtext.test.ts there).
+TEXT = {"charPx": 6.6, "pad": 28, "inset": 24, "minW": 130, "maxW": 250, "foldedExtra": 36, "maxLines": 3}
+TEXT_FIXTURES = os.path.join(REF_DIR, "text-fit.fixtures.json")
+
+
+def _js_round(x: float) -> int:
+    return int(x + 0.5) // 1 if x >= 0 else -int(-x + 0.5)
+
+
+def node_width(label: str, folded: bool = False) -> int:
+    extra = TEXT["foldedExtra"] if folded else 0
+    return max(TEXT["minW"], min(TEXT["maxW"] + extra, _js_round(len(label) * TEXT["charPx"] + TEXT["pad"] + extra)))
+
+
+def text_fit(label: str, box_w: float, stereotype: bool = False) -> dict:
+    """The lines a label is drawn in inside a box `box_w` wide, as the page draws it: {"lines", "clipped", "needed"}."""
+    w = max(1, int((box_w - TEXT["inset"]) // TEXT["charPx"]))
+    out: list = []
+    cur = ""
+    for t in label.split(" "):
+        if len((cur + " " + t).strip()) > w and cur:
+            out.append(cur)
+            cur = t
+        else:
+            cur = (cur + " " + t).strip()
+    if cur:
+        out.append(cur)
+    room = TEXT["maxLines"] - (1 if stereotype else 0)
+    clipped = len(out) > room or any(len(x) > w for x in out)
+    lines = out[:room]
+    if len(out) > room and lines:
+        lines[-1] = lines[-1][:-1] + "…"
+    return {"lines": lines, "clipped": clipped, "needed": len(out) + (1 if stereotype else 0)}
+
 
 def load(path: str) -> dict:
     """Read a graph file. Raises ValueError (not JSON) or OSError (unreadable)."""
@@ -253,6 +292,14 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
         if shape_broken:
             return issues
 
+    for i, n in enumerate(graph.get("nodes", [])):
+        if isinstance(n, dict) and isinstance(n.get("label"), str):
+            fit = text_fit(n["label"], node_width(n["label"]), bool(n.get("stereotype")))
+            if fit["clipped"]:
+                issues.append(_issue("label_too_long", "nodes[%d].label" % i,
+                                     "the label needs %d lines in the widest node box and the canvas draws %d (or one word is wider than a line): shorten it"
+                                     % (fit["needed"], TEXT["maxLines"] - (1 if n.get("stereotype") else 0))))
+
     lanes = [x for x in graph.get("lanes", []) if isinstance(x, dict)]
 
     seen: dict = {}
@@ -374,6 +421,28 @@ def _selftest() -> int:
         return sorted({i["code"] for i in issues})
 
     repo = os.path.join(FIXTURES, "repo")
+    # The text-fit rule agrees with shared/questions/vrtext.ts: the same fixture is pinned by shared/test/vrtext.test.ts.
+    with open(TEXT_FIXTURES, encoding="utf-8") as fh:
+        tf = json.load(fh)
+    check("textfit:cases", len(tf["cases"]) >= 10)
+    for c in tf["cases"]:
+        w = node_width(c["label"], bool(c.get("folded")))
+        f = text_fit(c["label"], w, bool(c.get("stereotype")))
+        check("textfit:" + c["label"][:30], (w, f["lines"], f["clipped"], f["needed"]) == (c["width"], c["lines"], c["clipped"], c["needed"]),
+              json.dumps([w, f]))
+    # A label that needs a fourth line is reported, a short one is not; the message comes from the same rule.
+    long_g = load(os.path.join(FIXTURES, "minimal.json"))
+    clipped_cases = [c for c in tf["cases"] if c["clipped"] and len(c["label"]) <= NODE_LABEL_MAX and not c.get("folded")]
+    check("textfit:has-clipped-case", bool(clipped_cases))
+    for c in clipped_cases:
+        long_g["nodes"][0]["label"] = c["label"]
+        long_g["nodes"][0].pop("stereotype", None)
+        if c.get("stereotype"):
+            long_g["nodes"][0]["stereotype"] = "service"
+        got = [i["code"] for i in validate(long_g) if i["path"] == "nodes[0].label"]
+        check("textfit:validate-flags-clipped:" + c["label"][:20], got == ["label_too_long"], json.dumps(validate(long_g))[:300])
+    long_g["nodes"][0]["label"] = "Render the walkthrough"
+    check("textfit:validate-accepts-fitting", validate(long_g) == [], json.dumps(validate(long_g))[:300])
     # Valid fixtures, including the three W-145 ones and the removed-elements one.
     for name in ("w145-l0", "w145-l1", "w145-l2", "removed", "minimal", "label-at-limit"):
         g = load(os.path.join(FIXTURES, name + ".json"))
