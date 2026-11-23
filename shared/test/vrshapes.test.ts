@@ -1,7 +1,9 @@
 // VR node shapes: the shape a node is drawn in, the box it needs, and where an edge meets its outline.
 // Run: bun test shared/test/vrshapes.test.ts
 import { afterAll, expect, test } from "bun:test"
-import { clipEdgesToShapes, closeLayout, layoutGraph, nodeShape, outlineInset, shapeSize } from "../questions/vrlayout.ts"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { clipEdgesToShapes, closeLayout, l1DefaultShapes, layoutGraph, nodeShape, outlineInset, shapeSize, withDefaultShapes, withFlowEdges } from "../questions/vrlayout.ts"
 import { checkLayout } from "../questions/vrcheck.ts"
 import { vrFitLabel } from "../questions/vrtext.ts"
 
@@ -110,4 +112,36 @@ test("a decision flow lays out with the shapes: boxes sized per shape, shapes re
   expect(lay.boxes.d.w).toBeGreaterThan(lay.boxes.p.w)
   // no edge end is left floating inside the diamond's bounding box corner: every end is on the box or inside it
   for (const pts of Object.values(lay.edges) as [number, number][][]) for (let i = 1; i < pts.length; i++) expect(pts[i][0] === pts[i - 1][0] || pts[i][1] === pts[i - 1][1]).toBe(true)
+})
+
+// ---- the Flow (L1) view in the flow-chart vocabulary: the shape of a step is derived when its author names none ----
+const L1FX = JSON.parse(readFileSync(join(import.meta.dir, "..", "..", "references", "visual-review", "l1-shapes.fixtures.json"), "utf8"))
+test("default L1 shapes: every fixture case gives the pinned shapes (vr_graph.py checks the same file)", () => {
+  expect(L1FX.cases.length).toBeGreaterThanOrEqual(8)
+  for (const c of L1FX.cases) expect([c.name, l1DefaultShapes(c.graph)]).toEqual([c.name, c.shapes])
+})
+test("withDefaultShapes copies: the file's graph is never changed, an own shape stays, other views come back as they are", () => {
+  const c = L1FX.cases[0]
+  const w = withDefaultShapes(c.graph)
+  expect(w.nodes.map((n: any) => n.shape)).toEqual(["terminal", undefined, "terminal"])
+  expect(c.graph.nodes.every((n: any) => n.shape === undefined)).toBe(true)
+  const own = L1FX.cases.find((x: any) => x.name === "own shape wins")
+  expect(withDefaultShapes(own.graph)).toBe(own.graph)
+  const l2 = { ...c.graph, view: "L2" }
+  expect(withDefaultShapes(l2)).toBe(l2)
+})
+test("an L1 flow with no shapes is laid out with terminals and io steps, and the layout check stays clean", async () => {
+  const lane = [{ id: "la", label: "Service" }, { id: "lb", label: "Store" }]
+  const mk = (id: string, label: string, l: string) => ({ id, label, kind: "step", status: "added", lane: l, evidence: [] })
+  const g = {
+    schema_version: "1.0.0", view: "L1", lanes: lane, edges: [],
+    nodes: [mk("s1", "A request for a page of events arrives", "la"), mk("s2", "Refuse the platform plane", "la"), mk("s3", "Reads the events above the cursor", "lb"), mk("s4", "Return the page with the next cursor", "la")],
+    flows: [{ id: "f", label: "F", status: "added", after: ["s1", "s2", "s3", "s4"], evidence: [] }],
+  }
+  const flowed = withFlowEdges(g)
+  const L = await layoutGraph(flowed)
+  expect(L.shapes).toEqual({ s1: "terminal", s3: "io", s4: "terminal" })
+  expect(L.boxes.s1.w).toBeGreaterThan(L.boxes.s2.w - 1) // the terminal box is not narrower than the plain one for a longer label
+  expect(checkLayout(flowed, L)).toEqual([])
+  expect(g.nodes.every((n: any) => n.shape === undefined)).toBe(true) // the graph handed in is not changed
 })

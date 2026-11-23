@@ -153,7 +153,7 @@ details.mstubs{margin-top:10px}details.mstubs>summary{font-size:.78rem;letter-sp
 .vrsvg .vroff{display:none}.vrsvg g.vrn,.vrsvg g.vre,.vrsvg g.vrg{cursor:pointer;outline:none}.vrsvg g.sel>rect:not([stroke=transparent]),.vrsvg g.sel>.vrshp{stroke-width:4}.vrsvg g:focus-visible>rect,.vrsvg g:focus-visible>.vrshp{stroke-width:4}.vrshk{margin-left:8px}.vrshk b{font-weight:400}.vrsvg g.vre.sel .vrline{stroke-width:4}
 .vrinsp{border:1px solid var(--bd);border-radius:10px;padding:10px 12px;overflow:auto;max-height:560px;background:var(--card)}.vrinsp h3{margin:0 0 6px;font-size:.95rem}.vrinsp p{margin:5px 0}.vrev{word-break:break-all;font-size:12px}
 .vrnote{margin-top:6px}.vrmm{margin-top:8px;display:flex;gap:8px;align-items:flex-start}.vrta{flex:1;font:12px/1.4 ui-monospace,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
-.vrban{margin:8px 0;padding:8px 10px;border:1px solid var(--warn);background:var(--warnbg);color:var(--fg);border-radius:8px;font-size:.88rem}
+.vrpv{margin:8px 0;padding:8px 10px;border:1px dashed var(--acc);background:var(--accbg);color:var(--fg);border-radius:8px;font-size:.88rem}.vrban{margin:8px 0;padding:8px 10px;border:1px solid var(--warn);background:var(--warnbg);color:var(--fg);border-radius:8px;font-size:.88rem}
 .vrrev{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;margin-top:8px}.vrsum{font-weight:650}.vrprev{margin-top:8px}.vrprev textarea{width:100%;min-height:120px;font:12px/1.4 ui-monospace,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
 .vrvd{margin-top:10px;padding-top:8px;border-top:1px solid var(--bd)}.vrvd .vrgrp{flex-wrap:wrap;margin:6px 0}.vrvd textarea{width:100%;min-height:60px;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
 .vrvd .btn[aria-pressed=true]{border-color:var(--acc);background:var(--accbg);font-weight:650}.vrcode{font-size:11px;font-weight:700}
@@ -370,7 +370,8 @@ function vrBuild(host, key, data) {
   /* The Intent tab (before L0): the run's short summary of what the change sets out to accomplish (intent.md), as context for the review. */
   const intent = !data.mapPath && data.intent ? data.intent : null; let inB = null;
   if (intent) { inB = vrDom('button', 'btn sm', 'Intent', tabs); inB.type = 'button'; inB.title = 'What this change sets out to accomplish'; inB.onclick = () => setIntent(true); }
-  ['L0', 'L1', 'decision', 'L2'].filter(k => k !== 'decision' || data.views[k]).concat(have.filter(k => k.indexOf('arch:') === 0)).forEach(k => { const isArch = k.indexOf('arch:') === 0; const b = vrDom('button', 'btn sm', isArch ? k.slice(5) : data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k === 'decision' ? VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); if (k === 'decision') b.title = 'What happens at each condition of the change (start, steps, decisions, ends)'; if (isArch) b.title = 'New architecture diagram ' + k.slice(5) + ' (Architecture impact)'; b.type = 'button'; b.disabled = !data.views[k]; b.hidden = !!data.mapPath && !data.views[k]; tb[k] = b; b.onclick = () => { setIntent(false); st.view = k; wkOff(); draw(); }; });
+  /* The Sequence tabs (auto-drafted previews from the L1 flows, next to Decisions): context, no verdicts, no part of the approval. */ const prevKeys = have.filter(k => k.indexOf('seqpreview:') === 0);
+  ['L0', 'L1', 'decision'].filter(k => k !== 'decision' || data.views[k]).concat(prevKeys, ['L2'], have.filter(k => k.indexOf('arch:') === 0)).forEach(k => { const isArch = k.indexOf('arch:') === 0, isPrev = k.indexOf('seqpreview:') === 0; const b = vrDom('button', 'btn sm', isPrev ? 'Sequence' + (prevKeys.length > 1 ? ' ' + (prevKeys.indexOf(k) + 1) : '') + ' (auto draft)' : isArch ? k.slice(5) : data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k === 'decision' ? VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); if (k === 'decision') b.title = 'What happens at each condition of the change (start, steps, decisions, ends)'; if (isPrev) b.title = (data.views[k].title || k.slice(11)) + ': a sequence drawn mechanically from the Flow view. A preview: no verdicts, not part of the approval, never promoted.'; if (isArch) b.title = 'New architecture diagram ' + k.slice(5) + ' (Architecture impact)'; b.type = 'button'; b.disabled = !data.views[k]; b.hidden = !!data.mapPath && !data.views[k]; tb[k] = b; b.onclick = () => { setIntent(false); st.view = k; wkOff(); draw(); }; });
   VR_MODES.forEach(m => { const b = vrDom('button', 'btn sm', m[1], modes); b.type = 'button'; mb[m[0]] = b; b.onclick = () => { st.mode = m[0]; applyMode(); }; });
   const fitB = vrDom('button', 'btn sm', 'Fit all', bar); fitB.title = 'Show the whole diagram (labels may get small)'; fitB.type = 'button';
   const zin = vrDom('button', 'btn sm', '+', bar), zout = vrDom('button', 'btn sm', '−', bar); zin.type = zout.type = 'button'; zin.title = 'Zoom in'; zout.title = 'Zoom out';
@@ -415,6 +416,7 @@ function vrBuild(host, key, data) {
   const slash = key.indexOf('/'), vrRepo = key.slice(0, slash), vrDossier = data.dossier || '';
   const reviewing = !!data.review;
   const ban = vrDom('div', 'vrban', null, host); ban.hidden = true;
+  const pvB = vrDom('div', 'vrpv', null, host); pvB.hidden = true;
   const rbar = vrDom('div', 'vrrev', null, host); rbar.hidden = !reviewing;
   const sumEl = vrDom('span', 'vrsum', '', rbar), sendB = vrDom('button', 'btn primary sm', 'Send review', rbar), apB = vrDom('button', 'btn sm', 'Approve all', rbar), sendNote = vrDom('span', 'small mut', '', rbar); sendB.type = 'button'; apB.type = 'button'; apB.title = 'Mark every element of every diagram OK and answer Approved, in one go.';
   const prev = vrDom('div', 'vrprev', null, host); prev.hidden = true;
@@ -443,7 +445,7 @@ function vrBuild(host, key, data) {
     vrDom('p', 'small mut', 'Evidence' + (tiers ? ' (' + tiers + ')' : '') + (ev.length ? '' : ': none'), insp);
     ev.forEach(x => vrDom('code', 'vrev', vrEv(x, vrHand(cur.graph)), vrDom('p', 'small', null, insp)));
     Object.keys(els).forEach(k => els[k].g.classList.toggle('sel', k === id));
-    st.sel = id; if (reviewing && cur.graph.nodes.some(n => n.id === id && !n.collapsed)) verdictBox(id);
+    st.sel = id; if (reviewing && st.view.indexOf('seqpreview:') !== 0 && cur.graph.nodes.some(n => n.id === id && !n.collapsed)) verdictBox(id);
   }
   /* VR-04: the verdict of the owner on one element. Saved to review.json by the server; a Question with a comment also goes to the agent. */
   const VD = [['ok', 'OK'], ['question', 'Question'], ['change', 'Change'], ['remove', 'Remove from scope']];
@@ -555,6 +557,7 @@ function vrBuild(host, key, data) {
   }
   function paint(v, anchor, selId) {
     hovHide(); cur = v; Object.keys(tb).forEach(k => tb[k].setAttribute('aria-pressed', String(k === st.view)));
+    const isPv = st.view.indexOf('seqpreview:') === 0; pvB.hidden = !isPv; pvB.textContent = isPv ? 'Auto-drafted preview, not part of the review. This sequence was built mechanically from the Flow view' + (v.note ? ' (' + v.note + ')' : '') + '. Read it as a picture of the order of the steps: the arrows are not verified calls. There are no verdicts here, it is never promoted into docs/architecture, and it does not block the approval.' : '';
     svg.replaceChildren(); els = {}; root = null; ovSvg = null; ovVp = null; ovRects = {}; ov.replaceChildren(); ov.hidden = true; st.sel = ''; insp.replaceChildren(); vrDom('p', 'small mut', 'Click an element for its description and evidence. Drag to pan; Ctrl or Cmd + wheel to zoom; the wheel scrolls the page; click a group header to fold it; in a folded view, click a folded box to open it.', insp);
     if (!cur.layout || !cur.graph) { note.textContent = cur.issues.map(i => i.message).join('; ') || 'This view could not be laid out.'; return; }
     const g = cur.graph, L = cur.layout, defs = vrEl('defs', {}, svg), mk = vrEl('marker', { id: 'vr-ar', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, markerUnits: 'userSpaceOnUse', orient: 'auto-start-reverse' }, defs);

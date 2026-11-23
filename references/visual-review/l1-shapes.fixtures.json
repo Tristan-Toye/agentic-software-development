@@ -1,0 +1,439 @@
+{
+ "_comment": "Pins l1DefaultShapes (shared/questions/vrlayout.ts) and l1_default_shapes (scripts/vr_graph.py) together: the same graph gives the same shapes.",
+ "cases": [
+  {
+   "name": "three steps: ends are terminals",
+   "graph": {
+    "view": "L1",
+    "nodes": [
+     {
+      "id": "a",
+      "label": "Request arrives",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "b",
+      "label": "Check the cache",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "c",
+      "label": "Answer is built",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     }
+    ],
+    "flows": [
+     {
+      "id": "f",
+      "after": [
+       "a",
+       "b",
+       "c"
+      ]
+     }
+    ]
+   },
+   "shapes": {
+    "a": "terminal",
+    "c": "terminal"
+   }
+  },
+  {
+   "name": "two steps stay boxes",
+   "graph": {
+    "view": "L1",
+    "nodes": [
+     {
+      "id": "a",
+      "label": "Check one",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "b",
+      "label": "Check two",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     }
+    ],
+    "flows": [
+     {
+      "id": "f",
+      "after": [
+       "a",
+       "b"
+      ]
+     }
+    ]
+   },
+   "shapes": {}
+  },
+  {
+   "name": "data verb is io",
+   "graph": {
+    "view": "L1",
+    "nodes": [
+     {
+      "id": "a",
+      "label": "Check",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "b",
+      "label": "Reads the row",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "c",
+      "label": "Check again",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "d",
+      "label": "Done checking",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     }
+    ],
+    "flows": [
+     {
+      "id": "f",
+      "after": [
+       "a",
+       "b",
+       "c",
+       "d"
+      ]
+     }
+    ]
+   },
+   "shapes": {
+    "a": "terminal",
+    "b": "io",
+    "d": "terminal"
+   }
+  },
+  {
+   "name": "call to another lane is io",
+   "graph": {
+    "view": "L1",
+    "nodes": [
+     {
+      "id": "a",
+      "label": "Ask",
+      "kind": "step",
+      "status": "added",
+      "lane": "la",
+      "to": "lb",
+      "call_kind": "call"
+     },
+     {
+      "id": "b",
+      "label": "Think",
+      "kind": "step",
+      "status": "added",
+      "lane": "la",
+      "to": "la",
+      "call_kind": "call"
+     },
+     {
+      "id": "c",
+      "label": "Wait",
+      "kind": "step",
+      "status": "added",
+      "lane": "la",
+      "to": "lb",
+      "call_kind": "reply"
+     },
+     {
+      "id": "d",
+      "label": "Stop",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     }
+    ],
+    "flows": [
+     {
+      "id": "f",
+      "after": [
+       "a",
+       "b",
+       "c",
+       "d"
+      ]
+     }
+    ]
+   },
+   "shapes": {
+    "a": "terminal",
+    "c": "io",
+    "d": "terminal"
+   }
+  },
+  {
+   "name": "own shape wins",
+   "graph": {
+    "view": "L1",
+    "nodes": [
+     {
+      "id": "a",
+      "label": "Start",
+      "kind": "step",
+      "status": "added",
+      "lane": "la",
+      "shape": "rect"
+     },
+     {
+      "id": "b",
+      "label": "Middle",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "c",
+      "label": "Reads end",
+      "kind": "step",
+      "status": "added",
+      "lane": "la",
+      "shape": "diamond"
+     }
+    ],
+    "flows": [
+     {
+      "id": "f",
+      "after": [
+       "a",
+       "b",
+       "c"
+      ]
+     }
+    ]
+   },
+   "shapes": {}
+  },
+  {
+   "name": "other kind keeps",
+   "graph": {
+    "view": "L1",
+    "nodes": [
+     {
+      "id": "a",
+      "label": "Start",
+      "kind": "decision",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "b",
+      "label": "Middle",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "c",
+      "label": "End",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     }
+    ],
+    "flows": [
+     {
+      "id": "f",
+      "after": [
+       "a",
+       "b",
+       "c"
+      ]
+     }
+    ]
+   },
+   "shapes": {
+    "c": "terminal"
+   }
+  },
+  {
+   "name": "context step as the end is a terminal",
+   "graph": {
+    "view": "L1",
+    "nodes": [
+     {
+      "id": "a",
+      "label": "Begin",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "b",
+      "label": "Middle",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "c",
+      "label": "Replay keeps working",
+      "kind": "step",
+      "status": "context",
+      "lane": "la"
+     }
+    ],
+    "flows": [
+     {
+      "id": "f",
+      "after": [
+       "a",
+       "b",
+       "c"
+      ]
+     }
+    ]
+   },
+   "shapes": {
+    "a": "terminal",
+    "c": "terminal"
+   }
+  },
+  {
+   "name": "before list used when no after",
+   "graph": {
+    "view": "L1",
+    "nodes": [
+     {
+      "id": "a",
+      "label": "Old start",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "b",
+      "label": "Old middle",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "c",
+      "label": "Old end",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     }
+    ],
+    "flows": [
+     {
+      "id": "f",
+      "before": [
+       "a",
+       "b",
+       "c"
+      ]
+     }
+    ]
+   },
+   "shapes": {
+    "a": "terminal",
+    "c": "terminal"
+   }
+  },
+  {
+   "name": "unknown ids skipped",
+   "graph": {
+    "view": "L1",
+    "nodes": [
+     {
+      "id": "a",
+      "label": "One",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "b",
+      "label": "Two",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     },
+     {
+      "id": "c",
+      "label": "Three",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     }
+    ],
+    "flows": [
+     {
+      "id": "f",
+      "after": [
+       "x",
+       "a",
+       "b",
+       "c",
+       "y"
+      ]
+     }
+    ]
+   },
+   "shapes": {
+    "a": "terminal",
+    "c": "terminal"
+   }
+  },
+  {
+   "name": "other views get none",
+   "graph": {
+    "view": "L2",
+    "nodes": [
+     {
+      "id": "a",
+      "label": "Reads",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     }
+    ],
+    "flows": []
+   },
+   "shapes": {}
+  },
+  {
+   "name": "verb needs a word boundary",
+   "graph": {
+    "view": "L1",
+    "nodes": [
+     {
+      "id": "a",
+      "label": "Readiness check",
+      "kind": "step",
+      "status": "added",
+      "lane": "la"
+     }
+    ],
+    "flows": []
+   },
+   "shapes": {}
+  }
+ ]
+}
