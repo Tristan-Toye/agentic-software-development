@@ -820,6 +820,12 @@ try {
   check("question card: light markdown keeps paragraphs, bold, line breaks, lists, rules and headings, no raw **",
     q1 === "<p><strong>Frame: x</strong></p><p><strong>Intent.</strong> Two|lines.</p><p><strong>Scope.</strong></p><ul><li>In: a <code>b</code></li><li>Out: c</li></ul><ol><li>one</li><li>two</li></ol><hr></hr><h4>Q2</h4><p>end</p>", q1)
   check("question card: text is never parsed as HTML", md("<b>x</b> & y").map(flat).join("") === "<p><b>x</b> & y</p>" && !mdSrc.includes("innerHTML"))
+  const body = (t: string) => new Function("h", "document", mdSrc + "; return qBody")(fakeH, { createTextNode: (x: string) => x })(t)
+  const qb = body("Plan it as framed?\n**Recommendation:** A — in scope.\n- one\n**Details**\n- scope\n- unknowns").map(flat).join("")
+  check("question card: the first line is the heading and everything after a Details line is folded",
+    qb === "<div>Plan it as framed?</div><p><strong>Recommendation:</strong> A — in scope.</p><ul><li>one</li></ul><details><summary>Details</summary><div><ul><li>scope</li><li>unknowns</li></ul></div></details>", qb)
+  const sd = questionBlocks({ id: "r.W-1.Q2", repo: "r", dossier: "W-1", text: "Go?\n**Recommendation:** A — x y z\n**Details**\nsecret-length evidence", options: [], lines: [] } as any, 7317)[0].text.text
+  check("slack: the folded Details stay on the dashboard", sd.includes("_Details: on the dashboard._") && !sd.includes("secret-length evidence"), sd)
   const sq = questionBlocks({ id: "r.W-1.Q1", repo: "r", dossier: "W-1", text: "**Frame.** a <b>\n# Q2\n---\nz", options: [], lines: [] } as any, 7317)[0].text.text
   check("slack: question markdown becomes mrkdwn (single-star bold, heading bold, a rule), still escaped", sq.includes("*Frame.* a &lt;b&gt;\n*Q2*\n────────\nz") && !sq.includes("**"), sq)
   const r10 = rv.runs.find((r: any) => r.id === "W-10"), r9 = rv.runs.find((r: any) => r.id === "W-9")

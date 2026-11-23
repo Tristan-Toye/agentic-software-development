@@ -970,7 +970,7 @@ def ask_resolve_failed(root: str, dossier: str, why: str) -> None:
     ask = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ask_owner.py")
     try:
         subprocess.run([sys.executable, ask, "ask", "--root", root, "--dossier", dossier, "--question",
-                        f"The merge queue could not bring the pull requests of {dossier} up to date: {why}. The dossier's agent tried twice. How should it go on?",
+                        f"How should the merge queue go on with {dossier}? It could not bring the dossier's pull requests up to date: {why}. The dossier's agent tried twice.",
                         "--option", "A|Resolve by hand|You resolve the conflict on the branch; the queue merges it on the next press of Merge",
                         "--option", "B|Leave it|The pull requests stay open and conflicting", "--recommend", "A",
                         "--blocks", "the merge of " + dossier], capture_output=True, text=True, timeout=60)

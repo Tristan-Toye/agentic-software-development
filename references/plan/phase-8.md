@@ -58,11 +58,14 @@ product-rule proposals. When it is empty, skip the card and log
 ```bash
 python3 ${PLUGIN_ROOT}/scripts/ask_owner.py ask --root ${RUN_ROOT} --dossier W-NNN \
   --kind product --topic plan-final --blocks "status: ready" --build-log <live dossier> \
-  --question "Q1 (AMBIGUITY Flush.drain): a) … (recommended) b) …  Q2 (PROMOTE DR-4): …  Q3 (rule): …" \
+  --question "$(printf '%s\n' 'Rule on these 3 items as recommended?' \
+      '**Recommendation:** A — <why, in one line>' \
+      'Q1 (AMBIGUITY Flush.drain): a) … (recommended) b) …' 'Q2 (PROMOTE DR-4): …' 'Q3 (rule): …')" --recommend A \
   --option "A|All as recommended|<one line>" --option "B|Change some|answer per Q in the reply"
 ```
 
-Each part `Qn` says what it is (its row, member or finding), the options with
+Each part `Qn`, on a line of its own under the decision and the recommendation
+(`owner-questions.md`, "The card layout"), says what it is (its row, member or finding), the options with
 their consequences, and your recommendation. Run `ask_owner.py wait <id>` as a
 background command and end the turn. Apply every answer: a ruling into the
 row's `Ruling` column or an `OWNER-RULING (<date>):` build-log line, a contract

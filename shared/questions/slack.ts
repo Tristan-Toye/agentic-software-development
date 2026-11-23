@@ -112,8 +112,14 @@ export function dossierLink(port: number | string, repo: string, dossier: string
 
 /** Question text (light markdown from the agents) as Slack mrkdwn: **bold** and `# heading` become *bold*, a `---`
  *  rule a line; Slack shows a doubled ** literally. */
+// The line that opens the folded part of a question (references/owner-questions.md, "The card layout").
+export const DETAILS_LINE = /^[ \t]*(?:\*\*Details\*\*:?|#{1,6}[ \t]+Details|Details:)[ \t]*$/im
+
 export function mrkdwnOf(text: string): string {
-  return esc(text || "")
+  // Slack shows the front of the card; the folded Details stay on the dashboard.
+  const m = DETAILS_LINE.exec(text || "")
+  const front = m ? (text || "").slice(0, m.index).trimEnd() + "\n_Details: on the dashboard._" : text || ""
+  return esc(front)
     .replace(/\*\*([^*\n]+)\*\*/g, "*$1*")
     .replace(/^#{1,6}[ \t]+(.+)$/gm, "*$1*")
     .replace(/^[ \t]*-{3,}[ \t]*$/gm, "────────")

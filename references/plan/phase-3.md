@@ -139,11 +139,14 @@ as **one** card at the end of this phase:
 python3 ${PLUGIN_ROOT}/scripts/ask_owner.py ask --root ${RUN_ROOT} --dossier <ID> \
   --kind product --topic plan-confirm --blocks "the contract and the packages" \
   --build-log <live dossier, once it exists> \
-  --question "Q1 (DR-1): <choice, trigger, why>; a) keep (recommended) b) <alternative> …  Q2 (R-PINS): …" \
+  --question "$(printf '%s\n' 'Confirm these <N> one-way choices as recommended?' \
+      '**Recommendation:** A — <why, in one line>' \
+      'Q1 (DR-1): <choice, trigger, why>; a) keep (recommended) b) <alternative> …' 'Q2 (R-PINS): …')" --recommend A \
   --option "A|All as recommended|<one line>" --option "B|Change some|answer per Q in the reply"
 ```
 
-Each part `Qn` names its row ID, the choice, the one-way trigger, your
+Each part `Qn`, on a line of its own under the decision and the recommendation
+(`owner-questions.md`, "The card layout"), names its row ID, the choice, the one-way trigger, your
 recommendation and every acceptable alternative with its consequence. Run
 `ask_owner.py wait <id>` as a background command and end the turn. Write each
 answer into the row's `Ruling` column (`owner <date>: <answer>`). No CONFIRM

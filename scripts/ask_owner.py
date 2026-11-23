@@ -176,6 +176,69 @@ def approval_kind(question: str, options: list[dict]) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------- the layout lint
+# Every card a run asks follows one layout, bottom line up front (references/owner-questions.md, "The card layout"):
+# the decision as the first line, the recommendation with its reason right after it, a short context, and the rest
+# under a Details line, which the dashboard folds. A one-line question is already that layout. A run-failure card is a
+# report the runner writes, not a decision, so it is exempt. ASD_ASK_LINT=0 turns this lint off too.
+DETAILS_LINE = re.compile(r"^\s*(?:\*\*Details\*\*:?|#{1,6}\s+Details|Details:)\s*$", re.I)
+RECOMMEND_LINE = re.compile(r"^\s*(?:\*\*Recommend(?:ation|ed)?:?\*\*:?|Recommend(?:ation|ed)?:)\s*(.*)$", re.I)
+SECOND_DECISION = re.compile(r"^\s*(?:#{1,6}\s*|\*\*)?(?:Q|Question|Decision|Part)\s*[2-9]\b", re.I)
+BULLET = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+")
+BATCHED_TOPICS = ("plan-confirm", "plan-final")
+HEAD_MAX, ONE_LINE_MAX, FRONT_MAX, FRONT_BULLETS, RECOMMEND_WITHIN = 240, 700, 1500, 6, 4
+LAYOUT = ("<the decision, one line, ending in ?>\n"
+          "**Recommendation:** <key> — <why, in one line>\n"
+          "- <at most 6 context bullets: the evidence, what each option costs, which one is one-way>\n"
+          "**Details**\n<scope, unknowns, overlap, the long evidence: folded on the dashboard>")
+
+
+def layout_problems(question: str, options: list[dict], recommend: str, topic: str | None) -> list[str]:
+    """What keeps a question from the card layout; empty when it follows it."""
+    if topic == "run-failure":
+        return []
+    lines = [l.rstrip() for l in question.strip().splitlines()]
+    head = lines[0].strip() if lines else ""
+    body = [l for l in lines[1:]]
+    out = []
+    if not body:
+        # One line: the question has to come first (within the first HEAD_MAX characters), and a long one gets lines.
+        q = head.find("?")
+        if q < 0:
+            out.append("the question has no '?': put the decision the owner makes as a question, first")
+        elif q >= HEAD_MAX:
+            out.append(f"the decision comes after {HEAD_MAX} characters of context: start with the question, the context goes after it")
+        if len(head) > ONE_LINE_MAX:
+            out.append(f"a one-line question over {ONE_LINE_MAX} characters: put the decision on the first line and the context under it, on lines of its own")
+        return out
+    if "?" not in head:
+        out.append("the first line is not the decision: start with the question the owner answers, ending in '?'")
+    if len(head) > HEAD_MAX:
+        out.append(f"the first line is over {HEAD_MAX} characters: the decision only, the context goes under it")
+    if DETAILS_LINE.match(head):
+        out.append("the card starts with Details: the decision comes first")
+    di = next((i for i, l in enumerate(body) if DETAILS_LINE.match(l)), len(body))
+    front = [l for l in body[:di] if l.strip()]
+    if recommend:
+        ri = next((i for i, l in enumerate(front) if RECOMMEND_LINE.match(l)), None)
+        if ri is None or ri >= RECOMMEND_WITHIN:
+            out.append(f"no **Recommendation:** line within the {RECOMMEND_WITHIN} lines after the decision: give the recommended option and why, right under it")
+        else:
+            reason = re.sub(r"^\W*" + re.escape(recommend) + r"\b\W*", "", RECOMMEND_LINE.match(front[ri]).group(1).strip())
+            if len(reason.split()) < 3:
+                out.append("the **Recommendation:** line has no reason: say in one line why that option")
+    if topic in BATCHED_TOPICS:
+        # These cards batch their parts (Q1, Q2, ...) by design; the decision and the recommendation still lead.
+        return out
+    if any(SECOND_DECISION.match(l) for l in lines):
+        out.append("a second decision on the card (Q2, Part 2, ...): ask each decision as its own card")
+    if sum(1 for l in front if BULLET.match(l)) > FRONT_BULLETS:
+        out.append(f"more than {FRONT_BULLETS} context bullets before Details: keep the strongest, move the rest under **Details**")
+    if sum(len(l) for l in front) > FRONT_MAX:
+        out.append(f"over {FRONT_MAX} characters before Details: move scope, unknowns and long evidence under a **Details** line")
+    return out
+
+
 def cmd_ask(a: argparse.Namespace) -> int:
     options = [parse_option(o) for o in (a.option or [])]
     if not 2 <= len(options) <= 4:
@@ -197,6 +260,12 @@ def cmd_ask(a: argparse.Namespace) -> int:
                   "\"A run started by the runner carries standing authority for\". Only a decision the owner has to make "
                   "(a design, a product choice, an uncertainty you cannot settle) is a question. If this really is one, "
                   "reword it as that decision, or set ASD_ASK_LINT=0.", file=sys.stderr)
+            return 2
+    if os.environ.get("ASD_RUN_KEY") and (os.environ.get("ASD_ASK_LINT") or "1").strip() != "0":
+        bad = layout_problems(a.question, options, a.recommend or "", a.topic)
+        if bad:
+            print("REFUSED: the question does not follow the card layout (references/owner-questions.md, \"The card "
+                  "layout\"):\n" + "\n".join("- " + b for b in bad) + "\nThe layout:\n" + LAYOUT, file=sys.stderr)
             return 2
     keys = [o["key"] for o in options]
     if len(set(keys)) != len(keys):
@@ -467,6 +536,31 @@ def selftest() -> int:
         check("lint: design and issue questions that mention push, retry or ready in passing go through", all(ask_q(t, dossier="W-11").returncode == 0 for t in passing))
         check("lint: ASD_ASK_LINT=0 turns it off", ask_q(refused[0], e=dict(kenv, ASD_ASK_LINT="0"), dossier="W-12").returncode == 0)
         check("lint: a run without ASD_RUN_KEY (a terminal run's start gate) is not linted", ask_q(refused[0], e=env, dossier="W-13").returncode == 0)
+
+        # ---- the layout lint (references/owner-questions.md, "The card layout") ----
+        good = ("Plan the per-repo indexer as framed?\n**Recommendation:** A — the frame covers the whole request and no dossier overlaps.\n"
+                "- Intent: one indexer per repository\n- Overlap: none\n**Details**\n" + "\n".join(f"- unknown {i}" for i in range(12)))
+        fr = ["--kind", "product", "--topic", "plan-frame", "--recommend", "A"]
+        check("layout: decision first, recommendation with a reason, short context, folded details pass", ask_q(good, fr, dossier="W-60").returncode == 0)
+        buried = "D-2: anchored comments on script lines. " + "The engine has nowhere to store them. " * 8 + "Fix it here or plan a dossier?"
+        lb = ask_q(buried, dossier="W-61")
+        check("layout: a one-line question whose decision comes after the context is refused with exit 2 and the layout",
+              lb.returncode == 2 and "The card layout" in lb.stderr and "**Recommendation:**" in lb.stderr and "**Details**" in lb.stderr)
+        check("layout: a first line that is not the decision is refused", ask_q("**Frame: W-033**\nPlan it as framed?", dossier="W-62").returncode == 2)
+        check("layout: --recommend without a Recommendation line under the decision is refused",
+              ask_q("Plan it as framed?\n- Intent: x", ["--recommend", "A"], dossier="W-63").returncode == 2)
+        check("layout: a Recommendation line without a reason is refused",
+              ask_q("Plan it as framed?\n**Recommendation:** A", ["--recommend", "A"], dossier="W-64").returncode == 2)
+        many = "Which cache?\n" + "\n".join(f"- fact {i}" for i in range(8))
+        check("layout: more than six context bullets before Details is refused, the same under Details passes",
+              ask_q(many, dossier="W-65").returncode == 2 and ask_q(many.replace("\n", "\n**Details**\n", 1), dossier="W-66").returncode == 0)
+        check("layout: over 1500 characters before Details is refused", ask_q("Which cache?\n" + "x " * 800, dossier="W-67").returncode == 2)
+        check("layout: a second decision on a card is refused, but the batched plan-confirm and plan-final cards may hold several",
+              ask_q("Plan it as framed?\n**Recommendation:** A — it is in scope today.\n# Q2\nAlso this?", fr, dossier="W-68").returncode == 2
+              and ask_q("Confirm the four CONFIRM rows?\n**Recommendation:** A — each row follows the dossier.\n**Q2** row two", ["--kind", "product", "--topic", "plan-confirm", "--recommend", "A"], dossier="W-69").returncode == 0)
+        check("layout: ASD_ASK_LINT=0 and a run without ASD_RUN_KEY are not linted",
+              ask_q(buried, e=dict(kenv, ASD_ASK_LINT="0"), dossier="W-71").returncode == 0 and ask_q(buried, e=env, dossier="W-72").returncode == 0)
+        check("layout: a run-failure report is exempt", ask_q("The run stopped at stage 2.\n" + "log line\n" * 5, ["--topic", "run-failure"], dossier="W-73").returncode == 0)
 
         bad = run("ask", "--root", root, "--dossier", "W-1", "--question", "x", "--option",
                   "A|a|b", "--blocks", "y", env=env)

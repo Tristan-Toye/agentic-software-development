@@ -75,7 +75,7 @@ ol.tl>li.boundary{margin:20px 0 14px}ol.tl>li.boundary::before{display:none}
 .need{border:1px solid var(--bd);border-left:3px solid var(--warn);border-radius:12px;padding:14px 16px;margin:10px 0;background:var(--card);box-shadow:var(--shadow);scroll-margin-top:70px}
 .need.thr{border-left-color:var(--acc)}.need.hit{outline:2px solid var(--acc)}
 .need .top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--mut)}.grow{flex:1}
-.need .q{font-size:1.02rem;font-weight:600;margin:.4em 0 .2em;overflow-wrap:anywhere}.q.md{font-weight:400;font-size:.95rem;line-height:1.45}.q.md p{margin:.45em 0}.q.md>p:first-child{margin-top:0}.q.md strong{font-weight:600}.q.md ul,.q.md ol{margin:.3em 0 .45em;padding-left:1.3em}.q.md li{margin:.15em 0}.q.md h4{margin:.6em 0 .2em;font-size:.95rem}.q.md hr{border:0;border-top:1px solid var(--bd);margin:.7em 0}.q.md code{font:.88em ui-monospace,monospace;background:var(--chip);padding:0 .25em;border-radius:4px}.blocks{color:var(--mut);font-size:13px;margin-bottom:6px}
+.need .q{font-size:1.02rem;font-weight:600;margin:.4em 0 .2em;overflow-wrap:anywhere}.q.md{font-weight:400;font-size:.95rem;line-height:1.45}.q.md p{margin:.45em 0}.q.md>p:first-child{margin-top:0}.q.md strong{font-weight:600}.q.md ul,.q.md ol{margin:.3em 0 .45em;padding-left:1.3em}.q.md li{margin:.15em 0}.q.md h4{margin:.6em 0 .2em;font-size:.95rem}.q.md hr{border:0;border-top:1px solid var(--bd);margin:.7em 0}.q.md .qh{font-weight:600;font-size:1.02rem;margin-bottom:.35em}.q.md .qdet{margin:.4em 0}.q.md .qdet summary{cursor:pointer;color:var(--mut);font-size:13px}.q.md code{font:.88em ui-monospace,monospace;background:var(--chip);padding:0 .25em;border-radius:4px}.blocks{color:var(--mut);font-size:13px;margin-bottom:6px}
 .opts{display:grid;gap:6px;margin:8px 0}
 .opt{display:flex;gap:10px;align-items:flex-start;text-align:left;width:100%;font:inherit;padding:9px 12px;border:1px solid var(--bd);border-radius:10px;background:var(--card);color:var(--fg);cursor:pointer}
 .opt:hover:not(:disabled){border-color:var(--acc)}.opt:disabled{cursor:default}.opt.rec{border-color:var(--ok);background:var(--okbg)}
@@ -724,11 +724,23 @@ function mdLite(text) {
   });
   return out;
 }
+// A multi-line question follows the card layout (references/owner-questions.md, "The card layout"): its first line
+// is the decision, shown as the heading, and everything after a Details line is folded.
+function qBody(text) {
+  const lines = String(text || '').split('\n');
+  let i = 0; while (i < lines.length && !lines[i].trim()) i++;
+  const head = (lines[i] || '').trim().replace(/^#{1,6}\s+/, '');
+  const rest = lines.slice(i + 1);
+  const di = rest.findIndex(l => /^\s*(\*\*Details\*\*:?|#{1,6}\s+Details|Details:)\s*$/i.test(l));
+  const front = di < 0 ? rest : rest.slice(0, di), back = di < 0 ? [] : rest.slice(di + 1);
+  return [h('div', { class: 'qh' }, mdInline(head))].concat(mdLite(front.join('\n')),
+    back.some(l => l.trim()) ? [h('details', { class: 'qdet' }, [h('summary', {}, ['Details']), h('div', {}, mdLite(back.join('\n')))])] : []);
+}
 function qCard(q, opts) {
   const open = q.state === 'open'; const repo = qRepo(q);
   const kids = [
     h('div', { class: 'top' }, [chip(rlabel(repo), 'neutral'), h('a', { class: 'chip', href: hrefItem(repo, q.dossier) }, [q.dossier]), h('span', { class: 'grow' }), q.qkind ? chip(q.qkind, 'neutral') : null, h('span', { class: 'mono' }, [q.id + ' · ']), opts.queue ? when(q.ts, 'waiting ') : when(q.ts)]),
-    /\n/.test(q.text || '') ? h('div', { class: 'q md' }, mdLite(q.text)) : h('div', { class: 'q' }, [q.text]),
+    /\n/.test(q.text || '') ? h('div', { class: 'q md' }, qBody(q.text)) : h('div', { class: 'q' }, [q.text]),
     // The diagrams live on the dossier page, not in the card: link them, whatever the question text says.
     q.topic === 'visual-review' ? h('div', { class: 'ctl' }, [h('a', { class: 'btn primary', href: hrefItem(repo, q.dossier), 'data-k': 'vrlink' }, ['Open the diagrams for ' + q.dossier])]) : null,
     q.blocks ? h('div', { class: 'blocks' }, ['Blocks: ' + q.blocks]) : null];
