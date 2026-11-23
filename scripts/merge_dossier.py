@@ -225,13 +225,42 @@ def dossier_prs(root: str) -> dict[int, str]:
     return out
 
 
+def dossier_ids(root: str) -> set[str]:
+    """The ids of every dossier file in ROOT (`.discovery/dossiers/*.md` front matter). A branch name names a dossier only
+    when its id is in here: a Jira key (feat/LABS-138-control-plane) is a branch's label, not a dossier."""
+    out: set[str] = set()
+    for f in sorted(glob.glob(os.path.join(root, ".discovery", "dossiers", "*.md"))):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                head = fh.read(4000)
+        except OSError:
+            continue
+        m = re.match(r"---\n(.*?)\n---", head, re.S)
+        i = re.search(r"^id:\s*([A-Za-z][A-Za-z0-9]*-\d+)\s*$", m.group(1), re.M) if m else None
+        if i:
+            out.add(i.group(1).upper())
+    return out
+
+
+def pr_dossier(p: dict, owned: dict | None, known: set[str] | None) -> str | None:
+    """The dossier a PR belongs to: the id its `pr:` record gives (OWNED) first; else the id its branch name carries, but
+    only a KNOWN dossier id (None = not checked, for callers that have no dossier index). Never a bare Jira key."""
+    o = (owned or {}).get(p.get("number"))
+    if o:
+        return o.upper()
+    for m in re.finditer(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]*-\d+)(?![0-9])", p.get("headRefName", "")):
+        if known is None or m.group(1).upper() in known:
+            return m.group(1).upper()
+    return None
+
+
 def chain_of(prs: list[dict], dossier: str, owned: dict | None = None) -> tuple[list[dict], str]:
     """The dossier's open PRs as one bottom-to-top chain, or ([], why not). OWNED ({PR number: dossier id}, from
     `dossier_prs`) adds the PRs a dossier records whose branch names no id."""
     pat = re.compile(r"(^|[^A-Za-z0-9])" + re.escape(dossier) + r"(?![0-9])", re.I)
     owned = owned or {}
     mine = [p for p in prs if (pat.search(p.get("headRefName", "")) or owned.get(p.get("number")) == dossier.upper())
-            and not p.get("headRefName", "").startswith("plan/")]
+            and not p.get("headRefName", "").startswith("plan/") and not is_stub(p.get("headRefName", ""))]
     if not mine:
         return [], f"no open pull request of {dossier}"
     # A PR stacked on one of them is part of the same stack whatever its branch is called: a repo that names its
@@ -246,7 +275,7 @@ def chain_of(prs: list[dict], dossier: str, owned: dict | None = None) -> tuple[
                   and not p.get("headRefName", "").startswith(("plan/", "docs/"))]
         below = [p for p in prs if p not in mine and p not in on_top
                  and p.get("headRefName") in {x.get("baseRefName") for x in mine}
-                 and not p.get("headRefName", "").startswith("plan/")]
+                 and not p.get("headRefName", "").startswith("plan/") and not is_stub(p.get("headRefName", ""))]   # the stub's own PR into development is nobody's stack
         if not on_top and not below:
             break
         mine += on_top + below
@@ -266,6 +295,9 @@ def chain_of(prs: list[dict], dossier: str, owned: dict | None = None) -> tuple[
     if len(chain) != len(mine):
         rest = [p for p in mine if p not in chain]
         return [], "some of its pull requests are not in the chain: " + ", ".join(f"#{p['number']}" for p in rest)
+    stubs = [p for p in chain if is_stub(p.get("headRefName", ""))]
+    if stubs:
+        return [], f"{dossier}'s chain would include the stub's own pull request (#{stubs[0]['number']}, head {stubs[0]['headRefName']}); refusing"
     return chain, ""
 
 
@@ -1553,9 +1585,10 @@ def integrate_held(key: str) -> int:
     return holder or -1
 
 
-def stacked_id(everything: list[dict], bottom: dict) -> str | None:
-    """The one dossier id the branches stacked on BOTTOM name (fix/W-199-deferred on docs/harness2-…), or None when
-    they name none or more than one. Plan branches never count."""
+def stacked_id(everything: list[dict], bottom: dict, owned: dict | None = None, known: set[str] | None = None) -> str | None:
+    """The one dossier id the branches stacked on BOTTOM belong to (fix/W-199-deferred on docs/harness2-…), or None when
+    they name none or more than one. A PR's `pr:` record (OWNED) wins over its branch name, which counts only for a KNOWN
+    dossier id. Plan branches never count."""
     found: set[str] = set()
     heads, seen = {bottom["headRefName"]}, {bottom.get("number")}
     while heads:
@@ -1563,38 +1596,41 @@ def stacked_id(everything: list[dict], bottom: dict) -> str | None:
               and not p.get("headRefName", "").startswith("plan/")]
         for p in up:
             seen.add(p.get("number"))
-            m = re.search(r"([A-Za-z][A-Za-z0-9]*-\d+)", p["headRefName"])
-            if m:
-                found.add(m.group(1).upper())
+            i = pr_dossier(p, owned, known)
+            if i:
+                found.add(i)
         heads = {p["headRefName"] for p in up}
     return found.pop() if len(found) == 1 else None
 
 
-def stub_stacks(everything: list[dict], branch: str, owned: dict | None = None) -> tuple[list[tuple[str, dict]], list[dict]]:
+def stub_stacks(everything: list[dict], branch: str, owned: dict | None = None, known: set[str] | None = None) -> tuple[list[tuple[str, dict]], list[dict]]:
     """The open PRs straight into the stub, as ([(dossier id, its bottom PR)], [PRs no dossier owns]). Only PRs still open
-    count, so a dossier already merged into the stub is not in it. A PR whose branch names no id belongs to the dossier
-    whose `pr:` records it (OWNED, from `dossier_prs`)."""
+    count, so a dossier already merged into the stub is not in it. The dossier is the one whose `pr:` records the PR
+    (OWNED, from `dossier_prs`); only without a record does the branch name count, and then only a KNOWN dossier id
+    (KNOWN, from `dossier_ids`): feat/LABS-138-control-plane is W-009's PR, LABS-138 is no dossier. A PR neither gives
+    is the dossier of the PRs stacked on it."""
     prs = sorted([p for p in everything if p.get("baseRefName") == branch and p["headRefName"] != branch], key=lambda p: p["number"])
     ids: list[tuple[str, dict]] = []
     others: list[dict] = []
     for p in prs:
-        m = re.search(r"([A-Za-z][A-Za-z0-9]*-\d+)", p["headRefName"])
-        if not p["headRefName"].startswith(("plan/", "docs/")) and (m or (owned or {}).get(p["number"])):
-            i = m.group(1).upper() if m else owned[p["number"]]
-        elif not p["headRefName"].startswith("plan/") and stacked_id(everything, p):
-            i = stacked_id(everything, p)   # an id-less branch (docs/…) under a dossier's stacked PR is that dossier's
-        else:
+        h = p["headRefName"]
+        i = None if h.startswith("plan/") or (h.startswith("docs/") and not (owned or {}).get(p["number"])) else pr_dossier(p, owned, known)
+        if not i and not h.startswith("plan/"):
+            i = stacked_id(everything, p, owned, known)   # an id-less branch (docs/…) under a dossier's stacked PR is that dossier's
+        if not i:
             others.append(p)
             continue
         if i not in [x[0] for x in ids]:
             ids.append((i, p))
     return ids, others
+
+
 def stub_dossiers(root: str, branch: str) -> list[str]:
     """The dossiers with an open pull request into the stub (the ones eager merging may put on it)."""
     rc, out = gh(root, "pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,baseRefName,isDraft")
     if rc != 0:
         return []
-    return [i for i, _ in stub_stacks(json.loads(out or "[]"), branch, dossier_prs(root))[0]]
+    return [i for i, _ in stub_stacks(json.loads(out or "[]"), branch, dossier_prs(root), dossier_ids(root))[0]]
 def kanban_dossiers(root: str) -> list[str]:
     """The kanban dossiers with an open pull request into development (the ones eager merging may queue)."""
     return [i for i in stub_dossiers(root, "development") if i in kanban_ids(root)]
@@ -1646,7 +1682,7 @@ def integrate(root: str, branch: str) -> int:
         state(state="failed", error="gh pr list failed: " + out[:200]); return 1
     everything = json.loads(out or "[]")
     owned = dossier_prs(root)
-    ids, others = stub_stacks(everything, branch, owned)   # others: no dossier's stack, never merged from here, only named, so the owner can decide about it
+    ids, others = stub_stacks(everything, branch, owned, dossier_ids(root))   # others: no dossier's stack, never merged from here, only named, so the owner can decide about it
     def ready(i: str, p: dict) -> bool:
         """Every PR of the dossier's stack is out of draft (the queue refuses a stack with a draft in it), and no run is live."""
         chain, _ = chain_of(everything, i, owned)
@@ -1845,6 +1881,49 @@ def selftest() -> int:
     c, why = chain_of([P(40, "feat/LABS-117-qc", "stub/x"), P(50, "fix/W-007-deferred", "feat/LABS-117-qc"), P(41, "fix/LABS-139-a", "stub/x"),
                        P(60, "plan/W-9", "feat/LABS-117-qc")], "LABS-117")
     check("chain: a PR stacked on the dossier's branch joins its stack whatever its branch is called", [p["number"] for p in c] == [40, 50], why)
+    # The live layout (podcast-generation-engine W-009): its PR is a Jira-key branch whose id is no dossier, a fix PR stacked on it
+    # names the dossier, and the stub's own PR into development sits under both.
+    stub9 = "stub/2026-11-21"
+    lay = [P(97, "feat/LABS-138-control-plane", stub9), P(99, "fix/W-009-deferred", "feat/LABS-138-control-plane"), P(101, stub9, "development"),
+           P(102, "feat/LABS-140-other", stub9)]
+    with tempfile.TemporaryDirectory() as td9, tempfile.TemporaryDirectory() as rd9:
+        os.makedirs(os.path.join(td9, ".discovery", "dossiers"))
+        for name, body in (("W-009-a.md", "---\nid: W-009\npr: 97\n---\n"), ("W-010-b.md", "---\nid: W-010\npr: null\n---\n")):
+            with open(os.path.join(td9, ".discovery", "dossiers", name), "w") as fh_:
+                fh_.write(body)
+        own9, known9 = dossier_prs(td9), dossier_ids(td9)
+        check("dossier_ids: every dossier file's id, with or without a pr:", known9 == {"W-009", "W-010"}, str(known9))
+        ids9, oth9 = stub_stacks(lay, stub9, own9, known9)
+        check("integrate selects W-009 from the pr: record, never the Jira key LABS-138", [i for i, _ in ids9][0] == "W-009" and "LABS-138" not in [i for i, _ in ids9], str(ids9))
+        check("integrate: an unknown Jira key with no record and no stacked dossier is nobody's PR", [p["number"] for p in oth9] == [102] and len(ids9) == 1, f"{ids9} {oth9}")
+        ids9b, _ = stub_stacks(lay, stub9, {}, known9)
+        check("integrate: without the pr: record the stacked fix/W-009-deferred still gives W-009", [i for i, _ in ids9b] == ["W-009"], str(ids9b))
+        ids9c, _ = stub_stacks([P(97, "feat/LABS-138-control-plane", stub9)], stub9, {}, {"LABS-138"})
+        check("integrate: a Jira key that IS a dossier id still names its dossier", [i for i, _ in ids9c] == ["LABS-138"], str(ids9c))
+        c9, why9 = chain_of(lay, "W-009", own9)
+        check("chain: W-009 is #97 then #99 and never the stub's PR #101", [p["number"] for p in c9] == [97, 99], f"{c9} {why9}")
+        c9, why9 = chain_of(lay, "LABS-138", own9)
+        check("chain: even asked for by the Jira key, the stub's PR #101 is not in it", 101 not in [p["number"] for p in c9], f"{c9} {why9}")
+        c9, why9 = chain_of([P(101, stub9, "development")], "W-009", {101: "W-009"})
+        check("chain: a PR whose head is the stub is never a dossier's, and the failure names the dossier", not c9 and "W-009" in why9, why9)
+        _sv = {k: globals()[k] for k in ("gh", "stub_into_dev")}
+        _env = os.environ.get("ASD_RUNS_DIR")
+        os.environ["ASD_RUNS_DIR"] = rd9
+        try:
+            globals()["gh"] = lambda root, *a, **k: (0, json.dumps(lay))
+            globals()["stub_into_dev"] = lambda root, stub: "open" if stub == stub9 else ""
+            ch, why = plan(td9, "W-009")
+            check("queue: W-009 resolves to #97 + #99 on the stub, not to #101 into development", [p["number"] for p in ch] == [97, 99] or "being integrated" in why, f"{ch} {why}")
+            check("queue: the refusal, if any, is the stub's, not '#101 goes into development'", "#101" not in why, why)
+            with open(os.path.join(rd9, f"{repo_name(td9)}.{stub9.replace('/', '-')}.integrate.json"), "w") as fh_:
+                json.dump({"finished": ["W-009"]}, fh_)
+            ch, why = plan(td9, "W-009")
+            check("queue: picked by the integration, W-009's chain is #97, #99 with base the stub", [p["number"] for p in ch] == [97, 99] and ch[0]["baseRefName"] == stub9, f"{ch} {why}")
+            check("eager: stub_dossiers lists W-009 (so the eager step sees it on the stub), not LABS-138", stub_dossiers(td9, stub9) == ["W-009"], str(stub_dossiers(td9, stub9)))
+        finally:
+            globals().update(_sv)
+            if _env is None: os.environ.pop("ASD_RUNS_DIR", None)
+            else: os.environ["ASD_RUNS_DIR"] = _env
     check("chain: the stack's run keys include every dossier id its branches name",
           chain_keys("repo", "LABS-117", c) == ["repo.LABS-117", "repo.W-007"], str(chain_keys("repo", "LABS-117", c)))
     w199 = [P(597, "docs/harness2-ingest-and-h14-plan", "stub/2026-11-18"), P(624, "fix/W-199-deferred", "docs/harness2-ingest-and-h14-plan"),
@@ -2259,6 +2338,10 @@ print("started")
             if os.path.exists(os.path.join(rdir, f)): os.remove(os.path.join(rdir, f))
         os.environ["ASD_MERGE_POLL"] = "0.2"
         # ---- integrate: the finished dossiers through the queue, the one in flight left, then /stub ----
+        for did_ in ("W-128", "W-130", "W-131", "W-140", "W-160", "W-161", "W-162"):   # a branch name names a dossier only when its file exists
+            f_ = os.path.join(root, ".discovery", "dossiers", did_ + "-t.md")
+            if not any(x.startswith(did_) for x in os.listdir(os.path.dirname(f_))):
+                open(f_, "w").write(f"---\nid: {did_}\nstatus: pr\n---\n")
         for f in ("runs.txt", "calls.txt"):
             if os.path.exists(os.path.join(fdir, f)): os.remove(os.path.join(fdir, f))
         for n in os.listdir(rdir):
