@@ -1355,10 +1355,52 @@ def selftest() -> int:
         check("status shows the eager-merge switch", cmd_status(root) == 0)
     LAND = real_land
     kanban_selftest(check)
+    jira_branch_selftest(check)
     land_dirs_ok = [land_stub.settings_path(), runs_dir()] != real_dirs
     check("the selftest used its own settings and runs directory", land_dirs_ok)
     print("FAILED: " + ", ".join(fails) if fails else "all ok")
     return 1 if fails else 0
+
+
+def jira_branch_selftest(check) -> None:
+    """Eager merge of a dossier whose PR is on a Jira-key branch (podcast-generation-engine W-009: #97 feat/LABS-138-control-plane
+    into the stub, #99 fix/W-009-deferred on it, #101 the stub into development). The real `merge_dossier.py --stub-dossiers`
+    reads a fake gh over a temp repo; its enqueue is a recording stand-in. Nothing touches ~/.agentic."""
+    keys = ("ASD_RUNS_DIR", "ASD_STUB_AUTOMERGE_FILE", "ASD_MERGE_BIN", "ASD_REAL_MERGE_BIN", "ASD_GH_BIN", "ASD_DELIVERY_FLOWS")
+    saved = {k: os.environ.get(k) for k in keys}
+    with tempfile.TemporaryDirectory() as tmp:
+        runs, root, log_ = os.path.join(tmp, "runs"), os.path.join(tmp, "pod-repo"), os.path.join(tmp, "calls.txt")
+        os.makedirs(runs); os.makedirs(os.path.join(root, ".discovery", "dossiers"))
+        repo = repo_name(root)
+        stub = "stub/2026-11-21"
+        prs = [{"number": 97, "headRefName": "feat/LABS-138-control-plane", "baseRefName": stub, "isDraft": False},
+               {"number": 99, "headRefName": "fix/W-009-deferred", "baseRefName": "feat/LABS-138-control-plane", "isDraft": False},
+               {"number": 101, "headRefName": stub, "baseRefName": "development", "isDraft": False}]
+        with open(os.path.join(root, ".discovery", "dossiers", "W-009-control-plane.md"), "w") as fh:
+            fh.write("---\nid: W-009\nstatus: pr\npr: 97\n---\n# t\n")
+        with open(os.path.join(tmp, "gh.py"), "w") as fh:
+            fh.write("import json\nprint(json.dumps(%r))\n" % prs)
+        with open(os.path.join(tmp, "merge.py"), "w") as fh:   # --stub-dossiers is the real script's; an enqueue is only recorded
+            fh.write("import sys, os, subprocess\n"
+                     "if '--stub-dossiers' in sys.argv:\n"
+                     "    sys.exit(subprocess.call([sys.executable, os.environ['ASD_REAL_MERGE_BIN']] + sys.argv[1:]))\n"
+                     "open(%r,'a').write('merge '+' '.join(sys.argv[1:])+'\\n')\nprint('queued')\n" % log_)
+        os.environ.update(ASD_RUNS_DIR=runs, ASD_STUB_AUTOMERGE_FILE=os.path.join(tmp, "settings.json"), ASD_MERGE_BIN=os.path.join(tmp, "merge.py"),
+                          ASD_REAL_MERGE_BIN=os.path.join(HERE, "merge_dossier.py"), ASD_GH_BIN=f"{sys.executable} {os.path.join(tmp, 'gh.py')}",
+                          ASD_DELIVERY_FLOWS=os.path.join(tmp, "flows.json"))
+        try:
+            check("eager (Jira-key branch): the stub's dossiers are W-009, not LABS-138", stub_dossiers(root, stub) == ["W-009"], stub_dossiers(root, stub))
+            fin = {"state": "done", "command": "work-on", "pid": 1, "started": "t"}
+            facts = {"root": root, "stubs": [{"branch": stub, "state": "accepting"}],
+                     "runs": [{"id": "W-009", "status": "pr", "blockedBy": [], "runner": fin, "deferred": []}]}
+            set_eager(repo, True)
+            eager_step(repo, root, facts)
+            calls = open(log_).read().splitlines() if os.path.exists(log_) else []
+            check("eager (Jira-key branch): W-009 is enqueued by its own id", calls == [f"merge W-009 --enqueue --root {root} --by eager"], calls)
+        finally:
+            for k, v in saved.items():
+                if v is None: os.environ.pop(k, None)
+                else: os.environ[k] = v
 
 
 def kanban_selftest(check) -> None:
