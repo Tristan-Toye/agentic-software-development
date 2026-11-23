@@ -639,9 +639,34 @@ def conflicting(root: str, nums: list[int]) -> tuple[list[int], str]:
             if out.strip() != "UNKNOWN":
                 break
             time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15) / 3)
-        if out.strip() == "CONFLICTING":
+        if out.strip() == "CONFLICTING" and not git_merges_clean(root, n):
             bad.append(n)
     return bad, ""
+
+
+def git_merges_clean(root: str, n: int) -> bool:
+    """True when git itself proves PR n merges into its base without a conflict, whatever GitHub's flag says.
+
+    GitHub's `mergeable` can stay CONFLICTING for a head that already holds its whole base (seen on W-137 #659: the
+    head descended from the base, yet GitHub said DIRTY for hours), and the queue then sent resolve-merge after a
+    conflict git cannot find, twice, and asked the owner. Only a positive proof overrides GitHub: the refs fetched,
+    and the base an ancestor of the head or `git merge-tree` clean. Anything that cannot be proven keeps the flag."""
+    rc, out = gh(root, "pr", "view", str(n), "--json", "baseRefName,headRefName")
+    try:
+        refs = json.loads(out) if rc == 0 else {}
+        base, head = refs["baseRefName"], refs["headRefName"]
+    except (ValueError, KeyError, TypeError):
+        return False
+    if git(root, "fetch", "-q", "origin", base, head)[0] != 0:
+        return False
+    b, h = f"refs/remotes/origin/{base}", f"refs/remotes/origin/{head}"
+    if git(root, "rev-parse", "-q", "--verify", b)[0] != 0 or git(root, "rev-parse", "-q", "--verify", h)[0] != 0:
+        return False
+    clean = git(root, "merge-base", "--is-ancestor", b, h)[0] == 0 or git(root, "merge-tree", "--write-tree", b, h)[0] == 0
+    if clean:
+        print(f"[merge_dossier] #{n}: GitHub says CONFLICTING but git merges {head} into {base} cleanly; "
+              "treated as mergeable (GitHub's flag is stale)", flush=True)
+    return clean
 
 
 def behind(root: str, nums: list[int]) -> list[int]:
@@ -1707,6 +1732,8 @@ if a[:2] == ["pr", "view"] and "mergeStateStatus" in a:
     p = next(p for p in prs if str(p["number"]) == a[2]); print(p.get("mss", "CLEAN")); sys.exit(0)
 if a[:2] == ["pr", "view"] and "number,state,baseRefName,headRefName,isDraft,files" in a:
     p = next(p for p in prs if str(p["number"]) == a[2]); print(json.dumps(dict(p, state=p.get("state", "OPEN")))); sys.exit(0)
+if a[:2] == ["pr", "view"] and "baseRefName,headRefName" in a:
+    p = next(p for p in prs if str(p["number"]) == a[2]); print(json.dumps(p)); sys.exit(0)
 if a[:2] == ["pr", "view"] and "headRefOid" in a:
     hf = os.path.join(d, "head.txt")
     print(open(hf).read().strip() if os.path.exists(hf) else os.environ.get("FAKE_HEAD", "")); sys.exit(0)
@@ -1735,6 +1762,37 @@ def selftest() -> int:
     ids_, others_ = stub_stacks([P(5, "feat/W-9-b", "stub/s"), P(3, "feat/W-8-a", "stub/s"), P(4, "fix/W-8-deferred", "feat/W-8-a"), P(6, "plan/x", "stub/s"), P(7, "feat/W-10-c", "development"), P(8, "feat/W-8-again", "stub/s")], "stub/s")
     check("stub members: the dossiers with an open PR straight into the stub, once each, in PR order; stacked, plan and other-base PRs are not extra members",
           [i for i, _ in ids_] == ["W-8", "W-9"] and [p["number"] for p in others_] == [6], f"{ids_} {others_}")
+    # GitHub's CONFLICTING flag is cross-checked by git: a head that holds its whole base is not conflicting (W-137 #659),
+    # a real conflict still is, and refs git cannot see keep GitHub's word.
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as _t:
+        _g = lambda *a, cwd: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=cwd, capture_output=True, text=True)
+        _o, _w = os.path.join(_t, "o.git"), os.path.join(_t, "w")
+        _g("init", "-q", "--bare", "-b", "feat", _o, cwd=_t); _g("clone", "-q", _o, _w, cwd=_t)
+        open(os.path.join(_w, "f"), "w").write("a\n"); _g("add", "f", cwd=_w); _g("commit", "-qm", "a", cwd=_w)
+        _g("push", "-q", "origin", "HEAD:feat", cwd=_w)
+        _g("checkout", "-qb", "fix", cwd=_w); open(os.path.join(_w, "f"), "w").write("b\n"); _g("commit", "-qam", "b", cwd=_w)
+        _g("push", "-q", "origin", "fix", cwd=_w)
+        _g("checkout", "-qb", "clash", "feat", cwd=_w); open(os.path.join(_w, "f"), "w").write("c\n"); _g("commit", "-qam", "c", cwd=_w)
+        _g("push", "-q", "origin", "clash", cwd=_w)
+        _g("checkout", "-q", "feat", cwd=_w); open(os.path.join(_w, "f"), "w").write("d\n"); _g("commit", "-qam", "d", cwd=_w)
+        _g("push", "-q", "origin", "feat", cwd=_w)   # feat moved on: fix holds old feat only, clash conflicts with it
+        _g("checkout", "-qb", "desc", cwd=_w); open(os.path.join(_w, "g"), "w").write("e\n"); _g("add", "g", cwd=_w); _g("commit", "-qm", "e", cwd=_w)
+        _g("push", "-q", "origin", "desc", cwd=_w)
+        _refs = {1: ("feat", "desc"), 2: ("feat", "clash"), 3: ("feat", "gone")}
+        _saved = globals()["gh"]
+        def _fake(root, *a, **k):
+            n = int(a[2])
+            if "mergeable" in a:
+                return 0, "CONFLICTING"
+            return 0, json.dumps({"baseRefName": _refs[n][0], "headRefName": _refs[n][1]})
+        globals()["gh"] = _fake
+        try:
+            _bad, _err = conflicting(_w, [1, 2, 3])
+        finally:
+            globals()["gh"] = _saved
+        check("conflicting: a head holding its whole base is mergeable whatever GitHub says; a real clash and an unknown ref stay conflicting",
+              _bad == [2, 3] and not _err, f"{_bad} {_err}")
     own_ = {79: "W-029"}
     ids_, others_ = stub_stacks([P(79, "feat/engine-stop-rules", "stub/s"), P(80, "fix/W-029-deferred", "feat/engine-stop-rules"), P(81, "chore/x", "stub/s")], "stub/s", own_)
     check("stub members: a branch with no id belongs to the dossier whose pr: records it", [i for i, _ in ids_] == ["W-029"] and [p["number"] for p in others_] == [81], f"{ids_} {others_}")
