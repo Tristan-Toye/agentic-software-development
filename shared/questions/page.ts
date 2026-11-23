@@ -526,7 +526,7 @@ function vrBuild(host, key, data) {
     g.nodes.forEach(n => { const b = L.boxes[n.id]; if (!b) return; const gg = vrEl('g', { 'data-id': n.id, 'data-status': n.status, class: 'vrn', tabindex: 0, role: 'button' }, root); els[n.id] = { g: gg, status: n.status, col: !!n.collapsed };
       if (n.collapsed) { gg.setAttribute('data-collapsed', '1'); vrEl('rect', { x: b.x + 5, y: b.y + 5, width: b.w, height: b.h, rx: 6, fill: 'var(--card)', stroke: 'var(--mut)', 'stroke-width': 1.5 }, gg); }
       vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 6, fill: 'var(--' + vrBg(n.status) + ')', stroke: 'var(--' + vrTone(n.status) + ')', 'stroke-width': n.status === 'context' ? 1 : 2.5, 'stroke-dasharray': n.status === 'removed' ? '3 3' : '0' }, gg);
-      const fit = vrFitLabel(n.label, b.w, !!n.stereotype); const lines = fit.lines.slice();
+      const fit = vrFitLabel(n.label, b.w, !!n.stereotype, g.view); const lines = fit.lines.slice();
       if (n.stereotype) lines.unshift('<<' + n.stereotype + '>>');
       if (fit.clipped) { const w = vrEl('text', { x: b.x + b.w - 10, y: b.y + b.h - 6, 'font-size': 12, 'font-weight': 700, fill: 'var(--bad)', 'text-anchor': 'middle' }, gg); w.textContent = '⚠'; const tt = vrEl('title', {}, w); tt.textContent = 'This label does not fit the box (' + fit.needed + ' lines needed): the text is cut off.'; }
       lines.forEach((t, i) => { const x = vrEl('text', { x: b.x + 12, y: b.y + 19 + i * 15, 'font-size': 12, fill: 'var(--fg)', 'text-decoration': n.status === 'removed' ? 'line-through' : 'none' }, gg); x.textContent = (n.collapsed && i === 0 ? '▸ ' : '') + t; });

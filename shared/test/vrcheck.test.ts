@@ -20,7 +20,7 @@ describe("text fit: one rule for the layout, the page and vr_graph.py", () => {
     test(`"${c.label.slice(0, 40)}"${c.stereotype ? " (stereotype)" : ""}${c.folded ? " (folded)" : ""}: width, lines, clipped as pinned`, () => {
       const w = vrNodeWidth(c.label, c.folded)
       expect(w).toBe(c.width)
-      const f = vrFitLabel(c.label, w, c.stereotype)
+      const f = vrFitLabel(c.label, w, c.stereotype, c.view)
       expect({ lines: f.lines, clipped: f.clipped, needed: f.needed }).toEqual({ lines: c.lines, clipped: c.clipped, needed: c.needed })
     })
   }
@@ -108,5 +108,29 @@ describe("the review shows the check as a warning beside the view", () => {
     const r = await visualReview(dir, "W-145")
     const all = Object.values(r.views).flatMap((v: any) => v?.issues ?? [])
     expect(all.some((i: any) => i.code === "label_clipped")).toBe(true)
+  })
+})
+
+describe("a sequence message box grows to the lines its label needs", () => {
+  const ev = [{ tier: "inferred", note: "test" }]
+  const seq = (label: string): any => ({
+    schema_version: "1.0.0", view: "seq", title: "seq", meta: {},
+    lanes: [{ id: "lane:A", label: "A" }, { id: "lane:B", label: "B" }],
+    nodes: [
+      { id: "m1", label, kind: "message", status: "context", lane: "lane:A", order: 1, seq: { to: "lane:B", arrow: "->>" }, evidence: ev },
+      { id: "m2", label: "ok", kind: "message", status: "context", lane: "lane:B", order: 2, seq: { to: "lane:A", arrow: "-->>" }, evidence: ev },
+    ],
+    edges: [], flows: [{ id: "f", label: "f", status: "context", lanes: ["lane:A", "lane:B"], after: ["m1", "m2"], evidence: ev }],
+  })
+  const four = "under pg_advisory_xact_lock(instance): read the node's graph, node_kind and more words"
+  test("4 lines: taller than a one-line box, drawn whole (no label_clipped)", async () => {
+    const g = seq(four), L = await layoutGraph(g)
+    expect(L.boxes.m1.h).toBeGreaterThan(L.boxes.m2.h)
+    expect(vrFitLabel(four, L.boxes.m1.w, false, "seq").clipped).toBe(false)
+    expect(checkLayout(g, L).map((i) => i.code)).not.toContain("label_clipped")
+  })
+  test("more than the seq maximum is still reported", async () => {
+    const g = seq("word ".repeat(40).trim()), L = await layoutGraph(g)
+    expect(checkLayout(g, L).map((i) => i.code)).toContain("label_clipped")
   })
 })

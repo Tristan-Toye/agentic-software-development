@@ -156,6 +156,31 @@
    "needed": 3
   },
   {
+   "label": "under pg_advisory_xact_lock(instance): read the knode graph, node_kind and more words to fill the lines here",
+   "view": "seq",
+   "width": 250,
+   "lines": [
+    "under",
+    "pg_advisory_xact_lock(instance):",
+    "read the knode graph, node_kind",
+    "and more words to fill the lines",
+    "here"
+   ],
+   "clipped": false,
+   "needed": 5
+  },
+  {
+   "label": "under pg_advisory_xact_lock(instance): read the knode graph, node_kind and more words to fill the lines here",
+   "width": 250,
+   "lines": [
+    "under",
+    "pg_advisory_xact_lock(instance):",
+    "read the knode graph, node_kin…"
+   ],
+   "clipped": true,
+   "needed": 5
+  },
+  {
    "label": "one two three four five six seven eight nine ten eleven twelve thirteen fourteen",
    "width": 250,
    "lines": [

@@ -68,7 +68,7 @@ MAP_GROUP = 15
 
 # The canvas's one text-fit rule: the same numbers and algorithm as VR_TEXT, vrNodeWidth and vrFitLabel in vrtext.ts.
 # references/visual-review/text-fit.fixtures.json pins the two together (selftest here, shared/test/vrtext.test.ts there).
-TEXT = {"charPx": 6.6, "pad": 28, "inset": 24, "minW": 130, "maxW": 250, "foldedExtra": 36, "maxLines": 3}
+TEXT = {"charPx": 6.6, "pad": 28, "inset": 24, "minW": 130, "maxW": 250, "foldedExtra": 36, "maxLines": 3, "seqMaxLines": 5}
 TEXT_FIXTURES = os.path.join(REF_DIR, "text-fit.fixtures.json")
 
 
@@ -81,7 +81,7 @@ def node_width(label: str, folded: bool = False) -> int:
     return max(TEXT["minW"], min(TEXT["maxW"] + extra, _js_round(len(label) * TEXT["charPx"] + TEXT["pad"] + extra)))
 
 
-def text_fit(label: str, box_w: float, stereotype: bool = False) -> dict:
+def text_fit(label: str, box_w: float, stereotype: bool = False, view: str | None = None) -> dict:
     """The lines a label is drawn in inside a box `box_w` wide, as the page draws it: {"lines", "clipped", "needed"}."""
     w = max(1, int((box_w - TEXT["inset"]) // TEXT["charPx"]))
     out: list = []
@@ -102,7 +102,7 @@ def text_fit(label: str, box_w: float, stereotype: bool = False) -> dict:
             cur = cur[cut:]
     if cur:
         out.append(cur)
-    room = TEXT["maxLines"] - (1 if stereotype else 0)
+    room = TEXT["seqMaxLines" if view == "seq" else "maxLines"] - (1 if stereotype else 0)
     clipped = len(out) > room
     lines = out[:room]
     if clipped and lines:
@@ -316,14 +316,13 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
         if shape_broken:
             return issues
 
-    # A sequence diagram's messages and notes are drawn as arrow text and note text by seqLayout, not wrapped into a node box.
-    for i, n in enumerate([] if graph.get("view") == "seq" else graph.get("nodes", [])):
+    for i, n in enumerate(graph.get("nodes", [])):
         if isinstance(n, dict) and isinstance(n.get("label"), str):
-            fit = text_fit(n["label"], node_width(n["label"]), bool(n.get("stereotype")))
+            fit = text_fit(n["label"], node_width(n["label"]), bool(n.get("stereotype")), graph.get("view"))
             if fit["clipped"]:
                 issues.append(_issue("label_too_long", "nodes[%d].label" % i,
                                      "the label needs %d lines (a stereotype takes one) in the widest node box and the canvas draws %d: shorten it"
-                                     % (fit["needed"], TEXT["maxLines"])))
+                                     % (fit["needed"], TEXT["seqMaxLines" if graph.get("view") == "seq" else "maxLines"])))
 
     lanes = [x for x in graph.get("lanes", []) if isinstance(x, dict)]
 
@@ -452,7 +451,7 @@ def _selftest() -> int:
     check("textfit:cases", len(tf["cases"]) >= 10)
     for c in tf["cases"]:
         w = node_width(c["label"], bool(c.get("folded")))
-        f = text_fit(c["label"], w, bool(c.get("stereotype")))
+        f = text_fit(c["label"], w, bool(c.get("stereotype")), c.get("view"))
         check("textfit:" + c["label"][:30], (w, f["lines"], f["clipped"], f["needed"]) == (c["width"], c["lines"], c["clipped"], c["needed"]),
               json.dumps([w, f]))
     # A label that needs a fourth line is reported, a short one is not; the message comes from the same rule.

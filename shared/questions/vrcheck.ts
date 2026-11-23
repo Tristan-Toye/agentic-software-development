@@ -40,8 +40,8 @@ export function checkLayout(graph: any, layout: Layout | null | undefined): Issu
   const boxes = layout.boxes ?? {}
   const nodes: any[] = (graph.nodes ?? []).filter((n: any) => boxes[n.id])
   // A sequence diagram's messages and notes are arrow and note text (seqLayout), not wrapped into a node box.
-  for (const n of graph.view === "seq" ? [] : nodes) {
-    const f = vrFitLabel(String(n.label ?? ""), boxes[n.id].w, !!n.stereotype)
+  for (const n of nodes) {
+    const f = vrFitLabel(String(n.label ?? ""), boxes[n.id].w, !!n.stereotype, graph.view)
     if (f.clipped) out.push({ code: "label_clipped", where: n.id, message: `the label of ${n.id} needs ${f.needed} lines or a wider box; the box draws ${f.lines.length}` })
   }
   for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++) {

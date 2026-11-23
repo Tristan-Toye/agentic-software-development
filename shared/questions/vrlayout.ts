@@ -6,7 +6,7 @@ import { createHash } from "node:crypto"
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { checkLayout } from "./vrcheck.ts"
-import { vrNodeWidth } from "./vrtext.ts"
+import { vrBoxHeight, vrFitLabel, vrNodeWidth } from "./vrtext.ts"
 // @ts-ignore: vendored CommonJS build, no types
 import ElkModule from "./vendor/elk/elk-api.js"
 
@@ -125,8 +125,11 @@ export function closeLayout(): void {
 }
 
 /** A folded box draws a ▸ before its label and a fold button after it: room for both (vrNodeWidth). */
-const size = (g: any, label: string, folded = false): { width: number; height: number } =>
-  ({ width: vrNodeWidth(label, folded), height: isLaneView(g.view) ? 62 : 50 })
+const size = (g: any, label: string, folded = false, stereotype = false): { width: number; height: number } => {
+  const width = vrNodeWidth(label, folded), base = isLaneView(g.view) ? 62 : 50
+  // A sequence message or note grows in height to the lines its label needs (up to the seq maximum): its rows stack, so there is room.
+  return { width, height: g.view === "seq" ? vrBoxHeight(vrFitLabel(label, width, stereotype, "seq").needed, base) : base }
+}
 
 /** The size of an edge label as the page draws it (11 px text on a backing rect). */
 export const edgeLabelSize = (label: string): { width: number; height: number } => ({ width: Math.ceil(label.length * 6.1) + 8, height: 15 })
@@ -244,7 +247,7 @@ export function seqLayout(g: any): Layout {
   const laneIdx = (id: unknown): number => lanes.findIndex((l) => l.id === id)
   const laneOf = (n: any): number => Math.max(0, laneIdx(n.lane))
   const recvOf = (n: any): number => { const r = seqReceiver(n); const i = r === undefined ? -1 : laneIdx(r); return i < 0 ? laneOf(n) : i }
-  const sz = new Map<string, { width: number; height: number }>(order.map((id) => [id, size(g, node.get(id).label)]))
+  const sz = new Map<string, { width: number; height: number }>(order.map((id) => [id, size(g, node.get(id).label, false, !!node.get(id).stereotype)]))
   const isMsg = (n: any): boolean => n.kind !== "note"
   // Gap between neighbouring lifelines: wide enough for the column header and, for every message, the label across the lifelines it spans.
   const COL = 170
