@@ -8,7 +8,7 @@ orchestrator only judges what a script cannot: the items this call flags `ask`.
 
     fix_deferred_prep.py --root R --dossier W-117 [--items D-1,D-3] [--direct D-4]
                          [--test-command CMD] [--hooks TEXT] [--env-script F] [--path-prepend DIR]
-                         [--pr-json FILE] [--no-compose]
+                         [--assign D-n=PKG] [--pr-json FILE] [--no-compose]
     fix_deferred_prep.py --selftest
 
 What it does, in order (every step is safe to run again):
@@ -36,8 +36,14 @@ What it does, in order (every step is safe to run again):
 5. Logs `DEFERRED-FIX: branch ...` (new branches only) and `DEFERRED-TRIAGE: D-n -> direct ...`
    through dossier_edit's log path (a line already there is not added again), sets each direct
    item `fixing` in the record, and commits that log in the worktree so the wave starts clean.
+   `.discovery/` is usually gitignored, so a worktree without the dossier gets its build copy and the
+   gates file copied in by the same call (nothing is overwritten).
 6. Writes the change-request document `<worktree>/.agent-staging/fix-deferred/crs-<ID>.md`
-   (one `## CR-n` per direct item), runs check_crs.py on it and compose_payloads.py --crs.
+   (one `## CR-n` per direct item, with a `- Tests:` line: the proving test's file or test project,
+   which the fix package owns), runs check_crs.py on it and compose_payloads.py --crs
+   `--group-conflicts --package-worktrees`: packages that share a path become one, and each package
+   gets its own worktree `<worktree>-<PKG>` (branch `fix/<ID>-deferred-<pkg>`), so Step 4 runs them
+   concurrently and merges them with merge_packages.py `--wave-args`.
 7. Saves its facts in `R/.discovery/deferred/<ID>.fix.json` for fix_deferred_pr.py and prints:
 
        WORKTREE: <path>
@@ -54,8 +60,8 @@ What it does, in order (every step is safe to run again):
 `--test-command` is the fix implementers' TEST_COMMAND; leave it out only when the dossier's
 `GATES:` line (or `.discovery/analysis/gates-<ID>.txt`) names the gates file, which then is it.
 
-Exit codes: 0 prepared (UNROUTED is exit 1: rule on the lines, re-run with `--assign` through
-compose_payloads.py by hand); 2 unusable input (no record, unknown D-id, no dossier). No
+Exit codes: 0 prepared (UNROUTED is exit 1: rule on the lines, re-run this script with
+`--assign D-n=PKG`); 2 unusable input (no record, unknown D-id, no dossier). No
 third-party imports.
 """
 
@@ -131,20 +137,25 @@ def _names_base(fm: dict[str, str]) -> bool:
 
 
 def build_copy(root: str, dossier: str, fm: dict[str, str]) -> tuple[dict[str, str], str]:
+    return build_copy_text(root, dossier, fm)[:2]
+
+
+def build_copy_text(root: str, dossier: str, fm: dict[str, str]) -> tuple[dict[str, str], str, str]:
     """The front matter to stack on, and where it came from. The main checkout's copy is often the pre-build one
     (no branch, no PR: the build wrote both on its own branch, which merges into a stub, not into the checkout's
     branch); then the newest copy on any ref that names a PR or a branch is the build's own."""
+    here = open(dossier, encoding="utf-8").read()
     if _names_base(fm):
-        return fm, "checkout"
+        return fm, "checkout", here
     rel = os.path.relpath(dossier, root)
     rc, out = git(root, "log", "--all", "--format=%H", "-n", "60", "--", rel)
     for sha in (out.split() if rc == 0 else []):
-        rc2, text = git(root, "show", f"{sha}:{rel}")
+        rc2, text2 = git(root, "show", f"{sha}:{rel}")
         if rc2 == 0:
-            cand = front(text)
+            cand = front(text2)
             if _names_base(cand):
-                return cand, f"build copy @ {sha[:9]}"
-    return fm, "checkout"
+                return cand, f"build copy @ {sha[:9]}", text2
+    return fm, "checkout", here
 
 
 def pr_state(root: str, number: int, pr_json: str | None) -> dict:
@@ -315,7 +326,50 @@ def other_dossiers(did: str, item: dict, texts: dict[str, str]) -> tuple[str, li
 
 # -- the change-request document -------------------------------------------
 
-def cr_document(did: str, items: list[dict]) -> str:
+def proving_tests(rel: str, files: list[str]) -> list[str]:
+    """Where the proving test of a fix at REL lives, from the tracked FILES: an existing test file or
+    test project of that source when there is one, else the place the repository's own layout puts
+    one (a new file the implementer creates). The fix package owns these, so the implementer may write
+    the failing test the change request asks for first. [] when the layout names none (an inline Rust
+    `#[cfg(test)]` module lives in the source file itself)."""
+    d, base = os.path.split(rel)
+    stem, ext = os.path.splitext(base)
+    ext = ext.lower()
+    if re.search(r"(^|/)(tests?|__tests__|spec)/|(\.|_)(test|spec)\.\w+$|\.tests?(/|$)", rel, re.I):
+        return []   # the item already sits in a test
+    if ext == ".py":
+        hit = [f for f in files if os.path.basename(f) in (f"test_{stem}.py", f"{stem}_test.py")]
+        if hit:
+            return hit[:2]
+        parts = d.split("/") if d else []
+        for n in range(len(parts), -1, -1):
+            a = "/".join(parts[:n])
+            if any(f.startswith((a + "/" if a else "") + "tests/") for f in files):
+                return [(a + "/" if a else "") + f"tests/test_{stem}.py"]
+        return [f"tests/test_{stem}.py"]
+    if ext == ".cs":
+        parts = d.split("/") if d else []
+        csprojs = [f for f in files if f.endswith(".csproj")]
+        for n in range(len(parts), 0, -1):
+            here = "/".join(parts[:n])
+            mine = [f for f in csprojs if os.path.dirname(f) == here]
+            if mine:
+                name = os.path.splitext(os.path.basename(mine[0]))[0]
+                pat = re.compile(r"^" + re.escape(name) + r"\.([\w.]+\.)?(Unit)?Tests?$")
+                return sorted({os.path.dirname(f) + "/" for f in csprojs
+                               if pat.match(os.path.splitext(os.path.basename(f))[0])})[:2]
+        return []
+    if ext in (".ts", ".tsx", ".js", ".jsx", ".mjs"):
+        hit = [f for f in files if re.fullmatch(re.escape(stem) + r"\.(test|spec)" + re.escape(ext), os.path.basename(f))]
+        return hit[:2] or [(d + "/" if d else "") + f"{stem}.test{ext}"]
+    if ext == ".go":
+        return [(d + "/" if d else "") + f"{stem}_test.go"]
+    if ext in (".java", ".kt") and "src/main/" in rel:
+        return [rel.replace("src/main/", "src/test/", 1).replace(base, f"{stem}Test{ext}")]
+    return []
+
+
+def cr_document(did: str, items: list[dict], files: list[str] | None = None) -> str:
     parts = [f"# Change requests — deferred issues of {did}\n"]
     for n, it in enumerate(items, 1):
         loc = item_loc(it)
@@ -327,6 +381,7 @@ def cr_document(did: str, items: list[dict]) -> str:
                 if s != where and s not in others:
                     others.append(s)
         sib = ", ".join(others) if others else f"none (searched: the deferred record of {did} names no other site)"
+        tests = ", ".join(proving_tests(loc[0], files)) if loc and files is not None else ""
         title = one_line(it.get("title") or it.get("evidence"), 100)
         parts.append(
             f"## CR-{n}: {it['id']} — {title}\n"
@@ -336,11 +391,33 @@ def cr_document(did: str, items: list[dict]) -> str:
             f"- Behaviour held fixed: every behaviour the item does not name; the public signatures\n"
             f"- Rule: {one_line(it.get('kind') or 'deferred issue', 60)}\n"
             f"- Severity: should-fix\n"
-            f"- Siblings: {sib}\n")
+            f"- Siblings: {sib}\n" + (f"- Tests: {tests}\n" if tests else ""))
     return "\n".join(parts)
 
 
 # -- the worktree -----------------------------------------------------------
+
+def seed_discovery(root: str, wt: str, did: str, dossier: str, text: str) -> str | None:
+    """`.discovery/` is gitignored in most repositories, so the stacked worktree holds no dossier and no
+    gates file. One call copies what the run reads: the dossier (the build copy, not the checkout's
+    pre-build one) and the gates file the gates run from. Returns the dossier's path in WT, or None
+    when the source is not in the checkout either. Never overwrites a file."""
+    rel = os.path.relpath(dossier, root)
+    if rel.startswith(".."):
+        return None
+    target = os.path.join(wt, rel)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    if not os.path.exists(target):
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    for extra in glob.glob(os.path.join(root, ".discovery", "analysis", f"gates-{did}*.txt")):
+        copy = os.path.join(wt, os.path.relpath(extra, root))
+        if not os.path.exists(copy):
+            os.makedirs(os.path.dirname(copy), exist_ok=True)
+            with open(extra, "rb") as src, open(copy, "wb") as dst:
+                dst.write(src.read())
+    return target
+
 
 def worktree_path(root: str, did: str) -> str:
     root = os.path.realpath(root)
@@ -471,13 +548,13 @@ def prepare(args) -> int:
     dossier = find_dossier(root, did)
     if not dossier:
         raise Refused(f"no dossier {did}-*.md under {root}/.discovery/dossiers")
-    fm, source = build_copy(root, dossier, front(open(dossier, encoding="utf-8").read()))
+    fm, source, dossier_text = build_copy_text(root, dossier, front(open(dossier, encoding="utf-8").read()))
     if source != "checkout":
         print(f"fix_deferred_prep: {did}: the checkout's dossier is the pre-build copy; stacking from the {source}")
     base = resolve_base(fm, root, args.pr_json)
     wt, kind, fork = ensure_branch(root, did, base["base"])
     branch = f"fix/{did}-deferred"
-    wt_dossier = find_dossier(wt, did)
+    wt_dossier = find_dossier(wt, did) or seed_discovery(root, wt, did, dossier, dossier_text)
     if not wt_dossier:
         raise Refused(f"the worktree {wt} holds no dossier {did}-*.md: the stack base {base['base']} lacks the build copy")
 
@@ -559,7 +636,7 @@ def prepare(args) -> int:
         os.makedirs(stage, exist_ok=True)
         crs = os.path.join(stage, f"crs-{did}.md")
         with open(crs, "w", encoding="utf-8") as fh:
-            fh.write(cr_document(did, direct))
+            fh.write(cr_document(did, direct, git(wt, "ls-files")[1].splitlines()))
         rc1, chk = run([sys.executable, os.path.join(HERE, "check_crs.py"), crs])
         summary = chk.splitlines()[-1] if chk else "no output"
         bad = [l for l in chk.splitlines() if re.match(r"\S+ demote \(", l)]
@@ -568,7 +645,14 @@ def prepare(args) -> int:
         os.makedirs(os.path.dirname(wave), exist_ok=True)
         cmd = [sys.executable, os.path.join(HERE, "compose_payloads.py"), "--kind", "implementer", "--dossier", wt_dossier,
                "--root", wt, "--host", "claude", "--crs", crs, "--out", wave,
-               "--hooks", args.hooks or fm.get("hooks") or "none (the dossier records no commit hook)"]
+               "--hooks", args.hooks or fm.get("hooks") or "none (the dossier records no commit hook)",
+               # concurrent fix packages: one worktree each, packages that share a path become one
+               "--group-conflicts", "--package-worktrees"]
+        for pair in args.assign or []:
+            # D-n=PKG names the deferred item; its change request is the one at its position in the document
+            key, _, pkg = pair.partition("=")
+            ids = [i["id"] for i in direct]
+            cmd += ["--assign", (f"CR-{ids.index(key) + 1}" if key in ids else key) + "=" + pkg]
         if args.test_command:
             cmd += ["--test-command", args.test_command]
         if args.env_script:
@@ -582,6 +666,7 @@ def prepare(args) -> int:
             rc = 1
         else:
             files = [l.split(" -> ")[1].split(" sha ")[0] for l in comp.splitlines() if " -> " in l]
+            out += [l for l in comp.splitlines() if l.startswith("GROUPED")]
             out.append(f"PAYLOADS: {wave} — " + ", ".join(files))
             st["crs"], st["wave"] = crs, wave
     with open(state_path(root, did), "w", encoding="utf-8") as fh:
@@ -663,7 +748,7 @@ def selftest() -> int:
 
         ns = argparse.Namespace(root=main, dossier="W-9", items=None, direct=None, test_command="python3 -m pytest -q", hooks=None,
                                 env_script=None, path_prepend=None, pr_json=pj, no_compose=False,
-                                report=os.path.join(tmp, "absent.deferred.md"), sign=False)
+                                report=os.path.join(tmp, "absent.deferred.md"), sign=False, assign=None)
         import io
         import contextlib
         buf = io.StringIO()
@@ -880,7 +965,7 @@ def selftest() -> int:
         sh(main, "push", "-q", "origin", "stub")
         ns = argparse.Namespace(root=main, dossier="W-9", items=None, direct=None, test_command="true", hooks=None,
                                 env_script=None, path_prepend=None, pr_json=pj, no_compose=True,
-                                report=os.path.join(tmp, "absent.deferred.md"), sign=False)
+                                report=os.path.join(tmp, "absent.deferred.md"), sign=False, assign=None)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             prepare(ns)
@@ -914,6 +999,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--direct", help="D-n[,D-m]: items the owner ruled 'fix it in this PR anyway'")
     ap.add_argument("--test-command")
     ap.add_argument("--hooks")
+    ap.add_argument("--assign", action="append", metavar="D-n=PKG",
+                    help="the package an UNROUTED item belongs to (repeatable); the one place a ruling goes, never compose_payloads by hand")
     ap.add_argument("--env-script")
     ap.add_argument("--path-prepend", action="append")
     ap.add_argument("--pr-json", help="a JSON file standing in for `gh pr view` (tests)")

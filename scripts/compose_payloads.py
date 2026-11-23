@@ -66,7 +66,7 @@ changes only those rows, in place, with Edit.
         [--hook-outputs STEP:GLOB ...] [--no-stub-hints]
     compose_payloads.py --kind implementer --dossier LIVE_DOSSIER --root X --host claude \\
         --crs DOC[,DOC...] --out WAVE_ARGS.json [--assign ID=PKG ...] [--base SHA] \\
-        [--test-command CMD] [--hooks TEXT]
+        [--group-conflicts] [--package-worktrees] [--test-command CMD] [--hooks TEXT]
     compose_payloads.py --emit-prompt PAYLOAD
     compose_payloads.py --refresh-contract PAYLOAD [PAYLOAD ...] --root X \\
         --contract-paths src/flush.py
@@ -89,7 +89,12 @@ Location (a few before, a few after, line-numbered, bounded), read from the tree
 fix implementer opens the spot instead of searching for it; `CRS` stays the authority.
 Each fix package's OWNED_PATHS is its row plus every Location and literal-source Siblings path its
 CRs name (#217; #490: no glob, dotfile or lock); a path two fix packages would both own prints `CONFLICT: ...` and
-nothing is written.
+nothing is written. A CR's `- Tests:` entries (the proving test's file or project directory) are owned too.
+`--group-conflicts` turns such a CONFLICT into one package (`GROUPED: P2 into P1 ...`). `--package-worktrees`
+gives each fix package its own worktree `<X>-<CODE>` on branch `<branch>-<code>` (the /work-on shape; the wave
+args carry that root and branch, so phase4-wave runs the packages concurrently) and merge_packages.py
+`--wave-args` merges them back. Fix payloads' TEST_COMMAND runs `run_gates.py --affected-since <base>` only;
+`{tests}` in `--test-command` becomes the package's `Tests:` paths.
 Exit 0 written and every payload linted clean; 1 unrouted, refused or a lint failure.
 
 `--refresh-contract` re-reads the contract files and rewrites the pasted
@@ -675,7 +680,8 @@ def hook_outputs_block(specs: list[str]) -> str:
     return "\n".join(lines)
 
 
-def gates_test_command(root: str, dossier_text: str, dossier_id: str) -> str | None:
+def gates_test_command(root: str, dossier_text: str, dossier_id: str, since: str = "",
+                       run_root: str = "") -> str | None:
     """MODE fix, no --test-command: the run's whole gates file as one command
     (`run_gates.py FILE --root X`), so a fix round is never narrower or stricter
     than the GATES: list of Phase 2. The file is the dossier's `GATES: <file> —`
@@ -690,8 +696,11 @@ def gates_test_command(root: str, dossier_text: str, dossier_id: str) -> str | N
     path = rel if os.path.isabs(rel) else os.path.join(root, rel)
     if not os.path.isfile(path):
         return None
-    return "python3 %s %s --root %s" % (
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_gates.py"), path, root)
+    cmd = "python3 %s %s --root %s" % (
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_gates.py"), path, run_root or root)
+    # A fix implementer runs only the gates its own changed paths touch; the one full run is the
+    # orchestrator's, after the merge (--affected-since REV: run_gates.py, "Path-affected gates").
+    return cmd + " --affected-since %s" % since if since else cmd
 
 
 def logged_test_command(cmd: str, dossier_id: str, tag: str) -> str:
@@ -909,7 +918,9 @@ def compose_implementer(ctx: dict) -> list[Field]:
 
     # MODE fix: the whole gates list first, then the test subset the orchestrator
     # runs itself (--test-command, e.g. the VM suite), never one in place of the other.
-    gates_cmd = gates_test_command(root, dossier_text, fm.get("id", "")) if mode == "fix" else None
+    gates_cmd = gates_test_command(
+        root, dossier_text, fm.get("id", ""), since=getattr(args, "base", None) or "",
+        run_root=getattr(args, "pkg_root", None) or "") if mode == "fix" else None
     test_cmd = logged_test_command(
         args.test_command, fm.get("id", ""), args.package.split()[0] if args.package else mode
     ) if args.test_command else None
@@ -1991,6 +2002,15 @@ def _owns(entry: str, path: str) -> bool:
     return path == entry or path.startswith(entry.rstrip("/") + "/")
 
 
+def cr_test_paths(body: str) -> list[str]:
+    """The CR's `- Tests:` entries: where the proving test lives (a file, or a test project
+    directory with a trailing `/`), written by fix_deferred_prep.py. The fix package owns
+    them, so its implementer may write the failing test the CR asks for first."""
+    value = re.sub(r"\([^)]*\)", " ", cc.fields(body).get("Tests", ""))
+    return [t for t in (x.strip().strip("`'\"") for x in re.split(r"[\s,;]+", value))
+            if t and t.lower() not in ("none", "n/a", "-")]
+
+
 def cr_named_paths(body: str, root: str) -> list[str]:
     """#217: every repo path one CR section names — its Location's path:line
     entries and its Siblings entries (with or without :line; `none` and the
@@ -2007,6 +2027,8 @@ def cr_named_paths(body: str, root: str) -> list[str]:
         if rel not in out and not rel.startswith(".."):
             out.append(rel)
     for raw in re.findall(r"([^\s,;`()\[\]]+):\d+", fs.get("Location", "")):
+        add(raw)
+    for raw in cr_test_paths(body):
         add(raw)
     sib = re.sub(r"\([^)]*\)", " ", fs.get("Siblings", ""))
     for raw in re.split(r"[\s,;]+", sib):
@@ -2171,6 +2193,49 @@ def unique_absolute(paths: list[str], root: str) -> list[str]:
     return out
 
 
+def group_conflicting(routed: dict[str, list[tuple[str, str]]], packages: list[list[str]],
+                      root: str) -> tuple[dict[str, list[tuple[str, str]]], list[str]]:
+    """--group-conflicts: two fix packages that would both own a path become ONE package (the first
+    in the table's order takes the other's CRs), repeated until the owned paths are disjoint. Returns
+    (routed, `GROUPED:` lines). Packages that touch the same files must never run side by side."""
+    order = [c[0] for c in packages]
+    notes: list[str] = []
+    while True:
+        _added, conflicts = fix_owned_paths(routed, packages, root)
+        if not conflicts:
+            return routed, notes
+        m = re.match(r"CONFLICT: (\S+) is named by CRs routed to (\S+) and (\S+) ", conflicts[0])
+        if not m:
+            return routed, notes
+        names = {n.split()[0]: n for n in routed}
+        a, b = sorted((names[m.group(2)], names[m.group(3)]), key=lambda n: order.index(n) if n in order else 99)
+        routed[a] = routed[a] + routed.pop(b)
+        notes.append("GROUPED: %s into %s (both own %s)" % (b.split()[0], a.split()[0], m.group(1)))
+
+
+def package_worktree(root: str, code: str, branch: str, base: str) -> tuple[str, str]:
+    """(path, branch) of one fix package's own worktree, `<root>-<CODE>` on `<branch>-<code>` forked
+    from BASE, exactly as /work-on's Phase 4 forks `<X>-P1`. An existing worktree is reused, never
+    recreated. The repository's executable `.worktree-setup.sh <root> <path>` runs for a new one."""
+    path = root.rstrip("/") + "-" + code.upper()
+    pkg_branch = "%s-%s" % (branch, code.lower())
+    rc, listing = git_out(root, "worktree", "list", "--porcelain")
+    known = {os.path.realpath(l[9:]) for l in listing.splitlines() if l.startswith("worktree ")} if rc == 0 else set()
+    if os.path.realpath(path) in known:
+        return path, pkg_branch
+    if os.path.exists(path):
+        raise Refusal("%s exists and is not a worktree of this repository" % path)
+    have = git_out(root, "rev-parse", "--verify", "--quiet", "refs/heads/" + pkg_branch)[0] == 0
+    cmd = ["git", "-C", root, "worktree", "add"] + ([path, pkg_branch] if have else ["-b", pkg_branch, path, base])
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode:
+        raise Refusal("git worktree add %s failed: %s" % (path, (proc.stderr or proc.stdout).strip()[:200]))
+    setup = os.path.join(root, ".worktree-setup.sh")
+    if os.access(setup, os.X_OK):
+        subprocess.run([setup, root, path], capture_output=True, text=True, check=False)
+    return path, pkg_branch
+
+
 def route_main(args: argparse.Namespace) -> int:
     """`--crs`: route, compose one fix payload per package, lint, write the wave args."""
     import copy
@@ -2200,6 +2265,9 @@ def route_main(args: argparse.Namespace) -> int:
             print("ROUTED: %d CR to %d package(s); UNROUTED: %d; nothing written — rule, then re-run with --assign ID=PKG"
                   % (total, len(routed), len(unrouted)))
             return 1
+        grouped: list[str] = []
+        if args.group_conflicts:
+            routed, grouped = group_conflicting(routed, work_packages(dossier_text), root)
         added, conflicts = fix_owned_paths(routed, work_packages(dossier_text), root)
         if conflicts:
             print("\n".join(conflicts))
@@ -2233,7 +2301,17 @@ def route_main(args: argparse.Namespace) -> int:
             ns = copy.copy(args)
             ns.package = pkg
             ns.out = os.path.join(outdir, "fix-%s-%s.md" % (fm.get("id", "run"), code))
+            pkg_root, pkg_branch = root, branch
+            if args.package_worktrees:
+                pkg_root, pkg_branch = package_worktree(root, code, checked_out_branch(root) or branch, base)
+            ns.base, ns.pkg_root = base, pkg_root if pkg_root != root else ""
             ns.set = list(args.set) + ["MODE=fix", "CRS=" + crs]
+            if pkg_root != root:
+                ns.set += ["WORKTREE_DIR=" + pkg_root, "BRANCH=" + pkg_branch]
+            if ns.test_command and "{tests}" in ns.test_command:
+                # the package's own proving tests, so the implementer runs only those
+                tests = [t for _stem, body in routed[pkg] for t in cr_test_paths(body)]
+                ns.test_command = ns.test_command.replace("{tests}", " ".join(dict.fromkeys(tests)))
             excerpts = cr_excerpts(routed[pkg], root)
             if excerpts and not any(x.startswith("CR_EXCERPTS=") for x in args.set):
                 ns.set.append("CR_EXCERPTS=" + excerpts)
@@ -2251,17 +2329,17 @@ def route_main(args: argparse.Namespace) -> int:
             stage_oversized(fields, ns.out, root)
             write_payload(ns.out, fields, True, VERBATIM_FIELDS + ("CRS",))
             rc, out = _run([sys.executable, os.path.join(SCRIPTS_DIR, "check_payload.py"), ns.out,
-                            "--kind", "implementer", "--host", args.host, "--worktree", root])
+                            "--kind", "implementer", "--host", args.host, "--worktree", pkg_root])
             if rc != 0:
                 print("LINT FAIL %s %s\n%s" % (code, ns.out, "\n".join(out.splitlines()[:6])))
                 return 1
             with open(ns.out, "rb") as fh:
                 sha = hashlib.sha256(fh.read()).hexdigest()
             owned = unique_absolute(
-                [e.strip() for e in find_package_row(dossier_text, pkg)[1].split(",") if e.strip()] + added.get(pkg, []), root)
+                [e.strip() for e in find_package_row(dossier_text, pkg)[1].split(",") if e.strip()] + added.get(pkg, []), pkg_root)
             items.append({"agentType": "agentic-software-development:implementer", "label": "FIX-" + code,
-                          "payloadPath": ns.out, "payloadSha256": sha, "root": root,
-                          "branch": branch, "base": base, "owned": owned,
+                          "payloadPath": ns.out, "payloadSha256": sha, "root": pkg_root,
+                          "branch": pkg_branch, "base": base, "owned": owned,
                           "kind": "implementer", "pluginRoot": os.path.abspath(args.plugin_root)})
             lines.append("%s %d CR -> %s sha %s%s" % (code, len(routed[pkg]), ns.out, sha[:12],
                                                      " (+owns %s)" % ", ".join(added[pkg]) if added.get(pkg) else ""))
@@ -2270,7 +2348,7 @@ def route_main(args: argparse.Namespace) -> int:
     except Refusal as err:
         print("compose_payloads: REFUSED — %s" % err, file=sys.stderr)
         return 1
-    print("\n".join(lines))
+    print("\n".join(grouped + lines))
     print("ROUTED: %d CR to %d payload(s), all linted clean; UNROUTED: 0; wave args: %s" % (total, len(items), args.out))
     return 0
 
@@ -2320,6 +2398,11 @@ def main(argv: list[str]) -> int:
                         help="implementer: route these change-request documents to one fix payload per owning package; --out is the phase4-wave args file")
     parser.add_argument("--assign", action="append", default=[], metavar="ID=PKG",
                         help="--crs: the package the orchestrator ruled for an UNROUTED id; repeatable")
+    parser.add_argument("--group-conflicts", action="store_true",
+                        help="--crs: fix packages that would own the same path become one package, not a CONFLICT")
+    parser.add_argument("--package-worktrees", action="store_true",
+                        help="--crs: one worktree per fix package (<root>-<CODE>, branch <branch>-<code>), "
+                             "so the fix implementers run concurrently; merge with merge_packages.py --wave-args")
     parser.add_argument("--base", metavar="SHA", help="--crs: the sha the fix round forks from (default HEAD of --root)")
     parser.add_argument("--no-stub-hints", action="store_true", help="leave the `# stub locations` aid out of OWNED_PATHS")
     parser.add_argument("--emit-prompt", metavar="PAYLOAD",
@@ -3556,6 +3639,62 @@ def selftest() -> int:
               bool(items2) and all(os.path.isabs(o) and w["owned"].count(o) == 1 for w in items2 for o in w["owned"]))
         check("#432: unique_absolute resolves a relative path and drops its absolute twin",
               unique_absolute(["src/a.py", os.path.join(root, "src/a.py"), "d/"], root) == [os.path.join(root, "src/a.py"), os.path.join(root, "d") + "/"])
+
+        # --- /fix-deferred: a Tests: path is owned, conflicts group, packages get worktrees, gates run affected-only ---
+        sec_t = ("## CR-5: name the cause 5\n- Location: src/flush.py:10\n- Observed: o\n- Required: r\n"
+                 "- Behaviour held fixed: same variant\n- Rule: errors carry their cause\n"
+                 "- Severity: should-fix\n- Siblings: none (searched: src)\n- Tests: tests/unit/test_flush_cause.py\n\n")
+        grp_doc = os.path.join(root, "grp.md")
+        with open(grp_doc, "w", encoding="utf-8") as fh:
+            fh.write(crs_head + sec_t + cr_section(6, "src/reload.py:5") + sec4.replace("CR-4", "CR-7").replace("lib/consts.py:4, ", "src/flush.py:2, "))
+        grp_json = os.path.join(root, ".agent-staging", "fixgrp", "wave.json")
+        grp_argv = ["--kind", "implementer", "--dossier", dossier_path, "--root", root, "--host", "opencode",
+                    "--plugin-root", plugin_root, "--hooks", "none", "--base", "abc1234",
+                    "--test-command", "pytest -q {tests}", "--crs", grp_doc, "--out", grp_json]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc_plain = main(grp_argv)
+        check("without --group-conflicts a path two packages would own is still refused", rc_plain == 1)
+        out_io = io.StringIO()
+        with contextlib.redirect_stdout(out_io), contextlib.redirect_stderr(out_io):
+            rc = main(grp_argv + ["--group-conflicts"])
+        grp = json.load(open(grp_json, encoding="utf-8")) if rc == 0 else []
+        grp_text = read_text(grp[0]["payloadPath"]) if grp else ""
+        check("--group-conflicts makes the two packages one, and says so",
+              rc == 0 and len(grp) == 1 and grp[0]["label"] == "FIX-P1" and "GROUPED: P2 into P1" in out_io.getvalue(), out_io.getvalue())
+        check("the grouped package owns the proving test and both rows' paths",
+              bool(grp) and os.path.join(root, "tests/unit/test_flush_cause.py") in grp[0]["owned"]
+              and os.path.join(root, "src/reload.py") in grp[0]["owned"], str(grp)[:300])
+        check("{tests} in --test-command becomes the package's Tests: paths",
+              "pytest -q tests/unit/test_flush_cause.py" in grp_text, grp_text[-700:])
+        subprocess.run(["git", "-C", root, "add", "-A"], capture_output=True)
+        subprocess.run(["git", "-C", root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "wip",
+                        "--allow-empty", "--no-verify"], capture_output=True)
+        head = git_out(root, "rev-parse", "HEAD")[1].strip()
+        if os.path.isdir(root + "-P1") and not os.listdir(root + "-P1"):
+            os.rmdir(root + "-P1")
+        gates_file = os.path.join(root, ".discovery", "analysis", "gates-W-014.txt")
+        os.makedirs(os.path.dirname(gates_file), exist_ok=True)
+        with open(gates_file, "w", encoding="utf-8") as fh:
+            fh.write("lint: true\n")
+        wt_json = os.path.join(root, ".agent-staging", "fixwt", "wave.json")
+        out_io = io.StringIO()
+        wt_argv = [a for a in grp_argv if a != "abc1234"]
+        wt_argv[wt_argv.index("--base") + 1:wt_argv.index("--base") + 1] = [head]
+        wt_argv[wt_argv.index("--out") + 1] = wt_json
+        with contextlib.redirect_stdout(out_io), contextlib.redirect_stderr(out_io):
+            rc = main(wt_argv + ["--group-conflicts", "--package-worktrees"])
+        wt_items = json.load(open(wt_json, encoding="utf-8")) if rc == 0 else []
+        wt_text = read_text(wt_items[0]["payloadPath"]) if wt_items else ""
+        check("--package-worktrees: the package runs in its own worktree, on its own branch, forked from the base",
+              rc == 0 and wt_items[0]["root"] == root + "-P1" and wt_items[0]["branch"].endswith("-p1")
+              and os.path.isdir(root + "-P1") and git_out(root + "-P1", "rev-parse", "HEAD")[1].strip() == head
+              and ("WORKTREE_DIR: %s-P1" % root) in wt_text and wt_items[0]["base"] == head
+              and all(o.startswith(root + "-P1/") for o in wt_items[0]["owned"]), out_io.getvalue() + str(wt_items)[:300])
+        check("a fix payload's TEST_COMMAND runs the gates affected since the base, in the package's worktree",
+              ("gates-W-014.txt --root %s-P1 --affected-since %s" % (root, head)) in wt_text, wt_text[-900:])
+        if os.path.isdir(root + "-P1"):
+            subprocess.run(["git", "-C", root, "worktree", "remove", "--force", root + "-P1"], capture_output=True)
+        os.makedirs(root + "-P1", exist_ok=True)
 
         # --- #419: a TEST_PATHS directory entry keeps its trailing slash ---
         dir_field = Field("TEST_PATHS", "tests/fakes/x/a/,tests/unit/test_a.py", block=False)
