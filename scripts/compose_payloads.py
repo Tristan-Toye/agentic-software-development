@@ -83,8 +83,8 @@ each document's own title), and `--out` receives the `phase4-wave` args array
 package owns, or two packages own, is printed `UNROUTED: <id> <path> — <why>` and
 nothing is written: the orchestrator rules and re-runs with `--assign ID=PKG`
 (repeatable; the id as printed — `<document stem>/CR-n` when several documents).
-Each fix package's OWNED_PATHS is its row plus every Location and Siblings path its
-CRs name (#217); a path two fix packages would both own prints `CONFLICT: ...` and
+Each fix package's OWNED_PATHS is its row plus every Location and literal-source Siblings path its
+CRs name (#217; #490: no glob, dotfile or lock); a path two fix packages would both own prints `CONFLICT: ...` and
 nothing is written.
 Exit 0 written and every payload linted clean; 1 unrouted, refused or a lint failure.
 
@@ -1325,6 +1325,21 @@ def is_own_path(path: str, own: list[str]) -> bool:
     return any(path == o or (o.endswith("/") and path.startswith(o)) for o in own)
 
 
+TEST_ROW_RE = re.compile(r"^(ut|it|ft|st|fl|flow|stack)\b|\b(unit|integration|flow|stack|shell)[ -]?tests?\b",
+                         re.IGNORECASE)
+
+
+def section_body_owned(payload: str) -> str:
+    """The OWNED_PATHS field's text of a composed payload (selftest aid)."""
+    m = re.search(r"^OWNED_PATHS:(.*?)(?=^[A-Z_]+:)", payload, re.S | re.M)
+    return m.group(1) if m else ""
+
+
+def is_test_package(name: str) -> bool:
+    """#524: a `## Work packages` row of a test author (UT, IT, flow, stack)."""
+    return bool(TEST_ROW_RE.search(name.strip()))
+
+
 def write_sealed_paths(staging: str, dossier_text: str, contract_paths: list[str],
                        own_tests: list[str] = ()) -> None:
     """The files the integration test author's hook refuses to Read or Edit
@@ -1333,23 +1348,61 @@ def write_sealed_paths(staging: str, dossier_text: str, contract_paths: list[str
     A test file a work package lists is never sealed: it is the file the author
     may have to extend (W-173.Q2), and neither is any path in the payload's own
     TEST_PATHS (#418: `own_tests`, repo-relative, a trailing `/` a directory).
+    #524: nor is any path a test-author row of the wave owns (the sealed file
+    is shared by every concurrent author); only implementation paths seal.
     Rewritten on each compose."""
     root = os.path.dirname(staging)
     sealed: list[str] = []
-    for cells in work_packages(dossier_text):
-        if len(cells) < 2:
+    rows = [c for c in work_packages(dossier_text) if len(c) >= 2]
+    wave_tests = list(own_tests)
+    for cells in rows:
+        if is_test_package(cells[0]):
+            wave_tests += [p.strip().strip("`") for p in cells[1].split(",") if p.strip()]
+    for cells in rows:
+        if is_test_package(cells[0]):
             continue
         for p in cells[1].split(","):
             p = p.strip().strip("`")
-            if p and p not in sealed and not is_test_path(p, root) and not is_own_path(p, own_tests):
+            if p and p not in sealed and not is_test_path(p, root) and not is_own_path(p, wave_tests):
                 sealed.append(p)
     for p in contract_paths:
-        if p not in sealed and not is_own_path(p, own_tests):
+        if p not in sealed and not is_own_path(p, wave_tests):
             sealed.append(p)
     with open(os.path.join(staging, "sealed-paths.txt"), "w", encoding="utf-8") as fh:
         fh.write("# sealed: implementation files the integration test author may not Read or Edit "
                  "(its payload's CONTRACT holds the signatures); written by compose_payloads.py\n")
         fh.write("".join(p + "\n" for p in sealed))
+
+
+IT_TAG = re.compile(r"\[IT\]")
+
+
+def integration_checklist(ctx: dict, dossier_id: str) -> str:
+    """#533 #486: the PROMISE_CHECKLIST an integration author carries, from
+    `.discovery/checklists/<ID>.md` (beside the dossier, or under --root). Every
+    line tagged `[IT]` is the integration slice. With no tagged line, a
+    test-only change (every contract path inside the payload's own TEST_PATHS,
+    or no implementation row in `## Work packages`) hands the author the whole
+    checklist: its test file holds the contract members. Otherwise empty."""
+    root, sets = ctx["root"], ctx["sets"]
+    here = os.path.dirname(os.path.dirname(os.path.abspath(ctx["args"].dossier)))
+    text = ""
+    for base in (os.path.join(here, "checklists"), os.path.join(root, ".discovery", "checklists")):
+        path = os.path.join(base, dossier_id + ".md")
+        if os.path.isfile(path):
+            text = read_text(path)
+            break
+    lines = [l.rstrip() for l in text.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    tagged = [l for l in lines if IT_TAG.search(l)]
+    if tagged:
+        return "\n".join(tagged)
+    own = own_test_paths(sets.get("TEST_PATHS", ""), root)
+    contract = ctx["args"].contract_paths
+    rows = [c for c in work_packages(ctx["dossier_text"]) if len(c) >= 2]
+    impl_rows = [c for c in rows if not is_test_package(c[0])]
+    if lines and ((contract and own and all(is_own_path(p, own) for p in contract)) or not impl_rows):
+        return "\n".join(lines)
+    return ""
 
 
 def compose_integration_test_author(ctx: dict) -> list[Field]:
@@ -1416,6 +1469,9 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
             "external API) — everything else runs for real")),
         "CONTRACT_HASH": Field("CONTRACT_HASH", contract_hash(contract_text)),
     }
+    checklist = integration_checklist(ctx, dossier_id)
+    if checklist:
+        fields["PROMISE_CHECKLIST"] = Field("PROMISE_CHECKLIST", checklist, block=True)
     apply_overrides(fields, sets, blocks={
         "CONTRACT", "HARNESS", "STYLE_SAMPLE", "PROMISE_CHECKLIST", "SHARED_IDIOM",
         "DELIVERY_CHANGE", "SUPPORT", "FAILURES", "CORRECTION", "CENSUS", "CITATION",
@@ -1932,6 +1988,12 @@ def cr_named_paths(body: str, root: str) -> list[str]:
         add(raw)
     sib = re.sub(r"\([^)]*\)", " ", fs.get("Siblings", ""))
     for raw in re.split(r"[\s,;]+", sib):
+        # #490: a Siblings entry owns only when it is a literal source file; a glob or a
+        # dotfile / lock / state file is a search note, not a file the fix edits.
+        bare = raw.strip().strip("`'\"")
+        if any(ch in bare for ch in "*?[") or os.path.basename(bare).startswith(".") \
+                or re.search(r"\.(lock|log|tmp|state|pid)$", bare):
+            continue
         add(raw)
     return out
 
@@ -2623,6 +2685,33 @@ def selftest() -> int:
         sl = read_text(os.path.join(st, ".agent-staging", "sealed-paths.txt")).splitlines()[1:]
         check("W-173.Q2: a work package's test file is not sealed; its implementation file is",
               sl == ["src/impl.rs", "src/api.rs"], repr(sl))
+        write_sealed_paths(os.path.join(st, ".agent-staging"),
+                           "## Work packages\n\n| Package | Owned paths | Depends on |\n|---|---|---|\n"
+                           "| P1 core | `src/impl.sh` | x |\n| UT shell | `scripts/check_a.sh` | x |\n"
+                           "| IT flow | `ops/flow_b.sh`, `qa/` | x |\n", ["src/api.rs"])
+        sl = read_text(os.path.join(st, ".agent-staging", "sealed-paths.txt")).splitlines()[1:]
+        check("#524: no test-author row's own path is sealed in a concurrent wave",
+              sl == ["src/impl.sh", "src/api.rs"], repr(sl))
+        cl_dir = os.path.join(root, ".discovery", "checklists")
+        os.makedirs(cl_dir, exist_ok=True)
+        cl_path = os.path.join(cl_dir, "W-014.md")
+        with open(cl_path, "w", encoding="utf-8") as fh:
+            fh.write("- Flush.add \u2014 return: gives 3 [UT]\n- Flush.run \u2014 flow: drains once [IT]\n")
+        rc, p_it, out = run_compose("IT-cl.md", ["integration-test-author", "--host", "claude", "--contract-paths", "src/flush.py"])
+        t_it = read_text(p_it) if rc == 0 else ""
+        check("#533: an integration author carries the [IT] slice of the checklist, not the [UT] lines",
+              "PROMISE_CHECKLIST: |" in t_it and "Flush.run" in t_it and "Flush.add" not in t_it, out + t_it[:300])
+        with open(cl_path, "w", encoding="utf-8") as fh:
+            fh.write("- helper.a \u2014 return: x\n- helper.b \u2014 error: y\n")
+        rc, p_it, out = run_compose("IT-own.md", ["integration-test-author", "--host", "claude", "--contract-paths", "src/flush.py",
+                                                  "--set", "TEST_PATHS=src/flush.py"])
+        t_it = read_text(p_it) if rc == 0 else ""
+        check("#486: when every contract path is the author's own TEST_PATHS it carries the whole checklist and CITATION",
+              "helper.a" in t_it and "helper.b" in t_it and "CITATION: |" in t_it, out + t_it[:300])
+        rc, p_it, out = run_compose("IT-none.md", ["integration-test-author", "--host", "claude", "--contract-paths", "src/flush.py"])
+        check("an untagged checklist on a change with implementation packages adds no PROMISE_CHECKLIST",
+              rc == 0 and "helper.a" not in read_text(p_it), out)
+        os.remove(cl_path)
         check("integration-test-author DOSSIER names the generated excerpt",
               ("DOSSIER: %s" % excerpt_path) in it_text)
         import io, contextlib
@@ -3294,7 +3383,7 @@ def selftest() -> int:
         # CR-4 now names its second file as a sibling in a path no package owns (the library project).
         sec4 = ("## CR-4: name the cause 4\n- Location: src/reload.py:2\n- Observed: o\n- Required: r\n"
                 "- Behaviour held fixed: same variant\n- Rule: errors carry their cause\n"
-                "- Severity: should-fix\n- Siblings: lib/consts.py:4, `lib/names.py` (searched: lib, src)\n\n")
+                "- Severity: should-fix\n- Siblings: lib/consts.py:4, `lib/names.py`, crates/*/src/*.rs, .state.lock (searched: lib, src)\n\n")
         with open(crs_doc, "w", encoding="utf-8") as fh:
             fh.write(crs_head + sec1 + sec2 + sec3 + sec4)
         out_io, err_io = io.StringIO(), io.StringIO()
@@ -3318,6 +3407,9 @@ def selftest() -> int:
               and p1["owned"] == [os.path.join(root, "src/flush.py"), os.path.join(root, "src/other.py")]
               and p2.get("owned") == [os.path.join(root, q) for q in ("src/reload.py", "lib/consts.py", "lib/names.py")]
               and p1["kind"] == "implementer" and p1["root"] == root and p1["agentType"].endswith(":implementer"), str(p1))
+        check("#490: a Siblings glob and a non-source sibling never reach OWNED_PATHS",
+              p2.get("owned") == [os.path.join(root, q) for q in ("src/reload.py", "lib/consts.py", "lib/names.py")]
+              and "OWNED_PATHS:" in t2 and "crates/*" not in section_body_owned(t2), t2[-600:])
         check("#217: the fix payload's OWNED_PATHS lists the CRs' other paths",
               "lib/consts.py" in t2 and "lib/names.py" in t2 and "src/other.py" in t1, t2[-600:])
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

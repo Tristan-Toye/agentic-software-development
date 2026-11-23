@@ -286,3 +286,16 @@ staged contract can never leak into a commit.
   `--worktree` when it is not absolute. The same rule applies to
   `integration-test-author` whenever it carries a routed `PROMISE_CHECKLIST`
   (`references/payloads/integration-test-author.md`).
+- **`SUPPORT` is the transitive closure of the signatures (#534).** Every repo
+  type a staged signature reaches — a record parameter, a property type, a
+  generic argument (`IReadOnlyDictionary<string, WorkOutputRevision>`) — is
+  declared in `CONTRACT`, `SUPPORT` or a `SUPPORT_PATHS` file, not only the
+  types the signature names. `check_payload.py` refuses a type the repo
+  declares and no staged text does, naming it. Fixture files a seeding recipe
+  names are staged the same way.
+- **A staged surface is the source file's bytes, never navigation output
+  (#519).** `scripts/stage_surface.py stage --root X --ref <contract sha>
+  --name <n> PATH[:A-B]` writes `contract-support/surface-<n>.md` from
+  `git show`; `stage_surface.py check --root X <file>` fails a surface that
+  differs from its source or ends mid-item. code_item / code_outline cut long
+  items, and an author then returns `GAP:` for the shape past the cut.

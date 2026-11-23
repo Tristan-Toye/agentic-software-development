@@ -86,6 +86,14 @@ writeFileSync(join(tp, "Twipe.Podcast.Runtime.Tests.csproj"), '<Project><ItemGro
 writeFileSync(join(tp, "Sub", "FooTests.cs"), "class FooTests {}")
 check("pre: blind author may read a file in a test project named by no family", blind(join(tp, "Sub", "FooTests.cs")) === "")
 check("pre: blind author may re-open a file it is about to write in a test project", blind(join(tp, "NewTests.cs")) === "")
+// #515: a `*.Tests` project folder is a test family by its name, with no csproj naming a framework.
+const bare = join(tmp, "Source", "Acme.Widgets.Tests")
+mkdirSync(bare, { recursive: true })
+writeFileSync(join(bare, "World.cs"), "class World {}")
+check("pre: blind author may Read an existing file under a bare *.Tests folder", blind(join(bare, "World.cs")) === "")
+check("pre: blind author may Edit an existing file under a bare *.Tests folder", blind(join(bare, "World.cs"), { tool_name: "Edit" }) === "")
+check("pre: blind author may Write a new file under a bare *.Tests folder", blind(join(bare, "New.cs"), { tool_name: "Write" }) === "")
+check("pre: a folder merely containing Tests is not a test project", blind(join(tmp, "Source", "Acme.Widgets.TestsBase", "X.cs")).includes('"deny"'))
 check("pre: blind author may Edit an existing test file in a test family", blind("/wt/tests/unit/test_a.py", { tool_name: "Edit" }) === "")
 const editOut = blind("/wt/src/lib.py", { tool_name: "Edit" })
 check("pre: blind author may not Edit a source file", editOut.includes('"deny"') && editOut.includes("blind edit"))
@@ -423,7 +431,7 @@ check("flight: missing dossier fails open", r.code === 0 && !r.out.includes("Bui
 const lines = readFileSync(join(tmp, "agentic-software-development", "claude", "claude-hooks.log"), "utf8").trim().split("\n")
 const count = (e: string) => lines.filter((l) => l.split(" ")[1] === e).length
 check("log: timestamped, one line per event", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z (refused|nudge|recorded|restored) \S+ /.test(l)))
-check("log: refusals (six orchestrator, one a runner-style /plan session; six blind-read; eight integration seal; three stateful reads)", count("refused") === 23)
+check("log: refusals (six orchestrator, one a runner-style /plan session; seven blind-read; eight integration seal; three stateful reads)", count("refused") === 24)
 check("log: nudges (two call-count, two pressure, one call-count in the pressure session)", count("nudge") === 5)
 check("log: restores (the rules case adds one)", count("restored") === 3 + restores)
 check("log: checkpoints recorded (the interactive one, and the runner stage's two: a runner stage is an orchestrator now)", count("recorded") === 3)

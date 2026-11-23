@@ -772,6 +772,18 @@ NOT_A_SURFACE = {
 }
 
 
+def owned_path_findings(lines: list[str], kind: str | None) -> list[str]:
+    """#490: an implementer's OWNED_PATHS entry is a literal path, never a glob
+    (a glob owns every file it matches, so the post-wave ownership check could
+    not catch a stray write)."""
+    if kind != "implementer":
+        return []
+    owned = [p.strip().strip("`") for l in field_body(lines, "OWNED_PATHS").split("\n")
+             if not l.strip().startswith("#") for p in l.split(",") if p.strip() and p.strip() != "|"]
+    return ["OWNED_PATHS: %r is a glob; own literal paths or a directory, not a pattern (a CR's Siblings "
+            "search note is not ownership)" % p for p in owned if any(ch in p for ch in "*?[")]
+
+
 def hook_output_findings(lines: list[str], kind: str | None) -> list[str]:
     """The implementer's `EXPECTED_HOOK_OUTPUTS:` sub-list inside HOOKS: one
     `<hook step>: <glob>` per line, a relative glob that is not the whole tree,
@@ -811,6 +823,92 @@ def hook_output_findings(lines: list[str], kind: str | None) -> list[str]:
                 found.append("HOOKS: EXPECTED_HOOK_OUTPUTS glob %r matches OWNED_PATHS %s; a path the "
                              "package owns is not a hook output" % (glob, ", ".join(clash)))
     return found
+
+
+DECL_KEYWORDS = r"(?:class|record|struct|enum|interface|trait|type|union)"
+SOURCE_EXTS = (".cs", ".rs", ".py", ".ts", ".tsx", ".go", ".java", ".kt", ".swift")
+SKIP_DIRS = {".git", ".agent-staging", ".discovery", "node_modules", "target", "bin", "obj", "dist", "__pycache__"}
+PASCAL = re.compile(r"\b[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+\b")
+
+
+def closure_findings(lines: list[str], kind: str | None, worktree: str | None) -> list[str]:
+    """#534: a blind unit author's world holds every repo type its staged signatures reach,
+    transitively. A PascalCase name in a non-comment line of CONTRACT, SUPPORT or a
+    SUPPORT_PATHS file that no staged text declares, but a source file of the worktree
+    does (a record parameter, a property type, a generic argument), is a DEFECT: the
+    spawn would return `GAP: <Type>`. Names only the repository declares count."""
+    if kind != "unit-test-author" or not worktree or not os.path.isdir(worktree):
+        return []
+    sig: list[str] = []
+    decl: list[str] = []
+    for field in ("CONTRACT", "SUPPORT_PATHS", "SUPPORT", "STYLE_SAMPLE", "FIXTURES", "SHARED_IDIOM"):
+        body = field_body(lines, field)
+        texts = [body]
+        for token in LIST_SEPARATOR.split(body):
+            path = token.strip(";")
+            cand = path if os.path.isabs(path) else os.path.join(worktree, path)
+            if path and os.path.isfile(cand):
+                try:
+                    with open(cand, encoding="utf-8", errors="replace") as handle:
+                        texts.append(handle.read())
+                except OSError:
+                    pass
+        decl.extend(texts)
+        if field in ("CONTRACT", "SUPPORT_PATHS", "SUPPORT"):
+            sig.extend(texts)
+    names: set[str] = set()
+    for text in sig:
+        for raw in text.splitlines():
+            code = re.sub(r'"[^"]*"|//.*$', "", raw)
+            if code.lstrip().startswith(("//", "#", "*", "/*", "--")):
+                continue
+            names.update(PASCAL.findall(code))
+    world = "\n".join(decl)
+    names = {n for n in names if n not in NOT_A_SURFACE
+             and not re.search(r"\b%s\s+%s\b" % (DECL_KEYWORDS, re.escape(n)), world)}
+    if not names:
+        return []
+    pattern = re.compile(r"\b%s\s+(%s)\b" % (DECL_KEYWORDS, "|".join(sorted(map(re.escape, names)))))
+    found: dict[str, str] = {}
+    scanned = 0
+    for dirpath, dirnames, files in os.walk(worktree):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for name in files:
+            if not name.endswith(SOURCE_EXTS) or scanned >= 20000:
+                continue
+            scanned += 1
+            full = os.path.join(dirpath, name)
+            try:
+                if os.path.getsize(full) > 1_000_000:
+                    continue
+                with open(full, encoding="utf-8", errors="replace") as handle:
+                    for m in pattern.finditer(handle.read()):
+                        found.setdefault(m.group(1), os.path.relpath(full, worktree))
+            except OSError:
+                continue
+    return ["SUPPORT: %s is reached by a staged signature and declared in %s, but in neither CONTRACT nor "
+            "SUPPORT / SUPPORT_PATHS: stage it too (transitively: record parameters, property types, generic "
+            "arguments), or the spawn returns GAP: %s" % (n, found[n], n) for n in sorted(found)]
+
+
+def integration_slice_findings(lines: list[str], kind: str | None, worktree: str | None) -> list[str]:
+    """#533: an integration-test-author with no PROMISE_CHECKLIST while the run's
+    `.discovery/checklists/<ID>.md` holds `[IT]`-tagged lines is a DEFECT: the
+    integration slice reaches an author or the Phase 5 gate finds lines without a
+    test. An author deliberately given none writes `PROMISE_CHECKLIST: none (<who owns the [IT] lines>)`."""
+    if kind != "integration-test-author" or not worktree or field_body(lines, "PROMISE_CHECKLIST").strip():
+        return []
+    m = re.search(r"([\w.-]+?)\.excerpt\.md", field_body(lines, "DOSSIER"))
+    path = os.path.join(worktree, ".discovery", "checklists", "%s.md" % m.group(1)) if m else ""
+    try:
+        text = open(path, encoding="utf-8").read() if path else ""
+    except OSError:
+        return []
+    tagged = [l for l in text.splitlines() if "[IT]" in l]
+    if not tagged:
+        return []
+    return ["PROMISE_CHECKLIST is missing: %s holds %d `[IT]` line(s) (the integration slice). Give them to this "
+            "author, or write `PROMISE_CHECKLIST: none (<the payload that carries them>)`" % (os.path.relpath(path, worktree), len(tagged))]
 
 
 def surface_findings(lines: list[str], kind: str | None, worktree: str | None) -> list[str]:
@@ -1039,11 +1137,16 @@ def round_relaxes_signals(kind: str | None, round_value: str | None, prior_crs: 
 TEST_FRAMEWORK_REF = re.compile(r"Microsoft\.NET\.Test\.Sdk|xunit|nunit|MSTest|TUnit", re.I)
 
 
+TEST_PROJECT_DIR = re.compile(r"(?:^|/)[^/]+\.(?:Unit|Integration)?Tests/")  # #515, mirrors blind-read.ts
+
+
 def in_test_project(path: str) -> bool:
     """True when the nearest ancestor directory holding a csproj holds one that references
     a test framework: a test project of the target repository whatever it is named
     (mirrors `inTestProject` in shared/blind-read.ts)."""
     d = os.path.dirname(os.path.abspath(path))
+    if TEST_PROJECT_DIR.search(d + "/"):
+        return True
     while True:
         try:
             for f in os.listdir(d):
@@ -1673,6 +1776,8 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
 
     # 7. a checklist surface the author's world does not carry
     defects.extend(surface_findings(lines, kind, worktree))
+    defects.extend(closure_findings(lines, kind, worktree))
+    defects.extend(integration_slice_findings(lines, kind, worktree))
 
     # 13. a relative path in a path-valued field
     defects.extend(relative_path_findings(lines))
@@ -1682,6 +1787,7 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
 
     # 15. a malformed or owned-path-overlapping EXPECTED_HOOK_OUTPUTS sub-list
     defects.extend(hook_output_findings(lines, kind))
+    defects.extend(owned_path_findings(lines, kind))
 
     # 9. a path, or a read instruction, handed to an agent with no Read
     if host is None and kind in ("unit-test-author", "integration-test-author"):
@@ -1838,6 +1944,16 @@ def _selftest_cases() -> int:
         "CONTRACT_HASH: 3f2611f0a91c4d8e\n"
     )
     case("unit author clean", unit_ok, "unit-test-author", False, host="opencode")
+    # --- #534: the transitive closure of the staged signatures ---
+    closure_src = {"src/Review.cs": "public record WorkOutputRevision(string Id);\npublic sealed class Unrelated {}\n"}
+    closure_sup = ("SUPPORT: |\n  public record ReviewSnapshot(IReadOnlyDictionary<string, WorkOutputRevision> Outputs);\n"
+                   "  // see Unrelated for the history\n")
+    case("#534: a type reached through a generic argument and declared in the repo is a defect",
+         unit_ok + closure_sup, "unit-test-author", True, "WorkOutputRevision", host="claude",
+         repo_files=closure_src, worktree=True)
+    case("#534: the closure is clean once the reached type is staged too",
+         unit_ok + closure_sup + "  public record WorkOutputRevision(string Id);\n", "unit-test-author", False,
+         host="claude", repo_files=closure_src, worktree=True)
     # --- #238: the contract reviewer may be shown the base class a stub extends ---
     cr_ok = ("WORKTREE_DIR: {REAL}\nCONTRACT_PATHS: src/flush.py\nCRITERIA: |\n  AC-1 flush returns the count\n"
              "CHECKLIST_RULES: |\n  return meaning, named error, order, empty case, invalid case, concurrency\n")
@@ -2176,6 +2292,14 @@ def _selftest_cases() -> int:
          True, "`guard:`", host="claude", tools=rw)
     case("integration author: no live service and no CI_ENVIRONMENT passes",
          integ, "integration-test-author", False, host="claude", tools=rw, live="{REAL}/.discovery/dossiers/W-014-x.md", must_warn="")
+    # --- #533: the [IT] slice of the promise checklist reaches an integration author ---
+    itcl = {".discovery/checklists/W-014.md": "- Flush.add — return: gives 3 [UT]\n- Flush.run — flow: drains [IT]\n"}
+    case("#533: an integration author with no PROMISE_CHECKLIST while [IT] lines exist is refused",
+         integ, "integration-test-author", True, "[IT]",
+         host="claude", tools=rw, worktree=True, repo_files=itcl)
+    case("#533: an explicit `none (owner)` is accepted",
+         integ + "PROMISE_CHECKLIST: none (IT-2 carries them)\n",
+         "integration-test-author", False, host="claude", tools=rw, worktree=True, repo_files=itcl)
     # --- #301: TEST_FORM_RULES when the repository declares refused forms ---
     forms = {".agent-pipeline/test-forms.txt": "# refused\nenv!(\"CARGO_MANIFEST_DIR\") -> testsupport::root()\n"}
     case("integration author: a repo that declares refused forms, payload without the field, is refused",
@@ -2235,6 +2359,8 @@ def _selftest_cases() -> int:
          hooked.replace("docs/architecture/*.md", "**/*"), "implementer", True, "narrower than the whole tree")
     case("expected hook outputs: a glob over an owned path",
          hooked.replace("docs/architecture/*.md", "src/*.py"), "implementer", True, "matches OWNED_PATHS")
+    case("#490: a glob in OWNED_PATHS is a defect",
+         impl.replace("OWNED_PATHS: src/flush.py", "OWNED_PATHS: src/flush.py, crates/*/src/*.rs"), "implementer", True, "is a glob")
     case("implementer hooks required",
          impl.replace("HOOKS: none\n", ""), "implementer", True, "HOOKS is missing")
     case("implementer block body is not a field",
