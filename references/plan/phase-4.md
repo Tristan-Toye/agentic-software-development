@@ -147,7 +147,7 @@ fails, and the plan reviewer flags it as a change request.
 Every criterion ends with an owner and an environment:
 `(owner: <test path>; env: <local|vm|container|ci>)`. The owner is a test
 path from the `## Work packages` table — you just built it, so take the path
-from there, never from memory. The env names where that test runs. A
+from there, never from memory. The env names where that test runs. (Kanban repos: `vm`/`container` makes the dossier stub, mechanically; see kanban.md.) A
 criterion whose env names services this machine cannot provide is a defect to
 fix in this pass, not at `/work-on` Phase 3: name the substitute environment,
 or mark the criterion `UNVERIFIABLE-LOCALLY` with its substitute in the same
