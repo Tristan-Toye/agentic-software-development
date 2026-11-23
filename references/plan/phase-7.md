@@ -37,7 +37,7 @@ both readers raise counts once.
 
 ### The typed output
 
-The reviewer returns typed findings (the `LENS: plan` section of `sub-agents/reviewer.md`):
+The reviewer returns typed findings (`references/reviewer-lenses/plan.md`):
 
 - **BLOCKING** — a product or architecture defect that makes the plan wrong,
   and every register row that says "fix in plan" but is missing from the

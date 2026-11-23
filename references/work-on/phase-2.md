@@ -272,7 +272,9 @@ This is the step everything else depends on.
    only local cover of a hook check),
    or write them by hand in `run_gates.py`'s format to `.discovery/analysis/gates-<ID>.txt`, run
    `python3 ${PLUGIN_ROOT}/scripts/run_gates.py <file> --root <X>` before the
-   contract commit, and log one line; `--pre-fanout` refuses without it:
+   contract commit, and log one line; `--pre-fanout` refuses without it (the
+   failure lines it prints are the parsed first errors with `file:line`; open the
+   gate's log only when the last line says `truncated`):
 
    ```
    GATES: <gates file> — <N> gates; axes: <default, fault-inject, ...>

@@ -40,6 +40,14 @@ found on PATH. Gate names must be unique and match `[A-Za-z0-9_.-]+`.
 is refused. `--jobs N` runs gates concurrently in a thread pool (default 1,
 sequential); output is still printed in the gates file's order regardless of
 finishing order, so a rerun's transcript reads the same way twice.
+A failing gate's excerpt is parsed first: rustc/clippy errors and warnings
+(`file:line  error[CODE]: message`, each distinct one once, errors before
+warnings), rustfmt diffs per file, ruff, tsc, mypy and eslint findings, and any
+failing test through `run_tests.parse_log` (`tests: passed N failed M`, then
+`test NAME  file:line first-assertion`). Output that parses to nothing falls
+back to the matching lines below. At most `--lines` items print; a last line
+`(+K more, truncated: open the log)` says the log holds more, and the log is
+opened only then. A gate's `FAIL` line keeps its log path.
 `--log-dir` picks where full per-gate logs land (default: a fresh temp
 directory, whose path is printed once). `--lines` and `--line-chars` bound
 the failure excerpt: up to N lines that match
@@ -703,6 +711,102 @@ def run_gate(command: str, root: str, timeout: float | None,
         return {"rc": None, "output": out, "elapsed": time.perf_counter() - start, "timed_out": True}
 
 
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+RUSTC_DIAG = re.compile(r"^(error|warning)(?:\[([A-Za-z0-9_]+)\])?: (.+)\n\s*--> (\S+)\s*$", re.M)
+LINT_NAME = re.compile(r"(clippy::[a-z0-9_-]+|#\[(?:warn|deny)\(([a-z0-9_:]+)\)\])")
+RUSTFMT_DIFF = re.compile(r"^Diff in (\S+?)(?: at line |:)(\d+):?\s*$", re.M)
+RUFF_CONCISE = re.compile(r"^(\S+?):(\d+):\d+: ([A-Z]{1,4}\d{2,4}) (?:\[\*\] )?(.*)$", re.M)
+RUFF_FULL = re.compile(r"^([A-Z]{1,4}\d{3,4}) (?:\[\*\] )?(.+)\n\s*--> (\S+?:\d+)(?::\d+)?\s*$", re.M)
+WOULD_REFORMAT = re.compile(r"^Would reformat: (\S+)", re.M)
+TSC_ERR = re.compile(r"^(\S+?)\((\d+),\d+\): error (TS\d+): (.*)$", re.M)
+MYPY_ERR = re.compile(r"^(\S+?):(\d+): error: (.*)$", re.M)
+ESLINT_ERR = re.compile(r"^\s+(\d+):\d+\s+error\s+(.*?)\s{2,}(\S+)\s*$")
+
+
+def structured_items(output: str) -> list[str]:
+    """What a failing gate's tool said, parsed: one `file:line  message` item per distinct
+    diagnostic (rustc/clippy errors and warnings, rustfmt diffs per file, ruff, tsc, mypy,
+    eslint) or per failing test (cargo, pytest, bun, nextest, ... through run_tests.parse_log).
+    Duplicates (the same error once per target) collapse. Errors come before warnings."""
+    text = ANSI.sub("", output)
+    items: list[str] = []
+    seen: set[str] = set()
+
+    def add(item: str) -> None:
+        if item not in seen:
+            seen.add(item)
+            items.append(item)
+
+    errors, warnings = [], []
+    for m in RUSTC_DIAG.finditer(text):
+        kind, code, msg, loc = m.groups()
+        if re.match(r"(?:aborting due to|could not compile|\d+ warnings? emitted|.*generated \d+ warnings?)", msg):
+            continue
+        lint = LINT_NAME.search(text[m.end():m.end() + 600])
+        tag = (code or (lint.group(2) or lint.group(1) if lint else "")) or ""
+        row = f"{loc}  {kind}{'[' + tag + ']' if tag else ''}: {msg}"
+        (errors if kind == "error" else warnings).append(row)
+    for row in errors + warnings:
+        add(row)
+    fmt: dict[str, list[str]] = {}
+    for m in RUSTFMT_DIFF.finditer(text):
+        fmt.setdefault(m.group(1), []).append(m.group(2))
+    for path, ls in fmt.items():
+        add(f"{path}:{ls[0]}  rustfmt diff ({len(ls)} hunk{'s' if len(ls) != 1 else ''})")
+    for m in RUFF_CONCISE.finditer(text):
+        add(f"{m.group(1)}:{m.group(2)}  {m.group(3)} {m.group(4)}")
+    for m in RUFF_FULL.finditer(text):
+        add(f"{m.group(3)}  {m.group(1)} {m.group(2)}")
+    for m in WOULD_REFORMAT.finditer(text):
+        add(f"{m.group(1)}  would reformat")
+    for m in TSC_ERR.finditer(text):
+        add(f"{m.group(1)}:{m.group(2)}  {m.group(3)} {m.group(4)}")
+    for m in MYPY_ERR.finditer(text):
+        add(f"{m.group(1)}:{m.group(2)}  mypy: {m.group(3)}")
+    current = ""
+    for line in text.splitlines():
+        if line and not line[0].isspace() and ":" not in line.split(" ")[0] and "/" in line and not line.startswith("error"):
+            current = line.strip()
+            continue
+        m = ESLINT_ERR.match(line)
+        if m and current:
+            add(f"{current}:{m.group(1)}  eslint {m.group(3)}: {m.group(2)}")
+    try:
+        import run_tests
+        parser, totals, fails = run_tests.parse_log(text)
+    except Exception:  # a parser bug never hides a gate's failure
+        parser, totals, fails = "", None, []
+    if parser and parser != "generic" and fails:
+        # Compile errors came through the rustc scan above; tests are listed by name.
+        tests = [f for f in fails if not re.fullmatch(r"\S+:\d+(?::\d+)?", f.name)]
+        if tests:
+            add(f"tests: passed {totals.passed} failed {totals.failed} ({parser})")
+        for f in tests:
+            head = run_tests.failure_headline(f)
+            add(f"test {f.name}" + (f"  {head}" if head else ""))
+    return items
+
+
+def digest_lines(output: str, n: int, chars: int) -> list[str]:
+    """The lines printed under a failing gate (before the 4-space indent): parsed items first,
+    at most n of them, then a `(+K more ...)` marker that says the log holds more; when the
+    output parses to nothing, the regex excerpt of old (matching lines, else the tail)."""
+    items = structured_items(output)
+    if not items:
+        lines = output.splitlines()
+        matched = [l for l in lines if FAILURE_RE.search(l)]
+        shown = [l[:chars] for l in (matched[:n] if matched else lines[-n:])]
+        if matched and len(matched) > n:
+            shown.append(f"(+{len(matched) - n} more matching lines, truncated: open the log)")
+        elif not matched and len(lines) > n:
+            shown.append("(no failure pattern matched; last lines shown, truncated: open the log)")
+        return shown
+    shown = [i[:chars] for i in items[:n]]
+    if len(items) > n:
+        shown.append(f"(+{len(items) - n} more, truncated: open the log)")
+    return shown
+
+
 def excerpt(output: str, n: int, chars: int) -> list[str]:
     lines = output.splitlines()
     matched = [l for l in lines if FAILURE_RE.search(l)]
@@ -936,7 +1040,7 @@ def main(argv: list[str]) -> int:
         if res["timed_out"]:
             failed += 1
             print(f"FAIL {g['name']} (timeout after {args.timeout:.1f}s, {res['elapsed']:.1f}s) — log {path}")
-            for line in excerpt(res["output"], args.lines, args.line_chars):
+            for line in digest_lines(res["output"], args.lines, args.line_chars):
                 print(f"    {line}")
         elif res["rc"] == 0:
             passed += 1
@@ -948,7 +1052,7 @@ def main(argv: list[str]) -> int:
                 notfound += 1
                 tag = " — command not found: environment, not a gate failure"
             print(f"FAIL {g['name']} (exit {res['rc']}, {res['elapsed']:.1f}s){tag} — log {path}")
-            for line in excerpt(res["output"], args.lines, args.line_chars):
+            for line in digest_lines(res["output"], args.lines, args.line_chars):
                 print(f"    {line}")
 
     print(f"run_gates: {passed} passed, {failed} failed, {skipped} skipped")
@@ -1029,6 +1133,89 @@ jobs:
 """
 
 
+CLIPPY_LOG = """    Checking foo v0.1.0 (/repo/crates/foo)
+error: this `if` has identical blocks
+  --> crates/foo/src/lib.rs:42:9
+   |
+42 |         if a { 1 } else { 1 }
+   |
+   = note: `-D clippy::if-same-then-else` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::if_same_then_else)]`
+
+error[E0599]: no method named `frob` found for struct `Foo` in the current scope
+ --> crates/foo/src/main.rs:7:7
+  |
+7 |     f.frob();
+  |       ^^^^
+
+error[E0599]: no method named `frob` found for struct `Foo` in the current scope
+ --> crates/foo/src/main.rs:7:7
+  |
+7 |     f.frob();
+  |       ^^^^
+
+warning: unused variable: `y`
+ --> crates/foo/src/lib.rs:3:9
+
+error: could not compile `foo` (lib) due to 2 previous errors
+"""
+
+RUSTFMT_LOG = """Diff in /repo/crates/foo/src/lib.rs:12:
+-fn a(){}
++fn a() {}
+Diff in /repo/crates/foo/src/lib.rs:30:
+-fn b(){}
++fn b() {}
+Diff in /repo/crates/bar/src/main.rs at line 4:
+-let x=1;
++let x = 1;
+"""
+
+RUFF_LOG = """src/app/util.py:10:1: F401 [*] `os` imported but unused
+src/app/util.py:22:5: E741 Ambiguous variable name: `l`
+Found 2 errors.
+Would reformat: src/app/other.py
+"""
+
+TSC_LOG = """src/index.ts(12,5): error TS2322: Type 'string' is not assignable to type 'number'.
+src/index.ts(30,1): error TS2304: Cannot find name 'foo'.
+Found 2 errors in the same file, starting at: src/index.ts:12
+"""
+
+CARGO_TEST_GATE_LOG = """running 2 tests
+test ok_one ... ok
+test bad_one ... FAILED
+
+failures:
+
+---- bad_one stdout ----
+thread 'bad_one' panicked at crates/foo/tests/t.rs:9:5:
+assertion `left == right` failed
+
+failures:
+    bad_one
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+"""
+
+BUN_GATE_LOG = """bun test v1.1.20
+
+a.test.ts:
+error: expect(received).toBe(expected)
+
+Expected: 1
+Received: 2
+
+      at <anonymous> (/repo/a.test.ts:5:12)
+\u2717 a > b [0.5ms]
+(fail) a > b [0.5ms]
+
+ 0 pass
+ 1 fail
+Ran 1 tests across 1 files. [5.00ms]
+"""
+
+
 def selftest() -> int:
     os.environ["ASD_BUILD_SLOTS"] = "0"  # a self-test never waits on, or takes, a real host build slot
     failures: list[str] = []
@@ -1036,6 +1223,50 @@ def selftest() -> int:
     def check(name: str, ok: bool) -> None:
         if not ok:
             failures.append(name)
+
+
+    # The failure digest: parsed items first, deduplicated, with file:line, capped with a marker.
+    items = structured_items(CLIPPY_LOG)
+    check("clippy: errors first with file:line, lint name, no duplicate, no summary line",
+          items == ["crates/foo/src/lib.rs:42:9  error[clippy::if-same-then-else]: this `if` has identical blocks",
+                    "crates/foo/src/main.rs:7:7  error[E0599]: no method named `frob` found for struct `Foo` in the current scope",
+                    "crates/foo/src/lib.rs:3:9  warning: unused variable: `y`"])
+    items = structured_items(RUSTFMT_LOG)
+    check("rustfmt: one item per file with its first line and hunk count",
+          items == ["/repo/crates/foo/src/lib.rs:12  rustfmt diff (2 hunks)", "/repo/crates/bar/src/main.rs:4  rustfmt diff (1 hunk)"])
+    items = structured_items(RUFF_LOG)
+    check("ruff: code and file:line, would-reformat file",
+          items == ["src/app/util.py:10  F401 `os` imported but unused", "src/app/util.py:22  E741 Ambiguous variable name: `l`",
+                    "src/app/other.py  would reformat"])
+    items = structured_items(TSC_LOG)
+    check("tsc: file:line and TS code", items[0] == "src/index.ts:12  TS2322 Type 'string' is not assignable to type 'number'." and len(items) == 2)
+    items = structured_items(CARGO_TEST_GATE_LOG)
+    check("a test failing inside a gate: counts, name, first panic location and message",
+          items == ["tests: passed 1 failed 1 (cargo)", "test bad_one  crates/foo/tests/t.rs:9:5 assertion `left == right` failed"])
+    items = structured_items(BUN_GATE_LOG)
+    check("bun test inside a gate", items[-1] == "test a > b  /repo/a.test.ts:5:12 error: expect(received).toBe(expected)")
+    check("unparsed output yields no items", structured_items("DEFECT: x\nall good\n") == [])
+    many = "\n".join(f"s{i}.py:{i}:1: E501 line too long" for i in range(1, 31))
+    shown = digest_lines(many, 5, 300)
+    check("a long item list is capped with a marker pointing at the log",
+          len(shown) == 6 and shown[-1] == "(+25 more, truncated: open the log)")
+    shown = digest_lines("\n".join(f"ERROR {i}" for i in range(40)), 5, 300)
+    check("the regex excerpt says it was truncated", len(shown) == 6 and "truncated" in shown[-1])
+    shown = digest_lines("one\nFAIL two\n", 5, 300)
+    check("a short regex excerpt has no marker", shown == ["FAIL two"])
+    with tempfile.TemporaryDirectory() as tmp2:
+        gpath = os.path.join(tmp2, "g.txt")
+        fmt = os.path.join(tmp2, "fmt.txt")
+        with open(fmt, "w", encoding="utf-8") as fh:
+            fh.write(RUFF_LOG)
+        with open(gpath, "w", encoding="utf-8") as fh:
+            fh.write(f"lint: cat {shlex.quote(fmt)}; exit 1\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = main([gpath, "--log-dir", os.path.join(tmp2, "l")])
+        out = buf.getvalue()
+        check("a failing gate prints the parsed items indented under its FAIL line, log path kept",
+              rc == 1 and "FAIL lint (exit 1" in out and "    src/app/util.py:10  F401" in out and "lint.log" in out)
 
     with tempfile.TemporaryDirectory() as tmp:
         timed = run_gate("printf partial; exec sleep 5", tmp, 0.5)

@@ -90,7 +90,7 @@ async function handle(msg: Rpc): Promise<object | undefined> {
       return reply({})
     case "tools/list":
       return reply({
-        tools: TOOLS.map((def) => ({ name: def.name, description: describeTool(def, "claude"), inputSchema: inputSchema(def) })),
+        tools: TOOLS.map((def) => ({ name: def.name, description: describeTool(def, "claude"), inputSchema: inputSchema(def), _meta: { "anthropic/alwaysLoad": true } })),
       })
     case "tools/call": {
       try {

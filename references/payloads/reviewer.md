@@ -129,6 +129,8 @@ PRIOR_CRS: |
 
 ## Field rules that matter
 
+- **`LENS_DOC` is mechanical**: `compose_payloads.py` writes `${PLUGIN_ROOT}/references/reviewer-lenses/<LENS>.md`. The reviewer's prompt carries no lens text; it reads that one file, so a spawn pays only for its own lens.
+
 - **`SCOPE` is a location list, never a diff.** Passing a diff breaks the
   reviewer's blindness, and blindness is the whole reason its verdict is worth
   anything.

@@ -1533,6 +1533,9 @@ def compose_reviewer(ctx: dict) -> list[Field]:
         "STANDARDS": Field("STANDARDS", os.path.join(
             ctx["plugin_root"], "skills", "standards", "engineering-standards.md")),
         "ROUND": Field("ROUND", sets.get("ROUND", "1")),
+        # The lens's own instructions live in a file, so a spawn carries only its lens.
+        "LENS_DOC": Field("LENS_DOC", os.path.join(
+            ctx["plugin_root"], "references", "reviewer-lenses", lens + ".md")),
     }
     if lens == "plan":
         staging = os.path.join(root, ".agent-staging")
@@ -1591,7 +1594,7 @@ def compose_reviewer(ctx: dict) -> list[Field]:
         "DOSSIER", "CRITERIA", "SCOPE", "CONTRACT", "RUN_EVIDENCE", "RULES",
         "ARBITRATIONS", "PRIOR_CRS", "SIGNALS",
     })
-    order = ["LENS", "DOSSIER", "WORKTREE_DIR", "SCOPE", "CONTRACT", "RUN_EVIDENCE",
+    order = ["LENS", "LENS_DOC", "DOSSIER", "WORKTREE_DIR", "SCOPE", "CONTRACT", "RUN_EVIDENCE",
              "CRITERIA", "STANDARDS", "RULES", "SIGNALS", "CONTEXT_DOCS", "ARBITRATIONS",
              "PRIOR_CRS", "ROUND"]
     return ordered(fields, order)
@@ -2557,6 +2560,11 @@ def selftest() -> int:
         with open(os.path.join(plugin_root, "skills", "standards", "engineering-standards.md"),
                   "w", encoding="utf-8") as fh:
             fh.write("# engineering standards fixture\n")
+        os.makedirs(os.path.join(plugin_root, "references", "reviewer-lenses"), exist_ok=True)
+        for lens_name in ("plan", "style", "architecture", "performance", "tests"):
+            with open(os.path.join(plugin_root, "references", "reviewer-lenses", lens_name + ".md"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("## LENS: %s\n" % lens_name)
 
         def run_compose(out_name: str, extra: list[str]) -> tuple[int, str, str]:
             out_path = os.path.join(root, ".agent-staging", "payloads", out_name)
