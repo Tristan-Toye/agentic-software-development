@@ -1523,6 +1523,7 @@ class Runner:
         self.ka_checked = 0.0               # monotonic time of the last keep-alive check
         self.ka_cold: set[str] = set()      # sessions whose cache a ping found cold: not pinged again
         self.ka_said: set[str] = set()
+        self.ka_skipped: dict[str, str] = {}   # session -> the reason of its last logged skipped ping
         self.stray = 0                      # ping results still to come that read_turn must not take for a turn's
         self.ctx = 0                        # the session's context now: the last assistant usage, input + cache read + cache write
         self.split: dict | None = None      # a checkpoint taken above ASD_RUNNER_SPLIT_AT: {tid, name, ctx, ready}
@@ -2161,27 +2162,45 @@ class Runner:
             return f"five-hour window at {w5['used_percentage']:.0f}%"
         return ""
 
+    def keepalive_skip(self, sid: str, reason: str) -> None:
+        """One log line per skipped ping and reason (repeats of the same reason while the wait lasts are not logged again)."""
+        if self.ka_skipped.get(sid) != reason:
+            self.ka_skipped[sid] = reason
+            self.log(f"keepalive skipped a ping for {self.key}: {reason}")
+
     def keepalive_tick(self) -> None:
-        """Prompt-cache keep-alive for a run that waits on the owner: the cache lives 1 h, and an owner's answer can
-        take longer. A run queued for a slot is never pinged: the slot wait is not worth what a ping costs. When the session's last API call is ASD_KEEPALIVE_AFTER seconds old
-        (3000) and the wait is under ASD_KEEPALIVE_MAX_H hours (12), send one tiny ping. No ping while the run is
-        paused for usage, when its account's 5-hour window is at 80% or more, or with ASD_KEEPALIVE=0. A ping takes
-        no run slot and never changes the run's state."""
+        """Prompt-cache keep-alive for a run that waits on the owner or on background work: the cache lives 1 h, and an
+        owner's answer can take longer. A `waiting` run and a `running`/`testing` one whose turn has ended (the session
+        waits on a background task) are pinged; a run queued for a slot never is: the slot wait is not worth what a ping
+        costs. When the session's last API call is ASD_KEEPALIVE_AFTER seconds old (3000) and the wait is under
+        ASD_KEEPALIVE_MAX_H hours (24), send one tiny ping. No ping while the run is paused for usage, when its
+        account's 5-hour window is at 80% or more, while a turn is open mid-stage (the session is working or blocked
+        in a tool), or with ASD_KEEPALIVE=0; each skip of a due ping is logged with its reason. A ping takes no run
+        slot and never changes the run's state."""
         if (os.environ.get("ASD_KEEPALIVE") or "").strip() == "0" or self.stopping:
             return
-        if self.state.get("state") != "waiting":   # a slot wait ("queued") is not worth a ping: the run starts when a slot frees
+        st = self.state.get("state")
+        if st not in ("waiting", "running", "testing"):   # a slot wait ("queued") is not worth a ping: the run starts when a slot frees
             self.ka_since = None
             return
         if time.monotonic() - self.ka_checked < env_num("ASD_KEEPALIVE_POLL", 5):
             return
         self.ka_checked = time.monotonic()
         t = now_s()
+        sid = str(self.state.get("session") or "")
+        if st != "waiting" and not self.turn_open and not self.session_last_api():
+            return   # no API call seen yet: nothing to keep warm
+        if st != "waiting" and self.turn_open:   # mid-stage the session is working or blocked in a tool call: no ping can go in
+            self.ka_since = None
+            last = self.session_last_api()
+            if sid and sid not in self.ka_cold and last and t - last >= env_num("ASD_KEEPALIVE_AFTER", 3000):
+                self.keepalive_skip(sid, "a turn is open (the session is mid-stage)")
+            return
         if self.ka_since is None:
             self.ka_since = t
-        sid = str(self.state.get("session") or "")
         if not sid or sid in self.ka_cold:
             return
-        if t - self.ka_since >= env_num("ASD_KEEPALIVE_MAX_H", 12) * 3600:
+        if t - self.ka_since >= env_num("ASD_KEEPALIVE_MAX_H", 24) * 3600:
             if sid + ":max" not in self.ka_said:
                 self.ka_said.add(sid + ":max")
                 self.log("keepalive stopped: waited longer than ASD_KEEPALIVE_MAX_H")
@@ -2189,8 +2208,11 @@ class Runner:
         last = self.session_last_api()
         if last and t - last < env_num("ASD_KEEPALIVE_AFTER", 3000):
             return
-        if self.keepalive_blocked(t):
+        why = self.keepalive_blocked(t)
+        if why:
+            self.keepalive_skip(sid, why)
             return
+        self.ka_skipped.pop(sid, None)
         self.keepalive_ping(sid)
 
     def keepalive_ping(self, sid: str) -> None:
@@ -2491,7 +2513,7 @@ class Runner:
         kill_group(self.proc, signal.SIGKILL)
         return detail
 
-    def read_turn(self, q: queue.Queue, extra: bool, idle: float | None = None) -> tuple[str, object]:
+    def read_turn(self, q: queue.Queue, extra: bool, idle: float | None = None, keepalive: bool = False) -> tuple[str, object]:
         """('result', (text, is_error)) | ('exit', code) | ('stopped', None) | ('idle', None)
         when `idle` seconds pass with no event at all."""
         last_text = ""
@@ -2513,6 +2535,8 @@ class Runner:
                 if result is not None:
                     return "result", result
                 self.refresh_testing()   # a Bash call quiet for TESTING_QUIET_SECS has no event to trigger it
+                if keepalive and result is None:
+                    self.keepalive_tick()   # a stage session waiting on background work keeps its cache warm too
                 if self.stalled():
                     return "stalled", None
                 if idle is not None and time.monotonic() - quiet_since > idle:
@@ -2836,7 +2860,7 @@ class Runner:
         bg_waited = 0.0  # quiet seconds spent waiting on background work the transcript shows in flight
         env_msgs = 0     # RUNNER: ENV lines this stage
         while True:
-            kind, val = self.read_turn(q, extra, idle if quiet else None)
+            kind, val = self.read_turn(q, extra, idle if quiet else None, keepalive=True)
             extra = False
             if kind != "idle":
                 bg_waited = 0.0
@@ -5788,6 +5812,7 @@ def selftest() -> int:
         p, qk = ka_run("W-245", [[9000, 100]], ASD_KEEPALIVE_AFTER=0.3, ASD_KEEPALIVE_POLL=0.1)
         time.sleep(2.5)
         check("keepalive: no ping while the account is limit-marked (the run would be paused)", not pinglines("W-245"))
+        check("keepalive: the skipped ping is logged once, with the run and the reason", len([t for t in texts("W-245") if t.startswith("keepalive skipped a ping for") and "paused for usage" in t]) == 1)
         check("keepalive: the run still finishes", ka_end(p, "W-245", qk))
         write_json(env["ASD_ACCOUNT_STATE"], {})
         os.makedirs(env["ASD_USAGE_DIR"], exist_ok=True)
@@ -5796,6 +5821,7 @@ def selftest() -> int:
         p, qk = ka_run("W-246", [[9000, 100]], ASD_KEEPALIVE_AFTER=0.3, ASD_KEEPALIVE_POLL=0.1)
         time.sleep(2.5)
         check("keepalive: no ping while the account's five-hour window is at 80% or more", not pinglines("W-246"))
+        check("keepalive: the five-hour skip is logged with its reason", any(t.startswith("keepalive skipped a ping for") and "five-hour window at 85%" in t for t in texts("W-246")))
         check("keepalive: the run still finishes", ka_end(p, "W-246", qk))
         env.pop("ASD_ACCOUNT_STATE")
         env["ASD_ACCOUNT_STATE"] = os.path.join(tmp, "e2e-state.json")

@@ -132,10 +132,12 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
    is not a tool) and there is no `Monitor` tool for you: never call it. Start
    the run with `run_tests.py ... --detach` (it prints a log path and the
    `--wait` command) or `run_gates.py ... --detach` (prints a run id), then
-   make ONE blocking call, `run_tests.py --wait <log>` or `run_gates.py --wait
-   <id>`; it returns the digest when the run ends (`run_gates.py --wait`
-   exits 6 when its cap passed with the run still going: call the same
-   `--wait` again). Never wait with `sleep`, `pgrep`, `ps`, `tail -f` or an
+   make a blocking call, `run_tests.py --wait <log>` or `run_gates.py --wait
+   <id>`; it returns the digest when the run ends. Each call blocks at most
+   about 270 s (your prompt cache lives 5 minutes, and a longer block makes
+   you pay for your whole context again): exit 6 with `still running, call
+   --wait again` means the run goes on, so call the same `--wait` again, as
+   often as it takes. Never pass a longer `--wait-cap`. Never wait with `sleep`, `pgrep`, `ps`, `tail -f` or an
    `until`/`while` loop, and never check progress in repeated calls: every such
    turn costs a full context read and shortens nothing. A run that finishes
    inside one call needs no `--detach`.
