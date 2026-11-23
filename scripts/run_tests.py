@@ -126,6 +126,11 @@ parsed with the parsers above, or its last lines when nothing parses. The
 digest then lists every SKIP with its reason (a skip is coverage the run did
 not give) and, when `<log>` minus `.log` plus `.durations.tsv` exists with
 `<seconds>\t<verdict>\t<suite>` rows, the slowest steps and their sum.
+skip banners: `--skip-banner REGEX` (repeatable; the stack config's `skip_banner`
+joins it when the preflight drops the env script) names the line a test prints
+when it returns early for want of the environment. The runner counts such a
+test as passed; the digest moves each matching line from `passed` to
+`skipped N (NOT VERIFIED, not passed)`, and `--expect green` refuses the proof.
 generic fallback (only when nothing above matched): lines containing
 `FAIL`, `FAILED`, or `Error`.
 
@@ -165,6 +170,7 @@ class Totals:
     passed: int = 0
     failed: int = 0
     ignored: int = 0
+    skipped: int = 0  # passed by the runner but returned early through a skip banner: NOT VERIFIED
 
 
 @dataclass
@@ -315,10 +321,14 @@ def outcomes(log_text: str, names: list[str]) -> dict[str, str | None]:
     return out
 
 
-def proof(log_text: str, names: list[str], expect: str) -> tuple[bool, str]:
+def proof(log_text: str, names: list[str], expect: str, banners: list[str] | None = None) -> tuple[bool, str]:
     """Whether the named tests ran with the expected outcome, and the PROOF line to log.
     A test that did not run proves nothing either way: a compile error is red, not proof."""
     got = outcomes(log_text, names)
+    skipped = banner_skips(log_text, banners or []) if expect == "green" else 0
+    if skipped:
+        return False, (f"PROOF REFUSED: {skipped} test(s) returned through the skip banner — NOT VERIFIED, "
+                       f"never green; run them with the environment present")
     want = "failed" if expect == "red" else "ok"
     unrun = [n for n, o in got.items() if o is None]
     if unrun:
@@ -327,6 +337,23 @@ def proof(log_text: str, names: list[str], expect: str) -> tuple[bool, str]:
     if wrong:
         return False, f"PROOF FAILED: expected {expect}, got {', '.join(wrong)}"
     return True, f"PROOF: {expect} as expected — {', '.join(names)}"
+
+
+def banner_skips(log_text: str, banners: list[str]) -> int:
+    """Lines of the log matching any skip-banner regex: each is a test that returned early through the
+    repository's stack-or-skip gate, which the runner counted as passed."""
+    if not banners:
+        return 0
+    res = [re.compile(b) for b in banners]
+    return sum(1 for line in ANSI_RE.sub("", log_text).splitlines() if any(r.search(line) for r in res))
+
+
+def apply_banners(totals: Totals, log_text: str, banners: list[str]) -> Totals:
+    """Totals with the banner-matched tests moved from passed to skipped (never more than passed)."""
+    n = min(banner_skips(log_text, banners), totals.passed)
+    if not n:
+        return totals
+    return Totals(totals.passed - n, totals.failed, totals.ignored, totals.skipped + n)
 
 
 def default_log_path(command: list[str]) -> str:
@@ -595,7 +622,8 @@ def format_body(
     if suites:
         suite_details(log_text, failures, root, lines_n)
     if parser:
-        out.append(f"passed {totals.passed}  failed {totals.failed}  ignored {totals.ignored}  ({parser})")
+        skipped = f"  skipped {totals.skipped} (NOT VERIFIED, not passed)" if totals.skipped else ""
+        out.append(f"passed {totals.passed}  failed {totals.failed}  ignored {totals.ignored}{skipped}  ({parser})")
         shown = failures[:max_failures]
         for fl in shown:
             out.append(f"FAIL {fl.name}")
@@ -688,6 +716,7 @@ def digest_of(path: str, args: argparse.Namespace) -> tuple[str, int]:
     with open(path, encoding="utf-8", errors="replace") as fh:
         text = fh.read()
     parser, totals, failures = parse_log(text)
+    totals = apply_banners(totals, text, args.skip_banner)
     body = format_body(parser, totals, failures, args.max_failures, args.lines, args.line_chars, text, run_root(args))
     head = f"digest of {path} ({len(text)} chars)"
     return "\n".join([head, *body]), len(failures)
@@ -710,12 +739,13 @@ def suite_line(sha: str, base: str | None, totals: "Totals", rc: int, log_path: 
     """The `SUITE: local on <sha>, base <sha> — <counts>; <log>` line phase-6-conditional.md asks for."""
     verdict = "passed" if rc == 0 else f"exit {rc}"
     return (f"SUITE: local on {sha}, base {(base or 'unknown')[:12]} — {totals.passed} passed, "
-            f"{totals.failed} failed, {totals.ignored} skipped, {verdict}; {log_path}")
+            f"{totals.failed} failed, {totals.ignored + totals.skipped} skipped, {verdict}; {log_path}")
 
 
 def single_run(args: argparse.Namespace, argv: list[str], display: str, log_path: str) -> int:
     rc, wall, log_text = execute(argv, log_path, args.cwd if not args.vm else None, args.vm, args.vm_pidfile)
     parser, totals, failures = parse_log(log_text)
+    totals = apply_banners(totals, log_text, args.skip_banner)
     out = format_digest(display, rc, wall, log_path, parser, totals, failures,
                         args.max_failures, args.lines, args.line_chars, log_text, run_root(args))
     missing = names_not_run(log_text, args.test) if args.test else []
@@ -723,7 +753,7 @@ def single_run(args: argparse.Namespace, argv: list[str], display: str, log_path
         out += f"\nNOT RUN (matched no test): {', '.join(missing)}"
         rc = rc or 3
     if args.expect:
-        held, line = proof(log_text, args.test or args.proof_name, args.expect)
+        held, line = proof(log_text, args.test or args.proof_name, args.expect, args.skip_banner)
         out += "\n" + line
         rc = 0 if held else 4
     if args.build_log:
@@ -874,6 +904,8 @@ def stack_env_preflight(args: argparse.Namespace, command: list[str]) -> tuple[s
             print(stack_env.line(res))
         env_script, command = stack_env.strip_env_script(cfg, args.env_script, command)
         skips = [f"{k}={v}" for k, v in sorted((cfg.get("skip_env") or {}).items())]
+        banner = cfg.get("skip_banner") or []
+        args.skip_banner = list(getattr(args, "skip_banner", None) or []) + ([banner] if isinstance(banner, str) else list(banner))
         return env_script, (["env", *skips] if skips else []) + command
     except Exception as err:  # noqa: BLE001 - a preflight problem must never cost the run
         print(f"STACK-ENV: check failed ({err}); running as asked")
@@ -962,6 +994,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--wait", metavar="LOG", help="block until the detached run on LOG ends; print its digest")
     ap.add_argument("--timeout", type=float, default=3600, help="--wait: give up after this many seconds")
     ap.add_argument("--digest", metavar="LOG", help="print the digest of an existing log; run nothing")
+    ap.add_argument("--skip-banner", action="append", default=[], metavar="REGEX", help="a line a test prints when it returned early for want of the environment (also the stack config's `skip_banner`); each match moves one test from passed to `skipped N`, and --expect green refuses on it")
     ap.add_argument("--print-cmd", action="store_true", help="print the full paste-safe command; run nothing")
     ap.add_argument("--detached-child", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--selftest", action="store_true", help="check the checker")
@@ -1400,6 +1433,22 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         print("SELFTEST FAIL  " + item)
     red_log = "running 2 tests\ntest cloud::tests::catalog_empty_is_refused ... FAILED\ntest cloud::tests::other ... ok\n"
     check("proof: red holds on a FAILED line", proof(red_log, ["catalog_empty_is_refused"], "red")[0])
+    # Skip banners: tests that returned early for want of the environment are skipped, never passed or green.
+    sk_log = ("running 3 tests\ntest a ... ok\ntest b ... ok\ntest c ... ok\n"
+              "SKIP: needs DB\nSKIP: needs DB\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n")
+    sk_banner = [r"^SKIP: needs DB"]
+    sk_p, sk_t, _ = parse_log(sk_log)
+    sk_t2 = apply_banners(sk_t, sk_log, sk_banner)
+    check("skip banner: matching lines move from passed to skipped", (sk_t2.passed, sk_t2.skipped) == (1, 2))
+    check("skip banner: none given leaves the totals alone", apply_banners(sk_t, sk_log, []) == sk_t)
+    check("skip banner: never more skipped than passed", apply_banners(Totals(passed=1), sk_log, sk_banner).skipped == 1)
+    sk_body = "\n".join(format_body(sk_p, sk_t2, [], 10, 15, 300, sk_log))
+    check("skip banner: the result line has skipped N apart from passed N",
+          "passed 1" in sk_body and "skipped 2 (NOT VERIFIED, not passed)" in sk_body)
+    check("skip banner: the SUITE line counts them as skipped", "1 passed, 0 failed, 2 skipped" in suite_line("a", "b", sk_t2, 0, "l"))
+    check("skip banner: --expect green is refused on a banner match",
+          proof(sk_log, ["a"], "green", sk_banner)[1].startswith("PROOF REFUSED: 2 test(s) returned through the skip banner"))
+    check("skip banner: --expect green holds without a banner match", proof(sk_log, ["a"], "green", [r"^NEVER"])[0])
     check("proof: green fails on a FAILED line", proof(red_log, ["catalog_empty_is_refused"], "green")[1].startswith("PROOF FAILED"))
     check("proof: a test that never ran is refused, never red",
           proof(CARGO_COMPILE_ERROR, ["catalog_empty_is_refused"], "red")[1].startswith("PROOF REFUSED"))
@@ -1496,7 +1545,7 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-    print(f"selftest: {len(failures_list)} failure(s)")
+    print(f"selftest: {len(failures_list)} failure(s)" + "".join(f"\n  FAILED: {n}" for n in failures_list))
     return 1 if failures_list else 0
 
 

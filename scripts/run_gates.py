@@ -120,9 +120,13 @@ when it is safe to flatten (plain commands; backslash, `&&`, `||` and `|` contin
 joined; it runs as `set -e; ...`). Workflow, job and step `env:` scalars
 become an `export` prefix and `working-directory:` a `(cd DIR && ...)`
 prefix. Names are `<job>-<step name slug>`. A step is never silently dropped:
-`uses:` steps, jobs with `services:`/`container:`/a reusable `uses:`,
+jobs with `services:`/`container:`/a reusable `uses:`,
 `github.*` conditions and `secrets.*` are CI-only and only counted (an `env:` var whose value is a `${{ }}` expression is dropped and counted too), on the one
-`# from-workflow:` summary line (also printed to stderr); a step it cannot
+`# from-workflow:` summary line (also printed to stderr); a `uses:` step is one of
+three: a checker action with a local twin (`CHECKER_TWINS`, e.g. `crate-ci/typos`
+becomes the gate `typos .`), a setup/cache/checkout/upload/download action (only
+counted), or any other action, listed as `# skipped: job/step - uses: ACTION ...`
+so it is never silent; a step it cannot
 flatten safely (compound shell, heredoc, `${{ }}` expressions, other `if:`,
 `continue-on-error`, a non-bash `shell:`, a folded scalar) is listed as
 `# skipped: job/step - why`. So is a step that is no local pre-push gate: one
@@ -398,6 +402,16 @@ def _env_prefix(env: dict) -> tuple[str, str, int]:
     return "".join(parts), "", dropped
 
 
+# `uses:` steps that check the source have a local twin; a gate list built from `run:` steps alone
+# misses them (a spelling check went red in CI with 105 green local gates). Setup, cache, checkout,
+# upload and download actions are only counted; any other action is listed as skipped by name.
+CHECKER_TWINS = {"crate-ci/typos": "typos ."}
+SETUP_ACTION = re.compile(
+    r"^actions/|checkout|cache|setup|install|toolchain|upload|download|artifact|login|auth|configure|"
+    r"^docker/|^dtolnay/rust-toolchain|^swatinem/|^codecov/|^github/codeql|slack|notify|release|publish|deploy|"
+    r"^peaceiris/|^softprops/|^mozilla-actions/", re.I)
+
+
 def derive_gates(paths: list[str]) -> tuple[list[tuple[str, str]], list[str], dict]:
     """(gates [(name, command)], unsafe-skip lines, CI-only skip counts by kind)."""
     gates: list[tuple[str, str]] = []
@@ -492,7 +506,21 @@ def derive_gates(paths: list[str]) -> tuple[list[tuple[str, str]], list[str], di
                     raise WorkflowError(f"{path}: job {job} step {idx}: {err}")
                 label = f"{job}/{st.get('name') if isinstance(st.get('name'), str) and st.get('name') else idx}"
                 if "uses" in st:
-                    count("uses")
+                    action = st["uses"].split("@")[0].strip() if isinstance(st["uses"], str) else ""
+                    twin = CHECKER_TWINS.get(action.lower())
+                    ucond = st.get("if")
+                    if twin and not (isinstance(ucond, str) and "github." in ucond):
+                        base = _slug(f"{job}-{st['name']}" if isinstance(st.get("name"), str) and st.get("name") else f"{job}-{action}")
+                        name, nn = base, 2
+                        while name in names:
+                            name, nn = f"{base}-{nn}", nn + 1
+                        names.add(name)
+                        gates.append((name, twin))
+                    elif action and not twin and not SETUP_ACTION.search(action) and "run" not in st:
+                        unsafe.append(f"# skipped: {label} - uses: {action} reads the source but has no local twin in CHECKER_TWINS")
+                        count("uses")
+                    else:
+                        count("uses")
                     continue
                 if "run" not in st:
                     count("no-run")
@@ -985,6 +1013,10 @@ jobs:
         run: ./deploy.sh
       - name: Token
         run: ./publish.sh ${{ secrets.TOKEN }}
+      - name: Check spelling
+        uses: crate-ci/typos@v1.24.0
+      - name: Odd lint
+        uses: someorg/odd-lint@v2
       - name: Lint
         run: ruff check .
   db:
@@ -1206,14 +1238,17 @@ def selftest() -> int:
               "# skipped: build/Loop - compound shell" in wout)
         check("heredoc block listed as skipped", "# skipped: build/Heredoc - heredoc" in wout)
         check("uses/secrets/github-event/service steps are counted, not gates",
-              "uses: 2" in wout and "secrets: 1" in wout and "if-github: 1" in wout
+              "uses: 3" in wout and "secrets: 1" in wout and "if-github: 1" in wout
               and "service-job: 1" in wout and "deploy.sh" not in wout and "pytest" not in wout)
-        check("summary on stderr too", "run_gates: from-workflow: 6 gates" in err_io.getvalue())
+        check("a `uses:` checker with a local twin is a gate", "build-check-spelling: typos ." in wout)
+        check("an unknown non-setup `uses:` step is listed by name as skipped",
+              "# skipped: build/Odd lint - uses: someorg/odd-lint" in wout and "uses: 3" in wout)
+        check("summary on stderr too", "run_gates: from-workflow: 7 gates" in err_io.getvalue())
         wgates = os.path.join(tmp, "from-wf.txt")
         with open(wgates, "w", encoding="utf-8") as fh:
             fh.write(wout)
         try:
-            check("derived file parses as a gates file", len(parse_gates(wout)) == 6)
+            check("derived file parses as a gates file", len(parse_gates(wout)) == 7)
         except GateFileError as err:
             check("derived file parses as a gates file", False)
         out_io = io.StringIO()

@@ -60,6 +60,28 @@ are cheap, and both run while the bodies in `X` are still stubs:
      (imports, fixtures, collection errors) yourself now, so Phase 6
      arbitrates real disagreements only.
 
+   **Judge each red by its panic site (#523).** A failure counts as red for the
+   stub only when its first frame inside the test file is the call into the
+   code under test (or an assertion after it). A panic or error raised before
+   that call, in a fixture, a builder or a parse of a literal the type's parser
+   rejects (`parse().unwrap()` on a typed identifier), proves nothing about the
+   stub: record that test as **UNPROVEN (fixture-site)**, route the fixture to
+   its author by the table below with the offending literal named, and prove
+   the test red again — on the stubs, or with a mutant — before its later pass
+   counts. A failure count that includes such tests overstates the red-run (one
+   build counted 67 fixture-parse panics as red and lost the proof).
+
+   **A skipped test is NOT VERIFIED, never green and never a keep (#488).** A
+   test that returned early through the repository's stack-or-skip gate (no
+   database, env script withheld, a `*_TESTS=skip` switch) is neither red nor
+   green. Run with `run_tests.py --skip-banner REGEX` (the line the test prints
+   when it returns early; a stack config's `skip_banner` joins it): the digest
+   then reports `skipped N (NOT VERIFIED, not passed)` apart from `passed N`,
+   and `--expect green` refuses. A test that is "green before the
+   implementation" because it was skipped is not "real contract code": rule it
+   NOT VERIFIED in the strength-gate record and the red-run record, and defer
+   its criterion to the run that has the environment.
+
 **Routing a vacuous test — one rule, everywhere it comes up.** A vacuous test
 is found at the stub red-run, by the weak-pattern grep, or at a Phase 6
 arbitration, and the mechanic is the same in all three places. It turns on

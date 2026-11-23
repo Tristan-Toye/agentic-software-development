@@ -96,7 +96,7 @@ before you spawn; `validate_pipeline.py --pre-fanout` requires the line and
 refuses a `parsed 0/` result — that means the ids don't match the grammar,
 so re-derive them in it, never fall back to a Phase 5 manual diff.
 
-Detail: `ref_section` with `phase-3-conditional` and the heading "Grep for census pins the contract shifts, and log CENSUS". (when the contract adds a migration, a table or a counted file, moves code or a file, or changes a string identifier's shape; otherwise log `CENSUS: none — <what was grepped>`, which `--pre-fanout` requires every run.)
+Detail: `ref_section` with `phase-3-conditional` and the heading "Grep for census pins the contract shifts, and log CENSUS". (when the contract adds a migration, a table or a counted file, moves code or a file, changes a string identifier's shape, or tightens a value (a validated member, a required constructor parameter, a defaults entry: census its producers); otherwise log `CENSUS: none — <what was grepped>`, which `--pre-fanout` requires every run.)
 
 **Every prose promise in `## Contract` maps to a criterion.** Each sentence of
 the contract's prose (outside code blocks) that promises observable behaviour

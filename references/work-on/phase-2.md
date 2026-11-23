@@ -256,7 +256,11 @@ This is the step everything else depends on.
    and once more per `--features` set a job uses) plus every doc and lint gate
    CI runs (`cargo doc` under its `RUSTDOCFLAGS`, clippy, fmt) — never the
    repo's local aggregator alone, which covers fewer. Generate them with
-   `run_gates.py --from-workflow <workflow files>` (it lists every skipped step),
+   `run_gates.py --from-workflow <workflow files>` (it lists every skipped step;
+   a `uses:` step that checks the source is a gate too, `crate-ci/typos` becomes
+   `typos .`, and an unknown non-setup action is listed `# skipped:` by name —
+   commits made with `LEFTHOOK=0` skip the repo's hooks, so the gate list is the
+   only local cover of a hook check),
    or write them by hand in `run_gates.py`'s format to `.discovery/analysis/gates-<ID>.txt`, run
    `python3 ${PLUGIN_ROOT}/scripts/run_gates.py <file> --root <X>` before the
    contract commit, and log one line; `--pre-fanout` refuses without it:

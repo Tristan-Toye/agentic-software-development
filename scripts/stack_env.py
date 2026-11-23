@@ -26,6 +26,7 @@ Config: the repo's stack-repair config (scripts/stack_repair.py finds it), keys
   lease_probe    argv; exit 0 = the stack lease is free now, 1 = held
   stack_up       argv, run from the persistent checkout {root} (stack_repair's key)
   skip_env       {NAME: value} set on a skipped run
+  skip_banner    regex (or list) of the line a test prints when it returns early under skip_env; run_tests counts it as skipped, not passed
   suite_markers  command words that mark the full stack suite (sync only: it is never run with tests skipped)
   fixture_stamp  argv printing the tree's fake-llm source stamp (`Sources:<sha>`); {stamp_dir} is the checkout it runs in
   fixture_probe  argv printing the stamp the RUNNING fixture serves (exit 1 = not answering, 2 = no stamp line)

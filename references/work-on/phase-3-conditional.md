@@ -56,6 +56,16 @@ every hit into a `CENSUS:` row (a catch-all row per file for stale literals),
 and log `CENSUS-LITERAL: <pattern> — <N> hits, <M> census rows` (or `CENSUS-LITERAL:
 none — <pattern searched, zero hits>`). `validate_pipeline.py --pre-fanout`
 refuses a contract with a `SHAPE-CHANGE:` line and no `CENSUS-LITERAL:` line.
+**A tightened value gets a census of its producers, not only compile errors
+(#518).** When the contract tightens what a value may be (a member becomes
+validated against a catalogue, a constructor parameter becomes required, a
+defaults table gains an entry), a test that builds the old shape may still
+compile. Search for the record's constructor calls, or the defaults' member
+names, across every test project, integration fakes and expected-defaults
+dumps (Python and shell included) included, and turn every producer into a
+`CENSUS:` row before the fan-out: a test builder, a fake model, a dump of the
+defaults, a test constructing a handler. A run that tightens a member and lists
+no integration fake in `CENSUS` has not searched.
 Log
 `CENSUS: <path>:<line> — <owner>`, or `CENSUS: none — <what was grepped>`,
 into `## Build log` before you spawn. **A row whose path is an existing test
