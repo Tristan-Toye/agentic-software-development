@@ -53,7 +53,11 @@ dossier, `status: done`, and log `MERGED: PR <n> into <stub> @ <sha>` with
 ## Step 3 — Local cleanup
 
 - The main checkout on the stub and clean: `git pull --ff-only`. On another
-  branch, or dirty: leave it, and say so.
+  branch, or dirty: leave it, and say so. Never edit it: in committed mode
+  the dossier's `status: done` and `MERGED:` line land in its notes file
+  (`dossier_edit.py` routes them; `formats/README.md` § "Two modes"), and a
+  `WORKTREE GONE` exit 3 means the branch is still open — recreate the
+  worktree as the message says.
 - A worktree still on the merged head branch: remove it when it is clean
   (`git worktree remove`), else leave it and name it (to save its leftovers use
   `remove_worktree.py --save`). Leftovers and staging go under `~/.agentic/`,

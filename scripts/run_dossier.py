@@ -600,7 +600,10 @@ def user_message(text: str) -> bytes:
 
 
 def set_dossier_status(root: str, dossier: str, status: str, log=lambda m: None) -> bool:
-    """Set `status:` in the dossier's front matter (.discovery/dossiers/<ID>-*.md), when it differs. Best effort."""
+    """Set `status:` in the dossier's front matter (.discovery/dossiers/<ID>-*.md), when it differs. Best effort.
+    The write goes through `dossier_edit.py set`, so a committed-mode main checkout is never edited: the dossier's
+    worktree gets it, or its notes file; a dossier whose branch is open but whose worktree is gone is not written
+    (dossier_edit exits 3, WORKTREE GONE) and the message is logged."""
     d = os.path.join(root, ".discovery", "dossiers")
     try:
         names = sorted(n for n in os.listdir(d) if re.match(re.escape(dossier) + r"(-.*)?\.md$", n))
@@ -609,20 +612,33 @@ def set_dossier_status(root: str, dossier: str, status: str, log=lambda m: None)
     if not names:
         return False
     path = os.path.join(d, names[0])
-    try:
-        text = open(path, encoding="utf-8").read()
-    except OSError:
+    text = dossier_text(path)
+    if text is None or not text.startswith("---\n"):
         return False
-    m = re.match(r"---\n(.*?)\n---\n", text, re.S)
-    if not m:
-        return False
-    fm = m.group(1)
-    new = re.sub(r"(?m)^status:[ \t]*\S.*$", f"status: {status}", fm, count=1)
-    if new == fm:
+    if front_status(text) == status:
         return True
-    open(path, "w", encoding="utf-8").write(f"---\n{new}\n---\n" + text[m.end():])
+    try:
+        r = subprocess.run([sys.executable, os.path.join(HERE, "dossier_edit.py"), "set", path, f"status={status}"],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log(f"dossier {dossier}: could not set status {status}: {e}")
+        return False
+    if r.returncode != 0:
+        log(f"dossier {dossier}: status {status} not written (dossier_edit exit {r.returncode}): "
+            + (r.stderr.strip() or r.stdout.strip())[:600])
+        return False
     log(f"dossier {dossier}: status set to {status}")
     return True
+
+
+def dossier_text(path: str) -> str | None:
+    """A dossier's text as a reader should see it: with its notes file (.discovery/notes/<file>) laid over it,
+    because the main checkout's committed copy is never written (dossier_edit.redirect_path). None when unreadable."""
+    try:
+        import dossier_edit  # noqa: PLC0415 (scripts/ is on sys.path)
+        return dossier_edit.read_overlaid(path)
+    except OSError:
+        return None
 
 
 def parse_marker(text: str) -> tuple[str, str] | None:
@@ -1367,9 +1383,8 @@ def has_buildable_dossier(root: str) -> bool:
     except OSError:
         return False
     for n in names:
-        try:
-            text = open(os.path.join(d, n), encoding="utf-8").read()
-        except OSError:
+        text = dossier_text(os.path.join(d, n))
+        if text is None:
             continue
         if text.startswith("---\n") and front_status(text) != "done":
             return True
@@ -3496,7 +3511,7 @@ def open_blockers(root: str, dossier: str) -> list[str]:
     def text_of(did: str) -> str | None:
         try:
             names = sorted(n for n in os.listdir(d) if re.match(re.escape(did) + r"(-.*)?\.md$", n))
-            return open(os.path.join(d, names[0]), encoding="utf-8").read() if names else None
+            return dossier_text(os.path.join(d, names[0])) if names else None
         except OSError:
             return None
     own = text_of(dossier)
@@ -3555,7 +3570,7 @@ def replan_followup(root: str, dossier: str, since: float = 0.0) -> tuple[str, s
     status = ""
     if names:
         try:
-            status = front_status(open(os.path.join(d, names[0]), encoding="utf-8").read())
+            status = front_status(dossier_text(os.path.join(d, names[0])) or "")
         except OSError:
             pass
         if status == "ready":
@@ -4042,6 +4057,36 @@ def selftest_reserved(check) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def selftest_main_lock(check) -> None:
+    """The runner's status write never edits a committed-mode main checkout: notes, or WORKTREE GONE for an open branch."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "app")
+        d = os.path.join(root, ".discovery", "dossiers")
+        os.makedirs(d)
+        g = lambda *a: subprocess.run(["git", "-C", root, *a], capture_output=True, text=True)  # noqa: E731
+        g("init", "-q")
+        for did in ("W-77", "W-78"):
+            open(os.path.join(d, f"{did}-x.md"), "w").write(f"---\nid: {did}\nstatus: ready\n---\n# {did}\n\n## Build log\n")
+        g("add", "-A")
+        g("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+        g("update-ref", "refs/remotes/origin/feat/W-78-x", "HEAD")
+        seen: list[str] = []
+        check("main lock: no open branch: the status write succeeds",
+              set_dossier_status(root, "W-77", "done", seen.append))
+        check("main lock: ...the committed dossier is untouched",
+              "status: ready" in open(os.path.join(d, "W-77-x.md")).read() and not g("status", "--porcelain").stdout.strip())
+        check("main lock: ...the notes file carries it",
+              "status: done" in open(os.path.join(root, ".discovery", "notes", "W-77-x.md")).read())
+        check("main lock: ...and readers see it overlaid", front_status(dossier_text(os.path.join(d, "W-77-x.md")) or "") == "done")
+        seen.clear()
+        check("main lock: open branch, worktree gone: nothing written, False",
+              not set_dossier_status(root, "W-78", "planned", seen.append)
+              and "status: ready" in open(os.path.join(d, "W-78-x.md")).read()
+              and not os.path.exists(os.path.join(root, ".discovery", "notes", "W-78-x.md")))
+        check("main lock: ...and the log says WORKTREE GONE with the branch", any("WORKTREE GONE" in m and "feat/W-78-x" in m for m in seen))
+        check("main lock: one not-done dossier left (W-78) keeps the repo buildable", has_buildable_dossier(root))
+
+
 def selftest() -> int:
     me = os.path.abspath(__file__)
     failures: list[str] = []
@@ -4060,6 +4105,7 @@ def selftest() -> int:
             failures.append(name)
 
     selftest_reserved(check)
+    selftest_main_lock(check)
 
     def lines_of(path: str) -> list[dict]:
         try:

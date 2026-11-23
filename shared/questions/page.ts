@@ -823,7 +823,7 @@ function homeView() {
       h('span', { class: 'meta' }, [meta]), h('span', { class: 'chips' }, cs)]));
   });
   return h('div', {}, [h('h1', {}, ['Pipeline']), h('p', { class: 'lead' }, ['Pick a repo to see what is running, what is next and what is done.']),
-    diskView(), accountsView(), runningView(), h('div', { class: 'grid' }, cards),
+    diskView(), dirtyMainView(), accountsView(), runningView(), h('div', { class: 'grid' }, cards),
     section('Open questions', open.length, queueView(''), 'queue')]);
 }
 /* The Claude logins: which one the next stage starts on, the 5-hour and weekly windows, and the runs on each. */
@@ -835,6 +835,12 @@ function meter(label, w) {
   const tone = pct === null ? '' : pct >= 90 ? 'bad' : pct >= 70 ? 'warn' : 'ok';
   return h('div', { class: 'meter' }, [h('div', { class: 'mhd' }, [h('span', { class: 'ml' }, [label]), h('span', { class: 'mv' }, [pct === null ? (w && w.status === 'reset' ? 'reset — not read since' : '—') : Math.round(pct) + '%'])]),
     h('div', { class: 'mbar' }, [h('span', { class: 'mfill ' + tone, style: 'width:' + (pct || 0) + '%' })]), h('div', { class: 'small mut' }, [w && w.resetsAt ? fmtReset(w.resetsAt) : ''])]);
+}
+function dirtyMainView() {
+  const ds = S.dirtyMain || []; if (!ds.length) return null;
+  return h('div', { class: 'diskbar', 'data-k': 'dirty-main' }, ds.map(d => h('div', {}, [h('b', {}, [d.repo + ': the main checkout has local edits']),
+    ' — ' + d.files.length + ' tracked file(s) changed in ' + d.root + ' (' + d.files.slice(0, 5).join(', ') + (d.files.length > 5 ? ', …' : '') + '). ',
+    'Runs never edit it: commit these on a branch from origin/development, or discard them (git checkout -- <file>), so git pull works there again.'])));
 }
 function diskView() {
   const d = S.disk; if (!d || !d.low) return null;
@@ -1636,7 +1642,7 @@ async function loadDetail() {
 async function load(what) {
   const all = !what; const w = new Set(what || []); const jobs = [];
   if (all || w.has('questions')) jobs.push(fetchJ('/api/questions?state=all').then(d => { if (Array.isArray(d)) S.q = d; }));
-  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.refreshing = !!d.refreshing; S.accounts = d.accounts || []; S.disk = d.disk || null; S.plans = d.plans || []; S.usageBusy = !!d.usageBusy; } }));
+  if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/runs').then(d => { if (d && d.pageId) { if (S.pageId && S.pageId !== d.pageId) { location.reload(); return; } S.pageId = d.pageId; } if (d && d.runs) { S.runs = d.runs; S.slack = d.slack; S.scannedAt = d.scannedAt; S.refreshing = !!d.refreshing; S.accounts = d.accounts || []; S.disk = d.disk || null; S.dirtyMain = d.dirtyMain || []; S.plans = d.plans || []; S.usageBusy = !!d.usageBusy; } }));
   if (all || w.has('stubs') || w.has('scan')) jobs.push(fetchJ('/api/stubs').then(d => { if (d && d.repos) S.stubs = d; }));
   if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/autowork').then(d => { if (d && d.repos) { S.auto = {}; d.repos.forEach(v => { S.auto[v.repo] = v; }); } }));
   if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/delivery-flows').then(d => { if (d && d.repos) { S.flows = {}; d.repos.forEach(v => { S.flows[v.repo] = v; }); } }));
