@@ -390,7 +390,8 @@ def merge(before: dict, after: dict) -> dict:
     if lanes:
         merged["lanes"] = lanes
     _summarise(merged)
-    bad = vr_graph.validate(merged, check_budget=False)
+    # A merged decision graph holds the before and the after flow together: its flow rules hold for each side (view before / after), not for the union.
+    bad = vr_graph.validate(merged, check_budget=False, flow_rules=False)
     if bad:
         raise DiffError(bad)
     return merged
@@ -886,6 +887,36 @@ def _selftest() -> int:
             check("VC-07:%d-steps" % n, ok)
         except DiffError as exc:
             check("VC-07:%d-steps" % n, (not ok) and codes(exc) == ["over_budget"] and "'f'" in exc.issues[0]["message"], str(exc))
+    # View decision: two decision graphs merge on the stable ids; the retry branch is added, the old drop edge is removed.
+    after_d = vr_graph.load(os.path.join(fx, "decision-retry.json"))
+    keep = {"end:start:delivery", "proc:deliver::send", "decision:deliver::run:status-ok", "proc:deliver::dead_letter", "end:ok:delivered"}
+    before_d = copy.deepcopy(after_d)
+    before_d["nodes"] = [n for n in before_d["nodes"] if n["id"] in keep]
+    before_d["edges"] = [e for e in before_d["edges"] if e["source"] in keep and e["target"] in keep]
+    ev_t = [{"tier": "inferred", "note": "t"}]
+    before_d["edges"] += [
+        {"id": "edge:flow:decision:deliver::run:status-ok:proc:deliver::dead_letter", "source": "decision:deliver::run:status-ok", "target": "proc:deliver::dead_letter",
+         "kind": "flow", "label": "NO", "status": "context", "evidence": ev_t},
+        {"id": "edge:flow:proc:deliver::dead_letter:end:ok:delivered", "source": "proc:deliver::dead_letter", "target": "end:ok:delivered", "kind": "flow", "status": "context", "evidence": ev_t}]
+    for x in before_d["nodes"] + before_d["edges"]:
+        x["status"] = "context"
+    check("decision:before-valid", vr_graph.validate(before_d) == [], str(vr_graph.validate(before_d)))
+    try:
+        md = merge(before_d, after_d)
+        nst = {n["id"]: n["status"] for n in md["nodes"]}
+        est = {e["id"]: e["status"] for e in md["edges"]}
+        check("decision:merge-added-nodes", nst["decision:deliver::run:attempts-left"] == "added" and nst["proc:deliver::backoff"] == "added" and nst["end:error:parked"] == "added", str(nst))
+        check("decision:merge-context-node", nst["proc:deliver::send"] == "context" and nst["decision:deliver::run:status-ok"] == "context", str(nst))
+        check("decision:merge-removed-edge", est["edge:flow:proc:deliver::dead_letter:end:ok:delivered"] == "removed", str(est))
+        check("decision:merge-added-edge", est["edge:flow:proc:deliver::backoff:proc:deliver::send"] == "added", str(est))
+        check("decision:merge-view", md["view"] == "decision")
+        rem = merge(after_d, before_d)
+        rst = {n["id"]: n["status"] for n in rem["nodes"]}
+        check("decision:merge-removed-nodes", rst["decision:deliver::run:attempts-left"] == "removed" and rst["proc:deliver::backoff"] == "removed" and rst["end:error:parked"] == "removed", str(rst))
+        for mode in ("before", "after", "diff"):
+            check("decision:view-" + mode, vr_graph.validate(view(md, mode), flow_rules=(mode != "diff")) == [], mode + str(vr_graph.validate(view(md, mode), flow_rules=(mode != "diff")))[:300])
+    except DiffError as exc:
+        check("decision:merge", False, str(exc.issues)[:300])
     # S8 / VC-08: a 3-step sequence repeated 5 times, as distinct nodes with the same labels
     ids = []
     nodes, edges = [], []

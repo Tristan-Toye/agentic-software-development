@@ -4,8 +4,8 @@ The model behind the visual review of a change (feature VR-01). Language-neutral
 
 | File | What it is |
 |---|---|
-| `graph.schema.json` | The change graph schema, version 1.0.0: nodes, edges, groups, flows (before/after steps, lanes), status, evidence, resolution, view, tool versions in `meta`. |
-| `fixtures/` | `w145-l0|l1|l2.json` (the W-145 change, migrated), `removed.json` (removed elements), `minimal.json`, `label-at-limit.json` (an 80-character node label, the limit; longer fails with `label_too_long`: node 80, group and flow 60, edge and lane 40, title 100), `invalid/<issue code>.json` (one per validator issue), `repo/` (the tiny tree the invalid fixtures cite). |
+| `graph.schema.json` | The change graph schema, version 1.1.0 (1.1.0 adds the `decision` view; every 1.0.0 graph stays valid): nodes, edges, groups, flows (before/after steps, lanes), status, evidence, resolution, view, tool versions in `meta`. |
+| `fixtures/` | `w145-l0|l1|l2.json` (the W-145 change, migrated), `removed.json` (removed elements), `decision-retry.json` (a valid decision view: a failed webhook delivery retries, then is parked), `minimal.json`, `label-at-limit.json` (an 80-character node label, the limit; longer fails with `label_too_long`: node 80, group and flow 60, edge and lane 40, title 100), `invalid/<issue code>.json` (one per validator issue), `repo/` (the tiny tree the invalid fixtures cite). |
 | `../../scripts/vr_graph.py` | Validator and budget check. |
 | `../../scripts/vr_extract.py` | Extractor: the "before" graph of a Cargo workspace, a Python tree (`vr_extract_py.py`, stdlib `ast`) or a C# solution (`vr_extract_cs.py`, a dependency-free declaration parser, no dotnet); shared helpers in `vr_lang.py`. |
 | `../../scripts/vr_diff.py` | Diff: merges a before and an after graph on the stable id (status added, changed, removed, context), filters it by mode, builds the plan-time after graph from two commits. |
@@ -36,6 +36,14 @@ An id is derived from the kind plus the qualified name, never from a counter or 
 ## Views and budgets
 
 `L0` features (15), `L1` steps (12), `L2` nodes (12). Groups are not counted (D0 report, section 7). `map` is the whole-repo product map and counts its folded first screen: at most 7 top-level groups (areas, plus any node outside a group) and at most 15 nodes inside any one group (the L0 limit applies when an area is opened); groups are counted there because the folded view is the budgeted one. `full` is an unbudgeted extractor graph; VR-05 picks the views a reviewer sees from it.
+
+### The decision view (`decision`)
+
+A flow chart of the conditions a change adds or alters, for the owner who wants to see what happens when. Shapes: `terminal` (alias `stadium`), `process` (alias `rect`), `decision` (alias `diamond`), `io`, `junction` (alias `circle`). A terminal carries `terminal: "start" | "end"`; an end may carry `outcome: "ok" | "error"`; an `io` node may carry `io: "in" | "out"`; `step` names the L1 step a node restates (checked by `vr_graph.py validate --l1 l1.json`); an exit of a decision carries `branch` (`yes`, `no`, `case`, `default`, `error`, `loop`) and a `label`. Ids of decisions are stable: `decision:<fn>:<slug>`.
+
+Rules (`vr_graph.py`, errors): exactly 1 start (`no_start`, `multiple_start`) and at least 1 end (`no_end`); an end has no exit (`end_has_exit`), any other node has one (`dead_end`); every node is reachable from the start (`unreachable_node`); a decision has 2 or 3 exits (`decision_exits`), each labelled (`unlabeled_branch`), the labels unique (`duplicate_branch_label`); a node that is not a decision has one exit (`fork_without_decision`); every cycle contains a decision (`unbounded_loop`); a decision label is at most 40 characters (`decision_label`) and cites `source` evidence, or every entry is `inferred` (`decision_evidence`); an unknown shape or a field on the wrong shape is `bad_shape`. Budget: 14 nodes (terminals and junctions count) and 5 decisions (`over_budget`: split into two diagrams). `vr_graph.py budget` also prints `paths`, the number of start-to-end routes (capped at 99; a loop is walked once). `to` and `call_kind` (the STEP_ROUTING rule) are for sequence drafts only and are never asked of a decision node. A merged graph (`vr_diff.py merge`) is the union of the before and the after flow, so the flow rules are not applied to it (they hold for `view --mode before` and `after`).
+
+Owner decisions (2026-11-23): the decision view joins the Phase 3 diagrams the same way as L0/L1/L2: it is part of the owner's diagram approval in Phase 3, under the same approval and the same gate, and it is shown only when the change has branches. An approved decision diagram is review-only: it is NEVER promoted into `docs/architecture` (unlike `seq-*`), and `vr_promote.py` refuses it as an architecture draft (its views are `c1`, `c4`, `seq`). Producing it (diagram-author) and drawing it (renderer) come in later changes.
 
 ## CLI
 
