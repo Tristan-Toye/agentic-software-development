@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared helpers for the mechanical-phase drivers (finalize_pr, merge_packages,
+"""Shared helpers for the mechanical-phase drivers (merge_packages,
 pre_fanout_check, strength_gate_prep, test_round).
 
 A driver chains scripts that already exist, in the order the phase doc lists
@@ -49,6 +49,8 @@ import sys
 import tempfile
 import traceback
 from typing import Callable, Iterator
+
+import driver_modes
 
 GIT = "/usr/bin/git"
 SCRIPTS = os.path.dirname(os.path.abspath(__file__))
@@ -296,7 +298,7 @@ def drive(name: str, argv: list[str] | None, build_parser: Callable, run: Callab
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
-    mode = read_mode(name, args.mode)
+    mode = "on" if name in driver_modes.GRADUATED else read_mode(name, args.mode)   # a graduated driver is the procedure
     if mode == "off":
         print(f"{env_name(name)} is off (the default): do the phase doc's manual steps. Set it to shadow or on to run this driver.")
         return EXIT_OFF

@@ -44,7 +44,7 @@ Usage:
     driver_modes.py --file PATH ...           another file than the default
     driver_modes.py --selftest
 
-NAME is one of finalize_pr, merge_packages, pre_fanout_check, strength_gate_prep,
+NAME is one of merge_packages, pre_fanout_check, strength_gate_prep,
 test_round, vr_promote_preview; MODE is off, shadow or on. The file is written atomically.
 Exit 0 done, 2 bad arguments or an unreadable file.
 
@@ -59,16 +59,17 @@ import fcntl
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import time
 
-NAMES = ("finalize_pr", "merge_packages", "pre_fanout_check", "strength_gate_prep", "test_round",
+NAMES = ("merge_packages", "pre_fanout_check", "strength_gate_prep", "test_round",
          "vr_promote_preview")
 FREE = ("vr_promote_preview",)   # script-only, no tokens: exempt from the run quota
 # Drivers that were switched on and are now just the procedure. name -> graduation date. Never a mode, never exported.
-GRADUATED = {"flow_coverage_gate": "2026-11-20"}
+GRADUATED = {"flow_coverage_gate": "2026-11-20", "finalize_pr": "2026-11-23"}
 GRADUATED_SCAN = ("references", "primary-agents", "sub-agents", "skills", "claude", "opencode")   # dirs the agents read
 NO_ON = {"vr_promote_preview": "no on mode yet: promotion stays tied to `Diagrams new:`"}   # modes a driver refuses
 MODES = ("off", "shadow", "on")
@@ -216,7 +217,8 @@ def graduated_text(name: str) -> str:
 def graduated_leaks(root: str) -> list[str]:
     """`path:line` of every place under GRADUATED_SCAN (in repo `root`) that still names a graduated driver or its
     ASD_DRIVER_<NAME> variable: once graduated, the agents must not know the driver, its modes or shadow."""
-    needles = [n for n in GRADUATED] + [env_name(n) for n in GRADUATED]
+    # the driver's script file (`finalize_pr.py`) is the procedure itself and stays; the bare name and the variable do not
+    needles = re.compile("|".join([re.escape(n) + r"(?!\.py)" for n in GRADUATED] + [re.escape(env_name(n)) for n in GRADUATED]), re.I)
     found: list[str] = []
     for top in GRADUATED_SCAN:
         for dirpath, _dirs, files in os.walk(os.path.join(root, top)):
@@ -225,8 +227,7 @@ def graduated_leaks(root: str) -> list[str]:
                 try:
                     with open(full, encoding="utf-8") as fh:
                         for i, line in enumerate(fh, 1):
-                            low = line.lower()
-                            if any(n.lower() in low for n in needles):
+                            if needles.search(line):
                                 found.append(f"{os.path.relpath(full, root)}:{i}")
                 except (OSError, UnicodeDecodeError):
                     continue
@@ -355,8 +356,8 @@ def _run_selftest() -> list[str]:
         with tempfile.TemporaryDirectory() as tmp:
             f = os.path.join(tmp, "sub", "drivers.json")
             check("a missing file is no modes, no warning", load(f) == ({}, []))
-            check("set creates the file", main(["--file", f, "set", "test_round=shadow", "finalize_pr=ON"]) == 0
-                  and load(f) == ({"test_round": "shadow", "finalize_pr": "on"}, []))
+            check("set creates the file", main(["--file", f, "set", "test_round=shadow", "pre_fanout_check=ON"]) == 0
+                  and load(f) == ({"test_round": "shadow", "pre_fanout_check": "on"}, []))
             check("set keeps the others", main(["--file", f, "set", "merge_packages=shadow"]) == 0 and load(f)[0]["test_round"] == "shadow"
                   and load(f)[0]["merge_packages"] == "shadow")
             check("a bad pair is refused and writes nothing", main(["--file", f, "set", "nope=on"]) == 2 and main(["--file", f, "set", "test_round=maybe"]) == 2
@@ -365,7 +366,7 @@ def _run_selftest() -> list[str]:
             check("no temp file is left behind", [x for x in os.listdir(os.path.dirname(f)) if x.endswith(".tmp")] == [])
             check("off clears", main(["--file", f, "off"]) == 0 and load(f) == ({}, []) and json.load(open(f)) == {})
             with open(f, "w") as fh:
-                fh.write('{"test_round": "shadow", "bogus": "on", "finalize_pr": "maybe", "merge_packages": 3}')
+                fh.write('{"test_round": "shadow", "bogus": "on", "strength_gate_prep": "maybe", "merge_packages": 3}')
             modes, warns = load(f)
             check("unknown names and modes are warned about and ignored", modes == {"test_round": "shadow"} and len(warns) == 3)
             with open(f, "w") as fh:
@@ -377,7 +378,7 @@ def _run_selftest() -> list[str]:
             write(f, {"test_round": "shadow", "pre_fanout_check": "on"})
             eff, exp, _ = resolve({"ASD_DRIVER_TEST_ROUND": "off"}, f)
             check("an explicit environment variable wins and is not exported", eff["test_round"] == "off" and "ASD_DRIVER_TEST_ROUND" not in exp)
-            check("the file's modes are exported", exp == {"ASD_DRIVER_PRE_FANOUT_CHECK": "on"} and eff["pre_fanout_check"] == "on" and eff["finalize_pr"] == "off")
+            check("the file's modes are exported", exp == {"ASD_DRIVER_PRE_FANOUT_CHECK": "on"} and eff["pre_fanout_check"] == "on" and eff["strength_gate_prep"] == "off")
             os.environ["ASD_DRIVERS_FILE"] = f
             check("ASD_DRIVERS_FILE moves the default", default_file() == f and load()[0]["pre_fanout_check"] == "on")
             del os.environ["ASD_DRIVERS_FILE"]
@@ -419,7 +420,7 @@ def _run_selftest() -> list[str]:
             check("a full quota leaves the modes alone", load(q)[0] == {"test_round": "shadow"})
             shown = show(q)
             check("show prints the quota and the claimed runs", "2 of 2 used" in shown and "r1" in shown and "r2" in shown and "used up" in shown)
-            check("set keeps the quota and its claims", main(["--file", q, "set", "finalize_pr=on"]) == 0 and len((load_quota(q) or {})["claimed"]) == 2)
+            check("set keeps the quota and its claims", main(["--file", q, "set", "strength_gate_prep=on"]) == 0 and len((load_quota(q) or {})["claimed"]) == 2)
             check("off keeps the quota", main(["--file", q, "off"]) == 0 and (load_quota(q) or {})["limit"] == 2 and load(q)[0] == {})
             check("limit N starts a fresh count", main(["--file", q, "limit", "3"]) == 0 and load_quota(q) == {"limit": 3, "claimed": []})
             check("a bad limit is refused", main(["--file", q, "limit", "many"]) == 2 and main(["--file", q, "limit", "-1"]) == 2 and (load_quota(q) or {})["limit"] == 3)

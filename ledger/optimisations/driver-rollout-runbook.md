@@ -77,8 +77,7 @@ file: that is a phase-doc compliance gap, noted in the decision log, not a pass.
 
 Per driver and dossier it prints the shadow runs and exit codes (2 is a surprise: the driver met something it could
 not classify), the driver's findings, the orchestrator's build-log lines for that phase, and an agreement line.
-Agreement is only computed where it is well defined (finalize_pr: conflict markers / duplicate ADR vs a logged fix;
-merge_packages: TOUCHED_BEYOND vs a scope/drift line; test_round: failed count vs the `SUITE:` lines); everything
+Agreement is only computed where it is well defined (merge_packages: TOUCHED_BEYOND vs a scope/drift line; test_round: failed count vs the `SUITE:` lines); everything
 else says `needs human read`, and you read the findings next to the build log yourself.
 
 Verdict per driver:
@@ -138,7 +137,7 @@ Cost and requests need the budget file; the windows below cover both arms:
     python3 $S/driver_ab_report.py \
         --baseline W-A1,W-A2,W-A3,W-A4,W-A5,W-A6 \
         --driver merge_packages=W-B1,W-B2,W-B3,W-B4,W-B5,W-B6 \
-        --driver finalize_pr=W-B1,W-B2,W-B3,W-B4,W-B5,W-B6 \
+        --driver strength_gate_prep=W-B1,W-B2,W-B3,W-B4,W-B5,W-B6 \
         --budget /tmp/budget-ab.json --json /tmp/driver-ab.json
 
 (one `--driver NAME=IDS` per driver that was `on`; IDS in build order; `--questions-dir` defaults to the owner
@@ -175,4 +174,6 @@ One row per decision (shadow start, READY-FOR-ON, switch to on, KEEP, BACK-TO-SH
 |------|--------|------|----------|---------|
 | 2026-11-20 | flow_coverage_gate | on | 9 shadow dossiers | Switched to `on` by the owner after a human read: no false blocks, CI enforces the same rule. |
 | 2026-11-20 | flow_coverage_gate | graduated | switched on today | Graduated: the phase-9 paragraph is now the plain procedure, the mode branch and the `NAMES` entry are gone, `driver_modes.GRADUATED` holds the name (this PR). |
+| 2026-11-23 | finalize_pr | on | 3 shadow dossiers (W-028, W-032, W-033) | READY-FOR-ON on podcast-generation-engine: all exit 0, no disagreement; config-harness has no finalize_pr evidence yet. Switched on by the owner. |
+| 2026-11-23 | finalize_pr | graduated | switched on today | Graduated: the phase-9 paragraph is now the plain procedure, the mode branch and the `NAMES` entry are gone, `driver_modes.GRADUATED` holds the name (this PR). |
 | 2026-11-20 | vr_promote_preview | shadow | 25 shadow runs | KEEP-SHADOW: 25/25 builds failed because the steps lacked `to`/`call_kind`; the shadow now collects real data (this PR). |
