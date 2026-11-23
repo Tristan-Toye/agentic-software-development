@@ -115,8 +115,15 @@ function parseRunner(text: string, alive: (pid: number) => boolean): RunnerState
     const j = JSON.parse(text)
     let state = ["running", "testing", "waiting", "paused", "queued", "parked", "done", "failed", "stopped"].includes(j.state) ? j.state : "stopped"
     if ((state === "running" || state === "testing" || state === "waiting" || state === "paused" || state === "queued") && !alive(Number(j.pid))) state = "stopped"
-    // A run that waits with no question is waiting for the stub being integrated (`wait_for_stub`), not for the owner.
-    const waitingFor = state === "waiting" && Array.isArray(j.questions) && j.questions.length === 0 ? { waitingFor: "stub" as const } : {}
+    // What a waiting run waits on, as run_dossier records it (`waiting_for`): the stub being integrated, its CI, or an
+    // account sign-in, none of them the owner. A runner from before the field: a wait with CI PRs is the CI wait, any
+    // other wait with no question the stub's.
+    const wf = j.waiting_for
+    const noQ = Array.isArray(j.questions) && j.questions.length === 0
+    const waitingFor = state !== "waiting" || !noQ ? {}
+      : wf === "stub" || wf === "ci" || wf === "login" ? { waitingFor: wf as "stub" | "ci" | "login" }
+      : wf === undefined || wf === null ? (Array.isArray(j.ci) && j.ci.length ? { waitingFor: "ci" as const } : { waitingFor: "stub" as const })
+      : {}
     return { ...waitingFor, state, stage: String(j.stage ?? ""), pid: Number(j.pid) || 0, started: String(j.started ?? ""), root: typeof j.root === "string" ? j.root : "", ...(typeof j.account === "string" ? { account: j.account } : {}), ...(typeof j.resumes_at === "string" ? { resumesAt: j.resumes_at } : {}), ...(typeof j.command === "string" ? { command: j.command } : {}), ...(typeof j.session === "string" && j.session ? { session: j.session } : {}), ...(typeof j.items === "string" && j.items ? { items: j.items } : {}), ...(state === "parked" && Array.isArray(j.parked?.blockers) ? { parkedFor: j.parked.blockers.map(String) } : {}) }
   } catch { return null }
 }

@@ -6,7 +6,7 @@ import { STATUS_ACTION } from "./slack.ts"
 export type StatusRun = {
   repo: string; id: string; title: string
   state: string                    // running | testing | waiting | paused | stopped | failed | done | "" (no runner)
-  waitingFor?: "stub"              // waiting for the stub being integrated, not for the owner
+  waitingFor?: "stub" | "ci" | "login"   // waiting for the stub being integrated, its CI or an account sign-in, not for the owner
   phase: string; phaseName: string
   account?: string; started?: string; resumesAt?: string
   context?: number                 // the orchestrator's live context, tokens
@@ -52,6 +52,8 @@ export function agentCounts(updates: Update[]): { running: number; done: number;
 }
 
 /** True when the newest admission line says the wave waits for agent slots and no agent has started since. */
+const WAITING_FOR = { stub: "⏳ queued · waiting for the stub", ci: "⏳ waiting on CI", login: "⏳ waiting for an account sign-in" } as const
+
 export function waitingForSlots(updates: Update[]): boolean {
   for (const u of updates) {
     if (u.event === "spawn") return false
@@ -71,7 +73,7 @@ const hhmm = (ts: string) => { const d = new Date(ts); return Number.isFinite(d.
 export function runStatusText(r: StatusRun, now: number): string {
   const lines: string[] = []
   lines.push(`*<${r.link}|${esc(r.id)}>* — ${esc(clip(r.title, 90))}`)
-  const head: string[] = [r.state === "waiting" && r.waitingFor === "stub" ? "⏳ queued · waiting for the stub" : STATE[r.state] ?? (r.state || "not running")]
+  const head: string[] = [r.state === "waiting" && r.waitingFor ? WAITING_FOR[r.waitingFor] : STATE[r.state] ?? (r.state || "not running")]
   if (r.phase && r.phase !== "plan") head.push(`Phase ${esc(r.phase)}${r.phaseName ? ` · ${esc(r.phaseName)}` : ""}`)
   else if (["running", "testing", "waiting", "paused", "queued"].includes(r.state)) head.push("starting")
   if (r.state === "paused" && r.resumesAt) head.push(`resumes ${hhmm(r.resumesAt)}`)

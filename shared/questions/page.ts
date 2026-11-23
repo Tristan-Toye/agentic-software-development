@@ -676,7 +676,7 @@ function stageText(r) {
 const RUN_STATE = { running: 'in progress', testing: 'testing \u00b7 slot released', waiting: 'waiting for you', paused: 'paused · usage limit', queued: 'queued · waiting for a slot', parked: 'parked · waits for its blockers', stopped: 'stopped', failed: 'failed', done: 'done' };
 const waitsForStub = (rn) => !!rn && rn.state === 'waiting' && rn.waitingFor === 'stub';
 /* A runner's state, or just a state's name. A run held for the stub is not waiting for you. */
-const runChip = (x) => { const st = (x && x.state) || x; if (st === 'parked' && x && x.parkedFor && x.parkedFor.length) return h('span', { title: 'starts by itself once every blocker is done' }, [chip('parked · waits for ' + x.parkedFor.join(', '), 'queued')]); return waitsForStub(x) ? chip('queued · waiting for the stub', 'queued') : chip(RUN_STATE[st] || st, st === 'parked' ? 'queued' : st); };
+const runChip = (x) => { const st = (x && x.state) || x; if (st === 'parked' && x && x.parkedFor && x.parkedFor.length) return h('span', { title: 'starts by itself once every blocker is done' }, [chip('parked · waits for ' + x.parkedFor.join(', '), 'queued')]); if (x && st === 'waiting' && x.waitingFor === 'ci') return chip('waiting on CI', 'running'); if (x && st === 'waiting' && x.waitingFor === 'login') return chip('waiting for an account sign-in', 'waiting'); return waitsForStub(x) ? chip('queued · waiting for the stub', 'queued') : chip(RUN_STATE[st] || st, st === 'parked' ? 'queued' : st); };
 function itemMode(run) { if (R.forceDossier) return 'dossier'; return run.view === 'run' ? 'run' : 'dossier'; }
 function newestStub(repo) { const r = S.stubs.repos.find(x => x.repo === repo); return r && r.stubs.length ? r.stubs[0] : null; }
 const doneKey = (r) => (r.updated || '') + r.id;
@@ -986,7 +986,7 @@ function stubRow(repo, id, o) {
     const rn = r && r.runner; const m = r && r.merge;
     const CMD = { 'work-on': stageText(r) || 'building', plan: 'planning', 'fix-deferred': 'fixing deferred issues', 'resolve-merge': 'the agent is fixing the merge', 'after-merge': 'cleaning up after the merge', stub: 'integrating' };
     let what = m && MERGE_STEP[m.state] ? MERGE_STEP[m.state] : rn ? (CMD[rn.command] || rn.command || 'working') : (stageText(r) || 'working');
-    if (waitsForStub(rn)) what = 'queued · waiting for the stub'; else if (rn && rn.state === 'waiting') what += ' · waiting for you'; else if (rn && rn.state === 'paused') what += ' · paused (usage limit)'; else if (rn && rn.state === 'queued') what += ' · queued for a slot';
+    if (waitsForStub(rn)) what = 'queued · waiting for the stub'; else if (rn && rn.state === 'waiting' && rn.waitingFor === 'ci') what += ' · waiting on CI'; else if (rn && rn.state === 'waiting' && rn.waitingFor === 'login') what += ' · waiting for an account sign-in'; else if (rn && rn.state === 'waiting') what += ' · waiting for you'; else if (rn && rn.state === 'paused') what += ' · paused (usage limit)'; else if (rn && rn.state === 'queued') what += ' · queued for a slot';
     // Queued (for a slot, or for the stub) is its own colour with a steady dot: nothing runs yet.
     const queued = waitsForStub(rn) || (rn && rn.state === 'queued');
     const cls = queued ? 'queued' : rn && rn.state === 'waiting' ? 'warn' : 'fixing';

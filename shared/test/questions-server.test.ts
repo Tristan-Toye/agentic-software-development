@@ -360,6 +360,9 @@ check("slack: Status on a thread opener answers in a new message for that run", 
   const t = runStatusText(run, Date.parse(T(30)))
   check("status: one run's text", t.includes("in progress · Phase 4 · Fan-out · account b") && t.includes("1 running, 2 finished (1 with a gap") && t.includes("Wave one is out.") && !t.includes("More detail") && t.includes("context 63k") && t.includes("❓ *Q1* Pick one") && t.includes("A &lt;title&gt;") && t.includes("⚠ quiet"), t)
   check("status: a testing run reads as testing with its slot released", /testing/.test(runStatusText({ ...run, state: "testing" }, Date.parse(T(30)))))
+  check("status: a CI wait reads waiting on CI, not queued for the stub",
+    runStatusText({ ...run, state: "waiting", waitingFor: "ci" }, Date.parse(T(30))).includes("waiting on CI")
+    && !runStatusText({ ...run, state: "waiting", waitingFor: "ci" }, Date.parse(T(30))).includes("waiting for the stub"))
   check("status: a run held for the stub reads queued, not waiting for you", runStatusText({ ...run, state: "waiting", waitingFor: "stub" }, Date.parse(T(30))).includes("queued · waiting for the stub") && runStatusText({ ...run, state: "waiting" }, Date.parse(T(30))).includes("waiting for you"))
   const sb = statusBlocks([run], { repo: "config-harness" }, Date.parse(T(30)))
   check("status: blocks carry a heading, the run and a Refresh button with the scope", sb.blocks[0].text.text.startsWith("*Status — config-harness*") && sb.blocks.at(-1).elements[0].value === "config-harness|" && sb.text.includes("W-1 running"))
@@ -458,6 +461,13 @@ markIntegrating("repoB.stub-b", { pid: process.pid, root: "/r", branch: "stub/b"
 writeFileSync(join(udir, "repoB.W-70.runner.json"), JSON.stringify({ state: "waiting", pid: 1, questions: [] }))
 writeFileSync(join(udir, "repoB.W-71.runner.json"), JSON.stringify({ state: "waiting", pid: 1, questions: ["repoB.W-71.Q1"] }))
 check("runstore: a run waiting with no question waits for the stub; with one, for the owner", readRunner("repoB.W-70", udir, () => true)?.waitingFor === "stub" && readRunner("repoB.W-71", udir, () => true)?.waitingFor === undefined && readRunner("repoB.W-70", udir, () => false)?.waitingFor === undefined)
+writeFileSync(join(udir, "repoB.W-72.runner.json"), JSON.stringify({ state: "waiting", pid: 1, questions: [], ci: [97], waiting_for: "ci" }))
+writeFileSync(join(udir, "repoB.W-73.runner.json"), JSON.stringify({ state: "waiting", pid: 1, questions: [], ci: [97] }))
+writeFileSync(join(udir, "repoB.W-74.runner.json"), JSON.stringify({ state: "waiting", pid: 1, questions: [], waiting_for: "login" }))
+writeFileSync(join(udir, "repoB.W-75.runner.json"), JSON.stringify({ state: "waiting", pid: 1, questions: [], waiting_for: "stub" }))
+check("runstore: a CI wait is not the stub's (recorded, or a pre-field runner with CI PRs), nor a sign-in wait",
+  readRunner("repoB.W-72", udir, () => true)?.waitingFor === "ci" && readRunner("repoB.W-73", udir, () => true)?.waitingFor === "ci"
+  && readRunner("repoB.W-74", udir, () => true)?.waitingFor === "login" && readRunner("repoB.W-75", udir, () => true)?.waitingFor === "stub")
 check("integrate: the label follows the phase", integrationPhase({ state: "merging" }, null) === "merging dossiers into stub" && integrationPhase({ state: "merging" }, { state: "done" }) === "merging dossiers into stub" && integrationPhase({ state: "stub" }, { state: "running" }) === "validating stub" && integrationPhase({ state: "stub" }, { state: "waiting" }) === "validating stub" && integrationPhase({ state: "stub" }, { state: "done" }) === "validation finished · your merge" && integrationPhase({ state: "failed" }, null) === "integration stopped" && integrationPhase({ state: "stub" }, { state: "failed" }) === "integration stopped" && integrationPhase(null, { state: "running" }) === "validating stub" && integrationPhase(null, null) === "integrating")
 check("runstore: summary prefers the Problem section, caps at 300", summaryOf("---\nid: A\n---\n# A\nIntro line.\n\n## Problem\nThe cache\nis stale. More.\n\n## Approach\nx") === "The cache is stale. More." && summaryOf("---\nid: A\n---\n# T\n\nFirst para\nwraps.\n\nSecond.") === "First para wraps." && summaryOf("# T\n" + "z".repeat(400)).length === 300)
 check("runstore: markdown is escaped", renderMarkdown("# H <b>\n\n- a `c<d>`\n\n```\n<script>x</script>\n```\n| a | b |").includes("&lt;b&gt;") && !renderMarkdown("<script>alert(1)</script>").includes("<script>") && renderMarkdown("- a\n- b").includes("<li>b</li>"))
