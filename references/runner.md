@@ -47,14 +47,26 @@ the recorded checkpoints.
       runs `wait_ci.py --pr <pr> --timeout <ASD_CI_TIMEOUT, 5400>` itself
       (with `--log <dossier>` when the run has a dossier file), so no tokens are
       spent while CI runs, and sends the verdict into the same live process:
-      `CI RESULT <pr>: green|red|timeout <failing checks + log tail>`.
+      `CI RESULT <pr>: green|red|timeout|never-started <failing checks + log tail>`.
       Several PRs wait in parallel and come back together, one line each;
       `ci:` ids are never mixed with question ids. While it waits the run's state is
       `waiting` (event `waiting on CI #<pr>`, state field `ci`), so the slot
       is free and the keep-alive ping runs exactly as in an owner wait; the
       next step takes a slot again, ahead of runs not yet started. A `wait_ci`
-      exit other than 0 and 3 (1 failed; 2, 4, 5 error, stale green, conflict)
-      is `red` with the exit code and its output in the summary. An owner
+      exit other than 0, 3, 6 and 7 (1 failed; 2, 4, 5 error, stale green, conflict)
+      is `red` with the exit code and its output in the summary. Exit 6 is
+      `never-started`: the PR head has no workflow run even after `wait_ci`
+      re-triggered it once (`gh pr close` + `gh pr reopen`, once per head sha,
+      never a force-push). It means CI did not run, not that it failed. The
+      session is told so and to end with `RUNNER: FAILED CI never started on
+      PR <n>: ...` (a blocker for the owner); a further `WAITING ci:<pr>` for
+      that PR is refused by the runner without running `wait_ci` again.
+      Exit 7 is also `never-started`, but the cause is known: the PR is
+      stacked on a parent PR (the open PR whose head is its base) that is
+      DIRTY/CONFLICTING, and GitHub starts no workflow for the child
+      meanwhile. `wait_ci` checks this before any retrigger; the session is
+      told to resolve the parent (merge its base into it, the resolve-merge
+      procedure), push and wait again. An owner
       message ends the wait early and is delivered; the agent waits again.
     - `RUNNER: ENV <vm|stack|disk> <detail>` — a broken environment (the
       Lima VM down, a compose service unhealthy, the disk low), reported

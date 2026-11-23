@@ -91,7 +91,20 @@ Exit codes: 0 every check passed; 1 any check failed or was cancelled;
 3 timed out with checks still pending (or the idle wait timed out); 2 unusable
 input or a `gh` error (e.g. `gh pr checks` did not return JSON);
 4 the green checks ran on a head that is not the PR's current head (stale
-green, refused); 5 the PR is CONFLICTING/DIRTY, so its checks will never start.
+green, refused; only when the PR cannot be re-triggered); 5 the PR is
+CONFLICTING/DIRTY, so its checks will never start; 7 no run because the PR's
+parent (the open PR whose head is this PR's base) is itself DIRTY/CONFLICTING:
+GitHub starts no workflow for a stacked child then, so resolve the parent
+(checked before any retrigger); 6 CI never started: the PR
+head has no workflow run (a stale green on an older head, or no run at all
+after the register wait) even after one retrigger.
+
+A head with no run is re-triggered ONCE per head sha, through the PR's own
+state: `gh pr close N` then `gh pr reopen N` (fires `reopened`, recomputes
+mergeability), never a force-push. The wait then continues inside the same
+call. The attempt is recorded (a marker file per repo, PR and head sha under
+`--state-dir`, default the temp dir), so a second identical failure on the same
+head, in this call or a later one, exits 6 at once instead of looping.
 
 No third-party imports: this runs wherever python3 and gh do.
 """
@@ -303,6 +316,69 @@ def stale_head(runner: Runner, checks: list[dict], pr_head: str, repo: str | Non
     return None
 
 
+def marker_path(args: argparse.Namespace, number: int, head: str) -> str:
+    key = re.sub(r"[^A-Za-z0-9]+", "_", f"{args.repo or 'cwd'}-{number}-{head[:12]}")
+    return os.path.join(args.state_dir or tempfile.gettempdir(), f"wait_ci-retrigger-{key}")
+
+
+def retrigger(runner: Runner, args: argparse.Namespace, number: int, head: str) -> None:
+    """Close and reopen the PR (once per head: the marker is written first)."""
+    with open(marker_path(args, number, head), "w", encoding="utf-8") as fh:
+        fh.write(head + "\n")
+    print(f"wait_ci: PR #{number} head {head[:12]} has no workflow run; closing and reopening the PR once to retrigger CI")
+    runner(with_repo(["gh", "pr", "close", str(number)], args.repo))
+    runner(with_repo(["gh", "pr", "reopen", str(number)], args.repo))
+    time.sleep(max(args.rerun_settle, 0))
+
+
+def await_head_run(runner: Runner, target, args: argparse.Namespace, head: str) -> bool:
+    """After a retrigger: poll up to the register wait for checks that ran on `head`."""
+    deadline = time.monotonic() + max(args.register_wait, 0)
+    while True:
+        checks, _ = fetch_checks(runner, target, args.repo)
+        if checks and stale_head(runner, checks, head, args.repo) is None:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(max(args.interval, 0.001))
+
+
+def parent_conflict(runner: Runner, state: dict, repo: str | None) -> tuple[int, str] | None:
+    """(number, its base) of an open PR whose head branch is this PR's base (a stacked PR's parent) while that
+    parent is DIRTY/CONFLICTING; None otherwise. GitHub starts no workflow for the child while it conflicts."""
+    base = str(state.get("baseRefName") or "")
+    if not base:
+        return None
+    rc, out, _ = runner(with_repo(["gh", "pr", "list", "--head", base, "--state", "open", "--json",
+                                   "number,mergeStateStatus,mergeable,baseRefName"], repo))
+    if rc != 0:
+        return None
+    try:
+        rows = json.loads(out)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and (row.get("mergeStateStatus") == "DIRTY" or row.get("mergeable") == "CONFLICTING"):
+            return int(row.get("number") or 0), str(row.get("baseRefName") or "its base")[:100]
+    return None
+
+
+def parent_line(number: int, state: dict, parent: tuple[int, str]) -> str:
+    return (f"wait_ci: CI not started: PR #{number} is stacked on #{parent[0]} (branch {str(state.get('baseRefName'))[:100]}), "
+            f"which conflicts with {parent[1]}; GitHub starts no workflow for the child while its parent conflicts "
+            f"(CI did not fail, it did not run). Resolve #{parent[0]}: merge {parent[1]} into it (the resolve-merge procedure) "
+            f"and push; CI then starts for #{number}")
+
+
+def never_started(runner: Runner, args: argparse.Namespace, number: int, head: str, retriggered: bool) -> int:
+    fresh = pr_state(runner, number, args.repo) or {}
+    print(f"wait_ci: CI never started: PR #{number} head {head[:12]} has no workflow run"
+          f"{' even after closing and reopening the PR once' if retriggered else ''}; CI did not fail, it did not run "
+          f"(mergeable: {fresh.get('mergeable', 'unknown')}, mergeStateStatus: {fresh.get('mergeStateStatus', 'unknown')}). "
+          "Waiting again will not help: report a blocker for the owner (GitHub-side, e.g. refs/pull/N/merge not recomputed)", file=sys.stderr)
+    return 6
+
+
 # --------------------------------------------------------------------- poll
 
 
@@ -499,6 +575,7 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     ap.add_argument("--rerun-failed", action="store_true", help="re-run the failed jobs once and wait again")
     ap.add_argument("--rerun-settle", type=float, default=20, help="seconds to let GitHub register the rerun")
     ap.add_argument("--log", "--build-log", dest="log", metavar="DOSSIER", help="append `SUITE: ci run <url> on <sha> — <N> failed / <N> passed` to this dossier's Build log once the checks have a verdict")
+    ap.add_argument("--state-dir", default=None, help="where the once-per-head retrigger markers live (default: the temp dir)")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     if args.selftest:
@@ -523,6 +600,8 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
         print(f"wait_ci: {err}", file=sys.stderr)
         return 2
 
+    is_pr = target[0] == "pr"
+    pr_no = int(str(target[1])) if is_pr else 0
     if args.job_log:
         checks, err = fetch_checks(active_runner, target, args.repo)
         if checks is None:
@@ -530,48 +609,79 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
             return 2
         return job_log(active_runner, checks, args)
 
-    state = pr_state(active_runner, target[1], args.repo) if target[0] == "pr" else None
+    state = pr_state(active_runner, pr_no, args.repo) if is_pr else None
     if state:
-        line = conflict_line(target[1], state)
+        line = conflict_line(pr_no, state)
         if line:
             print(line, file=sys.stderr)
             return 5
 
     def watch() -> str | None:
-        fresh = pr_state(active_runner, target[1], args.repo)
-        return conflict_line(target[1], fresh) if fresh else None
+        fresh = pr_state(active_runner, pr_no, args.repo)
+        return conflict_line(pr_no, fresh) if fresh else None
 
     watcher = watch if state else None
-    outcome, checks, err = poll(active_runner, target, args.repo, args.timeout, args.interval, args.register_wait, watcher)
-    if outcome in ("error", "conflict"):
-        print(f"wait_ci: {err}" if outcome == "error" else err, file=sys.stderr)
-        return 2 if outcome == "error" else 5
+    retriggered = False
+    while True:
+        outcome, checks, err = poll(active_runner, target, args.repo, args.timeout, args.interval, args.register_wait, watcher)
+        no_run = (outcome == "error" and err.startswith(NOT_REGISTERED)) or (outcome == "timeout" and not checks)
+        if no_run and is_pr:
+            cur = pr_state(active_runner, pr_no, args.repo)
+            head = str((cur or {}).get("headRefOid") or "")
+            parent = parent_conflict(active_runner, cur, args.repo) if cur else None
+            if parent:
+                print(parent_line(pr_no, cur or {}, parent), file=sys.stderr)
+                return 7
+            if head:
+                if retriggered or os.path.exists(marker_path(args, pr_no, head)):
+                    return never_started(active_runner, args, pr_no, head, True)
+                retrigger(active_runner, args, pr_no, head)
+                retriggered = True
+                continue
+        if outcome in ("error", "conflict"):
+            print(f"wait_ci: {err}" if outcome == "error" else err, file=sys.stderr)
+            return 2 if outcome == "error" else 5
 
-    if outcome == "done" and args.rerun_failed and any(c.get("bucket") in BAD_BUCKETS for c in checks):
-        failed_names = [str(c.get("name")) for c in checks if c.get("bucket") in BAD_BUCKETS]
-        ids = rerun_failed(active_runner, checks, args.repo)
-        print(f"rerun: failed {', '.join(failed_names)}; re-ran run(s) {', '.join(ids) or 'none (no run id in the links)'}")
-        if ids:
-            time.sleep(max(args.rerun_settle, 0))
-            outcome, checks, err = poll(active_runner, target, args.repo, args.timeout, args.interval, args.register_wait, watcher)
-            if outcome in ("error", "conflict"):
-                print(f"wait_ci: {err}" if outcome == "error" else err, file=sys.stderr)
-                return 2 if outcome == "error" else 5
-            print("after the rerun:")
+        if outcome == "done" and args.rerun_failed and any(c.get("bucket") in BAD_BUCKETS for c in checks):
+            failed_names = [str(c.get("name")) for c in checks if c.get("bucket") in BAD_BUCKETS]
+            ids = rerun_failed(active_runner, checks, args.repo)
+            print(f"rerun: failed {', '.join(failed_names)}; re-ran run(s) {', '.join(ids) or 'none (no run id in the links)'}")
+            args.rerun_failed = False
+            if ids:
+                time.sleep(max(args.rerun_settle, 0))
+                outcome, checks, err = poll(active_runner, target, args.repo, args.timeout, args.interval, args.register_wait, watcher)
+                if outcome in ("error", "conflict"):
+                    print(f"wait_ci: {err}" if outcome == "error" else err, file=sys.stderr)
+                    return 2 if outcome == "error" else 5
+                print("after the rerun:")
 
-    if outcome == "done" and state and checks and not any(c.get("bucket") in BAD_BUCKETS for c in checks):
-        state = pr_state(active_runner, target[1], args.repo) or state  # the head NOW, not at the start
-        line = conflict_line(target[1], state)
-        if line:
-            print(line, file=sys.stderr)
-            return 5
-    if outcome == "done" and state and state.get("headRefOid") and checks \
-            and not any(c.get("bucket") in BAD_BUCKETS for c in checks):
-        stale = stale_head(active_runner, checks, str(state["headRefOid"]), args.repo)
-        if stale:
-            print(f"wait_ci: stale green refused: run {stale[0]} ran on {stale[1][:12]} but PR #{target[1]} "
-                  f"head is {str(state['headRefOid'])[:12]}; the push to the head started no run", file=sys.stderr)
-            return 4
+        if outcome == "done" and state and checks and not any(c.get("bucket") in BAD_BUCKETS for c in checks):
+            state = pr_state(active_runner, pr_no, args.repo) or state  # the head NOW, not at the start
+            line = conflict_line(pr_no, state)
+            if line:
+                print(line, file=sys.stderr)
+                return 5
+        if outcome == "done" and state and state.get("headRefOid") and checks \
+                and not any(c.get("bucket") in BAD_BUCKETS for c in checks):
+            head = str(state["headRefOid"])
+            stale = stale_head(active_runner, checks, head, args.repo)
+            if stale:
+                print(f"wait_ci: stale green refused: run {stale[0]} ran on {stale[1][:12]} but PR #{pr_no} "
+                      f"head is {head[:12]}; the push to the head started no run", file=sys.stderr)
+                if not is_pr:
+                    return 4
+                parent = parent_conflict(active_runner, state, args.repo)
+                if parent:
+                    print(parent_line(pr_no, state, parent), file=sys.stderr)
+                    return 7
+                if retriggered or os.path.exists(marker_path(args, pr_no, head)):
+                    return never_started(active_runner, args, pr_no, head, True)
+                retrigger(active_runner, args, pr_no, head)
+                retriggered = True
+                if not await_head_run(active_runner, target, args, head):
+                    return never_started(active_runner, args, pr_no, head, True)
+                continue
+        break
 
     report(active_runner, checks, args)
     if args.log and outcome == "done" and checks:
@@ -870,9 +980,10 @@ def selftest() -> int:
             return 1, "", "unexpected call"
         return runner_g
 
+    sdir = tempfile.mkdtemp(prefix="wait_ci_st_")
     clean = {"headRefOid": head_new, "mergeStateStatus": "CLEAN", "mergeable": "MERGEABLE", "baseRefName": "production"}
     for label, view, sha, want, needle in (
-        ("a green on a superseded head is refused with both SHAs", clean, head_old, 4, (head_old[:12], head_new[:12])),
+        ("a green on a superseded head is refused with both SHAs", clean, head_old, 6, (head_old[:12], head_new[:12])),
         ("a DIRTY PR fails fast naming the base", {**clean, "mergeStateStatus": "DIRTY"}, head_new, 5, ("merge origin/production",)),
         ("a CONFLICTING PR fails fast", {**clean, "mergeable": "CONFLICTING", "mergeStateStatus": "BLOCKED"}, head_new, 5, ("merge origin/production",)),
         ("a matching head stays green", clean, head_new, 0, ()),
@@ -880,12 +991,16 @@ def selftest() -> int:
         pr_calls.clear()
         out_g, err_g = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out_g), contextlib.redirect_stderr(err_g):
-            rc = main(["--pr", "9", "--interval", "0.01"], runner=runner_guard(view, sha))
+            rc = main(["--pr", "9", "--interval", "0.01", "--rerun-settle", "0", "--register-wait", "0.05", "--state-dir", sdir],
+                      runner=runner_guard(view, sha))
         check(label, rc == want and all(n in err_g.getvalue() for n in needle))
         check(label + " (pr view: once up front, once more before a green; bounded line)",
-              sum(1 for c in pr_calls if c[:3] == ["gh", "pr", "view"]) == (1 if want == 5 else 2) and len(err_g.getvalue().splitlines()) <= 1)
+              (want == 6 or sum(1 for c in pr_calls if c[:3] == ["gh", "pr", "view"]) == (1 if want == 5 else 2))
+              and len(err_g.getvalue().splitlines()) <= (2 if want == 6 else 1))
         if want == 5:
             check(label + " (never polled)", not any(c[:3] == ["gh", "pr", "checks"] for c in pr_calls))
+        if want == 6:
+            check(label + " (never green)", "pass" not in out_g.getvalue().replace("1/1 done, 0 failed", ""))
         if want == 4:
             check(label + " (no report printed)", "pass" not in out_g.getvalue().replace("1/1 done, 0 failed", ""))
 
@@ -900,9 +1015,10 @@ def selftest() -> int:
 
     out_m, err_m = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out_m), contextlib.redirect_stderr(err_m):
-        rc = main(["--pr", "9", "--interval", "0.01"], runner=runner_moves)
-    check("a head that moves during the wait is refused", rc == 4 and head_new[:12] in err_m.getvalue()
-          and head_old[:12] in err_m.getvalue() and views["n"] == 2 and len(err_m.getvalue().splitlines()) == 1)
+        rc = main(["--pr", "9", "--interval", "0.01", "--rerun-settle", "0", "--register-wait", "0.05", "--state-dir", sdir],
+                  runner=runner_moves)
+    check("a head that moves during the wait is refused", rc == 6 and head_new[:12] in err_m.getvalue()
+          and head_old[:12] in err_m.getvalue() and "CI never started" in err_m.getvalue())
 
     polls_n = {"n": 0}
 
@@ -920,6 +1036,67 @@ def selftest() -> int:
         rc = main(["--pr", "9", "--interval", "0.001", "--timeout", "5"], runner=runner_turns_dirty)
     check("a PR that turns DIRTY mid-wait fails fast with 5", rc == 5 and "merge origin/production" in err_d.getvalue()
           and len(err_d.getvalue().splitlines()) == 1 and len(out_d.getvalue().splitlines()) <= 1)
+
+    # 14. CI never started: one retrigger per head (close + reopen), then a distinct verdict, never a loop.
+    head_x = "c" * 40
+    state_h: dict = {}
+
+    def runner_norun(log: list[list[str]], heal: bool = False, stale: bool = False, parent: str = "CLEAN"):
+        def r(cmd: list[str]) -> tuple[int, str, str]:
+            log.append(cmd)
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return 0, json.dumps({**clean, "headRefOid": head_x, "mergeable": "UNKNOWN"}), ""
+            if cmd[:3] == ["gh", "pr", "list"]:
+                return 0, json.dumps([{"number": 620, "mergeStateStatus": parent, "mergeable": "UNKNOWN",
+                                       "baseRefName": "stub/2026-11-18"}]), ""
+            if cmd[:3] == ["gh", "pr", "reopen"]:
+                state_h["reopened"] = True
+            if cmd[:3] == ["gh", "pr", "checks"]:
+                if stale:
+                    return 0, json.dumps([{"name": "build", "state": "SUCCESS", "bucket": "pass",
+                                           "link": "https://github.com/o/r/actions/runs/40/job/41", "workflow": "CI"}]), ""
+                if heal and state_h.get("reopened"):
+                    return 0, json.dumps([{"name": "build", "state": "SUCCESS", "bucket": "pass", "link": "", "workflow": "CI"}]), ""
+                return 1, "", "no checks reported on the 'feat/x' branch"
+            if cmd[:3] == ["gh", "run", "view"]:
+                return 0, (head_x if heal and state_h.get("reopened") else head_old) + "\n", ""
+            return 0, "", ""
+        return r
+
+    def run14(log, **kw):
+        o, e = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(o), contextlib.redirect_stderr(e):
+            rc14 = main(["--pr", "9", "--interval", "0.01", "--rerun-settle", "0", "--register-wait", "0.05",
+                         "--state-dir", sdir], runner=runner_norun(log, **kw))
+        return rc14, e.getvalue()
+
+    for mode, kw in (("no run at all", {}), ("stale head", {"stale": True})):
+        sdir = tempfile.mkdtemp(prefix="wait_ci_st_")
+        log1: list[list[str]] = []
+        rc1, err1 = run14(log1, **kw)
+        closes = [c for c in log1 if c[:3] == ["gh", "pr", "close"]]
+        check(f"{mode}: first call retriggers once (close then reopen, no push) and ends 6",
+              rc1 == 6 and len(closes) == 1 and any(c[:3] == ["gh", "pr", "reopen"] for c in log1)
+              and not any(c[:2] == ["git", "push"] for c in log1) and "CI did not fail, it did not run" in err1
+              and "UNKNOWN" in err1)
+        log2: list[list[str]] = []
+        rc2, err2 = run14(log2, **kw)
+        check(f"{mode}: a repeat on the same head gives 6 with no second retrigger",
+              rc2 == 6 and not any(c[:3] in (["gh", "pr", "close"], ["gh", "pr", "reopen"]) for c in log2))
+        check(f"{mode}: the verdict names no wait", "report a blocker" in err2)
+    for mode, kw in (("no run at all", {}), ("stale head", {"stale": True})):
+        sdir = tempfile.mkdtemp(prefix="wait_ci_st_")
+        log4: list[list[str]] = []
+        rc4, err4 = run14(log4, parent="DIRTY", **kw)
+        check(f"{mode}: a conflicting parent PR gives 7 naming it, with no close/reopen and no wait",
+              rc4 == 7 and "#620" in err4 and "stub/2026-11-18" in err4 and "resolve-merge" in err4
+              and not any(c[:3] in (["gh", "pr", "close"], ["gh", "pr", "reopen"]) for c in log4))
+    sdir = tempfile.mkdtemp(prefix="wait_ci_st_")
+    state_h.clear()
+    log3: list[list[str]] = []
+    rc3, _ = run14(log3, heal=True)
+    check("a retrigger that works continues the same call to green", rc3 == 0
+          and sum(1 for c in log3 if c[:3] == ["gh", "pr", "close"]) == 1)
 
     for item in failures_list:
         print("SELFTEST FAIL  " + item)

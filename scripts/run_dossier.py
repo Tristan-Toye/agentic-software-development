@@ -102,7 +102,7 @@ CLAUDE_MD_POINTER = ("- The target repo's own CLAUDE.md is not loaded in this se
 RUNNER_RULES = """\
 You run under the dossier runner and nobody reads the terminal.
 - Ask the owner only through scripts/ask_owner.py, and never wait in the background: keep working on whatever is not blocked; when nothing can proceed, end the turn with the line `RUNNER: WAITING <id>[,<id>...]` and stop. The ids are question ids from ask_owner.py only; a wait on a background command or workflow is not a WAITING line: just end the turn, and Claude Code re-invokes you when it finishes. The runner waits for you and sends the owner's message into this session as `OWNER ANSWER <id>: ...` or `OWNER FOLLOWUP <id>: ...`. A follow-up is the owner's typed message and the question stays open, as a chat, until the owner presses a button: if it is a question, answer it with `ask_owner.py reply <id> --text "..."`; if it reads as an answer or an instruction, reply with your reading and add it as a button, `ask_owner.py reply <id> --text "<what you take it to mean, and what you will do>" --option "D|Confirm: <your reading in a few words>|<what happens>"` (a key the question does not have yet); if it is unclear, reply with your question. When what you recommend changes (a measurement, the owner's point), say so and move the highlighted button with `--recommend <key>` on that reply. Then end the turn with `RUNNER: WAITING <id>` again. Never close a question yourself: only the owner's button does, and every question ends with one.
-- To wait for CI never run `wait_ci.py` yourself in a loop (every call is a full turn): push, then end the turn with `RUNNER: WAITING ci:<pr number>` (several: `RUNNER: WAITING ci:12,ci:13`, one line per PR comes back together; never mix with question ids). The runner runs `wait_ci.py` for you (up to hours, no tokens) and sends `CI RESULT <pr>: green|red|timeout <failing check names and the log tail>` into this session. On `red`, fix and push, then wait again the same way; on `timeout`, wait once more, then ask the owner. Use `wait_ci.py --job-log` / `--rerun-failed` directly only for a one-off read of a log.
+- To wait for CI never run `wait_ci.py` yourself in a loop (every call is a full turn): push, then end the turn with `RUNNER: WAITING ci:<pr number>` (several: `RUNNER: WAITING ci:12,ci:13`, one line per PR comes back together; never mix with question ids). The runner runs `wait_ci.py` for you (up to hours, no tokens) and sends `CI RESULT <pr>: green|red|timeout|never-started <failing check names and the log tail>` into this session. On `red`, fix and push, then wait again the same way; on `timeout`, wait once more, then ask the owner; on `never-started` CI did not run (it did not fail: GitHub created no run for the head, even after one close/reopen), so never wait on that PR again and end with `RUNNER: FAILED CI never started on PR <pr>: ...`. Use `wait_ci.py --job-log` / `--rerun-failed` directly only for a one-off read of a log.
 - Never end a turn to wait for a command: run commands in the foreground (raise the Bash timeout up to 10 minutes) or wait for them inside the same turn. A workflow or background task that notifies you later is fine, but say `waiting for <what>` in plain text in that turn (never as a `RUNNER:` line); the runner keeps the session open for its notification.
 - When the auto-mode safety check blocks a call you need, never work around it: ask the owner with `ask_owner.py ask`, quoting the exact command (or path) and what it is for, with options to allow it once, to allow it as a standing rule, or to go without it; carry on with what is not blocked. The dashboard's Blocked card answers that question; an approval names the exact command, so retry it as written.
 - Run every test through scripts/run_tests.py and every gate list through scripts/run_gates.py (`--path-prepend DIR` / `--env-script FILE` for a toolchain off the shell PATH, `--detach` then `--wait ID` for a long run), never through a script or command of your own: their result lines are how the owner's timeline shows a suite going green or red. Run only the tests the command's step names: under /work-on and /fix-deferred with SUITE-MODE `stub`, that is the new and affected tests and the pull request's CI, never the full workspace or `--stack` suite, which only /stub runs.
@@ -425,6 +425,13 @@ NUDGE = ("RUNNER: your last turn ended without a RUNNER: line and nothing has ha
 QUESTION_ID = re.compile(r"(?:^|\.)Q\d+$")
 # A CI wait: `ci:<pr number>`.
 CI_ID = re.compile(r"^ci:\d+$")
+CI_PARENT_NEXT = ("Next step: the cause is the parent PR of #{n} (see above): resolve its conflict by merging its base into its branch "
+                  "(the resolve-merge procedure), push, then end the turn with RUNNER: WAITING ci:{n} again. If you cannot resolve it, end "
+                  "with `RUNNER: FAILED CI not started on PR #{n}: its parent PR conflicts` so it is reported as a blocker.")
+CI_NEVER_STARTED_NEXT = ("Next step: do NOT end the turn with RUNNER: WAITING ci:{n} again (the runner will not wait on it). "
+                         "State in your summary that CI did not run on PR #{n} (not that it failed; GitHub's mergeability for it is "
+                         "unknown and a close/reopen did not start a run), then end the turn with `RUNNER: FAILED CI never started on "
+                         "PR #{n}: GitHub created no workflow run for the head, the owner must unstick the PR` so it is reported as a blocker.")
 MARKER = re.compile(r"^RUNNER:\s*(STAGE-DONE|WAITING|DONE|REPLAN|FAILED|ENV)\b[ \t]*(.*)$")
 # A FAILED whose reason says the owner sent the dossier back to /plan is a REPLAN under an older wording.
 REPLAN_WORDS = re.compile(r"\b(sent|send|sending|go(?:es|ing)?)\s+back\s+to\s+/?plan\b|\bre-?plan(?:ned|ning)?\b.*\b(ruling|ruled|owner)\b", re.I)
@@ -1478,6 +1485,7 @@ class Runner:
         self.model = runner_model(model) if command != "product-summary" else model
         self.permission_mode = permission_mode
         self.max_stages = max_stages
+        self.ci_never_started: set[int] = set()
         prev = read_json(os.path.join(runs_dir(), run_key(root, dossier, command, items) + ".runner.json"), {}) or {}
         prev_acct = prev.get("account", "")
         # /work-on stacked on a re-plan's unmerged plan branch (committed mode): a restart of the same unfinished build
@@ -2615,10 +2623,12 @@ class Runner:
                 for n, p in procs.items():
                     if n not in out and p.poll() is not None:
                         text = (p.communicate()[0] or "").strip()
-                        verdict = {0: "green", 3: "timeout"}.get(p.returncode, "red")
+                        verdict = {0: "green", 3: "timeout", 6: "never-started", 7: "never-started"}.get(p.returncode, "red")
                         lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
                         tail = " | ".join(lines[-int(env_num("ASD_CI_TAIL_LINES", 30)):])[-3000:]
-                        if p.returncode not in (0, 1, 3):
+                        if p.returncode == 6:
+                            self.ci_never_started.add(n)
+                        if p.returncode not in (0, 1, 3, 6, 7):
                             tail = f"(wait_ci exit {p.returncode}) " + tail
                         out[n] = (verdict, tail)
                 if self.stopping:
@@ -3023,6 +3033,16 @@ class Runner:
                               "End the turn again with only the ids you need first.")
                     quiet = True
                     continue
+                again = [int(i[3:]) for i in cis if int(i[3:]) in self.ci_never_started]
+                if again:
+                    # CI never started on this PR and one retrigger already failed: waiting again gets the same verdict
+                    # at the same cost. Refuse the wait; the session must report the blocker instead.
+                    self.send("\n".join(f"CI RESULT {n}: never-started {CI_NEVER_STARTED_NEXT.format(n=n)} "
+                                         "(refused: already reported; the runner does not wait on it again)" for n in again))
+                    cis = [i for i in cis if int(i[3:]) not in again]
+                    if not cis:
+                        continue
+                    ids = [i for i in ids if i in cis]
                 res = self.ci_wait([int(i[3:]) for i in cis])
                 if res is None:
                     return "stopped", ""
@@ -3033,7 +3053,10 @@ class Runner:
                 if not self.take_slot(first=True):
                     return "stopped", ""
                 self.event("CI result: " + ", ".join(f"#{n} {v}" for n, v, _ in res), "running")
-                self.send("\n".join(f"CI RESULT {n}: {v} {t}".rstrip() for n, v, t in res))
+                self.send("\n".join((f"CI RESULT {n}: never-started CI did not run on #{n} (it did not fail): {t} "
+                                          + (CI_NEVER_STARTED_NEXT if n in self.ci_never_started else CI_PARENT_NEXT).format(n=n))
+                                         if v == "never-started"
+                                         else f"CI RESULT {n}: {v} {t}".rstrip() for n, v, t in res))
                 continue
             qids = [i for i in ids if QUESTION_ID.search(i)]
             if not qids:
@@ -5131,12 +5154,17 @@ def selftest() -> int:
             "if n==71: print('all green'); sys.exit(0)\n"
             "if n==72: print('FAIL unit-tests'); print('assert 1 == 2'); sys.exit(1)\n"
             "if n==74: print('conflicting'); sys.exit(5)\n"
+            "if n==75: print('no run for the head'); sys.exit(6)\n"
+            "if n==76: print('PR stacked on #620, which conflicts'); sys.exit(7)\n"
             "print('still pending'); sys.exit(3)\n")
         dos_dir = os.path.join(root, ".discovery", "dossiers"); os.makedirs(dos_dir, exist_ok=True)
         open(os.path.join(dos_dir, "W-43-ci.md"), "w").write("---\nid: W-43\nstatus: ready\n---\n")
         for dos, prs, want in (("W-43", "ci:71", ["CI RESULT 71: green all green"]),
                                ("W-44", "ci:72", ["CI RESULT 72: red FAIL unit-tests | assert 1 == 2"]),
                                ("W-45", "ci:73", ["CI RESULT 73: timeout still pending"]),
+                               ("W-48", "ci:75", ["CI RESULT 75: never-started CI did not run on #75 (it did not fail): no run for the head",
+                                                  "RUNNER: FAILED CI never started on PR #75"]),
+                               ("W-50", "ci:76", ["CI RESULT 76: never-started CI did not run on #76 (it did not fail): PR stacked on #620, which conflicts"]),
                                ("W-46", "ci:71,ci:72,ci:74", ["CI RESULT 71: green", "CI RESULT 72: red", "CI RESULT 74: red (wait_ci exit 5) conflicting"])):
             scenario([{"turns": [[{"final": f"pushed\nRUNNER: WAITING {prs}"}], [{"final": "RUNNER: DONE"}]]}])
             env.update(ASD_WAIT_CI_BIN=ci_fake, ASD_CI_TIMEOUT="123")
@@ -5147,6 +5175,16 @@ def selftest() -> int:
             check(f"ci breakpoint {prs}: waits without a question and sends {' / '.join(w.split(':')[0] + ':' + w.split(':')[1] for w in want)}",
                   rc == 0 and all(w in sent for w in want) and any(t.startswith("waiting on CI #") for t in texts(dos))
                   and not any("asked" in t for t in texts(dos)))
+        # the session waits on a never-started PR again anyway: refused, wait_ci not run a second time
+        n75_before = open(os.path.join(tmp, "ci.args")).read().count("--pr 75")
+        scenario([{"turns": [[{"final": "RUNNER: WAITING ci:75"}], [{"final": "RUNNER: WAITING ci:75"}], [{"final": "RUNNER: DONE"}]]}])
+        env.update(ASD_WAIT_CI_BIN=ci_fake, ASD_CI_TIMEOUT="123")
+        rc = start("W-49").wait(timeout=60)
+        env.pop("ASD_WAIT_CI_BIN"); env.pop("ASD_CI_TIMEOUT")
+        sent49 = [m for m in msgs(1) if m.startswith("CI RESULT 75")]
+        check("ci never-started: the repeated wait is refused and wait_ci runs once",
+              rc == 0 and len(sent49) == 2 and "refused" in sent49[1] and "never-started" in sent49[0]
+              and open(os.path.join(tmp, "ci.args")).read().count("--pr 75") == n75_before + 1)
         ci_args = open(os.path.join(tmp, "ci.args")).read()
         check("ci breakpoint: wait_ci gets --pr, the long --timeout and the dossier as --log",
               "--pr 71 --timeout 123.0 --log " + os.path.join(dos_dir, "W-43-ci.md") in ci_args)
