@@ -1957,7 +1957,7 @@ class Runner:
 
     def wait_for_stub(self) -> str | None:
         """Poll scripts/stub_target.py until a stub can be built on (the integrated one merged, the next one cut)."""
-        self.save(state="waiting", questions=[])
+        self.save(state="waiting", questions=[], waiting_for="stub")
         self.event("waiting for the stub being integrated to merge into development; a new stub is cut then", "waiting")
         poll = float(os.environ.get("ASD_STUB_POLL") or 300)
         script = os.environ.get("ASD_STUB_TARGET_BIN") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "stub_target.py")
@@ -2549,7 +2549,7 @@ class Runner:
         script = os.environ.get("ASD_WAIT_CI_BIN") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "wait_ci.py")
         timeout = env_num("ASD_CI_TIMEOUT", 5400)
         log = self.dossier_file()
-        self.save(state="waiting", questions=[], ci=prs)
+        self.save(state="waiting", questions=[], ci=prs, waiting_for="ci")
         self.event("waiting on CI " + ", ".join(f"#{n}" for n in prs), "waiting")
         procs: dict[int, subprocess.Popen] = {}
         for n in prs:
@@ -2631,7 +2631,7 @@ class Runner:
         msg = (f"account {name} is signed out; run `CLAUDE_CONFIG_DIR={shlex.quote(cur['dir'])} claude` then /login; "
                "this run resumes by itself once it is signed in")
         self.ask_logged_out(cur)
-        self.save(state="waiting", questions=[])
+        self.save(state="waiting", questions=[], waiting_for="login")
         self.event(msg, "waiting")
         poll = float(os.environ.get("ASD_AUTH_POLL") or 60)
         while not self.stopping:
@@ -2991,7 +2991,7 @@ class Runner:
                 quiet = True
                 continue
             ids = qids
-            self.save(state="waiting", questions=ids)
+            self.save(state="waiting", questions=ids, waiting_for="owner")
             self.event(f"waiting on {','.join(ids)}", "waiting")
             qid, rc, out = self.owner_wait(ids)
             if self.stopping:

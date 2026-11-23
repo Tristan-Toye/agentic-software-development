@@ -237,12 +237,19 @@ def chain_of(prs: list[dict], dossier: str, owned: dict | None = None) -> tuple[
     # A PR stacked on one of them is part of the same stack whatever its branch is called: a repo that names its
     # branches by Jira key (feat/LABS-117-…) gets /fix-deferred's fix/W-007-deferred on top, and GitHub refuses to
     # merge the bottom of a stack alone.
+    # And the PR a found one is stacked on is part of it too, whatever its branch is called: /fix-deferred's
+    # fix/W-199-deferred sits on a research branch (docs/harness2-…) that names no id and whose pr: lives only on
+    # that branch's dossier copy, not the main checkout's, so `owned` misses it. Without it the chain's bottom is
+    # the fix PR into a non-stub branch and the queue refuses the dossier.
     while True:
         on_top = [p for p in prs if p not in mine and p.get("baseRefName") in {x["headRefName"] for x in mine}
                   and not p.get("headRefName", "").startswith(("plan/", "docs/"))]
-        if not on_top:
+        below = [p for p in prs if p not in mine and p not in on_top
+                 and p.get("headRefName") in {x.get("baseRefName") for x in mine}
+                 and not p.get("headRefName", "").startswith("plan/")]
+        if not on_top and not below:
             break
-        mine += on_top
+        mine += on_top + below
     heads = {p["headRefName"]: p for p in mine}
     bottoms = [p for p in mine if p.get("baseRefName") not in heads]
     if len(bottoms) != 1:
@@ -1543,6 +1550,23 @@ def integrate_held(key: str) -> int:
     return holder or -1
 
 
+def stacked_id(everything: list[dict], bottom: dict) -> str | None:
+    """The one dossier id the branches stacked on BOTTOM name (fix/W-199-deferred on docs/harness2-…), or None when
+    they name none or more than one. Plan branches never count."""
+    found: set[str] = set()
+    heads, seen = {bottom["headRefName"]}, {bottom.get("number")}
+    while heads:
+        up = [p for p in everything if p.get("baseRefName") in heads and p.get("number") not in seen
+              and not p.get("headRefName", "").startswith("plan/")]
+        for p in up:
+            seen.add(p.get("number"))
+            m = re.search(r"([A-Za-z][A-Za-z0-9]*-\d+)", p["headRefName"])
+            if m:
+                found.add(m.group(1).upper())
+        heads = {p["headRefName"] for p in up}
+    return found.pop() if len(found) == 1 else None
+
+
 def stub_stacks(everything: list[dict], branch: str, owned: dict | None = None) -> tuple[list[tuple[str, dict]], list[dict]]:
     """The open PRs straight into the stub, as ([(dossier id, its bottom PR)], [PRs no dossier owns]). Only PRs still open
     count, so a dossier already merged into the stub is not in it. A PR whose branch names no id belongs to the dossier
@@ -1554,10 +1578,13 @@ def stub_stacks(everything: list[dict], branch: str, owned: dict | None = None) 
         m = re.search(r"([A-Za-z][A-Za-z0-9]*-\d+)", p["headRefName"])
         if not p["headRefName"].startswith(("plan/", "docs/")) and (m or (owned or {}).get(p["number"])):
             i = m.group(1).upper() if m else owned[p["number"]]
-            if i not in [x[0] for x in ids]:
-                ids.append((i, p))
+        elif not p["headRefName"].startswith("plan/") and stacked_id(everything, p):
+            i = stacked_id(everything, p)   # an id-less branch (docs/…) under a dossier's stacked PR is that dossier's
         else:
             others.append(p)
+            continue
+        if i not in [x[0] for x in ids]:
+            ids.append((i, p))
     return ids, others
 def stub_dossiers(root: str, branch: str) -> list[str]:
     """The dossiers with an open pull request into the stub (the ones eager merging may put on it)."""
@@ -1817,6 +1844,17 @@ def selftest() -> int:
     check("chain: a PR stacked on the dossier's branch joins its stack whatever its branch is called", [p["number"] for p in c] == [40, 50], why)
     check("chain: the stack's run keys include every dossier id its branches name",
           chain_keys("repo", "LABS-117", c) == ["repo.LABS-117", "repo.W-007"], str(chain_keys("repo", "LABS-117", c)))
+    w199 = [P(597, "docs/harness2-ingest-and-h14-plan", "stub/2026-11-18"), P(624, "fix/W-199-deferred", "docs/harness2-ingest-and-h14-plan"),
+            P(600, "docs/other-research", "stub/2026-11-18")]
+    c199, why199 = chain_of(w199, "W-199")
+    check("chain: the id-less PR a dossier's fix PR is stacked on is the chain's bottom", [p["number"] for p in c199] == [597, 624], why199)
+    ids_, others_ = stub_stacks(w199, "stub/2026-11-18")
+    check("stub members: a docs branch under a dossier's stacked PR belongs to that dossier",
+          [(i, p["number"]) for i, p in ids_] == [("W-199", 597)] and [p["number"] for p in others_] == [600], f"{ids_} {others_}")
+    two = [P(1, "docs/x", "stub/s"), P(2, "fix/W-1-deferred", "docs/x"), P(3, "fix/W-2-deferred", "docs/x")]
+    check("stub members: an id-less PR under two dossiers' PRs belongs to neither", stub_stacks(two, "stub/s")[0] == [])
+    check("chain: a plan PR below is never pulled into the chain",
+          [p["number"] for p in chain_of([P(1, "plan/W-5", "development"), P(2, "fix/W-5-deferred", "plan/W-5")], "W-5")[0]] == [2])
     real_git = globals()["git"]
     trees = {"origin/fix/W-007-deferred": {".discovery/dossiers/W-007-qc.md": "---\nid: W-007\npr: https://x/pull/40\n---\nbody"},
              "origin/feat/LABS-139-a": {".discovery/dossiers/W-018-order.md": "---\nid: W-018\npr:\n  - https://x/pull/41\n---\n",
