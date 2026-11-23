@@ -185,6 +185,29 @@ This is the step everything else depends on.
    (`--kind design` or `--kind product`), under the ask policy
    (`references/owner-questions.md`, "The ask policy").
 
+   **Lint the stubs' documentation comments, then sweep the tests the contract
+   breaks — both before the commit, both scripts, no agent.**
+
+   - `python3 ${PLUGIN_ROOT}/scripts/lint_stub_docs.py --root X --paths <the
+     contract files, comma list>` reads the stubs alone and lists the words a
+     blind reader resolves two ways (rounds with no mode, equal on a record
+     holding a list, blank, sorted with no key, exactly/only, discarded,
+     coalesces), an error variant no comment names, a rule cited by name with
+     no quoted clause, and an `(inferred)` marker. **Fix the comment, or
+     accept the finding knowingly, before `contract-reviewer` is spawned**
+     (Phase 3): the reviewer then spends its budget on readings a script
+     cannot find. Log `DOC-LINT: <N> finding(s), <M> fixed`.
+   - `python3 ${PLUGIN_ROOT}/scripts/affected_literals.py --root X --dossier
+     <dossier> [--literal <count or constant the diff cannot show> ...]` lists
+     every pre-existing test that spells a literal the contract changes
+     (column, key or kind list, count, hoisted expectation) with its owning
+     package. Paste its `AFFECTED_TESTS:` block into `## Build log`. A test
+     with `owner: UNOWNED` (exit 1) is added to the owned paths of the package
+     that changes the behaviour (or to a package of its own) before the
+     commit, so its fix lands in the first fan-out and not as a row-3
+     arbitration after it. Never hand a blind author an affected test's old
+     literal; the owning implementer package updates it.
+
 4. **Commit it on `X`.** Prefix with the Jira key. Every fan-out branch forks
    from this commit, so the contract is the one thing all of them share. In
    committed mode the dossier is in this commit too — `status: building`, the
