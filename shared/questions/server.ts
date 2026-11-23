@@ -881,7 +881,7 @@ export async function handle(req: Request): Promise<Response> {
       const fd = openSync(join(runsDir(), `${repo}.docmerge.log`), "w")
       const proc = Bun.spawn(["python3", join(import.meta.dir, "..", "..", "scripts", "merge_docs_prs.py"), "merge", "--root", main], { stdout: fd, stderr: fd, stdin: "ignore" })
       writeFileSync(stateFile, JSON.stringify({ pid: proc.pid, started: new Date().toISOString() }))
-      proc.exited.then(() => { emitChange("runs"); return refreshDocPrs(repo, main) }).then(() => emitChange("runs"), () => {})
+      proc.exited.then(() => { emitChange("runs"); return refreshDocPrs(repo, main) }).then(() => { emitChange("runs"); emitChange("docprs") }, () => {})
       return json({ ok: true })
     }
     if (req.method !== "GET") return json({ error: "method not allowed" }, 405)
@@ -891,7 +891,7 @@ export async function handle(req: Request): Promise<Response> {
     let c = docPrsCache.get(repo)
     if (!c) { const d = readViewCache<any>(`docprs-${repo}`); if (d) { c = { at: 0, v: d }; docPrsCache.set(repo, c) } }
     if (!c || fresh) { c = { at: Date.now(), v: await refreshDocPrs(repo, main) } }
-    else if (Date.now() - c.at >= 60_000) void refreshDocPrs(repo, main)
+    else if (Date.now() - c.at >= 60_000) void refreshDocPrs(repo, main).then(() => emitChange("docprs"), () => {})   // the page reloads the list when the refresh lands
     const prs = c.v
     return json({ ...prs, merging, log, stale: c.at === 0 })
   }
