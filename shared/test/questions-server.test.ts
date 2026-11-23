@@ -834,7 +834,7 @@ try {
   check("server: /api/runs lists dossiers from the injected roots", rv.runs?.length === 9 && r7?.status === "building" && r7.phase === "4" && r7.repo === "repoB", JSON.stringify(rv).slice(0, 300))
   check("server: /api/runs session activity and context", r7?.session.state === "active" && r7.session.context === 143003 && r7.session.requests === 2 && r7.pr === null, JSON.stringify(r7?.session))
   check("server: /api/runs carries the open-question link", rv.runs.every((r: any) => Array.isArray(r.questions)) && typeof rv.scannedAt === "string")
-  check("table rows: the stage label carries the stagelbl class, coloured with --acc", html.includes("h('span', { class: 'stagelbl' }, [stageText(r) || 'starting'])") && html.includes(".stagelbl{color:var(--acc)}") && html.includes("--acc:#"))
+  check("table rows: the status chip on the right of a working row is blue (.sright>.chip.fixing after the grey .sright>.chip rule)", html.indexOf(".sright>.chip.fixing{color:var(--acc)}") > html.indexOf(".sright>.chip{background:none") && !html.includes("stagelbl"), "")
   check("server: page has the Runs view and no external resources", html.includes("Open questions") && html.includes("/api/runs") && html.includes("/api/stubs") && !/https?:\/\//.test(html))
   const qo = html.match(/function queueOpen\(\) \{[^\n]*\}/)?.[0] ?? ""
   const order = qo ? new Function("S", qo + "; return queueOpen().map(q => q.id)")({ q: [{ id: "c", state: "open", ts: "2026-11-02T10:03:00Z" }, { id: "a", state: "open", ts: "2026-11-02T10:01:00Z" }, { id: "x", state: "answered", ts: "2026-11-02T10:00:00Z" }, { id: "b", state: "open", ts: "2026-11-02T10:02:00Z" }] }) : []
