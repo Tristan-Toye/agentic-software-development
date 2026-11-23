@@ -675,13 +675,15 @@ export function viewFile(dir: string, view: string): string | null {
   const stem = archStemOf(view)
   return stem !== null && archStems(dir).includes(stem) ? join(dir, ARCH_DIR, stem + ".json") : null
 }
-/** The views a review covers, in tab order: L0, L1, L2, then one `arch:<stem>` per draft in arch/. */
-export const reviewViews = (dir: string): string[] => [...VR_VIEWS, ...archStems(dir).map((s) => "arch:" + s)]
-/** The views the page draws, in tab order: L0, L1, the decision flow when decision.json exists, L2, then the architecture drafts. The verdicts of the review still cover reviewViews only. */
-export const tabViews = (dir: string): string[] => [...VR_VIEWS.slice(0, 2), ...(existsSync(join(dir, DECISION_VIEW + ".json")) ? [DECISION_VIEW] : []), ...VR_VIEWS.slice(2), ...archStems(dir).map((s) => "arch:" + s)]
+/** Whether the dossier directory holds a decision.json (a regular file). */
+export const hasDecision = (dir: string): boolean => { try { return lstatSync(join(dir, DECISION_VIEW + ".json")).isFile() } catch { return false } }
+/** The views a review covers, in tab order: L0, L1, the decision flow when decision.json exists (it needs the owner's verdict like the others), L2, then one `arch:<stem>` per draft in arch/. */
+export const reviewViews = (dir: string): string[] => tabViews(dir)
+/** The views the page draws, in tab order: L0, L1, the decision flow when decision.json exists, L2, then the architecture drafts. Every one of them takes verdicts. */
+export const tabViews = (dir: string): string[] => [...VR_VIEWS.slice(0, 2), ...(hasDecision(dir) ? [DECISION_VIEW] : []), ...VR_VIEWS.slice(2), ...archStems(dir).map((s) => "arch:" + s)]
 
-/** Whether `root` holds a visual-review folder for the dossier with at least one of l0/l1/l2.json. */
-export const hasVisualReview = (root: string, dossier: string): boolean => VR_VIEWS.some((v) => existsSync(join(vrDir(root, dossier), v.toLowerCase() + ".json")))
+/** Whether `root` holds a visual-review folder for the dossier with at least one of l0/l1/l2/decision.json. */
+export const hasVisualReview = (root: string, dossier: string): boolean => VR_VIEWS.some((v) => existsSync(join(vrDir(root, dossier), v.toLowerCase() + ".json"))) || hasDecision(vrDir(root, dossier))
 
 /**
  * Read, validate and lay out l0/l1/l2.json of one dossier directory. A missing file is a null view; a broken one carries

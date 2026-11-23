@@ -214,7 +214,8 @@ Then ONE `run_gates.py` call over the paths the branch changed (the gates file,
 `--only` the gates that cover those paths). Every test and gate run goes
 through these two scripts, never a script of your own: their result lines are
 how the owner's timeline shows the suite. Those runs are also the evidence
-Step 5's reviewers get. When the batch is red, read the failure digest, find
+Step 5's reviewers get. When the batch is red, read the failure digest (it names each failing test with
+its first assertion and `file:line`; open the log only where it says `truncated`), find
 which item's change broke it, and send only that item through one more wave
 (Step 4.3, with that item's change request). A suite that stays red after
 one fix round for an item turns that item into a dossier seed: revert its

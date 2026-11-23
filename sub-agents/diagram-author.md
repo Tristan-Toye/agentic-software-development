@@ -3,7 +3,8 @@ name: diagram-author
 description: >-
   Names and groups the facts of one change into three review views (L0 features,
   L1 flow steps, L2 nodes), plus one draft per new architecture diagram the
-  dossier names (arch/<stem>.json), from the extractor and diff output the
+  dossier names (arch/<stem>.json), plus a decision flow (decision.json) when the
+  change has branches, from the extractor and diff output the
   orchestrator prepared. Never invents an element; whatever a stub does not prove is marked
   inferred. Writes only under .discovery/visual-review/ and validates its own
   files with vr_graph.py.
@@ -85,6 +86,10 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   `vr_promote_preview` in `shadow` (or `on`): every added or changed L1 step
   then carries `to` and `call_kind`, not only those of a `Diagrams new:` flow
   (see L1 below). Absent or `off`: the rule below is unchanged.
+- `DECISION` — optional, `yes` or `no`: the branch rule's answer
+  (`validate_pipeline.py --dossier <ID> --branch-rule`: the dossier's acceptance
+  criteria name a condition, an error end or a retry). `yes`: write
+  `decision.json`. `no` or absent: do not. You never decide this yourself.
 - `ERRORS` — only on a repair attempt: the validator's issue list from the
   last attempt.
 
@@ -99,6 +104,12 @@ Three files, each a graph of schema 1.0.0 (see
 | `OUT_DIR/l0.json` | `L0` | 15 nodes of kind `feature` | what the owner gets, in product words |
 | `OUT_DIR/l1.json` | `L1` | 12 nodes of kind `step` | the flow, in order, with `lane`, `order` and `detail.before` / `detail.after` |
 | `OUT_DIR/l2.json` | `L2` | 12 nodes | the parts that change, grouped; groups are free |
+
+With `DECISION: yes` a fourth file, `OUT_DIR/decision.json` (`view: "decision"`),
+is written: what happens at each condition of the change, shapes and rules in
+`references/visual-review/README.md` ("The decision view"), fixture
+`decision-retry.json`. The owner approves it in Phase 3 like L0, L1 and L2; it is
+never promoted into `docs/architecture`.
 
 Each stem in `DIAGRAMS_NEW` also gets a draft the owner reviews as an
 "Architecture impact" tab, `OUT_DIR/arch/<stem>.json`, by its prefix:
@@ -187,8 +198,20 @@ Shapes the schema requires, which the fixtures also show:
 4. **L0.** One feature per owner-visible capability the dossier's `PROBLEM`
    and `APPROACH` name, each cited by the L2 node or L1 step that implements
    it.
-5. Write the three files, and the `arch/<stem>.json` of every `c1-*` and
-   `c4-*` stem, to `OUT_DIR`, then run, for each:
+4b. **Decision flow** (only with `DECISION: yes`). Spine: the `after` steps of
+   the L1 flow, each restated as a `process` node with `step` = the L1 step id.
+   For every condition in a changed function (the diff hunks and the contract's
+   documented error cases and retries) add a `decision` node with its 2 or 3
+   exits (`branch` and a `label`), ending every arm in a `terminal` end
+   (`outcome: "ok"` or `"error"`); one `start` terminal. Ids:
+   `decision:<fn>:<slug>`, `proc:<fn>:<slug>`, `end:<fn>:<slug>`. Statuses by
+   the rule above (an arm the change rewires is `changed`, `detail.before` /
+   `detail.after` name the old and new target). Cite the first line of each arm
+   and condition; an arm the code does not show is `inferred`. Budget 14 nodes,
+   5 decisions: over it, keep the changed branches and fold the rest into one
+   `process` node.
+5. Write the three files, `decision.json` when asked, and the `arch/<stem>.json`
+   of every `c1-*` and `c4-*` stem, to `OUT_DIR`, then run, for each:
 
    ```bash
    python3 SCRIPTS_DIR/vr_graph.py validate OUT_DIR/l1.json --root REPO
@@ -201,6 +224,7 @@ Shapes the schema requires, which the fixtures also show:
 
    ```bash
    python3 SCRIPTS_DIR/vr_graph.py validate OUT_DIR/arch/<stem>.json --root REPO
+   python3 SCRIPTS_DIR/vr_graph.py validate OUT_DIR/decision.json --root REPO --l1 OUT_DIR/l1.json
    ```
 
    The budget counts nodes, not groups: on L2 a crate node and a module node
@@ -239,14 +263,20 @@ Shapes the schema requires, which the fixtures also show:
    concept keeps one name: if L0 says "retry budget", no node, edge or group
    says "attempt limit" for it. These rules shape wording only (rule 2 holds):
    a label never adds an edge.
-8. **Three strikes, then stop**, as every agent here: the same validation
+8. **Decision taste** (`decision.json` only). One real condition per diamond,
+   never two folded together; a diamond is a question in the owner's words
+   ("Token still valid?"), its exits short labels of at most 14 characters
+   ("YES", "EXPIRED"). The remove test: if deleting a node, arrow or label
+   loses nothing the owner needs, delete it. At most 2 error ends; never an
+   outcome the code does not show. The words match `l1.json` (rule 7).
+9. **Three strikes, then stop**, as every agent here: the same validation
    failing three times ends the run with what failed and what you tried.
 
 ## Report
 
 At most 12 lines, guidance not verdicts:
 
-- `WROTE:` the three paths and each `arch/<stem>.json`, one per line, each with its node count against its budget.
+- `WROTE:` the three paths, `decision.json` when `DECISION: yes` (with `DECISION: no` or absent say `decision: not drawn`), and each `arch/<stem>.json`, one per line, each with its node count against its budget.
 - `VALIDATE:` `pass` or `fail`, with the issue codes and element ids when it failed.
 - `INFERRED:` how many elements and which ids of every element marked `inferred` (explicit `none` allowed).
 - `NOTICED:` anything in `PROBLEM`, `APPROACH` or `CONTRACT` that contradicts the facts (explicit `none` allowed). Always last.

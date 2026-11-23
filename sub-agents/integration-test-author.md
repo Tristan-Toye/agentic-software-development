@@ -90,6 +90,11 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   `refused form -> use instead` line each, or `none declared`. Never write a
   refused form; use the helper named after the arrow.
 - `STYLE_SAMPLE` — one existing integration test, verbatim.
+- `SUPPORT_DIGEST` — present when the repository has test support (harness, fixtures,
+  conftest, builders, fakes): the path of one generated file holding the signatures and
+  doc comments of every such file you may read, bodies replaced by `…`. It is built from
+  the same list your hook enforces, so it never covers a sealed file. Read it whole,
+  right after the payload.
 - `CENSUS` — present only when the package edits existing test files or shell
   checks that a contract shift pins (the Phase 3 `CENSUS:` rows): one
   `<path>:<line> — <what changes there>` line per row. Each row is one scoped
@@ -119,7 +124,10 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
 2. Trace the flow's entry point with `Grep` and `Glob`: the endpoint, the
    command handler, the job, the CLI verb. Read the wiring — routing,
    registration, configuration — so the test enters where a caller enters.
-3. Read the existing integration tests and the harness. Reuse the fixture that
+3. Read `SUPPORT_DIGEST` first (when present): it already names the harness, the fixtures
+   and the helpers with their signatures and docs. Open a support file only for a detail the
+   digest lacks (a body you must see to use it, a seed value); never re-read what the digest
+   shows. Then read the existing integration tests. Reuse the fixture that
    already exists; a second parallel harness is a maintenance problem, not a
    test.
 4. Write one test per criterion, entering at the flow's real entry point and

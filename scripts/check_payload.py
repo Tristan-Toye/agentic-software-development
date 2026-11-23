@@ -255,7 +255,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
             "SHARED_IDIOM", "DELIVERY_CHANGE", "PROMISE_CHECKLIST",
             "SUPPORT_PATHS", "SUPPORT", "FAILURES", "CORRECTION", "CENSUS",
             "BASELINE_COUNTS_FROM", "CITATION", "CI_ENVIRONMENT", "TEST_FORM_RULES",
-            "PROPERTY_LIBRARY",
+            "PROPERTY_LIBRARY", "SUPPORT_DIGEST",
         },
     },
     "implementer": {
@@ -264,14 +264,14 @@ FIELDS: dict[str, dict[str, set[str]]] = {
             "TEST_COMMAND", "STANDARDS", "JIRA_KEY", "HOOKS",
         },
         "optional": {
-            "PACKAGE", "CRITERIA", "CRS", "FAILURES", "SHARED_IDIOM",
+            "PACKAGE", "CRITERIA", "CRS", "CR_EXCERPTS", "FAILURES", "SHARED_IDIOM",
             "VERIFY_EMBEDDED", "BASELINE_COUNTS_FROM", "COMMIT_ENV", "COMMIT_SUBJECT",
         },
     },
     "reviewer": {
         "required": {"LENS", "WORKTREE_DIR", "STANDARDS", "ROUND"},
         "optional": {
-            "DOSSIER", "SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA",
+            "LENS_DOC", "DOSSIER", "SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA",
             "CONTEXT_DOCS", "ARBITRATIONS", "PRIOR_CRS", "RULES", "SIGNALS",
             # LENS: plan, the /plan Phase 7 product-coherence review
             "PRODUCT_MODEL", "ADR_INDEX", "RELATED_DOSSIERS", "READER",
@@ -300,7 +300,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
             "DOSSIER_ID", "PROBLEM", "APPROACH", "CONTRACT", "WORK_DIR", "OUT_DIR",
             "SCRIPTS_DIR", "REPO", "DIAGRAMS_NEW",
         },
-        "optional": {"ERRORS", "STEP_ROUTING"},
+        "optional": {"ERRORS", "STEP_ROUTING", "DECISION"},
     },
 }
 
@@ -596,7 +596,7 @@ ASSIGNMENT = re.compile(r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(?P<value>
 # change requests. Such text may discuss `${HOME}` or quote `token: a`.
 VERBATIM_FIELDS = (
     "CRITERIA", "CONTRACT", "DOSSIER-EXCERPTS", "STYLE_SAMPLE", "SUPPORT",
-    "FAILURES", "CRS", "PRIOR_CRS", "RUN_EVIDENCE", "CHECKLIST_RULES", "FORMAT",
+    "FAILURES", "CRS", "CR_EXCERPTS", "PRIOR_CRS", "RUN_EVIDENCE", "CHECKLIST_RULES", "FORMAT",
     "PROBLEM", "APPROACH", "ERRORS",
 )
 # #362: the fields whose text is quoted material (verbatim contract text, evidence, excerpts):
@@ -672,13 +672,48 @@ def missing_tool_findings(present: list[str], kind: str | None,
 # when it pastes text under `CONTRACT: |`.
 LIST_SEPARATOR = re.compile(r"[,\s]+")
 PATH_VALUED_FIELDS = (
-    "TEST_PATHS", "STYLE_PATHS", "SUPPORT_PATHS", "WORKTREE_DIR", "DOSSIER",
+    "TEST_PATHS", "STYLE_PATHS", "SUPPORT_PATHS", "SUPPORT_DIGEST", "WORKTREE_DIR", "DOSSIER",
     "STANDARDS", "CONTEXT_DOCS", "TARGET_PATHS",
     "REPO", "WORK_DIR", "OUT_DIR", "SCRIPTS_DIR",
 )
 NOT_A_PATH_VALUE = re.compile(r"^(|none|null|n/a)$", re.IGNORECASE)
 
 
+def support_digest_findings(lines: list[str], kind: str | None) -> list[str]:
+    """SUPPORT_DIGEST (the integration author's signatures-and-docs digest, support_digest.py)
+    must be the staged file: it exists, carries the generator's marker, and names no path the
+    read policy beside it (`.agent-staging/sealed-paths.txt`) seals."""
+    if kind != "integration-test-author":
+        return []
+    path = field_value(lines, "SUPPORT_DIGEST")
+    if not path or NOT_A_PATH_VALUE.match(path):
+        return []
+    try:
+        sd = _load_script("support_digest")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as exc:
+        return ["SUPPORT_DIGEST: cannot read %s (%s): run compose_payloads.py again, it writes the "
+                "digest" % (path, exc.strerror)]
+    if sd.MARKER not in text:
+        return ["SUPPORT_DIGEST: %s was not written by support_digest.py (marker missing); never "
+                "hand-write one: a digest holds signatures and doc comments only" % path]
+    root = os.path.dirname(os.path.dirname(os.path.abspath(path)))
+    try:
+        sealed = sd.sealed_in_digest(text, root)
+    except sd.Refused as exc:
+        return ["SUPPORT_DIGEST: %s" % exc]
+    return ["SUPPORT_DIGEST: %s covers %s, which the integration author's read policy seals; "
+            "rebuild it with support_digest.py build" % (path, p) for p in sealed]
+def _load_script(name: str):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py"))
+    if spec is None or spec.loader is None:
+        raise OSError("cannot load %s" % name)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 def relative_path_findings(lines: list[str]) -> list[str]:
     """A path-valued field carrying a relative path: it resolves against the
     subagent's cwd — the HOST SESSION's working directory — never against
@@ -1301,7 +1336,7 @@ def diagram_author_findings(lines: list[str], kind: str | None,
     if kind != "diagram-author":
         return [], []
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from validate_pipeline import DIAGRAMS_NEW_RE, parse_diagrams_new
+    from validate_pipeline import DIAGRAMS_NEW_RE, branch_markers, parse_diagrams_new
     defects: list[str] = []
     warnings: list[str] = []
     body = field_body(lines, "DIAGRAMS_NEW")
@@ -1347,11 +1382,25 @@ def diagram_author_findings(lines: list[str], kind: str | None,
     if dossier and os.path.isfile(dossier):
         try:
             with open(dossier, encoding="utf-8") as handle:
-                match = DIAGRAMS_NEW_RE.search(handle.read())
+                dossier_text = handle.read()
+                match = DIAGRAMS_NEW_RE.search(dossier_text)
         except OSError as err:
             print("check_payload: cannot read %s" % err, file=sys.stderr)
             raise SystemExit(2)
         expected = parse_diagrams_new(match.group(1)) if match else []
+        # DECISION: the branch rule (validate_pipeline.py --branch-rule) over the criteria; yes means decision.json is written
+        words = branch_markers(dossier_text)
+        decision = (field_value(lines, "DECISION") or "").strip().strip("`").lower().split(" ")[0]
+        if decision not in ("", "yes", "no"):
+            defects.append("DECISION %r is not `yes` or `no`: copy the branch rule's answer "
+                           "(`validate_pipeline.py --dossier <ID> --branch-rule`)." % decision)
+        elif words and decision != "yes":
+            defects.append(
+                "the dossier's acceptance criteria name branches (%s) but the payload has DECISION %s: a change "
+                "with branches needs decision.json, so write `DECISION: yes`." % (", ".join(words[:5]), decision or "(absent)"))
+        elif not words and decision == "yes":
+            defects.append("DECISION: yes but the branch rule finds no branch word in the dossier's acceptance criteria: "
+                           "write `DECISION: no` (the author would draw a decision flow nothing asks for).")
         if stems != expected:
             defects.append(
                 "DIAGRAMS_NEW names %s, the dossier's `Diagrams new:` line lists %s. The author writes "
@@ -1781,6 +1830,7 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
 
     # 13. a relative path in a path-valued field
     defects.extend(relative_path_findings(lines))
+    defects.extend(support_digest_findings(lines, kind))
 
     # 14. an unverified env-var / fixture-mechanism claim
     warnings.extend(env_claim_findings(lines))
@@ -2314,6 +2364,20 @@ def _selftest_cases() -> int:
          "none declared", host="claude", tools=rw, worktree=True, repo_files=forms)
     case("integration author: a repo with no test-forms file needs no TEST_FORM_RULES",
          integ, "integration-test-author", False, host="claude", tools=rw, worktree=True, live="{REAL}/.discovery/dossiers/W-014-x.md", must_warn="")
+    dg_mark = "# support_digest.py: signatures and doc comments only; bodies replaced by \u2026\n"
+    dg_line = "SUPPORT_DIGEST: {REAL}/.agent-staging/support-digest.md\n"
+    dg_files = {".agent-staging/sealed-paths.txt": "# sealed\nsrc/flush.py\n",
+                ".agent-staging/support-digest.md": dg_mark + "\n## tests/support/harness.py (python, 3 lines)\n"}
+    case("integration author: a staged SUPPORT_DIGEST that names no sealed path is quiet",
+         integ + dg_line, "integration-test-author", False, host="claude", tools=rw, worktree=True,
+         repo_files=dg_files, live="{REAL}/.discovery/dossiers/W-014-x.md", must_warn="")
+    case("integration author: a SUPPORT_DIGEST that covers a sealed path is refused",
+         integ + dg_line, "integration-test-author", True, "read policy seals", host="claude", tools=rw,
+         worktree=True, repo_files={**dg_files, ".agent-staging/support-digest.md":
+                                    dg_mark + "\n## src/flush.py (python, 3 lines)\n"})
+    case("integration author: a hand-written SUPPORT_DIGEST (no generator marker) is refused",
+         integ + dg_line, "integration-test-author", True, "marker missing", host="claude", tools=rw,
+         worktree=True, repo_files={**dg_files, ".agent-staging/support-digest.md": "def f(): return 1\n"})
     case("unit author: a repo that declares refused forms, payload without the field, is refused",
          unit_ok, "unit-test-author", True, "no TEST_FORM_RULES", host="opencode", worktree=True,
          repo_files=forms)
@@ -2370,6 +2434,8 @@ def _selftest_cases() -> int:
     case("implementer build missing package",
          impl.replace("PACKAGE: P1 thing\n", ""), "implementer", True, "PACKAGE is missing")
     fix = impl.replace("MODE: build", "MODE: fix").replace("PACKAGE: P1 thing\n", "").replace("CRITERIA: |\n  1. x\n", "")
+    case("implementer fix takes CR_EXCERPTS, quoted code with ${HOME} is not a variable",
+         fix + "CRS: |\n  CR-1: x\nCR_EXCERPTS: |\n  # src/a.sh:1-2 (CR-1)\n  1: cd ${HOME}/x\n", "implementer", False)
     case("implementer fix needs crs or failures", fix, "implementer", True, "CRS / FAILURES")
     case("implementer fix with failures", fix + "FAILURES: |\n  assert x\nBASELINE_COUNTS_FROM: pre-change tree re-run\n", "implementer", False)
     case("implementer fix: several failing tests of one package travel in one FAILURES block",
@@ -2515,6 +2581,18 @@ def _selftest_cases() -> int:
     case("diagram author: OUT_DIR outside the repo",
          da.replace("OUT_DIR: {REAL}/.discovery/visual-review/W-014", "OUT_DIR: {REAL}/../elsewhere"),
          "diagram-author", True, "not under REPO", repo_files=da_files)
+    # the branch rule: DECISION is the rule's answer over the criteria
+    da_branch = {".discovery/dossiers/W-014-x.md": da_dossier + "## Acceptance criteria\n\n1. If the flush fails, retry 3 times.\n",
+                 ".discovery/visual-review/W-014/work/summary.json": "{}"}
+    case("diagram author: criteria with branches, DECISION: yes is clean", da + "DECISION: yes\n", "diagram-author", False,
+         repo_files=da_branch)
+    case("diagram author: criteria with branches, no DECISION field", da, "diagram-author", True, "DECISION", repo_files=da_branch)
+    case("diagram author: criteria with branches, DECISION: no", da + "DECISION: no\n", "diagram-author", True,
+         "name branches", repo_files=da_branch)
+    case("diagram author: no branches, DECISION: yes", da + "DECISION: yes\n", "diagram-author", True,
+         "no branch word", repo_files=da_files)
+    case("diagram author: DECISION: no without branches is clean", da + "DECISION: no\n", "diagram-author", False, repo_files=da_files)
+    case("diagram author: DECISION must be yes or no", da + "DECISION: maybe\n", "diagram-author", True, "yes` or `no", repo_files=da_files)
     # a field that appears twice (issue #107)
     delivery = "DELIVERY_CHANGE: |\n  one Write, then Edits\n"
     case("one DELIVERY_CHANGE block is clean", unit_ok + delivery, "unit-test-author", False)

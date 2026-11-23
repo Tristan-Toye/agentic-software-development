@@ -83,6 +83,10 @@ each document's own title), and `--out` receives the `phase4-wave` args array
 package owns, or two packages own, is printed `UNROUTED: <id> <path> — <why>` and
 nothing is written: the orchestrator rules and re-runs with `--assign ID=PKG`
 (repeatable; the id as printed — `<document stem>/CR-n` when several documents).
+One fix payload per package carries every CR of the round routed to it, from every lens, so a package
+is never spawned twice in one round. Each payload also carries `CR_EXCERPTS`: the lines now at each CR's
+Location (a few before, a few after, line-numbered, bounded), read from the tree under --root, so the
+fix implementer opens the spot instead of searching for it; `CRS` stays the authority.
 Each fix package's OWNED_PATHS is its row plus every Location and literal-source Siblings path its
 CRs name (#217; #490: no glob, dotfile or lock); a path two fix packages would both own prints `CONFLICT: ...` and
 nothing is written.
@@ -182,6 +186,7 @@ cp = _load("check_payload")   # FIELDS, CONDITIONAL, GROUPS — the field tables
 de = _load("dossier_edit")    # section(), split_front_matter(), KEY_RE, Refused
 cc = _load("check_crs")      # sections(), fields(): the change-request document reader
 pwh = _load("payload_hash")   # the one CONTRACT_HASH recipe, shared with verify_return.py
+sdg = _load("support_digest")  # SUPPORT_DIGEST: signatures + doc comments of the readable support code
 
 MARKER = "# compose_payloads.py: generated payload — re-run with --force to overwrite by hand"
 
@@ -385,6 +390,7 @@ STAGEABLE_FIELDS = {
     "CONTRACT", "CRITERIA", "CRS", "FAILURES", "RUN_EVIDENCE", "HARNESS",
     "STYLE_SAMPLE", "SUPPORT", "SCOPE", "RULES", "ARBITRATIONS", "PRIOR_CRS",
     "PROMISE_CHECKLIST", "CONVENTIONS", "FIXTURES", "CONTEXT_DOCS", "CORRECTION",
+    "CR_EXCERPTS",
 }
 # TEST_PATHS and its siblings are written absolute under --root: a relative
 # entry resolves against the composer's cwd here and the subagent's cwd there.
@@ -936,7 +942,7 @@ def compose_implementer(ctx: dict) -> list[Field]:
     else:
         fields["JIRA_KEY"] = Field("JIRA_KEY", jira)
 
-    apply_overrides(fields, sets, blocks={"CRS", "FAILURES", "SHARED_IDIOM", "VERIFY_EMBEDDED", "HOOKS", "CONTRACT"})
+    apply_overrides(fields, sets, blocks={"CRS", "CR_EXCERPTS", "FAILURES", "SHARED_IDIOM", "VERIFY_EMBEDDED", "HOOKS", "CONTRACT"})
     if "FAILURES" in fields and not is_placeholder(fields["FAILURES"].value) \
             and "BASELINE_COUNTS_FROM" not in fields:
         # #149: counts without a named tree inherit an earlier phase's numbers;
@@ -951,7 +957,7 @@ def compose_implementer(ctx: dict) -> list[Field]:
 
     order = (["WORKTREE_DIR", "BRANCH", "MODE", "CONTRACT"]
              + (["PACKAGE", "SHARED_IDIOM", "OWNED_PATHS", "CRITERIA"] if mode == "build"
-                else ["CRS", "FAILURES", "OWNED_PATHS"])
+                else ["CRS", "CR_EXCERPTS", "FAILURES", "OWNED_PATHS"])
              + ["TEST_COMMAND", "HOOKS", "COMMIT_ENV", "VERIFY_EMBEDDED", "STANDARDS", "JIRA_KEY", "COMMIT_SUBJECT"])
     return ordered(fields, order)
 
@@ -1420,7 +1426,11 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     a real style sample, and which boundaries are substituted are all
     decisions only the orchestrator can make; @@FILL unless --set.
     PROMISE_CHECKLIST/SHARED_IDIOM/DELIVERY_CHANGE/SUPPORT_PATHS/SUPPORT/
-    FAILURES/CORRECTION: optional, included only when --set names them."""
+    FAILURES/CORRECTION: optional, included only when --set names them.
+    SUPPORT_DIGEST: mechanical (support_digest.py), the path of
+    `.agent-staging/support-digest.md`: signatures and doc comments of the test
+    support the author may read, built from sealed-paths.txt; omitted when no
+    support file qualifies."""
     root, dossier_text, sets = ctx["root"], ctx["dossier_text"], ctx["sets"]
     fm = ctx["fm"]
     dossier_id = fm.get("id")
@@ -1437,8 +1447,15 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     with open(excerpt_path, "w", encoding="utf-8") as fh:
         fh.write(excerpt_text_)
 
-    write_sealed_paths(staging, dossier_text, ctx["args"].contract_paths,
-                       own_test_paths(sets.get("TEST_PATHS", ""), root))
+    own_tests = own_test_paths(sets.get("TEST_PATHS", ""), root)
+    write_sealed_paths(staging, dossier_text, ctx["args"].contract_paths, own_tests)
+    # The digest is built from the sealed-paths.txt just written (the hook's read policy), so it can
+    # never cover a file the author may not read. One text per wave: every compose writes the same
+    # bytes, and an unchanged digest is left untouched.
+    try:
+        support_digest = sdg.write_digest(root, exclude=own_tests)
+    except (sdg.Refused, OSError):
+        support_digest = None
     contract_text = contract_text_for(ctx)
     fields: dict[str, Field] = {
         "WORKTREE_DIR": Field("WORKTREE_DIR", root),
@@ -1469,6 +1486,8 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
             "external API) — everything else runs for real")),
         "CONTRACT_HASH": Field("CONTRACT_HASH", contract_hash(contract_text)),
     }
+    if support_digest:
+        fields["SUPPORT_DIGEST"] = Field("SUPPORT_DIGEST", support_digest)
     checklist = integration_checklist(ctx, dossier_id)
     if checklist:
         fields["PROMISE_CHECKLIST"] = Field("PROMISE_CHECKLIST", checklist, block=True)
@@ -1485,7 +1504,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
             "`pre-change tree re-run` — never an earlier phase's numbers"))
     order = ["WORKTREE_DIR", "DOSSIER", "CONTRACT", "PROMISE_CHECKLIST", "TEST_PATHS",
              "TEST_FRAMEWORK", "CITATION", "HARNESS", "CI_ENVIRONMENT", "TEST_FORM_RULES",
-             "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
+             "STYLE_SAMPLE", "SUPPORT_DIGEST", "SUPPORT_PATHS", "SUPPORT",
              "BOUNDARIES", "SHARED_IDIOM", "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "CENSUS",
              "CONTRACT_HASH"]
     return ordered(fields, order)
@@ -1519,6 +1538,9 @@ def compose_reviewer(ctx: dict) -> list[Field]:
         "STANDARDS": Field("STANDARDS", os.path.join(
             ctx["plugin_root"], "skills", "standards", "engineering-standards.md")),
         "ROUND": Field("ROUND", sets.get("ROUND", "1")),
+        # The lens's own instructions live in a file, so a spawn carries only its lens.
+        "LENS_DOC": Field("LENS_DOC", os.path.join(
+            ctx["plugin_root"], "references", "reviewer-lenses", lens + ".md")),
     }
     if lens == "plan":
         staging = os.path.join(root, ".agent-staging")
@@ -1577,7 +1599,7 @@ def compose_reviewer(ctx: dict) -> list[Field]:
         "DOSSIER", "CRITERIA", "SCOPE", "CONTRACT", "RUN_EVIDENCE", "RULES",
         "ARBITRATIONS", "PRIOR_CRS", "SIGNALS",
     })
-    order = ["LENS", "DOSSIER", "WORKTREE_DIR", "SCOPE", "CONTRACT", "RUN_EVIDENCE",
+    order = ["LENS", "LENS_DOC", "DOSSIER", "WORKTREE_DIR", "SCOPE", "CONTRACT", "RUN_EVIDENCE",
              "CRITERIA", "STANDARDS", "RULES", "SIGNALS", "CONTEXT_DOCS", "ARBITRATIONS",
              "PRIOR_CRS", "ROUND"]
     return ordered(fields, order)
@@ -1998,6 +2020,66 @@ def cr_named_paths(body: str, root: str) -> list[str]:
     return out
 
 
+CR_EXCERPT_BEFORE = 2
+CR_EXCERPT_AFTER = 7
+CR_EXCERPT_MAX_LINES = 120
+
+
+def cr_excerpts(crs: list[tuple[str, str]], root: str) -> str:
+    """One fix package's CR_EXCERPTS: for each `path:line` (or `path:A-B`) in a
+    routed CR's Location, the lines now at that spot (a few before, a few after),
+    read from the tree under ROOT and headed `# path:A-B (CR id)`, so the fix
+    implementer opens the place instead of re-exploring for it. Pure mechanics,
+    no judgement: a path that is not a file under ROOT, or a line past its end,
+    is skipped, and the CRS text stays the authority. Overlapping windows of one
+    file merge; the whole field is bounded at CR_EXCERPT_MAX_LINES lines."""
+    windows: dict[str, list[list]] = {}
+    order: list[str] = []
+    for _stem, body in crs:
+        head = re.search(r"^##\s+(\S+?):", body, re.M)
+        cid = head.group(1) if head else "CR"
+        loc = cc.fields(body).get("Location", "")
+        for raw, a, b in re.findall(r"([^\s,;`()\[\]]+):(\d+)(?:-(\d+))?", loc):
+            rel = os.path.relpath(raw, root) if os.path.isabs(raw) else raw
+            rel = rel[2:] if rel.startswith("./") else rel
+            if rel.startswith(".."):
+                continue
+            first, last = int(a), int(b or a)
+            lo, hi = max(1, first - CR_EXCERPT_BEFORE), last + CR_EXCERPT_AFTER
+            hi = min(hi, lo + 24)
+            if rel not in windows:
+                windows[rel] = []
+                order.append(rel)
+            for w in windows[rel]:
+                if lo <= w[1] + 1 and hi >= w[0] - 1:
+                    w[0], w[1] = min(w[0], lo), max(w[1], hi)
+                    if cid not in w[2]:
+                        w[2].append(cid)
+                    break
+            else:
+                windows[rel].append([lo, hi, [cid]])
+    out: list[str] = []
+    total = 0
+    for rel in order:
+        full = os.path.join(root, rel)
+        try:
+            with open(full, encoding="utf-8") as fh:
+                lines = fh.read().split("\n")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for lo, hi, ids in sorted(windows[rel]):
+            hi = min(hi, len(lines))
+            if lo > hi or total + (hi - lo + 1) > CR_EXCERPT_MAX_LINES:
+                continue
+            chunk = lines[lo - 1:hi]
+            if not any(l.strip() for l in chunk):
+                continue
+            out.append("# %s:%d-%d (%s)" % (rel, lo, hi, ", ".join(ids)))
+            out.extend("%d: %s" % (lo + i, l) for i, l in enumerate(chunk))
+            total += hi - lo + 1
+    return "\n".join(out)
+
+
 def fix_owned_paths(routed: dict[str, list[tuple[str, str]]], packages: list[list[str]],
                     root: str) -> tuple[dict[str, list[str]], list[str]]:
     """#217: a fix package owns every path its routed CRs name, across projects:
@@ -2152,6 +2234,9 @@ def route_main(args: argparse.Namespace) -> int:
             ns.package = pkg
             ns.out = os.path.join(outdir, "fix-%s-%s.md" % (fm.get("id", "run"), code))
             ns.set = list(args.set) + ["MODE=fix", "CRS=" + crs]
+            excerpts = cr_excerpts(routed[pkg], root)
+            if excerpts and not any(x.startswith("CR_EXCERPTS=") for x in args.set):
+                ns.set.append("CR_EXCERPTS=" + excerpts)
             ns.contract_paths = []
             ns.excerpt, ns.failures_from = [], None
             fields, _ = compose(ns)
@@ -2543,6 +2628,11 @@ def selftest() -> int:
         with open(os.path.join(plugin_root, "skills", "standards", "engineering-standards.md"),
                   "w", encoding="utf-8") as fh:
             fh.write("# engineering standards fixture\n")
+        os.makedirs(os.path.join(plugin_root, "references", "reviewer-lenses"), exist_ok=True)
+        for lens_name in ("plan", "style", "architecture", "performance", "tests"):
+            with open(os.path.join(plugin_root, "references", "reviewer-lenses", lens_name + ".md"),
+                      "w", encoding="utf-8") as fh:
+                fh.write("## LENS: %s\n" % lens_name)
 
         def run_compose(out_name: str, extra: list[str]) -> tuple[int, str, str]:
             out_path = os.path.join(root, ".agent-staging", "payloads", out_name)
@@ -2672,6 +2762,30 @@ def selftest() -> int:
               bool(pkg_paths) and all(p in sealed_lines for p in pkg_paths), repr((pkg_paths, sealed_lines)))
         check("integration-test-author sealed-paths.txt has no duplicates",
               len(sealed_lines) == len(set(sealed_lines)))
+        # --- SUPPORT_DIGEST: signatures and docs of the readable support code only ---
+        os.makedirs(os.path.join(root, "tests", "support"), exist_ok=True)
+        with open(os.path.join(root, "tests", "support", "harness.py"), "w", encoding="utf-8") as fh:
+            fh.write('def stand_up(app):\n    """Stand the app up."""\n    return "DIGESTBODYLEAK"\n')
+        rc, itd_path, out = run_compose("IT-digest.md", [
+            "integration-test-author", "--host", "claude", "--contract-paths", "src/flush.py",
+        ])
+        itd_text = read_text(itd_path) if rc == 0 else ""
+        digest_file = os.path.join(root, ".agent-staging", "support-digest.md")
+        digest_text = read_text(digest_file) if os.path.exists(digest_file) else ""
+        check("integration-test-author payload carries SUPPORT_DIGEST: the staged digest path",
+              "SUPPORT_DIGEST: %s" % digest_file in itd_text, out)
+        check("the digest holds the support signature and doc, never the body",
+              "def stand_up(app):" in digest_text and "Stand the app up." in digest_text
+              and "DIGESTBODYLEAK" not in digest_text, digest_text)
+        check("the digest covers no sealed path",
+              not sdg.sealed_in_digest(digest_text, root), digest_text)
+        os.remove(os.path.join(root, "tests", "support", "harness.py"))
+        os.rmdir(os.path.join(root, "tests", "support"))
+        rc, _p, out = run_compose("IT-nodigest.md", [
+            "integration-test-author", "--host", "claude", "--contract-paths", "src/flush.py",
+        ])
+        check("no support file: no SUPPORT_DIGEST field and no stale digest",
+              rc == 0 and "SUPPORT_DIGEST" not in read_text(_p) and not os.path.exists(digest_file), out)
         check("is_test_path: test families and test file names are tests, source is not",
               all(is_test_path(x) for x in ("crates/platform/tests/nats_auth_live_test.rs", "tests/unit/test_retry.py",
                                             "src/a.test.ts", "web/__tests__/b.ts", "pkg/x_test.go", "App.Tests/FooTests.cs"))
@@ -3412,6 +3526,14 @@ def selftest() -> int:
               and "OWNED_PATHS:" in t2 and "crates/*" not in section_body_owned(t2), t2[-600:])
         check("#217: the fix payload's OWNED_PATHS lists the CRs' other paths",
               "lib/consts.py" in t2 and "lib/names.py" in t2 and "src/other.py" in t1, t2[-600:])
+        ex2 = t2.split("CR_EXCERPTS:")[-1].split("OWNED_PATHS:")[0] if "CR_EXCERPTS:" in t2 else ""
+        check("fix payload carries CR_EXCERPTS: the line-numbered lines now at each Location, CR ids in the header",
+              "# src/reload.py:1-3 (CR-2, CR-4)" in ex2 and "2:     pass" in ex2, t2[-900:])
+        past = cr_excerpts([("d", cr_section(7, "src/reload.py:50")), ("d", cr_section(8, "src/missing.py:1"))], root)
+        check("CR_EXCERPTS skips a Location past the end of its file and a file that is absent", past == "", past)
+        far = cr_excerpts([("d", cr_section(7, "src/reload.py:1"))], root)
+        check("CR_EXCERPTS windows one Location, line-numbered, headed with its CR id",
+              far.startswith("# src/reload.py:1-3 (CR-7)\n1: def reload():"), far)
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             rc = main(route_base + ["--assign", "CR-9=P1", "--assign", "CR-3=P1"])
         check("--assign naming no section is refused", rc == 1)

@@ -81,6 +81,11 @@ CONTRACT: |
 CRS: |
   <the merged change-request documents from the three lenses, verbatim,
    plus any user arbitration that overrides one of them>
+CR_EXCERPTS: |
+  <optional; `compose_payloads.py --crs` fills it: the lines now at each CR's
+   Location (a few before, a few after, line-numbered, `# path:A-B (CR-n)`
+   headers), so the implementer opens the spot, not searches for it. CRS is
+   the authority; never paste it by hand>
 FAILURES: |
   <verbatim test output, when this fix answers a Phase 6 arbitration ruling
    rather than review change requests — the implementation broke a promise,

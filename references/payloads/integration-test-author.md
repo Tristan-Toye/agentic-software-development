@@ -70,6 +70,12 @@ TEST_FORM_RULES: |
           # `none declared`) for a repository that declares forms.
 STYLE_SAMPLE: |
   <one existing integration test, verbatim>
+SUPPORT_DIGEST: /abs/path/repo-W-014/.agent-staging/support-digest.md
+          # written by compose_payloads.py (support_digest.py), never by hand: the
+          # signatures and doc comments of the test support the author may read,
+          # bodies replaced by `…`. Built from `.agent-staging/sealed-paths.txt`, the
+          # hook's own read policy, so it never covers a sealed file; check_payload.py
+          # refuses a digest that does. Omitted when the repo has no test support.
 BOUNDARIES: IClock (time), IPaymentClient (external API) — substitute these two
             only. Everything else runs for real.
 SHARED_IDIOM: |
