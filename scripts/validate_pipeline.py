@@ -941,6 +941,39 @@ VISUAL_REVIEW_CHANGES_RE = re.compile(r"^changes requested\b.*\S", re.I)
 VISUAL_REVIEW_SKIPPED_RE = re.compile(r"^skipped(?:-(?!error\b)[a-z]\w*\s*|\s+)[—–-]+\s*\S", re.I)
 VISUAL_REVIEW_SKIPPED_ERROR_RE = re.compile(r"^skipped-error\b", re.I)
 VISUAL_REVIEW_VIEWS = (("l0.json", "L0"), ("l1.json", "L1"), ("l2.json", "L2"))
+# The decision flow (decision.json) is a fourth reviewed diagram, there only when the change has branches. Its entry
+# on the approved line is `decision <n>` (the node count); `decision none — <reason>` records that the branch rule
+# matched on wording alone (no condition in the changed behaviour) and no diagram was drawn.
+VISUAL_REVIEW_DECISION_RE = re.compile(r"\bdecision\s+(\d+)\b", re.I)
+VISUAL_REVIEW_DECISION_NONE_RE = re.compile(r"\bdecision\s+none\s*[—–-]+\s*\S", re.I)
+# The branch rule, mechanical and read from the dossier's `## Acceptance criteria` only: the change has branches
+# when a criterion names a condition, an error end or a retry. vr_prepare (PR F) refines it with the code's branches.
+BRANCH_RE = re.compile(
+    r"\b(if|else|otherwise|unless|retr(?:y|ies|ied)|falls? back|fallback|on (?:error|failure|timeout)|"
+    r"errors?|fail(?:s|ed|ure|ures)?|reject(?:s|ed)?|invalid|timeouts?)\b", re.I)
+
+
+def branch_markers(dossier_text: str) -> list[str]:
+    """The distinct branch words (lower case, sorted) of the dossier's `## Acceptance criteria`; [] = no branches."""
+    crit = sections(dossier_text).get("## Acceptance criteria", "")
+    return sorted({m.group(1).lower() for m in BRANCH_RE.finditer(crit)})
+
+
+def decision_needed(dossier_text: str) -> bool:
+    """The branch rule: True when the change has branches, so Phase 3 draws decision.json for the owner."""
+    return bool(branch_markers(dossier_text))
+
+
+def _dossier_text(*roots: Path | None, dossier_id: str) -> str:
+    for r in roots:
+        ddir = r / ".discovery" / "dossiers" if r else None
+        files = sorted(ddir.glob(f"{dossier_id}-*.md")) + sorted(ddir.glob(f"{dossier_id}.md")) if ddir and ddir.is_dir() else []
+        if files:
+            try:
+                return files[0].read_text(encoding="utf-8")
+            except OSError:
+                return ""
+    return ""
 
 
 def visual_review_applies(fm: dict) -> bool:
@@ -1019,6 +1052,59 @@ def visual_review_problems(fm: dict, log: str, root: Path, worktree: Path | None
         if used is not None and used != int(claimed):
             problems.append(f"{name}: the VISUAL-REVIEW: line says {view} {claimed}, the file holds {used}")
     problems.extend(_visual_review_arch_problems(last, base, root, dossier_id, vr_graph))
+    problems.extend(_visual_review_decision_problems(last, base, root, dossier_id, vr_graph))
+    return problems
+
+
+def _visual_review_decision_problems(line: str, base: Path, root: Path, dossier_id: str, vr_graph) -> list[str]:
+    """The `decision <n>` entry of an approved line against decision.json, the branch rule and the owner's verdicts.
+
+    decision.json present: valid, view `decision`, node count equal to the entry, and every node `ok` in review.json on
+    the current hash (an approved decision verdict, like L0/L1/L2). Absent: an entry needs a file, and a dossier whose
+    criteria carry branch words needs the file or `decision none — <reason>`. No file and no branches: as before."""
+    vdir = base / ".discovery" / "visual-review" / dossier_id
+    head = line.split("(", 1)[0]
+    m = VISUAL_REVIEW_DECISION_RE.search(head)
+    f = vdir / "decision.json"
+    if not f.is_file():
+        if m:
+            return [f"the VISUAL-REVIEW: line has `decision {m.group(1)}`, but there is no decision.json"]
+        if VISUAL_REVIEW_DECISION_NONE_RE.search(head):
+            return []
+        words = branch_markers(_dossier_text(base, root, dossier_id=dossier_id))
+        if words:
+            return ["decision.json is missing: the dossier's acceptance criteria name branches "
+                    f"({', '.join(words[:5])}), so Phase 3 draws the decision flow and the owner approves it "
+                    "(`decision <n>` on the line); only when the words are no condition of the changed behaviour, "
+                    "record `decision none — <reason>`"]
+        return []
+    if not m:
+        return ["decision.json exists but the VISUAL-REVIEW: line has no `decision <n>` entry"]
+    try:
+        graph = vr_graph.load(str(f))
+    except (OSError, ValueError) as exc:
+        return [f"decision.json is not readable: {exc}"]
+    problems = [f"decision.json: {i.get('code')} {i.get('path')}: {i.get('message')}"
+                for i in vr_graph.validate(graph, root=str(base))]
+    if not isinstance(graph, dict):
+        return problems
+    if graph.get("view") != "decision":
+        problems.append(f"decision.json: view is {graph.get('view')!r}, expected 'decision'")
+    used = len([n for n in (graph.get("nodes") or []) if isinstance(n, dict)])
+    if used != int(m.group(1)):
+        problems.append(f"decision.json: the VISUAL-REVIEW: line says decision {m.group(1)}, the file holds {used}")
+    try:
+        import vr_promote
+        review = json.loads((vdir / "review.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, ImportError):
+        review = None
+    ids = [n["id"] for n in graph.get("nodes") or [] if isinstance(n, dict) and isinstance(n.get("id"), str)]
+    if review is None:
+        problems.append("decision.json has no owner verdicts: review.json is missing or unreadable; the owner "
+                        "approves the decision flow on the dashboard like L0, L1 and L2")
+    else:
+        _, bad = vr_promote.approval(vr_promote.graph_hash(graph), review, ids, "decision", "decision.json")
+        problems.extend("decision.json: " + b for b in bad[:5])
     return problems
 
 
@@ -3654,8 +3740,60 @@ def selftest_visual_review() -> bool:
         ("arch: entry for a stem with no draft and no listing: flagged",
          run_arch(base_line + ", arch c4-z 2 (link)\n", "none", {}), True),
     ]
+    # the decision flow: decision.json is a fourth reviewed diagram, required when the criteria carry branch words
+    fix = Path(__file__).resolve().parent.parent / "references" / "visual-review" / "fixtures" / "decision-retry.json"
+    dec = json.loads(fix.read_text(encoding="utf-8"))
+    for part in dec["nodes"] + dec["edges"]:  # the fixture's source anchors point into no repository here
+        part["evidence"] = [{"tier": "inferred", "note": "selftest"}]
+    n_dec = len(dec["nodes"])
+    plain_crit = "## Acceptance criteria\n\n1. The report lists 3 rows.\n"
+    branch_crit = "## Acceptance criteria\n\n1. If the send fails, retry up to 3 times, otherwise park it.\n"
+
+    def run_dec(log: str, crit: str, decision: dict | None, verdict: str | None = "ok") -> list[str]:
+        import vr_promote
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ddir = root / ".discovery" / "dossiers"
+            ddir.mkdir(parents=True)
+            (ddir / "W-9-x.md").write_text(new_fm + crit, encoding="utf-8")
+            out = root / ".discovery" / "visual-review" / "W-9"
+            out.mkdir(parents=True)
+            for name, g in good.items():
+                (out / name).write_text(json.dumps(g), encoding="utf-8")
+            if decision is not None:
+                (out / "decision.json").write_text(json.dumps(decision), encoding="utf-8")
+                if verdict:
+                    h = vr_promote.graph_hash(decision)
+                    lines = [{"anchor": {"diagram": "decision", "element": n["id"], "graph_hash": h},
+                              "verdict": verdict if i == 0 else "ok", "comment": "", "ts": "t"}
+                             for i, n in enumerate(decision["nodes"])]
+                    (out / "review.json").write_text(json.dumps({"schema_version": "1.0.0", "dossier": "W-9",
+                                                                 "updated": "t", "lines": lines}), encoding="utf-8")
+            fmd, _, _ = split_front_matter(new_fm + "## Build log\n")
+            return visual_review_problems(fmd, log, root)
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    dline = base_line + f", decision {n_dec} (link)\n"
+    cases += [
+        ("decision: branches in the criteria, no decision.json: flagged", run_dec(base_line + " (link)\n", branch_crit, None), True),
+        ("decision: no branches, no decision.json (the old behaviour): clean", run_dec(base_line + " (link)\n", plain_crit, None), False),
+        ("decision: branches, `decision none — reason`: clean",
+         run_dec(base_line + ", decision none \u2014 'if' only names the input format (link)\n", branch_crit, None), False),
+        ("decision: file, entry, every node ok: clean", run_dec(dline, branch_crit, dec), False),
+        ("decision: file present though the criteria have no branches, approved: clean", run_dec(dline, plain_crit, dec), False),
+        ("decision: file but no entry on the line: flagged", run_dec(base_line + " (link)\n", branch_crit, dec), True),
+        ("decision: entry count differs from the file: flagged",
+         run_dec(base_line + f", decision {n_dec + 1} (link)\n", branch_crit, dec), True),
+        ("decision: entry but no file: flagged", run_dec(dline, plain_crit, None), True),
+        ("decision: a node marked change: flagged", run_dec(dline, branch_crit, dec, "change"), True),
+        ("decision: no owner verdicts: flagged", run_dec(dline, branch_crit, dec, None), True),
+    ]
     ok = ok_msg
     print(f"{'ok  ' if ok_msg else 'FAIL'}    visual review: skipped-error message names the owner and the skipped record")
+    words = branch_markers(branch_crit)
+    br_ok = decision_needed(branch_crit) and "retry" in words and not decision_needed(plain_crit)
+    ok &= br_ok
+    print(f"{'ok  ' if br_ok else 'FAIL'}    visual review: the branch rule reads conditions, retries and errors from the criteria only")
     for name, problems, expect in cases:
         passed = bool(problems) == expect
         ok &= passed
@@ -4638,6 +4776,12 @@ def main() -> int:
         "(only the `pr:` line; numbers become URLs through the origin remote)",
     )
     ap.add_argument(
+        "--branch-rule",
+        action="store_true",
+        help="with --dossier: print `DECISION: yes|no` (and the matched words) from the dossier's acceptance "
+        "criteria: yes = the change has branches, so Phase 3 draws decision.json (the diagram-author payload's DECISION field)",
+    )
+    ap.add_argument(
         "--selftest",
         action="store_true",
         help="check this script against a reference pair",
@@ -4653,6 +4797,11 @@ def main() -> int:
 
     if args.mode:
         return run_mode(root)
+
+    if args.branch_rule:
+        words = branch_markers(_dossier_text(root, dossier_id=args.dossier or "")) if args.dossier else []
+        print("DECISION: " + ("yes" if words else "no") + (" (" + ", ".join(words) + ")" if words else ""))
+        return 0
 
     if args.normalize_pr:
         return normalize_pr_repo(str(root))
