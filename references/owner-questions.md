@@ -484,8 +484,12 @@ restarted server answers at once from them while its first scan runs.
     open does not either). It needs an open pull request into an open stub. The
     stub grows during the week, and Integrate has little left to merge before /stub.
     A dossier with a `<repo>.<dossier>.merge.json` record (queued, running, waiting,
-    merged, failed or cancelled) is never put on again: a failed one waits for the
-    owner. Non-code PRs are not touched. Integrate only merges the dossiers that
+    merged, failed or cancelled) is not put on again, with these exceptions: a failed
+    merge is retried by itself when the failure was transient (CI still running or
+    timed out, a gh or network error; at most twice per head of the stack) or when a
+    later run of the dossier started after the record and has finished (one timeline
+    line says so). A cancelled one, and a failure that needs a human (a conflict, red
+    checks, spent resolve-merge attempts), wait for the owner. Non-code PRs are not touched. Integrate only merges the dossiers that
     still have an open PR into the stub, so it skips what is already merged. The
     server sends a switched-on repository's facts on the 2-minute tick for either
     switch. Off, nothing of this runs.

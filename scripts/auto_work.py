@@ -47,7 +47,7 @@ the `queued` state, the account routing and every owner question apply unchanged
 little left to merge. Finished is the same as for a cycle member: build done (status `pr` or `done`), no run live (so a
 fix-deferred run is over) and no open deferred item left (one the owner ruled to stay open does not count). The dossier
 must have an open pull request into an open stub. A dossier whose `<repo>.<dossier>.merge.json` exists is never enqueued (a `merged` one only until a later run of it, e.g. /fix-deferred, finishes with a new open PR: blocks_eager)
-again (queued, running, waiting, merged, failed or cancelled: a failed one waits for the owner). It works with auto work
+again (queued, running, waiting, merged, failed or cancelled). A failed one is retried by itself when the failure was transient (CI still running or timed out, a gh/network error; at most twice per head of its stack, one timeline line each) or when a later run of the dossier has finished; a cancelled one, and a failure that needs a human (conflict, red checks, spent resolve-merge attempts), wait for the owner. It works with auto work
 on or off; with the switch off nothing of this runs.
 
 # Kanban pull (its own switch: `kanban` in `~/.agentic/delivery-flows.json`, `$ASD_DELIVERY_FLOWS`; default off)
@@ -711,16 +711,74 @@ def enqueue_merge(root: str, dossier: str, by: str = "button") -> tuple[bool, st
     return run_runner([sys.executable, script, dossier, "--enqueue", "--root", root, "--by", by])
 
 
-def blocks_eager(repo: str, run: dict) -> bool:
+EAGER_RETRIES = 2   # re-enqueues of a transiently failed merge per head of its stack, so a persistent failure cannot loop
+HUMAN_FAIL_RE = re.compile(r"conflict|clash|checks (?:still )?red|resolve-merge|head did not change|draft|changes code|not an open pull request|branch changed", re.I)
+
+
+def transient_failure(rec: dict) -> bool:
+    """A `failed` merge record whose error is a wait that ran out or an outage, not a verdict on the PRs: CI still running
+    (or timed out) after the queue's limit, or a gh/network error (merge_dossier.TRANSIENT_RE). Anything that needs a
+    human (a conflict, red checks, spent resolve-merge attempts, a draft) is not."""
+    err = str(rec.get("error") or "")
+    if not err or HUMAN_FAIL_RE.search(err):
+        return False
+    return bool(err.startswith("checks still running") or merge_dossier.TRANSIENT_RE.search(err))
+
+
+def retry_heads(root: str, rec: dict) -> str:
+    """The heads of the PRs the failed record names, as one string ("" when none are known)."""
+    return ",".join(merge_dossier.head_of(root, int(n)) for n in rec.get("prs") or [])
+
+
+def retry_mark(repo: str, run: dict) -> str:
+    return os.path.join(runs_dir(), f"{repo}.{run['id']}.eager-retry.json")
+
+
+def retry_allowed(repo: str, run: dict, root: str, rec: dict) -> bool:
+    """A transient failure is retried at most EAGER_RETRIES times per head of its stack. Under the cap no gh call is made."""
+    mark = read_json(retry_mark(repo, run), {}) or {}
+    if int(mark.get("count") or 0) < EAGER_RETRIES:
+        return True
+    return bool(root) and retry_heads(root, rec) != mark.get("heads")   # a new head (a push, a resolve run) is a new chance
+
+
+def note_retry(repo: str, run: dict, root: str, rec: dict, why: str) -> None:
+    """One timeline line when a failed merge goes back in the queue; counts the retry against the stack's head."""
+    heads = retry_heads(root, rec) if root else ""
+    mark = read_json(retry_mark(repo, run), {}) or {}
+    count = int(mark.get("count") or 0) + 1 if mark.get("heads") == heads else 1
+    write_atomic(retry_mark(repo, run), {"heads": heads, "count": count, "ts": now()})
+    merge_dossier.append_line(os.path.join(runs_dir(), f"{repo}.{run['id']}.jsonl"), {"ts": now(), "kind": "runner", "text":
+        f"eager merge: retrying the merge that failed ({str(rec.get('error') or '')[:160]}): {why}"
+        + (f" (retry {count} of {EAGER_RETRIES} for this head)" if why.startswith("transient") else "")})
+
+
+def retry_kind(repo: str, run: dict, root: str, rec: dict) -> str:
+    """"outlived" or "transient" when the failed record may be retried, else "". A `cancelled` record never is."""
+    if rec.get("state") != "failed":
+        return ""
+    rn = run.get("runner") or {}
+    if rn.get("command") not in ("after-merge", "resolve-merge") and rn.get("started") and rec.get("ts") and str(rn["started"]) > str(rec["ts"]):
+        return "outlived"
+    if transient_failure(rec) and retry_allowed(repo, run, root, rec):
+        return "transient"
+    return ""
+
+
+def blocks_eager(repo: str, run: dict, root: str = "") -> bool:
     """Whether the dossier's `<repo>.<ID>.merge.json` keeps it out of eager merge. Any record does (queued, running, merging,
-    waiting, failed, cancelled: a failure or a cancel is the owner's to retry), except a `merged` one that the dossier has
-    outlived: its run started after the merge (a /fix-deferred run that opened a new stacked PR), so what is open on the
-    stub now is not what that record merged. One local file read per dossier: no gh call."""
+    waiting, cancelled: a cancel is the owner's), except a `merged` one that the dossier has outlived: its run started after
+    the merge (a /fix-deferred run that opened a new stacked PR), so what is open on the stub now is not what that record
+    merged. A `failed` one is retried when the failure was transient (CI still running or timed out, a gh/network error; at
+    most EAGER_RETRIES per head) or is outlived the same way; one that needs a human (conflict, red checks, spent
+    resolve-merge attempts) stays the owner's. One local file read per dossier: no gh call unless a retry cap was reached."""
     path = os.path.join(runs_dir(), f"{repo}.{run['id']}.merge.json")
     if not os.path.exists(path):
         return False
     rec = read_json(path, {}) or {}
     rn = run.get("runner") or {}
+    if rec.get("state") == "failed":
+        return not retry_kind(repo, run, root, rec)
     if rec.get("state") != "merged" or rn.get("command") in ("after-merge", "resolve-merge"):
         return True
     return not (rn.get("started") and rec.get("ts") and str(rn["started"]) > str(rec["ts"]))
@@ -730,7 +788,7 @@ def eager_step(repo: str, root: str, facts: dict) -> list[str]:
     """Eager merge: every finished dossier on an open stub joins the merge queue, once; with kanban on, so does every finished
     kanban dossier with an open PR into development, while development's CI is green. Returns the ones enqueued."""
     stubs = [s["branch"] for s in facts.get("stubs") or [] if s.get("branch")]
-    unqueued = [r for r in facts.get("runs") or [] if not blocks_eager(repo, r)]
+    unqueued = [r for r in facts.get("runs") or [] if not blocks_eager(repo, r, root)]
     todo = [r for r in unqueued if finished_run(r)]
     held = [r for r in unqueued if held_by_deferred(r)]
     if not todo and not held:
@@ -756,7 +814,11 @@ def eager_step(repo: str, root: str, facts: dict) -> list[str]:
     out = []
     for r in sorted(todo, key=lambda r: r["id"]):
         if r["id"].upper() in on_stub:
+            rec = read_json(os.path.join(runs_dir(), f"{repo}.{r['id']}.merge.json"), {}) or {}
+            kind = retry_kind(repo, r, root, rec) if rec else ""
             ok, msg = enqueue_merge(root, r["id"], "eager")
+            if ok and kind:
+                note_retry(repo, r, root, rec, "transient failure, nothing else changed" if kind == "transient" else "outlived: a later run of the dossier has finished")
             if not ok:   # the eager step's own output reaches no log: the dossier's timeline says why it did not queue
                 merge_dossier.append_line(os.path.join(runs_dir(), f"{repo}.{r['id']}.jsonl"),
                             {"ts": now(), "kind": "runner", "text": "eager merge: not queued: " + msg[:300]})
@@ -1323,6 +1385,49 @@ def selftest() -> int:
         facts_runs[:] = keep_runs
         open(stubf, "w").write("E1\nE2\nE3\nE4\nE5\nE6\nE7\n")
         for k in ("E10", "E11", "E12", "E13"): os.remove(P(f"{repo}.{k}.merge.json"))
+        # A failed merge is retried by itself when that is safe: transient, or outlived by a later finished run; never a cancel,
+        # never a failure that needs a human, and a transient one at most EAGER_RETRIES times per head.
+        keep_runs = list(facts_runs); real_head = merge_dossier.head_of
+        heads_now = {"v": "sha1"}
+        merge_dossier.head_of = lambda _root, n: heads_now["v"]
+        def retried(k: str) -> int:
+            try:
+                return sum("eager merge: retrying" in l for l in open(P(f"{repo}.{k}.jsonl"), encoding="utf-8"))
+            except OSError:
+                return 0
+        try:
+            ids = ("E20", "E21", "E22", "E23", "E24", "E25")
+            open(stubf, "w").write("\n".join(ids) + "\n")
+            facts_runs[:] = [run_(k, "done", runner=runner("done", "work-on", started="2026-11-20T10:00:00Z")) for k in ids]
+            setrun("E23", runner=runner("done", "fix-deferred", started="2026-11-21T14:00:00Z"))   # started after the record
+            recs = {"E20": {"state": "failed", "error": "checks still running after 60 min: #637"},
+                    "E21": {"state": "failed", "error": "still conflicting: #5 after 2 resolve-merge attempts"},
+                    "E22": {"state": "cancelled", "error": ""},
+                    "E23": {"state": "failed", "error": "checks still red: #9 after 2 resolve-merge attempts"},
+                    "E24": {"state": "failed", "error": "gh: error connecting to api.github.com"},
+                    "E25": {"state": "failed", "error": "checks still running after 60 min: #7"}}
+            for k, v in recs.items():
+                json.dump({**v, "prs": [637, 657], "ts": "2026-11-21T03:41:08Z"}, open(P(f"{repo}.{k}.merge.json"), "w"))
+            json.dump({"heads": "sha1,sha1", "count": 2, "ts": "2026-11-21T04:00:00Z"}, open(P(f"{repo}.E25.eager-retry.json"), "w"))   # cap reached for this head
+            n_before = len(log()); tk()
+            got = sorted(l.split()[1] for l in log()[n_before:] if l.startswith("enqueue"))
+            check("eager retry: a transient failure (CI still running, a gh error) and an outlived one are enqueued again", got == ["E20", "E23", "E24"], got)
+            check("eager retry: a cancel, a failure that needs a human, and a capped transient one are not", "E22" not in got and "E21" not in got and "E25" not in got, got)
+            check("eager retry: one timeline line per retry, none for the others", [retried(k) for k in ids] == [1, 0, 0, 1, 1, 0], [retried(k) for k in ids])
+            check("eager retry: the transient retry is counted against its head", (read_json(P(f"{repo}.E20.eager-retry.json"), {}) or {}).get("count") == 1)
+            # the stub records are 'queued' now in the real flow; here the fake enqueue leaves them failed: the cap must stop a loop
+            for _ in range(3): tk()
+            check("eager retry: a failure that persists is retried at most twice for one head", retried("E20") == 2, retried("E20"))
+            heads_now["v"] = "sha2"; tk()
+            check("eager retry: a new head gets a new chance", retried("E20") == 3, retried("E20"))
+        finally:
+            merge_dossier.head_of = real_head
+        facts_runs[:] = keep_runs
+        open(stubf, "w").write("E1\nE2\nE3\nE4\nE5\nE6\nE7\n")
+        for k in ("E20", "E21", "E22", "E23", "E24", "E25"):
+            for suf in ("merge.json", "eager-retry.json", "jsonl"):
+                try: os.remove(P(f"{repo}.{k}.{suf}"))
+                except OSError: pass
         def held_lines() -> list[str]:
             try:
                 return [l for l in open(P(f"{repo}.E3.jsonl"), encoding="utf-8") if "eager merge: held" in l]
