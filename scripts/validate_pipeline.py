@@ -3067,6 +3067,81 @@ def check_prose_promises(path: Path, text: str) -> int:
     return 0
 
 
+def _payload_field(text: str, name: str) -> str:
+    """One payload field's whole text: its inline value plus every indented line after it."""
+    out: list[str] = []
+    grab = False
+    for line in text.splitlines():
+        if grab:
+            if line.strip() and line[:1] not in (" ", "\t"):
+                break
+            out.append(line)
+        elif line.startswith(name + ":"):
+            grab = True
+            rest = line[len(name) + 1 :].strip()
+            if rest and rest != "|":
+                out.append(rest)
+    return "\n".join(out)
+
+
+def check_it_slice_carried(path: Path, text: str, root: Path) -> int:
+    """#533: every `[IT]` line of `.discovery/checklists/<ID>.md` is carried by the
+    PROMISE_CHECKLIST of at least one integration-test-author payload of the wave
+    (`<root>/.agent-staging/payloads/`: the files a `kind=integration-test-author`
+    manifest line names, plus any payload whose DOSSIER is an `<ID>.excerpt.md`).
+    A line no payload carries is a DEFECT: it reaches Phase 5 as a promise with no
+    test. Silent when there is no `[IT]` line, no checklist or no payload directory."""
+    try:
+        fm, _, _ = split_front_matter(text)
+    except ValueError:
+        fm = {}
+    did = str(fm.get("id") or path.stem)
+    cl = None
+    for base in (path.resolve().parent.parent / "checklists", root / ".discovery" / "checklists"):
+        if (base / f"{did}.md").is_file():
+            cl = base / f"{did}.md"
+            break
+    pdir = root / ".agent-staging" / "payloads"
+    if cl is None or not pdir.is_dir():
+        return 0
+    tagged = [
+        " ".join(l.split())
+        for l in cl.read_text(encoding="utf-8").splitlines()
+        if "[IT]" in l and not l.lstrip().startswith("#")
+    ]
+    if not tagged:
+        return 0
+    files: set[Path] = set()
+    for man in pdir.glob("*.txt"):
+        for l in man.read_text(encoding="utf-8").splitlines():
+            if l.lstrip().startswith("#"):
+                continue
+            kind = re.search(r"\bkind=(\S+)", l)
+            pay = re.search(r"\bpayload=(\S+)", l)
+            if kind and pay and kind.group(1) == "integration-test-author":
+                files.add(Path(pay.group(1)))
+    for f in pdir.glob("*.md"):
+        if re.search(r"\.excerpt\.md", _payload_field(f.read_text(encoding="utf-8"), "DOSSIER")):
+            files.add(f)
+    carried = " ".join(
+        " ".join(_payload_field(f.read_text(encoding="utf-8"), "PROMISE_CHECKLIST").split())
+        for f in sorted(files)
+        if f.is_file()
+    )
+    missing = [l for l in tagged if l not in carried]
+    if not missing:
+        print(f"ok      {path.name}: IT-SLICE {len(tagged)} `[IT]` line(s) carried by an integration-test-author payload")
+        return 0
+    print(
+        f"DEFECT  {path.name}: IT-SLICE {len(missing)} of {len(tagged)} `[IT]` line(s) in "
+        f"{cl.name} are carried by no integration-test-author payload "
+        f"(first: {missing[0][:80]!r}). Put them in a payload's PROMISE_CHECKLIST "
+        f"(compose_payloads.py --kind integration-test-author fills them), or spawn the author "
+        f"that owns them; the Phase 5 strength gate finds them without a test otherwise."
+    )
+    return 1
+
+
 PRE_FANOUT_LINES = (
     (
         "PAYLOAD-LINT",
@@ -3312,6 +3387,7 @@ def check_pre_fanout(
     rc |= check_receipts(path, text, root, worktree)
     rc |= check_definitions(path, text, body[1], root, worktree)
     rc |= check_prose_promises(path, text)
+    rc |= check_it_slice_carried(path, text, root)
 
     checklist_ids = CHECKLIST_IDS_RE.search(body[1])
     if checklist_ids and CHECKLIST_IDS_ZERO_RE.search(checklist_ids.group(1)):
@@ -3718,6 +3794,29 @@ def selftest_pre_fanout() -> bool:
             encoding="utf-8",
         )
         ok &= check_pre_fanout(root / "pp-ok.md") == 0
+
+        # #533: an `[IT]` checklist line no integration-test-author payload carries is a defect.
+        (root / ".discovery" / "checklists").mkdir(parents=True)
+        (root / ".agent-staging" / "payloads").mkdir(parents=True)
+        itfm = RECEIPTS_FM.replace("id: W-9", "id: W-533")
+        (root / ".discovery" / "dossiers").mkdir(parents=True, exist_ok=True)
+        itd = root / ".discovery" / "dossiers" / "W-533.md"
+        itd.write_text(itfm + full, encoding="utf-8")
+        clf = root / ".discovery" / "checklists" / "W-533.md"
+        pay = root / ".agent-staging" / "payloads" / "IT1.md"
+        (root / ".agent-staging" / "payloads" / "wave1.txt").write_text(
+            f"kind=integration-test-author payload={pay}\n", encoding="utf-8"
+        )
+        clf.write_text("- Flush.add \u2014 return: gives 3 [UT]\n- Flush.run \u2014 flow: drains [IT]\n", encoding="utf-8")
+        pay.write_text("DOSSIER: x/W-533.excerpt.md\nPROMISE_CHECKLIST: |\n  - Flush.add \u2014 return: gives 3 [UT]\nTEST_PATHS: t\n", encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()) as ibuf:
+            it_rc = check_pre_fanout(itd, root)
+        ok &= it_rc == 1 and "IT-SLICE 1 of 1" in ibuf.getvalue() and "Flush.run" in ibuf.getvalue()
+        pay.write_text("DOSSIER: x/W-533.excerpt.md\nPROMISE_CHECKLIST: |\n  - Flush.run \u2014 flow: drains [IT]\nTEST_PATHS: t\n", encoding="utf-8")
+        ok &= check_pre_fanout(itd, root) == 0
+        clf.write_text("- Flush.add \u2014 return: gives 3 [UT]\n", encoding="utf-8")
+        pay.write_text("DOSSIER: x/W-533.excerpt.md\nPROMISE_CHECKLIST: none (UT1)\n", encoding="utf-8")
+        ok &= check_pre_fanout(itd, root) == 0
         # A GET/POST route without backticks is a promise too.
         (root / "pp-route.md").write_text(
             RECEIPTS_FM + "## Contract\n\nThe server answers GET /health. Run /work-on next. "

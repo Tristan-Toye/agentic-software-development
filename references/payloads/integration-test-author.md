@@ -20,7 +20,8 @@ PROMISE_CHECKLIST: |
    contract path is the author's own TEST_PATHS or the dossier has no
    implementation package (a test-only change: the test file holds the
    contract). check_payload.py refuses an empty one while `[IT]` lines exist,
-   unless it says `none (<payload that carries them>)`. Omit only for a pure
+   unless it says `none (<payload that carries them>)`; `validate_pipeline.py
+   --pre-fanout` fails (`IT-SLICE`) while an `[IT]` line is in no integration payload. Omit only for a pure
    flow with no such line. SUPPORT_PATHS / SUPPORT
    travel with it, same rule as the unit author's: check_payload.py flags a
    checklist line naming a type in neither CONTRACT nor SUPPORT_PATHS /

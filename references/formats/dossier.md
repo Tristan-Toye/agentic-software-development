@@ -224,6 +224,13 @@ payload's `FIXTURES` names the house idiom to use instead (`match` on
 and the file failed to compile at the Phase 5 commit — one corrective resume
 after two blind authors had done nothing wrong.
 
+**A line the integration author owns carries `[IT]`; one the unit author owns
+carries `[UT]`.** `compose_payloads.py --kind integration-test-author` copies
+every `[IT]` line of `.discovery/checklists/<ID>.md` into that payload's
+`PROMISE_CHECKLIST` (every line for a test-only change), and
+`validate_pipeline.py --pre-fanout` refuses an `[IT]` line carried by no
+integration payload of the wave (#533).
+
 **A line that states the whole result carries its assertion form as a
 tag.** `[whole-value]` on a line that states the whole result — "gives
 exactly", "gives `[A, B]`", "gives `Ok(vec![])`", a full list — means ONE
