@@ -1,7 +1,9 @@
 // VR node shapes: the shape a node is drawn in, the box it needs, and where an edge meets its outline.
 // Run: bun test shared/test/vrshapes.test.ts
 import { afterAll, expect, test } from "bun:test"
-import { clipEdgesToShapes, closeLayout, layoutGraph, nodeShape, outlineInset, shapeLineChars, shapeSize } from "../questions/vrlayout.ts"
+import { clipEdgesToShapes, closeLayout, layoutGraph, nodeShape, outlineInset, shapeSize } from "../questions/vrlayout.ts"
+import { checkLayout } from "../questions/vrcheck.ts"
+import { vrFitLabel } from "../questions/vrtext.ts"
 
 afterAll(() => closeLayout())
 const base = { width: 130, height: 50 }
@@ -38,7 +40,7 @@ test("sizes: a diamond needs more box than a rectangle for the same label; a dot
   expect(d.width).toBeGreaterThan(base.width)
   expect(d.height).toBeGreaterThan(base.height)
   // the label wraps in at most 3 lines of the room a diamond has
-  expect(Math.ceil(label.length / shapeLineChars("diamond", d.width))).toBeLessThanOrEqual(3)
+  expect(vrFitLabel(label, d.width, false, undefined, "diamond").clipped).toBe(false)
   expect(shapeSize("diamond", "x".repeat(200), base).width).toBe(300)
   expect(shapeSize("junction", "merge", base)).toEqual({ width: 14, height: 14 })
   const c = shapeSize("circle", "Done", base)
@@ -71,6 +73,25 @@ test("clipEdgesToShapes moves only the ends that touch a non-rectangle, and keep
   expect(edges.e[0]).toEqual([100, 25])
   expect(edges.e[3]).toEqual([240, 20])
   for (let i = 1; i < edges.e.length; i++) expect(edges.e[i][0] === edges.e[i - 1][0] || edges.e[i][1] === edges.e[i - 1][1]).toBe(true)
+})
+
+test("decision view: kinds terminal/io/step/decision map to shapes, and a circle there is a junction dot", () => {
+  expect(nodeShape({ kind: "terminal" }, "decision")).toBe("terminal")
+  expect(nodeShape({ kind: "io" }, "decision")).toBe("io")
+  expect(nodeShape({ kind: "step" }, "decision")).toBe("rect")
+  expect(nodeShape({ kind: "decision" }, "decision")).toBe("diamond")
+  expect(nodeShape({ shape: "circle" }, "decision")).toBe("junction")
+  expect(nodeShape({ shape: "circle" }, "L2")).toBe("circle")
+})
+
+test("the shared text rule knows shapes: a diamond holds fewer characters per line than a box; checkLayout uses the shape's room", () => {
+  const label = "Subscriber answered with a two hundred class status code"
+  const box = vrFitLabel(label, 200).needed, dia = vrFitLabel(label, 200, false, undefined, "diamond").needed
+  expect(dia).toBeGreaterThan(box)
+  const g: any = { view: "L2", nodes: [{ id: "d", label, kind: "decision", status: "context" }] }
+  const lay: any = { boxes: { d: { x: 0, y: 0, w: 200, h: 84 } }, edges: {}, shapes: { d: "diamond" } }
+  expect(checkLayout(g, lay).map((i) => i.code)).toContain("label_clipped")
+  expect(checkLayout(g, { ...lay, shapes: undefined }).map((i) => i.code)).not.toContain("label_clipped")
 })
 
 test("a decision flow lays out with the shapes: boxes sized per shape, shapes reported, edges end on the outline", async () => {

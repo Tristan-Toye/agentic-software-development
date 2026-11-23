@@ -264,7 +264,7 @@ compared against this one.
    ```
    VISUAL-REVIEW: approved — L0 <n>, L1 <n>, L2 <n>, arch <stem> <n>, arch <stem> <n> (<dashboard link>)
    VISUAL-REVIEW: changes requested — <element ids of the review.json lines with verdict change or remove>
-   VISUAL-REVIEW: skipped — <reason>   (step 1 only: unsupported repository, or the owner said go on)
+   VISUAL-REVIEW: skipped — <reason>   (step 1 only: unsupported repository, that is a language with no extractor, or the owner said go on)
    ```
 
    The counts are the node counts of the three files, then one

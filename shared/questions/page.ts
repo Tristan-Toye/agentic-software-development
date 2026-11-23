@@ -2,6 +2,7 @@
 // or createTextNode; the only innerHTML is the server's escaped markdown render of a dossier. Contract: references/owner-questions.md (Dashboard).
 // The script avoids backticks and dollar-brace so it can live in this raw template.
 import { vrWalkOrder } from "./vrwalk.ts"
+import { VR_TEXT, vrFitLabel } from "./vrtext.ts"
 
 export const PAGE = String.raw`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -295,17 +296,16 @@ function vrEv(ev, hand) { return ev.tier === 'source' ? (ev.path || '?') + (ev.l
 /* A hand-authored graph (meta.generated_by "hand", e.g. imported from Mermaid) carries tier "inferred" evidence only because no tool proved it; there the dashed style follows the authored arrow instead, and no "? inferred" badge is drawn. */
 function vrHand(g) { return !!(g && g.meta && g.meta.generated_by === 'hand'); }
 function vrInferred(e, g) { if (vrHand(g)) return /\./.test(e.arrow || ''); return e.resolution ? e.resolution === 'inferred' : (e.evidence || []).length > 0 && e.evidence.every(x => x.tier === 'inferred'); }
-function vrWrap(s, w) { const out = []; let l = ''; String(s).split(' ').forEach(t => { if ((l + ' ' + t).trim().length > w && l) { out.push(l); l = t; } else l = (l + ' ' + t).trim(); }); if (l) out.push(l); return out; }
+const VR_TEXT = ${JSON.stringify(VR_TEXT)};
+${vrFitLabel.toString()}
 /* Node shapes (see nodeShape in vrlayout.ts: the layout names the shape of each non-rectangle in L.shapes and sizes the box for it). Shape is the node's type; colour stays the change status. */
-const VR_IO_SKEW = 12;
 const VR_CENTER = { terminal: 1, diamond: 1, io: 1, circle: 1, cylinder: 1 };
-function vrChars(sh, w) { const room = sh === 'diamond' ? w * 0.6 : sh === 'circle' ? w * 0.7 : sh === 'terminal' ? w - 36 : sh === 'io' ? w - 44 : w - 24; return Math.max(4, Math.floor(room / 6.4)); }
 /* Draws the outline of shape sh in box b with the given paint attributes; returns the elements (the first carries class vrshp). */
 function vrShapeEl(sh, b, at, p) {
   const x = b.x, y = b.y, w = b.w, h = b.h, cx = x + w / 2, cy = y + h / 2, pts = a => a.map(q => q[0] + ',' + q[1]).join(' ');
   const mk = (n, a) => vrEl(n, Object.assign({ class: 'vrshp' }, a, at), p);
   if (sh === 'diamond') return mk('polygon', { points: pts([[cx, y], [x + w, cy], [cx, y + h], [x, cy]]) });
-  if (sh === 'io') return mk('polygon', { points: pts([[x + VR_IO_SKEW, y], [x + w, y], [x + w - VR_IO_SKEW, y + h], [x, y + h]]) });
+  if (sh === 'io') return mk('polygon', { points: pts([[x + VR_TEXT.ioSkew, y], [x + w, y], [x + w - VR_TEXT.ioSkew, y + h], [x, y + h]]) });
   if (sh === 'asymmetric') return mk('polygon', { points: pts([[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x + 10, cy]]) });
   if (sh === 'junction') return mk('circle', { cx: cx, cy: cy, r: Math.min(w, h) / 2 - 1, fill: at.stroke });
   if (sh === 'circle') return mk('ellipse', { cx: cx, cy: cy, rx: w / 2, ry: h / 2 });
@@ -548,8 +548,9 @@ function vrBuild(host, key, data) {
     g.nodes.forEach(n => { const b = L.boxes[n.id]; if (!b) return; const gg = vrEl('g', { 'data-id': n.id, 'data-status': n.status, class: 'vrn', tabindex: 0, role: 'button' }, root); els[n.id] = { g: gg, status: n.status, col: !!n.collapsed }; const sh = (L.shapes && L.shapes[n.id]) || 'rect'; vrEl('title', {}, gg).textContent = n.label + ' (' + (n.kind || 'node') + (sh === 'rect' ? '' : ', ' + sh) + ', ' + n.status + ')';
       if (n.collapsed) { gg.setAttribute('data-collapsed', '1'); vrEl('rect', { x: b.x + 5, y: b.y + 5, width: b.w, height: b.h, rx: 6, fill: 'var(--card)', stroke: 'var(--mut)', 'stroke-width': 1.5 }, gg); }
       vrShapeEl(sh, b, { fill: 'var(--' + vrBg(n.status) + ')', stroke: 'var(--' + vrTone(n.status) + ')', 'stroke-width': n.status === 'context' ? 1 : 2.5, 'stroke-dasharray': n.status === 'removed' ? '3 3' : '0' }, gg);
-      const wl = vrWrap(n.label, vrChars(sh, b.w)); const lines = wl.slice(0, 3); if (wl.length > 3) lines[2] = lines[2].replace(/.?$/, '…');
-      if (n.stereotype) lines.unshift('<<' + n.stereotype + '>>'); if (lines.length > 3) lines.length = 3;
+      const fit = vrFitLabel(n.label, b.w, !!n.stereotype, g.view, sh); const lines = fit.lines.slice();
+      if (n.stereotype) lines.unshift('<<' + n.stereotype + '>>');
+      if (fit.clipped) { const ctr = !!VR_CENTER[sh]; const w = vrEl('text', { x: ctr ? b.x + b.w / 2 : b.x + b.w - 10, y: b.y + b.h - 6, 'font-size': 12, 'font-weight': 700, fill: 'var(--bad)', 'text-anchor': 'middle' }, gg); w.textContent = '⚠'; const tt = vrEl('title', {}, w); tt.textContent = 'This label does not fit the box (' + fit.needed + ' lines needed): the text is cut off.'; }
       if (sh !== 'junction') lines.forEach((t, i) => { const mid = VR_CENTER[sh] ? { x: b.x + b.w / 2, y: b.y + b.h / 2 + 4 + (i - (lines.length - 1) / 2) * 15, 'text-anchor': 'middle' } : { x: b.x + 12, y: b.y + 19 + i * 15 }; const x = vrEl('text', Object.assign({ 'font-size': 12, fill: 'var(--fg)', 'text-decoration': n.status === 'removed' ? 'line-through' : 'none' }, mid), gg); x.textContent = (n.collapsed && i === 0 ? '▸ ' : '') + t; });
       const mk0 = vrMarkAt(sh, b); vrMark(gg, n.status, mk0[0], mk0[1]);
       if (L.arrows && L.arrows[n.id]) vrSeqArrow(gg, L.arrows[n.id], n.status);

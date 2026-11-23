@@ -5,6 +5,8 @@
 import { createHash } from "node:crypto"
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
+import { checkLayout } from "./vrcheck.ts"
+import { vrBoxHeight, vrFitLabel, vrNodeWidth, vrShapeWidth, VR_TEXT } from "./vrtext.ts"
 // @ts-ignore: vendored CommonJS build, no types
 import ElkModule from "./vendor/elk/elk-api.js"
 
@@ -124,11 +126,11 @@ export function closeLayout(): void {
   try { e?.terminateWorker() } catch { /* already gone */ }
 }
 
-/** A folded box draws a ▸ before its label and a fold button after it: room for both. */
-const FOLDED_EXTRA = 36
-const size = (g: any, label: string, folded = false): { width: number; height: number } => {
-  const t = String(label ?? "").length
-  return { width: Math.max(130, Math.min(250 + (folded ? FOLDED_EXTRA : 0), Math.round(t * 6.6 + 28 + (folded ? FOLDED_EXTRA : 0)))), height: isLaneView(g.view) ? 62 : 50 }
+/** A folded box draws a ▸ before its label and a fold button after it: room for both (vrNodeWidth). */
+const size = (g: any, label: string, folded = false, stereotype = false): { width: number; height: number } => {
+  const width = vrNodeWidth(label, folded), base = isLaneView(g.view) ? 62 : 50
+  // A sequence message or note grows in height to the lines its label needs (up to the seq maximum): its rows stack, so there is room.
+  return { width, height: g.view === "seq" ? vrBoxHeight(vrFitLabel(label, width, stereotype, "seq").needed, base) : base }
 }
 
 // ---- node shapes: shape carries the node's type, colour carries its change status ----
@@ -147,30 +149,23 @@ const KIND_SHAPES: Record<string, Shape> = {
   database: "cylinder", datastore: "cylinder", db: "cylinder", io: "io", junction: "junction",
 }
 /** The shape one node is drawn in: its own `shape` when known, else by its `kind`, else a rectangle. A folded group is always a rectangle. Pure. */
-export function nodeShape(n: any): Shape {
+export function nodeShape(n: any, view?: string): Shape {
   if (!n || n.collapsed === true) return "rect"
-  const own = typeof n.shape === "string" ? SHAPE_NAMES[n.shape.toLowerCase()] : undefined
+  const own = typeof n.shape === "string" ? (view === "decision" && n.shape.toLowerCase() === "circle" ? "junction" : SHAPE_NAMES[n.shape.toLowerCase()]) : undefined
   return own ?? KIND_SHAPES[String(n.kind ?? "").toLowerCase()] ?? "rect"
 }
-/** Characters per text line a shape of this width holds at the page's 12 px text (6.4 px a character). The page wraps with the same numbers. */
-export const shapeLineChars = (shape: Shape, w: number): number => {
-  const room = shape === "diamond" ? w * 0.6 : shape === "circle" ? w * 0.7 : shape === "terminal" ? w - 36 : shape === "io" ? w - 44 : w - 24
-  return Math.max(4, Math.floor(room / 6.4))
-}
-/** The box a node of this shape needs, from the plain-box size `base` for the same label. A diamond needs far more room than a box for the same text. Pure. */
+/** The box a node of this shape needs, from the plain-box size `base` for the same label (the width comes from the shared text rule, vrShapeWidth). A diamond needs far more room than a box for the same text. Pure. */
 export function shapeSize(shape: Shape, label: string, base: { width: number; height: number }): { width: number; height: number } {
-  const t = String(label ?? "").length
+  const width = vrShapeWidth(label, shape)
   switch (shape) {
-    case "terminal": case "io": return { width: base.width + 24, height: base.height }
+    case "terminal": case "io": return { width, height: base.height }
     case "cylinder": return { width: base.width, height: base.height + 14 }
     case "junction": return { width: 14, height: 14 }
-    case "circle": { const d = Math.max(72, Math.min(150, Math.round(t * 6.6 * 0.6 + 44))); return { width: d, height: d } }
-    case "diamond": return { width: Math.max(160, Math.min(300, Math.round(t * 6.6 * 0.9 + 60))), height: Math.max(84, base.height + 22) }
+    case "circle": return { width, height: width }
+    case "diamond": return { width, height: Math.max(84, base.height + 22) }
     default: return base
   }
 }
-/** The slant of a parallelogram (`io`) node: how far its top edge is shifted right and its bottom edge left, in px. The page draws the same. */
-export const IO_SKEW = 12
 /**
  * How far an orthogonal edge that touches the box `b` at point `p` must go inward (along its own axis) to reach the outline of
  * `shape` instead of the bounding box. 0 for a rectangle-like shape and for a point not on the box boundary. Pure.
@@ -190,7 +185,7 @@ export function outlineInset(shape: Shape, b: Box, p: [number, number]): number 
       const o = Math.abs(dx) - (hw - r)
       return o > 0 ? r - Math.sqrt(Math.max(0, r * r - o * o)) : 0
     }
-    case "io": { const f = (p[1] - b.y) / b.h; return onSide ? (dx < 0 ? IO_SKEW * (1 - f) : IO_SKEW * f) : 0 }
+    case "io": { const f = (p[1] - b.y) / b.h; return onSide ? (dx < 0 ? VR_TEXT.ioSkew * (1 - f) : VR_TEXT.ioSkew * f) : 0 }
     default: return 0
   }
 }
@@ -247,7 +242,7 @@ export function elkInput(g: any, mode: "thorough" | "fast", wrap = false): { roo
   for (const c of containers) mk.set(c.id, { id: c.id, layoutOptions: { "elk.padding": "[top=30,left=14,bottom=14,right=14]" }, children: [] })
   for (const n of g.nodes) {
     const base = size(g, n.label, n.collapsed === true)
-    mk.set(n.id, { id: n.id, ...(g.view === "seq" ? base : shapeSize(nodeShape(n), n.label, base)) })
+    mk.set(n.id, { id: n.id, ...(g.view === "seq" ? base : shapeSize(nodeShape(n, g.view), n.label, base)) })
   }
   const root: any = { id: "root", layoutOptions: opts, children: [], edges: [] }
   // A parent cycle (a -> b -> a) would drop both groups out of the tree: break it by hanging the group on the root.
@@ -333,7 +328,7 @@ export function seqLayout(g: any): Layout {
   const laneIdx = (id: unknown): number => lanes.findIndex((l) => l.id === id)
   const laneOf = (n: any): number => Math.max(0, laneIdx(n.lane))
   const recvOf = (n: any): number => { const r = seqReceiver(n); const i = r === undefined ? -1 : laneIdx(r); return i < 0 ? laneOf(n) : i }
-  const sz = new Map<string, { width: number; height: number }>(order.map((id) => [id, size(g, node.get(id).label)]))
+  const sz = new Map<string, { width: number; height: number }>(order.map((id) => [id, size(g, node.get(id).label, false, !!node.get(id).stereotype)]))
   const isMsg = (n: any): boolean => n.kind !== "note"
   // Gap between neighbouring lifelines: wide enough for the column header and, for every message, the label across the lifelines it spans.
   const COL = 170
@@ -460,7 +455,7 @@ async function runLayoutOnce(g: any, key: string, timeoutMs: number, wrap: boole
   }
   if (g.view !== "seq") {
     const shapes: Record<string, Shape> = {}
-    for (const n of g.nodes) { const sh = nodeShape(n); if (sh !== "rect" && L.boxes[n.id]) shapes[n.id] = sh }
+    for (const n of g.nodes) { const sh = nodeShape(n, g.view); if (sh !== "rect" && L.boxes[n.id]) shapes[n.id] = sh }
     if (Object.keys(shapes).length) { L.shapes = shapes; if (mode === "thorough") clipEdgesToShapes(L.edges, ends, L.boxes, shapes) }
   }
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value as string)
@@ -709,7 +704,7 @@ export async function visualReview(dir: string, dossier: string): Promise<Visual
     clean.edges = clean.edges.filter((e: any) => known.has(e.source) && known.has(e.target))
     out.view = clean.view
     out.graph = withFlowEdges(clean)
-    try { out.layout = await layoutGraph(out.graph) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
+    try { out.layout = await layoutGraph(out.graph); out.issues.push(...checkLayout(out.graph, out.layout)) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
   }
   res.rev = h.digest("hex").slice(0, 16)
   res.issues = Object.keys(res.views).flatMap((v) => (res.views[v]?.issues ?? []).map((i) => ({ ...i, where: v + (i.where ? "." + i.where : "") })))

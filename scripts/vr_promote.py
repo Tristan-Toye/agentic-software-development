@@ -59,6 +59,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -632,6 +633,16 @@ def _selftest() -> int:
     # the hash is the dashboard's: shared/test/vrhash.test.ts asserts the same constant
     hc = vr_graph.load(os.path.join(vr_graph.FIXTURES, "hash-case.json"))
     check("hash:cross-language", graph_hash(hc) == HASH_CASE_EXPECTED, graph_hash(hc))
+
+    # a decision diagram is review-only: it is never an architecture draft, so it is never promoted into docs/architecture
+    check("decision:not-an-arch-view", "decision" not in ARCH_VIEWS and "decision" not in MERMAID_DEFAULT)
+    with tempfile.TemporaryDirectory() as dvr:
+        os.makedirs(os.path.join(dvr, ARCH_DIR))
+        shutil.copy(os.path.join(vr_graph.FIXTURES, "decision-retry.json"), _arch_draft(dvr, "seq-decision"))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = _run_draft("W-9", "seq-decision", dvr, dvr, None, None, False, False)
+        check("decision:draft-refused", rc == 2 and "expected one of c1, c4, seq" in buf.getvalue(), buf.getvalue())
 
     base = vr_graph.load(os.path.join(vr_graph.FIXTURES, "w145-l1.json"))
     BASE_A = ["// header", "fn alpha() { todo!() }", "fn beta() {", "    todo!()", "}", "fn gamma() { todo!() }"]

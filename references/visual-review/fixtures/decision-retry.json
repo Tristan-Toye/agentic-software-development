@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0.0",
+  "view": "decision",
+  "title": "A failed delivery retries three times, then goes to the dead-letter queue",
+  "meta": {"change": "W-210", "repo": "hooks", "commit": "a1b2c3d", "base_sha": "a1b2c3d", "generated_by": "agent"},
+  "nodes": [
+    {"id": "end:start:delivery", "label": "Delivery requested", "kind": "terminal", "shape": "terminal", "terminal": "start", "status": "context", "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 12}], "label_source": "llm"},
+    {"id": "proc:deliver::send", "label": "POST payload to subscriber", "kind": "step", "shape": "io", "io": "out", "step": "step:deliver::send", "status": "context", "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 31}], "label_source": "llm"},
+    {"id": "decision:deliver::run:status-ok", "label": "Subscriber answered 2xx?", "kind": "decision", "shape": "decision", "status": "context", "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 38}], "label_source": "llm"},
+    {"id": "decision:deliver::run:attempts-left", "label": "Attempts left?", "kind": "decision", "shape": "decision", "status": "added", "detail": {"after": "Retries up to 3 times with backoff"}, "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 44}], "label_source": "llm"},
+    {"id": "proc:deliver::backoff", "label": "Wait, then try again", "kind": "step", "shape": "process", "status": "added", "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 47}], "label_source": "llm"},
+    {"id": "proc:deliver::dead_letter", "label": "Park message in dead-letter queue", "kind": "step", "shape": "process", "status": "changed", "detail": {"before": "Dropped the message", "after": "Keeps it for manual replay"}, "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 52}], "label_source": "llm"},
+    {"id": "end:ok:delivered", "label": "Delivered", "kind": "terminal", "shape": "terminal", "terminal": "end", "outcome": "ok", "status": "context", "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 40}], "label_source": "llm"},
+    {"id": "end:error:parked", "label": "Parked", "kind": "terminal", "shape": "terminal", "terminal": "end", "outcome": "error", "status": "added", "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 55}], "label_source": "llm"}
+  ],
+  "edges": [
+    {"id": "edge:flow:end:start:delivery:proc:deliver::send", "source": "end:start:delivery", "target": "proc:deliver::send", "kind": "flow", "status": "context", "evidence": [{"tier": "inferred", "note": "entry"}]},
+    {"id": "edge:flow:proc:deliver::send:decision:deliver::run:status-ok", "source": "proc:deliver::send", "target": "decision:deliver::run:status-ok", "kind": "flow", "status": "context", "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 36}]},
+    {"id": "edge:flow:decision:deliver::run:status-ok:end:ok:delivered", "source": "decision:deliver::run:status-ok", "target": "end:ok:delivered", "kind": "flow", "branch": "yes", "label": "YES", "status": "context", "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 39}]},
+    {"id": "edge:flow:decision:deliver::run:status-ok:decision:deliver::run:attempts-left", "source": "decision:deliver::run:status-ok", "target": "decision:deliver::run:attempts-left", "kind": "flow", "branch": "no", "label": "NO", "status": "changed", "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 43}]},
+    {"id": "edge:flow:decision:deliver::run:attempts-left:proc:deliver::backoff", "source": "decision:deliver::run:attempts-left", "target": "proc:deliver::backoff", "kind": "flow", "branch": "yes", "label": "YES", "status": "added", "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 46}]},
+    {"id": "edge:flow:proc:deliver::backoff:proc:deliver::send", "source": "proc:deliver::backoff", "target": "proc:deliver::send", "kind": "flow", "branch": "loop", "label": "RETRY", "status": "added", "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 49}]},
+    {"id": "edge:flow:decision:deliver::run:attempts-left:proc:deliver::dead_letter", "source": "decision:deliver::run:attempts-left", "target": "proc:deliver::dead_letter", "kind": "flow", "branch": "no", "label": "NO", "status": "added", "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 51}]},
+    {"id": "edge:flow:proc:deliver::dead_letter:end:error:parked", "source": "proc:deliver::dead_letter", "target": "end:error:parked", "kind": "flow", "status": "added", "evidence": [{"tier": "source", "path": "src/deliver.rs", "line": 54}]}
+  ]
+}

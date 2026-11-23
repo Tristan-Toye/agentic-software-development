@@ -39,7 +39,7 @@ base..head` touches as `changed` and adds those files as evidence; the added
 signature lines (fn, struct, enum, trait, impl, type, mod) become the node's
 `detail.after` and a "stub signature" evidence note.
 
-Importable: `merge(before, after)`, `view(merged, mode)`, `after_from_git(repo, base, head, layers)`.
+Importable: `merge(before, after)`, `view(merged, mode)`, `after_from_git(repo, base, head, layers, lang="rust")`.
 Issue codes: removed_element_missing, added_element_exists, over_budget, bad_revision,
 plus every code of vr_graph.validate. Exit codes: 0 written; 1 the diff failed (issues
 as JSON on stderr); 2 unusable input.
@@ -76,6 +76,10 @@ GROUP_ATTRS = ("label", "parent")
 SIGNATURE_LINE = {
     ".rs": re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:default\s+)?(?:async\s+)?(?:unsafe\s+)?(?:const\s+)?"
                       r"(?:fn|struct|enum|trait|type|impl|mod)\b.*$"),
+    ".py": re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+\w+.*$"),
+    ".cs": re.compile(r"^\s*(?:(?:public|private|protected|internal|static|abstract|virtual|override|sealed|async|partial|"
+                      r"readonly|unsafe|extern|new)\s+)*(?:(?:class|struct|interface|enum|record|namespace)\s+\w+.*|"
+                      r"[\w<>\[\],.?]+\s+\w+\s*(?:<[^>()]*>)?\s*\(.*)$"),
 }
 MAX_SIGNATURES = 6
 
@@ -315,8 +319,8 @@ def merge(before: dict, after: dict) -> dict:
                     if sid in nodes and not re.search(r" x\d+$", nodes[sid]["label"]):
                         suffix = " x%d" % r["count"]
                         lab = nodes[sid]["label"]
-                        if len(lab) + len(suffix) > vr_graph.NODE_LABEL_MAX:  # trim the label, never the count
-                            lab = lab[:vr_graph.NODE_LABEL_MAX - len(suffix) - 1].rstrip() + "\u2026"
+                        # trim the label (to what the canvas draws whole, vr_graph.fit_label), never the count
+                        lab = vr_graph.fit_label(lab, bool(nodes[sid].get("stereotype")), suffix)
                         nodes[sid]["label"] = lab + suffix
     # drop edges whose end was removed by the collapse alone
     flows: dict = {}
@@ -386,7 +390,8 @@ def merge(before: dict, after: dict) -> dict:
     if lanes:
         merged["lanes"] = lanes
     _summarise(merged)
-    bad = vr_graph.validate(merged, check_budget=False)
+    # A merged decision graph holds the before and the after flow together: its flow rules hold for each side (view before / after), not for the union.
+    bad = vr_graph.validate(merged, check_budget=False, flow_rules=False)
     if bad:
         raise DiffError(bad)
     return merged
@@ -502,6 +507,36 @@ def _owner_for(path: str, graph: dict, pkgs: list, ws_root: str):
     return None
 
 
+def _mark_changed_generic(graph: dict, files: dict, base: str, head: str, lang: str) -> list:
+    """The Python and C# counterpart of `_mark_changed`: a changed file marks the nodes whose first evidence is that
+    file (a Python module; the types of a C# file and its top-level-statements function), a changed manifest
+    (.csproj, pyproject.toml, setup.py/cfg) the project node it belongs to."""
+    unmapped = []
+    kinds = {"python": ("module",), "csharp": ("type", "fn")}[lang]
+    manifests = (".csproj", "pyproject.toml", "setup.py", "setup.cfg")
+    for path in sorted(files):
+        info = files[path]
+        if path.endswith(manifests):
+            owners = [n for n in graph["nodes"] if n["kind"] == "project" and n["evidence"][0].get("path") == path]
+        elif path.endswith(".py" if lang == "python" else ".cs"):
+            owners = [n for n in graph["nodes"] if n["kind"] in kinds and n["evidence"][0].get("path") == path
+                      and (lang == "python" or n["kind"] == "type" or n["id"].endswith("::top_level_statements"))]
+        else:
+            owners = []
+        if not owners:
+            unmapped.append(path)
+            continue
+        sigs = info["signatures"]
+        note = ("stub signature: " + "; ".join(sigs))[:300] if sigs else "changed in %s..%s" % (base[:8], head[:8])
+        for n in owners:
+            n["status"] = "changed"
+            n["evidence"].append({"tier": "source", "path": path, "line": info["line"] or 1, "note": note})
+            if sigs:
+                old = (n.get("detail") or {}).get("after")
+                n["detail"] = {"after": ((old + "; ") if old else "") + "; ".join(sigs)}
+    return unmapped
+
+
 def _mark_changed(graph: dict, files: dict, base: str, head: str, ws_root: str) -> list:
     pkgs = []
     for n in graph["nodes"]:
@@ -528,10 +563,11 @@ def _mark_changed(graph: dict, files: dict, base: str, head: str, ws_root: str) 
     return unmapped
 
 
-def after_from_git(repo: str, base: str, head: str, layers=(1, 2), extractor=None, crates=None, calls=None) -> dict:
+def after_from_git(repo: str, base: str, head: str, layers=(1, 2), extractor=None, crates=None, calls=None,
+                   lang: str = "rust") -> dict:
     """The plan-time "after" graph: the extractor at `head` in a temporary worktree, changed files marked.
 
-    `extractor(root, layers)` defaults to vr_extract.extract("rust", ...); with `crates` (names) it is
+    `extractor(root, layers)` defaults to vr_extract.extract(lang, ...) ("rust", "python" or "csharp"); with `crates` (names) it is
     called as `extractor(root, layers, crates)` and layer 2 runs only for them. The worktree is
     created under $TMPDIR and removed again, also when the extraction fails.
 
@@ -553,7 +589,7 @@ def after_from_git(repo: str, base: str, head: str, layers=(1, 2), extractor=Non
         _git(repo, "worktree", "add", "--detach", "--quiet", wt, head_sha)
         added = True
         extract = extractor or (lambda root, lay, crs=None, calls=(): vr_extract.extract(
-            "rust", root, layers=lay, crates=crs, calls=calls))
+            lang, root, layers=lay, crates=crs, calls=calls))
         try:
             args = (wt, tuple(layers)) if crates is None else (wt, tuple(layers), list(crates))
             g = extract(*args, calls=list(calls)) if calls else extract(*args)
@@ -561,7 +597,8 @@ def after_from_git(repo: str, base: str, head: str, layers=(1, 2), extractor=Non
             raise DiffError([_issue("schema_error", "extract", str(exc))])
         diff = _git(repo, "diff", "--no-renames", "-U0", "%s..%s" % (base_sha, head_sha))
         files = parse_diff(diff)
-        unmapped = _mark_changed(g, files, base_sha, head_sha, wt)
+        unmapped = (_mark_changed(g, files, base_sha, head_sha, wt) if lang == "rust"
+                    else _mark_changed_generic(g, files, base_sha, head_sha, lang))
         g["title"] = "After graph of %s at %s" % (os.path.basename(repo), head_sha[:8])
         g["meta"]["repo"] = os.path.basename(repo)
         g["meta"]["commit"] = head_sha[:8]
@@ -632,7 +669,7 @@ def _cmd_after(args) -> int:
     try:
         crates = None if args.crates is None else [c.strip() for c in args.crates.split(",") if c.strip()]
         calls = [c for c in (args.calls or "").split(",") if c.strip()]
-        g = after_from_git(args.repo, args.base, args.head, layers, crates=crates, calls=calls or None)
+        g = after_from_git(args.repo, args.base, args.head, layers, crates=crates, calls=calls or None, lang=args.lang)
     except DiffError as exc:
         return _fail(exc)
     _write(g, args.output)
@@ -850,6 +887,36 @@ def _selftest() -> int:
             check("VC-07:%d-steps" % n, ok)
         except DiffError as exc:
             check("VC-07:%d-steps" % n, (not ok) and codes(exc) == ["over_budget"] and "'f'" in exc.issues[0]["message"], str(exc))
+    # View decision: two decision graphs merge on the stable ids; the retry branch is added, the old drop edge is removed.
+    after_d = vr_graph.load(os.path.join(fx, "decision-retry.json"))
+    keep = {"end:start:delivery", "proc:deliver::send", "decision:deliver::run:status-ok", "proc:deliver::dead_letter", "end:ok:delivered"}
+    before_d = copy.deepcopy(after_d)
+    before_d["nodes"] = [n for n in before_d["nodes"] if n["id"] in keep]
+    before_d["edges"] = [e for e in before_d["edges"] if e["source"] in keep and e["target"] in keep]
+    ev_t = [{"tier": "inferred", "note": "t"}]
+    before_d["edges"] += [
+        {"id": "edge:flow:decision:deliver::run:status-ok:proc:deliver::dead_letter", "source": "decision:deliver::run:status-ok", "target": "proc:deliver::dead_letter",
+         "kind": "flow", "label": "NO", "status": "context", "evidence": ev_t},
+        {"id": "edge:flow:proc:deliver::dead_letter:end:ok:delivered", "source": "proc:deliver::dead_letter", "target": "end:ok:delivered", "kind": "flow", "status": "context", "evidence": ev_t}]
+    for x in before_d["nodes"] + before_d["edges"]:
+        x["status"] = "context"
+    check("decision:before-valid", vr_graph.validate(before_d) == [], str(vr_graph.validate(before_d)))
+    try:
+        md = merge(before_d, after_d)
+        nst = {n["id"]: n["status"] for n in md["nodes"]}
+        est = {e["id"]: e["status"] for e in md["edges"]}
+        check("decision:merge-added-nodes", nst["decision:deliver::run:attempts-left"] == "added" and nst["proc:deliver::backoff"] == "added" and nst["end:error:parked"] == "added", str(nst))
+        check("decision:merge-context-node", nst["proc:deliver::send"] == "context" and nst["decision:deliver::run:status-ok"] == "context", str(nst))
+        check("decision:merge-removed-edge", est["edge:flow:proc:deliver::dead_letter:end:ok:delivered"] == "removed", str(est))
+        check("decision:merge-added-edge", est["edge:flow:proc:deliver::backoff:proc:deliver::send"] == "added", str(est))
+        check("decision:merge-view", md["view"] == "decision")
+        rem = merge(after_d, before_d)
+        rst = {n["id"]: n["status"] for n in rem["nodes"]}
+        check("decision:merge-removed-nodes", rst["decision:deliver::run:attempts-left"] == "removed" and rst["proc:deliver::backoff"] == "removed" and rst["end:error:parked"] == "removed", str(rst))
+        for mode in ("before", "after", "diff"):
+            check("decision:view-" + mode, vr_graph.validate(view(md, mode), flow_rules=(mode != "diff")) == [], mode + str(vr_graph.validate(view(md, mode), flow_rules=(mode != "diff")))[:300])
+    except DiffError as exc:
+        check("decision:merge", False, str(exc.issues)[:300])
     # S8 / VC-08: a 3-step sequence repeated 5 times, as distinct nodes with the same labels
     ids = []
     nodes, edges = [], []
@@ -872,7 +939,9 @@ def _selftest() -> int:
           and all(n["label"].endswith(" x5") for n in m["nodes"]))
     check("VC-08:edges-valid", vr_graph.validate(m, check_budget=False) == [] and len(m["edges"]) == 3, str(len(m["edges"])))
     # a collapsed label at the 80-character limit is trimmed to take its " xN" suffix, not rejected
-    long_label = "q" * vr_graph.NODE_LABEL_MAX
+    long_label = ("word " * 16).strip()[:vr_graph.NODE_LABEL_MAX]
+    # a word wider than a line is trimmed too (vr_graph.fit_label), so the collapsed label still validates
+    check("VC-08:fit-label-wide-word", vr_graph.text_fit(vr_graph.fit_label("q" * 80, False, " x5") + " x5", 250)["clipped"] is False)
     lids, lnodes = [], []
     for r in range(5):
         for k in "abc":
@@ -993,6 +1062,36 @@ def _selftest() -> int:
         except DiffError:
             pass
         check("git:cleanup-on-failure", len(git("worktree", "list").strip().splitlines()) == 1)
+    # after_from_git with the real Python and C# extractors: changed files mark modules, types and projects
+    for lang, files0, files1, want in (
+            ("python", {"pkg/__init__.py": "", "pkg/a.py": "def old():\n    pass\n", "pkg/b.py": "def keep():\n    pass\n"},
+             {"pkg/a.py": "def old():\n    pass\n\n\ndef planned(x):\n    raise NotImplementedError\n"},
+             ("module:pkg.a", "module:pkg.b", "def planned(x)")),
+            ("csharp", {"App/App.csproj": "<Project />\n", "App/A.cs": "namespace N { class A { void Old() {} } }\n",
+                        "App/B.cs": "namespace N { class B { void Keep() {} } }\n"},
+             {"App/A.cs": "namespace N {\n class A {\n void Old() {}\n public void Planned(int x) { throw null; }\n }\n}\n"},
+             ("type:App::N.A", "type:App::N.B", "void Planned(int x)"))):
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "demo")
+            os.makedirs(repo)
+            git = lambda *a: subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"] + list(a),
+                                            capture_output=True, text=True, check=True).stdout
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            for grp in (files0, files1):
+                for rel, txt in grp.items():
+                    os.makedirs(os.path.dirname(os.path.join(repo, rel)), exist_ok=True)
+                    open(os.path.join(repo, rel), "w").write(txt)
+                git("add", "-A")
+                git("commit", "-qm", "step")
+            try:
+                g = after_from_git(repo, "HEAD~1", "HEAD", (1, 2, 3), lang=lang)
+            except DiffError as exc:
+                check("git:%s-run" % lang, False, str(exc))
+                continue
+            st = stat(g)
+            check("git:%s-changed" % lang, st.get(want[0]) == "changed" and st.get(want[1]) == "context", str(st))
+            ch = next(n for n in g["nodes"] if n["id"] == want[0])
+            check("git:%s-signature" % lang, want[2] in (ch.get("detail") or {}).get("after", ""), str(ch.get("detail")))
     # CLI: merge and view through the files, exit codes
     with tempfile.TemporaryDirectory() as d:
         full = vr_graph.load(os.path.join(fx, "removed.json"))
@@ -1042,6 +1141,7 @@ def main(argv=None) -> int:
     g.add_argument("--base", required=True)
     g.add_argument("--head", required=True)
     g.add_argument("--layers", default="1,2")
+    g.add_argument("--lang", default="rust", choices=["rust", "python", "csharp"], help="the extractor (default rust)")
     g.add_argument("--crates", default=None, help="comma list: layer 2 only for these crates (as vr_extract.py --crates)")
     g.add_argument("--calls", default="", help="comma list of functions for the call-hierarchy layer (as vr_extract.py --calls)")
     g.add_argument("-o", "--output", required=True)

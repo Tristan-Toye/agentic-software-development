@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Visual review: extract the "before" change graph from a Cargo workspace.
+"""Visual review: extract the "before" change graph from a Cargo workspace, a Python tree or a C# solution.
 
     vr_extract.py rust REPO_ROOT [--layers 1,2] [--crates a,b] [--calls fn1,fn2] [--timeout 120]
                        [--cfg-test] [-o out.json] [--timings]
+    vr_extract.py python|csharp REPO_ROOT [--layers 1,2,3] [--calls fn1,fn2] [--cfg-test] [-o out.json]
     vr_extract.py --selftest
     vr_extract.py --live REPO_ROOT       (opt-in: the real tools, needs cargo)
 
@@ -31,8 +32,14 @@ Rules for layer 1 (D0 REPORT section 2): only `normal` dependencies count; dev
 and build edges, self edges and edges to `workspace-hack` are dropped. The
 `workspace-hack` crate itself stays a node (it is a workspace member).
 
-The language seam: `extract(lang, root, ...)` dispatches on `lang`; "rust" is
-the only entry in EXTRACTORS. A new language adds one function and one entry.
+The language seam: `extract(lang, root, ...)` dispatches on `lang`; EXTRACTORS holds "rust"
+(above), "python" (vr_extract_py.py, stdlib `ast`) and "csharp" (vr_extract_cs.py, a
+dependency-free declaration parser, no dotnet needed). Those two emit the same graph shape
+(project, module/namespace, type, fn nodes; contains, depends, uses, calls edges) with layers
+1 projects, 2 modules/namespaces and types, 3 functions and methods, and calls from --calls;
+what a name search cannot prove is `inferred` or left out, never guessed. A language with no
+extractor stays a `VISUAL-REVIEW: skipped` record (vr_prepare exit 3). A new language adds one
+function and one entry.
 Exit codes: 0 written; 1 the extractor failed; 2 bad arguments.
 """
 
@@ -87,9 +94,10 @@ def default_runner(cmd: list, cwd: str, timeout: float | None = None):
 def _shorten(label: str) -> tuple:
     """(label, full): a label over vr_graph.NODE_LABEL_MAX ends with an ellipsis; `full` is the
     original, kept in the evidence note so the inspector still shows it."""
-    if len(label) <= vr_graph.NODE_LABEL_MAX:
+    short = vr_graph.fit_label(label)  # also within the canvas's lines and word width, not only the character count
+    if short == label:
         return label, None
-    return label[:vr_graph.NODE_LABEL_MAX - 1] + "\u2026", label
+    return short, label
 
 
 def _node(nid, label, kind, ev, status="context", **extra):
@@ -574,11 +582,25 @@ def extract_rust(root: str, layers=(1, 2), calls=(), timeout: float = 120.0, cfg
 
 
 # The language-neutral seam (OQ-10): one function per language, same signature.
-EXTRACTORS = {"rust": extract_rust}
+def _via_lang_module(modname: str, fname: str):
+    """Wrap an extractor module that has its own LangError (the modules never import this file)."""
+    def run(root: str, **opts) -> dict:
+        import importlib
+        mod = importlib.import_module(modname)
+        try:
+            return getattr(mod, fname)(root, **opts)
+        except mod.LangError as exc:
+            raise ExtractError(str(exc))
+    return run
+
+
+extract_python = _via_lang_module("vr_extract_py", "extract_python")
+extract_csharp = _via_lang_module("vr_extract_cs", "extract_csharp")
+EXTRACTORS = {"rust": extract_rust, "python": extract_python, "csharp": extract_csharp}
 
 
 def extract(lang: str, root: str, **opts) -> dict:
-    """Extract the before graph of `root` for `lang`. Only "rust" exists."""
+    """Extract the before graph of `root` for `lang` (rust, python or csharp)."""
     if lang not in EXTRACTORS:
         raise ExtractError("no extractor for %r (known: %s)" % (lang, ", ".join(sorted(EXTRACTORS))))
     return EXTRACTORS[lang](root, **opts)
@@ -739,7 +761,26 @@ def _selftest() -> int:
             extract("go", d)
             check("seam:unknown-lang", False)
         except ExtractError as exc:
-            check("seam:unknown-lang", "rust" in str(exc))
+            check("seam:unknown-lang", "rust" in str(exc) and "python" in str(exc) and "csharp" in str(exc))
+        # The Python and C# extractors go through the same seam and their errors become ExtractError.
+        with tempfile.TemporaryDirectory() as pd:
+            pd = os.path.realpath(pd)
+            with open(os.path.join(pd, "m.py"), "w") as fh:
+                fh.write("def f():\n    return g()\n\n\ndef g():\n    return 1\n")
+            gp = extract("python", pd, layers=(1, 2, 3), calls=["f"])
+            check("seam:python-graph", vr_graph.validate(gp, root=pd, check_budget=False) == [] and
+                  any(e["kind"] == "calls" for e in gp["edges"]), str(vr_graph.validate(gp, root=pd, check_budget=False)))
+            with open(os.path.join(pd, "A.cs"), "w") as fh:
+                fh.write("namespace N { class A { void F() { G(); } void G() {} } }\n")
+            gc2 = extract("csharp", pd, layers=(1, 2, 3), calls=["F"])
+            check("seam:csharp-graph", vr_graph.validate(gc2, root=pd, check_budget=False) == [] and
+                  any(e["kind"] == "calls" for e in gc2["edges"]), str(vr_graph.validate(gc2, root=pd, check_budget=False)))
+        with tempfile.TemporaryDirectory() as ed:
+            try:
+                extract("csharp", os.path.realpath(ed))
+                check("seam:csharp-empty", False)
+            except ExtractError:
+                check("seam:csharp-empty", True)
         # Layer 4: fake rust-analyzer. VC-10 / S3: trait-method callee is a dispatch.
         # the fake server answers for <root>/crates/a/src/lib.rs: point the layer at that layout.
         os.makedirs(os.path.join(d, "crates/a/src"), exist_ok=True)
@@ -791,7 +832,7 @@ def _selftest() -> int:
     check("cli:bad-root-exit-1", r.returncode == 1, r.stderr[:200])
     long_name = "very_long_module_name_" * 6
     nn = _node("module:x", long_name, "module", _src("a.rs", 1, "definition"))
-    check("fu02:shorten", len(nn["label"]) == vr_graph.NODE_LABEL_MAX and nn["label"].endswith("\u2026")
+    check("fu02:shorten", len(nn["label"]) <= vr_graph.NODE_LABEL_MAX and nn["label"].endswith("\u2026") and not vr_graph.text_fit(nn["label"], vr_graph.node_width(nn["label"]))["clipped"]
           and long_name in nn["evidence"][0]["note"] and "definition" in nn["evidence"][0]["note"], str(nn))
     check("fu02:short-untouched", _node("m", "abc", "module", _src("a.rs", 1))["label"] == "abc")
     rr = subprocess.run([sys.executable, os.path.join(me, "vr_ra.py"), "--selftest"], capture_output=True, text=True)
@@ -871,11 +912,41 @@ def main(argv=None) -> int:
     r.add_argument("--cfg-test", action="store_true", help="include #[cfg(test)] modules (default: excluded)")
     r.add_argument("--timings", action="store_true", help="print per-layer seconds to stderr")
     r.add_argument("-o", "--output", help="write here instead of stdout")
+    for name, what in (("python", "a Python tree (stdlib ast)"), ("csharp", "a C# solution (declaration parser)")):
+        q = sub.add_parser(name, help="extract the before graph of " + what)
+        q.add_argument("root")
+        q.add_argument("--layers", default="1,2,3", help="comma list of 1 (projects), 2 (modules, types), 3 (functions); default 1,2,3")
+        q.add_argument("--calls", default="", help="comma list of functions (name or relpath:name) for the call layer")
+        q.add_argument("--cfg-test", action="store_true", help="include test code (default: excluded)")
+        q.add_argument("--timings", action="store_true", help="accepted for symmetry with rust")
+        q.add_argument("-o", "--output", help="write here instead of stdout")
     args = ap.parse_args(argv)
     if args.selftest:
         return _selftest()
     if args.live:
         return _live(args.live)
+    if args.lang in ("python", "csharp"):
+        try:
+            layers = tuple(sorted({int(x) for x in args.layers.split(",") if x.strip()}))
+        except ValueError:
+            print("--layers takes numbers, e.g. 1,2,3", file=sys.stderr)
+            return 2
+        if not set(layers) <= {1, 2, 3}:
+            print("--layers: only 1, 2 and 3 (the call layer is --calls)", file=sys.stderr)
+            return 2
+        try:
+            g = extract(args.lang, args.root, layers=layers, calls=[c for c in args.calls.split(",") if c.strip()],
+                        cfg_test=args.cfg_test)
+        except ExtractError as exc:
+            print("vr_extract: %s" % exc, file=sys.stderr)
+            return 1
+        text = dumps(g)
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        else:
+            sys.stdout.write(text)
+        return 0
     if args.lang != "rust":
         ap.print_usage(sys.stderr)
         return 2

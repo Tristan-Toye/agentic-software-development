@@ -577,9 +577,12 @@ def enqueue(root: str, dossier: str, by: str = "button") -> int:
         pos = [i["id"] for i in items].index(dossier) + 1
         if not waiting:   # one already in the queue keeps its state: the worker may be busy with it
             # a new press is the owner's retry: it starts with fresh resolve-merge attempts (a restart keeps them)
-            set_state(f"{repo}.{dossier}", state="queued", position=pos, error="", prs=[], pid=None, resolve_attempts=None, by=by)
+            prior = read_json(os.path.join(runs_dir(), f"{repo}.{dossier}.merge.json"), {}) or {}
+            again = f"; earlier merge of {', '.join('#%s' % n for n in prior['prs'])} done, this is a new pull request" if prior.get("state") == "merged" and prior.get("prs") else ""
+            # the old record's note ("merged; /after-merge runs") and prs must not read as this merge's
+            set_state(f"{repo}.{dossier}", state="queued", position=pos, error="", prs=[], pid=None, resolve_attempts=None, note=None, by=by)
             append_line(os.path.join(runs_dir(), f"{repo}.{dossier}.jsonl"),
-                        {"ts": now(), "kind": "runner", "text": f"merge queue: queued at position {pos} ({source_text(by)})"})
+                        {"ts": now(), "kind": "runner", "text": f"merge queue: queued at position {pos} ({source_text(by)}){again}"})
         worker = q.get("worker")
         if not (worker and alive(worker)):
             log = os.path.join(runs_dir(), f"{repo}.merge-queue.log")
@@ -2316,6 +2319,16 @@ print("started")
                 enqueue(root, "W-77")
             kept = read_json(os.path.join(rdir, "repo.W-77.merge.json"), {})
             check("enqueue: a stack already in the queue keeps its state", kept.get("state") == "resolving" and kept.get("prs") == [7], str(kept))
+            write_json(queue_path("repo"), {})
+            # A merged record is replaced by a new press: fresh queued state, no stale prs or note, the old PRs named in the timeline.
+            write_json(os.path.join(rdir, "repo.W-78.merge.json"), {"state": "merged", "prs": [595, 614], "ts": "2026-11-21T03:41:08Z", "note": "merged; /after-merge runs"})
+            write_json(queue_path("repo"), {"items": [], "root": root, "worker": os.getpid()})
+            with contextlib.redirect_stdout(io.StringIO()):
+                enqueue(root, "W-78", by="eager")
+            again = read_json(os.path.join(rdir, "repo.W-78.merge.json"), {})
+            tl = open(os.path.join(rdir, "repo.W-78.jsonl"), encoding="utf-8").read()
+            check("enqueue: over a merged record the dossier is queued afresh (no old prs or note) and the timeline names the earlier merge",
+                  again.get("state") == "queued" and again.get("prs") == [] and not again.get("note") and "#595, #614" in tl and "new pull request" in tl, f"{again} {tl}")
             write_json(queue_path("repo"), {})
         finally:
             os.environ.clear(); os.environ.update(saved_env)

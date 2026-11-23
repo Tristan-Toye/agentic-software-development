@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.invalid/visual-review/graph.schema.json",
-  "title": "Change graph (version 1.0.0)",
+  "title": "Change graph (version 1.1.0)",
   "description": "One graph for one view. Language-neutral: no field names a Rust concept (OQ-10); the language lives in the values of kind, in the evidence path and in meta.tools. STABLE ID RULE: an id is derived from the kind plus the qualified name of the thing it names (crate:harness, module:harness::tools::step, fn:harness::tools::step::run_group); an edge id is derived from its kind and its two end ids (edge:depends:crate:a:crate:b). An id is never derived from a counter or an array position, so the same element has the same id in the before graph and the after graph and VR-02 can join on it. Hand-made ids (fixtures) may be short, but must stay unique. A view is L0 (features), L1 (steps), L2 (components), or full (an unbudgeted extractor graph from which VR-05 picks the views a reviewer sees). Mermaid ids (vr_mermaid.py): message ids are msg:<from>:<to>:<slug>-<h6> and note ids note:<position>:<anchors>:<slug>-<h6> (slug = the text's words, at most 32 characters, cut at a word boundary; h6 = 6 decimal digits from sha1 over the content, digits so that no suffix spells a word a spell checker flags); the same content sent twice gets the suffix .2, .3 by order of occurrence.",
   "type": "object",
   "required": [
@@ -30,9 +30,10 @@
         "c2",
         "c3",
         "c4",
-        "seq"
+        "seq",
+        "decision"
       ],
-      "description": "L0, L1, L2 are budgeted (15 features, 12 steps, 12 nodes; groups not counted). map is the whole-repo product map: at most 7 top-level groups (the folded first view) and at most 15 nodes in any group. full is not budgeted. c1, c2, c3, c4 (context, containers, components, classes) and seq (a sequence diagram) are the architecture-doc views, imported from and rendered to Mermaid by vr_mermaid.py (JSON is the source, the Mermaid block is generated); they are not budgeted. c1, c2, c3 and c4 lay out like map (groups for subgraphs and namespaces); seq lays out like L1 (participants are lanes, each message or note is a step node on its sender's lane, the order is flows[0].after)."
+      "description": "L0, L1, L2 are budgeted (15 features, 12 steps, 12 nodes; groups not counted). map is the whole-repo product map: at most 7 top-level groups (the folded first view) and at most 15 nodes in any group. full is not budgeted. c1, c2, c3, c4 (context, containers, components, classes) and seq (a sequence diagram) are the architecture-doc views, imported from and rendered to Mermaid by vr_mermaid.py (JSON is the source, the Mermaid block is generated); they are not budgeted. c1, c2, c3 and c4 lay out like map (groups for subgraphs and namespaces); seq lays out like L1 (participants are lanes, each message or note is a step node on its sender's lane, the order is flows[0].after). decision (1.1.0) is a decision flow of one change: terminal start and end nodes, process and io steps, decision diamonds with 2 or 3 labelled exits; at most 14 nodes and 5 decisions (own checks in vr_graph.py). It is review-only: never promoted into docs/architecture."
     },
     "title": {
       "type": "string",
@@ -433,7 +434,7 @@
         },
         "shape": {
           "type": "string",
-          "description": "Flowchart node shape: rect (default), round, stadium, cylinder, circle, diamond, subroutine, asymmetric, bare (an id alone) or implicit (only used in an edge: nothing is written for it)."
+          "description": "Flowchart node shape: rect (default), round, stadium, cylinder, circle, diamond, subroutine, asymmetric, bare (an id alone) or implicit (only used in an edge: nothing is written for it). View decision: terminal (alias stadium), process (alias rect), decision (alias diamond), io (parallelogram), junction (alias circle); any other value is bad_shape there."
         },
         "stereotype": {
           "type": "string",
@@ -501,6 +502,31 @@
             "publish"
           ],
           "description": "L1 step: how the step reaches `to`: call, reply, async or publish. Required on every step of a flow with new_stem."
+        },
+        "terminal": {
+          "enum": [
+            "start",
+            "end"
+          ],
+          "description": "View decision, shape terminal only: the one start (exactly 1) or an end (at least 1) of the flow."
+        },
+        "outcome": {
+          "enum": [
+            "ok",
+            "error"
+          ],
+          "description": "View decision, terminal end only: how the flow ends (shown as a tag, not only as a colour)."
+        },
+        "io": {
+          "enum": [
+            "in",
+            "out"
+          ],
+          "description": "View decision, shape io only: the step reads input (in) or writes output (out); only for real I/O (file, queue, HTTP, DB)."
+        },
+        "step": {
+          "$ref": "#/$defs/id",
+          "description": "View decision: id of the L1 step this node restates (cross highlighting). Checked against l1.json by `vr_graph.py validate --l1`."
         }
       }
     },
@@ -554,6 +580,17 @@
         "arrow": {
           "type": "string",
           "description": "The Mermaid operator exactly as written (-->, -.->, ==>, ..|>, ..>, <|--, ...), so render restores it; kind is the readable name of it."
+        },
+        "branch": {
+          "enum": [
+            "yes",
+            "no",
+            "case",
+            "default",
+            "error",
+            "loop"
+          ],
+          "description": "View decision: kind of branch an exit of a decision is (layout and visual hint); `label` stays the text."
         }
       }
     },

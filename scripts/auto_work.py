@@ -46,7 +46,7 @@ the `queued` state, the account routing and every owner question apply unchanged
 (`merge_dossier.py ID --enqueue`, the Merge button's entry point), so the stub grows during the week and Integrate has
 little left to merge. Finished is the same as for a cycle member: build done (status `pr` or `done`), no run live (so a
 fix-deferred run is over) and no open deferred item left (one the owner ruled to stay open does not count). The dossier
-must have an open pull request into an open stub. A dossier whose `<repo>.<dossier>.merge.json` exists is never enqueued
+must have an open pull request into an open stub. A dossier whose `<repo>.<dossier>.merge.json` exists is never enqueued (a `merged` one only until a later run of it, e.g. /fix-deferred, finishes with a new open PR: blocks_eager)
 again (queued, running, waiting, merged, failed or cancelled: a failed one waits for the owner). It works with auto work
 on or off; with the switch off nothing of this runs.
 
@@ -698,12 +698,26 @@ def enqueue_merge(root: str, dossier: str, by: str = "button") -> tuple[bool, st
     return run_runner([sys.executable, script, dossier, "--enqueue", "--root", root, "--by", by])
 
 
+def blocks_eager(repo: str, run: dict) -> bool:
+    """Whether the dossier's `<repo>.<ID>.merge.json` keeps it out of eager merge. Any record does (queued, running, merging,
+    waiting, failed, cancelled: a failure or a cancel is the owner's to retry), except a `merged` one that the dossier has
+    outlived: its run started after the merge (a /fix-deferred run that opened a new stacked PR), so what is open on the
+    stub now is not what that record merged. One local file read per dossier: no gh call."""
+    path = os.path.join(runs_dir(), f"{repo}.{run['id']}.merge.json")
+    if not os.path.exists(path):
+        return False
+    rec = read_json(path, {}) or {}
+    rn = run.get("runner") or {}
+    if rec.get("state") != "merged" or rn.get("command") in ("after-merge", "resolve-merge"):
+        return True
+    return not (rn.get("started") and rec.get("ts") and str(rn["started"]) > str(rec["ts"]))
+
+
 def eager_step(repo: str, root: str, facts: dict) -> list[str]:
     """Eager merge: every finished dossier on an open stub joins the merge queue, once; with kanban on, so does every finished
     kanban dossier with an open PR into development, while development's CI is green. Returns the ones enqueued."""
     stubs = [s["branch"] for s in facts.get("stubs") or [] if s.get("branch")]
-    unqueued = [r for r in facts.get("runs") or []
-                if not os.path.exists(os.path.join(runs_dir(), f"{repo}.{r['id']}.merge.json"))]   # any record: queued, running, merged, waiting, failed, cancelled
+    unqueued = [r for r in facts.get("runs") or [] if not blocks_eager(repo, r)]
     todo = [r for r in unqueued if finished_run(r)]
     held = [r for r in unqueued if held_by_deferred(r)]
     if not todo and not held:
@@ -1280,6 +1294,22 @@ def selftest() -> int:
         for state_ in ("merging", "waiting", "cancelled", "cleanup"):
             json.dump({"state": state_}, open(P(f"{repo}.E1.merge.json"), "w")); tk()
         check("any other record state is left alone too", not [l for l in log()[n_before:] if l.startswith("enqueue")])
+        # A merged record does not outlive the dossier: a later run (/fix-deferred) that finished with a new open PR on the stub queues it again.
+        keep_runs = list(facts_runs)
+        open(stubf, "w").write("E10\nE11\nE12\nE13\n")
+        facts_runs[:] = [run_("E10", "done", runner=runner("done", "fix-deferred", started="2026-11-21T14:00:00Z")),   # merged 03:41, fix-deferred ran after: new PR
+                         run_("E11", "done", runner=runner("done", "work-on", started="2026-11-20T10:00:00Z")),        # merged after its last run: nothing new
+                         run_("E12", "done", runner=runner("done", "fix-deferred", started="2026-11-21T14:00:00Z")),   # queued: once
+                         run_("E13", "done", runner=runner("done", "fix-deferred", started="2026-11-21T14:00:00Z"))]   # merged, rerun, but no open PR on the stub
+        for k, v in (("E10", "merged"), ("E11", "merged"), ("E12", "queued"), ("E13", "merged")):
+            json.dump({"state": v, "prs": [594], "ts": "2026-11-21T03:41:08Z"}, open(P(f"{repo}.{k}.merge.json"), "w"))
+        open(stubf, "w").write("E10\nE11\nE12\n")
+        n_before = len(log()); tk()
+        check("merged record + a later run finished with a new open PR on the stub: queued again; no new run, a queued record, or no open PR: not",
+              [l for l in log()[n_before:] if l.startswith("enqueue")] == [f"enqueue E10 --enqueue --root {root} --by eager"], log()[n_before:])
+        facts_runs[:] = keep_runs
+        open(stubf, "w").write("E1\nE2\nE3\nE4\nE5\nE6\nE7\n")
+        for k in ("E10", "E11", "E12", "E13"): os.remove(P(f"{repo}.{k}.merge.json"))
         def held_lines() -> list[str]:
             try:
                 return [l for l in open(P(f"{repo}.E3.jsonl"), encoding="utf-8") if "eager merge: held" in l]
