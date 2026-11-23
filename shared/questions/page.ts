@@ -193,6 +193,7 @@ header{padding:10px 24px}
 .rmeta{font-size:11.5px;color:var(--mut);white-space:nowrap}
 .srow:has(.chip.fixing),.srow:has(.chip.queued){box-shadow:none}
 .nowline .chip{background:none;padding:0}
+.stagelbl{color:var(--acc)}
 .empty{padding:16px 4px}
 .skel{display:flex;flex-direction:column;gap:10px;margin-top:28px}.skel i{display:block;height:44px;border-radius:12px;background:var(--card);border:1px solid var(--bd)}.skel i:first-child{height:132px}
 @media (max-width:640px){.srows{display:block}.srow{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:12px}.sright{flex-wrap:wrap}}
@@ -958,7 +959,7 @@ function runningView() {
     if (laneChip(r)) right.push(laneChip(r));
     if (r.blocked) right.push(chip(r.blocked + ' blocked', 'blocked'));
     return h('a', { class: 'srow', href: hrefItem(r.repo, r.id), 'data-k': 'run:' + r.repo + '/' + r.id, 'data-rank': String(nq ? 0 : ['queued', 'paused', 'parked'].includes(r.runner.state) ? 2 : 1) }, [h('span', { class: 'sid mono' }, [r.id]),
-      h('span', { class: 'sname' }, [h('span', {}, [r.title]), h('span', { class: 'small mut rsub' }, [rlabel(r.repo) + ' · ' + (stageText(r) || 'starting') + (last ? ' · ' : ''), last ? when(last.ts, 'last update ') : null]), nowLine(r)]),
+      h('span', { class: 'sname' }, [h('span', {}, [r.title]), h('span', { class: 'small mut rsub' }, [rlabel(r.repo) + ' · ', h('span', { class: 'stagelbl' }, [stageText(r) || 'starting']), last ? ' · ' : '', last ? when(last.ts, 'last update ') : null]), nowLine(r)]),
       h('span', { class: 'sright' }, right)]);
   });
   // A /plan run of a deferred item before its dossier exists: linked to the source dossier's Deferred tab.
