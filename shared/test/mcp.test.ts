@@ -60,6 +60,7 @@ check(
       Object.values(t.inputSchema.properties).every((p: any) => ["string", "number", "boolean", "array"].includes(Array.isArray(p.type) ? p.type[0] : p.type) && typeof p.description === "string"),
   ),
 )
+check("tools/list: every nav tool is always loaded", list.every((t: any) => t._meta?.["anthropic/alwaysLoad"] === true && t.description.length < 4096))
 check("tools/list: claude host sentence", list.find((t: any) => t.name === "phase_checkpoint").description.includes("does not cut"))
 
 // doc_section on a fixture, relative to CLAUDE_PROJECT_DIR.
