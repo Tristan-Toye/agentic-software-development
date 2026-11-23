@@ -101,7 +101,12 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
    lines is itself a finding.
 2. **`AMBIGUITY:` lines** — one per member where two readings are possible,
    each naming the member, the two readings, and the docstring sentence both
-   readings come from, quoted verbatim, and an `IMPACT:` mark: `high` when the
+   readings come from, quoted verbatim, and three more fields:
+   `SITE: <path>::<member>` (the file and member the doc comment belongs to,
+   one key per member); `ASSERT-A:` and `ASSERT-B:`, the one concrete assertion
+   a test author would write under each reading (a line of test code or one
+   plain sentence, never a recommendation), so the orchestrator rules by
+   choosing a line; and an `IMPACT:` mark: `high` when the
    readings differ in what a caller observes (a return value, an error, an
    order, persisted state, a signature or a type another package or dossier
    uses), `low` when they differ only in wording or in an internal detail no
@@ -109,8 +114,12 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
 3. **`DEFECT:` lines** — unstated visibility, unmeasurable words, criteria
    the contract cannot reach, members with no observable promise.
 4. Counts: members reviewed, checklist lines, ambiguities, defects.
-5. `NOTICED:` — anything in the stubs the payload did not mention (explicit
-   `none` allowed). This line is always last.
+5. `SETTLE-MAP:` — mandatory, even when there is none (`SETTLE-MAP: none`):
+   every `SITE:` of your `AMBIGUITY:` lines once, comma-separated, in the
+   order reported. The orchestrator logs `AMBIGUITY-SETTLED site=<key>` for
+   each, and `budget_report.py` joins a later row-3 arbitration to it.
+6. `NOTICED:` — anything in the stubs the payload did not mention (explicit
+   `none` allowed). This line is always last, after `SETTLE-MAP:`.
 
 ## Rules
 
