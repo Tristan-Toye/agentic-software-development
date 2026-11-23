@@ -877,8 +877,9 @@ function runningView() {
   // A /plan run of a deferred item before its dossier exists: linked to the source dossier's Deferred tab.
   (S.plans || []).forEach(p => {
     const right = [runChip(p.state)]; if (p.account) right.push(chip('account ' + p.account, 'neutral'));
-    rows.push(h('a', { class: 'srow', href: hrefItem(p.repo, p.src), 'data-k': 'plan:' + p.key }, [h('span', { class: 'sid mono' }, [p.src + ' ' + p.item]),
-      h('span', { class: 'sname' }, [h('span', {}, ['Planning: ' + p.title]), h('span', { class: 'small mut rsub' }, [rlabel(p.repo) + ' · new dossier from ' + p.src + ' ' + p.item + (p.lastTs ? ' · ' : ''), p.lastTs ? when(p.lastTs, 'last update ') : null])]),
+    // A free-form /plan (src empty): no source dossier to link to.
+    rows.push(h(p.src ? 'a' : 'div', { class: 'srow', ...(p.src ? { href: hrefItem(p.repo, p.src) } : {}), 'data-k': 'plan:' + p.key }, [h('span', { class: 'sid mono' }, [p.src ? p.src + ' ' + p.item : p.item]),
+      h('span', { class: 'sname' }, [h('span', {}, ['Planning: ' + p.title]), h('span', { class: 'small mut rsub' }, [rlabel(p.repo) + (p.src ? ' · new dossier from ' + p.src + ' ' + p.item : ' · new dossier from a free-form brief') + (p.lastTs ? ' · ' : ''), p.lastTs ? when(p.lastTs, 'last update ') : null])]),
       h('span', { class: 'sright' }, right)]));
   });
   const nAll = live.length + (S.plans || []).length;

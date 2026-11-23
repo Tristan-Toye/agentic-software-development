@@ -41,6 +41,9 @@ points at:
   `/work-on` returned lives there; copy that one file into a fresh plan
   worktree made as below and leave the build worktree for the user to
   remove. Never plan on a build branch.
+- **A brief file** (`the description in <path>`, as the runner's `--seed`
+  passes it) → read the file: it is the free-form description, classified
+  like any other. It is not code to trace.
 - **A stack trace or a log excerpt** → the frames are your first anchors.
 - **A file path or a symbol** → your starting point for the trace.
 - **A free-form description** → an intent. Restate it in one sentence and show

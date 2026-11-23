@@ -462,6 +462,38 @@ def key_of(root: str, dossier: str) -> str:
     return f"{main_repo_name(root)}.{dossier}"
 
 
+# A free-form /plan (`--seed FILE`): no dossier exists yet, so the run is keyed by a slug, `<repo>.seed-<slug>`, and the
+# description is kept beside the run's records (`<key>.seed.md`), where every restart (revive, Resume) finds it again.
+SEED_RE = re.compile(r"seed-[a-z0-9][a-z0-9-]{0,60}")
+SEED_MAX = 64 * 1024
+
+
+def seed_path(root: str, dossier: str) -> str:
+    return os.path.join(runs_dir(), key_of(root, dossier) + ".seed.md")
+
+
+def store_seed(root: str, dossier: str, src: str) -> str:
+    """Copy the seed file to `<key>.seed.md` (atomically); "" when stored, else why not."""
+    try:
+        text = open(src, encoding="utf-8").read()
+    except (OSError, UnicodeDecodeError) as e:
+        return f"cannot read the seed {src}: {e}"
+    if not text.strip():
+        return f"the seed {src} is empty"
+    if len(text.encode("utf-8")) > SEED_MAX:
+        return f"the seed {src} is over {SEED_MAX // 1024} KiB; a seed is a brief, not a document"
+    dst = seed_path(root, dossier)
+    st = read_json(dst[:-len(".seed.md")] + ".runner.json", {}) or {}
+    if os.path.exists(dst) and open(dst, encoding="utf-8").read() != text and st.get("state") in ("running", "waiting", "queued", "paused", "testing"):
+        return f"a run of {dossier} with another seed is live; pick another slug"
+    os.makedirs(runs_dir(), exist_ok=True)
+    tmp = dst + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, dst)
+    return ""
+
+
 def run_key(root: str, dossier: str, command: str = "work-on", items: str = "") -> str:
     """The run's key: `<repo>.<ID>`, and for a `plan` run of a routed deferred item `<repo>.<ID>.plan-<D-n>`, so the
     planners of several items run at once, beside the source dossier's own run."""
@@ -1425,6 +1457,7 @@ class Runner:
         self.root = os.path.abspath(root)
         self.dossier = dossier
         self.command = command
+        self.seed = seed_path(root, dossier) if command == "plan" and not items and SEED_RE.fullmatch(dossier) else ""
         self.items = items  # fix-deferred: the D-ids the owner selected, "D-1,D-3" (empty = all); after-merge: the merged PR numbers, "429,430"
         self.model = runner_model(model) if command != "product-summary" else model
         self.permission_mode = permission_mode
@@ -1646,6 +1679,8 @@ class Runner:
             return f"/{PLUGIN}:stub {self.items}"
         if self.command == "work-on" and self.plan_branch:
             return f"/{PLUGIN}:work-on {self.dossier} plan-branch={self.plan_branch}"
+        if self.seed:
+            return f"/{PLUGIN}:plan the description in {self.seed} (read that file first: it is the whole brief, a free-form description, not a dossier)"
         return f"/{PLUGIN}:{self.command} {self.dossier}" + (f" {self.items}" if self.items and self.command in ITEM_COMMANDS else "")
 
     def handoff(self) -> str | None:
@@ -3269,7 +3304,7 @@ class Runner:
         /work-on. Committed mode with the plan PR still open: /work-on stacked on the plan branch (`plan-branch=`), which
         forks from the stub as always and cherry-picks the plan commits (work-on Phase 2). A plan that did not reach
         ready, or a ready copy found nowhere, is logged and left to the owner. `ASD_RUNNER_REQUEUE=0` turns it off."""
-        if self.command != "plan" or self.items or os.environ.get("ASD_RUNNER_REQUEUE", "1") == "0":
+        if self.command != "plan" or self.items or self.seed or os.environ.get("ASD_RUNNER_REQUEUE", "1") == "0":
             return
         if not was_built_before(self.updates):
             return
@@ -4980,6 +5015,28 @@ def selftest() -> int:
         p = start("W-41", "--command", "plan")
         check("plan: with no item it plans the dossier itself under its own key", p.wait(timeout=60) == 0 and msgs(1)[0] == f"/{PLUGIN}:plan W-41" and state_of("W-41").get("command") == "plan")
 
+        # ---- plan --seed: a free-form /plan under a seed-<slug> key, the brief kept beside the run ----
+        seedf = os.path.join(tmp, "brief.md")
+        open(seedf, "w").write("Rate-limit the webhook route.\nDetails.\n")
+        scenario([{"turns": [[{"final": "planned W-60\nRUNNER: DONE"}]]}])
+        p = start("seed-webhook-limit", "--command", "plan", "--seed", seedf)
+        rc = p.wait(timeout=60)
+        kept = os.path.join(rdir, "repo.seed-webhook-limit.seed.md")
+        check("seed: the brief is copied beside the run's records", rc == 0 and open(kept).read() == open(seedf).read())
+        check("seed: the session gets /plan with the kept brief's path", msgs(1)[0].startswith(f"/{PLUGIN}:plan the description in {kept}"))
+        check("seed: runs under <repo>.seed-<slug>, and no /work-on is requeued", state_of("seed-webhook-limit").get("state") == "done"
+              and not any("requeued" in t for t in texts("seed-webhook-limit")))
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        p = start("seed-webhook-limit", "--command", "plan")
+        check("seed: a restart without --seed finds the kept brief", p.wait(timeout=60) == 0 and msgs(1)[0].startswith(f"/{PLUGIN}:plan the description in {kept}"))
+        for bad_args, why in ((["seed-nope", "--command", "plan"], "no stored seed"),
+                              (["seed-webhook-limit", "--command", "work-on"], "a seed id with another command"),
+                              (["W-61", "--command", "plan", "--seed", seedf], "--seed with a dossier id"),
+                              (["seed-Bad_Slug", "--command", "plan", "--seed", seedf], "a slug outside seed-<lowercase words>"),
+                              (["seed-empty", "--command", "plan", "--seed", os.devnull], "an empty seed")):
+            r = subprocess.run([sys.executable, me, "--root", root, "--dossier", bad_args[0], "--foreground", *bad_args[1:]], env=env, capture_output=True, text=True, timeout=30)
+            check(f"seed: refused: {why}", r.returncode == 2)
+
         # ---- #239: a stage end waits for background work the session launched ----
         J = lambda o: json.dumps(o)
         lines = [J({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"description": "Run the VM suite"}}]}}),
@@ -5984,6 +6041,8 @@ def main() -> int:
     ap.add_argument("--permission-mode", default="auto")
     ap.add_argument("--max-stages", type=int, default=20)
     ap.add_argument("--plan-branch", default="", help="work-on: build stacked on this unmerged plan branch (committed mode, after a re-plan): the plan commits are cherry-picked onto the build branch")
+    ap.add_argument("--seed", default="", metavar="FILE", help="plan: a free-form /plan from this description file; the id is a slug "
+                    "seed-<words> (no dossier exists yet). The file is copied beside the run's records, so restarts find it")
     ap.add_argument("--items", default="", help="fix-deferred: the D-ids to fix, e.g. D-1,D-3 (default: every open item); after-merge: the merged PR numbers, e.g. 429,430")
     ap.add_argument("--detach", action="store_true", help="the default: run in the background; output to <key>.runner.log")
     ap.add_argument("--foreground", action="store_true", help="run in this terminal instead of the background")
@@ -6000,6 +6059,22 @@ def main() -> int:
                       or (a.command == "stub" and re.fullmatch(r"(?:stub|release)/[\w.-]+", items))):
         print("run_dossier.py: --items takes D-ids (D-1,D-3) with --command fix-deferred, PR numbers (429,430) with --command after-merge, "
               "or one D-id with --command plan", file=sys.stderr)
+        return 2
+    if SEED_RE.fullmatch(a.dossier) and (a.command != "plan" or items):
+        print("run_dossier.py: a seed-<slug> id is only a free-form /plan (--command plan --seed FILE, no --items)", file=sys.stderr)
+        return 2
+    if a.seed:
+        if a.command != "plan" or items or not SEED_RE.fullmatch(a.dossier):
+            print("run_dossier.py: --seed takes --command plan and an id seed-<slug> (lowercase words and dashes), no --items", file=sys.stderr)
+            return 2
+        why = store_seed(a.root, a.dossier, a.seed)
+        if why:
+            print(f"run_dossier.py: {why}", file=sys.stderr)
+            return 2
+        i = argv.index("--seed") if "--seed" in argv else -1
+        argv = argv[:i] + argv[i + 2:] if i >= 0 else [x for x in argv if not x.startswith("--seed=")]
+    elif a.command == "plan" and SEED_RE.fullmatch(a.dossier) and not os.path.isfile(seed_path(a.root, a.dossier)):
+        print(f"run_dossier.py: no seed stored for {a.dossier}; pass --seed FILE", file=sys.stderr)
         return 2
     if a.plan_branch and (a.command != "work-on" or not re.fullmatch(r"plan/[\w./-]+", a.plan_branch) or ".." in a.plan_branch):
         print("run_dossier.py: --plan-branch takes a plan/<KEY> branch, with --command work-on", file=sys.stderr)
