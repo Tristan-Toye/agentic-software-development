@@ -27,6 +27,11 @@ Usage:
         [--package-worktree P1=/path/to/p1] [--expected-hook-output 'docs/**/anchors.json'] \\
         [--log DOSSIER_FILE]
 
+    --wave-args FILE   (/fix-deferred) the phase4-wave args file compose_payloads.py --crs wrote: each
+        item `FIX-<PKG>` names the package, its branch, its worktree (removed after its merge) and its
+        owned paths, which extend the package's row for the scope check (a fix package also owns the
+        paths its change requests name and its proving test). Replaces the --branch list.
+
 Shadow mode merges in a throwaway worktree of X's HEAD and removes nothing.
 Modes, exit codes and the evidence file: see driver_common.py.
 """
@@ -154,6 +159,18 @@ def run(d: dc.Driver, args) -> int:
         raise dc.Surprise("--worktree is required: the working directory is not inside a git work tree")
     wt = os.path.abspath(args.worktree)
     notes: list[str] = []
+    extra_owned: dict[str, list[str]] = {}
+    if args.wave_args:
+        import json
+        with open(args.wave_args, encoding="utf-8") as fh:
+            wave = json.load(fh)
+        for it in (wave["items"] if isinstance(wave, dict) else wave):
+            pid = str(it.get("label", "")).split("-", 1)[-1]
+            args.branch.append(f"{pid}={it['branch']}")
+            if os.path.realpath(it["root"]) != os.path.realpath(wt):
+                args.package_worktree.append(f"{pid}={it['root']}")
+            extra_owned[pid] = [os.path.relpath(o, it["root"]) for o in it.get("owned") or []]
+        d.facts["wave_args"] = args.wave_args
     if not args.branch:
         # no --branch: the staged implementer payloads (.agent-staging/payloads/*.md) name each package's branch
         found, notes = dc.derive_branches(wt)
@@ -168,7 +185,10 @@ def run(d: dc.Driver, args) -> int:
     dossier_file = dc.resolve_dossier(args.root, args.dossier, args.log, also=(wt,))
     if not os.path.isfile(dossier_file):
         raise dc.Surprise(f"dossier file not found: {dossier_file} (give --dossier or --log)")
-    order = merge_order(parse_package_table(open(dossier_file, encoding="utf-8").read()))
+    rows = parse_package_table(open(dossier_file, encoding="utf-8").read())
+    for r in rows:
+        r["owned"] = r["owned"] + extra_owned.get(r["id"], [])
+    order = merge_order(rows)
     branches = {}
     for spec in args.branch:
         pid, _, br = spec.partition("=")
@@ -207,6 +227,7 @@ def build_parser(ap) -> None:
     ap.add_argument("--worktree", help="the build worktree X")
     ap.add_argument("--branch", action="append", default=[], metavar="PKG=BRANCH", help="a package's implementer branch (repeatable)")
     ap.add_argument("--package-worktree", action="append", default=[], metavar="PKG=PATH", help="remove this package's worktree after its merge (mode on)")
+    ap.add_argument("--wave-args", metavar="FILE", help="a fix wave's phase4-wave args: branches, worktrees and owned paths come from it")
     ap.add_argument("--expected-hook-output", action="append", default=[], metavar="GLOB", help="EXPECTED_HOOK_OUTPUTS glob accepted outside OWNED_PATHS")
 
 
@@ -304,6 +325,40 @@ def selftest() -> int:
         dc.fixture_git(x2, "branch", "pkg-other")
         rc, out = dc.run_self("merge_packages.py", "--dossier", "W-4", "--root", main2, env=env, cwd=x2)
         c("two branches for one package are not derived, the error stays clear", rc == 2 and "--branch" in out and "2 branches" in out)
+
+        # --wave-args (/fix-deferred): branches, worktrees and the extra owned paths come from the wave file
+        import json
+        main3 = os.path.join(tmp, "main3")
+        dc.fixture_repo(main3)
+        dc.fixture_commit(main3, "README", "r\n", "init")
+        x3 = os.path.join(tmp, "x3")
+        dc.fixture_git(main3, "worktree", "add", "-q", "-b", "fix/w-5-deferred", x3)
+        dc.fixture_write(x3, ".discovery/dossiers/W-5-slug.md", "---\nid: W-5\n---\n" + table + "\n## Build log\n")
+        items = []
+        for pid, br, rel, extra in (("P1", "fix/w-5-deferred-p1", "src/flush.py", "tests/test_flush.py"),
+                                    ("P2", "fix/w-5-deferred-p2", "src/reload.py", "tests/stray.py")):
+            w = os.path.join(tmp, "main3-" + pid)
+            dc.fixture_git(main3, "worktree", "add", "-q", "-b", br, w, "fix/w-5-deferred")
+            dc.fixture_commit(w, rel, "x = 1\n", br)
+            dc.fixture_commit(w, extra, "t = 1\n", br + " test")
+            owned = [os.path.join(w, rel)] + ([os.path.join(w, extra)] if pid == "P1" else [])
+            items.append({"label": "FIX-" + pid, "branch": br, "root": w, "owned": owned})
+        wave_file = os.path.join(tmp, "wave.json")
+        with open(wave_file, "w", encoding="utf-8") as fh:
+            json.dump(items, fh)
+        wa = ["--worktree", x3, "--dossier", "W-5", "--root", main3, "--wave-args", wave_file]
+        rc, out = dc.run_self("merge_packages.py", *wa, env=env)
+        c("--wave-args: a package touching a path the wave did not give it stops, nothing of it merged",
+          rc == 2 and "tests/stray.py" in out and not os.path.isfile(os.path.join(x3, "src", "reload.py")))
+        c("--wave-args: P1 merged first, with its proving test as an extra owned path",
+          os.path.isfile(os.path.join(x3, "src", "flush.py")) and os.path.isfile(os.path.join(x3, "tests", "test_flush.py")))
+        items[1]["owned"].append(os.path.join(tmp, "main3-P2", "tests/stray.py"))
+        with open(wave_file, "w", encoding="utf-8") as fh:
+            json.dump(items, fh)
+        rc, out = dc.run_self("merge_packages.py", *wa, env=env)
+        c("--wave-args: both merge once the wave owns the path, and both worktrees are removed",
+          rc == 0 and os.path.isfile(os.path.join(x3, "src", "reload.py"))
+          and not os.path.exists(os.path.join(tmp, "main3-P1")) and not os.path.exists(os.path.join(tmp, "main3-P2")))
     return c.report()
 
 

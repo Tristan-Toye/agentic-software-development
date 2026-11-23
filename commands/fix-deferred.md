@@ -47,14 +47,15 @@ dossier file it names (`.discovery/dossiers/<ID>-*.md` in `<WT>`), `<S>` is
 
 | Work | One call |
 |---|---|
-| Triage, stacked branch and worktree, change requests, payloads (Steps 1 to 3) | `python3 <S>/fix_deferred_prep.py --root <R> --dossier <ID> [--items D-1,D-3] [--direct D-4] [--report <path>] [--test-command '<cmd>'] [--env-script <file>]` |
+| Triage, stacked branch and worktree, change requests, payloads (Steps 1 to 3) | `python3 <S>/fix_deferred_prep.py --root <R> --dossier <ID> [--items D-1,D-3] [--direct D-4] [--report <path>] [--test-command '<cmd>'] [--assign D-n=<package>] [--env-script <file>]` |
 | Ask the owner about one `ask` item | `python3 <S>/ask_owner.py ask --root <R> --dossier <ID> --kind design --question '<text>' --option 'A|<label>|<consequence>' --option 'B|…|…' --option 'C|…|…' --recommend A --blocks '<what waits>' --build-log <DOSSIER>` (prints the question id) |
 | Wait for the answer, only when nothing else can proceed | `python3 <S>/ask_owner.py wait <question id> --build-log <DOSSIER>` |
 | Log a line to the dossier's `## Build log` | `python3 <S>/dossier_edit.py log <DOSSIER> '- DEFERRED-RULING: D-n — <ruling>' '- …'` |
 | Read the record | `python3 <S>/build_records.py deferred show <ID> --root <R>` |
 | Set an item's state (only when no script above does it) | `python3 <S>/build_records.py deferred set <ID> D-n --state fixing\|fixed\|dossier\|wontfix [--note <sha>] --root <R> --log <DOSSIER>` |
 | Check a change-request document | `python3 <S>/check_crs.py <CRS file>` (drop a demoted one: `--drop CR-2 --out <file>`) |
-| Route the change requests to fix payloads | `python3 <S>/compose_payloads.py --kind implementer --dossier <DOSSIER> --root <WT> --host claude --crs <CRS file> --out <WT>/.agent-staging/payloads/fix-wave.json --hooks '<text>' [--test-command '<cmd>'] [--assign CR-2=P1]` |
+| Merge the fix packages (Step 4) | `ASD_DRIVER_MERGE_PACKAGES=on python3 <S>/merge_packages.py --dossier <ID> --worktree <WT> --wave-args <WT>/.agent-staging/payloads/fix-wave.json` |
+| Add a review finding the run will not fix to the deferred list | `python3 <S>/build_records.py deferred add <ID> --root <R> --log <DOSSIER> --title '<claim>' --kind <kind> --loc <path:line> --evidence '<text>' --fix '<text>'` |
 | Run the proving tests and the touched packages, once | `python3 <S>/run_tests.py --log <WT>/.agent-staging/fix-tests.log --cwd <WT> [--vm <name> --workdir <WT> --env-script <file>] -- <one command naming every proving test and package>`; a run over 10 minutes: add `--detach`, then `python3 <S>/run_tests.py --wait <WT>/.agent-staging/fix-tests.log` |
 | Run the gates | `python3 <S>/run_gates.py <gates file> --root <WT> [--only a,b] [--env-script <file>] [--build-log <DOSSIER>]` (gates file: the dossier's `GATES:` line, else `.discovery/analysis/gates-<ID>.txt`) |
 | Revert a fix that did not hold | `python3 <S>/safe_revert.py --repo <WT> <path> [<path> …]` (uncommitted), or `git -C <WT> revert --no-edit <sha>` (committed) |
@@ -159,43 +160,66 @@ Go on with the direct items while the questions are open; under the runner,
 end the turn with `RUNNER: WAITING <ids>` only when nothing else can proceed.
 The output also gives `UNROUTED: <id> <path> — <why>` when a change request has
 no single owning package: rule on those lines only, then re-run
-`compose_payloads.py` with `--assign <id>=<package>` (the row in the table).
+`fix_deferred_prep.py` with `--assign D-n=<package>` (the row in the table; the
+prep composes again, you never hand-write an assignment for a later wave).
+`GROUPED: <packages> — <path>` lines are information: packages that named the
+same file became one package.
 
-## Step 4 — Fix, test first
+## Step 4 — Fix, test first, packages in parallel
 
 Call `phase_checkpoint` for `Fix-deferred — Step 4 — Fix, test first`.
 
-Everything the Phase 7 fix round does is already done by Steps 1 to 3 except
-the spawn; here is the recipe, so no phase file is read:
+This is /work-on's Phase 4 to 6 machinery without its contract and blind test
+authors: one worktree per fix package, the implementers running concurrently,
+the packages merged mechanically, and the merged batch proved once. No phase
+file is read:
 
 1. `check_crs.py` on the document: `fix_deferred_prep.py` ran it and printed the
    summary. A `demote` line is a change request missing a field: drop it with
    `--drop` and treat the item as a dossier seed only if it cannot be fixed
    without it.
-2. `compose_payloads.py --crs` routed each item to the work package owning its
-   path and wrote one `MODE: fix` payload per package, linted, plus the
-   `phase4-wave` args file `<WT>/.agent-staging/payloads/fix-wave.json`. **A fix
-   package owns every path its CRs name**, across projects. A CR no package
-   owns, or two own, is an `UNROUTED:` line (above); a path two fix packages
-   would both own is `CONFLICT: <path> is named by CRs routed to <A> and <B>`:
-   merge the two packages' CRs into one with `--assign`. The fix payload is
-   never composed or edited by hand, and never passes through your prompt.
-3. Call the `phase4-wave` workflow **once**, with the array in that JSON file
-   as `args`. The spawn guard checks every payload before the launch and
-   `verify_return.py` checks every return, so there is nothing to verify by
-   hand. Fix implementers that share `<WT>` run one after another inside the
-   workflow, each **alone** in `<WT>`: the tests exist only in what each writes
-   now, so never run anything that edits `<WT>` beside the wave, and never over
-   an uncommitted change of your own. A returned implementer's
-   `TOUCHED_BEYOND` path is ruled on by you: never another package's owned
-   paths, never the contract files. A second wave (a held-back item, a ruling
-   `B`) is a new `fix_deferred_prep.py` call and a new `phase4-wave` call.
+2. `compose_payloads.py --crs --group-conflicts --package-worktrees` (the prep
+   ran it) routed each item to the work package owning its path and wrote one
+   `MODE: fix` payload per package, linted, plus the `phase4-wave` args file
+   `<WT>/.agent-staging/payloads/fix-wave.json`. **A fix package owns every path
+   its CRs name and every proving-test path** (each CR's `Tests:` line), across
+   projects. Packages whose CRs name the same file are **grouped into one
+   package** (a `GROUPED:` line says which); nothing for you to merge by hand. A
+   CR no package owns is an `UNROUTED:` line (above). Each package has its own
+   worktree `<WT>-<PKG>` on its own branch (`fix/<ID>-deferred-<pkg>`), forked
+   from `<WT>`'s head; its payload's `TEST_COMMAND` is cheap: the proving test
+   plus `run_gates.py --affected-since <fork>` (or `--compile-lint-only`), never
+   the full gates. The fix payload is never composed or edited by hand, and never
+   passes through your prompt.
+3. Call the `phase4-wave` workflow **once**, with the array in that JSON file as
+   `args`. The packages run concurrently, one implementer per worktree; the
+   spawn guard checks every payload before the launch and `verify_return.py`
+   checks every return, so there is nothing to verify by hand. A returned
+   implementer's `TOUCHED_BEYOND` path is ruled on by you: never another
+   package's owned paths. Never run anything that edits a package worktree
+   beside the wave.
+4. **Merge the packages** from `<WT>`, one call:
 
-Each implementer first writes a focused test that fails on the defect, then
-fixes it, so every item ends with its own proving test and its own commit
-(`git_state.py` lists them; the return names each item's test).
+   ```bash
+   ASD_DRIVER_MERGE_PACKAGES=on python3 ${PLUGIN_ROOT}/scripts/merge_packages.py \
+     --dossier <ID> --worktree <WT> --wave-args <WT>/.agent-staging/payloads/fix-wave.json
+   ```
 
-**Prove the batch once, after the whole wave** (never item by item: the
+   It merges each package branch into `<WT>`'s branch, checking each diff
+   against the package's owned paths first (the wave file carries them,
+   including the proving-test paths), and removes the package worktrees. A path
+   outside the owned ones or a conflict stops with exit 2: you take over (read
+   the printed paths, rule, never widen a package silently). A second wave (a
+   held-back item, a ruling `B`) is a new `fix_deferred_prep.py` call, a new
+   `phase4-wave` call and a new merge.
+
+Each implementer first writes a focused test that fails on the defect (in the
+test path it owns), then fixes it, so every item ends with its own proving test
+and its own commit (`git_state.py` lists them; the return names each item's
+test). It runs only that test and the cheap check; **the full gates run once,
+below**.
+
+**Prove the merged batch once, after the merge** (never item by item: the
 recorded runs spent 146 `run_gates` and 93 `run_tests` calls on per-item
 proving). The dossier's `SUITE-COMMAND` and `SUITE:` lines say its suite mode:
 
@@ -210,27 +234,53 @@ proving). The dossier's `SUITE-COMMAND` and `SUITE:` lines say its suite mode:
 - **`ci`**: the same one focused local run, and CI is the verdict.
 - **`local`**: Phase 6's full `SUITE-COMMAND`, through `run_tests.py`.
 
-Then ONE `run_gates.py` call over the paths the branch changed (the gates file,
-`--only` the gates that cover those paths). Every test and gate run goes
-through these two scripts, never a script of your own: their result lines are
-how the owner's timeline shows the suite. Those runs are also the evidence
-Step 5's reviewers get. When the batch is red, read the failure digest (it names each failing test with
-its first assertion and `file:line`; open the log only where it says `truncated`), find
-which item's change broke it, and send only that item through one more wave
-(Step 4.3, with that item's change request). A suite that stays red after
-one fix round for an item turns that item into a dossier seed: revert its
-commits with `safe_revert.py` (or `git revert`), log
-`DEFERRED-TRIAGE: D-n → dossier — fix did not hold`, pass it to Step 6 as
-`--to-dossier`, run the batch once more for the rest, and go on.
+Then ONE `run_gates.py` call, the **full gates**, in `<WT>` (the gates file, no
+`--only` unless the branch touches nothing a gate covers). Every test and gate
+run goes through these two scripts, never a script of your own: their result
+lines are how the owner's timeline shows the suite. Those runs are also the
+evidence Step 5's reviewers get. When the batch is red, read the failure digest
+(it names each failing test with its first assertion and `file:line`; open the
+log only where it says `truncated`), find which item's change broke it, and
+send only that item through one more wave (Step 4.3, with that item's change
+request). A suite that stays red after one fix round for an item turns that
+item into a dossier seed: revert its commits with `safe_revert.py` (or `git
+revert`), log `DEFERRED-TRIAGE: D-n → dossier — fix did not hold`, pass it to
+Step 6 as `--to-dossier`, run the batch once more for the rest, and go on.
 
 ## Step 5 — Review
 
 Call `phase_checkpoint` for `Fix-deferred — Step 5 — Review`.
 
-Run one review round with the `style` and `architecture` lenses through
-`phase7-review`, scoped to this branch's diff. A blocking change request goes
-back through Step 4 once. One still open after that is reported in the pull
-request, never hidden.
+Run one review round with the `style` and `architecture` lenses, scoped to
+this branch's diff (`<fork>..HEAD` of `<WT>`). Compose each lens's payload with
+`compose_payloads.py --kind reviewer --review-base <fork>` (the same call
+/work-on's Phase 7 makes), then call the `phase7-review` workflow **once** with
+`args` an array of one object per lens, exactly:
+
+```
+{ "lens": "style | architecture", "label": "r1 style", "round": 1,
+  "payloadPath": "<the linted reviewer final, absolute, under <WT>/.agent-staging/>",
+  "payloadSha256": "<its hash>", "reportDir": "<WT>/.agent-staging/reviews" }
+```
+
+(`pluginRoot` is an arg of the `phase4-wave` items only: `phase7-review` takes
+none, and never a pasted payload.) The workflow keeps each verbatim document in
+`reportDir` and returns one structured object per lens: read those, not the
+documents. A blocking change request goes back through Step 4 once (one
+package, one wave, one merge, and only the affected tests plus `run_gates.py
+--affected-since` after it, never the full batch again). A change request that
+is **not blocking, or still open after that**, and that this run will not fix
+(style and architecture findings above all) becomes an item of the deferred
+list instead of being carried or hidden:
+
+```bash
+python3 ${PLUGIN_ROOT}/scripts/build_records.py deferred add <ID> --root <R> --log <DOSSIER> \
+  --title '<the CR claim>' --kind <style|architecture> --loc '<path:line>' \
+  --evidence '<the CR evidence>' --fix '<its Required line>' \
+  --boundary '<contract boundary>' --blast-radius '<blast radius>' --source 'fix-deferred review'
+```
+
+and the pull request body says how many went there.
 
 ## Step 6 — The pull request
 
@@ -311,6 +361,9 @@ runner, end with `RUNNER: DONE`.
 - The dossier's own pull request is never edited, rebased or merged by this
   command. The stacked pull request is the only thing it opens, and the
   owner merges it.
-- Prove the branch once, after the whole wave: one `run_tests.py` call and one
+- Packages run concurrently, each in its own worktree; packages that name the
+  same file are one package. The implementer runs its proving test and a cheap
+  check only (`--affected-since`); the full gates run once, in Step 4's batch.
+- Prove the merged branch once, after the merge: one `run_tests.py` call and one
   `run_gates.py` call per batch, never one per item. A script prints what it
   decided: read its output, do not re-derive it with `cat`, `grep` or `--help`.
