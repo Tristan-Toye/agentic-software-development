@@ -102,6 +102,26 @@ PR**, never asked about: the owner chose to fix these items. The script flags
 - has effort `L`, or
 - **no longer applies**: the `path:line` it names is gone.
 
+Before any of that, the script settles what is not the owner's to rule on:
+
+- `DROPPED: D-n` — not product code: its evidence points only at
+  `.discovery/` or `.agent-staging/` files, or is only a pipeline check's
+  output (`validate_pipeline.py`, `check_docs.py`, …). The record says
+  `wontfix`; never ask about it. Such an item belonged in the /deferred
+  report's footer.
+- `COVERED: D-n — W-m (status) cites <ID> D-n` — another dossier already
+  carries it. The record says `dossier`; never ask about it.
+- `CHECK: D-n — <signals> — otherwise <direct|ask: reason>` — development
+  changed the anchored lines since the stack base forked from it, or another
+  dossier's `anchors:` name the same file nearby. Read that commit or that
+  dossier's problem section first. Already fixed on development:
+  `build_records.py deferred set <ID> D-n --state fixed --note "fixed on development by <PR or sha>"`,
+  log `DEFERRED-DROPPED: D-n — fixed on development by <PR or sha>`. Carried
+  by that dossier: `deferred set <ID> D-n --state dossier --note "covered by W-m"`,
+  log `DEFERRED-TRIAGE: D-n → dossier — covered by W-m`. Neither: treat it
+  as the `otherwise` verdict says (a `direct` one is a re-run with
+  `--items D-n --direct D-n`). No owner question for the first two.
+
 Read only the `ask` lines of its output. For each, judge whether the script's
 reason holds (a `no longer applies` line is a fact; an `external` or `L` line is
 yours to confirm in one look at the item). An `ask` item you judge fine to fix

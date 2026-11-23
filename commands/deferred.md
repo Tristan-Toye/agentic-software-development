@@ -92,7 +92,16 @@ Product code only, in code this session touched or read. One of six kinds:
 - `ssot` — one fact with more than one source of truth.
 
 Test gaps, process problems, and tooling nits do not qualify. If you noticed
-one anyway, it goes in the footer — one line, no ID.
+one anyway, it goes in the footer — one line, no ID. The pipeline's own state
+is never product code: an item whose `path:line` evidence points only at
+`.discovery/` or `.agent-staging/` files (dossiers, records, duplicate dossier
+ids), or whose only evidence is a pipeline check's output
+(`validate_pipeline.py`, `check_docs.py`, `vr_mermaid.py`, …), goes in the
+footer. `build_records.py deferred add` refuses it (`out of scope: …`).
+
+Before you mint an item, look once whether another dossier already carries it
+(`grep -l '<path>' .discovery/dossiers/*.md`, and a dossier whose problem says
+"deferred item D-n of <ID>"): then name that dossier in the footer instead.
 
 ## Output — exact structure
 
