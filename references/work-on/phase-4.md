@@ -113,6 +113,17 @@ wave's implementation paths only, never any test author's own TEST_PATHS,
 change, #486; `validate_pipeline.py --pre-fanout` fails an `[IT]` line no integration
 payload carries), and
 leaves every judgement field as `@@FILL_<FIELD>@@` with a one-line hint.
+For the integration author it also runs `support_digest.py` right after it writes
+`sealed-paths.txt`: one `.agent-staging/support-digest.md` per wave (the same bytes
+from every compose, rewritten only when the tree changed) holding only the signatures
+and doc comments of the test support the author may read, named in the payload as
+`SUPPORT_DIGEST`. Never write it by hand; `support_digest.py check --root <X>` re-verifies
+it, and `check_payload.py` refuses one that covers a sealed path. Spawns of one wave
+read it once each instead of each re-reading the harness files (recorded: 41% of this
+author's read bytes were already read by a sibling spawn).
+Do not batch flows into fewer integration spawns to save reads: `TEST_PATHS` stays one path per
+flow (blindness and GAP re-spawn cost are per flow, and one long Write once returned empty);
+the digest removes the duplicated reads without merging spawns.
 Replace each `@@FILL_…@@` yourself — `check_payload.py` refuses any that
 is left — or pass it with `--set FIELD=VALUE`. `--contract-paths` is for this
 phase's kinds, whose files are still stubs; a Phase 7 reviewer or fix
