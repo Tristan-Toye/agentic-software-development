@@ -48,6 +48,22 @@ async function run(src: string, args: unknown, fake: (prompt: string, opts: Opts
   const calls: { prompt: string; opts: Opts }[] = []
   const agent = async (prompt: string, opts: Opts = {}) => {
     calls.push({ prompt, opts })
+    // The wave's one verifier wrapper (verify_wave.py): answer each section as the per-item verifier
+    // would have been asked, so a fake only needs to know the one-return command.
+    if (!opts.agentType && prompt.includes("scripts/verify_wave.py") && prompt.includes("`RESULT {json}`")) {
+      const root = /python3 '([^']*)\/scripts\/verify_wave\.py'/.exec(prompt)![1]
+      const spec = prompt.slice(prompt.indexOf("=== SPEC BEGIN ===\n") + 19, prompt.lastIndexOf("\n=== SPEC END ==="))
+      const results: unknown[] = []
+      for (const m of spec.matchAll(/^@@ASD-RETURN (.*)\n([\s\S]*?)^@@ASD-END$/gm)) {
+        const meta = JSON.parse(m[1])
+        const quote = (v: string) => "'" + v.replace(/'/g, "'\\''") + "'"
+        const one = "python3 " + quote(root + "/scripts/verify_return.py") + " " + meta.argv.map((a: string) => (/^--[a-z][a-z0-9-]*$/.test(a) ? a : quote(a))).join(" ") + (meta.nobody ? "\nThe agent returned no report." : "")
+        calls.push({ prompt: one, opts: { model: "haiku", schema: {} } })
+        const r: any = await fake(one, { model: "haiku", schema: {} })
+        if (r) results.push({ label: meta.label, ...r })
+      }
+      return { results }
+    }
     return fake(prompt, opts)
   }
   // pipeline: each item flows through the stages on its own; a null stops that item.
@@ -276,6 +292,17 @@ const fakeReview = (prompt: string, opts: Opts) => {
   }
   check("review: document kept under reportDir", by("architecture").document_path === "/x/.agent-staging/reviews/r1_architecture.md")
   check("review: the verbatim document travels to the keeper", calls.some((c) => c.opts.model === "haiku" && c.prompt.includes(doc)))
+  {
+    // with pluginRoot every document of the round is written by ONE wrapper through verify_wave.py
+    const withRoot = (n: string) => ({ ...lens(n), pluginRoot: "/plugin" })
+    const batch = await run(review, [withRoot("architecture"), withRoot("style")], (p, o) => {
+      if (o.agentType) return fakeReview(p, o)
+      return { written: ["/x/.agent-staging/reviews/r1_architecture.md"] }
+    })
+    const keepers = batch.calls.filter((c) => !c.opts.agentType)
+    check("review: one keeper spawn writes every document", keepers.length === 1 && keepers[0].prompt.includes("scripts/verify_wave.py") && keepers[0].prompt.includes(doc))
+    check("review: batch keep reports the path", batch.result[0].document_path === "/x/.agent-staging/reviews/r1_architecture.md")
+  }
   check("review: a dead lens is 'died', never PASS", by("performance").verdict === "died" && by("performance").crs.length === 0)
   check("review: the compact result holds no document text", !JSON.stringify(result).includes("# Change requests"))
   check("review: result shape", result.every((r: any) => ["label", "lens", "round", "verdict", "crs", "defects", "answers", "unreached", "notes", "document_path"].every((k) => k in r)))
