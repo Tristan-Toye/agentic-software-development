@@ -483,10 +483,16 @@ then pays for the whole context again. So, for a run in state `waiting` or
   cold: pinging that session stops (`keepalive stopped: ...`).
 - No ping when the run is paused for usage (its account is limit-marked), when
   the account's five-hour window is at 80% or more, after the wait has lasted
-  `ASD_KEEPALIVE_MAX_H` hours (default 12), or with `ASD_KEEPALIVE=0`.
+  `ASD_KEEPALIVE_MAX_H` hours (default 24), or with `ASD_KEEPALIVE=0`. A skipped
+  ping that was due is logged once per reason: `keepalive skipped a ping for
+  <run>: <reason>`.
+- A run in state `running` or `testing` is pinged too when its turn has ended
+  (the session waits on a background task, from the stage's read loop) and its
+  last API call is old enough. A run with a turn open (the session is working or
+  blocked in a tool call) cannot take a ping: that skip is logged.
 
 Knobs: `ASD_KEEPALIVE` (`0` = off), `ASD_KEEPALIVE_AFTER` (3000 s),
-`ASD_KEEPALIVE_MAX_H` (12), `ASD_KEEPALIVE_POLL` (check interval, 5 s) and
+`ASD_KEEPALIVE_MAX_H` (24), `ASD_KEEPALIVE_POLL` (check interval, 5 s) and
 `ASD_KEEPALIVE_TIMEOUT` (180 s). The agent's side: see `RUNNER KEEPALIVE` in the
 runner-mode rules below.
 
@@ -645,8 +651,9 @@ The prompt tells the orchestrator these rules:
 - Run every test through `run_tests.py` and every gate list through
   `run_gates.py` (`--path-prepend`/`--env-script` for a toolchain off the
   shell PATH: both apply to a local run and in the VM, and a missing env
-  script fails the run, `--detach` then ONE blocking `--wait ID` for a long run: never a
-  `sleep`/`pgrep`/`until` poll loop or repeated status turns; only an exit 6 earns a second
+  script fails the run, `--detach` then a blocking `--wait ID` for a long run (a call blocks at most 270 s, `--wait-cap` / `ASD_WAIT_CAP`
+  change that, so a sub-agent's 5-minute prompt cache stays warm): never a
+  `sleep`/`pgrep`/`until` poll loop or repeated status turns; only an exit 6 (still running) earns another
   `--wait`; `--compile-lint-only` at the contract commit, the full list at the first push and the final head, `--affected-since REV` for the fix rounds between), never an ad-hoc
   script, so the timeline gets the suite and gate lines; and only the tests the step names (under SUITE-MODE `stub`, the
   new and affected tests plus CI: the full suite belongs to `/stub`).

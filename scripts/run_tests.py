@@ -24,7 +24,7 @@ reaches stdout, however large the run.
                  [--cwd DIR] [--test NAME ...] [--repeat N] [--detach] [--print-cmd]
                  -- <command...>
     run_tests.py [...] --build-log DOSSIER [--suite-base SHA] -- <command...>
-    run_tests.py --wait LOG [--timeout SECONDS=3600]
+    run_tests.py --wait LOG [--timeout SECONDS=3600] [--wait-cap SECONDS=270]
     run_tests.py --digest LOG
     run_tests.py --selftest
 
@@ -59,8 +59,13 @@ prints four lines — the pid, the log path, the pid file `LOG.pid` and the exac
 `LOG.exit` and then `LOG.digest` (the digest it would have printed).
 
 `--wait LOG` blocks, silently, until `LOG.digest` exists, prints it, and exits
-with the run's own exit code (read from `LOG.exit`). 124 means `--timeout`
-passed with the run still going; 125 means the process died without writing a
+with the run's own exit code (read from `LOG.exit`). One call blocks at most
+`--wait-cap` seconds (default 270, or $ASD_WAIT_CAP: a sub-agent's prompt cache
+lives 5 minutes, so a longer block makes it pay for its whole context again; an
+orchestrator may pass a longer cap): with the run still going it prints `still
+running, call --wait again` and exits 6. `--timeout` is the total across those
+calls (the first call stamps `LOG.waitstart`); 124 means it passed with the run
+still going; 125 means the process died without writing a
 digest (killed), and a digest of the log so far is printed instead; 2 means no
 detached run was started for LOG.
 
@@ -142,7 +147,7 @@ never blows up the digest.
 Exit codes: the run command's own exit code (so callers can branch on it);
 2 for unusable input (no command, `--vm` without `--workdir`, `--test` on a
 non-cargo command, `--expect` without names); 3 a `--test` name matched nothing; 4 an
-`--expect` proof did not hold; 124/125 from `--wait` (see above).
+`--expect` proof did not hold; 6/124/125 from `--wait` (see above).
 
 No third-party imports: this runs wherever python3 does.
 """
@@ -927,13 +932,36 @@ def read_int(path: str, default: int) -> int:
         return default
 
 
+EXIT_STILL_RUNNING = 6   # --wait hit its --wait-cap with the run still going: call --wait again
+
+
+def read_float(path: str, default: float) -> float:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return float(fh.read().strip())
+    except (OSError, ValueError):
+        return default
+
+
 def wait(args: argparse.Namespace, log_path: str) -> int:
     """Block silently until the detached run's digest exists, then print it."""
     digest_path = log_path + ".digest"
     if not os.path.exists(log_path + ".pid") and not os.path.exists(digest_path):
         print(f"run_tests: no detached run for {log_path} (no {log_path}.pid)", file=sys.stderr)
         return 2
-    deadline = time.monotonic() + args.timeout
+    start_path = log_path + ".waitstart"
+    started = read_float(start_path, 0.0)
+    with contextlib.suppress(OSError):
+        if started and started < os.path.getmtime(log_path + ".pid"):
+            started = 0.0   # a newer detached run on the same log: its own clock
+    if not started or started > time.time():
+        started = time.time()
+        with contextlib.suppress(OSError):
+            with open(start_path, "w", encoding="utf-8") as fh:
+                fh.write(f"{started}\n")
+    now0 = time.monotonic()
+    deadline = now0 + max(0.0, args.timeout - (time.time() - started))   # the total timeout across --wait calls
+    cap_at = now0 + args.wait_cap
     dead_polls = 0
     pause = 0.2
     while True:
@@ -952,7 +980,10 @@ def wait(args: argparse.Namespace, log_path: str) -> int:
         if time.monotonic() >= deadline:
             print(f"run_tests: still running after {args.timeout:.0f}s (pid {pid}); wait again with the same command")
             return 124
-        time.sleep(pause)
+        if time.monotonic() >= cap_at:
+            print(f"run_tests: still running after {args.wait_cap:.0f}s (pid {pid}), call --wait again: {shlex.quote(os.path.abspath(__file__))} --wait {shlex.quote(log_path)}")
+            return EXIT_STILL_RUNNING
+        time.sleep(min(pause, max(0.0, min(deadline, cap_at) - time.monotonic())))
         pause = min(pause * 1.5, 5.0)
 
 
@@ -1083,7 +1114,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--proof-name", action="append", default=[], metavar="NAME", help="a test --expect judges, for a command --test cannot filter")
     ap.add_argument("--detach", action="store_true", help="run detached; print the log path, pid file and --wait command")
     ap.add_argument("--wait", metavar="LOG", help="block until the detached run on LOG ends; print its digest")
-    ap.add_argument("--timeout", type=float, default=3600, help="--wait: give up after this many seconds")
+    ap.add_argument("--timeout", type=float, default=3600, help="--wait: give up after this many seconds in total, across --wait calls")
+    ap.add_argument("--wait-cap", type=float, default=float(os.environ.get("ASD_WAIT_CAP") or 270), metavar="SECONDS",
+                    help="--wait: longest block per call (default 270, or $ASD_WAIT_CAP); exit 6 when the run is still going")
     ap.add_argument("--digest", metavar="LOG", help="print the digest of an existing log; run nothing")
     ap.add_argument("--skip-banner", action="append", default=[], metavar="REGEX", help="a line a test prints when it returned early for want of the environment (also the stack config's `skip_banner`); each match moves one test from passed to `skipped N`, and --expect green refuses on it")
     ap.add_argument("--print-cmd", action="store_true", help="print the full paste-safe command; run nothing")
@@ -1609,6 +1642,13 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             main(["--log", slow, "--detach", "--", "python3", "-c", "import time; time.sleep(5)"])
             rc = main(["--wait", slow, "--timeout", "0.3"])
         check("--wait times out with 124", rc == 124)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = main(["--wait", slow, "--wait-cap", "0.3"])
+        check("--wait at its cap with the run still going says so and exits 6", rc == 6 and "call --wait again" in buf.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = main(["--wait", slow, "--wait-cap", "30", "--timeout", "0.3"])
+        check("--timeout counts the time across --wait calls (124 once the first call's clock ran out)", rc == 124)
         with contextlib.suppress(OSError, ValueError):
             os.kill(read_int(slow + ".pid", 0), signal.SIGTERM)
 

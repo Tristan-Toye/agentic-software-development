@@ -34,7 +34,7 @@ Gate names must be unique and match `[A-Za-z0-9_.-]+`.
                  [--line-chars N=300] [--timeout SECONDS]
                  [--path-prepend DIR ...] [--env-script FILE] [--detach]
                  [--affected-since REV] [--compile-lint-only] [--fresh]
-    run_gates.py --wait ID [--wait-cap SECONDS=540]
+    run_gates.py --wait ID [--wait-cap SECONDS=270]
     run_gates.py --from-workflow FILE [FILE...]
     run_gates.py --selftest
 
@@ -110,8 +110,9 @@ exact `--wait` command, and exits 0 at once. The state directory
 `state.json`, `out.txt` (what a foreground run prints) and, once the run ends,
 `exit` (its exit code).
 
-`--wait ID` blocks up to `--wait-cap` seconds (default 540, under a 10-minute
-tool cap), then prints `out.txt` — the same summary a foreground run prints —
+`--wait ID` blocks up to `--wait-cap` seconds (default 270, or $ASD_WAIT_CAP: under
+the 5-minute prompt cache of a sub-agent, which goes cold in a longer block; an
+orchestrator may pass a longer cap), then prints `out.txt` — the same summary a foreground run prints —
 and exits with the run's own exit code. Still running at the cap: it prints
 `run_gates: run ID still running ...` and exits 6; call it again. 125: the run
 died without writing an exit code. 2: no such run.
@@ -1242,8 +1243,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--detach", action="store_true",
                     help="start the run in the background, print a run id and return at once")
     ap.add_argument("--wait", metavar="ID", help="wait for a detached run, print its summary, exit with its code")
-    ap.add_argument("--wait-cap", type=float, default=540, metavar="SECONDS",
-                    help="--wait: longest block (default 540); exit 6 when the run is still going")
+    ap.add_argument("--wait-cap", type=float, default=float(os.environ.get("ASD_WAIT_CAP") or 270), metavar="SECONDS",
+                    help="--wait: longest block (default 270, or $ASD_WAIT_CAP); exit 6 when the run is still going")
     ap.add_argument("--build-log", metavar="DOSSIER",
                     help="after a gate run, append `GATES: run <green|red> on <sha> — <counts>` to this dossier's Build log")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
