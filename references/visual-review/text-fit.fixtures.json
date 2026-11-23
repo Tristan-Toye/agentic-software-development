@@ -40,10 +40,12 @@
    "label": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
    "width": 250,
    "lines": [
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "aaaaaaaaaaaa"
    ],
-   "clipped": true,
-   "needed": 1
+   "clipped": false,
+   "needed": 3
   },
   {
    "label": "Lay out the graph, route every edge and keep each label clear of the boxes around it",
@@ -103,11 +105,55 @@
    "label": "supercalifragilisticexpialidocious_and_more_characters_in_one_word ok",
    "width": 250,
    "lines": [
-    "supercalifragilisticexpialidocious_and_more_characters_in_one_word",
+    "supercalifragilisticexpialidocious",
+    "_and_more_characters_in_one_word",
     "ok"
    ],
-   "clipped": true,
+   "clipped": false,
+   "needed": 3
+  },
+  {
+   "label": "nats\ndeploy/compose/docker-compose.yml:52",
+   "width": 250,
+   "lines": [
+    "nats",
+    "deploy/compose/docker-compose.yml:",
+    "52"
+   ],
+   "clipped": false,
+   "needed": 3
+  },
+  {
+   "label": "deploy/host/lima/nightwatch/provision/bootstrap-vm-and-compose-stack.yaml:118",
+   "width": 250,
+   "lines": [
+    "deploy/host/lima/nightwatch/",
+    "provision/bootstrap-vm-and-",
+    "compose-stack.yaml:118"
+   ],
+   "clipped": false,
+   "needed": 3
+  },
+  {
+   "label": "VeryLongIdentifierNameWithoutAnySeparatorsAtAllSoItIsCutAtTheWidth",
+   "width": 250,
+   "lines": [
+    "VeryLongIdentifierNameWithoutAnySe",
+    "paratorsAtAllSoItIsCutAtTheWidth"
+   ],
+   "clipped": false,
    "needed": 2
+  },
+  {
+   "label": "shared/questions/vrlayout.ts:612 and shared/questions/vrmap.ts:197 and more path words here",
+   "width": 250,
+   "lines": [
+    "shared/questions/vrlayout.ts:612",
+    "and shared/questions/vrmap.ts:197",
+    "and more path words here"
+   ],
+   "clipped": false,
+   "needed": 3
   },
   {
    "label": "one two three four five six seven eight nine ten eleven twelve thirteen fourteen",

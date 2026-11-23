@@ -1160,7 +1160,7 @@ flowchart LR
 
         subgraph compose["docker compose"]
             direction TB
-            nats["nats\\ncompose/docker-compose.yml:52"]
+            nats["nats\\ndeploy/compose/docker-compose.yml:52"]
             pg["postgres"]
         end
 

@@ -86,7 +86,7 @@ describe("checkLayout finds what is wrong (adversarial layouts)", () => {
     expect(codes(L, g)).toEqual([])
   })
   test("a label that needs more lines than its box draws", () => {
-    const g = { view: "L2", nodes: [{ id: "a", label: "x".repeat(70) }], edges: [] }
+    const g = { view: "L2", nodes: [{ id: "a", label: "abcd ".repeat(14) }], edges: [] }
     const r = checkLayout(g, { boxes: { a: { x: 0, y: 0, w: 130, h: 50 } }, edges: {} } as any)
     expect(r.map((i) => i.code)).toEqual(["label_clipped"])
     expect(r[0].where).toBe("a")
@@ -102,7 +102,7 @@ describe("the review shows the check as a warning beside the view", () => {
     const dir = mkdtempSync(join(tmpdir(), "vrcheck-"))
     for (const v of ["l0", "l1", "l2"]) {
       const g = load(`w145-${v}.json`)
-      if (v === "l2") g.nodes[0].label = "verylongwordthatcannotwrapinsideanynodebox".repeat(2)
+      if (v === "l2") g.nodes[0].label = "word ".repeat(25)
       writeFileSync(join(dir, `${v}.json`), JSON.stringify(g))
     }
     const r = await visualReview(dir, "W-145")

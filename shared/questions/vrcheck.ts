@@ -39,7 +39,8 @@ export function checkLayout(graph: any, layout: Layout | null | undefined): Issu
   if (!graph || !layout) return out
   const boxes = layout.boxes ?? {}
   const nodes: any[] = (graph.nodes ?? []).filter((n: any) => boxes[n.id])
-  for (const n of nodes) {
+  // A sequence diagram's messages and notes are arrow and note text (seqLayout), not wrapped into a node box.
+  for (const n of graph.view === "seq" ? [] : nodes) {
     const f = vrFitLabel(String(n.label ?? ""), boxes[n.id].w, !!n.stereotype)
     if (f.clipped) out.push({ code: "label_clipped", where: n.id, message: `the label of ${n.id} needs ${f.needed} lines or a wider box; the box draws ${f.lines.length}` })
   }

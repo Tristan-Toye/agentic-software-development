@@ -16,22 +16,29 @@ export function vrNodeWidth(label: string, folded?: boolean): number {
 }
 
 /**
- * The lines a label is drawn in inside a box `boxW` wide: wrapped on spaces at floor((boxW - inset) / charPx) characters. A stereotype
- * takes one of the maxLines. `clipped` is true when the label needs more lines than are left, or a single word is wider than a line:
- * then `lines` holds what the page draws (the last line ends with an ellipsis); `needed` is the number of lines the label needs.
+ * The lines a label is drawn in inside a box `boxW` wide: wrapped on spaces (a newline counts as one) at floor((boxW - inset) / charPx)
+ * characters. A word wider than a line is broken, never rejected: after the last of / : . _ - that leaves a piece of at least a third
+ * of the line, else at the line width (a file:line anchor or a long identifier is a normal label). A stereotype takes one of the
+ * maxLines. `clipped` is true only when the label needs more lines than are left: then `lines` holds what the page draws (the last
+ * line ends with an ellipsis); `needed` is the number of lines the label needs, the stereotype's included.
  */
 export function vrFitLabel(label: string, boxW: number, stereotype?: boolean): { lines: string[]; clipped: boolean; needed: number } {
   const w = Math.max(1, Math.floor((boxW - VR_TEXT.inset) / VR_TEXT.charPx))
   const out: string[] = []
   let l = ""
-  String(label == null ? "" : label).split(" ").forEach((t) => {
+  String(label == null ? "" : label).split(/[ \n]/).forEach((t) => {
     if ((l + " " + t).trim().length > w && l) { out.push(l); l = t } else l = (l + " " + t).trim()
+    while (l.length > w) {
+      let cut = w
+      for (let i = w; i >= Math.ceil(w / 3); i--) if ("/:._-".indexOf(l.charAt(i - 1)) >= 0) { cut = i; break }
+      out.push(l.slice(0, cut))
+      l = l.slice(cut)
+    }
   })
   if (l) out.push(l)
   const room = VR_TEXT.maxLines - (stereotype ? 1 : 0)
-  const wide = out.some((x) => x.length > w)
-  const clipped = out.length > room || wide
+  const clipped = out.length > room
   const lines = out.slice(0, room)
-  if (out.length > room && lines.length) lines[lines.length - 1] = lines[lines.length - 1].replace(/.?$/, "…")
+  if (clipped && lines.length) lines[lines.length - 1] = lines[lines.length - 1].replace(/.?$/, "…")
   return { lines, clipped, needed: out.length + (stereotype ? 1 : 0) }
 }

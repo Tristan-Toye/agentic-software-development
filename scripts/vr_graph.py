@@ -25,8 +25,8 @@ unknown_frame_step: a frame (view seq) whose first, last or a branch's first is 
 
 label_too_long: a node label over 80 characters, or one that would be clipped on
 the canvas (it needs more than 3 lines, 2 with a stereotype, in the widest node
-box, or has a word wider than a line: the shared text-fit rule, `text_fit`
-below, ported from shared/questions/vrtext.ts), an edge or lane label over
+box; a word wider than a line is broken after / : . _ - or at the line width,
+not rejected: the shared text-fit rule, `text_fit` below, ported from shared/questions/vrtext.ts), an edge or lane label over
 40, a group or flow label over 60, a title over 100. The limits live in
 graph.schema.json as maxLength; this reader maps that error to its own code.
 """
@@ -86,31 +86,33 @@ def text_fit(label: str, box_w: float, stereotype: bool = False) -> dict:
     w = max(1, int((box_w - TEXT["inset"]) // TEXT["charPx"]))
     out: list = []
     cur = ""
-    for t in label.split(" "):
+    for t in re.split(r"[ \n]", label):
         if len((cur + " " + t).strip()) > w and cur:
             out.append(cur)
             cur = t
         else:
             cur = (cur + " " + t).strip()
+        while len(cur) > w:  # a word wider than a line is broken: after the last of / : . _ - that leaves a third of a line, else at w
+            cut = w
+            for i in range(w, -(-w // 3) - 1, -1):
+                if cur[i - 1] in "/:._-":
+                    cut = i
+                    break
+            out.append(cur[:cut])
+            cur = cur[cut:]
     if cur:
         out.append(cur)
     room = TEXT["maxLines"] - (1 if stereotype else 0)
-    clipped = len(out) > room or any(len(x) > w for x in out)
+    clipped = len(out) > room
     lines = out[:room]
-    if len(out) > room and lines:
+    if clipped and lines:
         lines[-1] = lines[-1][:-1] + "…"
     return {"lines": lines, "clipped": clipped, "needed": len(out) + (1 if stereotype else 0)}
 
 
-def wide_word(label: str, box_w: float | None = None) -> str | None:
-    """The first word of `label` wider than a line of its box (None when there is none)."""
-    w = max(1, int(((node_width(label) if box_w is None else box_w) - TEXT["inset"]) // TEXT["charPx"]))
-    return next((t for t in label.split(" ") if len(t) > w), None)
-
-
 def fit_label(label: str, stereotype: bool = False, suffix: str = "") -> str:
     """`label` shortened (ending with an ellipsis) until `label + suffix` is drawn whole by the canvas: at most
-    NODE_LABEL_MAX characters, within the lines a node has, no word wider than a line. A label that fits is returned as is.
+    NODE_LABEL_MAX characters, within the lines a node has (a long word is broken, see text_fit). A label that fits is returned as is.
     Producers of labels (vr_diff, vr_extract) call this, so what they write passes `validate`."""
     def fits(s: str) -> bool:
         full = s + suffix
@@ -314,16 +316,14 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
         if shape_broken:
             return issues
 
-    for i, n in enumerate(graph.get("nodes", [])):
+    # A sequence diagram's messages and notes are drawn as arrow text and note text by seqLayout, not wrapped into a node box.
+    for i, n in enumerate([] if graph.get("view") == "seq" else graph.get("nodes", [])):
         if isinstance(n, dict) and isinstance(n.get("label"), str):
             fit = text_fit(n["label"], node_width(n["label"]), bool(n.get("stereotype")))
-            if fit["needed"] > TEXT["maxLines"]:
-                msg = "the label needs %d lines (a stereotype takes one) in the widest node box and the canvas draws %d: shorten it" % (fit["needed"], TEXT["maxLines"])
-            elif fit["clipped"]:
-                msg = "the word %r is wider than a line of the widest node box: break or shorten it" % wide_word(n["label"])
-            else:
-                continue
-            issues.append(_issue("label_too_long", "nodes[%d].label" % i, msg))
+            if fit["clipped"]:
+                issues.append(_issue("label_too_long", "nodes[%d].label" % i,
+                                     "the label needs %d lines (a stereotype takes one) in the widest node box and the canvas draws %d: shorten it"
+                                     % (fit["needed"], TEXT["maxLines"])))
 
     lanes = [x for x in graph.get("lanes", []) if isinstance(x, dict)]
 
@@ -466,11 +466,12 @@ def _selftest() -> int:
             long_g["nodes"][0]["stereotype"] = "service"
         got = [i["code"] for i in validate(long_g) if i["path"] == "nodes[0].label"]
         check("textfit:validate-flags-clipped:" + c["label"][:20], got == ["label_too_long"], json.dumps(validate(long_g))[:300])
-    # An over-long word gets its own message naming the word; fit_label makes any label pass.
+    # An over-long word is broken across lines; fit_label makes any label pass.
     long_g["nodes"][0].pop("stereotype", None)
-    long_g["nodes"][0]["label"] = "go " + "w" * 50
-    msgs = [i["message"] for i in validate(long_g) if i["path"] == "nodes[0].label"]
-    check("textfit:wide-word-message", len(msgs) == 1 and "word" in msgs[0] and "w" * 50 in msgs[0], str(msgs))
+    long_g["nodes"][0]["label"] = "go " + "w" * 50  # one long word is broken across lines, not rejected
+    check("textfit:long-word-broken", validate(long_g) == [], str(validate(long_g)))
+    long_g["nodes"][0]["label"] = "nats\ndeploy/compose/docker-compose.yml:52"
+    check("textfit:path-anchor-ok", validate(long_g) == [], str(validate(long_g)))
     for raw in ("w" * 80, "one two " * 10, "x" * 40 + " y"):
         for st in (False, True):
             f = fit_label(raw, st, " x5")
