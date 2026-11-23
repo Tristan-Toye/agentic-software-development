@@ -740,6 +740,11 @@ Eager merge is a second, separate switch (`auto_work.py --eager-merge on|off --r
 on by default, works with automatic work off): each dossier that is finished (build
 done, fix-deferred run over, no open deferred item) and has an open pull request into
 an open stub is put on the merge queue once, so Integrate has little left to merge.
+A failed merge is retried by itself when retrying is safe: the failure was transient
+(CI still running or timed out, a gh or network error), at most twice per head of the
+stack, or a later run of the dossier started after the record and has finished. One
+timeline line says so. A cancelled merge, and a failure that needs a human (a
+conflict, red checks, spent resolve-merge attempts), stay the owner's to retry.
 
 ## Standing repair of the VM and the stack (`scripts/stack_repair.py`)
 
