@@ -1001,6 +1001,8 @@ function stubRow(repo, id, o) {
     const rn = r.runner;
     if (r.merge && r.merge.state === 'queued') right.push(chip('in the merge queue' + (r.merge.position ? ' · #' + r.merge.position : ''), 'pending'));
     else if (rn && ['stopped', 'failed'].includes(rn.state)) right.push(chip((rn.command || 'run') + ' ' + rn.state, 'blocked'));
+    // Open deferred items keep eager merge from queueing it (auto_work.held_by_deferred): say that, not "waiting for your merge".
+    else if ((r.status === 'done' || r.status === 'pr') && !o.noPr && r.deferredOpen > 0) right.push(chip('PR ready · held by ' + r.deferredOpen + ' open deferred · fix or rule them', 'pending'));
     else if (r.status === 'done' || r.status === 'pr') right.push(chip(o.noPr ? 'finished · no PR' : 'PR ready · waiting for your merge', 'done'));
     else { const st = stageText(r); right.push(chip(st ? st + ' · not running' : 'not started', 'neutral')); }
     if ((r.status === 'done' || r.status === 'pr') && !o.noPr) { const mc = mergeCtl(r); if (mc) right.push(mc); }

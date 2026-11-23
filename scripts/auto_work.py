@@ -655,6 +655,33 @@ def finished_run(run: dict) -> bool:
     return run.get("status") in ("pr", "done") and (run.get("runner") or {}).get("state") not in LIVE and not open_items(run)
 
 
+def held_by_deferred(run: dict) -> bool:
+    """Built (`pr` or `done`), no run of it live, and only open deferred items keep it from the merge queue: an item
+    minted after the last /fix-deferred took its selection (W-190 D-9) would hold it there silently."""
+    return run.get("status") in ("pr", "done") and (run.get("runner") or {}).get("state") not in LIVE and bool(open_items(run))
+
+
+def note_held(repo: str, run: dict) -> bool:
+    """Say once, in the dossier's timeline, which open items hold it from eager merge, and what releases it. Said again
+    only when the set of open items changes. Returns whether a line was written."""
+    items = open_items(run)
+    mark = os.path.join(runs_dir(), f"{repo}.{run['id']}.eager-held.json")
+    try:
+        if json.load(open(mark, encoding="utf-8")).get("items") == items:
+            return False
+    except (OSError, ValueError, AttributeError):
+        pass
+    merge_dossier.append_line(os.path.join(runs_dir(), f"{repo}.{run['id']}.jsonl"), {"ts": now(), "kind": "runner", "text":
+        f"eager merge: held — deferred {', '.join(items[:8])} still open. Fix them (Deferred tab, Fix) or rule them "
+        f"leave-open; it joins the merge queue by itself after that. The Merge button merges it now regardless."})
+    tmp = mark + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"items": items, "ts": now()}, fh)
+    os.replace(tmp, mark)
+    print(f"auto_work: {repo}: eager merge of {run['id']}: held by open deferred {', '.join(items)}")
+    return True
+
+
 def stub_dossiers(root: str, branch: str) -> list[str]:
     """The dossiers with an open pull request into the stub, asked of merge_dossier.py (the same view Integrate has)."""
     script = os.environ.get("ASD_MERGE_BIN") or os.path.join(HERE, "merge_dossier.py")
@@ -675,13 +702,20 @@ def eager_step(repo: str, root: str, facts: dict) -> list[str]:
     """Eager merge: every finished dossier on an open stub joins the merge queue, once; with kanban on, so does every finished
     kanban dossier with an open PR into development, while development's CI is green. Returns the ones enqueued."""
     stubs = [s["branch"] for s in facts.get("stubs") or [] if s.get("branch")]
-    todo = [r for r in facts.get("runs") or [] if finished_run(r)
-            and not os.path.exists(os.path.join(runs_dir(), f"{repo}.{r['id']}.merge.json"))]   # any record: queued, running, merged, waiting, failed, cancelled
-    if not todo:
+    unqueued = [r for r in facts.get("runs") or []
+                if not os.path.exists(os.path.join(runs_dir(), f"{repo}.{r['id']}.merge.json"))]   # any record: queued, running, merged, waiting, failed, cancelled
+    todo = [r for r in unqueued if finished_run(r)]
+    held = [r for r in unqueued if held_by_deferred(r)]
+    if not todo and not held:
         return []
     on_stub: set[str] = set()
     for b in stubs:
         on_stub.update(stub_dossiers(root, b))
+    for r in held:
+        if r["id"].upper() in on_stub:
+            note_held(repo, r)
+    if not todo:
+        return []
     kan = kanban_ids(repo, root)
     ready_kan = {r["id"] for r in todo if r["id"].upper() in kan and r.get("status") == "pr"}   # `done` ones are merged: no gh call per tick for them
     if ready_kan:
@@ -1246,6 +1280,15 @@ def selftest() -> int:
         for state_ in ("merging", "waiting", "cancelled", "cleanup"):
             json.dump({"state": state_}, open(P(f"{repo}.E1.merge.json"), "w")); tk()
         check("any other record state is left alone too", not [l for l in log()[n_before:] if l.startswith("enqueue")])
+        def held_lines() -> list[str]:
+            try:
+                return [l for l in open(P(f"{repo}.E3.jsonl"), encoding="utf-8") if "eager merge: held" in l]
+            except OSError:
+                return []
+        check("held: a built dossier on the stub kept out only by an open deferred item says so in its timeline, once",
+              len(held_lines()) == 1 and "D-1" in held_lines()[0] and "leave-open" in held_lines()[0], held_lines())
+        setrun("E3", deferred=[{"id": "D-1", "state": "open"}, {"id": "D-9", "state": "open"}]); tk()
+        check("held: a new open item (minted after the fix-deferred run) says it again, naming it", len(held_lines()) == 2 and "D-9" in held_lines()[1], held_lines())
         # A dossier becomes finished: the open item is fixed, the fix-deferred run ends.
         setrun("E3", deferred=[{"id": "D-1", "state": "fixed"}]); setrun("E4", runner=done_())
         n_before = len(log()); tk()
