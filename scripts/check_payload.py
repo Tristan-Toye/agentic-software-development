@@ -271,7 +271,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
     "reviewer": {
         "required": {"LENS", "WORKTREE_DIR", "STANDARDS", "ROUND"},
         "optional": {
-            "DOSSIER", "SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA",
+            "LENS_DOC", "DOSSIER", "SCOPE", "CONTRACT", "RUN_EVIDENCE", "CRITERIA",
             "CONTEXT_DOCS", "ARBITRATIONS", "PRIOR_CRS", "RULES", "SIGNALS",
             # LENS: plan, the /plan Phase 7 product-coherence review
             "PRODUCT_MODEL", "ADR_INDEX", "RELATED_DOSSIERS", "READER",
