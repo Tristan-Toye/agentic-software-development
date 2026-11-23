@@ -209,6 +209,39 @@ def kanban_ids(repo: str, root: str) -> set[str]:
     return {i for i, d in delivery_of(root).items() if d == "kanban"}
 
 
+CLAIMED_RE = re.compile(r"\b([A-Z][A-Z0-9]*-\d+)\s*\(claimed")
+
+
+def planning_ids(repo: str) -> set[str]:
+    """Dossier ids that a LIVE /plan run other than the dossier's own is writing: a free-form seed run (`<repo>.seed-<slug>`)
+    or a plan-from-deferred run (`<repo>.<ID>.plan-D-n`). /plan claims the id in Phase 1 and every later `stage` event of
+    the run's jsonl names it ("W-218 (claimed, final), key ..."); that is the one structured link from such a run to its
+    dossier, and the dossier reads `planned` while the run is still at work. Never start a second /plan (or /work-on)
+    on an id in this set."""
+    out: set[str] = set()
+    for path in glob.glob(os.path.join(runs_dir(), f"{glob.escape(repo)}.*.runner.json")):
+        key = os.path.basename(path)[: -len(".runner.json")][len(repo) + 1:]
+        if not (key.startswith("seed-") or re.search(r"\.plan-D-\d+$", key)):
+            continue
+        st = read_json(path, {}) or {}
+        if st.get("command") != "plan" or st.get("state") not in LIVE:
+            continue
+        try:
+            with open(os.path.join(runs_dir(), f"{repo}.{key}.jsonl"), encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if '"stage"' not in line or "(claimed" not in line:
+                        continue
+                    try:
+                        o = json.loads(line)
+                    except ValueError:
+                        continue
+                    if o.get("kind") == "stage":
+                        out.update(m.upper() for m in CLAIMED_RE.findall(str(o.get("text", "")) + " " + str(o.get("stage", ""))))
+        except OSError:
+            pass
+    return out
+
+
 def kanban_pull(repo: str, root: str, facts: dict) -> list[str]:
     """Continuous pull, plain queue order (by id): /plan for a planned dossier, /work-on for a ready kanban one, every
     blocker done, no live run. Starts go through the runner (slot cap, queue, account, owner questions). Returns "ID:command"."""
@@ -220,11 +253,12 @@ def kanban_pull(repo: str, root: str, facts: dict) -> list[str]:
     started = state.setdefault("started", {})
     aw = read_json(state_path(repo), {}) or {}
     cycle = {m["id"] for m in aw.get("members") or []} if aw.get("step") == "work" else set()   # the auto work cycle's own members
+    planning = planning_ids(repo)   # a seed or plan-from-deferred run still writing the dossier: its own runner is not the one to check
     out = []
     for r in sorted(runs, key=lambda r: r["id"]):
         cmd = "plan" if r.get("status") == "planned" else "work-on" if r.get("status") == "ready" and r["id"].upper() in kan else ""
         key = f"{r['id']}:{cmd}"
-        if not cmd or key in started or r["id"] in cycle or (r.get("runner") or {}).get("state") in LIVE \
+        if not cmd or key in started or r["id"] in cycle or r["id"].upper() in planning or (r.get("runner") or {}).get("state") in LIVE \
                 or not all(b in done for b in r.get("blockedBy") or []):
             continue
         ok, msg = start_runner(root, r["id"], cmd)
@@ -526,7 +560,9 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
         if m["lag"] < LAG_TICKS:     # a status write may land late: wait before believing "not ready"
             return
         if want == "plan":           # the owner's ruling: plan again, until the dossier reads ready (questions, failures and stops are handled above)
-            launch(st, m, "plan", r); return
+            if m["id"].upper() not in planning_ids(st["repo"]):
+                launch(st, m, "plan", r)
+            return
         if m["accepted"]:
             return
         ask = m.get("asked")
@@ -546,6 +582,8 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
                 pause(st, f"{m['id']}: /work-on stopped at {status}; its agent says: {said}", "member", m["id"], "recheck")
         elif age(ask["ts"]) > ask_wait():
             pause(st, f"{m['id']}: /work-on stopped at {status}; its agent did not answer", "member", m["id"], "recheck")
+        return
+    if m["id"].upper() in planning_ids(st["repo"]):   # a seed / plan-from-deferred run is still writing it: wait, never a second /plan
         return
     launch(st, m, want, r)
 
@@ -1400,6 +1438,20 @@ def kanban_selftest(check) -> None:
             n = len(calls()); tick_repo(repo, facts)
             check("kanban only: a ready dossier without `delivery:` is not pulled (/work-on and merge_dossier.py would treat it as stub)",
                   not [l for l in calls()[n:] if l.startswith("runner")] and "K-2" not in kanban_ids(repo, root), calls()[n:])
+            # a /plan run that is still writing a dossier (free-form seed, plan-from-deferred) owns it: no second /plan
+            for k_, cmd_, st_ in (("seed-hook", "plan", "running"), ("K-20.plan-D-1", "plan", "waiting")):
+                json.dump({"command": cmd_, "state": st_, "pid": 1}, open(os.path.join(runs, f"{repo}.{k_}.runner.json"), "w"))
+            for k_, i_ in (("seed-hook", "K-12"), ("K-20.plan-D-1", "K-13")):
+                with open(os.path.join(runs, f"{repo}.{k_}.jsonl"), "w") as fh:
+                    fh.write(json.dumps({"kind": "stage", "stage": "Phase 2", "text": f"Dossier {i_} (claimed), key x"}) + "\n")
+            check("planning_ids: a live seed run and a live plan-from-deferred run name the ids they claimed", planning_ids(repo) == {"K-12", "K-13"}, planning_ids(repo))
+            facts["runs"] += [run_("K-12", "planned"), run_("K-13", "planned"), run_("K-14", "planned")]
+            n = len(calls()); tick_repo(repo, facts)
+            check("a planned dossier a live seed / plan-from-deferred run is still writing is not given a second /plan; another planned one is",
+                  [l for l in calls()[n:] if l.startswith("runner")] == [f"runner K-14 --root {root} --command plan"], calls()[n:])
+            json.dump({"command": "plan", "state": "done", "pid": 1}, open(os.path.join(runs, f"{repo}.seed-hook.runner.json"), "w"))
+            n = len(calls()); tick_repo(repo, facts)
+            check("the seed run done: its dossier may be planned", f"runner K-12 --root {root} --command plan" in calls()[n:] and planning_ids(repo) == {"K-13"}, calls()[n:])
             # the frontier snapshot
             runs_f = [run_("K-1", "ready"), run_("K-2", "ready"), run_("K-5", "building", runner={"state": "running", "command": "work-on"})]
             check("frontier: kanban dossiers are skipped (in flight too), others kept; default skips nothing",
