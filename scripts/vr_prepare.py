@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Visual review: the mechanical half of the Phase 3 diagram step (VR-05).
 
-    vr_prepare.py REPO DOSSIER-ID --base REV --head REV [--calls fn1,fn2]
+    vr_prepare.py REPO DOSSIER-ID --base REV --head REV [--calls fn1,fn2] [--lang rust|python|csharp]
                   [--layers 1,2] [--crates a,b|all] [--timeout 120] [--scripts-dir DIR]
     vr_prepare.py --selftest
 
 The orchestrator runs this before it spawns `diagram-author`. It does the work
 no model should do:
 
-  1. finds the functions the contract touches: every `fn NAME` on a changed or
-     added line of `git diff BASE HEAD -- '*.rs'` (hunk headers included), the
-     `fn NAME` words in the dossier's `## Contract` section when
-     `.discovery/dossiers/<ID>.md` exists, and the names given with --calls;
+  0. picks the language (`detect_language`): Rust when HEAD holds a `Cargo.toml`, else the
+     one of C# (.cs) and Python (.py) with more source files; `--lang` overrides. A repository
+     of another language is the exit-3 case below;
+  1. finds the functions the contract touches: every `fn NAME` (Python `def NAME`, C# method
+     declarations) on a changed or added line of `git diff BASE HEAD -- '*.rs'` (`*.py`,
+     `*.cs`; hunk headers included), the same words in the dossier's `## Contract` section
+     when `.discovery/dossiers/<ID>.md` exists, and the names given with --calls;
   2. extracts the "before" graph from a `git archive` of BASE (vr_extract.py,
      with the call hierarchy for those functions);
   3. gets the "after" graph with `vr_diff.py after-from-git` and joins the two
@@ -19,7 +22,11 @@ no model should do:
   4. computes the call-hierarchy candidates: for each touched function its
      callers and callees, with evidence, taken from the merged graph.
 
-Layer 2 (cargo-modules, the slow part) runs only for the crates the change
+For Python and C# the extractors are vr_extract_py.py and vr_extract_cs.py (layers 1 projects,
+2 modules and types, 3 functions; the call edges of the touched functions); there is no crate
+limit and no build slot, and `--layers` defaults to 1,2,3 for them.
+
+Layer 2 (cargo-modules, the slow part, Rust only) runs only for the crates the change
 touches: those whose `Cargo.toml` or a file under `src/` differs between BASE
 and HEAD (`changed_crates`). The same set is used for the before and the after
 side, so the merge compares like with like; layer 1 stays the whole workspace.
@@ -31,8 +38,8 @@ and a `.gitignore` holding `*`, so the work directory never reaches git (the
 agent's three outputs, `l0.json`, `l1.json` and `l2.json` one level up, do).
 A compact JSON summary goes to stdout. Exit codes: 0 prepared; 1 a step failed
 (the JSON says which); 2 bad arguments or a script that is not there; 3 the
-repository is not supported: the visual review reads Rust only, and HEAD holds
-no `Cargo.toml`. That is a known limit, not a failure: the JSON is
+repository is not supported: the visual review reads Rust, Python and C#, and HEAD holds
+no `Cargo.toml`, `.cs` or `.py` file. That is a known limit, not a failure: the JSON is
 `{"ok": false, "status": "unsupported", "reason": ..., "languages": [...]}`
 (the languages found, by file extension), nothing is written, and Phase 3 skips
 the step with `VISUAL-REVIEW: skipped — unsupported repository (<reason>)`.
@@ -59,6 +66,12 @@ import build_slots  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_REL = os.path.join(".discovery", "visual-review")
 FN_RE = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")
+PY_FN_RE = re.compile(r"\bdef\s+([A-Za-z_][A-Za-z0-9_]*)")
+CS_FN_RE = re.compile(r"\b(?:public|private|protected|internal|static|override|virtual|abstract|async|sealed|extern)\b"
+                      r"[^;=(){}]*?\b([A-Za-z_]\w*)\s*(?:<[^<>()]*>)?\s*\(")
+FN_RES = {"rust": FN_RE, "python": PY_FN_RE, "csharp": CS_FN_RE}
+PATHSPEC = {"rust": "*.rs", "python": "*.py", "csharp": "*.cs"}
+CS_NOT_NAMES = {"if", "while", "for", "foreach", "switch", "using", "lock", "catch", "return", "new", "nameof", "typeof"}
 HUNK_RE = re.compile(r"^@@ [^@]*@@\s*(.*)$")
 ID_RE = re.compile(r"^[A-Za-z0-9]+([._-][A-Za-z0-9]+)*$")  # a dossier id: no slash, no ".." or dots-only
 
@@ -76,15 +89,21 @@ LANGUAGES = {".rs": "Rust", ".cs": "C#", ".csproj": "C#", ".sln": "C#", ".py": "
              ".kt": "Kotlin", ".rb": "Ruby", ".php": "PHP", ".swift": "Swift", ".cpp": "C++", ".c": "C"}
 
 
-def unsupported_reason(repo: str, head: str) -> tuple[str, list] | None:
-    """None when HEAD holds a `Cargo.toml` anywhere (the extractor can run `cargo metadata`); else the reason
-    and the languages found, by file extension."""
+def detect_language(repo: str, head: str, forced: str | None = None) -> tuple[str | None, str, list]:
+    """(language, reason, languages found): "rust" when HEAD holds a `Cargo.toml` anywhere, else "csharp" or
+    "python" by the larger count of .cs and .py files (a tie goes to C#), else None with the reason."""
     names = run("tree", ["git", "ls-tree", "-r", "--name-only", head], cwd=repo).splitlines()
-    if any(os.path.basename(n) == "Cargo.toml" for n in names):
-        return None
     langs = sorted({LANGUAGES[e] for e in (os.path.splitext(n)[1].lower() for n in names) if e in LANGUAGES})
+    if forced:
+        return forced, "", langs
+    if any(os.path.basename(n) == "Cargo.toml" for n in names):
+        return "rust", "", langs
+    cs = sum(1 for n in names if n.endswith(".cs"))
+    py = sum(1 for n in names if n.endswith(".py"))
+    if cs or py:
+        return ("csharp" if cs >= py else "python"), "", langs
     found = ", ".join(langs) if langs else "no recognised source files"
-    return ("no Cargo.toml; the visual review reads Rust only (found: %s)" % found, langs)
+    return None, "no Cargo.toml, .cs or .py file; the visual review reads Rust, Python and C# (found: %s)" % found, langs
 
 
 class Failed(Exception):
@@ -103,23 +122,36 @@ def run(step: str, cmd: list, cwd: str | None = None, timeout: int = 900) -> str
     return r.stdout
 
 
-def touched_functions(repo: str, base: str, head: str, dossier_id: str, extra: list) -> list:
+def touched_functions(repo: str, base: str, head: str, dossier_id: str, extra: list, lang: str = "rust") -> list:
     """Function names the contract touches, sorted, without duplicates."""
     names = set(extra)
-    diff = run("diff", ["git", "diff", "-U0", "--no-color", base, head, "--", "*.rs"], cwd=repo)
+    fn_re = FN_RES[lang]
+    # Hunk headers name the enclosing function only when git knows the language: for Python and C# the builtin
+    # diff drivers are switched on through a throw-away global attributes file (nothing is written into the repo).
+    attrs = []
+    if lang != "rust":
+        fd, attr_path = tempfile.mkstemp(prefix="vr-attrs-")
+        with os.fdopen(fd, "w") as fh:
+            fh.write("*.py diff=python\n*.cs diff=csharp\n")
+        attrs = ["-c", "core.attributesFile=" + attr_path]
+    try:
+        diff = run("diff", ["git"] + attrs + ["diff", "-U0", "--no-color", base, head, "--", PATHSPEC[lang]], cwd=repo)
+    finally:
+        if attrs:
+            os.unlink(attr_path)
     for line in diff.splitlines():
         m = HUNK_RE.match(line)
         if m:
-            names.update(FN_RE.findall(m.group(1)))
+            names.update(fn_re.findall(m.group(1)))
         elif line.startswith("+") and not line.startswith("+++"):
-            names.update(FN_RE.findall(line))
+            names.update(fn_re.findall(line))
     dossier = os.path.join(repo, ".discovery", "dossiers", dossier_id + ".md")
     if os.path.isfile(dossier):
         text = open(dossier, encoding="utf-8").read()
         m = re.search(r"^## Contract\b.*?(?=^## |\Z)", text, re.S | re.M)
         if m:
-            names.update(FN_RE.findall(m.group(0)))
-    return sorted(names)
+            names.update(fn_re.findall(m.group(0)))
+    return sorted(names - CS_NOT_NAMES if lang == "csharp" else names)
 
 
 def _package_name(text: str) -> str | None:
@@ -211,7 +243,7 @@ def candidates(merged: dict, touched: list) -> dict:
 
 
 def prepare(repo: str, dossier_id: str, base: str, head: str, scripts: str,
-            calls: list, layers: str, timeout: int, crates: list | None | str = "derive") -> dict:
+            calls: list, layers: str, timeout: int, crates: list | None | str = "derive", lang: str | None = None) -> dict:
     repo = os.path.abspath(repo)
     extract = os.path.join(scripts, "vr_extract.py")
     diff = os.path.join(scripts, "vr_diff.py")
@@ -220,27 +252,34 @@ def prepare(repo: str, dossier_id: str, base: str, head: str, scripts: str,
             raise Failed("scripts", "%s is not there (VR-02 ships vr_diff.py)" % p, 2)
     for rev in (base, head):
         run("rev", ["git", "rev-parse", "--verify", "--quiet", rev + "^{commit}"], cwd=repo)
-    no = unsupported_reason(repo, head)
-    if no:
-        raise Unsupported(*no)
+    lang, reason, found = detect_language(repo, head, lang)
+    if lang is None:
+        raise Unsupported(reason, found)
+    if lang != "rust":
+        crates = None   # the crate limit is Rust's; the others read the whole tree
+        if layers == "1,2":
+            layers = "1,2,3"
     out_dir = os.path.join(repo, OUT_REL, dossier_id)
     work = os.path.join(out_dir, "work")
     os.makedirs(work, exist_ok=True)
     with open(os.path.join(work, ".gitignore"), "w", encoding="utf-8") as fh:
         fh.write("*\n")
 
-    touched = touched_functions(repo, base, head, dossier_id, calls)
+    touched = touched_functions(repo, base, head, dossier_id, calls, lang)
     if crates == "derive":
         crates = changed_crates(repo, base, head)
     # The extraction indexes a fresh copy of the tree with rust-analyzer, a full build's worth of work: it holds
     # a host build slot (build_slots.py) like a gate run, so it neither starves under fifteen concurrent builds
     # nor adds to them. The step timeouts start once the slot is held.
-    with build_slots.slot("vr_prepare " + repo, log=lambda m: print("vr_prepare: " + m, file=sys.stderr, flush=True)):
-        before_s, total_s = _extract(repo, base, head, scripts, work, touched, crates, layers, timeout)
-    return _summarise(repo, dossier_id, base, head, work, touched, crates, before_s, total_s)
+    if lang == "rust":
+        with build_slots.slot("vr_prepare " + repo, log=lambda m: print("vr_prepare: " + m, file=sys.stderr, flush=True)):
+            before_s, total_s = _extract(repo, base, head, scripts, work, touched, crates, layers, timeout, lang)
+    else:
+        before_s, total_s = _extract(repo, base, head, scripts, work, touched, crates, layers, timeout, lang)
+    return _summarise(repo, dossier_id, base, head, work, touched, crates, before_s, total_s, lang)
 
 
-def _extract(repo, base, head, scripts, work, touched, crates, layers, timeout):
+def _extract(repo, base, head, scripts, work, touched, crates, layers, timeout, lang="rust"):
     extract = os.path.join(scripts, "vr_extract.py")
     diff = os.path.join(scripts, "vr_diff.py")
     t_start = time.time()
@@ -254,7 +293,9 @@ def _extract(repo, base, head, scripts, work, touched, crates, layers, timeout):
         arc.stdout.close()
         if arc.wait() != 0 or tar.returncode != 0:
             raise Failed("archive", "git archive %s failed" % base)
-        cmd = [py, extract, "rust", tree, "--layers", layers, "--timeout", str(timeout)]
+        cmd = [py, extract, lang, tree, "--layers", layers]
+        if lang == "rust":
+            cmd += ["--timeout", str(timeout)]
         if crates is not None:
             cmd += ["--crates", ",".join(crates)]
         if touched:
@@ -271,6 +312,8 @@ def _extract(repo, base, head, scripts, work, touched, crates, layers, timeout):
     if touched:
         # the same call layer as the before graph: otherwise its fn nodes are all "removed" in the merge
         after_cmd += ["--calls", ",".join(touched)]
+    if lang != "rust":
+        after_cmd += ["--lang", lang, "--layers", layers]
     run("after", after_cmd)
     run("merge", [py, diff, "merge", "--before", os.path.join(work, "before.json"),
                   "--after", os.path.join(work, "after.json"),
@@ -278,7 +321,7 @@ def _extract(repo, base, head, scripts, work, touched, crates, layers, timeout):
     return t_before, time.time() - t_start
 
 
-def _summarise(repo, dossier_id, base, head, work, touched, crates, t_before, t_total):
+def _summarise(repo, dossier_id, base, head, work, touched, crates, t_before, t_total, lang="rust"):
     with open(os.path.join(work, "merged.json"), encoding="utf-8") as fh:
         merged = json.load(fh)
     cand = candidates(merged, touched)
@@ -290,7 +333,7 @@ def _summarise(repo, dossier_id, base, head, work, touched, crates, t_before, t_
     for n in merged.get("nodes", []):
         counts[n.get("status", "?")] = counts.get(n.get("status", "?"), 0) + 1
     summary = {
-        "ok": True, "dossier": dossier_id, "base": base, "head": head,
+        "ok": True, "dossier": dossier_id, "base": base, "head": head, "language": lang,
         "out_dir": os.path.join(OUT_REL, dossier_id), "work_dir": os.path.join(OUT_REL, dossier_id, "work"),
         "expected_outputs": [os.path.join(OUT_REL, dossier_id, n) for n in ("l0.json", "l1.json", "l2.json")],
         "touched_functions": touched, "touched_found": len(cand["touched"]),
@@ -439,11 +482,11 @@ def selftest() -> int:
         prepare(wsr, "W-4", b2, "HEAD", scripts, [], "1,2", 5, crates=["gamma"])
         check("prepare: an explicit list wins", "--crates gamma" in open(os.path.join(wsr, OUT_REL, "W-4", "work", "after.json.argv")).read())
 
-        # 2c. an unsupported repository (C# and Python, no Cargo.toml): typed, exit 3, nothing written
+        # 2c. an unsupported repository (Go and TypeScript, no Cargo.toml, .cs or .py): typed, exit 3, nothing written
         cs = os.path.join(td, "cs")
         os.makedirs(cs)
-        open(os.path.join(cs, "App.csproj"), "w").write("<Project />\n")
-        open(os.path.join(cs, "tool.py"), "w").write("print(1)\n")
+        open(os.path.join(cs, "main.go"), "w").write("package main\n")
+        open(os.path.join(cs, "tool.ts"), "w").write("export {}\n")
         _git(cs, "init", "-q")
         _git(cs, "add", "-A")
         _git(cs, "commit", "-q", "-m", "base")
@@ -451,14 +494,41 @@ def selftest() -> int:
             prepare(cs, "W-5", "HEAD", "HEAD", scripts, [], "1", 5)
             check("unsupported repo is reported", False)
         except Unsupported as exc:
-            check("unsupported repo: reason names the languages", "C#" in exc.reason and "Python" in exc.reason
-                  and exc.languages == ["C#", "Python"])
+            check("unsupported repo: reason names the languages", "Go" in exc.reason and "TypeScript" in exc.reason
+                  and exc.languages == ["Go", "TypeScript"])
         check("unsupported repo: nothing written", not os.path.exists(os.path.join(cs, OUT_REL)))
         r = subprocess.run([sys.executable, os.path.abspath(__file__), cs, "W-5", "--base", "HEAD", "--head", "HEAD",
                             "--scripts-dir", scripts], capture_output=True, text=True)
         out = json.loads(r.stdout or "{}")
         check("unsupported repo: CLI exits 3 with status unsupported",
-              r.returncode == 3 and out.get("status") == "unsupported" and out.get("ok") is False and "C#" in out.get("reason", ""))
+              r.returncode == 3 and out.get("status") == "unsupported" and out.get("ok") is False and "Go" in out.get("reason", ""))
+
+        # 2d. Python and C# repositories: the real extractors end to end, language detected, no crate limit
+        for lang, label, files0, files1, fn_name in (
+                ("python", "py", {"pkg/__init__.py": "", "pkg/a.py": "def helper():\n    return 1\n\n\ndef old():\n    return helper()\n"},
+                 {"pkg/a.py": "def helper():\n    return 1\n\n\ndef old():\n    return helper() + 1\n\n\ndef planned(x):\n    return old()\n"}, "old"),
+                ("csharp", "cs", {"App/App.csproj": "<Project />\n", "App/A.cs": "namespace N {\n class A {\n public void Helper() {}\n public void Old() {\n  Helper();\n }\n }\n}\n"},
+                 {"App/A.cs": "namespace N {\n class A {\n public void Helper() {}\n public void Old() {\n  Helper();\n  Helper();\n }\n public void Planned(int x) { Old(); }\n }\n}\n"}, "Old")):
+            rp = os.path.join(td, "lang-" + label)
+            os.makedirs(rp)
+            _git(rp, "init", "-q")
+            revs = []
+            for grp in (files0, files1):
+                for rel, txt in grp.items():
+                    os.makedirs(os.path.dirname(os.path.join(rp, rel)), exist_ok=True)
+                    open(os.path.join(rp, rel), "w").write(txt)
+                _git(rp, "add", "-A")
+                _git(rp, "commit", "-q", "-m", "step")
+                revs.append(subprocess.run(["git", "rev-parse", "HEAD"], cwd=rp, capture_output=True, text=True).stdout.strip())
+            check("detect: %s repo" % lang, detect_language(rp, "HEAD")[0] == lang)
+            check("touched (%s): the added function" % lang, fn_name in touched_functions(rp, revs[0], "HEAD", "W-9", [], lang))
+            s3 = prepare(rp, "W-9", revs[0], "HEAD", HERE, [], "1,2", 60)
+            check("prepare (%s): ok, language and layers" % lang, s3["ok"] and s3["language"] == lang and s3["crates"] == "all")
+            check("prepare (%s): the new function is added" % lang, s3["touched_found"] >= 1 and s3["node_status"].get("added", 0) >= 1)
+            check("prepare (%s): a body edit marks the module/type changed" % lang, s3["node_status"].get("changed", 0) >= 1)
+            cand = json.load(open(os.path.join(rp, OUT_REL, "W-9", "work", "candidates.json")))
+            check("prepare (%s): the call to the old function is a candidate" % lang,
+                  any(c["touches"].endswith("::" + fn_name) for c in cand["calls"]))
 
         # 3. a bad revision fails with a step name
         try:
@@ -489,7 +559,8 @@ def main(argv=None) -> int:
     ap.add_argument("--base")
     ap.add_argument("--head")
     ap.add_argument("--calls", default="", help="extra function names, comma separated")
-    ap.add_argument("--layers", default="1,2")
+    ap.add_argument("--layers", default="1,2", help="Rust: 1,2; Python and C#: 1,2,3 (the default 1,2 becomes 1,2,3 for them)")
+    ap.add_argument("--lang", default=None, choices=["rust", "python", "csharp"], help="force the extractor (default: detected from HEAD)")
     ap.add_argument("--crates", default="derive",
                     help="layer 2 only for these crates: a comma list, `all` for no limit; default: derived from the changed files")
     ap.add_argument("--timeout", type=int, default=120)
@@ -505,7 +576,8 @@ def main(argv=None) -> int:
         summary = prepare(args.repo, args.dossier, args.base, args.head, args.scripts_dir,
                           [c for c in args.calls.split(",") if c], args.layers, args.timeout,
                           crates=("derive" if args.crates == "derive" else None if args.crates == "all"
-                                  else [c.strip() for c in args.crates.split(",") if c.strip()]))
+                                  else [c.strip() for c in args.crates.split(",") if c.strip()]),
+                          lang=args.lang)
     except Unsupported as exc:
         print(json.dumps({"ok": False, "status": "unsupported", "reason": exc.reason, "languages": exc.languages}))
         return 3

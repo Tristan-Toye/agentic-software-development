@@ -58,7 +58,7 @@ The panel sits above the dossier's questions.
 
 - The rust-analyzer call layer times out on a workspace of the size of config-harness: no `fn:` nodes, so the Flow view rests on the contract and on source lines the author read, not on a call hierarchy.
 - Module detail only for the touched crates; other crates appear as crate nodes only.
-- Rust only. The labels are written by a model: a label can be wrong, the evidence line is the check. A node marked `inferred` has no source line.
+- The demo is Rust; Python (`ast`) and C# (declaration parser) extractors exist since #393, with call edges only where a name resolves inside the repository (the rest is `inferred` or left out). The labels are written by a model: a label can be wrong, the evidence line is the check. A node marked `inferred` has no source line.
 - L0 and L1 elements have no node in `merged.json`, so their status is the author's judgement.
 - The demo set was authored once, by an agent run, on one change; it is a demonstration, not a measured quality.
 
