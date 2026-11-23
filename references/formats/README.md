@@ -71,6 +71,31 @@ overview), `.discovery/pr-draft-*.md` (the drafter's scratch), and
 `.discovery/deferred-ledger.md`. In committed mode `/plan` Phase 0 puts the
 three patterns in `.gitignore`, and every dossier commit adds files by name.
 
+**The main checkout is read-only in committed mode.** It is pulled, fetched
+and used to add worktrees, nothing else: a tracked change there blocks
+`git pull` and is on no branch. `scripts/dossier_edit.py` enforces it for
+dossier writes aimed at the main checkout's copy:
+
+- a worktree named for the dossier's ID holds the dossier: the write goes
+  there (`redirected: A -> B`);
+- no worktree, but a branch named for the ID is still open on origin (not
+  merged into `development` or a stub): `WORKTREE GONE`, exit 3, with the
+  `git worktree add` command that recreates it; rerun the same command after;
+- otherwise the write goes to the dossier's **notes file**,
+  `.discovery/notes/<file>`, git-excluded through `.git/info/exclude`. Every
+  reader (the scripts' `read_overlaid`, the dashboard) lays it over the
+  dossier: its front matter keys win, its `## Build log` lines are appended.
+  The next write once a worktree of the dossier exists flushes the notes into
+  that copy; `dossier_edit.py flush-notes --all <worktree>` flushes every
+  note into a worktree whose branch will commit them.
+
+Every other write is refused up front by the plugin's PreToolUse hook
+(`shared/claude/main-lock.ts`): Edit/Write of a path git does not ignore,
+and in Bash a mutating git subcommand, `sed -i`/`perl -i`, or a redirect or
+`tee` into such a path. `ASD_MAIN_LOCK=0` as a command prefix lets one call
+through, only for a change the owner asked for. The dashboard shows a
+warning for a main checkout with tracked changes anyway.
+
 A repository in two minds — tracked files under `.discovery/` while
 `.gitignore` also lists `.discovery/` — is neither mode: a new dossier would
 vanish from its PR. Every command stops there and shows the user the line.

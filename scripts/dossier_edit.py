@@ -120,7 +120,17 @@ def redirect_path(path: str) -> str:
     name carries the dossier's ID (`W-132` from the file name), holds the same
     relative file, that copy is returned and `redirected: A -> B` is printed once.
     No such worktree (e.g. /plan in the main checkout), a path outside a main
-    checkout, or ASD_DOSSIER_REDIRECT=0: PATH unchanged."""
+    checkout, or ASD_DOSSIER_REDIRECT=0: PATH unchanged.
+
+    The main checkout itself is never written when the dossier is tracked there
+    (committed mode). No worktree, but a branch named for the dossier is still
+    open on origin (not merged into development or a stub): WorktreeGone, whose
+    message says how to recreate the worktree, because the edit belongs on that
+    branch. No open branch: the write goes to the dossier's notes file
+    (`.discovery/notes/<file>`, kept out of `git status`), which every reader
+    lays over the dossier and the next stub or after-merge commits
+    (`flush-notes`). An untracked dossier (uncommitted mode, or one /plan has not
+    committed yet) is written where it is."""
     if os.environ.get("ASD_DOSSIER_REDIRECT") == "0":
         return path
     real = os.path.realpath(path)
@@ -146,8 +156,183 @@ def redirect_path(path: str) -> str:
             if real not in _REDIRECTED:
                 _REDIRECTED.add(real)
                 print(f"redirected: {real} -> {cand}", file=sys.stderr)
+            if notes_for(real):   # notes written while no worktree existed join the copy that will be committed
+                done = flush_notes(real, cand)
+                print(f"flushed notes into {cand}: {'; '.join(done)}", file=sys.stderr)
             return cand
-    return path
+    if not _git(top, "ls-files", "--", rel):
+        return path
+    live = live_branches(top, did)
+    if live:
+        wt = os.path.join(os.path.dirname(top), f"{os.path.basename(top)}-{m.group(0)}")
+        raise WorktreeGone(
+            f"WORKTREE GONE — {m.group(0)} is still open on branch {live[0]}"
+            + (f" (also: {', '.join(live[1:])})" if live[1:] else "")
+            + f", and its worktree is gone; this edit belongs on that branch, never in the main checkout {top}. "
+            f"Recreate it: `git -C {top} fetch origin && git -C {top} worktree add {wt} {live[0]} && "
+            f"git -C {wt} pull --ff-only`, rerun the same command (it lands there by itself), then commit and push "
+            f"in {wt}.")
+    notes = notes_path(top, rel)
+    if not os.path.isfile(notes):
+        os.makedirs(os.path.dirname(notes), exist_ok=True)
+        _exclude(top, NOTES_EXCLUDE)
+        write(notes, f"---\nid: {m.group(0)}\n---\n\n## Build log\n")
+    if real not in _REDIRECTED:
+        _REDIRECTED.add(real)
+        print(f"redirected: {real} -> {notes} (no open branch: notes the next stub or after-merge commits)",
+              file=sys.stderr)
+    return notes
+
+
+class WorktreeGone(Exception):
+    """A write aimed at the main checkout for a dossier whose branch is still open."""
+
+
+NOTES_EXCLUDE = ".discovery/notes/"
+NOT_BUILD = re.compile(r"^(?:plan|stub)/|^HEAD$|^(?:main|master|development|production)$")
+
+
+def notes_path(top: str, rel: str) -> str:
+    return os.path.join(top, ".discovery", "notes", os.path.basename(rel))
+
+
+def is_notes(path: str) -> bool:
+    return os.sep + os.path.join(".discovery", "notes") + os.sep in os.path.realpath(path)
+
+
+def notes_for(path: str) -> str | None:
+    """The notes file of a main-checkout dossier, when one exists."""
+    real = os.path.realpath(path)
+    cand = os.path.join(os.path.dirname(os.path.dirname(real)), "notes", os.path.basename(real))
+    return cand if os.path.basename(os.path.dirname(real)) == "dossiers" and os.path.isfile(cand) else None
+
+
+def _exclude(top: str, line: str) -> None:
+    """Add LINE to the repository's .git/info/exclude once (local, never a tracked change)."""
+    common = _git(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not common:
+        return
+    ex = os.path.join(common, "info", "exclude")
+    try:
+        have = open(ex, encoding="utf-8").read() if os.path.exists(ex) else ""
+        if line not in (x.strip() for x in have.splitlines()):
+            os.makedirs(os.path.dirname(ex), exist_ok=True)
+            with open(ex, "a", encoding="utf-8") as fh:
+                fh.write(("" if not have or have.endswith("\n") else "\n") + line + "\n")
+    except OSError:
+        pass
+
+
+def live_branches(top: str, did: "re.Pattern[str]") -> list[str]:
+    """Branches on origin named for the dossier and merged into neither development nor a stub, newest first."""
+    refs = _git(top, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/remotes/origin")
+    names = [r[len("origin/"):] for r in refs.splitlines() if r.startswith("origin/")]
+    bases = [f"origin/{n}" for n in names if n == "development" or n.startswith("stub/")]
+    out = []
+    for n in names:
+        if NOT_BUILD.search(n) or not did.search(n):
+            continue
+        merged = any(subprocess.run(["git", "-C", top, "merge-base", "--is-ancestor", f"origin/{n}", b],
+                                    capture_output=True).returncode == 0 for b in bases)
+        if not merged:
+            out.append(n)
+    return out
+
+
+def fm_blocks(fm: list[str]) -> dict[str, list[str]]:
+    """Front matter lines grouped per key (a list key keeps its item lines)."""
+    out: dict[str, list[str]] = {}
+    key = None
+    for line in fm:
+        m = KEY_RE.match(line)
+        if m:
+            key = m.group("key")
+            out[key] = [line]
+        elif key is not None:
+            out[key].append(line)
+    return out
+
+
+def overlay(text: str, notes: str) -> str:
+    """The dossier as readers should see it: the notes' front matter keys replace the dossier's, and the notes'
+    Build log lines follow the dossier's (a line already there is not repeated)."""
+    try:
+        fm, body = split_front_matter(text)
+        nfm, nbody = split_front_matter(notes)
+    except Refused:
+        return text
+    blocks, extra = fm_blocks(fm), fm_blocks(nfm)
+    extra.pop("id", None)
+    out: list[str] = []
+    for key, lines in blocks.items():
+        out += extra.pop(key, lines)
+    for lines in extra.values():
+        out += lines
+    merged = join_front_matter(out, body)
+    have = set(merged.split("\n"))
+    lines = [x.rstrip() for x in "\n".join(nbody).split("## Build log", 1)[-1].split("\n")
+             if x.startswith("- ") and x.rstrip() not in have]
+    if lines:
+        try:
+            merged = append_log(merged, lines)[0]
+        except Refused:
+            merged = merged.rstrip("\n") + "\n" + "\n".join(lines) + "\n"
+    return merged
+
+
+def read_overlaid(path: str) -> str:
+    """A dossier's text with its notes laid over it (the main checkout's copy is otherwise stale)."""
+    text = read(path)
+    notes = notes_for(path)
+    return overlay(text, read(notes)) if notes else text
+
+
+def notes_set(notes: str, before: str, after: str) -> list[str]:
+    """Store in NOTES the front matter keys AFTER changed relative to BEFORE (both full dossier texts)."""
+    b, a = fm_blocks(split_front_matter(before)[0]), fm_blocks(split_front_matter(after)[0])
+    changed = {k: v for k, v in a.items() if b.get(k) != v}
+    if [k for k in b if k not in a]:
+        raise Refused("removing a front matter key needs the dossier's branch; no open branch carries it — "
+                      "edit it on a branch from origin/development")
+    nfm, nbody = split_front_matter(read(notes))
+    blocks = fm_blocks(nfm)
+    blocks.update(changed)
+    write(notes, join_front_matter([x for v in blocks.values() for x in v], nbody))
+    return sorted(changed)
+
+
+def flush_notes(dossier: str, target: str) -> list[str]:
+    """Apply the notes of the main-checkout DOSSIER to TARGET (a worktree copy that will be committed), then
+    remove the notes. Returns what was applied."""
+    notes = notes_for(dossier)
+    if not notes:
+        return []
+    with locked(target):
+        new = overlay(read(target), read(notes))
+        nfm = fm_blocks(split_front_matter(read(notes))[0])
+        nfm.pop("id", None)
+        write_verified(target, new, "flush-notes")
+    os.remove(notes)
+    return [f"front matter: {', '.join(sorted(nfm)) or 'none'}", f"from {notes}"]
+
+
+def flush_all_notes(root: str) -> list[str]:
+    """Flush every notes file of ROOT's main checkout into ROOT, a worktree whose branch will commit them (the
+    stub's). A note whose dossier ROOT does not hold stays. Returns one line per dossier flushed."""
+    common = _git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not common:
+        raise Refused(f"{root} is not a git checkout")
+    main = os.path.dirname(os.path.realpath(common))
+    if os.path.realpath(root) == main:
+        raise Refused("--all needs a worktree, never the main checkout")
+    ndir = os.path.join(main, ".discovery", "notes")
+    out = []
+    for name in sorted(os.listdir(ndir)) if os.path.isdir(ndir) else []:
+        target = os.path.join(root, ".discovery", "dossiers", name)
+        if name.endswith(".md") and os.path.isfile(target):
+            flush_notes(os.path.join(main, ".discovery", "dossiers", name), target)
+            out.append(name)
+    return out
 
 
 def read(path: str) -> str:
@@ -260,12 +445,15 @@ def log_lines(path: str, entries: list[str]) -> tuple[int, int]:
     skipping a line already present verbatim in that section (an idempotent
     re-run adds nothing). Returns (appended, skipped). Raises Refused like
     append_log, OSError when the file cannot be read or written."""
+    orig = path
     path = redirect_path(path)
     with locked(path):
         text = read(path)
         lines = text.split("\n")
         level2 = [h for h in headings(lines) if h[1] == 2]
         have = set(x.rstrip() for x in lines[level2[-1][0] + 1 :]) if level2 and level2[-1][2].startswith("Build log") else set()
+        if is_notes(path) and os.path.isfile(orig):
+            have |= set(x.rstrip() for x in read(orig).split("\n") if x.startswith("- "))
         fresh: list[str] = []
         for e in entries:
             if not e.strip():
@@ -290,6 +478,8 @@ def log_or_say(path: str, entries: list[str]) -> str:
     does not depend on whether its build-log line landed."""
     try:
         n, skipped = log_lines(path, entries)
+    except WorktreeGone as err:
+        return f"build log: not written — {err}"
     except Refused as err:
         return f"build log: not written — {err}"
     except OSError as err:
@@ -962,13 +1152,37 @@ def run(argv: list[str]) -> int:
     p_syn = sub.add_parser("sync-contract", help="rebuild each ## Contract block from its file on disk, then verify")
     p_syn.add_argument("dossier")
     p_syn.add_argument("--root", required=True, help="the tree holding the materialised contract files")
+    p_fl = sub.add_parser("flush-notes", help="apply a main-checkout dossier's notes to a worktree copy, then drop them")
+    p_fl.add_argument("dossier", nargs="?", help="the dossier in the main checkout")
+    p_fl.add_argument("--into", metavar="FILE", help="the same dossier in the worktree that commits it")
+    p_fl.add_argument("--all", metavar="WORKTREE", help="flush every note into this worktree (the stub's)")
     args = ap.parse_args(argv)
     if args.selftest:
         return selftest()
     if not args.cmd:
         ap.error("a subcommand is required unless --selftest")
+    if args.cmd == "flush-notes":
+        if bool(args.all) == bool(args.dossier and args.into):
+            ap.error("flush-notes takes either DOSSIER --into FILE or --all WORKTREE")
+        try:
+            done = flush_all_notes(args.all) if args.all else flush_notes(args.dossier, args.into)
+        except (Refused, OSError) as err:
+            print(f"dossier_edit: {err}", file=sys.stderr)
+            return 1
+        print("dossier_edit: " + ("; ".join(done) if done else "no notes"))
+        return 0
+    main_copy = args.dossier
     if args.cmd != "section":
-        args.dossier = redirect_path(args.dossier)
+        try:
+            args.dossier = redirect_path(args.dossier)
+        except WorktreeGone as err:
+            print(f"dossier_edit: {err}", file=sys.stderr)
+            return 3
+    notes_mode = is_notes(args.dossier) and args.dossier != main_copy
+    if notes_mode and args.cmd in ("unset", "replace-section", "sync-contract"):
+        print(f"dossier_edit: REFUSED — `{args.cmd}` changes the dossier itself and no open branch carries it: "
+              f"make a worktree on a branch from origin/development and run it there", file=sys.stderr)
+        return 1
     try:
         if args.cmd == "log":
             entries = sys.stdin.read().splitlines() if args.lines == ["-"] else args.lines
@@ -982,7 +1196,7 @@ def run(argv: list[str]) -> int:
             print(f"dossier_edit: appended {n} line(s) to ## Build log"
                   + (f" ({skipped} already there, skipped)" if skipped else ""))
             return 0
-        text = read(args.dossier)
+        text = read_overlaid(main_copy) if notes_mode or args.cmd == "section" else read(args.dossier)
     except OSError as err:
         print(f"dossier_edit: {err}", file=sys.stderr)
         return 2
@@ -997,9 +1211,13 @@ def run(argv: list[str]) -> int:
                 print(f"dossier_edit: {change}")
         elif args.cmd in ("set", "add", "remove"):
             fn = {"set": set_fields, "add": add_items, "remove": remove_items}[args.cmd]
-            ctx = {"dir": os.path.dirname(os.path.abspath(args.dossier)), "reason": getattr(args, "reason", None)}
+            ctx = {"dir": os.path.dirname(os.path.abspath(main_copy)), "reason": getattr(args, "reason", None)}
             new, changes = (fn(text, pairs_of(args.pairs), ctx) if args.cmd != "add" else fn(text, pairs_of(args.pairs)))
-            write_verified(args.dossier, new, f"{args.cmd} {args.pairs}")
+            if notes_mode:
+                with locked(args.dossier):
+                    notes_set(args.dossier, text, new)
+            else:
+                write_verified(args.dossier, new, f"{args.cmd} {args.pairs}")
             for wid, why in ctx.get("reasoned", []):
                 print(f"dossier_edit: {record_blocker_removal(args.dossier, text, wid, why)}")
             for change in changes:
@@ -1404,19 +1622,79 @@ def selftest() -> int:
         gx(main, "add", "."); gx(main, "commit", "-qm", "i")
         mp = os.path.join(main, rel)
         saved_env = os.environ.pop("ASD_DOSSIER_REDIRECT", None)
-        check("redirect: no worktree, the main path is kept", redirect_path(mp) == os.path.realpath(mp))
+        notes = os.path.join(main, ".discovery", "notes", "W-132-x.md")
+        def status() -> str:
+            return subprocess.run(["git", "-C", main, "status", "--porcelain"], capture_output=True, text=True).stdout.strip()
+        check("redirect: no worktree and no open branch, a write goes to the notes file, never the main copy",
+              redirect_path(mp) == notes and os.path.isfile(notes) and status() == "")
+        untracked = os.path.join(main, ".discovery", "dossiers", "W-140-new.md")
+        open(untracked, "w", encoding="utf-8").write(SAMPLE.replace("W-001", "W-140"))
+        check("redirect: an untracked dossier (uncommitted mode, a fresh /plan) is written where it is",
+              redirect_path(untracked) == untracked)
+        os.remove(untracked)
         wt13 = os.path.join(rt, "app-W-13")
         gx(main, "worktree", "add", "-q", "-b", "w13", wt13)
-        check("redirect: a worktree whose name only prefixes the ID (W-13 vs W-132) is not taken", redirect_path(mp) == os.path.realpath(mp))
+        check("redirect: a worktree whose name only prefixes the ID (W-13 vs W-132) is not taken", redirect_path(mp) == notes)
+        n, _ = log_lines(mp, ["- SUITE: ci run 1 on abc — 0 failed / 3 passed"])
+        rc = run(["set", mp, "status=done"])
+        seen = read_overlaid(mp)
+        check("notes: a log line and a status change land in the notes; the main copy and git status stay clean",
+              n == 1 and rc == 0 and "SUITE: ci run 1" in read(notes) and "status: done" in read(notes)
+              and "SUITE" not in read(mp) and "status: ready" in read(mp) and status() == "")
+        check("notes: readers see the dossier with its notes laid over it",
+              "status: done" in seen and "status: ready" not in seen and seen.rstrip().endswith("0 failed / 3 passed")
+              and "anchors:" in seen)
+        check("notes: a line the main copy already has is not added again", log_lines(mp, ["- start"])[0] == 0
+              if "- start" in read(mp) else log_lines(mp, ["- SUITE: ci run 1 on abc — 0 failed / 3 passed"])[0] == 0)
+        check("notes: replace-section has no branch to land on and is refused",
+              run(["replace-section", mp, "Contract", "--from-file", mp]) == 1 and "status: ready" in read(mp))
+        tgt = os.path.join(rt, "target.md")
+        open(tgt, "w", encoding="utf-8").write(read(mp))
+        rc = run(["flush-notes", mp, "--into", tgt])
+        check("flush-notes: the notes land in the copy that will be committed, then go",
+              rc == 0 and "status: done" in read(tgt) and "0 failed / 3 passed" in read(tgt) and not os.path.exists(notes))
+        origin = os.path.join(rt, "origin.git")
+        gx(rt, "init", "-q", "--bare", origin)
+        gx(main, "remote", "add", "origin", origin)
+        gx(main, "push", "-q", "origin", "main:development")
+        gx(main, "checkout", "-q", "-b", "feat/W-132-x")
+        open(os.path.join(main, "f.txt"), "w").write("x")
+        gx(main, "add", "f.txt"); gx(main, "commit", "-qm", "build")
+        gx(main, "push", "-q", "origin", "feat/W-132-x")
+        gx(main, "checkout", "-q", "main")
+        gx(main, "fetch", "-q", "origin")
+        try:
+            redirect_path(mp)
+            gone = ""
+        except WorktreeGone as err:
+            gone = str(err)
+        check("worktree gone: an open branch named for the dossier refuses with the recreate command",
+              "WORKTREE GONE" in gone and "feat/W-132-x" in gone and "worktree add" in gone and "app-W-132" in gone)
+        check("worktree gone: the CLI exits 3 and a script's --log says so without raising",
+              run(["log", mp, "x"]) == 3 and "WORKTREE GONE" in log_or_say(mp, ["x"]) and "x\n" not in read(mp)[-3:])
+        gx(main, "push", "-q", "origin", "feat/W-132-x:development")
+        gx(main, "fetch", "-q", "origin")
+        check("worktree gone: a branch merged into development is no longer open", redirect_path(mp) == notes)
+        log_lines(mp, ["- NOTED: before the worktree"])
         wt = os.path.join(rt, "app-W-132")
         gx(main, "worktree", "add", "-q", "-b", "w132", wt)
         want = os.path.join(wt, rel)
         check("redirect: main path -> the worktree holding that ID", redirect_path(mp) == want)
+        check("redirect: notes written before the worktree existed are flushed into it, then go",
+              "NOTED: before the worktree" in read(want) and not os.path.exists(notes))
+        open(notes, "w", encoding="utf-8").write("---\nid: W-132\nstatus: done\n---\n\n## Build log\n- MERGED: x\n")
+        stray = os.path.join(main, ".discovery", "notes", "W-999-gone.md")
+        open(stray, "w", encoding="utf-8").write("---\nid: W-999\n---\n")
+        check("flush-notes --all: the main checkout itself is refused", run(["flush-notes", "--all", main]) == 1)
+        rc = run(["flush-notes", "--all", wt])
+        check("flush-notes --all: every note the worktree holds a dossier for lands there; the rest stay",
+              rc == 0 and "MERGED: x" in read(want) and "status: done" in read(want) and not os.path.exists(notes)
+              and os.path.exists(stray))
+        os.remove(stray)
         check("redirect: a path already in the worktree is unchanged", redirect_path(want) == want)
         n, _ = log_lines(mp, ["- QUESTION: q"])
         check("redirect: a log line lands in the worktree copy, the main copy stays clean",
-              n == 1 and "QUESTION: q" in read(want) and "QUESTION" not in read(mp)
-              and subprocess.run(["git", "-C", main, "status", "--porcelain"], capture_output=True, text=True).stdout.strip() == "")
+              n == 1 and "QUESTION: q" in read(want) and "QUESTION" not in read(mp) and status() == "")
         os.environ["ASD_DOSSIER_REDIRECT"] = "0"
         check("redirect: ASD_DOSSIER_REDIRECT=0 turns it off", redirect_path(mp) == mp)
         os.environ.pop("ASD_DOSSIER_REDIRECT")

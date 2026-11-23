@@ -305,6 +305,57 @@ export function lastLine(log: string): string {
   return l.length > 160 ? l.slice(0, 159) + "…" : l
 }
 
+// ---- notes laid over a main-checkout dossier ----
+// In committed mode a run never writes the main checkout's dossier: a write with no open branch goes to
+// `.discovery/notes/<file>` (scripts/dossier_edit.py, git-excluded) and every reader lays it over the dossier, as
+// dossier_edit.read_overlaid does: the notes' front matter keys replace the dossier's, and the notes' Build log lines
+// follow the dossier's (a line already there is not repeated).
+/** The notes file beside a `.discovery/dossiers/<file>`, when one exists. */
+export function notesFor(file: string): string | null {
+  if (basename(dirname(file)) !== "dossiers") return null
+  const n = join(dirname(dirname(file)), "notes", basename(file))
+  return existsSync(n) ? n : null
+}
+const FM = /^---\n([\s\S]*?)\n---\n?/
+function fmBlocks(fm: string): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  let key = ""
+  for (const l of fm.split("\n")) {
+    const m = l.match(/^([A-Za-z_][\w-]*):/)
+    if (m) { key = m[1]; out.set(key, [l]) } else if (key) out.get(key)!.push(l)
+  }
+  return out
+}
+/** TEXT with NOTES laid over it (see above). Text without front matter is returned as it is. */
+export function overlayNotes(text: string, notes: string): string {
+  const a = text.match(FM), b = notes.match(FM)
+  if (!a || !b) return text
+  const blocks = fmBlocks(a[1]), extra = fmBlocks(b[1])
+  extra.delete("id")
+  const lines: string[] = []
+  for (const [k, v] of blocks) { lines.push(...(extra.get(k) ?? v)); extra.delete(k) }
+  for (const v of extra.values()) lines.push(...v)
+  let merged = `---\n${lines.join("\n")}\n---\n` + text.slice(a[0].length)
+  const have = new Set(merged.split("\n"))
+  const nbody = notes.slice(b[0].length)
+  const tail = nbody.includes("## Build log") ? nbody.split("## Build log").slice(1).join("## Build log") : nbody
+  const add = tail.split("\n").filter((l) => l.startsWith("- ")).map((l) => l.trimEnd()).filter((l) => !have.has(l))
+  if (!add.length) return merged
+  const at = merged.search(/^## Build log\s*$/m)
+  if (at < 0) return merged.replace(/\n*$/, "\n") + add.join("\n") + "\n"
+  const next = merged.slice(at + 1).search(/^## /m)
+  const end = next < 0 ? merged.length : at + 1 + next
+  const head = merged.slice(0, end).replace(/\n*$/, "\n")
+  return head + add.join("\n") + "\n" + (next < 0 ? "" : "\n" + merged.slice(end))
+}
+/** A dossier file's text with its notes laid over it. */
+function readOverlaid(file: string): string {
+  const text = readFileSync(file, "utf8")
+  const n = notesFor(file)
+  if (!n) return text
+  try { return overlayNotes(text, readFileSync(n, "utf8")) } catch { return text }
+}
+
 /** Dossier files under one root, each parsed. */
 export function dossiersIn(root: string): { front: Front; text: string; file: string }[] {
   const dir = join(root, ".discovery", "dossiers")
@@ -313,7 +364,7 @@ export function dossiersIn(root: string): { front: Front; text: string; file: st
   const out: { front: Front; text: string; file: string }[] = []
   for (const n of names) {
     try {
-      const text = readFileSync(join(dir, n), "utf8")
+      const text = readOverlaid(join(dir, n))
       const front = parseFrontMatter(text)
       if (!front.id) front.id = n.replace(/\.md$/, "").replace(/^([A-Za-z]+-\d+).*$/, "$1")
       out.push({ front, text, file: join(dir, n) })
@@ -345,7 +396,7 @@ export const branchFile = (main: string, ref: string, rel: string): string => `g
 /** A dossier's text: from disk, or from the branch a `git:` file names. Throws when unreadable. */
 export function readDossier(file: string): string {
   const m = file.match(GIT_FILE)
-  if (!m) return readFileSync(file, "utf8")
+  if (!m) return readOverlaid(file)
   const p = Bun.spawnSync(["git", "-C", m[1], "show", `${m[2]}:${m[3]}`], { stdout: "pipe", stderr: "ignore" })
   if (p.exitCode !== 0) throw new Error(`cannot read ${m[3]} on ${m[2]}`)
   return p.stdout.toString()
@@ -353,7 +404,12 @@ export function readDossier(file: string): string {
 /** `readDossier` without blocking the event loop: a `git:` file's `git show` runs as an async child. */
 export async function readDossierAsync(file: string): Promise<string> {
   const m = file.match(GIT_FILE)
-  if (!m) return (await readText(file)) ?? (() => { throw new Error(`cannot read ${file}`) })()
+  if (!m) {
+    const text = (await readText(file)) ?? (() => { throw new Error(`cannot read ${file}`) })()
+    const n = notesFor(file)
+    const notes = n ? await readText(n) : null
+    return notes ? overlayNotes(text, notes) : text
+  }
   const r = await shRun(["git", "-C", m[1], "show", `${m[2]}:${m[3]}`], undefined, 30_000)
   if (r.code !== 0) throw new Error(`cannot read ${m[3]} on ${m[2]}`)
   return r.stdout

@@ -23,6 +23,7 @@ import { listChats, readChat, say } from "./pagechat.ts"
 import { awakeDeps, checkAwake, releaseAwake } from "./awake.ts"
 import { slotsReading } from "./slots.ts"
 import { checkDisk, diskDeps, diskReading, sweepDisk } from "./disk.ts"
+import { checkDirtyMains, dirtyMainReading } from "./mainlock.ts"
 import { api, apiGet, channelNameFor, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
 import { readAccounts, usageDir } from "./accounts.ts"
@@ -477,7 +478,7 @@ export async function handle(req: Request): Promise<Response> {
       .map((r) => ({ ...r, deferredUndecided: undecidedDeferred(r.deferred.items, r.runner?.command === "fix-deferred" && runnerActive(r.runner), openQs) }))
     const plans = planRuns(runs)
     const accounts = readAccounts([...runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: r.runKey || `${r.repo}.${r.id}`, account: r.runner?.account })), ...plans.map((p) => ({ key: p.key, account: p.account }))])
-    return json({ ...v, runs, plans, accounts, disk: diskReading(), slots: slotsReading(), usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
+    return json({ ...v, runs, plans, accounts, disk: diskReading(), dirtyMain: dirtyMainReading(), slots: slotsReading(), usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
   }
   // Visual review (VR-03): the change graph l0/l1/l2.json of a dossier, laid out by ELK on the server. The dossier's repo
   // roots are those of its runs (worktree, runner root, main checkout), the way the dossier routes find it.
@@ -1265,6 +1266,8 @@ async function main(): Promise<void> {
     const dd = diskDeps((t, b) => notify(t, "disk", b), () => emitChange("runs"))
     setTimeout(() => void checkDisk(dd), 3_000)
     setInterval(() => void checkDisk(dd), Number(process.env.ASD_DISK_EVERY_MS) || 300_000)
+    setTimeout(() => void checkDirtyMains(() => emitChange("runs")), 5_000)
+    setInterval(() => void checkDirtyMains(() => emitChange("runs")), Number(process.env.ASD_DIRTY_MAIN_EVERY_MS) || 120_000)
     // The sweep: each repo's own reclaim hook (a VM's build directories, its disk trim) on a timer, whatever the
     // host's free space, so a VM disk cannot fill while the Mac still has room.
     if (process.env.ASD_DISK_SWEEP !== "0") {

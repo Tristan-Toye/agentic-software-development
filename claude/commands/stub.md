@@ -185,6 +185,11 @@ into the stub**, never a direct push, before anything else runs. A conflicted
 sync is resolved as `/resolve-merge` Step 2 says, and `python3 ${PLUGIN_ROOT}/scripts/merge_guard.py`
 must exit 0 before the merge is committed.
 
+Kanban pull requests merged into development since the cut never passed a stack run. List them with
+`python3 ${PLUGIN_ROOT}/scripts/classify_delivery.py --landed --root <repo> --since $(git merge-base origin/development <stub>)`
+(prints `none` when there are none), name them in the record and the report, and treat each as an extra suspect
+when Step 5 attributes a suite failure: a failure no stub dossier explains may belong to one of them.
+
 ## Step 2 — The dossier census
 
 The census is the attribution table every later step rules by. For every
@@ -268,6 +273,17 @@ push. Do it again after any fix round that merged an ADR into the stub. Where
 a workflow on `development` writes the index, leave it alone: that repository's
 CI refuses a pull request that commits it. Never edit the index by hand, not
 even to renumber an ADR.
+
+**The architecture diagrams, next.** In a repository with
+`docs/architecture/*.json`, after merging `origin/development` into the stub
+and after any re-anchor (`check_diagram_anchors.py --fix` moves the `path:NNN`
+line numbers in the Mermaid blocks), run `python3
+${PLUGIN_ROOT}/scripts/vr_mermaid.py adopt-anchors docs/architecture`: the
+JSON takes the new line numbers, so the diagram gate of every branch on the
+stub stays green. Commit what it changed alone (`chore: adopt re-anchored
+diagram lines`) and push. A file it leaves alone holds a real edit: fix that
+JSON, then `vr_mermaid.py sync docs/architecture`. `vr_mermaid.py check
+docs/architecture` passes before you push.
 
 `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N>`. Exit 4 means a
 superseded head: re-run against the head that superseded it. Exit 5 means a

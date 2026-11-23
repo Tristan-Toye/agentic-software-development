@@ -255,6 +255,9 @@ def dossier_texts(dirs: list[str], wt: str, ref: str = MAINLINE) -> dict[str, st
             if name not in out:
                 with open(f, encoding="utf-8", errors="replace") as fh:
                     out[name] = fh.read()
+                notes = dossier_edit.notes_for(f)   # the main checkout's copy, with what was logged since
+                if notes:
+                    out[name] = dossier_edit.overlay(out[name], dossier_edit.read(notes))
     rc, names = git(wt, "ls-tree", "--name-only", ref, ".discovery/dossiers/")
     if rc == 0:
         for p in names.splitlines():
