@@ -56,7 +56,7 @@ dossier file it names (`.discovery/dossiers/<ID>-*.md` in `<WT>`), `<S>` is
 | Check a change-request document | `python3 <S>/check_crs.py <CRS file>` (drop a demoted one: `--drop CR-2 --out <file>`) |
 | Route the change requests to fix payloads | `python3 <S>/compose_payloads.py --kind implementer --dossier <DOSSIER> --root <WT> --host claude --crs <CRS file> --out <WT>/.agent-staging/payloads/fix-wave.json --hooks '<text>' [--test-command '<cmd>'] [--assign CR-2=P1]` |
 | Run the proving tests and the touched packages, once | `python3 <S>/run_tests.py --log <WT>/.agent-staging/fix-tests.log --cwd <WT> [--vm <name> --workdir <WT> --env-script <file>] -- <one command naming every proving test and package>`; a run over 10 minutes: add `--detach`, then `python3 <S>/run_tests.py --wait <WT>/.agent-staging/fix-tests.log` |
-| Run the gates | `python3 <S>/run_gates.py <gates file> --root <WT> [--only a,b] [--env-script <file>]` (gates file: the dossier's `GATES:` line, else `.discovery/analysis/gates-<ID>.txt`) |
+| Run the gates | `python3 <S>/run_gates.py <gates file> --root <WT> [--only a,b] [--env-script <file>] [--build-log <DOSSIER>]` (gates file: the dossier's `GATES:` line, else `.discovery/analysis/gates-<ID>.txt`) |
 | Revert a fix that did not hold | `python3 <S>/safe_revert.py --repo <WT> <path> [<path> …]` (uncommitted), or `git -C <WT> revert --no-edit <sha>` (committed) |
 | The worktree's state after the wave | `python3 <S>/git_state.py <WT> --base <base>` |
 | Open the PR, close the records, remove the worktree (Step 6) | `python3 <S>/fix_deferred_pr.py --root <R> --dossier <ID> --test 'D-1=<test>' [--test …] --suite '<summary>' --gates '<summary>' [--fixed D-1=<sha>] [--to-dossier D-3] [--dropped D-5] [--dry-run]` |

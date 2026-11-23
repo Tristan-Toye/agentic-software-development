@@ -34,6 +34,14 @@ Four kinds of reference, each resolved against the repository:
    phase headings of its own (WARNING when that file lacks it: name the
    owner).
 
+5. Script commands — `python3 scripts/X.py --flag …`, `python3
+   ${PLUGIN_ROOT}/scripts/X.py …` (also `${CLAUDE_PLUGIN_ROOT}` and `<S>/X.py`).
+   The script must exist, and every `--flag` on the same line (up to the
+   closing backtick of an inline span, or a `|`, `;`, `&&` or `#`) must appear
+   as a string literal in that script (or in `driver_common.py` for a driver).
+   DEFECT when the script is missing or a flag is not one of its own: the
+   agent that copies the command gets an argparse error and a wasted turn.
+
 Prose only for 1, 2 and 4 — a code fence quotes text. Paths (3) are checked
 inside fences too, because that is where the commands live. Generated files
 under claude/ are not read: they mirror their sources.
@@ -67,6 +75,14 @@ DOC_GLOBS = (
     "opencode/AGENTS.md",
 )
 DEFAULT_SECTION_FILE = "formats/README.md"
+SCRIPT_CMD_RE = re.compile(
+    r"(?:\$\{(?:CLAUDE_)?PLUGIN_ROOT\}/|(?<![\w/.-])|<S>/)(?:scripts/)?(?P<script>[a-z][a-z0-9_]*\.py)(?P<rest>[^`\n]*)"
+)
+FLAG_RE = re.compile(r"(?<![\w-])(--[a-z][a-z0-9-]*)")
+FLAG_LITERAL_RE = re.compile(r"""["'](--[a-z][a-z0-9-]*)""")
+# A script that hands part of its command line to another one: that one's flags count too.
+DELEGATES = {"vr_map.py": ("vr_refresh.py",)}
+WORD_LITERAL_RE = re.compile(r"""["']([a-z][a-z0-9-]*)["']""")
 PATH_ROOTS = ("scripts", "references", "sub-agents", "primary-agents", "commands", "skills")
 # A backticked `/name` that is a filesystem root, not a command.
 NOT_A_COMMAND = {
@@ -262,6 +278,54 @@ def check_paths(rel: str, text: str, repo: Path, rep: Report) -> None:
                 rep.warn(where, f"{path} does not exist in this plugin (a target repository's own file?)")
 
 
+def script_flags(repo: Path, script: str, cache: dict[str, set[str] | None]) -> set[str] | None:
+    """Every `--flag` literal the script (and driver_common.py, for a driver) spells; None when it does not exist."""
+    if script in cache:
+        return cache[script]
+    path = repo / "scripts" / script
+    flags: set[str] | None = None
+    if path.is_file():
+        src = path.read_text(encoding="utf-8")
+        flags = set(FLAG_LITERAL_RE.findall(src)) | {"--help"}
+        if re.search(r"""["']--["']\s*\+""", src):  # flags built as "--" + name in a loop: any word literal may be one
+            flags |= {"--" + w for w in WORD_LITERAL_RE.findall(src)}
+        for other in DELEGATES.get(script, ()):
+            flags |= script_flags(repo, other, cache) or set()
+        if "driver_common" in src and (repo / "scripts" / "driver_common.py").is_file():
+            flags |= set(FLAG_LITERAL_RE.findall((repo / "scripts" / "driver_common.py").read_text(encoding="utf-8")))
+    cache[script] = flags
+    return flags
+
+
+def check_script_commands(rel: str, text: str, repo: Path, rep: Report) -> None:
+    cache: dict[str, set[str] | None] = {}
+    for number, line, fenced in lines_with_fence(text):
+        for match in SCRIPT_CMD_RE.finditer(line):
+            before = line[: match.start()]
+            full = match.group(0)
+            # Only a command: `python3 …/X.py`, `<S>/X.py`, `scripts/X.py` or a ${PLUGIN_ROOT} path, not a bare file mention.
+            is_cmd = (before.rstrip(' "').endswith("python3") or full.startswith(("${", "<S>/", "scripts/"))
+                      or line.lstrip().startswith(f"{match.group('script')} "))
+            if not is_cmd:
+                continue
+            script = match.group("script")
+            flags = script_flags(repo, script, cache)
+            where = f"{rel}:{number}"
+            if flags is None:
+                if full.startswith(("${", "scripts/")) or before.rstrip(' "').endswith("python3"):
+                    # a target repository's own scripts/X.py is meant when no ${PLUGIN_ROOT} names it
+                    if full.startswith(("${CLAUDE_", "<S>/")):  # ${PLUGIN_ROOT} paths are check_paths' job
+                        rep.defect(where, f"scripts/{script} does not exist")
+                continue
+            rest = match.group("rest")
+            if not fenced:
+                rest = rest.split("`")[0]
+            rest = re.split(r"\s#\s|\||;|&&", rest)[0]
+            for flag in FLAG_RE.findall(rest):
+                if flag not in flags:
+                    rep.defect(where, f"{script} does not accept {flag}")
+
+
 def phase_headings(path: Path) -> list[str]:
     """Phase numbers a file's headings carry: `## Phase 4 — …` and, in a
     file that has such headings, the lettered sub-steps `### 8a — …`. A
@@ -332,6 +396,7 @@ def check_repo(repo: Path) -> Report:
         check_sections(rel, text, repo, rep)
         check_commands(rel, text, repo, rep)
         check_paths(rel, text, repo, rep)
+        check_script_commands(rel, text, repo, rep)
         check_phases(rel, text, repo, rep)
     return rep
 
@@ -410,7 +475,7 @@ def selftest() -> int:
         (repo / "commands" / "deferred.md").write_text("# /deferred\n")
         (repo / "primary-agents" / "plan.md").write_text(_PLAN)
         (repo / "primary-agents" / "work-on.md").write_text("# /work-on\n\n## Phase 4 — Fan out\n")
-        (repo / "scripts" / "validate_pipeline.py").write_text("")
+        (repo / "scripts" / "validate_pipeline.py").write_text('"--root" "--all" "--selftest"\n')
         (repo / "README.md").write_text(_GOOD)
 
         rep = check_repo(repo)
@@ -444,6 +509,24 @@ def selftest() -> int:
         phase_file = [w for w in rep.warnings if "references/work-on/phase-6.md" in w]
         check("phase file: owner's Phase 4 resolves", not any("Phase 4" in w for w in phase_file))
         check("phase file: missing phase still warns", any("Phase 13" in w for w in phase_file))
+
+        # Script commands: the script must exist and accept every flag the line shows.
+        (repo / "scripts" / "foo.py").write_text('ap.add_argument("--known")\nap.add_argument("--build-log")\n')
+        (repo / "README.md").write_text(
+            "Run `python3 scripts/foo.py --known x --build-log <dossier>` and then:\n\n```\n"
+            "python3 ${PLUGIN_ROOT}/scripts/foo.py --known 1 | tee out --other\n"
+            "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/foo.py --stale\n```\n\n"
+            "Also `python3 scripts/foo.py --gone` (inline) and `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ghost.py --x`.\n"
+            "A bare mention of foo.py --anything is not a command.\n"
+        )
+        rep = check_repo(repo)
+        flagged = "\n".join(rep.defects)
+        check("script flags: known flags pass", "--known" not in flagged and "--build-log" not in flagged)
+        check("script flags: text after a pipe is not the script's", "--other" not in flagged)
+        check("script flags: stale flag in a fence caught", "foo.py does not accept --stale" in flagged)
+        check("script flags: stale flag in an inline span caught", "foo.py does not accept --gone" in flagged)
+        check("script flags: missing plugin script caught", "scripts/ghost.py does not exist" in flagged)
+        check("script flags: a bare mention is skipped", "--anything" not in flagged)
 
     for item in failures:
         print(f"SELFTEST FAIL  {item}")
