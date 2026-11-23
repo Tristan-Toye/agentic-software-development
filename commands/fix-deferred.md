@@ -54,7 +54,7 @@ dossier file it names (`.discovery/dossiers/<ID>-*.md` in `<WT>`), `<S>` is
 | Read the record | `python3 <S>/build_records.py deferred show <ID> --root <R>` |
 | Set an item's state (only when no script above does it) | `python3 <S>/build_records.py deferred set <ID> D-n --state fixing\|fixed\|dossier\|wontfix [--note <sha>] --root <R> --log <DOSSIER>` |
 | Check a change-request document | `python3 <S>/check_crs.py <CRS file>` (drop a demoted one: `--drop CR-2 --out <file>`) |
-| Merge the fix packages (Step 4) | `ASD_DRIVER_MERGE_PACKAGES=on python3 <S>/merge_packages.py --dossier <ID> --worktree <WT> --wave-args <WT>/.agent-staging/payloads/fix-wave.json` |
+| Merge the fix packages (Step 4) | `python3 <S>/merge_packages.py --dossier <ID> --worktree <WT> --wave-args <WT>/.agent-staging/payloads/fix-wave.json` |
 | Add a review finding the run will not fix to the deferred list | `python3 <S>/build_records.py deferred add <ID> --root <R> --log <DOSSIER> --title '<claim>' --kind <kind> --loc <path:line> --evidence '<text>' --fix '<text>'` |
 | Run the proving tests and the touched packages, once | `python3 <S>/run_tests.py --log <WT>/.agent-staging/fix-tests.log --cwd <WT> [--vm <name> --workdir <WT> --env-script <file>] -- <one command naming every proving test and package>`; a run over 10 minutes: add `--detach`, then `python3 <S>/run_tests.py --wait <WT>/.agent-staging/fix-tests.log` |
 | Run the gates | `python3 <S>/run_gates.py <gates file> --root <WT> [--only a,b] [--env-script <file>] [--build-log <DOSSIER>]` (gates file: the dossier's `GATES:` line, else `.discovery/analysis/gates-<ID>.txt`) |
@@ -201,7 +201,7 @@ file is read:
 4. **Merge the packages** from `<WT>`, one call:
 
    ```bash
-   ASD_DRIVER_MERGE_PACKAGES=on python3 ${PLUGIN_ROOT}/scripts/merge_packages.py \
+   python3 ${PLUGIN_ROOT}/scripts/merge_packages.py \
      --dossier <ID> --worktree <WT> --wave-args <WT>/.agent-staging/payloads/fix-wave.json
    ```
 

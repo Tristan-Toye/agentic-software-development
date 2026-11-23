@@ -13,7 +13,6 @@ This report puts, per driver:
                 <root>/.discovery/dossiers/<ID>.md, or the copy in the worktree its
                 front matter names when that one has the longer log)
     agreement   only where it is mechanical, else `needs human read`; never guessed:
-                merge_packages driver's TOUCHED_BEYOND vs a scope / drift / TOUCHED_BEYOND line
                 test_round     the driver's failed-test count vs the failed counts of the
                                `SUITE:` lines
                 pre_fanout_check, strength_gate_prep: always `needs human read`
@@ -59,12 +58,12 @@ LINE_SHOW = 6
 # The orchestrator's build-log lines that belong to each driver's phase.
 PHASE_LINES = {
     "pre_fanout_check": r"(?i)phase 3|census|frozen|checklist|receipt|validat|slice|criteria|\bgates?\b",
-    "merge_packages": r"(?i)merge|TOUCHED_BEYOND|scope|drift|owned|conflict",
     "strength_gate_prep": r"(?i)strength|coverage|weak|stub|red[- ]run",
     "test_round": r"SUITE|(?i:arbitrat|round|failing|failed)",
     "vr_promote_preview": r"(?i)vr_promote|Diagrams new|seq draft|visual review|promot",
 }
-MERGE_LOGGED = re.compile(r"(?i)TOUCHED_BEYOND|\bscope\b|\bdrift\b|outside (its )?(owned|OWNED)")
+# a SUITE line the orchestrator logged: `SUITE:` at the start of the entry, never a word inside another line
+SUITE_LINE = re.compile(r"^[\s\-*]*SUITE:")
 SUITE_FAILED = re.compile(r"(\d+) failed")
 
 
@@ -134,18 +133,8 @@ def load_runs(evidence: str, dossier: str) -> tuple[dict[str, list[dict]], list[
 def agreement(driver: str, runs: list[dict], log: list[str], have_log: bool) -> tuple[str, str]:
     """(status, detail): status is agree | disagree | needs human read. Only where the comparison is well defined."""
     human = ("needs human read", "no mechanical comparison is defined for this driver")
-    if driver == "merge_packages":
-        if not have_log:
-            return "needs human read", "no dossier build log to compare with"
-        beyond = [r for r in runs if (r.get("facts") or {}).get("touched_beyond")]
-        logged = [ln for ln in log if MERGE_LOGGED.search(ln)]
-        if bool(beyond) == bool(logged):
-            return "agree", ("both name a path beyond OWNED_PATHS" if beyond else "neither names a path beyond OWNED_PATHS")
-        if beyond:
-            return "disagree", "driver stopped at TOUCHED_BEYOND " + ", ".join((beyond[0]["facts"]["touched_beyond"].get("paths") or [])[:3]) + "; the build log has no scope/drift line"
-        return "disagree", f"the build log has {logged[0][:90]!r}; the driver saw no path beyond OWNED_PATHS"
     if driver == "test_round":
-        suites = [ln for ln in log if ln.lstrip("- ").startswith("SUITE")]
+        suites = [ln for ln in log if SUITE_LINE.match(ln)]
         if not suites:
             return "needs human read", "the build log has no SUITE: line"
         logged = {int(m.group(1)) for ln in suites for m in [SUITE_FAILED.search(ln)] if m}
@@ -300,9 +289,9 @@ def selftest() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         evd, dd = os.path.join(tmp, "asd-drivers"), os.path.join(tmp, "dossiers")
-        # merge_packages: three dossiers, clean agreement (no TOUCHED_BEYOND either side)
+        # strength_gate_prep: three clean dossiers
         for i, d in enumerate(("W-1", "W-2", "W-3")):
-            ev(evd, d, "merge_packages", 1, 0, facts={"merged": ["A"]})
+            ev(evd, d, "strength_gate_prep", 1, 0, facts={"merged": ["A"]})
             dossier(dd, d, ["Phase 5: merged A", "SUITE: local on abc, base def — 5 passed, 0 failed, 0 skipped; /x.log"])
         # test_round: W-1 agrees (2 failed in the SUITE line), W-2 disagrees, W-3 has a surprise
         ev(evd, "W-1", "test_round", 1, 1, ["x"], {"suite": {"failed": 2, "passed": 5}})
@@ -315,12 +304,12 @@ def selftest() -> int:
         # the diagram driver: always a human read, findings carried through
         ev(evd, "W-2", "vr_promote_preview", 1, 1, ["flow f1: step s1 has no call_kind"], {"built_ok": 3, "failed": 1})
         # a corrupt evidence file is noted, not fatal
-        with open(os.path.join(evd, "driver-shadow", "W-3", "strength_gate_prep-1.json"), "w") as fh:
+        with open(os.path.join(evd, "driver-shadow", "W-3", "pre_fanout_check-1.json"), "w") as fh:
             fh.write("{bad")
         rep = report(evd, dd, [], [])
         v = {n: p["verdict"] for n, p in rep["drivers"].items()}
         check("dossiers are found from the shadow directories", rep["dossiers"] == ["W-1", "W-2", "W-3"])
-        check("merge_packages: 3 dossiers, no surprise, no disagreement -> READY-FOR-ON", v["merge_packages"] == "READY-FOR-ON")
+        check("strength_gate_prep: 3 dossiers, no surprise -> READY-FOR-ON", v["strength_gate_prep"] == "READY-FOR-ON")
         check("test_round: a surprise exit -> NOT-YET naming it", v["test_round"] == "NOT-YET" and "W-3" in rep["drivers"]["test_round"]["reason"])
         tr = {d["dossier"]: d for d in rep["drivers"]["test_round"]["dossiers"]}
         check("test_round: matching failed count agrees, differing disagrees, a surprise run has no count to compare",
@@ -333,14 +322,17 @@ def selftest() -> int:
               report(evd, dd, ["W-2"], [])["drivers"]["test_round"]["dossiers"][0]["agreement"] == "agree")
         check("pre_fanout_check: two dossiers -> NOT-YET with the count", v["pre_fanout_check"] == "NOT-YET" and "2 of 3" in rep["drivers"]["pre_fanout_check"]["reason"])
         check("pre_fanout_check: never a mechanical agreement", all(d["agreement"] == "needs human read" for d in rep["drivers"]["pre_fanout_check"]["dossiers"]))
-        check("strength_gate_prep: only an unreadable file -> NO-DATA and a note", v["strength_gate_prep"] == "NO-DATA" and any("unreadable" in n for n in rep["notes"]))
-        # merge_packages disagreement
-        ev(evd, "W-3", "merge_packages", 2, 2, ["x"], {"touched_beyond": {"package": "B", "paths": ["src/x.py"]}})
-        check("merge_packages: TOUCHED_BEYOND without a log line disagrees and surprises",
-              report(evd, dd, [], [])["drivers"]["merge_packages"]["verdict"] == "NOT-YET")
-        dossier(dd, "W-3", ["TOUCHED_BEYOND src/x.py accepted, package table updated"])
-        m = report(evd, dd, ["W-3"], ["merge_packages"])
-        check("merge_packages: a logged TOUCHED_BEYOND agrees; --driver narrows", m["drivers"]["merge_packages"]["dossiers"][0]["agreement"] == "agree" and list(m["drivers"]) == ["merge_packages"])
+        check("a corrupt evidence file is a note, not a count", any("unreadable" in n for n in rep["notes"]))
+        # only the SUITE: line counts: build-log entries that merely contain scope / drift / failed words are not it
+        ev(evd, "W-5", "test_round", 1, 1, ["z"], {"suite": {"failed": 3, "passed": 5}})
+        dossier(dd, "W-5", ["CR-4 accepted: the scope of the fix drifts past the owned paths, 3 failed checks",
+                            "AMBIGUITY-SETTLED: the scope reading, 3 failed", "RETURNED P1 with 3 failed; drift noted", "SUITEX 3 failed"])
+        check("test_round: CR-4 / AMBIGUITY-SETTLED / RETURNED lines are not SUITE: lines -> needs human read",
+              report(evd, dd, ["W-5"], ["test_round"])["drivers"]["test_round"]["dossiers"][0]["agreement"] == "needs human read")
+        dossier(dd, "W-5", ["CR-4 scope drift, 9 failed", "- SUITE: local on a, base b — 5 passed, 3 failed, 0 skipped; /l"])
+        m = report(evd, dd, ["W-5"], ["test_round"])
+        check("test_round: only the SUITE: line is compared; --driver narrows",
+              m["drivers"]["test_round"]["dossiers"][0]["agreement"] == "agree" and list(m["drivers"]) == ["test_round"])
         # the worktree copy with the longer log wins
         wt = os.path.join(tmp, "wt")
         dossier(os.path.join(wt, ".discovery", "dossiers"), "W-9", ["a", "b", "SUITE: local on x, base y — 1 passed, 1 failed; /l"])
@@ -357,17 +349,17 @@ def selftest() -> int:
         # rule tests on their own evidence: failed builds block a driver that has an on mode; a no-on driver is NO-ON
         evd2 = os.path.join(tmp, "evidence2")
         for d in ("W-1", "W-2", "W-3"):
-            ev(evd2, d, "merge_packages", 1, 0, [], {"built_ok": 0, "failed": 4})
+            ev(evd2, d, "strength_gate_prep", 1, 0, [], {"built_ok": 0, "failed": 4})
             ev(evd2, d, "vr_promote_preview", 1, 0, [], {"built_ok": 5, "failed": 0})
         dd2 = os.path.join(tmp, "dossiers2")
         for d in ("W-1", "W-2", "W-3"):
             dossier(dd2, d, ["Phase 5: merged A"])
-        rep2 = report(evd2, dd2, [], ["merge_packages", "vr_promote_preview"])
-        mp2, vp2 = rep2["drivers"]["merge_packages"], rep2["drivers"]["vr_promote_preview"]
+        rep2 = report(evd2, dd2, [], ["strength_gate_prep", "vr_promote_preview"])
+        mp2, vp2 = rep2["drivers"]["strength_gate_prep"], rep2["drivers"]["vr_promote_preview"]
         check("failed builds in the shadow facts -> NOT-YET with the counts", mp2["verdict"] == "NOT-YET" and "0 built ok, 12 failed" in mp2["reason"])
         check("a driver with no on mode is NO-ON, never READY-FOR-ON", vp2["verdict"] == "NO-ON" and "shadow only" in vp2["reason"])
         check("the text names a verdict line per driver", all(f"VERDICT {n}:" in text for n in DRIVERS))
-        check("--json round-trips", json.loads(json.dumps(rep))["drivers"]["merge_packages"]["verdict"] == "READY-FOR-ON")
+        check("--json round-trips", json.loads(json.dumps(rep))["drivers"]["strength_gate_prep"]["verdict"] == "READY-FOR-ON")
         check("an empty evidence directory is NO-DATA for all", all(p["verdict"] == "NO-DATA" for p in report(os.path.join(tmp, "none"), dd, [], [])["drivers"].values()))
     if failures:
         print("driver_shadow_report selftest FAILED: " + "; ".join(failures))

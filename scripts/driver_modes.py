@@ -44,7 +44,7 @@ Usage:
     driver_modes.py --file PATH ...           another file than the default
     driver_modes.py --selftest
 
-NAME is one of merge_packages, pre_fanout_check, strength_gate_prep,
+NAME is one of pre_fanout_check, strength_gate_prep,
 test_round, vr_promote_preview; MODE is off, shadow or on. The file is written atomically.
 Exit 0 done, 2 bad arguments or an unreadable file.
 
@@ -65,11 +65,11 @@ import sys
 import tempfile
 import time
 
-NAMES = ("merge_packages", "pre_fanout_check", "strength_gate_prep", "test_round",
-         "vr_promote_preview")
+NAMES = ("pre_fanout_check", "strength_gate_prep", "test_round", "vr_promote_preview")
 FREE = ("vr_promote_preview",)   # script-only, no tokens: exempt from the run quota
 # Drivers that were switched on and are now just the procedure. name -> graduation date. Never a mode, never exported.
-GRADUATED = {"flow_coverage_gate": "2026-11-20", "finalize_pr": "2026-11-23"}
+GRADUATED = {"flow_coverage_gate": "2026-11-20", "finalize_pr": "2026-11-23",
+             "merge_packages": "2026-11-23"}
 GRADUATED_SCAN = ("references", "primary-agents", "sub-agents", "skills", "claude", "opencode")   # dirs the agents read
 NO_ON = {"vr_promote_preview": "no on mode yet: promotion stays tied to `Diagrams new:`"}   # modes a driver refuses
 MODES = ("off", "shadow", "on")
@@ -358,15 +358,15 @@ def _run_selftest() -> list[str]:
             check("a missing file is no modes, no warning", load(f) == ({}, []))
             check("set creates the file", main(["--file", f, "set", "test_round=shadow", "pre_fanout_check=ON"]) == 0
                   and load(f) == ({"test_round": "shadow", "pre_fanout_check": "on"}, []))
-            check("set keeps the others", main(["--file", f, "set", "merge_packages=shadow"]) == 0 and load(f)[0]["test_round"] == "shadow"
-                  and load(f)[0]["merge_packages"] == "shadow")
+            check("set keeps the others", main(["--file", f, "set", "strength_gate_prep=shadow"]) == 0 and load(f)[0]["test_round"] == "shadow"
+                  and load(f)[0]["strength_gate_prep"] == "shadow")
             check("a bad pair is refused and writes nothing", main(["--file", f, "set", "nope=on"]) == 2 and main(["--file", f, "set", "test_round=maybe"]) == 2
                   and load(f)[0]["test_round"] == "shadow" and "nope" not in load(f)[0])
             check("all writes every driver", main(["--file", f, "all", "shadow"]) == 0 and load(f)[0] == {n: "shadow" for n in NAMES})
             check("no temp file is left behind", [x for x in os.listdir(os.path.dirname(f)) if x.endswith(".tmp")] == [])
             check("off clears", main(["--file", f, "off"]) == 0 and load(f) == ({}, []) and json.load(open(f)) == {})
             with open(f, "w") as fh:
-                fh.write('{"test_round": "shadow", "bogus": "on", "strength_gate_prep": "maybe", "merge_packages": 3}')
+                fh.write('{"test_round": "shadow", "bogus": "on", "strength_gate_prep": "maybe", "pre_fanout_check": 3}')
             modes, warns = load(f)
             check("unknown names and modes are warned about and ignored", modes == {"test_round": "shadow"} and len(warns) == 3)
             with open(f, "w") as fh:

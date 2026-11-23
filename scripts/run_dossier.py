@@ -4924,7 +4924,7 @@ def selftest() -> int:
         check("drivers: the file's modes are exported; an explicit ASD_DRIVER_* wins",
               done96 and drv(1) == {"ASD_DRIVER_PRE_FANOUT_CHECK": "shadow", "ASD_DRIVER_TEST_ROUND": "on"})
         check("drivers: the modes used are recorded in the runner metadata",
-              state_of("W-96").get("drivers") == {"merge_packages": "off", "pre_fanout_check": "shadow", "strength_gate_prep": "off", "test_round": "on",
+              state_of("W-96").get("drivers") == {"pre_fanout_check": "shadow", "strength_gate_prep": "off", "test_round": "on",
                                                       "vr_promote_preview": "off"})
         t96 = texts("W-96")
         check("drivers: an unknown name and an unknown mode are warned about in the runner log",

@@ -122,11 +122,15 @@ arithmetic (every checklist line exactly once), and diff its counts against
 the author's self-report: a disagreement is a forced full read of that file.
 The primary surface's test file(s) you read **in full**, never windowed.
 
-Then merge each implementer branch into `X`, one at a time, in `Depends on`
-order. Before each merge, check scope mechanically: `git diff --name-only
-X..<branch>` must list only paths inside that package's `OWNED_PATHS`. A path
-outside them is the same signal as a conflict — the package table or the
-implementer drifted — so resolve the drift first; never merge it blind.
+Then merge every implementer branch into `X` with one call, run from the build worktree `X` (`<ID>` is the bare dossier ID, e.g. `W-014`):
+
+```bash
+python3 "${PLUGIN_ROOT}/scripts/merge_packages.py" --worktree <X> --dossier <ID> \
+  --branch <P1>=<its implementer branch> --branch <P2>=<its implementer branch> \
+  --log <live dossier>
+```
+
+Give one `--branch PKG=BRANCH` per package you merged (the branch is the payload's `BRANCH:` field), plus `--package-worktree <PKG>=<path>` to have a merged package's worktree removed, and `--expected-hook-output <GLOB>` for each `EXPECTED_HOOK_OUTPUTS` glob. Always pass `--worktree`, `--dossier` and the full `--branch` list yourself; a call with missing flags stops without merging. The script merges the branches one at a time in `Depends on` order. Before each merge it checks scope mechanically: the branch's diff against `X` must list only paths inside that package's `OWNED_PATHS`. A path outside them is the same signal as a conflict (the package table or the implementer drifted), so the script stops before that merge, merges nothing blind, prints the paths and exits 2: you take over. A conflict also stops it with exit 2: it names the conflicted paths and aborts that merge. Accepted hook outputs are listed, not judged. Earlier merges stay in place when a later one stops the run; once you have ruled, run the call again for the packages not yet merged.
 
 **A path outside `OWNED_PATHS` is a `TOUCHED_BEYOND` decision, and the
 implementer's report already carries its side** (the section's shape and its
@@ -148,4 +152,4 @@ it, resolve it, and fix `## Work packages` so the next run does not repeat it.
 
 Remove each implementer worktree once its branch has merged.
 
-**Driver (`ASD_DRIVER_MERGE_PACKAGES` is `on` or `shadow`).** The exact command, run from the build worktree X (`<ID>` is the bare dossier ID, e.g. `W-014`): `python3 "${PLUGIN_ROOT}/scripts/merge_packages.py" --dossier <ID> --worktree <X> --branch <P1>=<its implementer branch> --branch <P2>=<its implementer branch> --log <live dossier>` with one `--branch PKG=BRANCH` per package you merged (the branch is the payload's `BRANCH:` field), optionally `--package-worktree <PKG>=<path>`. It merges packages in dependency order, checking each branch's diff against its owned paths first; a path outside them or a conflict stops with exit 2 and you take over. Accepted hook outputs are listed, not judged. If you leave `--worktree` out it is the working directory's git root, and with no `--branch` the driver reads the `BRANCH:`/`PACKAGE:` fields of `<X>/.agent-staging/payloads/*.md` and uses them only when every package has one existing branch; still give them, the shadow evidence is cleaner. `ASD_DRIVER_STRENGTH_GATE_PREP=on` likewise gives `python3 "${PLUGIN_ROOT}/scripts/strength_gate_prep.py" --dossier <ID> --worktree <X> --test-path <TEST_PATHS file> [--test-path <next file> ...] [--report <unit author report>] [--test-cmd '<command that runs the new tests only>']` (one `--test-path` per file in the test authors' payloads' `TEST_PATHS:`, relative to X; omitted, the driver collects them from `<X>/.agent-staging/payloads/*.md`) as evidence for the strength gate (coverage, weak-pattern flags, per-test stub red-run); the ruling stays yours. In `shadow` (either driver, by its own variable), merge by hand exactly as today, then run that driver once afterwards with the same command (no `--log`) and ignore its output for every decision; it works in a throwaway worktree and saves evidence for the rollout report. A call with missing flags only records a surprise and tells the rollout nothing, so copy the command whole. `off` or unset: ignore this paragraph.
+**Driver (`ASD_DRIVER_STRENGTH_GATE_PREP` is `on` or `shadow`).** When `on`, run `python3 "${PLUGIN_ROOT}/scripts/strength_gate_prep.py" --dossier <ID> --worktree <X> --test-path <TEST_PATHS file> [--test-path <next file> ...] [--report <unit author report>] [--test-cmd '<command that runs the new tests only>']` (one `--test-path` per file in the test authors' payloads' `TEST_PATHS:`, relative to X; omitted, the driver collects them from `<X>/.agent-staging/payloads/*.md`) as evidence for the strength gate (coverage, weak-pattern flags, per-test stub red-run); the ruling stays yours. In `shadow`, do the strength gate by hand exactly as today, then run that driver once afterwards with the same command (no `--log`) and ignore its output for every decision; it works in a throwaway worktree and saves evidence for the rollout report. A call with missing flags only records a surprise and tells the rollout nothing, so copy the command whole. `off` or unset: ignore this paragraph.
