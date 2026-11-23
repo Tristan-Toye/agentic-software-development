@@ -11,6 +11,12 @@ slot) and holds it for the command.
 
 N is `$ASD_BUILD_SLOTS` when set (0 turns the limit off), else a quarter of the CPUs, at least 1.
 
+A focused per-package check (`cargo check -p X`, one `dotnet build X.csproj`) is cheap: it rides a separate
+light lane (`<dir>/light`, `$ASD_BUILD_LIGHT_SLOTS` wide, default 2, 0 puts it back on the full slots) so it never
+queues behind a full build, and the full-slot cap N is unchanged. `is_light(argv)` decides; a workspace, all-targets,
+clippy, test or solution build always takes a full slot. A caller waits inside `slot()`: the call blocks, quietly
+(one stderr line), until a slot frees, so an agent never has to poll.
+
     build_slots.py --status      which slots are held, by which process
     build_slots.py --selftest
 """
@@ -46,6 +52,47 @@ def slot_dir() -> str:
     return os.environ.get("ASD_BUILD_SLOT_DIR") or os.path.expanduser("~/.agentic/locks/build-slots")
 
 
+def light_count() -> int:
+    """Width of the light lane. Off (0) whenever the full limit is off, so one switch silences both."""
+    if slot_count() <= 0:
+        return 0
+    raw = os.environ.get("ASD_BUILD_LIGHT_SLOTS", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    return 2
+
+
+_HEAVY_CARGO = ("--workspace", "--all", "--all-targets", "--exclude", "--tests", "--benches", "--examples")
+
+
+def is_light(argv: list[str]) -> bool:
+    """True for a focused per-package compile check: `cargo [+tc] check -p X` (not workspace, all-targets or
+    clippy) or `dotnet build X.csproj` for exactly one project file (not a solution). Looks through a
+    `bash -c ... run_tests CMD` wrapper by scanning for the first `cargo` or `dotnet` word."""
+    words = list(argv)
+    for i, w in enumerate(words):
+        base = os.path.basename(w)
+        if base == "cargo":
+            rest = [x for x in words[i + 1:] if not x.startswith("+")]
+            if not rest or rest[0] != "check":
+                return False
+            rest = rest[1:]
+            if any(x in _HEAVY_CARGO or x.startswith("--exclude") for x in rest):
+                return False
+            return any(x in ("-p", "--package") or x.startswith(("--package=", "-p=")) or
+                       (x.startswith("-p") and len(x) > 2 and not x.startswith("--")) for x in rest)
+        if base == "dotnet":
+            rest = words[i + 1:]
+            if not rest or rest[0] != "build":
+                return False
+            targets = [x for x in rest[1:] if x.endswith((".csproj", ".fsproj", ".vbproj", ".sln", ".slnx"))]
+            return len(targets) == 1 and targets[0].endswith((".csproj", ".fsproj", ".vbproj"))
+    return False
+
+
 def _try(path: str, label: str):
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
@@ -59,16 +106,17 @@ def _try(path: str, label: str):
 
 
 @contextlib.contextmanager
-def slot(label: str = "", log=None, count: int | None = None):
+def slot(label: str = "", log=None, count: int | None = None, light: bool = False):
     """Hold one host build slot for the block. `log(msg)` is told once when the block has to wait.
-    Yields the seconds spent waiting. With a count of 0 it yields 0.0 at once."""
-    n = slot_count() if count is None else count
+    Yields the seconds spent waiting. With a count of 0 it yields 0.0 at once. `light=True` takes a slot of
+    the separate light lane (see `is_light`), so a focused check never queues behind a full build."""
+    n = (light_count() if light else slot_count()) if count is None else count
     if n <= 0 or os.environ.get(HELD):
         # A command started under a held slot (a gate that calls run_tests.py) runs in its parent's slot:
         # waiting for a second one could deadlock N such parents against each other.
         yield 0.0
         return
-    d = slot_dir()
+    d = os.path.join(slot_dir(), "light") if light else slot_dir()
     os.makedirs(d, exist_ok=True)
     start = time.monotonic()
     told = False
@@ -80,7 +128,8 @@ def slot(label: str = "", log=None, count: int | None = None):
                 break
         if fd is None:
             if not told and log:
-                log("waiting for a host build slot (%d in use; ASD_BUILD_SLOTS)" % n)
+                log("waiting for a host build %sslot (%d in use; ASD_BUILD_SLOTS). This call blocks until one frees "
+                    "and then runs: do not poll, re-run or sleep." % ("light " if light else "", n))
                 told = True
             time.sleep(POLL)
     try:
@@ -171,6 +220,29 @@ def selftest() -> int:
             with slot("nested2", count=1) as w2:
                 ok("a child of a held slot never waits", w1 == 0.0 and w2 == 0.0)
         del os.environ[HELD]
+        for cmd, want in ((["cargo", "check", "-p", "foo"], True), (["cargo", "+nightly", "check", "--package=foo"], True),
+                          (["cargo", "check", "-pfoo", "--lib"], True),
+                          (["cargo", "check", "--workspace"], False), (["cargo", "check", "-p", "a", "--all-targets"], False),
+                          (["cargo", "check"], False), (["cargo", "clippy", "-p", "a"], False),
+                          (["cargo", "test", "-p", "a"], False), (["cargo", "build", "-p", "a"], False),
+                          (["bash", "-c", 'exec "$@"', "run_tests", "cargo", "check", "-p", "a"], True),
+                          (["dotnet", "build", "src/A/A.csproj"], True), (["dotnet", "build", "All.sln"], False),
+                          (["dotnet", "build"], False), (["make", "check"], False)):
+            ok("is_light %s" % " ".join(cmd), is_light(cmd) is want)
+        # The light lane has its own lock files, so full slots all held never block it.
+        os.environ["ASD_BUILD_SLOTS"] = "1"
+        ok("light lane width default", light_count() == 2)
+        os.environ["ASD_BUILD_LIGHT_SLOTS"] = "1"
+        ok("light lane width from env", light_count() == 1)
+        os.environ["ASD_BUILD_SLOTS"] = "0"
+        ok("light lane is off when the limit is off", light_count() == 0)
+        os.environ["ASD_BUILD_SLOTS"] = "2"
+        with slot("full", count=1):
+            t0 = time.monotonic()
+            with slot("light", light=True) as w:
+                ok("a light check does not queue behind a full build", w < POLL and time.monotonic() - t0 < POLL)
+                ok("light lock files live in their own directory", os.path.exists(os.path.join(td, "light", "slot-0")))
+        del os.environ["ASD_BUILD_LIGHT_SLOTS"]
         ok("held_env marks the child", held_env({"A": "1"}) == {"A": "1", HELD: "1"})
 
         # A dead holder never leaks its slot: the kernel drops the flock with the process.

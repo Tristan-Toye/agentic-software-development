@@ -773,8 +773,10 @@ def execute(
     # run builds in the VM, which has its own suite lease. Wall time starts once the slot is held.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import build_slots
+    # A focused per-package check rides the light lane, so it never queues behind a full build.
     host_slot = contextlib.nullcontext(0.0) if vm else build_slots.slot(
-        "run_tests " + (cwd or os.getcwd()), log=lambda m: print("run_tests: " + m, file=sys.stderr, flush=True))
+        "run_tests " + (cwd or os.getcwd()), log=lambda m: print("run_tests: " + m, file=sys.stderr, flush=True),
+        light=build_slots.is_light(argv))
     try:
         with host_slot, open(log_path, "w", encoding="utf-8", errors="replace") as fh:
             start = time.time()

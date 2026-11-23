@@ -82,7 +82,19 @@ python3 "${PLUGIN_ROOT}/scripts/prepare_wave.py" <manifest> --host <opencode|cla
 It runs `check_payload.py` over every payload and `check_permission_maps.py`
 for every test author, unchanged, prints only the defects and warnings,
 acquires the slots only when every spawn passes, and appends the
-`PAYLOAD-LINT:` and `ADMISSION:` lines. Fix what it prints and run it again.
+`PAYLOAD-LINT:` and `ADMISSION:` lines. The slot wait lives in the script: a
+refusal for lack of slots (or a deferral that resets within 15 minutes) blocks
+the call quietly until the slots free, `--wait-slot SECONDS` sets the bound
+(`0` returns at once), so never retry the call yourself to wait. A failure prints one FIX LIST
+with every defect of every payload and its exact cure (the `--seal` step last):
+fix the whole list, then run it once more. No lint rule is relaxed by any of it.
+
+**Admit before you hand-write.** Right after composing, run the same command
+with `--admit-only` (the manifest only gives the spawn count; nothing is
+linted): it takes the slots and waits for them while you have not yet written a
+word, records the grant, and the normal call after the judgement fields are
+filled lints and reuses that grant. Do this for any wave with a judgement field
+to write.
 The paragraphs below stay the rules; the script is how you run them.
 
 Detail: `ref_section` with `phase-4-conditional` and the heading "Admission before the spawn message". (`prepare_wave.py` runs it; read it on a refusal or a deferral.)
@@ -102,6 +114,15 @@ python3 "${PLUGIN_ROOT}/scripts/compose_payloads.py" --kind <agent> \
   --contract-paths '<f1,f2>' --test-command '<verified command>' \
   --hooks '<HOOKS>' --manifest <X>/.agent-staging/payloads/wave<k>.txt
 ```
+
+**Compose the whole wave in one call.** Put one line per payload in a batch
+file (`--kind implementer --package P1 --out <X>/.agent-staging/payloads/P1.md`,
+`--kind unit-test-author --out ...`, with the `--set` values that payload needs),
+and give the arguments they share once:
+`compose_payloads.py --batch <file> --dossier <live dossier> --root <X> --host <h>
+--contract-paths '<f1,f2>' --test-command '<verified command>' --hooks '<HOOKS>'
+--manifest <X>/.agent-staging/payloads/wave<k>.txt`. Every line runs even when one is
+refused, a line's own value beats the shared one, and the exit is 1 if any failed.
 
 It fills every mechanical field from the files, adds each contract member's
 `path:line` to the owned paths so an implementer starts where the stub is,

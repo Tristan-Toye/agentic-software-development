@@ -2275,6 +2275,49 @@ def route_main(args: argparse.Namespace) -> int:
     return 0
 
 
+def batch_lines(text: str) -> list[list[str]]:
+    """One argument list per non-comment line of a --batch file."""
+    rows = []
+    for raw in text.splitlines():
+        line = raw.split(" #", 1)[0].strip() if not raw.lstrip().startswith("#") else ""
+        if line:
+            rows.append(shlex.split(line))
+    return rows
+
+
+def batch_main(path: str, argv: list[str]) -> int:
+    """--batch: compose every line in this one process, the shared arguments first so a line's own value wins."""
+    common: list[str] = []
+    skip = False
+    for tok in argv:
+        if skip:
+            skip = False
+        elif tok == "--batch":
+            skip = True
+        elif not tok.startswith("--batch="):
+            common.append(tok)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rows = batch_lines(fh.read())
+    except OSError as err:
+        print("compose_payloads: REFUSED — cannot read --batch %s: %s" % (path, err), file=sys.stderr)
+        return 1
+    if not rows:
+        print("compose_payloads: REFUSED — --batch %s names no payload" % path, file=sys.stderr)
+        return 1
+    bad = 0
+    for number, row in enumerate(rows, 1):
+        try:
+            rc = main(common + row)
+        except SystemExit as err:  # argparse error on this line
+            rc = err.code if isinstance(err.code, int) else 2
+        if rc != 0:
+            bad += 1
+            print("compose_payloads: batch line %d failed (exit %s)" % (number, rc), file=sys.stderr)
+    print("compose_payloads: batch %d payload(s), %d failed" % (len(rows), bad))
+    return 1 if bad else 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--kind", choices=sorted(COMPOSERS))
@@ -2324,12 +2367,19 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--no-stub-hints", action="store_true", help="leave the `# stub locations` aid out of OWNED_PATHS")
     parser.add_argument("--emit-prompt", metavar="PAYLOAD",
                         help="print PAYLOAD's bytes and its PAYLOAD_SHA256 line: the Claude Code spawn prompt")
+    parser.add_argument("--batch", metavar="FILE",
+                        help="compose a whole wave in one call: FILE holds one payload per line (`#` comments), each line "
+                             "the per-payload arguments (--kind, --out, --package, --test-command, --set ...) as shell words; "
+                             "every other argument given here (--dossier, --root, --host, --manifest, ...) applies to all lines, "
+                             "a line's own value wins. Every line runs; exit 1 when any was refused")
     parser.add_argument("--verbose", action="store_true", help="print every filled field name and the manifest line (default: one summary line)")
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args(argv)
 
     if args.selftest:
         return selftest()
+    if args.batch:
+        return batch_main(args.batch, argv)
     if args.seal:
         try:
             print(seal_payload(args.seal))
@@ -2653,6 +2703,25 @@ def selftest() -> int:
         ])
         check("implementer compose exit 0", rc == 0, out)
         impl_text = read_text(impl_path) if rc == 0 else ""
+
+        # --- --batch: a whole wave in one call, shared args first, a line's own value wins ---
+        batch_dir = os.path.join(root, ".agent-staging", "payloads")
+        batch_file = os.path.join(tmp, "batch.txt")
+        with open(batch_file, "w", encoding="utf-8") as fh:
+            fh.write("# wave 1\n--kind implementer --package P1 --out %s/B1.md\n"
+                     "--kind implementer --package P1 --out %s/B2.md --set 'JIRA_KEY=PROJ-142'  # same package twice\n"
+                     "--kind implementer --package NOPE --out %s/B3.md\n" % (batch_dir, batch_dir, batch_dir))
+        out_io, err_io = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out_io), contextlib.redirect_stderr(err_io):
+            rc_b = main(["--batch", batch_file, "--dossier", dossier_path, "--root", root, "--host", "opencode",
+                         "--plugin-root", plugin_root, "--contract-paths", "src/flush.py",
+                         "--test-command", "pytest -q", "--hooks", "none", "--force"])
+        check("--batch composes every line, in one process", os.path.exists(os.path.join(batch_dir, "B1.md"))
+              and os.path.exists(os.path.join(batch_dir, "B2.md")), out_io.getvalue() + err_io.getvalue())
+        check("--batch exits 1 when a line is refused but still runs the rest, naming the line",
+              rc_b == 1 and "batch line 3 failed" in err_io.getvalue() and "batch 3 payload(s), 1 failed" in out_io.getvalue(),
+              out_io.getvalue() + err_io.getvalue())
+        check("a batch payload matches its single-call twin", read_text(os.path.join(batch_dir, "B1.md")).count("BRANCH: ") == impl_text.count("BRANCH: "))
         check("implementer WORKTREE_DIR is the P1 worktree",
               ("WORKTREE_DIR: %s-P1" % root) in impl_text)
         rc_w, wt_path, out_w = run_compose("P1w.md", [

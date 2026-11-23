@@ -30,7 +30,7 @@ integration author).
 
     prepare_wave.py MANIFEST --host opencode --root X --plugin-root P
         [--provider zai --model glm-5.3-flash --holder W-014-wave1]
-        [--lint-only] [--wait-slot SECONDS [--slot-poll S=15]]
+        [--lint-only | --admit-only] [--wait-slot SECONDS [--slot-poll S=15]]
         [--log LIVE_DOSSIER]
     prepare_wave.py --selftest
 
@@ -45,11 +45,27 @@ even when `--provider/--model/--holder` are also given — so a fix round can
 re-run the exact command that admitted the wave. It is the one door for
 re-checking a payload; there is no reason to run `check_payload.py` alone.
 
-`--wait-slot SECONDS` changes what a refusal for lack of slots means: instead
-of returning 1 at once, it polls `spawn_admission.py acquire` every
-`--slot-poll` seconds until the slots are free or SECONDS pass, printing one
-line when it starts waiting. A refusal that waiting cannot cure (asked more
-than the cap) and a provider deferral still return 1 immediately.
+Admission waits on the machine, not on the orchestrator: with `--provider/
+--model/--holder` the call blocks, quietly, up to `--wait-slot SECONDS`
+(default 900, `0` returns at once) while `spawn_admission.py acquire` refuses
+for lack of slots, polling every `--slot-poll` seconds and printing one line
+when it starts waiting. A provider deferral whose reset deadline falls inside
+the bound is waited out the same way. A refusal that waiting cannot cure
+(asked more than the cap) and a deferral that outlasts the bound still return 1
+at once, naming what to do.
+
+`--admit-only` takes the slots first, before the payloads are finished: it
+reads the manifest only for the number of spawns, never lints, and records the
+grant in `<root>/.agent-staging/wave-<holder>.admitted`. The orchestrator then
+hand-writes the judgement fields with the wait (if any) already over, and the
+normal call that follows lints everything and reuses that grant instead of
+acquiring again (the spawn count must match). The lint rules are the same.
+
+A lint failure reports everything at once: each payload's defects as found,
+then one FIX LIST over the whole wave, every defect with the exact command or
+edit that cures it (a missing sentinel is cured by `--seal`, which goes LAST
+because any later edit unseals the payload), so one correction round settles
+the wave.
 
 Every payload that passes lint has its sha256 recorded in
 `<root>/.agent-staging/wave-<holder>.hashes` (`wave.hashes` without a holder),
@@ -84,7 +100,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import Any
 
+DEFAULT_WAIT = 900
 TEST_AUTHORS = ("unit-test-author", "integration-test-author")
 KEYS = {"kind", "payload", "allow-path", "test-paths", "read-paths", "expected-lines", "flows", "live-dossier"}
 
@@ -148,6 +166,39 @@ def lint_row(row: dict[str, str], args: argparse.Namespace) -> tuple[bool, list[
     return ok, out
 
 
+def fix_hint(defect: str, payload: str, plugin_root: str) -> str:
+    """The exact cure for a defect when one command or edit is known; "" otherwise."""
+    if "PAYLOAD-END" in defect:
+        return "run LAST, after every other fix: python3 %s --seal %s" % (
+            os.path.join(plugin_root, "scripts", "compose_payloads.py"), payload)
+    left = sorted(set(re.findall(r"@@FILL_([A-Z0-9_]+)@@", defect)))
+    if left:
+        return "replace %s in %s with the real value, or recompose with --set %s='<value>'" % (
+            ", ".join("@@FILL_%s@@" % x for x in left), payload, left[0])
+    near = re.search(r"did you mean ([A-Z0-9_, ]+)\?", defect)
+    if near:
+        return "rename the field to %s in %s" % (near.group(1).strip(), payload)
+    return ""
+
+
+def fix_list(failures: list[tuple[str, list[str]]], plugin_root: str) -> list[str]:
+    """One block naming every defect of every failed payload, the seal steps last."""
+    items: list[tuple[int, str]] = []
+    for payload, defects in failures:
+        name = os.path.basename(payload)
+        for defect in defects:
+            text = re.sub(r"^(DEFECT|REFUSED|FAIL|ERROR|error:)\s*", "", defect).strip()
+            hint = fix_hint(text, payload, plugin_root)
+            line = "%s: %s" % (name, text)
+            if hint and hint not in text:
+                line += "\n          FIX: " + hint
+            items.append((1 if "PAYLOAD-END" in text else 0, line))
+    items.sort(key=lambda it: it[0])
+    out = ["FIX LIST — %d defect(s) across %d payload(s); fix them all, then re-run once:" % (len(items), len(failures))]
+    out += ["  %d. %s" % (i, line) for i, (_, line) in enumerate(items, 1)]
+    return out
+
+
 def ledger_path(root: str, holder: str | None) -> str:
     name = f"wave-{holder}.lint" if holder else "wave.lint"
     return os.path.join(root, ".agent-staging", name)
@@ -190,9 +241,23 @@ def record_hashes(root: str, holder: str | None, payloads: list[str]) -> str:
     return path
 
 
-def acquire(args: argparse.Namespace, n: int, runner=run, sleep=time.sleep, clock=time.monotonic) -> tuple[int, list[str]]:
+def deferral_seconds(lines: list[str], now: float) -> float | None:
+    """Seconds until the reset a `deferred:` line names, or None when it names none."""
+    text = next((l for l in lines if l.startswith("deferred:")), "")
+    m = re.search(r"resets at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", text)
+    if not m:
+        return None
+    try:
+        return time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) - now
+    except (ValueError, OverflowError):
+        return None
+
+
+def acquire(args: argparse.Namespace, n: int, runner=run, sleep=time.sleep, clock=time.monotonic,
+            wall=time.time) -> tuple[int, list[str]]:
     """spawn_admission.py acquire, polled while it refuses only for lack of
-    slots and --wait-slot seconds remain. Returns (exit, output lines)."""
+    slots (or defers to a reset inside the bound) and --wait-slot seconds
+    remain. Returns (exit, output lines)."""
     cmd = [sys.executable, os.path.join(args.plugin_root, "scripts", "spawn_admission.py"),
            "acquire", "--provider", args.provider, "--model", args.model,
            "--n", str(n), "--holder", args.holder]
@@ -205,12 +270,23 @@ def acquire(args: argparse.Namespace, n: int, runner=run, sleep=time.sleep, cloc
         refused = next((l for l in lines if l.startswith("refused:")), "")
         m = re.search(r"(\d+) free of cap (\d+).*asked (\d+)", refused)
         curable = bool(m) and int(m.group(3)) <= int(m.group(2))
+        pause = max(min(args.slot_poll, deadline - clock()), 0.001)
+        reason = refused
+        if not curable:
+            until = deferral_seconds(lines, wall())
+            if until is not None and 0 <= until <= deadline - clock():
+                curable, reason = True, next(l for l in lines if l.startswith("deferred:"))
+                pause = max(min(until + 1, max(args.slot_poll, 1) * 4), 0.001)
         if not (args.wait_slot and curable) or clock() >= deadline:
             return rc, lines
         if not announced:
-            print(f"      waiting up to {args.wait_slot:.0f}s for {n} free slot(s): {refused}")
+            print(f"      waiting up to {args.wait_slot:.0f}s for {n} free slot(s): {reason}")
             announced = True
-        sleep(max(min(args.slot_poll, deadline - clock()), 0.001))
+        sleep(pause)
+
+
+def admitted_path(root: str, holder: str | None) -> str:
+    return os.path.join(root, ".agent-staging", f"wave-{holder}.admitted" if holder else "wave.admitted")
 
 
 def main(argv: list[str]) -> int:
@@ -224,8 +300,11 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--holder", help="e.g. W-014-wave1")
     ap.add_argument("--log", metavar="LIVE_DOSSIER", help="append the build-log lines to this dossier")
     ap.add_argument("--lint-only", action="store_true", help="lint and gate; never acquire")
-    ap.add_argument("--wait-slot", type=float, default=0, metavar="SECONDS",
-                    help="when admission is refused for lack of slots, poll until free or this long")
+    ap.add_argument("--admit-only", action="store_true",
+                    help="take the slots now (no lint); the next normal call lints and reuses the grant")
+    ap.add_argument("--wait-slot", type=float, default=None, metavar="SECONDS",
+                    help="when admission is refused for lack of slots, block until free or this long "
+                         "(default %d; 0 returns at once)" % DEFAULT_WAIT)
     ap.add_argument("--slot-poll", type=float, default=15, metavar="SECONDS")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
     args = ap.parse_args(argv)
@@ -236,6 +315,10 @@ def main(argv: list[str]) -> int:
     admit = [args.provider, args.model, args.holder]
     if any(admit) and not all(admit):
         ap.error("--provider, --model and --holder go together")
+    if args.admit_only and (not all(admit) or args.lint_only):
+        ap.error("--admit-only needs --provider, --model and --holder, and excludes --lint-only")
+    if args.wait_slot is None:
+        args.wait_slot = DEFAULT_WAIT if all(admit) and not args.lint_only else 0
     try:
         with open(args.manifest, encoding="utf-8") as fh:
             rows = parse_manifest(fh.read())
@@ -243,8 +326,12 @@ def main(argv: list[str]) -> int:
         print(f"prepare_wave: {err}", file=sys.stderr)
         return 2
 
+    if args.admit_only:
+        return admit_now(args, rows)
+
     failed: list[str] = []
     linted: list[str] = []
+    failures: list[tuple[str, list[str]]] = []
     defect_count = 0
     for row in rows:
         ok, out = lint_row(row, args)
@@ -254,6 +341,7 @@ def main(argv: list[str]) -> int:
             print(f"      {item}")
         if not ok:
             failed.append(name)
+            failures.append((row["payload"], [i for i in out if i.startswith(("DEFECT", "REFUSED", "FAIL", "ERROR", "error:")) or " DEFECT " in i] or out))
             defect_count += max(1, sum(1 for item in out if "DEFECT" in item or "REFUSED" in item))
         elif os.path.isfile(row["payload"]):
             linted.append(row["payload"])
@@ -263,12 +351,22 @@ def main(argv: list[str]) -> int:
     fixed = defects_fixed(args.root, args.holder, defect_count)
     ids = ", ".join(os.path.splitext(os.path.basename(r["payload"]))[0] for r in rows)
     if failed:
-        print(f"prepare_wave: {len(failed)} of {len(rows)} spawn(s) failed — fix them and re-run; nothing acquired")
+        for line in fix_list(failures, args.plugin_root):
+            print(line)
+        print(f"prepare_wave: {len(failed)} of {len(rows)} spawn(s) failed — fix them all and re-run; nothing acquired"
+              + (" (a grant taken by --admit-only is kept)" if os.path.exists(admitted_path(args.root, args.holder)) else ""))
         return 1
 
     log_lines = [f"PAYLOAD-LINT: {len(rows)} payloads, {fixed} defects fixed — {ids}"]
     if all(admit) and not args.lint_only:
-        rc, lines = acquire(args, len(rows))
+        held = read_admitted(args.root, args.holder)
+        if held is not None and held[0] != len(rows):
+            print(f"prepare_wave: --admit-only took {held[0]} slot(s) for this holder, the manifest names {len(rows)}; "
+                  "release the holder with spawn_admission.py release and admit again")
+            return 1
+        rc, lines = (0, [held[1]]) if held is not None else acquire(args, len(rows))
+        if held is not None:
+            print(f"      admission already held from --admit-only ({held[0]} slot(s))")
         for line in lines:
             print(f"      {line}")
         if rc != 0:
@@ -283,6 +381,36 @@ def main(argv: list[str]) -> int:
         append(args, log_lines)
     for line in log_lines:
         print(line)
+    return 0
+
+
+def read_admitted(root: str, holder: str | None) -> tuple[int, str] | None:
+    try:
+        with open(admitted_path(root, holder), encoding="utf-8") as fh:
+            n, _, granted = fh.read().strip().partition(" ")
+        return int(n), granted
+    except (OSError, ValueError):
+        return None
+
+
+def admit_now(args: argparse.Namespace, rows: list[dict[str, str]]) -> int:
+    """--admit-only: take len(rows) slots before the payloads are finished; no lint."""
+    held = read_admitted(args.root, args.holder)
+    if held is not None:
+        print(f"prepare_wave: {args.holder} already holds {held[0]} slot(s) from an earlier --admit-only")
+        return 0 if held[0] == len(rows) else 1
+    rc, lines = acquire(args, len(rows))
+    for line in lines:
+        print(f"      {line}")
+    if rc != 0:
+        print("prepare_wave: admission refused or deferred — see the Phase 4 ladder; nothing spawned")
+        return 1
+    granted = next((l for l in lines if l.startswith("granted:")), "granted: ?")
+    os.makedirs(os.path.dirname(admitted_path(args.root, args.holder)), exist_ok=True)
+    with open(admitted_path(args.root, args.holder), "w", encoding="utf-8") as fh:
+        fh.write(f"{len(rows)} {granted}\n")
+    print(admission_line(len(rows), args.provider, args.model, lines))
+    print("prepare_wave: slots held; write the judgement fields, then run this command again without --admit-only")
     return 0
 
 
@@ -371,7 +499,7 @@ def selftest() -> int:
         check("a re-lint replaces its line and keeps the others", entries[other] == hashlib.sha256(b"b\n").hexdigest() and payload in entries)
 
         # --lint-only never acquires, even with provider/model/holder; a plain run does.
-        module = sys.modules[__name__]
+        module: Any = sys.modules[__name__]
         real_lint, real_acquire = module.lint_row, module.acquire
         calls: list[int] = []
         module.lint_row = lambda row, a: (True, [])
@@ -418,7 +546,48 @@ def selftest() -> int:
         ns.wait_slot = 60
         rc, _ = acquire(ns, 1, runner=lambda c: (1, ["deferred: p/m resets at 10:00"]),
                         sleep=lambda s: calls3.append(99), clock=lambda: 0.0)
-        check("a provider deferral is never waited for", rc == 1 and 99 not in calls3)
+        check("a deferral naming no parsable reset is never waited for", rc == 1 and 99 not in calls3)
+        far = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() + 7200))
+        rc, _ = acquire(ns, 1, runner=lambda c: (1, [f"deferred: p/m resets at {far} (in 120 min)"]),
+                        sleep=lambda s: calls3.append(99), clock=lambda: 0.0)
+        check("a deferral past the bound returns 1 at once", rc == 1 and 99 not in calls3)
+        soon = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() + 20))
+        runs = {"n": 0}
+
+        def defer_then_grant(cmd: list[str]) -> tuple[int, list[str]]:
+            runs["n"] += 1
+            return (1, [f"deferred: p/m resets at {soon} (in 0 min)"]) if runs["n"] < 2 else (0, ["granted: p/m slots 1 (held 1 of cap 2, learned; ceiling 4)"])
+
+        slept2: list[float] = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc, _ = acquire(ns, 1, runner=defer_then_grant, sleep=slept2.append, clock=lambda: 0.0)
+        check("a deferral resetting inside the bound is waited out", rc == 0 and runs["n"] == 2 and bool(slept2))
+
+        # --admit-only takes the slots before lint; the normal call reuses the grant.
+        module.acquire = lambda a, n, **kw: (calls.append(n) or (0, ["granted: p/m slots 1 (held 1 of cap 4, learned; ceiling 6)"]))
+        module.lint_row = lambda row, a: (True, [])
+        calls.clear()
+        try:
+            admit2 = ["--provider", "p", "--model", "m", "--holder", "W-3-wave1"]
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = main([manifest, "--host", "opencode", "--root", tmp, *admit2, "--admit-only"])
+            check("--admit-only acquires without linting", rc == 0 and calls == [1] and os.path.exists(admitted_path(tmp, "W-3-wave1")))
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = main([manifest, "--host", "opencode", "--root", tmp, *admit2])
+            check("the next normal call reuses the grant, never acquires again", rc == 0 and calls == [1])
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = main([manifest, "--host", "opencode", "--root", tmp, "--admit-only", *admit2])
+            check("a second --admit-only for the same holder does not acquire", calls == [1])
+        finally:
+            module.lint_row, module.acquire = real_lint, real_acquire
+
+        # A failed wave prints one FIX LIST naming every defect, the seal step last.
+        fl = fix_list([("/w/P1.md", ["DEFECT   the last non-empty line is not `PAYLOAD-END: P1 <8-hex hash>`: x; seal it with `compose_payloads.py --seal /w/P1.md`.",
+                                      "DEFECT   TEST_COMMAND is still @@FILL_TEST_COMMAND@@"]),
+                       ("/w/P2.md", ["DEFECT   line 3: 'OWNED_PATH' is not a field of implementer. did you mean OWNED_PATHS?"])], "/plug")
+        check("fix list counts every defect of every payload", "3 defect(s) across 2 payload(s)" in fl[0])
+        check("fix list puts the seal step last", "PAYLOAD-END" in fl[-1])
+        check("fix list gives the exact cure", any("--set TEST_COMMAND=" in l for l in fl) and any("rename the field to OWNED_PATHS" in l for l in fl))
 
     for item in failures:
         print("SELFTEST FAIL  " + item)
