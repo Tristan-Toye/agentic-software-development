@@ -3597,6 +3597,25 @@ def replan_followup(root: str, dossier: str, since: float = 0.0) -> tuple[str, s
     return "none", f"the dossier reads `{status or 'missing'}` here and no plan/* branch since the re-plan started carries it as ready"
 
 
+def unknown_dossier(root: str, dossier: str, command: str) -> str:
+    """Why a run must not start: the id names no dossier file (`.discovery/dossiers/<ID>.md` or `<ID>-<slug>.md` in
+    the main checkout). A typo, or the literal `selftest` typed without its dashes, otherwise starts a real run
+    that claims a driver quota place. /plan (a Jira key or a seed has no file yet) and /stub (a release name) are
+    exempt, except for the literal `selftest`. "" when it may start."""
+    if dossier == "selftest":
+        return "`selftest` is not a dossier id: did you mean --selftest?"
+    if command not in ("work-on", "fix-deferred") or os.environ.get("ASD_ALLOW_UNKNOWN_DOSSIER") == "1":   # the env is the selftest fixtures' (fake ids, no files)
+        return ""
+    folder = os.path.join(root, ".discovery", "dossiers")
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        names = []
+    if any(n == f"{dossier}.md" or (n.startswith(dossier + "-") and n.endswith(".md")) for n in names):
+        return ""
+    return f"no dossier file for {dossier} (looked for {os.path.join(folder, dossier)}.md and {dossier}-*.md); nothing started"
+
+
 def already_built(root: str, dossier: str) -> str:
     """Why /work-on must not start: the dossier is in the merge queue, or has an open pull request and no build of its
     own to resume. Its status on development can still read `ready`: the record that says done is on its branch, not
@@ -4129,7 +4148,7 @@ def selftest() -> int:
             os.makedirs(d)
         fake = os.path.join(fdir, "fake_claude.py")
         open(fake, "w").write(FAKE_CLAUDE)
-        env = dict(os.environ, ASD_QUESTIONS_DIR=qdir, ASD_RUNS_DIR=rdir, ASD_FAKE_DIR=fdir, ASD_RUNNER_DEFERRED="0", ASD_RUNNER_SUMMARY="0", ASD_RUNNER_IDLE="1",
+        env = dict(os.environ, ASD_ALLOW_UNKNOWN_DOSSIER="1", ASD_QUESTIONS_DIR=qdir, ASD_RUNS_DIR=rdir, ASD_FAKE_DIR=fdir, ASD_RUNNER_DEFERRED="0", ASD_RUNNER_SUMMARY="0", ASD_RUNNER_IDLE="1",
                    ASD_CLAUDE_BIN=f"{shlex.quote(sys.executable)} {shlex.quote(fake)}",
                    ASD_ASK_OWNER=ASK_OWNER, ASD_OWNER_POLL="0.1", ASD_RUNNER_GRACE="0.2",
                    # the runners of this test see no accounts file (the one default account), and the paced cap is off: the
@@ -4791,6 +4810,20 @@ def selftest() -> int:
         check("accounts: a dir logged in as another email than its own is not used", "not me@y" in account_problem(accs[0], accs))
         check("accounts: a twin of an earlier login is not used; a distinct one is", "same login" in account_problem(accs[2] if False else accs[1], [dict(accs[0], email=""), accs[1]]) and account_problem(accs[2], accs) == "")
 
+        # ---- an id that names no dossier file starts nothing; the literal `selftest` says --selftest ----
+        udir = os.path.join(tmp, "unk")
+        os.makedirs(os.path.join(udir, ".discovery", "dossiers"))
+        open(os.path.join(udir, ".discovery", "dossiers", "W-7-slug.md"), "w").write("---\nid: W-7\n---\n")
+        check("unknown dossier: a slugged file resolves", unknown_dossier(udir, "W-7", "work-on") == "")
+        check("unknown dossier: no file is refused for work-on and fix-deferred",
+              "no dossier file for W-8" in unknown_dossier(udir, "W-8", "work-on") and unknown_dossier(udir, "W-8", "fix-deferred") != "")
+        check("unknown dossier: /plan and /stub need no file", unknown_dossier(udir, "PROJ-1", "plan") == "" and unknown_dossier(udir, "stub-1", "stub") == "")
+        check("unknown dossier: the literal `selftest` suggests --selftest, for every command",
+              all("did you mean --selftest?" in unknown_dossier(udir, "selftest", c) for c in ("work-on", "plan", "stub")))
+        rs = subprocess.run([sys.executable, me, "selftest", "--root", udir, "--foreground"], capture_output=True, text=True,
+                            env=dict(os.environ, ASD_DRIVERS_FILE=os.path.join(tmp, "no-drivers.json")))
+        check("`run_dossier.py selftest` (no dashes) exits 2 and starts nothing",
+              rs.returncode == 2 and "did you mean --selftest?" in rs.stderr and not glob.glob(os.path.join(rdir, "*selftest*")))
         # ---- driver modes: ~/.agentic/drivers.json (ASD_DRIVERS_FILE) exported into the claude child ----
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
         p = start("W-95")
@@ -6124,6 +6157,10 @@ def main() -> int:
         return 2
     if a.plan_branch and (a.command != "work-on" or not re.fullmatch(r"plan/[\w./-]+", a.plan_branch) or ".." in a.plan_branch):
         print("run_dossier.py: --plan-branch takes a plan/<KEY> branch, with --command work-on", file=sys.stderr)
+        return 2
+    why = unknown_dossier(a.root, a.dossier, a.command)
+    if why:
+        print(f"run_dossier.py: {why}", file=sys.stderr)
         return 2
     runner_model(a.model)  # refuses a forbidden model before anything starts
     if a.command == "work-on":

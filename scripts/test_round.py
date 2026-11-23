@@ -95,8 +95,10 @@ def classify(fails, rows: list[dict], prior_sites: list[str]) -> list[dict]:
 
 
 def run(d: dc.Driver, args) -> int:
-    if not args.worktree or not args.dossier:
-        raise dc.Surprise("--worktree and --dossier are required")
+    if not args.worktree:
+        raise dc.Surprise("--worktree is required: the working directory is not inside a git work tree")
+    if not args.dossier or args.dossier == "none":
+        raise dc.Surprise("--dossier is required (none given, and none derivable from the staged payloads or the branch name)")
     cmd = [a for a in args.command if a != "--"] if args.command else []
     if not cmd:
         raise dc.Surprise("the suite command is missing (put it after --)")
@@ -104,7 +106,7 @@ def run(d: dc.Driver, args) -> int:
     sys.path.insert(0, dc.SCRIPTS)
     import run_tests
 
-    dossier_file = dc.resolve_dossier(args.root, args.dossier, args.log, required=False) or ""
+    dossier_file = dc.resolve_dossier(args.root, args.dossier, args.log, required=False, also=(wt,)) or ""
     rows: list[dict] = []
     if os.path.isfile(dossier_file):
         try:
@@ -240,8 +242,17 @@ def selftest() -> int:
         rc, out = dc.run_self("test_round.py", "--dossier", "W-1", "--root", shadow_main, "--worktree", wt, "--round", "1", "--", "sh", "-c", red,
                               env={"ASD_DRIVER_TEST_ROUND": "shadow"})
         c("shadow runs but keeps no sites memory", rc == 1 and not os.path.exists(os.path.join(shadow_main, ".git", "asd-drivers", "driver-state")))
+        # derived from the run context: no --worktree, and --dossier from the branch name
+        dc.fixture_git(wt, "checkout", "-q", "-b", "feat/w-1-flush")
+        dc.fixture_git(wt, "checkout", "-q", "-b", "feat/zzz")
+        rc, out = dc.run_self("test_round.py", "--root", main, "--", "sh", "-c", green, env=env, cwd=wt)
+        c("no --dossier on a branch without an ID is a clear surprise", rc == 2 and "--dossier is required" in out)
+        dc.fixture_write(main, ".discovery/dossiers/W-3-slug.md", "---\nid: W-3\n---\n")
+        dc.fixture_git(wt, "checkout", "-q", "-b", "feat/W-3-flush")
+        rc, out = dc.run_self("test_round.py", "--root", main, "--round", "9", "--", "sh", "-c", green, env=env, cwd=wt)
+        c("no --worktree, no --dossier: the git root and the dossier ID in the branch name", rc == 0 and "dossier=W-3" in out)
     return c.report()
 
 
 if __name__ == "__main__":
-    sys.exit(dc.drive("test_round", None, build_parser, run, selftest))
+    sys.exit(dc.drive("test_round", None, build_parser, run, selftest, derive=("worktree", "dossier")))

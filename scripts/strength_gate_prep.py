@@ -198,9 +198,19 @@ def step_red_run(d: dc.Driver, args, wt: str, files: list[str]) -> None:
 
 def run(d: dc.Driver, args) -> int:
     args.worktree = args.worktree or dc.toplevel(os.getcwd())   # run from X, the build worktree, it is the default
-    if not args.worktree or not args.test_path or not args.dossier:
-        raise dc.Surprise("--worktree (default: the working directory's git root), --dossier and at least one --test-path are required")
+    if not args.worktree:
+        raise dc.Surprise("--worktree is required: the working directory is not inside a git work tree")
     wt = os.path.abspath(args.worktree)
+    if not args.test_path:
+        # no --test-path: the TEST_PATHS of the staged test-author payloads (.agent-staging/payloads/*.md)
+        args.test_path = dc.derive_test_paths(wt)
+        if args.test_path:
+            d.facts["derived_test_paths"] = list(args.test_path)
+    if not args.test_path:
+        raise dc.Surprise("at least one --test-path is required, and none could be derived from the TEST_PATHS of "
+                          f"{os.path.join(wt, '.agent-staging', 'payloads')}")
+    if not args.dossier or args.dossier == "none":
+        raise dc.Surprise("--dossier is required (none given, and none derivable from the staged payloads or the branch name)")
     files = test_files(wt, args.test_path)
     if not files:
         raise dc.Surprise("none of the --test-path entries exists in the worktree")
@@ -267,8 +277,20 @@ def selftest() -> int:
         c("no such test path is a surprise", rc == 2)
         rc, out = dc.run_self("strength_gate_prep.py", "--dossier", "W-1", "--root", main, "--test-path", "nope/", env=env, cwd=wt)
         c("no --worktree: the working directory's git root is X", rc == 2 and "none of the --test-path entries exists" in out)
+        # derived from the staged payloads: no --test-path, no --dossier (the payload's DOSSIER path names it)
+        dc.fixture_write(main, ".discovery/dossiers/W-1-slug.md", "---\nid: W-1\n---\n")
+        dc.fixture_write(wt, ".agent-staging/payloads/ut.md",
+                         f"WORKTREE_DIR: {wt}\nDOSSIER: {main}/.discovery/dossiers/W-1-slug.md\nTEST_PATHS: |\n  {wt}/tests/t.rs,\n  {wt}/tests/nope.rs\n  /elsewhere/x.rs\n")
+        c("derive_test_paths: existing paths inside the worktree, relative", dc.derive_test_paths(wt) == ["tests/t.rs"])
+        c("derive_dossier: the one ID the payload paths agree on", dc.derive_dossier(main, wt) == "W-1")
+        rc, out = dc.run_self("strength_gate_prep.py", "--root", main, "--report", rep, "--test-cmd", f"sh -c \"{log_cmd}\"", env=env, cwd=wt)
+        c("no --worktree, --dossier or --test-path: all derived, the run proceeds", rc == 1 and "dossier=W-1" in out and "vacuous_one" in out)
+        dc.fixture_write(wt, ".agent-staging/payloads/ut2.md", "DOSSIER: /r/.discovery/dossiers/W-2-other.md\nTEST_PATHS: tests/t.rs\n")
+        c("payloads that name two dossiers derive none", dc.derive_dossier(main, wt) is None)
+        rc, out = dc.run_self("strength_gate_prep.py", "--root", main, env=env, cwd=wt)
+        c("an underivable --dossier stays a clear surprise", rc == 2 and "--dossier is required" in out)
     return c.report()
 
 
 if __name__ == "__main__":
-    sys.exit(dc.drive("strength_gate_prep", None, build_parser, run, selftest))
+    sys.exit(dc.drive("strength_gate_prep", None, build_parser, run, selftest, derive=("worktree", "dossier")))

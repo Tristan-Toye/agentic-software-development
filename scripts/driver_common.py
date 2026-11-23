@@ -43,6 +43,7 @@ import datetime
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -63,30 +64,150 @@ class Surprise(Exception):
     """Anything the driver cannot classify. Carries where it stopped."""
 
 
-def resolve_dossier(root: str, dossier: str | None, explicit: str | None = None, required: bool = True) -> str | None:
+def resolve_dossier(root: str, dossier: str | None, explicit: str | None = None, required: bool = True,
+                    also: tuple = ()) -> str | None:
     """The dossier file of one ID. Dossiers are named `<ID>-<slug>.md`, so
-    `<ID>.md` alone is not enough. Order: an explicit path (`--log`), then
-    `.discovery/dossiers/<ID>.md`, then exactly one `<ID>-*.md`. Several matches
-    are a surprise naming every candidate. No match is a surprise when
-    `required`, else None."""
+    `<ID>.md` alone is not enough. Order: an explicit path (`--log`), then in
+    `root` (the main checkout) and then in each `also` tree (the build
+    worktree) `.discovery/dossiers/<ID>.md`, then exactly one `<ID>-*.md`. The
+    first tree with a match wins. Several matches in one tree are a surprise
+    naming every candidate. No match is a surprise when `required`, else None."""
     if explicit:
         return explicit
     if not dossier:
         if required:
             raise Surprise("no dossier ID or path given (give --dossier or --log)")
         return None
-    folder = os.path.join(root, ".discovery", "dossiers")
-    plain = os.path.join(folder, f"{dossier}.md")
-    if os.path.isfile(plain):
-        return plain
-    found = sorted(os.path.join(folder, n) for n in (os.listdir(folder) if os.path.isdir(folder) else [])
-                   if n.startswith(dossier + "-") and n.endswith(".md"))
-    if len(found) == 1:
-        return found[0]
-    if len(found) > 1:
-        raise Surprise(f"dossier {dossier} is ambiguous, candidates: {', '.join(found)}")
+    plain = os.path.join(root, ".discovery", "dossiers", f"{dossier}.md")
+    seen: list[str] = []
+    for tree in (root, *[a for a in also if a]):
+        folder = os.path.join(tree, ".discovery", "dossiers")
+        if folder in seen:
+            continue
+        seen.append(folder)
+        one = os.path.join(folder, f"{dossier}.md")
+        if os.path.isfile(one):
+            return one
+        found = sorted(os.path.join(folder, n) for n in (os.listdir(folder) if os.path.isdir(folder) else [])
+                       if n.startswith(dossier + "-") and n.endswith(".md"))
+        if len(found) == 1:
+            return found[0]
+        if len(found) > 1:
+            raise Surprise(f"dossier {dossier} is ambiguous, candidates: {', '.join(found)}")
     if required:
-        raise Surprise(f"dossier file not found: {plain} (nor {dossier}-*.md)")
+        raise Surprise(f"dossier file not found: {plain} (nor {dossier}-*.md, in {len(seen)} tree(s) searched)")
+    return None
+
+
+# ---------------------------------------------------------------- context derivation
+# The orchestrator records its fan-out in the build worktree: every spawned payload is a file
+# `.agent-staging/payloads/<id>.md` of `NAME: value` fields (implementer: BRANCH, PACKAGE; test
+# authors: TEST_PATHS; both: DOSSIER or WORKTREE_DIR). A driver run without arguments reads them
+# back, and only ever uses what is unambiguous.
+
+FIELD_LINE = re.compile(r"^([A-Z][A-Z0-9_]*):[ \t]*(.*)$")
+
+
+def payload_fields(path: str) -> dict[str, str]:
+    """The top-level `NAME: value` fields of one payload file (a `|` block's lines joined by spaces)."""
+    try:
+        lines = open(path, encoding="utf-8", errors="replace").read().splitlines()
+    except OSError:
+        return {}
+    out: dict[str, str] = {}
+    name = None
+    for line in lines:
+        m = FIELD_LINE.match(line)
+        if m:
+            name = m.group(1)
+            out.setdefault(name, "" if m.group(2) == "|" else m.group(2).strip())
+            if m.group(2) == "|":
+                out[name] = ""
+        elif name and line[:1] in (" ", "\t") and line.strip() and name not in ("CONTRACT",):
+            if len(out.get(name, "")) < 4000:
+                out[name] = (out[name] + " " + line.strip()).strip()
+        elif line.strip():
+            name = None
+    return out
+
+
+def staged_payloads(wt: str) -> list[dict[str, str]]:
+    folder = os.path.join(wt, ".agent-staging", "payloads")
+    if not os.path.isdir(folder):
+        return []
+    return [payload_fields(os.path.join(folder, n)) for n in sorted(os.listdir(folder)) if n.endswith(".md")]
+
+
+def derive_branches(wt: str) -> tuple[dict[str, str], list[str]]:
+    """{package id: implementer branch} from the staged implementer payloads (BRANCH + PACKAGE), keeping a
+    package only when every payload naming it agrees on one branch and that branch exists in the repository.
+    Second item: why anything was left out."""
+    found: dict[str, set[str]] = {}
+    for f in staged_payloads(wt):
+        if f.get("BRANCH") and f.get("PACKAGE"):
+            found.setdefault(f["PACKAGE"].split()[0], set()).add(f["BRANCH"].strip())
+    _, cur = git(wt, "rev-parse", "--abbrev-ref", "HEAD")
+    out: dict[str, str] = {}
+    notes: list[str] = []
+    for pkg, branches in sorted(found.items()):
+        if len(branches) > 1:
+            notes.append(f"{pkg}: payloads name {len(branches)} branches ({', '.join(sorted(branches))})")
+            continue
+        br = next(iter(branches))
+        rc, _ = git(wt, "rev-parse", "--verify", "--quiet", f"refs/heads/{br}")
+        if rc != 0:
+            notes.append(f"{pkg}: branch {br} does not exist")
+        elif br == cur.strip():
+            notes.append(f"{pkg}: branch {br} is the worktree's own branch")
+        else:
+            out[pkg] = br
+    return out, notes
+
+
+def derive_test_paths(wt: str) -> list[str]:
+    """The TEST_PATHS of every staged test-author payload that exist inside `wt`, relative to it, in order."""
+    root = os.path.realpath(wt)
+    out: list[str] = []
+    for f in staged_payloads(wt):
+        for raw in re.split(r"[,\s]+", f.get("TEST_PATHS", "")):
+            if not raw:
+                continue
+            full = os.path.realpath(raw if os.path.isabs(raw) else os.path.join(wt, raw))
+            if full != root and not full.startswith(root + os.sep):
+                continue
+            rel = os.path.relpath(full, root)
+            if os.path.exists(full) and rel not in out:
+                out.append(rel)
+    return out
+
+
+ID_IN_TEXT = re.compile(r"(?<![A-Za-z0-9])([A-Za-z]{1,6}-\d{1,6})(?![0-9])")
+
+
+def derive_dossier(root: str, wt: str | None) -> str | None:
+    """The dossier ID of a run with none given: the one ID the staged payloads' DOSSIER paths agree on, else
+    the one ID in the worktree's branch name that has a dossier file. None when there is no unique answer."""
+    ids: set[str] = set()
+    for f in staged_payloads(wt) if wt else []:
+        m = ID_IN_TEXT.match(os.path.basename(f.get("DOSSIER", "").split()[0]) if f.get("DOSSIER") else "")
+        if m:
+            ids.add(m.group(1))
+    if len(ids) == 1:
+        return ids.pop()
+    if ids:
+        return None
+    if wt:
+        _, br = git(wt, "rev-parse", "--abbrev-ref", "HEAD")
+        cands = {m.group(1) for m in ID_IN_TEXT.finditer(br.strip())}
+        real = set()
+        for c in cands:
+            try:
+                if resolve_dossier(root, c, required=False, also=(wt,)):
+                    real.add(c)
+            except Surprise:
+                pass
+        if len(real) == 1:
+            return real.pop()
     return None
 
 
@@ -278,11 +399,14 @@ class Driver:
         return rc
 
 
-def drive(name: str, argv: list[str] | None, build_parser: Callable, run: Callable, selftest: Callable[[], int]) -> int:
+def drive(name: str, argv: list[str] | None, build_parser: Callable, run: Callable, selftest: Callable[[], int],
+          derive: tuple = ()) -> int:
     """Common entry: parse, --selftest, mode gate, run with surprise handling.
 
     `build_parser(ap)` adds the driver's own flags; `run(d, args)` does the
     steps on a Driver and returns 0 or 1 (raise Surprise for anything else).
+    `derive` names the run context the driver fills in when its flag is missing:
+    "worktree" (the working directory's git root) and "dossier" (see derive_dossier).
     """
     import argparse
 
@@ -300,8 +424,19 @@ def drive(name: str, argv: list[str] | None, build_parser: Callable, run: Callab
     if mode == "off":
         print(f"{env_name(name)} is off (the default): do the phase doc's manual steps. Set it to shadow or on to run this driver.")
         return EXIT_OFF
+    derived: list[str] = []
+    if "worktree" in derive and not getattr(args, "worktree", None):
+        args.worktree = toplevel(os.getcwd())
+        if args.worktree:
+            derived.append(f"--worktree {args.worktree} (the working directory's git root)")
     root = args.root or main_checkout(getattr(args, "worktree", None) or os.getcwd())
+    if "dossier" in derive and not args.dossier:
+        args.dossier = derive_dossier(root, getattr(args, "worktree", None) or toplevel(os.getcwd()))
+        if args.dossier:
+            derived.append(f"--dossier {args.dossier} (from the staged payloads or the branch name)")
     d = Driver(name, mode, args.dossier, evidence_root(root), args.log)
+    if derived:
+        d.facts["derived_args"] = derived
     args.root = root
     try:
         rc = run(d, args)
