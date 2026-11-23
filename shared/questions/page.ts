@@ -8,7 +8,7 @@ export const PAGE = String.raw`<!doctype html>
 <title>Pipeline · Owner questions</title>
 <style>
 :root{color-scheme:dark;--bg:#0e0f10;--fg:#e9e9e7;--mut:#8d8f94;--card:#151617;--raised:#1b1c1e;--bd:rgba(233,233,231,.09);--bd2:rgba(233,233,231,.2);--acc:#7da2f0;--accbg:rgba(125,162,240,.12);--shadow:none;--lift:0 8px 24px rgba(0,0,0,.5);
---ok:#5fcf80;--okbg:rgba(95,207,128,.12);--warn:#e0a84e;--warnbg:rgba(224,168,78,.13);--bad:#f0807a;--badbg:rgba(240,128,122,.13);--que:#8d8f94;--quebg:rgba(233,233,231,.07);--chip:rgba(233,233,231,.07)}
+--ok:#5fcf80;--okbg:rgba(95,207,128,.12);--warn:#e0a84e;--warnbg:rgba(224,168,78,.13);--bad:#f0807a;--badbg:rgba(240,128,122,.13);--que:#b49af0;--quebg:rgba(180,154,240,.14);--chip:rgba(233,233,231,.07)}
 *{box-sizing:border-box}
 body{margin:0;font:14px/1.5 ui-sans-serif,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased;background:var(--bg);color:var(--fg)}
 a{color:var(--acc)}
@@ -186,7 +186,7 @@ header{padding:10px 24px}
 .sgh:first-child{border-top:0}.sgh b{font-weight:500;color:var(--fg)}
 .sright{gap:14px;flex-wrap:nowrap}
 .sright>.chip{background:none;padding:0;font-size:12px;color:var(--mut)}
-.sright>.chip.info{color:var(--acc)}.sright>.chip.ok{color:var(--ok)}.sright>.chip.warn{color:var(--warn)}.sright>.chip.bad{color:var(--bad)}
+.sright>.chip.info{color:var(--acc)}.sright>.chip.ok{color:var(--ok)}.sright>.chip.warn{color:var(--warn)}.sright>.chip.bad{color:var(--bad)}.sright>.chip.queued{color:var(--que)}
 .sright>.chip:first-child:not(.fixing)::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
 .rmeta{font-size:11.5px;color:var(--mut);white-space:nowrap}
 .srow:has(.chip.fixing),.srow:has(.chip.queued){box-shadow:none}
@@ -217,7 +217,7 @@ function ago(ts) {
 }
 function when(ts, prefix) { if (!ts || !Date.parse(ts)) return null; return h('time', { datetime: ts, title: new Date(ts).toLocaleString(), class: 'when' }, [(prefix || '') + ago(ts)]); }
 const kfmt = (n) => n >= 1000 ? Math.round(n / 1000) + 'k' : String(n);
-const TONE = { planned: 'neutral', ready: 'info', building: 'info', review: 'warn', pr: 'warn', done: 'ok', dropped: 'neutral', running: 'info', testing: 'info', waiting: 'warn', queued: 'neutral', failed: 'bad', stopped: 'bad', gap: 'warn', 'contract-change': 'warn', unknown: 'neutral',
+const TONE = { planned: 'neutral', ready: 'info', building: 'info', review: 'warn', pr: 'warn', done: 'ok', dropped: 'neutral', running: 'info', testing: 'info', waiting: 'warn', queued: 'queued', failed: 'bad', stopped: 'bad', gap: 'warn', 'contract-change': 'warn', unknown: 'neutral',
   accepting: 'info', integrating: 'warn', merged: 'ok', blocked: 'bad', green: 'ok', red: 'bad', pending: 'warn', open: 'warn' };
 function laneChip(r) { return r && r.delivery === 'kanban' ? h('span', { class: 'chip info', title: 'Kanban lane: small fix, proven by CI only' }, ['kanban']) : null; }
 function chip(text, kind, extra) { return h('span', { class: 'chip ' + (TONE[kind || text] || '') + (extra ? ' ' + extra : '') }, [text]); }
