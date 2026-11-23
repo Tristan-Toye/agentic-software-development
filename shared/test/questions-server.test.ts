@@ -825,6 +825,34 @@ try {
   const qo = html.match(/function queueOpen\(\) \{[^\n]*\}/)?.[0] ?? ""
   const order = qo ? new Function("S", qo + "; return queueOpen().map(q => q.id)")({ q: [{ id: "c", state: "open", ts: "2026-11-02T10:03:00Z" }, { id: "a", state: "open", ts: "2026-11-02T10:01:00Z" }, { id: "x", state: "answered", ts: "2026-11-02T10:00:00Z" }, { id: "b", state: "open", ts: "2026-11-02T10:02:00Z" }] }) : []
   check("home: the open questions are a queue, oldest first, and no longer a card", JSON.stringify(order) === '["a","b","c"]' && !html.includes("home:questions") && html.includes("No open questions.") && html.includes("waiting "), JSON.stringify(order))
+  {
+    // The activity chip: a live runner shows the blue "fixing" chip in every list and header, whatever the static status says.
+    const cut = (from: string, to: string) => html.slice(html.indexOf(from), html.indexOf(to))
+    const src = cut("const RUNNER_LIVE", "function itemMode") + cut("const MERGE_STEP", "function mergeCtl") + cut("const isLive","/* One dossier on a stub card")
+    const mk = (h: any, S: any) => new Function("h", "S", "chip", "openQs", "hrefItem", "laneChip", "findRun", src + "; return { activityChip, subItem }")(h, S, (t: string, k: string) => ({ tag: "chip", cls: "static", text: t }), () => [], () => "#", () => null, () => null)
+    const text = (n: any): string => (n == null ? "" : typeof n === "string" ? n : (n.kids || []).map(text).join(""))
+    const fh = (tag: string, a: any, kids: any[]) => ({ tag, cls: a && a.class, kids: (kids || []).filter((k) => k != null), text: "" })
+    const find = (n: any, cls: string): any => (n == null || typeof n === "string" ? null : n.cls && n.cls.split(" ").includes(cls) ? n : (n.kids || []).map((k: any) => find(k, cls)).find(Boolean) || null)
+    const done = (rn: any) => ({ repo: "r", id: "W-1", title: "T", status: "done", phase: "9", deferredOpen: 2, runner: rn, updates: [] })
+    const S: any = { runs: [], q: [] }
+    const { activityChip, subItem } = mk(fh, S)
+    const fix = activityChip(done({ state: "running", command: "fix-deferred" }))
+    check("activity chip: a done dossier with a live /fix-deferred reads 'fixing deferred items' in blue", fix.cls === "chip fixing" && text(fix) === "fixing deferred items", JSON.stringify(fix))
+    const q = activityChip(done({ state: "queued", command: "fix-deferred" }))
+    check("activity chip: a queued runner is the queued chip", q.cls === "chip queued" && text(q) === "fixing deferred items · queued for a slot", text(q))
+    const w = activityChip(done({ state: "waiting", command: "product-summary" }))
+    check("activity chip: waiting is warn, product-summary has its own words", w.cls === "chip warn" && text(w) === "writing the product summary · waiting for you", text(w))
+    check("activity chip: no runner or a finished runner gives no chip (the static status stays)", activityChip(done(null)) === null && activityChip(done({ state: "done", command: "work-on" })) === null)
+    check("activity chip: an unknown command falls back to its name; the merge queue's step wins", text(activityChip(done({ state: "running", command: "zzz" }))) === "zzz" && text(activityChip({ ...done(null), merge: { state: "fixing" } })) === "merge queue · preparing the merge")
+    S.runs = [done({ state: "running", command: "fix-deferred" })]
+    const live = subItem("r", "W-1", false, false)
+    check("activity chip: the stub tree's In progress row shows it instead of the static stage chip", !!find(live, "fixing") && text(live).includes("fixing deferred items"), text(live))
+    S.runs = [done(null)]
+    check("activity chip: with no runner that row keeps its static chip", !find(subItem("r", "W-1", false, false), "fixing"))
+    // Every list and header builds its dossier chips through it.
+    const users = ["function stubRow", "function runningView", "function subItem", "function header(", "const dfd = ", "outs.map(o =>", "x.repo || repo, x.id"].map((m) => { const i = html.indexOf(m); return i < 0 ? false : html.slice(i, i + 6000).includes("activityChip(") })
+    check("activity chip: stub rows, running list, tree rows, deferred-on-merged rows, outside rows, dossier header and the stub's dossier list use it", users.every(Boolean) && !html.includes("const CMD = {"), JSON.stringify(users))
+  }
   const mdSrc = html.slice(html.indexOf("function mdInline"), html.indexOf("function qCard"))
   const fakeH = (tag: string, _a: unknown, kids: any[]) => { const e: any = { tag, kids: [...(kids || [])] }; e.appendChild = (k: any) => e.kids.push(k); return e }
   const md = (t: string) => new Function("h", "document", mdSrc + "; return mdLite")(fakeH, { createTextNode: (x: string) => x })(t)
