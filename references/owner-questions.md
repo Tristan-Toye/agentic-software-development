@@ -447,8 +447,8 @@ restarted server answers at once from them while its first scan runs.
     start. Every member starts through `run_dossier.py`, so the slot cap, the
     `queued` state, the account routing and the owner questions apply unchanged.
     A member whose build finished (status `pr` or `done`) gets "Fix all
-    deferred" exactly as the Deferred button sends it (every open item except
-    the ones ruled leave-open). When every member is finished (its fix run done
+    deferred" exactly as the Deferred button sends it (every open item;
+    one the owner ruled "leave open" is dropped, so it is no longer open). When every member is finished (its fix run done
     and no open item left), the non-code PRs are merged as "Merge all" does and
     awaited, then the stub is integrated (the Integrate button), then
     `land_stub.py` merges the stub PR; that merge starts the next cycle. A stub PR the
@@ -612,14 +612,14 @@ restarted server answers at once from them while its first scan runs.
     which starts `--command fix-deferred --items D-1,D-3`: only those items,
     one stacked PR through the implementer and review flow; an item that looks
     too big for it is put to the owner as a question (own dossier, fix here
-    anyway, or leave open). **A later run on a finished dossier** (`/fix-deferred`) opens its own
+    anyway, or drop it). **A later run on a finished dossier** (`/fix-deferred`) opens its own
     timeline section, "Fix deferred issues", at the runner's `start` line,
     and its steps stay inside it; while it runs the header reads "Fixing
     deferred issues", the page opens on the timeline, and the dossier's row on
     its stub card carries a live "fixing deferred" chip. **Deferred fix progress** (dossier page, under the last reply): once
     `/fix-deferred` has run or runs, a bar and one row per item: fixed (with
     the stacked PR), being fixed (`DEFERRED-TRIAGE: D-n → direct` without its
-    `DEFERRED-FIXED:`), own dossier, dropped, left open; the stacked PR or the
+    `DEFERRED-FIXED:`), own dossier, dropped; the stacked PR or the
     fix branch (`DEFERRED-FIX:`), the questions it waits on, and its latest
     note while live. The Deferred tab's cards carry the same states.
     **Blocked by the safety check** (top of the dossier page): every call auto

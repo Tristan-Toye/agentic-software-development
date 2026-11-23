@@ -40,7 +40,7 @@ export function readAutoState(repo: string, dir = runsDir()): AutoState | null {
   }
 }
 
-type RunLike = { repo: string; root: string; main?: string; id: string; status: string; blockedBy: string[]; runner: { state: string; command?: string; pid: number; started: string } | null; deferred: { items: { id: string; state: string; keptOpen?: boolean }[] } }
+type RunLike = { repo: string; root: string; main?: string; id: string; status: string; blockedBy: string[]; runner: { state: string; command?: string; pid: number; started: string } | null; deferred: { items: { id: string; state: string }[] } }
 type StubLike = { branch: string; state: string; canIntegrate?: boolean }
 
 /** The facts `auto_work.py --tick` reads: per repository its root, its dossiers (status, blockers, runner, deferred items) and its open stubs. */
@@ -53,7 +53,7 @@ export function buildFacts(runs: RunLike[], stubs: { repo: string; main: string;
     f.runs.push({
       id: r.id, status: r.status, blockedBy: r.blockedBy,
       runner: r.runner ? { state: r.runner.state, command: r.runner.command ?? "", pid: r.runner.pid, started: r.runner.started } : null,
-      deferred: (r.deferred?.items ?? []).map((i) => ({ id: i.id, state: i.state, keptOpen: !!i.keptOpen })),
+      deferred: (r.deferred?.items ?? []).map((i) => ({ id: i.id, state: i.state })),
     })
   }
   for (const s of stubs) {

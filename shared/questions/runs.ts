@@ -53,7 +53,7 @@ export function deferredSince(updated: string, runner: unknown): boolean {
 /** One deferred issue from a dossier's ledger (`/work-on` Phase 9, `/deferred`, `/fix-deferred`). */
 export type DeferredItem = { id: string; kind: string; title: string; loc: string; risk: string; why: string; state: "open" | "fixing" | "fixed" | "dossier" | "deprecated"; note: string; dossier: string;
   /** The item a dossier is planned from: itself, or another dossier's same issue (`seed: /plan W-128 D-3`, `DEFERRED-SAME`). */
-  seed?: { src: string; item: string }; planBranch?: string; ownerKept?: boolean; planning?: "running" | "testing" | "waiting" | "paused" | "done" | "failed" | "stopped"; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string; keptOpen?: boolean }
+  seed?: { src: string; item: string }; planBranch?: string; ownerKept?: boolean; planning?: "running" | "testing" | "waiting" | "paused" | "done" | "failed" | "stopped"; contract?: string; effort?: string; inReport?: boolean; question?: string; ruling?: string }
 export type Deferred = { items: DeferredItem[]; pr: string; report: boolean; branch?: string }
 
 /**
@@ -133,11 +133,12 @@ export function parseDeferred(log: string, record: DeferredItem[] | null = null)
       const text = (ru[2] ?? ru[4] ?? "").replace(/^D-\d+\s*/, "").trim()
       const it = did ? items.get(did) : undefined
       // An item the run already triaged as a direct fix (`fixing`) can still be ruled on: /fix-deferred asks when it
-      // cannot prove a fix, and a "leave it open" ruling then puts it back to open (W-162 D-5 read fixing for good).
+      // cannot prove a fix, and a "leave it open" ruling then drops it (W-162 D-5 read fixing for good).
       if (it && (it.state === "open" || it.state === "fixing")) {
         it.ruling = text
-        // "stays open" / "leave it open" keeps the item for later; any other ruling sets the run to work on it.
-        if (/\b(stays? open|leave (?:it )?open|left open|keep (?:it )?open|not now|later)\b/i.test(text)) { it.keptOpen = true; it.state = "open"; it.note = "" }
+        // "stays open" / "leave it open" / "not now" is a drop (there is no "open past this stub"): the item ends
+        // dropped, the ruling its reason. Any other ruling sets the run to work on it.
+        if (/\b(stays? open|leave (?:it )?open|left open|keep (?:it )?open|not now|later)\b/i.test(text)) { it.state = "deprecated"; it.note = text }
         else { it.state = "fixing"; it.note = `your ruling: ${text}` }
       }
       continue
@@ -734,7 +735,7 @@ export async function buildRuns(questions: Question[], now = Date.now()): Promis
         let report = ""
         try { report = readFileSync(join(runsDir(), `${repoName}.${f.id}.deferred.md`), "utf8") } catch { /* none */ }
         const deferred: Deferred = { items: withReport(pd.items, report), pr: pd.pr, report: report !== "", branch: pd.branch }
-        return { deferred, deferredOpen: pd.items.filter((i) => i.state === "open" && !i.keptOpen).length }
+        return { deferred, deferredOpen: pd.items.filter((i) => i.state === "open").length }
       })(),
     })
   }
@@ -833,11 +834,11 @@ let lastScan = 0
 let lastSig = ""
 /**
  * The deferred items that need the owner, the count a dossier's row shows. With no fix run live, every open item not
- * left open by a ruling. While `/fix-deferred` is live the open items are in the agent's hands, so only those whose
+ * dropped by a ruling. While `/fix-deferred` is live the open items are in the agent's hands, so only those whose
  * question still waits on the owner count.
  */
 export function undecidedDeferred(items: DeferredItem[], fixLive: boolean, openQuestions: Set<string>): number {
-  return items.filter((i) => i.state === "open" && !i.keptOpen && (!fixLive || (!!i.question && openQuestions.has(i.question)))).length
+  return items.filter((i) => i.state === "open" && (!fixLive || (!!i.question && openQuestions.has(i.question)))).length
 }
 /** Updates, runner state and the owner's rulings are fresh on every request; read async so a slow disk never stalls the server. */
 async function liveStore(r: Run): Promise<Pick<Run, "updates" | "runner" | "running" | "deferred" | "deferredOpen">> {
@@ -845,12 +846,14 @@ async function liveStore(r: Run): Promise<Pick<Run, "updates" | "runner" | "runn
   const [runner, rulings, updates] = await Promise.all([readRunnerAsync(key), readText(ownerRulingsFile(`${r.repo}.${r.id}`)), readUpdatesAsync(key)])
   const deferred = applyOwnerRulings(r.deferred, rulings)
   return { updates, runner, running: isRunning(r.status) || runnerActive(runner), deferred,
-    deferredOpen: deferred.items.filter((i) => i.state === "open" && !i.keptOpen).length }
+    deferredOpen: deferred.items.filter((i) => i.state === "open").length }
 }
 /**
  * The owner's own rulings on deferred items, made on the dashboard: `<key>.deferred-owner.json`
- * `{ "D-2": { "keepOpen": true, "ts": "…" } }`. Kept beside the run, not in the dossier, which a live run may be
- * editing. "Leave open" marks an open item kept open (not counted, not swept in by Fix all); "Reopen" undoes it.
+ * `{ "D-2": { "drop": true, "ts": "…" } }`. Kept beside the run, not in the dossier, which a live run may be
+ * editing. "Drop" ends an open item dropped (state `deprecated`, the ruling its reason: not counted, not swept in
+ * by Fix all); "Reopen" (`drop: false`) undoes it. The older `keepOpen: true` ("Leave open") reads as a drop: the
+ * owner's rule is that leaving an item open is dropping it, so rulings already on disk need no migration.
  */
 export function ownerRulingsFile(key: string, dir = runsDir()): string { return join(dir, `${key}.deferred-owner.json`) }
 export function withOwnerRulings(d: Deferred, key: string, dir = runsDir()): Deferred {
@@ -861,13 +864,16 @@ export function withOwnerRulings(d: Deferred, key: string, dir = runsDir()): Def
 /** The rulings file's text (null when there is none) applied to the deferred items. */
 export function applyOwnerRulings(d: Deferred, text: string | null): Deferred {
   if (text === null) return d
-  let o: Record<string, { keepOpen?: boolean; ts?: string }> = {}
+  let o: Record<string, { drop?: boolean; keepOpen?: boolean; ts?: string }> = {}
   try { o = JSON.parse(text) } catch { return d }
   return { ...d, items: d.items.map((i) => {
     const r = o[i.id]
     if (!r || i.state !== "open") return i
-    if (r.keepOpen) return { ...i, keptOpen: true, ruling: i.ruling || "left open on the dashboard", ownerKept: true }
-    return i.keptOpen ? { ...i, keptOpen: false, ruling: "", ownerKept: false } : i
+    if (r.drop === true || (r.drop === undefined && r.keepOpen === true)) {
+      const why = i.ruling || "left open on the dashboard: leaving it open is dropping it"
+      return { ...i, state: "deprecated", ruling: why, note: why, ownerKept: true }
+    }
+    return i
   }) }
 }
 /** Whether a scan has finished in this process: until then the view is the one read from disk at start. */
