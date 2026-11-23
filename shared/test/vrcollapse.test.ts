@@ -171,7 +171,10 @@ describe("page code of the canvas", () => {
   })
   test("a clipped node label ends with an ellipsis; the inspector and the node title carry the full label (FU-02)", () => {
     const vr = PAGE.slice(PAGE.indexOf("function vrBuild"), PAGE.indexOf("// ---- questions ----"))
-    expect(vr).toMatch(/wl\.length > 3\) lines\[2\] = lines\[2\]\.replace\([^)]*'(…|\\u2026)'\)/) // the page is served ASCII-escaped
+    // The page wraps through the shared vrFitLabel (vrtext.ts): its last line ends with an ellipsis, and a clipped box carries a visible marker.
+    expect(vr).toMatch(/vrFitLabel\(n\.label, b\.w/)
+    expect(PAGE).toMatch(/lines\[lines\.length - 1\]\.replace\([^)]*"(…|\\u2026)"\)/) // the page is served ASCII-escaped
+    expect(vr).toMatch(/if \(fit\.clipped\)/)
     expect(vr).toMatch(/vrDom\('h3', '', it\.label \|\|/) // inspector: the whole label, unwrapped
     expect(vr).toMatch(/const tip = [^\n]*it\.label/) // accessible title on the node
     expect(vr).toMatch(/vrDom\('b', '', it\.label \|\|/) // hover card: the whole label, at every zoom

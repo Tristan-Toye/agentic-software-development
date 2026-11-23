@@ -2,7 +2,8 @@
 // on a repo root, with a timeout, and caches the staleness result on the map file's mtime.
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { dirname, join, resolve, sep } from "node:path"
-import { checkGraph, collapseLoaded, layoutGraph, stripDollar, type ViewResult } from "./vrlayout.ts"
+import { checkLayout } from "./vrcheck.ts"
+import { checkGraph,collapseLoaded, layoutGraph, stripDollar, type ViewResult } from "./vrlayout.ts"
 
 export const MAP_REL = "docs/architecture/product-map.json"
 export const MAP_TIMEOUT_MS = 20_000
@@ -194,7 +195,7 @@ export async function openDiagram(root: string, rel: string, listed: Diagram[]):
     out.view = g.view
     let fold = openFolds(out.graph)
     // A view that opens folded may be too big to lay out unfolded: then the failure is not reported (layout stays null) and the canvas asks for the folded layout.
-    try { out.layout = await layoutGraph(out.graph) } catch (e) { if (!fold.length) out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
+    try { out.layout = await layoutGraph(out.graph); if (!fold.length) out.issues.push(...checkLayout(out.graph, out.layout)) } catch (e) { if (!fold.length) out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
     // Fold more (the biggest open group, nested ones too) until the opening layout fits the readable size, instead of letting Fit shrink the text.
     if (g.view !== "map" && (out.graph.groups ?? []).length) {
       try {

@@ -94,9 +94,10 @@ def default_runner(cmd: list, cwd: str, timeout: float | None = None):
 def _shorten(label: str) -> tuple:
     """(label, full): a label over vr_graph.NODE_LABEL_MAX ends with an ellipsis; `full` is the
     original, kept in the evidence note so the inspector still shows it."""
-    if len(label) <= vr_graph.NODE_LABEL_MAX:
+    short = vr_graph.fit_label(label)  # also within the canvas's lines and word width, not only the character count
+    if short == label:
         return label, None
-    return label[:vr_graph.NODE_LABEL_MAX - 1] + "\u2026", label
+    return short, label
 
 
 def _node(nid, label, kind, ev, status="context", **extra):
@@ -831,7 +832,7 @@ def _selftest() -> int:
     check("cli:bad-root-exit-1", r.returncode == 1, r.stderr[:200])
     long_name = "very_long_module_name_" * 6
     nn = _node("module:x", long_name, "module", _src("a.rs", 1, "definition"))
-    check("fu02:shorten", len(nn["label"]) == vr_graph.NODE_LABEL_MAX and nn["label"].endswith("\u2026")
+    check("fu02:shorten", len(nn["label"]) <= vr_graph.NODE_LABEL_MAX and nn["label"].endswith("\u2026") and not vr_graph.text_fit(nn["label"], vr_graph.node_width(nn["label"]))["clipped"]
           and long_name in nn["evidence"][0]["note"] and "definition" in nn["evidence"][0]["note"], str(nn))
     check("fu02:short-untouched", _node("m", "abc", "module", _src("a.rs", 1))["label"] == "abc")
     rr = subprocess.run([sys.executable, os.path.join(me, "vr_ra.py"), "--selftest"], capture_output=True, text=True)
