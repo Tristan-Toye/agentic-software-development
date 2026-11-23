@@ -450,7 +450,12 @@ def shadow_flow(l1: dict, flow: dict, removed: set) -> tuple:
     try:
         graph = promote_graph(dict(l1, flows=[dict(flow, new_stem=stem)]), stem, removed)
     except (PromoteError, KeyError, TypeError) as exc:
-        rec["errors"].append(("%s: %s" % (type(exc).__name__, exc))[:300] if not isinstance(exc, PromoteError) else str(exc)[:300])
+        msg = ("%s: %s" % (type(exc).__name__, exc))[:300] if not isinstance(exc, PromoteError) else str(exc)[:300]
+        if isinstance(exc, PromoteError) and not flow.get("new_stem") and (rec["missing_to"] or rec["missing_call_kind"]):
+            # the flow names no diagram, so its author wrote no routing: say which side to fix (STEP_ROUTING: all)
+            msg = msg.replace("(a flow with new_stem needs both)", "(the author wrote no routing for a flow without new_stem: "
+                              "the payload needs `STEP_ROUTING: all`)")
+        rec["errors"].append(msg)
     if graph is not None:
         rec["lanes"] = len(graph.get("lanes", []))
         issues = vr_graph.validate(graph, root=None)
@@ -948,6 +953,27 @@ def _selftest() -> int:
           and shadow_flow(l1s, ns_flow, set())[0]["built_ok"] is True)
     ns_bad = dict(ns_flow, after=["sx1"])
     check("shadow-flow:no-new_stem-without-routing-fails", shadow_flow(l1s, ns_bad, set())[0]["built_ok"] is False)
+    # the shape of the config-harness shadow evidence (W-118/W-119/...): a flow without new_stem, every step added or
+    # changed, none with to/call_kind. It fails with the hint naming the producer side; the same flow with the routing
+    # the author writes under STEP_ROUTING: all (to = the next step's lane, the last step a self-message) builds.
+    ev_l1 = copy.deepcopy(l1s)
+    ev_ids = [n["id"] for n in ev_l1["nodes"][:3]]
+    for n in ev_l1["nodes"]:
+        n.pop("to", None)
+        n.pop("call_kind", None)
+        n["status"] = "added"
+    ev_flow = {"id": "flow:save-node-config", "label": "save node config", "status": "added", "after": ev_ids,
+               "evidence": copy.deepcopy(l1s["flows"][0]["evidence"])}
+    rec_bad = shadow_flow(ev_l1, ev_flow, set())[0]
+    check("shadow-flow:evidence-shape-fails-with-hint", rec_bad["built_ok"] is False and rec_bad["missing_to"] == 3
+          and "STEP_ROUTING: all" in rec_bad["errors"][0], rec_bad)
+    by_id = {n["id"]: n for n in ev_l1["nodes"]}
+    for i, sid in enumerate(ev_ids):
+        by_id[sid]["to"] = by_id[ev_ids[min(i + 1, len(ev_ids) - 1)]]["lane"]
+        by_id[sid]["call_kind"] = "call"
+    rec_ok, draft_ok = shadow_flow(ev_l1, ev_flow, set())
+    check("shadow-flow:evidence-shape-with-routing-builds", rec_ok["built_ok"] is True and draft_ok is not None
+          and rec_ok["missing_to"] == 0, rec_ok)
     drafts = glob.glob(os.path.join(ds, ".git", "asd-drivers", "driver-shadow", "W-9", "*-drafts", "*.json"))
     check("shadow-all:drafts-in-common-dir", sorted(os.path.basename(x) for x in drafts) == ["seq-new.json", "seq-shadow-f-extra.json"], drafts)
     check("shadow-all:no-driver-evidence-leak", not os.path.exists(os.path.join(ds, ".git", "asd-drivers", "driver-evidence")))

@@ -154,6 +154,14 @@ Shapes the schema requires, which the fixtures also show:
 
    ```bash
    python3 SCRIPTS_DIR/vr_graph.py validate OUT_DIR/l1.json --root REPO
+   ```
+
+   When `STEP_ROUTING` is `all`, add `--step-routing all` to the `l1.json` run:
+   it then rejects (`step_missing_to`, `step_missing_call_kind`) any added or
+   changed step of any flow that lacks `to` or `call_kind`, which is exactly
+   what the driver's shadow build needs. Fix those steps before you return.
+
+   ```bash
    python3 SCRIPTS_DIR/vr_graph.py validate OUT_DIR/arch/<stem>.json --root REPO
    ```
 
