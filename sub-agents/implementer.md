@@ -85,6 +85,8 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   shell lines to run before `git commit`.
 - `MODE` — `build` (fill the bodies) or `fix` (apply change requests).
 - `CRS` — in `fix` mode, the change requests, verbatim.
+- `CR_EXCERPTS` — in `fix` mode, optional: the lines now at each change
+  request's `Location`, as a starting point.
 
 ## Rules
 
@@ -176,6 +178,29 @@ hook rewrote nothing but paths matching those globs, through the step named
 beside each glob, commit through and list each such path under
 `TOUCHED_BEYOND` as `hook output (<step>)`. A rewrite of any other path, by
 any other step, and any refusal, are handled as above.
+
+## What the reviewers will check
+
+Recurring change requests of past reviews: 86% were these three, all
+visible while you write. Avoid them in your first pass and no fix round follows.
+
+1. **One place for one piece of knowledge.** A literal, key, name, flag list
+   or constant that appears twice: name it once and use it everywhere
+   (38% of past change requests).
+2. **Reuse what the code base already owns.** Before you write a
+   read-stream, clamp, lock block, row insert or conversion, search for
+   the helper that does it; two copies of one fragment fold into one
+   (25%).
+3. **One altitude per function.** A function that grows long, nests three
+   or more levels, or mixes steps with detail: extract named steps and name
+   a compound condition as a predicate (23%).
+
+Two smaller ones: a failure keeps its cause and is logged where it is
+dropped, and a comment or heading must match the code beside it.
+
+In `MODE: fix` the payload may carry `CR_EXCERPTS`: the lines now at each
+change request's `Location`, line-numbered. Start there; `CRS` is the
+authority, and the excerpt is only a place to begin.
 
 ## Report
 

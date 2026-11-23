@@ -264,7 +264,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
             "TEST_COMMAND", "STANDARDS", "JIRA_KEY", "HOOKS",
         },
         "optional": {
-            "PACKAGE", "CRITERIA", "CRS", "FAILURES", "SHARED_IDIOM",
+            "PACKAGE", "CRITERIA", "CRS", "CR_EXCERPTS", "FAILURES", "SHARED_IDIOM",
             "VERIFY_EMBEDDED", "BASELINE_COUNTS_FROM", "COMMIT_ENV", "COMMIT_SUBJECT",
         },
     },
@@ -596,7 +596,7 @@ ASSIGNMENT = re.compile(r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(?P<value>
 # change requests. Such text may discuss `${HOME}` or quote `token: a`.
 VERBATIM_FIELDS = (
     "CRITERIA", "CONTRACT", "DOSSIER-EXCERPTS", "STYLE_SAMPLE", "SUPPORT",
-    "FAILURES", "CRS", "PRIOR_CRS", "RUN_EVIDENCE", "CHECKLIST_RULES", "FORMAT",
+    "FAILURES", "CRS", "CR_EXCERPTS", "PRIOR_CRS", "RUN_EVIDENCE", "CHECKLIST_RULES", "FORMAT",
     "PROBLEM", "APPROACH", "ERRORS",
 )
 # #362: the fields whose text is quoted material (verbatim contract text, evidence, excerpts):
@@ -2434,6 +2434,8 @@ def _selftest_cases() -> int:
     case("implementer build missing package",
          impl.replace("PACKAGE: P1 thing\n", ""), "implementer", True, "PACKAGE is missing")
     fix = impl.replace("MODE: build", "MODE: fix").replace("PACKAGE: P1 thing\n", "").replace("CRITERIA: |\n  1. x\n", "")
+    case("implementer fix takes CR_EXCERPTS, quoted code with ${HOME} is not a variable",
+         fix + "CRS: |\n  CR-1: x\nCR_EXCERPTS: |\n  # src/a.sh:1-2 (CR-1)\n  1: cd ${HOME}/x\n", "implementer", False)
     case("implementer fix needs crs or failures", fix, "implementer", True, "CRS / FAILURES")
     case("implementer fix with failures", fix + "FAILURES: |\n  assert x\nBASELINE_COUNTS_FROM: pre-change tree re-run\n", "implementer", False)
     case("implementer fix: several failing tests of one package travel in one FAILURES block",
