@@ -1072,11 +1072,23 @@ export async function handle(req: Request): Promise<Response> {
 function planRuns(runs: Run[]): { key: string; repo: string; src: string; item: string; title: string; state: string; started: string; account?: string; stage: string; last: string; lastTs: string }[] {
   const taken = new Set(runs.map((r) => r.runKey).filter(Boolean))
   let names: string[] = []
-  try { names = readdirSync(runsDir()).filter((n) => /\.plan-D-\d+\.runner\.json$/.test(n)) } catch { return [] }
+  try { names = readdirSync(runsDir()).filter((n) => /\.(plan-D-\d+|seed-[a-z0-9-]+)\.runner\.json$/.test(n)) } catch { return [] }
   const out = []
   for (const n of names) {
     const key = n.replace(/\.runner\.json$/, "")
     if (taken.has(key)) continue
+    // A free-form /plan (`run_dossier.py --seed`): no source dossier; the title is the brief's first line.
+    const sm = key.match(/^(.+)\.(seed-[a-z0-9-]+)$/)
+    if (sm) {
+      const rn = readRunner(key)
+      if (!rn || !runnerActive(rn)) continue
+      let first = ""
+      try { first = (readFileSync(join(runsDir(), `${key}.seed.md`), "utf8").split("\n").find((l) => l.trim()) ?? "").replace(/^#+\s*/, "").slice(0, 140) } catch { /* no brief */ }
+      const ups = readUpdates(key, runsDir(), 50)
+      const note = ups.find((u) => !u.auto && u.kind === "update") ?? ups[0]
+      out.push({ key, repo: sm[1], src: "", item: sm[2], title: first || sm[2], state: rn.state, started: rn.started, account: rn.account, stage: rn.stage, last: note?.text ?? "", lastTs: note?.ts ?? "" })
+      continue
+    }
     const m = key.match(/^(.+)\.([A-Z][A-Z0-9]*-\d+)\.plan-(D-\d+)$/)
     if (!m) continue
     const rn = readRunner(key)

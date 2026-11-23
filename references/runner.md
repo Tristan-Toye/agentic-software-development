@@ -360,6 +360,14 @@ the recorded checkpoints.
   item routed to its own dossier, under the key `<repo>.<ID>.plan-D-n`, so
   several items plan at once beside any run of the source. `/fix-deferred`
   Step 7 starts one per routed item; the dashboard's Plan it starts one.
+- **`seed-<slug> --command plan --seed FILE`:** a free-form `/plan` (a
+  description, no dossier and no deferred item yet). The id is a slug,
+  `seed-<lowercase words>`, so the key is `<repo>.seed-<slug>`. The runner
+  copies FILE to `<key>.seed.md` (at most 64 KiB) and starts
+  `/plan the description in <that file>`. A restart (revive, Resume) finds
+  the kept brief without `--seed`. No `/work-on` is requeued when it ends:
+  the dossier it wrote goes the usual way. The dashboard's Running now lists
+  it as "Planning: <the brief's first line>".
 - **The product summary:** after the deferred report, one more short
   process runs `/product-summary <ID>` (`commands/product-summary.md`) on
   `ASD_RUNNER_SUMMARY_MODEL` (default `sonnet`) and stores the page at
