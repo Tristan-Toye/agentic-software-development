@@ -388,7 +388,15 @@ restarted server answers at once from them while its first scan runs.
     on `/resolve-merge` (merge the stub into each branch, keep both sides,
     check no hunk was lost, prove it, push; never rebase or force-push) and
     waits for it; then merges by script, then runs `/after-merge` to its end,
-    then takes the next. A dossier that still conflicts, or whose run fails,
+    then takes the next. While the head waits on its agent (a `/resolve-merge`
+    run queued for a run slot, or its own run), the worker does not idle: it
+    goes on behind it and merges the later dossiers that are mergeable right
+    now (clean, up to date, checks green, no agent needed), keeping the head at
+    position 1 to be retried when its run ends. Nothing is merged ahead of a PR
+    it is based on, a stack that needs an agent too (or checks still running)
+    keeps its place, and a non-code PR keeps its order (`ASD_MERGE_AHEAD=0`
+    turns this off, `ASD_MERGE_AHEAD_EVERY` is the seconds between passes, 60).
+    A dossier that still conflicts, or whose run fails,
     is marked failed with why and the queue goes on. Chips: in the merge queue
     · #n, merge waits for its run, resolving merge conflicts, merging…, merged
     · cleaning up. No agent merges: the script finds every open PR whose head
