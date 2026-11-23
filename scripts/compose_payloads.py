@@ -83,6 +83,10 @@ each document's own title), and `--out` receives the `phase4-wave` args array
 package owns, or two packages own, is printed `UNROUTED: <id> <path> — <why>` and
 nothing is written: the orchestrator rules and re-runs with `--assign ID=PKG`
 (repeatable; the id as printed — `<document stem>/CR-n` when several documents).
+One fix payload per package carries every CR of the round routed to it, from every lens, so a package
+is never spawned twice in one round. Each payload also carries `CR_EXCERPTS`: the lines now at each CR's
+Location (a few before, a few after, line-numbered, bounded), read from the tree under --root, so the
+fix implementer opens the spot instead of searching for it; `CRS` stays the authority.
 Each fix package's OWNED_PATHS is its row plus every Location and literal-source Siblings path its
 CRs name (#217; #490: no glob, dotfile or lock); a path two fix packages would both own prints `CONFLICT: ...` and
 nothing is written.
@@ -385,6 +389,7 @@ STAGEABLE_FIELDS = {
     "CONTRACT", "CRITERIA", "CRS", "FAILURES", "RUN_EVIDENCE", "HARNESS",
     "STYLE_SAMPLE", "SUPPORT", "SCOPE", "RULES", "ARBITRATIONS", "PRIOR_CRS",
     "PROMISE_CHECKLIST", "CONVENTIONS", "FIXTURES", "CONTEXT_DOCS", "CORRECTION",
+    "CR_EXCERPTS",
 }
 # TEST_PATHS and its siblings are written absolute under --root: a relative
 # entry resolves against the composer's cwd here and the subagent's cwd there.
@@ -936,7 +941,7 @@ def compose_implementer(ctx: dict) -> list[Field]:
     else:
         fields["JIRA_KEY"] = Field("JIRA_KEY", jira)
 
-    apply_overrides(fields, sets, blocks={"CRS", "FAILURES", "SHARED_IDIOM", "VERIFY_EMBEDDED", "HOOKS", "CONTRACT"})
+    apply_overrides(fields, sets, blocks={"CRS", "CR_EXCERPTS", "FAILURES", "SHARED_IDIOM", "VERIFY_EMBEDDED", "HOOKS", "CONTRACT"})
     if "FAILURES" in fields and not is_placeholder(fields["FAILURES"].value) \
             and "BASELINE_COUNTS_FROM" not in fields:
         # #149: counts without a named tree inherit an earlier phase's numbers;
@@ -951,7 +956,7 @@ def compose_implementer(ctx: dict) -> list[Field]:
 
     order = (["WORKTREE_DIR", "BRANCH", "MODE", "CONTRACT"]
              + (["PACKAGE", "SHARED_IDIOM", "OWNED_PATHS", "CRITERIA"] if mode == "build"
-                else ["CRS", "FAILURES", "OWNED_PATHS"])
+                else ["CRS", "CR_EXCERPTS", "FAILURES", "OWNED_PATHS"])
              + ["TEST_COMMAND", "HOOKS", "COMMIT_ENV", "VERIFY_EMBEDDED", "STANDARDS", "JIRA_KEY", "COMMIT_SUBJECT"])
     return ordered(fields, order)
 
@@ -1998,6 +2003,66 @@ def cr_named_paths(body: str, root: str) -> list[str]:
     return out
 
 
+CR_EXCERPT_BEFORE = 2
+CR_EXCERPT_AFTER = 7
+CR_EXCERPT_MAX_LINES = 120
+
+
+def cr_excerpts(crs: list[tuple[str, str]], root: str) -> str:
+    """One fix package's CR_EXCERPTS: for each `path:line` (or `path:A-B`) in a
+    routed CR's Location, the lines now at that spot (a few before, a few after),
+    read from the tree under ROOT and headed `# path:A-B (CR id)`, so the fix
+    implementer opens the place instead of re-exploring for it. Pure mechanics,
+    no judgement: a path that is not a file under ROOT, or a line past its end,
+    is skipped, and the CRS text stays the authority. Overlapping windows of one
+    file merge; the whole field is bounded at CR_EXCERPT_MAX_LINES lines."""
+    windows: dict[str, list[list]] = {}
+    order: list[str] = []
+    for _stem, body in crs:
+        head = re.search(r"^##\s+(\S+?):", body, re.M)
+        cid = head.group(1) if head else "CR"
+        loc = cc.fields(body).get("Location", "")
+        for raw, a, b in re.findall(r"([^\s,;`()\[\]]+):(\d+)(?:-(\d+))?", loc):
+            rel = os.path.relpath(raw, root) if os.path.isabs(raw) else raw
+            rel = rel[2:] if rel.startswith("./") else rel
+            if rel.startswith(".."):
+                continue
+            first, last = int(a), int(b or a)
+            lo, hi = max(1, first - CR_EXCERPT_BEFORE), last + CR_EXCERPT_AFTER
+            hi = min(hi, lo + 24)
+            if rel not in windows:
+                windows[rel] = []
+                order.append(rel)
+            for w in windows[rel]:
+                if lo <= w[1] + 1 and hi >= w[0] - 1:
+                    w[0], w[1] = min(w[0], lo), max(w[1], hi)
+                    if cid not in w[2]:
+                        w[2].append(cid)
+                    break
+            else:
+                windows[rel].append([lo, hi, [cid]])
+    out: list[str] = []
+    total = 0
+    for rel in order:
+        full = os.path.join(root, rel)
+        try:
+            with open(full, encoding="utf-8") as fh:
+                lines = fh.read().split("\n")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for lo, hi, ids in sorted(windows[rel]):
+            hi = min(hi, len(lines))
+            if lo > hi or total + (hi - lo + 1) > CR_EXCERPT_MAX_LINES:
+                continue
+            chunk = lines[lo - 1:hi]
+            if not any(l.strip() for l in chunk):
+                continue
+            out.append("# %s:%d-%d (%s)" % (rel, lo, hi, ", ".join(ids)))
+            out.extend("%d: %s" % (lo + i, l) for i, l in enumerate(chunk))
+            total += hi - lo + 1
+    return "\n".join(out)
+
+
 def fix_owned_paths(routed: dict[str, list[tuple[str, str]]], packages: list[list[str]],
                     root: str) -> tuple[dict[str, list[str]], list[str]]:
     """#217: a fix package owns every path its routed CRs name, across projects:
@@ -2152,6 +2217,9 @@ def route_main(args: argparse.Namespace) -> int:
             ns.package = pkg
             ns.out = os.path.join(outdir, "fix-%s-%s.md" % (fm.get("id", "run"), code))
             ns.set = list(args.set) + ["MODE=fix", "CRS=" + crs]
+            excerpts = cr_excerpts(routed[pkg], root)
+            if excerpts and not any(x.startswith("CR_EXCERPTS=") for x in args.set):
+                ns.set.append("CR_EXCERPTS=" + excerpts)
             ns.contract_paths = []
             ns.excerpt, ns.failures_from = [], None
             fields, _ = compose(ns)
@@ -3412,6 +3480,14 @@ def selftest() -> int:
               and "OWNED_PATHS:" in t2 and "crates/*" not in section_body_owned(t2), t2[-600:])
         check("#217: the fix payload's OWNED_PATHS lists the CRs' other paths",
               "lib/consts.py" in t2 and "lib/names.py" in t2 and "src/other.py" in t1, t2[-600:])
+        ex2 = t2.split("CR_EXCERPTS:")[-1].split("OWNED_PATHS:")[0] if "CR_EXCERPTS:" in t2 else ""
+        check("fix payload carries CR_EXCERPTS: the line-numbered lines now at each Location, CR ids in the header",
+              "# src/reload.py:1-3 (CR-2, CR-4)" in ex2 and "2:     pass" in ex2, t2[-900:])
+        past = cr_excerpts([("d", cr_section(7, "src/reload.py:50")), ("d", cr_section(8, "src/missing.py:1"))], root)
+        check("CR_EXCERPTS skips a Location past the end of its file and a file that is absent", past == "", past)
+        far = cr_excerpts([("d", cr_section(7, "src/reload.py:1"))], root)
+        check("CR_EXCERPTS windows one Location, line-numbered, headed with its CR id",
+              far.startswith("# src/reload.py:1-3 (CR-7)\n1: def reload():"), far)
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             rc = main(route_base + ["--assign", "CR-9=P1", "--assign", "CR-3=P1"])
         check("--assign naming no section is refused", rc == 1)

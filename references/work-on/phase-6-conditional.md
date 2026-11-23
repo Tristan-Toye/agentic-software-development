@@ -48,7 +48,9 @@ file, and each package gets one fix payload whose `FAILURES:` holds all of
 its failures (test name, then its verbatim output, one block per test) and,
 for a test author, one `CORRECTION:` listing every edit in order. A package
 with no failure gets no agent. A package that fails again in the next round
-is batched again the same way.
+is batched again the same way. A review change request that already exists for
+the package (the `style` lens may run early, `phase-7-conditional`, "The style
+lens may start early") joins this payload's `CRS`; the package is spawned once.
 
 **A fix round carries its row-1 rulings to the implementers.** When you
 compose a fix round, put each row-1 ruling of that round (a test ruled a test

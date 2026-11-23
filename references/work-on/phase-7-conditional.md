@@ -108,6 +108,41 @@ whose line is not `UNREACHED: none`, or a reply with no such line, is
   same: a check round re-spawns them with the full payload, by the workflow
   again. A fix round after a contract change is a full re-spawn.
 
+### One fix spawn per package per round, with the place to start
+
+**A round's change requests are one fix spawn per work package, never one
+per change request or per lens.** Collect every kept CR of the round from all
+the lenses first, rule the conflicts, then compose once: `compose_payloads.py
+--crs` routes each CR to the package owning its `Location` and writes one
+payload per package carrying all of them. A package with no open CR gets no
+spawn. When a Phase 6 correction for the same package is still open, it goes
+in the same spawn (its `FAILURES`, the review's `CRS`), never a spawn of
+its own beside it. Each payload also carries `CR_EXCERPTS`, written by the
+composer from the tree: the lines now at each CR's `Location`, so the
+implementer opens the spot instead of searching for it. The excerpt is
+mechanical and never replaces `CRS`, which stays the reviewer's bytes.
+
+### The style lens may start early, beside the Phase 6 suite run
+
+The `style` lens reads the merged code for readability and does not need
+the suite's verdict, so it may be spawned as soon as the merged head is
+committed and the first Phase 6 suite run has started: its SCOPE is a location
+list on that head, the lens stays blind to the diff and the history, and its
+CRs reach the first fix spawn together with whatever Phase 6 corrections the
+head needs (one spawn, not two). Rules:
+
+- Compose its payload as in the sweep (`SCOPE` from the merged head,
+  `SIGNALS` omitted). The architecture, performance and `tests` lenses stay
+  in the round-1 sweep: they review the green state.
+- If Phase 6 changes code (a row-2 or row-3 correction), a style CR whose
+  `Location` is in a file that change touched is stale: drop it from the fix
+  payload and let round 1 re-run the style lens on the corrected head. The
+  CRs for untouched files stand.
+- When Phase 6 needs no correction, the early style result is round 1's
+  style result; log it as `r1 style` and do not spawn the lens again in the
+  sweep. A flaky-test investigation or any harness fix before review
+  (Phase 6) changes the head the same way and applies the staleness rule.
+
 ### Check the fix footprint against the CR footprints
 
 - **Check the fix footprint against the CR footprints.** After the fix

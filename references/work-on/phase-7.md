@@ -104,6 +104,8 @@ Detail: `ref_section` with `phase-7-conditional` and the heading "Resolve RULES 
   not depend on it, and record the ruling as an arbitration. Pass every accumulated arbitration into later spawns so no
   reviewer re-litigates a settled question.
 Detail: `ref_section` with `phase-7-conditional` and the heading "Spawn the implementer in MODE: fix with the merged change requests". (routing, payloads and the fix-round limits.)
+Detail: `ref_section` with `phase-7-conditional` and the heading "One fix spawn per package per round, with the place to start". (every fix round: one spawn per package, the CR excerpts.)
+Detail: `ref_section` with `phase-7-conditional` and the heading "The style lens may start early, beside the Phase 6 suite run". (the cheap lens runs with Phase 6.)
 
 - **Run the whole `GATES:` list (Phase 2) on the fixed head before you push**,
   including gates no local aggregator covers. A fix round never gets a
