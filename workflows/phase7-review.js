@@ -98,7 +98,11 @@ function unreachedFromText(text) {
     const m = /^\s*(?:[-*>]\s*)?[*_`]*UNREACHED[*_`]*\s*(?:locations)?\s*[:\-][*_`]*\s*(.*)$/i.exec(lines[i])
     if (!m) continue
     // #442: `UNREACHED: none. NOTICED: none` on one line: the NOTICED field is not part of the list.
-    const inline = m[1].replace(/[\s.;,]*\b[*_`]*NOTICED[*_`]*\s*[:\-].*$/i, '').trim()
+    let inline = m[1].replace(/[\s.;,]*\b[*_`]*NOTICED[*_`]*\s*[:\-].*$/i, '').trim()
+    // #522: `UNREACHED: none (the pass reached every location)` is none with a note; only path-like tokens count after it.
+    const lead = /^[`*_\s]*none\b[`*_]*(.*)$/i.exec(inline)
+    const pathLike = (t) => /^`?[\w.\-]+(?:\/[\w.\-]+)+`?(?::\d+|\s*::\s*\S+)?$/.test(t) || /^`?[\w\-]+\.\w+`?(?::\d+)?$/.test(t)
+    if (lead) inline = lead[1].replace(/\([^)]*\)/g, ' ').split(/\s*;\s*|\s*,\s+/).map((t) => t.replace(/^[`*_\s.]+|[`*_.\s]+$/g, '')).filter(pathLike).join('; ')
     if (inline !== '' && !isNone(inline)) {
       for (const part of inline.split(/\s*;\s*|\s*,\s+(?=[`\w./-]+[:/.])/)) {
         const loc = part.replace(/^[`*_\s]+|[`*_.\s]+$/g, '')
@@ -235,6 +239,13 @@ async function keep(reviewed) {
   const known = new Set(unreached.map((l) => l.trim()))
   let disagreed = false
   for (const loc of named) if (!known.has(loc)) { known.add(loc); unreached.push(loc); disagreed = true }
+  // #491: notes that say a SCOPE location was not read, beside an empty UNREACHED, are a malformed return: the lens is
+  // incomplete (a placeholder keeps the list non-empty so the narrowed follow-up runs).
+  const notesText = out && typeof out.notes === 'string' ? out.notes : ''
+  if (unreached.length === 0 && /\b(?:not|never|n't)\s+(?:been\s+)?(?:read|opened)\b/i.test(notesText.replace(/\bUNREACHED\s*:\s*none\b/ig, ''))) {
+    unreached.push('(unnamed: the notes say a SCOPE location was not read, but UNREACHED names none)')
+    disagreed = true
+  }
   let verdict = out ? out.verdict : 'died'
   if (verdict === 'PASS' && unreached.length > 0) verdict = 'incomplete'
   // #257: a reviewer that could not read its payload whole reviewed nothing; the orchestrator checks payload_last

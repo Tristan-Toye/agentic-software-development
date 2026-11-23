@@ -228,6 +228,10 @@ const fakeReview = (prompt: string, opts: Opts) => {
     if (prompt.includes("rv-bullets.md")) return { verdict: "PASS", crs: [], document: "", notes: "ok\nUNREACHED:\n- a/b.tf\n- `c/d.rs :: f`\n", unreached: ["none"], payload_last: "END" }
     if (prompt.includes("rv-nonenone.md")) return { verdict: "PASS", crs: [], document: "ok\nUNREACHED: none\n", notes: "UNREACHED: none", unreached: [], payload_last: "END" }
     if (prompt.includes("rv-sameline.md")) return { verdict: "PASS", crs: [], document: "", notes: "UNREACHED: none. NOTICED: none", unreached: [], payload_last: "END" }
+    if (prompt.includes("rv-nonenote.md")) return { verdict: "PASS", crs: [], document: "", notes: "UNREACHED: none (the pass reached every narrowed location)", unreached: [], payload_last: "END" }
+    if (prompt.includes("rv-nonepath.md")) return { verdict: "PASS", crs: [], document: "UNREACHED: none (mostly); src/a/b.rs:12, the rest was fine", notes: "", unreached: [], payload_last: "END" }
+    if (prompt.includes("rv-notread.md")) return { verdict: "CHANGES-REQUIRED", crs: [], document: "", notes: "the contract range was not read directly", unreached: [], payload_last: "END" }
+    if (prompt.includes("rv-notreadpass.md")) return { verdict: "PASS", crs: [], document: "", notes: "architecture.md was not read", unreached: [], payload_last: "END" }
     if (prompt.includes("rv-unread.md")) return { verdict: "CHANGES-REQUIRED", crs: [], document: "", unreached: [], payload_last: "UNREAD: Read returned a note pointing at ctx_search" }
     return {
       verdict: "CHANGES-REQUIRED",
@@ -253,6 +257,11 @@ const fakeReview = (prompt: string, opts: Opts) => {
   check("review: UNREACHED bullets in the notes are parsed", nby("bullets").verdict === "incomplete" && nby("bullets").unreached.join("|") === "a/b.tf|c/d.rs :: f")
   check("review: UNREACHED none in the text stays PASS", nby("nonenone").verdict === "PASS" && nby("nonenone").unreached.length === 0)
   check("review: `UNREACHED: none. NOTICED: none` is a complete lens (#442)", nby("sameline").verdict === "PASS" && nby("sameline").unreached.length === 0)
+  const n2 = await run(review, [lens("nonenote"), lens("nonepath"), lens("notread"), lens("notreadpass")], fakeReview)
+  const n2by = (n: string) => n2.result.find((r: any) => r.lens === n)
+  check("review: `UNREACHED: none (note)` is no unreached location (#522)", n2by("nonenote").verdict === "PASS" && n2by("nonenote").unreached.length === 0)
+  check("review: `none (note); path` still flags the path (#522)", n2by("nonepath").verdict === "incomplete" && n2by("nonepath").unreached.join("|") === "src/a/b.rs:12")
+  check("review: notes saying 'not read' with an empty UNREACHED flag the lens (#491)", n2by("notreadpass").verdict === "incomplete" && n2by("notreadpass").unreached.length === 1 && n2by("notread").unreached.length === 1)
   check("review: the schema demands the unreached list", calls.some((c) => c.opts.schema && c.opts.schema.required.includes("unreached")))
   check("review: PASS lens writes no document", by("style").verdict === "PASS" && by("style").crs.length === 0 && by("style").document_path === "")
   check("review: CRs are compact with ledger ids", by("architecture").verdict === "CHANGES-REQUIRED" && by("architecture").crs[0].ledger_id === "CR-architecture-1" && by("architecture").crs[0].location === "src/a.rs:10" && by("architecture").crs[0].severity === "blocking")

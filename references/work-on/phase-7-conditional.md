@@ -184,7 +184,7 @@ re-spawn") or call the workflow again with that lens alone; it is never
 the workflow never reports that as a pass, and neither do you — resume it, or
 call the workflow again with that lens alone and `SCOPE` narrowed to the
 `unreached` locations. A `CHANGES-REQUIRED` with a non-empty `unreached` keeps
-its CRs and gets the same follow-up for the rest. **The workflow fills `unreached`
+its CRs and gets the same follow-up for the rest. **A note that says a location was "not read" / "not opened" beside an empty `unreached` flags the lens `incomplete` too (a malformed return), and `UNREACHED: none (<note>)` reads as none: only path-like tokens count as locations.** **The workflow fills `unreached`
 from the reviewer's own text, not only from the structured field** (#399): every
 `UNREACHED:` line of the document and of the notes (inline or as bullets) joins the
 list, and the return's `notes` then starts with `[unreached filled from the
@@ -288,3 +288,12 @@ the recorded escape. Its `TOUCHED_BEYOND` section applies in fix
 mode exactly as at the merge (Phase 5): rule on every listed path, and two
 hard limits hold — never another package's owned paths, never the contract
 files.
+
+### A contract amendment after the merge is made by hand (#535)
+
+`dossier_edit.py sync-contract` refuses once the build log has a `- MERGE` line:
+the merged files hold private members and implementation detail that must never
+enter `## Contract`. To amend the contract during the review cycle, edit the
+`## Contract` block with `replace-section '## Contract'` adding the new public
+members (signatures and documentation comments) only, log `CONTRACT-AMEND:
+<member list>`, and re-run the contract review on the amended members.
