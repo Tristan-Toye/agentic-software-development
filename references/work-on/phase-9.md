@@ -64,8 +64,11 @@
    the prose around the block stays hand-written. A diagram still only in
    Mermaid is converted once with `vr_mermaid.py import <file>.md --write`.
    When a tool rewrote a block (`module_graph.py regen`,
-   `check_diagram_anchors.py --fix`), run
-   `vr_mermaid.py import --adopt --write <file>.md` so the JSON follows; a
+   `check_diagram_anchors.py --fix`), or a sync merged code that moved
+   anchored lines, run `vr_mermaid.py adopt-anchors docs/architecture` (it
+   adopts every block that differs from its JSON only in `path:NNN` line
+   numbers) and, for a block a tool rewrote beyond that,
+   `vr_mermaid.py import --adopt --write <file>.md`, so the JSON follows; a
    `sync` before that would revert the tool's edit.
 
    **Diagram gate (close gate).** After the sync, still inside `X`:

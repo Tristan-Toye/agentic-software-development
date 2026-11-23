@@ -25,6 +25,11 @@ import   parse every ```mermaid block of FILE.md into one graph JSON, written ne
 render   print the Mermaid text of a graph JSON.
 import --adopt  also re-import each marked block whose text was edited in the .md (an
          anchor --fix, a hand edit), so `sync` does not revert it; the JSON follows the .md.
+adopt-anchors  for every .md of DIR whose marked blocks differ from their JSON only in the
+         line numbers of `path:NNN` anchors (a re-anchor: check_diagram_anchors.py --fix, a merge
+         that moved code), run `import --adopt --write` so the JSON follows. A file with any other
+         difference is left alone and listed (edit the JSON, then sync). Exit 1 only when an
+         import failed. Run it after any merge or re-anchor, before `check`.
 sync     rewrite every marked block of the .md files of DIR (not recursive) from its JSON.
 check    exit 1 listing each marked block that differs from its JSON's render, each marker
          naming a missing JSON, each marker without its fence or end marker, and each unmarked
@@ -1041,13 +1046,62 @@ def process_dir(d: str, fix: bool) -> list:
                     new[b["start"]:b["end"]] = generated_lines(b["json"], want)
                     changed = True
                 else:
-                    problems.append("%s: block differs from %s%s (run: vr_mermaid.py sync %s)" % (
-                        where, b["json"], "" if not b["body"] else " at line %d" % first_diff("\n".join(b["body"]), want), d))
+                    only = b["body"] and anchor_key("\n".join(b["body"])) == anchor_key(want)
+                    problems.append("%s: block differs from %s%s (run: vr_mermaid.py %s %s)" % (
+                        where, b["json"], "" if not b["body"] else " at line %d" % first_diff("\n".join(b["body"]), want),
+                        "adopt-anchors" if only else "sync", d) + (": anchor line numbers only" if only else ""))
                     if b["problem"]:
                         problems.append("%s: %s" % (where, b["problem"]))
         if changed:
             write(path, "\n".join(new))
     return problems
+
+
+ANCHOR_RE = re.compile(r"([\w./+-]+\.\w+):\d+")
+
+
+def anchor_key(text: str) -> str:
+    """The text with every `path:NNN` anchor's line number blanked: equal keys = anchor-only drift."""
+    return ANCHOR_RE.sub(r"\1:#", text)
+
+
+def drift_of(path: str) -> tuple:
+    """(anchor-only blocks, other drifted blocks) of one .md: each a list of 1-based block start lines."""
+    d = os.path.dirname(os.path.abspath(path))
+    anchor, other = [], []
+    for b in scan_md(read(path).split("\n")):
+        if not b["marked"] or b["json"] is None or b["problem"]:
+            continue
+        jp = os.path.join(d, b["json"])
+        if not os.path.isfile(jp):
+            continue
+        try:
+            want = render(json.loads(read(jp)))
+        except (ValueError, KeyError, MermaidError):
+            continue
+        body = "\n".join(b["body"])
+        if b["body"] == want.split("\n"):
+            continue
+        (anchor if anchor_key(body) == anchor_key(want) else other).append(b["start"] + 1)
+    return anchor, other
+
+
+def cmd_adopt_anchors(args) -> int:
+    failed = 0
+    for path in md_files(args.dir):
+        anchor, other = drift_of(path)
+        if other:
+            print("%s: left alone, block(s) at line %s differ beyond anchor line numbers (edit the JSON, then sync)"
+                  % (path, ", ".join(map(str, other))))
+            continue
+        if not anchor:
+            continue
+        ns = argparse.Namespace(file=path, write=True, repo=None, commit=None, view=None, force=False, adopt=True)
+        if cmd_import(ns) != 0:
+            failed += 1
+            continue
+        print("%s: adopted %d re-anchored block(s)" % (path, len(anchor)))
+    return 1 if failed else 0
 
 
 def cmd_sync(args) -> int:
@@ -1306,6 +1360,23 @@ def _selftest(corpus: str | None) -> int:
         check("adopt:edited-block-drifts", len(process_dir(d, fix=False)) == 1)
         nsa = argparse.Namespace(file=md, write=True, repo="r", commit="c", view=None, force=False, adopt=True)
         check("adopt:takes-the-md-edit", cmd_import(nsa) == 0 and process_dir(d, fix=False) == [] and "B3" in read(jp) and 'b["B3"]' in read(md))
+        # adopt-anchors: a block re-anchored in the .md (only a path:NNN line number moved) is adopted;
+        # a file that also holds a real edit is left alone
+        g2 = json.loads(read(jp))
+        g2["nodes"][1]["label"] = "src/a.rs:10 B4"
+        write(jp, dump_json(g2))
+        process_dir(d, fix=True)
+        write(md, read(md).replace("src/a.rs:10", "src/a.rs:17", 1))
+        p = process_dir(d, fix=False)
+        check("adopt-anchors:check-names-it", len(p) == 1 and "adopt-anchors" in p[0] and "anchor line numbers only" in p[0], str(p))
+        check("adopt-anchors:drift-is-anchor-only", drift_of(md)[1] == [] and len(drift_of(md)[0]) == 1, str(drift_of(md)))
+        check("adopt-anchors:adopts", cmd_adopt_anchors(argparse.Namespace(dir=d)) == 0 and process_dir(d, fix=False) == []
+              and "src/a.rs:17" in read(jp))
+        write(md, read(md).replace("src/a.rs:17", "src/a.rs:20", 1).replace("B4", "B5", 1))
+        before = read(jp)
+        check("adopt-anchors:real-edit-left", cmd_adopt_anchors(argparse.Namespace(dir=d)) == 0 and read(jp) == before
+              and drift_of(md)[1] != [], str(drift_of(md)))
+        process_dir(d, fix=True)
         write(md, read(md).replace("```mermaid\nflowchart", "```mermaid\nflowchart", 1) + "\n```mermaid\nflowchart LR\n    x --> y\n```\n")
         p = process_dir(d, fix=False)
         check("check:unmarked", any("unmarked" in x for x in p), str(p))
@@ -1352,7 +1423,7 @@ def main(argv: list | None = None) -> int:
     p = sub.add_parser("render")
     p.add_argument("file")
     p.set_defaults(fn=cmd_render)
-    for name, fn in (("sync", cmd_sync), ("check", cmd_check)):
+    for name, fn in (("sync", cmd_sync), ("check", cmd_check), ("adopt-anchors", cmd_adopt_anchors)):
         p = sub.add_parser(name)
         p.add_argument("dir")
         p.set_defaults(fn=fn)
