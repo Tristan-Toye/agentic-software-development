@@ -894,23 +894,24 @@ export async function handle(req: Request): Promise<Response> {
     const prs = c.v
     return json({ ...prs, merging, log, stale: c.at === 0 })
   }
-  // Leave open / Reopen: the owner's own ruling on an open deferred item, kept beside the run (withOwnerRulings).
-  const lo = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/deferred-keep$/)
+  // Drop / Reopen: the owner's own ruling on an open deferred item (leaving it open is dropping it), kept beside the run (withOwnerRulings).
+  const lo = path.match(/^\/api\/runs\/([\w.-]+)\/([\w.-]+)\/deferred-drop$/)
   if (lo && req.method === "POST") {
     const origin = req.headers.get("origin")
     if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
     const run = await findRun(lo[1], lo[2])
     if (!run) return json({ error: "no such dossier" }, 404)
-    const body = await req.json().catch(() => ({})) as { item?: unknown; keepOpen?: unknown }
+    const body = await req.json().catch(() => ({})) as { item?: unknown; drop?: unknown }
     const item = typeof body.item === "string" ? body.item : ""
     const it = run.deferred.items.find((i) => i.id === item)
-    if (!it || it.state !== "open") return json({ error: "only an open item can be left open or reopened" }, 409)
+    const drop = body.drop !== false
+    if (!it || (drop ? it.state !== "open" : !(it.state === "deprecated" && it.ownerKept))) return json({ error: drop ? "only an open item can be dropped" : "only an item dropped on the dashboard can be reopened" }, 409)
     const f = ownerRulingsFile(`${run.repo}.${run.id}`)
     let o: Record<string, unknown> = {}
     try { o = JSON.parse(readFileSync(f, "utf8")) } catch { /* first ruling */ }
-    o[item] = { keepOpen: body.keepOpen !== false, ts: new Date().toISOString() }
+    o[item] = { drop, ts: new Date().toISOString() }
     writeFileSync(f, JSON.stringify(o, null, 1))
-    appendFileSync(join(runsDir(), `${run.repo}.${run.id}.jsonl`), JSON.stringify({ ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"), kind: "update", text: `${item} ${body.keepOpen !== false ? "left open" : "reopened"} by the owner on the dashboard` }) + "\n")
+    appendFileSync(join(runsDir(), `${run.repo}.${run.id}.jsonl`), JSON.stringify({ ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"), kind: "update", text: `${item} ${drop ? "dropped (left open = dropped)" : "reopened"} by the owner on the dashboard` }) + "\n")
     emitChange("runs")
     return json({ ok: true })
   }
@@ -952,11 +953,11 @@ export async function handle(req: Request): Promise<Response> {
       const ok = new Set(run.deferred.items.filter((i) => i.state === "open").map((i) => i.id))
       const bad = items.filter((i) => !ok.has(i))
       if (bad.length) return json({ error: `not an item to fix: ${bad.join(", ")}` }, 400)
-      // "Fix all deferred" means every open item except the ones the owner ruled to leave open: name them explicitly,
-      // so the run never sweeps a kept-open item in. (Ticking one by hand still fixes it.)
+      // "Fix all deferred" means every open item except the ones the owner dropped (already not open): name them explicitly,
+      // so the run never sweeps a dropped item in. (Ticking one by hand still fixes it.)
       if (!items.length) {
-        items = run.deferred.items.filter((i) => i.state === "open" && !i.keptOpen).map((i) => i.id)
-        if (!items.length) return json({ error: "nothing to fix: every open item was ruled to stay open" }, 409)
+        items = run.deferred.items.filter((i) => i.state === "open").map((i) => i.id)
+        if (!items.length) return json({ error: "nothing to fix: no open item is left" }, 409)
       }
     }
     const key = `${repo}.${id}`

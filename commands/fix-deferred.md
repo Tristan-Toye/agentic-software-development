@@ -141,7 +141,11 @@ are:
   drop it (log `DEFERRED-DROPPED: D-n — <why>`);
 - `B` — fix it in this stacked PR anyway: it joins the direct items, and the
   pull request body names any contract it changes;
-- `C` — leave it open for now: no log line, the item stays `open`.
+
+There is no option to leave an item open: a deferred item is fixed, planned
+as its own dossier, or dropped, never kept open past this stub. A ruling that
+amounts to "not now" or "later" is a drop: log `DEFERRED-DROPPED: D-n — <the
+ruling>` like the drop path in `A`.
 
 Log each question as `DEFERRED-ASKED: D-n <question id>`, and the owner's
 ruling once it arrives as `DEFERRED-RULING: D-n — <the ruling in a few words>`

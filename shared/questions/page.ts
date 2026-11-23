@@ -1321,14 +1321,12 @@ function dfState(r, i) {
       isPend(r, 'plan:' + i.id) ? null : h('button', { class: 'btn sm', type: 'button', 'data-act': 'plan-item', 'data-repo': r.repo, 'data-id': r.id, 'data-item': i.id }, ['Plan it']),
       h('button', { class: 'btn sm', type: 'button', 'data-act': 'copy', 'data-text': cmd }, ['Copy ' + cmd]), (pnote || st.err) ? h('span', { class: 'err' }, [pnote || st.err]) : null]);
   }
-  if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip('dropped', 'neutral')]);
-  if (i.state === 'open' && i.keptOpen) return h('span', { title: i.ruling || '' }, [chip('left open · your ruling', 'neutral')]);
+  if (i.state === 'deprecated') return h('span', { title: i.note || '' }, [chip(i.ownerKept ? 'dropped · your ruling' : 'dropped', 'neutral')]);
   if (i.state === 'open' && i.question && S.q.some(q => q.id === i.question && q.state === 'open')) return h('a', { href: '/questions#q=' + enc(i.question) }, [chip('? waiting for you', 'warn')]);
   if (i.state === 'fixing') return h('span', { title: i.note || '' }, [chip(fixLive(r) ? 'being fixed' : 'fix not finished', fixLive(r) ? 'pending' : 'blocked')]);
   return chip('not tackled', 'ready');
 }
-/* Fixing the deferred issues: the stacked PR, where each item stands (being fixed, fixed, its own dossier, dropped,
-   left open), and the questions it waits on; live while /fix-deferred runs, the final state once it is done. */
+/* Fixing the deferred issues: the stacked PR, where each item stands (being fixed, fixed, its own dossier, dropped), and the questions it waits on; live while /fix-deferred runs, the final state once it is done. */
 const fixLive = (r) => !!(r.runner && r.runner.command === 'fix-deferred' && ['running', 'testing', 'waiting', 'paused', 'queued'].includes(r.runner.state));
 const prNum = (u) => { const m = String(u || '').match(/(\d+)\/?$/); return m ? '#' + m[1] : 'PR'; };
 function deferredProgress(r, d) {
@@ -1336,7 +1334,7 @@ function deferredProgress(r, d) {
   const live = fixLive(r); const ran = live || !!df.pr || !!df.branch || df.items.some(i => i.state === 'fixing');
   if (!ran) return null;
   const n = (s) => df.items.filter(i => i.state === s).length;
-  const parts = [['fixed', n('fixed'), 'ok'], ['being fixed', n('fixing'), 'acc'], ['to its own dossier', n('dossier'), 'warn'], ['dropped', n('deprecated'), 'mut'], ['left open', df.items.filter(i => i.state === 'open' && i.keptOpen).length, 'mut2'], ['not tackled', df.items.filter(i => i.state === 'open' && !i.keptOpen).length, 'mut2']];
+  const parts = [['fixed', n('fixed'), 'ok'], ['being fixed', n('fixing'), 'acc'], ['to its own dossier', n('dossier'), 'warn'], ['dropped', n('deprecated'), 'mut'], ['not tackled', df.items.filter(i => i.state === 'open').length, 'mut2']];
   const total = df.items.length; const nq = openQs(r).length;
   const head = [h('span', { class: 'kind' }, [live ? 'Fixing deferred issues' : 'Deferred issues · after the fix run']), live ? h('span', { class: 'dot info live' }) : null];
   if (live) head.push(runChip(r.runner)); else if (r.runner && r.runner.command === 'fix-deferred' && r.runner.state !== 'done') head.push(runChip(r.runner));
@@ -1435,7 +1433,7 @@ function liveMessageView(r) {
 /* The deferred ledger as a table: tick items (or all) and "Fix selected" runs /fix-deferred on just those, in one
    stacked PR through the implementer and review flow; an item that looks big enough for a dossier is put to the owner first. */
 // Only an item still open can be picked for a fix; one ruled to its own dossier is seeded with /plan instead.
-const dfPickable = (i) => i.state === 'open' && !i.keptOpen;
+const dfPickable = (i) => i.state === 'open';
 const cbx = (on, attrs) => h('button', Object.assign({ class: 'cbx' + (on ? ' on' : ''), type: 'button', role: 'checkbox', 'aria-checked': on ? 'true' : 'false' }, attrs), [on ? '✓' : '']);
 function deferredView(r) {
   const df = r.deferred; const key = r.repo + '/' + r.id;
@@ -1455,8 +1453,8 @@ function deferredView(r) {
         i.inReport === false ? h('span', { class: 'dfact mut' }, ['not product code']) : null]),
       riskWhy || i.why ? h('div', { class: 'dfc-why' }, [[riskWhy, i.why].filter(Boolean).join(' · ')]) : null,
       can ? h('div', { class: 'dfc-a' }, [h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'copy', 'data-text': '/plan ' + r.id + ' ' + i.id, title: 'Copy the /plan seed for this item' }, ['Copy /plan seed']),
-        h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'df-keep', 'data-repo': r.repo, 'data-id': r.id, 'data-item': i.id, 'data-keep': '1', title: 'Leave this item open for now: it is no longer counted or picked up by Fix all deferred' }, ['Leave open'])])
-        : i.state === 'open' && i.keptOpen && i.ownerKept ? h('div', { class: 'dfc-a' }, [h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'df-keep', 'data-repo': r.repo, 'data-id': r.id, 'data-item': i.id, 'data-keep': '0', title: 'Count it as open again' }, ['Reopen'])]) : null]);
+        h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'df-drop', 'data-repo': r.repo, 'data-id': r.id, 'data-item': i.id, 'data-drop': '1', title: 'Drop this item: leaving it open is dropping it, there is no open past this stub. It ends dropped and is not picked up by Fix all deferred' }, ['Drop'])])
+        : i.state === 'deprecated' && i.ownerKept ? h('div', { class: 'dfc-a' }, [h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'df-drop', 'data-repo': r.repo, 'data-id': r.id, 'data-item': i.id, 'data-drop': '0', title: 'Count it as open again' }, ['Reopen'])]) : null]);
   });
   const links = [];
   if (df.report) links.push(h('a', { class: 'small', href: '/deferred/' + enc(r.repo) + '/' + enc(r.id), target: '_blank', rel: 'noopener' }, ['full report']));
@@ -1775,7 +1773,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'chat') sendChat(t);
     else if (act === 'dm-send') sendDm();
     else if (act === 'plan-item') planItem(t);
-    else if (act === 'df-keep') { fetch('/api/runs/' + enc(t.dataset.repo) + '/' + enc(t.dataset.id) + '/deferred-keep', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ item: t.dataset.item, keepOpen: t.dataset.keep === '1' }) }).catch(() => {}).finally(() => load(['runs'])); }
+    else if (act === 'df-drop') { fetch('/api/runs/' + enc(t.dataset.repo) + '/' + enc(t.dataset.id) + '/deferred-drop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ item: t.dataset.item, drop: t.dataset.drop === '1' }) }).catch(() => {}).finally(() => load(['runs'])); }
     else if (act === 'stub-confirm') { S.ctl[t.dataset.key] = { confirm: true }; render(); }
     else if (act === 'stub-cancel') { S.ctl[t.dataset.key] = {}; render(); }
     else if (act === 'stub-ctl') stubCtl(t);

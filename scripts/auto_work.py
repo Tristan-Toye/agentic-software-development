@@ -33,7 +33,7 @@ the `queued` state, the account routing and every owner question apply unchanged
    cycle's Integrate (and eager merge) takes them.
 3. Each member is started through `run_dossier.py` and followed to the end.
 4. A member whose build is finished (status `pr` or `done`) gets "Fix all deferred" exactly as the dashboard button
-   sends it: every open item except the ones the owner ruled to leave open, named explicitly. It is finished when
+   sends it: every open item (an item the owner ruled to leave open is dropped, so it is not open), named explicitly. It is finished when
    that run is done and it has no open item left, or had none to begin with.
 5. When every member is finished: the repository's non-code PRs are queued (`merge_docs_prs.py merge`, the "Merge all"
    button) and the script waits until each one is merged; then the stub's Integrate (`merge_dossier.py --integrate`)
@@ -385,8 +385,8 @@ def frontier(runs: list[dict], skip: frozenset | set = frozenset()) -> list[dict
 
 
 def open_items(run: dict) -> list[str]:
-    """The items "Fix all deferred" sends: every open one except those the owner ruled to leave open."""
-    return [i["id"] for i in run.get("deferred") or [] if i.get("state") == "open" and not i.get("keptOpen")]
+    """The items "Fix all deferred" sends: every open one. A "leave open" ruling drops the item (state deprecated), so it is never open."""
+    return [i["id"] for i in run.get("deferred") or [] if i.get("state") == "open"]
 
 
 def pause(st: dict, reason: str, kind: str, member: str = "", action: str = "relaunch") -> None:
@@ -885,7 +885,7 @@ def selftest() -> int:
               {"id": "B", "status": "building"},
               {"id": "L", "status": "done", "runner": {"state": "running", "command": "fix-deferred"}},
               {"id": "P", "status": "pr", "deferred": [item("open")]},
-              {"id": "K", "status": "pr", "deferred": [dict(item("open"), keptOpen=True), item("fixed")]},
+              {"id": "K", "status": "pr", "deferred": [item("deprecated"), item("fixed")]},
               {"id": "Q", "status": "pr"}, {"id": "X", "status": "done", "deferred": [item("open")]}, {"id": "Y", "status": "done", "deferred": [item("fixed")]},
               {"id": "Z", "status": "dropped"}]) == ["B", "L", "P", "R", "X"])
     check("frontier: a dependent of a blocker adopted this cycle (done, deferred still open) waits for the cycle after",
@@ -955,7 +955,7 @@ def selftest() -> int:
         st = lambda: read_json(state_path(repo), {}) or {}
 
         def run_(id, status, blocked=(), runner=None, items=()):
-            return {"id": id, "status": status, "blockedBy": list(blocked), "runner": runner, "deferred": [{"id": i[0], "state": i[1], "keptOpen": len(i) > 2} for i in items]}
+            return {"id": id, "status": status, "blockedBy": list(blocked), "runner": runner, "deferred": [{"id": i[0], "state": i[1]} for i in items]}
         facts_runs = []
         facts_merged = []
         facts_stubs = [{"branch": "stub/2026-11-24", "state": "accepting", "canIntegrate": True}]
@@ -1044,10 +1044,10 @@ def selftest() -> int:
         tk()
         check("planned -> /plan -> /work-on once the plan made it ready", f"runner D --root {root} --command work-on" in log() and members()["D"]["stage"] == "build", log())
         # D and F build and finish with deferred items; one is ruled to stay open.
-        setrun("D", status="pr", runner=runner("done", "work-on", pid=203, started="2026-11-17T10:30:00Z"), deferred=[{"id": "D-1", "state": "open", "keptOpen": False}, {"id": "D-2", "state": "open", "keptOpen": True}, {"id": "D-3", "state": "fixed"}])
-        setrun("F", status="pr", runner=runner("done", "work-on", pid=201, started="2026-11-17T10:01:00Z"), deferred=[{"id": "D-1", "state": "open", "keptOpen": False}])
+        setrun("D", status="pr", runner=runner("done", "work-on", pid=203, started="2026-11-17T10:30:00Z"), deferred=[{"id": "D-1", "state": "open"}, {"id": "D-2", "state": "deprecated"}, {"id": "D-3", "state": "fixed"}])
+        setrun("F", status="pr", runner=runner("done", "work-on", pid=201, started="2026-11-17T10:01:00Z"), deferred=[{"id": "D-1", "state": "open"}])
         tk()
-        check("planned -> plan -> work-on -> fix-deferred: the same item selection as the button (the kept-open one stays out)",
+        check("planned -> plan -> work-on -> fix-deferred: the same item selection as the button (the dropped one stays out)",
               f"runner D --root {root} --command fix-deferred --items D-1" in log() and f"runner F --root {root} --command fix-deferred --items D-1" in log(), log())
         check("not everyone is finished: no non-code merge, no integrate", not any(l.startswith(("docs", "integrate")) for l in log()))
         check("the phase reads fixing deferred", st()["phase"] == "fixing deferred", st()["phase"])
@@ -1057,7 +1057,7 @@ def selftest() -> int:
         n_before = len(log()); tk()
         s = st()
         check("a failed run pauses the cycle, with the reason, on the member", s["paused"] and "F" in s["paused"]["reason"] and "failed" in s["paused"]["reason"] and s["phase"] == "paused" and members()["F"]["state"] == "failed", s.get("paused"))
-        setrun("D", status="done", runner=runner("done", "fix-deferred", pid=302, started="2026-11-17T11:00:00Z"), deferred=[{"id": "D-1", "state": "fixed"}, {"id": "D-2", "state": "open", "keptOpen": True}])
+        setrun("D", status="done", runner=runner("done", "fix-deferred", pid=302, started="2026-11-17T11:00:00Z"), deferred=[{"id": "D-1", "state": "fixed"}, {"id": "D-2", "state": "deprecated"}])
         tk()
         check("paused: nothing new starts and nothing else moves", len(log()) == n_before and members()["D"]["stage"] == "fix", log()[n_before:])
         check("resume with nothing paused refuses", (cmd_resume(root + "/nope") if False else 1) == 1)
@@ -1090,7 +1090,7 @@ def selftest() -> int:
         check("heal: other pause kinds and actions are never cleared",
               all(h({**pz, **o}, {"id": "Z", "status": "done", "runner": {"state": "running"}})["paused"] is not None
                   for o in ({"kind": "docs"}, {"kind": "stub-run"}, {"action": "accept"}, {"action": "recheck"})))
-        # F's rerun finishes; D's fix-deferred is done with only a kept-open item.
+        # F's rerun finishes; D's fix-deferred is done with only a dropped item.
         setrun("F", status="done", runner=runner("done", "fix-deferred", pid=303, started="2026-11-17T11:10:00Z"), deferred=[{"id": "D-1", "state": "fixed"}])
         n_before = len(log()); tk()
         check("every member finished: the non-code PRs are queued first, and nothing integrates in the same look",
@@ -1247,7 +1247,7 @@ def selftest() -> int:
             json.dump({"state": state_}, open(P(f"{repo}.E1.merge.json"), "w")); tk()
         check("any other record state is left alone too", not [l for l in log()[n_before:] if l.startswith("enqueue")])
         # A dossier becomes finished: the open item is fixed, the fix-deferred run ends.
-        setrun("E3", deferred=[{"id": "D-1", "state": "fixed", "keptOpen": False}]); setrun("E4", runner=done_())
+        setrun("E3", deferred=[{"id": "D-1", "state": "fixed"}]); setrun("E4", runner=done_())
         n_before = len(log()); tk()
         check("a dossier whose item got fixed and whose fix-deferred run ended is enqueued next look",
               [l for l in log()[n_before:] if l.startswith("enqueue")] == [f"enqueue E3 --enqueue --root {root} --by eager", f"enqueue E4 --enqueue --root {root} --by eager"], log()[n_before:])

@@ -88,7 +88,7 @@ check("phase: the newest stage line wins", stagePhase([{ kind: "update", text: "
     const tri = parseDeferred(["- D-5 flake C.21 fails under load — f:1 — low — x", "- DEFERRED-TRIAGE: D-5 → direct — remove the timing dependence",
       "- DEFERRED-ASKED: D-5 repo.W-162.Q2", "- DEFERRED-RULING: D-5 — owner chose C, leave open (no timing dependence found)",
       "- DEFERRED-FIX: PR https://github.com/o/r/pull/614 — fixed 8, to dossier 0"].join("\n"), null).items[0]
-    check("deferred: a leave-open ruling after a direct triage puts the item back to open, kept open", tri.state === "open" && tri.keptOpen === true && /leave open/.test(tri.ruling ?? ""), tri)
+    check("deferred: a leave-open ruling after a direct triage drops the item, the ruling its reason", tri.state === "deprecated" && /leave open/.test(tri.ruling ?? "") && /leave open/.test(tri.note), tri)
   }
   check("deferred record: items [] is an empty list, not a fallback", readDeferredRecord(join(dir, "dossiers", "W-9.md"), "W-9")?.length === 0)
   // The dossier read from a branch or another worktree: the record in the main checkout still counts (W-174, W-119).
@@ -206,7 +206,7 @@ check("branches: a declared branch: field makes a name without the id the build 
 }
 {
   const pr = parseDeferred("- D-2 gap a — f:1 — low — x\n- D-9 perf b — f:2 — low — y\n- D-4 bug c — f:3 — low — z\n- QUESTION: r.W-1.Q6 — D-2 dossier, fix here or leave open\n- QUESTION: r.W-1.Q13 — D-9 dossier, fix here or leave open\n- DEFERRED-ASKED: D-4 r.W-1.Q20\n- OWNER-RULING (2026-11-04): r.W-1.Q6 — D-2 stays open\n- OWNER-RULING (2026-11-04): r.W-1.Q13 — D-9 measure it now and come back to the owner").items
-  check("deferred: questions and rulings — left open by the owner, worked on after another ruling, asked and waiting", pr[0].keptOpen === true && pr[0].state === "open" && pr[0].question === "r.W-1.Q6" && pr[1].state === "fixing" && pr[1].note.includes("measure it now") && pr[2].question === "r.W-1.Q20" && pr[2].state === "open" && !pr[2].keptOpen)
+  check("deferred: questions and rulings — dropped by the owner, worked on after another ruling, asked and waiting", pr[0].state === "deprecated" && pr[0].note.includes("stays open") && pr[0].question === "r.W-1.Q6" && pr[1].state === "fixing" && pr[1].note.includes("measure it now") && pr[2].question === "r.W-1.Q20" && pr[2].state === "open")
 }
 check("deferred: dropped items are deprecated, a dossier link names the new dossier", (() => { const x = parseDeferred("- D-1 bug a — f:1 — low — x\n- D-2 bug b — f:2 — low — y\nDEFERRED-DROPPED: D-1 — code removed\nDEFERRED-DOSSIER: D-2 → W-150").items; return x[0].state === "deprecated" && x[0].note === "code removed" && x[1].state === "dossier" && x[1].dossier === "W-150" })())
 check("deferred: old dossiers are ignored unless the runner ran them", !deferredSince("2026-10-20", null) && deferredSince("2026-11-03", null) && deferredSince("2026-10-01", { state: "done" }))
@@ -473,9 +473,9 @@ check("controls: Start on a minted dossier builds that dossier, never its source
   && runTarget("r", "W-147", "r.W-130.plan-D-1", "resume").dossier === "W-130" && runTarget("r", "W-147", "r.W-130.plan-D-1", "stop").stop === "W-130.plan-D-1")
 {
   const it = (id: string, extra: object = {}) => ({ id, state: "open", ...extra }) as any
-  const items = [it("D-1"), it("D-2", { question: "q.Q1" }), it("D-3", { question: "q.Q2" }), it("D-4", { keptOpen: true }), it("D-5", { state: "fixing" })]
+  const items = [it("D-1"), it("D-2", { question: "q.Q1" }), it("D-3", { question: "q.Q2" }), it("D-4", { state: "deprecated" }), it("D-5", { state: "fixing" })]
   const open = new Set(["q.Q2"])
-  check("deferred: with no fix run every open item not left open counts", undecidedDeferred(items, false, open) === 3)
+  check("deferred: with no fix run every open item counts, a dropped one does not", undecidedDeferred(items, false, open) === 3)
   check("deferred: during a fix run only items with a question still open count", undecidedDeferred(items, true, open) === 1)
 }
 
@@ -586,14 +586,17 @@ check("timeline: a step line and a counted suite result are on the timeline; a b
     && !limitSuperseded({ marked: "2026-11-06T08:53:41Z" }, { ts: "2026-11-06T08:00:00Z", windows: { five_hour: { used_percentage: 2, status: "allowed" } } }))
 }
 {
-  // Leave open on the dashboard: an open item is kept open (not counted), Reopen undoes it; a fixed item is untouched.
+  // Leave open on the dashboard is a drop: an open item ends dropped (deprecated), Reopen undoes it; a fixed item is untouched.
   const od = mkdtempSync(join(tmpdir(), "owner-"))
-  const led = parseDeferred("DEFERRED:\n- D-1 bug a — x.rs:1 — r — w\n- D-2 bug b — y.rs:2 — r — w\n- DEFERRED-FIXED: D-1 abc\n")
-  writeFileSync(ownerRulingsFile("r.W-1", od), JSON.stringify({ "D-2": { keepOpen: true }, "D-1": { keepOpen: true } }))
-  const kept = withOwnerRulings({ items: led.items, pr: "", report: false, branch: "" } as any, "r.W-1", od)
-  check("leave open: an open item is kept open; a fixed one is untouched", kept.items[1].keptOpen === true && kept.items[1].ownerKept === true && kept.items[0].state === "fixed" && !kept.items[0].keptOpen)
-  writeFileSync(ownerRulingsFile("r.W-1", od), JSON.stringify({ "D-2": { keepOpen: false } }))
-  check("leave open: reopen undoes it", withOwnerRulings({ items: kept.items, pr: "", report: false, branch: "" } as any, "r.W-1", od).items[1].keptOpen === false)
+  const led = parseDeferred("DEFERRED:\n- D-1 bug a — x.rs:1 — r — w\n- D-2 bug b — y.rs:2 — r — w\n- D-3 bug c — z.rs:3 — r — w\n- DEFERRED-FIXED: D-1 abc\n")
+  const base = { items: led.items, pr: "", report: false, branch: "" } as any
+  writeFileSync(ownerRulingsFile("r.W-1", od), JSON.stringify({ "D-2": { drop: true }, "D-1": { drop: true }, "D-3": { keepOpen: true } }))
+  const dropped = withOwnerRulings(base, "r.W-1", od)
+  check("drop: an open item ends dropped with a reason; a fixed one is untouched", dropped.items[1].state === "deprecated" && dropped.items[1].ownerKept === true && !!dropped.items[1].note && dropped.items[0].state === "fixed")
+  check("drop: an older keepOpen ruling already on disk reads as dropped too", dropped.items[2].state === "deprecated")
+  check("drop: dropped items are not counted or swept in by Fix all", undecidedDeferred(dropped.items, false, new Set()) === 0)
+  writeFileSync(ownerRulingsFile("r.W-1", od), JSON.stringify({ "D-2": { drop: false } }))
+  check("drop: reopen undoes it", withOwnerRulings(base, "r.W-1", od).items[1].state === "open")
 }
   check("classify: a hook suite line goes by its failed count", ev("suite: passed 31  failed 0  ignored 0  (cargo)", "suite") === "suite-green" && ev("suite: passed 2  failed 41  ignored 0  (dotnet)", "suite") === "suite-red" && ev("suite run finished", "suite") === "routine" && ev("gates: 7 passed", "gates") === "gate" && ev("PR opened: https://x/pull/1", "pr") === "pr")
   check("classify: key flags and routine flags", classify(E({ type: "stage", text: "x" })).key && classify(E({ type: "question", text: "x" })).key && !classify(E({ type: "update", text: "x", auto: true })).key && classify(E({ type: "update", text: "x", auto: true })).routine && !classify(E({ type: "update", text: "x" })).routine)
@@ -1071,13 +1074,13 @@ try {
   writeFileSync(sw, JSON.stringify({ r: { enabled: true }, on: { auto_work: true, enabled: true } }))
   const run = (repo: string, id: string, status: string, extra: any = {}) => ({ repo, root: "/x/" + repo, id, status, blockedBy: [], runner: null, deferred: { items: [] }, ...extra })
   const facts = buildFacts(
-    [run("on", "A", "ready"), run("on", "B", "pr", { blockedBy: ["A"], runner: { state: "done", command: "work-on", pid: 7, started: "t" }, deferred: { items: [{ id: "D-1", state: "open", keptOpen: true }, { id: "D-2", state: "open" }] } }), run("off", "C", "ready")],
+    [run("on", "A", "ready"), run("on", "B", "pr", { blockedBy: ["A"], runner: { state: "done", command: "work-on", pid: 7, started: "t" }, deferred: { items: [{ id: "D-1", state: "deprecated" }, { id: "D-2", state: "open" }] } }), run("off", "C", "ready")],
     [{ repo: "on", main: "/x/on", stubs: [{ branch: "stub/1", state: "accepting", canIntegrate: true }, { branch: "stub/0", state: "merged" }] }, { repo: "off", main: "/x/off", stubs: [] }],
     (r) => r === "on")
   check("auto work: facts hold only the repositories that are switched on", Object.keys(facts.repos).join() === "on")
-  check("auto work: facts carry status, blockers, the runner's launch fingerprint and every deferred item with its kept-open flag",
+  check("auto work: facts carry status, blockers, the runner's launch fingerprint and every deferred item with its state",
     facts.repos.on.root === "/x/on" && facts.repos.on.runs.length === 2 && facts.repos.on.runs[1].blockedBy[0] === "A" && facts.repos.on.runs[1].runner.pid === 7
-    && facts.repos.on.runs[1].deferred[0].keptOpen === true && facts.repos.on.runs[1].deferred[1].keptOpen === false, JSON.stringify(facts))
+    && facts.repos.on.runs[1].deferred[0].state === "deprecated" && facts.repos.on.runs[1].deferred[1].state === "open", JSON.stringify(facts))
   check("auto work: facts list the open stubs only, with whether they can be integrated", facts.repos.on.stubs.length === 1 && facts.repos.on.stubs[0].canIntegrate === true)
   const hand = buildFacts([run("on", "A", "ready")], [{ repo: "on", main: "/x/on", stubs: [{ branch: "stub/1", state: "accepting" }, { branch: "stub/0", state: "merged" }] }], (r) => r === "on")
   check("auto work: facts name the stubs GitHub shows merged, so a hand merge starts the next cycle", hand.repos.on.mergedStubs.join() === "stub/0" && hand.repos.on.stubs.length === 1, JSON.stringify(hand))

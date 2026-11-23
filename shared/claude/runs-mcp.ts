@@ -131,7 +131,7 @@ const TOOLS: Tool[] = [
       const r = await findRun(a.repo, a.id)
       const df = r.deferred || { items: [] }
       return out({ pr: df.pr || undefined, branch: df.branch || undefined, items: df.items.map((i: any) => ({ id: i.id, kind: i.kind, title: clip(i.title, 120), state: i.state,
-        ruling: i.ruling ? clip(i.ruling, 160) : undefined, keptOpen: i.keptOpen || undefined, dossier: i.dossier || undefined, planning: i.planning, contract: i.contract, effort: i.effort })) })
+        ruling: i.ruling ? clip(i.ruling, 160) : undefined, dossier: i.dossier || undefined, planning: i.planning, contract: i.contract, effort: i.effort })) })
     },
   },
   {
