@@ -639,6 +639,18 @@ hook still runs, with no arguments, so the repository can clean its orphans
 and trim. A sweep and a reclaim share the lock, and the reading's `lastSweep`
 says when the last sweep ended.
 
+## Repo-declared CI recovery
+
+A repository declares in `.agentic/ci-recover.json` the red checks only its own command
+clears (`name`, `detect`, `ci_check`, `ci_pattern`, `fix`, `paths`, `message`). The
+plugin knows no repository: `scripts/ci_recover.py` reads that file. `prevent` runs in
+the build before the push; `recover` runs when every red check of a PR is a declared
+`ci_check` whose failed log matches `ci_pattern`: it runs `fix` (for config-harness,
+`seal_bootstrap_from_cloud.sh` through `deploy/host/host.sh exec`, in the VM), commits
+`paths` through the repo's hooks, pushes the dossier branch and the runner waits for CI.
+It never asks the owner; another red check alongside, or an unmatched log, is not
+recovered. The fix's output is never read or logged.
+
 ## Runner-mode rules (the appended system prompt)
 
 The prompt tells the orchestrator these rules:

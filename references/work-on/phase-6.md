@@ -70,6 +70,22 @@ a line the digest names. With `--log` it appends `SUITE: ci run <url> on <sha> �
 that did not start, or that failed before the suite ran — a checkout error,
 a missing secret, a cache step — is not a verdict: exit-2 semantics. Fix the
 CI wiring on your branch, or fall back to `local` for this head and log why.
+**A repository-declared recovery is not a question.** A repo can declare, in
+`.agentic/ci-recover.json`, a check that only its own command clears (the sealed
+secrets backup lacking a name this change made required: the command reseals it in
+the VM). Two moments, both through `python3 ${PLUGIN_ROOT}/scripts/ci_recover.py`,
+and neither asks the owner:
+- *Prevent*: before the push that carries a change adding a required name (a new
+  entry in the repo's secrets catalogue), run `ci_recover.py prevent --worktree <WT>
+  --trailer '<the commit attribution line>'`; it runs the declared `detect`, and
+  reseals and commits through the hooks when it fails. The dossier PR never goes red.
+- *Recover*: when the PR's only red checks are a declared check whose failed log
+  matches the declared pattern (inherited from the dossier branch, a stacked PR
+  included), run `ci_recover.py recover --pr <N> --worktree <WT of the dossier branch>
+  [--branch <dossier branch>]`: it reseals, commits through the hooks, pushes, and you
+  wait with `wait_ci.py` again. Any other red check, or a log that does not match, exits
+  1: that stays the ordinary red-check path, never a reseal.
+
 Detail: `ref_section` with `phase-6-conditional` and the heading "Under local and stub, and the coverage check on every verdict". (read it for the runner you are under.)
 
 **Every head that leaves this machine passes the `GATES:` list first**

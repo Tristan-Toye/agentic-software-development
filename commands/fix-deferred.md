@@ -61,6 +61,7 @@ dossier file it names (`.discovery/dossiers/<ID>-*.md` in `<WT>`), `<S>` is
 | Revert a fix that did not hold | `python3 <S>/safe_revert.py --repo <WT> <path> [<path> …]` (uncommitted), or `git -C <WT> revert --no-edit <sha>` (committed) |
 | The worktree's state after the wave | `python3 <S>/git_state.py <WT> --base <base>` |
 | Open the PR, close the records, remove the worktree (Step 6) | `python3 <S>/fix_deferred_pr.py --root <R> --dossier <ID> --test 'D-1=<test>' [--test …] --suite '<summary>' --gates '<summary>' [--fixed D-1=<sha>] [--to-dossier D-3] [--dropped D-5] [--dry-run]` |
+| Reseal a declared check the PR inherits red (never ask the owner) | `python3 <S>/ci_recover.py prevent --worktree <WT>` before the push when a fix adds a required name; `python3 <S>/ci_recover.py recover --pr <N> --worktree <dossier-branch WT> --branch <dossier branch>` when the only red check is the one the repo declares in `.agentic/ci-recover.json` |
 | Wait for the PR's CI and read its failures | `python3 <S>/wait_ci.py --pr <N>` (`--rerun-failed` once for a flaky job; `--log <DOSSIER>` records the run) |
 | Plan an item routed to its own dossier (Step 7) | `python3 <S>/run_dossier.py <ID> --root <R> --command plan --items D-n` |
 
@@ -320,7 +321,10 @@ commit sha when you have it. It does what this step always required:
 
 Under `stub` and `ci` mode, wait for the PR's CI with `wait_ci.py --pr <N>`
 after it (the number is in the printed URL): green ends the step; a red job
-is read through its digest and goes back through Step 4 once.
+is read through its digest and goes back through Step 4 once. A red job that is the
+repo's declared recovery, inherited from the dossier branch (sealed backup lacking a
+name the dossier made required), is not Step 4 work and not an owner question:
+`ci_recover.py recover` reseals on the dossier branch and pushes; wait again.
 
 ## Step 7 — Plan the items routed to their own dossier
 
