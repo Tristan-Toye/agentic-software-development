@@ -18,7 +18,7 @@ Diff its checklist against yours. Every disagreement is a contract defect:
 - **`DEFECT:`** → fix the contract, amend the stubs (Phase 5, "When the
   contract changes later"), re-run the Phase 5 check.
 - **`AMBIGUITY:`** that the dossier already settles → cite where, and log
-  `AMBIGUITY-SETTLED: <member> — <reading>, settled by <section>`.
+  `AMBIGUITY-SETTLED site=<path>::<member> — <reading>, settled by <section>`.
 - **`AMBIGUITY:`** that is yours to settle (two readings, one right answer by
   the code or an ADR) → fix the documentation comment, log it.
 - **`AMBIGUITY:`** that is a **product choice** (both readings are acceptable
@@ -27,7 +27,7 @@ Diff its checklist against yours. Every disagreement is a contract defect:
   verbatim, the consequence of each and your recommendation. Phase 8 puts the
   whole list to the owner as one card. Continue with your recommended reading
   meanwhile, and mark it in the comment's build-log line
-  (`AMBIGUITY-OWNER: <member> — pending the final card`).
+  (`AMBIGUITY-OWNER site=<path>::<member> — pending the final card`).
 
 One re-review round at most, on the changed members only. Then record the
 verdict and store a hash per contract member:
