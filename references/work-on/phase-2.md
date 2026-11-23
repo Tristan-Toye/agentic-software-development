@@ -122,6 +122,15 @@ This is the step everything else depends on.
 
     Detail: `ref_section` with `phase-2-conditional` and the heading "A new test file's runner registration is contract wiring you own". (when the contract creates a test file the target's gates require to be registered; log `RUNNER-REG:` either way.)
 
+    **Restate a borrowed rule in place; never cite it by name only.** A
+    documentation comment that says a member follows a rule defined elsewhere
+    (a rule of an earlier change, an ADR, "the edit-required rule of X") also
+    states that rule's observable clauses in the comment: which calls, how many
+    times, in what order relative to status writes and events. A blind test
+    author and an implementer cannot read the earlier dossier, so a by-name
+    reference gets the call left out. The contract reviewer reports a member
+    documented by reference only as an `AMBIGUITY`.
+
     **Never cite an `(inferred)` comment as the contract.** A comment that
     starts with `(inferred)` is a guess about the code. A member the contract
     relies on needs an authored comment: write it here, and it replaces the

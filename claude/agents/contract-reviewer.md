@@ -54,6 +54,11 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   It asks of a member that normalises a value to locate, key or deduplicate it:
   which form does the later comparison use, normalised or as written? A
   docstring that names the normalisation only for the lookup is an `AMBIGUITY`.
+  A member documented by reference to a rule defined elsewhere (an earlier
+  change, an ADR, "follows the edit-required rule of X") without restating that
+  rule's observable clauses (which calls, how many times, in what order
+  relative to status writes and events) is an `AMBIGUITY`: a blind author and
+  an implementer cannot read the rule's source.
 
 ## Method
 

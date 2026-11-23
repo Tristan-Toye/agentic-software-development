@@ -154,6 +154,8 @@ PRIOR_CRS: |
   anything and never needs to check the suite's claim.
 - **Every reply ends with `UNREACHED:`** — `none`, or the `SCOPE` locations the
   lens did not read in full. A `PASS` that is not `UNREACHED: none` is
-  `incomplete`, never a pass (`references/work-on/phase-7.md`).
+  `incomplete`, never a pass (`references/work-on/phase-7.md`). Every `SCOPE`
+  location the lens did not read itself is listed; a note saying "not read"
+  beside `UNREACHED: none` is a malformed return, flagged incomplete.
 - **`ARBITRATIONS` accumulates across rounds** and goes into every later spawn,
   so no reviewer re-litigates a question the user already settled.

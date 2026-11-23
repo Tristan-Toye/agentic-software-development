@@ -460,6 +460,14 @@ read every `SCOPE` location in full (every dossier section, for `plan`), or
 anything unreached is not a pass, and the orchestrator treats it as one only
 when this line says `none`.
 
+`UNREACHED` lists every `SCOPE` location you did not read yourself, one entry
+per file or range. A note that says a location was "not read", "not read
+directly" or "not opened" beside `UNREACHED: none` is a malformed return and
+the orchestrator marks the lens incomplete. Example: notes "the contract range
+in `src/a.rs` was not read directly" go with `UNREACHED: src/a.rs:10-40`. A
+trailing note after `none` is fine (`UNREACHED: none (every location read)`);
+only path-like entries count as locations.
+
 After it, every reply also carries `NOTICED:` — one line per product-code issue you saw outside this lens's change requests and did not fix (`<path:line> — <kind> — <what is wrong>`; kind is bug, latent-bug, architecture, performance, duplication or ssot), or `NOTICED: none`. Never fix it yourself; the orchestrator logs it for the deferred ledger.
 
 The `plan` lens replies in the typed shape of its own section ("The plan lens

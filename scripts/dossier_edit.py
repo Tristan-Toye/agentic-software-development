@@ -52,7 +52,9 @@ included — for the file's text, keeping the heading line. It refuses `## Build
 log` (append-only, `log` only) and any section that contains it, and a new body
 that holds a heading of the section's own level or higher.
 
-`sync-contract` rebuilds each `### <path>` code block under `## Contract` from
+`sync-contract` refuses once the build log has a `- MERGE` line (the files then hold
+implementation detail; amend `## Contract` by hand, public members only). Before that it
+rebuilds each `### <path>` code block under `## Contract` from
 that file under `--root` (signatures, doc comments and constants, bodies as
 `…`; the extraction is code_nav.py's, .rs, .py and .cs), writes the dossier, then
 re-extracts both sides by symbol and compares each member's whole text. It
@@ -1040,6 +1042,13 @@ def sync_contract(text: str, root: str) -> tuple[str, list[str], list[str]]:
     blocks = contract_blocks(lines)
     if not blocks:
         raise Refused("`## Contract` holds no `### <path>` code block")
+    # #535: once a MERGE line is in the build log the files hold implementation (private members, bodies' helpers);
+    # rebuilding would write them into `## Contract`. A review-round amendment is made by hand instead.
+    if re.search(r"^\s*[-*]\s*MERGE\b", text.split("\n## Build log", 1)[-1] if "\n## Build log" in text else "", re.M):
+        raise Refused("the build log has a MERGE line: sync-contract would write the implemented files' private members "
+                      "into `## Contract`. Amend the contract by hand (`replace-section '## Contract'`) with the added "
+                      "public members only, then log `CONTRACT-AMEND:` and re-run the contract review "
+                      "(references/work-on/phase-7-conditional.md)")
     notes: list[str] = []
     baseline = baseline_of(text)
     if baseline:
@@ -1516,6 +1525,11 @@ def selftest() -> int:
                 fh.write(body)
         new, notes, problems = sync_contract(DOS, td)
         check("sync-contract rebuilds all three blocks and verifies clean", len(notes) == 3 and problems == [])
+        try:
+            sync_contract(DOS.replace("- first\n", "- first\n- MERGE P1 merged at abc1234\n"), td)
+            check("sync-contract refuses after a MERGE line (#535)", False)
+        except Refused as err:
+            check("sync-contract refuses after a MERGE line (#535)", "amend the contract by hand" in str(err).lower())
         MIXED = ("## Contract\n\n### New: `src/lib.rs`\n\n```rust\nstale\n```\n\n"
                  "### Changed: `src/Existing.cs`\n\nThe `Run` method now takes a token.\n\n## Build log\n\n- x\n")
         mnew, mnotes, mprob = sync_contract(MIXED, td)
