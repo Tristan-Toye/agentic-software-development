@@ -2,6 +2,7 @@
 // or createTextNode; the only innerHTML is the server's escaped markdown render of a dossier. Contract: references/owner-questions.md (Dashboard).
 // The script avoids backticks and dollar-brace so it can live in this raw template.
 import { vrWalkOrder } from "./vrwalk.ts"
+import { vrDecisionStats } from "./vrdecision.ts"
 import { VR_TEXT, vrFitLabel } from "./vrtext.ts"
 
 export const PAGE = String.raw`<!doctype html>
@@ -236,8 +237,9 @@ const VR = {}, VRS = {};
 const VR_NS = 'ht' + 'tp://www.w3.org/2000/svg', VR_MARK = { added: '+', changed: '~', removed: '−', context: '=' };
 const VR_PASS = { diff: () => true, before: (s) => s !== 'added', after: (s) => s !== 'removed' };
 const VR_MODES = [['before', 'Before'], ['after', 'After'], ['diff', 'Diff']];
-const VR_TABS = { L0: 'Features', L1: 'Flow', L2: 'Components' };
+const VR_TABS = { L0: 'Features', L1: 'Flow', decision: 'Decisions', L2: 'Components' };
 ${vrWalkOrder.toString()}
+${vrDecisionStats.toString()}
 function vrKey(repo, id) { return repo + '/' + id; }
 async function vrLoad(repo, id) {
   const key = vrKey(repo, id); let d = null;
@@ -367,7 +369,7 @@ function vrBuild(host, key, data) {
   /* The Intent tab (before L0): the run's short summary of what the change sets out to accomplish (intent.md), as context for the review. */
   const intent = !data.mapPath && data.intent ? data.intent : null; let inB = null;
   if (intent) { inB = vrDom('button', 'btn sm', 'Intent', tabs); inB.type = 'button'; inB.title = 'What this change sets out to accomplish'; inB.onclick = () => setIntent(true); }
-  ['L0', 'L1', 'L2'].concat(have.filter(k => k.indexOf('arch:') === 0)).forEach(k => { const isArch = k.indexOf('arch:') === 0; const b = vrDom('button', 'btn sm', isArch ? k.slice(5) : data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); if (isArch) b.title = 'New architecture diagram ' + k.slice(5) + ' (Architecture impact)'; b.type = 'button'; b.disabled = !data.views[k]; b.hidden = !!data.mapPath && !data.views[k]; tb[k] = b; b.onclick = () => { setIntent(false); st.view = k; wkOff(); draw(); }; });
+  ['L0', 'L1', 'decision', 'L2'].filter(k => k !== 'decision' || data.views[k]).concat(have.filter(k => k.indexOf('arch:') === 0)).forEach(k => { const isArch = k.indexOf('arch:') === 0; const b = vrDom('button', 'btn sm', isArch ? k.slice(5) : data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k === 'decision' ? VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); if (k === 'decision') b.title = 'What happens at each condition of the change (start, steps, decisions, ends)'; if (isArch) b.title = 'New architecture diagram ' + k.slice(5) + ' (Architecture impact)'; b.type = 'button'; b.disabled = !data.views[k]; b.hidden = !!data.mapPath && !data.views[k]; tb[k] = b; b.onclick = () => { setIntent(false); st.view = k; wkOff(); draw(); }; });
   VR_MODES.forEach(m => { const b = vrDom('button', 'btn sm', m[1], modes); b.type = 'button'; mb[m[0]] = b; b.onclick = () => { st.mode = m[0]; applyMode(); }; });
   const fitB = vrDom('button', 'btn sm', 'Fit all', bar); fitB.title = 'Show the whole diagram (labels may get small)'; fitB.type = 'button';
   const zin = vrDom('button', 'btn sm', '+', bar), zout = vrDom('button', 'btn sm', '−', bar); zin.type = zout.type = 'button'; zin.title = 'Zoom in'; zout.title = 'Zoom out';
@@ -381,6 +383,7 @@ function vrBuild(host, key, data) {
   ['added', 'changed', 'removed', 'context'].forEach(s => { const i = vrDom('span', 'vrlg', null, leg); const sw = vrDom('i', 'vrsw ' + s, VR_MARK[s], i); sw.setAttribute('aria-hidden', 'true'); i.appendChild(document.createTextNode(' ' + s)); });
   vrDom('span', 'vrlg', '- - - dashed edge = inferred', leg);
   const shLeg = vrDom('span', 'vrlg', null, leg); shLeg.hidden = true; shLeg.setAttribute('title', 'Shape = type of node; colour = change status'); VR_SHAPE_KEY.forEach(k => { const i = vrDom('span', 'vrshk', null, shLeg); const g0 = vrDom('b', null, k[1], i); g0.setAttribute('aria-hidden', 'true'); i.appendChild(document.createTextNode(' ' + k[2])); });
+  const dcLeg = vrDom('span', 'vrlg vrdc', null, leg); dcLeg.hidden = true; dcLeg.setAttribute('title', 'Decisions and start-to-end paths before and after the change');
   const wbar = vrDom('div', 'vrwalk', null, host); wbar.hidden = true; wbar.setAttribute('role', 'group'); wbar.setAttribute('aria-label', 'Walkthrough');
   const wkPrev = vrDom('button', 'btn sm', '◀ Previous', wbar), wkInd = vrDom('strong', 'vrwi', '', wbar), wkNext = vrDom('button', 'btn sm', 'Next ▶', wbar), wkExit = vrDom('button', 'btn sm', 'Exit', wbar), wkLab = vrDom('span', 'vrwl', '', wbar); vrDom('span', 'small mut', 'Arrow keys or n / p to move, Esc to leave', wbar);
   wkPrev.type = wkNext.type = wkExit.type = 'button'; wkInd.setAttribute('aria-live', 'polite');
@@ -574,6 +577,8 @@ function vrBuild(host, key, data) {
       if (e.bidirectional) gg.querySelector('.vrline').setAttribute('marker-start', 'url(#vr-ar)');
       tip(gg, e); });
     shLeg.hidden = !L.shapes;
+    const ds = g.view === 'decision' ? vrDecisionStats(g) : null; dcLeg.hidden = !ds; svg.setAttribute('aria-label', ds ? 'Decision flow: ' + g.nodes.length + ' nodes, ' + ds.decisions[1] + ' decisions, ' + ds.paths[1] + ' paths' : 'Change diagram');
+    if (ds) dcLeg.textContent = 'decisions ' + ds.decisions[0] + ' → ' + ds.decisions[1] + ' · paths ' + ds.paths[0] + ' → ' + ds.paths[1] + (ds.errorEnds ? ' · new error ends ' + ds.errorEnds : '');
     g.nodes.forEach(n => { const b = L.boxes[n.id]; if (!b) return; const gg = vrEl('g', { 'data-id': n.id, 'data-status': n.status, class: 'vrn', tabindex: 0, role: 'button' }, root); els[n.id] = { g: gg, status: n.status, col: !!n.collapsed }; const sh = (L.shapes && L.shapes[n.id]) || 'rect'; vrEl('title', {}, gg).textContent = n.label + ' (' + (n.kind || 'node') + (sh === 'rect' ? '' : ', ' + sh) + ', ' + n.status + ')';
       if (n.collapsed) { gg.setAttribute('data-collapsed', '1'); vrEl('rect', { x: b.x + 5, y: b.y + 5, width: b.w, height: b.h, rx: 6, fill: 'var(--card)', stroke: 'var(--mut)', 'stroke-width': 1.5 }, gg); }
       vrShapeEl(sh, b, { fill: 'var(--' + vrBg(n.status) + ')', stroke: 'var(--' + vrTone(n.status) + ')', 'stroke-width': n.status === 'context' ? 1 : 2.5, 'stroke-dasharray': n.status === 'removed' ? '3 3' : '0' }, gg);
@@ -599,6 +604,7 @@ function vrBuild(host, key, data) {
     paintBadges(); if (selId && els[selId]) inspect(selId);
   }
   function vrLane(v) { return v === 'L1' || v === 'seq'; }
+  function vrDown(v) { return vrLane(v) || v === 'decision'; }
   function vrBg(s) { return s === 'context' ? 'chip' : vrTone(s) + 'bg'; }
   function vrTone(s) { return s === 'added' ? 'ok' : s === 'changed' ? 'warn' : s === 'removed' ? 'bad' : 'mut'; }
   function vrMark(p, s, cx, cy) { const m = vrEl('g', { class: 'vr-mark', 'data-mark': s }, p); vrEl('circle', { cx: cx, cy: cy, r: 9, fill: 'var(--card)', stroke: 'var(--' + vrTone(s) + ')', 'stroke-width': 1.5 }, m); const t = vrEl('text', { x: cx, y: cy + 4, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': 700, fill: 'var(--' + vrTone(s) + ')' }, m); t.textContent = VR_MARK[s]; }
@@ -608,7 +614,7 @@ function vrBuild(host, key, data) {
     const lanes = vrLane(g.view) && (g.lanes || []).length; const cont = [].concat(g.groups || [], lanes ? g.lanes : []).filter(c => vis(c.id));
     const kids = {}, top = []; const put = (id, p) => { (p && cont.some(c => c.id === p) ? (kids[p] = kids[p] || []) : top).push(id); };
     cont.forEach(c => put(c.id, lanes && g.lanes.some(l => l.id === c.id) ? '' : c.parent)); g.nodes.filter(x => vis(x.id)).forEach(x => put(x.id, lanes ? x.lane : x.group));
-    const out = ['flowchart ' + (vrLane(g.view) ? 'TD' : 'LR')], isC = id => cont.some(c => c.id === id), lab = {}; cont.forEach(c => lab[c.id] = c.label); g.nodes.forEach(x => lab[x.id] = x.label);
+    const out = ['flowchart ' + (vrDown(g.view) ? 'TD' : 'LR')], isC = id => cont.some(c => c.id === id), lab = {}; cont.forEach(c => lab[c.id] = c.label); g.nodes.forEach(x => lab[x.id] = x.label);
     const emit = (id, ind) => { if (isC(id)) { out.push(ind + 'subgraph ' + mid(id) + '["' + esc(lab[id]) + '"]'); (kids[id] || []).forEach(k => emit(k, ind + '  ')); out.push(ind + 'end'); } else { const br = VR_MM[(cur.layout && cur.layout.shapes && cur.layout.shapes[id]) || 'rect']; out.push(ind + mid(id) + br[0] + '"' + esc(MARK(id) + ' ' + lab[id]) + '"' + br[1]); } };
     const MARK = id => { const x = g.nodes.find(y => y.id === id); return x ? VR_MARK[x.status] : ''; };
     top.forEach(id => emit(id, '  '));

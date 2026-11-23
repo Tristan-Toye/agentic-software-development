@@ -69,6 +69,12 @@ seed(SHAPED, (v, g) => {
 })
 real.push(SHAPED)
 
+// The decision flow fixture: the W-145 views plus decision.json (a merged before/after decision graph: start/end ovals, decision diamonds, an io parallelogram,
+// YES/NO labels on the branches, an added retry loop and a removed edge). Its tab must pass the same label rules, and its Mermaid export must use the flow shapes.
+const DECISION: Fix = { id: "W-150", expect: "pass", files: { ...real[0].files, decision: "decision-retry-diff.json" } }
+seed(DECISION)
+real.push(DECISION)
+
 let proc: ReturnType<typeof Bun.spawn> | undefined
 let browser: any
 const cleanup = async (): Promise<void> => { try { await browser?.close() } catch {} ; proc?.kill(); rmSync(work, { recursive: true, force: true }) }
@@ -141,6 +147,29 @@ function measure(minFont: number, eps: number, checkFont: boolean): { problems: 
   return { problems, labels: labs.length, nodes }
 }
 
+/** Decisions tab only: the shapes are drawn, every branch label is there, the summary line names the counts, and the Mermaid export uses the flow shapes. */
+async function decisionExtras(page: any): Promise<string[]> {
+  const probs: string[] = []
+  const info = await page.evaluate(() => {
+    const svg = Array.from(document.querySelectorAll<SVGSVGElement>(".vr svg")).find((s) => (s as any).getBoundingClientRect().width > 0)!
+    const texts = Array.from(svg.querySelectorAll("text")).map((t) => (t.textContent || "").trim())
+    return { polygons: svg.querySelectorAll("g.vrn polygon").length, labels: texts, summary: (document.querySelector(".vr .vrdc") as HTMLElement | null)?.textContent || "", aria: svg.getAttribute("aria-label") || "" }
+  })
+  if (info.polygons < 3) probs.push(`decision tab draws ${info.polygons} polygon shapes, expected diamonds and a parallelogram`)
+  for (const l of ["YES", "NO", "RETRY"]) if (!info.labels.includes(l)) probs.push(`decision tab has no ${l} branch label`)
+  if (!/decisions 1 → 2 · paths 2 → 2 · new error ends 1/.test(info.summary)) probs.push(`decision summary line is "${info.summary}"`)
+  if (!/^Decision flow: /.test(info.aria)) probs.push(`decision canvas aria-label is "${info.aria}"`)
+  await page.evaluate(() => { (Array.from(document.querySelectorAll(".vr button.btn.sm")).find((b) => /^Mermaid$/.test(b.textContent || "")) as HTMLElement)?.click() })
+  const mm: string = await page.evaluate(() => (document.querySelector(".vr textarea.vrta") as HTMLTextAreaElement | null)?.value || "")
+  if (!/^flowchart TD/.test(mm)) probs.push("decision Mermaid export is not a top-down flowchart")
+  if (!/\(\[".*"\]\)/.test(mm)) probs.push("decision Mermaid export has no stadium (start/end)")
+  if (!/\{".*"\}/.test(mm)) probs.push("decision Mermaid export has no diamond (decision)")
+  if (!/\[\/".*"\/\]/.test(mm)) probs.push("decision Mermaid export has no parallelogram (io)")
+  if (!/-- "NO" -->/.test(mm)) probs.push("decision Mermaid export has no labelled NO branch")
+  await page.evaluate(() => { (Array.from(document.querySelectorAll(".vr button.btn.sm")).find((b) => /^Mermaid$/.test(b.textContent || "")) as HTMLElement)?.click() })
+  return probs
+}
+
 type Result = { fix: Fix; width: number; tab: string; problems: string[]; labels: number; nodes: number }
 async function check(base: string, f: Fix, width: number): Promise<Result[]> {
   const page = await browser.newPage()
@@ -152,7 +181,7 @@ async function check(base: string, f: Fix, width: number): Promise<Result[]> {
   await page.setViewport({ width, height: 900, deviceScaleFactor: 1 })
   await page.goto(`${base}/repo/repoV/${f.id}`, { waitUntil: "load", timeout: 30_000 })
   await page.waitForSelector(".vr svg .vrn", { timeout: 20_000 })
-  const tabs: string[] = await page.$$eval(".vr button.btn.sm", (bs: Element[]) => bs.map((b) => b.textContent || "").filter((t) => /^L[012] /.test(t)))
+  const tabs: string[] = await page.$$eval(".vr button.btn.sm", (bs: Element[]) => bs.map((b) => b.textContent || "").filter((t) => /^(L[012] |Decisions$)/.test(t)))
   const out: Result[] = []
   const click = async (text: RegExp): Promise<void> => {
     await page.evaluate((src: string) => { (Array.from(document.querySelectorAll(".vr button.btn.sm")).find((b) => new RegExp(src).test(b.textContent || "")) as HTMLElement)?.click() }, text.source)
@@ -168,6 +197,7 @@ async function check(base: string, f: Fix, width: number): Promise<Result[]> {
         await page.waitForSelector(".vr svg .vrn", { timeout: 20_000 })
       }
       const m = await page.evaluate(measure, MIN_FONT_PX, EPS, font)
+      if (tab === "Decisions" && phase === "open") m.problems.push(...(await decisionExtras(page)))
       out.push({ fix: f, width, tab: `${phase} ${tab}`.trim(), ...m })
     }
   }
