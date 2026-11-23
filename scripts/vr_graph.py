@@ -102,6 +102,28 @@ def text_fit(label: str, box_w: float, stereotype: bool = False) -> dict:
     return {"lines": lines, "clipped": clipped, "needed": len(out) + (1 if stereotype else 0)}
 
 
+def wide_word(label: str, box_w: float | None = None) -> str | None:
+    """The first word of `label` wider than a line of its box (None when there is none)."""
+    w = max(1, int(((node_width(label) if box_w is None else box_w) - TEXT["inset"]) // TEXT["charPx"]))
+    return next((t for t in label.split(" ") if len(t) > w), None)
+
+
+def fit_label(label: str, stereotype: bool = False, suffix: str = "") -> str:
+    """`label` shortened (ending with an ellipsis) until `label + suffix` is drawn whole by the canvas: at most
+    NODE_LABEL_MAX characters, within the lines a node has, no word wider than a line. A label that fits is returned as is.
+    Producers of labels (vr_diff, vr_extract) call this, so what they write passes `validate`."""
+    def fits(s: str) -> bool:
+        full = s + suffix
+        return len(full) <= NODE_LABEL_MAX and not text_fit(full, node_width(full), stereotype)["clipped"]
+    if fits(label):
+        return label
+    for n in range(min(len(label), NODE_LABEL_MAX) - 1, 0, -1):
+        cand = label[:n].rstrip() + "…"
+        if fits(cand):
+            return cand
+    return "…"
+
+
 def load(path: str) -> dict:
     """Read a graph file. Raises ValueError (not JSON) or OSError (unreadable)."""
     with open(path, encoding="utf-8") as fh:
@@ -295,10 +317,13 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
     for i, n in enumerate(graph.get("nodes", [])):
         if isinstance(n, dict) and isinstance(n.get("label"), str):
             fit = text_fit(n["label"], node_width(n["label"]), bool(n.get("stereotype")))
-            if fit["clipped"]:
-                issues.append(_issue("label_too_long", "nodes[%d].label" % i,
-                                     "the label needs %d lines in the widest node box and the canvas draws %d (or one word is wider than a line): shorten it"
-                                     % (fit["needed"], TEXT["maxLines"] - (1 if n.get("stereotype") else 0))))
+            if fit["needed"] > TEXT["maxLines"]:
+                msg = "the label needs %d lines (a stereotype takes one) in the widest node box and the canvas draws %d: shorten it" % (fit["needed"], TEXT["maxLines"])
+            elif fit["clipped"]:
+                msg = "the word %r is wider than a line of the widest node box: break or shorten it" % wide_word(n["label"])
+            else:
+                continue
+            issues.append(_issue("label_too_long", "nodes[%d].label" % i, msg))
 
     lanes = [x for x in graph.get("lanes", []) if isinstance(x, dict)]
 
@@ -441,6 +466,15 @@ def _selftest() -> int:
             long_g["nodes"][0]["stereotype"] = "service"
         got = [i["code"] for i in validate(long_g) if i["path"] == "nodes[0].label"]
         check("textfit:validate-flags-clipped:" + c["label"][:20], got == ["label_too_long"], json.dumps(validate(long_g))[:300])
+    # An over-long word gets its own message naming the word; fit_label makes any label pass.
+    long_g["nodes"][0].pop("stereotype", None)
+    long_g["nodes"][0]["label"] = "go " + "w" * 50
+    msgs = [i["message"] for i in validate(long_g) if i["path"] == "nodes[0].label"]
+    check("textfit:wide-word-message", len(msgs) == 1 and "word" in msgs[0] and "w" * 50 in msgs[0], str(msgs))
+    for raw in ("w" * 80, "one two " * 10, "x" * 40 + " y"):
+        for st in (False, True):
+            f = fit_label(raw, st, " x5")
+            check("textfit:fit-label", not text_fit(f + " x5", node_width(f + " x5"), st)["clipped"], f)
     long_g["nodes"][0]["label"] = "Render the walkthrough"
     check("textfit:validate-accepts-fitting", validate(long_g) == [], json.dumps(validate(long_g))[:300])
     # Valid fixtures, including the three W-145 ones and the removed-elements one.

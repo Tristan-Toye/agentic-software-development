@@ -315,8 +315,8 @@ def merge(before: dict, after: dict) -> dict:
                     if sid in nodes and not re.search(r" x\d+$", nodes[sid]["label"]):
                         suffix = " x%d" % r["count"]
                         lab = nodes[sid]["label"]
-                        if len(lab) + len(suffix) > vr_graph.NODE_LABEL_MAX:  # trim the label, never the count
-                            lab = lab[:vr_graph.NODE_LABEL_MAX - len(suffix) - 1].rstrip() + "\u2026"
+                        # trim the label (to what the canvas draws whole, vr_graph.fit_label), never the count
+                        lab = vr_graph.fit_label(lab, bool(nodes[sid].get("stereotype")), suffix)
                         nodes[sid]["label"] = lab + suffix
     # drop edges whose end was removed by the collapse alone
     flows: dict = {}
@@ -872,7 +872,9 @@ def _selftest() -> int:
           and all(n["label"].endswith(" x5") for n in m["nodes"]))
     check("VC-08:edges-valid", vr_graph.validate(m, check_budget=False) == [] and len(m["edges"]) == 3, str(len(m["edges"])))
     # a collapsed label at the 80-character limit is trimmed to take its " xN" suffix, not rejected
-    long_label = "q" * vr_graph.NODE_LABEL_MAX
+    long_label = ("word " * 16).strip()[:vr_graph.NODE_LABEL_MAX]
+    # a word wider than a line is trimmed too (vr_graph.fit_label), so the collapsed label still validates
+    check("VC-08:fit-label-wide-word", vr_graph.text_fit(vr_graph.fit_label("q" * 80, False, " x5") + " x5", 250)["clipped"] is False)
     lids, lnodes = [], []
     for r in range(5):
         for k in "abc":
