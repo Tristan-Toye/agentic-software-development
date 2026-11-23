@@ -42,6 +42,15 @@ from `run_tests.py --skip-banner`) does not count as the new tests going green:
 treat the subset as not run, record those tests NOT VERIFIED, and take the
 verdict from a run that has the environment.
 
+**Read the summary, not the log.** `run_tests.py` prints the totals, each failing
+test (name, first assertion or panic with `file:line`), the failing test binary
+(`failed in:`) or failing files, and deduplicated compile errors; `run_gates.py`
+prints, under each `FAIL` line, the parsed first errors (`file:line  error[CODE]:
+message`, rustfmt diffs per file, ruff/tsc findings, failing tests). Open the log
+only when the summary carries a `truncated` or `see log` marker, and then only
+the slice it points to; a green or fully listed failure needs no `grep`, `tail`
+or `cat` of the log, and no second run.
+
 **The verdict comes from the runner `SUITE-RUNNER:` names (Phase 2), once
 per head, never twice.** Under `ci`: sync first (below), push `X`'s branch
 (`git push -u origin <branch>`; committed mode commits the dossier first),

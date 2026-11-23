@@ -272,7 +272,7 @@ absent; never leave the field out, and never paste the ungrouped block.
 the file's language and nothing about this repo. A reviewer that sets a rule
 aside for one of those says so in its notes.
 
-**Each lens carries its own evidence bar** (`sub-agents/reviewer.md`): performance
+**Each lens carries its own evidence bar** (`references/reviewer-lenses/`): performance
 states the input scale that makes the cost matter, style states the observable
 reading cost, architecture states the concrete future change or misuse. A CR
 without its lens's evidence is a note, not a change request — **a matched
