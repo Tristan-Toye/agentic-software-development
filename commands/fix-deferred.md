@@ -113,8 +113,10 @@ Before any of that, the script settles what is not the owner's to rule on:
   carries it. The record says `dossier`; never ask about it.
 - `CHECK: D-n — <signals> — otherwise <direct|ask: reason>` — development
   changed the anchored lines since the stack base forked from it, or another
-  dossier's `anchors:` name the same file nearby. Read that commit or that
-  dossier's problem section first. Already fixed on development:
+  dossier's `anchors:` name the same file (`anchors <path:line>` within 15
+  lines; `anchors the same file, <path:line>` elsewhere in it, its nearest
+  line: another caller of the same defect is common). Read that commit or
+  that dossier's problem section first. Already fixed on development:
   `build_records.py deferred set <ID> D-n --state fixed --note "fixed on development by <PR or sha>"`,
   log `DEFERRED-DROPPED: D-n — fixed on development by <PR or sha>`. Carried
   by that dossier: `deferred set <ID> D-n --state dossier --note "covered by W-m"`,

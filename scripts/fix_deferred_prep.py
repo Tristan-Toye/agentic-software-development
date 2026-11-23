@@ -30,7 +30,8 @@ What it does, in order (every step is safe to run again):
    - another dossier (worktree, main checkout, origin/development) cites the item ("D-5 of W-161")
      -> `COVERED`, state dossier, note "covered by W-n";
    - origin/development changed the anchored lines (or removed the file) since the stack base
-     forked from it, or another dossier's `anchors:` name the same file within 15 lines -> `CHECK`:
+     forked from it, or another dossier's `anchors:` name the same file (within 15 lines first,
+     then anywhere in it) -> `CHECK`:
      the orchestrator reads that before it fixes or asks (fix-deferred.md Step 3).
 5. Logs `DEFERRED-FIX: branch ...` (new branches only) and `DEFERRED-TRIAGE: D-n -> direct ...`
    through dossier_edit's log path (a line already there is not added again), sets each direct
@@ -265,16 +266,25 @@ def dossier_texts(dirs: list[str], wt: str, ref: str = MAINLINE) -> dict[str, st
     return out
 
 
+def _words(text: str) -> set[str]:
+    """Content words (4+ letters, a plural `s` dropped) for a rough overlap score."""
+    return {w[:-1] if w.endswith("s") and len(w) > 4 else w for w in re.findall(r"[a-z]{4,}", text.lower())}
+
+
 def other_dossiers(did: str, item: dict, texts: dict[str, str]) -> tuple[str, list[str]]:
     """(covered, related) for one item across the other dossiers.
 
     covered: a dossier that cites this very item ("D-5 of W-161", "W-161 D-5"), e.g. one /plan
-    wrote from it. related: dossiers whose `anchors:` name the item's file within NEAR lines."""
+    wrote from it. related: dossiers whose `anchors:` name the item's file, those within NEAR lines
+    first; one that anchors the file only elsewhere still names it (another line of one file is
+    often the same defect seen from another caller), ranked by the words their title shares with
+    the item's title and evidence, so a file many dossiers anchor still shows the likely one."""
     iid = item["id"]
     cite = re.compile(rf"\b{re.escape(iid)}\s+(?:of|in|from)\s+{re.escape(did)}\b"
                       rf"|\b{re.escape(did)}(?:'s)?[\s:/,.-]{{1,3}}(?:deferred\s+(?:item\s+)?)?{re.escape(iid)}\b")
     loc = item_loc(item)
-    covered, related = "", []
+    mine = _words(f"{item.get('title', '')} {item.get('evidence', '')}")
+    covered, related, same_file = "", [], []
     for name, text in sorted(texts.items()):
         fm = front(text)
         oid = fm.get("id") or name.split("-", 2)[0] + "-" + name.split("-", 2)[1]
@@ -287,11 +297,17 @@ def other_dossiers(did: str, item: dict, texts: dict[str, str]) -> tuple[str, li
             covered = f"{oid} ({status}) cites {did} {iid}"
             continue
         if loc:
-            for m in re.finditer(rf"^\s*-\s*{re.escape(loc[0])}:(\d+)\s*$", text.split("\n---", 1)[0], re.M):
-                if abs(int(m.group(1)) - loc[1]) <= NEAR:
-                    related.append(f"{oid} ({status}) anchors {loc[0]}:{m.group(1)}")
-                    break
-    return covered, related[:3]
+            lines = [int(m.group(1)) for m in re.finditer(
+                rf"^\s*-\s*{re.escape(loc[0])}:(\d+)\s*$", text.split("\n---", 1)[0], re.M)]
+            near = [n for n in lines if abs(n - loc[1]) <= NEAR]
+            if near:
+                related.append(f"{oid} ({status}) anchors {loc[0]}:{near[0]}")
+            elif lines:
+                nearest = min(lines, key=lambda n: abs(n - loc[1]))
+                score = len(mine & _words(fm.get("title", "")))
+                same_file.append((-score, abs(nearest - loc[1]),
+                                  f"{oid} ({status}) anchors the same file, {loc[0]}:{nearest}"))
+    return covered, (related + [t for *_, t in sorted(same_file)])[:3]
 
 
 # -- the change-request document -------------------------------------------
@@ -800,6 +816,7 @@ def selftest() -> int:
             with open(os.path.join(main, rel), "w") as fh:
                 fh.write(text)
         put("src/a.py", "".join(f"line {i}\n" for i in range(1, 46)))
+        put("src/b.py", "".join(f"line {i}\n" for i in range(1, 10)))
         put("src/c.py", "x\n")
         put(".discovery/dossiers/W-9-fix-things.md",
             "---\nid: W-9\nstatus: done\nbranch: feat/W-9\npr: [https://github.com/o/r/pull/7]\nhooks: none\n---\n\n"
@@ -821,7 +838,7 @@ def selftest() -> int:
         recs = [
             {"id": "D-1", "evidence": ".discovery/dossiers/W-9-fix-things.md:3 duplicate id", "fix": "renumber",
              "boundary": "none", "blast_radius": "x", "state": "open"},
-            {"id": "D-2", "evidence": "src/a.py:15 slow", "fix": "cache", "boundary": "none", "blast_radius": "x", "state": "open"},
+            {"id": "D-2", "evidence": "src/b.py:3 slow", "fix": "cache", "boundary": "none", "blast_radius": "x", "state": "open"},
             {"id": "D-3", "evidence": "src/a.py:12 race", "fix": "lock", "boundary": "none", "blast_radius": "x", "state": "open"},
             {"id": "D-4", "evidence": "src/a.py:5 off by one", "fix": "+1", "boundary": "none", "blast_radius": "x", "state": "open"},
             {"id": "D-5", "evidence": "src/a.py:28 leak", "fix": "close", "boundary": "none", "blast_radius": "x", "state": "open"},
@@ -833,6 +850,21 @@ def selftest() -> int:
               and other_dossiers("W-9", recs[5], texts)[0] == "", other_dossiers("W-9", recs[2], texts))
         check("other dossiers: an anchor on the same file within 15 lines is related, not covered",
               other_dossiers("W-9", recs[4], texts) == ("", ["W-21 (ready) anchors src/a.py:40"]), other_dossiers("W-9", recs[4], texts))
+        check("other dossiers: an anchor on the same file but far from the line still names that dossier",
+              other_dossiers("W-9", recs[3], texts) == ("", ["W-21 (ready) anchors the same file, src/a.py:40"])
+              and other_dossiers("W-9", recs[1], texts) == ("", []), other_dossiers("W-9", recs[3], texts))
+        far = {"W-30-far.md": "---\nid: W-30\nstatus: ready\nanchors:\n  - src/a.py:200\n  - src/a.py:90\n---\n",
+               "W-31-near.md": "---\nid: W-31\nstatus: done\nanchors:\n  - src/a.py:30\n---\n"}
+        check("other dossiers: a near anchor comes before a same-file one, which names its nearest line",
+              other_dossiers("W-9", recs[4], far)[1] == ["W-31 (done) anchors src/a.py:30",
+                                                         "W-30 (ready) anchors the same file, src/a.py:90"],
+              other_dossiers("W-9", recs[4], far))
+        ranked = {"W-40-a.md": "---\nid: W-40\nstatus: done\ntitle: Unrelated cache work\nanchors:\n  - src/a.py:27\n---\n",
+                  "W-41-b.md": "---\nid: W-41\nstatus: ready\ntitle: Close the file handle leak\nanchors:\n  - src/a.py:2\n---\n"}
+        check("other dossiers: same-file matches rank by title words shared with the item, then distance",
+              other_dossiers("W-9", dict(recs[4], evidence="src/a.py:60 handle leak"), ranked)[1]
+              == ["W-41 (ready) anchors the same file, src/a.py:2", "W-40 (done) anchors the same file, src/a.py:27"],
+              other_dossiers("W-9", dict(recs[4], evidence="src/a.py:60 handle leak"), ranked))
         check("mainline: development changed the anchored line since the fork; elsewhere in the file is no signal",
               "changed src/a.py:5" in mainline_change(main, recs[3]) and "#577" in mainline_change(main, recs[3])
               and mainline_change(main, recs[1]) == "", mainline_change(main, recs[3]))
