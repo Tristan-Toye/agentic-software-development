@@ -119,8 +119,17 @@ implementation). An input the docstring leaves open is row 3 (the
 contract). Expect row 1 often: about one LLM-written property in five is
 unsound against its documentation (Vikram et al.).
 
+**Row 1 is two rulings with one action.** Name which on the line: **1a** — the test
+asserts beyond the contract (an exact type, the whole set, an extra order, a value the doc
+comment leaves open): a contract-quality signal, reported with row 3. **1h** — the test's
+fixture, environment or a stale expectation is wrong (a seam the repo refuses, a missing CI
+dependency, a literal the contract commit changed) and you may not edit it because it feeds
+an assertion: harness craft, not contract quality. Both re-spawn the test author, as the table
+says. A bare `row 1` is the old label; write 1a or 1h.
+
 Write every arbitration as one `ARBITRATION:` line — the failure, the ruling, and which
-of the six rows applied — and hand the round's lines to its checkpoint as `log`
+of the six rows applied (`row 1a`, `row 1h`, `row 3`, …; a row-3 line adds `site=<path>::<member>`,
+the key of the member whose doc comment was silent or two-readable) — and hand the round's lines to its checkpoint as `log`
 (below); if the round runs on past a tool call, put them in the same message as the next call.
 A ruling that decides something a future agent must know (a contract choice, a
 trade-off accepted) is also written as a decision record, the source Phase 8

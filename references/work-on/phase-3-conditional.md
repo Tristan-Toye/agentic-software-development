@@ -139,13 +139,13 @@ compared against this one.
   dossier, so many of its ambiguities are already decided there: the
   approach, a criterion, a recorded ruling. For each, quote the dossier
   sentence that picks one reading, write that reading into the docstring,
-  and log `AMBIGUITY-SETTLED: <member> — <reading> (dossier § <section>)`.
+  and log `AMBIGUITY-SETTLED site=<path>::<member> — <reading> (dossier § <section>)`.
   That is not you ruling on your own sentence: the dossier is the referee,
   and the owner already approved it. A reading no dossier sentence picks you
   rule provisionally, **whatever its `IMPACT:` mark**: take the recommended
   reading (the simpler one, the repo's convention, the one the neighbouring
   code already follows, or the cheaper to reverse), write it into the
-  docstring, log `PROVISIONAL-RULING: <member>, <reading and why>, <how to
+  docstring, log `PROVISIONAL-RULING site=<path>::<member>, <reading and why>, <how to
   reverse>` in `## Build log` (add `IMPACT high` when the reviewer marked
   it), and list it under "Rulings to review" in the PR description (Phase 9),
   the `IMPACT high` ones first. The reviewer's `IMPACT: high` means a blind
@@ -163,6 +163,17 @@ compared against this one.
   the fan-out; keep working on what does not depend on it. Never ask the
   owner to confirm or review a list of readings you already ruled
   (`references/owner-questions.md`, "The ask policy").
+- **Every settle is one edit, to the doc comment, as a statement.** Whatever
+  settled it (a dossier sentence or your ruling), the chosen reading goes into
+  the doc comment of the member as a plain statement of what it does; a log line
+  or a dossier citation alone does not count, because test authors never see
+  the dossier. Pick the reading by choosing between the `ASSERT-A` and
+  `ASSERT-B` lines the reviewer gave, and write the sentence that makes the
+  chosen assertion derivable. The `site=` key is the reviewer's `SITE:`; its
+  `SETTLE-MAP:` line lists every site, so each one gets a settle line. It is
+  your edit in the contract commit: no extra agent, no second review round.
+  `validate_pipeline.py` checks that the stub diff from the `contract_review:`
+  sha to HEAD touches each settled site's doc comment.
 - **Its `DEFECT:` lines you fix immediately** — unstated visibility,
   unmeasurable words, criteria the contract cannot express.
 

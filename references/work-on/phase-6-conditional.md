@@ -180,6 +180,13 @@ Lesson: a method with a return type states what the value MEANS, not just that
 one exists.
 ```
 
+Name the member on the row-3 line as `site=<path>::<member>`, the same key the
+reviewer's `SETTLE-MAP:` and your `AMBIGUITY-SETTLED site=` lines use.
+`budget_report.py` joins them: a row 3 whose site was settled earlier is "ruled
+wrong" (the reviewer flagged it and the reading chosen failed), one whose site
+never was is a "reviewer miss". Report row 3 and row 1a as the contract-quality
+health signal; row 1h goes to the test-author payload backlog.
+
 `validate_pipeline.py` counts the row-3 `ARBITRATION` lines in the build log
 and refuses the dossier when fewer commits after the contract commit, touching a
 contract file, carry a `Lesson:` trailer. Implementer bodies and row-1/2 fixes
