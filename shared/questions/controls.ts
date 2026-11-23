@@ -21,7 +21,7 @@ export function blockedByOf(v: string | undefined): string[] {
 const active = (r: RunnerState | null): boolean => r?.state === "running" || r?.state === "testing" || r?.state === "waiting" || r?.state === "paused" || r?.state === "queued"
 
 /** Which of Start, Resume and Stop a dossier offers. `statusOf` gives the status of a blocker id, if known. */
-export function controlsFor(d: { status: string; blockedBy: string[]; runner: RunnerState | null; deferredOpen?: number }, statusOf: (id: string) => string | undefined): Controls {
+export function controlsFor(d: { status: string; blockedBy: string[]; runner: RunnerState | null; deferredOpen?: number; planning?: { key: string; state: string } | null }, statusOf: (id: string) => string | undefined): Controls {
   const open = d.blockedBy.filter((id) => statusOf(id) !== "done")
   const stopped = d.runner?.state === "stopped" || d.runner?.state === "failed"
   // Start runs the dossier's next flow: a planned dossier is planned (/plan), a ready one built (/work-on).
@@ -30,9 +30,11 @@ export function controlsFor(d: { status: string; blockedBy: string[]; runner: Ru
   // A stopped run of another flow (a /work-on sent back to /plan, the dossier planned again) is not this flow's to resume:
   // Start offers the next flow, and Resume stays hidden.
   const stale = stopped && startable && (d.runner?.command || "work-on") !== next
-  const start: Ctl = { show: startable && !active(d.runner) && (!stopped || stale), ok: d.status === "planned" || open.length === 0, reason: d.status === "ready" && open.length ? `blocked by ${open.join(", ")}` : "", command: next }
+  // A seed or plan-from-deferred run that claimed this id is still writing the dossier: it reads planned, but its /plan is live.
+  const planned = !!d.planning
+  const start: Ctl = { show: !planned && startable && !active(d.runner) && (!stopped || stale), ok: d.status === "planned" || open.length === 0, reason: d.status === "ready" && open.length ? `blocked by ${open.join(", ")}` : "", command: next }
   // Resume picks up the flow that stopped, whichever it was.
-  const resume: Ctl = { show: d.status !== "done" && d.status !== "dropped" && stopped && !stale, ok: !!d.runner?.root, reason: d.runner?.root ? "" : "no root recorded in the runner state", command: d.runner?.command || "work-on" }
+  const resume: Ctl = { show: !planned && d.status !== "done" && d.status !== "dropped" && stopped && !stale, ok: !!d.runner?.root, reason: d.runner?.root ? "" : "no root recorded in the runner state", command: d.runner?.command || "work-on" }
   const stop: Ctl = { show: active(d.runner), ok: true, reason: "" }
   /* Fix all deferred: a finished build (pr or done) with open ledger items and no live runner. */
   const fix: Ctl = { show: (d.status === "pr" || d.status === "done") && (d.deferredOpen ?? 0) > 0 && !active(d.runner), ok: true, reason: "" }

@@ -121,6 +121,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import merge_dossier  # noqa: E402
 from merge_dossier import now, read_json, repo_name, runs_dir  # noqa: E402
 import land_stub  # noqa: E402
+import planning_runs  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIVE = ("running", "testing", "waiting", "queued", "paused", "parked")   # parked: a /work-on waiting for its blockers; run_dossier unparks it
@@ -209,37 +210,11 @@ def kanban_ids(repo: str, root: str) -> set[str]:
     return {i for i, d in delivery_of(root).items() if d == "kanban"}
 
 
-CLAIMED_RE = re.compile(r"\b([A-Z][A-Z0-9]*-\d+)\s*\(claimed")
-
-
 def planning_ids(repo: str) -> set[str]:
-    """Dossier ids that a LIVE /plan run other than the dossier's own is writing: a free-form seed run (`<repo>.seed-<slug>`)
-    or a plan-from-deferred run (`<repo>.<ID>.plan-D-n`). /plan claims the id in Phase 1 and every later `stage` event of
-    the run's jsonl names it ("W-218 (claimed, final), key ..."); that is the one structured link from such a run to its
-    dossier, and the dossier reads `planned` while the run is still at work. Never start a second /plan (or /work-on)
-    on an id in this set."""
-    out: set[str] = set()
-    for path in glob.glob(os.path.join(runs_dir(), f"{glob.escape(repo)}.*.runner.json")):
-        key = os.path.basename(path)[: -len(".runner.json")][len(repo) + 1:]
-        if not (key.startswith("seed-") or re.search(r"\.plan-D-\d+$", key)):
-            continue
-        st = read_json(path, {}) or {}
-        if st.get("command") != "plan" or st.get("state") not in LIVE:
-            continue
-        try:
-            with open(os.path.join(runs_dir(), f"{repo}.{key}.jsonl"), encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    if '"stage"' not in line or "(claimed" not in line:
-                        continue
-                    try:
-                        o = json.loads(line)
-                    except ValueError:
-                        continue
-                    if o.get("kind") == "stage":
-                        out.update(m.upper() for m in CLAIMED_RE.findall(str(o.get("text", "")) + " " + str(o.get("stage", ""))))
-        except OSError:
-            pass
-    return out
+    """Dossier ids that a LIVE /plan run other than the dossier's own is writing (a free-form seed run or a plan-from-deferred
+    run): the dossier reads `planned` while the run is still at work. Never start a second /plan (or /work-on) on an id in
+    this set. The parsing lives in planning_runs.py, shared with run_dossier.py's refusal and the dashboard's port."""
+    return planning_runs.planning_ids(repo, runs_dir())
 
 
 def kanban_pull(repo: str, root: str, facts: dict) -> list[str]:

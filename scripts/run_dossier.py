@@ -85,6 +85,7 @@ sys.path.insert(0, HERE)
 import stack_repair  # noqa: E402
 import stack_env  # noqa: E402
 import driver_modes  # noqa: E402
+import planning_runs  # noqa: E402
 ASK_OWNER = os.path.join(HERE, "ask_owner.py")
 PLUGIN = "agentic-software-development"
 
@@ -4891,6 +4892,21 @@ def selftest() -> int:
                             env=dict(os.environ, ASD_DRIVERS_FILE=os.path.join(tmp, "no-drivers.json")))
         check("`run_dossier.py selftest` (no dashes) exits 2 and starts nothing",
               rs.returncode == 2 and "did you mean --selftest?" in rs.stderr and not glob.glob(os.path.join(rdir, "*selftest*")))
+        # ---- an id a live seed run already claimed starts no second /plan (or /work-on); a finished seed run frees it ----
+        pr_name = main_repo_name(udir)
+        seed_key = f"{pr_name}.seed-claims"
+        write_json(os.path.join(rdir, seed_key + ".runner.json"), {"command": "plan", "state": "running"})
+        append_line(os.path.join(rdir, seed_key + ".jsonl"), {"kind": "stage", "stage": "phase 1", "text": "W-218 (claimed, final), key x"})
+        open(os.path.join(udir, ".discovery", "dossiers", "W-218-hook.md"), "w").write("---\nid: W-218\nstatus: planned\n---\n")
+        pe = dict(os.environ, ASD_DRIVERS_FILE=os.path.join(tmp, "no-drivers.json"))
+        for cmd in ("plan", "work-on"):
+            rc = subprocess.run([sys.executable, me, "W-218", "--root", udir, "--command", cmd, "--foreground"], capture_output=True, text=True, env=pe)
+            check(f"claimed id: /{cmd} of an id a live seed run claimed is refused and starts nothing",
+                  rc.returncode == 2 and f"seed-claims" in rc.stderr and "being planned" in rc.stderr and not os.path.exists(os.path.join(rdir, f"{pr_name}.W-218.runner.json")))
+        check("claimed id: the claim is read by the same helper", planning_runs.claimed_why(pr_name, rdir, "W-218") != "" and planning_runs.claimed_why(pr_name, rdir, "W-219") == "")
+        write_json(os.path.join(rdir, seed_key + ".runner.json"), {"command": "plan", "state": "done"})
+        check("claimed id: a finished seed run frees the id", planning_runs.claimed_why(pr_name, rdir, "W-218") == "")
+        os.remove(os.path.join(rdir, seed_key + ".runner.json")); os.remove(os.path.join(rdir, seed_key + ".jsonl"))
         # ---- driver modes: ~/.agentic/drivers.json (ASD_DRIVERS_FILE) exported into the claude child ----
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
         p = start("W-95")
@@ -6230,6 +6246,13 @@ def main() -> int:
         print(f"run_dossier.py: {why}", file=sys.stderr)
         return 2
     runner_model(a.model)  # refuses a forbidden model before anything starts
+    if a.command in ("plan", "work-on") and not items and not SEED_RE.fullmatch(a.dossier):
+        # A seed or plan-from-deferred run that already claimed this id is still writing the dossier (it reads `planned`): a
+        # second /plan would duplicate it. Applies to every start path: the dashboard's button, auto_work, a hand start.
+        why = planning_runs.claimed_why(main_repo_name(a.root), runs_dir(), a.dossier, key_of(a.root, a.dossier))
+        if why:
+            print(f"run_dossier.py: not starting /{a.command}: {why}", file=sys.stderr)
+            return 2
     if a.command == "work-on":
         why = already_built(a.root, a.dossier)
         if why:

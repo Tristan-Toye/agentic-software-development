@@ -864,6 +864,7 @@ function controls(r, big) {
   });
   if (r.runner && r.runnerLog) kids.push(h('button', { class: 'btn sm ghost', type: 'button', 'data-act': 'copy', 'data-text': r.runnerLog, 'data-label': 'Copy log path', title: r.runnerLog }, ['Copy log path']));
   const out = [];
+  if (r.planningRun) kids.push(chip('Being planned by ' + r.planningRun.key.slice(r.repo.length + 1) + ' (' + r.planningRun.state + ')', 'blocked'));
   if (kids.length) out.push(h('div', { class: 'ctl' }, kids));
   const pn = r.pendingNotes && (r.pendingNotes.start || r.pendingNotes.resume || r.pendingNotes['fix-deferred']);
   if (pn) out.push(h('div', { class: 'ctl-msg bad' }, [pn]));
