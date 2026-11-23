@@ -178,7 +178,15 @@ that provider and model. A local cap cannot see other machines on the
 account — the provider's error stays the account-global signal, and
 `ASD_ADMISSION_DIR` can point every machine at one synced directory. Agents
 never learn any of this: an agent told about admission control waits on the
-wrong thing.
+wrong thing. `prepare_wave.py` does the waiting: with the provider, model and
+holder it blocks (default 15 minutes, `--wait-slot`) while the ledger refuses
+only for lack of slots or defers to a reset inside that bound; a refusal asking
+more than the cap, or a deferral past the bound, returns 1 at once for the
+ladder below. The host build slots a gate or test command takes
+(`build_slots.py`) are the same idea one level down: a queued `run_tests.py` call
+blocks inside the script, and a focused `cargo check -p`, or one `dotnet build
+X.csproj`, rides a separate light lane (`ASD_BUILD_LIGHT_SLOTS`, default 2) so it never
+waits behind a full build.
 
 ### Payload rules the lint enforces: test forms, CI environment, setup claims, boundary paths, templates
 
@@ -449,6 +457,17 @@ git worktree add ../<repo>-<ID>-P1 -b <branch>-p1 <X-head>
 git worktree add ../<repo>-<ID>-P2 -b <branch>-p2 <X-head>
 ```
 
+Create every worktree of the wave, and warm them, in one call:
+
+```
+python3 "${PLUGIN_ROOT}/scripts/wave_worktrees.py" --root <X> \
+  --wt ../<repo>-<ID>-P1 <branch>-p1 --wt ../<repo>-<ID>-P2 <branch>-p2 [<base>]
+```
+
+It adds the worktrees (fork point `--base`, default HEAD of `X`, or the
+third word of a `--wt` for a package forking from its dependency's branch),
+then runs the setup below for all of them at once, and prints one line each.
+
 The suffix uses a dash, never a slash: git refuses `<branch>/p1` while
 `<branch>` exists, because one ref cannot be both a name and a directory.
 
@@ -467,4 +486,5 @@ clones `X`'s warm build directory into the new worktree, so an implementer's
 first build compiles the workspace crates and no dependency. Log one line per
 worktree from its last output line. A non-zero exit is logged and the spawn
 goes ahead: a worktree without the setup is slower, never wrong. Concurrent
-calls are the script's concern; run them in one shell call, one per worktree.
+calls are the script's concern; `wave_worktrees.py` runs them in parallel in
+one call (add `--no-setup` to skip it).
