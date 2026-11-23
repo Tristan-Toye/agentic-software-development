@@ -1272,8 +1272,12 @@ def headroom_pick(rows: list, running: dict, current: str) -> tuple[str, str]:
     return best, ", ".join(f"{k} {v:.1f}" for k, v in sorted(score.items()))
 
 
+QUEUE_RUN_COMMANDS = ("resolve-merge", "after-merge")   # the runs the merge queue starts (merge_dossier.QUEUE_RUNS): each unblocks merges
+
+
 def queue_order(st: dict) -> tuple[int, str]:
-    """A queued run's place: runs the owner just answered (`queued_first`) go before the rest, then longest-queued first."""
+    """A queued run's place: runs the owner just answered, and the merge queue's own runs (`QUEUE_RUN_COMMANDS`), carry
+    `queued_first` and go before the rest, then longest-queued first."""
     return (0 if st.get("queued_first") else 1, str(st.get("queued_since") or ""))
 
 
@@ -1918,6 +1922,8 @@ class Runner:
             self.ka_since = None
             return True
         mine: tuple[int, str] | None = None
+        queue_run = getattr(self, "command", "") in QUEUE_RUN_COMMANDS   # a run the merge queue waits on goes before ordinary queued runs
+        first = first or queue_run
         low_said, reclaimed = False, 0.0
         while not self.stopping:
             free, floor = disk_free_gib(self.root), disk_floor()
@@ -1964,7 +1970,7 @@ class Runner:
                 since = now()
                 mine = queue_order({"queued_since": since, "queued_first": first})
                 self.save(state="queued", queued_since=since, queued_first=first or None)
-                self.event(f"queued{' first (answered)' if first else ''}: {held} of {cap} runs are working ({why}); "
+                self.event(f"queued{' first (a merge-queue run)' if queue_run else ' first (answered)' if first else ''}: {held} of {cap} runs are working ({why}); "
                            f"{how}; this one starts when a slot frees", "queued")
             self.keepalive_tick()
             time.sleep(float(os.environ.get("ASD_RUNNER_SLOT_POLL") or 10))
@@ -4682,6 +4688,19 @@ def selftest() -> int:
         r = _R(); os.environ["ASD_REEXEC_HELD"] = r.key; r.stopping = True
         check("re-exec marker: with the disk below the floor the held slot is not taken at once",
               Runner.take_slot(r, rehome=True) is False and ("rehome",) not in r.calls and not any(c[0] == "save" and c[1].get("state") == "running" for c in r.calls))
+        class _Q(_R):   # waits once for a slot (the disk is below the floor), then is stopped
+            command = ""
+            def keepalive_tick(self): self.stopping = True
+        saved_poll = os.environ.get("ASD_RUNNER_SLOT_POLL"); os.environ["ASD_RUNNER_SLOT_POLL"] = "0.01"
+        queued_first = {}
+        for cmd in ("resolve-merge", "after-merge", "work-on"):
+            rq_ = _Q(); rq_.command = cmd
+            Runner.take_slot(rq_)  # pyright: ignore[reportArgumentType]
+            queued_first[cmd] = [c[1].get("queued_first") for c in rq_.calls if c[0] == "save" and c[1].get("state") == "queued"]
+        if saved_poll is None: os.environ.pop("ASD_RUNNER_SLOT_POLL")
+        else: os.environ["ASD_RUNNER_SLOT_POLL"] = saved_poll
+        check("slots: a run the merge queue started (resolve-merge, after-merge) queues first, an ordinary run does not",
+              queued_first == {"resolve-merge": [True], "after-merge": [True], "work-on": [None]})
         os.environ.pop("ASD_DISK_FLOOR_GIB")
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
         fp = subprocess.Popen([sys.executable, copy, "--root", root, "--dossier", "W-98", "--foreground"], env=env,

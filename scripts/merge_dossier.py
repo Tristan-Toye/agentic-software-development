@@ -653,6 +653,24 @@ def picked_stacks(ids: list, ready, before: list) -> list:
     return [i for i, p in ids if i in before or ready(i, p)]
 
 
+WAIT_HOOK = None   # set by the worker while its head waits on an agent: called on every poll, so the queue goes on behind it
+_IN_HOOK = False
+
+
+def idle_tick() -> None:
+    """One chance for the worker to use a wait on an agent (`advance`); never nested, and never a reason to stop the wait."""
+    global _IN_HOOK
+    if WAIT_HOOK is None or _IN_HOOK:
+        return
+    _IN_HOOK = True
+    try:
+        WAIT_HOOK()
+    except Exception:
+        pass
+    finally:
+        _IN_HOOK = False
+
+
 def wait_run(key: str, since: str, timeout_s: float) -> str:
     """Wait for the run started at `since` (or later) to end; its end state ("done", "failed", "stopped") or "timeout".
     Only the run's own working time counts against `timeout_s`: an outage, a usage limit, a run slot and an owner question
@@ -665,6 +683,7 @@ def wait_run(key: str, since: str, timeout_s: float) -> str:
             end += poll
         if str(st.get("started") or "") >= since and not run_live(key):
             return str(st.get("state") or "stopped") if alive(st.get("pid")) or st.get("state") in ("done", "failed", "stopped") else "stopped"
+        idle_tick()
         time.sleep(poll)
     return "timeout"
 
@@ -1233,12 +1252,18 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
             return why
 
 
-def work_one(root: str, dossier: str) -> None:
+def work_one(root: str, dossier: str, ahead=None) -> str:
+    """Merge one dossier's stack. `ahead` (a guard over the chain, see `ahead_guard`) means the worker is not at this item yet: its head
+    waits on an agent. Then nothing is waited for and no agent woken: a stack that is clean, up to date and green now is merged,
+    anything else is "skip" and untouched. Returns "merged", "failed" or "skip" there."""
     repo = repo_name(root); key = f"{repo}.{dossier}"
     run_timeout = float(os.environ.get("ASD_MERGE_RUN_TIMEOUT") or 4 * 3600)
+    if run_live(key) and ahead is not None:
+        return "skip"
     if run_live(key):
         set_state(key, state="waiting", error="", pid=os.getpid(), note="waiting for the dossier's own run to finish")
         while run_live(key):
+            idle_tick()
             time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15))
     # A worker killed around the merge (a logout, a reboot) comes back to PRs GitHub has already merged. The merge
     # detector starts their /after-merge, so all that is left here is to say so.
@@ -1247,34 +1272,55 @@ def work_one(root: str, dossier: str) -> None:
         merged = [gh(root, "pr", "view", str(n), "--json", "state", "-q", ".state") for n in prior["prs"]]
         if all(rc == 0 and st.strip() == "MERGED" for rc, st in merged):
             set_state(key, state="merged", error="", pid=None, note="merged; found so after the merge queue restarted")
-            return
+            return "merged"
     chain, why = plan(root, dossier)
     if not chain:
-        set_state(key, state="failed", error=why, pid=None); return
+        if ahead is not None:
+            return "skip"
+        set_state(key, state="failed", error=why, pid=None); return "failed"
     nums = [p["number"] for p in chain]
+    if ahead is not None:
+        # Only what is mergeable right now: no waiting (the head's wait is going on), no agent, nothing that stacks on an item still ahead.
+        if chain[0]["baseRefName"] == "development" or not ahead(chain):
+            return "skip"
+        bad, err = conflicting(root, nums)
+        if bad or err:
+            return "skip"
+        stale = behind(root, nums)
+        if stale:   # an earlier merge put it behind: bring it up to date now, its checks run meanwhile, a later pass merges it
+            for n in stale:
+                gh(root, "pr", "update-branch", str(n), timeout=300)
+            return "skip"
+        if any(checks_state(root, n) != "green" for n in nums):
+            return "skip"
     def note(state, text):
+        if ahead is not None:
+            return
         set_state(key, state=state, prs=nums, error="", pid=os.getpid(), note=text)
         append_line(os.path.join(runs_dir(), key + ".jsonl"), {"ts": now(), "kind": "runner", "text": "merge queue: " + text})
     agent = dossier_id(root, dossier, chain)   # the dossier's own id: its agent resolves, its timeline gets the cleanup
     if chain[0]["baseRefName"] == "development":   # only a kanban dossier gets here (plan)
         why = wait_development(root, note)
         if why:
-            set_state(key, state="failed", prs=nums, error=why, pid=None); return
-    why = settle(root, key, agent, chain, chain[0]["baseRefName"], [], note)
+            set_state(key, state="failed", prs=nums, error=why, pid=None); return "failed"
+    why = settle(root, key, agent, chain, chain[0]["baseRefName"], [], note, use_agent=ahead is None)
     if why:
-        set_state(key, state="failed", prs=nums, error=why, pid=None); return
+        if ahead is not None:
+            return "skip"
+        set_state(key, state="failed", prs=nums, error=why, pid=None); return "failed"
     set_state(key, state="merging", pid=os.getpid())
     import io, contextlib
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         rc = merge(root, dossier, "merge", False, no_cleanup=True, by=(read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}).get("by") or "button")
     if rc != 0:
-        return  # merge() recorded "failed" and why
+        return "failed"  # merge() recorded "failed" and why
     st = read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}
     nums = st.get("prs") or []
     # /after-merge runs beside the queue: it never pushes to the stub, and a question it asks must not hold up the next merge.
     start_run(root, agent, "after-merge", nums)
     set_state(key, state="merged", pid=None, note="merged; /after-merge runs")
+    return "merged"
 
 
 DOC_PATH_RE = re.compile(r"^(\.discovery/|docs/)|\.md$")
@@ -1457,6 +1503,81 @@ def work_pr(root: str, n: int) -> None:
     set_state(key, state="merged", pid=None, note="merged into " + p["baseRefName"])
 
 
+# ---------------------------------------------------------------- going on behind a head that waits on an agent
+# One conflicting dossier must not hold ten clean ones: while the head waits on its agent (a resolve-merge run, or the
+# dossier's own run) the worker merges the later dossiers that are mergeable right now, without an agent and without
+# waiting. The head keeps position 1 and is retried when its run ends; an item that needs an agent too (or waits for
+# checks) stays where it is until its turn. Only dossiers go ahead: a non-code PR (batched, one CI run) keeps its order.
+_AHEAD = {"at": 0.0}
+
+
+def ahead_guard(root: str, earlier: list[dict]):
+    """A guard over a candidate's chain: False when it stacks on, or shares a PR with, an item still ahead of it in the queue
+    (a PR is never merged before the PR it is based on), or when that cannot be told."""
+    rc, out = gh(root, "pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,baseRefName,isDraft,title,url")
+    try:
+        prs = json.loads(out or "[]") if rc == 0 else None
+    except ValueError:
+        prs = None
+    repo = repo_name(root)
+    nums: set[int] = set()
+    for e in earlier:
+        if e.get("pr"):
+            nums.add(int(e["pr"]))
+            continue
+        nums.update(int(n) for n in (read_json(os.path.join(runs_dir(), f"{repo}.{e['id']}.merge.json"), {}) or {}).get("prs") or [])
+        if prs is not None:
+            nums.update(p["number"] for p in chain_of(prs, e["id"], dossier_prs(root))[0])
+    heads = {p["headRefName"] for p in prs or [] if p["number"] in nums}
+
+    def guard(chain: list[dict]) -> bool:
+        if prs is None:
+            return False
+        return not ({p["number"] for p in chain} & nums) and not any(p["baseRefName"] in heads for p in chain)
+    return guard
+
+
+def advance(root: str, head: str) -> list[str]:
+    """One pass over the dossiers behind `head` while it waits: each that merges now is merged and leaves the queue. The merged ids."""
+    if os.environ.get("ASD_MERGE_AHEAD") == "0":
+        return []
+    t = time.time()
+    if t - _AHEAD["at"] < float(os.environ.get("ASD_MERGE_AHEAD_EVERY") or 60):
+        return []
+    _AHEAD["at"] = t
+    repo = repo_name(root)
+    merged: list[str] = []
+    with locked(repo):
+        items = list((read_json(queue_path(repo), {}) or {}).get("items") or [])
+    ids = [i["id"] for i in items]
+    if head not in ids:
+        return []
+    for idx in range(ids.index(head) + 1, len(items)):
+        it = items[idx]
+        if it.get("pr"):
+            continue
+        earlier = [e for e in items[:idx] if e["id"] not in merged]
+        key = f"{repo}.{it['id']}"
+        before = read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}
+        try:
+            res = work_one(root, it["id"], ahead_guard(root, earlier))
+        except Exception:
+            res = "skip"
+        if res == "skip":
+            if before:   # whatever a look at it touched: it is still just waiting its turn
+                write_json(os.path.join(runs_dir(), key + ".merge.json"), before)
+            continue
+        merged.append(it["id"])
+        with locked(repo):   # merged or failed, as when the worker reaches it: out of the line, the rest move up
+            q = read_json(queue_path(repo), {}) or {}
+            q["items"] = [i for i in (q.get("items") or []) if i["id"] != it["id"]]
+            write_json(queue_path(repo), q)
+            for n, i in enumerate(q["items"]):
+                if n:
+                    set_state(f"{repo}.pr-{i['pr']}" if i.get("pr") else f"{repo}.{i['id']}", position=n + 1)
+    return merged
+
+
 def worker(root: str) -> int:
     """Work the repository's merge queue to the end, one dossier at a time."""
     repo = repo_name(root)
@@ -1484,6 +1605,9 @@ def worker(root: str) -> int:
                 if int(it["pr"]) not in single:
                     run.append(int(it["pr"]))
         finished = [head]
+        global WAIT_HOOK
+        _AHEAD["at"] = 0.0
+        WAIT_HOOK = lambda h=head, r=q.get("root") or root: advance(r, h)
         try:
             if head_pr and len(run) > 1 and run[0] == int(head_pr) and os.environ.get("ASD_MERGE_BATCH") != "0":
                 single.update(run)
@@ -1497,6 +1621,8 @@ def worker(root: str) -> int:
                 finished = []   # the batch failed: each goes through on its own
             else:
                 set_state(f"{repo}.pr-{head_pr}" if head_pr else f"{repo}.{head}", state="failed", error=f"{type(e).__name__}: {e}", pid=None)
+        finally:
+            WAIT_HOOK = None
         with locked(repo):
             q = read_json(queue_path(repo), {}) or {}
             q["items"] = [i for i in (q.get("items") or []) if i["id"] not in finished]
@@ -2636,6 +2762,91 @@ print("started")
         check("batch: a member pushed to during the batch is left open and says so, never closed", "pr close 530" not in cc and sa.get("state") == "failed" and "changed" in sa.get("error", ""), cc + str(sa))
         check("queue: both read merged", read_json(os.path.join(rdir, "repo.W-128.merge.json"), {}).get("state") == "merged" and read_json(os.path.join(rdir, "repo.W-130.merge.json"), {}).get("state") == "merged", str(read_json(os.path.join(rdir, "repo.W-128.merge.json"), {})) + str(read_json(os.path.join(rdir, "repo.W-130.merge.json"), {})))
         RUNNER = saved
+    # ---- head-of-line: a head that waits on its agent does not hold the dossiers behind it ----
+    with tempfile.TemporaryDirectory() as t3:
+        PP = lambda n, head, base: {"number": n, "headRefName": head, "baseRefName": base, "isDraft": False, "title": "t", "url": "u"}
+        rd3, root3 = os.path.join(t3, "r"), os.path.join(t3, "repo")
+        os.makedirs(rd3); os.makedirs(root3)
+        saved_env = {k: os.environ.get(k) for k in ("ASD_RUNS_DIR", "ASD_MERGE_AHEAD_EVERY", "ASD_MERGE_AHEAD", "ASD_MERGE_POLL")}
+        saved_fns = {n: globals()[n] for n in ("work_one", "gh", "dossier_prs", "plan", "conflicting", "behind", "checks_state", "settle", "merge", "start_run", "dossier_id")}
+        os.environ.update(ASD_RUNS_DIR=rd3, ASD_MERGE_AHEAD_EVERY="0", ASD_MERGE_POLL="0.01")
+        os.environ.pop("ASD_MERGE_AHEAD", None)
+        try:
+            def run_queue(ids, clean, ticks=6, stacks=None):
+                """The worker over `ids`; the head waits `ticks` polls on its run. (order merged, queue seen mid-wait, states mid-wait)"""
+                order, seen = [], {}
+                prs_ = [PP(1, "feat/W-1-x", "stub/s")] + [PP(n, f"feat/W-{n}-x", "stub/s") for n in (2, 4, 5)] + [PP(3, "feat/W-3-x", "feat/W-1-x")]
+                for f in os.listdir(rd3): os.remove(os.path.join(rd3, f))
+                write_json(queue_path("repo"), {"root": root3, "items": [{"id": i, "ts": now()} for i in ids]})
+                for n, i in enumerate(ids, 1): set_state(f"repo.{i}", state="queued", position=n, prs=[])
+                globals()["gh"] = lambda _r, *a, **_k: (0, json.dumps(prs_))
+                globals()["dossier_prs"] = lambda _r: {}
+                def fake_work_one(r, d, ahead=None):
+                    if ahead is None and d == ids[0]:   # the head: its resolve-merge run is queued for a slot, polled like wait_run does
+                        set_state(f"repo.{d}", state="resolving", prs=[1], pid=os.getpid())
+                        for _ in range(ticks):
+                            idle_tick(); time.sleep(0.005)
+                        seen["items"] = [i["id"] for i in (read_json(queue_path("repo"), {}) or {}).get("items") or []]
+                        seen["states"] = {i: read_json(os.path.join(rd3, f"repo.{i}.merge.json"), {}) for i in ids}
+                    elif ahead is not None:
+                        n = int(d.split("-")[1]); chain = [p for p in prs_ if p["number"] in ((n, 1) if d == "W-3" else (n,))]
+                        if not ahead(chain) or d not in clean:
+                            return "skip"
+                    order.append(d + ("*" if ahead is not None else ""))
+                    set_state(f"repo.{d}", state="merged", pid=None)
+                    return "merged"
+                globals()["work_one"] = fake_work_one
+                rc = worker(root3)
+                return rc, order, seen
+            rc, order, seen = run_queue(["W-1", "W-2", "W-3", "W-4", "W-5"], clean={"W-2", "W-3", "W-4"})
+            check("head of line: the clean dossiers behind a head waiting on its agent merge meanwhile, the one that needs an agent too stays",
+                  rc == 0 and order[:2] == ["W-2*", "W-4*"] and "W-5*" not in order, str(order))
+            check("head of line: the head keeps position 1 and the queue its order while the others leave",
+                  seen.get("items") == ["W-1", "W-3", "W-5"] and seen["states"]["W-1"].get("state") == "resolving" and seen["states"]["W-3"].get("position") == 2
+                  and seen["states"]["W-5"].get("position") == 3, str(seen))
+            check("head of line: a stacked child behind its resolving parent is not merged ahead of it (it shares the parent's PR)",
+                  "W-3*" not in order and order.index("W-1") < order.index("W-3"), str(order))
+            check("head of line: the head finishing its resolve is merged next, then the child, then the rest in place",
+                  order == ["W-2*", "W-4*", "W-1", "W-3", "W-5"], str(order))
+            rc, order, seen = run_queue(["W-1", "W-2", "W-4"], clean={"W-2", "W-4"}, ticks=3)
+            os.environ["ASD_MERGE_AHEAD"] = "0"
+            rc0, order0, _ = run_queue(["W-1", "W-2", "W-4"], clean={"W-2", "W-4"}, ticks=3)
+            os.environ.pop("ASD_MERGE_AHEAD")
+            check("head of line: ASD_MERGE_AHEAD=0 restores the strict order", order == ["W-2*", "W-4*", "W-1"] and order0 == ["W-1", "W-2", "W-4"], f"{order} {order0}")
+            # a PR based on a PR still ahead in the queue (different dossier, its own branch name) is not merged either
+            globals()["gh"] = lambda _r, *a, **_k: (0, json.dumps([PP(1, "feat/W-1-x", "stub/s"), PP(9, "feat/W-9-x", "feat/W-1-x")]))
+            write_json(os.path.join(rd3, "repo.W-1.merge.json"), {"prs": [1]})
+            guard_ = ahead_guard(root3, [{"id": "W-1"}])
+            check("head of line: the guard refuses a chain whose base is a branch of an item ahead, allows an independent one",
+                  not guard_([PP(9, "feat/W-9-x", "feat/W-1-x")]) and guard_([PP(8, "feat/W-8-x", "stub/s")]) and not ahead_guard(root3, [{"id": "W-1"}, {"id": "#7", "pr": 7}])([PP(7, "docs/x", "stub/s")]))
+            # work_one in ahead mode: only what is mergeable right now, never an agent, never a failed record
+            seen_calls = []
+            def settle_(*a, **k): seen_calls.append(("settle", k.get("use_agent"))); return ""
+            def merge_(r, d, *a, **k): write_json(os.path.join(rd3, f"repo.{d}.merge.json"), {"state": "merged", "prs": [11]}); return 0
+            globals().update(plan=lambda r, d: ([PP(11, "feat/W-6-x", "stub/s")], ""), conflicting=lambda r, n: ([], ""), behind=lambda r, n: [],
+                             checks_state=lambda r, n: "green", settle=settle_, merge=merge_, dossier_id=lambda r, d, c: d,
+                             start_run=lambda r, d, c, n: seen_calls.append(("run", d, c)) or "", work_one=saved_fns["work_one"])
+            globals()["gh"] = lambda _r, *a, **_k: seen_calls.append(("gh",) + a) or (0, "")
+            for f in os.listdir(rd3): os.remove(os.path.join(rd3, f))
+            res = work_one(root3, "W-6", lambda c: True)
+            check("head of line: a clean, up to date, green dossier merges ahead without an agent and /after-merge starts",
+                  res == "merged" and ("settle", False) in seen_calls and ("run", "W-6", "after-merge") in seen_calls, f"{res} {seen_calls}")
+            outcomes = {}
+            for name, patch in (("pending", {"checks_state": lambda r, n: "pending"}), ("red", {"checks_state": lambda r, n: "red"}),
+                                ("conflict", {"conflicting": lambda r, n: ([11], "")}), ("behind", {"behind": lambda r, n: [11]}),
+                                ("guard", {}), ("settle", {"settle": lambda *a, **k: "checks red"})):
+                for f in os.listdir(rd3): os.remove(os.path.join(rd3, f))
+                seen_calls.clear(); globals().update(conflicting=lambda r, n: ([], ""), behind=lambda r, n: [], checks_state=lambda r, n: "green", settle=settle_); globals().update(patch)
+                outcomes[name] = (work_one(root3, "W-6", (lambda c: False) if name == "guard" else (lambda c: True)), (read_json(os.path.join(rd3, "repo.W-6.merge.json"), {}) or {}).get("state"),
+                                  ("run", "W-6", "resolve-merge") in seen_calls, any(c[0] == "gh" and "update-branch" in c for c in seen_calls))
+            check("head of line: pending or red checks, a conflict, a guard refusal or a failed settle leave it untouched (no failed record, no agent)",
+                  all(v[:3] == ("skip", None, False) for v in outcomes.values()), str(outcomes))
+            check("head of line: a stack behind its base is only brought up to date; its checks run, a later pass merges it", outcomes["behind"][3] and not outcomes["pending"][3], str(outcomes))
+        finally:
+            globals().update(saved_fns)
+            for k, v in saved_env.items():
+                if v is None: os.environ.pop(k, None)
+                else: os.environ[k] = v
     # ---- a merged dossier's failure questions close by themselves ----
     with tempfile.TemporaryDirectory() as t2:
         qd, rd = os.path.join(t2, "q"), os.path.join(t2, "r")

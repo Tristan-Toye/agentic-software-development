@@ -152,7 +152,8 @@ the recorded checkpoints.
   `queued` (`queued_since`) and waits, longest-queued first. A run the owner
   just answered queues first (`queued_first`): it already waited on the owner,
   so it goes ahead of every run not answered and takes the next slot that
-  frees. A run waiting on the owner holds no slot. The dashboard
+  frees. So does a run the merge queue started (`resolve-merge`, `after-merge`):
+  merges wait on it. A run waiting on the owner holds no slot. The dashboard
   shows "queued · waiting for a slot". So a usage-limit reset, or many Start
   presses, no longer sets ten sessions going in the same minute.
   **One reserved slot per active repo, the rest shared:** `~/.agentic/active-repos.json`
