@@ -297,6 +297,33 @@ def checklist_members(text: str) -> list[str]:
     return seen
 
 
+def split_members(spec: str, known: list[str]) -> list[str]:
+    """`--surface` members: commas inside (), [], {} or <> belong to the name (`Map<K, V>.get`,
+    `f(a, b)`); a bare comma still splits, unless the pieces it joins form a known member
+    (`a, b` when the checklist names `a, b`)."""
+    parts, depth, cur = [], 0, ""
+    for ch in spec:
+        depth += (ch in "([{<") - (ch in ")]}>")
+        if ch == "," and depth <= 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    out, i = [], 0
+    while i < len(parts):
+        for j in range(len(parts), i + 1, -1):   # longest known join first
+            if ",".join(parts[i:j]).strip() in known:
+                out.append(",".join(parts[i:j]).strip())
+                i = j
+                break
+        else:
+            if parts[i].strip():
+                out.append(parts[i].strip())
+            i += 1
+    return out
+
+
 def criteria_items(dossier_text: str) -> list[tuple[int, str]]:
     """The numbered `## Acceptance criteria`, continuation lines folded in and
     the `(owner: ...; env: ...)` annotation dropped, so a test file's name never
@@ -457,14 +484,15 @@ def run(argv: list[str]) -> int:
                 with open(path, encoding="utf-8") as fh:
                     sys.stdout.write(fh.read())
             elif args.verb == "usage":
+                with open(path, encoding="utf-8") as fh:
+                    checklist = fh.read()
+                known = checklist_members(checklist)
                 surfaces: dict[str, list[str]] = {}
                 for spec in args.surface:
                     name, sep, ms = spec.partition("=")
                     if not sep or not name.strip() or not ms.strip():
                         raise Refused("--surface %r is not NAME=MEMBER[,MEMBER...]" % spec)
-                    surfaces[name.strip()] = [m.strip() for m in ms.split(",") if m.strip()]
-                with open(path, encoding="utf-8") as fh:
-                    checklist = fh.read()
+                    surfaces[name.strip()] = split_members(ms, known)
                 with open(args.dossier, encoding="utf-8") as fh:
                     dossier_text = fh.read()
                 u = checklist_usage(checklist, dossier_text, surfaces or None)
@@ -588,6 +616,11 @@ def selftest() -> int:
                   "--log", dpath])
         with open(dpath) as fh:
             check("the usage CLI logs the USAGE-SURFACE line", rc == 0 and "- USAGE-SURFACE: queue, rest — queue 2/4" in fh.read())
+        check("--surface: a comma inside brackets stays in the member name",
+              split_members("Map<K, V>.get,f(a, b), parse", []) == ["Map<K, V>.get", "f(a, b)", "parse"])
+        check("--surface: a bare comma joins into a member the checklist names",
+              split_members("a, b,parse", ["a, b", "parse"]) == ["a, b", "parse"]
+              and split_members("a,b", ["parse"]) == ["a", "b"])
         check("a malformed --surface is refused with exit 1",
               run(["checklist", "usage", "W-004", "--root", tmp, "--dossier", dpath, "--surface", "queue"]) == 1)
         # the CLI end to end, with a dossier that takes the log line
