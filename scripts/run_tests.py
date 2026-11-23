@@ -290,6 +290,7 @@ def names_not_run(log_text: str, names: list[str]) -> list[str]:
 def outcomes(log_text: str, names: list[str]) -> dict[str, str | None]:
     """Per name: 'failed' when a libtest or pytest result line containing it says FAILED,
     'ok' when one says ok/PASSED and none failed, None when no result line names it."""
+    log_text = ANSI_RE.sub("", log_text)
     lines = re.findall(r"^test (\S+) \.\.\. (ok|FAILED)", log_text, re.M)
     lines += [(m[0], "ok" if m[1] == "PASSED" else "FAILED")
               for m in re.findall(r"^(\S+::\S+) (PASSED|FAILED)\b", log_text, re.M)]
@@ -297,6 +298,10 @@ def outcomes(log_text: str, names: list[str]) -> dict[str, str | None]:
     # xunit v3 console: `    Ns.Class.Test [FAIL]` / `[PASS]`; the marker is not part of the name.
     lines += [(m[0], "ok" if m[1] == "PASS" else "FAILED")
               for m in re.findall(r"^[ \t]*(\S+) \[(FAIL|PASS)\]", log_text, re.M)]
+    # dotnet: Microsoft.Testing.Platform `failed Ns.Class.Test (12ms)` / `passed ...`, and VSTest's
+    # `  Failed Ns.Class.Test [12 ms]` / `  Passed ...`; the time is not part of the name.
+    lines += [(m[1], "ok" if m[0].lower() == "passed" else "FAILED")
+              for m in re.findall(r"^[ \t]*(failed|passed|Failed|Passed) (\S+) [(\[][^)\]]*[)\]][ \t]*$", log_text, re.M)]
     # Shell suites: `FAIL: <label> — why`, `ok: <label>`, `PASS: <label>`, or `<label> FAIL: why`. The label is
     # free text, so a name must stand alone in it (`G1` is not `G10`).
     shell = []
@@ -1268,6 +1273,16 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         rc = main(["--log", log_path, "--env-script", os.path.join(tmp, "missing.sh"), "--", "true"])
         check("a local run with an unreadable --env-script fails, not silently unmodified", rc != 0)
 
+        # --- #521: Microsoft.Testing.Platform and VSTest per-test lines prove red and green ---
+        mtp = ("\x1b[31mfailed\x1b[m Ns.LoaderTests.Reads (12ms)\n  Assert.Equal() Failure\n"
+               "passed Ns.LoaderTests.Other (3ms)\n  Failed Old.Tests.Gone [12 ms]\n  Passed Old.Tests.Kept [1 ms]\n"
+               "\nTest run summary: Failed!\n  total: 4\n  failed: 2\n")
+        check("MTP failed line (colour stripped) proves red", proof(mtp, ["Ns.LoaderTests.Reads"], "red")[0])
+        check("MTP passed line proves green, not red", proof(mtp, ["Ns.LoaderTests.Other"], "green")[0]
+              and not proof(mtp, ["Ns.LoaderTests.Other"], "red")[0])
+        check("VSTest Failed/Passed lines prove red and green", proof(mtp, ["Old.Tests.Gone"], "red")[0]
+              and proof(mtp, ["Old.Tests.Kept"], "green")[0])
+        check("MTP: a name with no per-test line is refused, not proven", proof(mtp, ["Ns.Absent"], "red")[1].startswith("PROOF REFUSED"))
         # --- #377: xunit v3 console lines carry a trailing [FAIL]/[PASS] marker ---
         xunit = "  Starting\n    Ns.Class.Test [FAIL]\n    Ns.Class.Other [PASS]\n"
         check("xunit v3 [FAIL] line proves red by --proof-name", proof(xunit, ["Ns.Class.Test"], "red")[0])

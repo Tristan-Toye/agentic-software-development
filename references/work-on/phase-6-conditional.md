@@ -299,7 +299,8 @@ build; skip only mechanical work, and log the reason.
 **The usage surface is the one the acceptance criteria exercise most.** Run
 `python3 scripts/build_records.py checklist usage <ID> --dossier <dossier>
 --surface <name>=<member>,<member> ...` with one `--surface` per Phase 3
-unit-author surface (every checklist member in exactly one) and `--log
+unit-author surface (every checklist member in exactly one; a member name may
+hold commas, inside brackets or exactly as the checklist names it) and `--log
 <dossier>`: it counts, per surface, the distinct criteria that name one of
 its members, and logs `USAGE-SURFACE: <name>`. When it names the primary
 surface, or `none`, the check runs on the primary surface alone; on a tie,
