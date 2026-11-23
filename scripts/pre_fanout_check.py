@@ -204,9 +204,9 @@ def validator_step(d: dc.Driver, name: str, wt_root: str, args, extra: list[str]
 
 
 def run(d: dc.Driver, args) -> int:
-    if not args.dossier:
-        raise dc.Surprise("--dossier is required")
-    path = dc.resolve_dossier(args.root, args.dossier)
+    if not args.dossier or args.dossier == "none":
+        raise dc.Surprise("--dossier is required (none given, and none derivable from the branch name)")
+    path = dc.resolve_dossier(args.root, args.dossier, also=(os.path.abspath(args.worktree),) if args.worktree else ())
     text = open(path, encoding="utf-8").read()
     wt = os.path.abspath(args.worktree) if args.worktree else args.root
     validator_step(d, "validate", args.root, args, [])
@@ -281,8 +281,16 @@ def selftest() -> int:
         c("receipts step ran and found the missing receipts", any(s["step"] == "receipts" and s["status"] == "finding" for s in data["steps"]))
         rc, out = dc.run_self("pre_fanout_check.py", "--dossier", "W-9", "--root", main, env=env)
         c("a missing dossier is a surprise", rc == 2 and "not found" in out)
+        # derived: --dossier from the branch name, and a dossier file that lives in the worktree only
+        wt2 = os.path.join(tmp, "wt2")
+        dc.fixture_git(main, "worktree", "add", "-q", "-b", "feat/W-5-thing", wt2)
+        dc.fixture_write(wt2, ".discovery/dossiers/W-5-thing.md", "---\nid: W-5\n---\n" + text)
+        rc, out = dc.run_self("pre_fanout_check.py", "--root", main, "--worktree", wt2, env=env)
+        c("--dossier from the branch name, dossier file only in the worktree", "dossier=W-5" in out and "not found" not in out)
+        rc, out = dc.run_self("pre_fanout_check.py", "--root", main, env=env, cwd=main)
+        c("no --dossier on a branch without an ID is a clear surprise", rc == 2 and "--dossier is required" in out)
     return c.report()
 
 
 if __name__ == "__main__":
-    sys.exit(dc.drive("pre_fanout_check", None, build_parser, run, selftest))
+    sys.exit(dc.drive("pre_fanout_check", None, build_parser, run, selftest, derive=("dossier",)))

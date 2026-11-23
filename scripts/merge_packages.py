@@ -150,10 +150,22 @@ def do_merges(d: dc.Driver, wt: str, order: list[dict], branches: dict, args) ->
 
 def run(d: dc.Driver, args) -> int:
     args.worktree = args.worktree or dc.toplevel(os.getcwd())   # run from X, the build worktree, it is the default
-    if not args.worktree or not args.branch:
-        raise dc.Surprise("--worktree (default: the working directory's git root) and at least one --branch PKG=BRANCH are required")
+    if not args.worktree:
+        raise dc.Surprise("--worktree is required: the working directory is not inside a git work tree")
     wt = os.path.abspath(args.worktree)
-    dossier_file = dc.resolve_dossier(args.root, args.dossier, args.log)
+    notes: list[str] = []
+    if not args.branch:
+        # no --branch: the staged implementer payloads (.agent-staging/payloads/*.md) name each package's branch
+        found, notes = dc.derive_branches(wt)
+        args.branch = [f"{pkg}={br}" for pkg, br in found.items()]
+        if args.branch:
+            d.facts["derived_branches"] = dict(found)
+    if notes:
+        d.facts["derive_notes"] = notes
+    if not args.branch:
+        raise dc.Surprise("at least one --branch PKG=BRANCH is required, and none could be derived from "
+                          f"{os.path.join(wt, '.agent-staging', 'payloads')}" + (f" ({'; '.join(notes[:3])})" if notes else ""))
+    dossier_file = dc.resolve_dossier(args.root, args.dossier, args.log, also=(wt,))
     if not os.path.isfile(dossier_file):
         raise dc.Surprise(f"dossier file not found: {dossier_file} (give --dossier or --log)")
     order = merge_order(parse_package_table(open(dossier_file, encoding="utf-8").read()))
@@ -163,6 +175,9 @@ def run(d: dc.Driver, args) -> int:
         if not br:
             raise dc.Surprise(f"--branch wants PKG=BRANCH, got {spec!r}")
         if pid not in {r["id"] for r in order}:
+            if "derived_branches" in d.facts:
+                d.facts.setdefault("derive_notes", []).append(f"{pid}: derived branch, not a row of ## Work packages, left out")
+                continue
             raise dc.Surprise(f"--branch names {pid}, which is not a row of ## Work packages")
         branches[pid] = br
     d.facts["order"] = [r["id"] for r in order]
@@ -262,8 +277,35 @@ def selftest() -> int:
         c("X unchanged after the aborted merge", dc.fixture_git(x, "rev-parse", "HEAD").strip() == before)
         rc, out = dc.run_self("merge_packages.py", "--worktree", x, "--dossier", "W-3", "--root", main, "--branch", "ZZ=pkg-p3", env=env)
         c("an unknown package is a surprise", rc == 2 and "not a row" in out)
+
+        # derived from the run context: no --worktree, no --branch, no --root dossier (it lives in the worktree only)
+        main2 = os.path.join(tmp, "main2")
+        dc.fixture_repo(main2)
+        dc.fixture_commit(main2, "README", "r\n", "init")
+        x2 = os.path.join(tmp, "x2")
+        dc.fixture_git(main2, "worktree", "add", "-q", "-b", "feat/w-4", x2)
+        dc.fixture_git(x2, "branch", "pkg-q1")
+        wq = os.path.join(tmp, "q1")
+        dc.fixture_git(main2, "worktree", "add", "-q", wq, "pkg-q1")
+        dc.fixture_commit(wq, "src/flush.py", "x = 1\n", "q1")
+        dc.fixture_write(x2, ".discovery/dossiers/W-4-slug.md", "---\nid: W-4\n---\n" + table + "\n## Build log\n")
+        dc.fixture_write(x2, ".agent-staging/payloads/p1.md", "WORKTREE_DIR: " + x2 + "\nBRANCH: pkg-q1\nMODE: build\nPACKAGE: P1 flush\nOWNED_PATHS: src/flush.py\n")
+        dc.fixture_write(x2, ".agent-staging/payloads/ut.md", "WORKTREE_DIR: " + x2 + "\nTEST_PATHS: tests/test_a.py\n")
+        dc.fixture_write(x2, ".agent-staging/payloads/p9.md", "BRANCH: gone-branch\nMODE: build\nPACKAGE: P9 zzz\n")
+        found, notes = dc.derive_branches(x2)
+        c("derive_branches keeps the existing branch, drops the missing one with a note", found == {"P1": "pkg-q1"} and any("gone-branch" in n for n in notes))
+        rc, out = dc.run_self("merge_packages.py", "--dossier", "W-4", "--root", main2, env=env, cwd=x2)
+        c("no --worktree, --branch or root dossier: all derived, merged", rc == 0 and os.path.isfile(os.path.join(x2, "src", "flush.py")))
+        ev2 = os.path.join(main2, ".git", "asd-drivers", "driver-evidence", "W-4")
+        import json
+        data2 = json.load(open(os.path.join(ev2, os.listdir(ev2)[0])))
+        c("the evidence records what was derived", data2["facts"].get("derived_branches") == {"P1": "pkg-q1"} and data2["facts"].get("derived_args"))
+        dc.fixture_write(x2, ".agent-staging/payloads/p1b.md", "BRANCH: pkg-other\nMODE: build\nPACKAGE: P1 flush\n")
+        dc.fixture_git(x2, "branch", "pkg-other")
+        rc, out = dc.run_self("merge_packages.py", "--dossier", "W-4", "--root", main2, env=env, cwd=x2)
+        c("two branches for one package are not derived, the error stays clear", rc == 2 and "--branch" in out and "2 branches" in out)
     return c.report()
 
 
 if __name__ == "__main__":
-    sys.exit(dc.drive("merge_packages", None, build_parser, run, selftest))
+    sys.exit(dc.drive("merge_packages", None, build_parser, run, selftest, derive=("worktree", "dossier")))
