@@ -1895,6 +1895,14 @@ class Runner:
         answered this run, so it queues ahead of every run not answered (it already waited on the owner). `rehome`: the
         run is about to start a stage in a fresh session (nothing to resume), so the slot goes with the account that has the
         most paced headroom, not the one it used last; a run with a session to resume keeps its account."""
+        if os.environ.pop("ASD_REEXEC_HELD", None) == self.key:
+            # this process is the exec of a runner that held a slot at a stage boundary (reexec_if_changed): same pid, same
+            # run, the slot was never given up, so it is not asked for again (it would queue behind the runs that took
+            # their slots meanwhile). A dead runner never gets here: its pid is gone and the census skips it.
+            self.event("restarted on new code; keeps the slot it held", "running")
+            self.save(state="running", queued_since=None, queued_first=None, over_cap=None)
+            self.ka_since = None
+            return True
         mine: tuple[int, str] | None = None
         low_said, reclaimed = False, 0.0
         while not self.stopping:
@@ -3078,6 +3086,7 @@ class Runner:
             sys.stdout.flush(); sys.stderr.flush()
         except Exception:
             pass
+        os.environ["ASD_REEXEC_HELD"] = self.key   # the exec'd process keeps the slot this one holds (see take_slot)
         os.execv(sys.executable, [sys.executable, path, *args])
 
     def on_term(self, *_a) -> None:
@@ -4575,6 +4584,41 @@ def selftest() -> int:
         check("re-exec: the run ends DONE in the same process", rp.wait(timeout=60) == 0 and state_of("W-92").get("state") == "done"
               and state_of("W-92").get("pid") == rp.pid)
         check("re-exec: the restart is logged", any("runner code changed" in t for t in texts("W-92")))
+        # a restart keeps its slot with the cap full; a fresh start queues behind; a dead holder frees its slot
+        rd = runs_dir()
+        cap_env = {k: env.get(k) for k in ("ASD_RUNNER_MAX_LIVE", "ASD_RUNNER_SLOT_POLL")}
+        env["ASD_RUNNER_SLOT_POLL"] = "0.2"
+        busy_files = [os.path.join(rd, f"other.B-{i}.runner.json") for i in range(3)]
+        for bf in busy_files:
+            write_json(bf, {"pid": os.getpid(), "state": "testing"})   # alive, holds no slot yet
+        env["ASD_RUNNER_MAX_LIVE"] = str(slot_census("x")[0] + 3)   # runs left over from earlier cases count: the cap is 3 above them
+        shutil.copy(me, copy)   # the copy is back to the original code: the append below is a new change
+        scenario([{"turns": [[{"bash": "sleep 1", "hold": 3, "after": 2}, {"append": copy, "line": "# a second deployed fix"}, {"final": "RUNNER: STAGE-DONE one"}]]},
+                  {"turns": [[{"final": "RUNNER: DONE"}]]}])
+        rp = subprocess.Popen([sys.executable, copy, "--root", root, "--dossier", "W-97", "--foreground"], env=env,
+                              stdout=open(os.path.join(tmp, "out.W-97.txt"), "w"), stderr=subprocess.STDOUT)
+        until(lambda: any("stage 1 start" in t for t in texts("W-97")), 20)
+        for bf in busy_files:
+            write_json(bf, {"pid": os.getpid(), "state": "running"})   # now 3 of 3 slots are held, this run being one of 3 + itself
+        try:
+            ended = rp.wait(timeout=40)
+        except subprocess.TimeoutExpired:
+            rp.kill(); ended = None
+        check("re-exec keeps the slot: the restarted run goes on with 3 of 3 busy, no queue",
+              ended == 0 and any("runner code changed" in t for t in texts("W-97")) and any("keeps the slot" in t for t in texts("W-97"))
+              and not any(t.startswith("queued") for t in texts("W-97")))
+        scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
+        fp = subprocess.Popen([sys.executable, copy, "--root", root, "--dossier", "W-98", "--foreground"], env=env,
+                              stdout=open(os.path.join(tmp, "out.W-98.txt"), "w"), stderr=subprocess.STDOUT)
+        check("fresh start queues behind the 3 busy runs", bool(until(lambda: state_of("W-98").get("state") == "queued", 20)))
+        dead = subprocess.Popen(["/usr/bin/true"]); dead.wait()
+        write_json(busy_files[0], {"pid": dead.pid, "state": "running"})   # a crashed holder
+        check("a crashed holder's slot is reclaimed by the queued run", fp.wait(timeout=40) == 0 and state_of("W-98").get("state") == "done")
+        for bf in busy_files:
+            try: os.remove(bf)
+            except OSError: pass
+        for k, v in cap_env.items():
+            env.pop(k, None) if v is None else env.__setitem__(k, v)
         vroot = os.path.join(tmp, "cache", "asd")
         def cache_dir(name: str, age: int, script: bool = True) -> str:
             """A plugin-cache version dir whose script was installed `age` seconds ago (the dir stays empty without it)."""
