@@ -28,7 +28,13 @@ const ADMITTED_FILE = new RegExp(
 // project or any other). Mirrored by `in_test_project` in scripts/check_payload.py.
 const TEST_FRAMEWORK = /Microsoft\.NET\.Test\.Sdk|xunit|nunit|MSTest|TUnit/i
 
+// #515: and any directory whose name ends in `.Tests`, `.UnitTests` or `.IntegrationTests`, so an
+// existing file of such a project is admitted even when its csproj names no framework itself
+// (central package versions, a props file). Mirrored by `TEST_PROJECT_DIR` in scripts/check_payload.py.
+const TEST_PROJECT_DIR = /(?:^|\/)[^/]+\.(?:Unit|Integration)?Tests\//
+
 function inTestProject(abs: string): boolean {
+  if (TEST_PROJECT_DIR.test(abs)) return true
   for (let dir = dirname(abs); ; dir = dirname(dir)) {
     try {
       for (const f of readdirSync(dir)) {

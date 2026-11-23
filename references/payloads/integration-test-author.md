@@ -14,7 +14,14 @@ PROMISE_CHECKLIST: |
   <only when this Read + Write author is the routed shape for a UNIT surface
    — under Claude Code, a shell suite or a compiled-language test file
    (work-on.md Phase 4): that surface's checklist, tags included, exactly as
-   the unit author would receive it. Omit for a flow. SUPPORT_PATHS / SUPPORT
+   the unit author would receive it. Also the `[IT]`-tagged lines of
+   `.discovery/checklists/<ID>.md` (the integration slice): the composer
+   fills them, and fills the whole checklist (with CITATION) when every
+   contract path is the author's own TEST_PATHS or the dossier has no
+   implementation package (a test-only change: the test file holds the
+   contract). check_payload.py refuses an empty one while `[IT]` lines exist,
+   unless it says `none (<payload that carries them>)`. Omit only for a pure
+   flow with no such line. SUPPORT_PATHS / SUPPORT
    travel with it, same rule as the unit author's: check_payload.py flags a
    checklist line naming a type in neither CONTRACT nor SUPPORT_PATHS /
    SUPPORT (nor STYLE_SAMPLE, SHARED_IDIOM) as a defect, naming the line.>

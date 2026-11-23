@@ -76,7 +76,9 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   length or membership check; `[member]` is membership of the whole
   element. Cover every line, one test per line, through the signature in
   `CONTRACT`; the dossier still supplies intent and the criteria still get
-  their flow tests. Absent, you test the flow alone.
+  their flow tests. Absent, you test the flow alone. Also routed to you: the
+  `[IT]` lines of the promise checklist, and the whole checklist when your
+  own test file holds the contract (a test-only change); cite each line.
 - `SHARED_IDIOM` — present only when a test must construct or invoke a
   concept the payload names as shared: the one helper, type or shape to use
   for it, verbatim. Use it as written; never invent an alternative.

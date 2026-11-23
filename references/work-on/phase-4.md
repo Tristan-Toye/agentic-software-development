@@ -106,7 +106,11 @@ python3 "${PLUGIN_ROOT}/scripts/compose_payloads.py" --kind <agent> \
 It fills every mechanical field from the files, adds each contract member's
 `path:line` to the owned paths so an implementer starts where the stub is,
 regenerates the integration author's excerpt from the live dossier (and its
-`.agent-staging/sealed-paths.txt`, the files its hook refuses to open), and
+`.agent-staging/sealed-paths.txt`, the files its hook refuses to open: the
+wave's implementation paths only, never any test author's own TEST_PATHS,
+#524), fills its `PROMISE_CHECKLIST` from the `[IT]` lines of
+`.discovery/checklists/<ID>.md` (#533; the whole checklist for a test-only
+change, #486), and
 leaves every judgement field as `@@FILL_<FIELD>@@` with a one-line hint.
 Replace each `@@FILL_…@@` yourself — `check_payload.py` refuses any that
 is left — or pass it with `--set FIELD=VALUE`. `--contract-paths` is for this
@@ -120,6 +124,10 @@ pasted contract file opens with a `# path:` line, and a Python file under a
 package with a `# import:` line. The manifest line it appends
 is the `prepare_wave.py` input. A composed payload is a final: the lint and
 the same-turn re-read below apply to it unchanged.
+
+Stage every contract surface from the source (`stage_surface.py`, #519), and
+every repo type its signatures reach transitively into `SUPPORT` (#534): both
+are linted, and a miss costs a `GAP:` re-spawn.
 
 Detail: `ref_section` with `phase-4-conditional` and the heading "Payload rules the lint enforces: test forms, CI environment, setup claims, boundary paths, templates". (read it when writing the judgement fields of a test-author payload.)
 
