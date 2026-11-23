@@ -110,7 +110,8 @@ regenerates the integration author's excerpt from the live dossier (and its
 wave's implementation paths only, never any test author's own TEST_PATHS,
 #524), fills its `PROMISE_CHECKLIST` from the `[IT]` lines of
 `.discovery/checklists/<ID>.md` (#533; the whole checklist for a test-only
-change, #486), and
+change, #486; `validate_pipeline.py --pre-fanout` fails an `[IT]` line no integration
+payload carries), and
 leaves every judgement field as `@@FILL_<FIELD>@@` with a one-line hint.
 Replace each `@@FILL_…@@` yourself — `check_payload.py` refuses any that
 is left — or pass it with `--set FIELD=VALUE`. `--contract-paths` is for this
