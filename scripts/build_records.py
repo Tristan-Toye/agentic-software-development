@@ -59,6 +59,12 @@ ITEM_OPTIONAL = ("title", "kind", "loc", "note")
 DECISION_KEYS = ("decision", "alternatives", "why", "evidence", "phase")
 WID_RE = re.compile(r"^W-\d+$")
 DID_RE = re.compile(r"^D-\d+$")
+LOC_RE = re.compile(r"([\w./+-]+\.\w+):(\d+)")
+# Pipeline records, not product code: a deferred item anchored only here is out of scope.
+PIPELINE_DIRS = (".discovery/", ".agent-staging/")
+# The plugin's own checks: an item whose only evidence is their output is a pipeline finding.
+PIPELINE_TOOLS = re.compile(r"\b(validate_pipeline|check_docs|check_crs|merge_dossier|build_records|compose_payloads"
+                            r"|vr_mermaid|vr_graph|ask_owner|run_dossier|fix_deferred_prep)(\.py)?\b")
 
 
 class Refused(Exception):
@@ -156,10 +162,35 @@ def next_id(items: list[dict]) -> str:
     return f"D-{max(nums, default=0) + 1}"
 
 
+def out_of_scope(item: dict) -> str:
+    """Why a deferred item is not product code, or ''.
+
+    Its `path:line` anchors (in `loc` and `evidence`) all point under `.discovery/` or `.agent-staging/`
+    (dossiers, records, staging), or it has no anchor at all and its evidence is the output of one of
+    the plugin's own checks (validate_pipeline.py, check_docs.py, ...). One anchor in product code keeps
+    the item in scope, whatever else it cites.
+    """
+    text = " ".join(str(item.get(k) or "") for k in ("loc", "evidence"))
+    locs = sorted({m.group(1) for m in LOC_RE.finditer(text)})
+    product = [p for p in locs if not re.sub(r"^(\./)+", "", p).startswith(PIPELINE_DIRS)]
+    if product:
+        return ""
+    if locs:
+        return "its evidence points only at pipeline records (" + ", ".join(locs[:3]) + ")"
+    m = PIPELINE_TOOLS.search(text)
+    if m:
+        return f"its evidence is the output of the pipeline check {m.group(1)}, not product code"
+    return ""
+
+
 def deferred_add(path: str, fields: dict, sources: list[str]) -> dict:
     for k in ("evidence", "fix", "boundary", "blast_radius"):
         if not str(fields.get(k) or "").strip():
             raise Refused(f"a deferred item needs {k.replace('_', '-')}")
+    why = out_of_scope(fields)
+    if why:
+        raise Refused(f"out of scope: {why}. Deferred items are product code only; put it in the report's "
+                      "`## Noticed, out of scope` footer, one line, no ID")
     state = fields.get("state") or "open"
     if state not in DEFERRED_STATES:
         raise Refused(f"state {state!r} is not one of {'|'.join(DEFERRED_STATES)}")
@@ -485,6 +516,14 @@ def selftest() -> int:
         check("sources merge without duplicates", load(dp, {})["sources"] == ["own reads", "review"])
         check("a duplicate id is refused", refused(deferred_add, dp, {**fields, "id": "D-1"}, []))
         check("a missing field is refused", refused(deferred_add, dp, {"evidence": "x"}, []))
+        check("an item anchored only in .discovery/ is refused (out of scope)",
+              refused(deferred_add, dp, {**fields, "evidence": ".discovery/dossiers/W-198-a.md:3 duplicate id W-198"}, []))
+        check("an item whose only evidence is a pipeline check's output is refused",
+              refused(deferred_add, dp, {**fields, "evidence": "validate_pipeline.py: duplicate dossier id W-198"}, []))
+        check("one product anchor keeps it in scope",
+              out_of_scope({"evidence": "src/a.py:4 and .discovery/dossiers/W-1.md:9"}) == ""
+              and out_of_scope({"loc": "./.agent-staging/x.md:1", "evidence": "x"}) != ""
+              and out_of_scope({"evidence": "a.py:1 bug"}) == "" and out_of_scope({"evidence": "no anchor"}) == "")
         deferred_set(dp, "D-1", "fixed", "abc123")
         item = load(dp, {})["items"][0]
         check("set changes state and note", (item["state"], item["note"]) == ("fixed", "abc123"))

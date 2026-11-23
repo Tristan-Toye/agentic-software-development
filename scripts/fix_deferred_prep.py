@@ -24,7 +24,14 @@ What it does, in order (every step is safe to run again):
 4. Triage: an item is `direct` unless its boundary names an external contract, its effort
    (`effort: L` in the record) is L, or its `path:line` no longer exists in the worktree: then it
    is `ask`, with the reason. `--direct D-n[,D-m]` treats an item the owner ruled "fix it anyway"
-   as direct.
+   as direct, and skips the checks below. Before that, for every other item:
+   - out of scope (build_records.out_of_scope: anchored only in `.discovery/` / `.agent-staging/`,
+     or evidence that is only a pipeline check's output) -> `DROPPED`, state wontfix;
+   - another dossier (worktree, main checkout, origin/development) cites the item ("D-5 of W-161")
+     -> `COVERED`, state dossier, note "covered by W-n";
+   - origin/development changed the anchored lines (or removed the file) since the stack base
+     forked from it, or another dossier's `anchors:` name the same file within 15 lines -> `CHECK`:
+     the orchestrator reads that before it fixes or asks (fix-deferred.md Step 3).
 5. Logs `DEFERRED-FIX: branch ...` (new branches only) and `DEFERRED-TRIAGE: D-n -> direct ...`
    through dossier_edit's log path (a line already there is not added again), sets each direct
    item `fixing` in the record, and commits that log in the worktree so the wave starts clean.
@@ -35,6 +42,9 @@ What it does, in order (every step is safe to run again):
        WORKTREE: <path>
        BRANCH: fix/W-117-deferred base <base> fork <sha> (new|reused); dossier PR #<n> <state>; stack base <b>
        DIRECT: D-1, D-2
+       DROPPED: D-6 — out of scope: <why>
+       COVERED: D-7 — W-196 (ready) cites W-117 D-7
+       CHECK: D-8 — development changed src/a.rs:40 since the stack base (<sha subject>) — otherwise direct
        ASK: D-3 — <reason>
        CRS: <document> — <check_crs summary>
        PAYLOADS: <wave args file> — <files>
@@ -199,6 +209,89 @@ def triage_item(item: dict, worktree: str) -> tuple[str, str]:
         if line > n:
             return "ask", f"no longer applies — {path}:{line} is past the end of the file ({n} lines)"
     return "direct", ""
+
+
+# -- before anyone is asked: covered elsewhere? -------------------------------
+
+MAINLINE = "origin/development"
+NEAR = 15          # an anchor this many lines from the item's line names the same code
+SKIP_STATUS = ("dropped", "superseded")   # a dossier with these covers nothing
+
+
+def mainline_change(wt: str, item: dict, ref: str = MAINLINE) -> str:
+    """'' or why the mainline may already have fixed the item: the anchored file changed near the
+    anchored line (or is gone) on `ref` since the stack base forked from it."""
+    loc = item_loc(item)
+    if not loc or git(wt, "rev-parse", "--verify", "-q", ref + "^{commit}")[0] != 0:
+        return ""
+    path, line = loc
+    rc, base = git(wt, "merge-base", "HEAD", ref)
+    if rc != 0 or not base:
+        return ""
+    rc, tip = git(wt, "rev-parse", ref)
+    if base == tip:
+        return ""
+    rc, log = git(wt, "log", "--format=%h %s", f"{base}..{ref}", "--", path)
+    commits = [one_line(c, 90) for c in log.splitlines()[:3]]
+    if not commits:
+        return ""
+    if git(wt, "cat-file", "-e", f"{ref}:{path}")[0] != 0:
+        return f"{path} is gone on {ref.split('/')[-1]} ({'; '.join(commits)})"
+    rc, diff = git(wt, "diff", "-U0", base, ref, "--", path)
+    for m in re.finditer(r"^@@ -(\d+)(?:,(\d+))? ", diff, re.M):
+        start, count = int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1)
+        if start - 3 <= line <= start + max(count, 1) + 3:
+            return f"{ref.split('/')[-1]} changed {path}:{line} since the stack base ({'; '.join(commits)})"
+    return ""
+
+
+def dossier_texts(dirs: list[str], wt: str, ref: str = MAINLINE) -> dict[str, str]:
+    """Every dossier by file name: the worktree's, the main checkout's, then the mainline's (first wins)."""
+    out: dict[str, str] = {}
+    for d in dirs:
+        for f in sorted(glob.glob(os.path.join(d, ".discovery", "dossiers", "W-*.md"))):
+            name = os.path.basename(f)
+            if name not in out:
+                with open(f, encoding="utf-8", errors="replace") as fh:
+                    out[name] = fh.read()
+    rc, names = git(wt, "ls-tree", "--name-only", ref, ".discovery/dossiers/")
+    if rc == 0:
+        for p in names.splitlines():
+            name = os.path.basename(p)
+            if re.match(r"W-\d+.*\.md$", name) and name not in out:
+                rc2, text = git(wt, "show", f"{ref}:{p}")
+                if rc2 == 0:
+                    out[name] = text
+    return out
+
+
+def other_dossiers(did: str, item: dict, texts: dict[str, str]) -> tuple[str, list[str]]:
+    """(covered, related) for one item across the other dossiers.
+
+    covered: a dossier that cites this very item ("D-5 of W-161", "W-161 D-5"), e.g. one /plan
+    wrote from it. related: dossiers whose `anchors:` name the item's file within NEAR lines."""
+    iid = item["id"]
+    cite = re.compile(rf"\b{re.escape(iid)}\s+(?:of|in|from)\s+{re.escape(did)}\b"
+                      rf"|\b{re.escape(did)}(?:'s)?[\s:/,.-]{{1,3}}(?:deferred\s+(?:item\s+)?)?{re.escape(iid)}\b")
+    loc = item_loc(item)
+    covered, related = "", []
+    for name, text in sorted(texts.items()):
+        fm = front(text)
+        oid = fm.get("id") or name.split("-", 2)[0] + "-" + name.split("-", 2)[1]
+        if oid == did:
+            continue
+        status = fm.get("status", "?").strip()
+        if status in SKIP_STATUS:
+            continue
+        if not covered and cite.search(text):
+            covered = f"{oid} ({status}) cites {did} {iid}"
+            continue
+        if loc:
+            for m in re.finditer(rf"^\s*-\s*{re.escape(loc[0])}:(\d+)\s*$", text.split("\n---", 1)[0], re.M):
+                if abs(int(m.group(1)) - loc[1]) <= NEAR:
+                    related.append(f"{oid} ({status}) anchors {loc[0]}:{m.group(1)}")
+                    break
+    return covered, related[:3]
 
 
 # -- the change-request document -------------------------------------------
@@ -379,11 +472,28 @@ def prepare(args) -> int:
     todo = [i for i in items if (not scope or i["id"] in scope) and i.get("state") not in CLOSED]
     direct: list[dict] = []
     asked: dict[str, str] = {}
+    dropped: dict[str, str] = {}   # not product code: the /deferred footer's, closed wontfix
+    covered: dict[str, str] = {}   # another dossier cites the item: closed `dossier`
+    checks: dict[str, str] = {}    # the mainline or another dossier may already cover it: read before fixing or asking
+    texts = dossier_texts([wt, root], wt) if any(i["id"] not in forced for i in todo) else {}
     for it in todo:
         verdict, why = triage_item(it, wt)
-        if verdict == "ask" and it["id"] in forced:
-            verdict = "direct"
-        if verdict == "direct":
+        if it["id"] in forced:
+            direct.append(it)
+            continue
+        scope = build_records.out_of_scope(it)
+        if scope:
+            dropped[it["id"]] = f"out of scope: {scope}"
+            continue
+        cov, related = other_dossiers(did, it, texts)
+        if cov:
+            covered[it["id"]] = cov
+            continue
+        dev = mainline_change(wt, it)
+        signals = ([dev] if dev else []) + related
+        if signals:
+            checks[it["id"]] = "; ".join(signals) + f" — otherwise {verdict}" + (f": {why}" if why else "")
+        elif verdict == "direct":
             direct.append(it)
         else:
             asked[it["id"]] = why
@@ -392,6 +502,8 @@ def prepare(args) -> int:
     if kind == "new":
         lines.append(f"- DEFERRED-FIX: branch {branch} on {base['base']} @ {fork}")
     lines += [f"- DEFERRED-TRIAGE: {it['id']} → direct — {one_line(it.get('fix'), 140)}" for it in direct]
+    lines += [f"- DEFERRED-TRIAGE: {k} → wontfix — {v}" for k, v in dropped.items()]
+    lines += [f"- DEFERRED-TRIAGE: {k} → dossier — covered: {v}" for k, v in covered.items()]
     if lines:
         print(dossier_edit.log_or_say(wt_dossier, lines))
         okc, msg = commit_log(wt, did, "deferred triage log", args.sign)
@@ -400,12 +512,19 @@ def prepare(args) -> int:
     for it in direct:
         if it.get("state") != "fixing":
             build_records.deferred_set(path, it["id"], "fixing", None)
+    for k, v in dropped.items():
+        build_records.deferred_set(path, k, "wontfix", v)
+    for k, v in covered.items():
+        build_records.deferred_set(path, k, "dossier", f"covered by {v}")
 
     out = [f"REPORT: {report_path if report else 'none — the record fields decide'}",
            f"WORKTREE: {wt}",
            f"BRANCH: {branch} base {base['base']} fork {fork} ({kind}); dossier PR "
            f"{'#%s' % base['pr'] if base['pr'] else 'none'} {base['pr_state']}; stack base {base['stack_base']}",
            "DIRECT: " + (", ".join(i["id"] for i in direct) or "none")]
+    out += [f"DROPPED: {k} — {v}" for k, v in dropped.items()]
+    out += [f"COVERED: {k} — {v}" for k, v in covered.items()]
+    out += [f"CHECK: {k} — {v}" for k, v in checks.items()]
     out += [f"ASK: {k} — {v}" for k, v in asked.items()]
     if not asked:
         out.append("ASK: none")
@@ -413,7 +532,8 @@ def prepare(args) -> int:
         out.append(f"LOG-COMMIT REFUSED (not bypassed; the lines stay uncommitted in the worktree): {log_failed}")
     st = {"id": did, "root": root, "worktree": wt, "branch": branch, "base": base["base"], "kind": base["kind"],
           "stack_base": base["stack_base"], "dossier_pr": base["pr"], "fork": fork, "dossier": wt_dossier,
-          "direct": sorted({*(i["id"] for i in direct), *_old(state_path(root, did))}), "asked": asked}
+          "direct": sorted({*(i["id"] for i in direct), *_old(state_path(root, did))}), "asked": asked,
+          "checks": checks, "dropped": dropped, "covered": covered}
     rc = 0
     if direct and not args.no_compose:
         stage = os.path.join(wt, ".agent-staging", "fix-deferred")
@@ -666,6 +786,86 @@ def selftest() -> int:
         check("pre-build copy in the checkout: the build branch's copy (bare PR number) gives the stack base",
               rc == 0 and "pre-build copy" in buf.getvalue() and sh(wt3, "branch", "--show-current") == "fix/W-11-deferred"
               and "pr: 11" in open(find_dossier(wt3, "W-11")).read(), buf.getvalue())
+    with tempfile.TemporaryDirectory() as tmp:  # covered elsewhere: out of scope, another dossier, the mainline
+        import io
+        import contextlib
+        origin, main = os.path.join(tmp, "origin.git"), os.path.join(tmp, "repo")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "development", origin], check=True)
+        subprocess.run(["git", "clone", "-q", origin, main], check=True, capture_output=True)
+        for k, v in (("user.email", "t@example.invalid"), ("user.name", "t"), ("commit.gpgsign", "false")):
+            sh(main, "config", k, v)
+
+        def put(rel: str, text: str) -> None:
+            os.makedirs(os.path.dirname(os.path.join(main, rel)), exist_ok=True)
+            with open(os.path.join(main, rel), "w") as fh:
+                fh.write(text)
+        put("src/a.py", "".join(f"line {i}\n" for i in range(1, 46)))
+        put("src/c.py", "x\n")
+        put(".discovery/dossiers/W-9-fix-things.md",
+            "---\nid: W-9\nstatus: done\nbranch: feat/W-9\npr: [https://github.com/o/r/pull/7]\nhooks: none\n---\n\n"
+            "## Contract\n\n### src/a.py\n\n```python\ndef f() -> int: ...\n```\n\n## Work packages\n\n"
+            "| Package | Owned paths | Depends on |\n|---|---|---|\n| P1 core | src/ | — |\n\n## Build log\n\n- start\n")
+        put(".discovery/dossiers/W-20-sibling.md", "---\nid: W-20\nstatus: ready\n---\n\n## Problem\n\nSource: deferred item D-3 of W-9.\n")
+        put(".discovery/dossiers/W-21-near.md", "---\nid: W-21\nstatus: ready\nanchors:\n  - src/a.py:40\n---\n\n## Problem\n\nx\n")
+        put(".discovery/dossiers/W-22-gone.md", "---\nid: W-22\nstatus: dropped\n---\n\nW-9 D-6 was here.\n")
+        sh(main, "add", "-A")
+        sh(main, "commit", "-q", "-m", "init")
+        sh(main, "push", "-q", "origin", "development")
+        sh(main, "push", "-q", "origin", "development:stub")
+        put("src/a.py", "".join(("fixed 5\n" if i == 5 else f"line {i}\n") for i in range(1, 46)))
+        os.remove(os.path.join(main, "src", "c.py"))
+        sh(main, "commit", "-q", "-am", "Merge pull request #577 from o/fix-5")
+        sh(main, "push", "-q", "origin", "development")
+        sh(main, "fetch", "-q", "origin")
+        sh(main, "checkout", "-q", "-b", "stub", "origin/stub")
+        recs = [
+            {"id": "D-1", "evidence": ".discovery/dossiers/W-9-fix-things.md:3 duplicate id", "fix": "renumber",
+             "boundary": "none", "blast_radius": "x", "state": "open"},
+            {"id": "D-2", "evidence": "src/a.py:15 slow", "fix": "cache", "boundary": "none", "blast_radius": "x", "state": "open"},
+            {"id": "D-3", "evidence": "src/a.py:12 race", "fix": "lock", "boundary": "none", "blast_radius": "x", "state": "open"},
+            {"id": "D-4", "evidence": "src/a.py:5 off by one", "fix": "+1", "boundary": "none", "blast_radius": "x", "state": "open"},
+            {"id": "D-5", "evidence": "src/a.py:28 leak", "fix": "close", "boundary": "none", "blast_radius": "x", "state": "open"},
+            {"id": "D-6", "evidence": "src/c.py:1 dead", "fix": "x", "boundary": "none", "blast_radius": "x", "state": "open"},
+        ]
+        texts = dossier_texts([main], main)
+        check("other dossiers: a dossier citing 'D-3 of W-9' covers it; a dropped one covers nothing",
+              other_dossiers("W-9", recs[2], texts)[0].startswith("W-20 (ready)")
+              and other_dossiers("W-9", recs[5], texts)[0] == "", other_dossiers("W-9", recs[2], texts))
+        check("other dossiers: an anchor on the same file within 15 lines is related, not covered",
+              other_dossiers("W-9", recs[4], texts) == ("", ["W-21 (ready) anchors src/a.py:40"]), other_dossiers("W-9", recs[4], texts))
+        check("mainline: development changed the anchored line since the fork; elsewhere in the file is no signal",
+              "changed src/a.py:5" in mainline_change(main, recs[3]) and "#577" in mainline_change(main, recs[3])
+              and mainline_change(main, recs[1]) == "", mainline_change(main, recs[3]))
+        check("mainline: a file removed on development is named", "src/c.py is gone on development" in mainline_change(main, recs[5]))
+        rec = build_records.record_path(os.path.join(main, ".discovery"), "deferred", "W-9")
+        build_records.atomic_write(rec, json.dumps({"items": recs, "sources": ["selftest"]}))
+        pj = os.path.join(tmp, "pr.json")
+        with open(pj, "w") as fh:
+            json.dump({"state": "MERGED", "baseRefName": "stub", "headRefName": "feat/W-9", "url": "u"}, fh)
+        sh(main, "push", "-q", "origin", "stub")
+        ns = argparse.Namespace(root=main, dossier="W-9", items=None, direct=None, test_command="true", hooks=None,
+                                env_script=None, path_prepend=None, pr_json=pj, no_compose=True,
+                                report=os.path.join(tmp, "absent.deferred.md"), sign=False)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            prepare(ns)
+        text = buf.getvalue()
+        state = {i["id"]: (i["state"], i.get("note", "")) for i in json.load(open(rec))["items"]}
+        check("prep: out of scope is DROPPED (wontfix), a cited item COVERED (dossier), never asked",
+              "DROPPED: D-1 — out of scope" in text and "COVERED: D-3 — W-20" in text
+              and state["D-1"][0] == "wontfix" and state["D-3"] == ("dossier", "covered by W-20 (ready) cites W-9 D-3")
+              and "ASK: D-1" not in text and "ASK: D-3" not in text, text)
+        check("prep: development's change and a related dossier are CHECK lines with the fallback verdict; the rest is direct",
+              "CHECK: D-4 — development changed src/a.py:5" in text and "otherwise direct" in text
+              and "CHECK: D-5 — W-21" in text and "CHECK: D-6 — src/c.py is gone" in text and "CHECK: D-2" not in text
+              and "DIRECT: D-2" in text and state["D-4"][0] == "open", text)
+        ns.items, ns.direct = "D-4", "D-4"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            prepare(ns)
+        check("prep: --direct skips the checks (the owner ruled fix it anyway)", "DIRECT: D-4" in buf.getvalue()
+              and "CHECK: D-4" not in buf.getvalue(), buf.getvalue())
+
     print("selftest:", "ok" if ok else "FAILED")
     return 0 if ok else 1
 
