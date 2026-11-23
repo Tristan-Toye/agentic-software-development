@@ -30,7 +30,7 @@ which this script does not repeat.
 
 Usage:
     driver_ab_report.py --baseline W-101,W-102,... \\
-        --driver merge_packages=W-110,W-111 --driver strength_gate_prep=W-112 \\
+        --driver pre_fanout_check=W-110,W-111 --driver strength_gate_prep=W-112 \\
         [--dossiers .discovery/dossiers] [--questions-dir DIR] [--budget budget.json] \\
         [--discovery .git/asd-drivers] [--json out.json]
     driver_ab_report.py --selftest
@@ -261,19 +261,19 @@ def selftest() -> int:
         c("a missing questions dir is not measured", owner_questions(os.path.join(tmp, "nope"), "W-111") is None)
         c("requests not measured without budget data", collect("W-111", ns, budget)["requests"] is None)
         rep = report(base_rows, {
-            "merge_packages": [collect(i, ns, budget) for i in ("W-110", "W-111", "W-112")],
+            "pre_fanout_check": [collect(i, ns, budget) for i in ("W-110", "W-111", "W-112")],
             "strength_gate_prep": [collect(i, ns, budget) for i in ("W-120", "W-121", "W-122")],
             "test_round": [collect("W-999", ns, budget)],
         })
-        c("two worse in a row -> back to shadow", rep["drivers"]["merge_packages"]["verdict"] == "BACK-TO-SHADOW")
+        c("two worse in a row -> back to shadow", rep["drivers"]["pre_fanout_check"]["verdict"] == "BACK-TO-SHADOW")
         c("worse dossiers not in a row -> keep", rep["drivers"]["strength_gate_prep"]["verdict"] == "KEEP")
         c("a dossier with no record is not measured", rep["drivers"]["test_round"]["verdict"] == "not measured")
-        c("requests change shown against the baseline median", rep["drivers"]["merge_packages"]["requests"]["driver_median"] == 70
-          and rep["drivers"]["merge_packages"]["requests"]["change_pct"] == round(100 * (70 - 110) / 110, 1))
+        c("requests change shown against the baseline median", rep["drivers"]["pre_fanout_check"]["requests"]["driver_median"] == 70
+          and rep["drivers"]["pre_fanout_check"]["requests"]["change_pct"] == round(100 * (70 - 110) / 110, 1))
         c("cost not measured when no driver dossier has it", rep["drivers"]["strength_gate_prep"]["requests"]["driver_median"] is None)
         c("fmt prints not measured for None", fmt(None) == "not measured" and fmt(0) == "0")
         out = os.path.join(tmp, "o.json")
-        a = argparse.Namespace(baseline="W-101,W-102,W-103", driver=["merge_packages=W-110,W-111,W-112"], dossiers=dd,
+        a = argparse.Namespace(baseline="W-101,W-102,W-103", driver=["pre_fanout_check=W-110,W-111,W-112"], dossiers=dd,
                                questions_dir=qd, budget=bj, discovery=None, json=out)
         c("run prints and writes json", run(a) == 0 and os.path.isfile(out))
         a.driver = ["bad"]

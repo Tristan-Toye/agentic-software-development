@@ -15,14 +15,14 @@ Per package, in order:
        proves the package table was wrong; logging it and fixing
        `## Work packages` is Opus's.
     3  with `--package-worktree PKG=PATH`, the merged package's worktree is
-       removed through remove_worktree.py (mode on only).
+       removed through remove_worktree.py.
 
 Packages with no `--branch` (the test rows the authors already committed) are
 skipped and listed. Earlier merges stay in place when a later one stops the run;
 the evidence names the last merged package and the head.
 
 Usage:
-    ASD_DRIVER_MERGE_PACKAGES=on python3 merge_packages.py --worktree X \\
+    python3 merge_packages.py --worktree X \\
         --dossier W-014 --branch P1=feat/w014-p1 --branch P2=feat/w014-p2 \\
         [--package-worktree P1=/path/to/p1] [--expected-hook-output 'docs/**/anchors.json'] \\
         [--log DOSSIER_FILE]
@@ -32,8 +32,8 @@ Usage:
         owned paths, which extend the package's row for the scope check (a fix package also owns the
         paths its change requests name and its proving test). Replaces the --branch list.
 
-Shadow mode merges in a throwaway worktree of X's HEAD and removes nothing.
-Modes, exit codes and the evidence file: see driver_common.py.
+Exit codes and the evidence file: see driver_common.py. The driver is part of the
+procedure (graduated: see driver_modes.GRADUATED), so it always runs `on`.
 """
 
 from __future__ import annotations
@@ -201,24 +201,18 @@ def run(d: dc.Driver, args) -> int:
             raise dc.Surprise(f"--branch names {pid}, which is not a row of ## Work packages")
         branches[pid] = br
     d.facts["order"] = [r["id"] for r in order]
-    if d.shadow:
-        dc.require_clean(wt)
-        with dc.throwaway_worktree(wt, "HEAD") as tmp:
-            d.facts["shadow_worktree"] = "throwaway; X untouched"
-            do_merges(d, tmp, order, branches, args)
-    else:
-        do_merges(d, wt, order, branches, args)
-        removed = []
-        for spec in args.package_worktree or []:
-            pid, _, path = spec.partition("=")
-            if pid not in d.facts["merged"]:
-                continue
-            rc, out = dc.script("remove_worktree.py", "--root", args.root, path, "--branch", cwd=args.root)
-            if rc != 0:
-                raise dc.Surprise(f"remove_worktree.py {path} exited {rc}: {' | '.join(dc.cap(out, 3))}")
-            removed.append(pid)
-        if removed:
-            d.step("remove worktrees", "ok", ", ".join(removed))
+    do_merges(d, wt, order, branches, args)
+    removed = []
+    for spec in args.package_worktree or []:
+        pid, _, path = spec.partition("=")
+        if pid not in d.facts["merged"]:
+            continue
+        rc, out = dc.script("remove_worktree.py", "--root", args.root, path, "--branch", cwd=args.root)
+        if rc != 0:
+            raise dc.Surprise(f"remove_worktree.py {path} exited {rc}: {' | '.join(dc.cap(out, 3))}")
+        removed.append(pid)
+    if removed:
+        d.step("remove worktrees", "ok", ", ".join(removed))
     d.summary = f"merged {len(d.facts['merged'])} of {len(branches)} package branch(es) in Depends-on order: {', '.join(d.facts['merged'])}"
     return 1 if d.findings else 0
 
@@ -226,7 +220,7 @@ def run(d: dc.Driver, args) -> int:
 def build_parser(ap) -> None:
     ap.add_argument("--worktree", help="the build worktree X")
     ap.add_argument("--branch", action="append", default=[], metavar="PKG=BRANCH", help="a package's implementer branch (repeatable)")
-    ap.add_argument("--package-worktree", action="append", default=[], metavar="PKG=PATH", help="remove this package's worktree after its merge (mode on)")
+    ap.add_argument("--package-worktree", action="append", default=[], metavar="PKG=PATH", help="remove this package's worktree after its merge")
     ap.add_argument("--wave-args", metavar="FILE", help="a fix wave's phase4-wave args: branches, worktrees and owned paths come from it")
     ap.add_argument("--expected-hook-output", action="append", default=[], metavar="GLOB", help="EXPECTED_HOOK_OUTPUTS glob accepted outside OWNED_PATHS")
 
@@ -265,16 +259,12 @@ def selftest() -> int:
             dc.fixture_commit(w, rel, "x = 1\n", br)
             if extra:
                 dc.fixture_commit(w, extra, "s = 1\n", br + " stray")
-        env = {"ASD_DRIVER_MERGE_PACKAGES": "on"}
-        shadow = {"ASD_DRIVER_MERGE_PACKAGES": "shadow"}
+        env = {}   # graduated: no ASD_DRIVER_MERGE_PACKAGES, the driver always runs on
         base = ["--worktree", x, "--dossier", "W-1", "--root", main, "--branch", "P1=pkg-p1", "--branch", "P2=pkg-p2"]
-        head0 = dc.fixture_git(x, "rev-parse", "HEAD").strip()
 
-        rc, out = dc.run_self("merge_packages.py", *base, env={})
-        c("off refuses", rc == 3)
-        rc, out = dc.run_self("merge_packages.py", *base, env=shadow)
-        c("shadow stops at the TOUCHED_BEYOND path", rc == 2 and "src/stray.py" in out and "TOUCHED_BEYOND" in out)
-        c("shadow leaves X untouched", dc.fixture_git(x, "rev-parse", "HEAD").strip() == head0)
+        rc, out = dc.run_self("merge_packages.py", *base, env=env)
+        c("it stops at the TOUCHED_BEYOND path before merging it", rc == 2 and "src/stray.py" in out and "TOUCHED_BEYOND" in out)
+        c("a stop before the P2 merge leaves only P1 merged", os.path.isfile(os.path.join(x, "src", "flush.py")) and not os.path.isfile(os.path.join(x, "src", "reload.py")))
         rc, out = dc.run_self("merge_packages.py", *base, "--expected-hook-output", "src/stray.py", env=env)
         c("an expected hook output is accepted and listed, exit 1", rc == 1 and "hook-output" in out)
         c("both packages merged in X", os.path.isfile(os.path.join(x, "src", "flush.py")) and os.path.isfile(os.path.join(x, "src", "reload.py")))
@@ -292,7 +282,7 @@ def selftest() -> int:
         rc, out = dc.run_self("merge_packages.py", "--worktree", x, "--dossier", "W-3", "--root", main, "--branch", "P3=pkg-p3", env=env)
         c("a conflict exits 2, names the path, aborts", rc == 2 and "src/flush.py" in out and dc.worktree_state(x)["operation"] == [])
         rc, out = dc.run_self("merge_packages.py", "--dossier", "W-3", "--root", main, "--branch", "P3=pkg-p3", env=env, cwd=x)
-        c("no --worktree: the working directory's git root is X (the shadow call that exited 2 had no arguments)", rc == 2 and "src/flush.py" in out)
+        c("no --worktree: the working directory's git root is X ", rc == 2 and "src/flush.py" in out)
         rc, out = dc.run_self("merge_packages.py", "--dossier", "W-3", "--root", main, env=env, cwd=x)
         c("no --branch still names what is missing", rc == 2 and "--branch" in out)
         c("X unchanged after the aborted merge", dc.fixture_git(x, "rev-parse", "HEAD").strip() == before)
