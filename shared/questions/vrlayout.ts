@@ -62,9 +62,11 @@ function canon(v: any): any {
 export const graphHash = (g: unknown): string => createHash("sha256").update(JSON.stringify(canon(stripDollar(g)))).digest("hex")
 
 const STATUS = new Set(["added", "changed", "removed", "context"])
-const VIEWS = new Set(["L0", "L1", "L2", "map", "full", "c1", "c2", "c3", "c4", "seq"])
+const VIEWS = new Set(["L0", "L1", "L2", "decision", "map", "full", "c1", "c2", "c3", "c4", "seq"])
 /** Views drawn as lanes top to bottom (steps in order) instead of groups left to right: the L1 flow and a sequence diagram. */
 export const isLaneView = (view: unknown): boolean => view === "L1" || view === "seq"
+/** The decision flow (start, steps, conditions, ends): read top to bottom like a flowchart, with no lanes and no groups. Never promoted to docs/architecture. */
+export const isDecisionView = (view: unknown): boolean => view === "decision"
 /** The views of the architecture diagrams kept as JSON beside their Markdown (scripts/vr_mermaid.py). */
 export const isDiagramView = (view: unknown): boolean => typeof view === "string" && /^(c[1-4]|seq)$/.test(view)
 /** Structural checks the page and the layout rely on. The full rules (budgets, evidence paths) stay in scripts/vr_graph.py. */
@@ -74,7 +76,7 @@ export function checkGraph(g: any, expectView?: string): Issue[] {
   if (!g || typeof g !== "object" || Array.isArray(g)) { bad("not_object", "", "the file is not a JSON object"); return out }
   if (typeof g.schema_version !== "string" || !/^\d+\.\d+\.\d+$/.test(g.schema_version)) bad("schema_version", "schema_version", "missing or malformed schema_version")
   else if (g.schema_version.split(".")[0] !== "1") bad("schema_version", "schema_version", "unsupported major version " + g.schema_version + " (this reader handles 1.x)")
-  if (!VIEWS.has(g.view)) bad("view", "view", "view must be L0, L1, L2, map, full, c1, c2, c3, c4 or seq")
+  if (!VIEWS.has(g.view)) bad("view", "view", "view must be L0, L1, L2, decision, map, full, c1, c2, c3, c4 or seq")
   else if (expectView && g.view !== expectView) bad("view_mismatch", "view", "the file holds view " + g.view + ", expected " + expectView)
   if (typeof g.title !== "string") bad("missing_field", "title", "title is required")
   for (const k of ["nodes", "edges"]) if (!Array.isArray(g[k])) bad("missing_field", k, k + " must be an array")
@@ -220,7 +222,7 @@ export const WRAP_FLAT = 3
 
 /** The ELK input for a graph: groups (or L1 lanes) as compound nodes, model order on. Pure. */
 export function elkInput(g: any, mode: "thorough" | "fast", wrap = false): { root: any; direction: "RIGHT" | "DOWN" } {
-  const direction = isLaneView(g.view) ? "DOWN" : "RIGHT"
+  const direction = isLaneView(g.view) || isDecisionView(g.view) ? "DOWN" : "RIGHT"
   const opts: Record<string, string> = {
     "elk.algorithm": "layered", "elk.direction": direction, "elk.hierarchyHandling": "INCLUDE_CHILDREN",
     "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES", "elk.spacing.nodeNode": "28",
@@ -228,6 +230,8 @@ export function elkInput(g: any, mode: "thorough" | "fast", wrap = false): { roo
   }
   // A long left-to-right chain wraps onto more rows near the canvas shape, instead of one strip the canvas must shrink to fit.
   if (direction === "RIGHT" && wrap) Object.assign(opts, { "elk.layered.wrapping.strategy": "MULTI_EDGE", "elk.aspectRatio": String(WRAP_ASPECT) })
+  // A decision flow starts on top and its retry loops run backwards: break cycles depth first from the first node, and pin the start to the first layer.
+  if (isDecisionView(g.view)) opts["elk.layered.cycleBreaking.strategy"] = "DEPTH_FIRST"
   if (mode === "fast") Object.assign(opts, { "elk.layered.thoroughness": "1", "elk.layered.nodePlacement.strategy": "SIMPLE", "elk.edgeRouting": "POLYLINE" })
   const lanes: any[] = isLaneView(g.view) ? g.lanes ?? [] : []
   const containers: any[] = [...(g.groups ?? []), ...lanes]
@@ -242,7 +246,8 @@ export function elkInput(g: any, mode: "thorough" | "fast", wrap = false): { roo
   for (const c of containers) mk.set(c.id, { id: c.id, layoutOptions: { "elk.padding": "[top=30,left=14,bottom=14,right=14]" }, children: [] })
   for (const n of g.nodes) {
     const base = size(g, n.label, n.collapsed === true)
-    mk.set(n.id, { id: n.id, ...(g.view === "seq" ? base : shapeSize(nodeShape(n, g.view), n.label, base)) })
+    const start = isDecisionView(g.view) && n.terminal === "start" ? { layoutOptions: { "elk.layered.layering.layerConstraint": "FIRST" } } : {}
+    mk.set(n.id, { id: n.id, ...(g.view === "seq" ? base : shapeSize(nodeShape(n, g.view), n.label, base)), ...start })
   }
   const root: any = { id: "root", layoutOptions: opts, children: [], edges: [] }
   // A parent cycle (a -> b -> a) would drop both groups out of the tree: break it by hanging the group on the root.
@@ -252,6 +257,8 @@ export function elkInput(g: any, mode: "thorough" | "fast", wrap = false): { roo
   // A labelled edge carries its label at the size the page draws it, so ELK keeps room for it instead of the page squeezing it in later.
   for (const e of g.edges) if (all.has(e.source) && all.has(e.target)) {
     const ed: any = { id: e.id, sources: [e.source], targets: [e.target] }
+    // The happy path (a yes exit, or the one exit of a step) runs as a straight spine; the other exits bend away from it.
+    if (isDecisionView(g.view) && (e.branch === "yes" || !e.branch)) ed.layoutOptions = { "elk.layered.priority.straightness": "10" }
     if (typeof e.label === "string" && e.label) ed.labels = [{ id: e.id + "#label", text: e.label, ...edgeLabelSize(e.label), layoutOptions: { "elk.edgeLabels.inline": "true" } }]
     root.edges.push(ed)
   }
@@ -630,7 +637,7 @@ export async function collapseLoaded(g: any, view: string, collapsed: string[]):
 /** One view of a dossier directory with `collapsed` groups drawn as boxes, and its layout (cached on the collapsed graph's hash). */
 export async function collapsedView(dir: string, view: string, collapsed: string[]): Promise<{ graph: any; layout: Layout; collapsed: string[] }> {
   const file = viewFile(dir, view)
-  if (!file) throw new Error("view must be L0, L1, L2 or arch:<stem>")
+  if (!file) throw new Error("view must be L0, L1, L2, decision or arch:<stem>")
   if (!existsSync(file) || !statSync(file).isFile()) throw new Error("no " + view + " diagram")
   const g = JSON.parse(readFileSync(file, "utf8"))
   if (archStemOf(view) !== null) {
@@ -642,6 +649,8 @@ export async function collapsedView(dir: string, view: string, collapsed: string
 
 // ---- the three files of a dossier ----
 export const VR_VIEWS = ["L0", "L1", "L2"] as const
+/** The decision flow file of a dossier directory (decision.json): a fourth tab, drawn from the file when it exists. It is never an architecture draft and is never promoted. */
+export const DECISION_VIEW = "decision"
 export const vrDir = (root: string, dossier: string): string => join(root, ".discovery", "visual-review", dossier)
 
 // ---- the architecture-impact diagrams: the NEW diagrams the dossier adds, drafted in <dir>/arch/<stem>.json ----
@@ -662,12 +671,14 @@ export function archStems(dir: string): string[] {
 }
 /** The file of a view of the dossier directory: `L0`/`L1`/`L2`, or `arch:<stem>` when that stem is a file in arch/. null for any other name. */
 export function viewFile(dir: string, view: string): string | null {
-  if ((VR_VIEWS as readonly string[]).includes(view)) return join(dir, view.toLowerCase() + ".json")
+  if ((VR_VIEWS as readonly string[]).includes(view) || view === DECISION_VIEW) return join(dir, view.toLowerCase() + ".json")
   const stem = archStemOf(view)
   return stem !== null && archStems(dir).includes(stem) ? join(dir, ARCH_DIR, stem + ".json") : null
 }
 /** The views a review covers, in tab order: L0, L1, L2, then one `arch:<stem>` per draft in arch/. */
 export const reviewViews = (dir: string): string[] => [...VR_VIEWS, ...archStems(dir).map((s) => "arch:" + s)]
+/** The views the page draws, in tab order: L0, L1, the decision flow when decision.json exists, L2, then the architecture drafts. The verdicts of the review still cover reviewViews only. */
+export const tabViews = (dir: string): string[] => [...VR_VIEWS.slice(0, 2), ...(existsSync(join(dir, DECISION_VIEW + ".json")) ? [DECISION_VIEW] : []), ...VR_VIEWS.slice(2), ...archStems(dir).map((s) => "arch:" + s)]
 
 /** Whether `root` holds a visual-review folder for the dossier with at least one of l0/l1/l2.json. */
 export const hasVisualReview = (root: string, dossier: string): boolean => VR_VIEWS.some((v) => existsSync(join(vrDir(root, dossier), v.toLowerCase() + ".json")))
@@ -679,7 +690,7 @@ export const hasVisualReview = (root: string, dossier: string): boolean => VR_VI
 export async function visualReview(dir: string, dossier: string): Promise<VisualReview> {
   const res: VisualReview = { dossier, dir, rev: "", views: { L0: null, L1: null, L2: null }, issues: [], hasReview: existsSync(join(dir, "review.json")) }
   const h = createHash("sha256")
-  for (const v of reviewViews(dir)) {
+  for (const v of tabViews(dir)) {
     const file = viewFile(dir, v)!
     if (!existsSync(file)) continue
     const isArch = archStemOf(v) !== null

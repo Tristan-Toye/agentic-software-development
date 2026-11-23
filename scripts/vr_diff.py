@@ -412,7 +412,25 @@ def _summarise(graph: dict) -> None:
         "counts": total, "by_type": by_type, "changes": changes,
         "summary": "%d added, %d changed, %d removed" % (total["added"], total["changed"], total["removed"]),
     }
+    if graph.get("view") == "decision":
+        _decision_stats(graph)
     graph["meta"]["marks"] = dict(MARKS)
+
+
+def _decision_stats(graph: dict) -> None:
+    """A decision graph: the decisions and the start-to-end paths before and after the change, and the error ends it adds,
+    into meta.diff.decision; the summary line names them ("decisions 2 -> 3, paths 3 -> 5")."""
+    def side(keep) -> dict:
+        nodes = [n for n in graph.get("nodes") or [] if n["status"] in keep]
+        ids = {n["id"] for n in nodes}
+        part = {"view": "decision", "nodes": nodes,
+                "edges": [e for e in graph.get("edges") or [] if e["status"] in keep and e["source"] in ids and e["target"] in ids]}
+        return {"decisions": vr_graph.budget(part)["decisions"], "paths": vr_graph.budget(part)["paths"]}
+    before, after = side(("context", "changed", "removed")), side(("context", "changed", "added"))
+    errs = sum(1 for n in graph.get("nodes") or [] if n["status"] == "added" and n.get("terminal") == "end" and n.get("outcome") == "error")
+    d = graph["meta"]["diff"]
+    d["decision"] = {"decisions": [before["decisions"], after["decisions"]], "paths": [before["paths"], after["paths"]], "new_error_ends": errs}
+    d["summary"] += ", decisions %d -> %d, paths %d -> %d" % (before["decisions"], after["decisions"], before["paths"], after["paths"]) + (", new error ends %d" % errs if errs else "")
 
 
 # ------------------------------------------------------------------- view
@@ -910,6 +928,10 @@ def _selftest() -> int:
         check("decision:merge-removed-edge", est["edge:flow:proc:deliver::dead_letter:end:ok:delivered"] == "removed", str(est))
         check("decision:merge-added-edge", est["edge:flow:proc:deliver::backoff:proc:deliver::send"] == "added", str(est))
         check("decision:merge-view", md["view"] == "decision")
+        dd = md["meta"]["diff"]
+        check("decision:summary-stats", dd["decision"] == {"decisions": [1, 2], "paths": [2, 2], "new_error_ends": 1} and dd["summary"].endswith("decisions 1 -> 2, paths 2 -> 2, new error ends 1"), str(dd))
+        check("decision:summary-regression", re.match(r"\d+ added, \d+ changed, \d+ removed, decisions", dd["summary"]) is not None)
+        check("decision:view-after-stats", view(md, "after")["meta"]["diff"]["decision"]["decisions"] == [1, 2])
         rem = merge(after_d, before_d)
         rst = {n["id"]: n["status"] for n in rem["nodes"]}
         check("decision:merge-removed-nodes", rst["decision:deliver::run:attempts-left"] == "removed" and rst["proc:deliver::backoff"] == "removed" and rst["end:error:parked"] == "removed", str(rst))
