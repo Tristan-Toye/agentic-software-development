@@ -1607,6 +1607,78 @@ def property_line_findings(lines: list[str], kind: str | None) -> list[str]:
     return out
 
 
+DOC_QUOTE = re.compile(r'\bdoc:\s*["\u201c]([^"\u201d]+)["\u201d]')
+_COMMENT_LEAD = re.compile(r"^\s*(?:///?!?|//!|\*+/?|#+|--|;+|\"{3}|\'{3})\s?")
+
+
+def _comment_text(text: str) -> str:
+    """Stub text with comment markers dropped and whitespace collapsed, so a
+    verbatim phrase wrapped over several comment lines still matches."""
+    kept = [_COMMENT_LEAD.sub("", line).rstrip() for line in text.splitlines()]
+    return " ".join(" ".join(kept).split())
+
+
+def doc_quote_findings(lines: list[str], kind: str | None,
+                       worktree: str | None) -> tuple[list[str], list[str]]:
+    """Item 4 of the contract-quality sweep: a checklist line quotes the doc
+    comment it derives from, `doc: "<verbatim phrase>"`, and the phrase is a
+    substring of the contract text the author reads. A quote found nowhere is
+    a defect (the orchestrator reworded or invented the promise). Once any line
+    of the checklist quotes, a line with no quote is one aggregated warning:
+    the writer has adopted the form, and a bare line is its own reading."""
+    if kind not in ("unit-test-author", "integration-test-author"):
+        return [], []
+    numbers = sorted(field_line_numbers(lines, "PROMISE_CHECKLIST"))
+    entries: list[tuple[int, str]] = []
+    for number in numbers:
+        line = lines[number - 1]
+        if not line.strip() or line.strip().startswith("PROMISE_CHECKLIST"):
+            continue
+        if entries and not CHECKLIST_ENTRY.match(line):
+            entries[-1] = (entries[-1][0], entries[-1][1] + "\n" + line)
+        else:
+            entries.append((number, line))
+    entries = [(n, e) for n, e in entries if CHECKLIST_ENTRY.match(e.splitlines()[0])]
+    if not entries:
+        return [], []
+    body = field_body(lines, "CONTRACT")
+    source = body
+    one = body.split()
+    if len(one) == 1 and not body.lstrip().startswith("|"):
+        path = one[0]
+        if worktree and not os.path.isabs(path):
+            path = os.path.join(worktree, path)
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8", errors="replace") as handle:
+                    source = handle.read()
+            except OSError:
+                source = body
+    haystack = _comment_text(source)
+    defects: list[str] = []
+    missing = quoted = 0
+    for number, text in entries:
+        quotes = DOC_QUOTE.findall(text)
+        if not quotes:
+            missing += 1
+            continue
+        quoted += 1
+        for quote in quotes:
+            if " ".join(quote.split()) not in haystack:
+                defects.append(
+                    "checklist line %d quotes doc: %r, which is not in the stub's doc comments. "
+                    "A checklist line is derived from a documented promise: copy the phrase "
+                    "verbatim, or fix the doc comment first (contract-quality item 4)."
+                    % (number, quote[:80]))
+    warnings = []
+    if missing and quoted and haystack:
+        warnings.append(
+            "%d checklist line(s) carry no `doc: \"<verbatim phrase>\"` quote of the doc comment "
+            "they derive from; the line is then the orchestrator's reading, not the contract's "
+            "(references/formats/dossier.md, the observability checklist)." % missing)
+    return defects, warnings
+
+
 def negative_input_findings(lines: list[str], kind: str | None) -> list[str]:
     """A negative checklist line names the isolating input every other guard admits."""
     if kind not in ("unit-test-author", "integration-test-author"):
@@ -1926,6 +1998,10 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
     warnings.extend(negative_input_findings(lines, kind))
     # 12c. a property line the author cannot write as one
     warnings.extend(property_line_findings(lines, kind))
+    # item 4: a checklist line quotes its doc comment
+    dq_defects, dq_warnings = doc_quote_findings(lines, kind, worktree)
+    defects.extend(dq_defects)
+    warnings.extend(dq_warnings)
 
     # 6. a dossier path that is not the run's live copy
     dossier, worktree_dir = field_value(lines, "DOSSIER"), field_value(lines, "WORKTREE_DIR")
@@ -2041,6 +2117,24 @@ def _selftest_cases() -> int:
         "CONTRACT_HASH: 3f2611f0a91c4d8e\n"
     )
     case("unit author clean", unit_ok, "unit-test-author", False, host="opencode")
+    # --- contract-quality item 4: a checklist line quotes its doc comment ---
+    inline_contract = ("CONTRACT: |\n  # path: src/flush.py\n  def flush(queue):\n"
+                       "      # Returns the number of items written, oldest first.\n"
+                       "      raise NotImplementedError\n")
+    dq_base = unit_ok.replace("CONTRACT: {REAL}/tests/unit/test_retry.py\n", inline_contract)
+    case("item 4: a verbatim doc quote passes", dq_base.replace(
+         "flush — return meaning: count\n",
+         "flush — return meaning: count doc: \"number of items written, oldest first\"\n"),
+         "unit-test-author", False, host="opencode", must_warn="")
+    case("item 4: a doc quote absent from the stub is a defect", dq_base.replace(
+         "flush — return meaning: count\n",
+         "flush — return meaning: count doc: \"half-up rounding\"\n"),
+         "unit-test-author", True, "half-up", host="opencode")
+    case("item 4: a bare line beside a quoted one warns once", dq_base.replace(
+         "flush — return meaning: count\n",
+         "flush — return meaning: count doc: \"number of items written, oldest first\"\n"
+         "  flush — empty case: returns 0\n"),
+         "unit-test-author", False, host="opencode", must_warn="verbatim phrase")
     # --- #534: the transitive closure of the staged signatures ---
     closure_src = {"src/Review.cs": "public record WorkOutputRevision(string Id);\npublic sealed class Unrelated {}\n"}
     closure_sup = ("SUPPORT: |\n  public record ReviewSnapshot(IReadOnlyDictionary<string, WorkOutputRevision> Outputs);\n"
