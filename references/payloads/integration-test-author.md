@@ -81,6 +81,15 @@ BOUNDARIES: IClock (time), IPaymentClient (external API) — substitute these tw
 SHARED_IDIOM: |
   <same rule as the unit author: present, byte-identical, whenever a test
    touches a concept two or more agents write. Omit otherwise.>
+SEAM_FACTS: |
+  <optional. Existing code the tests must use whose doc comments say NOTHING about
+   what it refuses or requires: one short line each, `<function> refuses|requires <X>
+   (path:line)`, e.g. `Queue::flush refuses an empty batch with Err(Empty)
+   (src/flush.rs:41)`; plus at most one `EXAMPLE_TEST: /abs/path/to/an_existing_test`
+   to copy the setup from (a path, never its text). A rule, never a body: no code
+   block, no statement; check_payload.py refuses either. At most 8 fact lines. Fill
+   it only when the docs are silent: when they state it, the author finds it
+   with code_item in contract mode. Omit when there is nothing to say.>
 CONTRACT_HASH: 3f2611f0a91c4d8e
 ```
 

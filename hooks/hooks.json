@@ -23,7 +23,7 @@
         ]
       },
       {
-        "matcher": "Read|Edit|Write|Grep|Bash",
+        "matcher": "Read|Edit|Write|Grep|Bash|mcp__plugin_agentic-software-development_nav__.*",
         "hooks": [
           {
             "type": "command",

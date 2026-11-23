@@ -1,9 +1,9 @@
 // PreToolUse hook for Read|Edit|Write|Grep|Bash. In the /work-on orchestrator (the main session of a
 // session that ran the work-on command) it applies the shared read guard. In a subagent it
-// applies only the unit test author's read and edit boundary and the integration test author's seal
-// (shared/blind-read.ts). Denies with the
+// applies only the unit test author's read and edit boundary, the integration test author's seal and
+// both authors' nav limit (code_outline, code_item in contract mode only) (shared/blind-read.ts). Denies with the
 // documented PreToolUse JSON. Fails open.
-import { BLIND_AGENT, INTEGRATION_AGENT, blindRead, sealedGrep, sealedRead } from "../blind-read"
+import { BLIND_AGENT, INTEGRATION_AGENT, blindRead, isNavTool, navBodyGuard, sealedGrep, sealedRead } from "../blind-read"
 import { configLoader } from "../config"
 import { bigGuardOn, phaseFileOf, phaseRereadReason, readGuard, windowReason, type ReadGuardCall } from "../read-guard"
 import { agentTypeOf, configPath, isOrchestrator, loadState, log, pipelineRoot, readInput, runHook, saveState } from "./common"
@@ -19,6 +19,13 @@ await runHook(async () => {
     const agent = agentTypeOf(input)
     const ti = input.tool_input ?? {}
     const cwd = input.cwd ?? process.cwd()
+    if ((agent === BLIND_AGENT || agent === INTEGRATION_AGENT) && isNavTool(input.tool_name)) {
+      // The contract-lookup tools: code_outline and code_item in contract mode only, never a body.
+      const reason = navBodyGuard(input.tool_name, ti)
+      if (!reason) return undefined
+      log("refused", input.session_id, `${agent} ${input.agent_id} ${input.tool_name}: ${reason}`)
+      return deny(`nav bodies: ${reason}`)
+    }
     if (agent === BLIND_AGENT && (input.tool_name === "Read" || input.tool_name === "Edit")) {
       // Edit (the in-place change of an existing test file, #392) stays inside the same boundary as Read.
       const reason = blindRead(String(ti.file_path ?? ""), cwd)

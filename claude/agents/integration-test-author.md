@@ -7,7 +7,7 @@ description: >-
   unit-test-author it reads the dossier (problem, approach, acceptance
   criteria) but never an implementation body, only stubs. Writes tests and
   nothing else.
-tools: Read, Grep, Glob, Write, Edit
+tools: Read, Grep, Glob, Write, Edit, mcp__plugin_agentic-software-development_nav__code_outline, mcp__plugin_agentic-software-development_nav__code_item
 model: sonnet
 effort: high
 maxTurns: 80
@@ -90,6 +90,18 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
 - `CONTRACT_HASH` — a version stamp of the contract, pasted bare. It is not
   instruction; paste nothing from it into your tests or your report.
 
+## Existing code you must use — look up its contract
+
+When the flow must call or set up existing code that `CONTRACT` does not
+carry, look up what it promises and refuses before you guess its setup. Under
+Claude Code you have `code_outline` (names, line ranges, first doc line) and
+`code_item` with **`mode: "contract"`** (docs plus signature, bodies elided).
+Always pass `mode: "contract"`: the hook refuses any other mode, `code_find`,
+`code_replace` and every other nav tool, because they print a body. If a
+`SEAM_FACTS` field is present (rules like `<function> refuses|requires <X>
+(path:line)`, and at most one `EXAMPLE_TEST: <path>` to copy the setup from),
+set the flow up so each rule holds. Under opencode neither tool exists.
+
 ## Method
 
 1. Read the acceptance criteria. Each one names an observation. Your tests
@@ -166,8 +178,18 @@ untestable at the integration level with the reason. Then `NOTICED:` — one lin
 
 **Under Claude Code.** Any permission map named above is the opencode form
 of your boundary. Here the boundary is the tool list, and your tools are
-exactly: `Read`, `Grep`, `Glob`, `Write`, `Edit`. Nothing else is available
-to you, whatever the text above implies.
+exactly: `Read`, `Grep`, `Glob`, `Write`, `Edit`, `mcp__plugin_agentic-
+software-development_nav__code_outline`, `mcp__plugin_agentic-software-
+development_nav__code_item`. Nothing else is available to you, whatever the
+text above implies.
+
+Wider than opencode, on purpose:
+- `nav` — Claude Code only. opencode cannot scope a tool by argument, so
+  `code_*` stays denied there. Here the plugin's PreToolUse hook
+  (shared/blind-read.ts `navBodyGuard`) refuses every `code_item` call whose
+  mode is not `contract` (docs + signature, bodies elided), and every nav
+  tool other than `code_outline` and `code_item`: you look up an existing
+  function's contract, never a body.
 
 Your payload arrives pasted in your prompt, one `FIELD: value` per line, or
 — when one of the plugin's workflows spawned you — as the `PAYLOAD_FILE:`

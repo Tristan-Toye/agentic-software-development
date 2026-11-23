@@ -51,6 +51,13 @@ are optional judgement fields, included only when given with --set. So are
 the integration author's FAILURES / CORRECTION (issue #82's corrective-round
 pair for a Phase 6 row-1 ruling on a pre-existing test) — included only when
 given with --set, same as SHARED_IDIOM / DELIVERY_CHANGE for that kind.
+SEAM_FACTS (both test authors, optional) is the rule an existing function the
+tests must use enforces and its doc comment never states, one short line each:
+`<function> refuses|requires <X> (path:line)`, plus at most one
+`EXAMPLE_TEST: <absolute path>` of an existing test to copy the setup from. Never
+a body or a code block (check_payload.py refuses one). The orchestrator fills it
+only when the contract docs are silent; when they state it, the author finds it
+with code_item in contract mode.
 CENSUS (both test authors, #392) is the Phase 3 `CENSUS:` rows of a package that
 edits existing test files (`<path>:<line> — <change>`, one per line): given with
 --set it admits an existing TEST_PATHS file without CORRECTION, and the author
@@ -1278,7 +1285,7 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
 
     apply_overrides(fields, sets, blocks={
         "CONTRACT", "PROMISE_CHECKLIST", "CONVENTIONS", "FIXTURES", "STYLE_SAMPLE",
-        "SUPPORT", "SHARED_IDIOM", "DELIVERY_CHANGE", "CITATION", "FAILURES", "CORRECTION",
+        "SUPPORT", "SHARED_IDIOM", "SEAM_FACTS", "DELIVERY_CHANGE", "CITATION", "FAILURES", "CORRECTION",
         "CENSUS", "TEST_FORM_RULES",
     })
     add_referenced_types(ctx, fields, contract_text)
@@ -1294,7 +1301,7 @@ def compose_unit_test_author(ctx: dict) -> list[Field]:
              "MAX_SINGLE_EDIT", "CITATION", "CONVENTIONS",
              "STYLE_PATHS", "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
              "NAMING", "TEST_FORM_RULES", "PROPERTY_LIBRARY", "VOCABULARY", "FIXTURES",
-             "SHARED_IDIOM", "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "CENSUS",
+             "SHARED_IDIOM", "SEAM_FACTS", "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "CENSUS",
              "BASELINE_COUNTS_FROM", "CONTRACT_HASH"]
     return ordered(fields, order)
 
@@ -1492,7 +1499,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     if checklist:
         fields["PROMISE_CHECKLIST"] = Field("PROMISE_CHECKLIST", checklist, block=True)
     apply_overrides(fields, sets, blocks={
-        "CONTRACT", "HARNESS", "STYLE_SAMPLE", "PROMISE_CHECKLIST", "SHARED_IDIOM",
+        "CONTRACT", "HARNESS", "STYLE_SAMPLE", "PROMISE_CHECKLIST", "SHARED_IDIOM", "SEAM_FACTS",
         "DELIVERY_CHANGE", "SUPPORT", "FAILURES", "CORRECTION", "CENSUS", "CITATION",
         "CI_ENVIRONMENT", "TEST_FORM_RULES",
     })
@@ -1505,7 +1512,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     order = ["WORKTREE_DIR", "DOSSIER", "CONTRACT", "PROMISE_CHECKLIST", "TEST_PATHS",
              "TEST_FRAMEWORK", "CITATION", "HARNESS", "CI_ENVIRONMENT", "TEST_FORM_RULES",
              "STYLE_SAMPLE", "SUPPORT_DIGEST", "SUPPORT_PATHS", "SUPPORT",
-             "BOUNDARIES", "SHARED_IDIOM", "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "CENSUS",
+             "BOUNDARIES", "SHARED_IDIOM", "SEAM_FACTS", "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "CENSUS",
              "CONTRACT_HASH"]
     return ordered(fields, order)
 
@@ -2745,6 +2752,16 @@ def selftest() -> int:
                               "--kind", "unit-test-author", "--host", "claude", "--worktree", root])
             check("#392 a CENSUS payload on an existing test file is not refused for a missing CORRECTION",
                   "CORRECTION" not in out3, out3)
+
+        # --- SEAM_FACTS: optional, composed only when given, in both test authors ---
+        seam = "Queue::flush refuses an empty batch with Err(Empty) (src/flush.py:12)"
+        rc, ut_seam_path, out = run_compose("UT1-seam.md", [
+            "unit-test-author", "--host", "claude", "--contract-paths", "src/flush.py", "--set", "SEAM_FACTS=" + seam,
+        ])
+        ut_seam = read_text(ut_seam_path) if rc == 0 else ""
+        check("SEAM_FACTS given with --set lands as a block in the unit author's payload",
+              rc == 0 and "SEAM_FACTS: |" in ut_seam and seam in ut_seam, out)
+        check("SEAM_FACTS is absent from a payload that was not given it", "SEAM_FACTS" not in ut_census)
 
         # --- integration-test-author ---
         rc, it_path, out = run_compose("IT1.md", [

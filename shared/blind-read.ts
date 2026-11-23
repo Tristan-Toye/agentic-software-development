@@ -121,3 +121,36 @@ export function sealedGrep(path: string | undefined, outputMode: string | undefi
   }
   return undefined
 }
+
+// The test authors' nav tools: both may look up the contract of an EXISTING function they must
+// use (what it promises and refuses: docs + signature, bodies elided) and never a body. They get
+// `code_outline` (rows of names, line ranges and first doc lines; no body) and `code_item` in
+// `mode: contract` only. Everything else of the nav server, and any other `code_item` mode
+// (`full` is the default and prints the whole item), is refused here, on the call's own input.
+// Claude Code names a plugin's MCP tool `mcp__plugin_<plugin>_<server>__<tool>`; the tool is the part
+// after the last `__`.
+export const NAV_CONTRACT_ONLY = "contract"
+
+const NAV_TOOL = /(?:^|__)(code_outline|code_item|code_find|code_replace|doc_section|ref_section|arch_find|phase_checkpoint)$/
+
+// True when `toolName` is a tool of the nav server (the hook's matcher admits it).
+export const isNavTool = (toolName: string): boolean => NAV_TOOL.test(toolName)
+
+// The refusal message for a nav call a test author may not make, or undefined to allow.
+export function navBodyGuard(toolName: string, toolInput: Record<string, any> | undefined): string | undefined {
+  const tool = NAV_TOOL.exec(toolName)?.[1]
+  if (!tool || tool === "code_outline") return undefined
+  if (tool === "code_item") {
+    const mode = toolInput?.mode
+    if (mode === NAV_CONTRACT_ONLY) return undefined
+    return (
+      `code_item with mode ${mode === undefined ? "unset (the default is full: the whole body)" : JSON.stringify(mode)} ` +
+      `is refused: you look up an existing function's contract with mode "${NAV_CONTRACT_ONLY}" only ` +
+      `(docs + signature, bodies elided). Repeat the call with mode: "${NAV_CONTRACT_ONLY}".`
+    )
+  }
+  return (
+    `${tool} is refused: your nav tools are code_outline and code_item with mode "${NAV_CONTRACT_ONLY}". ` +
+    `Nothing else of the nav server is open to you, because it can return an implementation body or a dossier.`
+  )
+}

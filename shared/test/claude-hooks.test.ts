@@ -427,11 +427,29 @@ r = hook("session-start.ts", start({ transcript_path: gone, cwd: join(tmp, "nowh
 restores++
 check("flight: missing dossier fails open", r.code === 0 && !r.out.includes("Build log, last lines") && r.out.includes("### Phase 1"))
 
+// Both test authors look up an existing function's contract with code_item, mode contract only: never a body.
+const navCall = (agent: string, tool: string, input: object) =>
+  hook("pre-tool-use.ts", pre({ agent_id: "n1", agent_type: agent, tool_name: NAV + tool, tool_input: input })).out
+for (const [label, agent] of [["unit author", UT], ["integration author", IT]] as const) {
+  check(`nav: ${label} code_item mode contract allowed`, navCall(agent, "code_item", { path: "src/lib.rs", symbol: "Queue::flush", mode: "contract" }) === "")
+  check(`nav: ${label} code_outline allowed`, navCall(agent, "code_outline", { path: "src/lib.rs" }) === "")
+  const dflt = navCall(agent, "code_item", { path: "src/lib.rs", symbol: "Queue::flush" })
+  check(`nav: ${label} code_item with no mode (default full) denied`, dflt.includes('"deny"') && dflt.includes("contract"))
+  for (const mode of ["full", "members", "signature", "doc", "CONTRACT", ""]) {
+    check(`nav: ${label} code_item mode ${JSON.stringify(mode)} denied`, navCall(agent, "code_item", { path: "src/lib.rs", symbol: "x", mode }).includes('"deny"'))
+  }
+  for (const tool of ["code_find", "code_replace", "doc_section", "ref_section", "arch_find", "phase_checkpoint"]) {
+    check(`nav: ${label} ${tool} denied`, navCall(agent, tool, { symbol: "x" }).includes('"deny"'))
+  }
+}
+check("nav: another subagent keeps code_item full", navCall("agentic-software-development:implementer", "code_item", { path: "a.rs", symbol: "x", mode: "full" }) === "")
+check("nav: the orchestrator keeps code_item full", hook("pre-tool-use.ts", pre({ tool_name: NAV + "code_item", tool_input: { path: "a.rs", symbol: "x" } })).out === "")
+
 // ---- the log ----------------------------------------------------------------------
 const lines = readFileSync(join(tmp, "agentic-software-development", "claude", "claude-hooks.log"), "utf8").trim().split("\n")
 const count = (e: string) => lines.filter((l) => l.split(" ")[1] === e).length
 check("log: timestamped, one line per event", lines.every((l) => /^\d{4}-\d\d-\d\dT[\d:.]+Z (refused|nudge|recorded|restored) \S+ /.test(l)))
-check("log: refusals (six orchestrator, one a runner-style /plan session; seven blind-read; eight integration seal; three stateful reads)", count("refused") === 24)
+check("log: refusals (six orchestrator, one a runner-style /plan session; seven blind-read; eight integration seal; three stateful reads; 26 nav limits of the two test authors)", count("refused") === 50)
 check("log: nudges (two call-count, two pressure, one call-count in the pressure session)", count("nudge") === 5)
 check("log: restores (the rules case adds one)", count("restored") === 3 + restores)
 check("log: checkpoints recorded (the interactive one, and the runner stage's two: a runner stage is an orchestrator now)", count("recorded") === 3)

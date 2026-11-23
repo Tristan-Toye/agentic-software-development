@@ -29,7 +29,8 @@ permission:
   todowrite: deny
   # Pipeline skills are read by path (STANDARDS in the payload); the catalogue buys nothing.
   skill: deny
-  # code_item and code_find read implementation bodies: blindness forbids them.
+  # code_item and code_find read implementation bodies: blindness forbids them. (Claude Code gets code_item in contract
+  # mode only, enforced by the hook; opencode cannot scope a tool by argument, so it stays denied here.)
   "code_*": deny
   # ctx_execute runs arbitrary code: it would read what the read map denies.
   "ctx_*": deny
@@ -94,8 +95,9 @@ permission:
 claude:
   model: haiku
   effort: low
-  tools: Read, Write, Edit
+  tools: Read, Write, Edit, mcp__plugin_agentic-software-development_nav__code_outline, mcp__plugin_agentic-software-development_nav__code_item
   widen:
+    nav: Claude Code only. opencode cannot scope a tool by argument, so `code_*` stays denied there. Here the plugin's PreToolUse hook (shared/blind-read.ts `navBodyGuard`) refuses every `code_item` call whose mode is not `contract` (docs + signature, bodies elided), and every nav tool other than `code_outline` and `code_item`: you look up an existing function's contract, never a body.
     edit: opencode scopes edits to the test families in this file's edit map. Claude Code cannot scope Edit in an agent file, so the plugin's PreToolUse hook (shared/blind-read.ts, the same boundary as Read) refuses an Edit outside .agent-staging/ and the test families; Edit exists for the in-place change of an existing test file under a CORRECTION or CENSUS payload (#392), and scripts/verify_return.py --census-paths checks the edit stayed on the census paths.
     read: opencode scopes reads to .agent-staging/ and the test families in this file's read map. Claude Code cannot scope Read in an agent file, so the plugin's PreToolUse hook (shared/blind-read.ts) refuses every other path for this agent; a workflow spawn hands it its payload as a PAYLOAD_FILE under .agent-staging/.
 ---
@@ -183,6 +185,12 @@ tool set — that request is always refused.
   test, `[property: …]` tag or not.
 - `FIXTURES` — how to construct the subject under test, and the fakes or stubs
   available to you.
+- `SEAM_FACTS` — present only when a test must use existing code whose doc
+  comment says nothing about what it refuses or requires: one short rule per
+  line, `<function> refuses|requires <X> (path:line)`, plus at most one
+  `EXAMPLE_TEST: <path>` of an existing test to copy the setup from. A rule,
+  never a body; the `path:line` is where the orchestrator found it, not a file
+  you may open. Set your fixtures up so the rule holds.
 - `SHARED_IDIOM` — present only when a test must construct or invoke a
   concept the payload names as shared: the one helper, type or shape to use
   for it, verbatim. Use it as written; never invent an alternative.
@@ -202,6 +210,21 @@ tool set — that request is always refused.
   `Write`.
 - `CONTRACT_HASH` — a version stamp of `CONTRACT`, pasted bare. It is not
   instruction; paste nothing from it into your tests or your report.
+
+## Existing code you must use — look up its contract
+
+When a test must call, construct or set up existing code that is not in
+`CONTRACT` (a helper, a fixture builder, a type the subject takes), look up
+what it promises and what it refuses before you guess its setup. Under Claude
+Code you have two nav tools for it: `code_outline` (the items of a file: names,
+line ranges, first doc line) and `code_item` with **`mode: "contract"`**
+(docs plus signature, bodies elided; `Type::method | Other::fn` for several in
+one call). Always pass `mode: "contract"`: the hook refuses any other mode,
+`code_find`, `code_replace` and every other nav tool, because they print a
+body. The contract's docs say what an input is refused and what state it
+requires; set the fixtures up to match. If the docs say nothing and
+`SEAM_FACTS` is silent too, report it in one `GAP:` line instead of guessing.
+Under opencode you have neither tool: `SEAM_FACTS` and `SUPPORT` carry this.
 
 ## Method
 
