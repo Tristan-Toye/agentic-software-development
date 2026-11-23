@@ -223,8 +223,12 @@ def budget(graph: dict) -> dict:
     return {"view": view, "counted": kind or "node", "used": used, "limit": limit, "over": used > limit}
 
 
-def validate(graph, root: str | None = None, schema: dict | None = None, check_budget: bool = True) -> list:
+def validate(graph, root: str | None = None, schema: dict | None = None, check_budget: bool = True,
+             step_routing: bool = False) -> list:
     """Typed issues for a graph, [] when valid. Each issue is {code, path, message}.
+
+    `step_routing`: the vr_promote_preview driver is in shadow, so every added or changed step of every flow
+    (not only a `new_stem` flow) needs `to` and `call_kind`; the driver builds a draft from each flow.
 
     `root` (optional): a repository root; every cited path:line must exist there.
     """
@@ -276,16 +280,18 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
             issues.append(_issue("unknown_lane_id", "nodes[%d].to" % i, "lane %r is not defined" % n["to"]))
     by_id = {n["id"]: (i, n) for i, n in enumerate(graph.get("nodes", []))}
     for fi, f in enumerate(graph.get("flows", [])):
-        if not f.get("new_stem"):
+        if not f.get("new_stem") and not (step_routing and graph.get("view") == "L1"):
             continue
         for sid in f.get("after", []):
             if sid not in by_id:
                 continue
             ni, n = by_id[sid]
+            if not f.get("new_stem") and n.get("status") not in ("added", "changed"):
+                continue
             for field in ("to", "call_kind"):
                 if n.get(field) is None:
                     issues.append(_issue("step_missing_" + field, "nodes[%d].%s" % (ni, field),
-                                         "step %r of flow %r (new_stem %r) has no %s" % (sid, f["id"], f["new_stem"], field)))
+                                         "step %r of flow %r (%s) has no %s" % (sid, f["id"], ("new_stem %r" % f["new_stem"]) if f.get("new_stem") else "STEP_ROUTING all", field)))
     for i, g in enumerate(graph.get("groups", [])):
         if g.get("parent") is not None and g["parent"] not in group_ids:
             issues.append(_issue("unknown_group_id", "groups[%d].parent" % i, "group %r is not defined" % g["parent"]))
@@ -337,7 +343,7 @@ def _cmd_validate(args) -> int:
     except (OSError, ValueError) as exc:
         print(json.dumps({"ok": False, "issues": [_issue("schema_error", "", str(exc))]}, indent=2))
         return 2
-    issues = validate(graph, root=args.root, check_budget=not args.no_budget)
+    issues = validate(graph, root=args.root, check_budget=not args.no_budget, step_routing=args.step_routing == "all")
     print(json.dumps({"ok": not issues, "issues": issues}, indent=2))
     return 1 if issues else 0
 
@@ -409,6 +415,16 @@ def _selftest() -> int:
     check("new_stem:complete-passes", validate(g) == [], validate(g))
     g["nodes"][0]["call_kind"] = "shout"
     check("call_kind:enum", validate(g) != [])
+    # STEP_ROUTING all: a flow without new_stem (the shape of the shadow evidence flows) needs to + call_kind too.
+    g = copy.deepcopy(l1)
+    check("routing:off-flow-without-new_stem-passes", validate(g) == [], validate(g))
+    got = codes(validate(g, step_routing=True))
+    check("routing:all-flags-steps-lacking-to-and-kind", "step_missing_to" in got and "step_missing_call_kind" in got, got)
+    for n in g["nodes"]:
+        if n.get("status") in ("added", "changed"):
+            n["to"] = n["lane"]
+            n["call_kind"] = "call"
+    check("routing:all-complete-passes", validate(g, step_routing=True) == [], validate(g, step_routing=True))
     # FU-02: 80 passes, 81 fails, a 200-character label fails, the message names the length.
     g = load(os.path.join(FIXTURES, "label-at-limit.json"))
     check("fu02:80-ok", len(g["nodes"][1]["label"]) == 80 and validate(g) == [])
@@ -488,6 +504,8 @@ def main(argv=None) -> int:
     v.add_argument("file")
     v.add_argument("--root", help="repository root: cited path:line must exist there")
     v.add_argument("--no-budget", action="store_true")
+    v.add_argument("--step-routing", choices=("all", "off"), default="off",
+                   help="all: every added/changed step of every L1 flow needs to + call_kind (driver vr_promote_preview in shadow)")
     v.set_defaults(fn=_cmd_validate)
     b = sub.add_parser("budget", help="print the budget use of the view")
     b.add_argument("file")
