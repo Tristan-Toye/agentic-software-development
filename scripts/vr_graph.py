@@ -115,6 +115,39 @@ def shape_of(node: dict, view: str | None = None) -> str | None:
     return SHAPE_KIND_ROOM.get(str(node.get("kind", "")).lower())
 
 
+L1_IO_VERB = re.compile(r"^(read|write|send|publish|fetch|receive|emit|store|save|load|query|request|return)(s|es)?\b", re.I)
+L1_SHAPES_FIXTURES = os.path.join(REF_DIR, "l1-shapes.fixtures.json")
+
+
+def l1_default_shapes(graph: dict) -> dict:
+    """{step id: "terminal" | "io"} for the steps of an L1 graph that name no shape (l1DefaultShapes in vrlayout.ts, pinned by
+    references/visual-review/l1-shapes.fixtures.json): the first and last step of a flow of 3 or more, a step that calls another
+    lane or starts with a data verb is io. A node with a `shape`, a kind other than step or `collapsed` keeps what it has."""
+    out: dict = {}
+    if not isinstance(graph, dict) or graph.get("view") != "L1" or not isinstance(graph.get("nodes"), list):
+        return out
+
+    def fixed(n) -> bool:
+        return not isinstance(n, dict) or n.get("shape") is not None or n.get("collapsed") is True or str(n.get("kind") or "").lower() not in ("", "step")
+
+    by_id = {n.get("id"): n for n in graph["nodes"] if isinstance(n, dict)}
+    for n in by_id.values():
+        if fixed(n):
+            continue
+        if (n.get("call_kind") is not None and n.get("to") is not None and n.get("to") != n.get("lane")) or L1_IO_VERB.match(str(n.get("label") or "").strip()):
+            out[n["id"]] = "io"
+    for f in graph.get("flows") or []:
+        if not isinstance(f, dict):
+            continue
+        ids = [i for i in ((f.get("after") or f.get("before") or []) if isinstance(f.get("after") or f.get("before") or [], list) else []) if i in by_id]
+        if len(ids) < 3:
+            continue
+        for i in (ids[0], ids[-1]):
+            if not fixed(by_id[i]):
+                out[i] = "terminal"
+    return out
+
+
 def shape_width(label: str, shape: str | None = None, folded: bool = False) -> int:
     """vrShapeWidth in vrtext.ts: the box width the layout gives a node drawn in `shape`."""
     base = node_width(label, folded)
@@ -515,9 +548,10 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
         if shape_broken:
             return issues
 
+    l1_shapes = l1_default_shapes(graph)
     for i, n in enumerate(graph.get("nodes", [])):
         if isinstance(n, dict) and isinstance(n.get("label"), str):
-            shp = shape_of(n, graph.get("view")) if graph.get("view") != "seq" else None
+            shp = (shape_of(n, graph.get("view")) or l1_shapes.get(n.get("id"))) if graph.get("view") != "seq" else None
             fit = text_fit(n["label"], shape_width(n["label"], shp), bool(n.get("stereotype")), graph.get("view"), shp)
             if fit["clipped"]:
                 issues.append(_issue("label_too_long", "nodes[%d].label" % i,
@@ -659,6 +693,16 @@ def _selftest() -> int:
         return sorted({i["code"] for i in issues})
 
     repo = os.path.join(FIXTURES, "repo")
+    # The default L1 shapes agree with shared/questions/vrlayout.ts: the same fixture is pinned by shared/test/vrshapes.test.ts.
+    with open(L1_SHAPES_FIXTURES, encoding="utf-8") as fh:
+        l1f = json.load(fh)
+    check("l1shapes:cases", len(l1f["cases"]) >= 8)
+    for c in l1f["cases"]:
+        check("l1shapes:" + c["name"], l1_default_shapes(c["graph"]) == c["shapes"], json.dumps(l1_default_shapes(c["graph"])))
+    # the wider terminal / io box is the text room validate() judges a label by (negative: a plain step has the plain room)
+    _lab = "x" * 36
+    _g = {"view": "L1", "nodes": [{"id": "a", "label": _lab, "kind": "step"}], "flows": []}
+    check("l1shapes:plain-room", l1_default_shapes(_g) == {} and shape_width(_lab, None) < shape_width(_lab, "terminal"))
     # The text-fit rule agrees with shared/questions/vrtext.ts: the same fixture is pinned by shared/test/vrtext.test.ts.
     with open(TEXT_FIXTURES, encoding="utf-8") as fh:
         tf = json.load(fh)

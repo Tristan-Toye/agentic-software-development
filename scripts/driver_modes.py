@@ -25,7 +25,8 @@ them away. No quota means every run carries the modes, as before.
 
 One driver is script-only and costs no tokens (FREE: vr_promote_preview). It is exempt from the quota: a run
 that finds the quota full, and a run that is not /work-on, still gets it exported with the mode in the file,
-and it never claims a place. `show` marks it "(no quota)". vr_promote_preview has no `on` mode (`set` refuses it).
+and it never claims a place. `show` marks it "(no quota)". `on` makes vr_promote_preview also write the Sequence preview tabs of the
+Phase 3 review (vr_promote.py --shadow-all); that is the owner's call, no PR switches it, and `all on` leaves it at shadow.
 
 Switching a driver on is graduation: the PR that does it rewrites the phase doc as the plain procedure, removes
 the mode branch from the code and moves the name from NAMES to GRADUATED. A graduated name is always on and part
@@ -71,7 +72,8 @@ FREE = ("vr_promote_preview",)   # script-only, no tokens: exempt from the run q
 GRADUATED = {"flow_coverage_gate": "2026-11-20", "finalize_pr": "2026-11-23",
              "merge_packages": "2026-11-23"}
 GRADUATED_SCAN = ("references", "primary-agents", "sub-agents", "skills", "claude", "opencode")   # dirs the agents read
-NO_ON = {"vr_promote_preview": "no on mode yet: promotion stays tied to `Diagrams new:`"}   # modes a driver refuses
+NO_ON: dict = {}   # drivers with no `on` mode yet: name -> why (`set` refuses on, `all on` leaves them at shadow). None now.
+ALL_ON_SKIP = ("vr_promote_preview",)   # `all on` leaves these at shadow: only an explicit `set name=on` (the owner's call) turns them on
 MODES = ("off", "shadow", "on")
 QUOTA_KEY = "_quota"   # in the drivers file next to the driver names: {"limit": N, "claimed": [{"run", "at"}]}
 QUOTA_COMMAND = "work-on"
@@ -318,7 +320,7 @@ def _change(a: argparse.Namespace, path: str) -> int:
                 return 2
             modes[name] = mode
     elif a.cmd == "all":
-        modes = {n: ("shadow" if (a.mode == "on" and n in NO_ON) else a.mode) for n in NAMES}
+        modes = {n: ("shadow" if (a.mode == "on" and (n in NO_ON or n in ALL_ON_SKIP)) else a.mode) for n in NAMES}
     elif a.cmd == "off":
         modes = {}
     try:
@@ -402,10 +404,17 @@ def _run_selftest() -> list[str]:
             with open(os.path.join(leak, "references", "x.md"), "w") as fh:
                 fh.write("ok\nWhen ASD_DRIVER_FLOW_COVERAGE_GATE is shadow\n")
             check("the leak scan finds a graduated name or variable", graduated_leaks(leak) == ["references/x.md:2"])
-            check("vr_promote_preview=on is refused and writes nothing", main(["--file", f, "set", "vr_promote_preview=on"]) == 2
-                  and "vr_promote_preview" not in load(f)[0] and main(["--file", f, "set", "vr_promote_preview=shadow"]) == 0)
-            check("all on keeps vr_promote_preview at shadow", main(["--file", f, "all", "on"]) == 0 and load(f)[0]["vr_promote_preview"] == "shadow"
+            check("vr_promote_preview=on is accepted (it writes the Sequence preview tabs)", main(["--file", f, "set", "vr_promote_preview=on"]) == 0
+                  and load(f)[0]["vr_promote_preview"] == "on" and main(["--file", f, "set", "vr_promote_preview=shadow"]) == 0)
+            check("all on keeps vr_promote_preview at shadow (only set turns it on)", main(["--file", f, "all", "on"]) == 0 and load(f)[0]["vr_promote_preview"] == "shadow"
                   and load(f)[0]["test_round"] == "on")
+            # the mechanism for a driver with no on mode (none today): refused by set, held at shadow by all
+            NO_ON["vr_promote_preview"] = "test"
+            try:
+                check("a NO_ON driver: set on is refused and all on keeps it at shadow", main(["--file", f, "set", "vr_promote_preview=on"]) == 2
+                      and main(["--file", f, "all", "on"]) == 0 and load(f)[0]["vr_promote_preview"] == "shadow" and load(f)[0]["test_round"] == "on")
+            finally:
+                NO_ON.clear()
             check("the free drivers are known names", set(FREE) <= set(NAMES) and name_of(env_name("vr_promote_preview")) == "vr_promote_preview")
             # ---- the run quota
             q = os.path.join(tmp, "quota", "drivers.json")

@@ -156,6 +156,38 @@ export function nodeShape(n: any, view?: string): Shape {
   const own = typeof n.shape === "string" ? (view === "decision" && n.shape.toLowerCase() === "circle" ? "junction" : SHAPE_NAMES[n.shape.toLowerCase()]) : undefined
   return own ?? KIND_SHAPES[String(n.kind ?? "").toLowerCase()] ?? "rect"
 }
+/** A step label that starts with one of these verbs moves data in or out (a read, a write, a send): drawn as an input/output parallelogram. */
+export const L1_IO_VERB = /^(read|write|send|publish|fetch|receive|emit|store|save|load|query|request|return)(s|es)?\b/i
+/**
+ * The shape each L1 step gets when its author names none (the Flow view drawn in the flow-chart vocabulary), by node id. Mechanical, so
+ * a dossier written before shapes existed is drawn the same way without regeneration:
+ * - the first and the last step of a flow with at least three steps are terminals (where it starts and ends);
+ * - a step that calls another lane (`call_kind` with a `to` other than its own lane), or whose label starts with a data verb (L1_IO_VERB), is io;
+ * - every other step stays a plain box (process).
+ * A node with its own `shape`, or a kind other than `step`, keeps what it has. Only the L1 view; any other view gets {}. Mirrored in vr_graph.py (l1_default_shapes),
+ * pinned by references/visual-review/l1-shapes.fixtures.json. Pure.
+ */
+export function l1DefaultShapes(g: any): Record<string, "terminal" | "io"> {
+  const out: Record<string, "terminal" | "io"> = {}
+  if (!g || g.view !== "L1" || !Array.isArray(g.nodes)) return out
+  const fixed = (n: any) => !n || typeof n !== "object" || n.shape != null || n.collapsed === true || !["", "step"].includes(String(n.kind ?? "").toLowerCase())
+  const byId = new Map<string, any>(g.nodes.map((n: any) => [n.id, n]))
+  for (const n of g.nodes) {
+    if (fixed(n)) continue
+    if ((n.call_kind != null && n.to != null && n.to !== n.lane) || L1_IO_VERB.test(String(n.label ?? "").trim())) out[n.id] = "io"
+  }
+  for (const f of Array.isArray(g.flows) ? g.flows : []) {
+    const ids: string[] = (Array.isArray(f.after) && f.after.length ? f.after : Array.isArray(f.before) ? f.before : []).filter((i: string) => byId.has(i))
+    if (ids.length < 3) continue
+    for (const id of [ids[0], ids[ids.length - 1]]) if (!fixed(byId.get(id))) out[id] = "terminal"
+  }
+  return out
+}
+/** The graph with the default L1 shapes written into the steps that name none (a copy; the file is never changed). Other views come back as they are. Pure. */
+export function withDefaultShapes(g: any): any {
+  const d = l1DefaultShapes(g)
+  return Object.keys(d).length ? { ...g, nodes: g.nodes.map((n: any) => (d[n.id] ? { ...n, shape: d[n.id] } : n)) } : g
+}
 /** The box a node of this shape needs, from the plain-box size `base` for the same label (the width comes from the shared text rule, vrShapeWidth). A diamond needs far more room than a box for the same text. Pure. */
 export function shapeSize(shape: Shape, label: string, base: { width: number; height: number }): { width: number; height: number } {
   const width = vrShapeWidth(label, shape)
@@ -407,7 +439,7 @@ export async function layoutGraph(graph: any, timeoutMs = LAYOUT_TIMEOUT_MS): Pr
   if (hit) return hit
   const running = pending.get(key)
   if (running) return running
-  const p = runLayout(g, key, timeoutMs).finally(() => pending.delete(key))
+  const p = runLayout(withDefaultShapes(g), key, timeoutMs).finally(() => pending.delete(key))
   pending.set(key, p)
   return p
 }
@@ -637,10 +669,10 @@ export async function collapseLoaded(g: any, view: string, collapsed: string[]):
 /** One view of a dossier directory with `collapsed` groups drawn as boxes, and its layout (cached on the collapsed graph's hash). */
 export async function collapsedView(dir: string, view: string, collapsed: string[]): Promise<{ graph: any; layout: Layout; collapsed: string[] }> {
   const file = viewFile(dir, view)
-  if (!file) throw new Error("view must be L0, L1, L2, decision or arch:<stem>")
+  if (!file) throw new Error("view must be L0, L1, L2, decision, arch:<stem> or seqpreview:<stem>")
   if (!existsSync(file) || !statSync(file).isFile()) throw new Error("no " + view + " diagram")
   const g = JSON.parse(readFileSync(file, "utf8"))
-  if (archStemOf(view) !== null) {
+  if (archStemOf(view) !== null || previewStemOf(view) !== null) {
     if (!ARCH_VIEWS.has(g?.view)) throw new Error(view + " must be a c1, c4 or seq graph")
     return collapseLoaded(g, g.view, collapsed)
   }
@@ -669,11 +701,26 @@ export function archStems(dir: string): string[] {
     return readdirSync(folder).filter((f) => f.endsWith(".json") && ARCH_STEM.test(f.slice(0, -5)) && lstatSync(join(folder, f)).isFile()).map((f) => f.slice(0, -5)).sort()
   } catch { return [] }
 }
-/** The file of a view of the dossier directory: `L0`/`L1`/`L2`, or `arch:<stem>` when that stem is a file in arch/. null for any other name. */
+// ---- the auto-drafted sequence previews: <dir>/seq-preview/<stem>.json, written by `vr_promote.py --shadow-all` when the driver vr_promote_preview is on ----
+export const PREVIEW_DIR = "seq-preview"
+/** The view name of a preview: `seqpreview:<stem>`. A preview is context for the owner: it takes no verdicts, is no part of the approval and is never promoted. */
+export const PREVIEW_PREFIX = "seqpreview:"
+export const previewStemOf = (d: unknown): string | null => typeof d === "string" && d.startsWith(PREVIEW_PREFIX) && ARCH_STEM.test(d.slice(PREVIEW_PREFIX.length)) ? d.slice(PREVIEW_PREFIX.length) : null
+/** The stems of the regular files `<stem>.json` in <dir>/seq-preview (symlinks and other names are ignored), sorted. */
+export function previewStems(dir: string): string[] {
+  const folder = join(dir, PREVIEW_DIR)
+  try {
+    if (!lstatSync(folder).isDirectory()) return []
+    return readdirSync(folder).filter((f) => f.endsWith(".json") && ARCH_STEM.test(f.slice(0, -5)) && lstatSync(join(folder, f)).isFile()).map((f) => f.slice(0, -5)).sort()
+  } catch { return [] }
+}
+/** The file of a view of the dossier directory: `L0`/`L1`/`L2`, `arch:<stem>` when that stem is a file in arch/, or `seqpreview:<stem>` when it is a file in seq-preview/. null for any other name. */
 export function viewFile(dir: string, view: string): string | null {
   if ((VR_VIEWS as readonly string[]).includes(view) || view === DECISION_VIEW) return join(dir, view.toLowerCase() + ".json")
   const stem = archStemOf(view)
-  return stem !== null && archStems(dir).includes(stem) ? join(dir, ARCH_DIR, stem + ".json") : null
+  if (stem !== null) return archStems(dir).includes(stem) ? join(dir, ARCH_DIR, stem + ".json") : null
+  const prev = previewStemOf(view)
+  return prev !== null && previewStems(dir).includes(prev) ? join(dir, PREVIEW_DIR, prev + ".json") : null
 }
 /** Whether the dossier directory holds a decision.json (a regular file). */
 export const hasDecision = (dir: string): boolean => { try { return lstatSync(join(dir, DECISION_VIEW + ".json")).isFile() } catch { return false } }
@@ -692,11 +739,14 @@ export const hasVisualReview = (root: string, dossier: string): boolean => VR_VI
 export async function visualReview(dir: string, dossier: string): Promise<VisualReview> {
   const res: VisualReview = { dossier, dir, rev: "", views: { L0: null, L1: null, L2: null }, issues: [], hasReview: existsSync(join(dir, "review.json")) }
   const h = createHash("sha256")
-  for (const v of tabViews(dir)) {
+  const previews = previewStems(dir).map((s) => PREVIEW_PREFIX + s)
+  for (const v of [...tabViews(dir), ...previews]) {
     const file = viewFile(dir, v)!
     if (!existsSync(file)) continue
-    const isArch = archStemOf(v) !== null
-    const out: ViewResult = { file: isArch ? ARCH_DIR + "/" + v.slice(5) + ".json" : v.toLowerCase() + ".json", graph: null, layout: null, issues: [] }
+    const isPreview = previewStemOf(v) !== null
+    const isArch = archStemOf(v) !== null || isPreview
+    const out: ViewResult = { file: isPreview ? PREVIEW_DIR + "/" + v.slice(PREVIEW_PREFIX.length) + ".json" : isArch ? ARCH_DIR + "/" + v.slice(5) + ".json" : v.toLowerCase() + ".json", graph: null, layout: null, issues: [] }
+    if (isPreview) out.preview = true
     res.views[v] = out
     let g: any
     try {
@@ -706,7 +756,9 @@ export async function visualReview(dir: string, dossier: string): Promise<Visual
       g = JSON.parse(text)
     } catch (e) { out.issues.push({ code: "unreadable", where: "", message: "cannot read " + out.file + ": " + (e as Error).message }); continue }
     out.issues.push(...checkGraph(g, isArch ? undefined : v))
-    if (isArch && !out.issues.length && !ARCH_VIEWS.has(g.view)) out.issues.push({ code: "view", where: "view", message: "an architecture draft must have view c1, c4 or seq, not " + g.view })
+    if (isPreview && !out.issues.length && g.view !== "seq") out.issues.push({ code: "view", where: "view", message: "a sequence preview must have view seq, not " + g.view })
+    else if (isArch && !out.issues.length && !ARCH_VIEWS.has(g.view)) out.issues.push({ code: "view", where: "view", message: "an architecture draft must have view c1, c4 or seq, not " + g.view })
+    if (isPreview && typeof g?.meta?.auto_draft === "string") out.note = g.meta.auto_draft
     // A dangling edge is dropped by the layout and reported; every other issue means no layout.
     const fatal = out.issues.some((i) => i.code !== "dangling_edge")
     if (typeof g?.title === "string") out.title = g.title
@@ -720,6 +772,7 @@ export async function visualReview(dir: string, dossier: string): Promise<Visual
     try { out.layout = await layoutGraph(out.graph); out.issues.push(...checkLayout(out.graph, out.layout)) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
   }
   res.rev = h.digest("hex").slice(0, 16)
-  res.issues = Object.keys(res.views).flatMap((v) => (res.views[v]?.issues ?? []).map((i) => ({ ...i, where: v + (i.where ? "." + i.where : "") })))
+  // A preview is context, not part of the review: its issues stay on its own tab and never count against the change.
+  res.issues = Object.keys(res.views).filter((v) => previewStemOf(v) === null).flatMap((v) => (res.views[v]?.issues ?? []).map((i) => ({ ...i, where: v + (i.where ? "." + i.where : "") })))
   return res
 }

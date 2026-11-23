@@ -217,11 +217,15 @@ compared against this one.
    a tab of the fourth part, "Architecture impact", with the same verdicts as
    L0, L1 and L2. A non-zero exit is a defect in the draft or in `l1.json`:
    re-spawn the author with the output in `ERRORS`, same two-attempt limit.
-   When `ASD_DRIVER_VR_PROMOTE_PREVIEW` is `shadow`: run
+   When `ASD_DRIVER_VR_PROMOTE_PREVIEW` is `shadow` or `on`: run
    `python3 "${PLUGIN_ROOT}/scripts/vr_promote.py" --shadow-all --dossier-id <ID> --repo <repo>`
-   once; read nothing from its output, it only records evidence. (The author got `STEP_ROUTING: all`
-   for this reason: without `to` and `call_kind` on the steps of a flow with no `Diagrams new:` stem
-   every shadow build fails by construction.)
+   once, after the last repair of `l1.json`; read nothing from its output, it only records evidence.
+   A step with no `to` / `call_kind` is no failure (its routing is inferred from the step order), but
+   the author writes them under `STEP_ROUTING: all` so the arrows are the author's, not inferred.
+   In `on` the same run also writes `.discovery/visual-review/<ID>/seq-preview/<stem>.json`
+   (the L1 flows with no `Diagrams new:` stem, at most 6): the dashboard draws each as a
+   "Sequence (auto draft)" tab next to Decisions. A preview is never promoted into
+   docs/architecture, takes no verdicts and is no part of the approval.
    The owner's verdicts are recorded in `review.json` against the hash of the
    file they saw; any later edit of `l1.json` or of a draft (a contract
    revision that re-runs the author) changes that hash, and Phase 9's

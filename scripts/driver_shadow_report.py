@@ -357,7 +357,13 @@ def selftest() -> int:
         rep2 = report(evd2, dd2, [], ["strength_gate_prep", "vr_promote_preview"])
         mp2, vp2 = rep2["drivers"]["strength_gate_prep"], rep2["drivers"]["vr_promote_preview"]
         check("failed builds in the shadow facts -> NOT-YET with the counts", mp2["verdict"] == "NOT-YET" and "0 built ok, 12 failed" in mp2["reason"])
-        check("a driver with no on mode is NO-ON, never READY-FOR-ON", vp2["verdict"] == "NO-ON" and "shadow only" in vp2["reason"])
+        check("vr_promote_preview has an on mode: clean shadow evidence is READY-FOR-ON", vp2["verdict"] == "READY-FOR-ON")
+        driver_modes.NO_ON["vr_promote_preview"] = "test"
+        try:
+            vp3 = report(evd2, dd2, [], ["vr_promote_preview"])["drivers"]["vr_promote_preview"]
+        finally:
+            driver_modes.NO_ON.clear()
+        check("a driver with no on mode is NO-ON, never READY-FOR-ON", vp3["verdict"] == "NO-ON" and "shadow only" in vp3["reason"])
         check("the text names a verdict line per driver", all(f"VERDICT {n}:" in text for n in DRIVERS))
         check("--json round-trips", json.loads(json.dumps(rep))["drivers"]["strength_gate_prep"]["verdict"] == "READY-FOR-ON")
         check("an empty evidence directory is NO-DATA for all", all(p["verdict"] == "NO-DATA" for p in report(os.path.join(tmp, "none"), dd, [], [])["drivers"].values()))
