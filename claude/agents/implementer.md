@@ -91,6 +91,17 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
    log, or `run_tests.py --digest <log> --lines 40`; never re-run the suite
    with no edit in between just to read its output through another `tail`
    or `grep`. The run that is cheap to repeat is the one you never repeat.
+   **Waiting for a long run.** Your shell tool is `Bash` (capital B; `bash`
+   is not a tool) and there is no `Monitor` tool for you: never call it. Start
+   the run with `run_tests.py ... --detach` (it prints a log path and the
+   `--wait` command) or `run_gates.py ... --detach` (prints a run id), then
+   make ONE blocking call, `run_tests.py --wait <log>` or `run_gates.py --wait
+   <id>`; it returns the digest when the run ends (`run_gates.py --wait`
+   exits 6 when its cap passed with the run still going: call the same
+   `--wait` again). Never wait with `sleep`, `pgrep`, `ps`, `tail -f` or an
+   `until`/`while` loop, and never check progress in repeated calls: every such
+   turn costs a full context read and shortens nothing. A run that finishes
+   inside one call needs no `--detach`.
    A green `run_gates.py` run leaves a receipt for this exact tree, so the
    orchestrator's own gate run on your commit reuses it instead of running
    the list again — another reason not to touch the tree after it.

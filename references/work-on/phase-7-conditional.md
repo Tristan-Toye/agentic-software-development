@@ -145,8 +145,12 @@ one object per lens in this round:
 { "lens": "style | architecture | performance | tests", "label": "r1 style",
   "payloadPath": "<the linted reviewer final, absolute, under <X>/.agent-staging/>",
   "payloadSha256": "<its hash>", "round": 1,
-  "reportDir": "<X>/.agent-staging/reviews" }
+  "reportDir": "<X>/.agent-staging/reviews", "pluginRoot": "<${PLUGIN_ROOT}, absolute>" }
 ```
+
+`pluginRoot` is what lets the round's documents be written by one script call
+(`scripts/verify_wave.py`) in one cheap spawn for the whole round; without it
+each document costs its own spawn.
 
 Each reviewer reads its final itself, as in Phase 4's workflow wave: never put
 a payload into `args` or a script, and never write or copy a workflow script.

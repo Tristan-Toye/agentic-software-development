@@ -645,7 +645,9 @@ The prompt tells the orchestrator these rules:
 - Run every test through `run_tests.py` and every gate list through
   `run_gates.py` (`--path-prepend`/`--env-script` for a toolchain off the
   shell PATH: both apply to a local run and in the VM, and a missing env
-  script fails the run, `--detach` then `--wait ID` for a long run), never an ad-hoc
+  script fails the run, `--detach` then ONE blocking `--wait ID` for a long run: never a
+  `sleep`/`pgrep`/`until` poll loop or repeated status turns; only an exit 6 earns a second
+  `--wait`), never an ad-hoc
   script, so the timeline gets the suite and gate lines; and only the tests the step names (under SUITE-MODE `stub`, the
   new and affected tests plus CI: the full suite belongs to `/stub`).
 - Never end a stage while background work it started is still running;

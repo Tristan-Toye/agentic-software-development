@@ -131,7 +131,10 @@ found — environment, not a gate failure": fix the flags, do not read it as
 red. A list too long for one tool call (the Bash cap is 10 minutes) runs
 with `--detach` (prints a run id, returns at once) and then
 `--wait <id>` (prints the foreground summary; exit 6 means still running,
-call it again).
+call it again). `--wait` is the one way to wait: a single blocking call that
+returns when the run ends. Never poll instead (no `sleep`/`pgrep`/`until`
+loop, no repeated status turns, no reading the run's state directory); the
+only second call is `--wait <id>` again after an exit 6.
 
 ### Kanban delivery
 

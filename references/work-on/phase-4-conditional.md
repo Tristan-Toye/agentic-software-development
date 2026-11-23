@@ -334,7 +334,12 @@ refuses both mistakes at launch, naming the item. They are for a test author
 whose world the hash stamps. When several authors share one worktree (`root`),
 pass nothing extra: the workflow hands each item its siblings' `owned` paths as
 `--shared-tree`, so an author is never flagged for a sibling's files.
-`reportDir` defaults to `<root>/.agent-staging/reports`. A workflow
+`reportDir` defaults to `<root>/.agent-staging/reports`. Verification is
+mechanical and per wave: once every agent has returned, one cheap spawn pipes
+all the returns to `scripts/verify_wave.py`, which writes each report file and
+runs `verify_return.py` for each in one call (a return it cannot settle falls
+back to a per-item wrapper; implementers sharing one worktree are still
+verified one after another). A workflow
 spawn is the one place the payload travels as a file, not pasted: each agent
 gets the two-line `PAYLOAD_FILE` / `PAYLOAD_SHA256` intake its file names and
 reads the final itself. The paste rule is about the per-spawn classifier, and
