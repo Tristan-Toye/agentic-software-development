@@ -108,7 +108,7 @@ Detail: `ref_section` with `phase-7-conditional` and the heading "One fix spawn 
 Detail: `ref_section` with `phase-7-conditional` and the heading "The style lens may start early, beside the Phase 6 suite run". (the cheap lens runs with Phase 6.)
 
 - **Run the `GATES:` list (Phase 2) on the fixed head before you push**,
-  including gates no local aggregator covers: `run_gates.py --affected-since
+  including gates no local aggregator covers: `run_gates.py --build-log <live dossier> --affected-since
   <sha of the head the full list last passed on>` for a review fix round (only
   the gates its changed paths touch run, the rest print `skipped`, a path no
   gate claims runs them all), and the FULL list (no flag) on the final head

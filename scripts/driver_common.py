@@ -417,7 +417,7 @@ def drive(name: str, argv: list[str] | None, build_parser: Callable, run: Callab
     ap.add_argument("--mode", choices=MODES, help=f"override {env_name(name)} (tests only)")
     ap.add_argument("--dossier", help="dossier id, e.g. W-014 (names the evidence directory)")
     ap.add_argument("--root", help="the main checkout (default: found from the working directory)")
-    ap.add_argument("--log", metavar="DOSSIER_FILE", help="append the one-line summary to this dossier's Build log (mode on only)")
+    ap.add_argument("--log", "--build-log", dest="log", metavar="DOSSIER_FILE", help="append the one-line summary to this dossier's Build log (mode on only)")
     build_parser(ap)
     args = ap.parse_args(argv)
     if args.selftest:

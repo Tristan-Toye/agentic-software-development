@@ -1189,6 +1189,31 @@ def wait_run(run_id: str, cap: float) -> int:
         return EXIT_DIED
 
 
+def parse_or_usage(ap: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
+    """parse_args, but an unknown argument prints the usage line and a hint, then exits 2."""
+    args, extra = ap.parse_known_args(argv)
+    if extra:
+        ap.print_usage(sys.stderr)
+        print(f"{ap.prog}: unknown argument(s): {' '.join(extra)}; `{ap.prog} --help` lists every flag", file=sys.stderr)
+        raise SystemExit(2)
+    return args
+
+
+def write_build_log(args: argparse.Namespace, root: str, passed: int, failed: int, skipped: int, reused: int) -> None:
+    """--build-log: append the one-line result to the dossier's Build log, through dossier_edit's lock."""
+    if not args.build_log:
+        return
+    import dossier_edit
+    sha = "unknown"
+    try:
+        sha = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()[:12]
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    line = (f"GATES: run {'red' if failed else 'green'} on {sha} — {passed} passed, {failed} failed, {skipped} skipped"
+            + (f" ({reused} reused)" if reused else ""))
+    print(dossier_edit.log_or_say(args.build_log, [line]))
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0], allow_abbrev=False)
     ap.add_argument("gates_file", nargs="?")
@@ -1219,8 +1244,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--wait", metavar="ID", help="wait for a detached run, print its summary, exit with its code")
     ap.add_argument("--wait-cap", type=float, default=540, metavar="SECONDS",
                     help="--wait: longest block (default 540); exit 6 when the run is still going")
+    ap.add_argument("--build-log", metavar="DOSSIER",
+                    help="after a gate run, append `GATES: run <green|red> on <sha> — <counts>` to this dossier's Build log")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
-    args = ap.parse_args(argv)
+    args = parse_or_usage(ap, argv)
     if args.selftest:
         return selftest()
     if args.wait:
@@ -1282,6 +1309,7 @@ def main(argv: list[str]) -> int:
         print(f"REUSED {len(rec['passed']) + len(rec['skipped'])} gates — receipt {rec['at']} on "
               f"{rec['head'][:12]}, same gates file and tree; --fresh runs them again")
         print(f"run_gates: {len(rec['passed'])} passed, 0 failed, {len(rec['skipped'])} skipped (reused)")
+        write_build_log(args, os.path.abspath(args.root), len(rec['passed']), 0, len(rec['skipped']), len(rec['passed']))
         return 0
 
     # Selection: which gates this call leaves out, each with a printed reason (never silent).
@@ -1397,6 +1425,7 @@ def main(argv: list[str]) -> int:
             write_receipt(root, gates_sha, fingerprint,
                           [g["name"] for kind, g, _ in results if kind == "ran"],
                           [{"name": g["name"], "needs": g["needs"]} for kind, g, _ in results if kind == "skip"])
+    write_build_log(args, root, passed + nreused, failed, skipped, nreused)
     return 1 if failed else 0
 
 
@@ -1746,6 +1775,23 @@ def selftest() -> int:
             check("second run on the same tree reuses the receipt", rc1 == 0 and runs() == 1
                   and "REUSED 2 gates" in out1 and "1 passed, 0 failed, 1 skipped (reused)" in out1)
             check("--receipt finds it", rrun("--receipt")[0] == 0)
+            bl = os.path.join(tmp, "W-bl.md")
+            with open(bl, "w", encoding="utf-8") as fh:
+                fh.write("---\nid: W-bl\n---\n\n# T\n\n## Build log\n\n- first\n")
+            _, outbl = rrun("--build-log", bl)
+            gotbl = open(bl, encoding="utf-8").read()
+            check("--build-log appends a GATES: run line, also on a reused receipt",
+                  re.search(r"^- GATES: run green on [0-9a-f]{12} — 1 passed, 0 failed, 1 skipped \(1 reused\)$", gotbl, re.M) is not None
+                  and "build log: 1 line(s) written" in outbl)
+            ebl = io.StringIO()
+            with contextlib.redirect_stderr(ebl):
+                try:
+                    main([rg, "--bogus"])
+                    raised = 0
+                except SystemExit as ex:
+                    raised = ex.code
+            check("an unknown argument prints the usage line and a hint, exit 2",
+                  raised == 2 and "usage:" in ebl.getvalue() and "--help" in ebl.getvalue())
             with open(os.path.join(rrepo, ".discovery", "dossiers", "W-1.md"), "a") as fh:
                 fh.write("RETURNED line\n")
             rrun()

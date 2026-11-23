@@ -30,8 +30,8 @@ and an unpushed record dies with the worktree. Add it by name, never with
 `$ARGUMENTS` names a dossier ID, or is empty. It can add
 `plan-branch=plan/<KEY>`: the runner requeued this build after a re-plan
 whose plan PR has not merged yet (committed mode). The live dossier before `X`
-exists is then the copy on that branch — read it with
-`git fetch origin <branch> && git show origin/<branch>:.discovery/dossiers/<file>`
+exists is then the copy on that branch — read only its front matter, never the file whole:
+`git fetch origin <branch> && git show origin/<branch>:.discovery/dossiers/<file> | head -40`
 and route on it (it reads `ready`; this checkout's copy still reads
 `planned`). Phase 2 stacks the build on that plan. Log
 `PLAN-STACK: <branch> — plan PR open, build stacked on it`. Empty → read the front matter of

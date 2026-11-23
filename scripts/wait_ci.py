@@ -498,7 +498,7 @@ def main(argv: list[str] | None = None, runner: Runner | None = None) -> int:
     ap.add_argument("--grep", metavar="REGEX", help="with --job-log: the pattern")
     ap.add_argument("--rerun-failed", action="store_true", help="re-run the failed jobs once and wait again")
     ap.add_argument("--rerun-settle", type=float, default=20, help="seconds to let GitHub register the rerun")
-    ap.add_argument("--log", metavar="DOSSIER", help="append `SUITE: ci run <url> on <sha> — <N> failed / <N> passed` to this dossier's Build log once the checks have a verdict")
+    ap.add_argument("--log", "--build-log", dest="log", metavar="DOSSIER", help="append `SUITE: ci run <url> on <sha> — <N> failed / <N> passed` to this dossier's Build log once the checks have a verdict")
     ap.add_argument("--selftest", action="store_true", help="check the checker")
     args = ap.parse_args(sys.argv[1:] if argv is None else argv)
     if args.selftest:
