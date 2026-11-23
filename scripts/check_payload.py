@@ -708,6 +708,8 @@ def support_digest_findings(lines: list[str], kind: str | None) -> list[str]:
 def _load_script(name: str):
     import importlib.util
     spec = importlib.util.spec_from_file_location(name, os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py"))
+    if spec is None or spec.loader is None:
+        raise OSError("cannot load %s" % name)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)

@@ -69,8 +69,9 @@ WHOLE = {"enum", "type", "union", "delegate"}  # declarations that hold no execu
 
 def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, os.path.join(SCRIPTS_DIR, name + ".py"))
+    if spec is None or spec.loader is None:
+        raise ImportError("cannot load %s" % name)
     module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
@@ -290,7 +291,7 @@ def build_text(root: str, paths: list[str] | None = None, exclude: list[str] | N
     """(digest text, repo-relative files covered). Empty text when nothing qualifies."""
     sealed = sealed_set(root)
     exclude = [e for e in (exclude or []) if e]
-    cands, skipped = discover(root, sealed, exclude)
+    cands, _skipped = discover(root, sealed, exclude)
     for p in paths or []:
         p = os.path.relpath(os.path.join(root, p), root) if not os.path.isabs(p) else os.path.relpath(p, root)
         if is_sealed(os.path.join(root, p), sealed):
@@ -531,6 +532,8 @@ def selftest() -> int:
         except Refused:
             check_("an explicit sealed path is refused", True)
         out = write_digest(root, exclude=["tests/support/mine_support.py"])
+        if out is None:
+            raise AssertionError("write_digest returned no path")
         check_("write_digest writes under .agent-staging", out == default_out(root) and os.path.isfile(out))
         mtime = os.stat(out).st_mtime_ns
         write_digest(root, exclude=["tests/support/mine_support.py"])
