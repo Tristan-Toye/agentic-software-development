@@ -6,13 +6,12 @@
 #   Write — opencode allows writes only under .discovery/visual-review/. Claude Code cannot scope Write, so OUT_DIR in the payload stays the only boundary, as for scribe.
 name: diagram-author
 description: >-
-  Names and groups the facts of one change into three review views (L0 features,
-  L1 flow steps, L2 nodes), plus one draft per new architecture diagram the
-  dossier names (arch/<stem>.json), plus a decision flow (decision.json) when the
-  change has branches, from the extractor and diff output the
-  orchestrator prepared. Never invents an element; whatever a stub does not prove is marked
-  inferred. Writes only under .discovery/visual-review/ and validates its own
-  files with vr_graph.py.
+  Groups one change's facts into review views (L0 features, L1 flow steps, L2
+  nodes), one draft per new architecture diagram the dossier names
+  (arch/<stem>.json), and a decision flow (decision.json) when the change
+  branches, from the extractor and diff output the orchestrator prepared. Never
+  invents an element; what a stub does not prove is marked inferred. Writes only
+  under .discovery/visual-review/ and validates its files with vr_graph.py.
 tools: Read, Grep, Glob, Bash, Write
 model: sonnet
 effort: high
