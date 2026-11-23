@@ -36,6 +36,12 @@ Get the suite's verdict on `X`. **This is the first time the code and the
 tests meet each other**, so expect failures. A failure here is the design
 working, not the design breaking.
 
+**A skipped test is not a green test (#488).** A subset run whose new tests
+were all skipped (the digest's `skipped N (NOT VERIFIED, not passed)` line,
+from `run_tests.py --skip-banner`) does not count as the new tests going green:
+treat the subset as not run, record those tests NOT VERIFIED, and take the
+verdict from a run that has the environment.
+
 **The verdict comes from the runner `SUITE-RUNNER:` names (Phase 2), once
 per head, never twice.** Under `ci`: sync first (below), push `X`'s branch
 (`git push -u origin <branch>`; committed mode commits the dossier first),

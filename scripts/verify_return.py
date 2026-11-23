@@ -21,7 +21,7 @@ agent's tool list makes impossible.
         [--contract-hash H [--contract-files f1,f2]]
         [--payload FILE --payload-sha256 H]
         [--release HOLDER --provider P --model M]
-        [--log DOSSIER --agent ID] [--print-line --agent ID]
+        [--file-gates FILE [--file-gate NAMES]] [--log DOSSIER --agent ID] [--print-line --agent ID]
         [--report FILE --kind KIND [--host claude|opencode]] [--uncommitted]
         [--preexisting FILE] [--orchestrator-paths p1,p2]
     verify_return.py --root DIR --snapshot FILE
@@ -88,6 +88,16 @@ truncation still has the verdict, then the detail:
   may have read something other than what was linted;
 - the release of the agent's admission slot, when `--release HOLDER` is given
   (with `--provider` and `--model`): spawn_admission.py's own last line;
+- with `--file-gates FILE` (#489; `--file-gate NAMES` narrows it to those gate
+  names): the repository's file-level static gates (relocatable-path,
+  wall-clock-ceiling, duplicate-helper and numeric-constant-marker checks: the
+  gates that read test files) run through `run_gates.py` with the paths the
+  return wrote, under `--owned` and not in `--shared-tree`, in `$GATE_PATHS`
+  (space separated, as `gate_commit.py` passes them). `file gates over N
+  path(s): ...` is the report line; a failing gate flags the return
+  `file-gate`, and `file gates green` / `FILE-GATE FAILED` joins the RETURNED
+  line. The orchestrator sends the failure back to that author in the same wave
+  as a CORRECTION;
 - with `--gates FILE` (the run's gates file): `gates: green receipt <time> on
   <head>` when `run_gates.py` left a green receipt for exactly this tree, and
   `, gates green (receipt)` joins the RETURNED line; `gates: no receipt for
@@ -435,6 +445,21 @@ REWRITE_SHARE = 0.8
 REWRITE_MIN_LINES = 20
 
 
+def run_file_gates(root: str, gates: str, only: str, paths: list[str]) -> tuple[list[str], str]:
+    """Run the file-level gates (a gates file, or `--only` names of it) with the return's paths in
+    $GATE_PATHS, space separated, as gate_commit.py does. (failing gate lines, the report line)."""
+    argv = [sys.executable, os.path.join(SCRIPTS_DIR, "run_gates.py"), gates, "--root", root, "--fresh"]
+    if only:
+        argv += ["--only", only]
+    proc = subprocess.run(argv, capture_output=True, text=True, check=False, env=dict(os.environ, GATE_PATHS=" ".join(paths)))
+    lines = (proc.stdout + proc.stderr).splitlines()
+    summary = next((l.strip().removeprefix("run_gates: ") for l in reversed(lines) if l.startswith("run_gates:") and " passed" in l), f"exit {proc.returncode}")
+    failing = [l.strip() for l in lines if l.startswith("FAIL ")]
+    if proc.returncode != 0 and not failing:
+        failing = [f"run_gates exit {proc.returncode}: " + " ".join(lines)[:120]]
+    return failing, f"file gates over {len(paths)} path(s): {summary}"
+
+
 def census_findings(root: str, base: str, census: list[str]) -> list[str]:
     """#392: a census edit is scoped and in place. A census path must exist at base and now, and
     must not be a whole-file replacement (a Write over the file): at least REWRITE_SHARE of a
@@ -668,6 +693,21 @@ def verify(args: argparse.Namespace) -> tuple[list[str], list[str], list[str]]:
     if sibling_dirty and not own_dirty:
         parts.append(f"tree exact for this author ({len(sibling_dirty)} sibling path(s) not judged here)")
 
+    if args.file_gates:
+        mine = [p for p in paths if os.path.exists(os.path.join(root, p)) and not is_shared(p)
+                and (not owned or is_owned(p, owned))]
+        if mine:
+            failed, said = run_file_gates(root, args.file_gates, args.file_gate, mine)
+            out.append(said)
+            if failed:
+                out += ["  " + l for l in failed[:3]]
+                parts.append(f"FILE-GATE FAILED: {len(failed)} line(s)")
+                flags.append("file-gate")
+            else:
+                parts.append("file gates green")
+        else:
+            out.append("file gates: no path written to check")
+
     if args.report:
         tools = agent_tools(args.kind, args.host)
         claims = shell_claims(report_text) if report_text is not None else []
@@ -734,6 +774,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--report", metavar="FILE", help="the agent's report, read only for claims its tools cannot back")
     ap.add_argument("--kind", help="with --report: the agent kind, e.g. unit-test-author")
     ap.add_argument("--host", default="claude", choices=("claude", "opencode"), help="with --report: where the tool list comes from")
+    ap.add_argument("--file-gates", metavar="FILE",
+                    help="a gates file of the repository's file-level static checks (those that read $GATE_PATHS); run over the paths the return wrote, a failure flags it FILE-GATE")
+    ap.add_argument("--file-gate", default="", metavar="NAMES", help="with --file-gates: only these gate names (comma list)")
     ap.add_argument("--gates", metavar="FILE", help="the run's gates file: report whether run_gates.py left a green receipt for this tree")
     ap.add_argument("--uncommitted", action="store_true",
                     help="the agent writes files and never commits (document-drafter): owned files are expected dirty, no commit is expected")
@@ -896,6 +939,18 @@ def selftest() -> int:
             rc, out = call(base_args + ["--gates", gates_file, "--print-line", "--agent", "P1"])
             check("--gates with a green receipt reports it and joins the RETURNED line",
                   "gates: green receipt" in out and "gates green (receipt)" in out.split("RETURNED-LINE:")[1].splitlines()[0])
+
+            # --- --file-gates (#489): the repository's file-level gates over the paths the return wrote ---
+            put(tmp, "fg.txt", 'refused-pattern: ! grep -n "unimplemented" $GATE_PATHS\nclean-pattern: ! grep -n "ZZZ-NEVER-WRITTEN" $GATE_PATHS\n')
+            fg = os.path.join(tmp, "fg.txt")
+            rc, out = call(base_args + ["--file-gates", fg, "--print-line", "--agent", "P1"])
+            check("#489 a return with a refused pattern is flagged file-gate",
+                  "file gates over 1 path(s): 1 passed, 1 failed" in out and "FILE-GATE FAILED" in out
+                  and "file-gate" in out.split("verdict:")[1].splitlines()[0])
+            rc, out = call(base_args + ["--file-gates", fg, "--file-gate", "clean-pattern", "--print-line", "--agent", "P1"])
+            check("#489 --file-gate narrows the run to the named gates, which pass",
+                  "file gates over 1 path(s): 1 passed, 0 failed" in out and "file gates green" in out
+                  and "file-gate" not in out.split("verdict:")[1].splitlines()[0])
 
             # --- the payload a workflow spawn read: stable, then changed ---
             put(tmp, "payload.md", "TASK: x\n")

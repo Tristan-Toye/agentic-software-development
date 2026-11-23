@@ -140,6 +140,18 @@ a test run but has no Bash; re-run it yourself` flags the return. A kind
 without Bash cannot have run what it reports — that verdict is fabricated, so
 run the claimed suite or diff yourself and log your result, never the claim.
 
+**Run the file-level static gates over each return (#489).** From the gate
+list (Phase 2), pick the gates that read test or source files by path — a
+relocatable-path check, a wall-clock ceiling check, a duplicate-helper check,
+a numeric-constant marker check — and write them to a subset gates file
+(`.agent-staging/file-gates.txt`, one `name: command` line each, the command
+narrowed to `$GATE_PATHS`). Pass `--file-gates .agent-staging/file-gates.txt`
+(`--file-gate NAMES` narrows it) to `verify_return.py`: it runs them over the
+paths the return wrote and flags the return `file-gate` on a failure. Send that
+failure back to the same author in the same wave as a CORRECTION; a return does
+not wait for the full gate run after the merge to meet a rule the repository's
+own gates already hold.
+
 Detail: `ref_section` with `phase-4-conditional` and the heading "A whole-file rewrite is diffed first; a payload-unread return is discarded". (read it when a blind author returns a whole file, or a return is flagged `payload-unread`.)
 
 Detail: `ref_section` with `phase-4-conditional` and the heading "Under Claude Code, send the wave through the workflow, once". (every wave under Claude Code.)
