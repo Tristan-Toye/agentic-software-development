@@ -287,13 +287,22 @@ def decision_add(path: str, fields: dict) -> dict:
 CHECKLIST_LINE_RE = re.compile(r"^\s*[-*]?\s*(?P<member>[^\s—:][^—:]*?)\s+—\s+(?P<cat>[^:]+?):\s*\S")
 
 
+CHECKLIST_ID_RE = re.compile(r"^(?:[A-Z]+\d+(?:\.\d+)*\s+)?(?:\[[^\]]*\]\s+)*")
+
+
 def checklist_members(text: str) -> list[str]:
-    """The member ids a checklist covers: `<member> — <category>: <promise>` lines."""
+    """The member ids a checklist covers: `<member> — <category>: <promise>` lines.
+    A leading `<PREFIX><n>.<m>` id and `[tag]`s (`RB1.1 CHECKPOINT_BUILD_TARGET`) are not
+    part of the member: ID-prefixed and plain lines read to the same member."""
     seen: list[str] = []
     for line in text.splitlines():
         m = CHECKLIST_LINE_RE.match(line)
-        if m and m.group("member") not in seen:
-            seen.append(m.group("member"))
+        if not m:
+            continue
+        member = m.group("member").strip()
+        member = CHECKLIST_ID_RE.sub("", member, count=1) or member
+        if member not in seen:
+            seen.append(member)
     return seen
 
 
@@ -573,6 +582,10 @@ def selftest() -> int:
         check("a bad dossier id is refused", refused(record_path, tmp, "deferred", "x"))
         text = "flush — return meaning: count written\n- flush — order: oldest first\nparse — empty case: 0\n"
         check("checklist members are read", checklist_members(text) == ["flush", "parse"])
+        check("an ID-prefixed checklist line reads the member, not the ID",
+              checklist_members("RB1.1 CHECKPOINT_BUILD_TARGET — order: first\n"
+                                "- NU1.2 [whole-value] Queue.flush — return: n\nparse — x: y\n")
+              == ["CHECKPOINT_BUILD_TARGET", "Queue.flush", "parse"])
         # usage: which criteria exercise which member and surface
         cl = ("Queue.flush — order: oldest first\nQueue.drain — empty case: 0\n"
               "parse — invalid case: raises\nStore.put — return meaning: id\n")
