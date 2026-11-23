@@ -116,8 +116,11 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
    **Run it once per change, and read its log, never a second run.**
    `TEST_COMMAND` goes through `run_tests.py` (tests) or `run_gates.py`
    (gates): you see a digest — counts and the failing tests — and the full
-   output is in the log it names. For more detail, `grep` or `sed -n` that
-   log, or `run_tests.py --digest <log> --lines 40`; never re-run the suite
+   output is in the log it names. The digest already carries each failing test's
+   first assertion or panic with `file:line`, the failing binary and the
+   deduplicated compile errors: open the log only when it ends in a `truncated`
+   or `see log` marker, then use `run_tests.py --digest <log> --lines 40`
+   or a `grep` or `sed -n` slice; never re-run the suite
    with no edit in between just to read its output through another `tail`
    or `grep`. The run that is cheap to repeat is the one you never repeat.
    A green `run_gates.py` run leaves a receipt for this exact tree, so the

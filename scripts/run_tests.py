@@ -388,8 +388,54 @@ def parse_cargo(text: str) -> tuple[Totals, list[Failure], bool]:
     for bm in re.finditer(r"^---- (\S+) stdout ----\n(.*?)(?=\n---- |\nfailures:|\Z)", text, re.M | re.S):
         blocks[bm.group(1)] = [l for l in bm.group(2).strip("\n").splitlines()]
     failures = [Failure(n, blocks.get(n, [])) for n in names]
+    seen: set[tuple[str, str, str]] = set()
     for etype, msg, loc in compiles:
+        # The same error shows once per target (lib, bin, test): list it once.
+        if (etype, msg, loc) in seen:
+            continue
+        seen.add((etype, msg, loc))
         failures.append(Failure(loc, [f"{etype}: {msg}"]))
+    return totals, failures, True
+
+
+def failing_binaries(text: str) -> list[str]:
+    """The cargo test binaries whose `test result:` line says FAILED, in log order, as
+    `Running <target>` / `Doc-tests <crate>` names; the answer to "which test file failed"."""
+    out: list[str] = []
+    current = ""
+    for line in text.splitlines():
+        m = re.match(r"^\s*(?:Running|Doc-tests)\s+(.+?)(?:\s+\(.*\))?\s*$", line)
+        if m:
+            current = m.group(1)
+        elif line.startswith("test result: FAILED") and current and current not in out:
+            out.append(current)
+    return out
+
+
+BUN_FAIL_RE = re.compile(r"^\(fail\) (.+?)(?: \[[\d.]+m?s\])?\s*$")
+
+
+def parse_bun(text: str) -> tuple[Totals, list[Failure], bool]:
+    text = ANSI_RE.sub("", text)
+    ran = re.search(r"^\s*Ran \d+ tests? across \d+ files?", text, re.M)
+    pass_m = re.search(r"^\s*(\d+) pass\s*$", text, re.M)
+    fail_m = re.search(r"^\s*(\d+) fail\s*$", text, re.M)
+    lines = text.splitlines()
+    failures: list[Failure] = []
+    for i, line in enumerate(lines):
+        m = BUN_FAIL_RE.match(line)
+        if not m:
+            continue
+        j = i - 1
+        while j >= 0 and not re.match(r"^(?:\(pass\)|\(fail\)|\(skip\)|\(todo\)|✓)", lines[j]) and not lines[j].startswith("error:"):
+            j -= 1
+        start = j if j >= 0 and lines[j].startswith("error:") else i
+        detail = [l.strip() for l in lines[start:i] if l.strip() and not l.startswith("✗")]
+        failures.append(Failure(m.group(1), detail))
+    if not (ran and (pass_m or fail_m)) and not failures:
+        return Totals(), [], False
+    totals = Totals(passed=int(pass_m.group(1)) if pass_m else 0,
+                    failed=int(fail_m.group(1)) if fail_m else len(failures))
     return totals, failures, True
 
 
@@ -416,7 +462,19 @@ def parse_pytest(text: str) -> tuple[Totals, list[Failure], bool]:
     if summary_m:
         counts = dict((v, int(k)) for k, v in re.findall(r"(\d+) (failed|passed|skipped|error)", summary_m.group(1)))
         totals = Totals(passed=counts.get("passed", 0), failed=counts.get("failed", 0), ignored=counts.get("skipped", 0))
-    failures = [Failure(path, [msg]) for path, msg in fails]
+    # The `___ test_name ___` sections hold the assertion's file:line (`path.py:12: AssertionError`).
+    where: dict[str, str] = {}
+    for sm in re.finditer(r"^_{3,} (\S+) _{3,}\n(.*?)(?=^_{3,} \S+ _{3,}$|^={3,} |\Z)", text, re.M | re.S):
+        lm = re.search(r"^(\S+\.\w+):(\d+): \w+", sm.group(2), re.M)
+        if lm:
+            where[sm.group(1).split(".")[-1]] = f"{lm.group(1)}:{lm.group(2)}"
+    failures = []
+    for path, msg in fails:
+        detail = [msg]
+        loc = where.get(re.sub(r"\[.*$", "", path.split("::")[-1]))
+        if loc:
+            detail.append(f"at {loc}")
+        failures.append(Failure(path, detail))
     return totals, failures, True
 
 
@@ -573,10 +631,30 @@ PARSERS: list[tuple[str, "callable[[str], tuple[Totals, list[Failure], bool]]"]]
     ("cargo", parse_cargo),
     ("nextest", parse_nextest),
     ("pytest", parse_pytest),
+    ("bun", parse_bun),
     ("dotnet", parse_dotnet),
     ("bats/tap", parse_bats),
     ("suites", parse_suites),
 ]
+
+
+def failure_headline(fl: Failure) -> str:
+    """One line for a failure: its first assertion/panic message with the location, when the
+    detail has one (cargo `panicked at file:line:col:` plus the message line, the older
+    `panicked at 'msg', file:line:col`, a bun `error:` line plus its `at ... (file:line)`,
+    pytest's message plus `at file:line`); otherwise its first detail line."""
+    detail = [l.strip() for l in fl.detail if l.strip()]
+    for i, l in enumerate(detail):
+        m = re.search(r"panicked at ([^\s:']+:\d+(?::\d+)?):?\s*$", l)
+        if m:
+            return f"{m.group(1)} {detail[i + 1] if i + 1 < len(detail) else ''}".strip()
+        m = re.search(r"panicked at '(.*)', (\S+:\d+(?::\d+)?)\s*$", l)
+        if m:
+            return f"{m.group(2)} {m.group(1)}"
+    if detail and detail[0].startswith("error:"):
+        loc = next((re.search(r"\(?([^\s()]+:\d+(?::\d+)?)\)?$", l) for l in detail if l.startswith("at ")), None)
+        return f"{loc.group(1) + ' ' if loc else ''}{detail[0]}"
+    return " | ".join(detail[:2])
 
 
 def parse_log(text: str) -> tuple[str, Totals, list[Failure]]:
@@ -629,13 +707,24 @@ def format_body(
             out.append(f"FAIL {fl.name}")
             for l in fl.detail[:lines_n]:
                 out.append("  " + cut(l, line_chars))
+            if len(fl.detail) > lines_n:
+                out.append(f"  (+{len(fl.detail) - lines_n} more lines of this failure, see log)")
         remaining = len(failures) - len(shown)
         if remaining > 0:
             out.append(f"(+{remaining} more failures, see log)")
+        if failures and "cargo" in parser.split(","):
+            bins = failing_binaries(log_text)
+            if bins:
+                out.append("failed in: " + cut(", ".join(bins), line_chars))
+        elif len(failures) > 3 and "pytest" in parser.split(","):
+            files: dict[str, int] = {}
+            for fl in failures:
+                files[fl.name.split("::")[0]] = files.get(fl.name.split("::")[0], 0) + 1
+            out.append("failing files: " + cut(", ".join(f"{f} ({n})" for f, n in files.items()), line_chars))
         if suites:
             out += [cut(l, line_chars) for l in suite_notes(log_text, root, max_failures)]
     else:
-        out.append("no recognized test output; last lines of the log:")
+        out.append("no recognized test output; last lines of the log (truncated, open the log for more):")
         for l in log_text.splitlines()[-lines_n:]:
             out.append("  " + cut(l, line_chars))
     return out
@@ -1136,6 +1225,106 @@ Build finished in 3.2s
 """
 
 
+BUN_LOG = """bun test v1.1.20 (abc123)
+
+src/math.test.ts:
+\u2713 adds numbers [0.12ms]
+error: expect(received).toBe(expected)
+
+Expected: 4
+Received: 5
+
+      at <anonymous> (/repo/src/math.test.ts:12:17)
+\u2717 math > subtracts [1.31ms]
+(fail) math > subtracts [1.31ms]
+
+ 1 pass
+ 1 fail
+ 2 expect() calls
+Ran 2 tests across 1 files. [18.00ms]
+"""
+
+PYTEST_LOCATED_LOG = """collected 3 items
+
+tests/test_a.py ..F.F                                                    [100%]
+
+=================================== FAILURES ===================================
+______________________________ test_parse_empty ________________________________
+
+    def test_parse_empty():
+>       assert parse("") == []
+E       AssertionError: assert None == []
+
+tests/test_a.py:14: AssertionError
+______________________ TestLoad.test_missing_key ______________________________
+
+>       raise KeyError("x")
+E       KeyError: 'x'
+
+tests/test_a.py:30: KeyError
+=========================== short test summary info ============================
+FAILED tests/test_a.py::test_parse_empty - AssertionError: assert None == []
+FAILED tests/test_a.py::TestLoad::test_missing_key - KeyError: 'x'
+========================= 2 failed, 3 passed in 0.12s ==========================
+"""
+
+CARGO_OLD_PANIC_LOG = """running 1 test
+test q ... FAILED
+
+failures:
+
+---- q stdout ----
+thread 'q' panicked at 'index out of range', src/idx.rs:7:9
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    q
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+"""
+
+CARGO_PER_TARGET_ERRORS = """   Compiling foo v0.1.0
+error[E0425]: cannot find value `x` in this scope
+ --> src/lib.rs:4:5
+  |
+4 |     x
+  |     ^ not found in this scope
+
+error[E0425]: cannot find value `x` in this scope
+ --> src/lib.rs:4:5
+  |
+4 |     x
+  |     ^ not found in this scope
+
+error: could not compile `foo` (lib test) due to 1 previous error
+"""
+
+CARGO_BINARIES_LOG = """     Running unittests src/lib.rs (target/debug/deps/foo-1)
+
+running 1 test
+test a ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/api.rs (target/debug/deps/api-2)
+
+running 1 test
+test c ... FAILED
+
+failures:
+
+---- c stdout ----
+thread 'c' panicked at tests/api.rs:10:5:
+assertion `left == right` failed
+  left: 1
+ right: 2
+
+failures:
+    c
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+"""
+
 def selftest() -> int:
     os.environ["ASD_BUILD_SLOTS"] = "0"  # a self-test never waits on, or takes, a real host build slot
     failures_list: list[str] = []
@@ -1179,6 +1368,37 @@ def selftest() -> int:
     check("generic: a PASS line whose name contains FAIL is no failure (#441)", totals.failed == 0 and not fails)
     parser, totals, fails = parse_log("PASS: a FAIL (exit 1)\nFAIL: b\n")
     check("generic: a leading FAIL still counts (#441)", totals.failed == 1)
+
+
+    # The parsed summary answers the follow-ups an orchestrator used to grep for.
+    parser, totals, fails = parse_log(BUN_LOG)
+    check("bun totals", parser == "bun" and totals == Totals(passed=1, failed=1))
+    check("bun failure name without timing", [f.name for f in fails] == ["math > subtracts"])
+    check("bun headline: assertion message with file:line",
+          failure_headline(fails[0]) == "/repo/src/math.test.ts:12:17 error: expect(received).toBe(expected)")
+    parser, totals, fails = parse_log(PYTEST_LOCATED_LOG)
+    check("pytest failure keeps the message and gains file:line",
+          fails[0].detail == ["AssertionError: assert None == []", "at tests/test_a.py:14"]
+          and fails[1].detail[-1] == "at tests/test_a.py:30")
+    parser, totals, fails = parse_log(CARGO_MULTI_BINARY)
+    check("cargo headline: panic location then message", failure_headline(fails[0]) == "src/lib.rs:10:5 assertion failed: left == right")
+    parser, totals, fails = parse_log(CARGO_OLD_PANIC_LOG)
+    check("cargo headline: old panic format", failure_headline(fails[0]) == "src/idx.rs:7:9 index out of range")
+    parser, totals, fails = parse_log(CARGO_PER_TARGET_ERRORS)
+    check("a compile error repeated per target is listed once", [f.name for f in fails] == ["src/lib.rs:4:5"])
+    parser, totals, fails = parse_log(CARGO_BINARIES_LOG)
+    check("failing binaries named", failing_binaries(CARGO_BINARIES_LOG) == ["tests/api.rs"])
+    body = format_body(parser, totals, fails, 10, 15, 300, CARGO_BINARIES_LOG)
+    check("digest names the failing binary", "failed in: tests/api.rs" in body)
+    long_detail = "running 1 test\ntest z ... FAILED\n\nfailures:\n\n---- z stdout ----\n" + "\n".join(f"line {i}" for i in range(30)) + \
+        "\n\nfailures:\n    z\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+    parser, totals, fails = parse_log(long_detail)
+    body = format_body(parser, totals, fails, 10, 5, 300, long_detail)
+    check("a cut failure detail says it was cut", any("more lines of this failure, see log" in l for l in body))
+    many = "\n".join(f"FAILED tests/test_{i % 2}.py::t{i} - boom" for i in range(5)) + "\n=== 5 failed, 1 passed in 0.1s ===\n"
+    parser, totals, fails = parse_log(many)
+    body = format_body(parser, totals, fails, 10, 5, 300, many)
+    check("pytest digest counts failing files", "failing files: tests/test_0.py (3), tests/test_1.py (2)" in body)
 
     parser, totals, fails = parse_log(NO_PARSE_LOG)
     check("no-parse log parses to nothing", parser == "" and not fails)

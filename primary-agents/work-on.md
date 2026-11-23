@@ -128,9 +128,15 @@ the lines `section` printed.
 `ctx_execute`, `ctx_execute_file` and `ctx_batch_execute` return what the code
 prints: print the count, the names, the matching lines — never a file's
 contents or a command's whole output. When you need to see text, read the
-lines you need. A test run's output goes to a log file; you read the summary
-and then the failing lines, bounded (`grep -n … | cut -c1-400 | head -40`),
-never the log. A tool result over opencode's `tool_output` limit arrives as a
+lines you need. A test or gate run's output goes to a log file; you read the
+summary `run_tests.py` and `run_gates.py` print: per failing test its name, the
+first assertion or panic with `file:line`, per failing suite binary and per
+failing gate its parsed first errors (compile errors once each, with `file:line`).
+Open the log only when that summary ends in a `(+K more … truncated` marker or
+says `see log`, and then only the bounded slice you need
+(`grep -n … | cut -c1-400 | head -40`), never the whole log. Never re-run a
+suite or gate to read its output another way, and never `tail`/`cat` a log
+the summary already covered. A tool result over opencode's `tool_output` limit arrives as a
 preview plus the path of the full text: grep or read that path in slices.
 When a ctx tool fails, do the same work with Bash or Read in the next step —
 never re-send the ctx call; in the recorded runs it was the tool that failed
