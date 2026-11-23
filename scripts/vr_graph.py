@@ -80,7 +80,9 @@ MAP_GROUP = 15
 
 # The canvas's one text-fit rule: the same numbers and algorithm as VR_TEXT, vrNodeWidth and vrFitLabel in vrtext.ts.
 # references/visual-review/text-fit.fixtures.json pins the two together (selftest here, shared/test/vrtext.test.ts there).
-TEXT = {"charPx": 6.6, "pad": 28, "inset": 24, "minW": 130, "maxW": 250, "foldedExtra": 36, "maxLines": 3, "seqMaxLines": 5}
+TEXT = {"charPx": 6.6, "pad": 28, "inset": 24, "minW": 130, "maxW": 250, "foldedExtra": 36, "maxLines": 3, "seqMaxLines": 5,
+        "shapeRoom": {"diamond": (0.6, 0), "circle": (0.7, 0), "terminal": (1, 36), "io": (1, 44)}, "ioSkew": 12,
+        "diamondW": (160, 300), "circleD": (72, 150), "terminalExtra": 24}
 TEXT_FIXTURES = os.path.join(REF_DIR, "text-fit.fixtures.json")
 
 
@@ -93,9 +95,48 @@ def node_width(label: str, folded: bool = False) -> int:
     return max(TEXT["minW"], min(TEXT["maxW"] + extra, _js_round(len(label) * TEXT["charPx"] + TEXT["pad"] + extra)))
 
 
-def text_fit(label: str, box_w: float, stereotype: bool = False, view: str | None = None) -> dict:
+# The shape a node is drawn in, for the text room (nodeShape in vrlayout.ts, only the names that change the room).
+SHAPE_NAME_ROOM = {"diamond": "diamond", "decision": "diamond", "rhombus": "diamond", "circle": "circle", "stadium": "terminal",
+                   "terminal": "terminal", "oval": "terminal", "io": "io", "parallelogram": "io", "junction": "junction", "dot": "junction"}
+SHAPE_KIND_ROOM = {"decision": "diamond", "terminal": "terminal", "start": "terminal", "end": "terminal", "io": "io", "junction": "junction"}
+
+
+def shape_of(node: dict, view: str | None = None) -> str | None:
+    """The text-room shape of a node (diamond, circle, terminal, io, junction) or None for a box: its `shape`, else its `kind`."""
+    if node.get("collapsed") is True:
+        return None
+    sh = node.get("shape")
+    if isinstance(sh, str):
+        got = SHAPE_NAME_ROOM.get(sh.lower())
+        if got == "circle" and view == "decision":
+            return "junction"
+        if got or sh.lower() in ("rect", "process", "round", "rounded", "cylinder", "database", "subroutine", "asymmetric", "bare", "implicit"):
+            return got
+    return SHAPE_KIND_ROOM.get(str(node.get("kind", "")).lower())
+
+
+def shape_width(label: str, shape: str | None = None, folded: bool = False) -> int:
+    """vrShapeWidth in vrtext.ts: the box width the layout gives a node drawn in `shape`."""
+    base = node_width(label, folded)
+    if shape in ("terminal", "io"):
+        return base + TEXT["terminalExtra"]
+    if shape == "junction":
+        return 14
+    if shape not in ("diamond", "circle"):
+        return base
+    lo, hi = TEXT["diamondW" if shape == "diamond" else "circleD"]
+    for w in range(lo, hi, 4):
+        if text_fit(label, w, False, None, shape)["needed"] <= TEXT["maxLines"]:
+            return w
+    return hi
+
+
+def text_fit(label: str, box_w: float, stereotype: bool = False, view: str | None = None, shape: str | None = None) -> dict:
     """The lines a label is drawn in inside a box `box_w` wide, as the page draws it: {"lines", "clipped", "needed"}."""
-    w = max(1, int((box_w - TEXT["inset"]) // TEXT["charPx"]))
+    if shape == "junction":  # a dot draws no text (its label is the title)
+        return {"lines": [], "clipped": False, "needed": 0}
+    factor, inset = TEXT["shapeRoom"].get(shape, (1, TEXT["inset"]))
+    w = max(1, int((box_w * factor - inset) // TEXT["charPx"]))
     out: list = []
     cur = ""
     for t in re.split(r"[ \n]", label):
@@ -476,7 +517,8 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
 
     for i, n in enumerate(graph.get("nodes", [])):
         if isinstance(n, dict) and isinstance(n.get("label"), str):
-            fit = text_fit(n["label"], node_width(n["label"]), bool(n.get("stereotype")), graph.get("view"))
+            shp = shape_of(n, graph.get("view")) if graph.get("view") != "seq" else None
+            fit = text_fit(n["label"], shape_width(n["label"], shp), bool(n.get("stereotype")), graph.get("view"), shp)
             if fit["clipped"]:
                 issues.append(_issue("label_too_long", "nodes[%d].label" % i,
                                      "the label needs %d lines (a stereotype takes one) in the widest node box and the canvas draws %d: shorten it"
@@ -622,13 +664,13 @@ def _selftest() -> int:
         tf = json.load(fh)
     check("textfit:cases", len(tf["cases"]) >= 10)
     for c in tf["cases"]:
-        w = node_width(c["label"], bool(c.get("folded")))
-        f = text_fit(c["label"], w, bool(c.get("stereotype")), c.get("view"))
+        w = shape_width(c["label"], c.get("shape"), bool(c.get("folded")))
+        f = text_fit(c["label"], w, bool(c.get("stereotype")), c.get("view"), c.get("shape"))
         check("textfit:" + c["label"][:30], (w, f["lines"], f["clipped"], f["needed"]) == (c["width"], c["lines"], c["clipped"], c["needed"]),
               json.dumps([w, f]))
     # A label that needs a fourth line is reported, a short one is not; the message comes from the same rule.
     long_g = load(os.path.join(FIXTURES, "minimal.json"))
-    clipped_cases = [c for c in tf["cases"] if c["clipped"] and len(c["label"]) <= NODE_LABEL_MAX and not c.get("folded")]
+    clipped_cases = [c for c in tf["cases"] if c["clipped"] and len(c["label"]) <= NODE_LABEL_MAX and not c.get("folded") and not c.get("shape")]
     check("textfit:has-clipped-case", bool(clipped_cases))
     for c in clipped_cases:
         long_g["nodes"][0]["label"] = c["label"]

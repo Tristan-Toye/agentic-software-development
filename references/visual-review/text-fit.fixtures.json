@@ -190,6 +190,102 @@
    ],
    "clipped": false,
    "needed": 3
+  },
+  {
+   "label": "Subscriber answered 2xx?",
+   "shape": "diamond",
+   "width": 160,
+   "lines": [
+    "Subscriber",
+    "answered 2xx?"
+   ],
+   "clipped": false,
+   "needed": 2
+  },
+  {
+   "label": "Validate the incoming webhook payload against the schema",
+   "shape": "diamond",
+   "width": 232,
+   "lines": [
+    "Validate the incoming",
+    "webhook payload",
+    "against the schema"
+   ],
+   "clipped": false,
+   "needed": 3
+  },
+  {
+   "label": "Lay out the graph, route every edge and keep each label clear of the boxes around it and then some more words to overflow",
+   "shape": "diamond",
+   "width": 300,
+   "lines": [
+    "Lay out the graph, route",
+    "every edge and keep each",
+    "label clear of the boxe…"
+   ],
+   "clipped": true,
+   "needed": 5
+  },
+  {
+   "label": "Parse",
+   "shape": "terminal",
+   "width": 154,
+   "lines": [
+    "Parse"
+   ],
+   "clipped": false,
+   "needed": 1
+  },
+  {
+   "label": "Validate the incoming webhook payload against the schema",
+   "shape": "terminal",
+   "width": 274,
+   "lines": [
+    "Validate the incoming webhook",
+    "payload against the schema"
+   ],
+   "clipped": false,
+   "needed": 2
+  },
+  {
+   "label": "Read the request body",
+   "shape": "io",
+   "width": 191,
+   "lines": [
+    "Read the request body"
+   ],
+   "clipped": false,
+   "needed": 1
+  },
+  {
+   "label": "Done",
+   "shape": "circle",
+   "width": 72,
+   "lines": [
+    "Done"
+   ],
+   "clipped": false,
+   "needed": 1
+  },
+  {
+   "label": "Validate the incoming webhook payload against the schema",
+   "shape": "circle",
+   "width": 150,
+   "lines": [
+    "Validate the",
+    "incoming",
+    "webhook payloa…"
+   ],
+   "clipped": true,
+   "needed": 5
+  },
+  {
+   "label": "merge",
+   "shape": "junction",
+   "width": 14,
+   "lines": [],
+   "clipped": false,
+   "needed": 0
   }
  ]
 }

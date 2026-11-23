@@ -151,7 +151,7 @@ details.mstubs{margin-top:10px}details.mstubs>summary{font-size:.78rem;letter-sp
 .vrsw.added,.vrbadge.added{border-color:var(--ok);color:var(--ok);background:var(--okbg)}.vrsw.changed,.vrbadge.changed{border-color:var(--warn);color:var(--warn);background:var(--warnbg)}.vrsw.removed,.vrbadge.removed{border-color:var(--bad);color:var(--bad);background:var(--badbg);border-style:dashed}
 .vrbody{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:12px;align-items:stretch}@media (max-width:760px){.vrbody{grid-template-columns:1fr}}
 .vrsvg{width:100%;height:clamp(300px,58vh,560px);background:var(--bg);border:1px solid var(--bd);border-radius:10px;touch-action:none;cursor:grab;display:block}.vrsvg.drag{cursor:grabbing}
-.vrsvg .vroff{display:none}.vrsvg g.vrn,.vrsvg g.vre,.vrsvg g.vrg{cursor:pointer;outline:none}.vrsvg g.sel>rect:not([stroke=transparent]){stroke-width:4}.vrsvg g:focus-visible>rect{stroke-width:4}.vrsvg g.vre.sel .vrline{stroke-width:4}
+.vrsvg .vroff{display:none}.vrsvg g.vrn,.vrsvg g.vre,.vrsvg g.vrg{cursor:pointer;outline:none}.vrsvg g.sel>rect:not([stroke=transparent]),.vrsvg g.sel>.vrshp{stroke-width:4}.vrsvg g:focus-visible>rect,.vrsvg g:focus-visible>.vrshp{stroke-width:4}.vrshk{margin-left:8px}.vrshk b{font-weight:400}.vrsvg g.vre.sel .vrline{stroke-width:4}
 .vrinsp{border:1px solid var(--bd);border-radius:10px;padding:10px 12px;overflow:auto;max-height:560px;background:var(--card)}.vrinsp h3{margin:0 0 6px;font-size:.95rem}.vrinsp p{margin:5px 0}.vrev{word-break:break-all;font-size:12px}
 .vrnote{margin-top:6px}.vrmm{margin-top:8px;display:flex;gap:8px;align-items:flex-start}.vrta{flex:1;font:12px/1.4 ui-monospace,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
 .vrban{margin:8px 0;padding:8px 10px;border:1px solid var(--warn);background:var(--warnbg);color:var(--fg);border-radius:8px;font-size:.88rem}
@@ -298,6 +298,26 @@ function vrHand(g) { return !!(g && g.meta && g.meta.generated_by === 'hand'); }
 function vrInferred(e, g) { if (vrHand(g)) return /\./.test(e.arrow || ''); return e.resolution ? e.resolution === 'inferred' : (e.evidence || []).length > 0 && e.evidence.every(x => x.tier === 'inferred'); }
 const VR_TEXT = ${JSON.stringify(VR_TEXT)};
 ${vrFitLabel.toString()}
+/* Node shapes (see nodeShape in vrlayout.ts: the layout names the shape of each non-rectangle in L.shapes and sizes the box for it). Shape is the node's type; colour stays the change status. */
+const VR_CENTER = { terminal: 1, diamond: 1, io: 1, circle: 1, cylinder: 1 };
+/* Draws the outline of shape sh in box b with the given paint attributes; returns the elements (the first carries class vrshp). */
+function vrShapeEl(sh, b, at, p) {
+  const x = b.x, y = b.y, w = b.w, h = b.h, cx = x + w / 2, cy = y + h / 2, pts = a => a.map(q => q[0] + ',' + q[1]).join(' ');
+  const mk = (n, a) => vrEl(n, Object.assign({ class: 'vrshp' }, a, at), p);
+  if (sh === 'diamond') return mk('polygon', { points: pts([[cx, y], [x + w, cy], [cx, y + h], [x, cy]]) });
+  if (sh === 'io') return mk('polygon', { points: pts([[x + VR_TEXT.ioSkew, y], [x + w, y], [x + w - VR_TEXT.ioSkew, y + h], [x, y + h]]) });
+  if (sh === 'asymmetric') return mk('polygon', { points: pts([[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x + 10, cy]]) });
+  if (sh === 'junction') return mk('circle', { cx: cx, cy: cy, r: Math.min(w, h) / 2 - 1, fill: at.stroke });
+  if (sh === 'circle') return mk('ellipse', { cx: cx, cy: cy, rx: w / 2, ry: h / 2 });
+  if (sh === 'cylinder') { const ry = 7, e = mk('path', { d: 'M' + x + ',' + (y + ry) + ' A' + w / 2 + ',' + ry + ' 0 0 1 ' + (x + w) + ',' + (y + ry) + ' V' + (y + h - ry) + ' A' + w / 2 + ',' + ry + ' 0 0 1 ' + x + ',' + (y + h - ry) + ' Z' }); vrEl('path', { d: 'M' + x + ',' + (y + ry) + ' A' + w / 2 + ',' + ry + ' 0 0 0 ' + (x + w) + ',' + (y + ry), fill: 'none', stroke: at.stroke, 'stroke-width': at['stroke-width'], 'stroke-dasharray': at['stroke-dasharray'] }, p); return e; }
+  const e = mk('rect', { x: x, y: y, width: w, height: h, rx: sh === 'terminal' ? h / 2 : sh === 'round' ? 16 : 6 });
+  if (sh === 'subroutine') [x + 8, x + w - 8].forEach(lx => vrEl('line', { x1: lx, y1: y, x2: lx, y2: y + h, stroke: at.stroke, 'stroke-width': 1.2 }, p));
+  return e;
+}
+/* Where the status mark sits: on the outline near the top right corner of the shape. */
+function vrMarkAt(sh, b) { const x = b.x, y = b.y, w = b.w, h = b.h; if (sh === 'diamond') return [x + w * 0.75, y + h * 0.25]; if (sh === 'circle') return [x + w / 2 + w * 0.354, y + h / 2 - h * 0.354]; if (sh === 'terminal') return [x + w - h * 0.15, y + h * 0.15]; if (sh === 'junction') return [x + w + 2, y - 2]; return [x + w - 12, y + 12]; }
+const VR_MM = { rect: ['[', ']'], round: ['(', ')'], terminal: ['([', '])'], diamond: ['{', '}'], io: ['[/', '/]'], junction: ['((', '))'], circle: ['((', '))'], cylinder: ['[(', ')]'], subroutine: ['[[', ']]'], asymmetric: ['>', ']'] };
+const VR_SHAPE_KEY = [['rect', '▭', 'step'], ['diamond', '◇', 'decision'], ['terminal', '⬭', 'start / end'], ['io', '▱', 'input / output'], ['cylinder', '⛁', 'store'], ['junction', '●', 'junction']];
 /* Sequence view: the arrow of one message from its sender to its receiver, styled by kind (call solid + filled head, reply dashed + open head, async solid + half head), coloured by status. Markers are per tone because a marker cannot take the line colour everywhere. */
 function vrSeqTone(s) { return s === 'added' ? 'ok' : s === 'changed' ? 'warn' : s === 'removed' ? 'bad' : 'mut'; }
 function vrSeqMarkers(defs) {
@@ -331,6 +351,7 @@ function vrBuild(host, key, data) {
   const leg = vrDom('div', 'vrleg small mut', null, host); leg.hidden = !!data.mapPath; /* the change legend: a committed diagram shows no change marks */
   ['added', 'changed', 'removed', 'context'].forEach(s => { const i = vrDom('span', 'vrlg', null, leg); const sw = vrDom('i', 'vrsw ' + s, VR_MARK[s], i); sw.setAttribute('aria-hidden', 'true'); i.appendChild(document.createTextNode(' ' + s)); });
   vrDom('span', 'vrlg', '- - - dashed edge = inferred', leg);
+  const shLeg = vrDom('span', 'vrlg', null, leg); shLeg.hidden = true; shLeg.setAttribute('title', 'Shape = type of node; colour = change status'); VR_SHAPE_KEY.forEach(k => { const i = vrDom('span', 'vrshk', null, shLeg); const g0 = vrDom('b', null, k[1], i); g0.setAttribute('aria-hidden', 'true'); i.appendChild(document.createTextNode(' ' + k[2])); });
   const wbar = vrDom('div', 'vrwalk', null, host); wbar.hidden = true; wbar.setAttribute('role', 'group'); wbar.setAttribute('aria-label', 'Walkthrough');
   const wkPrev = vrDom('button', 'btn sm', '◀ Previous', wbar), wkInd = vrDom('strong', 'vrwi', '', wbar), wkNext = vrDom('button', 'btn sm', 'Next ▶', wbar), wkExit = vrDom('button', 'btn sm', 'Exit', wbar), wkLab = vrDom('span', 'vrwl', '', wbar); vrDom('span', 'small mut', 'Arrow keys or n / p to move, Esc to leave', wbar);
   wkPrev.type = wkNext.type = wkExit.type = 'button'; wkInd.setAttribute('aria-live', 'polite');
@@ -523,14 +544,15 @@ function vrBuild(host, key, data) {
       vrEl('polyline', { class: 'vrline', points: ps, fill: 'none', stroke: e.status === 'context' ? 'var(--mut)' : 'var(--' + vrTone(e.status) + ')', 'stroke-width': (e.status === 'context' ? 1.2 : 2.2) + (e.count > 1 ? Math.min(0.8, Math.log2(e.count) * 0.3) : 0), 'stroke-dasharray': inf ? '6 4' : '0', 'marker-end': 'url(#vr-ar)' }, gg);
       if (e.bidirectional) gg.querySelector('.vrline').setAttribute('marker-start', 'url(#vr-ar)');
       tip(gg, e); });
-    g.nodes.forEach(n => { const b = L.boxes[n.id]; if (!b) return; const gg = vrEl('g', { 'data-id': n.id, 'data-status': n.status, class: 'vrn', tabindex: 0, role: 'button' }, root); els[n.id] = { g: gg, status: n.status, col: !!n.collapsed };
+    shLeg.hidden = !L.shapes;
+    g.nodes.forEach(n => { const b = L.boxes[n.id]; if (!b) return; const gg = vrEl('g', { 'data-id': n.id, 'data-status': n.status, class: 'vrn', tabindex: 0, role: 'button' }, root); els[n.id] = { g: gg, status: n.status, col: !!n.collapsed }; const sh = (L.shapes && L.shapes[n.id]) || 'rect'; vrEl('title', {}, gg).textContent = n.label + ' (' + (n.kind || 'node') + (sh === 'rect' ? '' : ', ' + sh) + ', ' + n.status + ')';
       if (n.collapsed) { gg.setAttribute('data-collapsed', '1'); vrEl('rect', { x: b.x + 5, y: b.y + 5, width: b.w, height: b.h, rx: 6, fill: 'var(--card)', stroke: 'var(--mut)', 'stroke-width': 1.5 }, gg); }
-      vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 6, fill: 'var(--' + vrBg(n.status) + ')', stroke: 'var(--' + vrTone(n.status) + ')', 'stroke-width': n.status === 'context' ? 1 : 2.5, 'stroke-dasharray': n.status === 'removed' ? '3 3' : '0' }, gg);
-      const fit = vrFitLabel(n.label, b.w, !!n.stereotype, g.view); const lines = fit.lines.slice();
+      vrShapeEl(sh, b, { fill: 'var(--' + vrBg(n.status) + ')', stroke: 'var(--' + vrTone(n.status) + ')', 'stroke-width': n.status === 'context' ? 1 : 2.5, 'stroke-dasharray': n.status === 'removed' ? '3 3' : '0' }, gg);
+      const fit = vrFitLabel(n.label, b.w, !!n.stereotype, g.view, sh); const lines = fit.lines.slice();
       if (n.stereotype) lines.unshift('<<' + n.stereotype + '>>');
-      if (fit.clipped) { const w = vrEl('text', { x: b.x + b.w - 10, y: b.y + b.h - 6, 'font-size': 12, 'font-weight': 700, fill: 'var(--bad)', 'text-anchor': 'middle' }, gg); w.textContent = '⚠'; const tt = vrEl('title', {}, w); tt.textContent = 'This label does not fit the box (' + fit.needed + ' lines needed): the text is cut off.'; }
-      lines.forEach((t, i) => { const x = vrEl('text', { x: b.x + 12, y: b.y + 19 + i * 15, 'font-size': 12, fill: 'var(--fg)', 'text-decoration': n.status === 'removed' ? 'line-through' : 'none' }, gg); x.textContent = (n.collapsed && i === 0 ? '▸ ' : '') + t; });
-      vrMark(gg, n.status, b.x + b.w - 12, b.y + 12);
+      if (fit.clipped) { const ctr = !!VR_CENTER[sh]; const w = vrEl('text', { x: ctr ? b.x + b.w / 2 : b.x + b.w - 10, y: b.y + b.h - 6, 'font-size': 12, 'font-weight': 700, fill: 'var(--bad)', 'text-anchor': 'middle' }, gg); w.textContent = '⚠'; const tt = vrEl('title', {}, w); tt.textContent = 'This label does not fit the box (' + fit.needed + ' lines needed): the text is cut off.'; }
+      if (sh !== 'junction') lines.forEach((t, i) => { const mid = VR_CENTER[sh] ? { x: b.x + b.w / 2, y: b.y + b.h / 2 + 4 + (i - (lines.length - 1) / 2) * 15, 'text-anchor': 'middle' } : { x: b.x + 12, y: b.y + 19 + i * 15 }; const x = vrEl('text', Object.assign({ 'font-size': 12, fill: 'var(--fg)', 'text-decoration': n.status === 'removed' ? 'line-through' : 'none' }, mid), gg); x.textContent = (n.collapsed && i === 0 ? '▸ ' : '') + t; });
+      const mk0 = vrMarkAt(sh, b); vrMark(gg, n.status, mk0[0], mk0[1]);
       if (L.arrows && L.arrows[n.id]) vrSeqArrow(gg, L.arrows[n.id], n.status);
       if (n.collapsed) { const kinds = {}; (n.member_kinds || []).forEach(k => kinds[k] = (kinds[k] || 0) + 1); const ks = Object.keys(kinds).sort((a, c) => kinds[c] - kinds[a]); const word = ks.length === 1 ? ks[0] + (n.members === 1 ? '' : 's') : (n.members === 1 ? 'item' : 'items'); const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = (n.members || 0) + ' ' + word; }
       else if (n.members && n.members.length) { const q = vrEl('text', { x: b.x + b.w - 8, y: b.y + b.h - 7, 'font-size': 11, 'text-anchor': 'end', fill: 'var(--mut)' }, gg); q.textContent = n.members.length + ' member' + (n.members.length === 1 ? '' : 's') + ' (hover)'; }
@@ -558,7 +580,7 @@ function vrBuild(host, key, data) {
     const kids = {}, top = []; const put = (id, p) => { (p && cont.some(c => c.id === p) ? (kids[p] = kids[p] || []) : top).push(id); };
     cont.forEach(c => put(c.id, lanes && g.lanes.some(l => l.id === c.id) ? '' : c.parent)); g.nodes.filter(x => vis(x.id)).forEach(x => put(x.id, lanes ? x.lane : x.group));
     const out = ['flowchart ' + (vrLane(g.view) ? 'TD' : 'LR')], isC = id => cont.some(c => c.id === id), lab = {}; cont.forEach(c => lab[c.id] = c.label); g.nodes.forEach(x => lab[x.id] = x.label);
-    const emit = (id, ind) => { if (isC(id)) { out.push(ind + 'subgraph ' + mid(id) + '["' + esc(lab[id]) + '"]'); (kids[id] || []).forEach(k => emit(k, ind + '  ')); out.push(ind + 'end'); } else out.push(ind + mid(id) + '["' + esc(MARK(id) + ' ' + lab[id]) + '"]'); };
+    const emit = (id, ind) => { if (isC(id)) { out.push(ind + 'subgraph ' + mid(id) + '["' + esc(lab[id]) + '"]'); (kids[id] || []).forEach(k => emit(k, ind + '  ')); out.push(ind + 'end'); } else { const br = VR_MM[(cur.layout && cur.layout.shapes && cur.layout.shapes[id]) || 'rect']; out.push(ind + mid(id) + br[0] + '"' + esc(MARK(id) + ' ' + lab[id]) + '"' + br[1]); } };
     const MARK = id => { const x = g.nodes.find(y => y.id === id); return x ? VR_MARK[x.status] : ''; };
     top.forEach(id => emit(id, '  '));
     g.edges.filter(e => vis(e.id)).forEach(e => { const d = vrInferred(e, g), l = e.label ? '"' + esc(e.label) + '"' : '', b = e.bidirectional ? '<' : ''; out.push('  ' + mid(e.source) + (l ? (d ? ' ' + b + '-. ' + l + ' .-> ' : ' ' + b + '-- ' + l + ' --> ') : (d ? ' ' + b + '-.-> ' : ' ' + b + '--> ')) + mid(e.target)); });

@@ -7,7 +7,7 @@ import { join } from "node:path"
 import { checkLayout, segmentHitsBox } from "../questions/vrcheck.ts"
 import { closeLayout, layoutGraph, visualReview } from "../questions/vrlayout.ts"
 import { PAGE } from "../questions/page.ts"
-import { vrFitLabel, vrNodeWidth } from "../questions/vrtext.ts"
+import { vrFitLabel, vrNodeWidth, vrShapeWidth } from "../questions/vrtext.ts"
 
 const REF = join(import.meta.dir, "..", "..", "references", "visual-review")
 const FIX = join(REF, "fixtures")
@@ -18,9 +18,9 @@ describe("text fit: one rule for the layout, the page and vr_graph.py", () => {
   const fx = JSON.parse(readFileSync(join(REF, "text-fit.fixtures.json"), "utf8"))
   for (const c of fx.cases) {
     test(`"${c.label.slice(0, 40)}"${c.stereotype ? " (stereotype)" : ""}${c.folded ? " (folded)" : ""}: width, lines, clipped as pinned`, () => {
-      const w = vrNodeWidth(c.label, c.folded)
+      const w = c.shape ? vrShapeWidth(c.label, c.shape, c.folded) : vrNodeWidth(c.label, c.folded)
       expect(w).toBe(c.width)
-      const f = vrFitLabel(c.label, w, c.stereotype, c.view)
+      const f = vrFitLabel(c.label, w, c.stereotype, c.view, c.shape)
       expect({ lines: f.lines, clipped: f.clipped, needed: f.needed }).toEqual({ lines: c.lines, clipped: c.clipped, needed: c.needed })
     })
   }
