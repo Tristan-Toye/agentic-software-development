@@ -719,12 +719,32 @@ const openQs = (r) => S.q.filter(q => q.state === 'open' && q.dossier === r.id &
 const rlabel = (repo) => { const r = S.runs.find(x => x.repo === repo); if (r && r.repoLabel) return r.repoLabel; const t = S.stubs.repos.find(x => x.repo === repo); return (t && t.label) || repo; };
 const allOpen = () => S.q.filter(q => q.state === 'open').sort((a, b) => (a.repo + a.dossier).localeCompare(b.repo + b.dossier) || a.ts.localeCompare(b.ts));
 /* The /work-on phase; a run that has not reached its first checkpoint yet is "starting", a dossier nobody runs shows none. */
-const CMD_DOING = { 'fix-deferred': 'Fixing deferred issues' };
+const RUNNER_LIVE = ['running', 'testing', 'waiting', 'paused', 'queued'];
+const runnerActive = (rn) => !!rn && RUNNER_LIVE.includes(rn.state);
+/* What each runner command is doing, in the words of the blue chip: one map for every view. Mirrors COMMAND_LABEL in timeline.ts. */
+const CMD_DOING = { plan: 'planning', 'fix-deferred': 'fixing deferred items', 'resolve-merge': 'the agent is fixing the merge', 'after-merge': 'cleaning up after the merge', stub: 'integrating', 'product-summary': 'writing the product summary', 'merge-queue': 'merging the finished dossiers' };
 function stageText(r) {
-  const live = r.runner && ['running', 'testing', 'waiting', 'paused', 'queued'].includes(r.runner.state);
-  if (live && r.runner.command && CMD_DOING[r.runner.command]) return CMD_DOING[r.runner.command];
+  const live = runnerActive(r.runner);
+  if (live && r.runner.command && r.runner.command !== 'work-on' && CMD_DOING[r.runner.command]) return CMD_DOING[r.runner.command].replace(/^./, c => c.toUpperCase());
   if (!r.phase || r.phase === 'plan') return live ? 'Starting' : '';
   return 'Phase ' + r.phase + (r.phaseName ? ' · ' + r.phaseName : '');
+}
+/* The blue "fixing" chip of something that is working right now: the command's words (or the merge queue's step, or the
+   build's phase), with the wait appended; queued is its own colour, waiting for you is warn. Null when nothing runs, so the
+   caller keeps its static status chip. force: a dossier worked on in a terminal (no runner) still reads "working". */
+function activityChip(r, force) {
+  const rn = r && r.runner; const m = r && r.merge;
+  const step = m && MERGE_STEP[m.state] ? MERGE_STEP[m.state] : '';
+  if (!step && !runnerActive(rn) && !force) return null;
+  return activityOf(rn && runnerActive(rn) ? rn : null, step, r && r.updates && r.updates[0] ? r.updates[0].text.slice(0, 200) : '', r);
+}
+function activityOf(rn, step, title, r) {
+  let what = step || (rn ? (rn.command === 'work-on' || !rn.command ? ((r && stageText(r)) || 'building') : (CMD_DOING[rn.command] || rn.command)) : ((r && stageText(r)) || 'working'));
+  if (waitsForStub(rn)) what = 'queued · waiting for the stub'; else if (rn && rn.state === 'waiting' && rn.waitingFor === 'ci') what += ' · waiting on CI'; else if (rn && rn.state === 'waiting' && rn.waitingFor === 'login') what += ' · waiting for an account sign-in'; else if (rn && rn.state === 'waiting') what += ' · waiting for you'; else if (rn && rn.state === 'paused') what += ' · paused (usage limit)'; else if (rn && rn.state === 'queued') what += ' · queued for a slot';
+  // Queued (for a slot, or for the stub) is its own colour with a steady dot: nothing runs yet.
+  const queued = waitsForStub(rn) || (rn && rn.state === 'queued');
+  const cls = queued ? 'queued' : rn && rn.state === 'waiting' ? 'warn' : 'fixing';
+  return h('span', { class: 'chip ' + cls, title: title || '' }, [h('span', { class: queued ? 'dot que' : 'dot info live' }), what]);
 }
 /* The run's state in plain words, no "runner" jargon. */
 const RUN_STATE = { running: 'in progress', testing: 'testing \u00b7 slot released', waiting: 'waiting for you', paused: 'paused · usage limit', queued: 'queued · waiting for a slot', parked: 'parked · waits for its blockers', stopped: 'stopped', failed: 'failed', done: 'done' };
@@ -923,7 +943,7 @@ function runningView() {
   const working = live.filter(r => r.runner.state === 'running').length;
   const rows = live.sort((a, b) => (a.repo + a.id).localeCompare(b.repo + b.id)).map(r => {
     const last = r.updates && r.updates[0]; const nq = openQs(r).length;
-    const right = [runChip(r.runner)];
+    const right = [activityChip(r) || runChip(r.runner)];
     if (r.runner.account) right.push(h('span', { class: 'rmeta mono', title: 'Account this run uses' }, [r.runner.account]));
     if (r.agents && r.agents.running) right.push(h('span', { class: 'chip fixing' }, [h('span', { class: 'dot info live' }), r.agents.running + ' agent' + (r.agents.running === 1 ? '' : 's')]));
     if (r.session && r.session.context && r.runner.state === 'running') right.push(h('span', { class: 'rmeta mono', title: 'Context in use' }, [kfmt(r.session.context) + ' ctx']));
@@ -936,7 +956,7 @@ function runningView() {
   });
   // A /plan run of a deferred item before its dossier exists: linked to the source dossier's Deferred tab.
   (S.plans || []).forEach(p => {
-    const right = [runChip(p.state)]; if (p.account) right.push(h('span', { class: 'rmeta mono', title: 'Account this run uses' }, [p.account]));
+    const right = [activityOf({ command: 'plan', state: p.state }, '', '')]; if (p.account) right.push(h('span', { class: 'rmeta mono', title: 'Account this run uses' }, [p.account]));
     // A free-form /plan (src empty): no source dossier to link to.
     rows.push(h(p.src ? 'a' : 'div', { class: 'srow', ...(p.src ? { href: hrefItem(p.repo, p.src) } : {}), 'data-k': 'plan:' + p.key, 'data-rank': String(p.state === 'waiting' ? 0 : p.state === 'running' || p.state === 'testing' ? 1 : 2) }, [h('span', { class: 'sid mono' }, [p.src ? p.src + ' ' + p.item : p.item]),
       h('span', { class: 'sname' }, [h('span', {}, ['Planning: ' + p.title]), h('span', { class: 'small mut rsub' }, [rlabel(p.repo) + (p.src ? ' · new dossier from ' + p.src + ' ' + p.item : ' · new dossier from a free-form brief') + (p.lastTs ? ' · ' : ''), p.lastTs ? when(p.lastTs, 'last update ') : null])]),
@@ -997,8 +1017,12 @@ function subItem(repo, id, noPr, done, ttl) {
   const title = (r && r.title) || ttl || '';
   const st = done ? 'done' : r ? stageText(r) : '';
   const kids = [h('span', { class: 'sid mono', style: 'font-weight:700' }, [id]), h('span', { class: 'sname', title: id + (title ? ' · ' + title : '') }, [title])];
-  if (st) kids.push(chip(st, done ? 'done' : 'neutral'));
-  if (!done && isLive(r)) kids.push(h('span', { class: 'dot info live', title: 'running' }));
+  const ac = done ? null : activityChip(r);
+  if (ac) kids.push(ac);
+  else {
+    if (st) kids.push(chip(st, done ? 'done' : 'neutral'));
+    if (!done && isLive(r)) kids.push(h('span', { class: 'dot info live', title: 'running' }));
+  }
   if (noPr) kids.push(chip('no PR yet', 'neutral'));
   if (laneChip(r)) kids.push(laneChip(r));
   if (nq.length) kids.push(h('span', { class: 'qb', title: nq.length + ' open question(s)' }, ['? ' + nq.length]));
@@ -1047,15 +1071,7 @@ function stubRow(repo, id, o) {
   const right = [];
   if (o.merged) right.push(chip('merged', 'done'));
   else if (o.working) {
-    // What it is doing: the run's command and state, the merge queue's step, or the build's phase.
-    const rn = r && r.runner; const m = r && r.merge;
-    const CMD = { 'work-on': stageText(r) || 'building', plan: 'planning', 'fix-deferred': 'fixing deferred issues', 'resolve-merge': 'the agent is fixing the merge', 'after-merge': 'cleaning up after the merge', stub: 'integrating' };
-    let what = m && MERGE_STEP[m.state] ? MERGE_STEP[m.state] : rn ? (CMD[rn.command] || rn.command || 'working') : (stageText(r) || 'working');
-    if (waitsForStub(rn)) what = 'queued · waiting for the stub'; else if (rn && rn.state === 'waiting' && rn.waitingFor === 'ci') what += ' · waiting on CI'; else if (rn && rn.state === 'waiting' && rn.waitingFor === 'login') what += ' · waiting for an account sign-in'; else if (rn && rn.state === 'waiting') what += ' · waiting for you'; else if (rn && rn.state === 'paused') what += ' · paused (usage limit)'; else if (rn && rn.state === 'queued') what += ' · queued for a slot';
-    // Queued (for a slot, or for the stub) is its own colour with a steady dot: nothing runs yet.
-    const queued = waitsForStub(rn) || (rn && rn.state === 'queued');
-    const cls = queued ? 'queued' : rn && rn.state === 'waiting' ? 'warn' : 'fixing';
-    right.push(h('span', { class: 'chip ' + cls, title: (r && r.updates && r.updates[0] ? r.updates[0].text.slice(0, 200) : '') }, [h('span', { class: queued ? 'dot que' : 'dot info live' }), what]));
+    right.push(activityChip(r, true));
   } else if (r) {
     const rn = r.runner;
     if (r.merge && r.merge.state === 'queued') right.push(chip('in the merge queue' + (r.merge.position ? ' · #' + r.merge.position : ''), 'pending'));
@@ -1138,14 +1154,14 @@ function sideColumn(repo) {
   // A dossier's open PR that targets no open stub (from before stubs existed) would otherwise be shown nowhere.
   const outs = rr && rr.outside ? rr.outside : [];
   if (outs.length) kids.push(h('div', { class: 'scol-sec', 'data-k': 'outside:' + repo }, [h('h3', { title: 'Open PRs of a dossier whose base is not an open stub (development, a release, or stacked on one). Nothing merges them into a stub.' }, ['Outside any stub']),
-    h('ul', { class: 'tree' }, outs.map(o => h('li', {}, [h('a', { class: 'sub-item', href: hrefItem(repo, o.id) }, [h('span', { class: 'sid mono' }, [o.id])]),
+    h('ul', { class: 'tree' }, outs.map(o => h('li', {}, [h('a', { class: 'sub-item', href: hrefItem(repo, o.id) }, [h('span', { class: 'sid mono' }, [o.id]), activityChip(findRun(repo, o.id))]),
       h('div', { class: 'small' }, o.prs.map(p => h('span', { style: 'margin-right:8px' }, [h('a', { href: p.url, target: '_blank', rel: 'noopener' }, ['#' + p.number]), ' → ' + p.base + ' ', p.mergeable === 'CONFLICTING' ? chip('⚠ CONFLICTING', 'blocked') : null])))])))]));
   // Dossiers on an open stub card show their deferred count there; this lists the rest (their stub merged).
   const onCard = {}; os.forEach(s => { (s.members || []).forEach(m => { onCard[m.id] = 1; }); s.dossiers.forEach(d => { onCard[d.id] = 1; }); });
   (rr && rr.outside ? rr.outside : []).forEach(o => { onCard[o.id] = 1; });
   const dfd = S.runs.filter(r => r.repo === repo && r.deferredUndecided > 0 && !onCard[r.id]).sort((a, b) => b.deferredUndecided - a.deferredUndecided);
   if (dfd.length) kids.push(h('div', { class: 'scol-sec', 'data-k': 'dfd:' + repo }, [h('h3', {}, ['Deferred on merged work · ' + dfd.reduce((n, r) => n + r.deferredUndecided, 0) + ' open']),
-    h('ul', { class: 'tree' }, dfd.map(r => h('li', {}, [h('a', { class: 'sub-item', href: hrefItem(repo, r.id) }, [h('span', { class: 'sid mono' }, [r.id]), h('span', { class: 'sname', title: r.title }, [r.title]), chip(r.deferredUndecided + ' open', 'ready')])])))]));
+    h('ul', { class: 'tree' }, dfd.map(r => h('li', {}, [h('a', { class: 'sub-item', href: hrefItem(repo, r.id) }, [h('span', { class: 'sid mono' }, [r.id]), h('span', { class: 'sname', title: r.title }, [r.title]), activityChip(r) || chip(r.deferredUndecided + ' open', 'ready')])])))]));
   if (merged.length) kids.push(h('details', { class: 'mstubs', 'data-k': 'mstubs:' + repo }, [h('summary', {}, ['Merged stubs (' + merged.length + ')']),
     h('ul', { class: 'tree' }, merged.map(s => h('li', {}, [h('a', { class: 'sub-item', href: hrefStub(repo, s.branch) }, [h('span', { class: 'sid mono' }, [s.branch]), h('span', { class: 'sname', title: s.branch }, [s.dossiers.length + ' dossier(s)'])])])))]));
   return h('section', { class: 'scol full', 'data-k': 'sec:stubs' }, kids);
@@ -1245,8 +1261,9 @@ function repoView(repo) {
 function onOpenStub(r) { return openStubs(r.repo).some(s => (s.members || []).some(m => m.id === r.id && !m.noPr)); }
 function header(r, mode) {
   const nq = openQs(r); const cs = [chip(r.status)];
-  if (r.runner && r.runner.state !== 'done') cs.push(runChip(r.runner));
-  const st = stageText(r); if (st) cs.push(chip(st, 'neutral'));
+  const ac = activityChip(r);
+  if (ac) cs.unshift(ac); else if (r.runner && r.runner.state !== 'done') cs.push(runChip(r.runner));
+  const st = ac ? '' : stageText(r); if (st) cs.push(chip(st, 'neutral'));
   if (r.session && r.session.context) cs.push(h('span', { title: 'Tokens in the orchestrator\'s context right now. It compacts at 200k, so this falls back after each compaction and each new stage.' }, [chip('context ' + kfmt(r.session.context) + ' / 200k', 'neutral')]));
   if (r.pr) cs.push(prChip(r.pr)); if (r.jira && r.jira !== 'null') cs.push(chip(r.jira, 'neutral'));
   nq.forEach(q => cs.push(h('a', { class: 'chip warn', href: '/questions#q=' + enc(q.id) }, ['? open question'])));
@@ -1552,7 +1569,7 @@ function stubView(repo, branch) {
   const d = S.detail && S.detail.url === detailUrl() ? S.detail.data : null;
   const cs = [stubChip(s), chip('cut ' + s.cut, 'neutral')]; if (s.stage) cs.push(chip(s.stage, 'neutral')); if (s.pr) cs.push(prChip(s.pr));
   const impl = s.dossiers.length ? h('div', { class: 'mini' }, s.dossiers.map(x => h('div', { class: 'card', 'data-k': 'i:' + x.id }, [
-    h('a', { class: 'stretch title', href: hrefItem(x.repo || repo, x.id) }, [h('span', { class: 'id' }, [x.id + ' ']), x.title]), h('div', { class: 'chips' }, [chip(x.status || '?')])]))) : h('div', { class: 'empty' }, ['No dossier is implemented on this stub yet.']);
+    h('a', { class: 'stretch title', href: hrefItem(x.repo || repo, x.id) }, [h('span', { class: 'id' }, [x.id + ' ']), x.title]), h('div', { class: 'chips' }, [activityChip(findRun(x.repo || repo, x.id)), chip(x.status || '?')])]))) : h('div', { class: 'empty' }, ['No dossier is implemented on this stub yet.']);
   const key = repo + '/' + branch; const tab = S.tab[key] || 'timeline'; const body = [];
   body.push(tabs(key, [['timeline', 'Timeline'], ['record', 'Record']]));
   if (!d || !d.groups) body.push(h('div', { class: 'empty' }, ['Loading…']));
