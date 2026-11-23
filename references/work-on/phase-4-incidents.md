@@ -23,6 +23,9 @@ Degrade instead, in this order, and log which step you are on:
    verb, which stamps the entry rather than deleting it and refuses one
    recorded under 120 s ago unless `--force`; never edit the ledger by hand.
 2. **Halve the wave.** Two batches that land beat one batch that dies.
+   A shortage of free slots alone needs no halving: `prepare_wave.py` admits what
+   is free and queues the rest (Phase 4's partial admission), so this step is for
+   a wave a provider limit already killed, not for a busy machine.
 3. **Serialise the kind that is cheapest to lose.** A killed reviewer wastes
    only its generation; a killed implementer or test author may have left a
    partial file, so every retry under pressure pays the tree-diff below

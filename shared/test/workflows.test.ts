@@ -157,6 +157,45 @@ const fakeWave = (prompt: string, opts: Opts) => {
   check("wave: verifier runs the plugin's verify_return.py with the paths given", calls.some((c) => c.prompt.includes("python3 '/plugin/scripts/verify_return.py' --root '/wt/P1' --branch 'feat/x-P1' --base 'abc123' --payload '/wt/P1/.agent-staging/payloads/P1.md' --payload-sha256 'sha-P1' --print-line --agent 'P1' --owned 'src/P1.rs'") && c.prompt.includes("--report '/wt/P1/.agent-staging/reports/P1.txt' --kind 'implementer'")))
 }
 {
+  // Per-agent release and partial waves: a slotted item's verification frees its own slot, and a queued item is
+  // spawned only after `prepare_wave.py --admit-next` admitted it.
+  const admission = { provider: "zai", model: "glm", holder: "W-1-wave1", root: "/x" }
+  const order: string[] = []
+  const fake = (prompt: string, opts: Opts) => {
+    if (opts.agentType) { order.push("spawn " + opts.label); return "Done.\nNOTICED: none" }
+    if (String(opts.label).startsWith("admit next")) {
+      order.push("admit")
+      return admitAnswer(prompt)
+    }
+    const label = /--agent '([^']+)'/.exec(prompt)?.[1] ?? "?"
+    order.push("verify " + label)
+    return { verdict: "clean", flags: [], returned_line: `${label} RETURNED: abc on feat/x-${label}` }
+  }
+  let admitAnswer = (_p: string): unknown => ({ status: "ok", admitted: [{ payload: "/wt/P3/.agent-staging/payloads/P3.md", slot: 1 }] })
+  const mkArgs = () => ({ pluginRoot: "/plugin", admission, items: [item("P1", { slot: 1 }), item("P2", { slot: 2 }), item("P3", { queued: true })] })
+  const { result, calls } = await run(wave, mkArgs(), fake)
+  check("admission: every item comes back clean, queued one included", result.map((r: any) => r.verdict).join() === "clean,clean,clean")
+  check("admission: a verified return carries its own --release --slot", calls.some((c) => c.prompt.includes("--agent 'P1'") && c.prompt.includes("--release 'W-1-wave1' --provider 'zai' --model 'glm' --slot '1'")) && calls.some((c) => c.prompt.includes("--agent 'P2'") && c.prompt.includes("--slot '2'")))
+  check("admission: the admitted payload's verification frees the slot admit-next gave it", calls.some((c) => c.prompt.includes("--agent 'P3'") && c.prompt.includes("--slot '1'")))
+  check("admission: the queued payload is spawned only after an admit-next", order.indexOf("admit") >= 0 && order.indexOf("spawn P3") > order.indexOf("admit"))
+  check("admission: admit-next is one prepare_wave.py command with the holder", calls.some((c) => String(c.opts.label).startsWith("admit next") && c.prompt.includes("prepare_wave.py' --admit-next --root '/x' --provider 'zai' --model 'glm' --holder 'W-1-wave1'")))
+  check("admission: a verified return is verified alone, before the rest of the wave", order.indexOf("verify P1") < order.indexOf("admit") || order.indexOf("verify P2") < order.indexOf("admit"))
+  // a deferral: admit-next refuses, the queued payload is never spawned
+  admitAnswer = () => ({ status: "refused", admitted: [] })
+  const refused = await run(wave, mkArgs(), fake)
+  const p3 = refused.result.find((r: any) => r.label === "P3")
+  check("admission: a refused admit-next leaves the payload unspawned and flagged", p3.verdict === "flagged" && p3.flags.includes("not-admitted") && !refused.calls.some((c) => c.opts.agentType && c.opts.label === "P3"))
+  // a dead agent with a slot still reaches its verification, which frees the slot
+  const died = await run(wave, { pluginRoot: "/plugin", admission, items: [item("P1", { slot: 1 })] }, (prompt: string, opts: Opts) => {
+    if (opts.agentType) throw new Error("agent crashed")
+    return { verdict: "flagged", flags: ["no-commits"], returned_line: "" }
+  })
+  check("admission: a dead agent is 'died' and its release still runs", died.result[0].verdict === "died" && died.calls.some((c) => c.prompt.includes("--slot '1'")))
+  // slot without admission is refused up front
+  const bad = await run(wave, [item("P1", { slot: 1 })], fake)
+  check("admission: slot without admission args is refused", bad.result[0].flags.includes("bad-args"))
+}
+{
   // #229: a line that reports there is no gap is no gap, in every prefix and case; a real one still flags
   const none = ["GAP: none", "- GAP: None.", "* CONTRACT-CHANGE: none", "> GAP:  NONE", "CONTRACT-CHANGE: none;"].join("\n")
   const quiet = await run(wave, [item("P1")], (p, o) => (o.agentType ? "Done.\n" + none : { verdict: "clean", flags: [], returned_line: "P1 RETURNED: x" }))

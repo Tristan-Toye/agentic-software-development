@@ -20,7 +20,7 @@ agent's tool list makes impossible.
         [--owned p1,p2] [--census-paths p1,p2] [--shared-tree p1,p2]
         [--contract-hash H [--contract-files f1,f2]]
         [--payload FILE --payload-sha256 H]
-        [--release HOLDER --provider P --model M]
+        [--release HOLDER --provider P --model M [--slot N]]
         [--file-gates FILE [--file-gate NAMES]] [--log DOSSIER --agent ID] [--print-line --agent ID]
         [--report FILE --kind KIND [--host claude|opencode]] [--uncommitted]
         [--preexisting FILE] [--orchestrator-paths p1,p2]
@@ -131,9 +131,12 @@ not the report.
 `--print-line` (with `--agent`) prints the same line as `RETURNED-LINE: <line>`
 without writing it: the phase workflows (`workflows/phase4-wave.js`) run many of
 these at once, and the orchestrator logs the lines itself, in one append, so
-concurrent verifications never race on the dossier. They never pass `--release`
-either: it frees the holder's whole wave, so the orchestrator releases once,
-after the last return.
+concurrent verifications never race on the dossier. They pass `--release HOLDER
+--slot N` (the slot `prepare_wave.py` recorded for this agent): the verified
+return frees exactly its own slot, so other runs do not wait on a finished
+agent. A holder's last slot closes its wave and raises the learned ceiling.
+Without `--slot`, `--release` frees the holder's whole wave (the one-at-a-time
+path). A slot already freed (reclaimed, or a re-run) is echoed, never flagged.
 
 The release and the log happen whether or not a check flagged anything: the
 agent is finished either way, and the log must say what it did.
@@ -765,7 +768,8 @@ def main(argv: list[str] | None = None) -> int:
                     "payload's real last line, print whole or UNREAD, exit 0 or 1, and nothing else")
     ap.add_argument("--payload-sha256", metavar="H", help="with --payload: the hash it was linted at (all 64 hex characters)")
     ap.add_argument("--dossier-id", help="the dossier ID; a new commit whose subject carries it is flagged COMMIT-ID-LEAK")
-    ap.add_argument("--release", metavar="HOLDER", help="release this holder's admission slot")
+    ap.add_argument("--release", metavar="HOLDER", help="release this holder's admission slot(s)")
+    ap.add_argument("--slot", metavar="N", help="with --release: free only this slot of the holder (this agent's)")
     ap.add_argument("--provider")
     ap.add_argument("--model")
     ap.add_argument("--log", metavar="DOSSIER", help="append the mechanical RETURNED line to this dossier's Build log")
@@ -812,6 +816,8 @@ def main(argv: list[str] | None = None) -> int:
                  "it whole from .agent-staging/wave-*.hashes" % len(args.payload_sha256))
     if args.release and not (args.provider and args.model):
         ap.error("--release needs --provider and --model")
+    if args.slot and not args.release:
+        ap.error("--slot needs --release")
     if args.report and not args.kind:
         ap.error("--report needs --kind")
     if (args.log or args.print_line) and not args.agent:
@@ -840,9 +846,14 @@ def main(argv: list[str] | None = None) -> int:
             out.append("gates: no receipt for this tree" + ("" if rc == 4 else f" (run_gates exit {rc})"))
 
     if args.release:
-        rc, lines = script("spawn_admission.py", "release", "--provider", args.provider, "--model", args.model, "--holder", args.release)
+        cmd = ["release", "--provider", args.provider, "--model", args.model, "--holder", args.release]
+        if args.slot:
+            cmd += ["--slots", args.slot]
+        rc, lines = script("spawn_admission.py", *cmd)
         out.append("release: " + (lines[-1].strip()[:140] if lines else f"exit {rc}"))
-        if rc != 0:
+        # A per-agent slot that is already free was released by a reclaim or an earlier run: nothing to flag.
+        already_free = bool(args.slot) and rc == 1 and any(l.startswith(("refused:", "nothing held")) for l in lines)
+        if rc != 0 and not already_free:
             flags.append("release")
     if args.log:
         line = f"{args.agent} RETURNED: " + ", ".join(parts)
@@ -981,6 +992,19 @@ def selftest() -> int:
             check("the log line is echoed", "logged: P1 (ses_x) RETURNED:" in out)
             rc, _ = call(["--root", root, "--branch", "feat/p1", "--base", base, "--release", "W-001-p1", "--provider", "p", "--model", "m"])
             check("releasing a slot that is no longer held is flagged", rc == 1)
+
+            # --- per-agent release: --slot frees exactly that agent's slot ---
+            for who in ("W-002-wave1",):
+                subprocess.run([sys.executable, os.path.join(SCRIPTS_DIR, "spawn_admission.py"), "acquire", "--provider", "p", "--model", "m", "--n", "3", "--holder", who], capture_output=True, text=True, check=False)
+            held_now = lambda: sorted(int(f[:-5]) for f in os.listdir(os.path.join(os.environ["ASD_ADMISSION_DIR"], "p__m", "slots")))
+            before = held_now()
+            rc, out = call(base_args + ["--release", "W-002-wave1", "--provider", "p", "--model", "m", "--slot", str(before[1])])
+            check("--slot frees only this agent's slot and echoes it", "release: released: 1 slot(s)" in out and held_now() == [before[0], before[2]])
+            rc, out = call(base_args + ["--release", "W-002-wave1", "--provider", "p", "--model", "m", "--slot", str(before[1])])
+            check("a per-agent slot already free is not a flag", "release" not in out.split("verdict:")[1].splitlines()[0])
+            call(base_args + ["--release", "W-002-wave1", "--provider", "p", "--model", "m", "--slot", str(before[0])])
+            rc, out = call(base_args + ["--release", "W-002-wave1", "--provider", "p", "--model", "m", "--slot", str(before[2])])
+            check("the last slot closes the holder's wave", "release: released:" in out and held_now() == [])
 
             # --- touched beyond, changed contract, dirty tree, wrong branch ---
             put(root, "src/other.rs", "pub fn o() { /* edited */ }\n")

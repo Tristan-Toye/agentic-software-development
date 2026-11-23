@@ -85,7 +85,14 @@ acquires the slots only when every spawn passes, and appends the
 `PAYLOAD-LINT:` and `ADMISSION:` lines. The slot wait lives in the script: a
 refusal for lack of slots (or a deferral that resets within 15 minutes) blocks
 the call quietly until the slots free, `--wait-slot SECONDS` sets the bound
-(`0` returns at once), so never retry the call yourself to wait. A failure prints one FIX LIST
+(`0` returns at once), so never retry the call yourself to wait. Fewer free slots
+than spawns is no wait: the call admits as many as are free (`ADMISSION: granted
+<k> of <N> slots`), prints one `ADMITTED {...}` line naming each admitted payload
+with its slot and the payloads still queued, and only zero free slots blocks.
+Spawn the admitted payloads now; the rest follow as returns free slots (the
+workflow runs `prepare_wave.py --admit-next` for you, one command; under opencode
+run it yourself after each return). Payloads of one wave may start at different
+times; waves stay in order. A failure prints one FIX LIST
 with every defect of every payload and its exact cure (the `--seal` step last):
 fix the whole list, then run it once more. No lint rule is relaxed by any of it.
 
@@ -179,9 +186,12 @@ Detail: `ref_section` with `phase-4-conditional` and the heading "Under Claude C
 **Check every return with one call.** When an agent returns, run
 `python3 ${PLUGIN_ROOT}/scripts/verify_return.py --root <its worktree> --branch
 <branch> --base <fork sha> --owned <OWNED_PATHS> [--contract-hash …
---contract-files …] --release <ID>-wave<k> --provider … --model … --log <live
+--contract-files …] --release <ID>-wave<k> --slot <n> --provider … --model … --log <live
 dossier> --agent <id>`: state, commits, paths touched beyond ownership, stubs
-left, the contract hash and the slot release, with the mechanical half of the
+left, the contract hash and the release of that agent's own slot (`<n>` is the
+slot `ADMITTED` gave it; a dead or empty agent frees its slot the same way, and a
+re-spawn is re-admitted with `prepare_wave.py --admit-only` on a one-line
+manifest), with the mechanical half of the
 `RETURNED` line written to the build log. You add the ruling, not the facts.
 Add `--report <file holding the agent's return> --kind <agent kind>` and it
 also checks the report against the kind's tool list: `UNVERIFIED: <kind> claims

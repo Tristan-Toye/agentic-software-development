@@ -60,14 +60,26 @@ const modelFor = (agentType) => AGENT_MODELS[agentType] || { model: 'sonnet', ef
 //   (no field)    a document-drafter item (Phase 8 ADR drafts) sets kind 'document-drafter', owned =
 //                 its TARGET_PATHS, root = X, branch = X's branch, base = X's HEAD at the spawn: the
 //                 drafter writes files and never commits, so it is verified with --uncommitted.
-// The object form { pluginRoot, items: [...] } is accepted too.
+// The object form { pluginRoot, items: [...], admission? } is accepted too.
+//
+// Admission (optional; prepare_wave.py's `ADMITTED` line gives every value). Without it the workflow
+// neither releases a slot nor admits anything: the wave behaves as before.
+//   admission     { provider, model, holder, root }  the wave's holder and the orchestrator's tree X
+//   item.slot     the slot prepare_wave.py recorded for this agent: its verification passes
+//                 `--release <holder> --slot <n>`, so a verified return frees exactly its own slot
+//                 at once (a dead agent, with no report, frees it too) and is verified one by one.
+//   item.queued   true for a payload that got no slot yet (prepare_wave.py listed it as queued). It
+//                 is not spawned until a return frees a slot: the workflow then runs
+//                 `prepare_wave.py --admit-next` (one command), spawns the payloads it admits, and
+//                 never spawns into a deferral. A payload still queued when the rest has finished
+//                 comes back flagged `not-admitted` (never spawned): admit and call it again.
 //
 // returns: [{ label, verdict: 'clean'|'flagged'|'died', flags: [], returned_line,
 //             report_excerpt (<= 600 chars, GAP:/CONTRACT-CHANGE: lines verbatim), report_path }]
 //
-// The workflow never releases admission slots (verify_return.py --release frees the holder's
-// whole wave on the first return) and never writes the build log (concurrent appends): the
-// orchestrator releases and logs from this array.
+// The workflow frees each agent's own slot through its verification (verify_return.py --release H
+// --slot N) and never writes the build log (concurrent appends): the orchestrator logs from this
+// array, and runs `spawn_admission.py release --holder H --if-held` once as a safety net.
 
 const WRITE_ONLY_KINDS = new Set(['document-drafter', 'integration-test-author', 'unit-test-author'])
 const MAX_AGENTS = 16
@@ -81,6 +93,15 @@ const VERIFY_SCHEMA = {
     verdict: { type: 'string', enum: ['clean', 'flagged'] },
     flags: { type: 'array', items: { type: 'string' } },
     returned_line: { type: 'string' },
+  },
+}
+
+const ADMIT_SCHEMA = {
+  type: 'object',
+  required: ['status', 'admitted'],
+  properties: {
+    status: { type: 'string', enum: ['ok', 'refused'] },
+    admitted: { type: 'array', items: { type: 'object', required: ['payload', 'slot'], properties: { payload: { type: 'string' }, slot: { type: 'number' } } } },
   },
 }
 
@@ -179,6 +200,8 @@ function verifyArgs(item, reportPath, report) {
   // Writers without Bash never commit: a drafter, and both test-author kinds (the orchestrator commits their files).
   if (WRITE_ONLY_KINDS.has(item.kind)) cmd.push('--uncommitted')
   if (report) cmd.push('--report', reportPath, '--kind', item.kind || '')
+  // The verified return frees exactly its own slot (a dead agent included: the release never depends on a report).
+  if (adm && item.slot) cmd.push('--release', adm.holder, '--provider', adm.provider, '--model', adm.model, '--slot', String(item.slot))
   return cmd
 }
 
@@ -199,6 +222,7 @@ function verifyPrompt(item, reportPath, report, pluginRoot) {
 }
 
 const items = Array.isArray(args) ? args : args && Array.isArray(args.items) ? args.items : null
+const adm = args && !Array.isArray(args) && args.admission && typeof args.admission === 'object' ? args.admission : null
 const rootOfPlugin = (item) => item.pluginRoot || (args && !Array.isArray(args) ? args.pluginRoot : '') || ''
 
 const bad = (why) => [{ label: 'phase4-wave', verdict: 'died', flags: ['bad-args'], returned_line: '', report_excerpt: why, report_path: '' }]
@@ -218,12 +242,32 @@ for (const item of items) {
     if (!/^[0-9a-f]{64}$/i.test(String(item.contractHash))) return bad('item ' + item.label + ' contractHash must be the full 64-hex CONTRACT_HASH from the payload, not a prefix — a truncated hash copied from a column-cut print once went unnoticed')
   }
 }
+if (adm) {
+  for (const key of ['provider', 'model', 'holder', 'root']) {
+    if (typeof adm[key] !== 'string' || adm[key] === '') return bad('admission lacks ' + key)
+  }
+}
+for (const item of items) {
+  if ((item.slot || item.queued) && !adm) return bad('item ' + item.label + ' carries slot/queued but args has no admission {provider, model, holder, root}')
+  if (item.slot !== undefined && (!Number.isInteger(item.slot) || item.slot < 1)) return bad('item ' + item.label + ' slot must be a positive integer')
+  if (item.queued && item.slot) return bad('item ' + item.label + ' is queued yet has a slot')
+  // Implementers sharing a tree run one after another (git's index): a queued one would race the chain.
+  if (item.queued && /:implementer$/.test(item.agentType) && items.some((o) => o !== item && /:implementer$/.test(o.agentType) && sameRoot(o.root, item.root))) {
+    return bad('item ' + item.label + ' is a queued implementer sharing its tree with another implementer: admit those payloads whole, never queued')
+  }
+}
 if (items.length > MEDIUM_WAVE) log('Wave of ' + items.length + ' is past the medium-run guideline (under 10); prefer splitting it.')
 
 // Stage 1: the spawn. Stage 2: the cheap mechanical verification. A stage that has a null
 // predecessor never runs, so the spawn always returns an object, even for a dead agent.
 async function spawn(item) {
-  const report = await agent(spawnPrompt(item), { agentType: item.agentType, ...modelFor(item.agentType), label: item.label, phase: 'Wave' })
+  let report = null
+  try {
+    report = await agent(spawnPrompt(item), { agentType: item.agentType, ...modelFor(item.agentType), label: item.label, phase: 'Wave' })
+  } catch (err) {
+    // An agent that died still reaches its verification (nobody): that call frees its slot.
+    if (!(adm && item.slot)) throw err
+  }
   return { item, report: typeof report === 'string' && report.trim() !== '' ? report : null }
 }
 
@@ -327,20 +371,77 @@ async function verifyWave(group, pluginRoot) {
 // siblings' paths in each verification.
 const chainKey = (item, i) => /:implementer$/.test(item.agentType) ? 'tree:' + item.root : 'solo:' + i
 const chains = new Map()
-items.forEach((item, i) => { const k = chainKey(item, i); if (!chains.has(k)) chains.set(k, []); chains.get(k).push(i) })
+const queue = items.filter((item) => item.queued)
+items.forEach((item, i) => { if (item.queued) return; const k = chainKey(item, i); if (!chains.has(k)) chains.set(k, []); chains.get(k).push(i) })
 const results = new Array(items.length).fill(null)
 const solo = []
+
+// Partial waves: a payload with no slot yet waits in `queue`. Every verified return has freed its own slot, so
+// `pump` asks prepare_wave.py --admit-next (one command, in a cheap wrapper) for the next payloads and spawns
+// exactly those. Calls run one at a time; a refusal (a recorded reset window, or no slot free within the wait)
+// admits nothing and leaves the queue for the next return's pump.
+const inflight = new Set()
+const track = (p) => { const t = p.then(() => {}, () => {}).then(() => inflight.delete(t)); inflight.add(t); return t }
+const ADMIT_WAIT = 540
+async function admitNext(count, pluginRoot) {
+  const cmd = 'python3 ' + sq(pluginRoot + '/scripts/prepare_wave.py') + ' --admit-next --root ' + sq(adm.root) + ' --provider ' + sq(adm.provider) +
+    ' --model ' + sq(adm.model) + ' --holder ' + sq(adm.holder) + ' --max ' + count + ' --wait-slot ' + ADMIT_WAIT
+  try {
+    const got = await agent(
+      'You run one mechanical script and copy its output. Run exactly this one Bash command with the Bash timeout set to 600000 (it may wait quietly for a free slot); run nothing else, no edit, no re-run:\n' + cmd + '\n' +
+      'Its output has one line `ADMIT-NEXT {json}` (exit status 1 means refused, which is a result, not a failure). Answer with the structured object: status and admitted copied verbatim from that JSON (admitted is [] when refused).',
+      { model: 'haiku', effort: 'low', label: 'admit next (' + count + ')', phase: 'Wave', schema: ADMIT_SCHEMA },
+    )
+    return got && got.status === 'ok' && Array.isArray(got.admitted) ? got.admitted : []
+  } catch (err) {
+    return []
+  }
+}
+let pumpChain = Promise.resolve()
+function pump() {
+  if (!adm || queue.length === 0) return
+  const p = pumpChain.then(async () => {
+    if (queue.length === 0) return
+    const admitted = await admitNext(queue.length, rootOfPlugin(items[0]))
+    for (const a of admitted) {
+      const at = queue.findIndex((q) => q.payloadPath === a.payload)
+      if (at < 0) continue
+      const item = queue.splice(at, 1)[0]
+      item.slot = a.slot
+      track(runAdmitted(items.indexOf(item)))
+    }
+  }).catch(() => {})
+  pumpChain = p
+  track(p)
+}
+// One spawned item with a slot is verified at once, alone, so its release does not wait for the rest of the wave.
+async function runAdmitted(i) {
+  try {
+    const spawned = await spawn(items[i])
+    results[i] = (await verifyWave([spawned], rootOfPlugin(items[i])))[0]
+  } catch (err) { results[i] = null }
+  pump()
+}
 await parallel([...chains.values()].map((idx) => async () => {
   const shared = idx.length > 1 // a lone implementer in its tree is verified with the wave
   for (const i of idx) {
     try {
       const spawned = await spawn(items[i])
       if (shared) results[i] = await verify(spawned)
+      else if (items[i].slot) results[i] = (await verifyWave([spawned], rootOfPlugin(items[i])))[0]
       else solo.push([i, spawned])
     } catch (err) { results[i] = null }
+    if (items[i].slot) pump()
   }
 }))
-// Everything not in a shared tree is verified together, after the whole wave returned.
+// Queued payloads are spawned as returns free slots: wait until none is running or being admitted.
+while (inflight.size > 0) await Promise.all([...inflight])
+for (const item of queue) {
+  const i = items.indexOf(item)
+  results[i] = { label: item.label, verdict: 'flagged', flags: ['not-admitted'], returned_line: '',
+    report_excerpt: 'never spawned: no slot could be admitted for it (a recorded reset window, or no free slot within the wait); admit it again with prepare_wave.py --admit-only and call this workflow for it', report_path: '' }
+}
+// Everything not in a shared tree and holding no slot is verified together, after the whole wave returned.
 solo.sort((a, b) => a[0] - b[0])
 const waveResults = await verifyWave(solo.map((entry) => entry[1]), rootOfPlugin(items[0]))
 solo.forEach((entry, n) => { results[entry[0]] = waveResults[n] })

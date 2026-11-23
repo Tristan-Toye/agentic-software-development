@@ -29,15 +29,20 @@ Commands — exit 0 admitted, 1 refused or deferred (split the wave or wait,
 per work-on.md Phase 4), 2 unusable:
 
     acquire      --provider P --model M --n N --holder H [--pid PID]
-                 [--cap C] [--stale-after SECONDS]
+                 [--cap C] [--stale-after SECONDS] [--partial]
         Refuses while a recorded reset deadline lies ahead, naming it.
         Refuses when held + N exceeds the cap, naming the free slots.
+        Otherwise holds N slots. With --partial, fewer than N free is not a
+        refusal: it holds min(N, free) slots (at least one) and says so; only
+        zero free, or a deferral, refuses. A holder may acquire again later
+        (the next payloads of a partial wave) and keeps ONE wave in the ledger.
         Otherwise holds N slots. A slot whose pid is dead, or older than
         --stale-after (default 4h), is reclaimed first — a crashed holder
         never blocks the machine.
     release      --provider P --model M (--holder H | --slots 3,4 | both)
         Frees the slots. With both, only those of the slots H holds are
-        freed; a named slot H does not hold refuses (rc 1) before anything
+        freed (--if-held: nothing held is then a no-op, rc 0 — the safety-net
+        release at the end of a wave); a named slot H does not hold refuses (rc 1) before anything
         is freed. A wave released whole (no --slots, or its last slot) with
         no error recorded since it was admitted raises the learned ceiling
         to its peak concurrency; a partial release leaves the wave open.
@@ -301,7 +306,8 @@ def cmd_acquire(args: argparse.Namespace) -> int:
         held = held_slots(directory)
         cap, cap_source = effective_cap(ledger, args.cap)
         free = cap - len(held)
-        if args.n > free:
+        want = min(args.n, free) if args.partial and free >= 1 else args.n
+        if want > free:
             holders = sorted({str(s.get("holder")) for s in held.values()})
             print(
                 f"refused: {max(free, 0)} free of cap {cap} ({cap_source}), asked {args.n}; "
@@ -311,7 +317,7 @@ def cmd_acquire(args: argparse.Namespace) -> int:
             return 1
         granted: list[int] = []
         number = 1
-        while len(granted) < args.n:
+        while len(granted) < want:
             if number not in held:
                 (directory / "slots" / f"{number}.json").write_text(
                     json.dumps({
@@ -323,15 +329,16 @@ def cmd_acquire(args: argparse.Namespace) -> int:
                 granted.append(number)
             number += 1
         wave = ledger["waves"].get(args.holder) or {"acquired_at": now, "peak": 0, "slots": []}
-        wave["peak"] = max(int(wave.get("peak") or 0), len(held) + args.n)
+        wave["peak"] = max(int(wave.get("peak") or 0), len(held) + want)
         wave["slots"] = sorted(set(wave.get("slots", [])) | set(granted))
         ledger["waves"][args.holder] = wave
         save_ledger(directory, ledger)
         ceiling = ledger.get("ceiling") or 0
         print(
             f"granted: {args.provider}/{args.model} slots {','.join(map(str, granted))} "
-            f"(held {len(held) + args.n} of cap {cap}, {cap_source}; ceiling "
+            f"(held {len(held) + want} of cap {cap}, {cap_source}; ceiling "
             f"{ceiling if ceiling else 'none learned yet'})"
+            + (f" [partial: {want} of {args.n} asked]" if want < args.n else "")
         )
         return 0
 
@@ -374,6 +381,9 @@ def cmd_release(args: argparse.Namespace) -> int:
                     ledger["ceiling"] = int(wave["peak"])
                     learned = f"; ceiling learned: {ledger['ceiling']}"
         save_ledger(directory, ledger)
+        if not targets and getattr(args, "if_held", False):
+            print(f"nothing held for {args.holder or wanted} under {args.provider}/{args.model}; nothing to release")
+            return 0
         if not targets:
             print(f"nothing held for {args.holder or wanted} under {args.provider}/{args.model}")
             return 1
@@ -599,6 +609,57 @@ def selftest() -> int:
             rc, out = _run(["release", *pm6, "--holder", "H"])
             check("releasing the rest closes the wave", rc == 0 and "ceiling learned: 4" in out, out)
 
+            # per-agent release: one slot per agent, the ceiling rises on the LAST slot only
+            pm8 = ["--provider", "p8", "--model", "m8"]
+            _run(["acquire", *pm8, "--n", "4", "--holder", "R", "--cap", "4"])
+            outs = []
+            for slot in ("2", "4", "1"):
+                rc, out = _run(["release", *pm8, "--holder", "R", "--slots", slot])
+                outs.append(out)
+                check(f"per-slot release of {slot} frees exactly that slot", rc == 0 and f"— {slot};" in out, out)
+            check("no ceiling is learned before the last slot", all("ceiling learned" not in o for o in outs), str(outs))
+            check("the wave stays open with one slot left", sorted(held_slots(key_dir("p8", "m8"))) == [3])
+            rc, out = _run(["release", *pm8, "--holder", "R", "--slots", "3"])
+            check("the last slot released with no error raises the ceiling", rc == 0 and "ceiling learned: 4" in out, out)
+            check("the wave is closed after its last slot", "R" not in load_ledger(key_dir("p8", "m8"))["waves"])
+            rc, out = _run(["release", *pm8, "--holder", "R", "--if-held"])
+            check("release --if-held with nothing held is a no-op rc 0", rc == 0 and "nothing to release" in out, out)
+            rc, out = _run(["release", *pm8, "--holder", "R"])
+            check("release without --if-held with nothing held still says rc 1", rc == 1, out)
+            # an error recorded mid-wave stops the last slot from raising the ceiling
+            pm9 = ["--provider", "p9", "--model", "m9"]
+            _run(["acquire", *pm9, "--n", "3", "--holder", "S", "--cap", "3"])
+            _run(["release", *pm9, "--holder", "S", "--slots", "1"])
+            _run(["record-error", *pm9, "Rate limit reached", "--cooldown", "1"])
+            _run(["release", *pm9, "--holder", "S", "--slots", "2"])
+            rc, out = _run(["release", *pm9, "--holder", "S", "--slots", "3"])
+            check("an error recorded mid-wave: the last slot learns nothing", rc == 0 and "ceiling learned" not in out, out)
+
+            # partial acquire: min(N, free), refused only at zero free; later acquires join one wave
+            pm10 = ["--provider", "p10", "--model", "m10"]
+            _run(["acquire", *pm10, "--n", "2", "--holder", "other", "--cap", "4"])
+            rc, out = _run(["acquire", *pm10, "--n", "4", "--holder", "T", "--cap", "4", "--partial"])
+            check("--partial admits the free slots, not all N", rc == 0 and "slots 3,4" in out and "[partial: 2 of 4 asked]" in out, out)
+            rc, out = _run(["acquire", *pm10, "--n", "2", "--holder", "T", "--cap", "4", "--partial"])
+            check("--partial at zero free refuses", rc == 1 and "0 free" in out, out)
+            rc, out = _run(["acquire", *pm10, "--n", "4", "--holder", "T2", "--cap", "4"])
+            check("without --partial a short request still refuses whole", rc == 1, out)
+            _run(["release", *pm10, "--holder", "T", "--slots", "3"])
+            rc, out = _run(["acquire", *pm10, "--n", "1", "--holder", "T", "--cap", "4", "--partial"])
+            check("a freed slot is admitted to the same holder", rc == 0 and "slots 3" in out, out)
+            check("the holder keeps one wave", len([h for h in load_ledger(key_dir("p10", "m10"))["waves"] if h == "T"]) == 1)
+            rc, out = _run(["acquire", *pm10, "--n", "9", "--holder", "U", "--cap", "4", "--partial"])
+            check("--partial never exceeds the cap", rc == 1, out)
+            _run(["release", *pm10, "--holder", "other"])
+            rc, out = _run(["acquire", *pm10, "--n", "9", "--holder", "U", "--cap", "4", "--partial"])
+            check("a request above the cap is split by --partial, never over the cap",
+                  rc == 0 and out.count(",") >= 1 and len(held_slots(key_dir("p10", "m10"))) == 4, out)
+            # a deferral refuses --partial too
+            pm11 = ["--provider", "p11", "--model", "m11"]
+            _run(["record-error", *pm11, "Limit Exhausted. Your limit will reset in 3 hours"])
+            rc, out = _run(["acquire", *pm11, "--n", "2", "--holder", "V", "--partial"])
+            check("a deferral refuses --partial", rc == 1 and "deferred" in out, out)
+
             # clear: the owner's verb, never a delete
             pm7 = ["--provider", "p7", "--model", "m7"]
             _run(["record-error", *pm7, "Limit Exhausted. Your limit will reset in 3 hours"])
@@ -662,12 +723,15 @@ def main(argv: list[str] | None = None) -> int:
     acquire.add_argument("--cap", type=int, default=None, help="override the cap for this acquire")
     acquire.add_argument("--stale-after", type=float, default=DEFAULT_STALE_AFTER,
                          help=f"seconds after which a held slot is reclaimed (default {DEFAULT_STALE_AFTER})")
+    acquire.add_argument("--partial", action="store_true",
+                         help="admit min(N, free) slots instead of refusing when fewer than N are free")
     acquire.set_defaults(func=cmd_acquire)
 
     release = sub.add_parser("release", help="free the slots of a holder, named slots, or the named slots of a holder")
     common(release)
     release.add_argument("--holder", default=None)
     release.add_argument("--slots", default=None, help="comma-separated slot numbers")
+    release.add_argument("--if-held", action="store_true", help="nothing held is a no-op (rc 0), not a refusal")
     release.set_defaults(func=cmd_release)
 
     record = sub.add_parser("record-error", help="record a provider limit error and its reset")
