@@ -1895,11 +1895,15 @@ class Runner:
         answered this run, so it queues ahead of every run not answered (it already waited on the owner). `rehome`: the
         run is about to start a stage in a fresh session (nothing to resume), so the slot goes with the account that has the
         most paced headroom, not the one it used last; a run with a session to resume keeps its account."""
-        if os.environ.pop("ASD_REEXEC_HELD", None) == self.key:
+        free0, floor0 = disk_free_gib(self.root), disk_floor()
+        if os.environ.pop("ASD_REEXEC_HELD", None) == self.key and not (free0 is not None and free0 < floor0):
             # this process is the exec of a runner that held a slot at a stage boundary (reexec_if_changed): same pid, same
             # run, the slot was never given up, so it is not asked for again (it would queue behind the runs that took
-            # their slots meanwhile). A dead runner never gets here: its pid is gone and the census skips it.
+            # their slots meanwhile); the account pick still applies, and a disk below the floor falls through to the normal loop
+            # (it queues for disk as before). A dead runner never gets here: its pid is gone and the census skips it.
             self.event("restarted on new code; keeps the slot it held", "running")
+            if rehome:
+                self.rehome_account()
             self.save(state="running", queued_since=None, queued_first=None, over_cap=None)
             self.ka_since = None
             return True
@@ -4607,6 +4611,25 @@ def selftest() -> int:
         check("re-exec keeps the slot: the restarted run goes on with 3 of 3 busy, no queue",
               ended == 0 and any("runner code changed" in t for t in texts("W-97")) and any("keeps the slot" in t for t in texts("W-97"))
               and not any(t.startswith("queued") for t in texts("W-97")))
+        class _R:   # a stand-in runner: take_slot only needs these
+            key, stopping, ka_since, state = "repo.W-99", False, None, {}
+            def __init__(me2): me2.calls = []; me2.root = root
+            def save(me2, **kw): me2.calls.append(("save", kw))
+            def event(me2, *a): me2.calls.append(("event", a[0]))
+            def rehome_account(me2): me2.calls.append(("rehome",))
+            def keepalive_tick(me2): me2.calls.append(("tick",))
+        r = _R(); os.environ["ASD_REEXEC_HELD"] = r.key
+        check("re-exec marker: keeps the slot and still picks the account (rehome)",
+              Runner.take_slot(r, rehome=True) is True and ("rehome",) in r.calls and not os.environ.get("ASD_REEXEC_HELD"))
+        r = _R(); os.environ["ASD_REEXEC_HELD"] = "other.key"
+        os.environ["ASD_DISK_FLOOR_GIB"] = "99999999"
+        r.stopping = True   # stop the loop at once: only whether the marker returned early matters
+        check("re-exec marker: a disk below the floor does not return at once (falls to the queue loop)",
+              Runner.take_slot(r) is False and ("rehome",) not in r.calls)
+        r = _R(); os.environ["ASD_REEXEC_HELD"] = r.key; r.stopping = True
+        check("re-exec marker: with the disk below the floor the held slot is not taken at once",
+              Runner.take_slot(r, rehome=True) is False and ("rehome",) not in r.calls and not any(c[0] == "save" and c[1].get("state") == "running" for c in r.calls))
+        os.environ.pop("ASD_DISK_FLOOR_GIB")
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
         fp = subprocess.Popen([sys.executable, copy, "--root", root, "--dossier", "W-98", "--foreground"], env=env,
                               stdout=open(os.path.join(tmp, "out.W-98.txt"), "w"), stderr=subprocess.STDOUT)
