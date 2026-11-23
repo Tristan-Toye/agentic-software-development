@@ -3107,7 +3107,10 @@ class Runner:
             return
         self.end_process()
         self.event(f"runner code changed ({path}); restarting the runner on it, same run", "running")
-        self.save(state="running")
+        # The exec'd process resumes the recorded session only when this one meant to (mark_resume after a kill or a
+        # stall). After a clean stage end (a checkpoint split) the next stage starts fresh from the hand-off, as it would
+        # without the restart: keeping the session here made the new process --resume the full, split context.
+        self.save(state="running", **({} if self.resume_sid else {"session": ""}))
         args = [a for a in sys.argv[1:] if a != "--detach"]
         if "--foreground" not in args and sys.argv[1:2] != ["chat"]:
             args.append("--foreground")
@@ -4613,6 +4616,8 @@ def selftest() -> int:
         check("re-exec: the run ends DONE in the same process", rp.wait(timeout=60) == 0 and state_of("W-92").get("state") == "done"
               and state_of("W-92").get("pid") == rp.pid)
         check("re-exec: the restart is logged", any("runner code changed" in t for t in texts("W-92")))
+        check("re-exec after a clean stage end: the next stage starts fresh, never --resume of the split session",
+              "--resume" not in open(os.path.join(fdir, "env.2")).read())
         # a restart keeps its slot with the cap full; a fresh start queues behind; a dead holder frees its slot
         rd = runs_dir()
         cap_env = {k: env.get(k) for k in ("ASD_RUNNER_MAX_LIVE", "ASD_RUNNER_SLOT_POLL")}
