@@ -13,8 +13,6 @@ This report puts, per driver:
                 <root>/.discovery/dossiers/<ID>.md, or the copy in the worktree its
                 front matter names when that one has the longer log)
     agreement   only where it is mechanical, else `needs human read`; never guessed:
-                finalize_pr    driver found conflict markers / a duplicate ADR / a DEFECT
-                               vs the orchestrator logged a fix of one
                 merge_packages driver's TOUCHED_BEYOND vs a scope / drift / TOUCHED_BEYOND line
                 test_round     the driver's failed-test count vs the failed counts of the
                                `SUITE:` lines
@@ -64,11 +62,8 @@ PHASE_LINES = {
     "merge_packages": r"(?i)merge|TOUCHED_BEYOND|scope|drift|owned|conflict",
     "strength_gate_prep": r"(?i)strength|coverage|weak|stub|red[- ]run",
     "test_round": r"SUITE|(?i:arbitrat|round|failing|failed)",
-    "finalize_pr": r"(?i)finaliz|conflict marker|duplicate|\bADR\b|sync|merge of",
     "vr_promote_preview": r"(?i)vr_promote|Diagrams new|seq draft|visual review|promot",
 }
-FINALIZE_FOUND = re.compile(r"(?i)conflict marker|duplicat\w* ADR|^DEFECT|\bDEFECT\b")
-FINALIZE_LOGGED = re.compile(r"(?i)(conflict marker|duplicat\w* ADR|ADR \w* ?(collision|duplicate|renumber)|resolved? (the )?conflict)")
 MERGE_LOGGED = re.compile(r"(?i)TOUCHED_BEYOND|\bscope\b|\bdrift\b|outside (its )?(owned|OWNED)")
 SUITE_FAILED = re.compile(r"(\d+) failed")
 
@@ -139,16 +134,6 @@ def load_runs(evidence: str, dossier: str) -> tuple[dict[str, list[dict]], list[
 def agreement(driver: str, runs: list[dict], log: list[str], have_log: bool) -> tuple[str, str]:
     """(status, detail): status is agree | disagree | needs human read. Only where the comparison is well defined."""
     human = ("needs human read", "no mechanical comparison is defined for this driver")
-    if driver == "finalize_pr":
-        if not have_log:
-            return "needs human read", "no dossier build log to compare with"
-        found = [f for r in runs for f in r.get("findings", []) if FINALIZE_FOUND.search(f)]
-        logged = [ln for ln in log if FINALIZE_LOGGED.search(ln)]
-        if bool(found) == bool(logged):
-            return "agree", ("driver and orchestrator both found/fixed it" if found else "neither the driver nor the orchestrator found a conflict marker or duplicate ADR")
-        if found:
-            return "disagree", f"driver found {found[0][:90]!r}; the build log has no such fix"
-        return "disagree", f"the build log has {logged[0][:90]!r}; the driver found nothing"
     if driver == "merge_packages":
         if not have_log:
             return "needs human read", "no dossier build log to compare with"
@@ -324,9 +309,6 @@ def selftest() -> int:
         dossier(dd, "W-1", ["SUITE: local on a, base b — 5 passed, 2 failed, 0 skipped; /l"])
         ev(evd, "W-2", "test_round", 1, 1, ["y"], {"suite": {"failed": 4, "passed": 5}})
         ev(evd, "W-3", "test_round", 1, 2, stopped="no failure parsed")
-        # finalize_pr: three dossiers, W-2's driver found a duplicate ADR the orchestrator did not log
-        for d in ("W-1", "W-2", "W-3"):
-            ev(evd, d, "finalize_pr", 1, 1 if d == "W-2" else 0, ["duplicated ADR number(s): 0007"] if d == "W-2" else [])
         # pre_fanout_check: only two dossiers
         for d in ("W-1", "W-2"):
             ev(evd, d, "pre_fanout_check", 1, 0)
@@ -349,10 +331,6 @@ def selftest() -> int:
         dossier(dd, "W-2", ["SUITE: local on a, base b — 5 passed, 4 failed, 0 skipped; /l"])
         check("test_round: a failed count present in a SUITE line agrees",
               report(evd, dd, ["W-2"], [])["drivers"]["test_round"]["dossiers"][0]["agreement"] == "agree")
-        check("finalize_pr: a duplicate ADR the log never mentions disagrees -> NOT-YET", v["finalize_pr"] == "NOT-YET" and "disagree" in rep["drivers"]["finalize_pr"]["reason"])
-        dossier(dd, "W-2", ["Phase 9: renumbered a duplicate ADR 0007 after the sync"])
-        check("finalize_pr: logged and found both -> agree",
-              report(evd, dd, ["W-2"], [])["drivers"]["finalize_pr"]["dossiers"][0]["agreement"] == "agree")
         check("pre_fanout_check: two dossiers -> NOT-YET with the count", v["pre_fanout_check"] == "NOT-YET" and "2 of 3" in rep["drivers"]["pre_fanout_check"]["reason"])
         check("pre_fanout_check: never a mechanical agreement", all(d["agreement"] == "needs human read" for d in rep["drivers"]["pre_fanout_check"]["dossiers"]))
         check("strength_gate_prep: only an unreadable file -> NO-DATA and a note", v["strength_gate_prep"] == "NO-DATA" and any("unreadable" in n for n in rep["notes"]))

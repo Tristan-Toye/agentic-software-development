@@ -26,11 +26,11 @@ the PR description and the `DEFERRED:` list stay with the orchestrator. It does
 not push, open the PR or comment on Jira.
 
 Usage:
-    ASD_DRIVER_FINALIZE_PR=on python3 finalize_pr.py --worktree X --target main \\
+    python3 finalize_pr.py --worktree X --target main \\
         --dossier W-014 [--gates FILE] [--wait-ci N] [--log DOSSIER_FILE]
 
-Modes, exit codes and the evidence file: see driver_common.py. In shadow mode
-every step runs in a throwaway worktree of X's HEAD, so X is untouched.
+Exit codes and the evidence file: see driver_common.py. The driver is part of
+the procedure (graduated: see driver_modes.GRADUATED), so it always runs `on`.
 """
 
 from __future__ import annotations
@@ -182,15 +182,9 @@ def run(d: dc.Driver, args) -> int:
     if not args.worktree or not args.target:
         raise dc.Surprise("--worktree and --target are required")
     wt = os.path.abspath(args.worktree)
-    if d.shadow:
-        dc.require_clean(wt)
-        with dc.throwaway_worktree(wt, "HEAD") as tmp:
-            d.facts["shadow_worktree"] = "throwaway; X untouched"
-            sync(d, tmp, args.target, args)
-    else:
-        sync(d, wt, args.target, args)
+    sync(d, wt, args.target, args)
     if not d.findings:
-        if args.wait_ci and not d.shadow:
+        if args.wait_ci:
             rc, out = dc.script("wait_ci.py", "--pr", str(args.wait_ci), cwd=wt, timeout=3600)
             d.facts["wait_ci"] = dc.cap(out, 12)
             if rc == 0:
@@ -200,7 +194,7 @@ def run(d: dc.Driver, args) -> int:
                 d.finding(f"CI on PR {args.wait_ci} is red: " + (dc.cap(out, 1) or [""])[0])
             else:
                 raise dc.Surprise(f"wait_ci.py exited {rc}: {' | '.join(dc.cap(out, 3))}")
-        if args.remove_worktree and not d.shadow:
+        if args.remove_worktree:
             rc, out = dc.script("remove_worktree.py", "--root", args.root, *args.remove_worktree, "--branch", cwd=args.root)
             if rc != 0:
                 raise dc.Surprise(f"remove_worktree.py exited {rc}: {' | '.join(dc.cap(out, 3))}")
@@ -215,8 +209,8 @@ def build_parser(ap) -> None:
     ap.add_argument("--worktree", help="the build worktree X (committed mode: dossier already committed)")
     ap.add_argument("--target", help="the branch the PR merges into")
     ap.add_argument("--gates", help="gates file for run_gates.py over the merged tree")
-    ap.add_argument("--wait-ci", type=int, metavar="PR", help="after a clean sync, wait_ci.py --pr PR (mode on only)")
-    ap.add_argument("--remove-worktree", nargs="+", metavar="PATH", help="after everything is clean, remove these fan-out worktrees (mode on only)")
+    ap.add_argument("--wait-ci", type=int, metavar="PR", help="after a clean sync, wait_ci.py --pr PR ")
+    ap.add_argument("--remove-worktree", nargs="+", metavar="PATH", help="after everything is clean, remove these fan-out worktrees ")
 
 
 def selftest() -> int:
@@ -238,21 +232,10 @@ def selftest() -> int:
         # the target moves: a file outside the feature's paths
         dc.fixture_commit(main, "src/other.py", "o = 1\n", "target advance")
         dc.fixture_git(main, "push", "-q", "origin", "main")
-        env = {"ASD_DRIVER_FINALIZE_PR": "on"}
-        shadow_env = {"ASD_DRIVER_FINALIZE_PR": "shadow"}
-
-        rc, out = dc.run_self("finalize_pr.py", "--worktree", xwt, "--target", "main", env={})
-        c("off refuses with exit 3", rc == 3 and "manual steps" in out)
-
-        head_x = dc.fixture_git(xwt, "rev-parse", "HEAD").strip()
-        rc, out = dc.run_self("finalize_pr.py", "--worktree", xwt, "--target", "main", "--dossier", "W-1", "--root", main, env=shadow_env)
-        c("shadow runs clean on a clean sync", rc == 0 and "verdict=clean" in out)
-        c("shadow leaves X untouched", dc.fixture_git(xwt, "rev-parse", "HEAD").strip() == head_x)
-        shadow_dir = os.path.join(main, ".git", "asd-drivers", "driver-shadow", "W-1")
-        c("shadow writes evidence under driver-shadow/<dossier>/", os.path.isdir(shadow_dir) and len(os.listdir(shadow_dir)) == 1)
+        env = {}   # graduated: no ASD_DRIVER_FINALIZE_PR, the driver always runs on
 
         rc, out = dc.run_self("finalize_pr.py", "--worktree", xwt, "--target", "main", "--dossier", "W-1", "--root", main, env=env)
-        c("on merges the target and exits 0", rc == 0 and "verdict=clean" in out)
+        c("it merges the target and exits 0", rc == 0 and "verdict=clean" in out)
         c("the merge landed", os.path.isfile(os.path.join(xwt, "src", "other.py")))
         c("bookkeeping_only is false for a code sync", '"bookkeeping_only_sync": false' in open(
             os.path.join(main, ".git", "asd-drivers", "driver-evidence", "W-1", sorted(os.listdir(os.path.join(main, ".git", "asd-drivers", "driver-evidence", "W-1")))[0])).read())

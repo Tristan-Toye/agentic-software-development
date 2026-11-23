@@ -4799,7 +4799,7 @@ def selftest() -> int:
         check("drivers: no file means no ASD_DRIVER_* in the child and every mode off in the metadata",
               done95 and drv(1) == {} and state_of("W-95").get("drivers") == {n: "off" for n in driver_modes.NAMES})
         dfile = os.path.join(tmp, "drivers.json")
-        write_json(dfile, {"pre_fanout_check": "shadow", "test_round": "SHADOW", "bogus": "on", "finalize_pr": "maybe"})
+        write_json(dfile, {"pre_fanout_check": "shadow", "test_round": "SHADOW", "bogus": "on", "strength_gate_prep": "maybe"})
         env["ASD_DRIVERS_FILE"] = dfile
         env["ASD_DRIVER_TEST_ROUND"] = "on"   # an explicit variable in the runner's environment outranks the file
         scenario([{"turns": [[{"final": "RUNNER: DONE"}]]}])
@@ -4808,11 +4808,11 @@ def selftest() -> int:
         check("drivers: the file's modes are exported; an explicit ASD_DRIVER_* wins",
               done96 and drv(1) == {"ASD_DRIVER_PRE_FANOUT_CHECK": "shadow", "ASD_DRIVER_TEST_ROUND": "on"})
         check("drivers: the modes used are recorded in the runner metadata",
-              state_of("W-96").get("drivers") == {"finalize_pr": "off", "merge_packages": "off", "pre_fanout_check": "shadow", "strength_gate_prep": "off", "test_round": "on",
+              state_of("W-96").get("drivers") == {"merge_packages": "off", "pre_fanout_check": "shadow", "strength_gate_prep": "off", "test_round": "on",
                                                       "vr_promote_preview": "off"})
         t96 = texts("W-96")
         check("drivers: an unknown name and an unknown mode are warned about in the runner log",
-              any("unknown driver 'bogus'" in t for t in t96) and any("finalize_pr: unknown mode 'maybe'" in t for t in t96))
+              any("unknown driver 'bogus'" in t for t in t96) and any("strength_gate_prep: unknown mode 'maybe'" in t for t in t96))
         del env["ASD_DRIVER_TEST_ROUND"]
         pinned97 = {n: "off" for n in driver_modes.NAMES}
         pinned97["test_round"] = "shadow"
