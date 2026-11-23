@@ -45,7 +45,7 @@ scripts/vr_graph.py budget GRAPH.json
 scripts/vr_extract.py rust REPO [--layers 1,2] [--crates a,b] [--calls fn1,fn2] [--timeout 120] [--cfg-test] -o out.json
 scripts/vr_diff.py merge --before B.json --after A.json [-o merged.json]   # issues as JSON on stderr, exit 1
 scripts/vr_diff.py view merged.json --mode before|after|diff [-o out.json]
-scripts/vr_diff.py after-from-git REPO --base REV --head REV [--layers 1,2] [--crates a,b] -o after.json
+scripts/vr_diff.py after-from-git REPO --base REV --head REV [--layers 1,2] [--crates a,b] [--calls f,g] -o after.json
 scripts/vr_prepare.py REPO ID --base REV --head REV [--crates a,b|all]   # default: crates derived from the changed files
 scripts/vr_diff.py --selftest
 scripts/vr_extract.py --selftest | --live REPO     # also vr_graph.py --selftest, vr_ra.py --selftest
