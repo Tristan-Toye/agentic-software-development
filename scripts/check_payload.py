@@ -255,7 +255,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
             "SHARED_IDIOM", "DELIVERY_CHANGE", "PROMISE_CHECKLIST",
             "SUPPORT_PATHS", "SUPPORT", "FAILURES", "CORRECTION", "CENSUS",
             "BASELINE_COUNTS_FROM", "CITATION", "CI_ENVIRONMENT", "TEST_FORM_RULES",
-            "PROPERTY_LIBRARY",
+            "PROPERTY_LIBRARY", "SUPPORT_DIGEST",
         },
     },
     "implementer": {
@@ -672,13 +672,46 @@ def missing_tool_findings(present: list[str], kind: str | None,
 # when it pastes text under `CONTRACT: |`.
 LIST_SEPARATOR = re.compile(r"[,\s]+")
 PATH_VALUED_FIELDS = (
-    "TEST_PATHS", "STYLE_PATHS", "SUPPORT_PATHS", "WORKTREE_DIR", "DOSSIER",
+    "TEST_PATHS", "STYLE_PATHS", "SUPPORT_PATHS", "SUPPORT_DIGEST", "WORKTREE_DIR", "DOSSIER",
     "STANDARDS", "CONTEXT_DOCS", "TARGET_PATHS",
     "REPO", "WORK_DIR", "OUT_DIR", "SCRIPTS_DIR",
 )
 NOT_A_PATH_VALUE = re.compile(r"^(|none|null|n/a)$", re.IGNORECASE)
 
 
+def support_digest_findings(lines: list[str], kind: str | None) -> list[str]:
+    """SUPPORT_DIGEST (the integration author's signatures-and-docs digest, support_digest.py)
+    must be the staged file: it exists, carries the generator's marker, and names no path the
+    read policy beside it (`.agent-staging/sealed-paths.txt`) seals."""
+    if kind != "integration-test-author":
+        return []
+    path = field_value(lines, "SUPPORT_DIGEST")
+    if not path or NOT_A_PATH_VALUE.match(path):
+        return []
+    try:
+        sd = _load_script("support_digest")
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as exc:
+        return ["SUPPORT_DIGEST: cannot read %s (%s): run compose_payloads.py again, it writes the "
+                "digest" % (path, exc.strerror)]
+    if sd.MARKER not in text:
+        return ["SUPPORT_DIGEST: %s was not written by support_digest.py (marker missing); never "
+                "hand-write one: a digest holds signatures and doc comments only" % path]
+    root = os.path.dirname(os.path.dirname(os.path.abspath(path)))
+    try:
+        sealed = sd.sealed_in_digest(text, root)
+    except sd.Refused as exc:
+        return ["SUPPORT_DIGEST: %s" % exc]
+    return ["SUPPORT_DIGEST: %s covers %s, which the integration author's read policy seals; "
+            "rebuild it with support_digest.py build" % (path, p) for p in sealed]
+def _load_script(name: str):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 def relative_path_findings(lines: list[str]) -> list[str]:
     """A path-valued field carrying a relative path: it resolves against the
     subagent's cwd — the HOST SESSION's working directory — never against
@@ -1781,6 +1814,7 @@ def lint(lines: list[str], kind: str | None, worktree: str | None,
 
     # 13. a relative path in a path-valued field
     defects.extend(relative_path_findings(lines))
+    defects.extend(support_digest_findings(lines, kind))
 
     # 14. an unverified env-var / fixture-mechanism claim
     warnings.extend(env_claim_findings(lines))
@@ -2314,6 +2348,20 @@ def _selftest_cases() -> int:
          "none declared", host="claude", tools=rw, worktree=True, repo_files=forms)
     case("integration author: a repo with no test-forms file needs no TEST_FORM_RULES",
          integ, "integration-test-author", False, host="claude", tools=rw, worktree=True, live="{REAL}/.discovery/dossiers/W-014-x.md", must_warn="")
+    dg_mark = "# support_digest.py: signatures and doc comments only; bodies replaced by \u2026\n"
+    dg_line = "SUPPORT_DIGEST: {REAL}/.agent-staging/support-digest.md\n"
+    dg_files = {".agent-staging/sealed-paths.txt": "# sealed\nsrc/flush.py\n",
+                ".agent-staging/support-digest.md": dg_mark + "\n## tests/support/harness.py (python, 3 lines)\n"}
+    case("integration author: a staged SUPPORT_DIGEST that names no sealed path is quiet",
+         integ + dg_line, "integration-test-author", False, host="claude", tools=rw, worktree=True,
+         repo_files=dg_files, live="{REAL}/.discovery/dossiers/W-014-x.md", must_warn="")
+    case("integration author: a SUPPORT_DIGEST that covers a sealed path is refused",
+         integ + dg_line, "integration-test-author", True, "read policy seals", host="claude", tools=rw,
+         worktree=True, repo_files={**dg_files, ".agent-staging/support-digest.md":
+                                    dg_mark + "\n## src/flush.py (python, 3 lines)\n"})
+    case("integration author: a hand-written SUPPORT_DIGEST (no generator marker) is refused",
+         integ + dg_line, "integration-test-author", True, "marker missing", host="claude", tools=rw,
+         worktree=True, repo_files={**dg_files, ".agent-staging/support-digest.md": "def f(): return 1\n"})
     case("unit author: a repo that declares refused forms, payload without the field, is refused",
          unit_ok, "unit-test-author", True, "no TEST_FORM_RULES", host="opencode", worktree=True,
          repo_files=forms)

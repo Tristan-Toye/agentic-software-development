@@ -182,6 +182,7 @@ cp = _load("check_payload")   # FIELDS, CONDITIONAL, GROUPS — the field tables
 de = _load("dossier_edit")    # section(), split_front_matter(), KEY_RE, Refused
 cc = _load("check_crs")      # sections(), fields(): the change-request document reader
 pwh = _load("payload_hash")   # the one CONTRACT_HASH recipe, shared with verify_return.py
+sdg = _load("support_digest")  # SUPPORT_DIGEST: signatures + doc comments of the readable support code
 
 MARKER = "# compose_payloads.py: generated payload — re-run with --force to overwrite by hand"
 
@@ -1420,7 +1421,11 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     a real style sample, and which boundaries are substituted are all
     decisions only the orchestrator can make; @@FILL unless --set.
     PROMISE_CHECKLIST/SHARED_IDIOM/DELIVERY_CHANGE/SUPPORT_PATHS/SUPPORT/
-    FAILURES/CORRECTION: optional, included only when --set names them."""
+    FAILURES/CORRECTION: optional, included only when --set names them.
+    SUPPORT_DIGEST: mechanical (support_digest.py), the path of
+    `.agent-staging/support-digest.md`: signatures and doc comments of the test
+    support the author may read, built from sealed-paths.txt; omitted when no
+    support file qualifies."""
     root, dossier_text, sets = ctx["root"], ctx["dossier_text"], ctx["sets"]
     fm = ctx["fm"]
     dossier_id = fm.get("id")
@@ -1437,8 +1442,15 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
     with open(excerpt_path, "w", encoding="utf-8") as fh:
         fh.write(excerpt_text_)
 
-    write_sealed_paths(staging, dossier_text, ctx["args"].contract_paths,
-                       own_test_paths(sets.get("TEST_PATHS", ""), root))
+    own_tests = own_test_paths(sets.get("TEST_PATHS", ""), root)
+    write_sealed_paths(staging, dossier_text, ctx["args"].contract_paths, own_tests)
+    # The digest is built from the sealed-paths.txt just written (the hook's read policy), so it can
+    # never cover a file the author may not read. One text per wave: every compose writes the same
+    # bytes, and an unchanged digest is left untouched.
+    try:
+        support_digest = sdg.write_digest(root, exclude=own_tests)
+    except (sdg.Refused, OSError):
+        support_digest = None
     contract_text = contract_text_for(ctx)
     fields: dict[str, Field] = {
         "WORKTREE_DIR": Field("WORKTREE_DIR", root),
@@ -1469,6 +1481,8 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
             "external API) — everything else runs for real")),
         "CONTRACT_HASH": Field("CONTRACT_HASH", contract_hash(contract_text)),
     }
+    if support_digest:
+        fields["SUPPORT_DIGEST"] = Field("SUPPORT_DIGEST", support_digest)
     checklist = integration_checklist(ctx, dossier_id)
     if checklist:
         fields["PROMISE_CHECKLIST"] = Field("PROMISE_CHECKLIST", checklist, block=True)
@@ -1485,7 +1499,7 @@ def compose_integration_test_author(ctx: dict) -> list[Field]:
             "`pre-change tree re-run` — never an earlier phase's numbers"))
     order = ["WORKTREE_DIR", "DOSSIER", "CONTRACT", "PROMISE_CHECKLIST", "TEST_PATHS",
              "TEST_FRAMEWORK", "CITATION", "HARNESS", "CI_ENVIRONMENT", "TEST_FORM_RULES",
-             "STYLE_SAMPLE", "SUPPORT_PATHS", "SUPPORT",
+             "STYLE_SAMPLE", "SUPPORT_DIGEST", "SUPPORT_PATHS", "SUPPORT",
              "BOUNDARIES", "SHARED_IDIOM", "DELIVERY_CHANGE", "FAILURES", "CORRECTION", "CENSUS",
              "CONTRACT_HASH"]
     return ordered(fields, order)
@@ -2672,6 +2686,30 @@ def selftest() -> int:
               bool(pkg_paths) and all(p in sealed_lines for p in pkg_paths), repr((pkg_paths, sealed_lines)))
         check("integration-test-author sealed-paths.txt has no duplicates",
               len(sealed_lines) == len(set(sealed_lines)))
+        # --- SUPPORT_DIGEST: signatures and docs of the readable support code only ---
+        os.makedirs(os.path.join(root, "tests", "support"), exist_ok=True)
+        with open(os.path.join(root, "tests", "support", "harness.py"), "w", encoding="utf-8") as fh:
+            fh.write('def stand_up(app):\n    """Stand the app up."""\n    return "DIGESTBODYLEAK"\n')
+        rc, itd_path, out = run_compose("IT-digest.md", [
+            "integration-test-author", "--host", "claude", "--contract-paths", "src/flush.py",
+        ])
+        itd_text = read_text(itd_path) if rc == 0 else ""
+        digest_file = os.path.join(root, ".agent-staging", "support-digest.md")
+        digest_text = read_text(digest_file) if os.path.exists(digest_file) else ""
+        check("integration-test-author payload carries SUPPORT_DIGEST: the staged digest path",
+              "SUPPORT_DIGEST: %s" % digest_file in itd_text, out)
+        check("the digest holds the support signature and doc, never the body",
+              "def stand_up(app):" in digest_text and "Stand the app up." in digest_text
+              and "DIGESTBODYLEAK" not in digest_text, digest_text)
+        check("the digest covers no sealed path",
+              not sdg.sealed_in_digest(digest_text, root), digest_text)
+        os.remove(os.path.join(root, "tests", "support", "harness.py"))
+        os.rmdir(os.path.join(root, "tests", "support"))
+        rc, _p, out = run_compose("IT-nodigest.md", [
+            "integration-test-author", "--host", "claude", "--contract-paths", "src/flush.py",
+        ])
+        check("no support file: no SUPPORT_DIGEST field and no stale digest",
+              rc == 0 and "SUPPORT_DIGEST" not in read_text(_p) and not os.path.exists(digest_file), out)
         check("is_test_path: test families and test file names are tests, source is not",
               all(is_test_path(x) for x in ("crates/platform/tests/nats_auth_live_test.rs", "tests/unit/test_retry.py",
                                             "src/a.test.ts", "web/__tests__/b.ts", "pkg/x_test.go", "App.Tests/FooTests.cs"))
