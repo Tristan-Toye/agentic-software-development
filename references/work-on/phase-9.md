@@ -121,11 +121,11 @@
 
     **Produce the review packet** on the head the PR will carry: one command,
     `python3 ${PLUGIN_ROOT}/scripts/review_packet.py all --dossier <ID> --base <BASE> --log`,
-    writes five JSON files under `.discovery/review-packet/<ID>/` and one
+    writes six JSON files under `.discovery/review-packet/<ID>/` and one
     `REVIEW-PACKET:` receipt per file into `## Build log`. It never blocks: a
     producer that cannot run writes `skipped: <reason>`.
 
-    Detail: `ref_section` with `phase-9-review-packet` and the heading "The review packet: five data producers, run before the PR". (every run that reaches the PR.)
+    Detail: `ref_section` with `phase-9-review-packet` and the heading "The review packet: six data producers, run before the PR". (every run that reaches the PR.)
 
  3. **Write the PR description** and post it as a note (it is not an approval step). Delegate the draft to
     `document-drafter` (`MODE: pr`, dossier excerpts verbatim, `TARGET_PATHS`
