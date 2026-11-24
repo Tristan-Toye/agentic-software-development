@@ -614,7 +614,7 @@ export function seqFold(g: any): { graph: any; fold: string[] } {
   const chunk = <T,>(xs: T[], max: number): T[][] => { const k = Math.ceil(xs.length / max), size = Math.ceil(xs.length / k); const o: T[][] = []; for (let i = 0; i < xs.length; i += size) o.push(xs.slice(i, i + size)); return o }
   const short = (t: string): string => (t.length > 28 ? t.slice(0, 27).trimEnd() + "…" : t)
   const groups: any[] = [], member = new Map<string, string>()
-  const mk = (id: string, label: string, members: any[]) => ({ id, label, status: st(members), evidence: [], synthesized: true })
+  const mk = (id: string, label: string, members: any[]): any => ({ id, label, status: st(members), evidence: [], synthesized: true })
   const level1 = chunk(msgs, SEQ_BUDGET.group)
   const refs = level1.map((c, i) => { const a = msgs.indexOf(c[0]) + 1; const grp = mk("ref:" + (i + 1), a + "-" + (a + c.length - 1) + ": " + short(String(node.get(c[0]).label)), c.map((id) => node.get(id))); c.forEach((id) => member.set(id, grp.id)); groups.push(grp); return { grp, from: a, to: a + c.length - 1 } })
   const fold: string[] = []

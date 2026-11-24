@@ -417,7 +417,7 @@ function vrSeqArrow(gg, a, status) {
 }
 function vrBuild(host, key, data) {
   const st = VRS[key] = VRS[key] || {}; const have = Object.keys(data.views).filter(k => data.views[k]); /* L0, L1, L2, then one arch:<stem> per new architecture diagram (Architecture impact) */
-  if (!st.view || !data.views[st.view]) st.view = have[0]; st.mode = st.mode || 'diff';
+  if (!st.view || !data.views[st.view]) st.view = (!data.mapPath && data.views.L1) ? 'L1' : have[0]; /* the numbered Flow (L1) is the view a change diagram opens on */ st.mode = st.mode || 'diff';
   if (st.rev !== data.rev) { st.rev = data.rev; st.col = {}; st.lc = {}; /* a committed diagram opens with the groups the server named folded (the areas of the product map, the big groups of a large view) */ have.forEach(k => { if (!data.mapPath && data.views[k].view !== 'seq') return; const c = data.views[k].collapsed; if (c && c.length) st.col[k] = c.slice().sort(); }); }
   const bar = vrDom('div', 'vrbar', null, host); vrDom('h2', 'vrh', (data.mapPath && data.views[have[0]] && data.views[have[0]].title) || 'Change diagram', bar);
   const tabs = vrDom('span', 'vrgrp', null, bar), modes = vrDom('span', 'vrgrp', null, bar);

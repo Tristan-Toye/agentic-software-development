@@ -256,7 +256,7 @@ describe("seq folds hierarchically, never crops", () => {
   })
   test("a huge sequence gets two levels at most; the top level is what opens folded", () => {
     const r = seqFold(big(80))
-    const by = new Map(r.graph.groups.map((x: any) => [x.id, x]))
+    const by = new Map<string, any>(r.graph.groups.map((x: any) => [x.id, x]))
     const depth = (id: string): number => (by.get(id)?.parent ? 1 + depth(by.get(id).parent) : 1)
     expect(Math.max(...r.graph.groups.map((x: any) => depth(x.id)))).toBeLessThanOrEqual(SEQ_BUDGET.maxLevels)
     expect(r.fold.every((id) => !by.get(id).parent)).toBe(true)
@@ -301,5 +301,11 @@ describe("seq tabs are on demand", () => {
   test("the page hides the sequence tabs until the Sequence diagrams button opens them; the Flow stays the default", () => {
     for (const s of ["isSeqTab", "Sequence diagrams", "Hide sequences", "syncSeq"]) expect(PAGE).toContain(s)
     expect(PAGE).toContain("|| isSeqTab(k)")
+  })
+})
+
+describe("the change diagram opens on the numbered Flow", () => {
+  test("L1 is selected on open for a dossier; a committed diagram keeps its first view", () => {
+    expect(PAGE).toContain("(!data.mapPath && data.views.L1) ? 'L1' : have[0]")
   })
 })
