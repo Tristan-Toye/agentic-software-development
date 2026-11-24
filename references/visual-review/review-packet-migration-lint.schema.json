@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "review-packet-migration-lint",
+  "description": "A fixed rule list run over the SQL migrations a change adds or edits. Each finding is a rule id at a path:line; there are no verdict sentences.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "producer",
+    "dossier"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "producer": {
+      "type": "string",
+      "enum": [
+        "migration-lint"
+      ]
+    },
+    "dossier": {
+      "type": "string"
+    },
+    "skipped": {
+      "type": "string",
+      "description": "present instead of the data when the producer could not run (for example no migration file in the change); the packet never blocks"
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "files": {
+          "type": "integer"
+        },
+        "findings": {
+          "type": "integer"
+        },
+        "suppressed": {
+          "type": "integer"
+        },
+        "by_rule": {
+          "type": "object",
+          "description": "rule id -> count of findings"
+        }
+      }
+    },
+    "rule": {
+      "type": "string"
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "status"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "added",
+              "modified",
+              "deleted"
+            ]
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "suppressed": {
+      "type": "array",
+      "description": "findings named by a `-- lint:ignore MIGnnn` comment on the statement's line or the line above",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "required": [
+        "rule",
+        "name",
+        "path",
+        "line",
+        "anchor",
+        "file_status"
+      ],
+      "properties": {
+        "rule": {
+          "type": "string",
+          "description": "MIG001 drop-table, MIG002 drop-column, MIG003 not-null-without-default, MIG004 column-type-change, MIG005 rename, MIG006 edit-merged-migration, MIG007 backfill-with-schema-change, MIG008 truncate"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer"
+        },
+        "anchor": {
+          "type": "string",
+          "description": "path:line"
+        },
+        "file_status": {
+          "type": "string",
+          "enum": [
+            "added",
+            "modified",
+            "deleted"
+          ]
+        },
+        "statement": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "the source line at the anchor, quoted; null for MIG006 on a deleted file"
+        }
+      }
+    }
+  },
+  "x-required-unless-skipped": [
+    "summary",
+    "rules",
+    "files",
+    "findings",
+    "suppressed"
+  ]
+}
