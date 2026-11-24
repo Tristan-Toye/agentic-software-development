@@ -99,7 +99,9 @@ blind author's test in a fix round. So: diff this commit against your own
 edits before any worktree forks from it and revert what the hook wrote;
 skip a workspace-wide hook on your own commits with the repository's bypass
 flag, run its fixers by hand over the files you changed, and say so in the
-message. Every implementer payload carries `HOOKS`
+message. The bypass ends when the last package merges: from the Phase 5 merge on, and in
+every later merge, resolve-merge and /fix-deferred commit, the hooks run and a
+failing hook is fixed, never skipped. Every implementer payload carries `HOOKS`
 (`references/payloads/implementer.md`): **the agent stops and reports when a hook
 refuses its commit**, and you commit on its branch. Never put the bypass in
 a payload or a resume — a sub-agent's permission is not granted by an
