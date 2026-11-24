@@ -8,7 +8,7 @@ import { approveAll, buildAnswer, diagramsOf, dossierIntent, isReviewQuestion, M
 import { questionBlocks } from "../questions/slack.ts"
 import { parseQuestion } from "../questions/store.ts"
 import { PAGE } from "../questions/page.ts"
-import { archStems, collapsedView, viewFile, visualReview } from "../questions/vrlayout.ts"
+import { archStems, collapsedView, graphHash, viewFile, visualReview } from "../questions/vrlayout.ts"
 
 const FIX = join(import.meta.dir, "..", "..", "references", "visual-review", "fixtures")
 const load = (n: string) => JSON.parse(readFileSync(join(FIX, n), "utf8"))
@@ -716,5 +716,35 @@ describe("architecture impact (arch:<stem>)", () => {
     writeFileSync(join(root, ".discovery", "visual-review", "W-1", "l1.json"), "{}")
     writeFileSync(join(root, ".discovery", "visual-review", "W-1", "arch", "seq-a.json"), "{}")
     expect(diagramsOf(root, "W-1")!.arch).toEqual(["seq-a"])
+  })
+})
+
+describe("the approval key ignores pure metadata", () => {
+  const rewrite = (d: string, f: (g: any) => void) => { const g = JSON.parse(readFileSync(join(d, "l1.json"), "utf8")); f(g); writeFileSync(join(d, "l1.json"), JSON.stringify(g)) }
+  test("a moved drawn-on commit, code link or line number keeps the approval current", () => {
+    const d = dirWith(), id = nodes("l1")[0]
+    setVerdict(d, "W-145", { diagram: "L1", element: id, verdict: "ok" })
+    const before = reviewState(d, "W-145").hashes.L1
+    rewrite(d, (g) => {
+      g.meta = { ...(g.meta ?? {}), commit: "f".repeat(40), base_sha: "e".repeat(40) }
+      for (const n of g.nodes) for (const ev of n.evidence ?? []) if (ev.tier === "source") { ev.line = (ev.line ?? 1) + 7; ev.path = ev.path + "" }
+    })
+    const st = reviewState(d, "W-145")
+    expect(st.hashes.L1).toBe(before)
+    expect(st.lines[0].state).toBe("current")
+    expect(st.summary.checked).toBe(1)
+  })
+  test("a changed label, element or arrow makes it outdated", () => {
+    for (const edit of [(g: any) => { g.nodes[0].label = g.nodes[0].label + " (renamed)" }, (g: any) => { g.nodes.push({ id: "new-el", label: "New", evidence: [] }) }, (g: any) => { g.edges.pop() }]) {
+      const d = dirWith(), id = nodes("l1")[0]
+      setVerdict(d, "W-145", { diagram: "L1", element: id, verdict: "ok" })
+      rewrite(d, edit)
+      expect(reviewState(d, "W-145").lines[0].state).toBe("outdated")
+    }
+  })
+  test("a line recorded on the old full-file hash holds while the file is byte-identical", () => {
+    const d = dirWith(), id = nodes("l1")[0]
+    writeFileSync(join(d, "review.json"), JSON.stringify({ schema_version: "1.0.0", dossier: "W-145", updated: "t", lines: [{ anchor: { diagram: "L1", element: id, graph_hash: graphHash(load("w145-l1.json")) }, verdict: "ok", comment: "", ts: "t" }] }))
+    expect(reviewState(d, "W-145").lines[0].state).toBe("current")
   })
 })

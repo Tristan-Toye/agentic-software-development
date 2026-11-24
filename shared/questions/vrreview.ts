@@ -3,7 +3,7 @@
 // Pure file work, no server state: the routes in server.ts call these.
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { archStemOf, archStems, DECISION_VIEW, graphHash, reviewViews, viewFile, VR_VIEWS } from "./vrlayout.ts"
+import { archStemOf, archStems, DECISION_VIEW, approvalHash, graphHash, reviewViews, viewFile, VR_VIEWS } from "./vrlayout.ts"
 
 export const VERDICTS = ["ok", "question", "change", "remove"] as const
 export type Verdict = (typeof VERDICTS)[number]
@@ -35,7 +35,7 @@ export class ReviewError extends Error {
 
 export const reviewFile = (dir: string): string => join(dir, "review.json")
 
-type Graphs = Partial<Record<string, { hash: string; nodes: Set<string>; labels: Map<string, string> }>>
+type Graphs = Partial<Record<string, { hash: string; legacy: string; nodes: Set<string>; labels: Map<string, string> }>>
 /**
  * The nodes (the elements a verdict can be about) and the hash of each diagram file that exists and parses. `broken`
  * names each file that exists but is too large, does not parse or has no nodes array (e.g. caught mid-write): the review
@@ -54,7 +54,7 @@ export function readGraphsFull(dir: string): { graphs: Graphs; broken: Diagram[]
       if (!g || !Array.isArray(g.nodes)) { broken.push(v); continue }
       const labels = new Map<string, string>()
       for (const n of g.nodes) if (n && typeof n.id === "string") labels.set(n.id, typeof n.label === "string" ? n.label : n.id)
-      graphs[v] = { hash: graphHash(g), nodes: new Set(labels.keys()), labels }
+      graphs[v] = { hash: approvalHash(g), legacy: graphHash(g), nodes: new Set(labels.keys()), labels }
     } catch { broken.push(v) }
   }
   return { graphs, broken }
@@ -89,7 +89,7 @@ export function reviewState(dir: string, dossier: string): ReviewState {
   const review = readReview(dir, dossier)
   const lines: StateLine[] = (review?.lines ?? []).map((l) => {
     const g = graphs[l.anchor.diagram]
-    const state: LineState = !g || !g.nodes.has(l.anchor.element) ? "gone" : g.hash !== l.anchor.graph_hash ? "outdated" : "current"
+    const state: LineState = !g || !g.nodes.has(l.anchor.element) ? "gone" : g.hash !== l.anchor.graph_hash && g.legacy !== l.anchor.graph_hash ? "outdated" : "current"
     return { ...l, state }
   })
   const cur = new Map(lines.filter((l) => l.state === "current").map((l) => [l.anchor.diagram + "\u0000" + l.anchor.element, l]))

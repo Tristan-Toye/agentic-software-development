@@ -174,6 +174,33 @@ standing authority for:**
 - a repository rule written from this build (Phase 8b): commit it on the
   dossier's branch; the owner ratifies it by reviewing and merging the PR.
 
+**A red CI check outside the change is never a question.** The session
+decides it by this policy and records it (the full text is in
+`references/work-on/phase-9.md`, step 4):
+
+- It re-runs the failed jobs itself (`gh run rerun <id> --failed`, or
+  `wait_ci.py --rerun-failed`), at most **2 re-runs per head**.
+- A test that fails outside the files the change touched and passes locally is
+  a **suspected flake**: record `CI: red <check> — suspected flake: <evidence>`
+  in `## Build log` and the PR description, or as a deferred item. Do not ask.
+- When the budget is used up and the failure still lies outside the change,
+  the session ends its CI wait with that failure noted (`CI: red <check> —
+  not this change, 2 re-runs used`). It does not ask; the stub integration
+  (`/stub`) owns cross-dossier red.
+- Only a red check inside the change's own files stays a fix-it item.
+
+Example of what must not be asked (W-197.Q8, 2026-11): "PR 670 fails one
+unrelated-looking CI test; re-run it or leave it?" after the session had seen
+it fail twice, outside the change's files, passing locally.
+
+**An approval that only a metadata field invalidated is never a question.**
+A diagram approval is keyed on the diagram's content without its pure metadata
+(the commit it was drawn on, code links such as a renamed migration file, line numbers); only the visible content (participants, messages, labels, order, kinds) invalidates it. When only those
+moved, the approval carries: record `approval carried: metadata only
+(<fields>)`. Example of what must not be asked (W-118.Q7, 2026-11): "Do you
+re-approve the repository index build sequence diagram, unchanged since your
+Phase 3 approval?"
+
 A batch question ("approve these 6 readings", "may I push and open the
 draft PR", "may I open the issue", "retry or stop") is a sign the answer is already given:
 check the dossier and this list before asking. Under a terminal run without

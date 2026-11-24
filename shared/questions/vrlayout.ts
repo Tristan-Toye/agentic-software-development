@@ -61,6 +61,27 @@ function canon(v: any): any {
 /** sha256 over the canonical JSON of the stripped graph: the cache key of its layout. */
 export const graphHash = (g: unknown): string => createHash("sha256").update(JSON.stringify(canon(stripDollar(g)))).digest("hex")
 
+/** The pure metadata an approval ignores: the commit the diagram was drawn on (`meta.commit`, `base_sha`, `branch`, `generated_at`) and the code link of a source evidence entry (`path`, `line`, `end_line`, `note`) and any `path:LINE` inside a `detail` or `text`. Mirrors `strip_metadata` in scripts/vr_promote.py. */
+const META_IGNORED = new Set(["commit", "base_sha", "branch", "generated_at"])
+const EVIDENCE_IGNORED = new Set(["path", "line", "end_line", "note"])
+const ANCHOR_RE = /[A-Za-z0-9_./-]+\.[A-Za-z0-9]+:[0-9]+(?:-[0-9]+)?/g
+const ANCHOR_TEXT_KEYS = new Set(["detail", "text"])
+export function stripMetadata(v: any, key?: string): any {
+  if (Array.isArray(v)) return v.map((x) => stripMetadata(x, key))
+  if (v && typeof v === "object") {
+    const o: any = {}
+    for (const k of Object.keys(v)) {
+      if (key === "meta" && META_IGNORED.has(k)) continue
+      if (key === "evidence" && EVIDENCE_IGNORED.has(k) && v.tier === "source") continue
+      o[k] = stripMetadata(ANCHOR_TEXT_KEYS.has(k) && typeof v[k] === "string" ? v[k].replace(ANCHOR_RE, "<anchor>") : v[k], k)
+    }
+    return o
+  }
+  return v
+}
+/** The key a verdict is recorded under (`anchor.graph_hash`): graphHash of the graph without its pure metadata, so an approval carries over when only metadata moved and never when a step, lane, arrow, label or element changed. The layout cache keeps graphHash. */
+export const approvalHash = (g: unknown): string => graphHash(stripMetadata(stripDollar(g)))
+
 const STATUS = new Set(["added", "changed", "removed", "context"])
 const VIEWS = new Set(["L0", "L1", "L2", "decision", "map", "full", "c1", "c2", "c3", "c4", "seq"])
 /** Views drawn as lanes top to bottom (steps in order) instead of groups left to right: the L1 flow and a sequence diagram. */
