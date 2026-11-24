@@ -141,7 +141,7 @@ checkout to get them to run.
 
 Note the commit you started the merge on (`before=$(git rev-parse HEAD)`, taken before `git merge`). Commit the merge (`git commit --no-edit`, keeping the `Dropped:` lines in the body; `merge_guard.py` exits 0). Then prove it landed, never assume it:
 `python3 ${PLUGIN_ROOT}/scripts/merge_guard.py --landed --before $before` (HEAD moved, no MERGE_HEAD, nothing staged). When it exits 1 the commit did
-not happen, usually a hook (lefthook) refused it: read the output of `git commit`, fix what it names, commit again, and re-run the check. Say "the
+not happen, usually a hook (lefthook) refused it: read the output of `git commit`, fix what it names, commit again, and re-run the check. A hook failure is never skipped: no `--no-verify`, and no owner question asking to allow it. An error that looks platform-only (a Linux-only module on macOS, E0432) is a defect like any other, often an attribute such as `#[cfg(target_os = "linux")]` that a merge or an inserted line moved off the item it gated: compare the file with the base (`git diff <base> -- <file>`) and put it back. Say "the
 merge is committed" only after exit 0. A MERGE_HEAD, staged files or a `.git/index.lock` in a worktree this session created is its own unfinished
 merge, never "a second process changing the worktree": call it another process only when `ps` or a lock file names one (a live pid), and never ask
 the owner about your own pending merge. Then `git push` (never `--force`). Check each pull request reads
