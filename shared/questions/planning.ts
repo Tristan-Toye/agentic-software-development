@@ -9,7 +9,9 @@ import { runsDir } from "./runstore.ts"
 
 export type PlanningRun = { key: string; state: string }
 const LIVE = ["running", "testing", "waiting", "queued", "paused", "parked"]
-const CLAIMED = /\b([A-Z][A-Z0-9]*-\d+)\s*\(claimed/g
+const CLAIMED = /\b([A-Z][A-Z0-9]*-\d+)\s*\(?claimed/g   // "W-218 (claimed, final)" and "W-219 claimed (claim_id exit 0)"
+/** Ids of the questions `<repo>.<ID>.Qn` a run asked: once /plan claimed an id, its questions carry it. */
+const questionIds = (repo: string, text: string) => [...text.matchAll(new RegExp(`\\b${repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.([A-Z][A-Z0-9]*-\\d+)\\.Q\\d+\\b`, "g"))].map((m) => m[1])
 
 /** {dossier id -> the live planning run that claimed it} for one repo; the first run (by key) wins an id. */
 export function planningRuns(repo: string, dir = runsDir()): Record<string, PlanningRun> {
@@ -20,15 +22,17 @@ export function planningRuns(repo: string, dir = runsDir()): Record<string, Plan
     const key = n.slice(0, -".runner.json".length)
     const short = key.slice(repo.length + 1)
     if (!(short.startsWith("seed-") || /\.plan-D-\d+$/.test(short))) continue
-    let st: { command?: string; state?: string } = {}
+    let st: { command?: string; state?: string; questions?: string[] } = {}
     try { st = JSON.parse(readFileSync(join(dir, n), "utf8")) || {} } catch { continue }
     if (st.command !== "plan" || !st.state || !LIVE.includes(st.state)) continue
+    for (const id of questionIds(repo, (st.questions ?? []).join(" "))) out[id.toUpperCase()] ??= { key, state: st.state }
     let text = ""
     try { text = readFileSync(join(dir, `${key}.jsonl`), "utf8") } catch { continue }
     for (const line of text.split("\n")) {
-      if (!line.includes('"stage"') || !line.includes("(claimed")) continue
+      if (!line.includes("claimed") && !line.includes("Q")) continue
       let o: any
       try { o = JSON.parse(line) } catch { continue }
+      if (o?.kind === "runner") for (const id of questionIds(repo, String(o.text ?? ""))) out[id.toUpperCase()] ??= { key, state: st.state }
       if (o?.kind !== "stage") continue
       for (const m of `${o.text ?? ""} ${o.stage ?? ""}`.matchAll(CLAIMED)) out[m[1].toUpperCase()] ??= { key, state: st.state }
     }

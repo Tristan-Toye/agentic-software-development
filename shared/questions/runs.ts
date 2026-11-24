@@ -951,15 +951,17 @@ function startScan(questions: () => Question[], build: (q: Question[]) => Promis
  * A restart serves the disk copy at once with `refreshing: true`. `fresh` is for a caller that acts on the view (run
  * control, merge, routing): it waits for the first scan of this process, so it never acts on the disk copy.
  */
-export async function getRuns(questions: () => Question[], opts: { fresh?: boolean; build?: (q: Question[]) => Promise<RunsView> } = {}): Promise<RunsView> {
-  const build = opts.build ?? buildRuns   // `build` is a test seam
+export async function getRuns(questions: () => Question[], opts: { fresh?: boolean; build?: (q: Question[]) => Promise<RunsView>; live?: typeof liveStore } = {}): Promise<RunsView> {
+  const build = opts.build ?? buildRuns   // `build` and `live` are test seams
   if (!inflight && Date.now() - lastScan > 30_000) startScan(questions, build)
   if (inflight && (!cached.scannedAt || (opts.fresh && !scannedLive))) await inflight
   if (opts.fresh && !scannedLive) { if (!inflight) startScan(questions, build); await inflight }
   const linked = linkQuestions(cached.runs, questions())
-  const lives = await mapLimit(cached.runs, IO_CONCURRENCY, liveStore)
+  const lives = await mapLimit(cached.runs, IO_CONCURRENCY, (r) => (opts.live ?? liveStore)(r).catch(() => undefined))
   const live = cached.runs.map((r, i) => {
-    const l = lives[i], qa = linked.get(`${r.repo}/${r.id}`)
+    // A run whose live store could not be read keeps its scanned state: one bad file never takes the whole view down.
+    const l = lives[i] ?? { updates: r.updates ?? [], runner: r.runner, running: isRunning(r.status), deferred: r.deferred, deferredOpen: r.deferredOpen }
+    const qa = linked.get(`${r.repo}/${r.id}`)
     return { ...r, ...l, questions: qa?.open ?? [], answered: qa?.answered ?? [], view: viewFor(r.status, l.running, l.updates.length) }
   })
   const statusOf = (repo: string) => (id: string) => live.find((x) => x.repo === repo && x.id === id)?.status

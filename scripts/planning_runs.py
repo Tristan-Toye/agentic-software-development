@@ -18,7 +18,7 @@ import re
 import sys
 
 LIVE = ("running", "testing", "waiting", "queued", "paused", "parked")
-CLAIMED_RE = re.compile(r"\b([A-Z][A-Z0-9]*-\d+)\s*\(claimed")
+CLAIMED_RE = re.compile(r"\b([A-Z][A-Z0-9]*-\d+)\s*\(?claimed")   # "W-218 (claimed, final)" and "W-219 claimed (claim_id exit 0)"
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared", "test", "fixtures", "planning-runs")
 
 
@@ -28,6 +28,12 @@ def _read_json(path: str):
             return json.load(fh) or {}
     except (OSError, ValueError):
         return {}
+
+
+def _question_ids(repo: str, text: str) -> list[str]:
+    """Ids of the questions `<repo>.<ID>.Qn` a run asked: once /plan claimed an id, its questions carry it (the run's own
+    first question, before the claim, carries the seed slug and so never matches)."""
+    return re.findall(rf"\b{re.escape(repo)}\.([A-Z][A-Z0-9]*-\d+)\.Q\d+\b", text)
 
 
 def planning_runs(repo: str, runs_dir: str) -> dict[str, dict]:
@@ -42,15 +48,20 @@ def planning_runs(repo: str, runs_dir: str) -> dict[str, dict]:
         st = _read_json(path)
         if st.get("command") != "plan" or st.get("state") not in LIVE:
             continue
+        for m in _question_ids(repo, " ".join(str(q) for q in st.get("questions") or [])):
+            out.setdefault(m.upper(), {"key": key, "state": st.get("state")})
         try:
             with open(os.path.join(runs_dir, f"{key}.jsonl"), encoding="utf-8", errors="replace") as fh:
                 for line in fh:
-                    if '"stage"' not in line or "(claimed" not in line:
+                    if not ("claimed" in line or "Q" in line):
                         continue
                     try:
                         o = json.loads(line)
                     except ValueError:
                         continue
+                    if o.get("kind") == "runner":   # "waiting on repo.W-219.Q2", "answered repo.W-219.Q2"
+                        for m in _question_ids(repo, str(o.get("text", ""))):
+                            out.setdefault(m.upper(), {"key": key, "state": st.get("state")})
                     if o.get("kind") == "stage":
                         for m in CLAIMED_RE.findall(str(o.get("text", "")) + " " + str(o.get("stage", ""))):
                             out.setdefault(m.upper(), {"key": key, "state": st.get("state")})
@@ -81,9 +92,12 @@ def selftest() -> int:
 
     got = planning_runs("r", FIXTURE)
     check("fixture: live seed and plan-D runs name their claimed ids; dead, stopped and non-plan runs do not",
-          {k: v["key"] for k, v in got.items()} == {"W-218": "r.seed-webhook-rate-limit", "K-13": "r.K-2.plan-D-1"}, got)
+          {k: v["key"] for k, v in got.items()} == {"W-218": "r.seed-webhook-rate-limit", "K-13": "r.K-2.plan-D-1", "W-219": "r.seed-plain-claim", "W-220": "r.seed-asked"}, got)
     check("fixture: the run state is carried", got["W-218"]["state"] == "running" and got["K-13"]["state"] == "queued", got)
     check("claimed_why names the run", "r.seed-webhook-rate-limit" in claimed_why("r", FIXTURE, "w-218") and claimed_why("r", FIXTURE, "W-1") == "")
+    check("claim read from a plain 'W-219 claimed' stage and from the run's questions (the seed-single-migration-owner shape)",
+          planning_runs("r", FIXTURE).get("W-219", {}).get("key") == "r.seed-plain-claim" and planning_runs("r", FIXTURE).get("W-220", {}).get("key") == "r.seed-asked",
+          planning_runs("r", FIXTURE))
     check("claimed_why: the claiming run itself is not refused", claimed_why("r", FIXTURE, "W-218", "r.seed-webhook-rate-limit") == "")
     return 1 if bad else 0
 
