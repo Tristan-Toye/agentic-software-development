@@ -29,6 +29,9 @@ export type Layout = {
   frames?: Record<string, Box>
   /** seq: the sender-to-receiver arrow of each message node, by node id (see seqLayout). */
   arrows?: Record<string, SeqArrow>
+  /** seq: the status glyph slot of each message (left of its label) and the review badge slot (right of it); the label never intersects either. */
+  marks?: Record<string, Box>
+  badges?: Record<string, Box>
   /** seq: the box of each expanded ref group (author or mechanical group of consecutive messages), by group id; the page draws its header with the fold button. */
   refs?: Record<string, Box>
   /** seq: the wrapped label lines of each message and each lane header, by node or lane id (the page draws exactly these). */
@@ -378,6 +381,8 @@ export function seqKind(n: any): SeqArrow["kind"] {
 export const seqReceiver = (n: any): string | undefined => (n?.kind === "note" ? undefined : n?.seq?.to ?? n?.to) || undefined
 
 /** seq text metrics: a label is 12 px text on the arrow (SEQ_CHAR px a character), wrapped at SEQ_WRAP characters, SEQ_LINE px a line; a lane header wraps at SEQ_LANE_WRAP characters. */
+/** The slots beside a message label: the status glyph before it, the review badge after it. */
+const MARK_W = 22, BADGE_W = 52
 const SEQ_CHAR = 6.3, SEQ_WRAP = 44, SEQ_LANE_WRAP = 24, SEQ_LINE = 15, SEQ_REF_H = 28, HEAD_MIN = 120
 /** Words wrapped greedily at `max` characters; a word longer than a line is broken. Never drops text. */
 export function wrapWords(label: string, max: number): string[] {
@@ -395,7 +400,7 @@ const seqTextWidth = (lines: string[]): number => Math.ceil(Math.max(...lines.ma
 const seqRefLabel = (n: any): string => "ref  " + String(n.label ?? "") + "  (" + (n.members ?? 0) + " msg" + (n.members === 1 ? "" : "s") + ")"
 
 /** The seq budget: at most SEQ_BUDGET.lanes lanes and SEQ_BUDGET.messages messages are drawn flat; a bigger diagram folds its messages into refs of at most SEQ_BUDGET.group messages (scripts/vr_graph.py SEQ_* holds the same numbers). Labels: lane <= laneLabel, message <= msgLabel characters. */
-export const SEQ_BUDGET = { lanes: 6, messages: 12, group: 6, laneLabel: 24, msgLabel: 32, maxLevels: 2 }
+export const SEQ_BUDGET = { lanes: 6, messages: 10, group: 6, laneLabel: 24, msgLabel: 32, maxLevels: 2 }
 /**
  * seq: the layout of a sequence diagram, computed here and not by ELK. Participants are columns in file order, each with a lifeline
  * (the lane box is the full-height column; its centre line is the lifeline). Each message is one row in flows[0].after order: its node box
@@ -440,7 +445,7 @@ export function seqLayout(g: any): Layout {
     const n = node.get(id)
     if (isRef(n)) { const [lo, hi] = refSpan(n); return { lo, hi, w: sz.get(id)!.width, self: false, msg: true } }
     const a = laneOf(n), b = recvOf(n)
-    return { lo: Math.min(a, b), hi: Math.max(a, b), w: sz.get(id)!.width + 24, self: a === b, msg: isMsg(n) }
+    return { lo: Math.min(a, b), hi: Math.max(a, b), w: sz.get(id)!.width + 24 + (isMsg(n) ? MARK_W + BADGE_W : 0), self: a === b, msg: isMsg(n) }
   })
   for (const r of [...need].filter((x) => x.msg).sort((p, q) => (p.hi - p.lo) - (q.hi - q.lo))) {
     if (r.self) { if (r.lo < lanes.length - 1) gap[r.lo] = Math.max(gap[r.lo], 28 + r.w); continue }
@@ -459,7 +464,7 @@ export function seqLayout(g: any): Layout {
   const gframes = (g.groups ?? []).filter((x: any) => grange.has(x.id)).map((x: any) => ({ id: x.id, kind: "ref", label: x.label, first: order[grange.get(x.id)![0]], last: order[grange.get(x.id)![1]] }))
   const starts = order.map(() => 0), ends = order.map(() => 0)
   for (const f of [...(g.frames ?? []), ...gframes]) { const a = at.get(f.first), b = at.get(f.last); if (a !== undefined && b !== undefined && a <= b) { starts[a]++; ends[b]++ } }
-  const boxes: Record<string, Box> = {}, span: Record<string, Box> = {}, arrows: Record<string, SeqArrow> = {}
+  const boxes: Record<string, Box> = {}, span: Record<string, Box> = {}, arrows: Record<string, SeqArrow> = {}, marks: Record<string, Box> = {}, badges: Record<string, Box> = {}
   let y = headH + 14 + 18 * Math.min(starts[0] ?? 0, 4)
   order.forEach((id, i) => {
     if (i) y += 4 + 18 * Math.min(starts[i], 4) + 8 * Math.min(ends[i - 1], 4)
@@ -479,24 +484,30 @@ export function seqLayout(g: any): Layout {
       return
     }
     const self = l === r, ay = y + s.height + 6
+    let strip: number // the left end of glyph + label + badge
     if (self) {
-      boxes[id] = { x: Math.round(cx[l] + 28), y, w: s.width, h: s.height }
+      strip = cx[l] + 28
+      boxes[id] = { x: Math.round(strip + MARK_W), y, w: s.width, h: s.height }
       const pts: [number, number][] = [[cx[l], y + 4], [cx[l] + 22, y + 4], [cx[l] + 22, ay], [cx[l], ay]]
       arrows[id] = { from: lanes[l]?.id, to: lanes[r]?.id, kind: seqKind(n), self, points: pts.map(([a, b]) => [Math.round(a), Math.round(b)] as [number, number]) }
     } else {
       // The label sits on the arrow beside the sender (left-aligned for an arrow to the right, right-aligned for one to the left).
-      bx = l < r ? cx[l] + 10 : cx[l] - 10 - s.width
+      strip = l < r ? cx[l] + 8 : cx[l] - 8 - (MARK_W + s.width + BADGE_W)
+      bx = strip + MARK_W
       boxes[id] = { x: Math.round(bx), y, w: s.width, h: s.height }
       arrows[id] = { from: lanes[l]?.id, to: lanes[r]?.id, kind: seqKind(n), self, points: [[Math.round(cx[l]), ay], [Math.round(cx[r]), ay]] }
     }
-    const bb = boxes[id], xs = [bb.x, bb.x + bb.w, ...arrows[id].points.map((p) => p[0])]
+    const bb = boxes[id]
+    marks[id] = { x: Math.round(bb.x - MARK_W), y: y - 1, w: 18, h: 18 }
+    badges[id] = { x: Math.round(bb.x + bb.w + 4), y, w: BADGE_W - 8, h: 14 }
+    const xs = [marks[id].x, bb.x + bb.w + BADGE_W, ...arrows[id].points.map((p) => p[0])]
     span[id] = { x: Math.min(...xs), y, w: Math.max(...xs) - Math.min(...xs), h: ay - y + 6 }
     y = ay + 8
   })
   const bottom = y + 20
   const last = lanes.length - 1
   const maxX = Math.max(last < 0 ? 0 : cx[last] + hw[last] / 2 + 10, ...Object.values(span).map((b) => b.x + b.w + 10))
-  const L: Layout = { view: g.view, mode: "thorough", direction: "DOWN", width: Math.round(maxX), height: bottom, boxes, edges: {}, arrows, texts, headH }
+  const L: Layout = { view: g.view, mode: "thorough", direction: "DOWN", width: Math.round(maxX), height: bottom, boxes, edges: {}, arrows, texts, headH, marks, badges }
   lanes.forEach((l, i) => { L.boxes[l.id] = { x: Math.round(cx[i] - hw[i] / 2), y: 0, w: hw[i], h: bottom } })
   const fr = frameBoxes(g, span)
   if (fr) { L.frames = fr; for (const b of Object.values(fr)) { L.width = Math.max(L.width, b.x + b.w); L.height = Math.max(L.height, b.y + b.h) } }

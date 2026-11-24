@@ -78,7 +78,7 @@ MAP_GROUP = 15
 # `parent` for the second level); without them the canvas groups mechanically. Labels: a lane label at most SEQ["lane_label"], a
 # message label at most SEQ["msg_label"] characters (the schema limit of 80 stays the hard one). Same numbers as SEQ_BUDGET in
 # shared/questions/vrlayout.ts (selftest checks they agree). `over` here means "folds", and a group over SEQ["group"] messages is an issue.
-SEQ = {"lanes": 6, "messages": 12, "group": 6, "lane_label": 24, "msg_label": 32, "levels": 2}
+SEQ = {"lanes": 6, "messages": 10, "group": 6, "lane_label": 24, "msg_label": 32, "levels": 2}
 
 
 # ---------------------------------------------------------------- loading
@@ -865,7 +865,7 @@ def _selftest() -> int:
     sm = lambda i: {"id": "m%d" % i, "label": "m", "kind": "message", "status": "context", "lane": "l0", "group": None}
     sq = {"view": "seq", "lanes": [{"id": "l0", "label": "A"}], "nodes": [sm(i) for i in range(20)], "edges": []}
     check("budget:seq-over-folds-not-errors", budget(sq)["folds"] and not budget(sq)["over"], str(budget(sq)))
-    check("budget:seq-within", not budget(dict(sq, nodes=sq["nodes"][:12]))["folds"])
+    check("budget:seq-within", not budget(dict(sq, nodes=sq["nodes"][:10]))["folds"])
     gs = {"view": "seq", "groups": [{"id": "g"}], "nodes": [dict(sm(i), group="g") for i in range(7)]}
     issues_g: list = []
     _seq_group_issues(gs, issues_g)

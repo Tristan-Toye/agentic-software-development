@@ -168,7 +168,7 @@ Shapes the schema requires, which the fixtures also show:
   `arch/` draft); the driver's shadow run builds a draft from each such flow
   and needs both on every step.
 - Sequence diagram (a `seq` view, `arch/<stem>.json`, or the flow of a
-  `new_stem`): the budget is **at most 6 lanes and 12 messages**, a lane label
+  `new_stem`): the budget is **at most 6 lanes and 10 messages**, a lane label
   of at most 24 characters and a message label of at most 32. Name the lane
   after the participant only (`Index builder`, not `Index builder (crate
   repo-index)`: the location goes in `evidence`), and write the message as the

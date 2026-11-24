@@ -541,7 +541,7 @@ function vrBuild(host, key, data) {
   function paintBadges() {
     if (!cur || !cur.layout) return; svg.querySelectorAll('.vr-vd').forEach(e => e.remove());
     cur.graph.nodes.forEach(n => { const l = lineFor(st.view, n.id), e = els[n.id], b = cur.layout.boxes[n.id]; if (!l || !e || !b) return;
-      const t = vrEl('text', { class: 'vr-vd vrcode', x: b.x + 10, y: b.y + 4, stroke: 'var(--bg)', 'stroke-width': 6, 'paint-order': 'stroke', fill: 'var(--' + (l.state === 'current' ? ({ ok: 'ok', question: 'que', change: 'warn', remove: 'bad' })[l.verdict] : 'mut') + ')' }, e.g);
+      const bd = cur.layout.badges && cur.layout.badges[n.id]; /* a sequence message has its own badge slot after the label, never on the text */ const t = vrEl('text', { class: 'vr-vd vrcode', x: bd ? bd.x : b.x + 10, y: bd ? bd.y + 11 : b.y + 4, stroke: 'var(--bg)', 'stroke-width': 6, 'paint-order': 'stroke', fill: 'var(--' + (l.state === 'current' ? ({ ok: 'ok', question: 'que', change: 'warn', remove: 'bad' })[l.verdict] : 'mut') + ')' }, e.g);
       t.textContent = VD_CODE[l.verdict] + (l.state === 'outdated' ? ' (old)' : ''); });
   }
   /* The summary, the Send button and the stale banner: cheap, runs on every page render. */
@@ -663,7 +663,7 @@ function vrBuild(host, key, data) {
         vrEl('rect', { x: b.x - 2, y: b.y - 2, width: b.w + 4, height: b.h + 4, fill: 'transparent' }, gg);
         const tt = vrEl('text', { x: b.x, y: b.y + 11, 'font-size': 12, fill: 'var(--fg)', stroke: 'var(--bg)', 'stroke-width': 4, 'paint-order': 'stroke', 'stroke-linejoin': 'round', 'text-decoration': n.status === 'removed' ? 'line-through' : 'none' }, gg);
         L.texts[n.id].forEach((t, i) => { const ts = vrEl('tspan', { x: b.x, dy: i ? 15 : 0 }, tt); ts.textContent = t; });
-        vrSeqArrow(gg, L.arrows[n.id], n.status); if (n.status !== 'context') vrMark(gg, n.status, b.x - 12, b.y + 7); tip(gg, n); return;
+        vrSeqArrow(gg, L.arrows[n.id], n.status); const mk1 = L.marks && L.marks[n.id]; if (n.status !== 'context' && mk1) vrMark(gg, n.status, mk1.x + 9, mk1.y + 9); tip(gg, n); return;
       }
       if (sqRef) {
         /* a folded ref: a band across the lanes it touches, the group label, the count of messages and the status colour; a click opens it in place */

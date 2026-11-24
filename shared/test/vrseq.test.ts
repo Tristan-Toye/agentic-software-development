@@ -309,3 +309,34 @@ describe("the change diagram opens on the numbered Flow", () => {
     expect(PAGE).toContain("(!data.mapPath && data.views.L1) ? 'L1' : have[0]")
   })
 })
+
+describe("a message label never collides with its status glyph or review badge", () => {
+  const hit = (a: any, b: any) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+  test("label, glyph and badge boxes are disjoint for calls to the right, replies to the left and self calls", () => {
+    const g = big(8, 4); g.nodes[1].lane = "lane:2"; g.nodes[1].seq.to = "lane:2" // a self call
+    g.nodes[2].label = "Pick the language pack for the repository and extract its symbols"
+    const L = seqLayout(g)
+    for (const n of g.nodes) {
+      const lab = L.boxes[n.id], mk = L.marks![n.id], bd = L.badges![n.id]
+      expect(hit(lab, mk), n.id + " label/glyph").toBe(false)
+      expect(hit(lab, bd), n.id + " label/badge").toBe(false)
+      expect(hit(mk, bd), n.id + " glyph/badge").toBe(false)
+    }
+  })
+  test("a label with its slots stays between the sender's lifeline and the receiver's (or beside a self call)", () => {
+    const L = seqLayout(big(8, 4)), cx = (id: string) => L.boxes[id].x + L.boxes[id].w / 2
+    for (const [id, a] of Object.entries(L.arrows!)) {
+      if (a.self) continue
+      const lo = Math.min(cx(a.from), cx(a.to)), hi = Math.max(cx(a.from), cx(a.to)), m = L.marks![id], b = L.badges![id]
+      expect(m.x).toBeGreaterThanOrEqual(lo)
+      expect(b.x + b.w).toBeLessThanOrEqual(hi)
+    }
+  })
+  test("the page draws the badge in the layout's badge slot and the glyph in the glyph slot", () => {
+    expect(PAGE).toContain("cur.layout.badges[n.id]")
+    expect(PAGE).toContain("L.marks[n.id]")
+  })
+  test("seq-repo-index-build size (12 messages, 6 lanes) folds under the budget of 10", () => {
+    expect(seqFold(big(12, 6)).fold.length).toBeGreaterThan(1)
+  })
+})
