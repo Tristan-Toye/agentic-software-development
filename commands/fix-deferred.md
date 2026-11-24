@@ -364,7 +364,12 @@ runner, end with `RUNNER: DONE`.
 - Never fix an item outside the owner's list when a list was given.
 - The dossier's own pull request is never edited, rebased or merged by this
   command. The stacked pull request is the only thing it opens, and the
-  owner merges it.
+  owner merges it. When that pull request conflicts (it is the stacked one's
+  parent, so GitHub starts no CI on the child), the runner starts the
+  resolve-merge run for it and waits; do not resolve it, and do not ask the
+  owner how to bring it up to date: wait for the CI verdict, and on a
+  `never-started` naming the parent end with `RUNNER: FAILED CI not started
+  on PR <n>: its parent PR still conflicts`.
 - Packages run concurrently, each in its own worktree; packages that name the
   same file are one package. The implementer runs its proving test and a cheap
   check only (`--affected-since`); the full gates run once, in Step 4's batch.

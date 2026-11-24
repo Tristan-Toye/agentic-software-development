@@ -60,7 +60,7 @@ the host's equivalent; on a host with no CLI the push alone triggers a
 pipeline whose branch pattern matches — and wait for the run in one call:
 `python3 ${PLUGIN_ROOT}/scripts/wait_ci.py --pr <N> --log <live dossier>` (under the
 runner, end the turn with `RUNNER: WAITING ci:<N>` instead: the runner runs it and answers
-`CI RESULT <N>: green|red|timeout|never-started ...` (`never-started`: CI did not run, it did not fail; never wait on that PR again, end `RUNNER: FAILED CI never started on PR <N>: ...`; when the message names a conflicting parent PR, resolve that parent first, then wait again); the rest of this paragraph then reads the same). It polls silently,
+`CI RESULT <N>: green|red|timeout|never-started ...` (`never-started`: CI did not run, it did not fail; never wait on that PR again, end `RUNNER: FAILED CI never started on PR <N>: ...`; a conflicting parent PR never reaches you while the runner can resolve it: it starts the resolve-merge run itself and waits; if you still get a never-started naming the parent, do not resolve it yourself or ask the owner, end with `RUNNER: FAILED CI not started on PR <N>: its parent PR still conflicts`); the rest of this paragraph then reads the same). It polls silently,
 exits with the checks' verdict, and prints each failed job's log as a
 bounded digest parsed from the whole log. The exit status is the runner's
 and the counts are summed from the whole log by the parser, never a verdict

@@ -87,9 +87,12 @@ way, after that one is pushed. Then resolve each conflict:
 ## Step 2a — A migration number already taken
 
 Run `python3 ${PLUGIN_ROOT}/scripts/merge_dossier.py --migration-clashes <top
-head> --base <stub> --root <checkout>`. For each migration it names, this stack
-takes the next number free on the stub: rename the file, update whatever names
-it, and never touch a migration the stub already holds. Then run Step 3.
+head> --base <stub> --root <checkout>`, with bare branch names (`fix/W-1`, never
+`origin/fix/W-1`). Exit 2 with `refs unreadable` means the check did not run:
+fix the names, never read it as "no clash". For each migration it names, this
+stack takes the number the line ends with ("next number free on the base and
+every open pull request head"): rename the file, update whatever names it, and
+never touch a migration the stub already holds. Then run Step 3.
 
 ## Step 2b — A red check, no conflict
 

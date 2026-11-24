@@ -832,15 +832,25 @@ def collisions(root: str, base: str, head: str, others: list[str]) -> tuple[list
 MIGRATION_RE = re.compile(r"^(.*/)?migrations/(\d+)[_-][^/]+\.sql$")
 
 
-def migration_clashes(root: str, base: str, head: str) -> list[str]:
-    """Migrations the head adds under a number another migration in the same folder already has, on the base or in the
-    head. A fresh database cannot migrate then, and CI without a database cannot see it. Numbers the base already
-    repeats on its own are not this head's."""
+def bare_ref(ref: str) -> str:
+    """A branch name without the remote: `origin/fix/W-1`, `refs/remotes/origin/fix/W-1` and `fix/W-1` all give `fix/W-1`.
+    The migration helpers add `origin/` themselves; a caller's `origin/` would look up origin/origin/... and read nothing."""
+    for pre in ("refs/remotes/origin/", "refs/heads/", "origin/"):
+        if ref.startswith(pre):
+            return ref[len(pre):]
+    return ref
+
+
+def migration_scan(root: str, base: str, head: str) -> tuple[list[str], str]:
+    """(clashes, "") or ([], why the refs could not be read). Migrations the head adds under a number another migration
+    in the same folder already has, on the base or in the head. A fresh database cannot migrate then, and CI without a
+    database cannot see it. Numbers the base already repeats on its own are not this head's."""
+    base, head = bare_ref(base), bare_ref(head)
     git(root, "fetch", "-q", "origin", base, head)
     rc, added = git(root, "diff", "--no-renames", "--diff-filter=A", "--name-only", f"origin/{base}...origin/{head}")
     rc2, tree = git(root, "ls-tree", "-r", "--name-only", f"origin/{base}")
     if rc != 0 or rc2 != 0:
-        return []   # the branch is not on origin: the merge's own checks have the last word
+        return [], f"refs unreadable: origin/{base} or origin/{head} is not on origin (pass bare branch names, e.g. fix/W-1, not origin/fix/W-1)"
     def keyed(paths):
         return {p: (m.group(1) or "", m.group(2)) for p in paths if (m := MIGRATION_RE.match(p.strip()))}
     new, old = keyed(added.splitlines()), keyed(tree.splitlines())
@@ -849,7 +859,46 @@ def migration_clashes(root: str, base: str, head: str) -> list[str]:
         others = sorted(p for p, k in {**old, **new}.items() if k == key and p != path)
         if others:
             out.append(f"{path} has the number of {others[0]}")
-    return out
+    return out, ""
+
+
+def migration_clashes(root: str, base: str, head: str) -> list[str]:
+    """The queue's own check: unreadable refs (a branch not on origin) are left to the merge's checks, explicitly: []."""
+    found, unreadable = migration_scan(root, base, head)
+    return [] if unreadable else found
+
+
+def next_free_migration(root: str, base: str, folder_of: str) -> str:
+    """The next migration number free in the folder of the migration file `folder_of`, across the base and the files every
+    open pull request head adds (one clash renumbered onto the base's next number would clash with another open branch).
+    Keeps the zero padding of the number in that file name. "" when nothing can be read."""
+    base = bare_ref(base)
+    m = MIGRATION_RE.match(folder_of)
+    if not m:
+        return ""
+    folder, width = m.group(1) or "", len(m.group(2))
+    rc, rows = gh(root, "pr", "list", "--state", "open", "--limit", "200", "--json", "headRefName")
+    try:
+        heads = [r["headRefName"] for r in json.loads(rows)] if rc == 0 else None
+    except (ValueError, TypeError, KeyError):
+        heads = None
+    if heads is None:
+        return ""
+    git(root, "fetch", "-q", "origin", base, *heads)
+    nums: list[int] = []
+    rc, tree = git(root, "ls-tree", "-r", "--name-only", f"origin/{base}")
+    if rc != 0:
+        return ""
+    paths = tree.splitlines()
+    for h in heads:
+        rc, added = git(root, "diff", "--no-renames", "--diff-filter=A", "--name-only", f"origin/{base}...origin/{h}")
+        if rc == 0:
+            paths += added.splitlines()
+    for p in paths:
+        mm = MIGRATION_RE.match(p.strip())
+        if mm and (mm.group(1) or "") == folder:
+            nums.append(int(mm.group(2)))
+    return str(max(nums or [0]) + 1).zfill(width)
 
 
 def next_free_id(root: str, prefix: str) -> str:
@@ -2322,6 +2371,31 @@ print("started")
         mbranch("moved", rename=("crates/p/migrations/0061_a.sql", "crates/p/migrations/0062_a.sql"))
         check("migrations: renumbering onto a free number is no clash", migration_clashes(mw, "main", "moved") == [], str(migration_clashes(mw, "main", "moved")))
         check("migrations: a branch not on origin is left to the merge's checks", migration_clashes(mw, "main", "no-such") == [])
+        # origin/-prefixed names (what the resolve-merge agent passed) read the same refs as bare ones
+        bare_found = migration_clashes(mw, "main", "clash")
+        check("migrations: origin/-prefixed and refs/remotes/origin/ names find the same clash as bare names",
+              bool(bare_found) and migration_clashes(mw, "origin/main", "origin/clash") == bare_found
+              and migration_clashes(mw, "refs/remotes/origin/main", "refs/remotes/origin/clash") == bare_found, str(migration_clashes(mw, "origin/main", "origin/clash")))
+        check("migrations: bare_ref strips only a leading remote prefix", bare_ref("origin/fix/W-1") == "fix/W-1" and bare_ref("fix/origin/x") == "fix/origin/x")
+        _o, _e = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(_o), contextlib.redirect_stderr(_e):
+            rc_bad = main(["--migration-clashes", "no-such", "--base", "main", "--root", mw])
+        check("migrations: the CLI on unreadable refs exits non-zero with refs unreadable, never no clash",
+              rc_bad != 0 and "refs unreadable" in _e.getvalue() and "no clash" not in _o.getvalue() + _e.getvalue(), _e.getvalue())
+        # next free number: across the base and every open PR head, not the base alone
+        mbranch("other-open", "crates/p/migrations/0063_open.sql", "crates/p/migrations/0064_open2.sql")
+        mbranch("clash2", "crates/p/migrations/0061_b.sql")
+        _sv_gh = globals()["gh"]
+        globals()["gh"] = lambda root_, *a, **k: (0, json.dumps([{"headRefName": "other-open"}, {"headRefName": "clash2"}]))
+        try:
+            free = next_free_migration(mw, "main", "crates/p/migrations/0061_b.sql")
+            _o2 = io.StringIO()
+            with contextlib.redirect_stdout(_o2):
+                rc_c = main(["--migration-clashes", "origin/clash2", "--base", "origin/main", "--root", mw])
+        finally:
+            globals()["gh"] = _sv_gh
+        check("migrations: the next free number counts every open PR head (0064 on another branch -> 0065), keeps the padding", free == "0065", free)
+        check("migrations: the CLI prints the clash and that free number", rc_c == 1 and "0061_b.sql has the number of" in _o2.getvalue() and "free on the base and every open pull request head: 0065" in _o2.getvalue(), _o2.getvalue())
         saved_fns = {n: globals()[n] for n in ("migration_clashes", "conflicting", "wait_checks", "behind", "collisions", "start_run", "wait_run")}
         seen_runs: list = []; waited: list = []; notes: list = []; left = [2]
         def fake_clash(*_a):
@@ -2914,15 +2988,29 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--kanban-dossiers", action="store_true", help="print the kanban dossiers with an open pull request into development, one per line")
     ap.add_argument("--dev-ci", action="store_true", help="print the state of development's CI (green|pending|red|unknown)")
     ap.add_argument("--carry-over", metavar="STUB", help="after STUB merged: move its leftover open PRs to the accepting stub (exit 1: try again later)")
-    ap.add_argument("--migration-clashes", metavar="HEAD", help="print the migrations this branch adds under a number already taken (needs --base)")
+    ap.add_argument("--migration-clashes", metavar="HEAD", help="print the migrations this branch adds under a number already taken, with the next free number (needs --base; bare branch names)")
     ap.add_argument("--base", help="the branch --migration-clashes compares with")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if a.selftest:
         return selftest()
     if a.migration_clashes and a.base and a.root:
-        found = migration_clashes(os.path.abspath(a.root), a.base, a.migration_clashes)
-        print("\n".join(found) if found else "no clash")
+        root_ = os.path.abspath(a.root)
+        found, unreadable = migration_scan(root_, a.base, a.migration_clashes)
+        if unreadable:   # never "no clash" for a ref that was not read
+            print(unreadable, file=sys.stderr)
+            return 2
+        taken: dict[str, int] = {}   # two clashes in one folder get two different numbers
+        for f in found:
+            path = f.split(" has the number of ")[0]
+            free = next_free_migration(root_, a.base, path)
+            if free and path.rsplit("/", 1)[0] in taken:
+                free = str(int(free) + taken[path.rsplit("/", 1)[0]]).zfill(len(free))
+            if free:
+                taken[path.rsplit("/", 1)[0]] = taken.get(path.rsplit("/", 1)[0], 0) + 1
+            print(f + (f"; next number free on the base and every open pull request head: {free}" if free else ""))
+        if not found:
+            print("no clash")
         return 1 if found else 0
     if a.revive:
         return revive()

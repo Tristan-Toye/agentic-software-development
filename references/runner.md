@@ -64,9 +64,17 @@ the recorded checkpoints.
       Exit 7 is also `never-started`, but the cause is known: the PR is
       stacked on a parent PR (the open PR whose head is its base) that is
       DIRTY/CONFLICTING, and GitHub starts no workflow for the child
-      meanwhile. `wait_ci` checks this before any retrigger; the session is
-      told to resolve the parent (merge its base into it, the resolve-merge
-      procedure), push and wait again. An owner
+      meanwhile. `wait_ci` checks this before any retrigger. The runner, not the
+      session, gets the parent resolved: it starts a `resolve-merge` run for
+      the parent PR (key `<repo>.<ID>.resolve-<pr>`, outside the merge queue,
+      which would merge a clean dossier into its stub), polls until the parent
+      is no longer DIRTY and runs `wait_ci` on the child again, with the session
+      parked and told nothing. Only when the parent still conflicts after
+      two such runs the session gets `never-started` and ends with
+      `RUNNER: FAILED CI not started on PR <n>: its parent PR still
+      conflicts ...`; the session never resolves the parent itself (the
+      dossier's own PRs are not its to edit) and never asks the owner how. The
+      "no further wait after never-started" refusal is for exit 6 only. An owner
       message ends the wait early and is delivered; the agent waits again.
     - `RUNNER: ENV <vm|stack|disk> <detail>` — a broken environment (the
       Lima VM down, a compose service unhealthy, the disk low), reported
