@@ -181,7 +181,11 @@ compared against this one.
 
 2. Spawn `diagram-author` (payload file in `.agent-staging/payloads/`): `DOSSIER_ID`,
    the dossier's `## Problem` and `## Approach`, the contract, `WORK_DIR`,
-   `OUT_DIR`, `SCRIPTS_DIR`, `REPO`, `STEP_ROUTING: all` only when
+   `OUT_DIR`, `SCRIPTS_DIR`, `REPO`, `AFFECTED` (the existing diagrams the change touches, one
+   `<stem> — <why>` per line, or `none`: the dossier's `Diagrams affected:` stems plus the diagrams anchored in
+   files the contract commit touches, exactly `affected_diagrams_stage3` of `validate_pipeline.py`, the Phase 9 gate's
+   rule; read it from `python3 ${PLUGIN_ROOT}/scripts/validate_pipeline.py --root <repo> --dossier <ID> --affected-stage3 --base <base>`
+   or derive it by hand from `arch_find`), `STEP_ROUTING: all` only when
    `ASD_DRIVER_VR_PROMOTE_PREVIEW` is `shadow` or `on` (omit the field otherwise: the author then
    writes `to` and `call_kind` only for `Diagrams new:` flows; with it, on every added or changed
    L1 step, so the shadow run below builds real drafts), and `DIAGRAMS_NEW` (the stems of the
@@ -209,7 +213,18 @@ compared against this one.
    rejects a `new_stem` flow whose steps lack them. A `c1-*` or `c4-*` stem
    has its own draft: validate it too,
    `python3 scripts/vr_graph.py validate <OUT_DIR>/arch/<stem>.json --root <repo>`.
-   Then prove the promotion works before the owner looks, per stem:
+   **Every part is mandatory.** The author also wrote `<OUT_DIR>/parts.json` and, for each `AFFECTED`
+   diagram, either a draft `arch/<stem>.json` of the updated diagram (`meta.updates_existing: true`; the
+   owner reviews it as before and after with the same verdicts) or an `unchanged` statement
+   (`Diagram <stem> unchanged: <why>`). Decision, sequence, affected and new are each content or a
+   stated `none — <reason>` (`No decisions in this change: <why>`, `No sequence: <why>`,
+   `No architecture diagram affected: <why>`, `No new diagram: <why>`; a repository with no
+   `docs/architecture/*.json` says so). Check it:
+   `python3 scripts/vr_graph.py parts <OUT_DIR> --decision <yes|no> --new <stems|none> --affected <stems|none>`
+   (exit 1 on a missing part). Stamp each affected draft's base the same way as a new one:
+   `vr_promote.py --dossier-id <ID> --stem <stem> --repo <repo> --preview` (it records
+   `meta.base_docs_hash`, the hash of the committed file the draft started from). **No owner question
+   (step 5) until every part exists.** Then prove the promotion works before the owner looks, per stem:
    `python3 scripts/vr_promote.py --dossier-id <ID> --stem <stem> --repo <repo> --preview`
    (for a `seq-*` stem it writes the draft `.discovery/visual-review/<ID>/arch/<stem>.json`
    from the `l1.json` flow; for `c1-*` and `c4-*` it validates the author's
@@ -217,14 +232,18 @@ compared against this one.
    a tab of the fourth part, "Architecture impact", with the same verdicts as
    L0, L1 and L2. A non-zero exit is a defect in the draft or in `l1.json`:
    re-spawn the author with the output in `ERRORS`, same two-attempt limit.
-   When `ASD_DRIVER_VR_PROMOTE_PREVIEW` is `shadow` or `on`: run
+   Whatever the driver says, run
+   `python3 "${PLUGIN_ROOT}/scripts/vr_promote.py" --write-previews --dossier-id <ID> --repo <repo>`
+   once, after the last repair of `l1.json`: it writes `.discovery/visual-review/<ID>/seq-preview/<stem>.json`
+   (the L1 flows that add or change a step and have no `Diagrams new:` stem, at most 6), the sequence part
+   of the review; with no such flow the author's `sequence_none` stands. When `ASD_DRIVER_VR_PROMOTE_PREVIEW`
+   is `shadow` or `on`: also run
    `python3 "${PLUGIN_ROOT}/scripts/vr_promote.py" --shadow-all --dossier-id <ID> --repo <repo>`
    once, after the last repair of `l1.json`; read nothing from its output, it only records evidence.
    A step with no `to` / `call_kind` is no failure (its routing is inferred from the step order), but
    the author writes them under `STEP_ROUTING: all` so the arrows are the author's, not inferred.
-   In `on` the same run also writes `.discovery/visual-review/<ID>/seq-preview/<stem>.json`
-   (the L1 flows with no `Diagrams new:` stem, at most 6): the dashboard draws each as a
-   "Sequence (auto draft)" tab next to Decisions. A preview is never promoted into
+   The dashboard lists every part (a "none — reason" card for each part without content) and draws each
+   sequence preview as a "Sequence (auto draft)" tab, on demand. A preview is never promoted into
    docs/architecture, takes no verdicts and is no part of the approval.
    The owner's verdicts are recorded in `review.json` against the hash of the
    file they saw; any later edit of `l1.json` or of a draft (a contract

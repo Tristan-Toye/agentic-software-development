@@ -300,7 +300,7 @@ FIELDS: dict[str, dict[str, set[str]]] = {
             "DOSSIER_ID", "PROBLEM", "APPROACH", "CONTRACT", "WORK_DIR", "OUT_DIR",
             "SCRIPTS_DIR", "REPO", "DIAGRAMS_NEW",
         },
-        "optional": {"ERRORS", "STEP_ROUTING", "DECISION"},
+        "optional": {"ERRORS", "STEP_ROUTING", "DECISION", "AFFECTED"},
     },
 }
 
@@ -1382,7 +1382,8 @@ def diagram_author_findings(lines: list[str], kind: str | None,
     if kind != "diagram-author":
         return [], []
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from validate_pipeline import DIAGRAMS_NEW_RE, branch_markers, parse_diagrams_new
+    from validate_pipeline import (DIAGRAMS_AFFECTED_RE, DIAGRAMS_NEW_RE, branch_markers, parse_diagrams_affected,
+                                   parse_diagrams_new)
     defects: list[str] = []
     warnings: list[str] = []
     body = field_body(lines, "DIAGRAMS_NEW")
@@ -1447,6 +1448,19 @@ def diagram_author_findings(lines: list[str], kind: str | None,
         elif not words and decision == "yes":
             defects.append("DECISION: yes but the branch rule finds no branch word in the dossier's acceptance criteria: "
                            "write `DECISION: no` (the author would draw a decision flow nothing asks for).")
+        # AFFECTED: the existing diagrams the change touches (the dossier's `Diagrams affected:` stems plus the diagrams anchored in
+        # files the contract commit touches, from validate_pipeline.affected_diagrams_stage3): one `<stem> \u2014 <why>` per line, or `none`.
+        # The author drafts the update of each (stage 3 shows every diagram part). A bare `none` on the dossier line is old but valid.
+        aff_match = DIAGRAMS_AFFECTED_RE.search(dossier_text)
+        aff_expected = parse_diagrams_affected(aff_match.group(1)) if aff_match else []
+        aff_body = field_body(lines, "AFFECTED")
+        aff_text = ",".join(x.strip() for x in aff_body.splitlines() if x.strip())
+        aff_stems = [x for x in parse_diagrams_affected(aff_text)] if aff_text.strip().strip("`").lower() != "none" else []
+        if aff_expected and not set(aff_expected) <= set(aff_stems):
+            defects.append(
+                "AFFECTED names %s but the dossier's `Diagrams affected:` line lists %s: the author drafts (or states `unchanged`) "
+                "every diagram on that line; add the missing stems (`<stem> \u2014 <why>`)."
+                % (", ".join(aff_stems) or ("none" if aff_body.strip() else "(absent)"), ", ".join(aff_expected)))
         if stems != expected:
             defects.append(
                 "DIAGRAMS_NEW names %s, the dossier's `Diagrams new:` line lists %s. The author writes "
@@ -2733,6 +2747,21 @@ def _selftest_cases() -> int:
          da.replace("DIAGRAMS_NEW: |\n  seq-flush \u2014 the flush flow\n  c4-queue \u2014 queue types\n",
                     "DIAGRAMS_NEW: none\n"), "diagram-author", False,
          repo_files={**da_files, ".discovery/dossiers/W-014-x.md": "---\nid: W-014\n---\n## Approach\nflush\n"})
+    # stage 3: AFFECTED carries every affected existing diagram; a bare `none` on the dossier line (an older dossier) stays valid
+    da_aff = {".discovery/dossiers/W-014-x.md": da_dossier + "Diagrams affected: c4-ports, seq-boot\n",
+              ".discovery/visual-review/W-014/work/summary.json": "{}"}
+    case("diagram author: affected diagrams, AFFECTED absent", da, "diagram-author", True, "AFFECTED", repo_files=da_aff)
+    case("diagram author: AFFECTED misses a stem", da + "AFFECTED: |\n  c4-ports \u2014 the port set\n", "diagram-author", True,
+         "seq-boot", repo_files=da_aff)
+    case("diagram author: AFFECTED lists every stem (and more)",
+         da + "AFFECTED: |\n  c4-ports \u2014 the port set\n  seq-boot \u2014 boot\n  c1-ctx \u2014 anchored in a stub\n", "diagram-author", False,
+         repo_files=da_aff)
+    case("diagram author: bare `Diagrams affected: none` needs no AFFECTED",
+         da, "diagram-author", False,
+         repo_files={**da_files, ".discovery/dossiers/W-014-x.md": da_dossier + "Diagrams affected: none\n"})
+    case("diagram author: `none \u2014 why` on the dossier line needs no AFFECTED",
+         da, "diagram-author", False,
+         repo_files={**da_files, ".discovery/dossiers/W-014-x.md": da_dossier + "Diagrams affected: none \u2014 no diagram shows this, helper only\n"})
     case("diagram author: OUT_DIR outside the repo",
          da.replace("OUT_DIR: {REAL}/.discovery/visual-review/W-014", "OUT_DIR: {REAL}/../elsewhere"),
          "diagram-author", True, "not under REPO", repo_files=da_files)

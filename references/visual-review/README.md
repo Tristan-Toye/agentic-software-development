@@ -25,6 +25,29 @@ VR-04 verdicts: the canvas inspector sets OK, Question, Change or Remove from sc
 
 **The sequence tab.** A sequence diagram (a `seq-*` stem, so a draft under `arch/` that `vr_promote.py --preview` wrote, or a committed `docs/architecture/seq-*.json`) is drawn as a real sequence diagram, not as a column of boxes. Participants are columns with a dashed lifeline. Each message is an arrow from the sender's lifeline to the receiver's (`seq.to`, or `to` on an L1 step), in order, with its label above the arrow. The line style follows the call kind: a call is solid with a filled head, a reply is dashed with an open head, an async message is solid with a half head, and a message to the same participant is a small loop beside its lifeline. Added, changed and removed messages are coloured like the other views (green, amber, red; unchanged ones grey) and the colours follow the light or dark theme. The messages are the elements: the same OK, Question, Change and Remove verdicts and follow-up anchors (`arch:<stem>` plus the message id) apply, and nothing new is stored. The preview draft needs no extra route: `/api/visual-review` already lists every `arch/<stem>.json` as a tab, and only plain `.json` files of that folder (not links, not other names) are served. The geometry is computed on the server (`seqLayout` in `shared/questions/vrlayout.ts`, tested in `shared/test/vrseq.test.ts`); the page only draws it.
 
+## Every part is mandatory (stage 3)
+
+The Phase 3 review always has seven parts: L0, L1, L2, the decision flow, the sequence, architecture impact affected and
+architecture impact new. Each is real content or an explicit statement. The author writes `parts.json` beside the graphs
+(`schema_version "1.0.0"`; `plan.affected` and `plan.new`; `decision_none`, `sequence_none`, `affected_none`, `new_none`,
+`unchanged: [{stem, reason}]`, `new_note`); a reason is 8 to 300 characters and never `none` or `<why>`. A part with content and a
+statement saying there is none is a conflict. `vr_graph.py parts`, `check_payload.py --kind diagram-author`, the phase checkpoint and
+`validate_pipeline.py` fail a review that wrote `parts.json` and lacks a part; a review from before this rule (no `parts.json`) is not
+flagged, and a dossier line with a bare `Diagrams affected: none` is still accepted (the author supplies the reason).
+
+**Affected diagrams.** The existing `docs/architecture/*.json` diagrams the change touches are the dossier's
+`Diagrams affected:` stems plus the diagrams whose source anchors point into files the contract commit touches (the Phase 9 gate's
+rule, `validate_pipeline.affected_diagrams_stage3`). The author drafts the updated version as `arch/<stem>.json` with
+`meta.updates_existing: true` (`vr_promote.py --preview` stamps `meta.base_docs_hash`, the sha256 of the committed file); the owner reviews
+it as before and after with the same verdicts. A diagram judged unchanged is `Diagram <stem> unchanged: <why>`. Phase 9 applies an
+approved draft with `vr_promote.py --stem <stem>` and refuses with `DIVERGED` when the committed file changed since the stamp; the
+gate prints a REVIEW line already answered at stage 3 as `SETTLED at stage 3`.
+
+**All diagrams (preview).** `vr_preview_all.py REPO ID [--base REV]` regenerates the full set of a dossier already past stage 3
+into `preview-all/` without model and without touching `review.json` or any approved file. The dashboard lists every part (a card with
+its reason for each `none`) and shows the preview as a separate view with a comment box per part (`preview-all/comments.json`). A preview
+is never an approval; Phase 9 ignores it.
+
 ## Stable id rule
 
 An id is derived from the kind plus the qualified name, never from a counter or an array position, so the same element has the same id before and after a change and VR-02 can join on it.
@@ -54,6 +77,9 @@ Rendering (the dashboard, `shared/questions`): `decision.json` in the dossier di
 ```
 scripts/vr_graph.py validate GRAPH.json [--root REPO] [--no-budget]   # issues as JSON, exit 1 on any
 scripts/vr_graph.py budget GRAPH.json
+scripts/vr_graph.py parts DIR [--decision yes|no] [--new stems|none] [--affected stems|none]   # stage 3: every part is content or a stated reason, exit 1 on any
+scripts/vr_promote.py --write-previews --dossier-id ID --repo REPO   # the seq-preview/ of the sequence part, whatever the driver says
+scripts/vr_preview_all.py REPO ID [--base REV]   # the whole set again, preview only, under .discovery/visual-review/ID/preview-all/
 scripts/vr_extract.py python|csharp REPO [--layers 1,2,3] [--calls f1,f2] [--cfg-test] -o out.json   # layers: 1 projects, 2 modules/namespaces + types, 3 functions
 scripts/vr_extract.py rust REPO [--layers 1,2] [--crates a,b] [--calls fn1,fn2] [--timeout 120] [--cfg-test] -o out.json
 scripts/vr_diff.py merge --before B.json --after A.json [-o merged.json]   # issues as JSON on stderr, exit 1

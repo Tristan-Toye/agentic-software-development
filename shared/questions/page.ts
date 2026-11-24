@@ -156,7 +156,7 @@ details.mstubs{margin-top:10px}details.mstubs>summary{font-size:.78rem;letter-sp
 .vrsvg .vroff{display:none}.vrsvg g.vrn,.vrsvg g.vre,.vrsvg g.vrg{cursor:pointer;outline:none}.vrsvg g.sel>rect:not([stroke=transparent]),.vrsvg g.sel>.vrshp{stroke-width:4}.vrsvg g:focus-visible>rect,.vrsvg g:focus-visible>.vrshp{stroke-width:4}.vrshk{margin-left:8px}.vrshk b{font-weight:400}.vrsvg g.vre.sel .vrline{stroke-width:4}
 .vrinsp{border:1px solid var(--bd);border-radius:10px;padding:10px 12px;overflow:auto;max-height:560px;background:var(--card)}.vrinsp h3{margin:0 0 6px;font-size:.95rem}.vrinsp p{margin:5px 0}.vrev{word-break:break-all;font-size:12px}
 .vrnote{margin-top:6px}.vrmm{margin-top:8px;display:flex;gap:8px;align-items:flex-start}.vrta{flex:1;font:12px/1.4 ui-monospace,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
-.vrpv{margin:8px 0;padding:8px 10px;border:1px dashed var(--acc);background:var(--accbg);color:var(--fg);border-radius:8px;font-size:.88rem}.vrban{margin:8px 0;padding:8px 10px;border:1px solid var(--warn);background:var(--warnbg);color:var(--fg);border-radius:8px;font-size:.88rem}
+.vrparts{margin:8px 0;padding:6px 10px;border:1px solid var(--bd);border-radius:6px}.vrpart{padding:6px 0;border-top:1px solid var(--bd)}.vrpart.none{opacity:.85}.vrpcm{display:block;width:100%;margin:4px 0}.vrpv{margin:8px 0;padding:8px 10px;border:1px dashed var(--acc);background:var(--accbg);color:var(--fg);border-radius:8px;font-size:.88rem}.vrban{margin:8px 0;padding:8px 10px;border:1px solid var(--warn);background:var(--warnbg);color:var(--fg);border-radius:8px;font-size:.88rem}
 .vrrev{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;margin-top:8px}.vrsum{font-weight:650}.vrprev{margin-top:8px}.vrprev textarea{width:100%;min-height:120px;font:12px/1.4 ui-monospace,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
 .vrvd{margin-top:10px;padding-top:8px;border-top:1px solid var(--bd)}.vrvd .vrgrp{flex-wrap:wrap;margin:6px 0}.vrvd textarea{width:100%;min-height:60px;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:6px}
 .vrvd .btn[aria-pressed=true]{border-color:var(--acc);background:var(--accbg);font-weight:650}.vrcode{font-size:11px;font-weight:700}
@@ -279,7 +279,7 @@ function prChip(pr) {
 
 // ---- visual review (VR-03): the change graph of a dossier. The server lays it out (ELK); this only draws boxes and points.
 // Hand-written SVG, every text is set as text content, no markup parsing on this path, no outside request.
-const VR = {}, VRS = {};
+const VR = {}, VRS = {}, VRPV = {}; /* VRPV: per dossier, whether the "All diagrams (preview)" view is shown instead of the review */
 const VR_NS = 'ht' + 'tp://www.w3.org/2000/svg', VR_MARK = { added: '+', changed: '~', removed: '−', context: '=' };
 const VR_PASS = { diff: () => true, before: (s) => s !== 'added', after: (s) => s !== 'removed' };
 const VR_MODES = [['before', 'Before'], ['after', 'After'], ['diff', 'Diff']];
@@ -305,9 +305,9 @@ ${fbSettle.toString()}
 ${packetModel.toString()}
 ${packetBody.toString()}
 function vrKey(repo, id) { return repo + '/' + id; }
-async function vrLoad(repo, id) {
-  const key = vrKey(repo, id); let d = null;
-  try { const r = await fetch('/api/visual-review?dossier=' + enc(id) + '&repo=' + enc(repo)); d = r.ok ? await r.json() : null; } catch (e) { d = null; }
+async function vrLoad(repo, id, set) {
+  const key = vrKey(repo, id) + (set ? '~all' : ''); let d = null;
+  try { const r = await fetch('/api/visual-review?dossier=' + enc(id) + '&repo=' + enc(repo) + (set ? '&set=' + enc(set) : '')); d = r.ok ? await r.json() : null; } catch (e) { d = null; }
   const had = VR[key] && VR[key].data ? VR[key].data.rev : null;
   if (d && d.review) d.shownHashes = Object.assign({}, d.review.hashes || {}); /* the hashes of the graphs this load displays: a verdict says which one the owner saw */
   VR[key] = { data: d };
@@ -375,9 +375,9 @@ function vrRepoPanel(repo) {
 }
 /* The panel above the dossier's questions: a host the morph leaves alone (data-raw, constant data-html); vrMount fills it. */
 function vrPanel(r) {
-  const v = VR[vrKey(r.repo, r.id)]; const d = v && v.data;
-  if (!d || !['L0', 'L1', 'L2'].some(k => d.views[k])) return null;
-  return h('section', { class: 'panel vr', 'data-k': 'vr', 'data-raw': '1', 'data-html': '', 'data-vrkey': vrKey(r.repo, r.id) + '@' + d.rev }, []);
+  const k0 = vrKey(r.repo, r.id) + (VRPV[vrKey(r.repo, r.id)] ? '~all' : ''); const v = VR[k0]; const d = v && v.data;
+  if (!d || (!['L0', 'L1', 'L2'].some(k => d.views[k]) && !d.previewAll)) return null;
+  return h('section', { class: 'panel vr', 'data-k': 'vr', 'data-raw': '1', 'data-html': '', 'data-vrkey': k0 + '@' + d.rev }, []);
 }
 const VR_FS = { off: null, toggle: null, fit: null };
 document.addEventListener('keydown', (e) => {
@@ -450,6 +450,26 @@ function vrBuild(host, key, data) {
   const seqTabs = have.filter(isSeqTab);
   if (seqTabs.length) { sqB = vrDom('button', 'btn sm', 'Sequence diagrams', tabs); sqB.type = 'button'; sqB.title = 'Show the sequence diagrams of this change (drawn on demand; the numbered Flow is the default view)'; sqB.onclick = () => { setIntent(false); if (isSeqTab(st.view)) { st.seqOn = false; st.view = data.views.L1 ? 'L1' : have.find(k => !isSeqTab(k)) || st.view; } else { st.seqOn = true; st.view = seqTabs[0]; } wkOff(); draw(); }; }
   syncSeq();
+  /* Every part of the review is listed here, its content (an Open button for the canvas tab) or its stated "none - reason" card; nothing sits behind a driver. The preview view adds a comment box per part (kept beside the preview, never in review.json). */
+  if (data.parts && !data.mapPath) {
+    const nCont = data.parts.filter(x => x.kind === 'content').length;
+    const pbox = vrDom('details', 'vrparts', null, host); pbox.open = st.partsOpen !== false; pbox.addEventListener('toggle', () => { st.partsOpen = pbox.open; });
+    vrDom('summary', '', 'Diagram parts: ' + nCont + ' drawn, ' + (data.parts.length - nCont) + ' stated as none' + (data.previewAll ? ' (preview, not an approval)' : ''), pbox);
+    data.parts.forEach(x => {
+      const c = vrDom('div', 'vrpart ' + x.kind, null, pbox); vrDom('strong', '', x.label, c); vrDom('span', 'small mut', x.kind === 'content' ? ' drawn' : ' none', c);
+      if (x.reason) vrDom('p', 'small', x.reason, c);
+      if (x.views && x.views.length) { const o = vrDom('button', 'btn sm', 'Open', c); o.type = 'button'; o.onclick = () => { const v0 = x.views.find(v => data.views[v]); if (!v0) return; if (v0.indexOf('seqpreview:') === 0 && !st.seqOn && sqB) { sqB.click(); } const t = tb[v0]; if (t) t.click(); }; }
+      if (data.previewAll) {
+        const ta = vrDom('textarea', 'vrpcm', null, c); ta.rows = 2; ta.placeholder = 'Is this part useful? Your comment'; ta.value = ((data.comments || {})[x.key] || {}).comment || ''; ta.setAttribute('aria-label', 'Comment on ' + x.label);
+        const sv = vrDom('button', 'btn sm', 'Save comment', c); sv.type = 'button'; const mg = vrDom('span', 'small mut', '', c);
+        sv.onclick = async () => { sv.disabled = true; mg.textContent = 'Saving...'; try { const r = await fetch('/api/visual-review/preview-comment', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dossier: data.dossier, repo: key.slice(0, key.indexOf('/')), part: x.key, comment: ta.value }) }); const j = await r.json(); mg.textContent = r.ok ? 'Saved' : (j.error || ('HTTP ' + r.status)); if (r.ok) data.comments = j.comments; } catch (e) { mg.textContent = 'Not saved'; } sv.disabled = false; };
+      }
+    });
+    if (data.hasPreviewAll || data.previewAll) {
+      const pv = vrDom('button', 'btn sm', data.previewAll ? 'Back to the review' : 'All diagrams (preview)', pbox); pv.type = 'button'; pv.title = data.previewAll ? 'Leave the preview' : 'Every diagram part generated after the fact, with a comment box each; never an approval';
+      pv.onclick = async () => { const k0 = key.split('~')[0]; const sl = k0.indexOf('/'); VRPV[k0] = !data.previewAll; if (VRPV[k0]) await vrLoad(k0.slice(0, sl), k0.slice(sl + 1), 'preview-all'); render(); };
+    }
+  }
   VR_MODES.forEach(m => { const b = vrDom('button', 'btn sm', m[1], modes); b.type = 'button'; mb[m[0]] = b; b.onclick = () => { st.mode = m[0]; applyMode(); }; });
   const fitB = vrDom('button', 'btn sm', 'Fit all', bar); fitB.title = 'Show the whole diagram (labels may get small)'; fitB.type = 'button';
   /* A sequence diagram over the budget is folded into refs: Expand all opens every one, Fold all closes them again (nothing is ever cropped). */

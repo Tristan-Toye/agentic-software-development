@@ -3,6 +3,7 @@
 
     vr_promote.py --dossier-id ID --stem STEM --repo PATH [--preview | --check-approval]
     vr_promote.py --shadow-all --dossier-id ID --repo PATH
+    vr_promote.py --write-previews --dossier-id ID --repo PATH
     vr_promote.py --selftest
 
 The owner reviews each new diagram as an "Architecture impact" tab of the visual review: the draft
@@ -50,6 +51,16 @@ drafts of the flows with no `new_stem` (at most 6) also replace `.discovery/visu
 them as "Sequence (auto draft)" tabs next to Decisions. They are previews: never promoted into docs/architecture, no verdicts, no part
 of the approval, and a flow with a `new_stem` already has its Architecture impact tab. l1.json and review.json are only read. Exit 0
 when every flow built, 1 when any flow failed to build (the evidence says which), 2 when l1.json is missing or unusable.
+
+`--write-previews` (stage 3, no driver) writes the same `seq-preview/<stem>.json` drafts as `--shadow-all` in `on`, whatever the driver says: the
+sequence part of the review always exists. Only L1 flows with an added or changed step and no `new_stem` qualify (at most 6); with none, nothing is
+written and the author states `sequence_none` in parts.json. Exit 0 when every flow built, 1 when one failed, 2 when l1.json is unusable.
+
+A draft of an EXISTING architecture diagram (the "affected" part of stage 3: `meta.updates_existing: true`, the file copied from
+docs/architecture with the change drawn, elements `added` / `changed` / `removed`) goes through the same arch/<stem>.json path. `--preview` stamps
+`meta.base_docs_hash` (sha256 of the committed file it was copied from) before the owner sees it; the promotion then needs the owner's `ok` on the draft's
+current hash like any arch draft, refuses with `DIVERGED` (exit 1) when docs/architecture/<stem>.json changed since, re-anchors every source anchor, drops
+the `removed` elements and writes the result over the committed file (statuses back to `context`), then runs `vr_mermaid.py sync`.
 
 Exit: 0 done, 1 a stale anchor, an unresolved `change` verdict or a validation failure, 2 usage / input error,
 3 (`--shadow-all` only) the driver is off.
@@ -459,6 +470,12 @@ def drop_removed(graph: dict, removed: set) -> dict:
     return g
 
 
+def file_hash(path: str) -> str:
+    """sha256 of a file's bytes: the base a draft of an existing diagram was copied from."""
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
 def _arch_draft(vr: str, stem: str) -> str:
     return os.path.join(vr, ARCH_DIR, stem + ".json")
 
@@ -471,6 +488,25 @@ def _run_draft(dossier_id: str, stem: str, repo: str, vr: str, l1: dict | None, 
         print("ERROR arch/%s.json has view %r, expected one of %s" % (stem, draft.get("view"), ", ".join(ARCH_VIEWS)))
         return 2
     label, fname = "arch:" + stem, "arch/%s.json" % stem
+    upd = vr_graph.draft_updates_existing(draft)
+    docs_file = os.path.join(repo, "docs", "architecture", stem + ".json")
+    if upd:
+        # A draft of an existing diagram (stage-3 "affected" part): its base is the committed file it was copied from.
+        if not os.path.isfile(docs_file):
+            print("ERROR arch/%s.json says updates_existing but docs/architecture/%s.json does not exist" % (stem, stem))
+            return 2
+        cur = file_hash(docs_file)
+        have = draft["meta"].get("base_docs_hash")
+        if have is None and preview:
+            draft["meta"]["base_docs_hash"] = cur   # stamped before the owner sees the draft
+            with open(_arch_draft(vr, stem), "w") as fh:
+                json.dump(draft, fh, indent=2, ensure_ascii=False)
+                fh.write("\n")
+            print("stamped base_docs_hash on " + fname)
+        elif have is not None and have != cur and not preview:
+            print("DIVERGED docs/architecture/%s.json changed after the draft %s was approved (base_docs_hash %s, now %s): "
+                  "the code moved on, so the owner approves the updated draft again" % (stem, fname, str(have)[:12], cur[:12]))
+            return 1
     ids = [n["id"] for n in draft.get("nodes", [])]
     removed, problems = approve(draft, review, ids, label, fname)
     if check_only:
@@ -485,11 +521,20 @@ def _run_draft(dossier_id: str, stem: str, repo: str, vr: str, l1: dict | None, 
             print(pr)
         if problems:
             return 1
+    if upd:
+        # The approved update replaces the committed diagram: elements the draft marks removed are gone, the rest is plain context again.
+        removed = set(removed) | {n["id"] for n in draft.get("nodes", []) if n.get("status") == "removed"}
     graph = drop_removed(draft, removed)
     if not graph["nodes"]:
         print("ERROR no element left in %s after the owner's removals" % fname)
         return 2
     graph["meta"] = dict(graph.get("meta") or {})
+    if upd:
+        graph["meta"].pop("updates_existing", None)
+        graph["meta"].pop("base_docs_hash", None)
+        for part in list(graph["nodes"]) + list(graph.get("edges") or []) + list(graph.get("groups") or []):
+            if isinstance(part, dict) and "status" in part:
+                part["status"] = "context"
     graph["meta"].setdefault("mermaid", dict(MERMAID_DEFAULT[graph["view"]]))
     graph["meta"].setdefault("promoted_from", "visual-review arch draft %s" % stem)
     if not preview:
@@ -591,6 +636,65 @@ def write_previews(vr: str, drafts: dict) -> list:
     return written
 
 
+def build_seq_drafts(l1: dict, removed: set, skip_new_stem: bool) -> tuple:
+    """(records, drafts, skipped): a seq draft (routing inferred where a step has no to / call_kind) for every L1 flow with an added or
+    changed step. `skip_new_stem`: a flow with a `Diagrams new:` stem has its own Architecture impact tab, so no second picture of it."""
+    nodes = {n.get("id"): n for n in l1.get("nodes", []) if isinstance(n, dict)}
+    records, drafts = [], {}
+    skipped = 0
+    for flow in l1.get("flows", []):
+        if not isinstance(flow, dict):
+            continue
+        if not any((nodes.get(i) or {}).get("status") in ("added", "changed") for i in flow.get("after", [])):
+            skipped += 1
+            continue
+        if skip_new_stem and flow.get("new_stem"):
+            skipped += 1
+            continue
+        rec, graph = shadow_flow(l1, flow, removed)
+        records.append(rec)
+        if graph is not None and rec["built_ok"]:
+            drafts[rec["stem"]] = graph
+    return records, drafts, skipped
+
+
+def write_seq_previews(dossier_id: str, repo: str) -> int:
+    """Stage 3, whatever the driver says: write `.discovery/visual-review/<ID>/seq-preview/<stem>.json` (at most PREVIEW_MAX) for the
+    L1 flows that add or change a step and have no `Diagrams new:` stem. The sequence part of the review always exists: with no
+    qualifying flow nothing is written and the author states `sequence_none` in parts.json. Reads l1.json / review.json only; exit 0
+    when every flow built, 1 when a flow failed to build, 2 when l1.json is missing or unusable."""
+    vr = os.path.join(repo, ".discovery", "visual-review", dossier_id)
+    l1p = os.path.join(vr, "l1.json")
+    try:
+        l1 = _load(l1p)
+        if not isinstance(l1.get("flows", []), list) or not isinstance(l1.get("nodes", []), list):
+            raise PromoteError("l1.json has no flows / nodes lists")
+    except (OSError, ValueError, PromoteError, AttributeError) as exc:
+        print("ERROR cannot use %s: %s" % (l1p, exc))
+        return 2
+    rpath = os.path.join(vr, "review.json")
+    try:
+        review = _load(rpath) if os.path.isfile(rpath) else None
+    except (OSError, ValueError, PromoteError):
+        review = None
+    try:
+        removed, _ = approve(l1, review, [])
+    except (KeyError, TypeError, AttributeError):
+        removed = set()
+    records, drafts, skipped = build_seq_drafts(l1, removed, skip_new_stem=True)
+    try:
+        written = write_previews(vr, drafts)
+    except OSError as exc:
+        print("ERROR seq-preview not written: %s" % exc)
+        return 2
+    failed = [r for r in records if not r["built_ok"]]
+    for r in failed:
+        print("flow %s: %s" % (r["flow"], "; ".join(r["errors"])[:300]))
+    print("seq-preview: %d written (%s); %d flow(s) without an added or changed step or with their own stem; %d failed"
+          % (len(written), ", ".join(written) or "none", skipped, len(failed)))
+    return 1 if failed else 0
+
+
 def shadow_all(dossier_id: str, repo: str, mode: str | None = None) -> int:
     """Driver `vr_promote_preview`, shadow only: build a seq draft for every L1 flow with an added or changed step and
     record the outcome in the git common dir. Reads l1.json / review.json, writes nothing under the dossier."""
@@ -618,22 +722,7 @@ def shadow_all(dossier_id: str, repo: str, mode: str | None = None) -> int:
         removed, _ = approve(l1, review, [])
     except (KeyError, TypeError, AttributeError):
         removed = set()
-    nodes = {n.get("id"): n for n in l1.get("nodes", []) if isinstance(n, dict)}
-    records, drafts = [], {}
-    skipped = 0
-    for flow in l1.get("flows", []):
-        if not isinstance(flow, dict):
-            continue
-        if not any((nodes.get(i) or {}).get("status") in ("added", "changed") for i in flow.get("after", [])):
-            skipped += 1
-            continue
-        if mode == "on" and flow.get("new_stem"):
-            skipped += 1   # a flow with a `Diagrams new:` stem has its own Architecture impact tab: no second picture of it
-            continue
-        rec, graph = shadow_flow(l1, flow, removed)
-        records.append(rec)
-        if graph is not None and rec["built_ok"]:
-            drafts[rec["stem"]] = graph
+    records, drafts, skipped = build_seq_drafts(l1, removed, skip_new_stem=(mode == "on"))
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     base = os.path.join(driver_common.evidence_root(repo), "driver-shadow", dossier_id)
     ok = sum(1 for r in records if r["built_ok"])
@@ -1096,6 +1185,40 @@ def _selftest() -> int:
         arch_review(d3, stem, gr, [(n["id"], "ok") for n in gr["nodes"]])
         rc, out = call_stem(d3, stem)
         check(view + ":stale-anchor", rc == 1 and "STALE-ANCHOR" in out, out)
+    # an EXISTING diagram updated at stage 3 (meta.updates_existing): stamped, approved on its hash, promoted over the committed file, refused when that moved
+    d4, l4_ = scenario({})
+    sha4 = l4_["meta"]["base_sha"]
+    e4 = [{"tier": "source", "path": "src/a.rs", "line": 6, "note": "`gamma`"}]
+    committed = {"schema_version": "1.0.0", "view": "c1", "title": "The systems", "meta": {"repo": "r", "commit": sha4, "generated_by": "hand"},
+                 "nodes": [{"id": "element:app", "label": "App", "kind": "element", "status": "context", "evidence": e4}], "edges": [], "groups": []}
+    os.makedirs(os.path.join(d4, "docs", "architecture"), exist_ok=True)
+    cpath = os.path.join(d4, "docs", "architecture", "c1-sys.json")
+    json.dump(committed, open(cpath, "w"))
+    open(os.path.join(d4, "docs", "architecture", "c1-sys.md"), "w").write("# c1-sys\n")
+    upd = copy.deepcopy(committed)
+    upd["meta"].update(base_sha=sha4, generated_by="agent", updates_existing=True)
+    upd["nodes"] += [{"id": "element:ext", "label": "External API", "kind": "element", "status": "added", "evidence": e4},
+                     {"id": "element:old", "label": "Old queue", "kind": "element", "status": "removed", "evidence": e4}]
+    upd["edges"] = [{"id": "edge:depends:element:app:element:ext", "source": "element:app", "target": "element:ext", "kind": "depends", "arrow": "-->",
+                     "label": "calls", "status": "added", "evidence": e4}]
+    put_draft(d4, "c1-sys", upd)
+    rc, out = call_stem(d4, "c1-sys", preview=True)
+    stamped = json.load(open(os.path.join(d4, ".discovery", "visual-review", "W-9", "arch", "c1-sys.json")))
+    check("affected:preview-stamps-base-hash", rc == 0 and stamped["meta"].get("base_docs_hash") == file_hash(cpath), out)
+    check("affected:draft-is-an-update", vr_graph.draft_updates_existing(stamped) and not vr_graph.draft_updates_existing(committed))
+    check("affected:not-approved-blocks", call_stem(d4, "c1-sys")[0] == 1)
+    arch_review(d4, "c1-sys", stamped, [(n["id"], "ok") for n in stamped["nodes"]])
+    d5 = shutil.copytree(d4, d4 + "-moved")
+    rc, out = call_stem(d4, "c1-sys")
+    got = json.load(open(cpath))
+    check("affected:approved-draft-replaces-committed", rc == 0 and sorted(n["id"] for n in got["nodes"]) == ["element:app", "element:ext"]
+          and all(n["status"] == "context" for n in got["nodes"]) and "updates_existing" not in got["meta"] and "base_docs_hash" not in got["meta"], out + str(got))
+    open(os.path.join(d5, "docs", "architecture", "c1-sys.json"), "a").write(" ")
+    rc, out = call_stem(d5, "c1-sys")
+    check("affected:diverged-docs-refused", rc == 1 and "DIVERGED" in out, out)
+    shutil.rmtree(d5, ignore_errors=True)
+    os.remove(cpath)
+    check("affected:missing-committed-file", call_stem(d4, "c1-sys", preview=True)[0] == 2)
     # a stem that is not a plain name, and a stem with neither flow nor draft
     check("stem:traversal", call_stem(d, "../x")[0] == 2 and call_stem(d, "c1-none")[0] == 2)
     with contextlib.redirect_stdout(io.StringIO()):
@@ -1206,6 +1329,23 @@ def _selftest() -> int:
     rc_cli = subprocess.run([sys.executable, os.path.abspath(__file__), "--shadow-all", "--dossier-id", "W-9", "--repo", ds],
                             capture_output=True, text=True, env=dict(os.environ, ASD_DRIVER_VR_PROMOTE_PREVIEW="")).returncode
     check("shadow-all:cli-off-exit-3", rc_cli == 3)
+    # stage 3: the previews are written with the driver OFF (the sequence part of the review always exists)
+    shutil.rmtree(os.path.join(vrs, PREVIEW_DIR), ignore_errors=True)
+    p_off = subprocess.run([sys.executable, os.path.abspath(__file__), "--write-previews", "--dossier-id", "W-9", "--repo", ds],
+                           capture_output=True, text=True, env=dict(os.environ, ASD_DRIVER_VR_PROMOTE_PREVIEW="off"))
+    got_off = sorted(os.listdir(pdir)) if os.path.isdir(pdir) else []
+    check("write-previews:driver-off-writes", got_off == ["seq-auto-f-bad.json", "seq-auto-f-extra.json"], p_off.stdout + p_off.stderr + str(got_off))
+    check("write-previews:failed-flow-exit-1", p_off.returncode == 1 and "f-broken" in p_off.stdout, p_off.stdout)
+    check("write-previews:no-new_stem-flow-no-arch", not os.path.exists(os.path.join(vrs, "arch")) and "seq-new.json" not in got_off)
+    with contextlib.redirect_stdout(io.StringIO()):
+        check("write-previews:no-l1-exit-2", write_seq_previews("W-404", ds) == 2)
+    # no qualifying flow: nothing written (the author then states sequence_none)
+    l1_ctx = copy.deepcopy(l1s)
+    l1_ctx["flows"] = [f for f in l1_ctx["flows"] if f["id"] == "f-ctx"]
+    json.dump(l1_ctx, open(os.path.join(vrs, "l1.json"), "w"))
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc_ctx = write_seq_previews("W-9", ds)
+    check("write-previews:none-qualifies-writes-nothing", rc_ctx == 0 and not os.path.exists(pdir), str(os.listdir(vrs)))
     for f in fails:
         print("FAIL  " + f)
     print("vr_promote selftest " + ("ok" if not fails else "FAILED"))
@@ -1230,11 +1370,17 @@ def main(argv=None) -> int:
     ap.add_argument("--shadow-all", action="store_true",
                     help="driver vr_promote_preview: build a seq draft for every L1 flow with an added or changed step; "
                          "evidence goes to the git common dir, nothing is written under the dossier")
+    ap.add_argument("--write-previews", action="store_true",
+                    help="stage 3: write seq-preview/*.json for the L1 flows that add or change a step (no driver involved; needs --dossier-id --repo)")
     ap.add_argument("--check-approval", action="store_true",
                     help="only the approval rule (no writes, no re-anchoring): exit 1 and name the unapproved steps")
     a = ap.parse_args(argv)
     if a.selftest:
         return _selftest()
+    if a.write_previews:
+        if not a.dossier_id:
+            ap.error("--write-previews needs --dossier-id")
+        return write_seq_previews(a.dossier_id, os.path.abspath(a.repo))
     if a.shadow_all:
         if not a.dossier_id:
             ap.error("--shadow-all needs --dossier-id")

@@ -8,6 +8,7 @@ ends, duplicate ids, evidence that points at nothing, and the view budgets.
 
     vr_graph.py validate GRAPH.json [--root REPO] [--no-budget]
     vr_graph.py budget GRAPH.json
+    vr_graph.py parts DIR [--decision yes|no] [--new STEMS] [--affected STEMS]
     vr_graph.py --selftest
 
 `validate` prints {"ok": bool, "issues": [{"code","path","message"}]} and exits
@@ -24,6 +25,8 @@ line_range_outside_file, over_budget, label_too_long, unknown_frame_step.
 View `decision` adds: no_start, multiple_start, no_end, end_has_exit, dead_end, unreachable_node, decision_exits,
 unlabeled_branch, duplicate_branch_label, fork_without_decision, unbounded_loop, decision_label, decision_evidence, bad_shape,
 unknown_step (with --l1).
+`parts` (the stage-3 mandatory parts of a visual review directory) adds: parts_missing, parts_conflict, parts_reason, parts_plan,
+parts_unknown_stem, parts_unknown_key, parts_version, parts_unreadable.
 unknown_frame_step: a frame (view seq) whose first, last or a branch's first is not a node id.
 
 label_too_long: a node label over 80 characters, or one that would be clipped on
@@ -685,6 +688,166 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
     return issues
 
 
+# ------------------------------------------------- the stage-3 parts (every diagram part is there, or says why not)
+
+PARTS_FILE = "parts.json"
+PARTS_VERSION = "1.0.0"
+PARTS_REASON_MIN, PARTS_REASON_MAX = 8, 300
+# The statements `parts.json` can carry: part -> the key. A part with content (a file) needs no statement; a part with neither is a defect.
+PARTS_KEYS = {"schema_version", "plan", "decision_none", "sequence_none", "affected_none", "unchanged", "new_none", "new_note"}
+PARTS_PLACEHOLDER_RE = re.compile(r"^(none|n/?a|nothing|-+|<[^>]*>|tbd|todo|\.+)$", re.I)
+
+
+def _parts_reason(value, where: str, issues: list) -> None:
+    if not isinstance(value, str) or not value.strip():
+        issues.append(_issue("parts_reason", where, "%s must be a sentence saying why (8 to %d characters)" % (where, PARTS_REASON_MAX)))
+        return
+    t = value.strip()
+    if len(t) < PARTS_REASON_MIN or len(t) > PARTS_REASON_MAX or PARTS_PLACEHOLDER_RE.match(t):
+        issues.append(_issue("parts_reason", where, "%s %r is not a reason: 8 to %d characters, never a placeholder like `none` or `<why>`" % (where, t[:40], PARTS_REASON_MAX)))
+
+
+def arch_drafts(vr_dir: str) -> dict:
+    """{stem: graph or None} of the arch/<stem>.json files of a dossier's visual-review directory (None: unreadable)."""
+    out: dict = {}
+    folder = os.path.join(vr_dir, "arch")
+    if not os.path.isdir(folder):
+        return out
+    for f in sorted(os.listdir(folder)):
+        fp = os.path.join(folder, f)
+        if f.endswith(".json") and os.path.isfile(fp) and not os.path.islink(fp):
+            try:
+                g = load(fp)
+            except (OSError, ValueError):
+                g = None
+            out[f[:-5]] = g if isinstance(g, dict) else None
+    return out
+
+
+def draft_updates_existing(graph) -> bool:
+    """An arch draft that updates a diagram already in docs/architecture says so in `meta.updates_existing`; any other draft is a new diagram."""
+    return isinstance(graph, dict) and isinstance(graph.get("meta"), dict) and graph["meta"].get("updates_existing") is True
+
+
+def has_sequence(vr_dir: str, drafts: dict | None = None) -> bool:
+    """The sequence part has content: an auto-draft in seq-preview/ or an arch draft of view `seq`."""
+    folder = os.path.join(vr_dir, "seq-preview")
+    if os.path.isdir(folder) and any(f.endswith(".json") and os.path.isfile(os.path.join(folder, f)) for f in os.listdir(folder)):
+        return True
+    drafts = arch_drafts(vr_dir) if drafts is None else drafts
+    return any(isinstance(g, dict) and g.get("view") == "seq" for g in drafts.values())
+
+
+def load_parts(vr_dir: str):
+    """(parts dict or None, issues): parts.json of the directory; None and no issue when the file does not exist."""
+    path = os.path.join(vr_dir, PARTS_FILE)
+    if not os.path.isfile(path):
+        return None, []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return None, [_issue("parts_unreadable", PARTS_FILE, "parts.json is not readable: %s" % exc)]
+    if not isinstance(data, dict):
+        return None, [_issue("parts_unreadable", PARTS_FILE, "parts.json must be a JSON object")]
+    return data, []
+
+
+def parts_issues(vr_dir: str, decision: str | None = None, new=None, affected=None) -> list:
+    """What is missing or wrong in the stage-3 diagram parts of one dossier directory. [] = every part is there.
+
+    Every part is real content or a stated reason (`parts.json`, written by the diagram author):
+      decision   decision.json, or `decision_none` (never with `decision` == "yes": the branch rule demands the file);
+      sequence   a seq-preview/*.json auto-draft or an arch draft of view seq, or `sequence_none`;
+      affected   per affected diagram (`affected` plus `plan.affected`): an arch draft with `meta.updates_existing`, or an
+                 `unchanged` entry {stem, reason}; with none affected, `affected_none`;
+      new        per `Diagrams new:` stem (`new`, else `plan.new`): its arch draft; with none, `new_none`.
+    A part with content AND a statement saying there is none is a conflict. `new` / `affected` None: read from the plan."""
+    issues: list = []
+    parts, errs = load_parts(vr_dir)
+    issues += errs
+    if errs:
+        return issues
+    parts = parts or {}
+    for k in parts:
+        if k not in PARTS_KEYS:
+            issues.append(_issue("parts_unknown_key", PARTS_FILE, "unknown key %r in parts.json" % k))
+    if parts and parts.get("schema_version") != PARTS_VERSION:
+        issues.append(_issue("parts_version", PARTS_FILE, "schema_version must be %r" % PARTS_VERSION))
+    plan = parts.get("plan") if isinstance(parts.get("plan"), dict) else {}
+    plan_aff = [s for s in (plan.get("affected") or []) if isinstance(s, str)]
+    plan_new = [s for s in (plan.get("new") or []) if isinstance(s, str)]
+    new_stems = list(plan_new if new is None else new)
+    aff_stems = sorted(set(plan_aff if affected is None else affected) | set(plan_aff))
+    if new is not None and sorted(plan_new) != sorted(new):
+        issues.append(_issue("parts_plan", "plan.new", "plan.new %s differs from the dossier's `Diagrams new:` stems %s" % (plan_new, list(new))))
+    if affected is not None and not set(affected) <= set(plan_aff):
+        issues.append(_issue("parts_plan", "plan.affected", "plan.affected %s misses the affected diagrams %s" % (plan_aff, sorted(set(affected) - set(plan_aff)))))
+    drafts = arch_drafts(vr_dir)
+
+    def stated(key: str) -> bool:
+        if key not in parts:
+            return False
+        _parts_reason(parts[key], key, issues)
+        return True
+
+    # decision
+    has_dec = os.path.isfile(os.path.join(vr_dir, "decision.json"))
+    if has_dec:
+        if "decision_none" in parts:
+            issues.append(_issue("parts_conflict", "decision_none", "decision.json exists, so the decision flow is not `none`: drop decision_none"))
+    elif decision == "yes":
+        issues.append(_issue("parts_missing", "decision", "decision.json is missing: the branch rule says the change has branches, so the decision flow is drawn"))
+    elif not stated("decision_none"):
+        issues.append(_issue("parts_missing", "decision", "no decision.json and no `decision_none` reason: the part is mandatory (`No decisions in this change: <why>`)"))
+    # sequence
+    if has_sequence(vr_dir, drafts):
+        if "sequence_none" in parts:
+            issues.append(_issue("parts_conflict", "sequence_none", "a sequence draft exists, so the sequence part is not `none`: drop sequence_none"))
+    elif not stated("sequence_none"):
+        issues.append(_issue("parts_missing", "sequence", "no sequence draft and no `sequence_none` reason: the part is mandatory (`No sequence: <why>`)"))
+    # architecture impact: affected
+    unchanged: dict = {}
+    for i, u in enumerate(parts.get("unchanged") or []):
+        if not isinstance(u, dict) or not isinstance(u.get("stem"), str):
+            issues.append(_issue("parts_reason", "unchanged[%d]" % i, "an `unchanged` entry is {stem, reason}"))
+            continue
+        _parts_reason(u.get("reason"), "unchanged[%d].reason" % i, issues)
+        unchanged[u["stem"]] = u.get("reason")
+    for stem in sorted(unchanged):
+        if stem not in aff_stems:
+            issues.append(_issue("parts_unknown_stem", "unchanged", "`unchanged` names %s, which is not an affected diagram (%s)" % (stem, ", ".join(aff_stems) or "none")))
+    upd = {s for s, g in drafts.items() if draft_updates_existing(g)}
+    for stem in aff_stems:
+        has_draft = stem in upd
+        if has_draft and stem in unchanged:
+            issues.append(_issue("parts_conflict", "unchanged", "%s has a draft and an `unchanged` entry: keep one" % stem))
+        elif not has_draft and stem not in unchanged:
+            issues.append(_issue("parts_missing", "affected:" + stem, "affected diagram %s has neither an updated draft arch/%s.json (meta.updates_existing) nor an `unchanged` entry" % (stem, stem)))
+    for stem in sorted(upd - set(aff_stems)):
+        issues.append(_issue("parts_unknown_stem", "arch/%s.json" % stem, "arch/%s.json updates an existing diagram that is not in the affected list %s" % (stem, aff_stems)))
+    if aff_stems:
+        if "affected_none" in parts:
+            issues.append(_issue("parts_conflict", "affected_none", "diagrams %s are affected: drop affected_none" % ", ".join(aff_stems)))
+    elif not stated("affected_none"):
+        issues.append(_issue("parts_missing", "affected", "no affected diagram and no `affected_none` reason: the part is mandatory (`No architecture diagram affected: <why>`)"))
+    # architecture impact: new
+    for stem in new_stems:
+        g = drafts.get(stem, False)
+        if g is False:
+            issues.append(_issue("parts_missing", "new:" + stem, "the dossier lists new diagram %s but arch/%s.json is missing" % (stem, stem)))
+        elif draft_updates_existing(g):
+            issues.append(_issue("parts_conflict", "new:" + stem, "arch/%s.json is marked updates_existing but %s is a new stem" % (stem, stem)))
+    if new_stems:
+        if "new_none" in parts:
+            issues.append(_issue("parts_conflict", "new_none", "new diagrams %s are drafted: drop new_none" % ", ".join(new_stems)))
+    elif not stated("new_none"):
+        issues.append(_issue("parts_missing", "new", "no new diagram and no `new_none` reason: the part is mandatory (`No new diagram: <why>`)"))
+    if "new_note" in parts:
+        _parts_reason(parts["new_note"], "new_note", issues)
+    return issues
+
+
 # --------------------------------------------------------------------- CLI
 
 def _cmd_validate(args) -> int:
@@ -701,6 +864,19 @@ def _cmd_validate(args) -> int:
             print(json.dumps({"ok": False, "issues": [_issue("schema_error", "", "--l1: %s" % exc)]}, indent=2))
             return 2
     issues = validate(graph, root=args.root, check_budget=not args.no_budget, step_routing=args.step_routing == "all", l1_steps=l1_steps)
+    print(json.dumps({"ok": not issues, "issues": issues}, indent=2))
+    return 1 if issues else 0
+
+
+def _stems_arg(v):
+    """`--new a,b` / `--affected a,b`: a list; `none` or an empty value is the empty list; absent is None (read from the plan)."""
+    if v is None:
+        return None
+    return [x.strip() for x in v.split(",") if x.strip() and x.strip().lower() != "none"]
+
+
+def _cmd_parts(args) -> int:
+    issues = parts_issues(args.dir, decision=args.decision, new=_stems_arg(args.new), affected=_stems_arg(args.affected))
     print(json.dumps({"ok": not issues, "issues": issues}, indent=2))
     return 1 if issues else 0
 
@@ -1022,6 +1198,59 @@ def _selftest() -> int:
     check("cli:junk-exit-2", r.returncode == 2)
     r = run("budget", os.path.join(FIXTURES, "invalid", "over_budget.json"))
     check("cli:budget-over", r.returncode == 1 and json.loads(r.stdout)["used"] == 16)
+    # ---- the stage-3 parts: every part is content or a stated reason
+    import shutil as _sh
+    def _pd(files):
+        d = tempfile.mkdtemp()
+        for rel, val in files.items():
+            fp = os.path.join(d, rel)
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            with open(fp, "w") as fh:
+                json.dump(val, fh)
+        return d
+    _g = lambda view, upd=False: {"view": view, "nodes": [], "meta": {"updates_existing": True} if upd else {}}
+    _full = {"parts.json": {"schema_version": "1.0.0", "plan": {"affected": [], "new": []}, "decision_none": "no condition in the changed behaviour",
+             "sequence_none": "no flow adds or changes a step", "affected_none": "the change stays inside one module no diagram shows",
+             "new_none": "no new flow or system appears"}}
+    _d = _pd(_full)
+    check("parts:all-none-ok", parts_issues(_d) == [], json.dumps(parts_issues(_d)))
+    _sh.rmtree(_d)
+    for _key, _code in (("decision_none", "decision"), ("sequence_none", "sequence"), ("affected_none", "affected"), ("new_none", "new")):
+        _f = json.loads(json.dumps(_full))
+        del _f["parts.json"][_key]
+        _d = _pd(_f)
+        _i = parts_issues(_d)
+        check("parts:missing-" + _code, [x["path"] for x in _i if x["code"] == "parts_missing"] == [_code], json.dumps(_i))
+        _sh.rmtree(_d)
+    _d = _pd({})
+    check("parts:no-file-all-missing", sorted(x["path"] for x in parts_issues(_d)) == ["affected", "decision", "new", "sequence"])
+    check("parts:decision-yes-needs-file", any(x["path"] == "decision" for x in parts_issues(_d, decision="yes")))
+    _sh.rmtree(_d)
+    _f = json.loads(json.dumps(_full)); _f["parts.json"]["decision_none"] = "none"
+    _d = _pd(_f)
+    check("parts:placeholder-reason", [x["code"] for x in parts_issues(_d)] == ["parts_reason"])
+    _sh.rmtree(_d)
+    _f = json.loads(json.dumps(_full)); _f["decision.json"] = _g("decision")
+    _d = _pd(_f)
+    check("parts:decision-file-and-none-conflict", [x["code"] for x in parts_issues(_d)] == ["parts_conflict"])
+    _sh.rmtree(_d)
+    _f = {"decision.json": _g("decision"), "seq-preview/seq-auto-x.json": _g("seq"), "arch/c4-a.json": _g("c4", True), "arch/seq-n.json": _g("seq"),
+          "parts.json": {"schema_version": "1.0.0", "plan": {"affected": ["c4-a", "c1-b"], "new": ["seq-n"]},
+                         "unchanged": [{"stem": "c1-b", "reason": "only a function body moved inside one container"}]}}
+    _d = _pd(_f)
+    check("parts:content-and-unchanged-ok", parts_issues(_d, decision="yes", new=["seq-n"], affected=["c4-a", "c1-b"]) == [], json.dumps(parts_issues(_d, decision="yes", new=["seq-n"], affected=["c4-a", "c1-b"])))
+    check("parts:new-stem-mismatch", any(x["code"] == "parts_plan" for x in parts_issues(_d, new=["seq-other"])))
+    check("parts:affected-not-in-plan", any(x["code"] == "parts_plan" for x in parts_issues(_d, affected=["c4-zzz"])))
+    _f["parts.json"]["unchanged"] = []
+    with open(os.path.join(_d, "parts.json"), "w") as fh:
+        json.dump(_f["parts.json"], fh)
+    check("parts:affected-needs-draft-or-unchanged", [x["path"] for x in parts_issues(_d) if x["code"] == "parts_missing"] == ["affected:c1-b"])
+    _sh.rmtree(_d)
+    _d = _pd({"parts.json": {"schema_version": "1.0.0", "bogus": 1}})
+    check("parts:unknown-key", any(x["code"] == "parts_unknown_key" for x in parts_issues(_d)))
+    _sh.rmtree(_d)
+    r = run("parts", _d, "--decision", "no")
+    check("cli:parts-exit-1", r.returncode == 1 and json.loads(r.stdout)["ok"] is False)
     if fails:
         print("vr_graph selftest FAILED:\n  " + "\n  ".join(fails), file=sys.stderr)
         return 1
@@ -1041,6 +1270,12 @@ def main(argv=None) -> int:
     v.add_argument("--step-routing", choices=("all", "off"), default="off",
                    help="all: every added/changed step of every L1 flow needs to + call_kind (driver vr_promote_preview in shadow)")
     v.set_defaults(fn=_cmd_validate)
+    pt = sub.add_parser("parts", help="stage-3 check: every diagram part (decision, sequence, affected, new) is content or a stated reason; exit 1 on any")
+    pt.add_argument("dir", help=".discovery/visual-review/<ID>/")
+    pt.add_argument("--decision", choices=("yes", "no"), help="the branch rule's answer: yes demands decision.json")
+    pt.add_argument("--new", help="the dossier's `Diagrams new:` stems, comma separated (`none` = no stem); default: parts.json plan.new")
+    pt.add_argument("--affected", help="the affected existing diagrams, comma separated (`none` = no stem); default: parts.json plan.affected")
+    pt.set_defaults(fn=_cmd_parts)
     b = sub.add_parser("budget", help="print the budget use of the view")
     b.add_argument("file")
     b.set_defaults(fn=_cmd_budget)

@@ -89,6 +89,9 @@ row in Phase 3. Log `SPIKE: <question> — <result>` in the findings file.
    shows: Phase 4 records a proposed diagram for it as the `Diagrams new:`
    line. Searching the existing sequence diagrams for the flow is how you
    tell "already shown" from "new".
+   Either line may end up `none`, but never silently: write down why
+   (`none — <why>`), because the stage-3 review shows every diagram part and
+   the reason is what the owner reads.
 4. **Trace the code.** Find where the problem lives. Follow the real call path;
    never assume a function does what its name says. Every claim you will write
    as `FACT` needs a `path:line` anchor you actually opened.

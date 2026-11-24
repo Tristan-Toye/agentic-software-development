@@ -45,8 +45,10 @@ Check, in this order:
    processes or containers (or a new external system) and the line says
    `Diagrams new: none`, search `docs/architecture/` (seq and c1 files) for a
    diagram that already shows the flow: finding none is a CR (propose the
-   stem). A repo with no `docs/architecture/` may say `none`. A missing
-   `Diagrams new:` line is a CR too.
+   stem). A repo with no `docs/architecture/` may say `none — <why>`. A missing
+   `Diagrams new:` line is a CR too. So is a `none` with no reason on either
+   line (`none — <why>` is mandatory in a new plan; a bare `none` in an older
+   dossier is accepted and the stage-3 author supplies the reason).
 
 ### Product coherence — when `PRODUCT_MODEL` is in your payload
 

@@ -63,6 +63,14 @@
         "branch": {
           "type": "string"
         },
+        "updates_existing": {
+          "type": "boolean",
+          "description": "Stage 3 arch draft: true when this draft is the updated version of a diagram already in docs/architecture (an affected diagram), not a new one."
+        },
+        "base_docs_hash": {
+          "type": "string",
+          "description": "sha256 of the committed docs/architecture file an updates_existing draft started from; promotion refuses with DIVERGED when it changed."
+        },
         "generated_by": {
           "enum": [
             "hand",
