@@ -168,3 +168,5 @@ A diagram anchors code as `path/file.rs:LINE` (optionally followed by a backtick
 ## Follow-ups
 
 Work decided but not done yet is in [FOLLOW-UPS.md](FOLLOW-UPS.md) (FU-01: move the cargo-modules pin past 0.27.0 after the first demo).
+
+Dashboard page layout (dossier redesign): the diagram toolbar is one row (view tabs, Before/After/Diff, Fit all, Walkthrough) plus a **More** menu holding zoom in, zoom out, Mermaid and Full screen. `/api/visual-review` and `/api/visual-review/layout` are cached in `server.ts` per dossier directory, keyed on the size and mtime of l0/l1/l2/decision.json, `arch/*.json` and `seq-preview/*.json` (`shared/questions/vrcache.ts`, 24 results, in-flight requests shared); an edit of any of those files is a miss, `review.json` content is always read fresh. The panes of the dossier page are a registry (`PANES` in `page.ts`), so a later review pane is one more entry.

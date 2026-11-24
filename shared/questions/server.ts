@@ -16,6 +16,7 @@ import { join } from "node:path"
 import { pendingSlack, readRunThreadAsync, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
 import { startLagWatch } from "./lagwatch.ts"
 import { archStemOf, collapsedView, hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
+import { makeVrCache, vrSignature } from "./vrcache.ts"
 import { approveAll, buildAnswer, diagramsOf, dossierIntent, MAX_BODY, ReviewError, isReviewQuestion, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
 import { collapsedDiagram, DiagramError, mapStatus, openDiagram } from "./vrmap.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
@@ -398,6 +399,12 @@ async function vrFind(dossier: string, repo: string): Promise<{ ok: true; root: 
   const own = runs.find((r) => [r.worktree, r.runner?.root, r.main].includes(root)) ?? runs[0]
   return { ok: true, root, dossier, repo: repo || own.repo, runs }
 }
+// The computed review of a dossier (every view validated and laid out) and each collapsed view, kept per dossier revision: the key is the
+// directory plus the size and mtime of its graph files (vrSignature), so a request repeats no ELK run until a file changes.
+const vrReviewCache = makeVrCache<Awaited<ReturnType<typeof visualReview>>>()
+const vrCollapsedCache = makeVrCache<Awaited<ReturnType<typeof collapsedView>>>()
+export const vrCacheStats = () => ({ review: vrReviewCache.stats(), collapsed: vrCollapsedCache.stats() })
+export const clearVrCaches = () => { vrReviewCache.clear(); vrCollapsedCache.clear() }
 /** The `diagrams` field of a run's detail: the paths of l0/l1/l2 and the review counts; null with no visual review. */
 function vrDiagrams(run: Run) {
   for (const root of [run.worktree, run.runner?.root, run.main]) { const d = root ? diagramsOf(root, run.id) : null; if (d) return d }
@@ -485,7 +492,7 @@ export async function handle(req: Request): Promise<Response> {
   if (req.method === "GET" && path === "/api/visual-review") {
     const f = await vrFind(url.searchParams.get("dossier") ?? "", url.searchParams.get("repo") ?? "")
     if (!f.ok) return json({ error: f.error }, f.status)
-    try { return json({ ...(await visualReview(vrDir(f.root, f.dossier), f.dossier)), review: reviewState(vrDir(f.root, f.dossier), f.dossier), intent: dossierIntent(f.root, vrDir(f.root, f.dossier), f.dossier) }) } catch (e) { return json({ error: "visual review failed: " + (e as Error).message }, 500) }
+    try { return json({ ...(await vrReviewCache.get(vrDir(f.root, f.dossier), vrSignature(vrDir(f.root, f.dossier)), () => visualReview(vrDir(f.root, f.dossier), f.dossier))), review: reviewState(vrDir(f.root, f.dossier), f.dossier), intent: dossierIntent(f.root, vrDir(f.root, f.dossier), f.dossier) }) } catch (e) { return json({ error: "visual review failed: " + (e as Error).message }, 500) }
   }
   // The same view with some groups collapsed to one box: the collapsed graph and its layout (the page only draws it).
   if (req.method === "GET" && path === "/api/visual-review/layout" && url.searchParams.has("path")) {
@@ -503,7 +510,7 @@ export async function handle(req: Request): Promise<Response> {
     if (!f.ok) return json({ error: f.error }, f.status)
     const ids = (url.searchParams.get("collapsed") ?? "").split(",").filter(Boolean)
     if (ids.some((i) => i.length > 200)) return json({ error: "collapsed ids are too long" }, 400)
-    try { return json(await collapsedView(vrDir(f.root, f.dossier), url.searchParams.get("view") ?? "", ids)) } catch (e) { return json({ error: "collapsed layout failed: " + (e as Error).message }, 400) }
+    try { return json(await vrCollapsedCache.get(vrDir(f.root, f.dossier) + "|" + (url.searchParams.get("view") ?? "") + "|" + ids.join(","), vrSignature(vrDir(f.root, f.dossier)), () => collapsedView(vrDir(f.root, f.dossier), url.searchParams.get("view") ?? "", ids))) } catch (e) { return json({ error: "collapsed layout failed: " + (e as Error).message }, 400) }
   }
   // VR-04: one verdict on one element (saved to review.json), the answer text built from all of them, and the question it answers.
   if (path === "/api/visual-review/review") {
