@@ -1093,7 +1093,25 @@ def visual_review_problems(fm: dict, log: str, root: Path, worktree: Path | None
             problems.append(f"{name}: the VISUAL-REVIEW: line says {view} {claimed}, the file holds {used}")
     problems.extend(_visual_review_arch_problems(last, base, root, dossier_id, vr_graph))
     problems.extend(_visual_review_decision_problems(last, base, root, dossier_id, vr_graph))
+    problems.extend(_visual_review_parts_problems(base, root, dossier_id, vr_graph))
     return problems
+
+
+def _visual_review_parts_problems(base: Path, root: Path, dossier_id: str, vr_graph) -> list[str]:
+    """Stage 3 shows EVERY diagram part: decision, sequence, architecture affected and new are each content or a stated reason
+    (parts.json). A review from before this rule (no parts.json, no `plan` in it) is not flagged: only a dossier whose review
+    wrote parts.json is held to it, so a build running while the plugin updates is never flagged retroactively."""
+    vdir = base / ".discovery" / "visual-review" / dossier_id
+    if not (vdir / "parts.json").is_file():
+        return []
+    text = _dossier_text(base, root, dossier_id=dossier_id)
+    new = parse_diagrams_new(DIAGRAMS_NEW_RE.search(text).group(1)) if DIAGRAMS_NEW_RE.search(text) else []
+    info = affected_diagrams_stage3(base if (base / "docs").exists() else root, "HEAD~0", dossier_id)
+    decision = "yes" if decision_needed(text) else "no"
+    # affected: the plan the author recorded must cover the dossier's stems that exist; anchors-derived ones are the author's to add
+    aff = [a["stem"] for a in info["affected"] if "dossier" in a["why"]]
+    return [f"visual review part {i.get('path')}: {i.get('message')}"
+            for i in vr_graph.parts_issues(str(vdir), decision=decision, new=new, affected=aff)]
 
 
 def _visual_review_decision_problems(line: str, base: Path, root: Path, dossier_id: str, vr_graph) -> list[str]:
@@ -4517,6 +4535,28 @@ def diagram_base(stem: str) -> str:
     return re.sub(r"\.\d+$", "", stem)
 
 
+def parse_diagrams_affected(value: str) -> list[str]:
+    """Stems of a `Diagrams affected:` value. `none`, bare or with a reason (`none \u2014 <why>`, whose reason may hold commas), is []; a
+    list is `stem, stem`, each piece optionally followed by ` \u2014 <what>`."""
+    v = value.strip().strip("`").strip()
+    if not v or re.match(r"none\b", v, re.I):
+        return []
+    out: list[str] = []
+    for piece in v.split(","):
+        head = _DESC_SEP_RE.split(piece.strip(), maxsplit=1)[0].strip().strip("`").strip()
+        head = re.sub(r"\.(json|md)$", "", head)
+        if head and head.lower() != "none" and _STEM_TOKEN_RE.match(head):
+            out.append(head)
+    return out
+
+
+def diagrams_none_reason(value: str) -> str:
+    """The reason after `none \u2014` / `none -` of a `Diagrams affected:` / `Diagrams new:` value; "" for a bare `none` or a list (an older
+    dossier: the diagram author then supplies the reason in parts.json)."""
+    m = re.match(r"\s*`?none`?\s*(?:\u2014|\u2013|--|-|:)\s*(.+?)\s*$", value, re.I)
+    return m.group(1) if m else ""
+
+
 def dossier_diagrams(root: Path, dossier_id: str | None) -> tuple[list[str] | None, str]:
     """(stems the dossier's `Diagrams affected:` line lists, note). None = no dossier or no line; [] = `none`."""
     if not dossier_id:
@@ -4527,9 +4567,87 @@ def dossier_diagrams(root: Path, dossier_id: str | None) -> tuple[list[str] | No
     m = DIAGRAMS_AFFECTED_RE.search(files[0].read_text())
     if not m:
         return None, f"diagram gate: {files[0].name} has no `Diagrams affected:` line"
-    stems = [re.sub(r"\.(json|md)$", "", s.strip().strip("`")) for s in m.group(1).split(",")]
-    stems = [s for s in stems if s and s.lower() != "none"]
-    return stems, ""
+    return parse_diagrams_affected(m.group(1)), ""
+
+
+DRAFTABLE_VIEWS = ("c1", "c4", "seq")
+
+
+def _dossier_line(root: Path, dossier_id: str | None, rx) -> str | None:
+    if not dossier_id:
+        return None
+    ddir = root / ".discovery" / "dossiers"
+    files = sorted(ddir.glob(f"{dossier_id}-*.md")) if ddir.is_dir() else []
+    if not files:
+        return None
+    m = rx.search(files[0].read_text())
+    return m.group(1) if m else None
+
+
+def affected_diagrams_stage3(root: Path, base: str, dossier_id: str | None = None) -> dict:
+    """The existing docs/architecture diagrams a change touches, for the stage-3 visual review (the "affected" part).
+
+    The dossier's `Diagrams affected:` stems that exist in docs/architecture, plus every diagram whose source evidence anchors point
+    into a file `git diff --name-only base...HEAD` lists (the contract and stub commits; the same anchor index and the same rule as
+    the Phase 9 diagram gate). Each entry: stem, view, why (`dossier` and/or `anchors <path>`), draftable (a seq, c1 or c4 diagram with
+    a plain stem: the author drafts its update; any other, like a c3 or a block file `seq-x.2`, can only be answered `unchanged`).
+    Also the dossier's new stems and the reason an older or newer dossier gives after `none \u2014`."""
+    arch = root / "docs" / "architecture"
+    index = diagram_anchor_index(arch) if arch.is_dir() else {}
+    out: dict = {"architecture": bool(index), "affected": [], "new": dossier_new_diagrams(root, dossier_id), "note": ""}
+    aff_line = _dossier_line(root, dossier_id, DIAGRAMS_AFFECTED_RE)
+    new_line = _dossier_line(root, dossier_id, DIAGRAMS_NEW_RE)
+    out["affected_none_reason"] = diagrams_none_reason(aff_line) if aff_line is not None else ""
+    out["new_none_reason"] = diagrams_none_reason(new_line) if new_line is not None else ""
+    if not index:
+        out["note"] = "no docs/architecture/*.json in this repository"
+        return out
+    try:
+        changed = set(git_out(root, "diff", "--name-only", f"{base}...HEAD").splitlines())
+    except RuntimeError as exc:
+        changed = set()
+        out["note"] = f"cannot list the diff against {base}: {exc}"
+    code_changed = {p for p in changed if not p.startswith("docs/architecture/")}
+    why: dict[str, list[str]] = {}
+    for stem in parse_diagrams_affected(aff_line or ""):
+        if stem in index:
+            why.setdefault(stem, []).append("dossier")
+    for stem, paths in sorted(index.items()):
+        for path in sorted(paths & code_changed):
+            why.setdefault(stem, []).append("anchors " + path)
+    for stem in sorted(why):
+        try:
+            view = json.loads((arch / f"{stem}.json").read_text()).get("view")
+        except (OSError, ValueError, AttributeError):
+            view = None
+        out["affected"].append({"stem": stem, "view": view, "why": why[stem],
+                                "draftable": view in DRAFTABLE_VIEWS and "." not in stem})
+    return out
+
+
+def stage3_settlements(root: Path, dossier_id: str | None) -> tuple[dict[str, str], set[str]]:
+    """({stem: reason} the stage-3 review settled as `unchanged`, {stems} with a draft of the existing diagram) of a dossier's
+    `.discovery/visual-review/<ID>/` (parts.json and arch/*.json with meta.updates_existing). Empty when there was no stage-3 review."""
+    if not dossier_id:
+        return {}, set()
+    vdir = root / ".discovery" / "visual-review" / dossier_id
+    unchanged: dict[str, str] = {}
+    drafts: set[str] = set()
+    try:
+        parts = json.loads((vdir / "parts.json").read_text())
+        for u in parts.get("unchanged") or []:
+            if isinstance(u, dict) and isinstance(u.get("stem"), str):
+                unchanged[u["stem"]] = str(u.get("reason") or "")
+    except (OSError, ValueError, AttributeError):
+        pass
+    for f in sorted((vdir / "arch").glob("*.json")) if (vdir / "arch").is_dir() else []:
+        try:
+            g = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(g, dict) and isinstance(g.get("meta"), dict) and g["meta"].get("updates_existing") is True:
+            drafts.add(f.stem)
+    return unchanged, drafts
 
 
 def flow_coverage_gate(root: Path, base: str, run=None) -> tuple[list[str], list[str]]:
@@ -4619,11 +4737,30 @@ def diagram_gate_run(root: Path, base: str, dossier_id: str | None = None, pr_te
     touched_bases = {diagram_base(Path(p).stem) for p in changed
                      if p.startswith("docs/architecture/") and p.endswith((".json", ".md"))}
     code_changed = {p for p in changed if not p.startswith("docs/architecture/")}
+    unchanged3, drafts3 = stage3_settlements(root, dossier_id)
+
+    def settled(stem: str, what: str) -> bool:
+        """A REVIEW the stage-3 visual review already answered: `unchanged` (the owner saw the statement) or an approved draft."""
+        if stem in unchanged3:
+            notes.append(f"SETTLED at stage 3: diagram {stem} unchanged: {unchanged3[stem]}")
+            return True
+        if stem in drafts3:
+            notes.append(f"REVIEW: {stem} {what}; the owner approved an update at stage 3: apply it "
+                         f"(`vr_promote.py --dossier-id {dossier_id} --stem {stem} --repo .`; DIVERGED, STALE-ANCHOR or STALE-APPROVAL "
+                         "means the code moved since: the owner approves the updated draft again)")
+            return True
+        return False
+
+    seen_review: set[str] = set()
     for stem, paths in sorted(index.items()):
         if diagram_base(stem) in touched_bases:
             continue
-        for path in sorted(paths & code_changed):
-            notes.append(f"REVIEW: {stem} anchors {path}")
+        hit = sorted(paths & code_changed)
+        if not hit:
+            continue
+        seen_review.add(stem)
+        if not settled(stem, f"anchors {hit[0]}"):
+            notes.extend(f"REVIEW: {stem} anchors {path}" for path in hit)
     stale = []
     listed, note = dossier_diagrams(root, dossier_id)
     if note:
@@ -4634,6 +4771,10 @@ def diagram_gate_run(root: Path, base: str, dossier_id: str | None = None, pr_te
         elif diagram_base(stem) not in touched_bases:
             stale.append(stem)
     for stem in stale:
+        if stem in seen_review:
+            continue
+        if settled(stem, "is listed as affected and the branch did not modify it"):
+            continue
         if pr_text is not None and stem not in pr_text:
             problems.append(f"diagram gate: the dossier lists diagram {stem} as affected, the branch did not modify it "
                             "and the PR description does not say why it still holds")
@@ -4787,6 +4928,53 @@ def selftest_diagram_gate() -> bool:
             (d / "docs" / "architecture" / nm).rename(d / "docs" / "architecture" / ("x-" + nm))
         p, n = diagram_gate_run(d, "base", "W-003", "x", passes, bad)
         ok("flow gate: no seq diagram is a SKIP note", not [x for x in p if "flow-coverage" in x] and "SKIP flow-coverage: no docs/architecture/seq-*.json in this repository" in n, (p, n))
+
+    # stage 3: bare `none`, `none \u2014 <why>` and lists parse; the reason is read when given
+    ok("affected: bare none", parse_diagrams_affected("none") == [] and diagrams_none_reason("none") == "")
+    ok("affected: none with a reason holding commas", parse_diagrams_affected("none \u2014 only a helper, no flow") == []
+       and diagrams_none_reason("none \u2014 only a helper, no flow") == "only a helper, no flow")
+    ok("affected: list with descriptions", parse_diagrams_affected("c4-a, seq-b \u2014 the boot flow") == ["c4-a", "seq-b"])
+    # the stage-3 gate: an `unchanged` statement or an approved draft settles a REVIEW line
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        git(d, "init", "-q", "-b", "main")
+        (d / "src").mkdir()
+        (d / "src" / "a.rs").write_text("")
+        (d / "src" / "b.rs").write_text("")
+        arch = d / "docs" / "architecture"
+        arch.mkdir(parents=True)
+        (arch / "c4-a.json").write_text(graph("src/a.rs").replace('"nodes"', '"view": "c4", "nodes"'))
+        (arch / "c4-b.json").write_text(graph("src/b.rs").replace('"nodes"', '"view": "c4", "nodes"'))
+        git(d, "add", "-A")
+        git(d, "commit", "-qm", "base")
+        git(d, "branch", "base")
+        (d / "src" / "a.rs").write_text("x")
+        (d / "src" / "b.rs").write_text("x")
+        git(d, "add", "-A")
+        git(d, "commit", "-qm", "change")
+        (d / ".discovery" / "dossiers").mkdir(parents=True)
+        (d / ".discovery" / "dossiers" / "W-007-x.md").write_text("## Approach\nDiagrams affected: c4-a\nDiagrams new: none \u2014 no new flow\n")
+        info = affected_diagrams_stage3(d, "base", "W-007")
+        ok("stage3 affected: dossier stem plus anchored diagram", [a["stem"] for a in info["affected"]] == ["c4-a", "c4-b"]
+           and info["affected"][0]["draftable"] and info["new_none_reason"] == "no new flow", info)
+        p, n = diagram_gate_run(d, "base", "W-007", None, passes)
+        ok("no stage 3 answer: both are REVIEW lines", sum(x.startswith("REVIEW") for x in n) >= 2, n)
+        vr = d / ".discovery" / "visual-review" / "W-007"
+        (vr / "arch").mkdir(parents=True)
+        (vr / "parts.json").write_text(json.dumps({"unchanged": [{"stem": "c4-a", "reason": "only a body moved"}]}))
+        (vr / "arch" / "c4-b.json").write_text(json.dumps({"view": "c4", "meta": {"updates_existing": True}, "nodes": []}))
+        p, n = diagram_gate_run(d, "base", "W-007", None, passes)
+        ok("stage 3 unchanged settles c4-a", any(x.startswith("SETTLED at stage 3: diagram c4-a unchanged") for x in n)
+           and not any(x == "REVIEW: c4-a anchors src/a.rs" for x in n), n)
+        ok("stage 3 draft: apply the approved update", any(x.startswith("REVIEW: c4-b") and "approved an update at stage 3" in x for x in n), n)
+        ok("stage 3 settlements read back", stage3_settlements(d, "W-007") == ({"c4-a": "only a body moved"}, {"c4-b"}))
+        # the pre-fanout parts check: only a review that wrote parts.json is held to it
+        class _G:  # the real vr_graph is imported inside the function under test
+            pass
+        import vr_graph as _vg
+        ok("parts check: missing parts are problems", len(_visual_review_parts_problems(d, d, "W-007", _vg)) >= 3,
+           _visual_review_parts_problems(d, d, "W-007", _vg))
+        ok("parts check: no parts.json is not flagged (old review)", _visual_review_parts_problems(d, d, "W-404", _vg) == [])
 
     for f in fails:
         print("FAIL  " + f)
