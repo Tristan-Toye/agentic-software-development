@@ -791,6 +791,10 @@ writeFileSync(join(runsDir, "repoB.W-7.jsonl"), [{ ts: "2026-11-02T10:00:00Z", k
 writeFileSync(join(runsDir, "repoA.W-8.jsonl"), JSON.stringify({ ts: "2026-11-02T09:00:00Z", kind: "update", text: "planning started" }) + "\n")
 writeFileSync(join(runsDir, "repoC.stub-2026-11-02.jsonl"), JSON.stringify({ ts: "2026-11-02T11:00:00Z", kind: "update", text: "stub step done" }) + "\n")
 writeFileSync(join(runsDir, "repoC.W-10.jsonl"), JSON.stringify({ ts: "2026-11-02T10:00:00Z", kind: "update", text: "ten started" }) + "\n")
+// Two live seed /plan runs: one already numbered its dossier (its question carries W-219), one not yet.
+writeFileSync(join(runsDir, "repoC.seed-one-owner.runner.json"), JSON.stringify({ pid: process.pid, state: "waiting", stage: "2", started: "s", command: "plan", questions: ["repoC.W-219.Q6"] }))
+writeFileSync(join(runsDir, "repoC.seed-one-owner.seed.md"), "One migration owner for the stack\n")
+writeFileSync(join(runsDir, "repoC.seed-fresh.runner.json"), JSON.stringify({ pid: process.pid, state: "running", stage: "1", started: "s", command: "plan" }))
 
 // server over HTTP
 const sdir = mkdtempSync(join(tmpdir(), "asd-oq-srv-"))
@@ -832,6 +836,9 @@ try {
   check("server: answered drops out of state=open", ((await (await fetch(`${base}/api/questions?state=open`)).json()) as any[]).length === 0)
   const rv: any = await (await fetch(`${base}/api/runs`)).json()
   const r7 = rv.runs?.find((r: any) => r.id === "W-7" && r.repo === "repoB")
+  const pOne = rv.plans?.find((p: any) => p.key === "repoC.seed-one-owner"), pFresh = rv.plans?.find((p: any) => p.key === "repoC.seed-fresh")
+  check("server: a seed /plan that numbered its dossier carries the id (row reads \"W-219 (seed: one-owner)\"); one that has not, none",
+    pOne?.claimed === "W-219" && pOne.title === "One migration owner for the stack" && pFresh && !pFresh.claimed, JSON.stringify(rv.plans))
   check("server: /api/runs lists dossiers from the injected roots", rv.runs?.length === 9 && r7?.status === "building" && r7.phase === "4" && r7.repo === "repoB", JSON.stringify(rv).slice(0, 300))
   check("server: /api/runs session activity and context", r7?.session.state === "active" && r7.session.context === 143003 && r7.session.requests === 2 && r7.pr === null, JSON.stringify(r7?.session))
   check("server: /api/runs carries the open-question link", rv.runs.every((r: any) => Array.isArray(r.questions)) && typeof rv.scannedAt === "string")

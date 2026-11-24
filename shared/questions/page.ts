@@ -1076,6 +1076,16 @@ function accountsView() {
     h('div', { class: 'agrid' }, cards)]);
 }
 /* Every run consuming tokens right now, across repos: its state, step, account, agents at work, context and last activity. */
+/* A /plan run before its dossier exists. From a deferred item it links to the source dossier's Deferred tab; from a
+   free-form seed it shows the seed slug, then "W-219 (seed: slug)" once the run numbered the dossier. */
+function planLabel(p) { const slug = p.item.replace(/^seed-/, ''); return p.src ? p.src + ' ' + p.item : p.claimed ? p.claimed + ' (seed: ' + slug + ')' : p.item; }
+function planRow(p) {
+    const right = [activityOf({ command: 'plan', state: p.state }, '', '')]; if (p.account) right.push(h('span', { class: 'rmeta mono', title: 'Account this run uses' }, [p.account]));
+    // A free-form /plan (src empty): no source dossier to link to.
+    return (h(p.src ? 'a' : 'div', { class: 'srow', ...(p.src ? { href: hrefItem(p.repo, p.src) } : {}), 'data-k': 'plan:' + p.key, 'data-rank': String(p.state === 'waiting' ? 0 : p.state === 'running' || p.state === 'testing' ? 1 : 2) }, [h('span', { class: 'sid mono' }, [planLabel(p)]),
+      h('span', { class: 'sname' }, [h('span', {}, ['Planning: ' + p.title]), h('span', { class: 'small mut rsub' }, [rlabel(p.repo) + (p.src ? ' · new dossier from ' + p.src + ' ' + p.item : ' · new dossier from a free-form brief') + (p.lastTs ? ' · ' : ''), p.lastTs ? when(p.lastTs, 'last update ') : null])]),
+      h('span', { class: 'sright' }, right)]));
+  }
 function runningView() {
   const live = S.runs.filter(r => r.runner && ['running', 'testing', 'waiting', 'paused', 'queued'].includes(r.runner.state));
   const agents = live.reduce((n, r) => n + (r.agents ? r.agents.running : 0), 0);
@@ -1093,14 +1103,7 @@ function runningView() {
       h('span', { class: 'sname' }, [h('span', {}, [r.title]), h('span', { class: 'small mut rsub' }, [rlabel(r.repo) + ' · ', (stageText(r) || 'starting'), last ? ' · ' : '', last ? when(last.ts, 'last update ') : null]), nowLine(r)]),
       h('span', { class: 'sright' }, right)]);
   });
-  // A /plan run of a deferred item before its dossier exists: linked to the source dossier's Deferred tab.
-  (S.plans || []).forEach(p => {
-    const right = [activityOf({ command: 'plan', state: p.state }, '', '')]; if (p.account) right.push(h('span', { class: 'rmeta mono', title: 'Account this run uses' }, [p.account]));
-    // A free-form /plan (src empty): no source dossier to link to.
-    rows.push(h(p.src ? 'a' : 'div', { class: 'srow', ...(p.src ? { href: hrefItem(p.repo, p.src) } : {}), 'data-k': 'plan:' + p.key, 'data-rank': String(p.state === 'waiting' ? 0 : p.state === 'running' || p.state === 'testing' ? 1 : 2) }, [h('span', { class: 'sid mono' }, [p.src ? p.src + ' ' + p.item : p.item]),
-      h('span', { class: 'sname' }, [h('span', {}, ['Planning: ' + p.title]), h('span', { class: 'small mut rsub' }, [rlabel(p.repo) + (p.src ? ' · new dossier from ' + p.src + ' ' + p.item : ' · new dossier from a free-form brief') + (p.lastTs ? ' · ' : ''), p.lastTs ? when(p.lastTs, 'last update ') : null])]),
-      h('span', { class: 'sright' }, right)]));
-  });
+  (S.plans || []).forEach(p => rows.push(planRow(p)));
   // Group by what needs the owner: waiting for you, working, queued. The rank is on each row; headers carry the counts.
   const RK = ['Waiting for you', 'Working', 'Queued']; const rk = (n) => +n.getAttribute('data-rank');
   rows.sort((a, b) => rk(a) - rk(b));
@@ -1384,9 +1387,12 @@ async function flowsAct(btn) {
 function repoView(repo) {
   const rs = S.runs.filter(r => r.repo === repo); const prog = rs.filter(inProgress); const os = openStubs(repo);
   const ow = (S.stubs.openWork || []).find(o => o.repo === repo); const oq = S.q.filter(q => q.state === 'open' && qRepo(q) === repo).sort((a, b) => a.ts.localeCompare(b.ts));
-  const kids = [h('h1', {}, [rlabel(repo)]), h('p', { class: 'lead' }, [prog.length + ' running · ' + oq.length + ' open question' + (oq.length === 1 ? '' : 's') + ' · ' + os.length + ' open stub' + (os.length === 1 ? '' : 's')])];
+  const kids = [h('h1', {}, [rlabel(repo)]), h('p', { class: 'lead' }, [prog.length + ' running · ' + ((S.plans || []).filter(p => p.repo === repo).length ? (S.plans || []).filter(p => p.repo === repo).length + ' planning · ' : '') + oq.length + ' open question' + (oq.length === 1 ? '' : 's') + ' · ' + os.length + ' open stub' + (os.length === 1 ? '' : 's')])];
   if (oq.length) kids.push(section('Waiting on you', oq.length, h('div', {}, oq.map(q => qCard(q, { thread: true }))), 'oq'));
   const frame = ow ? h('iframe', { class: 'report', 'data-repo': repo, src: '/open-work/' + enc(repo) + '?theme=dark&v=' + enc(ow.updated), title: 'Open work', scrolling: 'no', style: S.frameH[repo] ? 'height:' + S.frameH[repo] + 'px' : null }) : h('div', { class: 'empty' }, ['The open-work report is not generated yet.']);
+  // A /plan run writing a new dossier has no dossier file yet, so neither the stubs nor Open work list it: show it here.
+  const pl = (S.plans || []).filter(p => p.repo === repo);
+  if (pl.length) kids.push(section('Planning', pl.length, h('div', { class: 'srows' }, pl.map(planRow)), 'plans'));
   // The stubs (the current one and the next) first, then Open work, each full width, one under the other.
   kids.push(sideColumn(repo));
   const aw = autoWorkView(repo); if (aw) kids.push(aw);

@@ -1,5 +1,6 @@
 // Owner-questions server. Run: bun --no-install shared/questions/server.ts
 // Contract: references/owner-questions.md
+import { planningRunsAsync } from "./planning.ts"
 import { appendFileSync, existsSync, mkdirSync, openSync, readdirSync, statSync, watch, writeFileSync } from "node:fs"
 import { AnsweredError, appendOwner, idForThread, readAll, readAllAsync, readQuestion, readSidecarAsync, readSidecar, storeDir, writeSidecar, type Line, type Question } from "./store.ts"
 import { PAGE } from "./page.ts"
@@ -1156,7 +1157,7 @@ export async function handle(req: Request): Promise<Response> {
  * Live /plan runs of a deferred item whose dossier is not written yet (`<repo>.<src>.plan-<D-n>.runner.json` with no
  * dossier carrying its key): Running now shows them, linked to the source dossier, until the new dossier takes over.
  */
-async function planRuns(runs: Run[]): Promise<{ key: string; repo: string; src: string; item: string; title: string; state: string; started: string; account?: string; stage: string; last: string; lastTs: string }[]> {
+async function planRuns(runs: Run[]): Promise<{ key: string; repo: string; src: string; item: string; claimed?: string; title: string; state: string; started: string; account?: string; stage: string; last: string; lastTs: string }[]> {
   const taken = new Set(runs.map((r) => r.runKey).filter(Boolean))
   let names: string[] = []
   try { names = (await readdir(runsDir())).filter((n) => /\.(plan-D-\d+|seed-[a-z0-9-]+)\.runner\.json$/.test(n)) } catch { return [] }
@@ -1173,7 +1174,10 @@ async function planRuns(runs: Run[]): Promise<{ key: string; repo: string; src: 
       const first = brief === null ? "" : (brief.split("\n").find((l) => l.trim()) ?? "").replace(/^#+\s*/, "").slice(0, 140)
       const ups = await readUpdatesAsync(key, runsDir(), 50)
       const note = ups.find((u) => !u.auto && u.kind === "update") ?? ups[0]
-      out.push({ key, repo: sm[1], src: "", item: sm[2], title: first || sm[2], state: rn.state, started: rn.started, account: rn.account, stage: rn.stage, last: note?.text ?? "", lastTs: note?.ts ?? "" })
+      // Once /plan numbered the dossier, the row names it: "W-219 (seed: single-migration-owner)".
+      const claims = await planningRunsAsync(sm[1], runsDir())
+      const claimed = Object.keys(claims).filter((id) => claims[id].key === key).sort()[0]
+      out.push({ key, repo: sm[1], src: "", item: sm[2], ...(claimed ? { claimed } : {}), title: first || sm[2], state: rn.state, started: rn.started, account: rn.account, stage: rn.stage, last: note?.text ?? "", lastTs: note?.ts ?? "" })
       continue
     }
     const m = key.match(/^(.+)\.([A-Z][A-Z0-9]*-\d+)\.plan-(D-\d+)$/)
