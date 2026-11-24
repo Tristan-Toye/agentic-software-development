@@ -11,17 +11,31 @@ export type Verdict = (typeof VERDICTS)[number]
 export type Diagram = (typeof VR_VIEWS)[number] | typeof DECISION_VIEW | `arch:${string}`
 const isDiagramName = (d: unknown): d is Diagram => (VR_VIEWS as readonly unknown[]).includes(d) || d === DECISION_VIEW || archStemOf(d) !== null
 export type Anchor = { diagram: Diagram; element: string; graph_hash: string }
-export type ReviewLine = { anchor: Anchor; verdict: Verdict; comment: string; ts: string }
-export type Review = { schema_version: "1.0.0"; dossier: string; updated: string; lines: ReviewLine[] }
+export type ReviewLine = { anchor: Anchor; verdict: Verdict; comment: string; ts: string; blocking?: boolean }
+/**
+ * Feedback on an asset other than a diagram element (unified feedback control): the product summary (`summary`), a dossier
+ * section (`doc:<slug>`), an ADR (`adr:<id>`), a deferred item (`deferred:<id>`) or a pane of the page (`pane:<key>`). `viewed`
+ * lists the anchors the owner marked as looked at, element anchors (`el:<diagram>:<element>`) included. Both are optional in
+ * review.json: a file written before them still loads, and a file without them is written back without them.
+ */
+export const NOTE_VERDICTS = ["ok", "question", "change", "comment"] as const
+export type NoteVerdict = (typeof NOTE_VERDICTS)[number]
+export type Note = { anchor: string; verdict: NoteVerdict; comment: string; blocking: boolean; ts: string }
+export type Review = { schema_version: "1.0.0"; dossier: string; updated: string; lines: ReviewLine[]; notes?: Note[]; viewed?: string[] }
+export const MAX_NOTES = 300
+export const MAX_VIEWED = 800
+/** summary, or one of the asset prefixes with an id of letters, digits and . _ : - (an element id may hold a colon). */
+export const isAssetAnchor = (a: unknown): a is string => typeof a === "string" && a.length <= MAX_ID && /^(summary|(doc|adr|deferred|pane|el):[A-Za-z0-9][A-Za-z0-9_.:\-]*)$/.test(a)
 /** current: made on the graph as it is now. outdated: made on an older graph. gone: the element is no longer in the diagram. */
 export type LineState = "current" | "outdated" | "gone"
 export type StateLine = ReviewLine & { state: LineState }
 export type Summary = { total: number; checked: number; ok: number; question: number; change: number; remove: number; outdated: number; gone: number; unchecked: number; text: string }
-export type ReviewState = { exists: boolean; broken: Diagram[]; hashes: Partial<Record<Diagram, string>>; lines: StateLine[]; summary: Summary; unchecked: { diagram: Diagram; element: string }[] }
+export type ReviewState = { exists: boolean; notes: Note[]; viewed: string[]; broken: Diagram[]; hashes: Partial<Record<Diagram, string>>; lines: StateLine[]; summary: Summary; unchecked: { diagram: Diagram; element: string }[] }
 
 export const MAX_COMMENT = 1000
 export const MAX_ID = 200
 export const MAX_BODY = 8 * 1024
+export const MAX_FEEDBACK_BODY = 64 * 1024
 export const MAX_LINES = 600
 export const MAX_FILE = 512 * 1024
 /** A diagram file larger than this is not parsed: it counts as unreadable. */
@@ -77,9 +91,15 @@ export function readReviewChecked(dir: string, dossier: string): { review: Revie
     for (const l of o.lines) {
       const a = l?.anchor
       if (a && isDiagramName(a.diagram) && typeof a.element === "string" && typeof a.graph_hash === "string" && (VERDICTS as readonly string[]).includes(l.verdict))
-        lines.push({ anchor: { diagram: a.diagram, element: a.element, graph_hash: a.graph_hash }, verdict: l.verdict, comment: typeof l.comment === "string" ? l.comment : "", ts: typeof l.ts === "string" ? l.ts : "" })
+        lines.push({ anchor: { diagram: a.diagram, element: a.element, graph_hash: a.graph_hash }, verdict: l.verdict, comment: typeof l.comment === "string" ? l.comment : "", ts: typeof l.ts === "string" ? l.ts : "", ...(l.blocking === true ? { blocking: true } : {}) })
     }
-    return { review: { schema_version: "1.0.0", dossier: typeof o.dossier === "string" ? o.dossier : dossier, updated: typeof o.updated === "string" ? o.updated : "", lines } }
+    const notes: Note[] = []
+    for (const n of Array.isArray(o.notes) ? o.notes : []) {
+      if (n && isAssetAnchor(n.anchor) && (NOTE_VERDICTS as readonly string[]).includes(n.verdict))
+        notes.push({ anchor: n.anchor, verdict: n.verdict, comment: typeof n.comment === "string" ? n.comment : "", blocking: n.blocking === true, ts: typeof n.ts === "string" ? n.ts : "" })
+    }
+    const viewed = [...new Set((Array.isArray(o.viewed) ? o.viewed : []).filter(isAssetAnchor))] as string[]
+    return { review: { schema_version: "1.0.0", dossier: typeof o.dossier === "string" ? o.dossier : dossier, updated: typeof o.updated === "string" ? o.updated : "", lines, ...(notes.length ? { notes } : {}), ...(viewed.length ? { viewed } : {}) } }
   } catch (e) { return { review: null, unreadable: "review.json cannot be read: " + (e as Error).message } }
 }
 
@@ -101,11 +121,11 @@ export function reviewState(dir: string, dossier: string): ReviewState {
   const bits = [s.question && s.question + " question" + (s.question > 1 ? "s" : ""), s.change && s.change + " change" + (s.change > 1 ? "s" : ""), s.remove && s.remove + " to remove", s.outdated && s.outdated + " outdated"].filter(Boolean)
   if (broken.length) bits.push("unreadable: " + broken.join(", "))
   const text = s.checked + " of " + s.total + " elements checked" + (bits.length ? ", " + bits.join(", ") : "")
-  return { exists: review !== null, broken, hashes: Object.fromEntries(Object.keys(graphs).map((v) => [v, graphs[v]!.hash])), lines, summary: { ...s, text }, unchecked }
+  return { exists: review !== null, notes: review?.notes ?? [], viewed: review?.viewed ?? [], broken, hashes: Object.fromEntries(Object.keys(graphs).map((v) => [v, graphs[v]!.hash])), lines, summary: { ...s, text }, unchecked }
 }
 
 /** `graph_hash` is the hash of the graph the owner saw (from the review state's `hashes`); when given it must match the file on disk. */
-export type VerdictInput = { diagram: unknown; element: unknown; verdict: unknown; comment?: unknown; graph_hash?: unknown }
+export type VerdictInput = { diagram: unknown; element: unknown; verdict: unknown; comment?: unknown; graph_hash?: unknown; blocking?: unknown }
 /**
  * Upsert (or clear, with verdict "unset") one verdict. Refuses an unknown diagram, an element that is not a node of the
  * current graph, an unknown verdict and an oversize comment. `followup` is set when the line is a Question with a comment:
@@ -136,17 +156,66 @@ export function setVerdict(dir: string, dossier: string, b: VerdictInput): { sta
   let followup: { anchor: Anchor; text: string } | null = null
   if (!unset) {
     const anchor: Anchor = { diagram, element: b.element, graph_hash: g!.hash }
-    lines.push({ anchor, verdict: b.verdict as Verdict, comment: comment.trim(), ts })
+    lines.push({ anchor, verdict: b.verdict as Verdict, comment: comment.trim(), ts, ...(b.blocking === true ? { blocking: true } : {}) })
     if (b.verdict === "question" && comment.trim() && !(old && old.verdict === "question" && old.comment === comment.trim() && old.anchor.graph_hash === g!.hash)) followup = { anchor, text: comment.trim() }
   }
   if (lines.length > MAX_LINES) throw new ReviewError(413, "review.json would hold more than " + MAX_LINES + " verdicts")
-  const body = JSON.stringify({ schema_version: "1.0.0", dossier, updated: ts, lines }, null, 1) + "\n"
+  const body = reviewBody(dossier, ts, lines, prev)
   if (body.length > MAX_FILE) throw new ReviewError(413, "review.json would be larger than " + MAX_FILE + " bytes")
   mkdirSync(dir, { recursive: true })
   const tmp = reviewFile(dir) + "." + process.pid + ".tmp"
   writeFileSync(tmp, body)
   renameSync(tmp, reviewFile(dir))
   return { state: reviewState(dir, dossier), followup }
+}
+
+/** The body of the one "Send review" submit: asset notes (verdict "clear" removes one), viewed marks added and removed. */
+export type FeedbackInput = { notes?: unknown; viewed_add?: unknown; viewed_remove?: unknown }
+/**
+ * Apply a whole local draft in one write: upsert (or clear) the notes by anchor, add and remove viewed anchors. Nothing is
+ * written when any entry is invalid. `followups` are the notes that need the agent (a Question, a Change, a blocking note, or a
+ * comment with text) and that are new or changed, for the route to send as follow-ups. Diagram-element verdicts are not part of
+ * this: they keep their own route (setVerdict).
+ */
+export function submitFeedback(dir: string, dossier: string, b: FeedbackInput): { state: ReviewState; followups: Note[] } {
+  const rawNotes = b.notes === undefined ? [] : b.notes, add = b.viewed_add === undefined ? [] : b.viewed_add, rem = b.viewed_remove === undefined ? [] : b.viewed_remove
+  if (!Array.isArray(rawNotes) || !Array.isArray(add) || !Array.isArray(rem)) throw new ReviewError(400, "notes, viewed_add and viewed_remove must be lists")
+  if (rawNotes.length > MAX_NOTES || add.length > MAX_VIEWED || rem.length > MAX_VIEWED) throw new ReviewError(413, "too many entries in one review")
+  for (const a of [...add, ...rem]) if (!isAssetAnchor(a)) throw new ReviewError(400, "bad anchor in viewed: " + String(a).slice(0, 60))
+  const incoming: { anchor: string; verdict: NoteVerdict | "clear"; comment: string; blocking: boolean }[] = []
+  for (const n of rawNotes as any[]) {
+    if (!n || typeof n !== "object" || !isAssetAnchor(n.anchor)) throw new ReviewError(400, "a note needs an anchor: summary, doc:<slug>, adr:<id>, deferred:<id> or pane:<key>")
+    if (n.verdict !== "clear" && !(NOTE_VERDICTS as readonly string[]).includes(n.verdict)) throw new ReviewError(400, "note verdict must be one of " + NOTE_VERDICTS.join(", ") + " or clear")
+    const comment = n.comment === undefined || n.comment === null ? "" : n.comment
+    if (typeof comment !== "string") throw new ReviewError(400, "comment must be text")
+    if (comment.length > MAX_COMMENT) throw new ReviewError(413, "comment is longer than " + MAX_COMMENT + " characters")
+    incoming.push({ anchor: n.anchor, verdict: n.verdict, comment: comment.trim(), blocking: n.blocking === true })
+  }
+  const cur = readReviewChecked(dir, dossier)
+  if (cur.unreadable) throw new ReviewError(409, cur.unreadable + "; the review was not saved so the file is not overwritten. Fix or remove " + reviewFile(dir) + " and reload")
+  const prev = cur.review ?? { schema_version: "1.0.0" as const, dossier, updated: "", lines: [] }
+  const ts = new Date().toISOString()
+  const notes = new Map((prev.notes ?? []).map((n) => [n.anchor, n]))
+  const followups: Note[] = []
+  for (const n of incoming) {
+    const old = notes.get(n.anchor)
+    if (n.verdict === "clear") { notes.delete(n.anchor); continue }
+    const note: Note = { anchor: n.anchor, verdict: n.verdict, comment: n.comment, blocking: n.blocking, ts }
+    notes.set(n.anchor, note)
+    const same = old && old.verdict === note.verdict && old.comment === note.comment && old.blocking === note.blocking
+    if (!same && (note.verdict === "question" || note.verdict === "change" || note.blocking || (note.verdict === "comment" && note.comment))) followups.push(note)
+  }
+  const viewed = new Set(prev.viewed ?? [])
+  for (const a of add as string[]) viewed.add(a)
+  for (const a of rem as string[]) viewed.delete(a)
+  if (notes.size > MAX_NOTES || viewed.size > MAX_VIEWED) throw new ReviewError(413, "review.json would hold too many notes or viewed marks")
+  const body = reviewBody(dossier, ts, prev.lines, prev, { notes: [...notes.values()], viewed: [...viewed] })
+  if (body.length > MAX_FILE) throw new ReviewError(413, "review.json would be larger than " + MAX_FILE + " bytes")
+  mkdirSync(dir, { recursive: true })
+  const tmp = reviewFile(dir) + "." + process.pid + ".tmp"
+  writeFileSync(tmp, body)
+  renameSync(tmp, reviewFile(dir))
+  return { state: reviewState(dir, dossier), followups }
 }
 
 /**
@@ -169,6 +238,8 @@ export function approveAll(dir: string, dossier: string, shown?: unknown): Revie
   if (cur.unreadable) throw new ReviewError(409, cur.unreadable + "; verdicts were not saved so the file is not overwritten. Fix or remove " + reviewFile(dir) + " and reload")
   const before = reviewState(dir, dossier)
   const flagged = before.lines.filter((l) => l.state === "current" && l.verdict !== "ok")
+  const blk = blockingNotes(before.notes)
+  if (blk.length) throw new ReviewError(409, blk.length + " blocking note" + (blk.length > 1 ? "s" : "") + " (" + blk.slice(0, 5).map((n) => n.anchor).join(", ") + ") must be cleared or made informing first")
   if (flagged.length) throw new ReviewError(409, flagged.length + " element" + (flagged.length > 1 ? "s are" : " is") + " marked " + [...new Set(flagged.map((l) => l.verdict))].join("/") + " (" + flagged.slice(0, 5).map((l) => l.anchor.diagram + " " + l.anchor.element).join(", ") + (flagged.length > 5 ? ", …" : "") + "): clear those verdicts first, or send the review as it is")
   const ts = new Date().toISOString()
   const okNow = new Map(before.lines.filter((l) => l.state === "current").map((l) => [l.anchor.diagram + "\u0000" + l.anchor.element, l]))
@@ -178,7 +249,7 @@ export function approveAll(dir: string, dossier: string, shown?: unknown): Revie
     lines.push(keep ? { anchor: keep.anchor, verdict: "ok", comment: keep.comment, ts: keep.ts } : { anchor: { diagram: v, element: id, graph_hash: graphs[v]!.hash }, verdict: "ok", comment: "", ts })
   }
   if (lines.length > MAX_LINES) throw new ReviewError(413, "review.json would hold more than " + MAX_LINES + " verdicts")
-  const body = JSON.stringify({ schema_version: "1.0.0", dossier, updated: ts, lines }, null, 1) + "\n"
+  const body = reviewBody(dossier, ts, lines, cur.review)
   if (body.length > MAX_FILE) throw new ReviewError(413, "review.json would be larger than " + MAX_FILE + " bytes")
   mkdirSync(dir, { recursive: true })
   const tmp = reviewFile(dir) + "." + process.pid + ".tmp"
@@ -187,6 +258,13 @@ export function approveAll(dir: string, dossier: string, shown?: unknown): Revie
   return reviewState(dir, dossier)
 }
 
+/** The text of review.json; notes and viewed are written only when there are some, so a file without them keeps its old shape. */
+function reviewBody(dossier: string, ts: string, lines: ReviewLine[], prev: Review | null | undefined, over?: { notes?: Note[]; viewed?: string[] }): string {
+  const notes = over?.notes ?? prev?.notes ?? [], viewed = over?.viewed ?? prev?.viewed ?? []
+  return JSON.stringify({ schema_version: "1.0.0", dossier, updated: ts, lines, ...(notes.length ? { notes } : {}), ...(viewed.length ? { viewed } : {}) }, null, 1) + "\n"
+}
+/** Notes that hold the approval back: a Question or a Change the owner flagged as blocking (an informing one does not). */
+const blockingNotes = (notes: Note[]): Note[] => notes.filter((n) => n.blocking && (n.verdict === "question" || n.verdict === "change"))
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s)
 /**
  * The answer for the visual-review question, as the Phase 3 step defines it. Option A (Approved) only when every element
@@ -196,11 +274,12 @@ const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…"
 export function buildAnswer(state: ReviewState, dossier: string): { option: "A" | "B"; text: string } {
   const s = state.summary
   const head = (dossier ? dossier + " " : "") + "visual review: "
-  if (s.total > 0 && s.ok === s.total && !state.broken.length) return { option: "A", text: head + "approved, all " + s.total + " elements OK." }
+  if (s.total > 0 && s.ok === s.total && !state.broken.length && !blockingNotes(state.notes).length) return { option: "A", text: head + "approved, all " + s.total + " elements OK." }
   const label: Record<Verdict, string> = { ok: "ok", question: "question", change: "change", remove: "remove from scope" }
   const flagged = state.lines.filter((l) => l.state === "current" && l.verdict !== "ok")
   const out = [head + "changes requested. " + s.text + ". Full verdicts: .discovery/visual-review/" + dossier + "/review.json"]
-  for (const l of flagged) out.push("- " + label[l.verdict] + " " + l.anchor.diagram + " " + l.anchor.element + (l.comment ? ": " + clip(l.comment.replace(/\s+/g, " "), 240) : ""))
+  for (const l of flagged) out.push("- " + (l.blocking ? "BLOCKING " : "") + label[l.verdict] + " " + l.anchor.diagram + " " + l.anchor.element + (l.comment ? ": " + clip(l.comment.replace(/\s+/g, " "), 240) : ""))
+  for (const n of state.notes) if (n.verdict !== "ok" && (n.blocking || n.verdict !== "comment")) out.push("- " + (n.blocking ? "BLOCKING " : "") + n.verdict + " on " + n.anchor + (n.comment ? ": " + clip(n.comment.replace(/\s+/g, " "), 240) : ""))
   const old = state.lines.filter((l) => l.state === "outdated")
   if (old.length) out.push("- outdated (made on an older graph): " + old.map((l) => l.anchor.diagram + " " + l.anchor.element).join(", "))
   if (state.broken.length) out.push("- unreadable diagram file (not reviewed): " + state.broken.join(", "))

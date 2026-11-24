@@ -6,6 +6,7 @@ import { vrDecisionStats } from "./vrdecision.ts"
 import { VR_TEXT, vrFitLabel } from "./vrtext.ts"
 import { packetBody, packetModel } from "./packet.ts"
 import { paneDefault, paneRead, paneSlug, paneWrite, splitSections } from "./panes.ts"
+import { fbCounts, fbEmpty, fbIsViewed, fbNote, fbPayload, fbPending, fbRead, fbSetNote, fbSetViewed, fbSettle, fbWrite } from "./feedback.ts"
 
 export const PAGE = String.raw`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -212,6 +213,11 @@ header{padding:10px 24px}
 .needs-strip>.panel.result{border:0;background:none;padding:6px 0 0;margin:6px 0 0;border-top:1px solid var(--bd);border-radius:0}
 .nrow{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:8px 0;border-top:1px solid var(--bd)}.nrow .grow{flex:1;min-width:0}
 .nowait{color:var(--mut);padding:4px 0}
+.fbbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:0 0 10px;padding:6px 8px;border:1px dashed var(--bd);border-radius:8px}
+.fbbar .fbview,.fbbar .fbblk{display:inline-flex;align-items:center;gap:4px;font-size:12.5px;cursor:pointer}
+.fbbar .btn.on{background:var(--fg);color:var(--bg)}
+.fbbar textarea{flex:1 1 100%;min-height:52px;font:inherit}
+.fbhead{display:inline-flex;align-items:center;gap:8px}
 .dlayout{display:block}
 .rail{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
 .rail-i{font:inherit;font-size:12.5px;display:flex;align-items:center;gap:8px;text-align:left;padding:5px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--fg);cursor:pointer}
@@ -285,6 +291,17 @@ ${paneWrite.toString()}
 ${paneDefault.toString()}
 ${paneSlug.toString()}
 ${splitSections.toString()}
+${fbEmpty.toString()}
+${fbRead.toString()}
+${fbWrite.toString()}
+${fbSetNote.toString()}
+${fbSetViewed.toString()}
+${fbNote.toString()}
+${fbIsViewed.toString()}
+${fbCounts.toString()}
+${fbPayload.toString()}
+${fbPending.toString()}
+${fbSettle.toString()}
 ${packetModel.toString()}
 ${packetBody.toString()}
 function vrKey(repo, id) { return repo + '/' + id; }
@@ -525,12 +542,18 @@ function vrBuild(host, key, data) {
     const grp = vrDom('div', 'vrgrp', null, box), btns = {};
     VD.forEach(v => { const b = vrDom('button', 'btn sm', v[1], grp); b.type = 'button'; b.setAttribute('data-vd-pick', v[0]); btns[v[0]] = b; b.setAttribute('aria-pressed', String(pick === v[0])); b.onclick = () => { pick = v[0]; Object.keys(btns).forEach(k => btns[k].setAttribute('aria-pressed', String(k === pick))); save.disabled = false; }; });
     const ta = vrDom('textarea', '', null, box); ta.maxLength = 1000; ta.value = old ? old.comment : ''; ta.placeholder = 'Optional comment'; ta.setAttribute('aria-label', 'Comment on this element');
+    const fbA = 'el:' + st.view + ':' + id, fbItem = vrRepo + '/' + vrDossier;
+    if (FB_ANCHOR.test(fbA)) {
+      const vl = vrDom('label', 'fbview', null, box), vc = vrDom('input', '', null, vl); vc.type = 'checkbox'; vc.checked = fbIsViewed(fbSavedOf(), fbState(fbItem), fbA); vl.appendChild(document.createTextNode(' viewed'));
+      vc.onchange = () => { fbSetViewed(fbState(fbItem), fbA, vc.checked); fbKeep(fbItem); };
+    }
+    const bl = vrDom('label', 'fbblk', null, box), bc = vrDom('input', '', null, bl); bc.type = 'checkbox'; bc.checked = !!(old && old.blocking); bl.appendChild(document.createTextNode(' blocking')); bl.title = 'A blocking Question or Change holds the approval back; informing only tells the agent';
     const row = vrDom('div', 'vrgrp', null, box), save = vrDom('button', 'btn primary sm', 'Save verdict', row), clr = vrDom('button', 'btn sm', 'Clear', row), msg = vrDom('span', 'small mut', '', row);
     save.type = clr.type = 'button'; save.disabled = !pick; clr.disabled = !old;
     const go = async (verdict) => {
       save.disabled = clr.disabled = true; msg.textContent = 'Saving…';
       try {
-        const r = await fetch('/api/visual-review/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dossier: vrDossier, repo: vrRepo, diagram: st.view, element: id, verdict: verdict, comment: ta.value, graph_hash: (data.shownHashes || {})[st.view] }) });
+        const r = await fetch('/api/visual-review/review', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dossier: vrDossier, repo: vrRepo, diagram: st.view, element: id, verdict: verdict, comment: ta.value, blocking: bc.checked, graph_hash: (data.shownHashes || {})[st.view] }) });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) { msg.textContent = j.error || ('HTTP ' + r.status); save.disabled = !pick; clr.disabled = !old; if (r.status === 409) vrLoad(vrRepo, vrDossier); return; }
         st.review = j.review; paintAll(); if (j.followup) load(['questions']);
@@ -778,7 +801,7 @@ function vrBuild(host, key, data) {
 }
 
 // ---- state ----
-const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, po: {}, rulings: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {}, auto: {}, flows: {} };
+const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, po: {}, fb: {}, fbBusy: null, fbErr: null, rulings: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {}, auto: {}, flows: {} };
 let R = { kind: 'home' };
 let routeSig = '';
 let scrollTarget = '';
@@ -1356,7 +1379,7 @@ function repoView(repo) {
 }
 /* The dossier sits on an open stub with a PR into it (the stub card's "PR open · waiting for your merge"). */
 function onOpenStub(r) { return openStubs(r.repo).some(s => (s.members || []).some(m => m.id === r.id && !m.noPr)); }
-function header(r, mode) {
+function header(r, mode, fbAnchors) {
   const nq = openQs(r); const cs = [chip(r.status)];
   const ac = activityChip(r);
   if (ac) cs.unshift(ac); else if (r.runner && r.runner.state !== 'done') cs.push(runChip(r.runner));
@@ -1370,6 +1393,7 @@ function header(r, mode) {
   /* Sticky: one row of title and controls, one of chips and the live line. The long title and summary are cut to one line (the full text on hover). */
   return h('div', { class: 'panel dhead', 'data-k': 'dhead' }, [
     h('div', { class: 'drow' }, [h('h1', { class: 'dtitle', title: r.id + ' · ' + r.title + (r.summary ? '\n\n' + r.summary : '') }, [r.id + ' · ' + r.title]), h('div', { class: 'row dctl' }, controls(r, true).concat(onOpenStub(r) ? [mergeCtl(r)] : [], acts))]),
+    fbAnchors && fbAnchors.length ? h('div', { class: 'drow' }, [fbHead(r.repo + '/' + r.id, fbAnchors)]) : null,
     h('div', { class: 'drow' }, [h('div', { class: 'chips' }, cs), nowLine(r)])]);
 }
 const ICON = { step: '→', blocked: '⛔', start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', spawn: '⎇', reply: '↩', routine: '·', info: '·', entry: '§' };
@@ -1446,6 +1470,42 @@ function tabs(key, list) {
    nothing to show; the page lists the panes in this order, in the rail and below. A new pane (a review packet, a sequence diagram,
    a feedback bar) is one more push. */
 const PANES = [];
+/* ---- unified feedback control: one bar (viewed, OK / Question / Change / Comment, blocking or informing) on each pane, dossier section and
+   diagram element. Drafts stay in this browser (localStorage, tried and caught) until the one "Send review" in the header writes them to
+   review.json (POST /api/visual-review/feedback). A viewed tick is information only: nothing is forced. ---- */
+const FB_ANCHOR = /^(summary|(doc|adr|deferred|pane|el):[A-Za-z0-9][A-Za-z0-9_.:-]*)$/;
+const fbSavedOf = () => { const d = S.detail && S.detail.url === detailUrl() ? S.detail.data : null; return (d && d.feedback) || { notes: [], viewed: [] }; };
+function fbState(item) { return S.fb[item] || (S.fb[item] = fbRead(paneStore(), item)); }
+function fbKeep(item) { fbWrite(paneStore(), item, fbState(item)); }
+const FB_KINDS = [['ok', 'OK', 'Looks right'], ['question', 'Question', 'Ask the agent'], ['change', 'Change', 'Ask for a change'], ['comment', 'Comment', 'A remark, no action asked']];
+function fbBar(item, anchor, label) {
+  if (!FB_ANCHOR.test(anchor)) return null;
+  const saved = fbSavedOf(), st = fbState(item), n = fbNote(saved, st, anchor), v = fbIsViewed(saved, st, anchor);
+  const kids = [h('label', { class: 'fbview', title: 'Mark as looked at (information only, nothing is forced)' }, [h('input', { type: 'checkbox', 'data-fb': 'viewed', 'data-item': item, 'data-anchor': anchor, checked: v, 'aria-label': 'Viewed: ' + label }), 'viewed'])];
+  FB_KINDS.forEach(k => kids.push(h('button', { class: 'btn sm' + (n.verdict === k[0] ? ' on' : ''), type: 'button', 'data-act': 'fb-verdict', 'data-item': item, 'data-anchor': anchor, 'data-verdict': k[0], 'aria-pressed': String(n.verdict === k[0]), title: k[2] }, [k[1]])));
+  if (n.verdict && n.verdict !== 'ok' && n.verdict !== 'comment') kids.push(h('label', { class: 'fbblk', title: 'Blocking holds the approval back until you clear it; informing only tells the agent' }, [h('input', { type: 'checkbox', 'data-fb': 'blocking', 'data-item': item, 'data-anchor': anchor, checked: n.blocking, 'aria-label': 'Blocking: ' + label }), 'blocking']));
+  if (n.verdict) kids.push(chip(n.draft ? 'draft, not sent' : 'sent', n.draft ? 'warn' : 'ok'));
+  if (n.verdict && n.verdict !== 'ok') kids.push(h('textarea', { 'data-fb': 'comment', 'data-item': item, 'data-anchor': anchor, maxlength: '1000', placeholder: 'Optional comment (kept here until Send review)', 'aria-label': 'Comment on ' + label }, [n.comment]));
+  return h('div', { class: 'fbbar', 'data-k': 'fb:' + anchor, role: 'group', 'aria-label': 'Feedback on ' + label }, kids);
+}
+/* The header part: "N of M viewed" over the panes and sections that carry a bar, and the one Send review (all drafts at once). */
+function fbHead(item, anchors) {
+  const saved = fbSavedOf(), st = fbState(item), c = fbCounts(anchors, saved, st), pend = fbPending(saved, st), busy = S.fbBusy === item;
+  return h('div', { class: 'fbhead', 'data-k': 'fbhead' }, [h('span', { class: 'chip neutral', title: 'Panes and dossier sections you marked viewed. Information only.' }, [c.text]),
+    h('button', { class: 'btn primary sm', type: 'button', 'data-act': 'fb-send', 'data-item': item, disabled: !pend || busy, title: pend ? 'Write your ' + pend + ' draft change' + (pend === 1 ? '' : 's') + ' to review.json and tell the agent what needs it' : 'Nothing drafted' }, [busy ? 'Sending…' : 'Send review' + (pend ? ' (' + pend + ')' : '')]),
+    pend ? h('button', { class: 'btn sm', type: 'button', 'data-act': 'fb-discard', 'data-item': item }, ['Discard drafts']) : null, S.fbErr && S.fbErr.item === item ? h('span', { class: 'err' }, [S.fbErr.text]) : null]);
+}
+async function fbSend(item) {
+  const m = item.split('/'), saved = fbSavedOf(), st = fbState(item), sent = fbPayload(saved, st); if (!sent || S.fbBusy) return;
+  S.fbBusy = item; S.fbErr = null; render();
+  try {
+    const r = await fetch('/api/visual-review/feedback', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dossier: m[1], repo: m[0], notes: sent.notes, viewed_add: sent.viewed_add, viewed_remove: sent.viewed_remove }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) S.fbErr = { item: item, text: j.error || ('HTTP ' + r.status) };
+    else { fbSettle(st, sent); fbKeep(item); if (S.detail && S.detail.data) S.detail.data.feedback = { notes: j.review.notes || [], viewed: j.review.viewed || [] }; load(['questions']); }
+  } catch (e) { S.fbErr = { item: item, text: 'request failed' }; }
+  S.fbBusy = null; render();
+}
 const paneStore = () => { try { return window.localStorage; } catch (e) { return null; } };
 function paneOpen(item, key, def) { const k = item + '.' + key; if (S.po[k] !== undefined) return S.po[k]; return paneRead(paneStore(), item, key, def); }
 function paneSet(item, key, open) { S.po[item + '.' + key] = open; paneWrite(paneStore(), item, key, open); }
@@ -1453,24 +1513,24 @@ function paneSet(item, key, open) { S.po[item + '.' + key] = open; paneWrite(pan
 function pane(item, p) {
   const open = paneOpen(item, p.key, p.def);
   const sum = h('summary', {}, [h('span', { class: 'ptitle' }, [p.title]), p.badge ? h('span', { class: 'chip ' + (p.badge.tone || 'neutral') }, [p.badge.text]) : null]);
-  return h('details', { class: 'pane' + (p.cls ? ' ' + p.cls : ''), id: 'pane-' + p.key.replace(/[^A-Za-z0-9_-]/g, '_'), 'data-k': 'pane:' + p.key, 'data-pane': item, 'data-key': p.key, open: open }, [sum, h('div', { class: 'pbody' }, open ? p.body() : [])]);
+  return h('details', { class: 'pane' + (p.cls ? ' ' + p.cls : ''), id: 'pane-' + p.key.replace(/[^A-Za-z0-9_-]/g, '_'), 'data-k': 'pane:' + p.key, 'data-pane': item, 'data-key': p.key, open: open }, [sum, h('div', { class: 'pbody' }, open ? [p.fb ? fbBar(item, p.fb, p.title) : null].concat(p.body()) : [])]);
 }
 function reviewOf(r) { const st = VRS[vrKey(r.repo, r.id)]; const v = VR[vrKey(r.repo, r.id)]; return (st && st.review) || (v && v.data && v.data.review) || null; }
 PANES.push(
   c => c.d && c.d.blocks && c.d.blocks.length ? { key: 'blocked', title: 'Blocked by the safety check', badge: { text: String(c.d.blocks.length), tone: 'warn' }, def: paneDefault('blocked', c.pd), cls: 'flat', body: () => [blockedView(c.r, c.d)] } : null,
-  c => { const sv = c.mode !== 'run' && c.d ? summaryView(c.r, c.d) : null; return sv ? { key: 'summary', title: 'Product summary', badge: c.d.summary ? { text: 'written', tone: 'ok' } : { text: 'not written', tone: 'warn' }, def: paneDefault('summary', c.pd), cls: 'flat', body: () => [sv] } : null; },
+  c => { const sv = c.mode !== 'run' && c.d ? summaryView(c.r, c.d) : null; return sv ? { key: 'summary', fb: 'summary', title: 'Product summary', badge: c.d.summary ? { text: 'written', tone: 'ok' } : { text: 'not written', tone: 'warn' }, def: paneDefault('summary', c.pd), cls: 'flat', body: () => [sv] } : null; },
   c => { const vp = vrPanel(c.r); if (!vp) return null; const rs = c.rv && c.rv.summary;
-    return { key: 'diagram', title: 'Change diagram', badge: rs ? { text: rs.checked + ' of ' + rs.total + (rs.outdated ? ' · ' + rs.outdated + ' outdated' : ''), tone: rs.unchecked || rs.outdated || rs.question || rs.change ? 'warn' : 'ok' } : null, def: paneDefault('diagram', c.pd), cls: 'flat', body: () => [vp] }; },
+    return { key: 'diagram', fb: 'pane:diagram', title: 'Change diagram', badge: rs ? { text: rs.checked + ' of ' + rs.total + (rs.outdated ? ' · ' + rs.outdated + ' outdated' : ''), tone: rs.unchecked || rs.outdated || rs.question || rs.change ? 'warn' : 'ok' } : null, def: paneDefault('diagram', c.pd), cls: 'flat', body: () => [vp] }; },
   c => { if (c.mode === 'run' || !c.d || !c.d.html) return null; const sp = splitSections(c.d.html);
-    return { key: 'dossier', title: 'Dossier', badge: sp.sections.length ? { text: sp.sections.length + ' section' + (sp.sections.length === 1 ? '' : 's'), tone: 'neutral' } : null, def: paneDefault('dossier', c.pd), cls: 'flat',
-      body: () => [sp.intro.trim() ? mdBlock(sp.intro, 'doc:intro') : null].concat(sp.sections.map(s => pane(c.item, { key: 'sec:' + s.slug, title: s.title, def: false, cls: 'sub', body: () => [mdBlock(s.html, 'doc:' + s.slug)] }))) }; },
-  c => { const pk = PKT[vrKey(c.r.repo, c.r.id)]; if (!pk || !pk.files) return null; return Object.keys(pk.files).map(n => packetModel(n, pk.files[n])).filter(Boolean).map(m => ({ key: m.key, title: m.title, badge: m.badge, def: false, cls: 'flat', body: () => packetBody(h, m, pk.root) })); },
-  c => c.mode === 'run' || !c.r.answered.length ? null : { key: 'answered', title: 'Answered questions', badge: { text: String(c.r.answered.length), tone: 'neutral' }, def: paneDefault('answered', c.pd), cls: 'flat',
+    return { key: 'dossier', fbKids: sp.sections.map(s => 'doc:' + s.slug), title: 'Dossier', badge: sp.sections.length ? { text: sp.sections.length + ' section' + (sp.sections.length === 1 ? '' : 's'), tone: 'neutral' } : null, def: paneDefault('dossier', c.pd), cls: 'flat',
+      body: () => [sp.intro.trim() ? mdBlock(sp.intro, 'doc:intro') : null].concat(sp.sections.map(s => pane(c.item, { key: 'sec:' + s.slug, fb: 'doc:' + s.slug, title: s.title, def: false, cls: 'sub', body: () => [mdBlock(s.html, 'doc:' + s.slug)] }))) }; },
+  c => { const pk = PKT[vrKey(c.r.repo, c.r.id)]; if (!pk || !pk.files) return null; return Object.keys(pk.files).map(n => packetModel(n, pk.files[n])).filter(Boolean).map(m => ({ key: m.key, fb: FB_ANCHOR.test('pane:' + m.key) ? 'pane:' + m.key : undefined, title: m.title, badge: m.badge, def: false, cls: 'flat', body: () => packetBody(h, m, pk.root) })); },
+  c => c.mode === 'run' || !c.r.answered.length ? null : { key: 'answered', fb: 'pane:answered', title: 'Answered questions', badge: { text: String(c.r.answered.length), tone: 'neutral' }, def: paneDefault('answered', c.pd), cls: 'flat',
     body: () => c.r.answered.map(a => h('details', { class: 'qrow', 'data-k': 'qa:' + a.id }, [h('summary', {}, [h('span', { class: 'qrq' }, [a.text.split('\n')[0]]), h('span', { class: 'qra mut' }, [(a.option ? a.option + ' · ' : '') + a.answer.split('\n')[0]])]),
       h('div', { class: 'panel qa' }, [h('div', {}, ['Q: ' + a.text]), h('div', { class: 'a' }, ['A: ' + (a.option ? a.option + ' · ' : '') + a.answer + ' · ', when(a.answeredAt || a.asked)]), h('a', { class: 'small', href: '/questions#q=' + enc(a.id) }, ['thread'])])])) },
   c => { const dp = deferredProgress(c.r, c.d); return dp ? { key: 'deferredprog', title: 'Fix run for the deferred issues', badge: fixLive(c.r) ? { text: 'running', tone: 'info' } : null, def: paneDefault('deferredprog', c.pd), cls: 'flat', body: () => [dp] } : null; },
-  c => c.nDf ? { key: 'deferred', title: 'Deferred issues', badge: { text: c.r.deferredOpen + ' open / ' + c.nDf, tone: c.r.deferredOpen ? 'warn' : 'neutral' }, def: paneDefault('deferred', c.pd), cls: 'flat', body: () => [deferredView(c.r)] } : null,
-  c => { const rv = resultView(c.r, c.d); return rv ? { key: 'result', title: 'Final reply', def: paneDefault('result', c.pd), cls: 'flat', body: () => [rv] } : null; },
+  c => c.nDf ? { key: 'deferred', fb: 'pane:deferred', title: 'Deferred issues', badge: { text: c.r.deferredOpen + ' open / ' + c.nDf, tone: c.r.deferredOpen ? 'warn' : 'neutral' }, def: paneDefault('deferred', c.pd), cls: 'flat', body: () => [deferredView(c.r)] } : null,
+  c => { const rv = resultView(c.r, c.d); return rv ? { key: 'result', fb: 'pane:result', title: 'Final reply', def: paneDefault('result', c.pd), cls: 'flat', body: () => [rv] } : null; },
   c => c.d && (c.mode === 'run' || c.hasTl) ? { key: 'timeline', title: c.d.planning ? 'Planning' : 'Implement dossier', badge: c.d.entries && c.d.entries.length ? { text: c.d.entries.length + ' updates', tone: 'neutral' } : null, def: paneDefault('timeline', c.pd), cls: 'flat',
     body: () => [c.mode === 'run' && (c.d.activeSection || '') === '' ? nowView(c.d, c.r.runner, true) : null, groupsView(c.d.groups || [], c.key, 'No updates yet — the agent posts here as the run progresses')] } : null,
   c => c.d ? (c.secs.filter(x => x.cmd).map(x => ({ key: 'tl:' + x.cmd, title: x.label, def: paneDefault('tl', c.pd) || (c.d.activeSection === x.cmd && c.mode === 'run'), cls: 'flat',
@@ -1504,7 +1564,8 @@ function itemView(repo, id) {
   const c = { r: r, d: d, mode: mode, key: key, item: item, secs: secs, rv: rv, pd: pd, busy: busy, nDf: r.deferred ? r.deferred.items.length : 0,
     hasTl: !!(d && d.entries && d.entries.length > 0), hasLog: !!(d && d.log && d.log.length > 0) };
   const list = []; PANES.forEach(f => { const x = f(c); if (x) (Array.isArray(x) ? x : [x]).forEach(y => list.push(y)); });
-  const kids = [header(r, mode), needsYou(r, d, mode)];
+  const fbAnchors = []; list.forEach(p => { if (p.fb) fbAnchors.push(p.fb); (p.fbKids || []).forEach(a => fbAnchors.push(a)); });
+  const kids = [header(r, mode, fbAnchors), needsYou(r, d, mode)];
   if (!d) kids.push(h('div', { class: 'loading', role: 'status', 'data-k': 'loading' }, [h('span', { class: 'dot info live' }), ' Loading the dossier… the header and the questions above are already current.']));
   const rail = list.length > 1 ? h('nav', { class: 'rail', 'aria-label': 'Sections', 'data-k': 'rail' }, list.map(p => h('button', { class: 'rail-i', type: 'button', 'data-act': 'pane-go', 'data-pane': p.key, 'data-k': 'ri:' + p.key }, [
     h('span', { class: 'dot ' + (p.badge && p.badge.tone === 'warn' ? 'warn' : p.badge && p.badge.tone === 'ok' ? 'ok' : p.badge && p.badge.tone === 'info' ? 'info' : ''), 'aria-hidden': 'true' }), h('span', { class: 'rail-t' }, [p.title]), p.badge ? h('span', { class: 'rail-b' }, [p.badge.text]) : null]))) : null;
@@ -2000,6 +2061,9 @@ document.addEventListener('click', (e) => {
     else if (act === 'blk') ruleBlock(t);
     else if (act === 'rmrule') removeRule(t);
     else if (act === 'pane-go') paneGo(t.dataset.pane);
+    else if (act === 'fb-verdict') { const st = fbState(t.dataset.item), cur = fbNote(fbSavedOf(), st, t.dataset.anchor); fbSetNote(st, t.dataset.anchor, cur.verdict === t.dataset.verdict ? { verdict: '', comment: '', blocking: false } : { verdict: t.dataset.verdict, comment: cur.comment, blocking: cur.blocking }); if (st.viewed[t.dataset.anchor] === undefined) fbSetViewed(st, t.dataset.anchor, true); fbKeep(t.dataset.item); render(); }
+    else if (act === 'fb-send') fbSend(t.dataset.item);
+    else if (act === 'fb-discard') { S.fb[t.dataset.item] = fbEmpty(); fbKeep(t.dataset.item); render(); }
     else if (act === 'usage-refresh') { S.usageBusy = true; render(); fetch('/api/accounts/refresh', { method: 'POST' }).catch(() => {}).finally(() => load(['runs'])); }
     else if (act === 'toggle-done') { S.showAll[t.dataset.repo] = !S.showAll[t.dataset.repo]; render(); }
     return;
@@ -2013,6 +2077,13 @@ document.addEventListener('click', (e) => {
   if (h2 && (h2 === '/' || h2.indexOf('/questions') === 0 || h2.indexOf('/chat') === 0 || h2.indexOf('/repo/') === 0)) { e.preventDefault(); navigate(h2); }
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.target.dataset && e.target.dataset.dm) { e.preventDefault(); sendDm(); return; } if ((e.key === ' ' || e.key === 'Enter') && e.target.classList && e.target.classList.contains('dfc') && e.target.dataset.act === 'dsel') { e.preventDefault(); e.target.click(); } });
+/* The viewed tick, the blocking tick and the comment of a feedback bar: kept in the local draft on change (not on every keystroke). */
+document.addEventListener('change', (e) => {
+  const t = e.target; const k = t && t.dataset && t.dataset.fb; if (!k) return;
+  const st = fbState(t.dataset.item), a = t.dataset.anchor;
+  if (k === 'viewed') fbSetViewed(st, a, t.checked); else if (k === 'blocking') fbSetNote(st, a, { blocking: t.checked }); else if (k === 'comment') fbSetNote(st, a, { comment: t.value });
+  fbKeep(t.dataset.item); render();
+});
 /* Opening or closing a pane (the summary click is also Enter and Space) is remembered for this viewer; the closed body is dropped and the open one built. */
 document.addEventListener('click', (e) => {
   const sm = e.target.closest ? e.target.closest('details.pane>summary') : null; if (!sm) return;
