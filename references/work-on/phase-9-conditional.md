@@ -74,9 +74,18 @@ Two sources:
   anchor's note must agree (a repo with no `base_sha` falls back to the
   name alone and prints `WARN`). It writes `docs/architecture/<stem>.json`,
   the `.md` stub when absent, validates and runs `vr_mermaid.py sync`.
-  The owner's approval is tied to the exact file: each kept element needs an
-  `ok` in `review.json` (`anchor.diagram` `arch:<stem>`) on the current hash
-  of the draft (the dashboard's `graph_hash`). Exit 1 is a stop, each with
+  The owner's approval is tied to the file's content, not its bookkeeping:
+  each kept element needs an `ok` in `review.json` (`anchor.diagram`
+  `arch:<stem>`) on the current approval key of the draft (the dashboard's
+  `graph_hash`: the hash of the file without its pure metadata, that is
+  `meta.commit`, `base_sha`, `branch`, `generated_at`, the `path`, `line`,
+  `end_line` and `note` of source evidence, and any `path:LINE` code anchor
+  written in a `detail` or `text`). When only that metadata moved (the
+  commit the diagram was drawn on, a code link re-pointed, a line number),
+  the approval carries: never ask the owner again, record
+  `approval carried: metadata only (<fields>)` in `## Build log` (the line
+  `vr_promote.py --check-approval` prints). A changed step, lane, arrow,
+  label or element is a new key and needs approval again. Exit 1 is a stop, each with
   the element named:
   `STALE-ANCHOR` (the code no longer has what the anchor pointed at: fix
   the draft or the code and rerun), `UNRESOLVED-CHANGE` (a `change` or

@@ -1143,7 +1143,7 @@ def _visual_review_decision_problems(line: str, base: Path, root: Path, dossier_
         problems.append("decision.json has no owner verdicts: review.json is missing or unreadable; the owner "
                         "approves the decision flow on the dashboard like L0, L1 and L2")
     else:
-        _, bad = vr_promote.approval(vr_promote.graph_hash(graph), review, ids, "decision", "decision.json")
+        _, bad = vr_promote.approve(graph, review, ids, "decision", "decision.json")
         problems.extend("decision.json: " + b for b in bad[:5])
     return problems
 

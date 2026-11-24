@@ -97,7 +97,12 @@ Read why it failed (`gh pr checks <n>`, `gh run view <run> --log-failed`).
 Fix it on the branch, inside what the pull request changed: a spelling or
 link a docs check names, a validator's finding on a plan document, a test the
 change broke. A failure the change did not cause (an outage, a flaky job that
-failed twice) is put to the owner with the evidence, never patched around.
+failed twice) is never put to the owner: re-run its failed jobs
+yourself (`gh run rerun <id> --failed`, at most 2 re-runs per head), record a
+test that fails outside the touched files and passes locally as a suspected
+flake in the PR note, and when the budget is used up end with the failure
+noted (`references/owner-questions.md`, "A red CI check outside the change").
+Do not patch around it.
 
 ## Step 3 — Prove it
 

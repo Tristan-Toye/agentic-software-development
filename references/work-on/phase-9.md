@@ -161,8 +161,16 @@
    failure. Fix it on this branch, test first, through the implementer flow,
    then push and wait again. Never declare the run done on a red PR. A red
    check this branch does not touch (a network error, or a check that is red
-   on the base too): log it as `CI: red <check> — not this change: <evidence>`,
-   note it in the PR description, and rerun it once with `--rerun-failed`.
+   on the base too): never ask the owner. Re-run its failed jobs yourself
+   (`gh run rerun <id> --failed`, or `wait_ci.py --rerun-failed`), **at most 2
+   re-runs per head**. A test that fails outside the files this change touched
+   and passes locally is a suspected flake: log `CI: red <check> — suspected
+   flake: <evidence>`, note it in the PR description (or as a deferred item).
+   When the 2 re-runs are used and it still fails outside the change, end the
+   CI wait with `CI: red <check> — not this change, 2 re-runs used` in the
+   log and the PR description, and go on; the stub integration (`/stub`) owns
+   cross-dossier red. Only a red check inside this change's own files stays a
+   fix-it item (above).
 5. **Record the URL and remove the worktree.** Once the URL is in hand, write it
    to the front matter as `pr: [<url>]` (the canonical form: a list of full PR URLs, `dossier_edit.py set <dossier> pr=<url>` writes it) and set `status: done`. Committed mode: commit that
    final state on `X` and push it — the branch is yours, the PR picks the

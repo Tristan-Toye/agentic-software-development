@@ -119,9 +119,77 @@ def graph_hash(graph) -> str:
 
 HASH_CASE_EXPECTED = "8ce8ade17ad88b468fe732549001fa366d19a7ee5fba0c509ad28cd8b081434a"
 
+# The approval key. Approval is tied to what the owner looked at (steps, lanes, arrows, labels, elements), not to the
+# bookkeeping around it: the commit the diagram was drawn on and the code links. Mirrors `approvalHash` in
+# shared/questions/vrlayout.ts; shared/test/vrhash.test.ts asserts the same constants (APPROVAL_CASE_EXPECTED).
+META_IGNORED = ("commit", "base_sha", "branch", "generated_at")
+EVIDENCE_IGNORED = ("path", "line", "end_line", "note")
+ANCHOR_RE = re.compile(r"[A-Za-z0-9_./-]+\.[A-Za-z0-9]+:[0-9]+(?:-[0-9]+)?")
+ANCHOR_TEXT_KEYS = ("detail", "text")
 
-def approval(l1_hash: str, review: dict | None, step_ids: list, diagram: str = "L1", fname: str = "l1.json") -> tuple:
-    """(removed ids, problems). The owner's approval is tied to the exact file (`diagram` is its anchor: L1, or
+
+def strip_metadata(v, key=None):
+    """A copy of the graph without the pure metadata: `meta.commit|base_sha|branch|generated_at`, and `path`, `line`,
+    `end_line` and `note` of every `source` evidence entry (a code link re-pointed to the same symbol, a renamed
+    file, a moved line), and any `path:LINE` code anchor written inside a `detail` or `text`. The entry stays (its
+    tier), so a source entry turned inferred, or an element that lost its evidence, still changes the key. Only the
+    visible content (participants, messages, labels, order, kinds) is in the key."""
+    if isinstance(v, list):
+        return [strip_metadata(x, key) for x in v]
+    if isinstance(v, dict):
+        out = {}
+        for k, x in v.items():
+            if key == "meta" and k in META_IGNORED:
+                continue
+            if key == "evidence" and k in EVIDENCE_IGNORED and v.get("tier") == "source":
+                continue
+            if k in ANCHOR_TEXT_KEYS and isinstance(x, str):
+                x = ANCHOR_RE.sub("<anchor>", x)
+            out[k] = strip_metadata(x, k)
+        return out
+    return v
+
+
+def approval_hash(graph) -> str:
+    """The key an approval is recorded under (`anchor.graph_hash` of review.json): `graph_hash` of the graph without
+    its pure metadata. Only metadata moved: same key, the approval carries. Any step, lane, arrow, label or element
+    change: new key, the owner approves again."""
+    return graph_hash(strip_metadata(graph))
+
+
+APPROVAL_CASE_EXPECTED = "9d6ec0a5df120af15542fa3f7e5cf31ecb8edf87c7a2ac9f5a01a8e6a6344285"
+
+
+def metadata_fields(graph) -> list:
+    """The metadata fields the approval key ignores that this graph carries (named in the carried-approval line)."""
+    out = ["meta." + k for k in META_IGNORED if k in (graph.get("meta") or {})]
+    def walk(v):
+        if isinstance(v, dict):
+            for x in v.get("evidence") or []:
+                if isinstance(x, dict) and x.get("tier") == "source" and any(k in x for k in EVIDENCE_IGNORED):
+                    return True
+            return any(walk(x) for x in v.values())
+        if isinstance(v, list):
+            return any(walk(x) for x in v)
+        return False
+    if walk(graph):
+        out.append("code anchors (evidence path/line/note, path:LINE in text)")
+    return out
+
+
+def carried_line(graph) -> str:
+    return "approval carried: metadata only (%s)" % ", ".join(metadata_fields(graph) or ["none present"])
+
+
+def approve(graph, review: dict | None, step_ids: list, diagram: str = "L1", fname: str = "l1.json") -> tuple:
+    """`approval` on the graph's approval key. A line recorded before the key existed carries the full-file hash and
+    is still honoured while the file is byte-identical to what it saw."""
+    return approval(approval_hash(graph), review, step_ids, diagram, fname, legacy=graph_hash(graph))
+
+
+def approval(l1_hash: str, review: dict | None, step_ids: list, diagram: str = "L1", fname: str = "l1.json", legacy: str | None = None) -> tuple:
+    """(removed ids, problems). The owner's approval is tied to the file's approval key (`approval_hash`: the exact
+    content minus pure metadata; `legacy` is the old full-file hash, accepted as the same hash) (`diagram` is its anchor: L1, or
     `arch:<stem>` for a draft in arch/): every promoted element (a step of the flow) needs an `ok`
     line whose graph_hash is the current hash. A `change` or `question` line on the current hash is unresolved, and
     an `ok` never clears it (any order). A line on an older hash proves nothing about this file: the older versions
@@ -138,7 +206,7 @@ def approval(l1_hash: str, review: dict | None, step_ids: list, diagram: str = "
         if sid in removed:
             continue
         ls = lines.get(sid, [])
-        cur = [x for x in ls if x["anchor"].get("graph_hash") == l1_hash]
+        cur = [x for x in ls if x["anchor"].get("graph_hash") in (l1_hash, legacy)]
         open_ = [x for x in cur if x.get("verdict") in ("change", "question")]
         if open_:
             problems.append("UNRESOLVED-CHANGE %s: a %s verdict on the current %s hash is open (%s)"
@@ -404,11 +472,13 @@ def _run_draft(dossier_id: str, stem: str, repo: str, vr: str, l1: dict | None, 
         return 2
     label, fname = "arch:" + stem, "arch/%s.json" % stem
     ids = [n["id"] for n in draft.get("nodes", [])]
-    removed, problems = approval(graph_hash(draft), review, ids, label, fname)
+    removed, problems = approve(draft, review, ids, label, fname)
     if check_only:
         for pr in problems:
             print(pr)
         print("approval: " + ("every element of %s is approved on the current %s" % (stem, fname) if not problems else "%d element(s) not approved" % len(problems)))
+        if not problems and ids:
+            print(carried_line(draft))
         return 1 if problems else 0
     if not preview:
         for pr in problems:
@@ -545,7 +615,7 @@ def shadow_all(dossier_id: str, repo: str, mode: str | None = None) -> int:
     except (OSError, ValueError, PromoteError):
         review = None
     try:
-        removed, _ = approval(graph_hash(l1), review, [])
+        removed, _ = approve(l1, review, [])
     except (KeyError, TypeError, AttributeError):
         removed = set()
     nodes = {n.get("id"): n for n in l1.get("nodes", []) if isinstance(n, dict)}
@@ -621,19 +691,21 @@ def run(dossier_id: str, stem: str, repo: str, preview: bool = False, check_only
             return _run_draft(dossier_id, stem, repo, vr, l1, review, preview, check_only)
     removed: set = set()
     if check_only:
-        _, problems = approval(graph_hash(l1), review, flows[0].get("after", []))
+        _, problems = approve(l1, review, flows[0].get("after", []))
         for pr in problems:
             print(pr)
         print("approval: " + ("every step of %s is approved on the current l1.json" % stem if not problems else "%d step(s) not approved" % len(problems)))
+        if not problems and flows[0].get("after"):
+            print(carried_line(l1))
         return 1 if problems else 0
     if not preview:
-        removed, problems = approval(graph_hash(l1), review, flows[0].get("after", []))
+        removed, problems = approve(l1, review, flows[0].get("after", []))
         for pr in problems:
             print(pr)
         if problems:
             return 1
     else:
-        removed, _ = approval(graph_hash(l1), review, [])
+        removed, _ = approve(l1, review, [])
     try:
         graph = promote_graph(l1, stem, removed)
     except PromoteError as exc:
@@ -693,6 +765,8 @@ def _selftest() -> int:
     # the hash is the dashboard's: shared/test/vrhash.test.ts asserts the same constant
     hc = vr_graph.load(os.path.join(vr_graph.FIXTURES, "hash-case.json"))
     check("hash:cross-language", graph_hash(hc) == HASH_CASE_EXPECTED, graph_hash(hc))
+    ac = vr_graph.load(os.path.join(vr_graph.FIXTURES, "approval-case.json"))
+    check("hash:approval-cross-language", approval_hash(ac) == APPROVAL_CASE_EXPECTED, approval_hash(ac))
 
     # a decision diagram is review-only: it is never an architecture draft, so it is never promoted into docs/architecture
     check("decision:not-an-arch-view", "decision" not in ARCH_VIEWS and "decision" not in MERMAID_DEFAULT)
@@ -815,6 +889,67 @@ def _selftest() -> int:
     d, l1 = scenario({})
     review(d, l1, all_ok(l1), None)
     check("approval:current", call(d)[0] == 0)
+    # the approval key: only metadata moved (drawn-on commit, code links, line numbers) -> the approval carries;
+    # a step label, an arrow or an element -> the owner approves again. Lines on the old full-file hash still hold.
+    d, l1 = scenario({})
+    review(d, l1, [x + (approval_hash(l1),) for x in all_ok(l1)])
+    l1p = os.path.join(d, ".discovery", "visual-review", "W-9", "l1.json")
+    base_ok = call(d)
+    check("key:approved-on-the-key", base_ok[0] == 0, base_ok[1])
+    moved = copy.deepcopy(l1)
+    moved["meta"]["base_sha"] = "0" * 40
+    moved["meta"]["commit"] = "1" * 40
+    for n in moved["nodes"]:
+        for ev in n.get("evidence") or []:
+            if ev.get("tier") == "source":
+                ev["line"] = ev.get("line", 1) + 3
+                if "end_line" in ev:
+                    ev["end_line"] += 3
+    check("key:metadata-moved-the-file", graph_hash(moved) != graph_hash(l1) and approval_hash(moved) == approval_hash(l1))
+    soft = copy.deepcopy(l1)
+    soft["meta"]["commit"] = "1" * 40
+    soft["meta"]["branch"] = "feat/other"
+    json.dump(soft, open(l1p, "w"))
+    rc, out = call(d)
+    check("key:metadata-only-carries", rc == 0, out)
+    json.dump(moved, open(l1p, "w"))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = run("W-9", "seq-new", d, False, True)
+    # an anchor-only change (a migration file renamed in a code link, a moved path:LINE in a detail) is not visible content
+    anch = copy.deepcopy(l1)
+    for n in anch["nodes"]:
+        n["detail"] = (n.get("detail") or "") + " see db/migrations/V1__old.sql:3"
+        for ev in n.get("evidence") or []:
+            if ev.get("tier") == "source":
+                ev["path"] = "db/migrations/V2__new_name.sql"
+                ev["note"] = "renamed"
+    base_a = copy.deepcopy(anch)
+    for n in base_a["nodes"]:
+        n["detail"] = n["detail"].replace("V1__old.sql:3", "V2__new_name.sql:40")
+        for ev in n.get("evidence") or []:
+            if ev.get("tier") == "source":
+                ev["path"] = "db/migrations/V1__old.sql"
+                ev["note"] = "old"
+    check("key:anchor-only-same-key", approval_hash(anch) == approval_hash(base_a) and graph_hash(anch) != graph_hash(base_a))
+    vis = copy.deepcopy(base_a)
+    vis["nodes"][0]["detail"] = vis["nodes"][0]["detail"].replace("see db", "then see db")
+    check("key:visible-text-changes-key", approval_hash(vis) != approval_hash(base_a))
+    check("key:carried-line", rc == 0 and "approval carried: metadata only (meta.commit, meta.base_sha" in buf.getvalue(), buf.getvalue())
+    for label, mut in (("label", lambda g: g["nodes"][0].update(label="Renamed step")),
+                       ("element", lambda g: g["nodes"].append(dict(g["nodes"][0], id="s99"))),
+                       ("arrow", lambda g: g["edges"].pop() if g.get("edges") else g["nodes"].pop()),
+                       ("lane", lambda g: g["nodes"][0].update(lane="elsewhere"))):
+        changed = copy.deepcopy(moved)
+        mut(changed)
+        check("key:%s-needs-approval" % label, approval_hash(changed) != approval_hash(l1))
+    d, l1 = scenario({})
+    changed = copy.deepcopy(l1)
+    changed["nodes"][0]["label"] = "Renamed step"
+    review(d, l1, [x + (approval_hash(l1),) for x in all_ok(l1)])
+    json.dump(changed, open(os.path.join(d, ".discovery", "visual-review", "W-9", "l1.json"), "w"))
+    rc, out = call(d)
+    check("key:content-change-is-stale", rc == 1 and ("STALE-APPROVAL" in out or "NOT-APPROVED" in out), out)
     d, l1 = scenario({})
     review(d, l1, [(n["id"], "ok", "2026-01-02T00:00:00Z", "0" * 64) for n in l1["nodes"]])
     rc, out = call(d)

@@ -1,0 +1,37 @@
+{
+  "zeta": [
+    3,
+    {
+      "b": "é",
+      "a": null,
+      "$comment": "dropped"
+    }
+  ],
+  "meta": {
+    "repo": "r",
+    "commit": "abc1234",
+    "base_sha": "def5678",
+    "branch": "feat/x",
+    "generated_by": "hand"
+  },
+  "nodes": [
+    {
+      "id": "n1",
+      "label": "Step one",
+      "evidence": [
+        {
+          "tier": "source",
+          "path": "src/a.rs",
+          "line": 10,
+          "end_line": 12,
+          "note": "the call"
+        },
+        {
+          "tier": "inferred",
+          "note": "why"
+        }
+      ],
+      "detail": "Applies migrations/V12__old_name.sql:14 then returns"
+    }
+  ]
+}
