@@ -1075,7 +1075,7 @@ def selftest() -> int:
         st8 = stx(); m8 = dict(mk(), launch=dict(m4["launch"]), fix_rounds=2)
         step_member(st8, m8, {"id": "R", "status": "ready", "runner": fd, "deferred": [{"id": "D-9", "state": "open"}]})
         check("follow-up bound reached: finished with the reason in the state, no launch, no pause",
-              calls_ == [] and not st8["paused"] and m8["stage"] == "finished" and "D-9" in m8["state"], (calls_, st8, m8))
+              calls_ == [] and not st8["paused"] and m8["stage"] == "finished" and "D-9" in str(m8["state"]), (calls_, st8, m8))
     finally:
         globals()["start_runner"] = real_start
 
