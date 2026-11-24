@@ -29,12 +29,18 @@ export type Layout = {
   frames?: Record<string, Box>
   /** seq: the sender-to-receiver arrow of each message node, by node id (see seqLayout). */
   arrows?: Record<string, SeqArrow>
+  /** seq: the box of each expanded ref group (author or mechanical group of consecutive messages), by group id; the page draws its header with the fold button. */
+  refs?: Record<string, Box>
+  /** seq: the wrapped label lines of each message and each lane header, by node or lane id (the page draws exactly these). */
+  texts?: Record<string, string[]>
+  /** seq: the height of the lane headers; a lifeline starts below it. */
+  headH?: number
   /** The drawn shape of every node that is not a plain rectangle, by node id (see nodeShape). Absent when all nodes are rectangles. */
   shapes?: Record<string, Shape>
 }
 export type Issue = { code: string; where: string; message: string }
 /** One view as the page gets it. `layout` is null when the graph could not be laid out (see `issues`). */
-export type ViewResult = { file: string; view?: string; title?: string; graph: any | null; layout: Layout | null; issues: Issue[] }
+export type ViewResult = { file: string; view?: string; title?: string; graph: any | null; layout: Layout | null; issues: Issue[]; /** seq: the ref groups folded on open (see seqFold). */ collapsed?: string[] }
 export type VisualReview = { dossier: string; dir: string; rev: string; views: Record<string, ViewResult | null>; issues: Issue[]; hasReview: boolean }
 
 /** Above this many nodes the layout uses ELK's cheaper settings (scenario S9). */
@@ -371,6 +377,25 @@ export function seqKind(n: any): SeqArrow["kind"] {
 /** The receiver lane of a message node: `seq.to` (a seq graph) or `to` (an L1 step); undefined for a note or a node with neither. */
 export const seqReceiver = (n: any): string | undefined => (n?.kind === "note" ? undefined : n?.seq?.to ?? n?.to) || undefined
 
+/** seq text metrics: a label is 12 px text on the arrow (SEQ_CHAR px a character), wrapped at SEQ_WRAP characters, SEQ_LINE px a line; a lane header wraps at SEQ_LANE_WRAP characters. */
+const SEQ_CHAR = 6.3, SEQ_WRAP = 44, SEQ_LANE_WRAP = 24, SEQ_LINE = 15, SEQ_REF_H = 28, HEAD_MIN = 120
+/** Words wrapped greedily at `max` characters; a word longer than a line is broken. Never drops text. */
+export function wrapWords(label: string, max: number): string[] {
+  const out: string[] = []
+  let l = ""
+  for (let w of String(label ?? "").split(/\s+/).filter(Boolean)) {
+    while (w.length > max) { if (l) { out.push(l); l = "" } out.push(w.slice(0, max)); w = w.slice(max) }
+    if ((l + " " + w).trim().length > max && l) { out.push(l); l = w } else l = (l + " " + w).trim()
+  }
+  if (l) out.push(l)
+  return out.length ? out : [""]
+}
+const seqTextWidth = (lines: string[]): number => Math.ceil(Math.max(...lines.map((t) => t.length)) * SEQ_CHAR) + 8
+/** The text of a folded ref: its label and the count of messages it holds. */
+const seqRefLabel = (n: any): string => "ref  " + String(n.label ?? "") + "  (" + (n.members ?? 0) + " msg" + (n.members === 1 ? "" : "s") + ")"
+
+/** The seq budget: at most SEQ_BUDGET.lanes lanes and SEQ_BUDGET.messages messages are drawn flat; a bigger diagram folds its messages into refs of at most SEQ_BUDGET.group messages (scripts/vr_graph.py SEQ_* holds the same numbers). Labels: lane <= laneLabel, message <= msgLabel characters. */
+export const SEQ_BUDGET = { lanes: 6, messages: 12, group: 6, laneLabel: 24, msgLabel: 32, maxLevels: 2 }
 /**
  * seq: the layout of a sequence diagram, computed here and not by ELK. Participants are columns in file order, each with a lifeline
  * (the lane box is the full-height column; its centre line is the lifeline). Each message is one row in flows[0].after order: its node box
@@ -388,58 +413,97 @@ export function seqLayout(g: any): Layout {
   const laneIdx = (id: unknown): number => lanes.findIndex((l) => l.id === id)
   const laneOf = (n: any): number => Math.max(0, laneIdx(n.lane))
   const recvOf = (n: any): number => { const r = seqReceiver(n); const i = r === undefined ? -1 : laneIdx(r); return i < 0 ? laneOf(n) : i }
-  const sz = new Map<string, { width: number; height: number }>(order.map((id) => [id, size(g, node.get(id).label, false, !!node.get(id).stereotype)]))
+  const isRef = (n: any): boolean => n.collapsed === true
   const isMsg = (n: any): boolean => n.kind !== "note"
-  // Gap between neighbouring lifelines: wide enough for the column header and, for every message, the label across the lifelines it spans.
-  const COL = 170
-  const gap: number[] = lanes.map(() => COL)
-  const need = order.map((id) => { const n = node.get(id); const a = laneOf(n), b = recvOf(n); return { lo: Math.min(a, b), hi: Math.max(a, b), w: sz.get(id)!.width + 24, self: a === b, msg: isMsg(n) } })
+  const texts: Record<string, string[]> = {}
+  // A message is one line of text on its arrow (wrapped at SEQ_WRAP chars only when longer); a ref is a band with its label; a note keeps its card.
+  const sz = new Map<string, { width: number; height: number }>(order.map((id) => {
+    const n = node.get(id)
+    if (isRef(n)) { texts[id] = [seqRefLabel(n)]; return [id, { width: seqTextWidth(texts[id]) + 56, height: SEQ_REF_H }] }
+    if (!isMsg(n)) return [id, size(g, n.label, false, !!n.stereotype)]
+    texts[id] = wrapWords(n.label, SEQ_WRAP)
+    return [id, { width: seqTextWidth(texts[id]), height: SEQ_LINE * texts[id].length }]
+  }))
+  // Lane headers: the label wrapped, the column as wide as its widest line (the status mark sits at the right), never narrower than HEAD_MIN.
+  const head = lanes.map((l) => wrapWords(String(l.label ?? l.id), SEQ_LANE_WRAP))
+  const hw = head.map((h) => Math.max(HEAD_MIN, Math.ceil(Math.max(...h.map((t) => t.length)) * 7.6) + 40))
+  lanes.forEach((l, i) => { texts[l.id] = head[i] })
+  const headH = 14 + 16 * Math.max(1, ...head.map((h) => h.length)) + 14
+  // Gap between neighbouring lifelines: wide enough for the two column headers and, for every message, the label across the lifelines it spans.
+  const COL = 150
+  const gap: number[] = lanes.map((_, i) => (i < lanes.length - 1 ? Math.max(COL, (hw[i] + hw[i + 1]) / 2 + 12) : COL))
+  const refSpan = (n: any): [number, number] => {
+    const over: number[] = (n.seq?.over ?? []).map(laneIdx).filter((k: number) => k >= 0)
+    return over.length ? [Math.min(...over), Math.max(...over)] : [laneOf(n), laneOf(n)]
+  }
+  const need = order.map((id) => {
+    const n = node.get(id)
+    if (isRef(n)) { const [lo, hi] = refSpan(n); return { lo, hi, w: sz.get(id)!.width, self: false, msg: true } }
+    const a = laneOf(n), b = recvOf(n)
+    return { lo: Math.min(a, b), hi: Math.max(a, b), w: sz.get(id)!.width + 24, self: a === b, msg: isMsg(n) }
+  })
   for (const r of [...need].filter((x) => x.msg).sort((p, q) => (p.hi - p.lo) - (q.hi - q.lo))) {
     if (r.self) { if (r.lo < lanes.length - 1) gap[r.lo] = Math.max(gap[r.lo], 28 + r.w); continue }
+    if (r.lo === r.hi) continue
     let have = 0
     for (let i = r.lo; i < r.hi; i++) have += gap[i]
     if (have < r.w) for (let i = r.lo; i < r.hi; i++) gap[i] += (r.w - have) / (r.hi - r.lo)
   }
   const cx: number[] = []
-  lanes.reduce((x, _, i) => (cx[i] = x, x + gap[i]), COL / 2 + 10)
+  lanes.reduce((x, _, i) => (cx[i] = x, x + gap[i]), (hw[0] ?? HEAD_MIN) / 2 + 10)
   const at = new Map<string, number>(order.map((id, i) => [id, i]))
+  // Ref groups that are open (their members are rows): one box around the rows, like a frame; the rows of a group need room above and below.
+  const grpOf = (n: any): string[] => { const out: string[] = []; const gm = new Map<string, any>((g.groups ?? []).map((x: any) => [x.id, x])); for (let p = n.group, k = 0; p && gm.has(p) && k < 50; k++) { out.push(p); p = gm.get(p).parent } return out }
+  const grange = new Map<string, [number, number]>()
+  order.forEach((id, i) => { for (const gid of grpOf(node.get(id))) { const r = grange.get(gid); grange.set(gid, r ? [Math.min(r[0], i), Math.max(r[1], i)] : [i, i]) } })
+  const gframes = (g.groups ?? []).filter((x: any) => grange.has(x.id)).map((x: any) => ({ id: x.id, kind: "ref", label: x.label, first: order[grange.get(x.id)![0]], last: order[grange.get(x.id)![1]] }))
   const starts = order.map(() => 0), ends = order.map(() => 0)
-  for (const f of g.frames ?? []) { const a = at.get(f.first), b = at.get(f.last); if (a !== undefined && b !== undefined && a <= b) { starts[a]++; ends[b]++ } }
+  for (const f of [...(g.frames ?? []), ...gframes]) { const a = at.get(f.first), b = at.get(f.last); if (a !== undefined && b !== undefined && a <= b) { starts[a]++; ends[b]++ } }
   const boxes: Record<string, Box> = {}, span: Record<string, Box> = {}, arrows: Record<string, SeqArrow> = {}
-  let y = 54
+  let y = headH + 14 + 18 * Math.min(starts[0] ?? 0, 4)
   order.forEach((id, i) => {
-    if (i) y += 14 + 18 * Math.min(starts[i], 4) + 8 * Math.min(ends[i - 1], 4)
+    if (i) y += 4 + 18 * Math.min(starts[i], 4) + 8 * Math.min(ends[i - 1], 4)
     const n = node.get(id), l = laneOf(n), r = recvOf(n), s = sz.get(id)!
     let bx: number
+    if (isRef(n)) {
+      const [lo, hi] = refSpan(n), mid = (cx[lo] + cx[hi]) / 2, w = Math.max(s.width, cx[hi] - cx[lo] + 28)
+      boxes[id] = { x: Math.round(mid - w / 2), y, w: Math.round(w), h: s.height }; span[id] = boxes[id]
+      y += s.height + 8
+      return
+    }
     if (!isMsg(n)) {
       const pos = n.seq?.position, over: number[] = (n.seq?.over ?? []).map(laneIdx).filter((k: number) => k >= 0)
       bx = pos === "right of" ? cx[l] + 14 : pos === "left of" ? cx[l] - 14 - s.width : over.length ? (Math.min(...over.map((k) => cx[k])) + Math.max(...over.map((k) => cx[k]))) / 2 - s.width / 2 : cx[l] - s.width / 2
       boxes[id] = { x: Math.round(bx), y, w: s.width, h: s.height }; span[id] = boxes[id]
-      y += s.height
+      y += s.height + 6
       return
     }
-    const self = l === r, ay = y + s.height + 8
+    const self = l === r, ay = y + s.height + 6
     if (self) {
       boxes[id] = { x: Math.round(cx[l] + 28), y, w: s.width, h: s.height }
-      const pts: [number, number][] = [[cx[l], y + 6], [cx[l] + 22, y + 6], [cx[l] + 22, ay], [cx[l], ay]]
+      const pts: [number, number][] = [[cx[l], y + 4], [cx[l] + 22, y + 4], [cx[l] + 22, ay], [cx[l], ay]]
       arrows[id] = { from: lanes[l]?.id, to: lanes[r]?.id, kind: seqKind(n), self, points: pts.map(([a, b]) => [Math.round(a), Math.round(b)] as [number, number]) }
     } else {
-      bx = (cx[l] + cx[r]) / 2 - s.width / 2
+      // The label sits on the arrow beside the sender (left-aligned for an arrow to the right, right-aligned for one to the left).
+      bx = l < r ? cx[l] + 10 : cx[l] - 10 - s.width
       boxes[id] = { x: Math.round(bx), y, w: s.width, h: s.height }
       arrows[id] = { from: lanes[l]?.id, to: lanes[r]?.id, kind: seqKind(n), self, points: [[Math.round(cx[l]), ay], [Math.round(cx[r]), ay]] }
     }
     const bb = boxes[id], xs = [bb.x, bb.x + bb.w, ...arrows[id].points.map((p) => p[0])]
     span[id] = { x: Math.min(...xs), y, w: Math.max(...xs) - Math.min(...xs), h: ay - y + 6 }
-    y = ay + 6
+    y = ay + 8
   })
   const bottom = y + 20
   const last = lanes.length - 1
-  const half = COL / 2 - 10
-  const maxX = Math.max(last < 0 ? 0 : cx[last] + half, ...Object.values(span).map((b) => b.x + b.w + 10))
-  const L: Layout = { view: g.view, mode: "thorough", direction: "DOWN", width: Math.round(maxX), height: bottom, boxes, edges: {}, arrows }
-  lanes.forEach((l, i) => { L.boxes[l.id] = { x: Math.round(cx[i] - half), y: 0, w: half * 2, h: bottom } })
+  const maxX = Math.max(last < 0 ? 0 : cx[last] + hw[last] / 2 + 10, ...Object.values(span).map((b) => b.x + b.w + 10))
+  const L: Layout = { view: g.view, mode: "thorough", direction: "DOWN", width: Math.round(maxX), height: bottom, boxes, edges: {}, arrows, texts, headH }
+  lanes.forEach((l, i) => { L.boxes[l.id] = { x: Math.round(cx[i] - hw[i] / 2), y: 0, w: hw[i], h: bottom } })
   const fr = frameBoxes(g, span)
   if (fr) { L.frames = fr; for (const b of Object.values(fr)) { L.width = Math.max(L.width, b.x + b.w); L.height = Math.max(L.height, b.y + b.h) } }
+  if (gframes.length) {
+    const rf = frameBoxes({ frames: gframes, flows: [{ after: order }], nodes: g.nodes }, span)
+    if (rf) { L.refs = rf; for (const b of Object.values(rf)) { L.width = Math.max(L.width, b.x + b.w); L.height = Math.max(L.height, b.y + b.h) } }
+  }
   return L
 }
 const cache = new Map<string, Layout>()
@@ -523,6 +587,47 @@ async function runLayoutOnce(g: any, key: string, timeoutMs: number, wrap: boole
   return L
 }
 
+// ---- seq: hierarchical folding (a too-big sequence is folded into refs, never cropped) ----
+/**
+ * A seq graph over the budget (more than SEQ_BUDGET.messages messages, or more than SEQ_BUDGET.lanes lanes with more than SEQ_BUDGET.group messages)
+ * drawn folded: consecutive messages grouped into `ref` boxes that expand in place. The groups are the author's (`groups` with `group` on the
+ * messages, `parent` for a second level) when the draft has them; else a mechanical grouping: consecutive runs of at most SEQ_BUDGET.group
+ * messages (balanced), and, when that gives more than SEQ_BUDGET.group refs, runs of refs, so at most two levels. Returns the graph with its groups
+ * and the ids folded on open (the top level). A graph within the budget is returned as it is with nothing folded. Pure.
+ */
+export function seqFold(g: any): { graph: any; fold: string[] } {
+  if (g?.view !== "seq" || !(g.lanes ?? []).length) return { graph: g, fold: [] }
+  const ids = new Set<string>(g.nodes.map((n: any) => n.id))
+  const order: string[] = Array.isArray(g.flows?.[0]?.after) ? g.flows[0].after.filter((id: string) => ids.has(id)) : []
+  const seen = new Set<string>(order)
+  for (const n of [...g.nodes].sort((a: any, b: any) => (a.order ?? 1e9) - (b.order ?? 1e9))) if (!seen.has(n.id)) { seen.add(n.id); order.push(n.id) }
+  const node = new Map<string, any>(g.nodes.map((n: any) => [n.id, n]))
+  const msgs = order.filter((id) => node.get(id).kind !== "note")
+  const over = msgs.length > SEQ_BUDGET.messages || ((g.lanes ?? []).length > SEQ_BUDGET.lanes && msgs.length > SEQ_BUDGET.group)
+  if (!over) return { graph: g, fold: [] }
+  const gids = new Set<string>((g.groups ?? []).map((x: any) => x.id))
+  if (g.nodes.some((n: any) => n.group && gids.has(n.group))) {
+    const top = (g.groups ?? []).filter((x: any) => !(x.parent && gids.has(x.parent)) && g.nodes.some((n: any) => n.group && gids.has(n.group)))
+    return { graph: g, fold: top.map((x: any) => x.id).sort() }
+  }
+  const st = (list: any[]): string => (list.every((x) => x.status === "context") ? "context" : list.every((x) => x.status === "added") ? "added" : list.every((x) => x.status === "removed") ? "removed" : "changed")
+  const chunk = <T,>(xs: T[], max: number): T[][] => { const k = Math.ceil(xs.length / max), size = Math.ceil(xs.length / k); const o: T[][] = []; for (let i = 0; i < xs.length; i += size) o.push(xs.slice(i, i + size)); return o }
+  const short = (t: string): string => (t.length > 28 ? t.slice(0, 27).trimEnd() + "…" : t)
+  const groups: any[] = [], member = new Map<string, string>()
+  const mk = (id: string, label: string, members: any[]) => ({ id, label, status: st(members), evidence: [], synthesized: true })
+  const level1 = chunk(msgs, SEQ_BUDGET.group)
+  const refs = level1.map((c, i) => { const a = msgs.indexOf(c[0]) + 1; const grp = mk("ref:" + (i + 1), a + "-" + (a + c.length - 1) + ": " + short(String(node.get(c[0]).label)), c.map((id) => node.get(id))); c.forEach((id) => member.set(id, grp.id)); groups.push(grp); return { grp, from: a, to: a + c.length - 1 } })
+  const fold: string[] = []
+  if (refs.length > SEQ_BUDGET.group) {
+    chunk(refs, SEQ_BUDGET.group).forEach((c, i) => {
+      const p = mk("ref:" + (i + 1) + "x", "Steps " + c[0].from + "-" + c[c.length - 1].to, c.flatMap((r) => level1[refs.indexOf(r)].map((id) => node.get(id))))
+      groups.push(p); fold.push(p.id); c.forEach((r) => { r.grp.parent = p.id })
+    })
+  } else refs.forEach((r) => fold.push(r.grp.id))
+  const nodes = g.nodes.map((n: any) => (member.has(n.id) ? { ...n, group: member.get(n.id) } : n))
+  return { graph: { ...g, groups: [...(g.groups ?? []), ...groups], nodes }, fold: fold.sort() }
+}
+
 // ---- collapsed groups (VR-03) ----
 /** Most collapsed ids one request may carry. */
 export const COLLAPSE_MAX = 200
@@ -564,6 +669,16 @@ export function collapseGraph(graph: any, ids: string[]): any {
       detail: { after: "Collapsed group of " + s.n + " element" + (s.n === 1 ? "" : "s") + (parts.length ? ": " + parts.join(", ") : "") + ". Click to open it." } }
     if (g.parent && gmap.has(g.parent)) out.group = g.parent
     if (g.label_source) out.label_source = g.label_source
+    if (graph.view === "seq") {
+      // A folded ref: a band across the lanes its messages touch, labelled with the group and the number of messages (notes do not count).
+      const mem = graph.nodes.filter((n: any) => nodeRep.get(n.id) === w && n.id !== w)
+      const lanesIn = new Set<string>()
+      for (const n of mem) { if (n.lane) lanesIn.add(n.lane); const r = seqReceiver(n); if (r) lanesIn.add(r) }
+      const msgN = mem.filter((n: any) => n.kind !== "note").length
+      out.label = g.label; out.members = msgN
+      out.lane = mem.find((n: any) => n.lane)?.lane
+      out.seq = { ref: true, over: [...lanesIn] }
+    }
     return out
   }
   const nodes: any[] = []
@@ -591,7 +706,14 @@ export function collapseGraph(graph: any, ids: string[]): any {
       resolution: list.every((x) => (x.resolution ?? "static") === "inferred") ? "inferred" : "static", count: list.length,
       evidence: list.flatMap((x) => x.evidence ?? []).slice(0, 50) }
   })
-  return { ...graph, groups: keptGroups, nodes, edges: out.length > MERGE_ABOVE ? mergeDirections(out, nodes) : out }
+  const res = { ...graph, groups: keptGroups, nodes, edges: out.length > MERGE_ABOVE ? mergeDirections(out, nodes) : out }
+  if (graph.view === "seq") {
+    // The order of a sequence is its flow list: a folded ref takes the place of its first message; a frame's ends move to the ref that holds them.
+    const list = (l: unknown) => { if (!Array.isArray(l)) return l; const o: string[] = [], d = new Set<string>(); for (const id of l) { const r = nodeRep.get(id) ?? id; if (r !== id) { if (d.has(r)) continue; d.add(r) } o.push(r) } return o }
+    if (Array.isArray(graph.flows)) res.flows = graph.flows.map((f: any) => ({ ...f, ...(f.before !== undefined ? { before: list(f.before) } : {}), ...(f.after !== undefined ? { after: list(f.after) } : {}) }))
+    if (Array.isArray(graph.frames)) res.frames = graph.frames.map((f: any) => ({ ...f, first: nodeRep.get(f.first) ?? f.first, last: nodeRep.get(f.last) ?? f.last }))
+  }
+  return res
 }
 
 /** Longest edge label the page draws (graph.schema.json). */
@@ -680,9 +802,11 @@ export async function collapseLoaded(g: any, view: string, collapsed: string[]):
   const clean = stripDollar(g)
   const known = new Set<string>([...(clean.groups ?? []).map((x: any) => x.id), ...clean.nodes.map((x: any) => x.id), ...(clean.lanes ?? []).map((x: any) => x.id)])
   clean.edges = clean.edges.filter((e: any) => known.has(e.source) && known.has(e.target))
-  const flowed = withFlowEdges(clean)
-  const lanes = isLaneView(view) && (clean.lanes ?? []).length > 0
-  const use = lanes ? [] : ids.filter((i) => (clean.groups ?? []).some((x: any) => x.id === i))
+  const base = view === "seq" ? seqFold(clean).graph : clean
+  const flowed = withFlowEdges(base)
+  // A lane view has no foldable groups, except a sequence diagram: its groups are refs.
+  const lanes = isLaneView(view) && view !== "seq" && (clean.lanes ?? []).length > 0
+  const use = lanes ? [] : ids.filter((i) => (base.groups ?? []).some((x: any) => x.id === i))
   const graph = collapseGraph(flowed, use)
   return { graph, layout: await layoutGraph(graph), collapsed: use }
 }
@@ -789,7 +913,10 @@ export async function visualReview(dir: string, dossier: string): Promise<Visual
     const known = new Set<string>([...(clean.groups ?? []), ...(clean.lanes ?? []), ...clean.nodes].map((x: any) => x.id))
     clean.edges = clean.edges.filter((e: any) => known.has(e.source) && known.has(e.target))
     out.view = clean.view
-    out.graph = withFlowEdges(clean)
+    // A sequence over the budget opens folded (refs); the page asks for the folded layout, the unfolded one is what Expand all shows.
+    const sf = seqFold(clean)
+    out.graph = withFlowEdges(sf.graph)
+    if (sf.fold.length) out.collapsed = sf.fold
     try { out.layout = await layoutGraph(out.graph); out.issues.push(...checkLayout(out.graph, out.layout)) } catch (e) { out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
   }
   res.rev = h.digest("hex").slice(0, 16)
