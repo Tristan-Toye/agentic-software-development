@@ -632,6 +632,69 @@ def run_live(key: str) -> bool:
     return st.get("state") in ("running", "testing", "waiting", "paused", "queued") and alive(st.get("pid"))
 
 
+def runner_lock_held(key: str) -> bool:
+    """Whether a runner holds the run's `<key>.runner.lock` right now (run_dossier.try_lock's flock, probed and released at
+    once, without touching the pid inside). A failed run keeps it while it waits on its failure question."""
+    try:
+        import fcntl
+        fh = open(os.path.join(runs_dir(), key + ".runner.lock"), "a+")
+    except (OSError, ImportError):
+        return False
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    finally:
+        fh.close()
+    return False
+
+
+def open_failure_questions(key: str) -> list[str]:
+    """The unanswered run-failure questions of the dossier `key` (<repo>.<dossier>): ones asked with `--topic run-failure`
+    or (older ones) with the "failed at stage" text. The dossier's own failed run asked them and waits on the owner."""
+    qdir = os.environ.get("ASD_QUESTIONS_DIR") or os.path.expanduser("~/.agentic/questions")
+    try:
+        names = sorted(os.listdir(qdir))
+    except OSError:
+        return []
+    out: list[str] = []
+    for f in names:
+        if not re.fullmatch(re.escape(key) + r"\.Q\d+\.jsonl", f):
+            continue
+        lines = []
+        try:
+            with open(os.path.join(qdir, f), encoding="utf-8") as fh:
+                for raw in fh:
+                    try:
+                        lines.append(json.loads(raw))
+                    except ValueError:
+                        continue
+        except OSError:
+            continue
+        q = next((x for x in lines if isinstance(x, dict) and x.get("kind") == "question"), None)
+        if not q or any(isinstance(x, dict) and x.get("kind") == "answer" and (x.get("from") == "owner" or x.get("accepted") is True) for x in lines):
+            continue
+        if q.get("topic") == "run-failure" or (not q.get("topic") and FAILURE_TEXT.match(str(q.get("text") or ""))):
+            out.append(f[: -len(".jsonl")])
+    return out
+
+
+def wait_runner_free(key: str, timeout_s: float, while_question: bool = True) -> bool:
+    """Wait until no runner holds the dossier's lock and (while_question) it has no open run-failure question of its own.
+    The question has no deadline: the owner answers it. A lock alone gives up after `timeout_s`. True when free."""
+    poll = float(os.environ.get("ASD_MERGE_POLL") or 15)
+    end = time.time() + timeout_s
+    while True:
+        asking = while_question and bool(open_failure_questions(key))
+        held = runner_lock_held(key)
+        if not asking and not held:
+            return True
+        if not asking and time.time() >= end:
+            return False
+        idle_tick()
+        time.sleep(poll)
+
+
 QUEUE_RUNS = ("resolve-merge", "after-merge")
 
 
@@ -1245,6 +1308,15 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
         # 4. the dossier's agent
         if not use_agent:
             return ("conflicting: " + ", ".join(f"#{n}" for n in bad)) if bad else ("migration numbers clash: " + "; ".join(clashes)) if clashes else ("checks red: " + ", ".join(f"#{n}" for n in red))
+        rkey = f"{repo_name(root)}.{agent_id}"
+        # The dossier's own failed run still holds its runner lock while it waits on its failure question: a resolve-merge
+        # started now exits at once ("already has a runner"), and asking the owner a second time would repeat that
+        # question. Wait for the question to be answered / the lock to be released; that is no attempt.
+        if open_failure_questions(rkey) or runner_lock_held(rkey):
+            note("resolving", f"{agent_id} has a run holding its lock or an open run-failure question; waiting for it instead of starting or asking again")
+            if not wait_runner_free(rkey, run_timeout):
+                return f"the runner of {agent_id} still holds the dossier's lock after {int(run_timeout / 60)} min; no resolve-merge attempt was spent"
+            continue
         targets = bad or ([n for n in red] if red else list(nums))
         heads = {n: head_of(root, n) for n in targets}
         spent = [n for n in targets if attempts.get(n, 0) >= AGENT_ATTEMPTS]
@@ -1262,8 +1334,15 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
         what = ("conflicts in " + ", ".join(f"#{n}" for n in bad)) if bad else ("migration numbers clash: " + "; ".join(clashes)) if clashes else ("red checks on " + ", ".join(f"#{n}" for n in red))
         note("resolving", what + "; the dossier's agent resolves it (resolve-merge, attempt " + str(max(attempts[n] for n in targets)) + f" of {AGENT_ATTEMPTS})")
         since = now()
-        start_run(root, agent_id, "resolve-merge", nums)
-        rkey = f"{repo_name(root)}.{agent_id}"
+        started = start_run(root, agent_id, "resolve-merge", nums)
+        if "already has a runner" in started:
+            # The lock was taken between the check above and the start: the run never started, so it is not an attempt.
+            for n in targets:
+                attempts[n] -= 1
+            save_attempts(key, attempts, tried, known)
+            if not wait_runner_free(rkey, run_timeout):
+                return f"the runner of {agent_id} still holds the dossier's lock after {int(run_timeout / 60)} min; no resolve-merge attempt was spent"
+            continue
         live = read_json(os.path.join(runs_dir(), rkey + ".runner.json"), {}) or {}
         adopted = run_live(rkey) and str(live.get("started") or "") < since
         if adopted:
@@ -2516,6 +2595,64 @@ print("started")
             del os.environ["ASD_MERGE_RUN_TIMEOUT"]
             for f in (rk + ".merge.json", rk + ".runner.json"):
                 if os.path.exists(os.path.join(rdir, f)): os.remove(os.path.join(rdir, f))
+        # 3b. W-197 (2026-11-24): the failed run of the dossier still held its runner lock and its failure question. The queue
+        # started "attempt 2 of 2", the runner exited at once on the lock, that counted as spent, and a second question was asked.
+        import fcntl
+        wk = "repo.W-197"; wq = os.path.join(tmp, "questions")
+        os.makedirs(wq, exist_ok=True)
+        qf = os.path.join(wq, wk + ".Q9.jsonl")
+        write_line_q = lambda o: open(qf, "a").write(json.dumps(o) + "\n")
+        write_line_q({"kind": "question", "dossier": "W-197", "topic": "run-failure", "text": "The run of W-197 failed"})
+        check("lock: an unanswered run-failure question is open", open_failure_questions(wk) == [wk + ".Q9"], str(open_failure_questions(wk)))
+        lockfh = open(os.path.join(rdir, wk + ".runner.lock"), "a+"); fcntl.flock(lockfh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        check("lock: a held runner lock is seen", runner_lock_held(wk))
+        w197 = [P(599, "feat/W-197-x", "stub/s")]
+        wst = {"starts": 0, "asks": 0}
+        def release():   # the owner answers the failure question, the failed runner ends and drops its lock
+            write_line_q({"kind": "answer", "from": "owner", "option": "B"}); fcntl.flock(lockfh, fcntl.LOCK_UN)
+        def counted_start(*_a):
+            wst["starts"] += 1
+            return "[run_dossier] repo.W-197 already has a runner (it holds the lock); this one exits" if wst.get("race") and wst["starts"] == 1 else "started"
+        hd2 = {"n": 0}
+        def ask_count(*_a): wst["asks"] += 1
+        def fixing_wait(*_a):
+            hd2["n"] += 1; return "done"
+        conf = {"bad": True}
+        globals().update(conflicting=lambda r, n: (list(n) if conf["bad"] else [], ""), start_run=counted_start, head_of=lambda *_a: f"x{hd2['n']}",
+                         ask_resolve_failed=ask_count, wait_run=lambda *_a: (conf.update(bad=False) or "done"))
+        os.environ["ASD_MERGE_RUN_TIMEOUT"] = "5"
+        for f in (wk + ".merge.json", wk + ".runner.json"):
+            if os.path.exists(os.path.join(rdir, f)): os.remove(os.path.join(rdir, f))
+        saves: list = []
+        real_save = save_attempts
+        globals()["save_attempts"] = lambda k, a_, t_, kn: (saves.append(dict(a_)), real_save(k, a_, t_, kn))[1]
+        later(0.4, release)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                why = settle(root, wk, "W-197", w197, "stub/s", [], lambda s_, t_: None)
+            check("queue: an open run-failure question and a held lock make the queue wait, with no start and no second question",
+                  wst["asks"] == 0 and why == "" and wst["starts"] == 1, f"why={why!r} {wst}")
+            check("queue: ... and only the one real start after the release is an attempt", max(x.get(599, 0) for x in saves) == 1, str(saves))
+            # race: the lock is taken between the check and the start; the run never started, so it is no attempt
+            os.remove(qf); conf["bad"] = True; wst.update(starts=0, asks=0, race=True); saves.clear()
+            for f in (wk + ".merge.json",):
+                if os.path.exists(os.path.join(rdir, f)): os.remove(os.path.join(rdir, f))
+            seq = iter([False, True, False, False, False, False])   # free at the check, then held at the start, then free again
+            real_held = runner_lock_held
+            globals()["runner_lock_held"] = lambda k: next(seq, False)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    why = settle(root, wk, "W-197", w197, "stub/s", [], lambda s_, t_: None)
+            finally:
+                globals()["runner_lock_held"] = real_held
+            check("queue: a start that exits on the held lock is not a spent attempt", wst["starts"] == 2 and any(x.get(599) == 0 for x in saves) and max(x.get(599, 0) for x in saves) == 1 and wst["asks"] == 0 and why == "", f"why={why!r} {wst} {saves}")
+        finally:
+            globals().update(saved_fns)
+            lockfh.close(); globals()["save_attempts"] = real_save
+            del os.environ["ASD_MERGE_RUN_TIMEOUT"]
+            for f in (wk + ".merge.json", wk + ".runner.json", wk + ".runner.lock"):
+                if os.path.exists(os.path.join(rdir, f)): os.remove(os.path.join(rdir, f))
+            if os.path.exists(qf): os.remove(qf)
         # 4. one integrate per stub: a second exits at once; the revive leaves a held stub alone
         ikey = repo_name(root) + ".stub-stub-lock"; held, _ = integrate_lock(ikey)
         for f in ("calls.txt",):
