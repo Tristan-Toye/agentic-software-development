@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "review-packet-contract-diff",
+  "description": "Public signature changes with severity ERR/WARN/INFO, a cannot-confirm tier and a not-caught list. Produced by scripts/review_packet.py from vr_diff output.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "producer",
+    "dossier"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "producer": {
+      "type": "string",
+      "enum": [
+        "contract-diff"
+      ]
+    },
+    "dossier": {
+      "type": "string"
+    },
+    "skipped": {
+      "type": "string",
+      "description": "present instead of the data when the producer could not run; the packet never blocks"
+    },
+    "base": {
+      "type": "string"
+    },
+    "head": {
+      "type": "string"
+    },
+    "graph": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "ERR": {
+          "type": "integer"
+        },
+        "WARN": {
+          "type": "integer"
+        },
+        "INFO": {
+          "type": "integer"
+        },
+        "unchanged_signatures": {
+          "type": "integer"
+        }
+      }
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "severity",
+          "tier",
+          "rule",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "language": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "added",
+              "removed",
+              "changed"
+            ]
+          },
+          "before": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "after": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "ERR",
+              "WARN",
+              "INFO"
+            ]
+          },
+          "tier": {
+            "type": "string",
+            "enum": [
+              "confirmed",
+              "cannot-confirm"
+            ]
+          },
+          "rule": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "anchor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "path:line, or a test id"
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "cannot_confirm": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "anchor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "path:line, or a test id"
+          }
+        }
+      }
+    },
+    "not_caught": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "semver_checks": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not-applicable",
+            "not-installed",
+            "failed-to-run",
+            "ran"
+          ]
+        }
+      }
+    }
+  },
+  "x-required-unless-skipped": [
+    "base",
+    "head",
+    "summary",
+    "entries",
+    "cannot_confirm",
+    "not_caught"
+  ]
+}

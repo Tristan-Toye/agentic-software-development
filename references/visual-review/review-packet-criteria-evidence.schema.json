@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "review-packet-criteria-evidence",
+  "description": "One row per acceptance criterion with tests, results, diff hunks, link provenance and a status. Derived from the dossier owner/env map, PROMISE_CHECKLIST and CENSUS; nothing is copied.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "producer",
+    "dossier"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "producer": {
+      "type": "string",
+      "enum": [
+        "criteria-evidence"
+      ]
+    },
+    "dossier": {
+      "type": "string"
+    },
+    "skipped": {
+      "type": "string",
+      "description": "present instead of the data when the producer could not run; the packet never blocks"
+    },
+    "base": {
+      "type": "string"
+    },
+    "head": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "covered": {
+          "type": "integer"
+        },
+        "partial": {
+          "type": "integer"
+        },
+        "no-evidence": {
+          "type": "integer"
+        },
+        "criteria": {
+          "type": "integer"
+        }
+      }
+    },
+    "inputs": {
+      "type": "object"
+    },
+    "status_rule": {
+      "type": "string"
+    },
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "criterion",
+          "status",
+          "links",
+          "tests",
+          "results"
+        ],
+        "properties": {
+          "criterion": {
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          },
+          "anchor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "path:line, or a test id"
+          },
+          "owner": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "env": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "covered",
+              "partial",
+              "no-evidence"
+            ]
+          },
+          "status_reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "how"
+              ],
+              "properties": {
+                "how": {
+                  "type": "string",
+                  "enum": [
+                    "owner-map",
+                    "test-name",
+                    "promise-checklist",
+                    "census-pin"
+                  ]
+                },
+                "detail": {
+                  "type": "string"
+                },
+                "anchor": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "path:line, or a test id"
+                }
+              }
+            }
+          },
+          "tests": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "file": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "line": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "found_by": {
+                  "type": "string"
+                },
+                "result": {
+                  "type": "string",
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "ignored",
+                    "not-run",
+                    "unknown"
+                  ]
+                }
+              }
+            }
+          },
+          "results": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "enum": [
+                  "test-log",
+                  "suite-line",
+                  "none"
+                ]
+              }
+            }
+          },
+          "diff_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "diff_hunks": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  },
+  "x-required-unless-skipped": [
+    "summary",
+    "rows"
+  ]
+}
