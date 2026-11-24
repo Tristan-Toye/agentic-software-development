@@ -34,7 +34,12 @@ single character usually is not one).
 Usage:
     merge_guard.py                      # the merge in progress (MERGE_HEAD), working tree as result
     merge_guard.py --commit <sha>       # a finished merge commit
+    merge_guard.py --landed --before <sha>   # after `git commit`: did the merge commit really land?
     merge_guard.py --selftest
+
+`--landed` is the check after committing: HEAD moved off `--before` (the commit you started the merge on), no MERGE_HEAD
+is left and nothing stays staged. A commit a hook refused leaves the merge pending with every file staged; that is the
+session's own merge in progress, never another process: read the hook's output, fix what it names, commit again.
 
 Exit: 0 clean (or every drop explained), 1 unexplained drops, 2 usage error.
 """
@@ -161,6 +166,24 @@ def check(cwd: str, commit: str | None) -> tuple[int, str]:
     return 0, "\n".join(out)
 
 
+def landed(cwd: str, before: str | None) -> tuple[int, str]:
+    """Whether the merge commit landed: HEAD moved, no MERGE_HEAD, nothing staged."""
+    head = git(cwd, "rev-parse", "HEAD").strip()
+    problems = []
+    if before and head.startswith(before) or before and before.startswith(head):
+        problems.append(f"HEAD is still {head[:9]} (the commit never landed)")
+    if git(cwd, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).strip():
+        problems.append("MERGE_HEAD is still there (the merge is still pending)")
+    staged = [l for l in git(cwd, "diff", "--cached", "--name-only").splitlines() if l]
+    if staged:
+        problems.append(f"{len(staged)} file(s) are still staged")
+    if not problems:
+        return 0, f"merge_guard: landed, HEAD {head[:9]}, no merge pending, nothing staged"
+    return 1, ("merge_guard: NOT landed: " + "; ".join(problems) + ". This is the merge this session started, still in progress, "
+               "not another process's work. Read the output of `git commit` (a hook, e.g. lefthook, may have refused it), fix what it "
+               "names, and commit again; do not report the merge as committed until this exits 0.")
+
+
 def selftest() -> int:
     def run(*a, cwd):
         subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True)
@@ -219,6 +242,21 @@ def selftest() -> int:
         sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
         rc, out = check(d, sha)
         rc == 0 or fails.append("commit mode, faithful merge should pass:\n" + out)
+        # 7. --landed: a refused commit (a failing pre-commit hook) leaves the merge pending; a landed one passes
+        run("reset", "-q", "--hard", "HEAD~1", cwd=d)
+        before = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+        subprocess.run(["git", "merge", "side"], cwd=d, capture_output=True)
+        put(d, "a.md", "head\nkeep1\nkeep2\nkeep3\nmain-z\nside-z\ntail\nside-add\n")
+        run("add", "a.md", cwd=d)
+        hook = os.path.join(d, ".git", "hooks", "pre-commit")
+        open(hook, "w").write("#!/bin/sh\necho lint failed >&2\nexit 1\n"); os.chmod(hook, 0o755)
+        subprocess.run(["git", "commit", "--no-edit"], cwd=d, capture_output=True)
+        rc, out = landed(d, before)
+        (rc == 1 and "MERGE_HEAD" in out and "still staged" in out and "still " + before[:9] in out) or fails.append("a refused commit should read as not landed:\n" + out)
+        os.remove(hook)
+        subprocess.run(["git", "commit", "--no-edit"], cwd=d, capture_output=True)
+        rc, out = landed(d, before)
+        rc == 0 or fails.append("a landed merge commit should pass:\n" + out)
     for f in fails:
         print("FAIL", f)
     print("merge_guard selftest:", "FAILED" if fails else "ok")
@@ -229,10 +267,19 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--commit", help="check a finished merge commit instead of the merge in progress")
     ap.add_argument("-C", dest="cwd", default=".", help="repository (default: .)")
+    ap.add_argument("--landed", action="store_true", help="check that the merge commit just made landed (needs --before)")
+    ap.add_argument("--before", help="with --landed: the HEAD the merge started on")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
         return selftest()
+    if a.landed:
+        if not a.before:
+            print("merge_guard: --landed needs --before <sha>")
+            return 2
+        rc, out = landed(a.cwd, a.before)
+        print(out)
+        return rc
     rc, out = check(a.cwd, a.commit)
     print(out)
     return rc
