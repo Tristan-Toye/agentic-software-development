@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { fileSig, IO_CONCURRENCY, mapLimit, readText } from "./asyncio.ts"
 import { offThread } from "./scanpool.ts"
 import type { Question } from "./store.ts"
-import { readRunner, readViewCache, runnerActive, writeViewCache } from "./runstore.ts"
+import { readRunner, readViewCache, runnerActive, writeViewCacheAsync } from "./runstore.ts"
 import { emitChange } from "./events.ts"
 import { answeredBy, baseName, buildLog, getRuns, repoLabel, candidateRoots, listTranscripts, mainOf, parseFrontMatter, pickDossiers, runnerOf, withBranchCopies, questionInRepo, sh, shOrNull, worktreesOf, type Pr, type QA } from "./runs.ts"
 
@@ -398,7 +398,7 @@ async function rescan(questions: Question[]): Promise<void> {
   const sig = JSON.stringify([next.repos.map((r) => [r.repo, r.stubs.map((s) => [s.branch, s.state, s.stage, s.pr, s.dossiers.map((d) => d.id), s.members])]), next.openWork])
   cachedView = next
   scannedLive = true
-  writeViewCache("stubs", next)
+  void writeViewCacheAsync("stubs", next)
   if (sig !== lastSig) { lastSig = sig; emitChange("stubs") }
   emitChange("scan")
 }

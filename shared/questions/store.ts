@@ -117,8 +117,23 @@ export async function readQuestionAsync(dir: string, id: string): Promise<Questi
   return q
 }
 
-/** `readAll` off the main thread: async stat and read, 16 files at a time, unchanged files served from the cache. */
+/**
+ * `readAll` off the main thread: async stat and read, 16 files at a time, unchanged files served from the cache.
+ * One page load asks for the list several times at once (the runs view, the open list, the stub view); callers that
+ * arrive while a read of the same folder is in flight share it, so the ~600 stats run once, not once per caller.
+ * `appendOwner` drops the shared read: a caller after an owner line never gets a list that began before it.
+ */
+const listing = new Map<string, Promise<Question[]>>()
 export async function readAllAsync(dir: string): Promise<Question[]> {
+  let p = listing.get(dir)
+  if (!p) {
+    p = readAllUncached(dir).finally(() => { if (listing.get(dir) === p) listing.delete(dir) })
+    listing.set(dir, p)
+  }
+  return [...(await p)]
+}
+
+async function readAllUncached(dir: string): Promise<Question[]> {
   const ids = (await readdir(dir)).filter((f) => f.endsWith(".jsonl")).map((f) => f.slice(0, -".jsonl".length))
   const qs = await mapLimit(ids, IO_CONCURRENCY, (id) => readQuestionAsync(dir, id))
   const out = qs.filter((q): q is Question => q !== null)
@@ -157,6 +172,7 @@ export function appendOwner(
   // VR-04: a line about one diagram element carries its anchor; the batch answer of a visual review is marked so Slack does not repeat it.
   if (m.anchor) line.anchor = m.anchor
   if (m.review) line.review = true
+  listing.delete(dir)
   const fd = openSync(join(dir, `${id}.jsonl`), "a")
   try {
     writeSync(fd, JSON.stringify(line) + "\n")

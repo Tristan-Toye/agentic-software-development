@@ -166,6 +166,17 @@ export function keychain(service: string): string {
   }
 }
 
+/** `keychain` without freezing the event loop: the server asks at start, while its port is already open. */
+export async function keychainAsync(service: string): Promise<string> {
+  try {
+    const p = Bun.spawn(["security", "find-generic-password", "-s", service, "-w"], { stdout: "pipe", stderr: "ignore", stdin: "ignore" })
+    const out = await new Response(p.stdout).text()
+    return (await p.exited) === 0 ? out.trim() : ""
+  } catch {
+    return ""
+  }
+}
+
 /** The channel name for a repo: Slack allows lower-case letters, digits, - and _, under 80 characters. */
 export function channelNameFor(repo: string): string {
   const n = repo.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")
