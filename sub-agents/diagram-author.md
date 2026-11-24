@@ -89,6 +89,12 @@ When your prompt is `PAYLOAD_FILE: <path>` (with `PAYLOAD_SHA256`), read that fi
   (`validate_pipeline.py --dossier <ID> --branch-rule`: the dossier's acceptance
   criteria name a condition, an error end or a retry). `yes`: write
   `decision.json`. `no` or absent: do not. You never decide this yourself.
+- `AFFECTED` — the existing `docs/architecture/*.json` diagrams the change
+  touches, one `<stem> — <why>` per line, or `none`: the dossier's
+  `Diagrams affected:` stems plus the diagrams whose anchors point into files the
+  contract commit touches (the orchestrator derives it, the same rule as the
+  Phase 9 diagram gate). `none` also when the repository has no
+  `docs/architecture/*.json`.
 - `ERRORS` — only on a repair attempt: the validator's issue list from the
   last attempt.
 
@@ -228,7 +234,8 @@ Shapes the schema requires, which the fixtures also show:
    5 decisions: over it, keep the changed branches and fold the rest into one
    `process` node.
 5. Write the three files, `decision.json` when asked, and the `arch/<stem>.json`
-   of every `c1-*` and `c4-*` stem, to `OUT_DIR`, then run, for each:
+   of every `c1-*` and `c4-*` stem, to `OUT_DIR`, then write `parts.json` (next
+   section) and run, for each:
 
    ```bash
    python3 SCRIPTS_DIR/vr_graph.py validate OUT_DIR/l1.json --root REPO
@@ -289,11 +296,52 @@ Shapes the schema requires, which the fixtures also show:
 9. **Three strikes, then stop**, as every agent here: the same validation
    failing three times ends the run with what failed and what you tried.
 
+## Every part is mandatory: `parts.json`
+
+Stage 3 always shows seven parts: L0, L1, L2, the decision flow, the sequence,
+architecture impact affected and architecture impact new. Each is real content
+or a stated reason, never silence. Write `OUT_DIR/parts.json`:
+
+```json
+{"schema_version": "1.0.0",
+ "plan": {"affected": ["c4-ports"], "new": ["seq-boot"]},
+ "decision_none": "No decisions in this change: <why>",
+ "sequence_none": "No sequence: <why>",
+ "affected_none": "No architecture diagram affected: <why>",
+ "unchanged": [{"stem": "c4-ports", "reason": "<why the diagram stays as committed>"}],
+ "new_none": "No new diagram: <why>",
+ "new_note": "<optional: a new diagram seems warranted for <what>; the owner decides>"}
+```
+
+Write only the keys that apply, each reason 8 to 300 characters and specific to
+this change (never `none`, `n/a` or `<why>`):
+
+- decision: `DECISION: yes` means `decision.json`; otherwise `decision_none`
+  (the file and the statement are never both there).
+- sequence: the flows of `l1.json` that add or change a step become sequence
+  previews (the orchestrator runs `vr_promote.py --write-previews` after you);
+  with no such flow write `sequence_none`.
+- affected: `plan.affected` lists every stem of `AFFECTED`. For each one either
+  write a draft `OUT_DIR/arch/<stem>.json`: the committed
+  `docs/architecture/<stem>.json` with the change applied, `meta.updates_existing`
+  `true`, same view and same ids (the owner reviews it as before and after), or,
+  when you judge it stays right as committed, add `{stem, reason}` to
+  `unchanged` (shown as `Diagram <stem> unchanged: <why>`). Only `seq`, `c1`
+  and `c4` diagrams with a plain stem (no `.2` block suffix) are drafted. With
+  `AFFECTED: none` write `affected_none`.
+- new: `plan.new` lists the `DIAGRAMS_NEW` stems, each with its draft. With
+  `DIAGRAMS_NEW: none` write `new_none`. When a new diagram seems warranted
+  though the dossier names none, say so in `new_note`, never draw it.
+
+Then run `python3 SCRIPTS_DIR/vr_graph.py parts OUT_DIR --decision <yes|no>
+--new <stems> --affected <stems>` and fix what it reports.
+
 ## Report
 
 At most 12 lines, guidance not verdicts:
 
 - `WROTE:` the three paths, `decision.json` when `DECISION: yes` (with `DECISION: no` or absent say `decision: not drawn`), and each `arch/<stem>.json`, one per line, each with its node count against its budget.
+- `PARTS:` the seven parts, each `drawn` or `none — <reason>`, one line.
 - `VALIDATE:` `pass` or `fail`, with the issue codes and element ids when it failed.
 - `INFERRED:` how many elements and which ids of every element marked `inferred` (explicit `none` allowed).
 - `NOTICED:` anything in `PROBLEM`, `APPROACH` or `CONTRACT` that contradicts the facts (explicit `none` allowed). Always last.

@@ -49,6 +49,16 @@ pass: copy it into the PR description.
 
 ### New diagrams: create the stems the dossier lists
 
+**Affected diagrams (stage 3 drafts).** A diagram the stage-3 review drafted as an update of an existing one
+(`.discovery/visual-review/<ID>/arch/<stem>.json` with `meta.updates_existing: true`, approved by the owner) is
+applied like a new stem: `python3 "${PLUGIN_ROOT}/scripts/vr_promote.py" --dossier-id <ID> --stem <stem> --repo .`
+replaces `docs/architecture/<stem>.json` (and syncs the `.md`) with the approved draft. If the committed file
+changed since the draft was stamped (`meta.base_docs_hash`), it prints `DIVERGED` and exits 1: the code moved
+the diagram on, so re-draft the update against the current file and ask the owner again (same topic, naming
+the diagram). A diagram stage 3 settled as `unchanged` (`parts.json`) needs nothing here: the diagram gate
+prints it as `SETTLED at stage 3` instead of `REVIEW:`. Stage 3's `preview-all/` directory (the
+"All diagrams (preview)" view) is never read here: it is no approval.
+
 **New diagrams.** For every stem on the dossier's `Diagrams new:` line,
 create `docs/architecture/<stem>.json` and its `.md` before the PR opens,
 inside `X`, and commit them with the rest. The gate (`--diagram-gate

@@ -20,16 +20,20 @@ FIX row** before you write the contract: the fix lands in `## Contract` or
 
 End `## Approach` with one line, `Diagrams affected: <file stems>` (the
 `docs/architecture/` files, stem without extension, that this change makes
-stale: `c4-classes-ports, seq-boot`) or `Diagrams affected: none`; a repo
-without `docs/architecture/` gets `none`. Then one more line,
+stale: `c4-classes-ports, seq-boot`) or `Diagrams affected: none — <why>`
+(the reason is mandatory: the stage-3 diagram review shows every part, so a
+`none` says what makes it none, e.g. `none — a helper no diagram shows`); a repo
+without `docs/architecture/` gets `none — no docs/architecture in this repo`. Then one more line,
 `Diagrams new: <proposed stem> — <one line: the flow>` (several
 comma-separated: `seq-x — flow a, c1-ext — the new system`) or
-`Diagrams new: none`. It lists a diagram the change must **add**: a flow that
+`Diagrams new: none — <why>` (same rule). It lists a diagram the change must **add**: a flow that
 crosses crates, processes or containers and that no existing `seq-*` diagram
 shows (stem `seq-<flow>`), or a new external system (stem `c1-<name>`, an
 addition to the c1 context). A change inside one component, or a flow an
 existing diagram already shows (that one goes on `Diagrams affected:`), gets
-`none`; so does a repo without `docs/architecture/`. The plan reviewer checks
+`none — <why>`; so does a repo without `docs/architecture/`. A dossier written
+before this rule, with a bare `none`, is still accepted: the stage-3 diagram author then
+supplies the reason. The plan reviewer checks
 both lines against the change, and `/work-on` Phase 9 creates every listed
 diagram and gates on both (`validate_pipeline.py --diagram-gate`).
 

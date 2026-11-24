@@ -5064,6 +5064,13 @@ def main() -> int:
         "criteria: yes = the change has branches, so Phase 3 draws decision.json (the diagram-author payload's DECISION field)",
     )
     ap.add_argument(
+        "--affected-stage3",
+        action="store_true",
+        help="with --dossier and --base: print the diagram-author payload's AFFECTED field (one `<stem> \u2014 <why>` per existing "
+        "docs/architecture diagram the change touches: the dossier's `Diagrams affected:` stems plus the diagrams anchored in files "
+        "the contract commit touches), or `none`",
+    )
+    ap.add_argument(
         "--selftest",
         action="store_true",
         help="check this script against a reference pair",
@@ -5079,6 +5086,14 @@ def main() -> int:
 
     if args.mode:
         return run_mode(root)
+
+    if args.affected_stage3:
+        info = affected_diagrams_stage3(root, args.base or "HEAD", args.dossier or None)
+        for a in info["affected"]:
+            print(f"{a['stem']} \u2014 {'; '.join(a['why'])}")
+        if not info["affected"]:
+            print("none" + (f" \u2014 {info['note']}" if info["note"] else ""))
+        return 0
 
     if args.branch_rule:
         words = branch_markers(_dossier_text(root, dossier_id=args.dossier or "")) if args.dossier else []

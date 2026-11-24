@@ -82,7 +82,9 @@
    its JSON, or an unmarked Mermaid block, is a DEFECT: **the session does not
    close** until it exits 0), then lists every diagram whose source anchors
    point into a file this branch changed and which the branch did not modify,
-   as `REVIEW: <diagram> anchors <path>`, plus every diagram the dossier's
+   as `REVIEW: <diagram> anchors <path>` (unless the Phase 3 review already settled it: an approved draft of the
+   update, applied with `vr_promote.py` as in `phase-9-conditional`, or a `Diagram <stem> unchanged: <why>`
+   statement, printed as `SETTLED at stage 3`), plus every diagram the dossier's
    `Diagrams affected:` line lists that the branch left alone. Pass
    `--pr-body` with the drafted PR description once it exists: a listed
    diagram it does not mention is then a DEFECT. A `SKIP` line (no
