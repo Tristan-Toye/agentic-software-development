@@ -292,6 +292,7 @@ the recorded checkpoints.
   read from the CLI's epoch, an ISO time, or text like "resets Nov 6 at 12pm
   (Europe/Brussels)". The dashboard reads session history from every
   registered account.
+- **Commit hooks are never skipped:** the runner rules forbid `--no-verify` and an owner question asking to allow it. A failing hook is fixed in the file it names; only a failure in a file the branch did not change that also fails on the base may be asked about, with fixing it on the base as an option (W-182: a moved `#[cfg(target_os = "linux")]` hidden by `--no-verify` for five days).
 - **Blocked calls:** the plugin's PermissionDenied hook
   (`shared/claude/permission-denied.ts`) records every call auto mode refuses
   as a `blocked` update (`tool`, `target` — the exact command or path,
