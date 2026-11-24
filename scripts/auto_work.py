@@ -409,8 +409,23 @@ def open_items(run: dict) -> list[str]:
     return [i["id"] for i in run.get("deferred") or [] if i.get("state") == "open"]
 
 
-def pause(st: dict, reason: str, kind: str, member: str = "", action: str = "relaunch") -> None:
-    st["paused"] = {"reason": reason, "kind": kind, "member": member, "action": action, "at": now()}
+def leave_open(repo: str, dossier: str, items: list[str]) -> None:
+    """Rule these deferred items leave-open the way the dashboard's Leave open does: `{"D-2": {"drop": true}}` in
+    `<repo>.<ID>.deferred-owner.json` (shared/questions/runs.ts applyOwnerRulings), which ends them dropped, so the
+    eager-merge hold (held_by_deferred) lifts. Rulings already there are kept."""
+    if not items or not repo:
+        return
+    path = os.path.join(runs_dir(), f"{repo}.{dossier}.deferred-owner.json")
+    cur = read_json(path, {}) or {}
+    for i in items:
+        cur.setdefault(i, {"drop": True, "ts": now(), "by": "auto-work accept"})
+    write_atomic(path, cur)
+    merge_dossier.append_line(os.path.join(runs_dir(), f"{repo}.{dossier}.jsonl"), {"ts": now(), "kind": "runner", "text":
+        f"auto work: accepted the open deferred items {', '.join(items[:8])}: ruled leave-open, so the dossier joins the merge queue"})
+
+
+def pause(st: dict, reason: str, kind: str, member: str = "", action: str = "relaunch", items: list[str] | None = None) -> None:
+    st["paused"] = {"reason": reason, "kind": kind, "member": member, "action": action, "at": now(), **({"items": list(items)} if items else {})}
     st["phase"] = "paused"
     if member:
         for m in st["members"]:
@@ -646,11 +661,13 @@ def step_member(st: dict, m: dict, run: dict | None) -> None:
             unfixed = [i for i in todo if i in sent] if sent else todo
             added = [i for i in todo if i not in unfixed]
             if m["accepted"] or not todo:   # accepted: the owner took the items still open
+                if m["accepted"]:
+                    leave_open(st.get("repo") or "", m["id"], todo)
                 m.update(stage="finished", state="finished", error=""); return
             if unfixed:
                 m["lag"] += 1
                 if m["lag"] >= LAG_TICKS:
-                    pause(st, f"{m['id']}: /fix-deferred is done but {len(unfixed)} item(s) are still open ({', '.join(unfixed[:6])})", "member", m["id"], "accept")
+                    pause(st, f"{m['id']}: /fix-deferred is done but {len(unfixed)} item(s) are still open ({', '.join(unfixed[:6])})", "member", m["id"], "accept", todo)
                 return
             n = int(m.get("fix_rounds") or 0)
             if n < FIX_FOLLOWUPS:
@@ -848,11 +865,42 @@ EAGER_RETRIES = 2   # re-enqueues of a transiently failed merge per head of its 
 HUMAN_FAIL_RE = re.compile(r"conflict|clash|checks (?:still )?red|resolve-merge|head did not change|draft|changes code|not an open pull request|branch changed", re.I)
 
 
+STILL_LIVE_RE = re.compile(r"run of \S+ (?:on this stack )?is still live")
+
+
+def resolved_after(repo: str, run: dict, rec: dict) -> bool:
+    """Whether a queue-started /resolve-merge run of the dossier ended `done` after the failed merge record: it put right
+    what the queue gave up on (W-197: the run failed, asked its own question, was answered Retry and resolved everything
+    hours after the queue had failed the stack). Its keys are the dossier's own and `<key>.resolve-<prs>`; the end of a
+    finished run is its runner.json's last write."""
+    base, since = f"{repo}.{run['id']}", str(rec.get("ts") or "")
+    try:
+        names = os.listdir(runs_dir())
+    except OSError:
+        return False
+    for n in names:
+        if not n.endswith(".runner.json") or not (n == base + ".runner.json" or n.startswith(base + ".resolve-")):
+            continue
+        path = os.path.join(runs_dir(), n)
+        st = read_json(path, {}) or {}
+        if st.get("command") != "resolve-merge" or st.get("state") != "done":
+            continue
+        try:
+            ended = datetime.datetime.fromtimestamp(os.path.getmtime(path), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except OSError:
+            continue
+        if since and ended > since:
+            return True
+    return False
+
+
 def transient_failure(rec: dict) -> bool:
     """A `failed` merge record whose error is a wait that ran out or an outage, not a verdict on the PRs: CI still running
     (or timed out) after the queue's limit, or a gh/network error (merge_dossier.TRANSIENT_RE). Anything that needs a
     human (a conflict, red checks, spent resolve-merge attempts, a draft) is not."""
     err = str(rec.get("error") or "")
+    if STILL_LIVE_RE.search(err):
+        return True   # "a resolve-merge run of W-161 is still live": a wait that ran out, not a verdict on the PRs
     if not err or HUMAN_FAIL_RE.search(err):
         return False
     return bool(err.startswith("checks still running") or merge_dossier.TRANSIENT_RE.search(err))
@@ -883,7 +931,7 @@ def note_retry(repo: str, run: dict, root: str, rec: dict, why: str) -> None:
     write_atomic(retry_mark(repo, run), {"heads": heads, "count": count, "ts": now()})
     merge_dossier.append_line(os.path.join(runs_dir(), f"{repo}.{run['id']}.jsonl"), {"ts": now(), "kind": "runner", "text":
         f"eager merge: retrying the merge that failed ({str(rec.get('error') or '')[:160]}): {why}"
-        + (f" (retry {count} of {EAGER_RETRIES} for this head)" if why.startswith("transient") else "")})
+        + (f" (retry {count} of {EAGER_RETRIES} for this head)" if why.startswith(("transient", "resolved")) else "")})
 
 
 def retry_kind(repo: str, run: dict, root: str, rec: dict) -> str:
@@ -895,6 +943,8 @@ def retry_kind(repo: str, run: dict, root: str, rec: dict) -> str:
         return "outlived"
     if transient_failure(rec) and retry_allowed(repo, run, root, rec):
         return "transient"
+    if resolved_after(repo, run, rec) and retry_allowed(repo, run, root, rec):   # capped per head like a transient one
+        return "resolved"
     return ""
 
 
@@ -951,7 +1001,7 @@ def eager_step(repo: str, root: str, facts: dict) -> list[str]:
             kind = retry_kind(repo, r, root, rec) if rec else ""
             ok, msg = enqueue_merge(root, r["id"], "eager")
             if ok and kind:
-                note_retry(repo, r, root, rec, "transient failure, nothing else changed" if kind == "transient" else "outlived: a later run of the dossier has finished")
+                note_retry(repo, r, root, rec, {"transient": "transient failure, nothing else changed", "resolved": "resolved: a resolve-merge run of the dossier ended done after the queue gave up"}.get(kind, "outlived: a later run of the dossier has finished"))
             if not ok:   # the eager step's own output reaches no log: the dossier's timeline says why it did not queue
                 merge_dossier.append_line(os.path.join(runs_dir(), f"{repo}.{r['id']}.jsonl"),
                             {"ts": now(), "kind": "runner", "text": "eager merge: not queued: " + msg[:300]})
@@ -1122,6 +1172,7 @@ def resume_state(st: dict, root: str, action: str | None = None) -> str:
             m["error"], m["state"], m["lag"] = "", "pending", 0
             if action == "accept":
                 m["accepted"] = True
+                leave_open(st.get("repo") or repo_name(root), m["id"], list(p.get("items") or []))
             elif action == "relaunch":
                 m["launch"] = None   # the next look starts that run again, as the Resume button would
     if p["kind"] == "docs":
@@ -1390,6 +1441,18 @@ def selftest() -> int:
         stq["members"] = [mm]
         resume_state(stq, root, "accept")
         check("the accept override marks the member accepted and closes the question", mm["accepted"] is True and not stq["paused"] and qfinal("x.W-183.Q1.jsonl") is not None)
+        # D: accepting rules the open items leave-open (the dashboard's deferred-owner ruling), so the eager hold lifts
+        rd_ = tempfile.mkdtemp(prefix="aw-rulings-"); old_rd = os.environ.get("ASD_RUNS_DIR"); os.environ["ASD_RUNS_DIR"] = rd_
+        try:
+            stq3 = {"repo": "x", "root": root, "members": [{**mm, "accepted": False}], "paused": None, "step": "idle"}
+            pause(stq3, "W-183: /fix-deferred is done but 2 item(s) are still open (D-15, D-16)", "member", "W-183", "accept", ["D-15", "D-16"]); pause_question(stq3)
+            resume_state(stq3, root, "accept")
+            rul = read_json(os.path.join(rd_, "x.W-183.deferred-owner.json"), {})
+            check("accept: the open items are ruled leave-open (drop) in the dossier's deferred-owner file, as the dashboard does",
+                  sorted(rul) == ["D-15", "D-16"] and all(v.get("drop") is True for v in rul.values()), rul)
+        finally:
+            if old_rd is None: os.environ.pop("ASD_RUNS_DIR", None)
+            else: os.environ["ASD_RUNS_DIR"] = old_rd
 
         setrun("D", status="ready", runner=runner("done", "plan", pid=212, started="2026-11-17T10:30:00Z"))
         tk()
@@ -1694,6 +1757,27 @@ def selftest() -> int:
             check("eager retry: a failure that persists is retried at most twice for one head", retried("E20") == 2, retried("E20"))
             heads_now["v"] = "sha2"; tk()
             check("eager retry: a new head gets a new chance", retried("E20") == 3, retried("E20"))
+            # A: a queue-started resolve-merge run that ended done after the failed record puts the dossier back; "still live" is a wait
+            ids2 = ("E26", "E27", "E28", "E29")
+            open(stubf, "w").write("\n".join(ids2) + "\n")
+            facts_runs[:] = [run_(k, "done", runner=runner("done", "work-on", started="2026-11-20T10:00:00Z")) for k in ids2]
+            for k, err in (("E26", "still conflicting: #5 after 2 resolve-merge attempts"), ("E27", "a resolve-merge run of E27 is still live; merge when it is finished"),
+                           ("E28", "still conflicting: #5 after 2 resolve-merge attempts"), ("E29", "still conflicting: #5 after 2 resolve-merge attempts")):
+                json.dump({"state": "failed", "error": err, "prs": [5], "ts": "2026-11-21T03:41:08Z"}, open(P(f"{repo}.{k}.merge.json"), "w"))
+            json.dump({"command": "resolve-merge", "state": "done", "started": "2026-11-21T04:00:00Z"}, open(P(f"{repo}.E26.resolve-5.runner.json"), "w"))
+            json.dump({"command": "resolve-merge", "state": "failed", "started": "2026-11-21T04:00:00Z"}, open(P(f"{repo}.E28.resolve-5.runner.json"), "w"))
+            json.dump({"command": "resolve-merge", "state": "done", "started": "2026-11-20T04:00:00Z"}, open(P(f"{repo}.E29.resolve-5.runner.json"), "w"))
+            os.utime(P(f"{repo}.E29.resolve-5.runner.json"), (1763700000, 1763700000))   # ended 2025-11-21, before the record
+            n_before = len(log()); tk()
+            got2 = sorted(l.split()[1] for l in log()[n_before:] if l.startswith("enqueue"))
+            check("resolved retry: a resolve-merge run that ended done after the failure re-queues it; a failed one or one that ended before does not; 'still live' is a wait",
+                  got2 == ["E26", "E27"], got2)
+            for _ in range(3): tk()
+            check("resolved retry: capped per head like a transient one", retried("E26") == 2, retried("E26"))
+            for k in ids2:
+                for suf in ("merge.json", "eager-retry.json", "jsonl", "resolve-5.runner.json"):
+                    try: os.remove(P(f"{repo}.{k}.{suf}"))
+                    except OSError: pass
         finally:
             merge_dossier.head_of = real_head
         facts_runs[:] = keep_runs
