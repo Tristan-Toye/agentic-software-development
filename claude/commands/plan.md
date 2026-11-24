@@ -78,6 +78,17 @@ is not blocked. When nothing else can proceed, run `ask_owner.py wait <id>` as
 a background command under Claude Code and end the turn. Log `QUESTION:` and
 then `OWNER-RULING (<date>):` in `## Build log`. Never pick an option yourself.
 
+**Planning blocked on another pull request is a wait, not a question.** When
+the stubs or the contract need code that only an unmerged PR adds (and the
+owner ruled to wait for it, or the dossier's `blocked_by` says so), never ask a
+hold card ("is PR N merged? press A once merged"). Commit what you have, then
+end the turn with `RUNNER: WAITING merged:<pr number>` (several: `merged:12,merged:13`).
+The runner polls the PR with no tokens spent, frees your slot, shows "waiting
+for PR N to merge" on the dashboard and sends `PR RESULT <pr>: merged|closed ..`
+into your session. On `merged` carry on at the step you stopped at; on
+`closed` (unmerged) ask the owner, since that is a real decision. A blocker that
+only affects the build stays in `blocked_by` with no wait and no question.
+
 **Keep the owner informed on the dashboard.** Its timeline shows your notes,
 your questions and the agents you spawn, grouped by stage. Post
 `ask_owner.py note --root R --dossier ID --text "..."` at each milestone: the

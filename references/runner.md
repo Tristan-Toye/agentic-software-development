@@ -366,6 +366,15 @@ the recorded checkpoints.
   `ASD_STUB_POLL` seconds (default 300) without spending tokens, and once the
   integrated stub has merged and the new stub is cut, takes a run slot and
   sends `STUB READY: <branch>` into the same session.
+- **The merge breakpoint, `RUNNER: WAITING merged:<pr>`:** a `/plan` whose
+  stubs or contract need code only an unmerged PR adds ends its turn with it
+  instead of asking a hold question. The runner records `waiting` (slot free,
+  `waiting_for: pr`, the event "waiting for PR n to merge"), polls
+  `gh pr view` every `ASD_PR_POLL` seconds (default 120) with no tokens, and
+  sends `PR RESULT <pr>: merged into <base>` or `PR RESULT <pr>: closed without
+  merging` into the same session. Closed unmerged is the owner's decision, so
+  the agent asks then. A blocker that only affects the build stays in
+  `blocked_by`: no wait, no question.
 - **The CI breakpoint, `RUNNER: WAITING ci:<pr>`:** a headless agent never
   calls `wait_ci.py` in a loop (each call is a full turn that re-reads the
   whole context: 88 `--timeout 580` calls in 7 days of `/fix-deferred`). It

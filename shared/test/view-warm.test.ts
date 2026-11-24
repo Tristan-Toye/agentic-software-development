@@ -115,3 +115,13 @@ test("a question answer is not blocked by a slow merge call in the real server",
     expect(m.text).toContain("would merge")
   } finally { proc.kill() }
 }, 60_000)
+
+test("a run whose live store fails (or comes back empty) keeps its scanned state instead of crashing getRuns", async () => {
+  const { getRuns } = await freshRuns("livefail")
+  const build = async (_q: any) => ({ ...seeded, scannedAt: "live" })
+  const v = await getRuns(() => [], { fresh: true, build, live: () => Promise.reject(new Error("disk gone")) })
+  expect(v.runs.map((r) => r.id)).toEqual(["W-1"])
+  expect(v.runs[0].running).toBe(false)
+  const w = await getRuns(() => [], { fresh: true, build, live: () => Promise.resolve(undefined as any) })
+  expect(w.runs.length).toBe(1)
+})

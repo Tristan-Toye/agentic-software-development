@@ -21,6 +21,10 @@ the `result` event ends a turn and the turn's RUNNER: line decides:
     RUNNER: WAITING ci:<pr>[,ci:<pr>..]
                                 `wait_ci.py` runs here (no tokens spent, the slot is free meanwhile); the verdict goes into
                                 the same live process as `CI RESULT <pr>: green|red|timeout <failing checks + log tail>`
+    RUNNER: WAITING merged:<pr>[,merged:<pr>..]
+                                planning is blocked on code only that pull request adds: the runner polls the PR (no tokens,
+                                the slot is free, the dashboard says "waiting for PR n to merge") and sends
+                                `PR RESULT <pr>: merged|closed ..` into the same live process; closed unmerged is the owner's call
     RUNNER: ENV <vm|stack|disk> <detail>
                                 a broken environment (the Lima VM down, a compose service unhealthy, the disk low),
                                 reported instead of asked about; with ASD_STACK_REPAIR=1 (or a /stub run) the runner repairs vm and
@@ -425,6 +429,8 @@ NUDGE = ("RUNNER: your last turn ended without a RUNNER: line and nothing has ha
 QUESTION_ID = re.compile(r"(?:^|\.)Q\d+$")
 # A CI wait: `ci:<pr number>`.
 CI_ID = re.compile(r"^ci:\d+$")
+# A merge wait: `merged:<pr number>`, planning blocked on code only that PR adds (see merge_wait).
+MERGE_ID = re.compile(r"^merged:\d+$")
 CI_PARENT_NEXT = ("Next step: the cause is the parent PR of #{n} (see above). The runner already had a resolve-merge run work on it and "
                   "it still conflicts: do NOT resolve it yourself (that PR is not yours to edit) and do NOT ask the owner how. End the turn with "
                   "`RUNNER: FAILED CI not started on PR #{n}: its parent PR still conflicts after the runner's resolve-merge` so it is reported as a blocker.")
@@ -930,11 +936,14 @@ def model_ok(expected: str, actual: str) -> bool:
 # while queued runs idled). Trade-off, accepted by the owner: when the wait ends the run goes straight back to
 # `running` WITHOUT queueing, so the live count may briefly exceed the cap until another run finishes or waits.
 
+# a stage the agent ended with "duplicate run: <id> is already owned by the live run <key> ...; this run changed nothing"
+DUPLICATE_RUN_RE = re.compile(r"duplicate run\b[^\n]*\bchanged nothing", re.I)
+TESTING_HUNG_MIN = 240      # a known test/CI wait is hung only after this many minutes (ASD_TESTING_HUNG_MIN), not the plain stall limit
 TESTING_QUIET_SECS = 300    # an in-flight Bash call with no output for longer than this counts as a long wait
 # the long waits we know by name (any flags, `--wait` included): tests, gates, a hand-written poll on a detached run's
 # state directory, and CI (wait_ci.py, `gh pr checks --watch`, `gh run watch`; a fix-deferred session held its slot for
 # the whole of a Rust CI job in wait_ci.py)
-TESTING_CMD = re.compile(r"\brun_(?:tests|gates)(?:\.py\b|-detach/)|\bwait_ci\.py\b|\bgh\s+(?:pr\s+checks\b[^\n]*--watch|run\s+watch)\b")
+TESTING_CMD = re.compile(r"\brun_(?:tests|gates)(?:\.py\b|-detach/)|\bwait_ci\.py\b|\bfix_deferred_pr\.py\b|\bgh\s+(?:pr\s+checks\b[^\n]*--watch|run\s+watch)\b")
 
 
 def wait_label(cmd: str) -> str:
@@ -1829,6 +1838,7 @@ class Runner:
         self.turn_open = False
         self.last_out = time.monotonic()
         self.last_work = self.last_out
+        self.spawned_at = self.last_out
         self.inflight_bash.clear()
         self.bg_wait = ""
         self.stall_bg_at = 0.0
@@ -2475,7 +2485,7 @@ class Runner:
             return False
         if self.proc is None or self.proc.poll() is not None:
             return False
-        if time.monotonic() - self.last_out < lim and not self.hung_bash(lim):
+        if time.monotonic() - max(self.last_out, getattr(self, "spawned_at", 0.0)) < lim and not self.hung_bash(lim):
             return False
         if time.monotonic() - self.stall_bg_at >= 60:
             self.stall_bg_at = time.monotonic()
@@ -2491,10 +2501,12 @@ class Runner:
         one far past it is hung: W-176 sat six hours on a `git pull` whose login shell never started the command,
         with progress lines keeping `last_out` fresh the whole time."""
         now = time.monotonic()
-        if lim <= 0 or not self.inflight_bash or now - self.last_work < lim:
+        born = getattr(self, "spawned_at", 0.0)   # nothing older than this process counts: queue waits, a resumed session's old events
+        if lim <= 0 or not self.inflight_bash or now - max(self.last_work, born) < lim:
             return ""
         for cmd, t0 in self.inflight_bash.values():
-            if now - t0 >= lim:
+            own = max(lim, env_num("ASD_TESTING_HUNG_MIN", TESTING_HUNG_MIN) * 60) if TESTING_CMD.search(cmd) else lim
+            if now - max(t0, born) >= own and now - max(self.last_work, born) >= own:
                 return cmd.strip().splitlines()[0][:80] if cmd.strip() else "a Bash call"
         return ""
 
@@ -2531,7 +2543,7 @@ class Runner:
         hung = self.hung_bash(lim) if time.monotonic() - self.last_out < lim else ""   # silent: the plain stall below
         self.log(f"stall diagnostic: last stream event: {last}; process tree of claude pid {self.proc.pid}:\n" + self.process_tree())
         if hung:
-            work = int((time.monotonic() - self.last_work) / 60)
+            work = int((time.monotonic() - max(self.last_work, getattr(self, "spawned_at", 0.0))) / 60)
             detail = f"stalled: Bash call `{hung}` hung, no work for {work} min mid-turn (last: Bash)"
         else:
             detail = f"stalled: no output for {mins} min mid-turn (last: {tool})"
@@ -2736,6 +2748,51 @@ class Runner:
                 if p.poll() is None:
                     p.kill()
                     p.wait()
+        return [(n, *out[n]) for n in prs]
+
+    def pr_state(self, n: int) -> tuple[str, str] | None:
+        """(state, base branch) of PR n: OPEN, MERGED or CLOSED; None when it cannot be read."""
+        try:
+            p = subprocess.run(shlex.split(os.environ.get("ASD_GH_BIN") or "gh") + ["pr", "view", str(n), "--json", "state,mergedAt,baseRefName"],
+                               cwd=self.root, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+            row = json.loads(p.stdout) if p.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+        if not isinstance(row, dict) or not row.get("state"):
+            return None
+        state = "MERGED" if row.get("mergedAt") else str(row["state"]).upper()
+        return state, str(row.get("baseRefName") or "")
+
+    def merge_wait(self, prs: list[int]) -> list[tuple[int, str, str]] | str | None:
+        """`RUNNER: WAITING merged:<pr>`: planning is blocked on code only these pull requests add. Poll them here with no
+        token spent, in state `waiting` (the slot is free, the keepalive runs, the dashboard says "waiting for PR n to
+        merge"), until each is merged or closed. Returns [(pr, merged|closed, detail)]; None when stopped; "message" when
+        the owner wrote to the run. A PR that cannot be read is retried; it never ends the wait."""
+        poll = env_num("ASD_PR_POLL", 120)
+        self.save(state="waiting", questions=[], waiting_for="pr", merge_prs=prs)
+        self.event("waiting for " + ", ".join(f"PR {n}" for n in prs) + " to merge", "waiting")
+        out: dict[int, tuple[str, str]] = {}
+        next_at = 0.0
+        try:
+            while len(out) < len(prs):
+                if time.monotonic() >= next_at:
+                    next_at = time.monotonic() + poll
+                    for n in prs:
+                        if n in out:
+                            continue
+                        got = self.pr_state(n)
+                        if got is None or got[0] == "OPEN":
+                            continue
+                        out[n] = ("merged", f"into {got[1] or 'its base'}") if got[0] == "MERGED" else ("closed", "without merging")
+                if self.stopping:
+                    return None
+                if read_inbox(self.key, int(self.state.get("inbox_seen") or 0)):
+                    return "message"
+                self.keepalive_tick()
+                time.sleep(0.1)
+        finally:
+            self.ka_since = None
+            self.save(merge_prs=[])
         return [(n, *out[n]) for n in prs]
 
     def owner_wait(self, ids: list[str]) -> tuple[str, int, str]:
@@ -3118,6 +3175,27 @@ class Runner:
                 self.send(f"STUB READY: {branch}. The integrated stub is in development and {branch} is cut from it: "
                           "fork from it and carry on with the step you stopped at.")
                 continue
+            mps = [i for i in ids if MERGE_ID.match(i)]
+            if mps:
+                if len(mps) != len(ids):
+                    self.send("RUNNER: WAITING mixes merged:<pr> with other ids; wait on one kind per line. "
+                              "End the turn again with only the ids you need first.")
+                    quiet = True
+                    continue
+                res = self.merge_wait([int(i[7:]) for i in mps])
+                if res is None:
+                    return "stopped", ""
+                if res == "message":
+                    self.save(state="running")
+                    self.deliver_inbox()
+                    continue
+                if not self.take_slot(first=True):
+                    return "stopped", ""
+                self.event("PR result: " + ", ".join(f"#{n} {v}" for n, v, _ in res), "running")
+                self.send("\n".join(f"PR RESULT {n}: {v} {t}. " + (
+                    "Carry on with the step you stopped at." if v == "merged" else
+                    "It was closed unmerged: this is a real decision, ask the owner how planning goes on.") for n, v, t in res))
+                continue
             cis = [i for i in ids if CI_ID.match(i)]
             if cis:
                 if len(cis) != len(ids):
@@ -3431,6 +3509,9 @@ class Runner:
                 continue
             self.save(state="failed")
             self.event(f"stage {started} failed: {detail}", "failed")
+            if DUPLICATE_RUN_RE.match(detail):
+                # Another live run owns this dossier and this one changed nothing: an owner question is noise. End quietly.
+                return self.finish("failed", f"failed: {detail}", 1)
             if self.ask_failure(detail) == "retry":
                 if detail.startswith("the claude process exited with code"):
                     self.mark_resume()   # a crash of the process, not a verdict of the model: keep its session
@@ -4721,6 +4802,36 @@ def selftest() -> int:
         owner_line("repo.W-91.Q1", "answer", "B", "B")
         check("outside kill: three in a row end failed", p.wait(timeout=60) == 1 and any("2 retries in a row" in t for t in texts("W-91")))
 
+        # ---- 2b. a duplicate run (the dossier is owned by another live run) ends quietly: no owner question ----
+        scenario([{"turns": [[{"final": "RUNNER: FAILED duplicate run: W-2 is already owned by the live run repo.seed-x, which is waiting on question W-2.Q2; this run changed nothing"}]]}])
+        p = start("W-88")
+        check("duplicate run: ends failed, exit 1, with no owner question and the reason logged",
+              p.wait(timeout=60) == 1 and state_of("W-88").get("state") == "failed" and not os.path.exists(qfile("repo.W-88.Q1"))
+              and any("duplicate run" in t for t in texts("W-88")))
+
+        # ---- 2c. planning blocked on a PR: the runner waits for it to merge (no question), closed unmerged goes to the session ----
+        gh_merge = os.path.join(tmp, "gh_merge.py")
+        open(gh_merge, "w").write(
+            "import sys, os, json\n"
+            "if sys.argv[2] == 'list': print('[]'); sys.exit(0)\n"
+            "f = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gh_merge.n')\n"
+            "n = int(open(f).read()) if os.path.exists(f) else 0\n"
+            "open(f, 'w').write(str(n + 1))\n"
+            "pr = sys.argv[3]\n"
+            "if pr == '636': print(json.dumps({'state': 'OPEN', 'mergedAt': None, 'baseRefName': 'stub/1'} if n < 2 else {'state': 'MERGED', 'mergedAt': '2026-11-24T12:00:00Z', 'baseRefName': 'stub/1'}))\n"
+            "else: print(json.dumps({'state': 'CLOSED', 'mergedAt': None, 'baseRefName': 'stub/1'}))\n")
+        for dos, pr, want in (("W-87", "636", "PR RESULT 636: merged into stub/1"), ("W-86", "637", "PR RESULT 637: closed without merging")):
+            scenario([{"turns": [[{"final": f"stubs need PR {pr}\nRUNNER: WAITING merged:{pr}"}], [{"final": "RUNNER: DONE"}]]}])
+            env.update(ASD_GH_BIN=f"{sys.executable} {gh_merge}", ASD_PR_POLL="0.2")
+            rc = start(dos).wait(timeout=60)
+            for k_ in ("ASD_GH_BIN", "ASD_PR_POLL"):
+                env.pop(k_)
+            got = [m for m in msgs(1) if m.startswith("PR RESULT")]
+            check(f"merge wait: merged:{pr} is waited for by the runner, the verdict goes into the session, no owner question",
+                  rc == 0 and len(got) == 1 and want in got[0] and not os.path.exists(qfile(f"repo.{dos}.Q1"))
+                  and any(f"waiting for PR {pr} to merge" in t for t in texts(dos)))
+        check("merge wait: closed unmerged tells the session to ask the owner (a real decision)", "ask the owner" in got[0])
+
         # ---- 3c. a changed runner script is exec'd at the next stage boundary, same run --
         sd = os.path.join(tmp, "reexec", "scripts")
         shutil.copytree(HERE, sd, ignore=shutil.ignore_patterns("__pycache__"))
@@ -5439,13 +5550,30 @@ def selftest() -> int:
         rw.turn_open, rw.stopping, rw.state = True, False, {"state": "testing"}
         setattr(rw, "proc", type("P", (), {"poll": lambda self: None})())
         rw.last_out = rw.last_work = time.monotonic() - 73 * 60
-        rw.inflight_bash = {"t1": ("python3 fix_deferred_pr.py --root . --dossier W-182", time.monotonic() - 73 * 60)}
+        rw.inflight_bash = {"t1": ("python3 other_tool.py --root . --dossier W-182", time.monotonic() - 73 * 60)}
         rw.bg_wait, rw.stall_bg_at = "x", 0.0
         rw.background = lambda: []
         check("stall watchdog: the previous process's 73 minute old Bash call reads as hung", rw.hung_bash(45 * 60) != "" and rw.stalled())
         rw.reset_watchdog()
         check("stall watchdog: a new process starts with a fresh idle clock and no Bash call in flight",
               rw.hung_bash(45 * 60) == "" and not rw.inflight_bash and not rw.stalled() and rw.bg_wait == "")
+        # a fresh process whose stale clocks predate it (queue wait, resumed session's old events): never hung, never stalled
+        rs = object.__new__(Runner)
+        rs.turn_open, rs.stopping, rs.state = True, False, {"state": "testing"}
+        setattr(rs, "proc", type("P", (), {"poll": lambda self: None})())
+        rs.background = lambda: []
+        rs.spawned_at = time.monotonic()
+        rs.last_out = rs.last_work = time.monotonic() - 687 * 60
+        rs.inflight_bash = {"t1": ("python3 fix_deferred_pr.py --root . --dossier W-182", time.monotonic() - 687 * 60)}
+        rs.bg_wait, rs.stall_bg_at = "", 0.0
+        check("stall watchdog: stage just started, resumed session's last event hours old -> no hung Bash, no stall",
+              rs.hung_bash(45 * 60) == "" and not rs.stalled())
+        rs.spawned_at = time.monotonic() - 100 * 60
+        rs.last_out = rs.last_work = rs.spawned_at
+        rs.inflight_bash = {"t1": ("python3 fix_deferred_pr.py --root . --dossier W-182", rs.spawned_at)}
+        check("stall watchdog: a known test/CI wait is judged by its own longer limit, a plain Bash call by the stall limit",
+              rs.hung_bash(45 * 60) == "" and rs.hung_bash(45 * 60) == ""
+              and (rs.inflight_bash.update({"t2": ("sleep 99999", rs.spawned_at)}) or rs.hung_bash(45 * 60) == "sleep 99999"))
         rb = object.__new__(Runner)
         rb.turn_open, rb.inflight_bash, rb.bg_wait = False, {}, "background: Wait for PR 518 CI"
         check("background wait: a closed turn waiting only on background commands is blocked (slot released)", rb.blocked_on() == "background: Wait for PR 518 CI")
