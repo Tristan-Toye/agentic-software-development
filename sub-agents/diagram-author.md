@@ -167,6 +167,24 @@ Shapes the schema requires, which the fixtures also show:
   `new_stem` on a flow the dossier did not name, no new diagram, no
   `arch/` draft); the driver's shadow run builds a draft from each such flow
   and needs both on every step.
+- Sequence diagram (a `seq` view, `arch/<stem>.json`, or the flow of a
+  `new_stem`): the budget is **at most 6 lanes and 10 messages**, a lane label
+  of at most 24 characters and a message label of at most 32. Name the lane
+  after the participant only (`Index builder`, not `Index builder (crate
+  repo-index)`: the location goes in `evidence`), and write the message as the
+  call or reply (`build_index(repo)`, `index ready`), not as the L1 sentence.
+  A sequence over the budget is never cut and never an error: the page folds
+  it into `ref` groups of consecutive messages that expand in place (at most
+  2 levels), shown on demand. **Produce the groups yourself** when the
+  sequence is over the budget: `groups` is a list of `{id, label, status,
+  label_source, evidence}` (a label of at most 28 characters naming the phase,
+  `Validate input`, `Write index`; `status` `changed` when any member did), each
+  message names its group with `group`, a group holds **at most 6 consecutive
+  messages**, and a second level is a group with `parent` naming another (at
+  most 2 levels; a group that holds subgroups is not counted against the 6).
+  Without your groups the page groups mechanically by 6 messages, with a
+  label that is only the first message: yours read better. `validate` rejects
+  a group over 6 messages and a third level.
 - L2: `groups` is a list of `{id, label, status, label_source, evidence}`; a
   node names its group with `group`. Copy `edges` from `merged.json` between
   the nodes you keep.

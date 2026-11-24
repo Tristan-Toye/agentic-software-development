@@ -72,6 +72,13 @@ DECISION_SHAPES = {"terminal": "terminal", "stadium": "terminal", "process": "pr
                    "decision": "decision", "diamond": "decision", "io": "io", "junction": "junction", "circle": "junction"}
 MAP_AREAS = 7
 MAP_GROUP = 15
+# View "seq" (a sequence diagram): drawn flat up to SEQ["messages"] messages on SEQ["lanes"] lanes. A bigger one is never cropped and never
+# an error: the canvas folds it into `ref` groups of consecutive messages (at most SEQ["group"] messages each, SEQ["levels"] levels,
+# the top level folded on open, Expand all opens everything). The author supplies the groups (`groups` + `group` on each message,
+# `parent` for the second level); without them the canvas groups mechanically. Labels: a lane label at most SEQ["lane_label"], a
+# message label at most SEQ["msg_label"] characters (the schema limit of 80 stays the hard one). Same numbers as SEQ_BUDGET in
+# shared/questions/vrlayout.ts (selftest checks they agree). `over` here means "folds", and a group over SEQ["group"] messages is an issue.
+SEQ = {"lanes": 6, "messages": 10, "group": 6, "lane_label": 24, "msg_label": 32, "levels": 2}
 
 
 # ---------------------------------------------------------------- loading
@@ -371,11 +378,40 @@ def budget(graph: dict) -> dict:
         return {"view": view, "counted": "node", "used": len(nodes), "limit": DECISION_NODES, "decisions": nd,
                 "decision_limit": DECISION_MAX, "paths": _path_count(graph),
                 "over": len(nodes) > DECISION_NODES or nd > DECISION_MAX}
+    if view == "seq":
+        msgs = sum(1 for n in nodes if isinstance(n, dict) and n.get("kind") != "note")
+        lanes = len(graph.get("lanes") or [])
+        return {"view": view, "counted": "message", "used": msgs, "limit": SEQ["messages"], "lanes": lanes, "lane_limit": SEQ["lanes"],
+                "folds": msgs > SEQ["messages"] or (lanes > SEQ["lanes"] and msgs > SEQ["group"]), "over": False}
     if view not in BUDGETS:
         return {"view": view, "counted": None, "used": None, "limit": None, "over": False}
     kind, limit = BUDGETS[view]
     used = sum(1 for n in nodes if isinstance(n, dict) and (kind is None or n.get("kind") == kind))
     return {"view": view, "counted": kind or "node", "used": used, "limit": limit, "over": used > limit}
+
+
+def _seq_group_issues(graph: dict, issues: list) -> None:
+    """Author-supplied ref groups of a seq view: at most SEQ["group"] messages in a group (members of its subgroups count), at most SEQ["levels"] levels."""
+    groups = {g["id"]: g for g in graph.get("groups") or [] if isinstance(g, dict) and "id" in g}
+    if not groups:
+        return
+    count: dict = {}
+    for n in graph.get("nodes") or []:
+        if not isinstance(n, dict) or n.get("kind") == "note":
+            continue
+        gid, hops = n.get("group"), 0
+        while gid in groups and hops < 50:
+            count[gid] = count.get(gid, 0) + 1
+            gid, hops = groups[gid].get("parent"), hops + 1
+    for gid, c in sorted(count.items()):
+        if c > SEQ["group"] and not any(g.get("parent") == gid for g in groups.values()):
+            issues.append(_issue("seq_group_too_big", "groups", "seq group %r holds %d messages (budget %d): split it into groups of at most %d, or into two levels" % (gid, c, SEQ["group"], SEQ["group"])))
+    for gid in sorted(groups):
+        depth, p = 1, groups[gid].get("parent")
+        while p in groups and depth < 50:
+            depth, p = depth + 1, groups[p].get("parent")
+        if depth > SEQ["levels"]:
+            issues.append(_issue("seq_too_deep", "groups", "seq group %r is %d levels deep (at most %d)" % (gid, depth, SEQ["levels"])))
 
 
 def _flow_graph(graph: dict) -> tuple:
@@ -634,6 +670,8 @@ def validate(graph, root: str | None = None, schema: dict | None = None, check_b
 
     if graph.get("view") == "decision":
         _decision_issues(graph, issues, l1_steps, flow_rules)
+    if graph.get("view") == "seq":
+        _seq_group_issues(graph, issues)
     if check_budget:
         b = budget(graph)
         if b["over"] and b["view"] == "decision":
@@ -823,6 +861,22 @@ def _selftest() -> int:
     check("budget:map-too-many-areas", budget(dict(mp, groups=[{"id": "g%d" % i} for i in range(8)]))["over"])
     check("budget:map-nested-groups-fold-into-top", not budget(dict(mp, groups=mp["groups"] + [{"id": "s", "parent": "g0"}] * 3))["over"])
     check("budget:map-wide-group", budget(dict(mp, nodes=[nd(i, "g0") for i in range(16)]))["over"])
+    # View "seq": over the budget folds (never an error); only an author group that is too big or too deep is an issue.
+    sm = lambda i: {"id": "m%d" % i, "label": "m", "kind": "message", "status": "context", "lane": "l0", "group": None}
+    sq = {"view": "seq", "lanes": [{"id": "l0", "label": "A"}], "nodes": [sm(i) for i in range(20)], "edges": []}
+    check("budget:seq-over-folds-not-errors", budget(sq)["folds"] and not budget(sq)["over"], str(budget(sq)))
+    check("budget:seq-within", not budget(dict(sq, nodes=sq["nodes"][:10]))["folds"])
+    gs = {"view": "seq", "groups": [{"id": "g"}], "nodes": [dict(sm(i), group="g") for i in range(7)]}
+    issues_g: list = []
+    _seq_group_issues(gs, issues_g)
+    check("budget:seq-group-too-big", [i["code"] for i in issues_g] == ["seq_group_too_big"], str(issues_g))
+    gd = {"view": "seq", "groups": [{"id": "a"}, {"id": "b", "parent": "a"}, {"id": "c", "parent": "b"}], "nodes": [dict(sm(0), group="c")]}
+    issues_d: list = []
+    _seq_group_issues(gd, issues_d)
+    check("budget:seq-too-deep", [i["code"] for i in issues_d] == ["seq_too_deep"], str(issues_d))
+    ts = open(os.path.join(HERE, "..", "shared", "questions", "vrlayout.ts")).read()
+    mt = re.search(r"SEQ_BUDGET = \{ lanes: (\d+), messages: (\d+), group: (\d+), laneLabel: (\d+), msgLabel: (\d+), maxLevels: (\d+) \}", ts)
+    check("budget:seq-numbers-match-vrlayout", bool(mt) and [int(x) for x in mt.groups()] == [SEQ[k] for k in ("lanes", "messages", "group", "lane_label", "msg_label", "levels")], str(mt and mt.groups()))
     # Evidence sentences: inferred ok, end before start, absolute path refused.
     base = load(os.path.join(FIXTURES, "minimal.json"))
     for label, ev, want in (

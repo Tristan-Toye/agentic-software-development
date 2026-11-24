@@ -385,6 +385,7 @@ function vrInferred(e, g) { if (vrHand(g)) return /\./.test(e.arrow || ''); retu
 const VR_TEXT = ${JSON.stringify(VR_TEXT)};
 ${vrFitLabel.toString()}
 /* Node shapes (see nodeShape in vrlayout.ts: the layout names the shape of each non-rectangle in L.shapes and sizes the box for it). Shape is the node's type; colour stays the change status. */
+const VR_REFCH = 6.4; /* px a character of a ref header (11 px text) */
 const VR_CENTER = { terminal: 1, diamond: 1, io: 1, circle: 1, cylinder: 1 };
 /* Draws the outline of shape sh in box b with the given paint attributes; returns the elements (the first carries class vrshp). */
 function vrShapeEl(sh, b, at, p) {
@@ -416,8 +417,8 @@ function vrSeqArrow(gg, a, status) {
 }
 function vrBuild(host, key, data) {
   const st = VRS[key] = VRS[key] || {}; const have = Object.keys(data.views).filter(k => data.views[k]); /* L0, L1, L2, then one arch:<stem> per new architecture diagram (Architecture impact) */
-  if (!st.view || !data.views[st.view]) st.view = have[0]; st.mode = st.mode || 'diff';
-  if (st.rev !== data.rev) { st.rev = data.rev; st.col = {}; st.lc = {}; /* a committed diagram opens with the groups the server named folded (the areas of the product map, the big groups of a large view) */ if (data.mapPath) have.forEach(k => { const c = data.views[k].collapsed; if (c && c.length) st.col[k] = c.slice().sort(); }); }
+  if (!st.view || !data.views[st.view]) st.view = (!data.mapPath && data.views.L1) ? 'L1' : have[0]; /* the numbered Flow (L1) is the view a change diagram opens on */ st.mode = st.mode || 'diff';
+  if (st.rev !== data.rev) { st.rev = data.rev; st.col = {}; st.lc = {}; /* a committed diagram opens with the groups the server named folded (the areas of the product map, the big groups of a large view) */ have.forEach(k => { if (!data.mapPath && data.views[k].view !== 'seq') return; const c = data.views[k].collapsed; if (c && c.length) st.col[k] = c.slice().sort(); }); }
   const bar = vrDom('div', 'vrbar', null, host); vrDom('h2', 'vrh', (data.mapPath && data.views[have[0]] && data.views[have[0]].title) || 'Change diagram', bar);
   const tabs = vrDom('span', 'vrgrp', null, bar), modes = vrDom('span', 'vrgrp', null, bar);
   const tb = {}, mb = {}; modes.hidden = !!data.mapPath;
@@ -425,9 +426,19 @@ function vrBuild(host, key, data) {
   const intent = !data.mapPath && data.intent ? data.intent : null; let inB = null;
   if (intent) { inB = vrDom('button', 'btn sm', 'Intent', tabs); inB.type = 'button'; inB.title = 'What this change sets out to accomplish'; inB.onclick = () => setIntent(true); }
   /* The Sequence tabs (auto-drafted previews from the L1 flows, next to Decisions): context, no verdicts, no part of the approval. */ const prevKeys = have.filter(k => k.indexOf('seqpreview:') === 0);
-  ['L0', 'L1', 'decision'].filter(k => k !== 'decision' || data.views[k]).concat(prevKeys, ['L2'], have.filter(k => k.indexOf('arch:') === 0)).forEach(k => { const isArch = k.indexOf('arch:') === 0, isPrev = k.indexOf('seqpreview:') === 0; const b = vrDom('button', 'btn sm', isPrev ? 'Sequence' + (prevKeys.length > 1 ? ' ' + (prevKeys.indexOf(k) + 1) : '') + ' (auto draft)' : isArch ? k.slice(5) : data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k === 'decision' ? VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); if (k === 'decision') b.title = 'What happens at each condition of the change (start, steps, decisions, ends)'; if (isPrev) b.title = (data.views[k].title || k.slice(11)) + ': a sequence drawn mechanically from the Flow view. A preview: no verdicts, not part of the approval, never promoted.'; if (isArch) b.title = 'New architecture diagram ' + k.slice(5) + ' (Architecture impact)'; b.type = 'button'; b.disabled = !data.views[k]; b.hidden = !!data.mapPath && !data.views[k]; tb[k] = b; b.onclick = () => { setIntent(false); st.view = k; wkOff(); draw(); }; });
+  /* Sequence diagrams are on demand: their tabs stay hidden (the numbered Flow is the default) until the Sequence diagrams button opens them. */
+  const isSeqTab = k => !data.mapPath && (k.indexOf('seqpreview:') === 0 || (k.indexOf('arch:') === 0 && !!data.views[k] && data.views[k].view === 'seq')); let sqB = null;
+  function syncSeq() { const on = !!st.seqOn || isSeqTab(st.view); Object.keys(tb).forEach(k => { if (isSeqTab(k)) tb[k].hidden = !on; }); if (sqB) { sqB.setAttribute('aria-pressed', String(on)); sqB.textContent = on ? 'Hide sequences' : 'Sequence diagrams'; } }
+  ['L0', 'L1', 'decision'].filter(k => k !== 'decision' || data.views[k]).concat(prevKeys, ['L2'], have.filter(k => k.indexOf('arch:') === 0)).forEach(k => { const isArch = k.indexOf('arch:') === 0, isPrev = k.indexOf('seqpreview:') === 0; const b = vrDom('button', 'btn sm', isPrev ? 'Sequence' + (prevKeys.length > 1 ? ' ' + (prevKeys.indexOf(k) + 1) : '') + ' (auto draft)' : isArch ? k.slice(5) : data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k === 'decision' ? VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); if (k === 'decision') b.title = 'What happens at each condition of the change (start, steps, decisions, ends)'; if (isPrev) b.title = (data.views[k].title || k.slice(11)) + ': a sequence drawn mechanically from the Flow view. A preview: no verdicts, not part of the approval, never promoted.'; if (isArch) b.title = 'New architecture diagram ' + k.slice(5) + ' (Architecture impact)'; b.type = 'button'; b.disabled = !data.views[k]; b.hidden = (!!data.mapPath && !data.views[k]) || isSeqTab(k); tb[k] = b; b.onclick = () => { setIntent(false); st.view = k; wkOff(); draw(); }; });
+  const seqTabs = have.filter(isSeqTab);
+  if (seqTabs.length) { sqB = vrDom('button', 'btn sm', 'Sequence diagrams', tabs); sqB.type = 'button'; sqB.title = 'Show the sequence diagrams of this change (drawn on demand; the numbered Flow is the default view)'; sqB.onclick = () => { setIntent(false); if (isSeqTab(st.view)) { st.seqOn = false; st.view = data.views.L1 ? 'L1' : have.find(k => !isSeqTab(k)) || st.view; } else { st.seqOn = true; st.view = seqTabs[0]; } wkOff(); draw(); }; }
+  syncSeq();
   VR_MODES.forEach(m => { const b = vrDom('button', 'btn sm', m[1], modes); b.type = 'button'; mb[m[0]] = b; b.onclick = () => { st.mode = m[0]; applyMode(); }; });
   const fitB = vrDom('button', 'btn sm', 'Fit all', bar); fitB.title = 'Show the whole diagram (labels may get small)'; fitB.type = 'button';
+  /* A sequence diagram over the budget is folded into refs: Expand all opens every one, Fold all closes them again (nothing is ever cropped). */
+  const exB = vrDom('button', 'btn sm', 'Expand all', bar); exB.type = 'button'; exB.hidden = true; exB.title = 'Open every folded group of messages (ref) of this sequence';
+  const seqGroups = () => { const b = data.views[st.view]; return b && b.graph && b.graph.view === 'seq' ? (b.graph.groups || []) : []; };
+  exB.onclick = () => { if (busy) return; st.prevCol = colOf(st.view).slice(); st.col[st.view] = colOf(st.view).length ? [] : (data.views[st.view].collapsed || []).slice().sort(); draw(); };
   const moreD = vrDom('details', 'vrmore', null, bar); vrDom('summary', '', 'More ▾', moreD); const menu = vrDom('div', 'vrmenu', null, moreD); /* the row keeps the view tabs, the Before/After/Diff modes, Fit all and Walkthrough; zoom, Mermaid and Full screen sit in this menu */
   const zin = vrDom('button', 'btn sm', 'Zoom in (+)', menu), zout = vrDom('button', 'btn sm', 'Zoom out (−)', menu); zin.type = zout.type = 'button'; zin.title = 'Zoom in'; zout.title = 'Zoom out';
   const wkB = vrDom('button', 'btn sm', 'Walkthrough', bar); wkB.type = 'button'; wkB.title = 'Step through the added, changed and removed elements in reading order'; wkB.setAttribute('aria-pressed', 'false'); wkB.hidden = !!data.mapPath; /* a committed diagram has no added, changed or removed elements to step through */
@@ -530,7 +541,7 @@ function vrBuild(host, key, data) {
   function paintBadges() {
     if (!cur || !cur.layout) return; svg.querySelectorAll('.vr-vd').forEach(e => e.remove());
     cur.graph.nodes.forEach(n => { const l = lineFor(st.view, n.id), e = els[n.id], b = cur.layout.boxes[n.id]; if (!l || !e || !b) return;
-      const t = vrEl('text', { class: 'vr-vd vrcode', x: b.x + 10, y: b.y + 4, stroke: 'var(--bg)', 'stroke-width': 6, 'paint-order': 'stroke', fill: 'var(--' + (l.state === 'current' ? ({ ok: 'ok', question: 'que', change: 'warn', remove: 'bad' })[l.verdict] : 'mut') + ')' }, e.g);
+      const bd = cur.layout.badges && cur.layout.badges[n.id]; /* a sequence message has its own badge slot after the label, never on the text */ const t = vrEl('text', { class: 'vr-vd vrcode', x: bd ? bd.x : b.x + 10, y: bd ? bd.y + 11 : b.y + 4, stroke: 'var(--bg)', 'stroke-width': 6, 'paint-order': 'stroke', fill: 'var(--' + (l.state === 'current' ? ({ ok: 'ok', question: 'que', change: 'warn', remove: 'bad' })[l.verdict] : 'mut') + ')' }, e.g);
       t.textContent = VD_CODE[l.verdict] + (l.state === 'outdated' ? ' (old)' : ''); });
   }
   /* The summary, the Send button and the stale banner: cheap, runs on every page render. */
@@ -592,7 +603,7 @@ function vrBuild(host, key, data) {
   }
   function vrNote(v, mode) { const c = { added: 0, changed: 0, removed: 0 }; v.graph.nodes.forEach(n => { if (c[n.status] !== undefined && visible(n.status)) c[n.status]++; }); const is = v.issues.length ? ' · ' + v.issues.length + ' validation issue' + (v.issues.length > 1 ? 's' : '') + ': ' + v.issues.slice(0, 3).map(i => i.message).join('; ') : ''; const ti = v.graph.title ? v.graph.title + ' · ' : ''; if (data.mapPath) return ti.replace(/ · $/, '') + (is ? is : ''); return ti + c.added + ' added, ' + c.changed + ' changed, ' + c.removed + ' removed shown' + is; }
   const colOf = v => st.col[v] || [];
-  const canCol = id => !(vrLane(data.views[st.view].graph.view) && (data.views[st.view].graph.lanes || []).length) && (data.views[st.view].graph.groups || []).some(x => x.id === id);
+  const canCol = id => !(vrLane(data.views[st.view].graph.view) && data.views[st.view].graph.view !== 'seq' && (data.views[st.view].graph.lanes || []).length) && (data.views[st.view].graph.groups || []).some(x => x.id === id);
   /* A collapse state is laid out by the server (the collapsed graph, edges aggregated); the answer is kept per state, so closing again is instant. */
   function draw(anchor, selId) {
     const base = data.views[st.view], ids = colOf(st.view);
@@ -608,11 +619,11 @@ function vrBuild(host, key, data) {
   function toggle(id) {
     if (busy || !cur || !cur.layout) return;
     const list = colOf(st.view).slice(), i = list.indexOf(id), b = cur.layout.boxes[id];
-    st.prevCol = list.slice(); if (i >= 0) list.splice(i, 1); else list.push(id); list.sort(); st.col[st.view] = list;
+    st.prevCol = list.slice(); if (i >= 0) { list.splice(i, 1); /* a sequence ref opens with its sub-refs folded (two levels at most) */ if (cur.graph.view === 'seq') (data.views[st.view].graph.groups || []).forEach(x => { if (x.parent === id && list.indexOf(x.id) < 0) list.push(x.id); }); } else list.push(id); list.sort(); st.col[st.view] = list;
     draw(b ? { id: id, sx: vp.x + b.x * vp.k, sy: vp.y + b.y * vp.k } : null, id);
   }
   function paint(v, anchor, selId) {
-    hovHide(); cur = v; Object.keys(tb).forEach(k => tb[k].setAttribute('aria-pressed', String(k === st.view)));
+    hovHide(); cur = v; Object.keys(tb).forEach(k => tb[k].setAttribute('aria-pressed', String(k === st.view))); exB.hidden = !seqGroups().length; exB.textContent = colOf(st.view).length ? 'Expand all' : 'Fold all'; syncSeq();
     const isPv = st.view.indexOf('seqpreview:') === 0; pvB.hidden = !isPv; pvB.textContent = isPv ? 'Auto-drafted preview, not part of the review. This sequence was built mechanically from the Flow view' + (v.note ? ' (' + v.note + ')' : '') + '. Read it as a picture of the order of the steps: the arrows are not verified calls. There are no verdicts here, it is never promoted into docs/architecture, and it does not block the approval.' : '';
     svg.replaceChildren(); els = {}; root = null; ovSvg = null; ovVp = null; ovRects = {}; ov.replaceChildren(); ov.hidden = true; st.sel = ''; insp.replaceChildren(); vrDom('p', 'small mut', 'Click an element for its description and evidence. Drag to pan; Ctrl or Cmd + wheel to zoom; the wheel scrolls the page; click a group header to fold it; in a folded view, click a folded box to open it.', insp);
     if (!cur.layout || !cur.graph) { note.textContent = cur.issues.map(i => i.message).join('; ') || 'This view could not be laid out.'; return; }
@@ -622,7 +633,7 @@ function vrBuild(host, key, data) {
     const cont = [].concat(g.groups || [], (g.lanes || []).map(l => ({ id: l.id, label: l.label, status: 'context', evidence: [] })));
     cont.forEach(c => { const b = L.boxes[c.id]; if (!b) return; const gg = vrEl('g', { 'data-id': c.id, 'data-status': c.status, class: 'vrg', tabindex: 0 }, root); els[c.id] = { g: gg, status: c.status };
       vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 8, fill: 'var(--bg)', stroke: 'var(--' + vrTone(c.status) + ')', 'stroke-width': c.status === 'context' ? 1 : 2, 'stroke-dasharray': c.status === 'context' ? '4 3' : '0' }, gg);
-      const tx = vrEl('text', { x: b.x + 10, y: b.y + 19, fill: 'var(--fg)', 'font-weight': 600, 'font-size': 13 }, gg); tx.textContent = (canCol(c.id) ? '▾ ' : '') + VR_MARK[c.status] + ' ' + c.label; vrMark(gg, c.status, b.x + b.w - 14, b.y + 14); if (L.arrows) vrEl('line', { class: 'vrlife', x1: b.x + b.w / 2, x2: b.x + b.w / 2, y1: b.y + 34, y2: b.y + b.h - 6, stroke: 'var(--mut)', 'stroke-width': 1, 'stroke-dasharray': '5 4', 'pointer-events': 'none' }, gg); tip(gg, c);
+      const hl = L.arrows && L.texts && L.texts[c.id] ? L.texts[c.id] : null; /* a sequence lane header: its label wrapped to the column, whole */ const tx = vrEl('text', { x: b.x + 10, y: b.y + 19, fill: 'var(--fg)', 'font-weight': 600, 'font-size': 13 }, gg); if (hl) hl.forEach((t, i) => { const ts = vrEl('tspan', { x: b.x + 10, dy: i ? 16 : 0 }, tx); ts.textContent = t; }); else tx.textContent = (canCol(c.id) ? '▾ ' : '') + VR_MARK[c.status] + ' ' + c.label; vrMark(gg, c.status, b.x + b.w - 14, b.y + 14); if (L.arrows) vrEl('line', { class: 'vrlife', x1: b.x + b.w / 2, x2: b.x + b.w / 2, y1: b.y + (L.headH || 34), y2: b.y + b.h - 6, stroke: 'var(--mut)', 'stroke-width': 1, 'stroke-dasharray': '5 4', 'pointer-events': 'none' }, gg); tip(gg, c);
       if (canCol(c.id)) vrEl('rect', { class: 'vrhd', x: b.x, y: b.y, width: b.w, height: 30, fill: 'transparent', stroke: 'transparent', 'data-tog': c.id }, gg); });
     /* seq frames (alt, opt, loop, par ...): a labelled box behind the steps it spans, a dashed rule where a branch (else, and) starts. */
     (g.frames || []).forEach(f => { const b = L.frames && L.frames[f.id]; if (!b) return; const fg = vrEl('g', { class: 'vrfr', 'data-frame': f.id, 'pointer-events': 'none' }, root);
@@ -630,6 +641,11 @@ function vrBuild(host, key, data) {
       const lab = f.kind + (f.label ? ' [' + f.label + ']' : ''); const tw = Math.min(b.w - 8, Math.ceil(lab.length * 6.2) + 10); vrEl('rect', { x: b.x, y: b.y, width: tw, height: 15, fill: 'var(--card)', stroke: 'var(--mut)', 'stroke-width': 1 }, fg);
       const ft = vrEl('text', { x: b.x + 5, y: b.y + 11, 'font-size': 10.5, fill: 'var(--mut)' }, fg); ft.textContent = lab.length * 6.2 + 10 > tw ? lab.slice(0, Math.max(1, Math.floor((tw - 10) / 6.2) - 1)) + '…' : lab;
       (f.branches || []).forEach(br => { const sb = L.boxes[br.first]; if (!sb) return; const y = Math.max(b.y + 16, sb.y - 8); vrEl('line', { x1: b.x, x2: b.x + b.w, y1: y, y2: y, stroke: 'var(--mut)', 'stroke-width': 1, 'stroke-dasharray': '5 4' }, fg); const bt = vrEl('text', { x: b.x + 5, y: y + 11, 'font-size': 10.5, fill: 'var(--mut)' }, fg); bt.textContent = '[' + (br.label || br.kind) + ']'; }); });
+    /* seq refs that are open: a box around the messages of the group with its header (label, message count, status colour) and a fold button; the box does not take clicks, only the header does. */
+    (g.groups || []).forEach(x => { const b = L.refs && L.refs[x.id]; if (!b) return; const fg = vrEl('g', { class: 'vrref', 'data-ref': x.id }, root); const tone = vrTone(x.status), cnt = g.nodes.filter(n => { for (let p = n.group, k = 0; p && k < 50; k++) { if (p === x.id) return n.kind !== 'note'; const q = (g.groups || []).find(y => y.id === p); p = q && q.parent; } return false; }).length;
+      vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 4, fill: 'none', stroke: 'var(--' + tone + ')', 'stroke-width': 1.4, 'stroke-dasharray': '2 3', 'pointer-events': 'none' }, fg);
+      const lab = '▾ ref  ' + x.label + '  (' + cnt + ')', tw = Math.min(b.w - 4, Math.ceil(lab.length * VR_REFCH) + 12); vrEl('rect', { class: 'vrhd', x: b.x, y: b.y, width: tw, height: 16, fill: 'var(--card)', stroke: 'var(--' + tone + ')', 'stroke-width': 1, 'data-tog': x.id, style: 'cursor:pointer' }, fg);
+      const rt = vrEl('text', { x: b.x + 6, y: b.y + 12, 'font-size': 11, fill: 'var(--fg)', 'pointer-events': 'none' }, fg); rt.textContent = lab.length * VR_REFCH + 12 > tw ? lab.slice(0, Math.max(1, Math.floor((tw - 12) / VR_REFCH) - 1)) + '…' : lab; vrEl('title', {}, fg).textContent = 'Click the header to fold ' + x.label + ' (' + cnt + ' messages)'; });
     g.edges.forEach(e => { const pts = L.edges[e.id]; if (!pts) return; const gg = vrEl('g', { 'data-id': e.id, 'data-status': e.status, 'data-resolution': e.resolution || '', class: 'vre', tabindex: 0 }, root); els[e.id] = { g: gg, status: e.status, edge: [e.source, e.target] };
       const ps = pts.map(p => p.join(',')).join(' '), inf = vrInferred(e, g);
       vrEl('polyline', { points: ps, fill: 'none', stroke: 'transparent', 'stroke-width': 12 }, gg);
@@ -641,6 +657,19 @@ function vrBuild(host, key, data) {
     if (ds) dcLeg.textContent = 'decisions ' + ds.decisions[0] + ' → ' + ds.decisions[1] + ' · paths ' + ds.paths[0] + ' → ' + ds.paths[1] + (ds.errorEnds ? ' · new error ends ' + ds.errorEnds : '');
     g.nodes.forEach(n => { const b = L.boxes[n.id]; if (!b) return; const gg = vrEl('g', { 'data-id': n.id, 'data-status': n.status, class: 'vrn', tabindex: 0, role: 'button' }, root); els[n.id] = { g: gg, status: n.status, col: !!n.collapsed }; const sh = (L.shapes && L.shapes[n.id]) || 'rect'; vrEl('title', {}, gg).textContent = n.label + ' (' + (n.kind || 'node') + (sh === 'rect' ? '' : ', ' + sh) + ', ' + n.status + ')';
       if (n.collapsed) { gg.setAttribute('data-collapsed', '1'); vrEl('rect', { x: b.x + 5, y: b.y + 5, width: b.w, height: b.h, rx: 6, fill: 'var(--card)', stroke: 'var(--mut)', 'stroke-width': 1.5 }, gg); }
+      const sqMsg = !!(L.arrows && L.arrows[n.id] && L.texts && L.texts[n.id]), sqRef = g.view === 'seq' && !!n.collapsed;
+      if (sqMsg) {
+        /* a sequence message: no card, its label sits on the arrow (a halo keeps it legible over lifelines), the status mark before it */
+        vrEl('rect', { x: b.x - 2, y: b.y - 2, width: b.w + 4, height: b.h + 4, fill: 'transparent' }, gg);
+        const tt = vrEl('text', { x: b.x, y: b.y + 11, 'font-size': 12, fill: 'var(--fg)', stroke: 'var(--bg)', 'stroke-width': 4, 'paint-order': 'stroke', 'stroke-linejoin': 'round', 'text-decoration': n.status === 'removed' ? 'line-through' : 'none' }, gg);
+        L.texts[n.id].forEach((t, i) => { const ts = vrEl('tspan', { x: b.x, dy: i ? 15 : 0 }, tt); ts.textContent = t; });
+        vrSeqArrow(gg, L.arrows[n.id], n.status); const mk1 = L.marks && L.marks[n.id]; if (n.status !== 'context' && mk1) vrMark(gg, n.status, mk1.x + 9, mk1.y + 9); tip(gg, n); return;
+      }
+      if (sqRef) {
+        /* a folded ref: a band across the lanes it touches, the group label, the count of messages and the status colour; a click opens it in place */
+        vrEl('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 4, fill: 'var(--' + vrBg(n.status) + ')', stroke: 'var(--' + vrTone(n.status) + ')', 'stroke-width': n.status === 'context' ? 1.4 : 2.2, 'stroke-dasharray': '2 3', style: 'cursor:pointer' }, gg);
+        const rt = vrEl('text', { x: b.x + 10, y: b.y + b.h / 2 + 4, 'font-size': 12, fill: 'var(--fg)', 'pointer-events': 'none' }, gg); rt.textContent = '▸ ' + L.texts[n.id][0]; vrMark(gg, n.status, b.x + b.w - 14, b.y + b.h / 2); tip(gg, n); return;
+      }
       vrShapeEl(sh, b, { fill: 'var(--' + vrBg(n.status) + ')', stroke: 'var(--' + vrTone(n.status) + ')', 'stroke-width': n.status === 'context' ? 1 : 2.5, 'stroke-dasharray': n.status === 'removed' ? '3 3' : '0' }, gg);
       const fit = vrFitLabel(n.label, b.w, !!n.stereotype, g.view, sh); const lines = fit.lines.slice();
       if (n.stereotype) lines.unshift('<<' + n.stereotype + '>>');
@@ -703,7 +732,7 @@ function vrBuild(host, key, data) {
     ovVp = vrEl('rect', { class: 'vrovvp' }, ovSvg);
   }
   function mapUpd() {
-    if (!cur || !cur.layout || !ovVp) return; const r = svg.getBoundingClientRect(), L = cur.layout;
+    if (!cur || !cur.layout || !ovVp) return; const r = svg.getBoundingClientRect(), L = cur.layout; if (L.arrows) { ov.hidden = true; return; } /* a sequence is a narrow column of lanes: the overview would sit on top of them */
     const big = L.width * vp.k > r.width + 1 || L.height * vp.k > r.height + 1; ov.hidden = !big; if (!big) return;
     ovVp.setAttribute('x', -vp.x / vp.k); ovVp.setAttribute('y', -vp.y / vp.k); ovVp.setAttribute('width', r.width / vp.k); ovVp.setAttribute('height', r.height / vp.k);
   }

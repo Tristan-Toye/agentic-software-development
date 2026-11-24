@@ -3,7 +3,7 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { dirname, join, resolve, sep } from "node:path"
 import { checkLayout } from "./vrcheck.ts"
-import { checkGraph,collapseLoaded, layoutGraph, stripDollar, type ViewResult } from "./vrlayout.ts"
+import { checkGraph, collapseLoaded, layoutGraph, seqFold, stripDollar, type ViewResult } from "./vrlayout.ts"
 
 export const MAP_REL = "docs/architecture/product-map.json"
 export const MAP_TIMEOUT_MS = 20_000
@@ -194,10 +194,12 @@ export async function openDiagram(root: string, rel: string, listed: Diagram[]):
     out.graph = stripDollar(g)
     out.view = g.view
     let fold = openFolds(out.graph)
+    // A sequence over the seq budget opens folded into refs (never cropped); the fit-folding below is for the group views.
+    if (g.view === "seq") { const sf = seqFold(out.graph); out.graph = sf.graph; fold = sf.fold }
     // A view that opens folded may be too big to lay out unfolded: then the failure is not reported (layout stays null) and the canvas asks for the folded layout.
     try { out.layout = await layoutGraph(out.graph); if (!fold.length) out.issues.push(...checkLayout(out.graph, out.layout)) } catch (e) { if (!fold.length) out.issues.push({ code: "layout_failed", where: "", message: (e as Error).message }) }
     // Fold more (the biggest open group, nested ones too) until the opening layout fits the readable size, instead of letting Fit shrink the text.
-    if (g.view !== "map" && (out.graph.groups ?? []).length) {
+    if (g.view !== "map" && g.view !== "seq" && (out.graph.groups ?? []).length) {
       try {
         for (let i = 0; i < FIT_TRIES; i++) {
           const L = fold.length ? (await collapseLoaded(out.graph, g.view, fold)).layout : out.layout

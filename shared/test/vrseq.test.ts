@@ -149,10 +149,13 @@ describe("seq draws sender-to-receiver arrows", () => {
     expect([...ys].sort((p, q) => p - q)).toEqual(ys)
     expect(new Set(ys).size).toBe(4)
   })
-  test("the label sits between the two lifelines, on the arrow", () => {
+  test("the label is text on the arrow beside the sender, between the two lifelines, not a card", () => {
     const L = seqLayout(g3()), b = L.boxes.m1
-    expect(b.x + b.w / 2).toBeCloseTo((cxOf(L, "lane:A") + cxOf(L, "lane:C")) / 2, 0)
-    expect(b.y).toBeLessThan(L.arrows!.m1.points[0][1])
+    expect(b.x).toBeGreaterThanOrEqual(cxOf(L, "lane:A"))
+    expect(b.x + b.w).toBeLessThanOrEqual(cxOf(L, "lane:C"))
+    expect(b.y + b.h).toBeLessThan(L.arrows!.m1.points[0][1])
+    expect(b.h).toBeLessThan(30)
+    expect(L.texts!.m1).toEqual(["m1"])
   })
   test("a self-call is a loop that leaves and returns to the same lifeline", () => {
     const L = seqLayout(g3()), s = L.arrows!.m2, cx = cxOf(L, "lane:C")
@@ -204,5 +207,136 @@ describe("seq draws sender-to-receiver arrows", () => {
   test("the page draws the arrows by kind and status, and the lifelines, in theme variables", () => {
     for (const s of ["vrSeqArrow", "vrSeqMarkers", "vrlife", "vr-sq-", "L.arrows"]) expect(PAGE).toContain(s)
     expect(PAGE).toContain("'stroke-dasharray': a.kind === 'reply'")
+  })
+})
+
+// ---- renderer fixes and hierarchical folding (PR C) ----
+import { collapseGraph, seqFold, SEQ_BUDGET, wrapWords, visualReview } from "../questions/vrlayout.ts"
+const big = (n: number, lanes = 3): any => {
+  const ls = Array.from({ length: lanes }, (_, i) => ({ id: "lane:" + i, label: "Lane " + i }))
+  const nodes = Array.from({ length: n }, (_, i) => msg("m" + (i + 1), "lane:" + (i % lanes), "lane:" + ((i + 1) % lanes), i + 1))
+  return { schema_version: "1.0.0", view: "seq", title: "seq - big", meta: {}, lanes: ls, nodes, edges: [], flows: [{ id: "flow:main", label: "big", status: "context", lanes: [], after: nodes.map((x: any) => x.id), evidence: ev }] }
+}
+describe("seq lane headers fit, rows are compact", () => {
+  test("a long lane label wraps whole inside a column wide enough, and the lifeline starts below the header", () => {
+    const g = big(2); g.lanes[0].label = "Repository index builder service (worker pool)"
+    const L = seqLayout(g)
+    expect(L.texts!["lane:0"].join(" ")).toBe("Repository index builder service (worker pool)")
+    expect(L.texts!["lane:0"].length).toBeGreaterThan(1)
+    expect(L.headH).toBeGreaterThanOrEqual(14 + 16 * L.texts!["lane:0"].length)
+    const w = L.boxes["lane:0"].w, widest = Math.max(...L.texts!["lane:0"].map((t) => t.length)) * 7.6
+    expect(w).toBeGreaterThanOrEqual(widest)
+    // neighbouring headers never overlap
+    const a = L.boxes["lane:0"], b = L.boxes["lane:1"]
+    expect(a.x + a.w).toBeLessThanOrEqual(b.x)
+    // the first row starts below the header
+    expect(L.boxes.m1.y).toBeGreaterThan(L.headH!)
+  })
+  test("a message row is far smaller than the old 90 px card row", () => {
+    const L = seqLayout(big(6)), ys = ["m1", "m2", "m3"].map((id) => L.arrows![id].points[0][1])
+    expect(ys[1] - ys[0]).toBeLessThan(40)
+  })
+  test("the page draws the label as halo text on the arrow, no card, and keeps the minimap off a sequence", () => {
+    for (const s of ["paint-order", "sqMsg", "L.texts[n.id]", "L.headH", "if (L.arrows) { ov.hidden = true; return; }"]) expect(PAGE).toContain(s)
+  })
+})
+
+describe("seq folds hierarchically, never crops", () => {
+  test("within the budget nothing folds", () => {
+    const r = seqFold(big(SEQ_BUDGET.messages))
+    expect(r.fold).toEqual([])
+    expect(r.graph.groups).toBeUndefined()
+  })
+  test("over the message budget: mechanical refs of at most the group budget, every message kept", () => {
+    const g = big(20), r = seqFold(g)
+    expect(r.fold.length).toBeGreaterThan(1)
+    for (const id of r.fold) expect(r.graph.nodes.filter((n: any) => n.group === id).length).toBeLessThanOrEqual(SEQ_BUDGET.group)
+    expect(r.graph.nodes).toHaveLength(20)
+    expect(r.graph.nodes.every((n: any) => n.group)).toBe(true)
+  })
+  test("a huge sequence gets two levels at most; the top level is what opens folded", () => {
+    const r = seqFold(big(80))
+    const by = new Map<string, any>(r.graph.groups.map((x: any) => [x.id, x]))
+    const depth = (id: string): number => (by.get(id)?.parent ? 1 + depth(by.get(id).parent) : 1)
+    expect(Math.max(...r.graph.groups.map((x: any) => depth(x.id)))).toBeLessThanOrEqual(SEQ_BUDGET.maxLevels)
+    expect(r.fold.every((id) => !by.get(id).parent)).toBe(true)
+    expect(r.fold.length).toBeLessThanOrEqual(SEQ_BUDGET.group * 2)
+  })
+  test("author groups are used as they are; the top-level ones open folded", () => {
+    const g = big(14)
+    g.groups = [{ id: "g:a", label: "Setup", status: "context", evidence: [] }, { id: "g:b", label: "Work", status: "added", evidence: [] }, { id: "g:b1", label: "Inner", status: "added", parent: "g:b", evidence: [] }]
+    g.nodes.forEach((n: any, i: number) => { n.group = i < 7 ? "g:a" : i < 10 ? "g:b1" : "g:b" })
+    const r = seqFold(g)
+    expect(r.graph).toBe(g)
+    expect(r.fold).toEqual(["g:a", "g:b"])
+  })
+  test("folding replaces the messages of a ref by one band, in order, with the count and the lanes it touches", async () => {
+    const r = seqFold(big(20)), c = collapseGraph({ ...r.graph }, [r.fold[0]])
+    const ref = c.nodes.find((n: any) => n.id === r.fold[0])
+    expect(ref).toMatchObject({ collapsed: true, members: r.graph.nodes.filter((n: any) => n.group === r.fold[0]).length })
+    expect(ref.seq.over.length).toBeGreaterThan(1)
+    expect(c.flows[0].after[0]).toBe(r.fold[0])
+    expect(c.flows[0].after).toHaveLength(20 - ref.members + 1)
+    const L = await layoutGraph(withFlowEdges(c))
+    expect(L.texts![ref.id][0]).toContain("(" + ref.members + " msgs)")
+    expect(L.boxes[ref.id].h).toBeLessThan(40)
+    // the folded diagram is shorter than the open one
+    const open = await layoutGraph(withFlowEdges(r.graph))
+    expect(L.height).toBeLessThan(open.height)
+    expect(open.refs && Object.keys(open.refs).length).toBe(r.graph.groups.length)
+  })
+  test("the review opens a big seq folded (collapsed = the top-level refs) and the page can expand all", () => {
+    const dir = mkdtempSync(join(tmpdir(), "seqfold-")); mkdirSync(join(dir, "seq-preview"))
+    writeFileSync(join(dir, "seq-preview", "big.json"), JSON.stringify(big(20)))
+    for (const s of ["Expand all", "Fold all", "data-ref", "cur.graph.view === 'seq'"]) expect(PAGE).toContain(s)
+    return visualReview(dir, "W-1").then((r) => { const v = r.views["seqpreview:big"]!; expect(v.collapsed!.length).toBeGreaterThan(1); expect(v.issues).toEqual([]) })
+  })
+  test("wrapWords never drops text", () => {
+    const t = "a".repeat(60) + " tail words here"
+    expect(wrapWords(t, 20).join("").replace(/ /g, "")).toBe(t.replace(/ /g, ""))
+  })
+})
+
+describe("seq tabs are on demand", () => {
+  test("the page hides the sequence tabs until the Sequence diagrams button opens them; the Flow stays the default", () => {
+    for (const s of ["isSeqTab", "Sequence diagrams", "Hide sequences", "syncSeq"]) expect(PAGE).toContain(s)
+    expect(PAGE).toContain("|| isSeqTab(k)")
+  })
+})
+
+describe("the change diagram opens on the numbered Flow", () => {
+  test("L1 is selected on open for a dossier; a committed diagram keeps its first view", () => {
+    expect(PAGE).toContain("(!data.mapPath && data.views.L1) ? 'L1' : have[0]")
+  })
+})
+
+describe("a message label never collides with its status glyph or review badge", () => {
+  const hit = (a: any, b: any) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y
+  test("label, glyph and badge boxes are disjoint for calls to the right, replies to the left and self calls", () => {
+    const g = big(8, 4); g.nodes[1].lane = "lane:2"; g.nodes[1].seq.to = "lane:2" // a self call
+    g.nodes[2].label = "Pick the language pack for the repository and extract its symbols"
+    const L = seqLayout(g)
+    for (const n of g.nodes) {
+      const lab = L.boxes[n.id], mk = L.marks![n.id], bd = L.badges![n.id]
+      expect(hit(lab, mk), n.id + " label/glyph").toBe(false)
+      expect(hit(lab, bd), n.id + " label/badge").toBe(false)
+      expect(hit(mk, bd), n.id + " glyph/badge").toBe(false)
+    }
+  })
+  test("a label with its slots stays between the sender's lifeline and the receiver's (or beside a self call)", () => {
+    const L = seqLayout(big(8, 4)), cx = (id: string) => L.boxes[id].x + L.boxes[id].w / 2
+    for (const [id, a] of Object.entries(L.arrows!)) {
+      if (a.self) continue
+      const lo = Math.min(cx(a.from), cx(a.to)), hi = Math.max(cx(a.from), cx(a.to)), m = L.marks![id], b = L.badges![id]
+      expect(m.x).toBeGreaterThanOrEqual(lo)
+      expect(b.x + b.w).toBeLessThanOrEqual(hi)
+    }
+  })
+  test("the page draws the badge in the layout's badge slot and the glyph in the glyph slot", () => {
+    expect(PAGE).toContain("cur.layout.badges[n.id]")
+    expect(PAGE).toContain("L.marks[n.id]")
+  })
+  test("seq-repo-index-build size (12 messages, 6 lanes) folds under the budget of 10", () => {
+    expect(seqFold(big(12, 6)).fold.length).toBeGreaterThan(1)
   })
 })

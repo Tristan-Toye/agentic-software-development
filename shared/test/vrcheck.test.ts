@@ -129,8 +129,10 @@ describe("a sequence message box grows to the lines its label needs", () => {
     expect(vrFitLabel(four, L.boxes.m1.w, false, "seq").clipped).toBe(false)
     expect(checkLayout(g, L).map((i) => i.code)).not.toContain("label_clipped")
   })
-  test("more than the seq maximum is still reported", async () => {
+  test("a very long label wraps on the arrow and is never cropped", async () => {
     const g = seq("word ".repeat(40).trim()), L = await layoutGraph(g)
-    expect(checkLayout(g, L).map((i) => i.code)).toContain("label_clipped")
+    expect(L.texts!.m1.length).toBeGreaterThan(3)
+    expect(L.texts!.m1.join(" ")).toBe("word ".repeat(40).trim())
+    expect(checkLayout(g, L).map((i) => i.code)).not.toContain("label_clipped")
   })
 })
