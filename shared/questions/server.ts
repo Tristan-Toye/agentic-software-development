@@ -17,7 +17,8 @@ import { pendingSlack, readRunThreadAsync, runSlackEnabled, runsWatchIgnored, th
 import { startLagWatch } from "./lagwatch.ts"
 import { archStemOf, collapsedView, hasVisualReview, visualReview, vrDir } from "./vrlayout.ts"
 import { makeVrCache, vrSignature } from "./vrcache.ts"
-import { approveAll, buildAnswer, diagramsOf, dossierIntent, MAX_BODY, ReviewError, isReviewQuestion, reviewOptions, reviewState, setVerdict } from "./vrreview.ts"
+import type { Note } from "./vrreview.ts"
+import { approveAll, buildAnswer, diagramsOf, dossierIntent, MAX_BODY, MAX_FEEDBACK_BODY, ReviewError, isReviewQuestion, readReview, reviewOptions, reviewState, setVerdict, submitFeedback } from "./vrreview.ts"
 import { collapsedDiagram, DiagramError, mapStatus, openDiagram } from "./vrmap.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
@@ -388,12 +389,13 @@ async function repoRoots(repo: string): Promise<string[]> {
  * here for every visual-review route: a plain name, no leading dot, and a real run with that id (so no path is built from
  * anything else).
  */
-async function vrFind(dossier: string, repo: string): Promise<{ ok: true; root: string; dossier: string; repo: string; runs: Run[] } | { ok: false; status: number; error: string }> {
+async function vrFind(dossier: string, repo: string, anyRoot = false): Promise<{ ok: true; root: string; dossier: string; repo: string; runs: Run[] } | { ok: false; status: number; error: string }> {
   if (!/^[\w.-]+$/.test(dossier) || dossier.startsWith(".") || (repo && !/^[\w.-]+$/.test(repo))) return { ok: false, status: 400, error: "dossier (and repo) must be plain names" }
   const runs = (await allRuns(true)).filter((r) => r.id === dossier && (!repo || r.repo === repo))
   if (!runs.length) return { ok: false, status: 404, error: "no such dossier" + (repo ? " in " + repo : "") }
   const roots = [...new Set(runs.flatMap((r) => [r.worktree, r.runner?.root, r.main]).filter((x): x is string => !!x))]
-  const root = roots.find((r) => hasVisualReview(r, dossier))
+  // Feedback on the dossier text needs no diagrams: without a visual review it goes to the first root the dossier runs in.
+  const root = roots.find((r) => hasVisualReview(r, dossier)) ?? (anyRoot ? roots[0] : undefined)
   if (!root) return { ok: false, status: 404, error: "no visual review for " + dossier + ": none of l0/l1/l2.json exists under .discovery/visual-review/" + dossier + " in " + roots.join(", ") }
   // Without a repo, the repo is the one of the run whose root holds the review (not just the first run found).
   const own = runs.find((r) => [r.worktree, r.runner?.root, r.main].includes(root)) ?? runs[0]
@@ -409,6 +411,14 @@ export const clearVrCaches = () => { vrReviewCache.clear(); vrCollapsedCache.cle
 function vrDiagrams(run: Run) {
   for (const root of [run.worktree, run.runner?.root, run.main]) { const d = root ? diagramsOf(root, run.id) : null; if (d) return d }
   return null
+}
+/** The `feedback` field of a run's detail: the asset notes and viewed marks of review.json (no diagrams needed); empty when none. */
+function vrFeedback(run: Run): { notes: Note[]; viewed: string[] } {
+  for (const root of [run.worktree, run.runner?.root, run.main]) {
+    const r = root ? readReview(vrDir(root, run.id), run.id) : null
+    if (r && (r.notes?.length || r.viewed?.length)) return { notes: r.notes ?? [], viewed: r.viewed ?? [] }
+  }
+  return { notes: [], viewed: [] }
 }
 /** The open product question of the visual review for this dossier (its options are Approved and Changes requested), or undefined. */
 async function vrQuestion(dossier: string, repo: string, runs: Run[]): Promise<Question | undefined> {
@@ -539,6 +549,34 @@ export async function handle(req: Request): Promise<Response> {
       return json({ error: (e as Error).message }, 500)
     }
   }
+  // Unified feedback control: the one "Send review" submit of the page. Notes on the summary, dossier sections, ADRs, deferred
+  // items and panes, and the viewed marks, go to review.json (no diagrams needed); the ones the agent must act on go to it as follow-ups.
+  if (path === "/api/visual-review/feedback") {
+    if (req.method !== "POST") return json({ error: "method not allowed" }, 405)
+    const origin = req.headers.get("origin")
+    if (origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
+    const raw = await req.text()
+    if (raw.length > MAX_FEEDBACK_BODY) return json({ error: "body is larger than " + MAX_FEEDBACK_BODY + " bytes" }, 413)
+    let b: any
+    try { b = JSON.parse(raw) } catch { return json({ error: "body must be JSON" }, 400) }
+    if (!b || typeof b !== "object" || Array.isArray(b)) return json({ error: "body must be a JSON object" }, 400)
+    const f = await vrFind(typeof b.dossier === "string" ? b.dossier : "", typeof b.repo === "string" ? b.repo : "", true)
+    if (!f.ok) return json({ error: f.error }, f.status)
+    try {
+      const r = submitFeedback(vrDir(f.root, f.dossier), f.dossier, b)
+      let sent = 0
+      const q = r.followups.length ? await vrQuestion(f.dossier, f.repo, f.runs) : undefined
+      if (q) for (const n of r.followups) {
+        const i = n.anchor.indexOf(":"), anchor = { diagram: i < 0 ? n.anchor : n.anchor.slice(0, i), element: i < 0 ? n.anchor : n.anchor.slice(i + 1) }
+        try { appendOwner(DIR, q.id, { kind: "followup", text: (n.blocking ? "Blocking " : "") + n.verdict + " on " + n.anchor + (n.comment ? ": " + n.comment : ""), via: "page", anchor }); sent++ } catch { /* the question was answered meanwhile: the note is still saved */ }
+      }
+      if (sent) void scan()
+      return json({ ok: true, review: r.state, followups: sent })
+    } catch (e) {
+      if (e instanceof ReviewError) return json({ error: e.message }, e.status)
+      return json({ error: (e as Error).message }, 500)
+    }
+  }
   // One click: every element of every diagram OK, then the review question answered Approved, rebuilt from review.json
   // like any review answer. Refused (nothing written) when there is no open review question to answer.
   if (path === "/api/visual-review/approve-all") {
@@ -650,7 +688,7 @@ export async function handle(req: Request): Promise<Response> {
     const openQ = questions.filter((q) => q.state === "open").sort((a, b) => b.ts.localeCompare(a.ts))[0]?.id ?? ""
     // A refusal is only a blocker while the agent waits on the owner (an open question a ruling can answer); otherwise it did without the call.
     const blocks = openQ ? readBlocks(`${run.repo}.${run.id}`) : []
-    return json({ run, html, entries, groups, sections, activeSection: latest.cmd, activity, now, log, conv, summary, blocks, rulings: readRulings(run.repo), blockQuestion: openQ, diagrams: vrDiagrams(run), summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
+    return json({ run, html, entries, groups, sections, activeSection: latest.cmd, activity, now, log, conv, summary, blocks, rulings: readRulings(run.repo), blockQuestion: openQ, diagrams: vrDiagrams(run), feedback: vrFeedback(run), summaryBusy: summaryInflight.has(`${run.repo}.${run.id}`), empty: entries.length === 0, planning: run.status === "planned" && updates.length > 0, phaseNames: PHASE_NAMES })
   }
   const dd = path.match(/^\/api\/dossier\/([\w.-]+)\/([\w.-]+)$/)
   if (req.method === "GET" && dd) {

@@ -30,9 +30,34 @@
           },
           "verdict": { "enum": ["ok", "question", "change", "remove"], "description": "remove = remove from scope. An element with no line is 'not yet looked at'." },
           "comment": { "type": "string", "maxLength": 1000, "description": "Optional; empty string when none." },
+          "ts": { "type": "string", "format": "date-time" },
+          "blocking": { "const": true, "description": "Optional. Present only when the owner flagged a Question or Change as blocking; an informing line has no such field." }
+        }
+      }
+    },
+    "notes": {
+      "type": "array",
+      "maxItems": 300,
+      "description": "Optional (unified feedback control). Feedback on an asset other than a diagram element, one note per anchor, written by the one Send review of the dossier page. Absent in files written before it; readers must ignore it. A blocking Question or Change note keeps the review from being Approved until cleared.",
+      "items": {
+        "type": "object",
+        "required": ["anchor", "verdict", "comment", "blocking", "ts"],
+        "additionalProperties": false,
+        "properties": {
+          "anchor": { "type": "string", "maxLength": 200, "pattern": "^(summary|(doc|adr|deferred|pane|el):[A-Za-z0-9][A-Za-z0-9_.:-]*)$", "description": "summary, doc:<section-slug>, adr:<id>, deferred:<D-id> or pane:<key>." },
+          "verdict": { "enum": ["ok", "question", "change", "comment"] },
+          "comment": { "type": "string", "maxLength": 1000 },
+          "blocking": { "type": "boolean" },
           "ts": { "type": "string", "format": "date-time" }
         }
       }
+    },
+    "viewed": {
+      "type": "array",
+      "maxItems": 800,
+      "uniqueItems": true,
+      "description": "Optional. Anchors the owner marked as looked at: the anchors of notes, plus el:<diagram>:<element> for a diagram element. Information only; no verdict and no approval depends on it.",
+      "items": { "type": "string", "maxLength": 200, "pattern": "^(summary|(doc|adr|deferred|pane|el):[A-Za-z0-9][A-Za-z0-9_.:-]*)$" }
     }
   }
 }
