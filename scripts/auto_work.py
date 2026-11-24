@@ -11,7 +11,7 @@ the `queued` state, the account routing and every owner question apply unchanged
     auto_work.py --enable --root R      # the one switch: automatic work on, and the scripted stub merge (land_stub.py) with it
     auto_work.py --disable --root R     # both off; live runs are never touched
     auto_work.py --start-now --root R   # the next tick starts a cycle now (the first cycle; later ones start by themselves)
-    auto_work.py --resume --root R      # a paused cycle goes on (a failed or stopped run is started again)
+    auto_work.py --resume --root R      # a paused cycle goes on (a failed or stopped run is started again; closes the pause's owner question)
     auto_work.py --status --root R      # the state file and the eager-merge switch
     auto_work.py --eager-merge on|off --root R   # put each finished dossier on the open stub at once (on by default; works with auto work off)
     auto_work.py --tick --facts FILE|-  # one step for every enabled repository (the dashboard)
@@ -408,6 +408,80 @@ def pause(st: dict, reason: str, kind: str, member: str = "", action: str = "rel
         for m in st["members"]:
             if m["id"] == member:
                 m["error"], m["state"] = reason, "failed"
+
+
+PAUSE_DOSSIER = "auto-work"   # the question's dossier when the pause names no member (a repo-level stop)
+
+
+def pause_options(p: dict) -> list[tuple[str, str, str]]:
+    """The answers of a pause question: (key, label, consequence). The last one always leaves the cycle paused."""
+    leave = ("Leave paused", "Nothing changes: the cycle stays stopped until you press Resume on the dashboard or answer differently here")
+    m = p.get("member") or "the member"
+    if p.get("action") == "accept":
+        return [("A", "Accept the open items", f"{m} counts as finished with its still-open items (they wait for a later cycle) and the cycle goes on"),
+                ("B", "Relaunch the run", f"{m}'s /fix-deferred run starts again on those items, then the cycle goes on"),
+                ("C",) + leave]
+    if p.get("kind") == "member":
+        return [("A", "Relaunch the run", f"{m}'s run starts again and the cycle goes on"), ("B",) + leave]
+    return [("A", "Resume the cycle", "The failed step is tried again and the cycle goes on"), ("B",) + leave]
+
+
+def pause_question(st: dict) -> None:
+    """Every pause stops the whole automatic cycle of a repository, so it reaches the owner as a normal question (and,
+    with it, Slack). One per pause: the id is kept in st["paused"]["question"], so a later tick never asks twice."""
+    p = st.get("paused")
+    if not p or p.get("question"):
+        return
+    opts = pause_options(p)
+    rec = "A"
+    text = (f"Automatic work stopped for {st['repo']}: {p['reason']}. The whole cycle waits until you decide. "
+            + " ".join(f"{k} {l.lower()}: {c}." for k, l, c in opts[:-1]) + " " + opts[-1][0] + " " + opts[-1][1].lower() + ": " + opts[-1][2] + ".")
+    import ask_owner
+    dossier = p.get("member") or PAUSE_DOSSIER
+    n = 1 + max([int(m.group(1)) for f in os.listdir(ask_owner.store_dir()) if (m := re.fullmatch(re.escape(f"{st['repo']}.{dossier}.Q") + r"(\d+)\.jsonl", f))] or [0])
+    line = {"ts": now(), "from": "agent", "kind": "question", "text": ask_owner.clip(text), "dossier": dossier, "repo": st["repo"], "root": st.get("root", ""),
+            "options": [{"key": k, "label": l, "consequence": c} for k, l, c in opts], "recommendation": rec,
+            "blocks": "the automatic cycle of " + st["repo"], "qkind": "product", "topic": "auto-work-pause"}
+    while True:
+        qid = f"{st['repo']}.{dossier}.Q{n}"
+        try:
+            fd = os.open(os.path.join(ask_owner.store_dir(), qid + ".jsonl"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            n += 1
+            continue
+        try:
+            os.write(fd, (json.dumps(line, ensure_ascii=False) + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+        break
+    p["question"] = qid
+
+
+def pause_answer(st: dict) -> str:
+    """The option key the owner chose on the open pause question, "" while unanswered or when it is gone."""
+    q = (st.get("paused") or {}).get("question")
+    if not q:
+        return ""
+    import ask_owner
+    try:
+        lines = ask_owner.read_lines(q)
+    except SystemExit:
+        return ""
+    a = ask_owner.final_answer(lines)
+    return str(a.get("option") or "") if a and a.get("from") == "owner" else ""
+
+
+def close_pause_question(p: dict, how: str) -> None:
+    """The cycle went on without this question (Resume button, --resume): close it so no stale question stays open."""
+    q = p.get("question")
+    if not q:
+        return
+    import ask_owner
+    try:
+        if ask_owner.final_answer(ask_owner.read_lines(q)) is None:
+            ask_owner.write_line(ask_owner.path_of(q), {"ts": now(), "from": "agent", "kind": "answer", "accepted": True, "text": how})
+    except (SystemExit, OSError):
+        pass
 
 
 def phase_of(st: dict) -> str:
@@ -901,10 +975,32 @@ def tick_repo(repo: str, facts: dict) -> None:
         st["root"] = root
         carry_step(st, facts)
         heal(st, facts)
+        if st["paused"]:
+            try:
+                pause_question(st)
+                key = pause_answer(st)
+                p = st["paused"]
+                if key and not p.get("left"):
+                    opts = pause_options(p)
+                    label = next((l for k, l, c in opts if k == key), "Leave paused")
+                    if label == "Leave paused":
+                        p["left"] = True
+                    else:
+                        action = {"Accept the open items": "accept", "Relaunch the run": "relaunch"}.get(label)
+                        err = resume_state(st, root, action)
+                        if err:
+                            p["reason"] += f" (resume failed: {err})"; p["left"] = True
+            except OSError as e:
+                print(f"auto_work: {repo}: pause question: {e}")
         if not st["paused"]:
             for _ in range(8):
                 if not step_cycle(st, facts):
                     break
+        if st["paused"]:
+            try:
+                pause_question(st)   # a pause this very tick
+            except OSError as e:
+                print(f"auto_work: {repo}: pause question: {e}")
         st["phase"] = phase_of(st)
         if json.dumps(st, sort_keys=True) != before:
             st["ts"] = now()
@@ -973,33 +1069,44 @@ def cmd_start_now(root: str) -> int:
     return 0
 
 
+def resume_state(st: dict, root: str, action: str | None = None) -> str:
+    """Let a paused cycle go on, as the Resume button does; `action` overrides the pause's own (accept, relaunch).
+    Returns "" or why it could not."""
+    p = st["paused"]
+    action = action or p["action"]
+    for m in st["members"]:
+        if m["id"] == p.get("member"):
+            m["error"], m["state"], m["lag"] = "", "pending", 0
+            if action == "accept":
+                m["accepted"] = True
+            elif action == "relaunch":
+                m["launch"] = None   # the next look starts that run again, as the Resume button would
+    if p["kind"] == "docs":
+        st["docs"] = {}
+    elif p["kind"] == "integrate":
+        st["integrate"] = {**st["integrate"], "launched": ""}
+    elif p["kind"] == "stub-run":
+        # The /stub run is keyed by the stub being integrated (the dashboard's slug), not the one the cycle started after.
+        b = st["integrate"].get("branch") or st["stub"]
+        ok, out = start_runner(root, b.replace("/", "-"), "stub", b)
+        if not ok:
+            return "could not resume /stub: " + out
+    close_pause_question(p, "The cycle was resumed" + (f" ({action})" if action != p["action"] else "") + "; this question is closed.")
+    st["paused"], st["phase"], st["ts"] = None, "", now()
+    st["phase"] = phase_of(st)
+    return ""
+
+
 def cmd_resume(root: str) -> int:
     repo = repo_name(root)
     lk = lock_wait(repo)
     try:
         st = read_json(state_path(repo), None) or {}
-        p = st.get("paused")
-        if not p:
+        if not st.get("paused"):
             print("auto_work: nothing is paused"); return 1
-        for m in st["members"]:
-            if m["id"] == p.get("member"):
-                m["error"], m["state"], m["lag"] = "", "pending", 0
-                if p["action"] == "accept":
-                    m["accepted"] = True
-                elif p["action"] == "relaunch":
-                    m["launch"] = None   # the next look starts that run again, as the Resume button would
-        if p["kind"] == "docs":
-            st["docs"] = {}
-        elif p["kind"] == "integrate":
-            st["integrate"] = {**st["integrate"], "launched": ""}
-        elif p["kind"] == "stub-run":
-            # The /stub run is keyed by the stub being integrated (the dashboard's slug), not the one the cycle started after.
-            b = st["integrate"].get("branch") or st["stub"]
-            ok, out = start_runner(root, b.replace("/", "-"), "stub", b)
-            if not ok:
-                print("auto_work: could not resume /stub: " + out); return 1
-        st["paused"], st["phase"], st["ts"] = None, "", now()
-        st["phase"] = phase_of(st)
+        err = resume_state(st, root)
+        if err:
+            print("auto_work: " + err); return 1
         write_atomic(state_path(repo), st)
     finally:
         lk.close()
@@ -1009,6 +1116,8 @@ def cmd_resume(root: str) -> int:
 
 # ---------------------------------------------------------------- selftest
 def selftest() -> int:
+    qdir = tempfile.mkdtemp(prefix="aw-questions-")   # pause questions go here, never to the real ~/.agentic/questions
+    os.environ["ASD_QUESTIONS_DIR"] = qdir
     fails = []
 
     def check(name: str, ok: bool, why: object = "") -> None:
@@ -1192,6 +1301,53 @@ def selftest() -> int:
         cmd_resume(root)
         tk()
         check("resume starts the failed plan round again (round 3)", members()["D"]["rounds"] == 3 and not st()["paused"], members()["D"])
+        # A pause reaches the owner as one question; answering applies the matching action; Resume closes it.
+        import ask_owner
+        qs = lambda: sorted(f for f in os.listdir(qdir) if f.endswith(".jsonl"))
+        qline = lambda f: json.loads(open(os.path.join(qdir, f)).readline())
+        qfinal = lambda f: ask_owner.final_answer(ask_owner.read_lines(f[:-6]))
+        for f in qs():
+            os.remove(os.path.join(qdir, f))
+        setrun("D", runner=runner("failed", "plan", pid=213, started="2026-11-17T10:40:00Z")); tk()
+        p_ = st()["paused"]
+        check("a pause raises exactly one question on the member, with Relaunch / Leave paused and a recommendation",
+              len(qs()) == 1 and qs()[0].startswith(f"{repo}.D.Q") and p_.get("question") == qs()[0][:-6]
+              and [o["key"] for o in qline(qs()[0])["options"]] == ["A", "B"] and qline(qs()[0])["recommendation"] == "A" and qline(qs()[0])["qkind"] == "product", (qs(), p_))
+        tk(); tk()
+        check("later ticks of the same pause raise no duplicate", len(qs()) == 1, qs())
+        ask_owner.write_line(ask_owner.path_of(p_["question"]), {"ts": now(), "from": "owner", "kind": "answer", "option": "B"})
+        tk()
+        check("answering Leave paused keeps the cycle paused and asks nothing new", bool(st()["paused"]) and len(qs()) == 1, st().get("paused"))
+        cmd_resume(root)
+        check("the Resume button after an answered question resumes the cycle", not st()["paused"])
+        tk()
+        setrun("D", runner=runner("running", "plan", pid=214, started="2026-11-17T10:41:00Z")); tk()
+        setrun("D", runner=runner("failed", "plan", pid=214, started="2026-11-17T10:41:00Z")); tk()
+        q2 = st()["paused"]["question"]
+        cmd_resume(root)
+        fin = ask_owner.final_answer(ask_owner.read_lines(q2))
+        check("Resume closes the open pause question (answered by the agent), and the cycle goes on", fin is not None and fin.get("from") == "agent" and not st()["paused"], fin)
+        tk()
+        setrun("D", runner=runner("running", "plan", pid=215, started="2026-11-17T10:42:00Z")); tk()
+        setrun("D", runner=runner("failed", "plan", pid=215, started="2026-11-17T10:42:00Z")); tk()
+        q3 = st()["paused"]["question"]; r_before = members()["D"]["rounds"]
+        ask_owner.write_line(ask_owner.path_of(q3), {"ts": now(), "from": "owner", "kind": "answer", "option": "A"})
+        tk()
+        check("answering Relaunch applies it as Resume does: the cycle goes on and the run starts again", not st()["paused"] and members()["D"]["rounds"] == r_before + 1, (st().get("paused"), members()["D"]))
+        # The "accept" pause (the config-harness W-183 incident) offers three answers; B relaunches, A accepts.
+        stq = {"repo": "x", "root": root, "members": [], "paused": None, "step": "idle"}
+        pause(stq, "W-183: /fix-deferred is done but 2 item(s) are still open (D-15, D-16)", "member", "W-183", "accept"); pause_question(stq)
+        o3 = qline(stq["paused"]["question"] + ".jsonl")["options"]
+        check("an accept pause offers Accept / Relaunch / Leave, and a repo-level pause uses the auto-work dossier",
+              [o["key"] for o in o3] == ["A", "B", "C"] and "x.W-183.Q1" == stq["paused"]["question"], o3)
+        stq2 = {"repo": "x", "root": root, "members": [], "paused": None, "step": "idle"}
+        pause(stq2, "non-code PR #3 did not merge (red)", "docs"); pause_question(stq2)
+        check("a docs pause is asked on the repo-level dossier with Resume / Leave", stq2["paused"]["question"] == "x.auto-work.Q1" and [o["key"] for o in qline("x.auto-work.Q1.jsonl")["options"]] == ["A", "B"], stq2["paused"])
+        mm = {"id": "W-183", "stage": "fix", "state": "failed", "error": "e", "launch": {"x": 1}, "lag": 0, "asked": None, "accepted": False, "rounds": 0, "retried": False}
+        stq["members"] = [mm]
+        resume_state(stq, root, "accept")
+        check("the accept override marks the member accepted and closes the question", mm["accepted"] is True and not stq["paused"] and qfinal("x.W-183.Q1.jsonl") is not None)
+
         setrun("D", status="ready", runner=runner("done", "plan", pid=212, started="2026-11-17T10:30:00Z"))
         tk()
         check("planned -> /plan -> /work-on once the plan made it ready", f"runner D --root {root} --command work-on" in log() and members()["D"]["stage"] == "build", log())

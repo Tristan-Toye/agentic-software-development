@@ -2,7 +2,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { anyLiveRun, awakeHeld, checkAwake, CAFFEINATE_BIN, releaseAwake, resetAwake, type AwakeDeps } from "../questions/awake.ts"
+import { anyLiveRun, anyLiveRunAsync, awakeHeld, checkAwake, CAFFEINATE_BIN, releaseAwake, resetAwake, type AwakeDeps } from "../questions/awake.ts"
 
 const fails: string[] = []
 const check = (name: string, ok: boolean, extra = "") => { console.log((ok ? "PASS " : "FAIL ") + "awake: " + name); if (!ok) fails.push(name + (extra ? " — " + extra : "")) }
@@ -71,6 +71,9 @@ resetAwake()
     check(`a ${s} run with a live pid is live`, anyLiveRun(dir))
   }
   check("a missing runs dir is not live", !anyLiveRun(join(dir, "nope")))
+  check("async read agrees: a live pid is live, a missing dir is not", (await anyLiveRunAsync(dir)) && !(await anyLiveRunAsync(join(dir, "nope"))))
+  w("r.D", "done", process.pid)
+  check("async read agrees: nothing live", !(await anyLiveRunAsync(dir)))
 }
 
 if (fails.length) { console.log("FAIL\n  " + fails.join("\n  ")); process.exit(1) }

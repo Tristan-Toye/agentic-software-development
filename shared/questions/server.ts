@@ -6,12 +6,14 @@ import { PAGE } from "./page.ts"
 import { addRuling, readRulings, removeRuling } from "./rulings.ts"
 import { buildLog, getRuns, ownerRulingsFile, PHASE_NAMES, questionRepo, readDossier, readDossierAsync, shRun, undecidedDeferred, type Run } from "./runs.ts"
 import { getStubs, openWorkHtml, recordFile, refreshAfterControl } from "./stubs.ts"
-import { canIntegrate, checkRule, dossierPage, integrationPhase, integrationStopped, markIntegrating, readBlocks, readConversation, readIntegrate, readRunner, readUpdates, readUpdatesAsync, readUpdatesSig, renderMarkdown, readViewCache, runnerActive, runsDir, writeViewCache } from "./runstore.ts"
+import { canIntegrate, checkRule, dossierPage, integrationPhase, integrationStopped, markIntegrating, readBlocks, readConversation, readIntegrate, readRunner, readRunnerAsync, readUpdates, readUpdatesAsync, readUpdatesSig, renderMarkdown, readViewCache, runnerActive, runsDir, writeViewCache } from "./runstore.ts"
 import { emitChange, subscribe } from "./events.ts"
 import { groupByPhase, logEntries, mergeTimeline, nowPanel, parseRecord, splitSections } from "./timeline.ts"
 import { runRunner, runTarget, runnerScript } from "./controls.ts"
 import { failPending, markPending, PENDING_TTL_MS, stubResumePending } from "./pending.ts"
 import { readFileSync } from "node:fs"
+import { readdir } from "node:fs/promises"
+import { readText } from "./asyncio.ts"
 import { join } from "node:path"
 import { pendingSlack, readRunThreadAsync, runSlackEnabled, runsWatchIgnored, threadChanged, writeRunThread } from "./runslack.ts"
 import { startLagWatch } from "./lagwatch.ts"
@@ -23,11 +25,11 @@ import { approveAll, buildAnswer, diagramsOf, dossierIntent, MAX_BODY, MAX_FEEDB
 import { collapsedDiagram, DiagramError, mapStatus, openDiagram } from "./vrmap.ts"
 import { askAgent, type DmDeps } from "./dmagent.ts"
 import { listChats, readChat, say } from "./pagechat.ts"
-import { awakeDeps, checkAwake, releaseAwake } from "./awake.ts"
+import { awakeDeps, checkAwakeAsync, releaseAwake } from "./awake.ts"
 import { slotsReading } from "./slots.ts"
 import { checkDisk, diskDeps, diskReading, sweepDisk } from "./disk.ts"
 import { checkDirtyMains, dirtyMainReading } from "./mainlock.ts"
-import { api, apiGet, channelNameFor, keychain, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
+import { api, apiGet, channelNameFor, keychainAsync, pageLink, POINTER_TEXT, questionBlocks, runSocket, type OwnerAction } from "./slack.ts"
 import { agentCounts, openerBlocks, statusBlocks, type StatusRun } from "./runstatus.ts"
 import { readAccounts, usageDir } from "./accounts.ts"
 import { mergeDetectorEnabled, nextMerges, readMergeSeen, writeMergeSeen, type MergedPr } from "./merges.ts"
@@ -491,10 +493,12 @@ export async function handle(req: Request): Promise<Response> {
     // A refusal counts as a blocker only while the run has an open question a ruling can answer.
     const asking = new Set(open.map((q) => `${questionRepo(q, v.runs)}.${q.dossier}`))
     const active = new Map(await Promise.all(v.runs.filter((r) => runnerActive(r.runner)).map(async (r) => [`${r.repo}.${r.id}`, await readUpdatesAsync(`${r.repo}.${r.id}`, runsDir(), 3000)] as const)))
-    const runs = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(active.get(`${r.repo}.${r.id}`) ?? []), blocked: asking.has(`${r.repo}.${r.id}`) ? readBlocks(`${r.repo}.${r.id}`).length : 0 } : r))
-      .map((r) => { const m = mergeState(`${r.repo}.${r.id}`); return m ? { ...r, merge: m } : r })
+    const runs0 = v.runs.map((r) => (runnerActive(r.runner) ? { ...r, agents: agentCounts(active.get(`${r.repo}.${r.id}`) ?? []), blocked: asking.has(`${r.repo}.${r.id}`) ? readBlocks(`${r.repo}.${r.id}`).length : 0 } : r))
+    const listed = new Set(await readdir(runsDir()).catch(() => [] as string[]))
+    const merged = await Promise.all(runs0.map(async (r) => { const m = await mergeState(`${r.repo}.${r.id}`, listed); return m ? { ...r, merge: m } : r }))
+    const runs = merged
       .map((r) => ({ ...r, deferredUndecided: undecidedDeferred(r.deferred.items, r.runner?.command === "fix-deferred" && runnerActive(r.runner), openQs) }))
-    const plans = planRuns(runs)
+    const plans = await planRuns(runs)
     const accounts = readAccounts([...runs.filter((r) => runnerActive(r.runner)).map((r) => ({ key: r.runKey || `${r.repo}.${r.id}`, account: r.runner?.account })), ...plans.map((p) => ({ key: p.key, account: p.account }))])
     return json({ ...v, runs, plans, accounts, disk: diskReading(), dirtyMain: dirtyMainReading(), slots: slotsReading(), usageBusy: usageInflight, slack: slackOn(), pageId: PAGE_ID })
   }
@@ -898,7 +902,7 @@ export async function handle(req: Request): Promise<Response> {
     if (req.method === "POST" && origin && origin !== `http://${host}`) return json({ error: "bad origin" }, 403)
     const run = await findRun(mg[1], mg[2])
     if (!run) return json({ error: "no such dossier" }, 404)
-    const m = mergeState(`${run.repo}.${run.id}`)
+    const m = await mergeState(`${run.repo}.${run.id}`)
     const args = ["python3", mergeScript(), run.id, "--root", run.main]
     const body = req.method === "POST" ? await req.json().catch(() => ({})) as { cancel?: unknown } : {}
     // Cancel: leave the queue (refused for the dossier being merged now).
@@ -1129,10 +1133,10 @@ export async function handle(req: Request): Promise<Response> {
  * Live /plan runs of a deferred item whose dossier is not written yet (`<repo>.<src>.plan-<D-n>.runner.json` with no
  * dossier carrying its key): Running now shows them, linked to the source dossier, until the new dossier takes over.
  */
-function planRuns(runs: Run[]): { key: string; repo: string; src: string; item: string; title: string; state: string; started: string; account?: string; stage: string; last: string; lastTs: string }[] {
+async function planRuns(runs: Run[]): Promise<{ key: string; repo: string; src: string; item: string; title: string; state: string; started: string; account?: string; stage: string; last: string; lastTs: string }[]> {
   const taken = new Set(runs.map((r) => r.runKey).filter(Boolean))
   let names: string[] = []
-  try { names = readdirSync(runsDir()).filter((n) => /\.(plan-D-\d+|seed-[a-z0-9-]+)\.runner\.json$/.test(n)) } catch { return [] }
+  try { names = (await readdir(runsDir())).filter((n) => /\.(plan-D-\d+|seed-[a-z0-9-]+)\.runner\.json$/.test(n)) } catch { return [] }
   const out = []
   for (const n of names) {
     const key = n.replace(/\.runner\.json$/, "")
@@ -1140,22 +1144,22 @@ function planRuns(runs: Run[]): { key: string; repo: string; src: string; item: 
     // A free-form /plan (`run_dossier.py --seed`): no source dossier; the title is the brief's first line.
     const sm = key.match(/^(.+)\.(seed-[a-z0-9-]+)$/)
     if (sm) {
-      const rn = readRunner(key)
+      const rn = await readRunnerAsync(key)
       if (!rn || !runnerActive(rn)) continue
-      let first = ""
-      try { first = (readFileSync(join(runsDir(), `${key}.seed.md`), "utf8").split("\n").find((l) => l.trim()) ?? "").replace(/^#+\s*/, "").slice(0, 140) } catch { /* no brief */ }
-      const ups = readUpdates(key, runsDir(), 50)
+      const brief = await readText(join(runsDir(), `${key}.seed.md`))
+      const first = brief === null ? "" : (brief.split("\n").find((l) => l.trim()) ?? "").replace(/^#+\s*/, "").slice(0, 140)
+      const ups = await readUpdatesAsync(key, runsDir(), 50)
       const note = ups.find((u) => !u.auto && u.kind === "update") ?? ups[0]
       out.push({ key, repo: sm[1], src: "", item: sm[2], title: first || sm[2], state: rn.state, started: rn.started, account: rn.account, stage: rn.stage, last: note?.text ?? "", lastTs: note?.ts ?? "" })
       continue
     }
     const m = key.match(/^(.+)\.([A-Z][A-Z0-9]*-\d+)\.plan-(D-\d+)$/)
     if (!m) continue
-    const rn = readRunner(key)
+    const rn = await readRunnerAsync(key)
     if (!rn || !runnerActive(rn)) continue
     const src = runs.find((r) => r.repo === m[1] && r.id === m[2])
     const it = src?.deferred.items.find((i) => i.id === m[3])
-    const ups = readUpdates(key, runsDir(), 50)
+    const ups = await readUpdatesAsync(key, runsDir(), 50)
     const note = ups.find((u) => !u.auto && u.kind === "update") ?? ups[0]
     out.push({ key, repo: m[1], src: m[2], item: m[3], title: it?.title || `${m[2]} ${m[3]}`, state: rn.state, started: rn.started, account: rn.account, stage: rn.stage, last: note?.text ?? "", lastTs: note?.ts ?? "" })
   }
@@ -1163,15 +1167,19 @@ function planRuns(runs: Run[]): { key: string; repo: string; src: string; item: 
 }
 
 /** The Merge button's state, `<key>.merge.json` from scripts/merge_dossier.py; a "merging" whose process is gone is failed. */
-function mergeState(key: string): { state: string; prs: number[]; base: string; error: string; ts: string; position?: number; note?: string } | null {
+async function mergeState(key: string, listed?: Set<string>): Promise<{ state: string; prs: number[]; base: string; error: string; ts: string; position?: number; note?: string } | null> {
   const alive = (pid: unknown) => { try { process.kill(Number(pid), 0); return true } catch { return false } }
+  // `listed`: the runs dir's names, read once for the whole page, so a run with no merge file costs no open at all.
+  if (listed && !listed.has(`${key}.merge.json`)) return null
   try {
-    const j = JSON.parse(readFileSync(join(runsDir(), `${key}.merge.json`), "utf8"))
+    const text = await readText(join(runsDir(), `${key}.merge.json`))
+    if (text === null) return null
+    const j = JSON.parse(text)
     if (["waiting", "resolving", "merging", "cleanup"].includes(j.state) && j.pid && !alive(j.pid)) return { ...j, state: "failed", error: "the merge queue stopped before this dossier was done; press Merge again" }
     if (j.state === "queued") {
       const repo = key.replace(/\.[A-Z][A-Z0-9]*-\d+$/, "")
       let q: any = {}
-      try { q = JSON.parse(readFileSync(join(runsDir(), `${repo}.merge-queue.json`), "utf8")) } catch { /* none */ }
+      try { q = JSON.parse((await readText(join(runsDir(), `${repo}.merge-queue.json`))) ?? "") } catch { /* none */ }
       if (!(q.worker && alive(q.worker))) return { ...j, state: "failed", error: "the merge queue stopped; press Merge again" }
     }
     return j
@@ -1251,8 +1259,8 @@ async function main(): Promise<void> {
   console.log(`listening http://127.0.0.1:${PORT}`)
 
   if (owner && process.env.ASD_QUESTIONS_NO_SLACK !== "1") {
-    botToken = keychain("asd-slack-bot")
-    const appToken = keychain("asd-slack-app")
+    botToken = await keychainAsync("asd-slack-bot")
+    const appToken = await keychainAsync("asd-slack-app")
     if (botToken && appToken) {
       if (!socketStarted) {
         socketStarted = true
@@ -1294,8 +1302,8 @@ async function main(): Promise<void> {
   } catch { /* the 10 s rescan still picks the readings up */ }
   // Keep the Mac awake while a run is live (caffeinate -s -i), on the same rescan; released on exit.
   const ad = awakeDeps()
-  checkAwake(ad)
-  setInterval(() => { void scan(); void scanRunThreads(); checkAwake(ad) }, 10_000)
+  void checkAwakeAsync(ad)
+  setInterval(() => { void scan(); void scanRunThreads(); void checkAwakeAsync(ad) }, 10_000)
   for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => { releaseAwake(); process.exit(0) })
   process.on("exit", releaseAwake)
   setTimeout(() => void checkMerges(), 20_000)

@@ -3,7 +3,8 @@
 // server's existing rescan. Darwin only, only with /usr/bin/caffeinate; ASD_CAFFEINATE=0 turns it off.
 // Contract: references/runner.md ("Keeping the Mac awake").
 import { existsSync, readdirSync } from "node:fs"
-import { readRunner, runsDir } from "./runstore.ts"
+import { readdir } from "node:fs/promises"
+import { readRunner, readRunnerAsync, runsDir } from "./runstore.ts"
 
 export const CAFFEINATE_BIN = "/usr/bin/caffeinate"
 export const LIVE_STATES = ["running", "testing", "waiting", "queued", "paused"]
@@ -13,6 +14,7 @@ export type AwakeDeps = {
   platform: string
   exists: (path: string) => boolean
   live: () => boolean                          // at least one run in a live state
+  liveAsync?: () => Promise<boolean>           // the same without blocking the event loop (the server's tick uses it)
   spawn: (cmd: string[]) => AwakeChild
   enabled: () => boolean
 }
@@ -29,11 +31,24 @@ export function anyLiveRun(dir = runsDir()): boolean {
   return false
 }
 
+/** `anyLiveRun` without a synchronous read: the 10 s tick walks every runner file and must not hold the event loop on a busy disk. */
+export async function anyLiveRunAsync(dir = runsDir()): Promise<boolean> {
+  try {
+    for (const f of await readdir(dir)) {
+      if (!f.endsWith(".runner.json")) continue
+      const s = await readRunnerAsync(f.slice(0, -".runner.json".length), dir)
+      if (s && LIVE_STATES.includes(s.state)) return true
+    }
+  } catch { /* no runs dir: nothing is live */ }
+  return false
+}
+
 export function awakeDeps(): AwakeDeps {
   return {
     platform: process.platform,
     exists: existsSync,
     live: () => anyLiveRun(),
+    liveAsync: () => anyLiveRunAsync(),
     spawn: (cmd) => Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore", stdin: "ignore" }),
     enabled: () => process.env.ASD_CAFFEINATE !== "0",
   }
@@ -46,7 +61,16 @@ export const awakeHeld = (): boolean => child !== null
 /** One check: hold caffeinate while a run is live, release it when none is. Returns whether it is held afterwards. */
 export function checkAwake(d: AwakeDeps): boolean {
   const possible = d.enabled() && d.platform === "darwin" && d.exists(CAFFEINATE_BIN)
-  const want = possible && d.live()
+  return applyAwake(d, possible && d.live())
+}
+
+/** `checkAwake` reading the runner files async (the server's own tick). */
+export async function checkAwakeAsync(d: AwakeDeps): Promise<boolean> {
+  const possible = d.enabled() && d.platform === "darwin" && d.exists(CAFFEINATE_BIN)
+  return applyAwake(d, possible && (await (d.liveAsync ?? (async () => d.live()))()))
+}
+
+function applyAwake(d: AwakeDeps, want: boolean): boolean {
   if (want && !child) {
     try {
       const c = d.spawn([CAFFEINATE_BIN, "-s", "-i"])

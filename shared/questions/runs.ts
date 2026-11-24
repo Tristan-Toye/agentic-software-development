@@ -7,10 +7,10 @@ import type { Question } from "./store.ts"
 import { emitChange } from "./events.ts"
 import { blockedByOf, controlsFor, type Controls } from "./controls.ts"
 import { applyPending } from "./pending.ts"
-import { planningRuns } from "./planning.ts"
+import { planningRunsAsync } from "./planning.ts"
 import { IO_CONCURRENCY, mapLimit, readText } from "./asyncio.ts"
 import { offThread } from "./scanpool.ts"
-import { readRunner, readRunnerAsync, readUpdates, readUpdatesAsync, readViewCache, runnerActive, runsDir, summaryOf, writeViewCache, type RunnerState, type Update } from "./runstore.ts"
+import { readRunner, readRunnerAsync, readUpdates, readUpdatesAsync, readViewCache, runnerActive, runsDir, summaryOf, writeViewCacheAsync, type RunnerState, type Update } from "./runstore.ts"
 
 export const STATUSES = ["planned", "ready", "building", "review", "pr", "done", "dropped"] as const
 const TAIL = 256 * 1024
@@ -941,7 +941,7 @@ function startScan(questions: () => Question[], build: (q: Question[]) => Promis
     const sig = JSON.stringify(v.runs.map((r) => [r.repo, r.id, r.status, r.phase, r.lastActivity, r.session.state, r.pr, r.session.activity?.doing ?? "", r.session.activity?.background.length ?? 0]))
     cached = v
     scannedLive = true
-    writeViewCache("runs", v)
+    void writeViewCacheAsync("runs", v)
     if (sig !== lastSig) { lastSig = sig; emitChange("runs") }
     emitChange("scan")
   }).catch(() => { lastScan = 0 }).finally(() => { inflight = null })
@@ -968,9 +968,8 @@ export async function getRuns(questions: () => Question[], opts: { fresh?: boole
   // A pressed run button stays hidden while its run starts (pending.ts): the server-side marker outlives re-renders and tabs.
   const now = Date.now()
   // A dossier a live seed / plan-from-deferred run claimed is being planned there: no Start, the card names that run.
-  const planByRepo = new Map<string, ReturnType<typeof planningRuns>>()
+  const planByRepo = new Map<string, Awaited<ReturnType<typeof planningRunsAsync>>>(await Promise.all([...new Set(live.map((r) => r.repo))].map(async (repo) => [repo, await planningRunsAsync(repo)] as const)))
   const planningOf = (r: { repo: string; id: string; runKey: string }) => {
-    if (!planByRepo.has(r.repo)) planByRepo.set(r.repo, planningRuns(r.repo))
     const p = planByRepo.get(r.repo)![r.id.toUpperCase()]
     return p && p.key !== r.runKey ? p : null
   }
