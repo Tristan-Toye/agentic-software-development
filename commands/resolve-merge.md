@@ -94,6 +94,15 @@ stack takes the number the line ends with ("next number free on the base and
 every open pull request head"): rename the file, update whatever names it, and
 never touch a migration the stub already holds. Then run Step 3.
 
+The queue's check reads **the bottom pull request's base** and **the top pull
+request's head** (`gh pr view <n> --json baseRefName,headRefName`), never a
+middle branch's base and never your local checkout. When the queue named a
+clash (its timeline line "migration numbers clash: ..."), re-run the check
+exactly so. You never end "nothing to do" while the queue-named clash exists: if
+your run reads clean where the queue read a clash, state the exact command and
+its output in your final message and ask the owner (`--kind product`); a clean
+read of different refs proves nothing.
+
 ## Step 2b — A red check, no conflict
 
 Read why it failed (`gh pr checks <n>`, `gh run view <run> --log-failed`).

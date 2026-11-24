@@ -436,6 +436,8 @@ CI_PARENT_NEXT = ("Next step: the cause is the parent PR of #{n} (see above). Th
                   "`RUNNER: FAILED CI not started on PR #{n}: its parent PR still conflicts after the runner's resolve-merge` so it is reported as a blocker.")
 # `wait_ci.py` exit 7: "PR #76 is stacked on #620 (branch ...), which conflicts with ..."
 PARENT_RE = re.compile(r"stacked on #(\d+)")
+# A stage that failed only because CI cannot start: a parent PR of the stack conflicts with its base (CI_PARENT_NEXT's report).
+PARENT_BLOCK_RE = re.compile(r"parent PR[^|]{0,40}\bconflicts?\b|CI not started on PR #\d+[^|]{0,80}\bparent\b", re.I)
 CI_NEVER_STARTED_NEXT = ("Next step: do NOT end the turn with RUNNER: WAITING ci:{n} again (the runner will not wait on it). "
                          "State in your summary that CI did not run on PR #{n} (not that it failed; GitHub's mergeability for it is "
                          "unknown and a close/reopen did not start a run), then end the turn with `RUNNER: FAILED CI never started on "
@@ -3509,6 +3511,10 @@ class Runner:
                 continue
             self.save(state="failed")
             self.event(f"stage {started} failed: {detail}", "failed")
+            if PARENT_BLOCK_RE.search(detail) and self.command != "resolve-merge":
+                handed = self.hand_to_queue(detail)
+                if handed >= 0:
+                    return handed
             if DUPLICATE_RUN_RE.match(detail):
                 # Another live run owns this dossier and this one changed nothing: an owner question is noise. End quietly.
                 return self.finish("failed", f"failed: {detail}", 1)
@@ -3520,6 +3526,22 @@ class Runner:
             if self.stopping:
                 return self.finish("stopped", "stopped", 3)
             return self.finish("failed", f"failed: {detail}", 1)
+
+    def hand_to_queue(self, detail: str) -> int:
+        """The stage failed only because CI cannot start: a parent PR of its stack conflicts with the base. Only the merge
+        queue's resolve-merge can fix that, and it would wait forever on this run's lock and its run-failure question
+        (W-182). So no question is asked and no lock is kept: the dossier is put in the queue and this run ends."""
+        cmd = shlex.split(os.environ.get("ASD_MERGE_BIN") or f"{shlex.quote(sys.executable)} {shlex.quote(os.path.join(HERE, 'merge_dossier.py'))}") + [
+            self.dossier, "--enqueue", "--root", self.root, "--by", "handoff"]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+            ok = r.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if not ok:   # the queue cannot be reached: the owner's question is the fallback
+            self.event("could not hand the stack to the merge queue; asking the owner")
+            return -1
+        return self.finish("done", f"a parent PR of the stack conflicts with its base; the merge queue resolves it (handed off, no question asked)", 0)
 
     def ready_fix_pr(self) -> None:
         """A finished /fix-deferred leaves no draft behind, whatever the agent did: `gh stack link` opens one unless told
@@ -5419,6 +5441,18 @@ def selftest() -> int:
               "--items 621" in res_args and not any("asked" in t for t in texts("W-51")))
         check("ci parent conflict: the verdict for a parent the runner could not resolve tells the session not to resolve it or ask",
               "do NOT resolve it yourself" in CI_PARENT_NEXT and "do NOT ask the owner" in CI_PARENT_NEXT)
+        # E: a run that reports "CI not started ... its parent PR still conflicts" hands the stack to the merge queue: no question, no lock
+        mq_fake = os.path.join(tmp, "merge_queue_fake.py")
+        open(mq_fake, "w").write("import os,sys\nopen(os.path.join(os.path.dirname(__file__),'mq.args'),'a').write(' '.join(sys.argv[1:])+'\\n')\nprint('queued')\n")
+        open(os.path.join(dos_dir, "W-182-handoff.md"), "w").write("---\nid: W-182\nstatus: ready\n---\n")
+        scenario([{"turns": [[{"final": "RUNNER: FAILED CI not started on PR #688: its parent PR still conflicts after the runner's resolve-merge"}]]}])
+        env.update(ASD_MERGE_BIN=f"{sys.executable} {mq_fake}")
+        rc = start("W-182").wait(timeout=60)
+        env.pop("ASD_MERGE_BIN")
+        mq_args = open(os.path.join(tmp, "mq.args")).read() if os.path.exists(os.path.join(tmp, "mq.args")) else ""
+        check("parent conflict failure: the run hands the stack to the merge queue (enqueued, ends done, no run-failure question)",
+              rc == 0 and "W-182 --enqueue" in mq_args and state_of("W-182").get("state") == "done"
+              and any("merge queue resolves it" in t for t in texts("W-182")) and not any("asked the owner" in t or "waiting on" in t for t in texts("W-182")))
         # exit 7 is not exit 6: a second wait on the parent-blocked PR is not refused
         scenario([{"turns": [[{"final": "RUNNER: WAITING ci:77"}], [{"final": "RUNNER: WAITING ci:77"}], [{"final": "RUNNER: DONE"}]]}])
         env.update(ASD_WAIT_CI_BIN=ci_fake, ASD_CI_TIMEOUT="123", ASD_PARENT_RESOLVE_BIN=f"{sys.executable} {res_fake}",

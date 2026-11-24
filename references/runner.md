@@ -72,7 +72,11 @@ the recorded checkpoints.
       parked and told nothing. Only when the parent still conflicts after
       two such runs the session gets `never-started` and ends with
       `RUNNER: FAILED CI not started on PR <n>: its parent PR still
-      conflicts ...`; the session never resolves the parent itself (the
+      conflicts ...`; the runner then hands the stack to the merge queue (the
+      dossier is enqueued, the run ends `done` with the timeline line "a parent PR
+      of the stack conflicts with its base; the merge queue resolves it", its lock
+      is released and no run-failure question is asked: the queue's resolve-merge
+      could not run while that question held the run, W-182); the session never resolves the parent itself (the
       dossier's own PRs are not its to edit) and never asks the owner how. The
       "no further wait after never-started" refusal is for exit 6 only. An owner
       message ends the wait early and is delivered; the agent waits again.
@@ -359,7 +363,17 @@ the recorded checkpoints.
   <PRs>` (`commands/resolve-merge.md`): the merge queue found the dossier's
   PRs conflicting with their base, and the dossier's agent merges the base in,
   resolves keeping both sides, checks no hunk was lost, proves it with the
-  affected tests and gates, and pushes. It never merges into the stub.
+  affected tests and gates, and pushes. It never merges into the stub. A run
+  the merge queue starts has the key `<repo>.<ID>.resolve-<prs>`, so the dossier's
+  own run (and its failure question) never blocks it. The queue waits on that run
+  as long as it is alive: time queued for a slot or spent on an owner question is
+  not counted toward `ASD_MERGE_RUN_TIMEOUT`, a run that failed but still holds its
+  lock or has an open run-failure question is waited on (no new attempt), and a run
+  still live when its working time is up is waited on, not failed. The queue passes
+  nothing but the PR numbers; the command file makes the run re-run a clash check
+  exactly as the queue does (bottom PR's base, top PR's head, bare names). W-195's
+  "no migration clashes" came from `origin/`-prefixed names read as origin/origin/...,
+  fixed by `bare_ref` and the exit 2 on unreadable refs.
 - **The stub breakpoint, `RUNNER: WAITING stub`:** a build whose Phase 2
   finds the stub being integrated (`stub_target.py` exit 3) ends its turn
   with it. The runner records `waiting`, polls `stub_target.py` every
@@ -794,9 +808,15 @@ done, fix-deferred run over, no open deferred item) and has an open pull request
 an open stub is put on the merge queue once, so Integrate has little left to merge.
 A failed merge is retried by itself when retrying is safe: the failure was transient
 (CI still running or timed out, a gh or network error), at most twice per head of the
-stack, or a later run of the dossier started after the record and has finished. One
-timeline line says so. A cancelled merge, and a failure that needs a human (a
-conflict, red checks, spent resolve-merge attempts), stay the owner's to retry.
+stack, or a later run of the dossier started after the record and has finished, or a
+queue-started `resolve-merge` run of the dossier ended `done` after the record (the
+queue gave up while that run was still waiting or asking, e.g. W-197; also capped at
+twice per head). "A resolve-merge run of W-161 is still live" is a wait, never a human
+failure. One timeline line says so. A cancelled merge, and a failure that needs a human
+(a conflict, red checks, spent resolve-merge attempts), stay the owner's to retry.
+Accepting a pause ("Accept the open items", or `--resume accept`) rules every open
+deferred item leave-open (`<repo>.<ID>.deferred-owner.json`, as the dashboard's Leave
+open does), so the eager-merge hold lifts and the dossier joins the queue (W-183).
 
 ## Standing repair of the VM and the stack (`scripts/stack_repair.py`)
 

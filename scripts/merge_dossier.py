@@ -307,6 +307,8 @@ def plan(root: str, dossier: str) -> tuple[list[dict], str]:
     st = read_json(os.path.join(runs_dir(), key + ".runner.json"), {}) or {}
     if st.get("state") in ("running", "testing", "waiting", "paused", "queued") and alive(st.get("pid")):
         return [], f"a {st.get('command') or 'run'} run of {dossier} is still live; merge when it is finished"
+    if resolve_runs_live(key):
+        return [], f"a resolve-merge run of {dossier} is still live; merge when it is finished"
     rc, out = gh(root, "pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,baseRefName,isDraft,title,url")
     if rc != 0:
         return [], "gh pr list failed: " + out[:200]
@@ -506,7 +508,8 @@ def mark_detector(repo: str, chain: list[dict], dossier: str) -> None:
 
 # Who started a merge, for the dossier's timeline: the owner's Merge button, auto work's eager merge, or /stub's
 # integration. Unknown sources read as the button (the CLI default).
-SOURCES = {"button": "your Merge button", "eager": "eager merge: finished and on an open stub", "integrate": "the stub's integration"}
+SOURCES = {"button": "your Merge button", "eager": "eager merge: finished and on an open stub", "integrate": "the stub's integration",
+           "handoff": "a run whose CI cannot start: a parent PR of its stack conflicts"}
 
 
 def source_text(by: str | None) -> str:
@@ -632,6 +635,21 @@ def run_live(key: str) -> bool:
     return st.get("state") in ("running", "testing", "waiting", "paused", "queued") and alive(st.get("pid"))
 
 
+def resolve_key(key: str, nums: list[int]) -> str:
+    """The run key run_dossier gives a queue-started /resolve-merge of these PRs: `<repo>.<ID>.resolve-<pr>-<pr>`."""
+    return f"{key}.resolve-" + "-".join(str(n) for n in nums)
+
+
+def resolve_runs_live(key: str) -> list[str]:
+    """The live `<key>.resolve-*` runs: the queue's own resolve-merge runs and the runner's parent-PR ones."""
+    try:
+        names = os.listdir(runs_dir())
+    except OSError:
+        return []
+    return [n[: -len(".runner.json")] for n in sorted(names) if n.startswith(key + ".resolve-") and n.endswith(".runner.json")
+            and run_live(n[: -len(".runner.json")])]
+
+
 def runner_lock_held(key: str) -> bool:
     """Whether a runner holds the run's `<key>.runner.lock` right now (run_dossier.try_lock's flock, probed and released at
     once, without touching the pid inside). A failed run keeps it while it waits on its failure question."""
@@ -649,7 +667,10 @@ def runner_lock_held(key: str) -> bool:
     return False
 
 
-def open_failure_questions(key: str) -> list[str]:
+PARENT_CONFLICT_RE = re.compile(r"parent PR[^.|]{0,60}\bconflict", re.I)   # a run failed only because CI cannot start under a conflicting parent
+
+
+def open_failure_questions(key: str, conflicts: bool = True) -> list[str]:
     """The unanswered run-failure questions of the dossier `key` (<repo>.<dossier>): ones asked with `--topic run-failure`
     or (older ones) with the "failed at stage" text. The dossier's own failed run asked them and waits on the owner."""
     qdir = os.environ.get("ASD_QUESTIONS_DIR") or os.path.expanduser("~/.agentic/questions")
@@ -674,21 +695,26 @@ def open_failure_questions(key: str) -> list[str]:
         q = next((x for x in lines if isinstance(x, dict) and x.get("kind") == "question"), None)
         if not q or any(isinstance(x, dict) and x.get("kind") == "answer" and (x.get("from") == "owner" or x.get("accepted") is True) for x in lines):
             continue
+        if not conflicts and PARENT_CONFLICT_RE.search(str(q.get("text") or "")):
+            continue   # the stack's own conflict: the queue resolves it, so that question must not hold the queue (W-182)
         if q.get("topic") == "run-failure" or (not q.get("topic") and FAILURE_TEXT.match(str(q.get("text") or ""))):
             out.append(f[: -len(".jsonl")])
     return out
 
 
-def wait_runner_free(key: str, timeout_s: float, while_question: bool = True) -> bool:
+def wait_runner_free(key, timeout_s: float, while_question: bool = True) -> bool:
     """Wait until no runner holds the dossier's lock and (while_question) it has no open run-failure question of its own.
     The question has no deadline: the owner answers it. A lock alone gives up after `timeout_s`. True when free."""
     poll = float(os.environ.get("ASD_MERGE_POLL") or 15)
+    keys = [key] if isinstance(key, str) else list(key)
     end = time.time() + timeout_s
     while True:
-        asking = while_question and bool(open_failure_questions(key))
-        held = runner_lock_held(key)
+        asking = while_question and any(open_failure_questions(k, conflicts=False) for k in keys)
+        held = any(runner_lock_held(k) for k in keys)
         if not asking and not held:
             return True
+        if held and any(run_live(k) for k in keys):
+            end = time.time() + timeout_s   # a live run is waited for, however long: waiting is not failing
         if not asking and time.time() >= end:
             return False
         idle_tick()
@@ -734,21 +760,36 @@ def idle_tick() -> None:
         _IN_HOOK = False
 
 
-def wait_run(key: str, since: str, timeout_s: float) -> str:
+def wait_run(key, since: str, timeout_s: float) -> str:
     """Wait for the run started at `since` (or later) to end; its end state ("done", "failed", "stopped") or "timeout".
-    Only the run's own working time counts against `timeout_s`: an outage, a usage limit, a run slot and an owner question
-    (`waiting`: W-134 sat on Q21 for 7 h and its attempt was written off at 4 h) each extend the deadline."""
+    `key` is one run key or several (the dossier's own and the `.resolve-<prs>` one a queue-started /resolve-merge has).
+    Only the run's own working time counts against `timeout_s`: an outage, a usage limit, a slot it queued for and an owner
+    question each extend the deadline by the real time they took (W-161 queued for hours and was timed out at 4 h). A run
+    that failed but still holds its lock or has an open run-failure question is alive: its owner may answer Retry (W-197)."""
     poll = float(os.environ.get("ASD_MERGE_POLL") or 15)
-    end = time.time() + timeout_s
-    while time.time() < end:
-        st = read_json(os.path.join(runs_dir(), key + ".runner.json"), {}) or {}
-        if st.get("state") in ("paused", "queued", "waiting"):   # an outage, a usage limit, a run slot or an owner question: not the run taking too long
-            end += poll
-        if str(st.get("started") or "") >= since and not run_live(key):
-            return str(st.get("state") or "stopped") if alive(st.get("pid")) or st.get("state") in ("done", "failed", "stopped") else "stopped"
+    keys = [key] if isinstance(key, str) else list(key)
+    last = time.time()
+    end = last + timeout_s
+    idle_prev = False
+    while True:
+        t = time.time()
+        if idle_prev:
+            end += t - last
+        last = t
+        if t >= end:
+            return "timeout"
+        sts = {k: read_json(os.path.join(runs_dir(), k + ".runner.json"), {}) or {} for k in keys}
+        mine = [k for k in keys if str(sts[k].get("started") or "") >= since]
+        mine.sort(key=lambda k: not run_live(k))
+        cur = sts[mine[0]] if mine else {}
+        idle_prev = bool(mine) and cur.get("state") in ("paused", "queued", "waiting")
+        if mine and not any(run_live(k) for k in mine):
+            if cur.get("state") not in ("done", "stopped") and any(runner_lock_held(k) or open_failure_questions(k, conflicts=False) for k in mine):
+                idle_prev = True   # it failed and asks the owner: the same run goes on after an answer
+            else:
+                return str(cur.get("state") or "stopped") if alive(cur.get("pid")) or cur.get("state") in ("done", "failed", "stopped") else "stopped"
         idle_tick()
         time.sleep(poll)
-    return "timeout"
 
 
 def conflicting(root: str, nums: list[int]) -> tuple[list[int], str]:
@@ -1176,6 +1217,16 @@ def ask_resolve_failed(root: str, dossier: str, why: str) -> None:
         pass
 
 
+def wait_live(key, since: str, timeout_s: float) -> str:
+    """`wait_run`, but a run that is still alive when its working time is up is waited for on: waiting is not failing.
+    A hung run is the runner's own stall clock's to end; "timeout" is only for a run that is gone."""
+    keys = [key] if isinstance(key, str) else list(key)
+    while True:
+        end = wait_run(keys, since, timeout_s)
+        if end != "timeout" or not any(run_live(k) for k in keys):
+            return end
+
+
 def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, others: list[str], note, use_agent: bool = True) -> str:
     """Make the PRs mergeable and green, cheapest step first; "" when ready to merge, else why not. Without use_agent
     it stops before waking an agent: a batch that stays red goes back to one PR at a time, where the blame is clear."""
@@ -1309,12 +1360,15 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
         if not use_agent:
             return ("conflicting: " + ", ".join(f"#{n}" for n in bad)) if bad else ("migration numbers clash: " + "; ".join(clashes)) if clashes else ("checks red: " + ", ".join(f"#{n}" for n in red))
         rkey = f"{repo_name(root)}.{agent_id}"
+        qk = resolve_key(rkey, nums)   # the key run_dossier gives the run this settle starts
         # The dossier's own failed run still holds its runner lock while it waits on its failure question: a resolve-merge
         # started now exits at once ("already has a runner"), and asking the owner a second time would repeat that
         # question. Wait for the question to be answered / the lock to be released; that is no attempt.
-        if open_failure_questions(rkey) or runner_lock_held(rkey):
+        # The queue's resolve-merge has a key of its own (`.resolve-<prs>`), so the dossier's own run does not block it; a
+        # run-failure question about the stack's own parent conflict is the queue's to resolve, never to wait on (W-182).
+        if open_failure_questions(rkey, conflicts=False) or runner_lock_held(qk) or open_failure_questions(qk, conflicts=False):
             note("resolving", f"{agent_id} has a run holding its lock or an open run-failure question; waiting for it instead of starting or asking again")
-            if not wait_runner_free(rkey, run_timeout):
+            if not wait_runner_free([rkey, qk], run_timeout):
                 return f"the runner of {agent_id} still holds the dossier's lock after {int(run_timeout / 60)} min; no resolve-merge attempt was spent"
             continue
         targets = bad or ([n for n in red] if red else list(nums))
@@ -1340,18 +1394,20 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
             for n in targets:
                 attempts[n] -= 1
             save_attempts(key, attempts, tried, known)
-            if not wait_runner_free(rkey, run_timeout):
+            if not wait_runner_free([rkey, qk], run_timeout):
                 return f"the runner of {agent_id} still holds the dossier's lock after {int(run_timeout / 60)} min; no resolve-merge attempt was spent"
             continue
-        live = read_json(os.path.join(runs_dir(), rkey + ".runner.json"), {}) or {}
-        adopted = run_live(rkey) and str(live.get("started") or "") < since
+        # a live run of this dossier older than this start (its own work, or an earlier resolve-merge of these PRs): adopted
+        live_key = next((k for k in (qk, rkey) if run_live(k) and str((read_json(os.path.join(runs_dir(), k + ".runner.json"), {}) or {}).get("started") or "") < since), "")
+        live = (read_json(os.path.join(runs_dir(), live_key + ".runner.json"), {}) or {}) if live_key else {}
+        adopted = bool(live_key)
         if adopted:
             # The runner refused (or ignored) the start because a run of this dossier is still live. Wait for that run by its
             # own start, not for a new one that never comes; it is not a new attempt.
             for n in targets:
                 attempts[n] -= 1
             note("resolving", f"a run of {agent_id} ({live.get('command') or 'run'}) is still live; waiting for it instead of starting another")
-            end = wait_run(rkey, str(live.get("started") or ""), run_timeout)
+            end = wait_live(live_key, str(live.get("started") or ""), run_timeout)
             if end == "done":
                 if live.get("command") == "resolve-merge":
                     for n in targets:
@@ -1367,7 +1423,7 @@ def settle(root: str, key: str, agent_id: str, prs: list[dict], base: str, other
             if end != "timeout":
                 continue
         else:
-            end = wait_run(rkey, since, run_timeout)
+            end = wait_live([qk, rkey], since, run_timeout)
         for n in targets:
             known.setdefault(n, set()).add(head_of(root, n))   # a push of the agent is the queue's own head
         if end == "done":
@@ -1388,9 +1444,9 @@ def work_one(root: str, dossier: str, ahead=None) -> str:
     run_timeout = float(os.environ.get("ASD_MERGE_RUN_TIMEOUT") or 4 * 3600)
     if run_live(key) and ahead is not None:
         return "skip"
-    if run_live(key):
+    if run_live(key) or resolve_runs_live(key):
         set_state(key, state="waiting", error="", pid=os.getpid(), note="waiting for the dossier's own run to finish")
-        while run_live(key):
+        while run_live(key) or resolve_runs_live(key):
             idle_tick()
             time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15))
     # A worker killed around the merge (a logout, a reboot) comes back to PRs GitHub has already merged. The merge
@@ -1402,6 +1458,12 @@ def work_one(root: str, dossier: str, ahead=None) -> str:
             set_state(key, state="merged", error="", pid=None, note="merged; found so after the merge queue restarted")
             return "merged"
     chain, why = plan(root, dossier)
+    while not chain and ahead is None and "is still live" in why:
+        # a run started between the wait above and the check: waiting is not failing
+        set_state(key, state="waiting", error="", pid=os.getpid(), note="waiting: " + why)
+        idle_tick()
+        time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15))
+        chain, why = plan(root, dossier)
     if not chain:
         if ahead is not None:
             return "skip"
@@ -1439,8 +1501,17 @@ def work_one(root: str, dossier: str, ahead=None) -> str:
     set_state(key, state="merging", pid=os.getpid())
     import io, contextlib
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        rc = merge(root, dossier, "merge", False, no_cleanup=True, by=(read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}).get("by") or "button")
+    for _ in range(100):
+        with contextlib.redirect_stdout(buf):
+            rc = merge(root, dossier, "merge", False, no_cleanup=True, by=(read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}).get("by") or "button")
+        # a run started after the check above makes the merge refuse "still live": that is a wait, not a failure
+        if rc != 0 and "is still live" in str((read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}).get("error") or ""):
+            set_state(key, state="waiting", error="", pid=os.getpid(), note="waiting for a run of the dossier to finish")
+            while run_live(key) or resolve_runs_live(key):
+                idle_tick()
+                time.sleep(float(os.environ.get("ASD_MERGE_POLL") or 15))
+            continue
+        break
     if rc != 0:
         return "failed"  # merge() recorded "failed" and why
     st = read_json(os.path.join(runs_dir(), key + ".merge.json"), {}) or {}
@@ -2547,6 +2618,41 @@ print("started")
         later(1.0, lambda: runner_state("done", "2026-11-17T01:44:00Z"))
         got = wait_run(rk, "2026-11-17T01:44:00Z", 0.4)
         check("wait: a run that works longer than the limit still times out", got == "timeout", got)
+        runner_state("done", "2026-11-17T01:44:00Z")
+        # B: waiting is not failing. Time queued for a slot is real time, even when the worker's own hook is slow.
+        global WAIT_HOOK
+        saved_hook = WAIT_HOOK
+        WAIT_HOOK = lambda: time.sleep(0.3)
+        runner_state("queued", "2026-11-17T01:44:00Z")
+        later(1.0, lambda: runner_state("done", "2026-11-17T01:44:00Z"))
+        got = wait_run(rk, "2026-11-17T01:44:00Z", 0.4)
+        WAIT_HOOK = saved_hook
+        check("wait: time a queue-started run spends queued for a slot does not count toward the timeout, however slow the poll", got == "done", got)
+        # a run keyed `<key>.resolve-<prs>` (run_dossier's key for a queue-started resolve-merge) is the one waited for
+        rk2 = resolve_key(rk, [5, 6]); rpath2 = os.path.join(rdir, rk2 + ".runner.json")
+        check("queue: the resolve-merge run key is <repo>.<ID>.resolve-<prs>", rk2 == "repo.W-134.resolve-5-6")
+        write_json(rpath2, {"state": "running", "pid": os.getpid(), "started": "2026-11-17T09:00:00Z", "command": "resolve-merge"})
+        later(0.5, lambda: write_json(rpath2, {"state": "done", "pid": os.getpid(), "started": "2026-11-17T09:00:00Z", "command": "resolve-merge"}))
+        got = wait_run([rk2, rk], "2026-11-17T09:00:00Z", 5)
+        check("wait: the queue waits on the resolve-merge run's own key, not the dossier's stale record", got == "done", got)
+        check("queue: a live resolve run of the dossier is seen by the precheck keys", resolve_runs_live(rk) == [] and not os.remove(rpath2))
+        # W-197: a run that failed but holds an open run-failure question is alive: Retry resumes the same run, no new attempt
+        time.sleep(1.2)   # let the timers of the tests above fire before this one writes the same runner.json
+        qd_ = os.environ["ASD_QUESTIONS_DIR"]; os.makedirs(qd_, exist_ok=True)
+        append_line(os.path.join(qd_, rk + ".Q91.jsonl"), {"kind": "question", "topic": "run-failure", "text": "The run of W-134 failed at stage 1: another process changed its merge worktree"})
+        write_json(rpath, {"state": "failed", "pid": 1, "started": "2026-11-17T10:00:00Z", "command": "resolve-merge"})
+        later(0.6, lambda: runner_state("running", "2026-11-17T10:00:00Z"))
+        later(0.8, lambda: runner_state("done", "2026-11-17T10:00:00Z"))
+        got = wait_run(rk, "2026-11-17T10:00:00Z", 0.5)
+        check("wait: a failed run with its own open run-failure question is waited on; answered Retry, the same run ends done (no second attempt)", got == "done", got)
+        # W-182: a question about the stack's own parent conflict must not hold the queue
+        append_line(os.path.join(qd_, "repo.W-182.Q92.jsonl"), {"kind": "question", "topic": "run-failure", "text": "failed at stage 4: CI not started on PR #688: its parent PR still conflicts after the runner's resolve-merge"})
+        check("queue: an open run-failure question about a conflicting parent PR is not waited on; any other one is",
+              open_failure_questions("repo.W-182", conflicts=False) == [] and open_failure_questions("repo.W-182") == ["repo.W-182.Q92"]
+              and open_failure_questions(rk, conflicts=False) == [rk + ".Q91"], str(open_failure_questions(rk, conflicts=False)))
+        for f_ in (rk + ".Q91.jsonl", "repo.W-182.Q92.jsonl"):
+            os.remove(os.path.join(qd_, f_))
+        time.sleep(1.2)
         runner_state("done", "2026-11-17T01:44:00Z")
         # 2. the runner refused the start, since the dossier's run is live: the queue waits for that run, no new attempt
         saved_fns = {n: globals()[n] for n in ("conflicting", "wait_checks", "behind", "collisions", "start_run", "head_of", "ask_resolve_failed", "migration_clashes")}
