@@ -33,5 +33,6 @@ const server = readFileSync(join(root, "shared/questions/server.ts"), "utf8"), p
 check("server: Always allow stores the ruling; GET and DELETE /api/rulings/<repo> exist; the dossier payload lists them",
   server.includes("addRuling(run.repo") && /\/api\\\/rulings\\\/\(\[\\w\.-\]\+\)/.test(server) && server.includes('req.method === "DELETE"') && server.includes("rulings: readRulings(run.repo)"))
 check("page: the rulings are listed with a Remove button", page.includes("function rulingsView") && page.includes("'data-act': 'rmrule'") && page.includes("act === 'rmrule'"))
+check("page: the rulings moved to the repo page (repoView renders them, itemView does not)", (() => { const body = (n: string) => { const a = page.indexOf("function " + n + "("); return page.slice(a, page.indexOf("\nfunction ", a + 1)) }; return body("repoView").includes("rulingsView(repo)") && !body("itemView").includes("rulingsView(") })())
 console.log(fails.length ? "FAIL: " + fails.join("; ") : `PASS (${n} cases)`)
 process.exit(fails.length ? 1 : 0)

@@ -4,6 +4,7 @@
 import { vrWalkOrder } from "./vrwalk.ts"
 import { vrDecisionStats } from "./vrdecision.ts"
 import { VR_TEXT, vrFitLabel } from "./vrtext.ts"
+import { paneDefault, paneRead, paneSlug, paneWrite, splitSections } from "./panes.ts"
 
 export const PAGE = String.raw`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -198,6 +199,42 @@ header{padding:10px 24px}
 .skel{display:flex;flex-direction:column;gap:10px;margin-top:28px}.skel i{display:block;height:44px;border-radius:12px;background:var(--card);border:1px solid var(--bd)}.skel i:first-child{height:132px}
 @media (max-width:640px){.srows{display:block}.srow{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:12px}.sright{flex-wrap:wrap}}
 @media (prefers-reduced-motion:reduce){.btn,.opt,.srow,.card{transition:none}}
+/* Dossier page: sticky status header, Needs you now strip, section rail, collapsible panes. Colours are the theme tokens only. */
+:root{--hh:49px}
+.dhead{position:sticky;top:var(--hh);z-index:15;margin:8px 0 12px;padding:10px 16px;display:flex;flex-direction:column;gap:4px}
+.dhead .drow{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center;min-width:0}
+.dhead .dtitle{flex:1 1 280px;min-width:0;margin:0;font-size:1.1rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dhead .dctl{margin:0}.dhead .ctl{margin:0}.dhead .chips{margin:0}.dhead .nowline{margin:0}
+.chipbtn{font:inherit;font-size:11.5px;border:0;cursor:pointer}
+.needs-strip{border-left:4px solid var(--warn);margin:0 0 14px}
+.needs-strip .panel,.needs-strip .need{box-shadow:none}
+.needs-strip>.panel.result{border:0;background:none;padding:6px 0 0;margin:6px 0 0;border-top:1px solid var(--bd);border-radius:0}
+.nrow{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:8px 0;border-top:1px solid var(--bd)}.nrow .grow{flex:1;min-width:0}
+.nowait{color:var(--mut);padding:4px 0}
+.dlayout{display:block}
+.rail{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.rail-i{font:inherit;font-size:12.5px;display:flex;align-items:center;gap:8px;text-align:left;padding:5px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--fg);cursor:pointer}
+.rail-i:hover{border-color:var(--bd2)}.rail-t{flex:1;min-width:0}.rail-b{color:var(--mut);font-size:11.5px}
+@media (min-width:1100px){.dlayout.withrail{display:grid;grid-template-columns:220px minmax(0,1fr);gap:18px;align-items:start}.rail{flex-direction:column;flex-wrap:nowrap;position:sticky;top:calc(var(--hh) + 110px);margin:0;max-height:calc(100vh - var(--hh) - 130px);overflow:auto}}
+.panes{min-width:0}
+details.pane{border:1px solid var(--bd);border-radius:12px;background:var(--card);margin:0 0 10px;scroll-margin-top:calc(var(--hh) + 120px)}
+details.pane>summary{display:flex;align-items:center;gap:10px;margin:0;padding:10px 14px;font-size:14px;font-weight:600;color:var(--fg);cursor:pointer;list-style:none;border-radius:12px}
+details.pane>summary::-webkit-details-marker{display:none}
+details.pane>summary::before{content:"\25B8";color:var(--mut);display:inline-block;width:1em;transition:transform .12s}
+details.pane[open]>summary::before{transform:rotate(90deg)}
+details.pane>summary:hover{background:var(--raised)}
+details.pane .pbody{padding:0 14px 12px}
+details.pane.flat>.pbody>.panel,details.pane.flat>.pbody>section.panel{border:0;background:none;box-shadow:none;padding:0;margin:0}
+details.pane.flat>.pbody>.panel>.res-hd .kind{display:none}
+details.pane.sub{margin:6px 0;background:var(--bg)}details.pane.sub>summary{font-size:13px}
+details.qrow{border-top:1px solid var(--bd);margin:0}details.qrow>summary{display:flex;gap:12px;align-items:baseline;padding:6px 0;font-size:13px;color:var(--fg)}.qrq{flex:1 1 40%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.qra{flex:1 1 40%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.loading{color:var(--mut);padding:10px 4px;display:flex;align-items:center;gap:8px}.skel-t{color:var(--mut);margin:0 0 6px;display:flex;align-items:center;gap:8px}
+details.pane>summary:focus-visible,.rail-i:focus-visible,.vrmore>summary:focus-visible,details.qrow>summary:focus-visible,.chipbtn:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.vrmore{position:relative;display:inline-block}.vrmore>summary{display:inline-block;list-style:none;margin:0;font-size:12.5px;padding:3px 11px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--fg);cursor:pointer}.vrmore>summary::-webkit-details-marker{display:none}
+.vrmore .vrmenu{position:absolute;right:0;top:calc(100% + 4px);z-index:30;display:flex;flex-direction:column;gap:4px;padding:8px;min-width:150px;border:1px solid var(--bd2);border-radius:10px;background:var(--raised);box-shadow:var(--shadow)}
+.vrmore .vrmenu .btn{text-align:left}
+.rulelink{margin:6px 2px 24px}
+@media (prefers-reduced-motion:reduce){details.pane>summary::before{transition:none}}
 </style></head><body>
 <header><a class="brand" href="/">Pipeline</a><nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav><a class="pill dmlink" href="/chat" title="Talk to the agent, as in the Slack DM">Ask the agent</a><span class="pill" id="slack"></span><span class="pill" id="upd"></span></header>
 <main id="view"></main>
@@ -241,6 +278,11 @@ const VR_MODES = [['before', 'Before'], ['after', 'After'], ['diff', 'Diff']];
 const VR_TABS = { L0: 'Features', L1: 'Flow', decision: 'Decisions', L2: 'Components' };
 ${vrWalkOrder.toString()}
 ${vrDecisionStats.toString()}
+${paneRead.toString()}
+${paneWrite.toString()}
+${paneDefault.toString()}
+${paneSlug.toString()}
+${splitSections.toString()}
 function vrKey(repo, id) { return repo + '/' + id; }
 async function vrLoad(repo, id) {
   const key = vrKey(repo, id); let d = null;
@@ -374,11 +416,13 @@ function vrBuild(host, key, data) {
   ['L0', 'L1', 'decision'].filter(k => k !== 'decision' || data.views[k]).concat(prevKeys, ['L2'], have.filter(k => k.indexOf('arch:') === 0)).forEach(k => { const isArch = k.indexOf('arch:') === 0, isPrev = k.indexOf('seqpreview:') === 0; const b = vrDom('button', 'btn sm', isPrev ? 'Sequence' + (prevKeys.length > 1 ? ' ' + (prevKeys.indexOf(k) + 1) : '') + ' (auto draft)' : isArch ? k.slice(5) : data.mapPath ? (data.views[k] && data.views[k].tab) || VR_TABS[k] : k === 'decision' ? VR_TABS[k] : k + ' ' + VR_TABS[k], tabs); if (k === 'decision') b.title = 'What happens at each condition of the change (start, steps, decisions, ends)'; if (isPrev) b.title = (data.views[k].title || k.slice(11)) + ': a sequence drawn mechanically from the Flow view. A preview: no verdicts, not part of the approval, never promoted.'; if (isArch) b.title = 'New architecture diagram ' + k.slice(5) + ' (Architecture impact)'; b.type = 'button'; b.disabled = !data.views[k]; b.hidden = !!data.mapPath && !data.views[k]; tb[k] = b; b.onclick = () => { setIntent(false); st.view = k; wkOff(); draw(); }; });
   VR_MODES.forEach(m => { const b = vrDom('button', 'btn sm', m[1], modes); b.type = 'button'; mb[m[0]] = b; b.onclick = () => { st.mode = m[0]; applyMode(); }; });
   const fitB = vrDom('button', 'btn sm', 'Fit all', bar); fitB.title = 'Show the whole diagram (labels may get small)'; fitB.type = 'button';
-  const zin = vrDom('button', 'btn sm', '+', bar), zout = vrDom('button', 'btn sm', '−', bar); zin.type = zout.type = 'button'; zin.title = 'Zoom in'; zout.title = 'Zoom out';
+  const moreD = vrDom('details', 'vrmore', null, bar); vrDom('summary', '', 'More ▾', moreD); const menu = vrDom('div', 'vrmenu', null, moreD); /* the row keeps the view tabs, the Before/After/Diff modes, Fit all and Walkthrough; zoom, Mermaid and Full screen sit in this menu */
+  const zin = vrDom('button', 'btn sm', 'Zoom in (+)', menu), zout = vrDom('button', 'btn sm', 'Zoom out (−)', menu); zin.type = zout.type = 'button'; zin.title = 'Zoom in'; zout.title = 'Zoom out';
   const wkB = vrDom('button', 'btn sm', 'Walkthrough', bar); wkB.type = 'button'; wkB.title = 'Step through the added, changed and removed elements in reading order'; wkB.setAttribute('aria-pressed', 'false'); wkB.hidden = !!data.mapPath; /* a committed diagram has no added, changed or removed elements to step through */
-  const mmB = vrDom('button', 'btn sm', 'Mermaid', bar); mmB.type = 'button'; mmB.title = 'Export this view as mermaid flowchart text';
+  const mmB = vrDom('button', 'btn sm', 'Mermaid', menu); mmB.type = 'button'; mmB.title = 'Export this view as mermaid flowchart text';
   /* Full screen: the canvas takes the whole window (a body class, since the morph owns the host's own attributes); Esc or the button closes it. */
-  const fsB = vrDom('button', 'btn sm', '', bar); fsB.type = 'button'; fsB.title = 'Give the canvas the whole window (f; Esc closes)';
+  const fsB = vrDom('button', 'btn sm', '', menu); fsB.type = 'button'; fsB.title = 'Give the canvas the whole window (f; Esc closes)';
+  bar.appendChild(moreD); [mmB, fsB].forEach(b => b.addEventListener('click', () => { moreD.open = false; }));
   const setFs = (on) => { st.fs = on; document.body.classList.toggle('vrfs-on', on); fsB.textContent = on ? '✕ Close full screen' : '⤢ Full screen'; fsB.setAttribute('aria-pressed', String(on)); requestAnimationFrame(() => fit()); };
   fsB.onclick = () => setFs(!st.fs); VR_FS.off = () => setFs(false); VR_FS.toggle = () => setFs(!st.fs); VR_FS.fit = () => fit();
   const leg = vrDom('div', 'vrleg small mut', null, host); leg.hidden = !!data.mapPath; /* the change legend: a committed diagram shows no change marks */
@@ -693,7 +737,7 @@ function vrBuild(host, key, data) {
 }
 
 // ---- state ----
-const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {}, auto: {}, flows: {} };
+const S = { dm: { list: [], conv: null, enabled: true, busy: false, err: '' }, q: [], runs: [], accounts: [], usageBusy: false, slack: false, scannedAt: '', stubs: { repos: [], openWork: [] }, loaded: false, detail: null, live: false, changedAt: 0, showAll: {}, ctl: {}, pend: {}, qerr: {}, tab: {}, po: {}, rulings: {}, frameH: {}, dsel: {}, chat: {}, docPrs: {}, auto: {}, flows: {} };
 let R = { kind: 'home' };
 let routeSig = '';
 let scrollTarget = '';
@@ -826,7 +870,7 @@ function qCard(q, opts) {
     h('div', { class: 'top' }, [chip(rlabel(repo), 'neutral'), h('a', { class: 'chip', href: hrefItem(repo, q.dossier) }, [q.dossier]), h('span', { class: 'grow' }), q.qkind ? chip(q.qkind, 'neutral') : null, h('span', { class: 'mono' }, [q.id + ' · ']), opts.queue ? when(q.ts, 'waiting ') : when(q.ts)]),
     /\n/.test(q.text || '') ? h('div', { class: 'q md' }, qBody(q.text)) : h('div', { class: 'q' }, [q.text]),
     // The diagrams live on the dossier page, not in the card: link them, whatever the question text says.
-    q.topic === 'visual-review' ? h('div', { class: 'ctl' }, [h('a', { class: 'btn primary', href: hrefItem(repo, q.dossier), 'data-k': 'vrlink' }, ['Open the diagrams for ' + q.dossier])]) : null,
+    q.topic === 'visual-review' && opts.strip ? h('div', { class: 'ctl' }, [h('button', { class: 'btn primary', type: 'button', 'data-act': 'pane-go', 'data-pane': 'diagram' }, ['Open the diagrams for ' + q.dossier])]) : q.topic === 'visual-review' ? h('div', { class: 'ctl' }, [h('a', { class: 'btn primary', href: hrefItem(repo, q.dossier), 'data-k': 'vrlink' }, ['Open the diagrams for ' + q.dossier])]) : null,
     q.blocks ? h('div', { class: 'blocks' }, ['Blocks: ' + q.blocks]) : null];
   // An open question is a chat until a button closes it: your messages and the agent's replies, in order, then the
   // buttons (the question's own, plus any the agent offered in a reply, such as its reading of your words).
@@ -840,7 +884,7 @@ function qCard(q, opts) {
   }
   kids.push(optButtons(q));
   if (opts.thread && !open) kids.push(h('div', {}, q.lines.slice(1).map(msgBlock)));
-  if (open) kids.push(h('textarea', { placeholder: talk.length ? 'Reply to the agent' : 'Ask the agent something, or tell it what you want', 'data-qid': q.id }),
+  if (open) kids.push(h('textarea', { placeholder: talk.length ? 'Reply to the agent' : 'Ask the agent something, or tell it what you want', 'data-qid': q.id, 'aria-label': 'Message to the agent about ' + q.id }),
     h('div', { class: 'ctl' }, [h('button', { class: 'btn primary', type: 'button', 'data-act': 'reply', 'data-qid': q.id }, ['Send']),
       h('span', { class: 'small mut' }, ['Your message goes to the agent and it replies here. Only a button answers and closes the question; the agent adds one for what it takes your words to mean.'])]));
   kids.push(h('div', { class: 'err' }, [S.qerr[q.id] || '']));
@@ -1264,6 +1308,7 @@ function repoView(repo) {
   const aw = autoWorkView(repo); if (aw) kids.push(aw);
   const fv = flowsView(repo); if (fv) kids.push(fv);
   const dp = docPrsView(repo); if (dp) kids.push(dp);
+  const rl = rulingsView(repo); if (rl) kids.push(rl);
   const vm = vrRepoLink(repo); if (vm) kids.push(vm);
   kids.push(h('section', { class: 'main-col', 'data-k': 'sec:report' }, [h('h2', {}, ['Open work']), frame]));
   return h('div', {}, kids);
@@ -1277,12 +1322,14 @@ function header(r, mode) {
   const st = ac ? '' : stageText(r); if (st) cs.push(chip(st, 'neutral'));
   if (r.session && r.session.context) cs.push(h('span', { title: 'Tokens in the orchestrator\'s context right now. It compacts at 200k, so this falls back after each compaction and each new stage.' }, [chip('context ' + kfmt(r.session.context) + ' / 200k', 'neutral')]));
   if (r.pr) cs.push(prChip(r.pr)); if (r.jira && r.jira !== 'null') cs.push(chip(r.jira, 'neutral'));
-  nq.forEach(q => cs.push(h('a', { class: 'chip warn', href: '/questions#q=' + enc(q.id) }, ['? open question'])));
+  nq.forEach(q => cs.push(h('button', { class: 'chip warn chipbtn', type: 'button', 'data-act': 'pane-go', 'data-pane': 'needs', title: 'Answer it in the Needs you now strip below' }, ['? open question'])));
   const acts = [];
   if (mode === 'run') acts.push(h('a', { class: 'btn', href: hrefItem(r.repo, r.id) + '/dossier' }, ['View dossier']));
   else if (r.updates.length || inProgress(r)) acts.push(h('a', { class: 'btn', href: hrefItem(r.repo, r.id) }, ['Back to run']));
-  return h('div', { class: 'panel' }, [h('h1', { style: 'margin-top:0' }, [r.id + ' · ' + r.title]), r.summary && mode === 'run' ? h('p', { class: 'sum' }, [r.summary]) : null,
-    h('div', { class: 'chips' }, cs), nowLine(r), h('div', { class: 'row' }, controls(r, true).concat(onOpenStub(r) ? [mergeCtl(r)] : [], acts))]);
+  /* Sticky: one row of title and controls, one of chips and the live line. The long title and summary are cut to one line (the full text on hover). */
+  return h('div', { class: 'panel dhead', 'data-k': 'dhead' }, [
+    h('div', { class: 'drow' }, [h('h1', { class: 'dtitle', title: r.id + ' · ' + r.title + (r.summary ? '\n\n' + r.summary : '') }, [r.id + ' · ' + r.title]), h('div', { class: 'row dctl' }, controls(r, true).concat(onOpenStub(r) ? [mergeCtl(r)] : [], acts))]),
+    h('div', { class: 'drow' }, [h('div', { class: 'chips' }, cs), nowLine(r)])]);
 }
 const ICON = { step: '→', blocked: '⛔', start: '▶', stage: '✔', question: '?', answered: '✔', 'suite-green': '●', 'suite-red': '✖', gate: '▣', pr: '⇄', workflow: '⚙', failed: '✖', waiting: '⏳', done: '★', stopped: '■', note: '•', spawn: '⎇', reply: '↩', routine: '·', info: '·', entry: '§' };
 const KLABEL = { step: 'next step', blocked: 'blocked by the safety check', start: 'run started', stage: 'stage done', question: 'question asked', answered: 'answered', 'suite-green': 'suite green', 'suite-red': 'suite red', gate: 'gate', pr: 'pull request', workflow: 'workflow', spawn: 'agent', failed: 'failed', waiting: 'waiting', done: 'done', stopped: 'stopped', note: 'update', reply: 'reply', routine: 'routine', info: 'runner' };
@@ -1351,52 +1398,77 @@ function nowView(d, runner, withStepper) {
 }
 function tabs(key, list) {
   const cur = S.tab[key] || list[0][0];
-  return h('div', { class: 'tabs', role: 'tablist', 'data-k': 'tabs' }, list.map(t => h('button', { class: 'tab' + (cur === t[0] ? ' on' : ''), type: 'button', role: 'tab', 'data-act': 'tab', 'data-key': key, 'data-tab': t[0] }, [t[1]])));
+  return h('div', { class: 'tabs', role: 'tablist', 'data-k': 'tabs' }, list.map(t => h('button', { class: 'tab' + (cur === t[0] ? ' on' : ''), type: 'button', role: 'tab', 'aria-selected': String(cur === t[0]), 'data-act': 'tab', 'data-key': key, 'data-tab': t[0] }, [t[1]])));
+}
+/* ---- panes: native details, open or closed remembered per viewer (localStorage, tried and caught: no storage still works) ----
+   PANES is the registry of the dossier page. An entry is function (c) returning {key, title, badge, def, body, cls} or null when it has
+   nothing to show; the page lists the panes in this order, in the rail and below. A new pane (a review packet, a sequence diagram,
+   a feedback bar) is one more push. */
+const PANES = [];
+const paneStore = () => { try { return window.localStorage; } catch (e) { return null; } };
+function paneOpen(item, key, def) { const k = item + '.' + key; if (S.po[k] !== undefined) return S.po[k]; return paneRead(paneStore(), item, key, def); }
+function paneSet(item, key, open) { S.po[item + '.' + key] = open; paneWrite(paneStore(), item, key, open); }
+/* One pane: a details with a summary (title and state badge). Its body is built only while it is open, so a closed pane costs no DOM. */
+function pane(item, p) {
+  const open = paneOpen(item, p.key, p.def);
+  const sum = h('summary', {}, [h('span', { class: 'ptitle' }, [p.title]), p.badge ? h('span', { class: 'chip ' + (p.badge.tone || 'neutral') }, [p.badge.text]) : null]);
+  return h('details', { class: 'pane' + (p.cls ? ' ' + p.cls : ''), id: 'pane-' + p.key.replace(/[^A-Za-z0-9_-]/g, '_'), 'data-k': 'pane:' + p.key, 'data-pane': item, 'data-key': p.key, open: open }, [sum, h('div', { class: 'pbody' }, open ? p.body() : [])]);
+}
+function reviewOf(r) { const st = VRS[vrKey(r.repo, r.id)]; const v = VR[vrKey(r.repo, r.id)]; return (st && st.review) || (v && v.data && v.data.review) || null; }
+PANES.push(
+  c => c.d && c.d.blocks && c.d.blocks.length ? { key: 'blocked', title: 'Blocked by the safety check', badge: { text: String(c.d.blocks.length), tone: 'warn' }, def: paneDefault('blocked', c.pd), cls: 'flat', body: () => [blockedView(c.r, c.d)] } : null,
+  c => { const sv = c.mode !== 'run' && c.d ? summaryView(c.r, c.d) : null; return sv ? { key: 'summary', title: 'Product summary', badge: c.d.summary ? { text: 'written', tone: 'ok' } : { text: 'not written', tone: 'warn' }, def: paneDefault('summary', c.pd), cls: 'flat', body: () => [sv] } : null; },
+  c => { const vp = vrPanel(c.r); if (!vp) return null; const rs = c.rv && c.rv.summary;
+    return { key: 'diagram', title: 'Change diagram', badge: rs ? { text: rs.checked + ' of ' + rs.total + (rs.outdated ? ' · ' + rs.outdated + ' outdated' : ''), tone: rs.unchecked || rs.outdated || rs.question || rs.change ? 'warn' : 'ok' } : null, def: paneDefault('diagram', c.pd), cls: 'flat', body: () => [vp] }; },
+  c => { if (c.mode === 'run' || !c.d || !c.d.html) return null; const sp = splitSections(c.d.html);
+    return { key: 'dossier', title: 'Dossier', badge: sp.sections.length ? { text: sp.sections.length + ' section' + (sp.sections.length === 1 ? '' : 's'), tone: 'neutral' } : null, def: paneDefault('dossier', c.pd), cls: 'flat',
+      body: () => [sp.intro.trim() ? mdBlock(sp.intro, 'doc:intro') : null].concat(sp.sections.map(s => pane(c.item, { key: 'sec:' + s.slug, title: s.title, def: false, cls: 'sub', body: () => [mdBlock(s.html, 'doc:' + s.slug)] }))) }; },
+  c => c.mode === 'run' || !c.r.answered.length ? null : { key: 'answered', title: 'Answered questions', badge: { text: String(c.r.answered.length), tone: 'neutral' }, def: paneDefault('answered', c.pd), cls: 'flat',
+    body: () => c.r.answered.map(a => h('details', { class: 'qrow', 'data-k': 'qa:' + a.id }, [h('summary', {}, [h('span', { class: 'qrq' }, [a.text.split('\n')[0]]), h('span', { class: 'qra mut' }, [(a.option ? a.option + ' · ' : '') + a.answer.split('\n')[0]])]),
+      h('div', { class: 'panel qa' }, [h('div', {}, ['Q: ' + a.text]), h('div', { class: 'a' }, ['A: ' + (a.option ? a.option + ' · ' : '') + a.answer + ' · ', when(a.answeredAt || a.asked)]), h('a', { class: 'small', href: '/questions#q=' + enc(a.id) }, ['thread'])])])) },
+  c => { const dp = deferredProgress(c.r, c.d); return dp ? { key: 'deferredprog', title: 'Fix run for the deferred issues', badge: fixLive(c.r) ? { text: 'running', tone: 'info' } : null, def: paneDefault('deferredprog', c.pd), cls: 'flat', body: () => [dp] } : null; },
+  c => c.nDf ? { key: 'deferred', title: 'Deferred issues', badge: { text: c.r.deferredOpen + ' open / ' + c.nDf, tone: c.r.deferredOpen ? 'warn' : 'neutral' }, def: paneDefault('deferred', c.pd), cls: 'flat', body: () => [deferredView(c.r)] } : null,
+  c => { const rv = resultView(c.r, c.d); return rv ? { key: 'result', title: 'Final reply', def: paneDefault('result', c.pd), cls: 'flat', body: () => [rv] } : null; },
+  c => c.d && (c.mode === 'run' || c.hasTl) ? { key: 'timeline', title: c.d.planning ? 'Planning' : 'Implement dossier', badge: c.d.entries && c.d.entries.length ? { text: c.d.entries.length + ' updates', tone: 'neutral' } : null, def: paneDefault('timeline', c.pd), cls: 'flat',
+    body: () => [c.mode === 'run' && (c.d.activeSection || '') === '' ? nowView(c.d, c.r.runner, true) : null, groupsView(c.d.groups || [], c.key, 'No updates yet — the agent posts here as the run progresses')] } : null,
+  c => c.d ? (c.secs.filter(x => x.cmd).map(x => ({ key: 'tl:' + x.cmd, title: x.label, def: paneDefault('tl', c.pd) || (c.d.activeSection === x.cmd && c.mode === 'run'), cls: 'flat',
+    body: () => [c.mode === 'run' && c.d.activeSection === x.cmd ? nowView(c.d, c.r.runner, true) : null, groupsView(x.groups, c.key + ':' + x.cmd, 'No updates yet — the agent posts here as the run progresses')] }))) : null,
+  c => c.d && (c.mode === 'run' || c.hasLog) ? { key: 'log', title: 'Build log', badge: c.hasLog ? { text: String(c.d.log.length), tone: 'neutral' } : null, def: paneDefault('log', c.pd), cls: 'flat',
+    body: () => [c.hasLog ? h('ol', { class: 'tl', 'data-k': 'log' }, c.d.log.slice().reverse().map((l, i) => h('li', { class: 'log', 'data-k': 'l:' + i + l.slice(0, 30) }, [h('div', { class: 'tx' }, [l])]))) : h('div', { class: 'empty' }, ['The dossier has no build log yet.'])] } : null
+);
+/* "Needs you now": what waits on the owner, answerable here. The open questions are the question cards (the same buttons and answer
+   endpoints as /questions); the rest is a one-line row with the button that opens its pane. Always visible, never collapsible. */
+function needsYou(r, d, mode) {
+  const nq = openQs(r); const bs = d && d.blocks ? d.blocks.length : 0; const rv = reviewOf(r); const rows = [];
+  nq.forEach(q => rows.push(qCard(q, { thread: true, strip: true })));
+  if (bs) rows.push(h('div', { class: 'nrow', 'data-k': 'nr:blocked' }, [chip('blocked', 'warn'), h('span', { class: 'grow' }, [bs + ' command' + (bs === 1 ? '' : 's') + ' refused by the safety check: allow or deny']), h('button', { class: 'btn sm', type: 'button', 'data-act': 'pane-go', 'data-pane': 'blocked' }, ['Open'])]));
+  if (rv && rv.summary && (rv.summary.unchecked || rv.summary.outdated || rv.summary.question || rv.summary.change) && vrPanel(r)) rows.push(h('div', { class: 'nrow', 'data-k': 'nr:review' }, [chip('review', 'info'), h('span', { class: 'grow' }, [rv.summary.text]), h('button', { class: 'btn sm', type: 'button', 'data-act': 'pane-go', 'data-pane': 'diagram' }, ['Open the diagrams'])]));
+  const lm = liveMessageView(r); if (lm) rows.push(lm);
+  const waiting = nq.length + (bs ? 1 : 0);
+  return h('section', { class: 'panel needs-strip', 'data-k': 'needs', id: 'needs', role: 'region', 'aria-label': 'Needs you now' }, [
+    h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Needs you now']), waiting ? chip(String(waiting), 'warn') : null]),
+    waiting || (rv && rv.summary && rv.summary.unchecked) ? null : h('div', { class: 'nowait' }, ['Nothing is waiting on you.'])].concat(rows));
 }
 function itemView(repo, id) {
   const r = findRun(repo, id);
-  if (!r) return h('div', {}, [h('h1', {}, [id]), h('div', { class: 'empty' }, [S.loaded ? 'No such dossier in ' + repo + '.' : 'Loading…'])]);
+  if (!r) return h('div', {}, [h('h1', {}, [id]), h('div', { class: 'empty', role: 'status' }, [S.loaded ? 'No such dossier in ' + repo + '.' : 'Loading the dossier…'])]);
   const mode = itemMode(r); const d = S.detail && S.detail.url === detailUrl() ? S.detail.data : null;
-  const kids = [header(r, mode)];
-  const vpn = vrPanel(r); if (vpn) kids.push(vpn);
-  const bv = blockedView(r, d); if (bv) kids.push(bv);
-  const rv = rulingsView(r, d); if (rv) kids.push(rv);
-  const res = resultView(r, d); if (res) kids.push(res);
-  const lm = liveMessageView(r); if (lm) kids.push(lm);
-  const dp = deferredProgress(r, d); if (dp) kids.push(dp);
-  /* Every dossier has the same tabs; a finished or not-started one opens on the
-     dossier itself, a run in progress on its timeline. Empty tabs are left out. */
-  const key = repo + '/' + id;
-  const hasTl = d && d.entries && d.entries.length > 0, hasLog = d && d.log && d.log.length > 0, nDf = r.deferred ? r.deferred.items.length : 0;
-  const list = [];
-  if (mode !== 'run') list.push(['doc', 'Dossier']);
-  // One timeline tab per run: Implement dossier (the /work-on phases), then each later run (Fix deferred issues, …) with its own steps.
+  const key = repo + '/' + id; const item = key;
   const secs = (d && d.sections) || [];
-  if (mode === 'run' || hasTl) list.push(['timeline', d && d.planning ? 'Planning' : 'Implement dossier']);
-  secs.filter(x => x.cmd).forEach(x => list.push(['tl:' + x.cmd, x.label]));
-  if (mode === 'run' || hasLog) list.push(['log', 'Build log' + (hasLog ? ' (' + d.log.length + ')' : '')]);
-  if (nDf) list.push(['deferred', 'Deferred (' + r.deferredOpen + ' open / ' + nDf + ')']);
-  // A finished dossier opens on its dossier, but while a later run (fixing deferred issues) works, on its timeline.
+  const rv = reviewOf(r);
+  const needs = openQs(r).length > 0 || !!(d && d.blocks && d.blocks.length);
   const busy = r.runner && ['running', 'testing', 'waiting', 'paused', 'queued'].includes(r.runner.state);
-  const liveTab = d && d.activeSection ? 'tl:' + d.activeSection : 'timeline';
-  let tab = S.tab[key] || (busy && list.some(t => t[0] === liveTab) ? liveTab : busy && list.some(t => t[0] === 'timeline') ? 'timeline' : list[0][0]); if (!list.some(t => t[0] === tab)) tab = list[0][0];
-  if (list.length > 1) kids.push(tabs(key, list));
-  if (!d) kids.push(h('div', { class: 'empty' }, ['Loading…']));
-  else if (tab === 'doc') {
-    const sv = summaryView(r, d); if (sv) kids.push(sv);
-    const html = d.html || '';
-    kids.push(h('div', { class: 'panel md', 'data-raw': '1', 'data-sig': html.length + ':' + html.slice(0, 40) + html.slice(-40), 'data-html': html }, []));
-    if (r.answered.length) kids.push(section('Answered questions', r.answered.length, h('div', {}, r.answered.map(a => h('div', { class: 'panel qa', 'data-k': 'qa:' + a.id }, [
-      h('div', {}, ['Q: ' + a.text]), h('div', { class: 'a' }, ['A: ' + (a.option ? a.option + ' · ' : '') + a.answer + ' · ', when(a.answeredAt || a.asked)]), h('a', { class: 'small', href: '/questions#q=' + enc(a.id) }, ['thread'])]))), 'qa'));
-  }
-  else if (tab === 'log') kids.push(hasLog ? h('ol', { class: 'tl', 'data-k': 'log' }, d.log.slice().reverse().map((l, i) => h('li', { class: 'log', 'data-k': 'l:' + i + l.slice(0, 30) }, [h('div', { class: 'tx' }, [l])]))) : h('div', { class: 'empty' }, ['The dossier has no build log yet.']));
-  else if (tab === 'deferred') kids.push(deferredView(r));
-  else {
-    const sec = tab.indexOf('tl:') === 0 ? secs.find(x => 'tl:' + x.cmd === tab) : null;
-    const live = (d.activeSection || '') === (sec ? sec.cmd : '');
-    if (mode === 'run' && live) kids.push(nowView(d, r.runner, true));
-    kids.push(groupsView(sec ? sec.groups : (d.groups || []), key + (sec ? ':' + sec.cmd : ''), 'No updates yet — the agent posts here as the run progresses'));
-  }
+  const pd = { mode: mode, needs: needs, reviewing: !!vrOpenQ(id, repo) || !!(rv && rv.summary && (rv.summary.unchecked || rv.summary.outdated || rv.summary.question || rv.summary.change)), fixLive: fixLive(r), fixWaiting: fixLive(r) && openQs(r).length > 0 };
+  const c = { r: r, d: d, mode: mode, key: key, item: item, secs: secs, rv: rv, pd: pd, busy: busy, nDf: r.deferred ? r.deferred.items.length : 0,
+    hasTl: !!(d && d.entries && d.entries.length > 0), hasLog: !!(d && d.log && d.log.length > 0) };
+  const list = []; PANES.forEach(f => { const x = f(c); if (x) (Array.isArray(x) ? x : [x]).forEach(y => list.push(y)); });
+  const kids = [header(r, mode), needsYou(r, d, mode)];
+  if (!d) kids.push(h('div', { class: 'loading', role: 'status', 'data-k': 'loading' }, [h('span', { class: 'dot info live' }), ' Loading the dossier… the header and the questions above are already current.']));
+  const rail = list.length > 1 ? h('nav', { class: 'rail', 'aria-label': 'Sections', 'data-k': 'rail' }, list.map(p => h('button', { class: 'rail-i', type: 'button', 'data-act': 'pane-go', 'data-pane': p.key, 'data-k': 'ri:' + p.key }, [
+    h('span', { class: 'dot ' + (p.badge && p.badge.tone === 'warn' ? 'warn' : p.badge && p.badge.tone === 'ok' ? 'ok' : p.badge && p.badge.tone === 'info' ? 'info' : ''), 'aria-hidden': 'true' }), h('span', { class: 'rail-t' }, [p.title]), p.badge ? h('span', { class: 'rail-b' }, [p.badge.text]) : null]))) : null;
+  const panes = h('div', { class: 'panes', 'data-k': 'panes' }, list.map(p => pane(item, p)));
+  kids.push(h('div', { class: 'dlayout' + (rail ? ' withrail' : ''), 'data-k': 'dlayout' }, [rail, panes]));
+  if (d && d.rulings && d.rulings.length) kids.push(h('p', { class: 'small mut rulelink', 'data-k': 'rulelink' }, ['Standing rulings: ' + d.rulings.length + ' for ' + repo + ' · ', h('a', { href: hrefRepo(repo) + '#rulings' }, ['manage them on the repo page'])]));
   return h('div', {}, kids);
 }
 /* The deferred ledger: open items with a copyable /plan seed, fixed ones with their
@@ -1468,17 +1540,18 @@ function blockedView(r, d) {
   if (st.msg) kids.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad') }, [st.msg]));
   return h('section', { class: 'panel blocked', 'data-k': 'blocked' }, kids);
 }
-/* The standing "Always allow" rulings of this repo (~/.agentic/rulings): who saved each, when, for which question; Remove drops it. */
-function rulingsView(r, d) {
-  const rs = d && d.rulings; if (!rs || !rs.length) return null;
-  const st = S.chat['rul:' + r.repo] = S.chat['rul:' + r.repo] || {};
+/* The standing "Always allow" rulings of this repo (~/.agentic/rulings): who saved each, when, for which question; Remove drops it.
+   Repo-wide, so they live on the repo page; a dossier page only links here. */
+function rulingsView(repo) {
+  const rs = S.rulings[repo]; if (!rs || !rs.length) return null;
+  const st = S.chat['rul:' + repo] = S.chat['rul:' + repo] || {};
   const rows = rs.map(x => h('div', { class: 'blk', 'data-k': 'rul:' + x.rule }, [
     h('pre', { class: 'blk-cmd' }, [x.rule]),
     h('div', { class: 'small mut' }, ['saved by ' + (x.by || 'owner') + (x.question ? ' · answering ' + x.question : '') + ' · ', when(x.ts)]),
-    h('div', { class: 'ctl' }, [h('button', { class: 'btn', type: 'button', 'data-act': 'rmrule', 'data-repo': r.repo, 'data-rule': x.rule, disabled: st.busy ? true : null }, ['Remove'])])]));
-  const kids = [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Standing rulings for ' + r.repo + ' · ' + rs.length]), h('span', { class: 'small mut' }, ['applied to every later session of this repo'])])].concat(rows);
+    h('div', { class: 'ctl' }, [h('button', { class: 'btn', type: 'button', 'data-act': 'rmrule', 'data-repo': repo, 'data-rule': x.rule, disabled: st.busy ? true : null }, ['Remove'])])]));
+  const kids = [h('div', { class: 'res-hd' }, [h('span', { class: 'kind' }, ['Standing rulings for ' + repo + ' · ' + rs.length]), h('span', { class: 'small mut' }, ['applied to every later session of this repo'])])].concat(rows);
   if (st.msg) kids.push(h('div', { class: 'ctl-msg ' + (st.ok ? 'ok' : 'bad') }, [st.msg]));
-  return h('section', { class: 'panel rulings', 'data-k': 'rulings' }, kids);
+  return h('section', { class: 'panel rulings', id: 'rulings', 'data-k': 'rulings' }, kids);
 }
 /* What the dossier changed, in product terms (/product-summary, written after Phase 9), above the dossier itself. */
 function summaryView(r, d) {
@@ -1671,7 +1744,7 @@ function detailUrl() {
   return null;
 }
 function build() {
-  if (!S.loaded && !S.ready) return h('div', { class: 'skel' }, [h('i'), h('i'), h('i'), h('i')]);
+  if (!S.loaded && !S.ready) return h('div', { class: 'skel', role: 'status', 'aria-label': 'Loading' }, [h('p', { class: 'skel-t' }, [h('span', { class: 'dot info live' }), ' Loading the pipeline…']), h('i'), h('i'), h('i'), h('i')]);
   if (R.kind === 'questions') return questionsView(); if (R.kind === 'repo') return repoView(R.repo);
   if (R.kind === 'chat') return chatView();
   if (R.kind === 'arch') return archView(R.repo);
@@ -1719,6 +1792,7 @@ function render() {
   const t = new Date(S.changedAt || Date.now()).toISOString(); up.appendChild(when(t, 'updated ') || h('span')); if (S.refreshing || (S.stubs && S.stubs.refreshing)) up.appendChild(h('span', { class: 'muted', title: 'Showing the last saved view while the server rebuilds it' }, [' · refreshing…'])); morph(document.getElementById('upd'), up);
   document.title = (R.kind === 'chat' ? 'Ask the agent · ' : R.kind === 'item' ? R.id + ' · ' : R.kind === 'repo' ? R.repo + ' · ' : R.kind === 'arch' ? 'Architecture · ' + R.repo + ' · ' : '') + 'Pipeline · Owner questions';
   vrMount();
+  if (R.kind === 'repo' && location.hash === '#rulings') { const e = document.getElementById('rulings'); if (e && S.hashDone !== location.href) { S.hashDone = location.href; e.scrollIntoView({ block: 'start' }); } }
   if (scrollTarget) { const e = document.getElementById('q-' + scrollTarget); if (e) { e.scrollIntoView({ block: 'start' }); scrollTarget = ''; } }
 }
 
@@ -1737,9 +1811,11 @@ async function load(what) {
   if (all || w.has('runs') || w.has('scan')) jobs.push(fetchJ('/api/delivery-flows').then(d => { if (d && d.repos) { S.flows = {}; d.repos.forEach(v => { S.flows[v.repo] = v; }); } }));
   // The non-code PR list is fetched once per repo; reload it when the server says it changed (or any run changed) while it is on screen.
   if ((all || w.has('docprs') || w.has('runs')) && R.kind === 'repo') { const st = S.docPrs[R.repo]; if (st && !st.loading) jobs.push(fetch('/api/repo/' + enc(R.repo) + '/doc-prs').then(r => r.json()).then(j => { if (!S.docPrs[R.repo] || !S.docPrs[R.repo].merging || j.merging) S.docPrs[R.repo] = j; }).catch(() => {})); }
+  if ((all || w.has('runs') || w.has('rulings')) && R.kind === 'repo') { const rr = R.repo; jobs.push(fetchJ('/api/rulings/' + enc(rr)).then(d => { if (d && Array.isArray(d.rules)) S.rulings[rr] = d.rules; })); }
   if ((all || w.has('chat')) && R.kind === 'chat') jobs.push(loadChat());
   await Promise.all(jobs);
   await loadDetail();
+  if (R.kind === 'item') { S.loaded = true; S.changedAt = Date.now(); render(); } /* the header, the questions and the dossier text show before the (slow) diagrams arrive */
   if (R.kind === 'item') await vrLoad(R.repo, R.id);
   if (R.kind === 'repo' || R.kind === 'arch') await vrMapLoad(R.repo);
   if (R.kind === 'arch') { const want = new URLSearchParams(location.search).get('d'); const m = VRM[R.repo]; if (want && (!m || m.open !== want)) vrOpenDiagram(R.repo, want); }
@@ -1881,6 +1957,7 @@ document.addEventListener('click', (e) => {
     else if (act === 'summary') writeSummary(t);
     else if (act === 'blk') ruleBlock(t);
     else if (act === 'rmrule') removeRule(t);
+    else if (act === 'pane-go') paneGo(t.dataset.pane);
     else if (act === 'usage-refresh') { S.usageBusy = true; render(); fetch('/api/accounts/refresh', { method: 'POST' }).catch(() => {}).finally(() => load(['runs'])); }
     else if (act === 'toggle-done') { S.showAll[t.dataset.repo] = !S.showAll[t.dataset.repo]; render(); }
     return;
@@ -1894,6 +1971,20 @@ document.addEventListener('click', (e) => {
   if (h2 && (h2 === '/' || h2.indexOf('/questions') === 0 || h2.indexOf('/chat') === 0 || h2.indexOf('/repo/') === 0)) { e.preventDefault(); navigate(h2); }
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.target.dataset && e.target.dataset.dm) { e.preventDefault(); sendDm(); return; } if ((e.key === ' ' || e.key === 'Enter') && e.target.classList && e.target.classList.contains('dfc') && e.target.dataset.act === 'dsel') { e.preventDefault(); e.target.click(); } });
+/* Opening or closing a pane (the summary click is also Enter and Space) is remembered for this viewer; the closed body is dropped and the open one built. */
+document.addEventListener('click', (e) => {
+  const sm = e.target.closest ? e.target.closest('details.pane>summary') : null; if (!sm) return;
+  const dt = sm.parentNode; if (!dt.dataset.pane) return;
+  paneSet(dt.dataset.pane, dt.dataset.key, !dt.open); setTimeout(render, 0);
+});
+/* A rail button or a "Open ..." button: open that pane, scroll to it and move focus to its summary. */
+function paneGo(key) {
+  const idOf = (k) => k === 'needs' ? 'needs' : 'pane-' + k.replace(/[^A-Za-z0-9_-]/g, '_');
+  if (key !== 'needs' && R.kind === 'item') { paneSet(R.repo + '/' + R.id, key, true); render(); }
+  const el = document.getElementById(idOf(key)); if (!el) return;
+  el.scrollIntoView({ block: 'start' });
+  const f = key === 'needs' ? el.querySelector('button,textarea,a[href]') : el.querySelector('summary'); if (f && f.focus) f.focus({ preventScroll: true });
+}
 window.addEventListener('popstate', onRoute);
 window.addEventListener('hashchange', () => { if (R.kind === 'questions') { scrollTarget = hashQ(); render(); } else onRoute(); });
 setInterval(() => { if (!S.live) load(null); }, 60000);   // fallback while the event stream is down
